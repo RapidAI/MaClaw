@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView, SetDesktopPetState } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
@@ -218,13 +218,19 @@ interface AgentViewLifecyclePayload {
     error?: string;
 }
 
-type DesktopPetState = 'idle' | 'listening' | 'thinking' | 'speaking';
+type DesktopPetState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'done' | 'alert';
 
 function emitDesktopPetState(state: DesktopPetState, source: string, ttlMs?: number) {
     try {
         EventsEmit('pet:state', { state, source, ttlMs });
     } catch {
         // The desktop pet window may not be open; AI assistant flow should continue unaffected.
+    }
+    // Bridge to Windows native layered pet (K11). Fire-and-forget.
+    try {
+        void SetDesktopPetState(state, typeof ttlMs === 'number' ? ttlMs : 0);
+    } catch {
+        // Native pet may be unavailable; ignore.
     }
 }
 
@@ -3374,7 +3380,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (activeRoundRef.current.generation !== generation) return;
         clearTransientProgress();
         resetActiveRound();
-        emitPetStateForAssistant('idle', 'ai:round-done');
+        // Show done frame briefly, then TTL returns native pet to idle (K11 / criterion 4).
+        emitPetStateForAssistant('done', 'ai:round-done', 1600);
     }, [clearTransientProgress, emitPetStateForAssistant, resetActiveRound]);
 
     const startResponseTimeout = useCallback((round: { generation: number; assistantMessageId: string; requestId: string; source: string }) => {
@@ -4477,7 +4484,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         } finally {
             offBtwToken();
             offBtwProgress();
-            emitPetStateForAssistant('idle', 'ai:btw-done');
+            emitPetStateForAssistant('done', 'ai:btw-done', 1600);
         }
     }, [activeSessionKeyForEvents, emitPetStateForAssistant]);
 
@@ -5149,7 +5156,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 if (activeRoundRef.current.requestId === round.requestId) {
                     resetActiveRound(round.generation);
                 }
-                emitPetStateForAssistant('idle', 'agent-view:done');
+                emitPetStateForAssistant('done', 'agent-view:done', 1600);
             }
             return;
         } catch (err: any) {

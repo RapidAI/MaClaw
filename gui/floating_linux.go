@@ -283,3 +283,13 @@ func (w *linuxFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string
 	// Linux floating window does not manage sound state in-memory;
 	// sound is handled by the WebView-based React component.
 }
+
+func (w *linuxFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
+}
+
+func (w *linuxFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
+}
+
+func (w *linuxFloatingWindow) CurrentPetRuntimeState() string {
+	return "idle"
+}

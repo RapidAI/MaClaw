@@ -9,12 +9,13 @@ import (
 
 // mockFloatingWindow is a mock implementation of floatingWindow for testing.
 type mockFloatingWindow struct {
-	created   bool
-	shown     bool
-	destroyed bool
-	x, y      int
-	createErr error
-	mu        sync.Mutex
+	created      bool
+	shown        bool
+	destroyed    bool
+	x, y         int
+	createErr    error
+	runtimeState string
+	mu           sync.Mutex
 }
 
 func (m *mockFloatingWindow) Create(x, y, w, h int) error {
@@ -61,6 +62,20 @@ func (m *mockFloatingWindow) IsCreated() bool {
 }
 
 func (m *mockFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {}
+
+func (m *mockFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
+}
+
+func (m *mockFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
+	m.runtimeState = state
+}
+
+func (m *mockFloatingWindow) CurrentPetRuntimeState() string {
+	if m.runtimeState == "" {
+		return "idle"
+	}
+	return m.runtimeState
+}
 
 // TestFloatingAssistantManager_HideSetsVisibleFalse tests that HideFloatingButton
 // sets visible to false and destroys the window.

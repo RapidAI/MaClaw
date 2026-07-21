@@ -150,32 +150,41 @@ type AppConfig struct {
 	ShowAITraceEntry                   bool                   `json:"show_ai_trace_entry,omitempty"`
 	// ShowAppEntry controls the MaClaw Apps sidebar entry. Nil means on
 	// (same default-on contract as show_workflow_entry / show_utilities_entry).
-	ShowAppEntry                       *bool                  `json:"show_app_entry,omitempty"`
-	ShowWorkflowEntry                  *bool                  `json:"show_workflow_entry,omitempty"`
-	ShowUtilitiesEntry                 *bool                  `json:"show_utilities_entry,omitempty"`
-	SurveyEnabled                      *bool                  `json:"survey_enabled,omitempty"`
-	ShowAssistantEntry                 bool                   `json:"show_assistant_entry"`
-	ShowHubRanking                     *bool                  `json:"show_hub_ranking,omitempty"`
-	PetEnabled                         bool                   `json:"pet_enabled,omitempty"`
-	PetSkin                            string                 `json:"pet_skin,omitempty"`
-	PetSize                            int                    `json:"pet_size,omitempty"`
-	PetMotionEnabled                   *bool                  `json:"pet_motion_enabled,omitempty"`
-	PetMotionSound                     *bool                  `json:"pet_motion_sound_enabled,omitempty"`
-	PetMotionSoundPreset               string                 `json:"pet_motion_sound_preset,omitempty"`
-	PetTextInteraction                 *bool                  `json:"pet_text_interaction_enabled,omitempty"`
-	PetVoiceInput                      bool                   `json:"pet_voice_input_enabled,omitempty"`
-	PetVoiceReadback                   bool                   `json:"pet_voice_readback_enabled,omitempty"`
-	PetFileDropEnabled                 *bool                  `json:"pet_file_drop_enabled,omitempty"`
-	PetInteractionMode                 string                 `json:"pet_interaction_mode,omitempty"`
-	PetConversationMode                string                 `json:"pet_conversation_mode,omitempty"`
-	PetReadbackMode                    string                 `json:"pet_readback_mode,omitempty"`
-	PetAutoRetryOnNoHear               bool                   `json:"pet_auto_retry_on_no_hear,omitempty"`
-	PetContinuousTimeout               int                    `json:"pet_continuous_timeout_sec,omitempty"`
-	PetQuietMode                       bool                   `json:"pet_quiet_mode,omitempty"`
-	FloatingBtnX                       int                    `json:"floating_btn_x,omitempty"`
-	FloatingBtnY                       int                    `json:"floating_btn_y,omitempty"`
-	FloatingBtnPositionSet             bool                   `json:"floating_btn_position_set,omitempty"`
-	LogDetailEnabled                   bool                   `json:"log_detail_enabled,omitempty"`
+	ShowAppEntry         *bool  `json:"show_app_entry,omitempty"`
+	ShowWorkflowEntry    *bool  `json:"show_workflow_entry,omitempty"`
+	ShowUtilitiesEntry   *bool  `json:"show_utilities_entry,omitempty"`
+	SurveyEnabled        *bool  `json:"survey_enabled,omitempty"`
+	ShowAssistantEntry   bool   `json:"show_assistant_entry"`
+	ShowHubRanking       *bool  `json:"show_hub_ranking,omitempty"`
+	PetEnabled           bool   `json:"pet_enabled,omitempty"`
+	PetSkin              string `json:"pet_skin,omitempty"`
+	PetSize              int    `json:"pet_size,omitempty"`
+	PetMotionEnabled     *bool  `json:"pet_motion_enabled,omitempty"`
+	PetMotionSound       *bool  `json:"pet_motion_sound_enabled,omitempty"`
+	PetMotionSoundPreset string `json:"pet_motion_sound_preset,omitempty"`
+	PetTextInteraction   *bool  `json:"pet_text_interaction_enabled,omitempty"`
+	PetVoiceInput        bool   `json:"pet_voice_input_enabled,omitempty"`
+	PetVoiceReadback     bool   `json:"pet_voice_readback_enabled,omitempty"`
+	PetFileDropEnabled   *bool  `json:"pet_file_drop_enabled,omitempty"`
+	PetInteractionMode   string `json:"pet_interaction_mode,omitempty"`
+	PetConversationMode  string `json:"pet_conversation_mode,omitempty"`
+	PetReadbackMode      string `json:"pet_readback_mode,omitempty"`
+	PetAutoRetryOnNoHear bool   `json:"pet_auto_retry_on_no_hear,omitempty"`
+	PetContinuousTimeout int    `json:"pet_continuous_timeout_sec,omitempty"`
+	PetQuietMode         bool   `json:"pet_quiet_mode,omitempty"`
+	// PetVariant selects classic (procedural) vs default/figurative (native frames).
+	// Empty is treated as classic at resolve time (K18); migration persists classic for existing installs.
+	PetVariant string `json:"pet_variant,omitempty"`
+	// PetVariantMigrated marks that K18 migration has been applied. New installs set true in defaults.
+	PetVariantMigrated bool `json:"pet_variant_migrated,omitempty"`
+	// PetFigurativeUpgradePromptPending asks settings to offer switching to figurative.
+	PetFigurativeUpgradePromptPending bool `json:"pet_figurative_upgrade_prompt_pending,omitempty"`
+	// PetReducedMotion forces static frames and disables halo/SFX (explicit setting).
+	PetReducedMotion       bool `json:"pet_reduced_motion,omitempty"`
+	FloatingBtnX           int  `json:"floating_btn_x,omitempty"`
+	FloatingBtnY           int  `json:"floating_btn_y,omitempty"`
+	FloatingBtnPositionSet bool `json:"floating_btn_position_set,omitempty"`
+	LogDetailEnabled       bool `json:"log_detail_enabled,omitempty"`
 	// IM 闂?per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
@@ -251,6 +260,9 @@ type AppConfig struct {
 	GossipAutoPublish bool `json:"gossip_auto_publish"`
 	// LLM trajectory logging.
 	LLMTrajectoryLogging bool `json:"llm_trajectory_logging,omitempty"`
+	// BugReportEnabled is a temporary diagnostic collection mode. When enabled,
+	// the desktop client remembers and forces trajectory/detail logging, then
+	// restores the original values when the mode is disabled.
 	// MemoryRecallLogEnabled enables detailed memory recall logging to a
 	// dedicated file (~/.maclaw/logs/memory_recall.log). Records every recall
 	// operation's query, scores, and returned entries for debugging/improving
@@ -923,6 +935,10 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	// Set defaults first, then let json.Unmarshal overwrite with actual values.
 	// Fields present in JSON override defaults; absent fields keep defaults.
 	// No *bool tricks, no rawConfig map checks, no dual-layer logic.
+	//
+	// K18 note: PetVariant / PetVariantMigrated are intentionally NOT default-true
+	// seeds here. Absent fields stay empty/false so legacy configs can be migrated
+	// to classic. Brand-new installs call ApplyNewInstallPetDefaults.
 	*c = AppConfigDefaults()
 
 	type alias AppConfig
@@ -945,8 +961,8 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 // defaults — no other code path needs to repeat these values.
 func AppConfigDefaults() AppConfig {
 	return AppConfig{
-		MaclawRoleDescription:      DefaultMaclawRoleDescription,
-		ShowAssistantEntry:         true,
+		MaclawRoleDescription: DefaultMaclawRoleDescription,
+		ShowAssistantEntry:    true,
 		// ShowAppEntry left nil: absent/nil means enabled (default-on).
 		ShowCodex:                  true,
 		ShowOpenCode:               true,
@@ -977,12 +993,31 @@ func AppConfigDefaults() AppConfig {
 		// ApplySharedAgentLoopMigration (sets SharedAgentLoopMigrated).
 		SharedAgentLoopEnabled:  true,
 		SharedAgentLoopMigrated: true, // new installs need no later migration
-		GroupDiscussion:         defaultGroupDiscussionConfig(),
-		LLMPromptCache:          DefaultLLMPromptCacheConfig(),
-		ToolCacheMaintenance:    DefaultToolCacheMaintenanceConfig(),
-		Projects:                defaultProjects(),
-		CurrentProject:          "default",
+		// PetSkin only — PetVariant/Migrated intentionally zero here.
+		// UnmarshalJSON uses these defaults for absent keys; seeding figurative
+		// would silently upgrade every legacy install. First-run calls
+		// ApplyNewInstallPetDefaults instead (K18).
+		PetSkin:              "clawmate",
+		GroupDiscussion:      defaultGroupDiscussionConfig(),
+		LLMPromptCache:       DefaultLLMPromptCacheConfig(),
+		ToolCacheMaintenance: DefaultToolCacheMaintenanceConfig(),
+		Projects:             defaultProjects(),
+		CurrentProject:       "default",
 	}
+}
+
+// ApplyNewInstallPetDefaults sets figurative pet defaults for brand-new installs only.
+// Must not be used as UnmarshalJSON seed (see K18 / AppConfigDefaults comment).
+func ApplyNewInstallPetDefaults(cfg *AppConfig) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.PetSkin) == "" {
+		cfg.PetSkin = "clawmate"
+	}
+	cfg.PetVariant = "default"
+	cfg.PetVariantMigrated = true
+	cfg.PetFigurativeUpgradePromptPending = false
 }
 
 func (c *AppConfig) ensureDefaultProject() {

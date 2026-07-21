@@ -1,0 +1,61 @@
+﻿schema_version: 1
+id: mini-claw
+name: Mini Claw
+version: 1.1.0
+author: MaClaw Official
+license: proprietary
+description: "Pocket-sized helper with compact shell"
+tier: figurative
+min_maclaw_version: "0.0.0"
+label:
+  en: Mini Claw
+  zh-Hans: 迷你爪
+  zh-Hant: 迷你爪
+description_i18n:
+  en: "Pocket-sized helper with compact shell"
+  zh-Hans: "Pocket-sized helper with compact shell"
+preview: preview.png
+default_size: 88
+tone: compact
+tags: ["official", "default"]
+renderer: native-raster
+face_overlay: false
+assets:
+  preview: preview.png
+  native:
+    idle: native/idle.png
+    listening: native/listening.png
+    thinking: native/thinking.png
+    speaking: native/speaking.png
+    done: native/done.png
+    alert: native/alert.png
+    quiet: native/quiet.png
+variants:
+  - id: default
+    tier: figurative
+    renderer: native-raster
+    face_overlay: false
+    assets:
+      native:
+        idle: native/idle.png
+        listening: native/listening.png
+        thinking: native/thinking.png
+        speaking: native/speaking.png
+        done: native/done.png
+        alert: native/alert.png
+        quiet: native/quiet.png
+  - id: classic
+    tier: classic
+    renderer: procedural-fallback
+    face_overlay: true
+motion:
+  idle_ms: 4000
+  listening_ms: 1200
+  thinking_ms: 1800
+  speaking_ms: 950
+  amplitude: 0.85
+  sound_profile: classic
+  pitch: 1.2
+capabilities:
+  supports_done_state: true
+  supports_alert_state: true

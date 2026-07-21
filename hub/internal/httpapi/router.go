@@ -1055,5 +1055,6 @@ func NewRouter(
 	registerStaticRoutes(mux, "./web/maclaw-app-manual", "/maclaw-app-manual")
 	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
 	registerStaticRoutes(mux, "./web/user-ranking", "/user-ranking")
-	return mux
+	registerStaticRoutes(mux, "./web/pet-pack-help", "/pet-pack-help")
+return mux
 }

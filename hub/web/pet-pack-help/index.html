@@ -1,0 +1,925 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MaClaw Pet Pack creation guide — structure, build steps, zip install. Switchable ZH/EN (one language at a time).">
+  <title>MaClaw 宠物包创建指南</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #fff;
+      --panel-subtle: #f8fbff;
+      --ink: #172033;
+      --muted: #5f6f86;
+      --line: #d9e2ee;
+      --primary: #6366f1;
+      --primary-strong: #4f46e5;
+      --primary-soft: #eef2ff;
+      --green: #147d58;
+      --green-soft: #eaf7f1;
+      --amber: #9a6700;
+      --amber-soft: #fff8ed;
+      --shadow: 0 12px 32px rgba(23, 34, 54, .07);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #fbfcfe 0%, var(--bg) 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+    }
+    .skip-link {
+      position: fixed; top: 12px; left: 12px; z-index: 20;
+      transform: translateY(-140%); min-height: 38px; padding: 7px 12px;
+      border-radius: 8px; background: var(--ink); color: #fff; font-weight: 850;
+      text-decoration: none; transition: transform 160ms ease;
+    }
+    .skip-link:focus-visible { transform: translateY(0); }
+    .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+    .brand { display: flex; align-items: center; gap: 12px; color: var(--ink); text-decoration: none; }
+    .mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: var(--primary); color: #fff; font-weight: 900; }
+    .brand strong { display: block; font-size: 16px; }
+    .brand span:last-child { display: block; color: var(--muted); font-size: 13px; }
+    .lang { display: flex; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+    .lang button {
+      min-height: 32px; padding: 0 14px; border: 0; border-radius: 7px;
+      background: transparent; color: var(--muted); font-weight: 800; cursor: pointer;
+    }
+    .lang button[aria-pressed="true"] { background: var(--primary); color: #fff; }
+    :focus-visible { outline: 3px solid rgba(99, 102, 241, .34); outline-offset: 2px; }
+
+    /* One language at a time: inactive panel is fully removed from layout */
+    .lang-panel { display: block; }
+    .lang-panel.is-hidden,
+    .lang-panel[hidden] {
+      display: none !important;
+    }
+
+    .hero {
+      display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: center;
+      padding: 32px 36px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow);
+    }
+    .kicker { margin: 0 0 10px; color: var(--primary); font-size: 13px; font-weight: 850; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.2; }
+    h2 { margin: 0 0 12px; font-size: 22px; }
+    h3 { margin: 18px 0 8px; font-size: 16px; }
+    h4 { margin: 14px 0 6px; font-size: 14px; color: var(--ink); }
+    p { margin: 0 0 12px; color: var(--muted); }
+    ul, ol { margin: 0 0 12px; padding-left: 20px; color: var(--muted); }
+    li + li { margin-top: 6px; }
+    code { padding: 2px 5px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; color: var(--primary-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; }
+    pre {
+      margin: 0 0 14px; padding: 14px 16px; overflow: auto; border: 1px solid var(--line);
+      border-radius: 10px; background: #0f172a; color: #e2e8f0; font-size: 12.5px; line-height: 1.55;
+    }
+    pre code { padding: 0; border: 0; background: transparent; color: inherit; font-size: inherit; }
+    .lead { max-width: 780px; margin-top: 14px; color: var(--muted); font-size: 16px; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .button-link {
+      display: inline-flex; align-items: center; justify-content: center; min-height: 40px;
+      padding: 9px 13px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+      color: var(--ink); font-weight: 850; text-decoration: none;
+    }
+    .button-link.primary { border-color: var(--primary); background: var(--primary); color: #fff; }
+    .quick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+    .quick a {
+      min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px;
+      background: var(--panel-subtle); color: var(--ink); font-weight: 850; text-decoration: none;
+    }
+    .grid { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 22px; margin-top: 24px; }
+    .toc { position: sticky; top: 18px; align-self: start; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); max-height: calc(100vh - 36px); overflow: auto; }
+    .toc a { display: block; padding: 7px 10px; border-radius: 8px; color: var(--muted); font-weight: 760; text-decoration: none; font-size: 13.5px; }
+    .toc a:hover { background: var(--primary-soft); color: var(--primary); }
+    .content { display: grid; gap: 16px; }
+    .section {
+      scroll-margin-top: 18px; padding: 24px; border: 1px solid var(--line); border-radius: 12px;
+      background: var(--panel); box-shadow: 0 6px 18px rgba(23, 34, 54, .045);
+    }
+    .section:target { border-color: #c7d2fe; box-shadow: 0 0 0 3px rgba(99, 102, 241, .08), 0 6px 18px rgba(23, 34, 54, .045); }
+    .callout { padding: 14px 16px; border: 1px solid #cbe9db; border-radius: 10px; background: var(--green-soft); color: #285f49; font-weight: 760; margin-bottom: 12px; }
+    .warning { border-color: #ead2a6; background: var(--amber-soft); color: var(--amber); }
+    .table-wrap { overflow: auto; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--panel-subtle); color: var(--ink); font-weight: 800; white-space: nowrap; }
+    td { color: var(--muted); }
+    .steps { counter-reset: step; list-style: none; padding: 0; margin: 0 0 14px; }
+    .steps > li {
+      position: relative; padding: 14px 14px 14px 52px; margin-bottom: 10px;
+      border: 1px solid var(--line); border-radius: 10px; background: var(--panel-subtle);
+    }
+    .steps > li::before {
+      counter-increment: step; content: counter(step);
+      position: absolute; left: 12px; top: 14px;
+      display: grid; place-items: center; width: 28px; height: 28px;
+      border-radius: 999px; background: var(--primary-soft); color: var(--primary-strong); font-weight: 900; font-size: 13px;
+    }
+    .steps > li strong { display: block; color: var(--ink); margin-bottom: 4px; }
+    .hero-visual svg { display: block; width: 100%; height: auto; }
+    .noscript-note {
+      margin: 0 0 16px; padding: 12px 14px; border: 1px solid #ead2a6; border-radius: 10px;
+      background: var(--amber-soft); color: var(--amber); font-weight: 700; font-size: 14px;
+    }
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+      .toc { position: static; max-height: none; }
+      .quick { grid-template-columns: 1fr 1fr; }
+      h1 { font-size: 26px; }
+      .topbar { flex-direction: column; align-items: flex-start; }
+    }
+    @media (max-width: 560px) { .quick { grid-template-columns: 1fr; } }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#zh-overview" data-skip-link>跳到正文</a>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/pet-pack-help">
+        <span class="mark">P</span>
+        <span>
+          <strong>MaClaw Pet Pack</strong>
+          <span data-brand-sub>创建指南 · 切换语言只显示一种</span>
+        </span>
+      </a>
+      <div class="lang" role="group" aria-label="Language / 语言">
+        <button type="button" id="btn-lang-zh" data-set-lang="zh" aria-pressed="true">中文</button>
+        <button type="button" id="btn-lang-en" data-set-lang="en" aria-pressed="false">EN</button>
+      </div>
+    </header>
+
+    <noscript>
+      <p class="noscript-note">请启用 JavaScript 以切换中英文。默认显示中文正文；英文正文在页面下方（无脚本时可见）。</p>
+    </noscript>
+
+    <!-- ========== ZH only when active ========== -->
+    <div id="panel-zh" class="lang-panel" data-lang-panel="zh" role="region" aria-label="中文">
+      <section class="hero">
+        <div>
+          <p class="kicker">桌面宠物 · 自制扩展</p>
+          <h1>宠物包（Pet Pack）创建指南</h1>
+          <p class="lead">用<strong>声明式资源包</strong>做出自己的桌面宠物：一个 YAML 清单 + 若干 PNG/WebP 状态图，打成 zip 即可安装。不需要写 JS，也不用改 MaClaw 源码。</p>
+          <div class="hero-actions">
+            <a class="button-link primary" href="#zh-build">从零构建</a>
+            <a class="button-link" href="#zh-layout">目录结构</a>
+            <a class="button-link" href="#zh-checklist">验收清单</a>
+          </div>
+          <nav class="quick" aria-label="快速导航">
+            <a href="#zh-overview">是什么</a>
+            <a href="#zh-layout">结构</a>
+            <a href="#zh-build">构建步骤</a>
+            <a href="#zh-zip">打包安装</a>
+          </nav>
+        </div>
+        <div class="hero-visual" aria-hidden="true">
+          <svg viewBox="0 0 300 220" role="img">
+            <rect x="6" y="6" width="288" height="208" rx="14" fill="#eef2ff" stroke="#c7d2fe"/>
+            <circle cx="150" cy="92" r="44" fill="#fff" stroke="#a5b4fc" stroke-width="3"/>
+            <circle cx="134" cy="86" r="5" fill="#312e81"/>
+            <circle cx="166" cy="86" r="5" fill="#312e81"/>
+            <path d="M138 108c8 7 16 7 24 0" stroke="#312e81" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <rect x="110" y="148" width="80" height="32" rx="9" fill="#6366f1"/>
+            <text x="150" y="169" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" font-family="system-ui">your-pet</text>
+          </svg>
+        </div>
+      </section>
+
+      <div class="grid">
+        <nav class="toc" aria-label="目录">
+          <a href="#zh-overview">1. Pet Pack 是什么</a>
+          <a href="#zh-layout">2. 完整目录结构</a>
+          <a href="#zh-id">3. id 与命名规则</a>
+          <a href="#zh-manifest">4. pet-pack.yaml 详解</a>
+          <a href="#zh-frames">5. 状态帧怎么画</a>
+          <a href="#zh-variants">6. classic / default</a>
+          <a href="#zh-build">7. 从零构建步骤</a>
+          <a href="#zh-zip">8. 打包与安装</a>
+          <a href="#zh-security">9. 安全限制</a>
+          <a href="#zh-example">10. 最小可用示例</a>
+          <a href="#zh-checklist">11. 验收清单</a>
+          <a href="#zh-faq">12. 常见问题</a>
+        </nav>
+        <div class="content">
+
+          <section id="zh-overview" class="section">
+            <h2>1. Pet Pack 是什么</h2>
+            <p>Pet Pack 是放在用户目录下的<strong>纯资源包</strong>，用来替换/扩展桌面宠物外观：</p>
+            <ul>
+              <li><strong>能做：</strong>自定义形象、多状态表情（待机/聆听/思考/说话等）、设置页文案与推荐动效参数。</li>
+              <li><strong>不能做：</strong>不能执行代码、不能注册工具/技能、不能放 JS/HTML/可执行文件。</li>
+              <li><strong>和 Skill/MCP 插件的区别：</strong>插件是能力；Pet Pack 只是皮相（展示数据）。</li>
+            </ul>
+            <div class="callout">安装后位置：<code>{MaclawBaseDir}/pet-packs/&lt;id&gt;/</code>（Windows 常见为用户目录下 <code>.maclaw/pet-packs/</code>）。</div>
+          </section>
+
+          <section id="zh-layout" class="section">
+            <h2>2. 完整目录结构（必须严格遵守）</h2>
+            <p>推荐在磁盘上先建文件夹，最后再 zip。结构如下：</p>
+<pre><code>cool-pet/                      ← 文件夹名建议与 id 一致
+├── pet-pack.yaml              ← 【必需】清单，UTF-8 编码
+├── preview.png                ← 【推荐】设置页缩略图 256×256
+├── README.md                  ← 可选，给人看的说明（会随包安装）
+└── native/                    ← 【必需】Windows 桌宠用的状态帧
+    ├── idle.png               ← 【必需】待机（figurative 最低要求）
+    ├── listening.png          ← 强烈推荐：聆听/ASR
+    ├── thinking.png           ← 强烈推荐：思考/Agent
+    ├── speaking.png           ← 强烈推荐：说话/TTS
+    ├── done.png               ← 可选：任务完成
+    ├── alert.png              ← 可选：警告/需确认
+    └── quiet.png              ← 可选：勿扰/安静</code></pre>
+            <h3>文件角色说明</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>路径</th><th>是否必须</th><th>作用</th></tr></thead>
+                <tbody>
+                  <tr><td><code>pet-pack.yaml</code></td><td>必须</td><td>包身份、状态图映射、变体、动效参数</td></tr>
+                  <tr><td><code>native/idle.png</code></td><td>具象必须</td><td>默认外观；其它状态缺图时回落 idle</td></tr>
+                  <tr><td><code>native/listening|thinking|speaking.png</code></td><td>推荐</td><td>对应语音/思考/播报状态更生动</td></tr>
+                  <tr><td><code>preview.png</code></td><td>推荐</td><td>设置页卡片预览（也可用 idle 代替）</td></tr>
+                  <tr><td><code>native/done|alert|quiet.png</code></td><td>可选</td><td>完成、告警、勿扰等扩展态</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="callout warning">zip 里<strong>不要</strong>混入 <code>.js</code>、<code>.exe</code>、<code>.html</code> 等文件，安装会直接拒绝。</div>
+          </section>
+
+          <section id="zh-id" class="section">
+            <h2>3. id 与命名规则</h2>
+            <ul>
+              <li>清单字段 <code>id</code> 必须匹配：<code>^[a-z][a-z0-9-]{1,63}$</code></li>
+              <li>只能：小写字母开头，后接小写字母 / 数字 / 连字符 <code>-</code>。</li>
+              <li>合法：<code>cool-pet</code>、<code>my-fox</code>、<code>office-bot-01</code></li>
+              <li>非法：<code>CoolPet</code>（大写）、<code>1fox</code>（数字开头）、<code>my_pet</code>（下划线）、中文 id</li>
+              <li>安装后目录名即 <code>id</code>；若与官方 id 冲突（如 <code>clawmate</code>），用户包会覆盖展示但卸载用户副本后仍回官方 bundled。</li>
+            </ul>
+          </section>
+
+          <section id="zh-manifest" class="section">
+            <h2>4. pet-pack.yaml 字段详解</h2>
+            <p>文件必须是 <strong>YAML</strong>，建议 UTF-8 无 BOM。核心字段：</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+                <tbody>
+                  <tr><td><code>schema_version</code></td><td>int</td><td>固定写 <code>1</code></td></tr>
+                  <tr><td><code>id</code></td><td>string</td><td>包唯一 id（见上）</td></tr>
+                  <tr><td><code>name</code></td><td>string</td><td>显示名（英文或通用名）</td></tr>
+                  <tr><td><code>version</code></td><td>string</td><td>建议 semver，如 <code>1.0.0</code></td></tr>
+                  <tr><td><code>author</code></td><td>string</td><td>作者</td></tr>
+                  <tr><td><code>tier</code></td><td>string</td><td><code>figurative</code>（具象）/ <code>classic</code></td></tr>
+                  <tr><td><code>renderer</code></td><td>string</td><td><code>native-raster</code>=用图片；<code>procedural-fallback</code>=过程式几何</td></tr>
+                  <tr><td><code>preview</code> / <code>assets.preview</code></td><td>路径</td><td>相对包根的预览图，如 <code>preview.png</code></td></tr>
+                  <tr><td><code>assets.native</code></td><td>map</td><td>状态名 → 相对路径（见下）</td></tr>
+                  <tr><td><code>variants</code></td><td>list</td><td>至少建议有 <code>default</code> 与 <code>classic</code></td></tr>
+                  <tr><td><code>motion</code></td><td>object</td><td>节奏与音高推荐（不覆盖用户音效预设）</td></tr>
+                  <tr><td><code>label</code></td><td>map</td><td>多语言名：<code>en</code> / <code>zh-Hans</code> / <code>zh-Hant</code></td></tr>
+                  <tr><td><code>description_i18n</code></td><td>map</td><td>多语言简介</td></tr>
+                  <tr><td><code>default_size</code></td><td>int</td><td>建议 88（56–120）</td></tr>
+                  <tr><td><code>tone</code></td><td>string</td><td><code>balanced</code> / <code>compact</code> / <code>developer</code> / <code>focus</code></td></tr>
+                  <tr><td><code>face_overlay</code></td><td>bool</td><td>设置页是否叠 CSS 假脸（原生窗忽略）；具象图建议 <code>false</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>assets.native 状态键</h3>
+            <p>键名必须是小写英文，与运行时状态一致：</p>
+            <ul>
+              <li><code>idle</code> — 待机（必需）</li>
+              <li><code>listening</code> — 聆听</li>
+              <li><code>thinking</code> — 思考 / 处理中</li>
+              <li><code>speaking</code> — 播报 / 说话</li>
+              <li><code>done</code> — 完成（可选）</li>
+              <li><code>alert</code> — 告警（可选）</li>
+              <li><code>quiet</code> — 勿扰（可选）</li>
+            </ul>
+            <h3>motion 字段</h3>
+<pre><code>motion:
+  idle_ms: 4000          # 待机动画周期感（参考）
+  listening_ms: 1200
+  thinking_ms: 1800
+  speaking_ms: 950
+  amplitude: 0.85        # 0~1，动作幅度
+  sound_profile: classic # 仅推荐：classic|bubble|chime|synth|soft
+  pitch: 1.0             # 音高倍率；用户所选音效预设始终优先</code></pre>
+            <div class="callout">音效：设置里用户选的「动作音效」预设永远优先；包只提供 <code>pitch</code> 和推荐 profile，不会强行改用户选择。</div>
+          </section>
+
+          <section id="zh-frames" class="section">
+            <h2>5. 状态帧怎么画 / 导出</h2>
+            <h3>画布与格式</h3>
+            <ul>
+              <li>推荐画布 <strong>256×256</strong> 像素（也可用 512，安装体积会更大）</li>
+              <li>色彩 sRGB；<strong>透明背景</strong>（不要白底方块）</li>
+              <li>格式：<strong>PNG</strong> 或 <strong>WebP</strong>（扩展名必须是 <code>.png</code> / <code>.webp</code>）</li>
+              <li>单帧建议：PNG ≤ 80KB，WebP ≤ 40KB；整包未压缩尽量 ≤ 2MB</li>
+            </ul>
+            <h3>构图建议（小尺寸可读）</h3>
+            <ul>
+              <li>主体居中，四周留透明边距（约 8–12%），避免贴边被裁切</li>
+              <li>眼睛、嘴巴在 64–88px 显示时仍要能辨认（对比度够）</li>
+              <li>各状态主要靠表情/姿态区分，不要只靠文字</li>
+              <li>配色可参考官方：强调色 indigo <code>#6366F1</code>、深灰眼、浅壳</li>
+            </ul>
+            <h3>各状态画什么</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>状态</th><th>建议画面</th></tr></thead>
+                <tbody>
+                  <tr><td>idle</td><td>中性表情、轻微“活着”感</td></tr>
+                  <tr><td>listening</td><td>眼睛更亮/身体前倾/天线或耳朵竖起</td></tr>
+                  <tr><td>thinking</td><td>眼睛半眯、看向一侧、可加思考气泡点</td></tr>
+                  <tr><td>speaking</td><td>嘴巴张开、面颊微红</td></tr>
+                  <tr><td>done</td><td>微笑、递出卡片/勾选感</td></tr>
+                  <tr><td>alert</td><td>严肃、强调色警告环</td></tr>
+                  <tr><td>quiet</td><td>闭眼或更小存在感</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>工具建议</h3>
+            <ul>
+              <li>Figma / Photopea / Aseprite / Photoshop：导出 PNG 透明</li>
+              <li>可用 AI 出图，再统一裁切到 256 透明底</li>
+              <li>没有美术时：用纯色圆形身体 + 两点眼睛也能当 MVP 测试安装流程</li>
+            </ul>
+          </section>
+
+          <section id="zh-variants" class="section">
+            <h2>6. 变体 classic / default</h2>
+            <ul>
+              <li><strong>default（具象）</strong>：使用 <code>native/*</code> 图片，这是自制包的主目标。</li>
+              <li><strong>classic（经典）</strong>：忽略图片，用客户端内置过程式几何绘制（兼容回落）。</li>
+            </ul>
+            <p>清单里建议两个变体都写上：用户可在设置里「画质风格」切换。你的图主要服务于 <code>default</code>。</p>
+          </section>
+
+          <section id="zh-build" class="section">
+            <h2>7. 从零构建（推荐流程）</h2>
+            <ol class="steps">
+              <li>
+                <strong>定 id 与角色</strong>
+                想好包 id（如 <code>office-fox</code>）和人设（办公狐狸、极简机器人…）。
+              </li>
+              <li>
+                <strong>建文件夹</strong>
+                创建 <code>office-fox/</code> 与子目录 <code>native/</code>。
+              </li>
+              <li>
+                <strong>画 4 张核心状态图</strong>
+                至少 <code>idle / listening / thinking / speaking</code>，256×256 透明 PNG。文件名与 yaml 中路径一致。
+              </li>
+              <li>
+                <strong>写 pet-pack.yaml</strong>
+                复制下方「最小可用示例」，改 id、name、label、路径；确认 <code>assets.native</code> 与文件真实存在。
+              </li>
+              <li>
+                <strong>自检文件名</strong>
+                Windows 上注意扩展名是 <code>.png</code> 不是 <code>.PNG.png</code>；路径用正斜杠 <code>native/idle.png</code>。
+              </li>
+              <li>
+                <strong>打包 zip</strong>
+                见下一节。推荐 zip 内是 <code>office-fox/pet-pack.yaml</code> 这种带一层目录的结构。
+              </li>
+              <li>
+                <strong>在 MaClaw 安装</strong>
+                设置 → 桌面宠物 →「选择 Zip 安装」→ 切到「具象」→ 启用桌面宠物查看效果。
+              </li>
+              <li>
+                <strong>按验收清单微调</strong>
+                小尺寸五官、缺状态回落、勿扰模式等。
+              </li>
+            </ol>
+          </section>
+
+          <section id="zh-zip" class="section">
+            <h2>8. 打包与安装</h2>
+            <h3>正确的 zip 结构（两种都行）</h3>
+<pre><code># 方式 A（推荐）：带一层目录
+cool-pet.zip
+└── cool-pet/
+    ├── pet-pack.yaml
+    ├── preview.png
+    └── native/...
+
+# 方式 B：清单在 zip 根
+cool-pet.zip
+├── pet-pack.yaml
+├── preview.png
+└── native/...</code></pre>
+            <h3>Windows 打包示例</h3>
+            <ol>
+              <li>在资源管理器中进入 <code>cool-pet</code> 的<strong>上一级</strong>。</li>
+              <li>右键文件夹 <code>cool-pet</code> → 发送到 → 压缩(zipped)文件夹。</li>
+              <li>不要把整个「桌面」或含无关文件的父目录打进去。</li>
+            </ol>
+            <h3>PowerShell</h3>
+<pre><code>Compress-Archive -Path .\cool-pet\* -DestinationPath .\cool-pet.zip -Force
+# 若希望 zip 内带 cool-pet/ 目录：
+Compress-Archive -Path .\cool-pet -DestinationPath .\cool-pet.zip -Force</code></pre>
+            <h3>客户端安装</h3>
+            <ol>
+              <li>打开 MaClaw → 设置 → <strong>桌面宠物</strong></li>
+              <li>点「选择 Zip 安装」</li>
+              <li>安装成功后形象列表出现新 id；画质选「具象」</li>
+              <li>打开「启用桌面宠物」看桌面分层窗效果</li>
+            </ol>
+          </section>
+
+          <section id="zh-security" class="section">
+            <h2>9. 安全限制（安装器会强制）</h2>
+            <ul>
+              <li>最多 <strong>64</strong> 个文件；单文件 ≤ <strong>512 KiB</strong>；未压缩合计 ≤ <strong>2 MiB</strong></li>
+              <li>压缩比过高（zip bomb）会拒绝</li>
+              <li>路径禁止 <code>..</code> 逃逸；禁止绝对路径</li>
+              <li>允许扩展名：<code>.webp .png .yaml .yml .json .txt .md</code>（SVG 会扫描危险内容，自制建议只用 PNG/WebP）</li>
+              <li>禁止：<code>.js .mjs .cjs .wasm .exe .dll .html .bat .cmd .ps1</code> 等</li>
+            </ul>
+          </section>
+
+          <section id="zh-example" class="section">
+            <h2>10. 最小可用示例（可复制）</h2>
+            <p>建目录 <code>cool-pet/</code>，放入四张图后使用：</p>
+<pre><code>schema_version: 1
+id: cool-pet
+name: Cool Pet
+version: 1.0.0
+author: Your Name
+tier: figurative
+renderer: native-raster
+face_overlay: false
+preview: preview.png
+default_size: 88
+tone: balanced
+label:
+  en: Cool Pet
+  zh-Hans: 酷酷爪
+  zh-Hant: 酷酷爪
+description_i18n:
+  en: A friendly workbench companion you made yourself.
+  zh-Hans: 你自己做的友好工作台伙伴。
+  zh-Hant: 你自己做的友好工作台夥伴。
+assets:
+  preview: preview.png
+  native:
+    idle: native/idle.png
+    listening: native/listening.png
+    thinking: native/thinking.png
+    speaking: native/speaking.png
+variants:
+  - id: default
+    tier: figurative
+    renderer: native-raster
+    face_overlay: false
+    assets:
+      native:
+        idle: native/idle.png
+        listening: native/listening.png
+        thinking: native/thinking.png
+        speaking: native/speaking.png
+  - id: classic
+    tier: classic
+    renderer: procedural-fallback
+    face_overlay: true
+motion:
+  idle_ms: 4000
+  listening_ms: 1200
+  thinking_ms: 1800
+  speaking_ms: 950
+  amplitude: 0.85
+  sound_profile: classic
+  pitch: 1.0
+capabilities:
+  supports_done_state: false
+  supports_alert_state: false</code></pre>
+            <p>若暂时只有一张图：四份状态都指向 <code>native/idle.png</code> 也能先装上，再慢慢补表情。</p>
+          </section>
+
+          <section id="zh-checklist" class="section">
+            <h2>11. 验收清单（装上前勾一遍）</h2>
+            <ul>
+              <li>□ <code>id</code> 符合正则，与文件夹名一致</li>
+              <li>□ 存在 <code>pet-pack.yaml</code>，UTF-8，缩进正确（空格，不是 Tab）</li>
+              <li>□ 至少有 <code>native/idle.png</code> 且 yaml 路径能对上</li>
+              <li>□ 没有 JS/可执行文件</li>
+              <li>□ zip 体积合理；解压后目录结构正确</li>
+              <li>□ 设置页能看到名字（label）</li>
+              <li>□ 画质「具象」下桌宠不是过程式默认爪（说明帧加载成功）</li>
+              <li>□ 触发聆听/思考时若有对应帧会切换（需客户端状态桥）</li>
+            </ul>
+          </section>
+
+          <section id="zh-faq" class="section">
+            <h2>12. 常见问题</h2>
+            <h3>安装失败 forbidden extension</h3>
+            <p>删掉 zip 里非允许扩展名文件后重打。</p>
+            <h3>安装成功但还是抽象几何爪</h3>
+            <p>设置画质风格为「具象」；确认 <code>renderer: native-raster</code> 且 idle 图可解码。</p>
+            <h3>yaml 改了不生效</h3>
+            <p>重新 zip 安装会覆盖同 id 用户目录；或关掉再开设置刷新列表。</p>
+            <h3>可以放 GIF/MP4 吗？</h3>
+            <p>当前 MVP 仅静态 PNG/WebP 帧，不支持动画视频。</p>
+            <h3>如何卸载</h3>
+            <p>在设置 → 桌面宠物中选中<strong>用户</strong>包，点「卸载当前用户包」。官方 bundled 形象不能卸。也可手动删除 <code>{MaclawBaseDir}/pet-packs/&lt;id&gt;/</code>。</p>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== EN only when active ========== -->
+    <div id="panel-en" class="lang-panel is-hidden" data-lang-panel="en" hidden role="region" aria-label="English">
+      <section class="hero">
+        <div>
+          <p class="kicker">Desktop pet · DIY extension</p>
+          <h1>Pet Pack Creation Guide</h1>
+          <p class="lead">Ship your own desktop pet as a <strong>declarative resource pack</strong>: one YAML manifest + PNG/WebP state frames, zipped for install. No JavaScript, no MaClaw source changes.</p>
+          <div class="hero-actions">
+            <a class="button-link primary" href="#en-build">Build from scratch</a>
+            <a class="button-link" href="#en-layout">Directory layout</a>
+            <a class="button-link" href="#en-checklist">Checklist</a>
+          </div>
+          <nav class="quick" aria-label="Quick nav">
+            <a href="#en-overview">What</a>
+            <a href="#en-layout">Structure</a>
+            <a href="#en-build">Steps</a>
+            <a href="#en-zip">Zip &amp; install</a>
+          </nav>
+        </div>
+        <div class="hero-visual" aria-hidden="true">
+          <svg viewBox="0 0 300 220" role="img">
+            <rect x="6" y="6" width="288" height="208" rx="14" fill="#eef2ff" stroke="#c7d2fe"/>
+            <circle cx="150" cy="92" r="44" fill="#fff" stroke="#a5b4fc" stroke-width="3"/>
+            <circle cx="134" cy="86" r="5" fill="#312e81"/>
+            <circle cx="166" cy="86" r="5" fill="#312e81"/>
+            <path d="M138 108c8 7 16 7 24 0" stroke="#312e81" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <rect x="110" y="148" width="80" height="32" rx="9" fill="#6366f1"/>
+            <text x="150" y="169" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" font-family="system-ui">your-pet</text>
+          </svg>
+        </div>
+      </section>
+
+      <div class="grid">
+        <nav class="toc" aria-label="Contents">
+          <a href="#en-overview">1. What is a Pet Pack</a>
+          <a href="#en-layout">2. Full directory layout</a>
+          <a href="#en-id">3. id rules</a>
+          <a href="#en-manifest">4. pet-pack.yaml</a>
+          <a href="#en-frames">5. State frames</a>
+          <a href="#en-variants">6. classic / default</a>
+          <a href="#en-build">7. Build steps</a>
+          <a href="#en-zip">8. Zip &amp; install</a>
+          <a href="#en-security">9. Security limits</a>
+          <a href="#en-example">10. Minimal example</a>
+          <a href="#en-checklist">11. Checklist</a>
+          <a href="#en-faq">12. FAQ</a>
+        </nav>
+        <div class="content">
+
+          <section id="en-overview" class="section">
+            <h2>1. What is a Pet Pack</h2>
+            <p>A Pet Pack is a <strong>data-only</strong> package under the user pet-packs directory that changes how the desktop pet looks:</p>
+            <ul>
+              <li><strong>Can:</strong> custom character art, multi-state expressions, settings labels, motion/pitch hints.</li>
+              <li><strong>Cannot:</strong> run code, register tools/skills, include JS/HTML/executables.</li>
+              <li><strong>vs Skill/MCP plugins:</strong> plugins are capabilities; Pet Packs are skins only.</li>
+            </ul>
+            <div class="callout">Install location: <code>{MaclawBaseDir}/pet-packs/&lt;id&gt;/</code> (often <code>.maclaw/pet-packs/</code> under the user profile on Windows).</div>
+          </section>
+
+          <section id="en-layout" class="section">
+            <h2>2. Full directory layout (follow exactly)</h2>
+<pre><code>cool-pet/                      ← folder name should match id
+├── pet-pack.yaml              ← REQUIRED manifest (UTF-8)
+├── preview.png                ← recommended 256×256 settings thumb
+├── README.md                  ← optional human notes
+└── native/                    ← REQUIRED state frames for Windows pet
+    ├── idle.png               ← REQUIRED for figurative packs
+    ├── listening.png          ← recommended
+    ├── thinking.png           ← recommended
+    ├── speaking.png           ← recommended
+    ├── done.png               ← optional
+    ├── alert.png              ← optional
+    └── quiet.png              ← optional</code></pre>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Path</th><th>Required?</th><th>Role</th></tr></thead>
+                <tbody>
+                  <tr><td><code>pet-pack.yaml</code></td><td>Yes</td><td>Identity, asset map, variants, motion</td></tr>
+                  <tr><td><code>native/idle.png</code></td><td>Yes (figurative)</td><td>Default look; fallback for missing states</td></tr>
+                  <tr><td><code>native/listening|thinking|speaking.png</code></td><td>Strongly recommended</td><td>ASR / agent / TTS feedback</td></tr>
+                  <tr><td><code>preview.png</code></td><td>Recommended</td><td>Settings card thumbnail</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="callout warning">Do <strong>not</strong> put <code>.js</code>, <code>.exe</code>, <code>.html</code>, etc. in the zip — install will reject them.</div>
+          </section>
+
+          <section id="en-id" class="section">
+            <h2>3. id rules</h2>
+            <ul>
+              <li>Must match <code>^[a-z][a-z0-9-]{1,63}$</code></li>
+              <li>Lowercase letter first; then lowercase letters, digits, hyphens only</li>
+              <li>Good: <code>cool-pet</code>, <code>my-fox</code>, <code>office-bot-01</code></li>
+              <li>Bad: <code>CoolPet</code>, <code>1fox</code>, <code>my_pet</code>, non-ASCII ids</li>
+            </ul>
+          </section>
+
+          <section id="en-manifest" class="section">
+            <h2>4. pet-pack.yaml field reference</h2>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Field</th><th>Notes</th></tr></thead>
+                <tbody>
+                  <tr><td><code>schema_version</code></td><td>Always <code>1</code></td></tr>
+                  <tr><td><code>id</code></td><td>Unique pack id (see rules)</td></tr>
+                  <tr><td><code>name</code> / <code>version</code></td><td>Display name + semver</td></tr>
+                  <tr><td><code>renderer</code></td><td><code>native-raster</code> (images) or <code>procedural-fallback</code></td></tr>
+                  <tr><td><code>assets.native</code></td><td>Map of state → relative path</td></tr>
+                  <tr><td><code>variants</code></td><td>Prefer both <code>default</code> and <code>classic</code></td></tr>
+                  <tr><td><code>motion</code></td><td>Timing/amplitude/pitch hints; user sound preset wins</td></tr>
+                  <tr><td><code>label</code> / <code>description_i18n</code></td><td><code>en</code>, <code>zh-Hans</code>, <code>zh-Hant</code></td></tr>
+                  <tr><td><code>face_overlay</code></td><td>Settings CSS fake face only; use <code>false</code> for full art</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <h3>Native state keys</h3>
+            <p><code>idle</code>, <code>listening</code>, <code>thinking</code>, <code>speaking</code>, optional <code>done</code>, <code>alert</code>, <code>quiet</code>.</p>
+            <h3>motion example</h3>
+<pre><code>motion:
+  idle_ms: 4000
+  listening_ms: 1200
+  thinking_ms: 1800
+  speaking_ms: 950
+  amplitude: 0.85
+  sound_profile: classic   # recommendation only
+  pitch: 1.0               # scale Beep pitch; user preset still wins</code></pre>
+          </section>
+
+          <section id="en-frames" class="section">
+            <h2>5. Drawing / exporting frames</h2>
+            <ul>
+              <li>Canvas <strong>256×256</strong> (or 512), sRGB, <strong>transparent</strong> background</li>
+              <li>PNG or WebP only; keep frames small (PNG ≤ 80KB, WebP ≤ 40KB recommended)</li>
+              <li>Center the character; leave transparent padding; keep face readable at 64–88px</li>
+              <li>Differentiate states by expression/pose, not text</li>
+            </ul>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>State</th><th>Art hint</th></tr></thead>
+                <tbody>
+                  <tr><td>idle</td><td>Neutral, alive</td></tr>
+                  <tr><td>listening</td><td>Alert eyes, lean in</td></tr>
+                  <tr><td>thinking</td><td>Half-closed eyes, looking aside</td></tr>
+                  <tr><td>speaking</td><td>Open mouth, cheeks</td></tr>
+                  <tr><td>done</td><td>Smile / checkmark energy</td></tr>
+                  <tr><td>alert</td><td>Serious warning ring</td></tr>
+                  <tr><td>quiet</td><td>Closed eyes, low presence</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>Tools: Figma, Photopea, Aseprite, Photoshop, or AI image tools then crop to 256 transparent PNG. Solid color body + two eyes is enough to test install first.</p>
+          </section>
+
+          <section id="en-variants" class="section">
+            <h2>6. classic / default</h2>
+            <ul>
+              <li><strong>default (figurative):</strong> uses <code>native/*</code> images — your main target.</li>
+              <li><strong>classic:</strong> procedural geometry fallback (ignores your frames).</li>
+            </ul>
+            <p>Ship both variants in YAML so users can switch Visual Tier in Settings.</p>
+          </section>
+
+          <section id="en-build" class="section">
+            <h2>7. Build from scratch</h2>
+            <ol class="steps">
+              <li><strong>Pick an id &amp; character</strong> e.g. <code>office-fox</code>.</li>
+              <li><strong>Create folders</strong> <code>office-fox/</code> and <code>office-fox/native/</code>.</li>
+              <li><strong>Draw 4 core frames</strong> idle/listening/thinking/speaking as 256 transparent PNGs.</li>
+              <li><strong>Write pet-pack.yaml</strong> from the minimal example; paths must match files.</li>
+              <li><strong>Self-check</strong> extensions and forward slashes <code>native/idle.png</code>.</li>
+              <li><strong>Zip</strong> (prefer one root folder inside the archive).</li>
+              <li><strong>Install in MaClaw</strong> Settings → Desktop Pet → Choose Zip → Visual Tier Figurative → Enable pet.</li>
+              <li><strong>Polish</strong> using the checklist.</li>
+            </ol>
+          </section>
+
+          <section id="en-zip" class="section">
+            <h2>8. Zip &amp; install</h2>
+<pre><code># Preferred: folder at zip root
+cool-pet.zip
+└── cool-pet/
+    ├── pet-pack.yaml
+    ├── preview.png
+    └── native/...
+
+# Also OK: manifest at zip root
+cool-pet.zip
+├── pet-pack.yaml
+└── native/...</code></pre>
+            <h3>Windows</h3>
+            <p>Right-click the <code>cool-pet</code> folder → Send to → Compressed (zipped) folder. Or PowerShell:</p>
+<pre><code>Compress-Archive -Path .\cool-pet -DestinationPath .\cool-pet.zip -Force</code></pre>
+            <h3>In MaClaw</h3>
+            <ol>
+              <li>Settings → <strong>Desktop Pet</strong></li>
+              <li><strong>Choose Zip to Install</strong></li>
+              <li>Select the pack; set Visual Tier to <strong>Figurative</strong></li>
+              <li>Enable Desktop Pet and verify the layered window</li>
+            </ol>
+          </section>
+
+          <section id="en-security" class="section">
+            <h2>9. Security limits (enforced)</h2>
+            <ul>
+              <li>≤ 64 files; ≤ 512 KiB per file; ≤ 2 MiB total uncompressed</li>
+              <li>Zip-bomb ratio rejected; no <code>..</code> path escape</li>
+              <li>Allowed: <code>.webp .png .yaml .yml .json .txt .md</code> (prefer raster for third-party)</li>
+              <li>Denied: <code>.js .exe .html .dll .bat .ps1</code> …</li>
+            </ul>
+          </section>
+
+          <section id="en-example" class="section">
+            <h2>10. Minimal copy-paste example</h2>
+<pre><code>schema_version: 1
+id: cool-pet
+name: Cool Pet
+version: 1.0.0
+author: Your Name
+tier: figurative
+renderer: native-raster
+face_overlay: false
+preview: preview.png
+default_size: 88
+tone: balanced
+label:
+  en: Cool Pet
+  zh-Hans: 酷酷爪
+description_i18n:
+  en: A friendly workbench companion you made yourself.
+  zh-Hans: 你自己做的友好工作台伙伴。
+assets:
+  preview: preview.png
+  native:
+    idle: native/idle.png
+    listening: native/listening.png
+    thinking: native/thinking.png
+    speaking: native/speaking.png
+variants:
+  - id: default
+    tier: figurative
+    renderer: native-raster
+    face_overlay: false
+    assets:
+      native:
+        idle: native/idle.png
+        listening: native/listening.png
+        thinking: native/thinking.png
+        speaking: native/speaking.png
+  - id: classic
+    tier: classic
+    renderer: procedural-fallback
+    face_overlay: true
+motion:
+  idle_ms: 4000
+  listening_ms: 1200
+  thinking_ms: 1800
+  speaking_ms: 950
+  amplitude: 0.85
+  sound_profile: classic
+  pitch: 1.0</code></pre>
+            <p>Only one image for now? Point all four states to <code>native/idle.png</code>, install, then iterate art.</p>
+          </section>
+
+          <section id="en-checklist" class="section">
+            <h2>11. Pre-install checklist</h2>
+            <ul>
+              <li>□ id matches regex and folder name</li>
+              <li>□ pet-pack.yaml is UTF-8 YAML with spaces (not tabs)</li>
+              <li>□ native/idle.png exists and paths match</li>
+              <li>□ no executable/JS files</li>
+              <li>□ zip structure correct when unzipped</li>
+              <li>□ label shows in Settings</li>
+              <li>□ Figurative tier shows your art (not procedural geometry)</li>
+            </ul>
+          </section>
+
+          <section id="en-faq" class="section">
+            <h2>12. FAQ</h2>
+            <h3>Install fails with forbidden extension</h3>
+            <p>Remove disallowed files and re-zip.</p>
+            <h3>Installed but still abstract geometry</h3>
+            <p>Set Visual Tier to Figurative; ensure <code>native-raster</code> and a valid idle image.</p>
+            <h3>GIF / MP4?</h3>
+            <p>Not supported in MVP — static PNG/WebP frames only.</p>
+            <h3>Uninstall</h3>
+            <p>In Settings → Desktop Pet, select a <strong>User</strong> pack and click <strong>Uninstall selected user pack</strong>. Official bundled skins cannot be removed. Or delete <code>{MaclawBaseDir}/pet-packs/&lt;id&gt;/</code> manually.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      var titles = {
+        zh: 'MaClaw 宠物包创建指南',
+        en: 'MaClaw Pet Pack Creation Guide'
+      };
+      var brandSub = {
+        zh: '创建指南 · 切换语言只显示一种',
+        en: 'Guide · one language at a time'
+      };
+      var panelZh = document.getElementById('panel-zh');
+      var panelEn = document.getElementById('panel-en');
+      var btnZh = document.getElementById('btn-lang-zh');
+      var btnEn = document.getElementById('btn-lang-en');
+      var skipLink = document.querySelector('[data-skip-link]');
+      var brandSubEl = document.querySelector('[data-brand-sub]');
+
+      function preferredLangFromHash() {
+        if (window.location.hash.indexOf('#en-') === 0) return 'en';
+        if (window.location.hash.indexOf('#zh-') === 0) return 'zh';
+        return '';
+      }
+      function storedLang() {
+        try { return localStorage.getItem('maclaw_pet_pack_help_lang') || ''; }
+        catch (e) { return ''; }
+      }
+      function rememberLang(lang) {
+        try { localStorage.setItem('maclaw_pet_pack_help_lang', lang); }
+        catch (e) { /* private mode */ }
+      }
+      function pairedHashForLang(lang) {
+        var current = (window.location.hash || '').replace(/^#/, '');
+        if (!current) return '';
+        var pair = current.replace(/^(zh|en)-/, lang + '-');
+        return document.getElementById(pair) ? pair : '';
+      }
+      function scrollCurrentHashIntoView() {
+        var id = (window.location.hash || '').replace(/^#/, '');
+        if (!id) return;
+        var target = document.getElementById(id);
+        if (target) {
+          window.requestAnimationFrame(function () {
+            target.scrollIntoView({ block: 'start' });
+          });
+        }
+      }
+
+      /** Show exactly one language panel. */
+      function setLang(lang, options) {
+        options = options || {};
+        var normalized = lang === 'en' ? 'en' : 'zh';
+        var showZh = normalized === 'zh';
+
+        document.documentElement.lang = showZh ? 'zh-CN' : 'en';
+        document.title = titles[normalized];
+        if (brandSubEl) brandSubEl.textContent = brandSub[normalized];
+
+        if (skipLink) {
+          skipLink.setAttribute('href', showZh ? '#zh-overview' : '#en-overview');
+          skipLink.textContent = showZh ? '跳到正文' : 'Skip to content';
+        }
+
+        // Dual hide: attribute + class (robust against CSS resets)
+        if (panelZh) {
+          panelZh.hidden = !showZh;
+          panelZh.classList.toggle('is-hidden', !showZh);
+          panelZh.setAttribute('aria-hidden', showZh ? 'false' : 'true');
+        }
+        if (panelEn) {
+          panelEn.hidden = showZh;
+          panelEn.classList.toggle('is-hidden', showZh);
+          panelEn.setAttribute('aria-hidden', showZh ? 'true' : 'false');
+        }
+
+        if (btnZh) btnZh.setAttribute('aria-pressed', showZh ? 'true' : 'false');
+        if (btnEn) btnEn.setAttribute('aria-pressed', showZh ? 'false' : 'true');
+
+        rememberLang(normalized);
+
+        if (options.syncHash) {
+          var nextHash = pairedHashForLang(normalized);
+          if (nextHash) window.location.hash = nextHash;
+        }
+      }
+
+      if (btnZh) btnZh.addEventListener('click', function () { setLang('zh', { syncHash: true }); });
+      if (btnEn) btnEn.addEventListener('click', function () { setLang('en', { syncHash: true }); });
+
+      var q = new URLSearchParams(window.location.search).get('lang') || '';
+      var initial = preferredLangFromHash() || q || storedLang() || navigator.language || 'zh';
+      setLang(String(initial).toLowerCase().indexOf('en') === 0 ? 'en' : 'zh');
+      scrollCurrentHashIntoView();
+
+      window.addEventListener('hashchange', function () {
+        var hashLang = preferredLangFromHash();
+        if (hashLang) setLang(hashLang);
+        scrollCurrentHashIntoView();
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -875,6 +875,30 @@ export function PackLog(arg1) {
   return window['go']['main']['App']['PackLog'](arg1);
 }
 
+export function SetBugReportEnabled(arg1) {
+  return window['go']['main']['App']['SetBugReportEnabled'](arg1);
+}
+
+export function SelectBugReportScreenshots() {
+  return window['go']['main']['App']['SelectBugReportScreenshots']();
+}
+
+export function SubmitBugReport(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SubmitBugReport'](arg1, arg2, arg3);
+}
+
+export function RetryBugReportUpload(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RetryBugReportUpload'](arg1, arg2, arg3);
+}
+
+export function HasPendingBugReportUpload() {
+  return window['go']['main']['App']['HasPendingBugReportUpload']();
+}
+
+export function ListMyBugReports() {
+  return window['go']['main']['App']['ListMyBugReports']();
+}
+
 export function ReadBBS() {
   return window['go']['main']['App']['ReadBBS']();
 }
@@ -3350,4 +3374,44 @@ export function ResolveExpertCapabilityTier(arg1) {
 
 export function InferExpertCapabilityTier(arg1, arg2) {
   return window['go']['main']['App']['InferExpertCapabilityTier'](arg1, arg2);
+}
+
+export function ListPetPacks() {
+  return window['go']['main']['App']['ListPetPacks']();
+}
+
+export function InstallPetPackZip(arg1) {
+  return window['go']['main']['App']['InstallPetPackZip'](arg1);
+}
+
+export function UninstallPetPack(arg1) {
+  return window['go']['main']['App']['UninstallPetPack'](arg1);
+}
+
+export function SetDesktopPetState(arg1, arg2) {
+  return window['go']['main']['App']['SetDesktopPetState'](arg1, arg2);
+}
+
+export function GetDesktopPetState() {
+  return window['go']['main']['App']['GetDesktopPetState']();
+}
+
+export function SelectPetPackZip() {
+  return window['go']['main']['App']['SelectPetPackZip']();
+}
+
+export function GetPetPackPreviewDataURL(arg1) {
+  return window['go']['main']['App']['GetPetPackPreviewDataURL'](arg1);
+}
+
+export function GetPetPackStateFrameDataURL(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetPetPackStateFrameDataURL'](arg1, arg2, arg3);
+}
+
+export function OpenPetPacksDir() {
+  return window['go']['main']['App']['OpenPetPacksDir']();
+}
+
+export function GetPetPacksDir() {
+  return window['go']['main']['App']['GetPetPacksDir']();
 }

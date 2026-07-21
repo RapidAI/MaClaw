@@ -14997,3 +14997,182 @@ body {
     --theme-info-bg: rgba(0, 0, 0, 0.03);
     --theme-on-primary: #ffffff;
 }
+
+/* ---- Desktop pet settings / preview (pet pack system) ---- */
+.pet-help-button {
+    min-height: 32px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--theme-border);
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+    font-weight: 650;
+    cursor: pointer;
+    line-height: 1.2;
+}
+
+.pet-help-button:hover {
+    border-color: rgba(99, 102, 241, 0.45);
+    color: #4f46e5;
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.pet-help-button:focus-visible {
+    outline: 2px solid rgba(99, 102, 241, 0.45);
+    outline-offset: 2px;
+}
+
+.pet-help-button--inline {
+    min-height: 34px;
+}
+
+.pet-pack-install-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.pet-install-button {
+    min-height: 34px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(99, 102, 241, 0.35);
+    background: rgba(99, 102, 241, 0.12);
+    color: #4338ca;
+    font-size: 0.8rem;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.pet-install-button:hover:not(:disabled) {
+    background: rgba(99, 102, 241, 0.2);
+}
+
+.pet-install-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.pet-install-error {
+    margin: 8px 0 0;
+    color: #c43d34;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.pet-install-notice {
+    margin: 8px 0 0;
+    color: #4f7f6f;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.pet-section-spacer {
+    margin-top: 12px;
+}
+
+.pet-upgrade-chip {
+    margin-top: 8px;
+}
+
+.pet-skin-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 4px 0 2px;
+}
+
+.pet-skin-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    line-height: 1.2;
+    border: 1px solid var(--theme-border);
+    color: var(--theme-text-secondary);
+    background: var(--theme-surface);
+}
+
+.pet-skin-badge--official {
+    border-color: rgba(99, 102, 241, 0.28);
+    color: #4f46e5;
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.pet-skin-badge--user {
+    border-color: rgba(79, 127, 111, 0.3);
+    color: #3d6b5c;
+    background: rgba(79, 127, 111, 0.1);
+}
+
+.pet-skin-badge--ver {
+    opacity: 0.85;
+}
+
+.pet-skin-badge--invalid {
+    border-color: rgba(220, 38, 38, 0.35);
+    color: #b91c1c;
+    background: rgba(254, 226, 226, 0.65);
+}
+
+.pet-skin-option--invalid {
+    opacity: 0.88;
+    border-style: dashed;
+}
+
+.pet-skin-option--invalid .pet-skin-thumb {
+    filter: grayscale(0.35);
+}
+
+.pet-uninstall-button {
+    min-height: 34px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(196, 61, 52, 0.35);
+    background: rgba(196, 61, 52, 0.08);
+    color: #b91c1c;
+    font-size: 0.8rem;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.pet-uninstall-button:hover:not(:disabled) {
+    background: rgba(196, 61, 52, 0.14);
+}
+
+.pet-uninstall-button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.pet-packs-dir-hint {
+    margin: 8px 0 0;
+    font-size: 0.72rem;
+    color: var(--theme-text-secondary);
+    word-break: break-all;
+    line-height: 1.4;
+}
+
+.pet-packs-dir-hint code {
+    font-size: 0.7rem;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--theme-surface);
+    border: 1px solid var(--theme-border);
+}
+
+.pet-preview-avatar[data-pet-variant="default"] .pet-preview-image {
+    /* figurative frames already include face — keep marks subtle */
+    filter: none;
+}
+
+.pet-preview-state-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL, grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from '../hubCredits';
+import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL, buildHubPetPackHelpURL, normalizeHubGuideLang, grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from '../hubCredits';
 
 describe('hubCredits URL builders', () => {
     it('builds card store URL from a trimmed Hub URL', () => {
@@ -58,6 +58,13 @@ describe('hubCredits URL builders', () => {
         expect(buildHubMaclawAppManualURL(' https://hub.example.com/// ')).toBe('https://hub.example.com/maclaw-app-manual');
         expect(buildHubMaclawAppManualURL('https://hub.example.com', 'en')).toBe('https://hub.example.com/maclaw-app-manual?lang=en');
         expect(buildHubMaclawAppManualURL('https://hub.example.com', 'zh-Hans')).toBe('https://hub.example.com/maclaw-app-manual?lang=zh');
+        expect(buildHubPetPackHelpURL(' https://hub.example.com/// ')).toBe('https://hub.example.com/pet-pack-help');
+        expect(buildHubPetPackHelpURL('https://hub.example.com', 'en')).toBe('https://hub.example.com/pet-pack-help?lang=en');
+        expect(buildHubPetPackHelpURL('https://hub.example.com', 'zh-Hans')).toBe('https://hub.example.com/pet-pack-help?lang=zh');
+        expect(buildHubPetPackHelpURL('')).toBe('');
+        expect(normalizeHubGuideLang('en-US')).toBe('en');
+        expect(normalizeHubGuideLang('zh-Hans')).toBe('zh');
+        expect(normalizeHubGuideLang('')).toBe('');
         expect(buildHubMaclawAppManualURL('')).toBe('');
     });
 });

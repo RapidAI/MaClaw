@@ -247,3 +247,13 @@ func (w *darwinFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset strin
 	// macOS floating window does not manage sound state in-memory;
 	// sound is handled by the WebView-based React component.
 }
+
+func (w *darwinFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
+}
+
+func (w *darwinFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
+}
+
+func (w *darwinFloatingWindow) CurrentPetRuntimeState() string {
+	return "idle"
+}

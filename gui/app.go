@@ -4874,6 +4874,8 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 					config.RemoteHubCenterURL = defaultRemoteHubCenterURL
 					config.RemoteHeartbeatSec = corelib.DefaultRemoteHeartbeatSec
 					config.SubAgentConcurrency = corelib.DefaultSubAgentConcurrency
+					// New-format install path (legacy file migration): figurative pet.
+					corelib.ApplyNewInstallPetDefaults(&config)
 
 					if err := a.saveToPath(path, config); err != nil {
 						return corelib.AppConfig{}, err
@@ -4920,6 +4922,8 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		defaultConfig.SubAgentConcurrency = corelib.DefaultSubAgentConcurrency
 		defaultConfig.NetworkLevel = "full"
 		defaultConfig.SandboxMode = "none"
+		// K18: first-run figurative pet (must not come from UnmarshalJSON seed).
+		corelib.ApplyNewInstallPetDefaults(&defaultConfig)
 		err = a.saveToPath(path, defaultConfig)
 		if err == nil {
 			a.configCache = defaultConfig
@@ -5327,9 +5331,28 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	sanitizeCodingToolSelection(&config)
 	normalizeConfigTimeouts(&config)
 	normalizeProjectNames(&config)
+	EnsurePetPackRegistryScanned()
+	// Snapshot for K18: empty pet_variant must resolve AND persist as classic for legacy installs.
+	beforePetVariant := config.PetVariant
+	beforePetMigrated := config.PetVariantMigrated
+	beforePetSkin := config.PetSkin
+	beforePetPrompt := config.PetFigurativeUpgradePromptPending
+	sanitizePetConfig(&config)
+	petConfigMutated := beforePetVariant != config.PetVariant ||
+		beforePetMigrated != config.PetVariantMigrated ||
+		beforePetSkin != config.PetSkin ||
+		beforePetPrompt != config.PetFigurativeUpgradePromptPending
 	config.LLMPromptCache = config.LLMPromptCache.WithDefaults()
 	if err := migrateLLMPromptCacheDirIfNeeded(corelib.DefaultLLMPromptCacheConfig(), config.LLMPromptCache); err != nil {
 		log.Printf("[config] LoadConfig:llm_cache_migrate_failed err=%v", err)
+	}
+	// Persist K18 migration / sanitize so disk matches runtime (criterion 3).
+	if petConfigMutated {
+		if err := a.saveToPath(path, config); err != nil {
+			log.Printf("[config] LoadConfig:pet_migrate_persist_failed err=%v", err)
+		} else {
+			log.Printf("[config] LoadConfig:pet_migrate_persisted variant=%q migrated=%v", config.PetVariant, config.PetVariantMigrated)
+		}
 	}
 	log.Printf("[config] LoadConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
@@ -7562,6 +7585,34 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetQuietMode = v
+			petChanged = true
+		case "pet_variant":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetVariant = strings.TrimSpace(v)
+			cfg.PetVariantMigrated = true
+			if cfg.PetVariant == "default" || cfg.PetVariant == "figurative" {
+				cfg.PetFigurativeUpgradePromptPending = false
+			}
+			petChanged = true
+		case "pet_reduced_motion":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetReducedMotion = v
+			petChanged = true
+		case "pet_figurative_upgrade_prompt_pending":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetFigurativeUpgradePromptPending = v
 			petChanged = true
 		case "claude", "codex", "opencode", "codebuddy", "iflow", "kilo":
 			data, err := json.Marshal(value)

@@ -25,7 +25,7 @@
  * layer of noise filtering.
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { DiarizeAndTranscribeAudioBase64, TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText, NormalizeVoiceCommand, CorrectASRText } from "../../../wailsjs/go/main/App";
+import { DiarizeAndTranscribeAudioBase64, TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText, NormalizeVoiceCommand, CorrectASRText, SetDesktopPetState } from "../../../wailsjs/go/main/App";
 import { EventsEmit, EventsOn } from "../../../wailsjs/runtime";
 import { normalizeASRText, resolveNormalizedVoiceText, shouldDispatchASRText } from "./asrTextUtils";
 
@@ -141,11 +141,16 @@ function petRetryPromptText(): string {
     return "\u6ca1\u542c\u6e05\uff0c\u8bf7\u518d\u8bf4\u4e00\u904d\u3002";
 }
 
-function emitPetState(state: "idle" | "listening" | "thinking" | "speaking", source: string, ttlMs?: number) {
+function emitPetState(state: "idle" | "listening" | "thinking" | "speaking" | "done" | "alert", source: string, ttlMs?: number) {
     try {
         EventsEmit("pet:state", { state, source, ttlMs });
     } catch {
         // Runtime events are best-effort; voice input should never fail because the pet view is absent.
+    }
+    try {
+        void SetDesktopPetState(state, typeof ttlMs === "number" ? ttlMs : 0);
+    } catch {
+        // Native pet bridge is optional.
     }
 }
 

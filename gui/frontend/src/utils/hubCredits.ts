@@ -205,10 +205,28 @@ export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenant
     return token ? `${creditsURL}#token=${encodeURIComponent(token)}` : creditsURL;
 }
 
-export function buildHubMaclawAppManualURL(hubURL?: string, lang?: string) {
+/** Normalize UI lang to hub guide query: en | zh | '' (omit). */
+export function normalizeHubGuideLang(lang?: string): string {
+    const raw = String(lang || '').trim();
+    if (!raw) return '';
+    return raw.toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
+
+function buildHubGuideURL(hubURL: string | undefined, path: string, lang?: string): string {
     const base = String(hubURL || '').trim().replace(/\/+$/, '');
-    const normalizedLang = String(lang || '').toLowerCase().startsWith('en') ? 'en' : String(lang || '').trim() ? 'zh' : '';
-    return base ? appendQuery(`${base}/maclaw-app-manual`, { lang: normalizedLang }) : '';
+    if (!base) return '';
+    return appendQuery(`${base}${path.startsWith('/') ? path : `/${path}`}`, {
+        lang: normalizeHubGuideLang(lang),
+    });
+}
+
+export function buildHubMaclawAppManualURL(hubURL?: string, lang?: string) {
+    return buildHubGuideURL(hubURL, '/maclaw-app-manual', lang);
+}
+
+/** Hub page: Pet Pack creation guide (bilingual ZH/EN). */
+export function buildHubPetPackHelpURL(hubURL?: string, lang?: string) {
+    return buildHubGuideURL(hubURL, '/pet-pack-help', lang);
 }
 
 /**

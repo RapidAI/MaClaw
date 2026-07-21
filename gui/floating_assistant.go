@@ -1,11 +1,12 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/gui/petpack"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -306,13 +307,15 @@ func sanitizePetConfig(config *corelib.AppConfig) {
 	if config == nil {
 		return
 	}
-	switch config.PetSkin {
-	case "", "clawmate":
-		config.PetSkin = "clawmate"
-	case "mini-claw", "dev-claw", "focus-claw":
-	default:
-		config.PetSkin = "clawmate"
+	// Prefer registry allowlist when ready; never wipe well-formed user pack ids when not ready (B.4 / K20).
+	reg := petpack.EnsureGlobal()
+	ready := reg != nil && reg.Ready()
+	var allow map[string]bool
+	if ready {
+		allow = reg.Allowlist()
 	}
+	config.PetSkin = petpack.SanitizeSkinID(config.PetSkin, ready, allow)
+	_ = petpack.MigratePetVariant(config)
 
 	if config.PetSize == 0 {
 		config.PetSize = defaultPetSize
@@ -361,9 +364,11 @@ func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
 	return oldConfig.PetEnabled != newConfig.PetEnabled ||
 		oldConfig.PetSkin != newConfig.PetSkin ||
 		oldConfig.PetSize != newConfig.PetSize ||
+		oldConfig.PetVariant != newConfig.PetVariant ||
 		isPetMotionEnabled(oldConfig) != isPetMotionEnabled(newConfig) ||
 		oldConfig.PetQuietMode != newConfig.PetQuietMode ||
-		oldConfig.PetInteractionMode != newConfig.PetInteractionMode
+		oldConfig.PetInteractionMode != newConfig.PetInteractionMode ||
+		oldConfig.PetReducedMotion != newConfig.PetReducedMotion
 }
 
 // floatingSoundChanged returns true when only sound-related settings changed
@@ -382,6 +387,47 @@ func (m *FloatingAssistantManager) UpdateSoundConfig(config corelib.AppConfig) {
 	if win != nil {
 		win.UpdateSoundConfig(petMotionSoundEnabled(config), petMotionSoundPreset(config))
 	}
+}
+
+// UpdateMotionConfig pushes quiet/reduced-motion/interaction flags without full recreate when possible.
+func (m *FloatingAssistantManager) UpdateMotionConfig(config corelib.AppConfig) {
+	m.mu.Lock()
+	win := m.window
+	m.mu.Unlock()
+	if win != nil {
+		win.UpdateMotionConfig(
+			isPetMotionEnabled(config),
+			config.PetQuietMode,
+			config.PetReducedMotion,
+			config.PetInteractionMode,
+			config.PetSkin,
+			petpack.ResolveVariantForRuntime(config.PetVariant),
+		)
+	}
+}
+
+// SetPetRuntimeState bridges FE/runtime pet states to the native window (K11).
+// ttlMs <= 0 keeps the state until the next update; >0 auto-returns to idle.
+func (m *FloatingAssistantManager) SetPetRuntimeState(state string, ttlMs int) {
+	m.mu.Lock()
+	win := m.window
+	m.mu.Unlock()
+	if win == nil {
+		return
+	}
+	st := petpack.NormalizeState(state)
+	win.SetPetRuntimeState(string(st), ttlMs)
+}
+
+// CurrentPetRuntimeState returns the native window's selected runtime state (for tests).
+func (m *FloatingAssistantManager) CurrentPetRuntimeState() string {
+	m.mu.Lock()
+	win := m.window
+	m.mu.Unlock()
+	if win == nil {
+		return string(petpack.StateIdle)
+	}
+	return win.CurrentPetRuntimeState()
 }
 
 func floatingWindowSizeForCurrentConfig(app *App) int {

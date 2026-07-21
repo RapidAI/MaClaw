@@ -1,10 +1,59 @@
-﻿import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
 import { main } from '../../wailsjs/go/models';
-import { defaultPetSize, getPetSkinOption, petSkinOptions } from './petSkins';
+import {
+    ListPetPacks,
+    InstallPetPackZip,
+    SelectPetPackZip,
+    UninstallPetPack,
+    GetPetPackPreviewDataURL,
+    GetPetPackStateFrameDataURL,
+    OpenPetPacksDir,
+    GetPetPacksDir,
+} from '../../wailsjs/go/main/App';
+import { buildHubPetPackHelpURL } from '../utils/hubCredits';
+import {
+    defaultPetSize,
+    getPetSkinOption,
+    packInfoToSkinOption,
+    petSkinOptions,
+    type PetSkinOption,
+} from './petSkins';
 import { motionSoundPresetOptionIds, normalizeMotionSoundPreset, type MotionSoundPreset } from './petMotionSounds';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
-type PetPreviewState = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+function orderPackOptions(packs: unknown[], lang: Lang): PetSkinOption[] {
+    const options = packs.map((p) => packInfoToSkinOption(p as Record<string, unknown>, lang));
+    const byId = new Map(options.map((o) => [o.id, o]));
+    const ordered: PetSkinOption[] = [];
+    for (const b of petSkinOptions) {
+        ordered.push(byId.get(b.id) || b);
+        byId.delete(b.id);
+    }
+    const rest = Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
+    ordered.push(...rest);
+    return ordered;
+}
+
+function openExternalURL(url: string): void {
+    try {
+        BrowserOpenURL(url);
+    } catch {
+        window.open(url, '_blank', 'noopener,noreferrer');
+    }
+}
+
+function formatUnknownError(err: unknown): string {
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === 'string' && err.trim()) return err.trim();
+    if (err && typeof err === 'object' && 'message' in err) {
+        const msg = String((err as { message?: unknown }).message || '').trim();
+        if (msg) return msg;
+    }
+    return String(err ?? 'unknown error');
+}
+type PetPreviewState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'done' | 'alert';
 type DebouncedFieldKey = 'pet-size' | 'continuous-timeout';
 type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type PetToggleKey =
@@ -14,7 +63,8 @@ type PetToggleKey =
     | 'pet_voice_input_enabled'
     | 'pet_voice_readback_enabled'
     | 'pet_file_drop_enabled'
-    | 'pet_quiet_mode';
+    | 'pet_quiet_mode'
+    | 'pet_reduced_motion';
 
 interface PetSettingsPanelProps {
     config: main.AppConfig;
@@ -26,7 +76,8 @@ interface PetSettingsPanelProps {
 const modeOptionIds = ['quiet', 'balanced', 'active'] as const;
 const conversationModeOptionIds = ['text-first', 'voice-turn', 'continuous'] as const;
 const readbackModeOptionIds = ['off', 'summary', 'full', 'done-only'] as const;
-const previewStateOptionIds: PetPreviewState[] = ['idle', 'listening', 'thinking', 'speaking'];
+// Six semantic states with official pack frames (idle…alert); quiet is interaction-mode, not staged here.
+const previewStateOptionIds: PetPreviewState[] = ['idle', 'listening', 'thinking', 'speaking', 'done', 'alert'];
 const defaultEnabledToggleKeys = new Set<PetToggleKey>(['pet_motion_enabled', 'pet_motion_sound_enabled', 'pet_text_interaction_enabled', 'pet_file_drop_enabled']);
 
 function text(lang: Lang, zhHans: string, zhHant: string, en: string): string {
@@ -183,6 +234,10 @@ function previewStateLabel(lang: Lang, id: PetPreviewState): string {
             return text(lang, '思考', '思考', 'Think');
         case 'speaking':
             return text(lang, '说话', '說話', 'Speak');
+        case 'done':
+            return text(lang, '完成', '完成', 'Done');
+        case 'alert':
+            return text(lang, '提醒', '提醒', 'Alert');
         case 'idle':
         default:
             return text(lang, '待机', '待機', 'Idle');
@@ -244,14 +299,22 @@ function clampPetSize(value: number): number {
 export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSettingsPanelProps) {
     const [previewState, setPreviewState] = useState<PetPreviewState>('idle');
     const [saveState, setSaveState] = useState<SaveState>('idle');
+    const [packOptions, setPackOptions] = useState<PetSkinOption[]>(petSkinOptions);
+    const [installBusy, setInstallBusy] = useState(false);
+    const [installError, setInstallError] = useState('');
+    const [installNotice, setInstallNotice] = useState('');
+    const [stageImage, setStageImage] = useState('');
+    const [packsDirLabel, setPacksDirLabel] = useState('');
     const latestConfigRef = useRef<main.AppConfig>(config);
     const saveTimersRef = useRef<Partial<Record<DebouncedFieldKey, number>>>({});
     const savedTimerRef = useRef<number | undefined>(undefined);
+    const installNoticeTimerRef = useRef<number | undefined>(undefined);
     const mountedRef = useRef(true);
     const saveSeqRef = useRef(0);
     const pendingPatchRef = useRef<Record<string, unknown>>({});
     const petSize = clampPetSize(config.pet_size || defaultPetSize);
     const selectedSkin = config.pet_skin || 'clawmate';
+    const selectedVariant = config.pet_variant || 'classic';
     const interactionMode = config.pet_interaction_mode || 'balanced';
     const motionSoundPreset = normalizeMotionSoundPreset(config.pet_motion_sound_preset);
     const conversationMode = config.pet_conversation_mode || 'text-first';
@@ -261,8 +324,9 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     const ttsReady = !!config.tts_enabled;
     const petEnabled = !!config.pet_enabled;
     const quietMode = !!config.pet_quiet_mode;
+    const upgradePrompt = !!config.pet_figurative_upgrade_prompt_pending;
     const voiceReady = asrReady && ttsReady;
-    const selectedSkinOption = getPetSkinOption(selectedSkin);
+    const selectedSkinOption = getPetSkinOption(selectedSkin, packOptions);
     const motionEnabled = config.pet_motion_enabled !== false;
     const motionSoundPreviewEnabled = config.pet_motion_sound_enabled !== false && !config.pet_quiet_mode;
     const toggleOptions: ReadonlyArray<readonly [PetToggleKey, string]> = [
@@ -273,6 +337,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         ['pet_voice_readback_enabled', text(lang, '\u8bed\u97f3\u64ad\u62a5', '\u8a9e\u97f3\u64ad\u5831', 'Voice Readback')],
         ['pet_file_drop_enabled', text(lang, '\u6587\u4ef6\u62d6\u62fd', '\u6587\u4ef6\u62d6\u66f3', 'File Drop')],
         ['pet_quiet_mode', text(lang, '\u52ff\u6270\u6a21\u5f0f', '\u52ff\u64fe\u6a21\u5f0f', 'Do Not Disturb')],
+        ['pet_reduced_motion', text(lang, '\u51cf\u5c11\u52a8\u6548', '\u6e1b\u5c11\u52d5\u6548', 'Reduced Motion')],
     ];
     const isToggleChecked = (key: PetToggleKey) => {
         const value = config[key];
@@ -292,6 +357,158 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         latestConfigRef.current = config;
     }, [config]);
 
+    const enrichPreviews = useCallback(async (options: PetSkinOption[]): Promise<PetSkinOption[]> => {
+        return Promise.all(
+            options.map(async (opt) => {
+                // Always try pack raster preview (official + user). Builtin SVG is fallback only.
+                try {
+                    const dataURL = await GetPetPackPreviewDataURL(opt.id);
+                    if (dataURL && dataURL.startsWith('data:image/')) {
+                        return { ...opt, image: dataURL, hasPreview: true };
+                    }
+                } catch {
+                    // keep fallback image
+                }
+                return opt;
+            }),
+        );
+    }, []);
+
+    const applyPackList = useCallback(async (packs: unknown[], isCancelled?: () => boolean) => {
+        if (!Array.isArray(packs) || packs.length === 0) return;
+        const ordered = orderPackOptions(packs, lang);
+        if (isCancelled?.()) return;
+        setPackOptions(ordered);
+        // Async thumb enrich (native frames / user previews)
+        const enriched = await enrichPreviews(ordered);
+        if (isCancelled?.()) return;
+        setPackOptions(enriched);
+    }, [lang, enrichPreviews]);
+
+    const refreshPackOptions = useCallback(async () => {
+        try {
+            const packs = await ListPetPacks();
+            await applyPackList(packs);
+        } catch {
+            // Fallback to built-in catalog when Go binding unavailable.
+        }
+    }, [applyPackList]);
+
+    useEffect(() => {
+        let cancelled = false;
+        void ListPetPacks()
+            .then(async (packs) => {
+                await applyPackList(packs, () => cancelled);
+            })
+            .catch(() => {
+                // Fallback to built-in catalog when Go binding unavailable.
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [applyPackList]);
+
+    useEffect(() => {
+        let off: (() => void) | undefined;
+        let debounceTimer: number | undefined;
+        try {
+            // Debounce: install/uninstall also call refresh locally; event is for external drops.
+            const unsub = EventsOn('pet:packs-changed', () => {
+                if (debounceTimer) window.clearTimeout(debounceTimer);
+                debounceTimer = window.setTimeout(() => {
+                    debounceTimer = undefined;
+                    void refreshPackOptions();
+                }, 120);
+            });
+            off = typeof unsub === 'function' ? unsub : undefined;
+        } catch {
+            // runtime events optional in browser-only tests
+        }
+        return () => {
+            if (debounceTimer) window.clearTimeout(debounceTimer);
+            off?.();
+        };
+    }, [refreshPackOptions]);
+
+    // Classic stage uses pack thumbs / builtin SVG (cheap, can follow packOptions enrich).
+    useEffect(() => {
+        if ((selectedVariant || 'classic') !== 'classic') return;
+        setStageImage(getPetSkinOption(selectedSkin, packOptions).image);
+    }, [selectedSkin, selectedVariant, packOptions]);
+
+    // Figurative stage loads real state frames. Intentionally does NOT depend on packOptions
+    // so thumb enrich does not re-fetch every pack's state frame via IPC.
+    useEffect(() => {
+        let cancelled = false;
+        const skin = selectedSkin;
+        const variant = selectedVariant || 'classic';
+        const state = previewState;
+        if (variant === 'classic') {
+            return () => {
+                cancelled = true;
+            };
+        }
+        const fallback = getPetSkinOption(skin, packOptions).image;
+
+        void GetPetPackStateFrameDataURL(skin, state, variant)
+            .then((url) => {
+                if (cancelled) return;
+                if (url && url.startsWith('data:image/')) {
+                    setStageImage(url);
+                    return;
+                }
+                // fallback to pack thumb / builtin
+                return GetPetPackPreviewDataURL(skin).then((preview) => {
+                    if (cancelled) return;
+                    setStageImage(preview && preview.startsWith('data:image/') ? preview : fallback);
+                });
+            })
+            .catch(() => {
+                if (!cancelled) setStageImage(fallback);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+        // packOptions omitted on purpose (see comment above); skin/variant/state are the load keys.
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fallback image is best-effort only
+    }, [selectedSkin, selectedVariant, previewState]);
+
+    useEffect(() => {
+        void GetPetPacksDir()
+            .then((dir) => {
+                if (dir) setPacksDirLabel(dir);
+            })
+            .catch(() => {
+                /* optional */
+            });
+    }, []);
+
+    const openPetPacksFolder = useCallback(async () => {
+        try {
+            await OpenPetPacksDir();
+        } catch (err) {
+            setInstallError(formatUnknownError(err));
+        }
+    }, []);
+
+    const openPetPackHelp = useCallback(() => {
+        const hubURL = String(config.remote_hub_url || '').trim();
+        const url = buildHubPetPackHelpURL(hubURL, lang);
+        if (!url) {
+            window.alert(
+                text(
+                    lang,
+                    '未配置 Hub 地址，无法打开宠物包创建指南。请先连接 Hub，或在浏览器访问 Hub 的 /pet-pack-help。',
+                    '未設定 Hub 位址，無法開啟寵物包建立指南。請先連線 Hub，或在瀏覽器造訪 Hub 的 /pet-pack-help。',
+                    'No Hub URL configured. Connect to a Hub, or open /pet-pack-help on your Hub in a browser.'
+                )
+            );
+            return;
+        }
+        openExternalURL(url);
+    }, [config.remote_hub_url, lang]);
+
     useEffect(() => {
         mountedRef.current = true;
         return () => {
@@ -304,6 +521,10 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                 }
             });
             if (savedTimerRef.current) window.clearTimeout(savedTimerRef.current);
+            if (installNoticeTimerRef.current) {
+                window.clearTimeout(installNoticeTimerRef.current);
+                installNoticeTimerRef.current = undefined;
+            }
             if (hadPendingSave && Object.keys(pendingPatchRef.current).length > 0) {
                 void patchConfig(pendingPatchRef.current);
                 pendingPatchRef.current = {};
@@ -311,7 +532,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         };
     }, [patchConfig]);
 
-    const persistPetConfig = (patch: Record<string, unknown>, next: main.AppConfig) => {
+    const persistPetConfig = useCallback((patch: Record<string, unknown>, next: main.AppConfig) => {
         if (savedTimerRef.current) window.clearTimeout(savedTimerRef.current);
         const saveSeq = ++saveSeqRef.current;
         setSaveState('saving');
@@ -336,18 +557,18 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                 if (!mountedRef.current || saveSeq !== saveSeqRef.current) return;
                 setSaveState('error');
             });
-    };
+    }, [patchConfig, setConfig]);
 
-    const clearPendingSaveTimers = () => {
+    const clearPendingSaveTimers = useCallback(() => {
         Object.entries(saveTimersRef.current).forEach(([key, timer]) => {
             if (timer) {
                 window.clearTimeout(timer);
                 saveTimersRef.current[key as DebouncedFieldKey] = undefined;
             }
         });
-    };
+    }, []);
 
-    const updatePetConfig = (patch: Record<string, unknown>, debounceKey?: DebouncedFieldKey) => {
+    const updatePetConfig = useCallback((patch: Record<string, unknown>, debounceKey?: DebouncedFieldKey) => {
         const next = new main.AppConfig({ ...latestConfigRef.current, ...patch });
         latestConfigRef.current = next;
         setConfig(next);
@@ -363,7 +584,109 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         }
         clearPendingSaveTimers();
         persistPetConfig({ ...pendingPatchRef.current }, next);
-    };
+    }, [setConfig, clearPendingSaveTimers, persistPetConfig]);
+
+    const installBusyRef = useRef(false);
+
+    const uninstallSelectedPack = useCallback(async () => {
+        const skin = selectedSkin;
+        const opt = packOptions.find((p) => p.id === skin);
+        if (!opt?.canUninstall) {
+            setInstallError(text(lang, '官方内置包不能卸载', '官方內建包不能卸載', 'Official bundled packs cannot be uninstalled'));
+            return;
+        }
+        const ok = window.confirm(
+            text(
+                lang,
+                `确定卸载宠物包「${opt.label}」(${skin})？`,
+                `確定卸載寵物包「${opt.label}」(${skin})？`,
+                `Uninstall pet pack "${opt.label}" (${skin})?`
+            )
+        );
+        if (!ok) return;
+        setInstallError('');
+        setInstallNotice('');
+        setInstallBusy(true);
+        installBusyRef.current = true;
+        try {
+            await UninstallPetPack(skin);
+            await refreshPackOptions();
+            // Backend UninstallPetPack already patches config when this skin was active.
+            // Mirror locally without a second PatchConfigFields round-trip, and drop any
+            // pending debounced patch that still references the removed skin.
+            if (latestConfigRef.current.pet_skin === skin) {
+                const next = new main.AppConfig({
+                    ...latestConfigRef.current,
+                    pet_skin: 'clawmate',
+                    pet_variant: 'classic',
+                    pet_figurative_upgrade_prompt_pending: false,
+                });
+                latestConfigRef.current = next;
+                setConfig(next);
+            }
+            if (pendingPatchRef.current.pet_skin === skin) {
+                pendingPatchRef.current = {
+                    ...pendingPatchRef.current,
+                    pet_skin: 'clawmate',
+                    pet_variant: 'classic',
+                    pet_figurative_upgrade_prompt_pending: false,
+                };
+            }
+            setInstallNotice(text(lang, `已卸载：${skin}`, `已卸載：${skin}`, `Uninstalled: ${skin}`));
+            if (installNoticeTimerRef.current) window.clearTimeout(installNoticeTimerRef.current);
+            installNoticeTimerRef.current = window.setTimeout(() => {
+                if (mountedRef.current) setInstallNotice('');
+                installNoticeTimerRef.current = undefined;
+            }, 2400);
+        } catch (err) {
+            setInstallError(formatUnknownError(err));
+        } finally {
+            installBusyRef.current = false;
+            setInstallBusy(false);
+        }
+    }, [selectedSkin, packOptions, lang, refreshPackOptions, setConfig]);
+
+    const installPetPackFromDialog = useCallback(async () => {
+        if (installBusyRef.current) return;
+        installBusyRef.current = true;
+        setInstallError('');
+        setInstallNotice('');
+        if (installNoticeTimerRef.current) {
+            window.clearTimeout(installNoticeTimerRef.current);
+            installNoticeTimerRef.current = undefined;
+        }
+        setInstallBusy(true);
+        try {
+            const path = await SelectPetPackZip();
+            if (!path) {
+                return; // cancelled
+            }
+            const installedId = await InstallPetPackZip(path);
+            await refreshPackOptions();
+            if (installedId) {
+                // Prefer figurative frames for newly installed packs.
+                updatePetConfig({
+                    pet_skin: installedId,
+                    pet_variant: 'default',
+                    pet_figurative_upgrade_prompt_pending: false,
+                });
+                setInstallNotice(
+                    text(lang, `已安装并选用：${installedId}`, `已安裝並選用：${installedId}`, `Installed and selected: ${installedId}`)
+                );
+                installNoticeTimerRef.current = window.setTimeout(() => {
+                    if (mountedRef.current) setInstallNotice('');
+                    installNoticeTimerRef.current = undefined;
+                }, 2400);
+            }
+        } catch (err) {
+            const message = formatUnknownError(err);
+            console.error('[PetSettingsPanel] InstallPetPackZip failed:', err);
+            setInstallError(message);
+        } finally {
+            installBusyRef.current = false;
+            setInstallBusy(false);
+        }
+    }, [refreshPackOptions, lang, updatePetConfig]);
 
     return (
         <div className="pet-settings-panel">
@@ -385,6 +708,14 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     {saveStateLabel && (
                         <span className="pet-save-state" data-state={saveState} role="status" aria-live="polite">{saveStateLabel}</span>
                     )}
+                    <button
+                        type="button"
+                        className="pet-help-button"
+                        title={text(lang, '宠物包创建指南', '寵物包建立指南', 'Pet pack creation guide')}
+                        onClick={openPetPackHelp}
+                    >
+                        {text(lang, '帮助', '幫助', 'Help')}
+                    </button>
                     <label className="pet-switch-row" data-enabled={petEnabled ? 'true' : 'false'}>
                         <input
                             type="checkbox"
@@ -434,11 +765,24 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         data-interaction-mode={interactionMode}
                         data-motion={motionEnabled ? 'on' : 'off'}
                     >
-                        <div className="pet-preview-avatar" style={{ width: petSize * 1.45, height: petSize * 1.45 }}>
-                            <img src={selectedSkinOption.image} alt={selectedSkinOption.label} className="pet-preview-image" />
-                            <span className="pet-preview-face pet-preview-face--eye-left" aria-hidden="true" />
-                            <span className="pet-preview-face pet-preview-face--eye-right" aria-hidden="true" />
-                            <span className="pet-preview-face pet-preview-face--mouth" aria-hidden="true" />
+                        <div
+                            className="pet-preview-avatar"
+                            style={{ width: petSize * 1.45, height: petSize * 1.45 }}
+                            data-pet-variant={selectedVariant}
+                        >
+                            <img
+                                src={stageImage || selectedSkinOption.image}
+                                alt={selectedSkinOption.label}
+                                className="pet-preview-image"
+                            />
+                            {/* CSS face overlay only for classic / packs that request it */}
+                            {(selectedVariant === 'classic' || selectedSkinOption.faceOverlay) && (
+                                <>
+                                    <span className="pet-preview-face pet-preview-face--eye-left" aria-hidden="true" />
+                                    <span className="pet-preview-face pet-preview-face--eye-right" aria-hidden="true" />
+                                    <span className="pet-preview-face pet-preview-face--mouth" aria-hidden="true" />
+                                </>
+                            )}
                             <span className="pet-preview-motion-mark pet-preview-motion-mark--a" aria-hidden="true" />
                             <span className="pet-preview-motion-mark pet-preview-motion-mark--b" aria-hidden="true" />
                         </div>
@@ -458,7 +802,15 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     </div>
                     <div className="pet-preview-meta">
                         <strong>{selectedSkinOption.label}</strong>
-                        <span>{skinPreviewLine(lang, selectedSkinOption.id)}</span>
+                        <span>
+                            {selectedSkinOption.desc || skinPreviewLine(lang, selectedSkinOption.id)}
+                            {selectedSkinOption.canUninstall
+                                ? text(lang, ' · 用户安装', ' · 使用者安裝', ' · User install')
+                                : text(lang, ' · 官方', ' · 官方', ' · Official')}
+                            {selectedVariant === 'default'
+                                ? text(lang, ' · 具象帧预览', ' · 具象幀預覽', ' · Figurative frame preview')
+                                : text(lang, ' · 经典预览', ' · 經典預覽', ' · Classic preview')}
+                        </span>
                     </div>
                 </section>
 
@@ -469,12 +821,15 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             <span>{text(lang, '每个形象都有明确身份，不只是抽象图标。', '每個形象都有明確身份，不只是抽象圖示。', 'Each skin has a clear role, not just an abstract icon.')}</span>
                         </div>
                         <div className="pet-skin-grid">
-                            {petSkinOptions.map((skin) => (
+                            {packOptions.map((skin) => {
+                                const isInvalid = skin.status === 'invalid';
+                                return (
                                 <button
                                     key={skin.id}
                                     type="button"
-                                    className={`pet-skin-option ${selectedSkin === skin.id ? 'active' : ''}`}
+                                    className={`pet-skin-option ${selectedSkin === skin.id ? 'active' : ''}${isInvalid ? ' pet-skin-option--invalid' : ''}`}
                                     aria-pressed={selectedSkin === skin.id}
+                                    title={isInvalid ? (skin.desc || text(lang, '包无效，可卸载后重装', '包無效，可卸載後重裝', 'Invalid pack — uninstall and reinstall')) : undefined}
                                     onClick={() => updatePetConfig({ pet_skin: skin.id })}
                                 >
                                     <img src={skin.image} alt="" className="pet-skin-thumb" aria-hidden="true" />
@@ -482,10 +837,118 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                                         <span>{skin.label}</span>
                                         <em>{skinToneLabel(lang, skin.tone)}</em>
                                     </span>
-                                    <small>{skinDescription(lang, skin.id)}</small>
+                                    <span className="pet-skin-badges">
+                                        <span className={`pet-skin-badge ${skin.canUninstall ? 'pet-skin-badge--user' : 'pet-skin-badge--official'}`}>
+                                            {skin.canUninstall
+                                                ? text(lang, '用户', '使用者', 'User')
+                                                : text(lang, '官方', '官方', 'Official')}
+                                        </span>
+                                        {isInvalid ? (
+                                            <span className="pet-skin-badge pet-skin-badge--invalid">
+                                                {text(lang, '无效', '無效', 'Invalid')}
+                                            </span>
+                                        ) : null}
+                                        {skin.version ? <span className="pet-skin-badge pet-skin-badge--ver">v{skin.version}</span> : null}
+                                    </span>
+                                    <small>{skin.desc || skinDescription(lang, skin.id)}</small>
+                                </button>
+                                );
+                            })}
+                        </div>
+                        {selectedSkinOption.canUninstall && (
+                            <div className="pet-pack-install-row pet-section-spacer">
+                                <button
+                                    type="button"
+                                    className="pet-uninstall-button"
+                                    disabled={installBusy}
+                                    onClick={() => { void uninstallSelectedPack(); }}
+                                >
+                                    {text(lang, '卸载当前用户包', '卸載目前使用者包', 'Uninstall selected user pack')}
+                                </button>
+                            </div>
+                        )}
+                        <div className="pet-section-heading pet-section-heading--inline pet-section-spacer">
+                            <label className="form-label">{text(lang, '画质风格', '畫質風格', 'Visual Tier')}</label>
+                            <span>{text(lang, 'classic=过程式线稿回落；default=具象光栅帧。', 'classic=過程式線稿回落；default=具象光柵幀。', 'classic=procedural fallback; default=figurative frames.')}</span>
+                        </div>
+                        <div className="pet-segmented-control">
+                            {(['classic', 'default'] as const).map((variant) => (
+                                <button
+                                    key={variant}
+                                    type="button"
+                                    className={selectedVariant === variant ? 'active' : ''}
+                                    aria-pressed={selectedVariant === variant}
+                                    onClick={() => updatePetConfig({
+                                        pet_variant: variant,
+                                        pet_figurative_upgrade_prompt_pending: false,
+                                    })}
+                                >
+                                    {variant === 'classic'
+                                        ? text(lang, '经典', '經典', 'Classic')
+                                        : text(lang, '具象', '具象', 'Figurative')}
                                 </button>
                             ))}
                         </div>
+                        {upgradePrompt && (
+                            <div className="pet-status-chip pet-upgrade-chip" data-tone="warn">
+                                <div>
+                                    <strong>{text(lang, '可升级具象画质', '可升級具象畫質', 'Figurative upgrade available')}</strong>
+                                    <span>{text(lang, '现有安装保持经典，不会静默升级。点击「具象」可切换。', '現有安裝保持經典，不會靜默升級。點擊「具象」可切換。', 'Existing installs stay classic until you opt in.')}</span>
+                                </div>
+                                <button type="button" onClick={() => updatePetConfig({ pet_variant: 'default', pet_figurative_upgrade_prompt_pending: false })}>
+                                    {text(lang, '切换到具象', '切換到具象', 'Switch to figurative')}
+                                </button>
+                            </div>
+                        )}
+                        <div className="pet-section-heading pet-section-heading--inline pet-section-spacer">
+                            <label className="form-label">{text(lang, '安装宠物包', '安裝寵物包', 'Install pack')}</label>
+                            <span>{text(lang, '选择本地 pet pack zip（声明式资源，无 JS）。', '選擇本地 pet pack zip（聲明式資源，無 JS）。', 'Pick a local declarative pet pack zip (no JS).')}</span>
+                        </div>
+                        <div className="pet-range-row pet-pack-install-row">
+                            <button
+                                type="button"
+                                className="pet-install-button"
+                                disabled={installBusy}
+                                aria-busy={installBusy}
+                                onClick={() => { void installPetPackFromDialog(); }}
+                            >
+                                {installBusy
+                                    ? text(lang, '安装中…', '安裝中…', 'Installing…')
+                                    : text(lang, '选择 Zip 安装', '選擇 Zip 安裝', 'Choose Zip to Install')}
+                            </button>
+                            <button
+                                type="button"
+                                className="pet-help-button pet-help-button--inline"
+                                onClick={() => { void openPetPacksFolder(); }}
+                                title={packsDirLabel || undefined}
+                            >
+                                {text(lang, '打开 packs 目录', '開啟 packs 目錄', 'Open packs folder')}
+                            </button>
+                            <button
+                                type="button"
+                                className="pet-help-button pet-help-button--inline"
+                                aria-label={text(lang, '打开宠物包创建指南', '開啟寵物包建立指南', 'Open pet pack creation guide')}
+                                onClick={openPetPackHelp}
+                            >
+                                {text(lang, '创建指南', '建立指南', 'Creation Guide')}
+                            </button>
+                        </div>
+                        {packsDirLabel ? (
+                            <p className="pet-packs-dir-hint" title={packsDirLabel}>
+                                {text(lang, '用户包目录：', '使用者包目錄：', 'User packs: ')}
+                                <code>{packsDirLabel}</code>
+                            </p>
+                        ) : null}
+                        {installNotice && (
+                            <p className="pet-install-notice" role="status">
+                                {installNotice}
+                            </p>
+                        )}
+                        {installError && (
+                            <p className="pet-install-error" role="alert">
+                                {text(lang, '安装失败：', '安裝失敗：', 'Install failed: ')}{installError}
+                            </p>
+                        )}
                     </div>
 
                     <div className="pet-form-section">

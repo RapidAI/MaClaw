@@ -1,0 +1,61 @@
+﻿schema_version: 1
+id: focus-claw
+name: Focus Claw
+version: 1.1.0
+author: MaClaw Official
+license: proprietary
+description: "Quiet companion for long focus sessions"
+tier: figurative
+min_maclaw_version: "0.0.0"
+label:
+  en: Focus Claw
+  zh-Hans: 专注爪
+  zh-Hant: 专注爪
+description_i18n:
+  en: "Quiet companion for long focus sessions"
+  zh-Hans: "Quiet companion for long focus sessions"
+preview: preview.png
+default_size: 88
+tone: focus
+tags: ["official", "default"]
+renderer: native-raster
+face_overlay: false
+assets:
+  preview: preview.png
+  native:
+    idle: native/idle.png
+    listening: native/listening.png
+    thinking: native/thinking.png
+    speaking: native/speaking.png
+    done: native/done.png
+    alert: native/alert.png
+    quiet: native/quiet.png
+variants:
+  - id: default
+    tier: figurative
+    renderer: native-raster
+    face_overlay: false
+    assets:
+      native:
+        idle: native/idle.png
+        listening: native/listening.png
+        thinking: native/thinking.png
+        speaking: native/speaking.png
+        done: native/done.png
+        alert: native/alert.png
+        quiet: native/quiet.png
+  - id: classic
+    tier: classic
+    renderer: procedural-fallback
+    face_overlay: true
+motion:
+  idle_ms: 4000
+  listening_ms: 1200
+  thinking_ms: 1800
+  speaking_ms: 950
+  amplitude: 0.85
+  sound_profile: classic
+  pitch: 0.78
+capabilities:
+  supports_done_state: true
+  supports_alert_state: true

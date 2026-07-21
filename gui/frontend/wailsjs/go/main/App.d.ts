@@ -840,6 +840,18 @@ export function GetMemoryMaxBackups():Promise<number>;
 
 export function SetMemoryMaxBackups(arg1:number):Promise<void>;
 
+export function SetBugReportEnabled(arg1:boolean):Promise<main.AppConfig>;
+
+export function SelectBugReportScreenshots():Promise<Array<string>>;
+
+export function SubmitBugReport(arg1:string,arg2:string,arg3:Array<string>):Promise<Record<string, any>>;
+
+export function RetryBugReportUpload(arg1:string,arg2:string,arg3:Array<string>):Promise<Record<string, any>>;
+
+export function HasPendingBugReportUpload():Promise<boolean>;
+
+export function ListMyBugReports():Promise<Record<string, any>>;
+
 // Scheduled task management bindings
 export function ListScheduledTasks():Promise<Array<any>>;
 
@@ -1629,3 +1641,14 @@ export function GenerateExpertProfile(arg1:string):Promise<string>;
 export function ListAvailableToolNames():Promise<string>;
 export function ResolveExpertCapabilityTier(arg1:string):Promise<string>;
 export function InferExpertCapabilityTier(arg1:string,arg2:string):Promise<string>;
+
+export function ListPetPacks():Promise<Array<Record<string, any>>>;
+export function InstallPetPackZip(arg1:string):Promise<string>;
+export function UninstallPetPack(arg1:string):Promise<void>;
+export function SetDesktopPetState(arg1:string,arg2:number):Promise<void>;
+export function GetDesktopPetState():Promise<string>;
+export function SelectPetPackZip():Promise<string>;
+export function GetPetPackPreviewDataURL(arg1:string):Promise<string>;
+export function GetPetPackStateFrameDataURL(arg1:string,arg2:string,arg3:string):Promise<string>;
+export function OpenPetPacksDir():Promise<void>;
+export function GetPetPacksDir():Promise<string>;

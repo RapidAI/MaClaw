@@ -1146,3 +1146,32 @@ func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterPetPackHelpStaticRoutesServesPage(t *testing.T) {
+	dir := t.TempDir()
+	html := `<!doctype html><html><body data-set-lang="zh">pet-pack-help</body></html>`
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(html), 0644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerStaticRoutes(mux, dir, "/pet-pack-help")
+
+	req := httptest.NewRequest(http.MethodGet, "/pet-pack-help", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index status = %d", rec.Code)
+	}
+	if body := rec.Body.String(); body != html {
+		t.Fatalf("index body = %q", body)
+	}
+
+	// Trailing path should still fall back to index for SPA-style static pages.
+	req2 := httptest.NewRequest(http.MethodGet, "/pet-pack-help/", nil)
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("slash status = %d", rec2.Code)
+	}
+}

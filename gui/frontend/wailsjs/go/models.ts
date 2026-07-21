@@ -661,6 +661,10 @@ export namespace main {
 	    pet_auto_retry_on_no_hear?: boolean;
 	    pet_continuous_timeout_sec?: number;
 	    pet_quiet_mode?: boolean;
+	    pet_variant?: string;
+	    pet_variant_migrated?: boolean;
+	    pet_figurative_upgrade_prompt_pending?: boolean;
+	    pet_reduced_motion?: boolean;
 	    floating_btn_x?: number;
 	    floating_btn_y?: number;
 	    floating_btn_position_set?: boolean;
@@ -846,6 +850,10 @@ export namespace main {
 	        this.pet_auto_retry_on_no_hear = source["pet_auto_retry_on_no_hear"];
 	        this.pet_continuous_timeout_sec = source["pet_continuous_timeout_sec"];
 	        this.pet_quiet_mode = source["pet_quiet_mode"];
+	        this.pet_variant = source["pet_variant"];
+	        this.pet_variant_migrated = source["pet_variant_migrated"];
+	        this.pet_figurative_upgrade_prompt_pending = source["pet_figurative_upgrade_prompt_pending"];
+	        this.pet_reduced_motion = source["pet_reduced_motion"];
 	        this.floating_btn_x = source["floating_btn_x"];
 	        this.floating_btn_y = source["floating_btn_y"];
 	        this.floating_btn_position_set = source["floating_btn_position_set"];
