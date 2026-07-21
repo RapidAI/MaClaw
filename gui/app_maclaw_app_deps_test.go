@@ -263,6 +263,55 @@ func TestMaclawAppResolvedDependenciesRespectAppIDScopeForSameDependencyID(t *te
 	}
 }
 
+func TestEnrichDependenciesWithHubSkillIDMatchesAlias(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "paper_pdf_translator")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# paper\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:       "paper_pdf_translator",
+		SkillDir:   skillDir,
+		Status:     "active",
+		Source:     "skillmarket",
+		HubSkillID: "hub-uuid-alias",
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dep id is an alias form; enrich must still find HubSkillID via candidate keys.
+	deps := []maclawAppInstallPlanDependency{{
+		ID:       "Paper PDF Translator",
+		Required: true,
+		Source:   "local",
+		Aliases:  []string{"paper_pdf_translator"},
+	}}
+	app.enrichDependenciesWithHubSkillID(deps)
+	if deps[0].InstallRef != "hub-uuid-alias" {
+		t.Fatalf("InstallRef = %q want hub-uuid-alias (alias match)", deps[0].InstallRef)
+	}
+	if deps[0].Source != "skillmarket" {
+		t.Fatalf("Source = %q want skillmarket", deps[0].Source)
+	}
+	if deps[0].InstallRefKind != "skillmarket" {
+		t.Fatalf("InstallRefKind = %q want skillmarket", deps[0].InstallRefKind)
+	}
+}
+
 func TestMaclawAppHubCenterDependencySourceUsesSkillMarketInstaller(t *testing.T) {
 	source, ok := maclawAppInstallSkillSource("hubcenter")
 	if !ok || source != "skillmarket" {

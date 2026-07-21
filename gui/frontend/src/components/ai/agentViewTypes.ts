@@ -154,6 +154,12 @@ export type AgentView =
         description?: string;
         fields: AgentViewField[];
         dependentRequired?: AgentViewDependentRequired;
+        /**
+         * Groups of field names; each non-empty group needs at least one non-empty value.
+         * Used for alternate inputs (file OR url OR paste text). Snake_case matches
+         * backend workflow form emission (`require_any_of`).
+         */
+        require_any_of?: string[][];
         variants?: AgentViewVariant[];
         formErrors?: string[];
         submitLabel?: string;

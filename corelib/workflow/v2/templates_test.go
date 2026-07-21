@@ -129,6 +129,64 @@ func TestTemplateRegistryAmbiguousTopScoreDoesNotSelectByTieBreak(t *testing.T) 
 // wrong with AllTypes(). It also serves as a compile-time signal that adding a
 // template to RegisterBuiltinTemplates is sufficient — no other hardcoded list
 // needs to be maintained.
+func TestBidReviewTemplate_StructureAndRoutingIsolation(t *testing.T) {
+	tmpl := BidReviewTemplate()
+	if tmpl == nil {
+		t.Fatal("BidReviewTemplate() returned nil")
+	}
+	if tmpl.Type != "bid_review" {
+		t.Fatalf("Type = %q, want bid_review", tmpl.Type)
+	}
+	if !tmpl.SemanticOnly {
+		t.Fatal("bid_review should be SemanticOnly to avoid BM25 overlap with bid_response")
+	}
+	wantPhases := []string{"br_standards", "br_bid_content", "br_conformity", "br_fix_report"}
+	if len(tmpl.Phases) != len(wantPhases) {
+		t.Fatalf("phase count = %d, want %d", len(tmpl.Phases), len(wantPhases))
+	}
+	for i, id := range wantPhases {
+		if tmpl.Phases[i].ID != id {
+			t.Errorf("phase[%d].ID = %q, want %q", i, tmpl.Phases[i].ID, id)
+		}
+	}
+	// Final report should not re-inject every prior full document (context cost).
+	fixReport := tmpl.Phases[len(tmpl.Phases)-1]
+	if len(fixReport.DependsOnFull) != 1 || fixReport.DependsOnFull[0] != "br_conformity" {
+		t.Fatalf("br_fix_report DependsOnFull = %#v, want [br_conformity]", fixReport.DependsOnFull)
+	}
+	// Field names must not reuse bid_response tender-doc fields.
+	if tmpl.Phases[0].InputSchema == nil {
+		t.Fatal("br_standards missing InputSchema")
+	}
+	fieldNames := map[string]bool{}
+	for _, f := range tmpl.Phases[0].InputSchema.Fields {
+		fieldNames[f.Name] = true
+	}
+	for _, need := range []string{"tender_standard_path", "tender_standard_url", "tender_standard_text", "prepared_bid_path", "prepared_bid_text"} {
+		if !fieldNames[need] {
+			t.Errorf("missing intake field %q", need)
+		}
+	}
+	if fieldNames["bid_doc_path"] || fieldNames["bid_doc_text"] {
+		t.Error("bid_review must not reuse bid_response bid_doc_* field names for prepared bids")
+	}
+	if len(tmpl.Phases[0].InputSchema.RequireAnyOf) != 2 {
+		t.Fatalf("RequireAnyOf groups = %d, want 2 (standards + prepared bid)", len(tmpl.Phases[0].InputSchema.RequireAnyOf))
+	}
+
+	reg := NewTemplateRegistry()
+	RegisterBuiltinTemplates(reg)
+	if reg.Get("bid_review") == nil {
+		t.Fatal("bid_review not registered via RegisterBuiltinTemplates")
+	}
+	// SemanticOnly: BM25 ranking for generic "标书" text should not surface bid_review.
+	for _, score := range reg.RankedByText("帮我写一份标书投标文件") {
+		if score.Type == "bid_review" {
+			t.Fatalf("bid_review should be excluded from BM25 RankedByText, got score=%v", score.Score)
+		}
+	}
+}
+
 func TestAllTypes_ReturnsAllRegisteredTemplates(t *testing.T) {
 	registry := NewTemplateRegistry()
 	RegisterBuiltinTemplates(registry)

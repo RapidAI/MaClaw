@@ -349,7 +349,7 @@ func DefaultDefinitions() []IntentDefinition {
 				"literature_review", "research_report", "experiment_design",
 				"grant_proposal", "paper_writing", "project_proposal",
 				"event_planning", "competitive_analysis",
-				"bid_response", "contract_review", "due_diligence",
+				"bid_response", "bid_review", "contract_review", "due_diligence",
 				"compliance_audit", "patent_analysis", "patent_application",
 				"us_patent_application",
 			},
@@ -361,7 +361,8 @@ func DefaultDefinitions() []IntentDefinition {
 				"testing=测试方案, literature_review=文献综述, research_report=研究报告/研报, " +
 				"experiment_design=实验方案, grant_proposal=基金申请, paper_writing=论文撰写, " +
 				"project_proposal=项目立项, event_planning=活动策划, " +
-				"competitive_analysis=竞品分析, bid_response=招投标, " +
+				"competitive_analysis=竞品分析, bid_response=招投标/写标书/生成投标文件(从招标文件起草), " +
+				"bid_review=标书检查/审查已写好的标书并给修改建议(不是写新标书; 需对照招标标准), " +
 				"contract_review=合同审查, due_diligence=尽职调查(对公司做商业评估), " +
 					"compliance_audit=合规审计, patent_analysis=专利分析, " +
 					"patent_application=中国专利申请/撰写(按发明、实用新型、外观设计类型准备申请文件), " +
@@ -380,6 +381,8 @@ func DefaultDefinitions() []IntentDefinition {
 				"分析一下这个专利的侵权风险",
 				"检查一下我们的数据合规情况",
 				"帮我分析这个招标文件准备投标",
+				"检查一下我们的标书是否符合招标要求",
+				"对照招标文件审查投标文件并给出修改建议",
 				"设计一个实验方案",
 				"写一份基金申请书",
 				"做一个创新方案",

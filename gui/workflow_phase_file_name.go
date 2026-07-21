@@ -192,6 +192,12 @@ var knownPhaseFileNames = map[string]string{
 	"document_assembly":  "05-document-assembly.md",
 	"assembly":           "05-assembly.md",         // current template phase ID
 
+	// bid_review workflow (标书检查)
+	"br_standards":   "01-br-standards.md",
+	"br_bid_content": "02-br-bid-content.md",
+	"br_conformity":  "03-br-conformity.md",
+	"br_fix_report":  "04-br-fix-report.md",
+
 	// contract_review workflow
 	"contract_parsing": "01-contract-parsing.md",
 	"parsing":          "01-parsing.md",            // current template phase ID

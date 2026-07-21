@@ -375,7 +375,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			taskText = c.task
 		}
 		stepTitle, stepDesc := resolveCodingPlanStepFocus("", "", taskText)
-		verificationStatus, verificationSummary = maybeRelaxScaffoldVerification(stepTitle, stepDesc, verificationStatus, verificationSummary)
+		verificationStatus, verificationSummary = maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, taskText, verificationStatus, verificationSummary)
 	}
 	diffStatus, diffSummary := summarizeRemoteDiffSelfCheck(filesModified, commandsRun, lastEditSeq)
 	noChangeSummary := summarizeSubAgentNoChangeEvidence(filesModified, filesCreated, filesRead, searchesRun, commandsRun, nil)
@@ -513,7 +513,15 @@ func remoteCodingMaxIterationsReached(errText string) bool {
 }
 
 func remoteCodingPostEditEvidenceIsConclusive(confirmationStatus, verificationStatus, diffStatus codingSubAgentQualityStatus) bool {
-	if confirmationStatus != codingSubAgentQualityPassed || verificationStatus != codingSubAgentQualityPassed {
+	if confirmationStatus != codingSubAgentQualityPassed {
+		return false
+	}
+	// A plan step with an explicitly later compile/build/test task has already
+	// been narrowed to NOT_NEEDED by maybeRelaxDeferredPlanStepVerification.
+	// Its post-edit reads plus diff/non-git audit are conclusive for this step,
+	// even if the model reaches its iteration limit while composing the final
+	// summary.  Ordinary unverified edits remain MISSING and cannot recover.
+	if verificationStatus != codingSubAgentQualityPassed && verificationStatus != codingSubAgentQualityNotNeeded {
 		return false
 	}
 	return diffStatus == codingSubAgentQualityPassed || diffStatus == codingSubAgentQualityNotNeeded
@@ -535,20 +543,60 @@ func summarizeRemoteDiffSelfCheck(filesModified []string, commands []CodingSubAg
 	if len(checks) == 0 {
 		return codingSubAgentQualityMissing, "远程文件已修改，但未记录编辑后的 git diff/status 自检。"
 	}
+
+	// Only status/diff successes count as content evidence. A bare successful
+	// `git rev-parse --is-inside-work-tree` must not satisfy the gate.
+	var contentSuccess []CodingSubAgentCommandResult
+	var lastContentSuccessSeq uint64
+	for _, cmd := range checks {
+		if cmd.Succeeded && isSubAgentDiffSelfCheckContentCommand(cmd.Command) {
+			contentSuccess = append(contentSuccess, cmd)
+			if cmd.seq > lastContentSuccessSeq {
+				lastContentSuccessSeq = cmd.seq
+			}
+		}
+	}
+
+	// Soft non-git / policy-rejection are never hard. Earlier hard failures are
+	// superseded by a later content success; hard failures after that success
+	// still fail the gate.
 	failed := failedSubAgentCommands(checks)
-	if len(failed) > 0 {
-		nonGit, other := splitRemoteNonGitDiffSelfCheckFailures(failed)
-		if len(other) == 0 && len(nonGit) > 0 {
+	nonGit, other := splitRemoteNonGitDiffSelfCheckFailures(failed)
+	hard := make([]CodingSubAgentCommandResult, 0, len(other))
+	for _, cmd := range other {
+		if subAgentCommandIsSoftSilencedGitSelfCheckRejection(cmd) {
+			continue
+		}
+		// Recovery: ignore hard failures that happened before the latest
+		// successful status/diff. seq==0 entries are only treated as hard when
+		// there is no content success (tests and unsequenced audits).
+		if len(contentSuccess) > 0 && (cmd.seq == 0 || cmd.seq <= lastContentSuccessSeq) {
+			continue
+		}
+		hard = append(hard, cmd)
+	}
+
+	if len(contentSuccess) == 0 {
+		if len(hard) > 0 {
+			return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检失败：%s", compactFailedVerificationCommandResults(hard))
+		}
+		if len(nonGit) > 0 {
 			return codingSubAgentQualityNotNeeded, fmt.Sprintf("远程目录不是 Git 仓库，跳过 git diff/status 自检；已使用文件审计记录作为改动证据：%s", compactSubAgentVerificationCommandList(nonGit))
 		}
-		failed = other
-		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检失败：%s", compactFailedVerificationCommandResults(failed))
+		// e.g. only policy rejections, or only a work-tree probe — still missing
+		// a real status/diff self-check.
+		return codingSubAgentQualityMissing, "远程文件已修改，但未记录可用的 git diff/status 自检（请去掉 2>/dev/null 后重跑 status/diff，或确认非 Git 仓库）。"
 	}
-	clean := remoteCleanDiffSelfChecks(checks)
-	if len(clean) == len(checks) {
+
+	if len(hard) > 0 {
+		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检失败：%s", compactFailedVerificationCommandResults(hard))
+	}
+
+	clean := remoteCleanDiffSelfChecks(contentSuccess)
+	if len(clean) == len(contentSuccess) {
 		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检显示工作区干净，但审计记录已有远程文件修改：%s", compactSubAgentVerificationCommandList(clean))
 	}
-	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条远程 diff/status 自检命令：%s", len(checks), compactSubAgentVerificationCommandList(checks))
+	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条远程 diff/status 自检命令：%s", len(contentSuccess), compactSubAgentVerificationCommandList(contentSuccess))
 }
 
 func splitRemoteNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResult) ([]CodingSubAgentCommandResult, []CodingSubAgentCommandResult) {
@@ -745,9 +793,20 @@ func (c *remoteCodingCallbacks) completeRemoteDiffSelfCheck() {
 	if status != codingSubAgentQualityMissing || c.ShouldStop() {
 		return
 	}
+	workDir := c.defaultRemoteWorkingDir()
+	// Probe first without status/diff so non-git workspaces are recorded as a
+	// soft skip (with fatal text intact) instead of a hard command failure.
+	probe := c.sshBash(map[string]interface{}{
+		"command":     "git rev-parse --is-inside-work-tree",
+		"working_dir": workDir,
+	})
+	if remoteCodingToolOutcome(probe) != "success" {
+		log.Printf("[remote-subagent] git work-tree probe did not pass (often non-git): result=%q", compactCodingSubAgentLogText(probe, 800))
+		return
+	}
 	result := c.sshBash(map[string]interface{}{
 		"command":     "git status --short; git diff --stat",
-		"working_dir": c.defaultRemoteWorkingDir(),
+		"working_dir": workDir,
 	})
 	if remoteCodingToolOutcome(result) != "success" {
 		log.Printf("[remote-subagent] diff/status audit command did not pass: result=%q", compactCodingSubAgentLogText(result, 800))
@@ -1068,7 +1127,16 @@ func (c *remoteCodingCallbacks) GetMaxIterations() int {
 		}
 		return config.EffectiveMaxIterations(codingSpawnRoleMaxIterations(role))
 	}
-	return config.EffectiveMaxIterations(50)
+	// The root remote coding task is a user-facing agent turn. Honor the same
+	// configurable budget as the other agent surfaces instead of hard-capping it
+	// at 50: the workflow creates loopCtx from "Agent 最大推理轮数".
+	if c != nil && c.agent != nil && c.agent.loopCtx != nil && c.agent.loopCtx.MaxIterations() > 0 {
+		return config.EffectiveMaxIterations(c.agent.loopCtx.MaxIterations())
+	}
+	// No root loop context is normally only possible in lightweight tests or
+	// bootstrap error paths. Keep the fallback consistent with the global agent
+	// setting's default rather than reintroducing a hidden remote-only cap.
+	return config.EffectiveMaxIterations(0)
 }
 
 func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
@@ -1477,9 +1545,11 @@ func remoteCodingToolOutcome(result string) string {
 	return "success"
 }
 
-// remoteCodingParseExitMarker extracts the last "EXIT: N" marker from tool output.
-// Returns (code, true) when a numeric exit marker is present.
-// Scans from the end so a successful command's marker wins over earlier echo noise.
+// remoteCodingParseExitMarker extracts the last instrumented exit marker from
+// tool output. Supports both remote bash ("EXIT: N") and ACP-style
+// ("---EXIT_CODE:N") markers. Returns (code, true) when a numeric exit marker
+// is present. Scans from the end so a successful command's marker wins over
+// earlier echo noise.
 func remoteCodingParseExitMarker(result string) (int, bool) {
 	lines := strings.Split(result, "\n")
 	// Prefer tail: instrumented EXIT is near the end; avoid scanning multi-MB dumps fully
@@ -1488,13 +1558,15 @@ func remoteCodingParseExitMarker(result string) (int, bool) {
 		raw := strings.TrimSpace(strings.TrimRight(lines[i], "\r"))
 		// Strip common CSI color codes so colored EXIT markers still parse.
 		raw = remoteCodingStripSimpleANSI(raw)
-		if len(raw) < 6 {
+		rest := ""
+		switch {
+		case len(raw) >= 5 && strings.EqualFold(raw[:5], "EXIT:"):
+			rest = strings.TrimSpace(raw[5:])
+		case strings.HasPrefix(raw, "---EXIT_CODE:"):
+			rest = strings.TrimSpace(raw[len("---EXIT_CODE:"):])
+		default:
 			continue
 		}
-		if !strings.EqualFold(raw[:5], "EXIT:") {
-			continue
-		}
-		rest := strings.TrimSpace(raw[5:])
 		if rest == "" {
 			continue
 		}
@@ -2600,6 +2672,12 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 	} else {
 		workDir = c.resolvePath(workDir)
 	}
+	// Hard block silenced git self-checks (no high-risk approval bypass).
+	if msg := rejectSilencedGitSelfCheckCommand(command); msg != "" {
+		msg = strings.Replace(msg, "编码 SubAgent", "远程编码 SubAgent", 1)
+		c.trackRemoteCommand(command, workDir, msg, false)
+		return msg
+	}
 	if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
 		msg = strings.Replace(msg, "编码 SubAgent", "远程编码 SubAgent", 1)
 		if c == nil || c.agent == nil {
@@ -2908,8 +2986,9 @@ func buildRemoteInspectionRoleSystemPrompt(projectDir, workDir string, role codi
 ## 工作规范
 1. 先定位相关路径与符号，再深入阅读关键文件
 2. 用 ssh_bash 做只读探查（find/rg/ls/git status/diff/test 等）
-3. 完成后给出结构化发现：关键路径、结论、风险/建议
-4. 禁止写文件或改仓库状态；只输出发现与建议
+3. git status/diff/log 自检不要加 2>/dev/null 或 >/dev/null；若目录不是 Git 仓库，直接在结论中说明即可，不要用重定向掩盖 fatal 信息
+4. 完成后给出结构化发现：关键路径、结论、风险/建议
+5. 禁止写文件或改仓库状态；只输出发现与建议
 `)
 	if strings.TrimSpace(taskContext) != "" {
 		sb.WriteString("\n## 任务上下文\n\n")
@@ -2937,27 +3016,33 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 
 ## 工作规范
 
-以下第 4、5、6 步是完成任务的质量门禁；只要修改或创建了文件，就必须执行并在最终回复中报告，否则任务会被判定为未完成。
+0. For a toolchain inventory, never put an optional tool in an "&&" chain with required tools: one missing optional tool (such as clang++) short-circuits the entire check. Check required tools first, then probe optional tools separately with a non-blocking command (for example, "command -v clang++ || true") and report the result.
+
+0a. Do not use "tree" as a verification dependency: it is often absent on minimal servers. For a portable project-structure display use "find . -maxdepth 3 -print | sort"; run build/syntax checks as separate commands so a display-tool absence cannot block them.
+
+以下第 4、5、6 步是完成任务的质量门禁；只要修改或创建了文件，就必须执行并在最终回复中报告。唯一例外是第 5 步：当前多步骤计划明确把编译/build/test 交给后续独立步骤时，不要提前构建，但第 4、6 步仍为必做项。
 
 1. 修改文件前先 ssh_read_file 确认当前内容
 2. 优先做最小、聚焦的修改；不要顺手重构无关代码
 3. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
 4. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容
-5. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "g++ -o hello hello.cpp"、"python3 -m py_compile file.py"、pytest/go test/npm test 等）
-6. 修改后运行并查看只读自检命令（优先 git diff --stat / git diff / git status --short），确认远程改动范围符合任务要求
-7. ssh_bash 只用于探索、诊断、格式化和验证；文件改写必须使用 ssh_edit_file/ssh_write_file
-8. 路径可以是相对路径（相对于项目目录）或绝对路径
-9. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
-10. 长时间训练命令会自动作为后台任务运行，返回 task_id；必须用 ssh_check_task 跟进直到得到明确状态/exit_code
-11. 如确实需要运行被安全策略拦截的 ssh_bash 命令，等待用户确认；用户可选择本次放行或本任务放行
-12. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、diff/status 自检结果、剩余风险或未验证项
+	5. 修改后用 ssh_bash 运行匹配任务的验证命令（如 "g++ -o hello hello.cpp"、"python3 -m py_compile file.py"、pytest/go test/npm test 等）。例外仅适用于：当前是多步骤计划的实现步骤，且计划后续明确有独立的编译/build/test 步骤时，不要提前执行完整构建；完成本步骤的修改后回读确认，后续步骤负责可执行验证。没有这一明确的后续步骤时，必须在本步骤验证。
+6. 修改后运行并查看只读自检命令（优先 git status --short 与 git diff --stat；不要附带 git log，除非任务明确要求）
+7. git 自检命令不要使用 2>/dev/null、>/dev/null、&>/dev/null 等重定向；保留 fatal 原文。若不是 Git 仓库，在最终回复写明“非 Git 仓库，跳过 diff 自检”即可，不要反复重试
+8. ssh_bash 只用于探索、诊断、格式化和验证；文件改写必须使用 ssh_edit_file/ssh_write_file
+9. 路径可以是相对路径（相对于项目目录）或绝对路径
+10. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
+11. 长时间训练命令会自动作为后台任务运行，返回 task_id；必须用 ssh_check_task 跟进直到得到明确状态/exit_code
+12. 如确实需要运行被安全策略拦截的 ssh_bash 命令，等待用户确认；用户可选择本次放行或本任务放行
+13. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、diff/status 自检结果、剩余风险或未验证项
 
 ## 严禁行为
 - 不要删除项目根目录或关键系统文件
 - 不要修改 /etc、/usr 等系统目录
 - 不要在未读取文件的情况下盲目覆盖
 - 不要用 ssh_bash 执行 git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f 等会改写工作区或历史的命令
-- 不要用 ssh_bash 执行 rm -r/rm -rf、shell 重定向、sed -i、perl -pi、touch/mkdir/cp/mv、脚本内写文件等绕过审计的文件改写
+- 不要用 ssh_bash 执行 rm -r/rm -rf、shell 重定向写文件、sed -i、perl -pi、touch/mkdir/cp/mv、脚本内写文件等绕过审计的文件改写
+- 不要对 git status/diff/log 自检命令做 2>/dev/null 或 >/dev/null（会掩盖“不是 Git 仓库”等关键信息并触发质量门误判）
 `)
 	if taskContext != "" {
 		sb.WriteString("\n## 任务上下文\n\n")
@@ -3137,8 +3222,10 @@ func isLongRemoteCommand(command string) bool {
 	if strings.Contains(lower, "git pull") {
 		return true
 	}
-	if strings.HasPrefix(lower, "make ") || strings.Contains(lower, " make ") {
-		return remoteCommandHasLongTrainingIntent(lower) || strings.Contains(lower, " build") || strings.Contains(lower, " install")
+	// Only treat make as long when the make *target* is long-running.
+	// Do NOT match incidental paths like `mkdir -p build && make` via bare " build".
+	if remoteCommandInvokesMake(lower) {
+		return remoteCommandHasLongTrainingIntent(lower) || remoteMakeCommandHasLongTarget(lower)
 	}
 	if strings.Contains(lower, "cmake ") {
 		return strings.Contains(lower, "--build") || strings.Contains(lower, " --install")
@@ -3155,6 +3242,63 @@ func remoteCommandIsPythonOneLiner(lower string) bool {
 		strings.Contains(lower, "python -c") ||
 		strings.Contains(lower, "python3 - <<") ||
 		strings.Contains(lower, "python - <<")
+}
+
+func remoteCommandInvokesMake(lower string) bool {
+	lower = strings.TrimSpace(lower)
+	if lower == "" {
+		return false
+	}
+	// Normalize common chain separators so "&&make" still tokenizes.
+	normalized := lower
+	for _, sep := range []string{"&&", ";", "|"} {
+		normalized = strings.ReplaceAll(normalized, sep, " ")
+	}
+	for _, field := range strings.Fields(normalized) {
+		base := commandNameBase(field)
+		if base == "make" || base == "gmake" || base == "mingw32-make" {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteMakeCommandHasLongTarget reports make invocations whose first positional
+// target is a long-running one (build/install), ignoring flags and redirections.
+// `mkdir -p build` does not invoke make, so it never matches.
+func remoteMakeCommandHasLongTarget(lower string) bool {
+	normalized := lower
+	for _, sep := range []string{"&&", ";", "|"} {
+		normalized = strings.ReplaceAll(normalized, sep, " ")
+	}
+	fields := strings.Fields(normalized)
+	for i := 0; i < len(fields); i++ {
+		base := commandNameBase(fields[i])
+		if base != "make" && base != "gmake" && base != "mingw32-make" {
+			continue
+		}
+		for j := i + 1; j < len(fields); j++ {
+			tok := strings.TrimSpace(fields[j])
+			if tok == "" || tok == "2>&1" || tok == "1>&2" {
+				continue
+			}
+			if strings.HasPrefix(tok, "2>") || strings.HasPrefix(tok, "1>") ||
+				strings.HasPrefix(tok, ">") || strings.HasPrefix(tok, "&>") {
+				continue
+			}
+			if strings.HasPrefix(tok, "-") {
+				// Common value-taking flags: -j 8, -C dir, -f file
+				switch tok {
+				case "-j", "-C", "-f", "--file", "--makefile", "--directory", "-I", "--include-dir":
+					j++
+				}
+				continue
+			}
+			// First positional target only (switch-break would not exit this loop).
+			return tok == "build" || tok == "install"
+		}
+	}
+	return false
 }
 
 func remoteCommandLooksExplicitlyLongRunning(lower string) bool {

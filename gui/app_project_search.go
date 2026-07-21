@@ -36,10 +36,10 @@ const (
 	// Used by the GUI to open the task in coding-agent mode.
 	taskCodingDevTag = "coding_dev"
 	// taskRemoteCodingDevTag marks pure remote (SSH) coding environments.
-	taskRemoteCodingDevTag = "remote_coding_dev"
-	taskRemoteHostTagPrefix = "remote_host:"
-	taskRemoteUserTagPrefix = "remote_user:"
-	taskRemotePortTagPrefix = "remote_port:"
+	taskRemoteCodingDevTag     = "remote_coding_dev"
+	taskRemoteHostTagPrefix    = "remote_host:"
+	taskRemoteUserTagPrefix    = "remote_user:"
+	taskRemotePortTagPrefix    = "remote_port:"
 	taskRemoteWorkDirTagPrefix = "remote_workdir:"
 	// taskSourceCodingWorkflowTag marks remote/local tasks created from the multi-phase coding workflow form.
 	taskSourceCodingWorkflowTag = taskSourceTagPrefix + "coding_workflow"
@@ -984,7 +984,10 @@ func (a *App) FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir string) Proje
 		return ProjectSearchResult{}
 	}
 	a.ensureMemoryStore()
-	tasks := a.ListTasks(80)
+	// Keep this lookup window aligned with the ACP remote-task picker. Otherwise
+	// a previously created remote task can fall outside this search window and a
+	// retry from VS Code would create a duplicate record.
+	tasks := a.ListTasks(1000)
 	for _, task := range tasks {
 		if !projectRecordHasTagLike(task.Tags, taskRemoteCodingDevTag) {
 			continue
@@ -1191,9 +1194,9 @@ type CodingWorkbenchStatus struct {
 	// CheckpointLabel is the last saved checkpoint name.
 	CheckpointLabel string `json:"checkpoint_label,omitempty"`
 	// Session token/cost observability.
-	SessionInputTokens  int     `json:"session_input_tokens,omitempty"`
-	SessionOutputTokens int     `json:"session_output_tokens,omitempty"`
-	SessionEstCostRMB   float64 `json:"session_est_cost_rmb,omitempty"`
+	SessionInputTokens   int     `json:"session_input_tokens,omitempty"`
+	SessionOutputTokens  int     `json:"session_output_tokens,omitempty"`
+	SessionEstCostRMB    float64 `json:"session_est_cost_rmb,omitempty"`
 	LastTurnInputTokens  int     `json:"last_turn_input_tokens,omitempty"`
 	LastTurnOutputTokens int     `json:"last_turn_output_tokens,omitempty"`
 	LastTurnEstCostRMB   float64 `json:"last_turn_est_cost_rmb,omitempty"`
@@ -1219,7 +1222,7 @@ type CodingWorkbenchStatus struct {
 	RouteTask   string `json:"route_task,omitempty"`
 	RouteReason string `json:"route_reason,omitempty"`
 	// RoutePref: auto | primary | reasoning | vision
-	RoutePref   string `json:"route_pref,omitempty"`
+	RoutePref string `json:"route_pref,omitempty"`
 	// RouteCapabilities maps each route pref to ModelRouter availability / model.
 	RouteCapabilities []codingRouteCapability `json:"route_capabilities,omitempty"`
 	// CheckpointFiles are paths recorded at the last checkpoint (for UI).
@@ -1235,14 +1238,14 @@ type CodingWorkbenchStatus struct {
 	// HooksCommandCount is total non-empty hook commands across phases.
 	HooksCommandCount int `json:"hooks_command_count,omitempty"`
 	// HooksFailOnError mirrors hooks.json fail_on_error.
-	HooksFailOnError bool `json:"hooks_fail_on_error,omitempty"`
-	LastSummary string `json:"last_summary,omitempty"`
-	RemoteHost      string `json:"remote_host,omitempty"`
-	RemoteUser      string `json:"remote_user,omitempty"`
-	RemotePort      int    `json:"remote_port,omitempty"`
-	RemoteWorkDir   string `json:"remote_work_dir,omitempty"`
-	RemoteSessionID string `json:"remote_session_id,omitempty"`
-	Message         string `json:"message,omitempty"`
+	HooksFailOnError bool   `json:"hooks_fail_on_error,omitempty"`
+	LastSummary      string `json:"last_summary,omitempty"`
+	RemoteHost       string `json:"remote_host,omitempty"`
+	RemoteUser       string `json:"remote_user,omitempty"`
+	RemotePort       int    `json:"remote_port,omitempty"`
+	RemoteWorkDir    string `json:"remote_work_dir,omitempty"`
+	RemoteSessionID  string `json:"remote_session_id,omitempty"`
+	Message          string `json:"message,omitempty"`
 }
 
 func (a *App) remoteCodingMetaFromTaskTags(projectPath string) (host, user, workDir string, port int) {
@@ -4455,6 +4458,8 @@ func workflowTypeLabel(wfType string) string {
 		return "竞品分析"
 	case v2.WorkflowBidResponse:
 		return "招投标"
+	case v2.WorkflowBidReview:
+		return "标书检查"
 	case v2.WorkflowContractReview:
 		return "合同审查"
 	case v2.WorkflowDueDiligence:

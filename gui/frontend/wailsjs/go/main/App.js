@@ -2990,6 +2990,14 @@ export function PublishMaclawAppSubmissionOneClick(arg1) {
   return window['go']['main']['App']['PublishMaclawAppSubmissionOneClick'](arg1);
 }
 
+export function PreflightMaclawAppOneClickPublish(arg1) {
+  return window['go']['main']['App']['PreflightMaclawAppOneClickPublish'](arg1);
+}
+
+export function PreflightMaclawAppSubmissionOneClick(arg1) {
+  return window['go']['main']['App']['PreflightMaclawAppSubmissionOneClick'](arg1);
+}
+
 export function ListMaclawAppPackageSubmissions(arg1) {
   return window['go']['main']['App']['ListMaclawAppPackageSubmissions'](arg1);
 }

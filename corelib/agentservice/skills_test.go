@@ -797,7 +797,8 @@ func TestRememberUserHubCenterSelectionPromotesPublicFallback(t *testing.T) {
 	if cfg.AppConfig.RemoteHubCenterURL != "https://hubs.maclaw.top" {
 		t.Fatalf("RemoteHubCenterURL = %q, want promoted fallback", cfg.AppConfig.RemoteHubCenterURL)
 	}
-	want := []string{"https://hubs.maclaw.top", "https://hubs2.maclaw.top", "https://hubs.mypapers.top"}
+	// Must not inject official defaults or keep non-preferred HA peers (hubs2).
+	want := []string{"https://hubs.maclaw.top"}
 	if !remote.StringSliceEqual(cfg.AppConfig.RemoteHubCenterURLs, want) {
 		t.Fatalf("RemoteHubCenterURLs = %#v, want %#v", cfg.AppConfig.RemoteHubCenterURLs, want)
 	}

@@ -513,7 +513,13 @@ func (s *acpHostSession) handle(req acpagent.Request) error {
 		}
 		result, rpcErr := s.onSessionSteer(req.Params)
 		return s.reply(req, result, rpcErr)
-	// MaClaw extensions for VS Code remote coding attach (Phase 1).
+	// MaClaw extensions for VS Code remote coding tasks.
+	case "maclaw/create_remote_coding_task":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onMaclawCreateRemoteCodingTask(req.Params)
+		return s.reply(req, result, rpcErr)
 	case "maclaw/list_remote_coding_tasks":
 		if !s.authed {
 			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))

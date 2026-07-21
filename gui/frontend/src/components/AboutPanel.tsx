@@ -265,21 +265,25 @@ export function AboutPanel({
     const tenantLabel = remoteTenant.name || remoteTenant.id || emptyValue;
     const registeredName = hasRegisteredMachine ? (String(config?.remote_nickname || '').trim() || String(config?.remote_machine_name || '').trim() || String(config?.remote_machine_id || '').trim() || emptyValue) : emptyValue;
     const hubURL = String(config?.remote_hub_url || '').trim() || emptyValue;
-    // Display the first discovered public HubCenter URL (from the discovery list),
-    // falling back to the preferred URL. HubCenter is a public control-plane
-    // endpoint, so loopback addresses are ignored for this identity view.
+    // Enrollment identity = public preferred only (remote_hubcenter_url).
+    // Loopback preferred must NOT promote leftover public entries from
+    // remote_hubcenter_urls (discovery seeds / pollution) — matches
+    // ConfiguredHubCenterBaseURL / RegisteredPublicHubCenterURLs.
     const hubCenterURL = (() => {
-        const discoveredList = (config as any)?.remote_hubcenter_urls as string[] | undefined;
-        if (Array.isArray(discoveredList) && discoveredList.length > 0) {
-            const publicURL = discoveredList.find(u => {
-                const trimmed = u.trim();
-                return trimmed && !localHubCenterPattern.test(trimmed);
-            });
-            if (publicURL) return publicURL.trim();
-        }
         const preferred = String(config?.remote_hubcenter_url || '').trim();
-        if (localHubCenterPattern.test(preferred)) return emptyValue;
-        return preferred || emptyValue;
+        if (preferred && !localHubCenterPattern.test(preferred)) return preferred;
+        // Preferred unset (not loopback-local): allow first public list entry.
+        if (!preferred) {
+            const discoveredList = (config as any)?.remote_hubcenter_urls as string[] | undefined;
+            if (Array.isArray(discoveredList) && discoveredList.length > 0) {
+                const publicURL = discoveredList.find(u => {
+                    const trimmed = String(u || '').trim();
+                    return trimmed && !localHubCenterPattern.test(trimmed);
+                });
+                if (publicURL) return String(publicURL).trim();
+            }
+        }
+        return emptyValue;
     })();
     const remoteEmailRaw = registrationEmailFromConfig(config?.remote_email);
     const remoteMobileRaw = configuredMobile || probedMobile;

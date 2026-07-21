@@ -119,9 +119,25 @@ func ResolveHubCenterWithFailover(cfg corelib.AppConfig, currentURL string, cach
 		persister = SharedHubCenterPersister()
 	}
 
+	// Unique enrollment algorithm (same as GUI): registered public only;
+	// official defaults only when unregistered.
 	urls := cfg.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
-	if len(urls) <= 1 {
-		return currentURL // single URL, no failover needed
+	if len(urls) == 0 {
+		return currentURL
+	}
+	registered := remote.RegisteredPublicHubCenterURLs(cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+
+	// Prefer a seed-valid current URL; otherwise start from first enrollment seed.
+	preferred := remote.PickAlignedHubCenterBase(currentURL, urls)
+	if preferred == "" {
+		preferred = urls[0]
+	}
+	if len(urls) == 1 {
+		// Single valid seed — no multi-node probe needed.
+		// Constrain for persistence (no default injection into config).
+		preferred, aligned := remote.ConstrainHubCenterPersistence(registered, preferred, urls)
+		cache.RememberSelectionThrottled(persister, preferred, aligned)
+		return preferred
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -131,20 +147,18 @@ func ResolveHubCenterWithFailover(cfg corelib.AppConfig, currentURL string, cach
 	var ordered []string
 
 	// Try discovery first (gossip protocol).
-	if ordered = remote.DiscoverHubCenterURLs(ctx, probeClient, urls, currentURL); len(ordered) > 0 {
-		currentURL = ordered[0]
-	} else {
+	if ordered = remote.DiscoverHubCenterURLs(ctx, probeClient, urls, preferred); len(ordered) == 0 {
 		// Fallback to direct probe if discovery fails.
-		if ordered = remote.SelectBestCenter(ctx, probeClient, urls, currentURL); len(ordered) > 0 {
-			currentURL = ordered[0]
-		}
+		ordered = remote.SelectBestCenter(ctx, probeClient, urls, preferred)
 	}
 
-	// Persist the failover result (shared with GUI via config.json).
-	if len(ordered) > 0 {
-		cache.RememberSelectionThrottled(persister, currentURL, ordered)
+	// Runtime candidates may include seed failover; persistence must not inject defaults.
+	ordered = remote.AlignHubCenterCandidates(registered, urls, ordered)
+	if len(ordered) == 0 {
+		return preferred
 	}
-
+	currentURL, ordered = remote.ConstrainHubCenterPersistence(registered, ordered[0], ordered)
+	cache.RememberSelectionThrottled(persister, currentURL, ordered)
 	return currentURL
 }
 

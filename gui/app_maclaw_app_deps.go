@@ -889,7 +889,9 @@ func (a *App) enrichDependenciesWithHubSkillID(deps []maclawAppInstallPlanDepend
 	installed := a.installedMaclawAppSkillIndex()
 	for i := range deps {
 		dep := &deps[i]
-		match, found := installed[strings.ToLower(dep.ID)]
+		// Match by full candidate set (id / alias / canonical / install_ref target),
+		// not only dep.ID — otherwise late stamps miss HubSkillID after MarkUploaded.
+		match, found := maclawAppInstalledSkillMatch(installed, *dep)
 		if !found {
 			continue
 		}
@@ -1858,20 +1860,18 @@ func maclawAppNormalizeInstallRefKind(kind string) string {
 
 func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, installDoc map[string]any) {
 	// Collect resolved entries from all available locations.
-	var allResolved []interface{}
+	// Use anySlice so both []interface{} (JSON decode) and []map[string]any
+	// (in-memory stamp path before re-encode) are accepted.
+	var allResolved []any
 	// Source 1: package-level (local queue path).
-	if topLevel, ok := installDoc["resolved_dependencies"].([]interface{}); ok {
-		allResolved = append(allResolved, topLevel...)
-	}
+	allResolved = append(allResolved, anySlice(installDoc["resolved_dependencies"])...)
 	// Source 2: entry-level (Hub download path — each entry may carry its own).
 	for _, appRaw := range anySlice(installDoc["apps"]) {
 		entryMap := anyMap(appRaw)
 		if entryMap == nil {
 			continue
 		}
-		if entryResolved, ok := entryMap["resolved_dependencies"].([]interface{}); ok {
-			allResolved = append(allResolved, entryResolved...)
-		}
+		allResolved = append(allResolved, anySlice(entryMap["resolved_dependencies"])...)
 	}
 	if len(allResolved) == 0 {
 		return
@@ -1879,8 +1879,8 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 	// Build a lookup from resolved entries: id → scoped resolved metadata.
 	lookup := make(map[string][]maclawAppResolvedDependencyEntry, len(allResolved))
 	for _, item := range allResolved {
-		resMap, ok := item.(map[string]interface{})
-		if !ok {
+		resMap := anyMap(item)
+		if resMap == nil {
 			continue
 		}
 		id := stringFromMapSafe(resMap, "id")

@@ -24,6 +24,12 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "commercial", name: "商务报价", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "assembly", name: "文件组装", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
+  "bid_review": [
+    { id: "br_standards", name: "招标标准解析", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "br_bid_content", name: "标书内容解析", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "br_conformity", name: "符合性检查", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "br_fix_report", name: "修改建议报告", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
   "business_plan": [
     { id: "market_analysis", name: "市场分析", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "business_model", name: "商业模式", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },

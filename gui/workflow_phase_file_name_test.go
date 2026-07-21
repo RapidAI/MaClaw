@@ -152,6 +152,10 @@ func TestWorkflowPhaseFileName(t *testing.T) {
 		{"bid_response: bid_parsing", "bid_parsing", "01-bid-parsing.md"},
 		{"bid_response: document_assembly", "document_assembly", "05-document-assembly.md"},
 
+		// Known bid_review phases
+		{"bid_review: br_standards", "br_standards", "01-br-standards.md"},
+		{"bid_review: br_fix_report", "br_fix_report", "04-br-fix-report.md"},
+
 		// Known contract_review phases
 		{"contract_review: contract_parsing", "contract_parsing", "01-contract-parsing.md"},
 

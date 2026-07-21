@@ -24,6 +24,35 @@ func TestOnMaclawListRemoteCodingTasksEmptyApp(t *testing.T) {
 	}
 }
 
+func TestOnMaclawCreateRemoteCodingTaskRequiresCoordinates(t *testing.T) {
+	s := &acpHostSession{app: &App{}}
+	_, rpcErr := s.onMaclawCreateRemoteCodingTask([]byte(`{"name":"demo"}`))
+	if rpcErr == nil {
+		t.Fatal("expected required SSH fields error")
+	}
+	if !strings.Contains(rpcErr.Message, "ssh_host") {
+		t.Fatalf("unexpected error: %#v", rpcErr)
+	}
+}
+
+func TestOnMaclawCreateRemoteCodingTaskRejectsInvalidPort(t *testing.T) {
+	s := &acpHostSession{app: &App{}}
+	raw := []byte(`{"name":"demo","ssh_host":"example.com","ssh_user":"root","work_dir":"/srv/app","ssh_port":65536}`)
+	_, rpcErr := s.onMaclawCreateRemoteCodingTask(raw)
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "ssh_port") {
+		t.Fatalf("expected invalid port error, got %#v", rpcErr)
+	}
+}
+
+func TestOnMaclawCreateRemoteCodingTaskRejectsNegativePort(t *testing.T) {
+	s := &acpHostSession{app: &App{}}
+	raw := []byte(`{"name":"demo","ssh_host":"example.com","ssh_user":"root","work_dir":"/srv/app","ssh_port":-1}`)
+	_, rpcErr := s.onMaclawCreateRemoteCodingTask(raw)
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "ssh_port") {
+		t.Fatalf("expected invalid port error, got %#v", rpcErr)
+	}
+}
+
 func TestOnMaclawPrepareRemoteCodingRequiresPassword(t *testing.T) {
 	app := &App{}
 	s := &acpHostSession{app: app}
@@ -39,6 +68,15 @@ func TestOnMaclawPrepareRemoteCodingRequiresPassword(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(rpcErr.Message), "password") {
 		t.Fatalf("unexpected error: %#v", rpcErr)
+	}
+}
+
+func TestOnMaclawPrepareRemoteCodingRejectsNegativePort(t *testing.T) {
+	s := &acpHostSession{app: &App{}}
+	raw := []byte(`{"project_path":"task","ssh_port":-1}`)
+	_, rpcErr := s.onMaclawPrepareRemoteCoding(raw)
+	if rpcErr == nil || !strings.Contains(rpcErr.Message, "ssh_port") {
+		t.Fatalf("expected invalid port error, got %#v", rpcErr)
 	}
 }
 

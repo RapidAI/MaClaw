@@ -319,7 +319,7 @@ func orderHubCenterBasesPreferringHost(bases []string, scheme, host string) []st
 	}
 	preferred := hubCenterBaseForHost(bases, scheme, host)
 	if preferred == "" || remote.HasRecentFailures(preferred) {
-		return deprioritizeRecentlyFailedHubCenters(bases)
+		return remote.DeprioritizeRecentlyFailedHubCenters(bases)
 	}
 	out := make([]string, 0, len(bases))
 	out = append(out, preferred)
@@ -329,7 +329,7 @@ func orderHubCenterBasesPreferringHost(bases []string, scheme, host string) []st
 		}
 		out = append(out, base)
 	}
-	return deprioritizeRecentlyFailedHubCenters(out)
+	return remote.DeprioritizeRecentlyFailedHubCenters(out)
 }
 
 func hubCenterBaseForHost(bases []string, scheme, host string) string {

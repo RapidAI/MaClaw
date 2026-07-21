@@ -2522,6 +2522,17 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('去修复'));
 
         await waitFor(() => expect(screen.getByText('执行')).not.toBeNull());
+        expect(screen.getByRole('button', { name: '返回审核/发布' })).not.toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: /关闭.*运行证据修复应用/ }));
+        expect(screen.queryByRole('button', { name: '返回审核/发布' })).toBeNull();
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('去修复'));
+        await waitFor(() => expect(screen.getByRole('button', { name: '返回审核/发布' })).not.toBeNull());
+        fireEvent.click(screen.getByRole('button', { name: '返回审核/发布' }));
+        await waitFor(() => expect(getPublishTab().getAttribute('aria-selected')).toBe('true'));
+        expect(screen.getAllByText('运行证据修复应用').length).toBeGreaterThan(0);
     });
     it('prefers the run workspace over dependency resolution from 去修复 when both checks fail', async () => {
         // Both 依赖 Skill (missing verification) and 运行证据 (no run) fail.

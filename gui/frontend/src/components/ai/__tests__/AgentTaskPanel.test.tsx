@@ -767,6 +767,42 @@ describe("AgentTaskPanel", () => {
         expect(screen.getByText(/Receipt is required when Invoice No is provided/)).toBeTruthy();
     });
 
+    it("blocks require_any_of groups before submit (bid review style)", () => {
+        const onSubmit = vi.fn();
+        const view: AgentView = {
+            type: "form",
+            id: "require-any-of-test",
+            title: "Bid Review",
+            fields: [
+                { name: "tender_standard_path", label: "Tender File", type: "file", value: "" },
+                { name: "tender_standard_url", label: "Tender URL", type: "text", value: "" },
+                { name: "prepared_bid_path", label: "Bid File", type: "file", value: "" },
+                { name: "prepared_bid_text", label: "Bid Text", type: "textarea", value: "" },
+            ],
+            require_any_of: [
+                ["tender_standard_path", "tender_standard_url"],
+                ["prepared_bid_path", "prepared_bid_text"],
+            ],
+            submitLabel: "Save",
+        };
+
+        render(<AgentTaskPanel view={view} onSubmit={onSubmit} theme={lightTheme} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
+        expect(onSubmit).not.toHaveBeenCalled();
+        expect(screen.getByText(/Provide at least one of: Tender File \/ Tender URL/)).toBeTruthy();
+
+        // Fill only standards group — still blocked on prepared bid group.
+        fireEvent.change(screen.getByLabelText(/Tender URL/), { target: { value: "https://example.com/tender" } });
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
+        expect(onSubmit).not.toHaveBeenCalled();
+        expect(screen.getByText(/Provide at least one of: Bid File \/ Bid Text/)).toBeTruthy();
+
+        fireEvent.change(screen.getByLabelText(/Bid Text/), { target: { value: "bid body" } });
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
+        expect(onSubmit).toHaveBeenCalled();
+    });
+
     it("renders selected variant fields and submits the active variant data", () => {
         const onSubmit = vi.fn();
         const view: AgentView = {

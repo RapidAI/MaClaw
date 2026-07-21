@@ -25,6 +25,12 @@ const providerSelect = document.getElementById("provider-select") as HTMLSelectE
 const providerHint = document.getElementById("provider-hint") as HTMLDivElement;
 const remoteSelect = document.getElementById("remote-select") as HTMLSelectElement;
 const remoteHint = document.getElementById("remote-hint") as HTMLDivElement;
+const remoteTaskName = document.getElementById("remote-task-name") as HTMLInputElement;
+const remoteHost = document.getElementById("remote-host") as HTMLInputElement;
+const remoteUser = document.getElementById("remote-user") as HTMLInputElement;
+const remotePort = document.getElementById("remote-port") as HTMLInputElement;
+const remoteWorkDir = document.getElementById("remote-workdir") as HTMLInputElement;
+const createRemoteBtn = document.getElementById("btn-create-remote") as HTMLButtonElement;
 const attachBtn = document.getElementById("btn-attach-remote") as HTMLButtonElement;
 const detachBtn = document.getElementById("btn-detach-remote") as HTMLButtonElement;
 const openTaskBtn = document.getElementById("btn-open-task") as HTMLButtonElement | null;
@@ -46,7 +52,21 @@ for (const btn of document.querySelectorAll<HTMLElement>("[data-action]")) {
     ev.preventDefault();
     const action = (btn as HTMLElement).dataset.action;
     if (action) {
-      vscode.postMessage({ type: "action", action });
+      if (action === "createRemoteTask") {
+        vscode.postMessage({
+          type: "action",
+          action,
+          remoteTask: {
+            name: remoteTaskName.value,
+            host: remoteHost.value,
+            user: remoteUser.value,
+            port: Number(remotePort.value || "22"),
+            workDir: remoteWorkDir.value,
+          },
+        });
+      } else {
+        vscode.postMessage({ type: "action", action });
+      }
     }
   });
 }
@@ -75,6 +95,8 @@ let lastProvidersState: {
 } = { ok: true, providers: [], current: "" };
 
 let lastRemoteRender = "";
+let creatingRemoteTask = false;
+let attachingRemoteTask = false;
 
 function rerenderProviders(): void {
   renderProviders(lastProvidersState.ok, lastProvidersState.providers, lastProvidersState.current);
@@ -150,7 +172,7 @@ function renderRemoteTasks(
   mode: string,
   remoteLabel: string
 ): void {
-  const key = JSON.stringify([tasks, selected, mode, remoteLabel]);
+  const key = JSON.stringify([tasks, selected, mode, remoteLabel, attachingRemoteTask]);
   if (key === lastRemoteRender) {
     return;
   }
@@ -178,7 +200,7 @@ function renderRemoteTasks(
     } else {
       remoteSelect.value = tasks[0].project_path;
     }
-    attachBtn.disabled = false;
+    attachBtn.disabled = attachingRemoteTask;
     const cur = tasks.find((t) => t.project_path === remoteSelect.value);
     if (cur?.message) {
       remoteHint.textContent = cur.message;
@@ -222,6 +244,19 @@ function renderRemoteTasks(
   }
 }
 
+function renderRemoteTaskAttach(active: boolean): void {
+  attachingRemoteTask = active;
+  attachBtn.disabled = active || remoteSelect.disabled;
+  attachBtn.textContent = active ? "正在附着…" : "附着远程";
+  remoteSelect.disabled = active || remoteSelect.options.length === 0 || remoteSelect.value === "";
+}
+
+function renderRemoteTaskCreation(active: boolean): void {
+  creatingRemoteTask = active;
+  createRemoteBtn.disabled = active;
+  createRemoteBtn.textContent = active ? "正在创建…" : "创建并附着";
+}
+
 window.addEventListener("message", (event) => {
   const msg = event.data as {
     type: string;
@@ -245,6 +280,8 @@ window.addEventListener("message", (event) => {
     selected?: string;
     mode?: string;
     remoteLabel?: string;
+    active?: boolean;
+    attaching?: boolean;
   };
 
   if (msg.type === "status" && msg.snap) {
@@ -304,12 +341,23 @@ window.addEventListener("message", (event) => {
   }
 
   if (msg.type === "remoteTasks") {
+    attachingRemoteTask = msg.attaching === true;
     renderRemoteTasks(
       msg.tasks ?? [],
       String(msg.selected ?? ""),
       String(msg.mode ?? "local"),
       String(msg.remoteLabel ?? "")
     );
+    return;
+  }
+
+  if (msg.type === "remoteTaskCreation") {
+    renderRemoteTaskCreation(msg.active === true);
+    return;
+  }
+
+  if (msg.type === "remoteTaskAttach") {
+    renderRemoteTaskAttach(msg.active === true);
   }
 });
 

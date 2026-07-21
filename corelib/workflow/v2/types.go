@@ -44,6 +44,7 @@ const (
 	WorkflowCompetitiveAnalysis     WorkflowType = "competitive_analysis"
 	WorkflowPresentationDesign      WorkflowType = "presentation_design"
 	WorkflowBidResponse             WorkflowType = "bid_response"
+	WorkflowBidReview               WorkflowType = "bid_review"
 	WorkflowContractReview          WorkflowType = "contract_review"
 	WorkflowDueDiligence            WorkflowType = "due_diligence"
 	WorkflowComplianceAudit         WorkflowType = "compliance_audit"
@@ -713,6 +714,7 @@ type PhaseInputSchemaSpec struct {
 	DescriptionI18N      map[string]string           `json:"description_i18n,omitempty"`
 	Fields               []PhaseInputFieldSpec       `json:"fields"`
 	Variants             []PhaseInputVariantSpec     `json:"variants,omitempty"`
+	RequireAnyOf         [][]string                  `json:"require_any_of,omitempty"`
 	AcceptsResume        bool                        `json:"accepts_resume,omitempty"`
 	AcceptsSupplementary *SupplementaryDocConfigSpec `json:"accepts_supplementary,omitempty"`
 }
@@ -743,6 +745,12 @@ func (s *PhaseInputSchemaSpec) Clone() *PhaseInputSchemaSpec {
 			cp.Variants[i].Fields[j].DescriptionI18N = cloneStringMap(s.Variants[i].Fields[j].DescriptionI18N)
 			cp.Variants[i].Fields[j].PlaceholderI18N = cloneStringMap(s.Variants[i].Fields[j].PlaceholderI18N)
 			cp.Variants[i].Fields[j].Options = append([]PhaseInputOptionSpec(nil), s.Variants[i].Fields[j].Options...)
+		}
+	}
+	if len(s.RequireAnyOf) > 0 {
+		cp.RequireAnyOf = make([][]string, len(s.RequireAnyOf))
+		for i := range s.RequireAnyOf {
+			cp.RequireAnyOf[i] = append([]string(nil), s.RequireAnyOf[i]...)
 		}
 	}
 	if s.AcceptsSupplementary != nil {

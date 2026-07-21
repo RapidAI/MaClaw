@@ -431,6 +431,12 @@ func phaseInputSchemaToSpec(schema *PhaseInputSchema) *PhaseInputSchemaSpec {
 		Variants:      make([]PhaseInputVariantSpec, 0, len(schema.Variants)),
 		AcceptsResume: schema.AcceptsResume,
 	}
+	if len(schema.RequireAnyOf) > 0 {
+		spec.RequireAnyOf = make([][]string, len(schema.RequireAnyOf))
+		for i := range schema.RequireAnyOf {
+			spec.RequireAnyOf[i] = append([]string(nil), schema.RequireAnyOf[i]...)
+		}
+	}
 	for _, field := range schema.Fields {
 		spec.Fields = append(spec.Fields, phaseInputFieldToSpec(field))
 	}
@@ -1244,6 +1250,12 @@ func phaseInputSchemaFromSpec(spec *PhaseInputSchemaSpec) *PhaseInputSchema {
 		Fields:        make([]PhaseInputField, 0, len(spec.Fields)),
 		Variants:      make([]PhaseInputVariant, 0, len(spec.Variants)),
 		AcceptsResume: spec.AcceptsResume,
+	}
+	if len(spec.RequireAnyOf) > 0 {
+		schema.RequireAnyOf = make([][]string, len(spec.RequireAnyOf))
+		for i := range spec.RequireAnyOf {
+			schema.RequireAnyOf[i] = append([]string(nil), spec.RequireAnyOf[i]...)
+		}
 	}
 	for _, field := range spec.Fields {
 		schema.Fields = append(schema.Fields, phaseInputFieldFromSpec(field))

@@ -157,15 +157,15 @@ func sourceAppIDFromPack(pkg map[string]any) string {
 	if pkg == nil {
 		return "app"
 	}
-	apps, _ := pkg["apps"].([]any)
+	apps := anySlice(pkg["apps"])
 	if len(apps) == 0 {
 		return "app"
 	}
-	entry, _ := apps[0].(map[string]any)
+	entry := anyMap(apps[0])
 	if entry == nil {
 		return "app"
 	}
-	app, _ := entry["app"].(map[string]any)
+	app := anyMap(entry["app"])
 	if id := strings.TrimSpace(stringFromAnyMap(app, "id")); id != "" {
 		return id
 	}

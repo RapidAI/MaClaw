@@ -311,9 +311,9 @@ func TestCachedSkillScannerUpsertReplacesSameNameDifferentDir(t *testing.T) {
 		createdAt: time.Now(),
 	})
 	scanner.UpsertSkills([]corelib.NLSkillEntry{{
-		Name:     "demo", // case-insensitive same name
-		Status:   "active",
-		SkillDir: newDir,
+		Name:        "demo", // case-insensitive same name
+		Status:      "active",
+		SkillDir:    newDir,
 		Description: "replacement",
 	}})
 	got := scanner.Get()
@@ -495,5 +495,51 @@ func TestCloneSkillEntriesDeepCopiesMutableFields(t *testing.T) {
 	}
 	if original[0].SolidificationCandidates[0].ParamSlots[0] != "input" || original[0].Pipeline[0].Params["input"] != "{{input}}" {
 		t.Fatal("pipeline or solidification fields were not deep-copied")
+	}
+}
+func TestMarkUploadedFileSkillEagerHubSkillIDFromPackageSubmission(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "paper_pdf_translator")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yamlBody := "name: paper_pdf_translator\ndescription: test\nstatus: active\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(yamlBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	app.cachedSkillScanner = &CachedSkillScanner{}
+	app.cachedSkillScanner.UpsertSkills([]corelib.NLSkillEntry{{
+		Name:     "paper_pdf_translator",
+		Status:   "active",
+		Source:   "file",
+		SkillDir: skillDir,
+	}})
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	const submission = "sub-1783856848170-cbee8cd2135b3c8e;enterprise_hub=enterprise_hub:skill:paper_pdf_translator@6c2a9af36010"
+	if err := app.skillExecutor.MarkUploaded("paper_pdf_translator", submission); err != nil {
+		t.Fatalf("MarkUploaded: %v", err)
+	}
+	statusPath := filepath.Join(skillDir, "upload_status.json")
+	if _, err := os.Stat(statusPath); err != nil {
+		t.Fatalf("upload_status.json missing: %v", err)
+	}
+	// Eager cache patch so ListNLSkills / publish gate sees HubSkillID immediately.
+	found := false
+	for _, s := range app.ListNLSkills() {
+		if s.Name == "paper_pdf_translator" {
+			found = true
+			if s.HubSkillID != "paper_pdf_translator" {
+				t.Fatalf("HubSkillID = %q, want package id paper_pdf_translator", s.HubSkillID)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("skill missing from ListNLSkills after MarkUploaded")
 	}
 }

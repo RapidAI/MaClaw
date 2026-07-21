@@ -20,6 +20,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
@@ -1455,11 +1456,11 @@ func TestCountCodingWorkbenchStepOutcomes(t *testing.T) {
 
 func TestFormatRemoteCodingPlanStatusText(t *testing.T) {
 	cases := []struct {
-		name                         string
-		planned                      bool
-		status                       string
-		total, passed, failed, skip  int
-		wantContains                 string
+		name                        string
+		planned                     bool
+		status                      string
+		total, passed, failed, skip int
+		wantContains                string
 	}{
 		{"full success", true, "success", 6, 6, 0, 0, "远程编程完成（已按 6 步计划执行）"},
 		{"partial success no fail", true, "success", 6, 2, 0, 0, "部分完成"},
@@ -1582,6 +1583,62 @@ func TestMaybeRelaxScaffoldVerificationOnlyMissing(t *testing.T) {
 	if st != codingSubAgentQualityMissing || sum != "no verify" {
 		t.Fatalf("implement step must not relax, got %v %q", st, sum)
 	}
+	planTask := `[Plan step T3/5] 实现核心代码
+
+Plan outline (titles only):
+- T3: 实现核心代码
+- T4: 编译项目并运行测试
+`
+	st, sum = maybeRelaxDeferredPlanStepVerification("实现核心代码", "完成系统信息收集", planTask, codingSubAgentQualityMissing, "no verify")
+	if st != codingSubAgentQualityNotNeeded || !strings.Contains(sum, "explicitly deferred") {
+		t.Fatalf("implementation step with later compile should relax, got %v %q", st, sum)
+	}
+	st, sum = maybeRelaxDeferredPlanStepVerification("实现核心代码", "完成系统信息收集", "[Plan step T3/5] 实现核心代码", codingSubAgentQualityMissing, "no verify")
+	if st != codingSubAgentQualityMissing || sum != "no verify" {
+		t.Fatalf("implementation step without later compile must keep gate, got %v %q", st, sum)
+	}
+	st, sum = maybeRelaxDeferredPlanStepVerification("实现核心代码", "完成系统信息收集", planTask, codingSubAgentQualityFailed, "build failed")
+	if st != codingSubAgentQualityFailed || sum != "build failed" {
+		t.Fatalf("failed verification must not relax for deferred implementation, got %v %q", st, sum)
+	}
+	// Keep this aligned with the actual remote T3 prompt: it includes both a
+	// current-marker suffix and a later T4 compile title in the continuity
+	// outline. The parser must not be confused by the surrounding instruction
+	// prose or earlier T1/T2 outline lines.
+	realisticTask := `[Plan step T3/5] 实现系统信息收集核心代码
+
+编写 C++ 源文件实现系统信息收集。
+
+You are executing plan step T3/5: 实现系统信息收集核心代码
+Focus on this step only; do not skip ahead.
+Do not implement, create files for, verify, or report on work that belongs to later plan steps.
+
+[Session continuity]
+Plan outline (titles only; later steps are separate remote tasks — do not execute them now):
+- T1: 环境检查与目录探索
+- T2: 初始化项目结构
+- T3: 实现系统信息收集核心代码  ← current (do only this)
+- T4: 编译项目
+- T5: 验证与输出结果
+`
+	st, sum = maybeRelaxDeferredPlanStepVerification("实现系统信息收集核心代码", "编写 C++ 源文件实现系统信息收集", realisticTask, codingSubAgentQualityMissing, "no verify")
+	if st != codingSubAgentQualityNotNeeded || !strings.Contains(sum, "explicitly deferred") {
+		t.Fatalf("real remote T3 prompt should defer to T4 compilation, got %v %q", st, sum)
+	}
+
+	// A later "验证" only is not enough to defer compilation. Otherwise a plan
+	// could accidentally skip every executable check merely because it ends with
+	// an acceptance/reporting step.
+	verifyOnlyTask := `[Plan step T3/5] 实现核心代码
+
+Plan outline (titles only):
+- T3: 实现核心代码
+- T4: 验证并输出结果
+`
+	st, sum = maybeRelaxDeferredPlanStepVerification("实现核心代码", "完成系统信息收集", verifyOnlyTask, codingSubAgentQualityMissing, "no verify")
+	if st != codingSubAgentQualityMissing || sum != "no verify" {
+		t.Fatalf("later acceptance-only step must not defer implementation verification, got %v %q", st, sum)
+	}
 }
 
 func TestResolveCodingPlanStepFocusPrefersPlanHeader(t *testing.T) {
@@ -1648,7 +1705,28 @@ Plan outline (titles only; later steps are separate remote tasks — do not exec
 		t.Fatalf("expected scaffold verification NOT_NEEDED, got summary:\n%s", result.Summary)
 	}
 
-	// Implement plan step still requires build/test verification.
+	// T2 must also survive a missing optional tree display command. The failed
+	// `&&` chain did not reach CMake/g++, so the scaffold relaxation (not a
+	// false build pass) is the expected outcome.
+	cb = &remoteCodingCallbacks{task: taskText}
+	cb.trackRemoteFileChanged("/home/sysinfo15/CMakeLists.txt", true)
+	cb.trackRemoteFileChanged("/home/sysinfo15/src/main.cpp", true)
+	cb.trackRemoteFileRead("/home/sysinfo15/CMakeLists.txt")
+	cb.trackRemoteFileRead("/home/sysinfo15/src/main.cpp")
+	cb.trackRemoteCommand(
+		`tree /home/sysinfo15 && cd /home/sysinfo15 && cmake -S . -B build_test_parse --dry-run && g++ -fsyntax-only src/main.cpp`,
+		"/home/sysinfo15", "sh: 1: tree: not found\nEXIT: 127", false,
+	)
+	cb.trackRemoteCommand("git status --short", "/home/sysinfo15", "fatal: not a git repository\nEXIT: 128", false)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status: "success", Summary: "T2 scaffold complete", ToolCalls: 6,
+	})
+	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "NOT_NEEDED") {
+		t.Fatalf("T2 missing optional tree should use scaffold relaxation and pass, got %#v", result)
+	}
+
+	// An implementation step without a later dedicated verifier still requires
+	// build/test verification.
 	implTask := `[Plan step T3/6] 实现系统信息查看程序
 
 编写 C++ 代码实现读取 /proc 并打印主机名、CPU、内存。
@@ -1670,6 +1748,29 @@ Focus on this step only; do not skip ahead.
 	}
 	if !strings.Contains(result.Error, "verification") && !strings.Contains(result.Error, "test/build") && !strings.Contains(result.Summary, "MISSING") {
 		t.Fatalf("implement step should fail on verification gate, got %#v", result)
+	}
+
+	// T3 may defer executable verification only when the plan explicitly gives
+	// T4 that responsibility.  The post-edit read and diff/non-git audit remain
+	// mandatory evidence for this implementation step.
+	deferredImplTask := `[Plan step T3/5] 实现系统信息收集核心代码
+
+编写 C++ 代码实现读取 /proc 并打印主机名、CPU、内存。
+
+Plan outline (titles only; later steps are separate remote tasks):
+- T3: 实现系统信息收集核心代码  ← current
+- T4: 编译项目并运行测试
+`
+	cb = &remoteCodingCallbacks{task: deferredImplTask}
+	cb.trackRemoteFileRead("/home/sysinfo16/src/sysinfo.cpp")
+	cb.trackRemoteFileChanged("/home/sysinfo16/src/sysinfo.cpp", false)
+	cb.trackRemoteFileRead("/home/sysinfo16/src/sysinfo.cpp")
+	cb.trackRemoteCommand("git status --short", "/home/sysinfo16", "fatal: not a git repository", false)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status: "success", Summary: "implemented core collection", ToolCalls: 4,
+	})
+	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "explicitly deferred") {
+		t.Fatalf("implementation with later compile step should defer verification, got %#v", result)
 	}
 
 	// Scaffold without post-edit re-read still fails confirmation.
@@ -1813,6 +1914,25 @@ func TestRemoteCodingSubAgentKeepsVerifiedExistingArtifactSuccessful(t *testing.
 	}
 }
 
+func TestRemoteCodingRootUsesConfiguredIterationBudget(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{loopCtx: NewLoopContext("remote-budget", 120, nil)},
+	}
+	if got := cb.GetMaxIterations(); got != 120 {
+		t.Fatalf("root remote coding iteration budget = %d, want configured 120", got)
+	}
+
+	cb.agent.nestDepth = 1
+	cb.agent.role = codingRoleExplorer
+	if got := cb.GetMaxIterations(); got == 120 {
+		t.Fatalf("nested explorer must retain its role-specific budget, got %d", got)
+	}
+
+	if got := (&remoteCodingCallbacks{}).GetMaxIterations(); got != config.MaxAgentIterationsCap {
+		t.Fatalf("nil/default remote coding budget = %d, want global default %d", got, config.MaxAgentIterationsCap)
+	}
+}
+
 func TestRemoteCodingSubAgentKeepsConclusiveEditedTaskSuccessfulAfterIterationLimit(t *testing.T) {
 	cb := &remoteCodingCallbacks{}
 	cb.trackRemoteFileChanged("/repo/hello.cpp", true)
@@ -1844,6 +1964,27 @@ func TestRemoteCodingSubAgentKeepsConclusiveEditedTaskSuccessfulAfterIterationLi
 	})
 	if result.Status != "failed" {
 		t.Fatalf("non-iteration terminal failures must remain failures, got %#v", result)
+	}
+
+	// A T3 implementation whose executable verification is explicitly deferred
+	// to T4 still has conclusive evidence for its own plan step. This avoids a
+	// late iteration-limit error undoing an otherwise accepted deferred result.
+	deferredTask := `[Plan step T3/5] 实现核心代码
+
+Plan outline (titles only):
+- T3: 实现核心代码  ← current
+- T4: 编译项目并运行测试
+`
+	cb = &remoteCodingCallbacks{task: deferredTask}
+	cb.trackRemoteFileRead("/repo/sysinfo.cpp")
+	cb.trackRemoteFileChanged("/repo/sysinfo.cpp", false)
+	cb.trackRemoteFileRead("/repo/sysinfo.cpp")
+	cb.trackRemoteCommand("git status --short", "/repo", "fatal: not a git repository", false)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status: "failed", Error: "max iterations reached", Summary: "implemented core code", ToolCalls: 4,
+	})
+	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "explicitly deferred") {
+		t.Fatalf("deferred T3 should recover from iteration limit, got %#v", result)
 	}
 }
 
@@ -2230,6 +2371,40 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 	if status != codingSubAgentQualityPassed {
 		t.Fatalf("dirty git status should not be treated as clean, got (%q, %q)", status, summary)
 	}
+
+	// A bare work-tree probe must not satisfy the content self-check gate.
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git rev-parse --is-inside-work-tree", Succeeded: true, Summary: "true\nEXIT: 0", seq: 2},
+	}, 1)
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("rev-parse-only success should stay MISSING, got (%q, %q)", status, summary)
+	}
+	// Probe success + dirty status still passes and only counts content cmds.
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git rev-parse --is-inside-work-tree", Succeeded: true, Summary: "true\nEXIT: 0", seq: 2},
+		{Command: "git status --short", Succeeded: true, Summary: " M main.py\nEXIT: 0", seq: 3},
+	}, 1)
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "已运行 1 条") {
+		t.Fatalf("rev-parse + dirty status should pass with one content check, got (%q, %q)", status, summary)
+	}
+
+	// Earlier hard git failure must not poison a later successful content check.
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git status --short", Succeeded: false, Summary: "fatal: bad revision 'HEAD'\nEXIT: 128", seq: 2},
+		{Command: "git status --short", Succeeded: true, Summary: " M main.py\nEXIT: 0", seq: 3},
+	}, 1)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("later dirty status should recover from earlier hard git failure, got (%q, %q)", status, summary)
+	}
+
+	// Hard failure after a content success still fails (not recovered).
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git status --short", Succeeded: true, Summary: " M main.py\nEXIT: 0", seq: 2},
+		{Command: "git diff --stat", Succeeded: false, Summary: "fatal: unable to read tree\nEXIT: 128", seq: 3},
+	}, 1)
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "unable to read tree") {
+		t.Fatalf("hard failure after content success should fail gate, got (%q, %q)", status, summary)
+	}
 }
 
 func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
@@ -2239,6 +2414,7 @@ func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
 		"git status --short",
 		"git status --short; git diff --stat",
 		"bash -lc \"git diff -- src/main.py\"",
+		"git rev-parse --is-inside-work-tree",
 	}
 	for _, command := range positives {
 		if !isRemoteDiffSelfCheckCommand(command) {
@@ -2248,6 +2424,7 @@ func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
 	negatives := []string{
 		"git grep target",
 		"git log --oneline",
+		"git rev-parse HEAD",
 		"pytest tests",
 		"rg target src",
 	}
@@ -2255,6 +2432,59 @@ func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
 		if isRemoteDiffSelfCheckCommand(command) {
 			t.Fatalf("isRemoteDiffSelfCheckCommand(%q) = true, want false", command)
 		}
+	}
+}
+
+func TestRejectSilencedGitSelfCheckCommand(t *testing.T) {
+	if msg := rejectSilencedGitSelfCheckCommand("git status --short 2>/dev/null"); msg == "" {
+		t.Fatal("silenced git status self-check should be rejected")
+	}
+	if msg := rejectSilencedGitSelfCheckCommand("git diff --stat >/dev/null 2>&1"); msg == "" {
+		t.Fatal("fully redirected git diff self-check should be rejected")
+	}
+	if msg := rejectSilencedGitSelfCheckCommand("git status --short; git diff --stat"); msg != "" {
+		t.Fatalf("unsilenced git self-check must remain allowed, got %q", msg)
+	}
+	if msg := rejectSilencedGitSelfCheckCommand("git grep pattern 2>/dev/null"); msg != "" {
+		t.Fatalf("silenced git grep is not a diff self-check and should remain allowed, got %q", msg)
+	}
+	// Remote hard-block path tracks and returns without approval bypass.
+	cb := &remoteCodingCallbacks{}
+	out := cb.sshBash(map[string]interface{}{
+		"command":     "git status --short 2>/dev/null",
+		"working_dir": "/repo",
+	})
+	if !strings.Contains(out, "拒绝执行被重定向静默") {
+		t.Fatalf("remote ssh_bash should hard-block silenced git self-check, got %q", out)
+	}
+	if len(cb.commandsRun) != 1 || cb.commandsRun[0].Succeeded {
+		t.Fatalf("rejection should be tracked as a failed command audit entry, got %#v", cb.commandsRun)
+	}
+	if !subAgentCommandIsSoftSilencedGitSelfCheckRejection(cb.commandsRun[0]) {
+		t.Fatal("silenced-git policy rejection must be a soft failure so retries are not poisoned")
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(cb.commandsRun); len(unresolved) != 0 {
+		t.Fatalf("soft policy rejection must not stay unresolved, got %#v", unresolved)
+	}
+
+	// Rejection alone does not satisfy the remote diff gate (and must not be
+	// misread as "non-git repository" evidence).
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cb.commandsRun[0]) {
+		t.Fatal("policy rejection must not classify as soft non-git evidence")
+	}
+	status, summary := summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, cb.commandsRun, 0)
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("rejection-only audit should stay MISSING, got (%q, %q)", status, summary)
+	}
+	if strings.Contains(summary, "不是 Git 仓库") {
+		t.Fatalf("rejection-only audit must not claim non-git skip, got %q", summary)
+	}
+
+	// After a correct unsilenced retry, the gate should pass (dirty status).
+	cb.trackRemoteCommand("git status --short", "/repo", " M main.py\nEXIT: 0", true)
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, cb.commandsRun, 0)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("unsilenced retry after rejection should pass remote diff gate, got (%q, %q)", status, summary)
 	}
 }
 
@@ -2271,6 +2501,9 @@ func TestRemoteDiffSelfCheckCommandAllowedByWindowsShellGuard(t *testing.T) {
 	}
 	if msg := rejectDisallowedCodingBashCommand("git reset --hard HEAD"); msg == "" {
 		t.Fatal("destructive git command should remain rejected")
+	}
+	if msg := rejectSilencedGitSelfCheckCommand("git status --short 2>/dev/null"); msg == "" {
+		t.Fatal("silenced git self-check should be rejected on all platforms")
 	}
 }
 
@@ -2302,6 +2535,230 @@ func TestSubAgentCommandSummarySoftensNonGitDiffSelfCheckFailure(t *testing.T) {
 	})
 	if !strings.Contains(commandSummary, "SKIP: `git diff --stat`") || strings.Contains(commandSummary, "FAIL: `git diff --stat`") {
 		t.Fatalf("non-git diff self-check should be shown as skipped, got %q", commandSummary)
+	}
+}
+
+// Reproduces the remote sysinfo T4 false failure: agent ran a compound git
+// self-check with stderr redirected, so only "---" separators + EXIT: 128 remain.
+// That must soft-skip and not hard-fail an otherwise successful compile/run step.
+func TestSubAgentSoftensSilencedNonGitDiffSelfCheckExit128(t *testing.T) {
+	silencedCmd := `cd /home/sysinfo7 && git diff --stat 2>/dev/null; echo "---"; git status --short 2>/dev/null; echo "---"; git log --oneline -5 2>/dev/null`
+	silencedSummary := "---\n---\n\nEXIT: 128"
+	// Realistic PTY dump shape from production remote coding (SSH chrome +
+	// remoteBashCommandWithExitMarker + base64 transport + separators).
+	realisticSummary := strings.Join([]string{
+		"[ssh_root@www.driverdevelop.com:22_1] 状态: running",
+		"$ cd '/home/sysinfo7'",
+		"__maclaw_cd_status=$?",
+		"if [ $__maclaw_cd_status -ne 0 ]; then",
+		"  printf '\\nEXIT: %s\\n' \"$__maclaw_cd_status\"",
+		"else",
+		"  sh -lc 'cd /home/sysinfo7 && git diff --stat 2>/dev/null; echo \"---\"; git status --short 2>/dev/null'",
+		"  __maclaw_cmd_status=$?",
+		"  printf '\\nEXIT: %s\\n' \"$__maclaw_cmd_status\"",
+		"fi",
+		"eval \"$(echo 'Y2QgJy9ob21lL3N5c2luZm83JwpfX21hY2xhd19jZF9zdGF0dXM9JD8KaWY",
+		"YgWyAkX19tYWNsYXdfY2Rfc3RhdHVzIC1uZSAwIF07IHRoZW4KICBwcmludGYgJ1xuRVhJVDogJXNc",
+		"bicgIiRfX21hY2xhd19jZF9zdGF0dXMiCmVsc2UKICBzaCAtbGMgJ2NkIC9ob21lL3N5c2luZm83",
+		"' | base64 -d)\"",
+		"---",
+		"---",
+		"",
+		"EXIT: 128",
+		"(base) root@VM-0-4-ubuntu:/home/sysinfo7# ",
+	}, "\n")
+
+	for _, summary := range []string{silencedSummary, realisticSummary} {
+		if !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+			Command:   silencedCmd,
+			Succeeded: false,
+			Summary:   summary,
+		}) {
+			t.Fatalf("silenced EXIT:128 git self-check should be soft non-git failure; summary=%q", summary)
+		}
+	}
+
+	// Truncated audit summary lost the trailing EXIT line but still has only
+	// wrapper noise + separators; stderr was silenced so treat as soft.
+	truncatedNoExit := strings.Join([]string{
+		"[ssh_root@host:22_1] 状态: running",
+		"$ cd '/home/sysinfo7'",
+		"eval \"$(echo 'Y2QgJy9ob21lL3N5c2luZm83JwpfX21hY2xhd19jZF9zdGF0dXM9JD8KaWY",
+		"YgWyAkX19tYWNsYXdfY2Rfc3RhdHVzIC1uZSAwIF07IHRoZW4KICBwcmludGYgJ1xuRVhJVDogJXNc",
+		"' | base64 -d)\"",
+		"---",
+		"---",
+	}, "\n")
+	if !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   silencedCmd,
+		Succeeded: false,
+		Summary:   truncatedNoExit,
+	}) {
+		t.Fatal("stderr-silenced git self-check with truncated empty body should soft-skip")
+	}
+
+	failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: "cmake ..", Succeeded: true, Summary: "Build files written\nEXIT: 0"},
+		{Command: "make", Succeeded: true, Summary: "[100%] Built target sysinfo\nEXIT: 0"},
+		{Command: "/home/sysinfo7/build/sysinfo", Succeeded: true, Summary: "系统信息报告\nEXIT: 0"},
+		{Command: silencedCmd, Succeeded: false, Summary: realisticSummary},
+	})
+	if len(failed) != 0 {
+		t.Fatalf("silenced non-git self-check must not remain unresolved, got %#v", failed)
+	}
+
+	status, summary := summarizeSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: silencedCmd, Succeeded: false, Summary: realisticSummary},
+	})
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "skipped diff self-check") {
+		t.Fatalf("silenced EXIT:128 should summarize as skipped diff self-check, got (%q, %q)", status, summary)
+	}
+
+	// Real git fatals with body text must stay hard.
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   "git status --short",
+		Succeeded: false,
+		Summary:   "fatal: bad revision 'HEAD'\nEXIT: 128",
+	}) {
+		t.Fatal("bad revision should not be treated as soft non-git")
+	}
+
+	// Non-128 failures with empty body are not non-git soft skips.
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   "git status --short",
+		Succeeded: false,
+		Summary:   "EXIT: 1",
+	}) {
+		t.Fatal("EXIT:1 empty git status should not soft-skip as non-git")
+	}
+
+	// Without stderr silencing, empty body + no EXIT is not enough to soft-skip.
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   "git status --short",
+		Succeeded: false,
+		Summary:   "[ssh_root@host:22_1] 状态: running\n$ git status --short\n",
+	}) {
+		t.Fatal("empty git status without exit marker or stderr silence should not soft-skip")
+	}
+
+	// Mixed pipeline must not soft-skip via silence fallback when EXIT is lost.
+	mixedCmd := `git status --short 2>/dev/null; make`
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   mixedCmd,
+		Succeeded: false,
+		Summary:   "[ssh_root@host:22_1] 状态: running\n$ git status --short 2>/dev/null; make\n---\n",
+	}) {
+		t.Fatal("mixed git+make command without EXIT must not soft-skip")
+	}
+	// Mixed + EXIT:128 + empty is soft only when stderr was silenced (text discarded).
+	if !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   mixedCmd,
+		Succeeded: false,
+		Summary:   "---\nEXIT: 128",
+	}) {
+		t.Fatal("silenced mixed command with EXIT:128 empty body should soft-skip")
+	}
+	mixedNoSilence := `git status --short; make`
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   mixedNoSilence,
+		Succeeded: false,
+		Summary:   "---\nEXIT: 128",
+	}) {
+		t.Fatal("mixed non-silenced command with EXIT:128 empty body must stay hard")
+	}
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   mixedCmd,
+		Succeeded: false,
+		Summary:   "error: target failed\nEXIT: 2",
+	}) {
+		t.Fatal("make-style failure body must stay hard")
+	}
+
+	// ACP-style exit marker must parse and soft-skip pure git probes.
+	if !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   "git status --short",
+		Succeeded: false,
+		Summary:   "---EXIT_CODE:128",
+	}) {
+		t.Fatal("---EXIT_CODE:128 empty pure git self-check should soft-skip")
+	}
+	code, ok := remoteCodingParseExitMarker("noise\n---EXIT_CODE:128\n")
+	if !ok || code != 128 {
+		t.Fatalf("remoteCodingParseExitMarker should parse ---EXIT_CODE:128, got (%d, %v)", code, ok)
+	}
+
+	// Full stdout+stderr discard form.
+	if !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(CodingSubAgentCommandResult{
+		Command:   "git status --short >/dev/null 2>&1",
+		Succeeded: false,
+		Summary:   "EXIT: 128",
+	}) {
+		t.Fatal(">/dev/null 2>&1 pure git self-check should soft-skip on EXIT:128")
+	}
+
+	// printf format scaffolding must not be treated as an EXIT marker line.
+	if subAgentIsExitMarkerLine(`printf '\nEXIT: %s\n' "$__maclaw_cmd_status"`) {
+		t.Fatal("printf EXIT format string must not count as exit marker")
+	}
+
+	// Local failures keep their own diagnostic; PTY noise heuristics must not apply.
+	localDiag := commandResultDiagnosticLine("printf: not found\nEXIT: 127")
+	if localDiag != "printf: not found" && !strings.Contains(localDiag, "printf") {
+		t.Fatalf("local diagnostic should not be rewritten by remote PTY heuristics, got %q", localDiag)
+	}
+
+	// A lone 40-char git object id is meaningful body, not base64 transport noise.
+	if subAgentDiffSelfCheckMeaningfulBodyEmpty("abcdef0123456789abcdef0123456789abcdef01\nEXIT: 128") {
+		t.Fatal("40-char object id must not be treated as empty body noise")
+	}
+
+	// compactCommandResult must keep EXIT markers from long PTY dumps.
+	longPrelude := strings.Repeat("noise-line-from-remote-pty-wrapper\n", 80)
+	longResult := longPrelude + "---\nEXIT: 128\nroot@host:/tmp# "
+	compacted := compactCommandResult(longResult)
+	if code, ok := remoteCodingParseExitMarker(compacted); !ok || code != 128 {
+		t.Fatalf("compactCommandResult should retain EXIT:128, got %q", compacted)
+	}
+
+	// Failure banners should prefer EXIT over SSH chrome.
+	diag := commandResultDiagnosticLine(realisticSummary)
+	if diag != "EXIT: 128" {
+		t.Fatalf("commandResultDiagnosticLine should surface EXIT:128, got %q", diag)
+	}
+
+	// End-to-end remote quality gate: verified work + realistic silenced git
+	// must not produce "## 命令状态" / command(s) failed hard failure.
+	cb := &remoteCodingCallbacks{task: "[Plan step T4/5] 编译与测试\n进入 build/ 编译并运行"}
+	cb.trackRemoteFileRead("/home/sysinfo7/src/main.cpp")
+	cb.trackRemoteCommand("make", "/home/sysinfo7/build", "[100%] Built target sysinfo\nEXIT: 0", true)
+	cb.trackRemoteCommand("./sysinfo", "/home/sysinfo7/build", "系统信息报告\nEXIT: 0", true)
+	cb.trackRemoteCommand(silencedCmd, "/home/sysinfo7", realisticSummary, false)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "T4 compile and test complete",
+		ToolCalls: 4,
+	})
+	if result.Status != "success" {
+		t.Fatalf("T4 with silenced non-git self-check should succeed, got %#v", result)
+	}
+	if strings.Contains(result.Summary, "## 命令状态") || strings.Contains(result.Error, "command(s) failed") {
+		t.Fatalf("silenced git self-check must not produce command failure gate, got %#v", result)
+	}
+
+	// Same soft skip when post-edit verification already passed (edit path).
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteFileChanged("/repo/main.py", false)
+	cb.trackRemoteFileRead("/repo/main.py")
+	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
+	cb.trackRemoteCommand(silencedCmd, "/repo", realisticSummary, false)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "changed file",
+		ToolCalls: 5,
+	})
+	if result.Status != "success" || strings.Contains(result.Summary, "## 命令状态") {
+		t.Fatalf("post-edit silenced non-git self-check should not hard-fail, got %#v", result)
 	}
 }
 
@@ -2556,6 +3013,13 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 		"必须用 ssh_check_task 跟进直到得到明确状态/exit_code",
 		"git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f",
 		"不要用 ssh_bash 执行 rm -r/rm -rf",
+		"2>/dev/null",
+		"never put an optional tool in an \"&&\" chain",
+		"\"command -v clang++ || true\"",
+		"Do not use \"tree\" as a verification dependency",
+		"\"find . -maxdepth 3 -print | sort\"",
+		"非 Git 仓库",
+		"不要附带 git log",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("remote prompt should expose alias hint %q, got %q", want, prompt)
@@ -7339,6 +7803,268 @@ func TestSoftInspectionProbeFailureIsNotUnresolved(t *testing.T) {
 		t.Fatalf("missing toolchain must remain unresolved without later verification, got %#v", failed)
 	}
 
+	// Exact T1 inventory shape from production workbench (sysinfo11): chain of
+	// version probes with echo "---" separators; clang++ missing must be soft.
+	t1InventoryCmd := `g++ --version 2>&1; echo "---"; clang++ --version 2>&1; echo "---"; cmake --version 2>&1; echo "---"; make --version 2>&1; echo "---"; pkg-config --version 2>&1`
+	t1InventorySummary := strings.Join([]string{
+		"g++ (Ubuntu 9.4.0-1ubuntu1~18.04) 9.4.0",
+		"Copyright (C) 2019 Free Software Foundation, Inc.",
+		"---",
+		"sh: 1: clang++: not found",
+		"---",
+		"cmake version 3.31.11",
+		"---",
+		"GNU Make 4.1",
+		"Built for x86_64-pc-linux-gnu",
+		"---",
+		"0.29.1",
+		"EXIT: 127",
+	}, "\n")
+	if !subAgentDiagnosticProbeCommand(t1InventoryCmd) {
+		t.Fatal("T1 g++/clang++/cmake/make/pkg-config inventory must be a diagnostic probe")
+	}
+	if !subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command: t1InventoryCmd, Succeeded: false, Summary: t1InventorySummary,
+	}) {
+		t.Fatal("T1 inventory with optional clang++ missing should be soft")
+	}
+	if failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command: t1InventoryCmd, Succeeded: false, Summary: t1InventorySummary,
+	}}); len(failed) != 0 {
+		t.Fatalf("T1 inventory soft failure must not stay unresolved, got %#v", failed)
+	}
+	cbT1 := &remoteCodingCallbacks{task: "[Plan step T1/5] 探索远端环境与工作目录"}
+	cbT1.trackRemoteCommand(t1InventoryCmd, "/home/sysinfo11", t1InventorySummary, false)
+	cbT1.trackRemoteCommand("cmake --version", "/home/sysinfo11", "cmake version 3.31.11\nEXIT: 0", true)
+	resT1 := cbT1.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status: "success", Summary: "环境就绪，可进入 T2", ToolCalls: 2,
+	})
+	if resT1.Status != "success" || strings.Contains(resT1.Summary, "## 命令状态") {
+		t.Fatalf("T1 remote quality gate must pass with optional clang++ missing, got %#v", resT1)
+	}
+
+	// Truncated audit summary: only clang++ not-found remains (successful g++
+	// banner dropped by compactCommandResult). Still soft via multi-tool inventory.
+	truncatedOnlyClangMissing := "sh: 1: clang++: not found\nEXIT: 127"
+	if !subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command: t1InventoryCmd, Succeeded: false, Summary: truncatedOnlyClangMissing,
+	}) {
+		t.Fatal("truncated summary with only optional clang++ missing must still be soft")
+	}
+	if subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command: t1InventoryCmd, Succeeded: false,
+		Summary: "bash: g++: command not found\nsh: 1: clang++: not found\nEXIT: 127",
+	}) {
+		t.Fatal("when every probed compiler is not-found, inventory must stay hard")
+	}
+
+	// Multi-compiler inventory: g++/gcc present, optional clang++ missing.
+	// T1 env exploration documents this; must not hard-fail the step.
+	inventoryCmd := `echo "=== g++ ==="; g++ --version 2>&1; echo "=== gcc ==="; gcc --version 2>&1; echo "=== clang++ ==="; clang++ --version 2>&1`
+	inventorySummary := strings.Join([]string{
+		"=== g++ ===",
+		"g++ (Ubuntu 9.4.0-1ubuntu1~18.04) 9.4.0",
+		"Copyright (C) 2019 Free Software Foundation, Inc.",
+		"=== gcc ===",
+		"gcc (Ubuntu 9.4.0-1ubuntu1~18.04) 9.4.0",
+		"Copyright (C) 2019 Free Software Foundation, Inc.",
+		"=== clang++ ===",
+		"sh: 1: clang++: not found",
+		"EXIT: 127",
+	}, "\n")
+	if !subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command:   inventoryCmd,
+		Succeeded: false,
+		Summary:   inventorySummary,
+	}) {
+		t.Fatal("partial multi-compiler version inventory with optional clang++ missing should be soft")
+	}
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   inventoryCmd,
+		Succeeded: false,
+		Summary:   inventorySummary,
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("partial toolchain inventory must not block T1 progression, got %#v", failed)
+	}
+
+	// All compilers missing: still hard (no successful version banner).
+	allMissing := strings.Join([]string{
+		"=== g++ ===",
+		"bash: g++: command not found",
+		"=== clang++ ===",
+		"sh: 1: clang++: not found",
+		"EXIT: 127",
+	}, "\n")
+	if subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command:   inventoryCmd,
+		Succeeded: false,
+		Summary:   allMissing,
+	}) {
+		t.Fatal("inventory with every toolchain missing must stay hard")
+	}
+
+	// Real remote PTY dumps echo the probe command (`g++ --version`) even when
+	// the binary is missing. That must stay hard — do not treat flag text as
+	// a successful version banner.
+	ptyMissingOnly := strings.Join([]string{
+		"[ssh_root@host:22_1] 状态: running",
+		"$ cd '/home/sysinfo8'",
+		"sh -lc 'g++ --version 2>&1; clang++ --version 2>&1'",
+		"bash: g++: command not found",
+		"sh: 1: clang++: not found",
+		"EXIT: 127",
+	}, "\n")
+	if subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command:   `g++ --version 2>&1; clang++ --version 2>&1`,
+		Succeeded: false,
+		Summary:   ptyMissingOnly,
+	}) {
+		t.Fatal("PTY dump containing --version flags without real version output must stay hard")
+	}
+	if subAgentSummaryLooksLikeSuccessfulToolchainVersion(strings.ToLower(strings.Join(strings.Fields(ptyMissingOnly), " "))) {
+		t.Fatal("PTY command echo must not count as successful toolchain version output")
+	}
+
+	// MSYS/Windows banners use g++.exe (…); still counts as successful output.
+	msysPartial := strings.Join([]string{
+		"g++.exe (Rev6, Built by MSYS2 project) 13.2.0",
+		"sh: 1: clang++: not found",
+		"EXIT: 127",
+	}, "\n")
+	if !subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command:   `g++ --version 2>&1; clang++ --version 2>&1`,
+		Succeeded: false,
+		Summary:   msysPartial,
+	}) {
+		t.Fatal("MSYS g++.exe version banner + optional clang++ missing should be soft")
+	}
+
+	// echo inventory banners with tool names must still classify as diagnostic probes.
+	if !subAgentDiagnosticProbeCommand(inventoryCmd) {
+		t.Fatal("multi-compiler inventory with echo === g++ === banners should be a diagnostic probe")
+	}
+
+	// End-to-end remote T1: env ready + optional clang++ missing must pass.
+	cb := &remoteCodingCallbacks{task: "[Plan step T1/5] 探索远端环境与工作目录"}
+	cb.trackRemoteCommand("uname -a", "/home/sysinfo8", "Linux VM-0-4-ubuntu 4.15.0\nEXIT: 0", true)
+	cb.trackRemoteCommand(inventoryCmd, "/home/sysinfo8", inventorySummary, false)
+	cb.trackRemoteCommand("cmake --version", "/home/sysinfo8", "cmake version 3.31.11\nEXIT: 0", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "T1 complete: g++ 9.4.0 + cmake ready; clang++ not installed",
+		ToolCalls: 3,
+	})
+	if result.Status != "success" {
+		t.Fatalf("T1 with optional clang++ missing should succeed, got %#v", result)
+	}
+	if strings.Contains(result.Summary, "## 命令状态") || strings.Contains(result.Error, "command(s) failed") {
+		t.Fatalf("optional missing clang++ must not produce command failure gate, got %#v", result)
+	}
+
+	// Production T1 (sysinfo13): which g++ gcc clang++ cmake make && versions…
+	// GNU which exits 1 when clang++ is missing and prints only found paths
+	// (no "clang++: not found" line). Version probes after && never run.
+	whichInventoryCmd := `which g++ gcc clang++ cmake make && echo "---versions---" && g++ --version 2>&1 | head -3 && cmake --version 2>&1 | head -2 && make --version 2>&1 | head -2`
+	whichInventorySummary := strings.Join([]string{
+		"[ssh_root@www.driverdevelop.com:22_1] 状态: running",
+		"$ cd '/home/sysinfo13'",
+		`sh -lc 'which g++ gcc clang++ cmake make && echo "---versions---" && g++ --version 2>&1 | head -3'`,
+		"/usr/bin/g++",
+		"/usr/bin/gcc",
+		"/usr/bin/cmake",
+		"/usr/bin/make",
+		"",
+		"EXIT: 1",
+	}, "\n")
+	if !subAgentToolchainInventoryOnlyCommand(whichInventoryCmd) {
+		t.Fatal("which + version | head compound must classify as toolchain inventory-only")
+	}
+	if tools := subAgentWhichInventoryToolsInCommand(whichInventoryCmd); len(tools) < 4 {
+		t.Fatalf("which inventory must list multi tools, got %#v", tools)
+	}
+	if !subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command: whichInventoryCmd, Succeeded: false, Summary: whichInventorySummary,
+	}) {
+		t.Fatal("production which inventory with optional clang++ missing must be soft")
+	}
+	if failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command: whichInventoryCmd, Succeeded: false, Summary: whichInventorySummary,
+	}}); len(failed) != 0 {
+		t.Fatalf("which inventory soft failure must not stay unresolved, got %#v", failed)
+	}
+	// Required tool missing from which output → hard.
+	whichMissingGxx := strings.Join([]string{
+		"/usr/bin/cmake",
+		"/usr/bin/make",
+		"EXIT: 1",
+	}, "\n")
+	if subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command: whichInventoryCmd, Succeeded: false, Summary: whichMissingGxx,
+	}) {
+		t.Fatal("which inventory missing required g++/gcc must stay hard")
+	}
+	// A non-zero inventory containing only required tools has no evidence of an
+	// optional absence, so it must preserve the failure for diagnosis.
+	requiredOnlyWhichCmd := `which g++ gcc cmake make && echo "---versions---"`
+	if subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command: requiredOnlyWhichCmd, Succeeded: false, Summary: strings.Join([]string{
+			"/usr/bin/g++", "/usr/bin/gcc", "/usr/bin/cmake", "/usr/bin/make", "EXIT: 1",
+		}, "\n"),
+	}) {
+		t.Fatal("failed required-only which inventory must stay hard")
+	}
+	// `false` is not part of an inventory. It must not be whitelisted merely
+	// because a preceding optional compiler is absent.
+	if subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command: `which g++ gcc clang++ cmake make && false`,
+		Summary: strings.Join([]string{
+			"/usr/bin/g++", "/usr/bin/gcc", "/usr/bin/cmake", "/usr/bin/make", "EXIT: 1",
+		}, "\n"),
+	}) {
+		t.Fatal("non-inventory command appended to which probe must stay hard")
+	}
+	// Production T2 regression: tree is optional on minimal Linux hosts. Its
+	// absence must not fail a project step after the created files are otherwise
+	// checked with CMake and g++ in later commands.
+	treeThenBuildCmd := `tree /home/sysinfo15/ && echo "---" && cd /home/sysinfo15 && cmake -S . -B build_test_parse --dry-run 2>&1 | head -20 && echo "---" && g++ -std=c++17 -fsyntax-only src/main.cpp 2>&1`
+	treeMissing := "sh: 1: tree: not found\nEXIT: 127"
+	if !subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command: treeThenBuildCmd, Succeeded: false, Summary: treeMissing,
+	}) {
+		t.Fatal("missing optional tree display command must be soft")
+	}
+	if failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command: treeThenBuildCmd, Succeeded: false, Summary: treeMissing,
+	}}); len(failed) != 0 {
+		t.Fatalf("missing tree must not block T2 progression, got %#v", failed)
+	}
+	if status, summary := summarizeSubAgentVerification([]string{"/home/sysinfo15/src/main.cpp"}, []CodingSubAgentCommandResult{{
+		Command: treeThenBuildCmd, Succeeded: false, Summary: treeMissing, seq: 2,
+	}}, 1); status != codingSubAgentQualityMissing || !strings.Contains(summary, "did not reach") {
+		t.Fatalf("tree-short-circuited build must require a separate verifier, got (%q, %q)", status, summary)
+	}
+	if !subAgentToolchainInventoryOnlyCommand(`command -v g++ clang++ && true`) {
+		t.Fatal("command -v tool lookup should classify as inventory-only")
+	}
+	if subAgentToolchainInventoryOnlyCommand(`command make && which g++ clang++`) {
+		t.Fatal("command without -v/-V can execute programs and must not classify as inventory-only")
+	}
+	cbWhich := &remoteCodingCallbacks{task: "[Plan step T1/5] 检查环境与工作目录"}
+	cbWhich.trackRemoteCommand(whichInventoryCmd, "/home/sysinfo13", whichInventorySummary, false)
+	cbWhich.trackRemoteCommand(
+		`echo "=== g++ ===" && g++ --version 2>&1`,
+		"/home/sysinfo13",
+		"=== g++ ===\ng++ (Ubuntu 9.4.0-1ubuntu1~18.04) 9.4.0\nEXIT: 0",
+		true,
+	)
+	resWhich := cbWhich.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status: "success", Summary: "环境就绪：g++/cmake/make 可用，clang++ 未安装", ToolCalls: 2,
+	})
+	if resWhich.Status != "success" || strings.Contains(resWhich.Summary, "## 命令状态") {
+		t.Fatalf("T1 remote gate must pass on which-inventory optional miss, got %#v", resWhich)
+	}
+
 	// Workdir missing: ssh_bash cds first, so even version probes fail with cd error.
 	// That is a soft env finding (project not created yet), not a hard task failure.
 	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
@@ -8798,6 +9524,48 @@ func TestSummarizeSubAgentVerification(t *testing.T) {
 	}, 0)
 	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "test/build/lint/typecheck") {
 		t.Fatalf("formatter-only commands should not satisfy verification, got (%q, %q)", status, summary)
+	}
+}
+
+func TestSummarizeSubAgentVerificationAcceptsMakeWithStderrMerge(t *testing.T) {
+	// Regression (remote T3 sysinfo): agent runs
+	//   mkdir -p build && cd build && cmake .. 2>&1 && make 2>&1
+	// and gets [100%] Built target, but quality gate said "none were verification"
+	// because `make 2>&1` treated "2>&1" as a make target.
+	cmd := "cd /home/sysinfo9 && mkdir -p build && cd build && cmake .. 2>&1 && make 2>&1"
+	if !isSubAgentVerificationCommand(cmd) {
+		t.Fatalf("cmake+make build pipeline with 2>&1 must count as verification: %q", cmd)
+	}
+	if !isSubAgentVerificationCommand("make 2>&1") {
+		t.Fatal("bare make 2>&1 must count as verification")
+	}
+	if !isSubAgentVerificationCommand("make -j4 2>&1") {
+		t.Fatal("make -j4 2>&1 must count as verification")
+	}
+	status, summary := summarizeSubAgentVerification([]string{"/home/sysinfo9/src/sysinfo.cpp"}, []CodingSubAgentCommandResult{
+		{Command: cmd, Succeeded: true, Summary: "[100%] Built target sysinfo\nEXIT: 0", seq: 5},
+		{Command: "ls -la /home/sysinfo9/src", Succeeded: true, Summary: "sysinfo.cpp", seq: 2},
+	}, 3)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("remote cmake/make build should satisfy verification, got (%q, %q)", status, summary)
+	}
+	// mkdir -p build must not force background-long classification for a short make.
+	if isLongRemoteCommand(cmd) {
+		t.Fatalf("mkdir -p build && make must not be treated as long remote command, got long for %q", cmd)
+	}
+	if !isLongRemoteCommand("make -j8 install") {
+		t.Fatal("make -j8 install should remain classified as a long remote command")
+	}
+	if !isLongRemoteCommand("make build") {
+		t.Fatal("make build should remain classified as a long remote command")
+	}
+	// First positional target wins: "all" is not long even if "install" appears later
+	// as a second word (must not scan past the first target).
+	if isLongRemoteCommand("make all install") {
+		t.Fatal("make all install should not be long solely due to a later install word")
+	}
+	if isLongRemoteCommand("make clean") {
+		t.Fatal("make clean should not be classified as a long remote command")
 	}
 }
 

@@ -251,17 +251,25 @@ func BuildPhasePrompt(state *WorkflowState) string {
 		}
 	}
 
-	// Auto-inject document parsing guidance when form data contains file paths.
-	// This is the mechanism-level fix: any phase that receives a file path from
-	// the user automatically gets parsing instructions — no need to repeat them
-	// in each phaseInstruction case.
+	// Auto-inject document parsing guidance when collected form data contains
+	// file paths. Mechanism-level: phases with user file inputs get parsing
+	// instructions without repeating them in every phaseInstruction.
 	//
-	// Two detection paths:
-	// 1. Form data contains a file path field/value (user submitted via InputSchema form)
-	// 2. No form data but state.Summary contains a file path (user typed path in chat)
+	// Detection order:
+	// 1. Active phase form data (user just submitted)
+	// 2. Prior phases' form data (intake paths must survive phase advance —
+	//    e.g. bid_review prepared_bid_path is only collected on phase 0)
+	// 3. state.Summary when the user typed a path in chat without a form
 	needsParsingGuidance := formDataContainsFilePath(phase.FormData)
-	if !needsParsingGuidance && (phase.FormData == nil || len(phase.FormData) == 0) {
-		// Check if the user's original request message contains a file path.
+	if !needsParsingGuidance {
+		for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
+			if formDataContainsFilePath(state.Phases[i].FormData) {
+				needsParsingGuidance = true
+				break
+			}
+		}
+	}
+	if !needsParsingGuidance {
 		needsParsingGuidance = textContainsFilePath(state.Summary)
 	}
 	if needsParsingGuidance && !phaseInstructionHasOwnParsingGuidance(phase.ID) {
@@ -393,8 +401,9 @@ func RenderFormDataFields(phase *Phase, boldLabels bool) string {
 }
 
 // formDataContainsFilePath returns true if any value in the form data looks like
-// a file path (Windows drive letter path, Unix absolute path, or common document
-// extensions). This triggers automatic injection of documentParsingGuidance.
+// a local file path (Windows drive letter path, Unix absolute path, or common
+// document extensions). This triggers automatic injection of documentParsingGuidance.
+// HTTP(S) URLs are excluded — they are fetched via web_fetch, not office/bash.
 func formDataContainsFilePath(formData map[string]interface{}) bool {
 	if len(formData) == 0 {
 		return false
@@ -407,10 +416,18 @@ func formDataContainsFilePath(formData map[string]interface{}) bool {
 		if s == "" || s == "<nil>" {
 			continue
 		}
+		// Web URLs / scheme-less host paths are not local file paths (even with .pdf).
+		if isHTTPURL(s) || looksLikeWebHostPath(s) {
+			continue
+		}
 		// Signal 1: field name contains "path" or "file" AND value is non-trivial.
 		// This is the strongest signal — template authors name file fields explicitly.
+		// Skip pure *url* field names so name-based matching never treats URL inputs
+		// as local files (value-based Windows/Unix/ext signals still apply below).
 		kl := strings.ToLower(key)
-		if strings.Contains(kl, "path") || strings.Contains(kl, "file") {
+		if strings.Contains(kl, "url") || strings.Contains(kl, "href") || strings.Contains(kl, "link") {
+			// fall through to value-based signals only
+		} else if strings.Contains(kl, "path") || strings.Contains(kl, "file") {
 			if len(s) > 2 {
 				return true
 			}
@@ -423,12 +440,11 @@ func formDataContainsFilePath(formData map[string]interface{}) bool {
 		// Signal 3: value looks like a Unix absolute path with depth (at least 2 segments).
 		// "/home/user/file.pdf" matches; "/yes" does not (too short, no depth).
 		if len(s) >= 5 && s[0] == '/' && strings.Count(s, "/") >= 2 {
-			// Exclude patterns that are clearly not paths (e.g. URLs handled by web_fetch).
-			if !strings.HasPrefix(s, "//") && !strings.Contains(s, "://") {
+			if !strings.HasPrefix(s, "//") {
 				return true
 			}
 		}
-		// Signal 4: value ends with a document file extension.
+		// Signal 4: value ends with a document file extension (local names only).
 		sl := strings.ToLower(s)
 		for _, ext := range []string{".docx", ".doc", ".pdf", ".pptx", ".ppt", ".xlsx", ".xls"} {
 			if strings.HasSuffix(sl, ext) {
@@ -439,12 +455,88 @@ func formDataContainsFilePath(formData map[string]interface{}) bool {
 	return false
 }
 
+// isHTTPURL reports whether s is an absolute HTTP(S) URL value.
+func isHTTPURL(s string) bool {
+	sl := strings.ToLower(strings.TrimSpace(s))
+	return strings.HasPrefix(sl, "http://") || strings.HasPrefix(sl, "https://")
+}
+
+// looksLikeWebHostPath detects scheme-less web locations such as
+// "example.com/tender/a.pdf" or "www.example.com/x.docx". These must not
+// trigger local document-parsing guidance (use web_fetch instead).
+func looksLikeWebHostPath(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
+		return false
+	}
+	if strings.Contains(s, `\`) {
+		return false
+	}
+	// Windows drive paths (C:\... or C:/...).
+	if len(s) >= 2 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) && s[1] == ':' {
+		return false
+	}
+	slash := strings.IndexByte(s, '/')
+	if slash <= 0 {
+		return false
+	}
+	host := s[:slash]
+	if strings.ContainsAny(host, " \t") || !strings.Contains(host, ".") {
+		return false
+	}
+	// Reject single-dot / empty host segments.
+	if host == "." || host == ".." || strings.HasPrefix(host, ".") {
+		return false
+	}
+	return true
+}
+
+// stripHTTPURLTokens removes http(s)://… spans so bare ".pdf" inside a URL does
+// not look like a local document path reference.
+func stripHTTPURLTokens(s string) string {
+	lowerAll := strings.ToLower(s)
+	if !strings.Contains(lowerAll, "http://") && !strings.Contains(lowerAll, "https://") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		// Case-insensitive match for http:// or https://
+		rest := s[i:]
+		lower := strings.ToLower(rest)
+		skip := 0
+		if strings.HasPrefix(lower, "https://") {
+			skip = len("https://")
+		} else if strings.HasPrefix(lower, "http://") {
+			skip = len("http://")
+		}
+		if skip > 0 {
+			j := skip
+			for j < len(rest) {
+				c := rest[j]
+				if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ')' || c == ']' || c == '>' || c == '"' || c == '\'' {
+					break
+				}
+				j++
+			}
+			i += j
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 // phaseInstructionHasOwnParsingGuidance returns true if the phase-specific
 // instruction already includes document parsing methods, in which case the
 // shared documentParsingGuidance should be skipped to avoid redundancy.
 func phaseInstructionHasOwnParsingGuidance(phaseID string) bool {
 	switch phaseID {
-	case "pa_disclosure_parsing", "us_disclosure_analysis":
+	case "pa_disclosure_parsing", "us_disclosure_analysis",
+		// bid_review phases spell out file/URL reading explicitly.
+		"br_standards", "br_bid_content":
 		return true
 	}
 	return false
@@ -502,9 +594,9 @@ func genericArtifactGenerationGuidance(phase *Phase) string {
 `, name)
 }
 
-// textContainsFilePath checks if a plain text string contains a file path
+// textContainsFilePath checks if a plain text string contains a local file path
 // or document file extension. Used when no form data is available (user typed
-// a file path directly in chat).
+// a file path directly in chat). HTTP(S) URLs and scheme-less host paths are ignored.
 func textContainsFilePath(text string) bool {
 	if len(text) < 4 {
 		return false
@@ -520,14 +612,38 @@ func textContainsFilePath(text string) bool {
 			}
 		}
 	}
-	// Check for document file extensions.
-	sl := strings.ToLower(text)
+	// Extension check after removing web URLs / host paths so remote links are not
+	// mistaken for local documents (e.g. "https://x.com/a.pdf", "example.com/a.pdf").
+	cleaned := stripWebLocationTokens(stripHTTPURLTokens(text))
+	sl := strings.ToLower(cleaned)
 	for _, ext := range []string{".docx", ".doc", ".pdf", ".pptx", ".ppt", ".xlsx", ".xls"} {
 		if strings.Contains(sl, ext) {
 			return true
 		}
 	}
 	return false
+}
+
+// stripWebLocationTokens drops whitespace-separated tokens that look like
+// scheme-less web host paths (example.com/a.pdf).
+func stripWebLocationTokens(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, f := range fields {
+		core := strings.Trim(f, ".,;:!?()[]{}\"'")
+		if looksLikeWebHostPath(core) {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(f)
+	}
+	return b.String()
 }
 
 func phaseInstruction(workflowType WorkflowType, phaseID string) string {
@@ -2551,6 +2667,17 @@ Document must end with: This document was generated with AI assistance. It is re
 		return bidResponseCommercial
 	case "assembly":
 		return bidResponseAssembly
+
+	// --- Bid Review Workflow (标书检查) ---
+
+	case "br_standards":
+		return bidReviewStandards
+	case "br_bid_content":
+		return bidReviewBidContent
+	case "br_conformity":
+		return bidReviewConformity
+	case "br_fix_report":
+		return bidReviewFixReport
 
 	// --- Contract Review Workflow ---
 

@@ -16,6 +16,9 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
   private configWatcher?: { close(): void };
   private remoteTasks: RemoteCodingTask[] = [];
   private selectedRemotePath = "";
+  private creatingRemoteTask = false;
+  private attachingRemoteTask = false;
+  private refreshingRemoteTasks?: Promise<void>;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -55,6 +58,13 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
     action?: string;
     name?: string;
     projectPath?: string;
+    remoteTask?: {
+      name?: string;
+      host?: string;
+      user?: string;
+      port?: number;
+      workDir?: string;
+    };
   }): Promise<void> {
     if (msg.type === "ready") {
       this.postStatus(this.chat.getStatusSnapshot());
@@ -97,6 +107,9 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
       case "refreshRemoteTasks":
         await this.refreshRemoteTasks();
         return;
+      case "createRemoteTask":
+        await this.createRemoteTask(msg.remoteTask);
+        return;
       case "selectRemoteTask":
         this.selectedRemotePath = (msg.projectPath ?? "").trim();
         this.postRemoteTasks();
@@ -137,6 +150,18 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
 
   /** Public entry for commands / extension activation. */
   async refreshRemoteTasks(opts?: { quiet?: boolean }): Promise<void> {
+    if (this.refreshingRemoteTasks) {
+      return this.refreshingRemoteTasks;
+    }
+    this.refreshingRemoteTasks = this.refreshRemoteTasksImpl(opts);
+    try {
+      await this.refreshingRemoteTasks;
+    } finally {
+      this.refreshingRemoteTasks = undefined;
+    }
+  }
+
+  private async refreshRemoteTasksImpl(opts?: { quiet?: boolean }): Promise<void> {
     const quiet = opts?.quiet === true;
     try {
       const connected = await this.ensureBridge();
@@ -146,13 +171,36 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
             "MaClaw: 未连接到 GUI。请先启动 MaClaw 主程序，再刷新远程任务。"
           );
         }
-        this.remoteTasks = [];
+        // A transient bridge outage must not erase the picker while a remote
+        // task is still attached; users need that cached row to retry once the
+        // GUI comes back. Clear only the non-attached stale list.
+        const attached = this.chat.getStatusSnapshot().mode === "remote" ? this.chat.getStatusSnapshot().cwd : "";
+        if (attached) {
+          const cached = this.remoteTasks.find((t) => t.project_path === attached);
+          this.remoteTasks = cached ? [cached] : [];
+          this.selectedRemotePath = attached;
+        } else {
+          this.remoteTasks = [];
+          this.selectedRemotePath = "";
+        }
         this.postRemoteTasks();
         return;
       }
-      this.remoteTasks = await this.chat.acpClient.listRemoteCodingTasks(40);
+      const previousTasks = this.remoteTasks;
+      // The GUI caps this RPC at 100. Request that full bounded set so an older
+      // remote task is not hidden merely because it falls outside the first 40.
+      this.remoteTasks = await this.chat.acpClient.listRemoteCodingTasks(100);
       // Prefer currently attached task if still listed.
       const attached = this.chat.getStatusSnapshot().mode === "remote" ? this.chat.getStatusSnapshot().cwd : "";
+      // The GUI task index can lag briefly after creating or restoring a task.
+      // Never make an already-attached remote target disappear from the picker
+      // just because that one list response is stale.
+      if (attached && !this.remoteTasks.some((t) => t.project_path === attached)) {
+        const cached = previousTasks.find((t) => t.project_path === attached);
+        if (cached) {
+          this.remoteTasks = [cached, ...this.remoteTasks];
+        }
+      }
       if (attached && this.remoteTasks.some((t) => t.project_path === attached)) {
         this.selectedRemotePath = attached;
       }
@@ -197,13 +245,96 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
     return `${user}@${host}${port}:${wd}`;
   }
 
+  private async createRemoteTask(input?: {
+    name?: string;
+    host?: string;
+    user?: string;
+    port?: number;
+    workDir?: string;
+  }): Promise<void> {
+    if (this.creatingRemoteTask) {
+      return;
+    }
+    const name = input?.name?.trim() ?? "";
+    const host = input?.host?.trim() ?? "";
+    const user = input?.user?.trim() ?? "";
+    const workDir = input?.workDir?.trim() ?? "";
+    const port = Number(input?.port ?? 22);
+    if (!name || !host || !user || !workDir) {
+      void vscode.window.showWarningMessage("MaClaw: 请填写任务名、SSH 主机、用户名和远程工作目录。");
+      return;
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      void vscode.window.showWarningMessage("MaClaw: SSH 端口必须在 1 到 65535 之间。");
+      return;
+    }
+    try {
+      this.creatingRemoteTask = true;
+      this.postRemoteTaskCreationState();
+      if (!(await this.ensureBridge())) {
+        void vscode.window.showWarningMessage("MaClaw: 未连接到 GUI，无法创建远程任务。");
+        return;
+      }
+      const created = await this.chat.acpClient.createRemoteCodingTask({
+        name,
+        sshHost: host,
+        sshUser: user,
+        workDir,
+        sshPort: port,
+      });
+      const task = created.task;
+      await this.refreshRemoteTasks({ quiet: true });
+      this.selectedRemotePath = task.project_path;
+      const selected = this.selectedTask() ?? task;
+      this.upsertRemoteTask(task);
+      this.postRemoteTasks();
+      await this.attachRemoteTask(selected);
+      if (this.chat.getStatusSnapshot().mode !== "remote") {
+        void vscode.window.showInformationMessage(
+          created.reused
+            ? "MaClaw: 已复用已有远程任务。可稍后在列表中选择它并点击“附着远程”。"
+            : "MaClaw: 远程任务已创建。可稍后在列表中选择它并点击“附着远程”。"
+        );
+      }
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `MaClaw: 创建远程编程任务失败 — ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      this.creatingRemoteTask = false;
+      this.postRemoteTaskCreationState();
+    }
+  }
+
+  private postRemoteTaskCreationState(): void {
+    void this.view?.webview
+      .postMessage({ type: "remoteTaskCreation", active: this.creatingRemoteTask })
+      .then(undefined, () => {});
+  }
+
+  private postRemoteTaskAttachState(): void {
+    void this.view?.webview
+      .postMessage({ type: "remoteTaskAttach", active: this.attachingRemoteTask })
+      .then(undefined, () => {});
+  }
+
   private async attachSelectedRemote(): Promise<void> {
     const task = this.selectedTask();
     if (!task) {
       void vscode.window.showInformationMessage("MaClaw: 请先选择一个远程编程任务。");
       return;
     }
+    await this.attachRemoteTask(task);
+  }
+
+  private async attachRemoteTask(task: RemoteCodingTask): Promise<void> {
+    if (this.attachingRemoteTask) {
+      void vscode.window.showInformationMessage("MaClaw: 正在附着远程任务，请完成当前 SSH 连接。");
+      return;
+    }
     try {
+      this.attachingRemoteTask = true;
+      this.postRemoteTaskAttachState();
       const connected = await this.ensureBridge();
       if (!connected) {
         void vscode.window.showWarningMessage("MaClaw: 未连接，无法附着远程任务。");
@@ -242,7 +373,7 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
         void vscode.window.showWarningMessage(
           `MaClaw: 远程任务未能就绪 — ${st?.message || res.status?.message || "unknown"}`
         );
-        // Still allow attach so the user can see errors from the agent path.
+        return;
       }
 
       await this.chat.attachRemoteTask({
@@ -255,7 +386,9 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
       });
       // Refresh list flags (armed etc.)
       try {
-        this.remoteTasks = await this.chat.acpClient.listRemoteCodingTasks(40);
+        this.remoteTasks = await this.chat.acpClient.listRemoteCodingTasks(100);
+        this.upsertRemoteTask(task);
+        this.selectedRemotePath = task.project_path;
         this.postRemoteTasks();
       } catch {
         /* ignore */
@@ -273,6 +406,9 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
       void vscode.window.showErrorMessage(
         `MaClaw: 附着远程任务失败 — ${err instanceof Error ? err.message : String(err)}`
       );
+    } finally {
+      this.attachingRemoteTask = false;
+      this.postRemoteTaskAttachState();
     }
   }
 
@@ -288,6 +424,19 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
     }
   }
 
+  /** Keep a just-created or attached row visible during eventual index refreshes. */
+  private upsertRemoteTask(task: RemoteCodingTask): void {
+    const index = this.remoteTasks.findIndex((candidate) => candidate.project_path === task.project_path);
+    if (index < 0) {
+      this.remoteTasks = [task, ...this.remoteTasks];
+      return;
+    }
+    // The list response is the newest source for connection state (armed /
+    // reconnect / message); keep caller-supplied fields only as a fallback for
+    // rows that are temporarily absent from that response.
+    this.remoteTasks[index] = { ...task, ...this.remoteTasks[index] };
+  }
+
   private postRemoteTasks(): void {
     if (!this.view) {
       return;
@@ -299,6 +448,7 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
         selected: this.selectedRemotePath,
         mode: this.chat.getAgentMode(),
         remoteLabel: this.chat.getStatusSnapshot().remoteLabel,
+        attaching: this.attachingRemoteTask,
       })
       .then(undefined, () => {});
   }
@@ -446,6 +596,29 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
 
     <div class="card">
       <div class="card-title">远程编程</div>
+      <details class="remote-create">
+        <summary>新建远程任务</summary>
+        <div class="remote-create-fields">
+          <label class="field-label" for="remote-task-name">任务名称</label>
+          <input id="remote-task-name" class="input" placeholder="例如：生产站点修复" required>
+          <label class="field-label" for="remote-host">SSH 主机</label>
+          <input id="remote-host" class="input" placeholder="例如：server.example.com" required>
+          <div class="form-row">
+            <div class="field-group">
+              <label class="field-label" for="remote-user">用户名</label>
+              <input id="remote-user" class="input" placeholder="用户名" required>
+            </div>
+            <div class="field-group port-group">
+              <label class="field-label" for="remote-port">端口</label>
+              <input id="remote-port" class="input" type="number" min="1" max="65535" value="22" inputmode="numeric" required>
+            </div>
+          </div>
+          <label class="field-label" for="remote-workdir">远程工作目录</label>
+          <input id="remote-workdir" class="input" placeholder="例如：/srv/app" required>
+          <button class="btn primary" id="btn-create-remote" data-action="createRemoteTask">创建并附着</button>
+          <div class="hint">密码只会在连接时询问，不会保存到 MaClaw 或 VS Code。</div>
+        </div>
+      </details>
       <select id="remote-select" class="select"></select>
       <div class="hint" id="remote-hint">连接 GUI 后刷新任务列表</div>
       <div class="btn-row">

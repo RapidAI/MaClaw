@@ -1047,6 +1047,14 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 			"phase_id": phase.ID,
 		},
 	}
+	// Alternate-input groups (e.g. file OR url OR paste) for client-side validation.
+	if len(schema.RequireAnyOf) > 0 {
+		groups := make([][]string, len(schema.RequireAnyOf))
+		for i, g := range schema.RequireAnyOf {
+			groups[i] = append([]string(nil), g...)
+		}
+		view["require_any_of"] = groups
+	}
 	// Declare resume upload capability — frontend renders file upload entry at form top
 	if schema.AcceptsResume {
 		view["accepts_resume"] = true
@@ -1223,6 +1231,13 @@ func (h *IMMessageHandler) emitWorkflowV2FormWithPrefill(userID, phaseID string,
 			"resume_mode":   true,
 			"prefill_count": len(prefilled),
 		},
+	}
+	if len(schema.RequireAnyOf) > 0 {
+		groups := make([][]string, len(schema.RequireAnyOf))
+		for i, g := range schema.RequireAnyOf {
+			groups[i] = append([]string(nil), g...)
+		}
+		view["require_any_of"] = groups
 	}
 	// No variants — we force manual_mode as a flat form for user review
 	h.app.emitAgentView(view)

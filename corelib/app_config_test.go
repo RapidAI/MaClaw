@@ -70,6 +70,7 @@ func TestAppConfigMarshalKeepsUserMemoryZeroValues(t *testing.T) {
 }
 
 func TestAppConfigConfiguredHubCenterBaseURLFiltersLoopback(t *testing.T) {
+	// Loopback preferred is local/dev — do not promote leftover public list entries.
 	cfg := AppConfig{
 		RemoteHubCenterURL: "http://127.0.0.1:65140",
 		RemoteHubCenterURLs: []string{
@@ -77,12 +78,20 @@ func TestAppConfigConfiguredHubCenterBaseURLFiltersLoopback(t *testing.T) {
 			"https://hubs.example.com/",
 		},
 	}
-
-	if got, want := cfg.ConfiguredHubCenterBaseURL(), "https://hubs.example.com"; got != want {
-		t.Fatalf("ConfiguredHubCenterBaseURL() = %q, want %q", got, want)
+	if got := cfg.ConfiguredHubCenterBaseURL(); got != "" {
+		t.Fatalf("ConfiguredHubCenterBaseURL() = %q, want empty for loopback preferred", got)
 	}
-	if got, want := cfg.SkillMarketBaseURL("https://default.example.com"), "https://hubs.example.com"; got != want {
-		t.Fatalf("SkillMarketBaseURL() = %q, want %q", got, want)
+	if got := cfg.SkillMarketBaseURL("https://default.example.com"); got != "" {
+		t.Fatalf("SkillMarketBaseURL() = %q, want empty for loopback preferred", got)
+	}
+
+	// Public preferred is the enrollment identity.
+	cfg2 := AppConfig{
+		RemoteHubCenterURL:  "https://hubs.example.com/",
+		RemoteHubCenterURLs: []string{"http://127.0.0.1:65140", "https://hubs.example.com/"},
+	}
+	if got, want := cfg2.ConfiguredHubCenterBaseURL(), "https://hubs.example.com"; got != want {
+		t.Fatalf("ConfiguredHubCenterBaseURL(public) = %q, want %q", got, want)
 	}
 }
 
@@ -98,9 +107,42 @@ func TestAppConfigHubCenterBaseURLsKeepsDefaultsAsCandidates(t *testing.T) {
 	cfg := AppConfig{RemoteHubCenterURL: "http://127.0.0.1:65140"}
 
 	got := cfg.HubCenterBaseURLs("http://127.0.0.1:9999", []string{"https://default.example.com"})
-	want := []string{"http://127.0.0.1:9999", "https://default.example.com"}
+	// Unregistered (loopback only): loopback config + official defaults.
+	want := []string{"http://127.0.0.1:65140", "http://127.0.0.1:9999", "https://default.example.com"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("HubCenterBaseURLs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestAppConfigHubCenterBaseURLsDoesNotMergeDefaultsWhenRegistered(t *testing.T) {
+	cfg := AppConfig{
+		RemoteHubCenterURL:  "https://hubs.maclaw.top",
+		RemoteHubCenterURLs: []string{"http://127.0.0.1:9", "https://hubs.maclaw.top", "https://hubs2.maclaw.top"},
+	}
+	got := cfg.HubCenterBaseURLs("https://hubs.mypapers.top", []string{
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+		"https://hubs2.maclaw.top",
+	})
+	// Non-preferred official default hubs2 stripped from polluted config.
+	want := []string{"https://hubs.maclaw.top"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("HubCenterBaseURLs(registered) = %#v, want %#v", got, want)
+	}
+	if got := cfg.ConfiguredHubCenterBaseURL(); got != "https://hubs.maclaw.top" {
+		t.Fatalf("ConfiguredHubCenterBaseURL = %q", got)
+	}
+}
+
+func TestAppConfigHubCenterBaseURLsNormalizesBareHost(t *testing.T) {
+	cfg := AppConfig{RemoteHubCenterURL: "hubs.maclaw.top"}
+	got := cfg.HubCenterBaseURLs("", nil)
+	want := []string{"https://hubs.maclaw.top"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("HubCenterBaseURLs(bare host) = %#v, want %#v", got, want)
+	}
+	if got := cfg.ConfiguredHubCenterBaseURL(); got != "https://hubs.maclaw.top" {
+		t.Fatalf("ConfiguredHubCenterBaseURL(bare host) = %q", got)
 	}
 }
 

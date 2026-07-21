@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -22,24 +23,48 @@ func (a *App) resolveHubCenterBaseURL(ctx context.Context, client *http.Client) 
 	if err != nil {
 		return "", nil, err
 	}
-	urls := cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
-	urls = remote.NormalizeHubCenterURLs(urls)
-	if len(urls) == 0 && strings.TrimSpace(a.testHomeDir) != "" {
-		testURLs := append([]string{cfg.RemoteHubCenterURL}, cfg.RemoteHubCenterURLs...)
-		urls = remote.NormalizeHubCenterURLs(testURLs)
-	}
+	registered := remote.RegisteredPublicHubCenterURLs(cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+	urls := hubCenterSeedURLs(cfg)
+	return a.resolveHubCenterBaseURLWithSeeds(ctx, client, registered, urls, cfg)
+}
+
+func (a *App) resolveHubCenterBaseURLWithSeeds(ctx context.Context, client *http.Client, registered, urls []string, cfg corelib.AppConfig) (string, []string, error) {
 	if len(urls) == 0 {
 		return "", nil, fmt.Errorf("hubcenter URL not configured")
 	}
-	preferred := strings.TrimSpace(cfg.RemoteHubCenterURL)
-	ordered := remote.DiscoverHubCenterURLs(ctx, client, urls, preferred)
-	if len(ordered) == 0 {
-		ordered = remote.SelectBestCenter(ctx, client, urls, preferred)
+	preferred := remote.PreferRegisteredHubCenterBase(cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+	if preferred == "" {
+		preferred = remote.NormalizeHubCenterURL(cfg.RemoteHubCenterURL)
 	}
-	if len(ordered) == 0 {
-		ordered = urls
+	// Require a successful probe — do not treat unprobed seed lists as "resolved".
+	// Seeds are already enrollment-scoped (no defaults when registered), so probes
+	// never fan out to unregistered HA peers like hubs2.
+	var probed []string
+	if len(urls) == 1 {
+		// Single enrollment seed: direct probe only (skip multi-node discovery fan-out).
+		probed = remote.SelectBestCenter(ctx, client, urls, preferred)
+	} else {
+		probed = remote.DiscoverHubCenterURLs(ctx, client, urls, preferred)
+		if len(probed) == 0 {
+			probed = remote.SelectBestCenter(ctx, client, urls, preferred)
+		}
 	}
-	ordered = remote.NormalizeHubCenterURLs(ordered)
+	if len(probed) == 0 {
+		return "", nil, fmt.Errorf("no reachable hubcenter")
+	}
+	ordered := remote.AlignHubCenterCandidates(registered, urls, probed)
+	if len(ordered) == 0 {
+		return "", nil, fmt.Errorf("no reachable hubcenter")
+	}
+
+	// When already enrolled, seed set IS the identity — skip HA discovery expand
+	// (it only re-advertises peers we would Align away, costing an extra RTT).
+	if len(registered) > 0 {
+		return ordered[0], ordered, nil
+	}
+
+	// Unregistered / first-time: best-effort merge discovery view, then re-align.
+	// If discovery endpoint is down, still return probed seeds.
 	for _, candidate := range ordered {
 		base := remote.NormalizeHubCenterURL(candidate)
 		if base == "" {
@@ -54,57 +79,76 @@ func (a *App) resolveHubCenterBaseURL(ctx context.Context, client *http.Client) 
 		for _, node := range view.Nodes {
 			merged = append(merged, node.BaseURL)
 		}
-		return base, remote.NormalizeHubCenterURLs(merged), nil
+		return base, remote.AlignHubCenterCandidates(registered, urls, merged), nil
 	}
-	return "", ordered, fmt.Errorf("no reachable hubcenter")
+	return ordered[0], ordered, nil
 }
 
 func (a *App) resolveHubCenterCandidates(ctx context.Context, client *http.Client) ([]string, error) {
-	base, discovered, err := a.resolveHubCenterBaseURLCached(ctx, client)
+	// Single LoadConfig for identity; pass into cache path to avoid a second load.
+	registered, seeds := a.currentHubCenterIdentity()
+	if len(seeds) == 0 {
+		seeds = remote.EffectiveHubCenterSeeds("", nil, remote.DefaultRemoteHubCenterURLs)
+	}
+	base, discovered, err := a.resolveHubCenterBaseURLCachedWithIdentity(ctx, client, registered, seeds)
 	if err != nil {
 		return nil, err
 	}
-	bases := append([]string{base}, discovered...)
-	bases = append(bases, remote.DefaultRemoteHubCenterURLs...)
-	bases = remote.NormalizeHubCenterURLs(bases)
+	// Re-align with enrollment (protects mid-session registration changes).
+	bases := remote.AlignHubCenterCandidates(registered, seeds, append([]string{base}, discovered...))
 	if len(bases) == 0 {
 		return nil, fmt.Errorf("hubcenter URL not configured")
 	}
 	// Cached preferred may still be a node that just failed connectivity. Keep it in
 	// the pool for recovery, but try clean nodes first so skill download / search
 	// do not burn a per-node timeout on a known-dead host every request.
-	return deprioritizeRecentlyFailedHubCenters(bases), nil
+	return remote.DeprioritizeRecentlyFailedHubCenters(bases), nil
 }
 
-// deprioritizeRecentlyFailedHubCenters stable-partitions bases so hosts with recent
-// probe failures are tried after clean hosts, without dropping any candidate.
-func deprioritizeRecentlyFailedHubCenters(bases []string) []string {
-	bases = remote.NormalizeHubCenterURLs(bases)
-	if len(bases) <= 1 {
-		return bases
+// resolveHubCenterSubmitCandidates returns HubCenter bases for skill *upload*.
+// Uses the same EffectiveHubCenterSeeds identity as search/download:
+//   - public preferred → enrollment only (no hubs2 pollution)
+//   - loopback / unregistered → loopbacks + official defaults (not leftover public URLs)
+func (a *App) resolveHubCenterSubmitCandidates(ctx context.Context, client *http.Client) ([]string, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is nil")
 	}
-	healthy := make([]string, 0, len(bases))
-	failed := make([]string, 0, len(bases))
-	for _, base := range bases {
-		if remote.HasRecentFailures(base) {
-			failed = append(failed, base)
-			continue
-		}
-		healthy = append(healthy, base)
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
 	}
-	if len(failed) == 0 || len(healthy) == 0 {
-		return bases
+	bases := hubCenterSeedURLs(cfg)
+	if len(bases) == 0 {
+		// No config seeds at all — last resort discovery pool.
+		return a.resolveHubCenterCandidates(ctx, client)
 	}
-	return append(healthy, failed...)
+	return remote.DeprioritizeRecentlyFailedHubCenters(bases), nil
+}
+
+// hubCenterSeedURLs is the GUI entry to the unique EffectiveHubCenterSeeds algorithm.
+func hubCenterSeedURLs(cfg corelib.AppConfig) []string {
+	return remote.EffectiveHubCenterSeeds(cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs, remote.DefaultRemoteHubCenterURLs)
+}
+
+func (a *App) currentHubCenterIdentity() (registeredPublic, seeds []string) {
+	if a == nil {
+		return nil, nil
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, nil
+	}
+	return remote.RegisteredPublicHubCenterURLs(cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs), hubCenterSeedURLs(cfg)
 }
 
 func (a *App) rememberHubCenterSelection(base string, discovered []string) {
 	if a == nil {
 		return
 	}
-	// Delegate filtering to RememberSelectionThrottled: it prefers public URLs
-	// when present, keeps pure-loopback chains for local/dev, and never replaces
-	// a public preferred URL with loopback.
+	// Persist only what enrollment policy allows (never inject official defaults).
+	registered, _ := a.currentHubCenterIdentity()
+	base, discovered = remote.ConstrainHubCenterPersistence(registered, base, discovered)
+	// Delegate write-throttle to shared cache (loopback preferred handling).
 	a.rememberHubCenterSelectionThrottled(base, discovered)
 }
 

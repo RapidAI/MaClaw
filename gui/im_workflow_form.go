@@ -106,6 +106,13 @@ func buildWorkflowPhaseFormAgentView(userID, workflowID, eventScopeID, phaseID s
 			"phase_id": phaseID,
 		},
 	}
+	if len(schema.RequireAnyOf) > 0 {
+		groups := make([][]string, len(schema.RequireAnyOf))
+		for i, g := range schema.RequireAnyOf {
+			groups[i] = append([]string(nil), g...)
+		}
+		view["require_any_of"] = groups
+	}
 	if len(schema.Variants) > 0 {
 		variants := make([]map[string]interface{}, 0, len(schema.Variants))
 		for _, v := range schema.Variants {

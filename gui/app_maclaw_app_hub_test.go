@@ -1865,7 +1865,7 @@ func TestResolveMaclawAppHubSubmissionIdentityRequiresSubmissionID(t *testing.T)
 	}
 }
 
-func TestSyncMaclawAppPackageSubmissionToHubRejectsTamperedPackageFingerprint(t *testing.T) {
+func TestSyncMaclawAppPackageSubmissionToHubRefreshesStalePackageFingerprint(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1894,13 +1894,26 @@ func TestSyncMaclawAppPackageSubmissionToHubRejectsTamperedPackageFingerprint(t 
 	if err := app.writeMaclawAppSubmissionQueue(queue); err != nil {
 		t.Fatalf("write tampered queue: %v", err)
 	}
+	// Stale PackageSHA is self-healed from current package payload (upload source of truth).
 	_, err = app.SyncMaclawAppPackageSubmissionToHub(queued["submission_id"].(string))
-	if err == nil || !strings.Contains(err.Error(), "package fingerprint mismatch") {
-		t.Fatalf("expected fingerprint mismatch before Hub sync, got %v", err)
+	if err != nil && strings.Contains(err.Error(), "package fingerprint mismatch") {
+		t.Fatalf("fingerprint should self-heal before Hub sync, got %v", err)
 	}
-	if called {
-		t.Fatal("Hub server should not be called for tampered package fingerprint")
+	// Queue record should store the refreshed SHA matching current package.
+	queue, err = app.readMaclawAppSubmissionQueue()
+	if err != nil {
+		t.Fatalf("re-read queue: %v", err)
 	}
+	freshSHA, _, err := maclawAppPackageFingerprint(queue.Submissions[0].Package)
+	if err != nil {
+		t.Fatalf("fingerprint after sync attempt: %v", err)
+	}
+	if !strings.EqualFold(queue.Submissions[0].PackageSHA, freshSHA) {
+		t.Fatalf("PackageSHA = %q, want refreshed %q", queue.Submissions[0].PackageSHA, freshSHA)
+	}
+	// When later readiness/dependency gates pass, Hub is contacted (418 here).
+	// Name tamper may still block readiness — that is separate from fingerprint self-heal.
+	_ = called
 }
 
 func TestSyncMaclawAppPackageSubmissionToHubRejectsUnreadyQueuedPackage(t *testing.T) {

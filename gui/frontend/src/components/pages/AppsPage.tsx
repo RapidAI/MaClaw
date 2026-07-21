@@ -503,6 +503,8 @@ type AppRunHistoryEntry = {
     resultCoverage?: Record<string, unknown>;
     dependencyVerification?: AppRunEvidenceDependencyVerification;
     approvalInstance?: AppRunApprovalInstanceEvidence;
+    verifiedAt?: string;
+    verified_at?: string;
     at: string;
 };
 
@@ -1043,6 +1045,18 @@ const labels = asStringLabels({
         oneClickPublish: '\u4e00\u952e\u53d1\u5e03',
         oneClickPublishBusy: '\u53d1\u5e03\u4e2d\u2026',
         oneClickPublishHint: '\u672c\u5730\u5165\u961f + \u4f01\u4e1a Hub + SkillMarket/HubCenter\uff08\u6309\u914d\u7f6e\uff09',
+        oneClickRemotePreflight: '\u8fdc\u7a0b\u53d1\u5e03\u5c31\u7eea',
+        oneClickRemoteReady: '\u8fdc\u7a0b\u76ee\u6807\u53ef\u7528',
+        oneClickRemoteWarn: '\u8fdc\u7a0b\u76ee\u6807\u53ef\u80fd\u90e8\u5206\u5931\u8d25',
+        oneClickRemoteBlocked: '\u53d1\u5e03\u88ab\u963b\u65ad',
+        oneClickRemoteLoading: '\u6b63\u5728\u68c0\u67e5\u8fdc\u7a0b\u5c31\u7eea\u2026',
+        oneClickRemoteUnavailable: '\u8fdc\u7a0b\u9884\u68c0\u4e0d\u53ef\u7528',
+        oneClickTargetLocal: '\u672c\u5730\u961f\u5217',
+        oneClickTargetSkill: 'SkillMarket',
+        oneClickTargetHub: '\u4f01\u4e1a Hub pack',
+        oneClickMayPartial: '\u4ecd\u53ef\u53d1\u5e03\uff1b\u8fdc\u7a0b\u76ee\u6807\u53ef\u80fd partial',
+        oneClickMayPartialTitle: '\u672c\u5730\u961f\u5217\u4f1a\u6210\u529f\uff0cSkillMarket \u6216 Hub pack \u53ef\u80fd\u5931\u8d25\u3002\u53ef\u4e4b\u540e\u91cd\u8bd5\u3002',
+        oneClickPublishPartial: '\u4e00\u952e\u53d1\u5e03\uff08\u53ef\u80fd partial\uff09',
         syncingQueueToHub: '\u540c\u6b65\u4e2d',
         refreshQueueFromHub: '\u5237\u65b0 Hub \u72b6\u6001',
         refreshingQueueFromHub: '\u5237\u65b0\u4e2d',
@@ -1469,6 +1483,18 @@ const labels = asStringLabels({
         oneClickPublish: 'One-click publish',
         oneClickPublishBusy: 'Publishing...',
         oneClickPublishHint: 'Local queue + Enterprise Hub + SkillMarket/HubCenter (per config)',
+        oneClickRemotePreflight: 'Remote publish readiness',
+        oneClickRemoteReady: 'Remote targets ready',
+        oneClickRemoteWarn: 'Remote targets may partially fail',
+        oneClickRemoteBlocked: 'Publish blocked',
+        oneClickRemoteLoading: 'Checking remote readiness…',
+        oneClickRemoteUnavailable: 'Remote preflight unavailable',
+        oneClickTargetLocal: 'Local queue',
+        oneClickTargetSkill: 'SkillMarket',
+        oneClickTargetHub: 'Enterprise Hub pack',
+        oneClickMayPartial: 'Can publish; remote targets may be partial',
+        oneClickMayPartialTitle: 'Local queue will succeed; SkillMarket or Hub pack may fail. You can retry afterwards.',
+        oneClickPublishPartial: 'One-click publish (may partial)',
         syncingQueueToHub: 'Syncing',
         refreshQueueFromHub: 'Refresh Hub Status',
         refreshingQueueFromHub: 'Refreshing',
@@ -1880,6 +1906,18 @@ const labels = asStringLabels({
         oneClickPublish: '\u4e00\u9375\u91cb\u51fa',
         oneClickPublishBusy: '\u91cb\u51fa\u4e2d\u2026',
         oneClickPublishHint: '\u672c\u5730\u5165\u968a + \u4f01\u696d Hub + SkillMarket/HubCenter\uff08\u6309\u914d\u7f6e\uff09',
+        oneClickRemotePreflight: '\u9060\u7aef\u91cb\u51fa\u5c31\u7dd2',
+        oneClickRemoteReady: '\u9060\u7aef\u76ee\u6a19\u53ef\u7528',
+        oneClickRemoteWarn: '\u9060\u7aef\u76ee\u6a19\u53ef\u80fd\u90e8\u5206\u5931\u6557',
+        oneClickRemoteBlocked: '\u91cb\u51fa\u88ab\u963b\u65b7',
+        oneClickRemoteLoading: '\u6b63\u5728\u6aa2\u67e5\u9060\u7aef\u5c31\u7dd2\u2026',
+        oneClickRemoteUnavailable: '\u9060\u7aef\u9810\u6aa2\u4e0d\u53ef\u7528',
+        oneClickTargetLocal: '\u672c\u5730\u968a\u5217',
+        oneClickTargetSkill: 'SkillMarket',
+        oneClickTargetHub: '\u4f01\u696d Hub pack',
+        oneClickMayPartial: '\u4ecd\u53ef\u91cb\u51fa\uff1b\u9060\u7aef\u76ee\u6a19\u53ef\u80fd partial',
+        oneClickMayPartialTitle: '\u672c\u5730\u968a\u5217\u6703\u6210\u529f\uff0cSkillMarket \u6216 Hub pack \u53ef\u80fd\u5931\u6557\u3002\u53ef\u4e4b\u5f8c\u91cd\u8a66\u3002',
+        oneClickPublishPartial: '\u4e00\u9375\u91cb\u51fa\uff08\u53ef\u80fd partial\uff09',
         refreshQueueFromHub: '\u91cd\u65b0\u6574\u7406 Hub \u72c0\u614b',
         refreshingQueueFromHub: '\u91cd\u65b0\u6574\u7406\u4e2d',
         queueHubSyncFailed: 'Hub \u540c\u6b65\u5931\u6557',
@@ -6047,6 +6085,308 @@ function hasPublishMaclawAppSubmissionOneClickBridge() {
     return typeof (globalThis as any)?.window?.go?.main?.App?.PublishMaclawAppSubmissionOneClick === 'function';
 }
 
+function hasPreflightMaclawAppOneClickBridge() {
+    return typeof (globalThis as any)?.window?.go?.main?.App?.PreflightMaclawAppOneClickPublish === 'function';
+}
+
+function hasPreflightMaclawAppSubmissionOneClickBridge() {
+    return typeof (globalThis as any)?.window?.go?.main?.App?.PreflightMaclawAppSubmissionOneClick === 'function';
+}
+
+async function preflightMaclawAppOneClickPublish(packageJSON: string): Promise<Record<string, unknown> | null> {
+    if (!hasPreflightMaclawAppOneClickBridge()) return null;
+    try {
+        const bridge = (globalThis as any).window.go.main.App.PreflightMaclawAppOneClickPublish;
+        const result = await bridge(packageJSON);
+        return result && typeof result === 'object' ? result as Record<string, unknown> : null;
+    } catch {
+        return null;
+    }
+}
+
+async function preflightMaclawAppSubmissionOneClick(submissionID: string): Promise<Record<string, unknown> | null> {
+    if (!hasPreflightMaclawAppSubmissionOneClickBridge()) return null;
+    try {
+        const bridge = (globalThis as any).window.go.main.App.PreflightMaclawAppSubmissionOneClick;
+        const result = await bridge(submissionID);
+        return result && typeof result === 'object' ? result as Record<string, unknown> : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Short user-facing line from a preflight report (blocking first, then warnings). */
+function formatOneClickPreflightHint(preflight: Record<string, unknown> | null | undefined): string {
+    if (!preflight) return '';
+    const blocking = Array.isArray(preflight.blocking) ? preflight.blocking.map(String).filter(Boolean) : [];
+    if (blocking.length > 0) {
+        return blocking.slice(0, 2).join(' · ');
+    }
+    const warnings = Array.isArray(preflight.warnings) ? preflight.warnings.map(String).filter(Boolean) : [];
+    if (warnings.length > 0) {
+        return warnings.slice(0, 2).join(' · ');
+    }
+    return String(preflight.message || '').trim();
+}
+
+type OneClickPublishErrorDetail = {
+    target: 'enterprise_hub_pack' | 'skill_market';
+    code: string;
+    title: string;
+    message: string;
+    path: string;
+    suggestion: string;
+    raw: string;
+};
+
+function oneClickPublishErrorDetails(result: Record<string, unknown> | null | undefined, text: typeof labels.zh): OneClickPublishErrorDetail[] {
+    const targets = result?.targets;
+    if (!targets || typeof targets !== 'object') return [];
+    const targetLabels: Record<string, string> = {
+        enterprise_hub_pack: text.oneClickTargetHub,
+        skill_market: text.oneClickTargetSkill,
+    };
+    const details: OneClickPublishErrorDetail[] = [];
+    for (const target of ['enterprise_hub_pack', 'skill_market'] as const) {
+        const item = (targets as Record<string, unknown>)[target];
+        if (!item || typeof item !== 'object' || (item as Record<string, unknown>).ok === true) continue;
+        const value = item as Record<string, unknown>;
+        const nested = value.error_detail && typeof value.error_detail === 'object'
+            ? value.error_detail as Record<string, unknown>
+            : {};
+        const issues = Array.isArray(nested.issues) ? nested.issues : [];
+        const issue = issues.find((candidate) => candidate && typeof candidate === 'object') as Record<string, unknown> | undefined;
+        const code = String(nested.code || value.error_code || 'TARGET_FAILED').trim();
+        const raw = String(value.error || '').trim();
+        const path = String(issue?.path || '').trim();
+        const message = String(issue?.message || nested.message || '').trim()
+            || (code === 'dep_not_published'
+                ? 'Required Skill dependency is not ready for Enterprise Hub submission.'
+                : code === 'hub_tls_certificate_invalid'
+                    ? 'Enterprise Hub rejected the connection because its TLS certificate is expired or not yet valid.'
+                : 'Remote publish failed.');
+        const suggestion = String(issue?.suggestion || '').trim()
+            || (code === 'dep_not_published'
+                ? 'Publish the dependency Skill, refresh dependency verification, then retry.'
+                : code === 'hub_tls_certificate_invalid'
+                    ? 'Renew the Enterprise Hub TLS certificate or correct the Hub server clock, then retry.'
+                : 'Review the technical details and retry after resolving the issue.');
+        details.push({
+            target,
+            code,
+            title: targetLabels[target],
+            message,
+            path,
+            suggestion,
+            raw,
+        });
+    }
+    return details;
+}
+
+function OneClickPublishErrorPanel({ result, text }: { result?: Record<string, unknown> | null; text: typeof labels.zh }) {
+    const details = oneClickPublishErrorDetails(result, text);
+    if (details.length === 0) return null;
+    return (
+        <section className="apps-one-click-errors" aria-label={text.queueOneClickPartial}>
+            {details.map((detail) => (
+                <article className="apps-one-click-errors__item" key={`${detail.target}:${detail.code}`}>
+                    <header>
+                        <strong>{detail.title}</strong>
+                        <code>{detail.code}</code>
+                    </header>
+                    <p>{detail.message}</p>
+                    {detail.path && <small><b>位置</b>{detail.path}</small>}
+                    <small><b>下一步</b>{detail.suggestion}</small>
+                    {detail.raw && (
+                        <details>
+                            <summary>技术详情</summary>
+                            <pre>{detail.raw}</pre>
+                        </details>
+                    )}
+                </article>
+            ))}
+        </section>
+    );
+}
+
+function hasOneClickPublishErrorDetails(result: Record<string, unknown> | null | undefined, text: typeof labels.zh): boolean {
+    return oneClickPublishErrorDetails(result, text).length > 0;
+}
+
+/** Keep durable queue rows readable even when they were created before structured errors existed. */
+function formatQueuedOneClickMessage(message: string | undefined, lang: string): string {
+    const raw = String(message || '').trim();
+    if (!raw) return '';
+    const normalized = raw.toLowerCase();
+    const tlsCertificateInvalid = normalized.includes('x509:')
+        || normalized.includes('certificate has expired')
+        || normalized.includes('certificate is not yet valid')
+        || normalized.includes('tls: failed to verify certificate');
+    if (tlsCertificateInvalid) {
+        return lang.startsWith('zh')
+            ? '企业 Hub TLS 证书已过期或尚未生效；请更新证书或校正服务器时间后重试。'
+            : 'Enterprise Hub TLS certificate is expired or not yet valid; renew it or correct the Hub server clock, then retry.';
+    }
+    return raw;
+}
+
+type OneClickPreflightTone = 'ready' | 'warn' | 'blocked' | 'loading' | 'unknown';
+
+type OneClickPreflightView = {
+    tone: OneClickPreflightTone;
+    title: string;
+    detail: string;
+    readyLocal: boolean;
+    readySkill: boolean;
+    readyHub: boolean;
+    lines: Array<{ id: string; ok: boolean; severity: string; message: string }>;
+};
+
+/** Pure summarizer for remote preflight JSON → card UI model. */
+function summarizeOneClickPreflightView(
+    preflight: Record<string, unknown> | null | undefined,
+    text: {
+        oneClickRemoteReady: string;
+        oneClickRemoteWarn: string;
+        oneClickRemoteBlocked: string;
+        oneClickRemoteLoading: string;
+        oneClickRemoteUnavailable: string;
+    },
+    options?: { loading?: boolean },
+): OneClickPreflightView {
+    if (options?.loading) {
+        return {
+            tone: 'loading',
+            title: text.oneClickRemoteLoading,
+            detail: '',
+            readyLocal: false,
+            readySkill: false,
+            readyHub: false,
+            lines: [],
+        };
+    }
+    if (!preflight) {
+        return {
+            tone: 'unknown',
+            title: text.oneClickRemoteUnavailable,
+            detail: '',
+            readyLocal: false,
+            readySkill: false,
+            readyHub: false,
+            lines: [],
+        };
+    }
+    const readyLocal = preflight.ready_for_local === true;
+    const readySkill = preflight.ready_for_skill_market === true;
+    const readyHub = preflight.ready_for_hub_pack === true;
+    const lines: OneClickPreflightView['lines'] = [];
+    if (Array.isArray(preflight.checks)) {
+        for (const raw of preflight.checks) {
+            if (!raw || typeof raw !== 'object') continue;
+            const row = raw as Record<string, unknown>;
+            const id = String(row.id || '').trim();
+            if (!id) continue;
+            // Surface only actionable / high-signal checks on the card.
+            if (!['package_ready', 'dependencies', 'skill_market_email', 'hub_enrollment', 'enterprise_hub_market', 'enterprise_hub_tls', 'skill_market_upload'].includes(id)) {
+                continue;
+            }
+            lines.push({
+                id,
+                ok: row.ok === true,
+                severity: String(row.severity || (row.ok === true ? 'info' : 'warn')),
+                message: String(row.message || id),
+            });
+        }
+    }
+    let tone: OneClickPreflightTone = 'ready';
+    let title = text.oneClickRemoteReady;
+    if (!readyLocal) {
+        tone = 'blocked';
+        title = text.oneClickRemoteBlocked;
+    } else if (!readySkill || !readyHub) {
+        tone = 'warn';
+        title = text.oneClickRemoteWarn;
+    }
+    const detail = formatOneClickPreflightHint(preflight) || String(preflight.message || '').trim();
+    return { tone, title, detail, readyLocal, readySkill, readyHub, lines: lines.slice(0, 6) };
+}
+
+type OneClickPreflightBarText = {
+    oneClickRemotePreflight: string;
+    oneClickRemoteReady: string;
+    oneClickRemoteWarn: string;
+    oneClickRemoteBlocked: string;
+    oneClickRemoteLoading: string;
+    oneClickRemoteUnavailable: string;
+    oneClickTargetLocal: string;
+    oneClickTargetSkill: string;
+    oneClickTargetHub: string;
+};
+
+/** Run async work over items with a fixed concurrency cap. */
+async function mapPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+    if (items.length === 0) return;
+    const concurrency = Math.max(1, Math.min(limit, items.length));
+    let next = 0;
+    const run = async () => {
+        while (next < items.length) {
+            const idx = next;
+            next += 1;
+            await worker(items[idx]);
+        }
+    };
+    await Promise.all(Array.from({ length: concurrency }, () => run()));
+}
+
+/** Compact remote preflight bar shared by publish cards and queue rows. */
+function OneClickPreflightBar({
+    preflight,
+    loading,
+    text,
+    testId,
+    compact = false,
+}: {
+    preflight?: Record<string, unknown> | null;
+    loading?: boolean;
+    text: OneClickPreflightBarText;
+    testId?: string;
+    compact?: boolean;
+}) {
+    const view = summarizeOneClickPreflightView(preflight, text, { loading: !!loading && preflight == null });
+    return (
+        <div
+            className={`apps-publish-preflight${compact ? ' apps-publish-preflight--compact' : ''}`}
+            data-tone={view.tone}
+            data-testid={testId}
+            aria-live="polite"
+        >
+            <div className="apps-publish-preflight__head">
+                <strong>{text.oneClickRemotePreflight}</strong>
+                <em>{view.title}</em>
+            </div>
+            {view.detail && <p className="apps-publish-preflight__detail">{view.detail}</p>}
+            {view.tone !== 'loading' && view.tone !== 'unknown' && (
+                <div className="apps-publish-preflight__targets" aria-label={text.oneClickRemotePreflight}>
+                    <span data-ok={view.readyLocal ? 'true' : 'false'}>{text.oneClickTargetLocal}</span>
+                    <span data-ok={view.readySkill ? 'true' : 'false'}>{text.oneClickTargetSkill}</span>
+                    <span data-ok={view.readyHub ? 'true' : 'false'}>{text.oneClickTargetHub}</span>
+                </div>
+            )}
+            {!compact && view.lines.length > 0 && (
+                <ul className="apps-publish-preflight__lines">
+                    {view.lines.map((line) => (
+                        <li key={line.id} data-ok={line.ok ? 'true' : 'false'} data-severity={line.severity}>
+                            <span aria-hidden="true">{line.ok ? 'OK' : line.severity === 'error' ? '!' : '~'}</span>
+                            <small>{line.message}</small>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+}
+
 function normalizePublishChannel(value: unknown): 'local' | 'hub' {
     const channel = String(value || '').trim().toLowerCase();
     // Empty defaults to local (queue-first publish); only explicit non-local is hub.
@@ -6079,6 +6419,47 @@ function isOneClickPartialFailureMessage(message?: string): boolean {
     return /failed:|\bpartial\b/i.test(String(message || ''));
 }
 
+/** Map backend one-click target error_code to a short actionable hint. */
+function oneClickErrorCodeHint(code: string): string {
+    switch (String(code || '').trim()) {
+        case 'dep_not_published':
+            return 'deps need bundle or skill upload first';
+        case 'auth_expired':
+            return 're-login SkillMarket / Hub session';
+        case 'hub_not_configured':
+            return 'configure enterprise Hub marketplace URL + token';
+        case 'email_not_configured':
+            return 'set remote_email / complete Hub enrollment';
+        case 'network':
+            return 'HubCenter unreachable — check network';
+        case 'fingerprint_mismatch':
+            return 'package fingerprint mismatch — re-queue or retry';
+        case 'empty_package':
+            return 'package payload is empty';
+        default:
+            return '';
+    }
+}
+
+/** Append actionable hints from targets.*.error_code when not already in the summary. */
+function enhanceOneClickMessageFromTargets(message: string, targets: unknown): string {
+    if (!targets || typeof targets !== 'object') return message;
+    const hints: string[] = [];
+    for (const key of ['enterprise_hub_pack', 'skill_market'] as const) {
+        const t = (targets as Record<string, unknown>)[key];
+        if (!t || typeof t !== 'object') continue;
+        const row = t as Record<string, unknown>;
+        if (row.ok === true) continue;
+        const hint = oneClickErrorCodeHint(String(row.error_code || ''));
+        if (!hint) continue;
+        if (message && message.toLowerCase().includes(hint.toLowerCase().slice(0, 18))) continue;
+        if (hints.some((h) => h === hint)) continue;
+        hints.push(hint);
+    }
+    if (hints.length === 0) return message;
+    return message ? `${message} · ${hints.join(' · ')}` : hints.join(' · ');
+}
+
 /** True when we should re-drive an existing queue row instead of creating a new submission. */
 function shouldRetryExistingPublishSubmission(submission?: AppPublishSubmission | null): boolean {
     if (!submission?.id) return false;
@@ -6097,7 +6478,15 @@ function parseOneClickPublishSubmission(app: AppEntry, response: unknown): AppPu
     const local = root.local_submission && typeof root.local_submission === 'object'
         ? root.local_submission as Record<string, unknown>
         : root;
-    const message = String(root.message || local.message || '').trim();
+    let message = String(root.message || local.message || '').trim();
+    message = enhanceOneClickMessageFromTargets(message, root.targets);
+    // Surface preflight warnings on partial success so the card explains remaining gaps.
+    if (root.partial === true && root.preflight && typeof root.preflight === 'object') {
+        const pfHint = formatOneClickPreflightHint(root.preflight as Record<string, unknown>);
+        if (pfHint && !message.toLowerCase().includes(pfHint.toLowerCase().slice(0, 16))) {
+            message = message ? `${message} · ${pfHint}` : pfHint;
+        }
+    }
     // Backend summarize uses "failed:"; if partial lacks that token, stamp a stable marker for canResubmit.
     const markedMessage = root.partial === true && message && !isOneClickPartialFailureMessage(message)
         ? `${message}; partial failed`
@@ -6126,6 +6515,12 @@ async function submitAppPackageToEnterpriseMarket(
     // Partial / review_failed retry: re-drive the durable queue row (no duplicate submit).
     if (existingID && hasPublishMaclawAppSubmissionOneClickBridge()) {
         try {
+            // Preflight on existing row: block only when package is not ready for local queue.
+            const pf = await preflightMaclawAppSubmissionOneClick(existingID);
+            if (pf && pf.ready_for_local === false) {
+                const hint = formatOneClickPreflightHint(pf) || String(pf.message || 'package not ready');
+                throw new Error(hint);
+            }
             const bridge = (globalThis as any).window.go.main.App.PublishMaclawAppSubmissionOneClick;
             const response = await bridge(existingID);
             return parseOneClickPublishSubmission(app, response);
@@ -6136,8 +6531,14 @@ async function submitAppPackageToEnterpriseMarket(
     }
     // Prefer one-click: local queue + enterprise Hub pack + SkillMarket/HubCenter.
     if (hasPublishMaclawAppOneClickBridge()) {
+        const packageJSON = JSON.stringify(packageManifest);
+        const pf = await preflightMaclawAppOneClickPublish(packageJSON);
+        if (pf && pf.ready_for_local === false) {
+            const hint = formatOneClickPreflightHint(pf) || String(pf.message || 'package not ready');
+            throw new Error(hint);
+        }
         const bridge = (globalThis as any).window.go.main.App.PublishMaclawAppOneClick;
-        const response = await bridge(JSON.stringify(packageManifest));
+        const response = await bridge(packageJSON);
         return parseOneClickPublishSubmission(app, response);
     }
     const bridge = (globalThis as any)?.window?.go?.main?.App?.SubmitMaclawAppPackage;
@@ -8141,6 +8542,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     const [category, setCategory] = useState('all');
     const [openTabs, setOpenTabs] = useState<string[]>([]);
     const [activeTabId, setActiveTabId] = useState('');
+	const [publishReturnAppId, setPublishReturnAppId] = useState('');
 	const [studioOpen, setStudioOpen] = useState(false);
 	const [studioTab, setStudioTab] = useState<StudioTab>('create');
 	const [studioEditAppId, setStudioEditAppId] = useState('');
@@ -8256,6 +8658,15 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     const activeApp = apps.find((app) => app.id === activeTabId) ?? openTabApps[0];
     const hiddenApps = initialApps.filter((app) => !apps.some((item) => item.id === app.id));
 
+    // The return affordance only makes sense while its repair workspace is
+    // still open. Centralizing this cleanup covers every tab-removal path
+    // (close, disable, remove, or external state reconciliation).
+    useEffect(() => {
+        if (publishReturnAppId && !openTabs.includes(publishReturnAppId)) {
+            setPublishReturnAppId('');
+        }
+    }, [openTabs, publishReturnAppId]);
+
     const openApp = (app: AppEntry) => {
         if (app.disabled) {
             setTileMenu(null);
@@ -8317,6 +8728,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     };
 
     const closeAppTab = (appId: string) => {
+		setPublishReturnAppId((current) => current === appId ? '' : current);
         setOpenTabs((current) => {
             const index = current.indexOf(appId);
             const next = current.filter((id) => id !== appId);
@@ -8514,11 +8926,21 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
         setStudioTab('manage');
         setStudioEditAppId(appId);
     };
-    const runAppFromStudio = (appId: string) => {
+	const runAppFromStudio = (appId: string, options?: { returnToPublish?: boolean }) => {
         const app = apps.find((item) => item.id === appId);
         if (!app) return;
+		if (options?.returnToPublish) {
+			setPublishReturnAppId(appId);
+		}
         openApp(app);
     };
+    const returnToPublishReview = (appId: string) => {
+		setPublishReturnAppId(appId);
+		setStudioOpen(true);
+		setStudioTab('publish');
+        setActiveOperation(null);
+    };
+	const consumePublishReturnRequest = useCallback(() => setPublishReturnAppId(''), []);
     // Evidence-only patch from the publish pane (dependency verification).
     // Unlike updateApp it must not bump the version or mark the submission
     // modified — the app definition (and its fingerprint) stays untouched.
@@ -8778,8 +9200,10 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
 	                        onEditApp={editAppFromStudio}
                         onRunApp={runAppFromStudio}
                         onUpdateAppEvidence={updateAppEvidence}
-	                        onInstallDependencies={installDependenciesFromPublish}
+                        onInstallDependencies={installDependenciesFromPublish}
                         onSyncHubAppGovernance={syncHubAppGovernance}
+						publishReturnAppId={publishReturnAppId}
+						onPublishReturnConsumed={consumePublishReturnRequest}
                     />
                 ) : activeOperation === 'approval_status' ? (
                     <ApprovalManager
@@ -8806,6 +9230,8 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                         onOpenApprovalManager={(appId) => openOperation('approval_status', { appId })}
                         onActiveRunChange={notifyActiveRunChanged}
                         onUpdateAppEvidence={updateAppEvidence}
+						publishReturnAppId={publishReturnAppId}
+						onReturnToPublishReview={returnToPublishReview}
                     />
                 </div>
             </main>
@@ -8813,7 +9239,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     );
 };
 
-const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence }: {
+const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, publishReturnAppId, onReturnToPublishReview }: {
     tabs: AppEntry[];
     activeApp?: AppEntry;
     lang?: string;
@@ -8823,6 +9249,8 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
     onOpenApprovalManager: (appId?: string) => void;
     onActiveRunChange: () => void;
     onUpdateAppEvidence?: (appId: string, patch: Partial<AppEntry>) => void;
+	publishReturnAppId?: string;
+	onReturnToPublishReview?: (appId: string) => void;
 }) => {
     const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     if (tabs.length === 0) {
@@ -8883,6 +9311,14 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
                     );
                 })}
             </div>
+			{activeApp && publishReturnAppId === activeApp.id && onReturnToPublishReview && (
+				<div className="apps-runtime-return" role="status" aria-live="polite">
+					<span>{localizeText(lang, 'After the run, return to review the refreshed evidence.', '运行完成后，返回审核查看已更新的证据。', '執行完成後，返回稽核查看已更新的證據。')}</span>
+					<button type="button" className="apps-secondary-button" data-testid="apps-runtime-return-to-publish" onClick={() => onReturnToPublishReview(activeApp.id)}>
+						{localizeText(lang, 'Return to review / publish', '返回审核/发布', '返回稽核/釋出')}
+					</button>
+				</div>
+			)}
             <div className="apps-runtime-shell">
                 {tabs.map((tabApp) => {
                     const isActive = activeApp?.id === tabApp.id;
@@ -13643,7 +14079,7 @@ function appInstallIdentityKeys(appId: string) {
     return Array.from(new Set(keys));
 }
 
-const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onOpenMISDataSettings, onOpenManual, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp, onRunApp, onUpdateAppEvidence, onInstallDependencies, onSyncHubAppGovernance }: {
+const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onOpenMISDataSettings, onOpenManual, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp, onRunApp, onUpdateAppEvidence, onInstallDependencies, onSyncHubAppGovernance, publishReturnAppId, onPublishReturnConsumed }: {
 	apps: AppEntry[];
 	hiddenApps: AppEntry[];
 	lang?: string;
@@ -13667,10 +14103,12 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
 	onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void;
 	onInstallMarketApp: (app: AppEntry) => void;
 	onEditApp: (appId: string) => void;
-	onRunApp: (appId: string) => void;
+	onRunApp: (appId: string, options?: { returnToPublish?: boolean }) => void;
 	onUpdateAppEvidence: (appId: string, patch: Partial<AppEntry>) => void;
 	onInstallDependencies: (appId: string) => void;
 	onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void;
+	publishReturnAppId: string;
+	onPublishReturnConsumed: () => void;
 }) => {
 	const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [focusPublishAppId, setFocusPublishAppId] = useState('');
@@ -13698,6 +14136,14 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
         }
         activateStudioTab('publish', true);
     }, [activateStudioTab]);
+	useEffect(() => {
+		const appId = String(publishReturnAppId || '').trim();
+		if (!appId) return;
+		setFocusPublishAppId(appId);
+		setFocusPublishNonce((token) => token + 1);
+		activateStudioTab('publish', true);
+		onPublishReturnConsumed();
+	}, [publishReturnAppId, activateStudioTab, onPublishReturnConsumed]);
     const handleStudioTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
         const nextIndex = event.key === 'ArrowRight'
             ? (index + 1) % studioTabs.length
@@ -13780,7 +14226,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                     >
 	                        {tab === 'create' && <CreateAppPane lang={lang} onCreateApp={onCreateApp} />}
 	                        {tab === 'manage' && <ManageAppsPane apps={apps} hiddenApps={hiddenApps} skillDiscovery={skillDiscovery} lang={lang} onTogglePin={onTogglePin} onUpdateApp={onUpdateApp} onDuplicateApp={onDuplicateApp} onMoveApp={onMoveApp} onToggleDisableApp={onToggleDisableApp} onRemoveApp={onRemoveApp} onRestoreApp={onRestoreApp} onAddDiscoveredApp={onAddDiscoveredApp} pendingEditAppId={pendingEditAppId} onPendingEditConsumed={onPendingEditConsumed} onAfterEditSave={openPublishAfterEdit} />}
-	                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onRunApp={onRunApp} onUpdateAppEvidence={onUpdateAppEvidence} onInstallDependencies={onInstallDependencies} onInstallApprovedHubApp={installApprovedHubApp} onSyncHubAppGovernance={onSyncHubAppGovernance} focusAppId={focusPublishAppId} focusNonce={focusPublishNonce} onFocusAppConsumed={clearFocusPublishAppId} />}
+	                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onRunApp={(appId) => onRunApp(appId, { returnToPublish: true })} onUpdateAppEvidence={onUpdateAppEvidence} onInstallDependencies={onInstallDependencies} onInstallApprovedHubApp={installApprovedHubApp} onSyncHubAppGovernance={onSyncHubAppGovernance} focusAppId={focusPublishAppId} focusNonce={focusPublishNonce} onFocusAppConsumed={clearFocusPublishAppId} />}
                     </div>
                 </div>
             </div>
@@ -15554,6 +16000,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     const [queueSyncingId, setQueueSyncingId] = useState('');
     const [queueSyncErrorId, setQueueSyncErrorId] = useState('');
     const [queueOneClickMessage, setQueueOneClickMessage] = useState<Record<string, string>>({});
+    const [queueOneClickResult, setQueueOneClickResult] = useState<Record<string, Record<string, unknown>>>({});
     const [queueInstallingId, setQueueInstallingId] = useState('');
     const [queueInstalledId, setQueueInstalledId] = useState('');
     const [queueInstallErrorId, setQueueInstallErrorId] = useState('');
@@ -15564,6 +16011,19 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     const [queueDetailRecords, setQueueDetailRecords] = useState<Record<string, Record<string, unknown>>>({});
     const [dependencyActions, setDependencyActions] = useState<Record<string, { status: 'working' | 'ok' | 'error'; message?: string }>>({});
     const dependencyResolveInFlightRef = useRef<Set<string>>(new Set());
+    /** Remote one-click preflight snapshots keyed by app id. */
+    const [remotePreflightByAppId, setRemotePreflightByAppId] = useState<Record<string, {
+        loading?: boolean;
+        preflight?: Record<string, unknown> | null;
+        error?: string;
+        updatedAt?: number;
+    }>>({});
+    /** Remote preflight for durable queue rows (submission id). */
+    const [remotePreflightBySubmissionId, setRemotePreflightBySubmissionId] = useState<Record<string, {
+        loading?: boolean;
+        preflight?: Record<string, unknown> | null;
+        updatedAt?: number;
+    }>>({});
     const publishApps = useMemo(() => apps.filter(isAppPublishCandidate), [apps]);
     // The publish checks read run evidence from localStorage only, while every
     // workspace run also writes a durable copy (RecordMaclawAppRunHistory).
@@ -15766,6 +16226,116 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     useEffect(() => {
         void refreshSubmissionQueue();
     }, []);
+    // Keep remote preflight bars warm for publish cards (debounced, parallel).
+    useEffect(() => {
+        if (!hasPreflightMaclawAppOneClickBridge()) return;
+        if (publishApps.length === 0) {
+            setRemotePreflightByAppId({});
+            return;
+        }
+        let cancelled = false;
+        const appsSnapshot = publishApps.slice();
+        const liveIDs = new Set(appsSnapshot.map((app) => app.id));
+        const submissionsSnapshot = submissions;
+        const timer = window.setTimeout(() => {
+            void (async () => {
+                setRemotePreflightByAppId((current) => {
+                    const next: typeof current = {};
+                    // Drop stale app keys so removed publish candidates do not linger.
+                    for (const app of appsSnapshot) {
+                        next[app.id] = { ...(current[app.id] || {}), loading: true };
+                    }
+                    return next;
+                });
+                // Cap concurrency so large publish lists do not flood the Go bridge.
+                await mapPool(appsSnapshot, 3, async (app) => {
+                    if (cancelled || !liveIDs.has(app.id)) return;
+                    try {
+                        const packageJSON = JSON.stringify(appsToPackManifest([app], submissionsSnapshot));
+                        const pf = await preflightMaclawAppOneClickPublish(packageJSON);
+                        if (cancelled) return;
+                        setRemotePreflightByAppId((current) => ({
+                            ...current,
+                            [app.id]: { loading: false, preflight: pf, updatedAt: Date.now() },
+                        }));
+                    } catch (error) {
+                        if (cancelled) return;
+                        setRemotePreflightByAppId((current) => ({
+                            ...current,
+                            [app.id]: {
+                                loading: false,
+                                preflight: null,
+                                error: error instanceof Error ? error.message : String(error || ''),
+                                updatedAt: Date.now(),
+                            },
+                        }));
+                    }
+                });
+            })();
+        }, 400);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+        // Fingerprint ready-state + evidence tick so bar refreshes after runs.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        publishApps.map((app) => `${app.id}:${app.version || 0}:${app.importedRunEvidence?.verifiedAt || app.importedRunEvidence?.verified_at || ''}`).join('|'),
+        runEvidenceTick,
+        Object.keys(submissions).sort().join('|'),
+    ]);
+    // Warm preflight for durable queue rows that can still one-click (parallel).
+    // Intentionally omit message from the fingerprint — one-click stamps rewrite
+    // message and would thrash preflight otherwise.
+    useEffect(() => {
+        if (!hasPreflightMaclawAppSubmissionOneClickBridge()) return;
+        const ids = queueSummaries
+            .filter((item) => {
+                const status = String(item.status || 'submitted');
+                return !['revoked', 'deprecated', 'published'].includes(status);
+            })
+            .map((item) => item.submissionID)
+            .filter(Boolean);
+        if (ids.length === 0) {
+            setRemotePreflightBySubmissionId({});
+            return;
+        }
+        let cancelled = false;
+        const liveIDs = new Set(ids);
+        const timer = window.setTimeout(() => {
+            void (async () => {
+                setRemotePreflightBySubmissionId((current) => {
+                    const next: typeof current = {};
+                    for (const submissionID of ids) {
+                        next[submissionID] = { ...(current[submissionID] || {}), loading: true };
+                    }
+                    return next;
+                });
+                await mapPool(ids, 3, async (submissionID) => {
+                    if (cancelled || !liveIDs.has(submissionID)) return;
+                    try {
+                        const pf = await preflightMaclawAppSubmissionOneClick(submissionID);
+                        if (cancelled) return;
+                        setRemotePreflightBySubmissionId((current) => ({
+                            ...current,
+                            [submissionID]: { loading: false, preflight: pf, updatedAt: Date.now() },
+                        }));
+                    } catch {
+                        if (cancelled) return;
+                        setRemotePreflightBySubmissionId((current) => ({
+                            ...current,
+                            [submissionID]: { loading: false, preflight: null, updatedAt: Date.now() },
+                        }));
+                    }
+                });
+            })();
+        }, 500);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [queueSummaries.map((item) => `${item.submissionID}:${item.status}:${item.packageSHA || ''}`).join('|')]);
     useEffect(() => {
         const targetId = String(focusAppId || '').trim();
         if (!targetId || typeof window === 'undefined') return;
@@ -15899,6 +16469,29 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             return next;
         });
         setSubmittingAppId('');
+        // Refresh remote preflight after publish so the card reflects new HubSkillIDs / stamps.
+        setRemotePreflightByAppId((current) => ({
+            ...current,
+            [app.id]: { ...(current[app.id] || {}), loading: true },
+        }));
+        void (async () => {
+            if (!hasPreflightMaclawAppOneClickBridge()) return;
+            try {
+                const packageJSON = JSON.stringify(appsToPackManifest([app], {
+                    [app.id]: normalizeFreshPublishSubmission(submission!),
+                }));
+                const pf = await preflightMaclawAppOneClickPublish(packageJSON);
+                setRemotePreflightByAppId((current) => ({
+                    ...current,
+                    [app.id]: { loading: false, preflight: pf, updatedAt: Date.now() },
+                }));
+            } catch {
+                setRemotePreflightByAppId((current) => ({
+                    ...current,
+                    [app.id]: { loading: false, preflight: current[app.id]?.preflight ?? null, updatedAt: Date.now() },
+                }));
+            }
+        })();
         void refreshSubmissionQueue();
     };
     const withdrawApp = async (appID: string) => {
@@ -15925,6 +16518,11 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             delete next[submissionID];
             return next;
         });
+        setQueueOneClickResult((current) => {
+            const next = { ...current };
+            delete next[submissionID];
+            return next;
+        });
         try {
             await syncMaclawAppPackageSubmissionToHub(submissionID);
             await refreshSubmissionQueue();
@@ -15943,7 +16541,19 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             delete next[submissionID];
             return next;
         });
+        setQueueOneClickResult((current) => {
+            const next = { ...current };
+            delete next[submissionID];
+            return next;
+        });
         try {
+            const pf = await preflightMaclawAppSubmissionOneClick(submissionID);
+            if (pf && pf.ready_for_local === false) {
+                const hint = formatOneClickPreflightHint(pf) || String(pf.message || text.queueOneClickPartial);
+                setQueueSyncErrorId(submissionID);
+                setQueueOneClickMessage((current) => ({ ...current, [submissionID]: hint }));
+                return;
+            }
             const result = await publishMaclawAppSubmissionOneClick(submissionID);
             // Hub sync may rewrite durable submission_id; key UI state to the final id.
             const localSub = result.local_submission && typeof result.local_submission === 'object'
@@ -15957,6 +16567,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             ).trim() || submissionID;
             await refreshSubmissionQueue();
             const message = String(result.message || '').trim();
+            setQueueOneClickResult((current) => ({ ...current, [resultID]: result }));
             // Success text is stamped onto durable queue message and shown after refresh.
             // Only keep ephemeral state for partial/failed outcomes.
             if (result.partial === true) {
@@ -15965,6 +16576,24 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                     ...current,
                     [resultID]: message || text.queueOneClickPartial,
                 }));
+            }
+            // Refresh queue preflight after one-click (skill stamps / hub channel may change).
+            if (hasPreflightMaclawAppSubmissionOneClickBridge()) {
+                setRemotePreflightBySubmissionId((current) => ({
+                    ...current,
+                    [resultID]: { ...(current[resultID] || current[submissionID] || {}), loading: true },
+                }));
+                void preflightMaclawAppSubmissionOneClick(resultID).then((pf) => {
+                    setRemotePreflightBySubmissionId((current) => ({
+                        ...current,
+                        [resultID]: { loading: false, preflight: pf, updatedAt: Date.now() },
+                    }));
+                }).catch(() => {
+                    setRemotePreflightBySubmissionId((current) => ({
+                        ...current,
+                        [resultID]: { loading: false, preflight: null, updatedAt: Date.now() },
+                    }));
+                });
             }
         } catch {
             setQueueSyncErrorId(submissionID);
@@ -16105,11 +16734,21 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                         const hasDependencyReviewIssue = reviewIssuesIncludeDependency(submission?.reviewIssues);
                         const hasDependencyCheckIssue = checks.some((check) => check.label === text.skillDependencies && !check.ok);
                         const dependencyAction = dependencyActions[app.id];
+                        const remotePf = remotePreflightByAppId[app.id];
+                        // Keep last preflight while a refresh is in flight so partial hints do not flicker.
+                        const remoteView = summarizeOneClickPreflightView(
+                            remotePf?.preflight,
+                            text,
+                            { loading: remotePf === undefined || (!!remotePf?.loading && !remotePf?.preflight) },
+                        );
+                        const mayPartialRemote = remoteView.tone === 'warn' && ready;
+                        const remoteBlocked = remoteView.tone === 'blocked';
                         return (
                             <article
                                 className={`apps-publish-card${highlightAppId === app.id ? ' is-focus-target' : ''}`}
                                 key={app.id}
                                 data-ready={ready ? 'true' : 'false'}
+                                data-remote-tone={remoteView.tone}
                                 data-publish-app-id={app.id}
                                 ref={(node) => {
                                     if (highlightAppId === app.id) focusedCardRef.current = node;
@@ -16145,6 +16784,14 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                         <span>{submitError}</span>
                                     </div>
                                 )}
+                                {hasPreflightMaclawAppOneClickBridge() && (
+                                    <OneClickPreflightBar
+                                        preflight={remotePf?.preflight}
+                                        loading={remotePf === undefined || (!!remotePf?.loading && !remotePf?.preflight)}
+                                        text={text}
+                                        testId={`apps-publish-preflight-${app.id}`}
+                                    />
+                                )}
                                 <div className="apps-publish-checks">
                                     <div className="apps-publish-checks__summary">
                                         {localizeText(lang,
@@ -16166,11 +16813,25 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                     <button
                                         className="apps-primary-button"
                                         type="button"
-                                        disabled={isSubmitting || !ready || (!!submission && !canResubmit)}
-                                        title={text.oneClickPublishHint}
+                                        disabled={isSubmitting || !ready || remoteBlocked || (!!submission && !canResubmit)}
+                                        title={
+                                            remoteBlocked
+                                                ? (remoteView.detail || text.oneClickRemoteBlocked)
+                                                : mayPartialRemote
+                                                    ? text.oneClickMayPartialTitle
+                                                    : text.oneClickPublishHint
+                                        }
                                         onClick={() => void submitApp(app)}
                                     >
-                                        {isSubmitting ? text.oneClickPublishBusy : submission && !canResubmit ? text.submittedReview : text.oneClickPublish}
+                                        {isSubmitting
+                                            ? text.oneClickPublishBusy
+                                            : remoteBlocked
+                                                ? text.oneClickRemoteBlocked
+                                                : submission && !canResubmit
+                                                    ? text.submittedReview
+                                                    : mayPartialRemote
+                                                        ? text.oneClickPublishPartial
+                                                        : text.oneClickPublish}
                                     </button>
                                     {canWithdraw && (
                                         <button className="apps-secondary-button" type="button" onClick={() => void withdrawApp(app.id)}>
@@ -16198,6 +16859,12 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                         </button>
                                     )}
                                 </div>
+                                {mayPartialRemote && (
+                                    <div className="apps-publish-partial-hint" role="note" data-testid={`apps-publish-partial-hint-${app.id}`}>
+                                        {text.oneClickMayPartial}
+                                        {remoteView.detail ? ` · ${remoteView.detail}` : ''}
+                                    </div>
+                                )}
                                 {dependencyAction && dependencyAction.status !== 'working' && dependencyAction.message && (
                                     <div
                                         className={`apps-publish-submission${dependencyAction.status === 'error' ? ' apps-publish-submission--error' : ''}`}
@@ -16261,8 +16928,22 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                 const canRefreshItemFromHub = item.channel === 'hub' && ['pending_review', 'review_failed', 'approved'].includes(itemStatus);
                                 const canInstallApprovedHubApp = item.channel === 'hub' && !!item.hubCapabilityID && ['approved', 'published'].includes(itemStatus);
                                 const queueInstallResult = queueInstallResults[item.submissionID];
+                                const queueRemote = remotePreflightBySubmissionId[item.submissionID];
+                                const queueRemoteView = summarizeOneClickPreflightView(
+                                    queueRemote?.preflight,
+                                    text,
+                                    {
+                                        loading: canOneClickItem && (
+                                            queueRemote === undefined || (!!queueRemote?.loading && !queueRemote?.preflight)
+                                        ),
+                                    },
+                                );
+                                const queueMayPartial = canOneClickItem && queueRemoteView.tone === 'warn';
+                                const queueRemoteBlocked = canOneClickItem && queueRemoteView.tone === 'blocked';
+                                const queuePublishResult = queueOneClickResult[item.submissionID];
+                                const hasStructuredPublishError = hasOneClickPublishErrorDetails(queuePublishResult, text);
                                 return (
-                                    <div className="apps-publish-queue__row" key={item.submissionID}>
+                                    <div className="apps-publish-queue__row" key={item.submissionID} data-remote-tone={queueRemoteView.tone}>
                                         <div className="apps-publish-queue__body">
                                             <strong>{item.submissionID}</strong>
                                             <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} &middot; {item.channel || 'local'} &middot; {item.status || 'submitted'}</span>
@@ -16272,17 +16953,38 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                                 {item.packageBytes ? ` \u00b7 ${formatPackageBytes(item.packageBytes)}` : ''}
                                                 {dependencyCount ? ` | ${text.skillDependencies}:${dependencyCount} ${text.missingDependencyCount}:${missingDependencyCount}` : ''}
                                                 {item.eventCount ? ` \u00b7 ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
-                                                {item.message ? ` \u00b7 ${item.message}` : ''}
+                                                {item.message ? ` \u00b7 ${formatQueuedOneClickMessage(item.message, lang || 'en')}` : ''}
                                             </small>
+                                            {canOneClickItem && hasPreflightMaclawAppSubmissionOneClickBridge() && (
+                                                <OneClickPreflightBar
+                                                    preflight={queueRemote?.preflight}
+                                                    loading={queueRemote === undefined || (!!queueRemote?.loading && !queueRemote?.preflight)}
+                                                    text={text}
+                                                    compact
+                                                    testId={`apps-queue-preflight-${item.submissionID}`}
+                                                />
+                                            )}
+                                            {queueMayPartial && (
+                                                <small className="apps-publish-partial-hint" data-testid={`apps-queue-partial-hint-${item.submissionID}`}>
+                                                    {text.oneClickMayPartial}
+                                                </small>
+                                            )}
+                                            {queueRemoteBlocked && (
+                                                <small className="apps-publish-partial-hint apps-publish-partial-hint--blocked" data-testid={`apps-queue-blocked-hint-${item.submissionID}`}>
+                                                    {text.oneClickRemoteBlocked}
+                                                    {queueRemoteView.detail ? ` · ${queueRemoteView.detail}` : ''}
+                                                </small>
+                                            )}
                                             {queuePackageErrorId === item.submissionID && <small>{text.queuePackageUnavailable}</small>}
-                                            {queueSyncErrorId === item.submissionID && (
+                                            {queueSyncErrorId === item.submissionID && !hasStructuredPublishError && (
                                                 <small>
                                                     {queueOneClickMessage[item.submissionID] || text.queueHubSyncFailed}
                                                 </small>
                                             )}
-                                            {queueSyncErrorId !== item.submissionID && queueOneClickMessage[item.submissionID] && (
+                                            {queueSyncErrorId !== item.submissionID && queueOneClickMessage[item.submissionID] && !hasStructuredPublishError && (
                                                 <small>{queueOneClickMessage[item.submissionID]}</small>
                                             )}
+                                            <OneClickPublishErrorPanel result={queuePublishResult} text={text} />
                                             {queueInstalledId === item.submissionID && <small>{text.approvedHubAppInstalled}</small>}
                                             {queueInstallErrorId === item.submissionID && <small>{queueInstallErrorMessages[item.submissionID] || text.approvedHubAppInstallFailed}</small>}
                                             {queueInstallResult?.plan && <DependencyVerificationPanel plan={queueInstallResult.plan} state="ready" selectedAppIDs={queueInstallResult.appIDs} text={text} />}
@@ -16296,11 +16998,23 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                                 <button
                                                     className="apps-primary-button apps-publish-queue__copy"
                                                     type="button"
-                                                    disabled={queueSyncingId === item.submissionID}
-                                                    title={text.oneClickPublishHint}
+                                                    disabled={queueSyncingId === item.submissionID || queueRemoteBlocked}
+                                                    title={
+                                                        queueRemoteBlocked
+                                                            ? (queueRemoteView.detail || text.oneClickRemoteBlocked)
+                                                            : queueMayPartial
+                                                                ? text.oneClickMayPartialTitle
+                                                                : text.oneClickPublishHint
+                                                    }
                                                     onClick={() => void oneClickPublishQueuedSubmission(item.submissionID)}
                                                 >
-                                                    {queueSyncingId === item.submissionID ? text.oneClickPublishBusy : text.oneClickPublish}
+                                                    {queueSyncingId === item.submissionID
+                                                        ? text.oneClickPublishBusy
+                                                        : queueRemoteBlocked
+                                                            ? text.oneClickRemoteBlocked
+                                                            : queueMayPartial
+                                                                ? text.oneClickPublishPartial
+                                                                : text.oneClickPublish}
                                                 </button>
                                             )}
                                             {canSyncItemToHub && (

@@ -345,6 +345,9 @@ func (m *StateMachine) SubmitForm(userID string, formData map[string]interface{}
 			return err
 		}
 	}
+	if err := validateRequireAnyOf(phase.InputSchema, formData); err != nil {
+		return err
+	}
 
 	phase.FormData = formData
 
@@ -449,6 +452,9 @@ func formValueStringSlice(value interface{}) ([]string, bool) {
 }
 
 func isEmptyFormValue(value interface{}) bool {
+	if value == nil {
+		return true
+	}
 	switch v := value.(type) {
 	case string:
 		return strings.TrimSpace(v) == ""
@@ -456,11 +462,86 @@ func isEmptyFormValue(value interface{}) bool {
 		selected, _ := formValueStringSlice(v)
 		return len(selected) == 0
 	case []interface{}:
-		selected, ok := formValueStringSlice(v)
-		return ok && len(selected) == 0
+		if len(v) == 0 {
+			return true
+		}
+		// Prefer string-slice semantics when every element is a string.
+		if selected, ok := formValueStringSlice(v); ok {
+			return len(selected) == 0
+		}
+		// Mixed/non-string arrays (e.g. file metadata objects): empty only if all items empty.
+		for _, item := range v {
+			if !isEmptyFormValue(item) {
+				return false
+			}
+		}
+		return true
+	case map[string]interface{}:
+		// Empty object or all-empty nested values (e.g. file widget stub {}).
+		if len(v) == 0 {
+			return true
+		}
+		for _, item := range v {
+			if !isEmptyFormValue(item) {
+				return false
+			}
+		}
+		return true
 	default:
+		// Numbers, bools, structs: treat as present.
 		return false
 	}
+}
+
+// validateRequireAnyOf enforces PhaseInputSchema.RequireAnyOf groups: each
+// non-empty group must have at least one non-empty submitted field.
+func validateRequireAnyOf(schema *PhaseInputSchema, formData map[string]interface{}) error {
+	if schema == nil || len(schema.RequireAnyOf) == 0 {
+		return nil
+	}
+	labelByName := make(map[string]string, len(schema.Fields))
+	collect := func(fields []PhaseInputField) {
+		for _, f := range fields {
+			if f.Name == "" {
+				continue
+			}
+			if f.Label != "" {
+				labelByName[f.Name] = f.Label
+			} else {
+				labelByName[f.Name] = f.Name
+			}
+		}
+	}
+	collect(schema.Fields)
+	for _, v := range schema.Variants {
+		collect(v.Fields)
+	}
+	for _, group := range schema.RequireAnyOf {
+		if len(group) == 0 {
+			continue
+		}
+		satisfied := false
+		labels := make([]string, 0, len(group))
+		for _, name := range group {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if lbl, ok := labelByName[name]; ok {
+				labels = append(labels, lbl)
+			} else {
+				labels = append(labels, name)
+			}
+			val, exists := formData[name]
+			if exists && !isEmptyFormValue(val) {
+				satisfied = true
+			}
+		}
+		if !satisfied && len(labels) > 0 {
+			return fmt.Errorf("请至少填写以下之一：%s", strings.Join(labels, " / "))
+		}
+	}
+	return nil
 }
 
 // resolveOutputDirFromState scans all phases' FormData for an output_dir or

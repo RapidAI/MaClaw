@@ -1237,6 +1237,7 @@ func TestSubmitSkill_AllAuthFailuresReturnAuthExpiredMessage(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
+	// No Hub enrollment credentials → cannot machine-login refresh.
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubCenterURL:      server.URL,
 		SkillMarketSessionToken: "expired-session",
@@ -1254,5 +1255,267 @@ func TestSubmitSkill_AllAuthFailuresReturnAuthExpiredMessage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SkillMarket 认证失败或已过期") {
 		t.Fatalf("SubmitSkill() error = %v, want auth expired message", err)
+	}
+}
+
+func TestSubmitSkill_RefreshesSessionViaHubMachineLoginOn401(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var submitHits int32
+	var machineLoginHits int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{server.URL}})
+		case "/api/v1/auth/machine-login":
+			atomic.AddInt32(&machineLoginHits, 1)
+			if got := r.Header.Get("Content-Type"); !strings.Contains(got, "json") {
+				// body still ok
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"session_token": "fresh-skillmarket-session",
+				"email":         "user@example.com",
+			})
+		case "/api/v1/skills/submit":
+			n := atomic.AddInt32(&submitHits, 1)
+			auth := r.Header.Get("Authorization")
+			if n == 1 {
+				if auth != "Bearer expired-session" {
+					t.Errorf("first submit Authorization = %q", auth)
+				}
+				http.Error(w, `{"error":"session expired or invalid"}`, http.StatusUnauthorized)
+				return
+			}
+			if auth != "Bearer fresh-skillmarket-session" {
+				t.Errorf("retry submit Authorization = %q, want refreshed token", auth)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "sub-after-refresh"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:      server.URL,
+		RemoteEmail:             "user@example.com",
+		RemoteMachineID:         "m_test",
+		RemoteViewerToken:       "viewer-token",
+		SkillMarketSessionToken: "expired-session",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	id, err := NewSkillMarketClient(app).SubmitSkill(context.Background(), zipPath, "user@example.com")
+	if err != nil {
+		t.Fatalf("SubmitSkill() error = %v", err)
+	}
+	if id != "sub-after-refresh" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if atomic.LoadInt32(&machineLoginHits) != 1 {
+		t.Fatalf("machine-login hits = %d, want 1", machineLoginHits)
+	}
+	if atomic.LoadInt32(&submitHits) != 2 {
+		t.Fatalf("submit hits = %d, want 2 (auth fail + retry)", submitHits)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SkillMarketSessionToken != "fresh-skillmarket-session" {
+		t.Fatalf("SkillMarketSessionToken = %q after refresh", cfg.SkillMarketSessionToken)
+	}
+}
+
+// Mixed 401 + 5xx used to skip session refresh (authFailures < len(bases)).
+// Refresh must still run so a stale token is not blocked by a flaky peer.
+func TestSubmitSkill_RefreshesSessionOnMixedAuthAndServerErrors(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var flaky *httptest.Server
+	flaky = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/skills/submit" {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer flaky.Close()
+
+	var submitHits int32
+	var machineLoginHits int32
+	var primary *httptest.Server
+	primary = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{primary.URL, flaky.URL}})
+		case "/api/v1/auth/machine-login":
+			atomic.AddInt32(&machineLoginHits, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"session_token": "fresh-after-mixed",
+				"email":         "user@example.com",
+			})
+		case "/api/v1/skills/submit":
+			n := atomic.AddInt32(&submitHits, 1)
+			auth := r.Header.Get("Authorization")
+			if n == 1 {
+				http.Error(w, `{"error":"session expired"}`, http.StatusUnauthorized)
+				return
+			}
+			if auth != "Bearer fresh-after-mixed" {
+				t.Errorf("retry Authorization = %q", auth)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "sub-mixed-ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer primary.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:      primary.URL,
+		RemoteHubCenterURLs:     []string{flaky.URL},
+		RemoteEmail:             "user@example.com",
+		RemoteMachineID:         "m_test",
+		RemoteViewerToken:       "viewer-token",
+		SkillMarketSessionToken: "expired-session",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := filepath.Join(tmpHome, "skill.zip")
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	id, err := NewSkillMarketClient(app).SubmitSkill(context.Background(), zipPath, "user@example.com")
+	if err != nil {
+		t.Fatalf("SubmitSkill() error = %v", err)
+	}
+	if id != "sub-mixed-ok" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if atomic.LoadInt32(&machineLoginHits) < 1 {
+		t.Fatalf("expected machine-login refresh on mixed 401+5xx, hits=%d", machineLoginHits)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SkillMarketSessionToken != "fresh-after-mixed" {
+		t.Fatalf("SkillMarketSessionToken = %q after mixed-error refresh", cfg.SkillMarketSessionToken)
+	}
+}
+
+func TestSubmitSkill_DoesNotUseDefaultHAPeerOutsideRegistration(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var registeredHits int32
+	var defaultPeerHits int32
+
+	var defaultPeer *httptest.Server
+	defaultPeer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/skills/submit" {
+			atomic.AddInt32(&defaultPeerHits, 1)
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer defaultPeer.Close()
+
+	var registered *httptest.Server
+	registered = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			// Discovery advertises the broken default peer (like HA cluster listing hubs2).
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{registered.URL, defaultPeer.URL}})
+		case "/api/v1/skills/submit":
+			atomic.AddInt32(&registeredHits, 1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "sub-registered"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer registered.Close()
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = defaultPeer.URL
+	remote.DefaultRemoteHubCenterURLs = []string{defaultPeer.URL}
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	app := &App{
+		testHomeDir:    tmpHome,
+		hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute),
+	}
+	// Cache poisoned with the broken HA peer (same symptom users hit with hubs2).
+	app.hubCenterCache.Set(defaultPeer.URL, []string{defaultPeer.URL, registered.URL})
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  registered.URL,
+		RemoteHubCenterURLs: []string{"http://127.0.0.1:61729", registered.URL},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	zipPath := tmpHome + "/skill.zip"
+	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	id, err := NewSkillMarketClient(app).SubmitSkill(context.Background(), zipPath, "uploader@example.com")
+	if err != nil {
+		t.Fatalf("SubmitSkill() error = %v", err)
+	}
+	if id != "sub-registered" {
+		t.Fatalf("submission id = %q", id)
+	}
+	if atomic.LoadInt32(&registeredHits) != 1 {
+		t.Fatalf("registered hits = %d, want 1", registeredHits)
+	}
+	if atomic.LoadInt32(&defaultPeerHits) != 0 {
+		t.Fatalf("default HA peer hits = %d, want 0 (must not upload outside registration)", defaultPeerHits)
 	}
 }

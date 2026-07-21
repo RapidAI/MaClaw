@@ -30,6 +30,90 @@ type acpRemoteCodingTask struct {
 	LastActivity   string `json:"last_activity,omitempty"`
 }
 
+// onMaclawCreateRemoteCodingTask creates the same persistent remote_coding_dev
+// task record that the MaClaw GUI creates. SSH passwords are deliberately not
+// part of this request: the VS Code client asks for one only when attaching.
+func (s *acpHostSession) onMaclawCreateRemoteCodingTask(raw json.RawMessage) (any, *acpagent.RPCError) {
+	if s == nil || s.app == nil {
+		return nil, acpErr(acpagent.CodeInternalError, "app unavailable")
+	}
+	var params struct {
+		Name       string `json:"name"`
+		SSHHost    string `json:"ssh_host"`
+		SSHHostAlt string `json:"sshHost"`
+		SSHUser    string `json:"ssh_user"`
+		SSHUserAlt string `json:"sshUser"`
+		WorkDir    string `json:"work_dir"`
+		WorkDirAlt string `json:"workDir"`
+		SSHPort    int    `json:"ssh_port"`
+		SSHPortAlt int    `json:"sshPort"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, acpErr(acpagent.CodeInvalidParams, err.Error())
+	}
+	if params.SSHPort < 0 || params.SSHPortAlt < 0 {
+		return nil, acpErr(acpagent.CodeInvalidParams, "ssh_port must be between 1 and 65535")
+	}
+	name := strings.TrimSpace(params.Name)
+	host := normalizeSSHHostInput(firstNonEmpty(params.SSHHost, params.SSHHostAlt))
+	user := sanitizeTaskMetadataTagValue(firstNonEmpty(params.SSHUser, params.SSHUserAlt))
+	workDir := sanitizeTaskMetadataTagValue(firstNonEmpty(params.WorkDir, params.WorkDirAlt))
+	port := params.SSHPort
+	if port <= 0 {
+		port = params.SSHPortAlt
+	}
+	if name == "" || host == "" || user == "" || workDir == "" {
+		return nil, acpErr(acpagent.CodeInvalidParams, "name, ssh_host, ssh_user, and work_dir are required")
+	}
+	if port == 0 {
+		port = 22
+	}
+	if port < 1 || port > 65535 {
+		return nil, acpErr(acpagent.CodeInvalidParams, "ssh_port must be between 1 and 65535")
+	}
+	// Reuse the matching task rather than creating duplicate task records when a
+	// user retries after a cancelled password prompt or a transient bridge error.
+	if existing := s.app.FindRemoteCodingTaskByMeta(host, user, workDir); strings.TrimSpace(existing.ProjectPath) != "" {
+		if err := s.app.UpdateRemoteCodingTaskMeta(existing.ProjectPath, host, user, workDir, port); err != nil {
+			return nil, acpErr(acpagent.CodeInternalError, "failed to update existing remote coding task: "+err.Error())
+		}
+		return s.remoteCodingTaskResult(existing.ProjectPath, existing.Name, true)
+	}
+	task := s.app.CreateRemoteCodingTask(name, host, user, workDir, port)
+	if strings.TrimSpace(task.ProjectPath) == "" {
+		return nil, acpErr(acpagent.CodeInternalError, "failed to create remote coding task")
+	}
+	return s.remoteCodingTaskResult(task.ProjectPath, task.Name, false)
+}
+
+func (s *acpHostSession) remoteCodingTaskResult(projectPath, name string, reused bool) (any, *acpagent.RPCError) {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return nil, acpErr(acpagent.CodeInternalError, "remote coding task path is empty")
+	}
+	meta, err := s.app.GetRemoteCodingTaskMeta(projectPath)
+	if err != nil {
+		return nil, acpErr(acpagent.CodeInternalError, "failed to read remote coding task metadata: "+err.Error())
+	}
+	status := s.app.GetCodingWorkbenchStatus(projectPath)
+	return map[string]any{
+		"ok":     true,
+		"reused": reused,
+		"task": acpRemoteCodingTask{
+			Name:           strings.TrimSpace(name),
+			ProjectPath:    projectPath,
+			Host:           strings.TrimSpace(meta.Host),
+			User:           strings.TrimSpace(meta.User),
+			Port:           meta.Port,
+			WorkDir:        strings.TrimSpace(meta.WorkDir),
+			Kind:           "remote",
+			Armed:          status.Armed,
+			NeedsReconnect: status.NeedsReconnect,
+			Message:        strings.TrimSpace(status.Message),
+		},
+	}, nil
+}
+
 func (s *acpHostSession) onMaclawListRemoteCodingTasks(raw json.RawMessage) (any, *acpagent.RPCError) {
 	if s == nil || s.app == nil {
 		return nil, acpErr(acpagent.CodeInternalError, "app unavailable")
@@ -47,7 +131,11 @@ func (s *acpHostSession) onMaclawListRemoteCodingTasks(raw json.RawMessage) (any
 	if limit > 100 {
 		limit = 100
 	}
-	tasks := s.app.ListTasks(limit * 3) // over-fetch then filter remote
+	// Tasks are ordered by recency, not by kind. A shallow over-fetch can hide a
+	// valid remote task behind routine local tasks, which makes the VS Code picker
+	// misleadingly appear empty. Scan a bounded broad window, then return only
+	// the requested remote rows.
+	tasks := s.app.ListTasks(1000)
 	out := make([]acpRemoteCodingTask, 0, 16)
 	for _, t := range tasks {
 		if !projectRecordHasTagLike(t.Tags, taskRemoteCodingDevTag) {
@@ -84,7 +172,7 @@ func (s *acpHostSession) onMaclawGetCodingWorkbenchStatus(raw json.RawMessage) (
 		return nil, acpErr(acpagent.CodeInternalError, "app unavailable")
 	}
 	var params struct {
-		ProjectPath string `json:"project_path"`
+		ProjectPath    string `json:"project_path"`
 		ProjectPathAlt string `json:"projectPath"`
 	}
 	if len(raw) > 0 {
@@ -161,15 +249,18 @@ func (s *acpHostSession) onMaclawPrepareRemoteCoding(raw json.RawMessage) (any, 
 			return nil, acpErr(acpagent.CodeInvalidParams, err.Error())
 		}
 	}
+	if params.SSHPort < 0 || params.SSHPortAlt < 0 {
+		return nil, acpErr(acpagent.CodeInvalidParams, "ssh_port must be between 1 and 65535")
+	}
 	path := firstNonEmpty(params.ProjectPath, params.ProjectPathAlt)
 	if path == "" {
 		return nil, acpErr(acpagent.CodeInvalidParams, "project_path is required")
 	}
 	// Prefer explicit params; fall back to stored task meta for host/user/workdir.
 	meta, _ := s.app.GetRemoteCodingTaskMeta(path)
-	host := firstNonEmpty(params.SSHHost, params.SSHHostAlt, meta.Host)
-	user := firstNonEmpty(params.SSHUser, params.SSHUserAlt, meta.User)
-	workDir := firstNonEmpty(params.WorkDir, params.WorkDirAlt, meta.WorkDir)
+	host := normalizeSSHHostInput(firstNonEmpty(params.SSHHost, params.SSHHostAlt, meta.Host))
+	user := sanitizeTaskMetadataTagValue(firstNonEmpty(params.SSHUser, params.SSHUserAlt, meta.User))
+	workDir := sanitizeTaskMetadataTagValue(firstNonEmpty(params.WorkDir, params.WorkDirAlt, meta.WorkDir))
 	password := firstNonEmpty(params.SSHPassword, params.SSHPasswordAlt)
 	port := params.SSHPort
 	if port <= 0 {
@@ -177,6 +268,12 @@ func (s *acpHostSession) onMaclawPrepareRemoteCoding(raw json.RawMessage) (any, 
 	}
 	if port <= 0 {
 		port = meta.Port
+	}
+	if port <= 0 {
+		port = 22
+	}
+	if port > 65535 {
+		return nil, acpErr(acpagent.CodeInvalidParams, "ssh_port must be between 1 and 65535")
 	}
 	if password == "" {
 		return nil, acpErr(acpagent.CodeInvalidParams, "ssh_password is required")
@@ -187,17 +284,22 @@ func (s *acpHostSession) onMaclawPrepareRemoteCoding(raw json.RawMessage) (any, 
 	if err := s.app.PrepareRemoteCodingEnvironment(path, host, user, password, workDir, port); err != nil {
 		return nil, acpErr(acpagent.CodeInternalError, err.Error())
 	}
+	// Persist the coordinates only after a successful connection. This lets a
+	// user correct an old host/work_dir from VS Code without saving unverified
+	// connection details when SSH authentication fails.
+	if err := s.app.UpdateRemoteCodingTaskMeta(path, host, user, workDir, port); err != nil {
+		return nil, acpErr(acpagent.CodeInternalError, "remote coding connected but failed to save task metadata: "+err.Error())
+	}
 	st := s.app.GetCodingWorkbenchStatus(path)
+	storedMeta, err := s.app.GetRemoteCodingTaskMeta(path)
+	if err != nil {
+		return nil, acpErr(acpagent.CodeInternalError, "remote coding connected but failed to read task metadata: "+err.Error())
+	}
 	// Never echo password.
 	return map[string]any{
-		"ok":     true,
-		"status": st,
-		"meta": RemoteCodingTaskMeta{
-			Host:    host,
-			User:    user,
-			Port:    port,
-			WorkDir: workDir,
-		},
+		"ok":      true,
+		"status":  st,
+		"meta":    storedMeta,
 		"message": fmt.Sprintf("remote coding armed for %s@%s:%s", user, host, workDir),
 	}, nil
 }
@@ -481,14 +583,14 @@ func (s *acpHostSession) onMaclawSearchRemote(raw json.RawMessage) (any, *acpage
 	text := acpStripSearchOutput(rawOut)
 	hits := acpParseSearchHits(text, workDir, maxResults)
 	return map[string]any{
-		"ok":         true,
-		"query":      query,
-		"path":       absScope,
-		"work_dir":   workDir,
-		"hits":       hits,
-		"raw":        text,
-		"hit_count":  len(hits),
-		"truncated":  len(hits) >= maxResults,
+		"ok":        true,
+		"query":     query,
+		"path":      absScope,
+		"work_dir":  workDir,
+		"hits":      hits,
+		"raw":       text,
+		"hit_count": len(hits),
+		"truncated": len(hits) >= maxResults,
 	}, nil
 }
 

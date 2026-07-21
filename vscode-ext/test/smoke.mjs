@@ -31,6 +31,18 @@ try {
   const sessionId = await client.newSession("C:/tmp");
   assert.equal(sessionId, "sess-1", "sessionId");
 
+  const remoteTaskResult = await client.createRemoteCodingTask({
+    name: "smoke remote",
+    sshHost: "example.com",
+    sshUser: "dev",
+    workDir: "/srv/app",
+    sshPort: 2222,
+  });
+  const remoteTask = remoteTaskResult.task;
+  assert.equal(remoteTask.project_path, "C:/tmp/maclaw-task", "remote task path");
+  assert.equal(remoteTask.port, 2222, "remote task port");
+  assert.equal(remoteTaskResult.reused, false, "new remote task is not reused");
+
   const res = await client.prompt(sessionId, "hello maclaw");
   assert.equal(res.stopReason, "end_turn", "stopReason");
 

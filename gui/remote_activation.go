@@ -1258,9 +1258,10 @@ func (a *App) ListRemoteHubs(centerURL string, email string) ([]RemoteHubCenterH
 		return nil, err
 	}
 
-	// Persist the successfully used HubCenter URL for next time.
+	// Persist via the unique enrollment aligner (drops unregistered HA peers /
+	// official defaults that were only used as discovery seeds).
 	if usedCenter != "" {
-		go a.rememberHubCenterSelectionThrottled(usedCenter, ordered)
+		go a.rememberHubCenterSelection(usedCenter, ordered)
 	}
 
 	if len(result.Hubs) == 0 {

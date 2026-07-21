@@ -63,6 +63,8 @@ export function agentViewStrings(lang: string) {
         noDuplicateItems: (label: string) => t(`${label} must not contain duplicate items`, `${label} \u4e0d\u80fd\u5305\u542b\u91cd\u590d\u9879`),
         mustBe: (label: string, val: string) => t(`${label} must be ${val}`, `${label} \u5fc5\u987b\u662f ${val}`),
         requiredWhen: (required: string, trigger: string) => t(`${required} is required when ${trigger} is provided`, `\u5f53\u63d0\u4f9b\u4e86 ${trigger} \u65f6\uff0c${required} \u4e3a\u5fc5\u586b`),
+        /** At least one of the listed alternate fields must be filled. */
+        requireAnyOf: (labels: string) => t(`Provide at least one of: ${labels}`, `\u8bf7\u81f3\u5c11\u586b\u5199\u4ee5\u4e0b\u4e4b\u4e00\uff1a${labels}`),
         // Prefill source badges
         prefillContext: t("from dialog", "\u5bf9\u8bdd"),
         prefillMemory: t("from memory", "\u8bb0\u5fc6"),

@@ -21,8 +21,9 @@ func TestSkillMarketBaseURLUsesConfiguredPublicHubCenter(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
+	// Enrollment identity requires a public preferred URL (loopback preferred is local/dev).
 	if err := app.SaveConfig(corelib.AppConfig{
-		RemoteHubCenterURL:  "http://127.0.0.1:65140",
+		RemoteHubCenterURL:  "https://hubs.example.com/",
 		RemoteHubCenterURLs: []string{"http://127.0.0.1:65140", "https://hubs.example.com/"},
 	}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)

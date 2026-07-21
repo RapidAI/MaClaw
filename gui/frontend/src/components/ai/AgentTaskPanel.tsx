@@ -329,6 +329,23 @@ function dependentRequiredErrors(fields: AgentViewField[], data: Record<string, 
     return errors;
 }
 
+/** At-least-one-of group validation (workflow RequireAnyOf). */
+function requireAnyOfErrors(fields: AgentViewField[], data: Record<string, unknown>, groups: string[][] | undefined, s: AgentViewStrings): string[] {
+    if (!groups || groups.length === 0) return [];
+    const byName = new Map(fields.map((field) => [field.name, field]));
+    const errors: string[] = [];
+    for (const group of groups) {
+        if (!group || group.length === 0) continue;
+        const names = group.map((n) => (n || "").trim()).filter(Boolean);
+        if (names.length === 0) continue;
+        const satisfied = names.some((name) => !isMissingFormValue(data[name]));
+        if (satisfied) continue;
+        const labels = names.map((name) => byName.get(name)?.label || name).join(" / ");
+        errors.push(s.requireAnyOf(labels));
+    }
+    return errors;
+}
+
 function nestedDependentRequiredErrors(prefix: string, columns: AgentViewTableColumn[], data: Record<string, unknown>, dependentRequired: Record<string, string[]> | undefined, s: AgentViewStrings): string[] {
     if (!dependentRequired) return [];
     const byName = new Map(columns.map((column) => [column.name, column]));
@@ -1259,6 +1276,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, onToggleMaximiz
         return [
             ...validationFields.flatMap((field) => fieldValidationErrors(field, formData[field.name], s)),
             ...dependentRequiredErrors(validationFields, formData, { ...(view.dependentRequired || {}), ...(activeVariant?.dependentRequired || {}) }, s),
+            ...requireAnyOfErrors(validationFields, formData, view.require_any_of, s),
         ];
     }, [activeVariant, formData, s, validationFields, view]);
     const wizardValidationErrors = useMemo(() => {

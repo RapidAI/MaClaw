@@ -620,6 +620,381 @@ func TestHandleInput_ClassifierUnavailable_PassesThrough(t *testing.T) {
 	}
 }
 
+// TestBidReviewWorkflow_EndToEndProgression drives bid_review from create → form
+// → all four NeedsConfirm phases → StatusCompleted, and asserts BuildPhasePrompt
+// never blocks on MissingFullDependencies once prior outputs exist.
+func TestBidReviewWorkflow_EndToEndProgression(t *testing.T) {
+	m := setupTestMachine()
+	userID := "bid-review-user"
+
+	state, err := m.Create(userID, string(WorkflowBidReview), `D:\投标\项目`, "对照招标标准检查标书")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if state.Type != string(WorkflowBidReview) {
+		t.Fatalf("Type = %q, want bid_review", state.Type)
+	}
+	wantPhases := []string{"br_standards", "br_bid_content", "br_conformity", "br_fix_report"}
+	if len(state.Phases) != len(wantPhases) {
+		t.Fatalf("phase count = %d, want %d", len(state.Phases), len(wantPhases))
+	}
+	for i, id := range wantPhases {
+		if state.Phases[i].ID != id {
+			t.Fatalf("phase[%d].ID = %q, want %q", i, state.Phases[i].ID, id)
+		}
+		if !state.Phases[i].NeedsConfirm {
+			t.Fatalf("phase %s NeedsConfirm = false, want true (user gate before advance)", id)
+		}
+	}
+	// DependsOnFull must be copied from template onto runtime phases.
+	if got := strings.Join(state.Phases[1].DependsOnFull, ","); got != "br_standards" {
+		t.Fatalf("br_bid_content DependsOnFull = %q, want br_standards", got)
+	}
+	if got := strings.Join(state.Phases[2].DependsOnFull, ","); got != "br_standards,br_bid_content" {
+		t.Fatalf("br_conformity DependsOnFull = %q", got)
+	}
+	if got := strings.Join(state.Phases[3].DependsOnFull, ","); got != "br_conformity" {
+		t.Fatalf("br_fix_report DependsOnFull = %q", got)
+	}
+
+	// --- Phase 0: form intake ---
+	hr, err := m.HandleInput(userID, "开始检查")
+	if err != nil {
+		t.Fatalf("HandleInput(start): %v", err)
+	}
+	if hr.Action != ActionShowForm {
+		t.Fatalf("first action = %q, want show_form", hr.Action)
+	}
+	if hr.Phase == nil || hr.Phase.ID != "br_standards" {
+		t.Fatalf("show_form phase = %#v, want br_standards", hr.Phase)
+	}
+
+	// Empty form must fail RequireAnyOf (standards + prepared bid groups).
+	if err := m.SubmitForm(userID, map[string]interface{}{}); err == nil {
+		t.Fatal("SubmitForm empty should fail RequireAnyOf")
+	}
+	// Standards only (missing prepared bid) should fail.
+	if err := m.SubmitForm(userID, map[string]interface{}{
+		"tender_standard_path": `D:\投标\招标文件.pdf`,
+	}); err == nil {
+		t.Fatal("SubmitForm without prepared bid should fail RequireAnyOf")
+	}
+
+	form := map[string]interface{}{
+		"tender_standard_path": `D:\投标\招标文件.pdf`,
+		"tender_standard_url":  "",
+		"prepared_bid_path":    `D:\投标\投标文件.pdf`,
+		"our_company":          "测试科技有限公司",
+		"focus_areas":          "废标项、资格符合性、评分点",
+	}
+	if err := m.SubmitForm(userID, form); err != nil {
+		t.Fatalf("SubmitForm: %v", err)
+	}
+
+	hr, err = m.HandleInput(userID, "继续")
+	if err != nil {
+		t.Fatalf("HandleInput after form: %v", err)
+	}
+	if hr.Action != ActionRunPhase || hr.Phase == nil || hr.Phase.ID != "br_standards" {
+		t.Fatalf("after form: action=%q phase=%v, want run_phase br_standards", hr.Action, hr.Phase)
+	}
+
+	// Prompt for intake must be non-empty and not blocked on missing deps.
+	prompt0 := BuildPhasePrompt(m.GetActive(userID))
+	if strings.TrimSpace(prompt0) == "" {
+		t.Fatal("BuildPhasePrompt(br_standards) empty")
+	}
+	if strings.Contains(prompt0, "前序产出物不可用") {
+		t.Fatalf("intake phase should not report missing deps:\n%s", prompt0)
+	}
+	if !strings.Contains(prompt0, "prepared_bid_path") && !strings.Contains(prompt0, `D:\投标\投标文件.pdf`) {
+		t.Error("intake prompt should include form file fields")
+	}
+
+	phaseOutputs := map[string]string{
+		"br_standards": `# 招标标准解析
+
+### 1. 招标项目基本信息
+- 项目名称：某某系统采购
+- 资料来源：D:\投标\招标文件.pdf
+
+### 2. 资格与废标条款清单
+| 序号 | 条款类型 | 要求摘要 | 是否硬性/废标项 | 原文定位 |
+|------|---------|---------|----------------|---------|
+| 1 | 资格 | 具备软件企业资质 | 硬性 | 第三章 |
+
+### 3. 技术/商务响应要求
+| 序号 | 要求类别 | 要求摘要 | 响应方式 | 分值 |
+|------|---------|---------|---------|------|
+| 1 | 技术 | 支持国产化环境 | 点对点 | 20 |
+
+### 4. 评分标准摘要
+| 评分项 | 分值 | 得分关键点 |
+|--------|------|----------|
+| 技术方案 | 40 | 架构完整性 |
+
+### 5. 格式与递交要求
+- 需加盖公章，一正两副
+
+### 6. 后续检查关注点
+- 废标项、资格符合性`,
+		"br_bid_content": `# 标书内容解析
+
+### 1. 标书结构目录
+| 章节/附件 | 内容摘要 | 页码/位置 |
+|------|---------|---------|
+| 第一章 资格证明 | 营业执照、软件资质 | P1-10 |
+| 第二章 技术方案 | 总体架构、实施计划 | P11-40 |
+
+### 2. 资格证明与商务响应摘要
+- 已附营业执照与软著
+- 报价与工期已响应
+
+### 3. 技术方案要点
+- 采用微服务架构，支持国产化中间件
+
+### 4. 已识别的明显缺口（粗筛）
+| 缺口 | 依据 | 严重程度 |
+|------|------|---------|
+| 缺偏离表 | 格式要求 | 高 |
+
+### 5. 材料完整度说明
+- 已读取投标文件全文关键章节`,
+		"br_conformity": `# 符合性检查
+
+### 1. 符合性总览
+- 总体符合度：中
+- 废标风险：中
+- 预计得分影响：技术方案可提分
+
+### 2. 逐项对照表
+| 序号 | 招标要求 | 标书响应情况 | 符合状态 | 证据位置 | 风险等级 |
+|------|---------|-------------|---------|---------|---------|
+| 1 | 软件企业资质 | 已附 | 符合 | 资格章 | 低 |
+| 2 | 偏离表 | 未提供 | 不符合 | - | 高 |
+
+### 3. 废标项与硬性条款专项
+- 偏离表缺失：构成格式废标风险，建议补正
+
+### 4. 评分点得失分析
+| 评分项 | 满分 | 预估得分 | 失分原因 |
+|--------|------|---------|---------|
+| 技术方案 | 40 | 32 | 国产化描述偏简 |
+
+### 5. 格式与递交合规
+- 缺偏离表；盖章要求已满足`,
+		"br_fix_report": `# 标书修改建议报告
+
+### 一、检查结论摘要
+- 总体结论：补正后可投
+- 必改 1 项、建议改 2 项
+- 最高优先级：补充偏离表，消除格式废标风险
+
+### 二、必改问题清单
+#### 问题 1：缺少偏离表
+- **对应招标要求**：格式与递交要求
+- **当前标书问题**：未附偏离表
+- **风险等级**：废标风险
+- **修改建议**：按招标格式新增偏离表，逐条声明无偏离/有偏离项
+- **证据位置**：标准第X章 + 标书目录
+
+### 三、建议修改与可选优化
+- 加厚国产化适配说明，对齐评分点
+
+### 四、提分/响应增强建议
+- 技术方案增加国产中间件版本与兼容矩阵
+
+### 五、修改行动清单（执行顺序）
+| 优先级 | 动作 | 预计工作量 | 完成标准 |
+|--------|------|-----------|---------|
+| P0 | 补偏离表 | 0.5 人日 | 格式合规 |
+
+### 六、免责声明
+本报告由 AI 辅助生成，仅供投标准备参考。最终响应策略与法律/商务判断请由具备资质的专业人员确认。`,
+	}
+
+	for i, phaseID := range wantPhases {
+		state = m.GetActive(userID)
+		if state == nil {
+			t.Fatalf("workflow gone at phase %s", phaseID)
+		}
+		if state.Status != StatusActive {
+			t.Fatalf("status=%q at phase %s, want active", state.Status, phaseID)
+		}
+		ap := state.ActivePhase()
+		if ap == nil || ap.ID != phaseID {
+			t.Fatalf("active phase = %v, want %s (index %d)", ap, phaseID, i)
+		}
+
+		// After confirm of the previous phase, the next phase is already Running.
+		// Ensure missing deps are satisfied before prompt (prior phases have outputs).
+		if missing := MissingFullDependencies(state); len(missing) > 0 {
+			t.Fatalf("MissingFullDependencies at %s: %v", phaseID, missing)
+		}
+
+		prompt := BuildPhasePrompt(state)
+		if strings.TrimSpace(prompt) == "" {
+			t.Fatalf("BuildPhasePrompt(%s) empty", phaseID)
+		}
+		if strings.Contains(prompt, "前序产出物不可用") {
+			t.Fatalf("BuildPhasePrompt(%s) blocked on missing deps:\n%s", phaseID, prompt)
+		}
+		// Inherited form data must remain visible after phase 0.
+		if i > 0 {
+			if !strings.Contains(prompt, "工作流已收集的结构化信息") &&
+				!strings.Contains(prompt, `D:\投标\投标文件.pdf`) {
+				t.Errorf("phase %s prompt missing inherited form context", phaseID)
+			}
+		}
+		// Full dependency injection for conformity / content phases.
+		if phaseID == "br_bid_content" && !strings.Contains(prompt, "招标标准解析") {
+			t.Error("br_bid_content should inject prior standards output")
+		}
+		if phaseID == "br_conformity" {
+			if !strings.Contains(prompt, "招标标准解析") || !strings.Contains(prompt, "标书内容解析") {
+				t.Error("br_conformity should inject full standards + bid content outputs")
+			}
+		}
+		if phaseID == "br_fix_report" && !strings.Contains(prompt, "符合性检查") {
+			t.Error("br_fix_report should inject full conformity output")
+		}
+
+		if err := m.RecordOutput(userID, phaseOutputs[phaseID]); err != nil {
+			t.Fatalf("RecordOutput(%s): %v", phaseID, err)
+		}
+		state = m.GetActive(userID)
+		if state.ActivePhase() == nil || state.ActivePhase().Status != PhaseWaitingConfirm {
+			t.Fatalf("after RecordOutput(%s) status = %v, want waiting_confirm", phaseID, state.ActivePhase())
+		}
+		if state.ActivePhase().Output == "" {
+			t.Fatalf("output not saved for %s", phaseID)
+		}
+
+		hr, err = m.HandleInput(userID, "确认")
+		if err != nil {
+			t.Fatalf("confirm %s: %v", phaseID, err)
+		}
+
+		if i < len(wantPhases)-1 {
+			// Advance to next phase.
+			if hr.Action != ActionRunPhase {
+				t.Fatalf("confirm %s action = %q, want run_phase for next", phaseID, hr.Action)
+			}
+			if hr.Phase == nil || hr.Phase.ID != wantPhases[i+1] {
+				t.Fatalf("after confirm %s, next phase = %v, want %s", phaseID, hr.Phase, wantPhases[i+1])
+			}
+			state = m.GetActive(userID)
+			if state.CurrentPhase != i+1 {
+				t.Fatalf("CurrentPhase = %d, want %d", state.CurrentPhase, i+1)
+			}
+			continue
+		}
+
+		// Final phase confirm completes the workflow.
+		if hr.Action != ActionConfirmed {
+			t.Fatalf("final confirm action = %q, want confirmed", hr.Action)
+		}
+		state = m.GetActive(userID)
+		if state != nil && state.Status == StatusActive {
+			t.Fatalf("workflow still active after final confirm; status=%s phase=%d", state.Status, state.CurrentPhase)
+		}
+		// GetActive may return nil when completed — load via store or check hr.State.
+		if hr.State == nil {
+			t.Fatal("final confirm missing State")
+		}
+		if hr.State.Status != StatusCompleted {
+			t.Fatalf("final status = %q, want completed", hr.State.Status)
+		}
+		if hr.State.CurrentPhase < len(wantPhases) {
+			// CurrentPhase is len(phases) when completed (advanced past last).
+			if hr.State.CurrentPhase != len(wantPhases) {
+				t.Fatalf("final CurrentPhase = %d, want %d (past last)", hr.State.CurrentPhase, len(wantPhases))
+			}
+		}
+		for _, p := range hr.State.Phases {
+			if p.Status != PhaseCompleted {
+				t.Errorf("phase %s status = %q, want completed", p.ID, p.Status)
+			}
+			if strings.TrimSpace(p.Output) == "" {
+				t.Errorf("phase %s has empty output after completion", p.ID)
+			}
+		}
+	}
+}
+
+func TestSubmitForm_RequireAnyOf_BidReview(t *testing.T) {
+	m := setupTestMachine()
+	if _, err := m.Create("u1", string(WorkflowBidReview), `D:\投标`, "检查标书"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// URL + pasted bid text is enough (no local files).
+	if err := m.SubmitForm("u1", map[string]interface{}{
+		"tender_standard_url": "https://example.com/tender",
+		"prepared_bid_text":   "投标文件正文……",
+	}); err != nil {
+		t.Fatalf("SubmitForm url+text should pass: %v", err)
+	}
+}
+
+func TestValidateRequireAnyOf_Messages(t *testing.T) {
+	schema := &PhaseInputSchema{
+		Fields: []PhaseInputField{
+			{Name: "a", Label: "A"},
+			{Name: "b", Label: "B"},
+			{Name: "c", Label: "C"},
+		},
+		RequireAnyOf: [][]string{{"a", "b"}, {"c"}},
+	}
+	err := validateRequireAnyOf(schema, map[string]interface{}{"a": "x"})
+	if err == nil || !strings.Contains(err.Error(), "C") {
+		t.Fatalf("want missing C group error, got %v", err)
+	}
+	if err := validateRequireAnyOf(schema, map[string]interface{}{"a": "x", "c": "y"}); err != nil {
+		t.Fatalf("both groups filled: %v", err)
+	}
+	if err := validateRequireAnyOf(nil, nil); err != nil {
+		t.Fatalf("nil schema: %v", err)
+	}
+	// Empty map / all-empty nested map must not satisfy a group.
+	err = validateRequireAnyOf(schema, map[string]interface{}{
+		"a": map[string]interface{}{},
+		"c": map[string]interface{}{"path": "", "name": ""},
+	})
+	if err == nil {
+		t.Fatal("empty map values should not satisfy RequireAnyOf")
+	}
+}
+
+func TestIsEmptyFormValue(t *testing.T) {
+	cases := []struct {
+		name string
+		val  interface{}
+		want bool
+	}{
+		{"nil", nil, true},
+		{"empty string", "", true},
+		{"spaces", "  ", true},
+		{"text", "x", false},
+		{"empty slice", []interface{}{}, true},
+		{"string slice blanks", []interface{}{"", "  "}, true},
+		{"string slice value", []interface{}{"a"}, false},
+		{"mixed empty objects", []interface{}{map[string]interface{}{}, map[string]interface{}{"x": ""}}, true},
+		{"mixed with object path", []interface{}{map[string]interface{}{"path": `D:\a.pdf`}}, false},
+		{"empty map", map[string]interface{}{}, true},
+		{"map all empty", map[string]interface{}{"path": "", "name": "  "}, true},
+		{"map with path", map[string]interface{}{"path": `D:\a.pdf`}, false},
+		{"bool false present", false, false},
+		{"zero present", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isEmptyFormValue(tc.val); got != tc.want {
+				t.Fatalf("isEmptyFormValue(%v)=%v want %v", tc.val, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHandleInput_NoClassifierSet_PassesThrough(t *testing.T) {
 	store := NewMemoryStore()
 	templates := NewTemplateRegistry()

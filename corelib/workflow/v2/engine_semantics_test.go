@@ -181,6 +181,7 @@ func TestPhaseSpecToTemplatePreservesRichInputSchemaForLegacyTemplateSpecs(t *te
 			Title:         "Profile Form",
 			Description:   "collect profile",
 			AcceptsResume: true,
+			RequireAnyOf:  [][]string{{"name", "email"}},
 			AcceptsSupplementary: &SupplementaryDocConfigSpec{
 				Label:         "Attachments",
 				Description:   "upload optional docs",
@@ -216,5 +217,13 @@ func TestPhaseSpecToTemplatePreservesRichInputSchemaForLegacyTemplateSpecs(t *te
 	}
 	if !tmpl.InputSchema.Variants[0].Fields[0].Reusable {
 		t.Fatal("Reusable should survive PhaseSpec -> PhaseTemplate conversion")
+	}
+	if len(tmpl.InputSchema.RequireAnyOf) != 1 || len(tmpl.InputSchema.RequireAnyOf[0]) != 2 {
+		t.Fatalf("RequireAnyOf lost during conversion: %#v", tmpl.InputSchema.RequireAnyOf)
+	}
+	// Round-trip through PhaseInputSchemaSpec preserves groups.
+	spec := PhaseInputSchemaToSpec(tmpl.InputSchema)
+	if len(spec.RequireAnyOf) != 1 || spec.RequireAnyOf[0][0] != "name" {
+		t.Fatalf("PhaseInputSchemaToSpec lost RequireAnyOf: %#v", spec.RequireAnyOf)
 	}
 }

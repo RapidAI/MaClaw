@@ -69,6 +69,11 @@ export interface CodingWorkbenchStatusResult {
   };
 }
 
+export interface CreateRemoteCodingTaskResult {
+  task: RemoteCodingTask;
+  reused: boolean;
+}
+
 interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -205,6 +210,26 @@ export class AcpClient extends EventEmitter {
       tasks?: RemoteCodingTask[];
     };
     return Array.isArray(res?.tasks) ? res.tasks : [];
+  }
+
+  async createRemoteCodingTask(params: {
+    name: string;
+    sshHost: string;
+    sshUser: string;
+    workDir: string;
+    sshPort?: number;
+  }): Promise<CreateRemoteCodingTaskResult> {
+    const res = (await this.maclawCall("maclaw/create_remote_coding_task", {
+      name: params.name,
+      ssh_host: params.sshHost,
+      ssh_user: params.sshUser,
+      work_dir: params.workDir,
+      ssh_port: params.sshPort ?? 22,
+    })) as { ok?: boolean; reused?: boolean; task?: RemoteCodingTask };
+    if (!res?.task?.project_path) {
+      throw new Error("MaClaw did not return the newly created remote task");
+    }
+    return { task: res.task, reused: res.reused === true };
   }
 
   async getCodingWorkbenchStatus(projectPath: string): Promise<CodingWorkbenchStatusResult> {

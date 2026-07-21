@@ -128,17 +128,42 @@ func (p *guiHubCenterPersister) SaveHubCenterURLs(preferred string, discovered [
 		// Never replace a public preferred HubCenter with loopback. Allow
 		// loopback preferred only when the user is already on loopback/unset
 		// (local/dev failover among 127.0.0.1 test hubs).
-		if preferred != "" {
-			if !remote.IsLoopbackURL(preferred) {
-				cfg.RemoteHubCenterURL = preferred
+		savePref := remote.NormalizeHubCenterURL(preferred)
+		if savePref != "" {
+			if !remote.IsLoopbackURL(savePref) {
+				cfg.RemoteHubCenterURL = savePref
 			} else {
 				current := strings.TrimSpace(cfg.RemoteHubCenterURL)
 				if current == "" || remote.IsLoopbackURL(current) {
-					cfg.RemoteHubCenterURL = preferred
+					cfg.RemoteHubCenterURL = savePref
+				} else {
+					// Keep existing public preferred; still clean discovered list.
+					savePref = remote.NormalizeHubCenterURL(cfg.RemoteHubCenterURL)
 				}
 			}
+		} else {
+			savePref = remote.NormalizeHubCenterURL(cfg.RemoteHubCenterURL)
 		}
-		cfg.RemoteHubCenterURLs = discovered
+
+		// Defense in depth: strip non-preferred official defaults / foreign peers.
+		// When savePref is public, constrain to that enrollment identity.
+		// When loopback (local/dev), pass registered=nil so loopback preferred is kept.
+		var registered []string
+		if savePref != "" && !remote.IsLoopbackURL(savePref) {
+			registered = remote.RegisteredPublicHubCenterURLs(savePref, discovered)
+		}
+		// Use constrained preferred (may differ if caller passed a stale base).
+		constrainedPref, urls := remote.ConstrainHubCenterPersistence(registered, savePref, discovered)
+		if constrainedPref != "" && !remote.IsLoopbackURL(constrainedPref) {
+			cfg.RemoteHubCenterURL = constrainedPref
+			savePref = constrainedPref
+		}
+		// Never fall back to raw discovered (would re-introduce hubs2 pollution).
+		if len(urls) == 0 && savePref != "" {
+			urls = []string{savePref}
+		}
+			// Replaces the former direct cfg.RemoteHubCenterURLs = discovered assignment.
+			cfg.RemoteHubCenterURLs = urls
 	})
 }
 
@@ -227,13 +252,60 @@ func (a *App) rememberHubCenterSelectionThrottled(base string, discovered []stri
 // ────────────────────────────────────────────────────────────────────────────
 
 func (a *App) resolveHubCenterBaseURLCached(ctx context.Context, client *http.Client) (string, []string, error) {
+	return a.resolveHubCenterBaseURLCachedWithIdentity(ctx, client, nil, nil)
+}
+
+// resolveHubCenterBaseURLCachedWithIdentity is the shared cache path.
+// When registered/seeds are precomputed by the caller, skips an extra LoadConfig.
+func (a *App) resolveHubCenterBaseURLCachedWithIdentity(ctx context.Context, client *http.Client, registered, seeds []string) (string, []string, error) {
 	if a.hubCenterCache != nil {
 		if base, all := a.hubCenterCache.Get(); base != "" {
-			return base, all, nil
+			// Align cached entries to enrollment identity so a stale HA peer
+			// (e.g. hubs2) cannot stick after the user registered elsewhere.
+			if registered == nil && seeds == nil {
+				registered, seeds = a.currentHubCenterIdentity()
+			}
+			if len(registered) > 0 || len(seeds) > 0 {
+				aligned := remote.AlignHubCenterCandidates(registered, seeds, append([]string{base}, all...))
+				if len(aligned) == 0 {
+					a.hubCenterCache.Invalidate()
+				} else {
+					nextBase := remote.PickAlignedHubCenterBase(base, aligned)
+					// Write back only when alignment drops/reorders peers — avoids
+					// resetting cache TTL on every read of an already-clean entry.
+					if nextBase != base || !remote.StringSliceEqual(aligned, all) {
+						a.hubCenterCache.Set(nextBase, aligned)
+					}
+					return nextBase, aligned, nil
+				}
+			} else {
+				return base, all, nil
+			}
 		}
 	}
 
-	base, all, err := a.resolveHubCenterBaseURL(ctx, client)
+	var (
+		base string
+		all  []string
+		err  error
+	)
+	if seeds != nil || registered != nil {
+		// Caller already loaded identity — reuse seeds without a second LoadConfig
+		// when we still need a full resolve (cache miss / invalidated).
+		cfg, loadErr := a.LoadConfig()
+		if loadErr != nil {
+			return "", nil, loadErr
+		}
+		if len(seeds) == 0 {
+			seeds = hubCenterSeedURLs(cfg)
+		}
+		if registered == nil {
+			registered = remote.RegisteredPublicHubCenterURLs(cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+		}
+		base, all, err = a.resolveHubCenterBaseURLWithSeeds(ctx, client, registered, seeds, cfg)
+	} else {
+		base, all, err = a.resolveHubCenterBaseURL(ctx, client)
+	}
 	if err != nil {
 		return "", nil, err
 	}

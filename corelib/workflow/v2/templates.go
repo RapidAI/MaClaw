@@ -34,6 +34,12 @@ type PhaseInputSchema struct {
 	Fields      []PhaseInputField   `json:"fields"`
 	Variants    []PhaseInputVariant `json:"variants,omitempty"`
 
+	// RequireAnyOf lists groups of field names. For each non-empty group, at least
+	// one field in the group must be non-empty on SubmitForm. Used for alternate
+	// inputs such as "file OR url OR paste text" without marking every field Required.
+	// Example: [][]string{{"doc_path","doc_url","doc_text"},{"bid_path","bid_text"}}
+	RequireAnyOf [][]string `json:"require_any_of,omitempty"`
+
 	// AcceptsResume declares that this form can be auto-populated from a resume/CV
 	// document. When true, the frontend renders a "上传简历" file upload entry at the
 	// top of the form. If the user uploads a document, the backend parses it via LLM
@@ -788,8 +794,9 @@ func BidResponseTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "bid_response",
 		Name:        "招投标文件",
-		Description: "招标解析 → 资质响应 → 技术方案 → 商务报价 → 文件组装",
-		Keywords:    []string{"招投标", "投标", "标书", "bid", "tender"},
+		// Emphasize generation/writing so BM25 routing does not confuse with bid_review.
+		Description: "招标解析 → 资质响应 → 技术方案 → 商务报价 → 文件组装。适用于根据招标文件撰写/生成投标文件与响应材料。Bid response writing: parse tender, draft qualification/technical/commercial response, assemble bid package.",
+		Keywords:    []string{"招投标", "写标书", "做投标", "生成投标文件", "bid response", "tender response"},
 		Phases: []PhaseTemplate{
 			{ID: "tender_analysis", Name: "招标解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
 				InputSchema: &PhaseInputSchema{
@@ -806,6 +813,51 @@ func BidResponseTemplate() *WorkflowTemplate {
 			{ID: "technical", Name: "技术方案", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "commercial", Name: "商务报价", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
 			{ID: "assembly", Name: "文件组装", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly},
+		},
+	}
+}
+
+// BidReviewTemplate reviews an existing bid/proposal document against tender
+// standards (document or URL) and produces a modification-suggestion report.
+// SemanticOnly avoids BM25 overlap with bid_response (shared 招标/标书 tokens).
+func BidReviewTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:         "bid_review",
+		Name:         "标书检查",
+		Description:  "招标标准解析 → 标书对照 → 符合性检查 → 修改建议报告。适用于对照招标文件/评分标准审查已写好的投标标书，并输出可落地的修改建议（不是撰写新标书）。Bid document review against tender standards; produces a revision report, not a new bid draft.",
+		Keywords:     []string{"标书检查", "标书审查", "标书审核", "投标文件检查", "符合性检查", "改标建议", "bid review", "tender review", "proposal review"},
+		SemanticOnly: true,
+		Phases: []PhaseTemplate{
+			{ID: "br_standards", Name: "招标标准解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				InputSchema: &PhaseInputSchema{
+					Title:       "标书检查信息",
+					Description: "至少提供一类招标标准来源（文件/网址/文本）和一类待检查标书来源（文件/文本）。系统将对照检查并生成修改建议报告。",
+					// Enforce alternate inputs: standards group + prepared-bid group.
+					RequireAnyOf: [][]string{
+						{"tender_standard_path", "tender_standard_url", "tender_standard_text"},
+						{"prepared_bid_path", "prepared_bid_text"},
+					},
+					Fields: []PhaseInputField{
+						{Name: "tender_standard_path", Label: "招标标准/招标文件", Type: "file", Placeholder: "如：D:\\投标\\招标文件.pdf 或 评分标准.docx"},
+						{Name: "tender_standard_url", Label: "或招标标准网址", Type: "text", Placeholder: "如：https://example.com/tender/xxx"},
+						{Name: "tender_standard_text", Label: "或粘贴招标标准内容", Type: "textarea", Placeholder: "粘贴招标要求、资格条件、评分标准、响应格式等关键内容"},
+						// Distinct field names from bid_response (bid_doc_* there means the tender doc).
+						{Name: "prepared_bid_path", Label: "待检查标书", Type: "file", Placeholder: "如：D:\\投标\\投标文件.pdf 或 技术方案.docx"},
+						{Name: "prepared_bid_text", Label: "或粘贴标书内容", Type: "textarea", Placeholder: "将已写好的标书/响应材料核心内容粘贴到这里"},
+						{Name: "our_company", Label: "投标主体", Type: "text", Placeholder: "我方公司或联合体名称"},
+						{Name: "focus_areas", Label: "重点检查项", Type: "textarea", Placeholder: "如：废标项、资格符合性、技术评分点、格式响应、报价完整性"},
+					},
+				},
+			},
+			// Full prior standards checklist is required to structure bid parsing.
+			{ID: "br_bid_content", Name: "标书内容解析", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"br_standards"}},
+			// Conformity must see both authoritative checklists, not short summaries.
+			{ID: "br_conformity", Name: "符合性检查", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"br_standards", "br_bid_content"}},
+			// Final report only needs the full conformity matrix; earlier phases arrive as summaries.
+			{ID: "br_fix_report", Name: "修改建议报告", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly,
+				DependsOnFull: []string{"br_conformity"}},
 		},
 	}
 }
@@ -1337,6 +1389,7 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	r.Register(ProjectProposalTemplate())
 	r.Register(EventPlanningTemplate())
 	r.Register(BidResponseTemplate())
+	r.Register(BidReviewTemplate())
 	r.Register(ContractReviewTemplate())
 	r.Register(DueDiligenceTemplate())
 	r.Register(ComplianceAuditTemplate())

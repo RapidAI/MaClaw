@@ -133,6 +133,8 @@ export function getAllWorkflowShortcuts(localizeText: LocalizeText): WorkflowSho
                 { type: "competitive_analysis", icon: "trophy", label: localizeText("Competitive Analysis", "竞品分析", "競品分析"), description: localizeText("Competitive analysis", "竞争对手分析", "競爭對手分析") },
                 { type: "innovation", icon: "bulb", label: localizeText("Innovation", "创新方案", "創新方案"), description: localizeText("Innovation design", "创新方案设计", "創新方案設計") },
                 { type: "project_proposal", icon: "proposal", label: localizeText("Project Proposal", "项目提案", "專案提案"), description: localizeText("Project proposal", "项目立项提案", "專案立項提案") },
+                { type: "bid_response", icon: "package", label: localizeText("Bid Response", "招投标", "招投標"), description: localizeText("Generate bid response documents", "根据招标文件生成投标材料", "根據招標文件生成投標材料") },
+                { type: "bid_review", icon: "search", label: localizeText("Bid Review", "标书检查", "標書檢查"), description: localizeText("Review prepared bid vs tender standards", "对照招标标准检查标书并生成修改建议", "對照招標標準檢查標書並生成修改建議") },
             ],
         },
         {
@@ -151,7 +153,6 @@ export function getAllWorkflowShortcuts(localizeText: LocalizeText): WorkflowSho
             items: [
                 { type: "presentation_design", icon: "presentation", label: localizeText("PPT Design", "PPT 设计", "PPT 設計"), description: localizeText("Presentation design", "演示文稿设计", "簡報設計") },
                 { type: "event_planning", icon: "target", label: localizeText("Event Planning", "活动策划", "活動策劃"), description: localizeText("Event planning", "活动策划方案", "活動策劃方案") },
-                { type: "bid_response", icon: "package", label: localizeText("Bid Response", "招投标", "招投標"), description: localizeText("Bid response", "招投标文件生成", "招投標文件生成") },
             ],
         },
         {

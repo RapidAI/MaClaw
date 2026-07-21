@@ -49,6 +49,21 @@ rl.on("line", async (line) => {
       respond(msg.id, { sessionId: "sess-1" });
       break;
 
+    case "maclaw/create_remote_coding_task":
+      respond(msg.id, {
+        ok: true,
+        task: {
+          name: msg.params.name,
+          project_path: "C:/tmp/maclaw-task",
+          host: msg.params.ssh_host,
+          user: msg.params.ssh_user,
+          port: msg.params.ssh_port,
+          work_dir: msg.params.work_dir,
+          kind: "remote",
+        },
+      });
+      break;
+
     case "session/prompt": {
       const { sessionId, prompt } = msg.params;
       const text = prompt?.[0]?.text ?? "";

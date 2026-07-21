@@ -994,8 +994,13 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 	if len(saved.NLSkills) != 1 || saved.NLSkills[0].HubSkillID != "auto-upload-skill" {
 		t.Fatalf("HubSkillID not recorded in config: %+v", saved.NLSkills)
 	}
-	if !containsString(saved.RemoteHubCenterURLs, "https://upload-backup.example") {
-		t.Fatalf("RemoteHubCenterURLs = %#v", saved.RemoteHubCenterURLs)
+	// Upload uses enrollment seeds only — HA-advertised peers outside registration
+	// (e.g. https://upload-backup.example) must not be written into config.
+	if containsString(saved.RemoteHubCenterURLs, "https://upload-backup.example") {
+		t.Fatalf("RemoteHubCenterURLs leaked unregistered discovery peer: %#v", saved.RemoteHubCenterURLs)
+	}
+	if !containsString(saved.RemoteHubCenterURLs, backup.URL) {
+		t.Fatalf("RemoteHubCenterURLs = %#v, want backup %q", saved.RemoteHubCenterURLs, backup.URL)
 	}
 }
 

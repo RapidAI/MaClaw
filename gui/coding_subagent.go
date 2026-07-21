@@ -437,7 +437,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	dynamicToolsRun := audit.DynamicToolsRun
 
 	var (
-		explorationStatus, verificationStatus codingSubAgentQualityStatus
+		explorationStatus, verificationStatus   codingSubAgentQualityStatus
 		explorationSummary, verificationSummary string
 		diffChecked                             bool
 		diffSummary                             string
@@ -1288,6 +1288,11 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	case "bash":
 		bashArgs := c.withDefaultWorkingDir(args)
 		if command, _ := bashArgs["command"].(string); command != "" {
+			// Hard block: never offer high-risk approval for silenced git self-checks.
+			if msg := rejectSilencedGitSelfCheckCommand(command); msg != "" {
+				c.trackCommandResult(bashArgs, msg, false)
+				return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
 				workingDir, _ := bashArgs["working_dir"].(string)
 				if c.subagent != nil && c.subagent.scopeApproval != nil {
@@ -2394,6 +2399,8 @@ func rejectDisallowedCodingBashCommand(command string) string {
 	if msg := rejectWindowsShellCompatibilityCommand(command); msg != "" {
 		return msg
 	}
+	// Note: silenced git self-checks are rejected separately via
+	// rejectSilencedGitSelfCheckCommand (hard block, no high-risk approval bypass).
 	disallowed := false
 	switch {
 	case hasOpaqueShellWrapperCommand(normalized):
@@ -2409,6 +2416,19 @@ func rejectDisallowedCodingBashCommand(command string) string {
 		return ""
 	}
 	return fmt.Sprintf("拒绝执行高风险命令：%s。编码 SubAgent 不允许自动执行 Git 工作区改写、递归删除或通过 shell 直接改写文件；请改用更小范围的操作或文件编辑工具。", command)
+}
+
+// rejectSilencedGitSelfCheckCommand blocks git status/diff self-checks that
+// redirect stderr/stdout to /dev/null. These redirections discard fatal text
+// the quality gate needs for soft non-git classification. Callers must hard-
+// return this rejection (do not offer high-risk approval bypass).
+func rejectSilencedGitSelfCheckCommand(command string) string {
+	if !isSubAgentDiffSelfCheckCommand(command) || !subAgentCommandSilencesGitStderr(command) {
+		return ""
+	}
+	// Avoid the phrase "不是 git 仓库" here: soft non-git classifiers match that
+	// marker and would treat a policy rejection as non-git evidence.
+	return fmt.Sprintf("拒绝执行被重定向静默的 git 自检：%s。请去掉 2>/dev/null、>/dev/null、&>/dev/null 等重定向后重试（保留 fatal 原文）。若尚未初始化版本控制，直接在结论中说明即可。", command)
 }
 
 func rejectWindowsShellCompatibilityCommand(command string) string {
@@ -3482,6 +3502,241 @@ func subAgentGitDiffUnavailableBecauseNonGit(text string) bool {
 		}
 	}
 	return false
+}
+
+// subAgentIsDashSeparatorLine reports agent-inserted probe separators such as
+// echo "---" between git status/diff/log probes.
+func subAgentIsDashSeparatorLine(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, r := range text {
+		if r != '-' {
+			return false
+		}
+	}
+	// Require at least "--" so a lone "-" cannot hide real one-character output.
+	n := utf8.RuneCountInString(text)
+	return n >= 2 && n <= 40
+}
+
+// subAgentIsExitMarkerLine reports instrumented remote bash / ACP exit markers
+// with a numeric code (e.g. "EXIT: 128", "---EXIT_CODE:1"). Non-numeric lines
+// such as printf format strings are not treated as markers.
+func subAgentIsExitMarkerLine(text string) bool {
+	_, ok := remoteCodingParseExitMarker(text)
+	return ok
+}
+
+// subAgentLooksLikeBase64BlobLine reports wrapped base64 payload lines from the
+// remote bash transport (`eval "$(echo '....' | base64 -d)"`).
+// Threshold stays above 40-char git object ids so a lone SHA is not treated as
+// transport noise and soft-skipped away.
+func subAgentLooksLikeBase64BlobLine(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	// Keep the trailing quote/paren crumbs from wrapped eval payloads.
+	text = strings.Trim(text, "`'\"| )")
+	if len(text) < 48 {
+		return false
+	}
+	for _, r := range text {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '+', r == '/', r == '=':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// subAgentLastExitMarkerLineIndex returns the index of the last instrumented
+// exit marker line, or -1 when none is present.
+func subAgentLastExitMarkerLineIndex(lines []string) int {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if subAgentIsExitMarkerLine(lines[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+// subAgentRemoteShellNoiseLine reports PTY/SSH envelope and remote bash wrapper
+// scaffolding that must not count as git self-check diagnostic body.
+func subAgentRemoteShellNoiseLine(line string) bool {
+	text := strings.TrimSpace(remoteCodingStripSimpleANSI(line))
+	if text == "" {
+		return true
+	}
+	// OSC title sequences often precede the real prompt on the same line.
+	if i := strings.IndexByte(text, '\x07'); i >= 0 {
+		text = strings.TrimSpace(text[i+1:])
+		if text == "" {
+			return true
+		}
+	}
+	if subAgentIsExitMarkerLine(text) || subAgentIsDashSeparatorLine(text) {
+		return true
+	}
+	if strings.HasPrefix(text, "[ssh_") || strings.Contains(text, "状态:") {
+		return true
+	}
+	if strings.HasPrefix(text, "$ ") {
+		return true
+	}
+	if strings.Contains(text, "base64 -d") || strings.Contains(text, "__maclaw_") {
+		return true
+	}
+	if strings.HasPrefix(text, "eval ") || strings.HasPrefix(text, "sh -lc ") {
+		return true
+	}
+	if subAgentLooksLikeBase64BlobLine(text) {
+		return true
+	}
+	// remoteBashCommandWithExitMarker scaffolding echoed by the PTY.
+	switch {
+	case strings.HasPrefix(text, "if ["),
+		text == "else",
+		text == "fi",
+		strings.HasPrefix(text, "printf "),
+		strings.HasPrefix(text, "cd '"),
+		strings.HasPrefix(text, "cd \""):
+		return true
+	}
+	// Shell prompts after the command finishes.
+	if strings.Contains(text, "@") && (strings.HasSuffix(text, "#") || strings.HasSuffix(text, "$")) {
+		return true
+	}
+	if strings.HasPrefix(text, "(base)") && strings.Contains(text, "@") {
+		return true
+	}
+	return false
+}
+
+// subAgentDiffSelfCheckMeaningfulBodyEmpty reports whether a failed git
+// diff/status self-check produced no real diagnostic body — only exit markers,
+// agent separators (echo "---"), and remote SSH/PTY wrapper noise. This is the
+// common shape when agents run `git ... 2>/dev/null` outside a repo.
+func subAgentDiffSelfCheckMeaningfulBodyEmpty(summary string) bool {
+	lines := strings.Split(strings.ReplaceAll(summary, "\r\n", "\n"), "\n")
+	// Ignore everything after the last EXIT marker (prompt / shell chrome).
+	end := len(lines)
+	if idx := subAgentLastExitMarkerLineIndex(lines); idx >= 0 {
+		end = idx
+	}
+	for i := 0; i < end; i++ {
+		if subAgentRemoteShellNoiseLine(lines[i]) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// subAgentCommandSilencesGitStderr detects agent habits that hide
+// "fatal: not a git repository" from quality-gate text matching.
+func subAgentCommandSilencesGitStderr(command string) bool {
+	lower := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if lower == "" || !strings.Contains(lower, "git") {
+		return false
+	}
+	// Common redirections that drop git diagnostics from the captured body.
+	switch {
+	case strings.Contains(lower, "2>/dev/null"),
+		strings.Contains(lower, "2> /dev/null"),
+		strings.Contains(lower, "2>&-"),
+		strings.Contains(lower, "&>/dev/null"),
+		strings.Contains(lower, "&> /dev/null"),
+		strings.Contains(lower, ">&/dev/null"),
+		strings.Contains(lower, ">& /dev/null"):
+		return true
+	}
+	// Full-discard forms: >/dev/null 2>&1  and  2>&1 >/dev/null
+	hasStdoutNull := strings.Contains(lower, ">/dev/null") || strings.Contains(lower, "> /dev/null")
+	hasStderrMerge := strings.Contains(lower, "2>&1")
+	return hasStdoutNull && hasStderrMerge
+}
+
+// subAgentCommandIsPureGitSelfCheckProbes reports commands that only run git
+// self-check probes (plus cd/echo separators). Mixed pipelines that also run
+// make/test/etc. must not soft-skip via the "stderr silenced + empty body"
+// fallback when the trailing EXIT marker was truncated.
+func subAgentCommandIsPureGitSelfCheckProbes(command string) bool {
+	if !isSubAgentDiffSelfCheckCommand(command) {
+		return false
+	}
+	segments := shellCommandSegments(command)
+	if len(segments) == 0 {
+		return false
+	}
+	for _, segment := range segments {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		cmd := commandNameBase(segment[0])
+		switch cmd {
+		case "cd", "echo", "printf", "true", ":":
+			continue
+		case "git":
+			if len(segment) < 2 {
+				return false
+			}
+			switch segment[1] {
+			case "diff", "status", "log", "show", "branch", "ls-files", "describe":
+				continue
+			case "rev-parse":
+				// Only the work-tree probe is a soft self-check companion.
+				ok := false
+				for _, arg := range segment[2:] {
+					if normalizeShellExecutableToken(arg) == "--is-inside-work-tree" {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					return false
+				}
+				continue
+			default:
+				// Mutating / unrelated git subcommands are not soft self-checks.
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// subAgentDiffSelfCheckLooksLikeSilencedNonGitFailure detects non-repo git
+// self-checks whose stderr was redirected away (2>/dev/null), leaving only
+// EXIT: 128 (or a truncated summary without the exit line) plus empty /
+// separator / SSH-wrapper body. Real git fatals that still surface text
+// (bad revision, lock, permission, …) keep a non-empty body and remain hard.
+func subAgentDiffSelfCheckLooksLikeSilencedNonGitFailure(cmd CodingSubAgentCommandResult) bool {
+	if !subAgentDiffSelfCheckMeaningfulBodyEmpty(cmd.Summary) {
+		return false
+	}
+	pure := subAgentCommandIsPureGitSelfCheckProbes(cmd.Command)
+	silenced := subAgentCommandSilencesGitStderr(cmd.Command)
+	if code, ok := remoteCodingParseExitMarker(cmd.Summary); ok {
+		if code != 128 {
+			return false
+		}
+		// EXIT 128 + empty body:
+		// - pure git probes → soft (classic non-repo / missing git metadata)
+		// - stderr silenced → soft (diagnostic text was discarded)
+		// - mixed non-silenced pipelines stay hard so we do not mask other fatals
+		return pure || silenced
+	}
+	// No EXIT marker (often truncated audit text): only soft-skip pure git
+	// probe commands that also silenced stderr. Mixed commands like
+	// `git status 2>/dev/null; make` must stay hard when EXIT is unknown.
+	return pure && silenced
 }
 
 func subAgentGitDiffUnavailableNonGitSummary(workDir string) string {
@@ -4621,11 +4876,65 @@ func compactCommandResult(result string) string {
 	if result == "" {
 		return "(无输出)"
 	}
-	return truncateRunesForSubAgent(result, 1000)
+	const maxRunes = 1000
+	if utf8.RuneCountInString(result) <= maxRunes {
+		return result
+	}
+	// Prefer head+tail when an instrumented EXIT marker is present so quality
+	// gates keep exit codes and late diagnostics instead of only SSH prelude.
+	if _, ok := remoteCodingParseExitMarker(result); ok {
+		// Keep enough head for context and enough tail for EXIT + last output.
+		head, tail := 280, 680
+		if head+tail > maxRunes {
+			tail = maxRunes - head
+		}
+		return truncateRunesMiddle(result, head, tail)
+	}
+	return truncateRunesForSubAgent(result, maxRunes)
+}
+
+// subAgentResultLooksLikeRemotePTYDump reports SSH/remote-bash envelope chrome
+// that should not be preferred over EXIT markers in failure banners.
+func subAgentResultLooksLikeRemotePTYDump(result string) bool {
+	if result == "" {
+		return false
+	}
+	return strings.Contains(result, "[ssh_") ||
+		strings.Contains(result, "__maclaw_") ||
+		strings.Contains(result, "base64 -d") ||
+		strings.Contains(result, "状态:")
 }
 
 func commandResultDiagnosticLine(result string) string {
-	return strings.TrimSpace(firstDiagnosticCodingToolResultLine(result))
+	line := strings.TrimSpace(firstDiagnosticCodingToolResultLine(result))
+	// Only apply remote PTY noise filtering when the result looks like an SSH
+	// dump. Local tool failures must keep their first actionable diagnostic
+	// (e.g. "printf: not found") without git-self-check heuristics.
+	if !subAgentResultLooksLikeRemotePTYDump(result) {
+		return line
+	}
+	// Remote PTY dumps often put SSH chrome first; prefer a real diagnostic or
+	// the instrumented EXIT marker so failure banners are actionable.
+	if line != "" && !subAgentRemoteShellNoiseLine(line) && !subAgentIsDashSeparatorLine(strings.TrimSpace(line)) {
+		return line
+	}
+	if code, ok := remoteCodingParseExitMarker(result); ok {
+		return fmt.Sprintf("EXIT: %d", code)
+	}
+	// Last non-noise body line before EXIT (if any).
+	lines := strings.Split(strings.ReplaceAll(result, "\r\n", "\n"), "\n")
+	end := len(lines)
+	if idx := subAgentLastExitMarkerLineIndex(lines); idx >= 0 {
+		end = idx
+	}
+	for i := end - 1; i >= 0; i-- {
+		text := strings.TrimSpace(lines[i])
+		if text == "" || subAgentRemoteShellNoiseLine(text) {
+			continue
+		}
+		return text
+	}
+	return line
 }
 
 func compactGuardrailSummary(result string) string {
@@ -5193,8 +5502,17 @@ var subAgentMissingPathProbeMarkers = []string{
 //  2. Pure `test`/`[` existence probes (any non-hard failure; exit-code only).
 //  3. Inspection probes that never ran because ssh_bash could not cd into
 //     working_dir (common on brand-new remote project paths).
+//  4. Multi-tool version inventory probes (e.g. g++/gcc/clang++ --version)
+//     where some tools report versions and others are "not found" — documenting
+//     an optional missing compiler is a valid T1 env finding, not a hard fail.
+//  5. Multi-tool `which`/`command -v` inventory: GNU which exits 1 when any
+//     named tool is missing and omits that name from stdout (no "not found"
+//     line). Agents commonly chain `which g++ gcc clang++ cmake make && …`;
+//     when required tools (g++/cmake/make) are listed as found paths and only
+//     optional ones (clang++) are absent, that is valid T1 env evidence.
 //
-// Not soft: toolchain "command not found", permission denied, compile/link errors.
+// Not soft: single required toolchain fully missing (no version output),
+// permission denied, compile/link errors.
 func subAgentCommandIsSoftInspectionProbeFailure(cmd CodingSubAgentCommandResult) bool {
 	if cmd.Succeeded {
 		return false
@@ -5222,6 +5540,419 @@ func subAgentCommandIsSoftInspectionProbeFailure(cmd CodingSubAgentCommandResult
 	// subAgentInspectionProbeCommand already covers diagnostic version probes.
 	if subAgentMissingWorkdirCdFailure(summary) && subAgentInspectionProbeCommand(cmd.Command) {
 		return true
+	}
+
+	// (4) Partial toolchain inventory: some tools printed versions and others
+	// were not found (common: g++ present, clang++ absent).
+	// Also soft when the summary was truncated (PTY dump) and only shows
+	// not-found for a subset of tools named in a multi-tool --version probe —
+	// we must not require the successful banner text still be present.
+	// Accept inventory-only compounds (which + --version | head) in addition to
+	// pure diagnostic probes — agents often mix both in one T1 shell line.
+	if (subAgentDiagnosticProbeCommand(cmd.Command) || subAgentToolchainInventoryOnlyCommand(cmd.Command)) &&
+		subAgentSummaryLooksLikeCommandNotFound(summary) &&
+		(subAgentSummaryLooksLikeSuccessfulToolchainVersion(summary) ||
+			subAgentPartialVersionInventoryMissingOnlySomeTools(cmd.Command, summary)) {
+		return true
+	}
+
+	// (5) Multi-tool which/command -v inventory with optional tools absent.
+	// GNU which does not print "clang++: not found"; it just exits 1 after
+	// listing the tools that exist. Version probes after `&&` never run.
+	if subAgentPartialWhichInventorySoftFailure(cmd) {
+		return true
+	}
+
+	// `tree` is a convenience-only directory renderer, not a project build
+	// dependency. Minimal remote images often omit it. Agents sometimes place
+	// it before CMake/compiler checks in an `&&` chain, so its absence aborts
+	// otherwise useful verification. Treat only this exact missing-command case
+	// as soft; failures from find/ls/cmake/the compiler remain actionable.
+	if subAgentOptionalTreeDisplayCommandMissing(cmd.Command, summary) {
+		return true
+	}
+	return false
+}
+
+func subAgentOptionalTreeDisplayCommandMissing(command, summary string) bool {
+	if !subAgentSummaryReportsToolNotFound(summary, "tree") {
+		return false
+	}
+	segments := shellCommandSegments(command)
+	if len(segments) == 0 {
+		return false
+	}
+	first := stripVerificationCommandPrefixes(segments[0])
+	return len(first) > 0 && commandNameBase(first[0]) == "tree"
+}
+
+// subAgentPartialWhichInventorySoftFailure reports multi-name which/type/
+// command -v inventories where required build tools appear as found paths and
+// only optional tools are missing (exit non-zero with no hard-error markers).
+func subAgentPartialWhichInventorySoftFailure(cmd CodingSubAgentCommandResult) bool {
+	if cmd.Succeeded {
+		return false
+	}
+	if subAgentDiagnosticProbeFailureResultLooksHard(cmd.Summary) {
+		return false
+	}
+	if !subAgentToolchainInventoryOnlyCommand(cmd.Command) {
+		return false
+	}
+	tools := subAgentWhichInventoryToolsInCommand(cmd.Command)
+	if len(tools) < 2 {
+		return false
+	}
+	foundRequired := 0
+	missingRequired := 0
+	missingOptional := 0
+	for _, tool := range tools {
+		found := subAgentSummaryShowsWhichFoundTool(cmd.Summary, tool)
+		if subAgentToolchainToolIsRequiredBuildProbe(tool) {
+			if found {
+				foundRequired++
+			} else {
+				missingRequired++
+			}
+		} else if !found {
+			missingOptional++
+		}
+	}
+	// Soft only when every required tool named in the inventory is present and
+	// at least one explicitly-requested optional tool is absent. This prevents a
+	// failed inventory containing only required tools from hiding an unrelated
+	// shell or transport failure.
+	return foundRequired > 0 && missingRequired == 0 && missingOptional > 0
+}
+
+// subAgentToolchainInventoryOnlyCommand is true when every shell segment is a
+// read-only env inventory probe (which/version/uname/…) or a pipe viewer
+// (head/tail) used to trim version output — never a build/test/write command.
+func subAgentToolchainInventoryOnlyCommand(command string) bool {
+	segments := shellCommandSegments(strings.ToLower(command))
+	if len(segments) == 0 {
+		return false
+	}
+	hasInventory := false
+	for _, segment := range segments {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		cmd := commandNameBase(segment[0])
+		switch cmd {
+		case "which", "where", "where.exe", "type", "whatis":
+			hasInventory = true
+			continue
+		case "command":
+			if !subAgentCommandLookupProbe(segment[1:]) {
+				return false
+			}
+			hasInventory = true
+			continue
+		case "echo", "printf":
+			// Only decorative inventory banners ("=== g++ ===", "---"), not prose.
+			if !subAgentDiagnosticEchoSeparator(segment[1:]) {
+				return false
+			}
+			continue
+		case "false":
+			// A deliberate failing shell command is not environment inventory.
+			return false
+		case "true", "head", "tail",
+			"uname", "nproc", "arch", "hostname", "id", "whoami", "pwd",
+			"getconf", "free", "df", "ls", "stat", "file":
+			// Viewers / env facts allowed only alongside real inventory segments.
+			continue
+		}
+		if subAgentDiagnosticProbeCommandSegment(segment) {
+			hasInventory = true
+			continue
+		}
+		if subAgentInspectionProbeCommandSegment(segment) {
+			continue
+		}
+		return false
+	}
+	return hasInventory
+}
+
+// subAgentCommandLookupProbe accepts only the non-executing `command -v/-V`
+// forms. `command <program>` would execute that program and must never make a
+// failed shell line eligible for the inventory soft-failure path.
+func subAgentCommandLookupProbe(args []string) bool {
+	hasLookupFlag := false
+	hasToolName := false
+	for _, arg := range args {
+		tok := strings.TrimSpace(normalizeShellCommandToken(arg))
+		if tok == "" {
+			continue
+		}
+		if tok == "-v" || tok == "-V" {
+			hasLookupFlag = true
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			return false
+		}
+		hasToolName = true
+	}
+	return hasLookupFlag && hasToolName
+}
+
+// subAgentWhichInventoryToolsInCommand lists tool names passed to which/type/
+// command -v (or where on Windows) in a compound inventory command.
+func subAgentWhichInventoryToolsInCommand(command string) []string {
+	seen := make(map[string]bool)
+	var tools []string
+	for _, segment := range shellCommandSegments(strings.ToLower(command)) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		cmd := commandNameBase(segment[0])
+		args := segment[1:]
+		switch cmd {
+		case "which", "where", "where.exe", "type":
+			// which g++ gcc clang++  /  type -a g++  /  where g++
+		case "command":
+			// command -v g++ / command -V cmake
+			if !subAgentCommandLookupProbe(args) {
+				continue
+			}
+			cleaned := make([]string, 0, len(args))
+			for _, a := range args {
+				tok := strings.TrimSpace(normalizeShellCommandToken(a))
+				if tok == "-v" || tok == "-V" {
+					continue
+				}
+				if tok == "" || strings.HasPrefix(tok, "-") {
+					continue
+				}
+				cleaned = append(cleaned, tok)
+			}
+			args = cleaned
+		default:
+			continue
+		}
+		for _, a := range args {
+			tok := strings.TrimSpace(normalizeShellCommandToken(a))
+			if tok == "" || strings.HasPrefix(tok, "-") {
+				continue
+			}
+			name := commandNameBase(tok)
+			if name == "cl.exe" {
+				name = "cl"
+			}
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			tools = append(tools, name)
+		}
+	}
+	return tools
+}
+
+// subAgentSummaryShowsWhichFoundTool reports that which/type output lists an
+// absolute (or path-like) location for tool — e.g. "/usr/bin/g++".
+func subAgentSummaryShowsWhichFoundTool(summary, tool string) bool {
+	tool = strings.ToLower(strings.TrimSpace(tool))
+	if tool == "" || summary == "" {
+		return false
+	}
+	for _, line := range strings.Split(summary, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		// Skip PTY dumps / wrapper echoes that mention the tool name in the command.
+		if strings.HasPrefix(lower, "$") || strings.HasPrefix(lower, "sh -lc") ||
+			strings.HasPrefix(lower, "bash -lc") || strings.Contains(lower, "which ") ||
+			strings.Contains(lower, "command -v") || strings.HasPrefix(lower, "eval ") ||
+			strings.HasPrefix(lower, "[ssh_") || strings.HasPrefix(lower, "状态:") {
+			continue
+		}
+		// Normalize Windows separators then take basename.
+		norm := strings.ReplaceAll(lower, "\\", "/")
+		base := pathpkg.Base(norm)
+		base = strings.TrimSuffix(base, ".exe")
+		if base == tool {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentSummaryLooksLikeCommandNotFound(summary string) bool {
+	// Keep markers tight: bare "not found" / "no such file or directory" also
+	// appear in path probes and unrelated errors, and would over-soft case (4).
+	for _, marker := range []string{
+		"command not found",
+		"is not recognized",
+		"不是内部或外部命令",
+		"无法将", // PowerShell: 无法将“xxx”项识别为…
+	} {
+		if strings.Contains(summary, marker) {
+			return true
+		}
+	}
+	// sh/bash style: "sh: 1: clang++: not found" / "bash: foo: not found"
+	if strings.Contains(summary, ": not found") {
+		return true
+	}
+	return false
+}
+
+// subAgentSummaryLooksLikeSuccessfulToolchainVersion reports that a diagnostic
+// probe body contains at least one real tool version banner (not just errors).
+//
+// Markers must come from tool *output*, not from the probe command text that
+// remote PTY dumps echo (e.g. `sh -lc 'g++ --version'`). Matching on bare
+// "--version" + tool name would false-soft a fully missing compiler.
+func subAgentSummaryLooksLikeSuccessfulToolchainVersion(summary string) bool {
+	if summary == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"free software foundation",
+		"copyright (c)",
+		"cmake version", // cmake stdout, not a common flag form
+		"gnu make",
+		"clang version",
+		"apple clang",
+		"go version go", // "go version go1.22.x" stdout; avoids matching only the words in a command dump
+		"rustc 1.",
+		"rustc 0.",
+	} {
+		if strings.Contains(summary, marker) {
+			return true
+		}
+	}
+	// Compiler identity banners: "g++ (Ubuntu …)", "g++.exe (Rev…, Built by MSYS2…)"
+	for _, tool := range []string{"g++", "gcc", "c++", "clang", "clang++"} {
+		if subAgentSummaryHasToolchainParenBanner(summary, tool) {
+			return true
+		}
+	}
+	return false
+}
+
+// subAgentSummaryHasToolchainParenBanner matches "<tool> (" or "<tool>.exe (" in
+// version stdout (not "tool: not found" / flag-only command echoes).
+func subAgentSummaryHasToolchainParenBanner(summary, tool string) bool {
+	tool = strings.ToLower(strings.TrimSpace(tool))
+	if tool == "" {
+		return false
+	}
+	for _, form := range []string{tool + " (", tool + ".exe ("} {
+		if strings.Contains(summary, form) {
+			return true
+		}
+	}
+	return false
+}
+
+// subAgentPartialVersionInventoryMissingOnlySomeTools reports multi-tool
+// --version inventories where the summary only marks optional tools as
+// not-found (e.g. clang++), with no required build tool (g++/cmake/make)
+// reported missing. Used when compactCommandResult truncates away successful
+// version banners but keeps the optional-tool error line.
+//
+// If a required tool is reported missing, stay hard — that is a real env gap.
+func subAgentPartialVersionInventoryMissingOnlySomeTools(command, summary string) bool {
+	tools := subAgentVersionProbeToolsInCommand(command)
+	if len(tools) < 2 {
+		return false
+	}
+	missingOptional := false
+	for _, tool := range tools {
+		if !subAgentSummaryReportsToolNotFound(summary, tool) {
+			continue
+		}
+		if subAgentToolchainToolIsRequiredBuildProbe(tool) {
+			return false
+		}
+		missingOptional = true
+	}
+	return missingOptional
+}
+
+func subAgentToolchainToolIsRequiredBuildProbe(tool string) bool {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "g++", "gcc", "c++", "cmake", "make", "gmake", "mingw32-make", "cl", "cl.exe":
+		return true
+	default:
+		// clang++/pkg-config/boost probes are treated as optional inventory.
+		return false
+	}
+}
+
+// subAgentVersionProbeToolsInCommand lists tools invoked with a version/probe
+// flag in a diagnostic inventory (g++, clang++, cmake, make, pkg-config, …).
+func subAgentVersionProbeToolsInCommand(command string) []string {
+	seen := make(map[string]bool)
+	var tools []string
+	// Pass the raw command (lowercased) into shellCommandSegments so ";" / "&&"
+	// stay as boundaries. Do NOT strings.Fields-join first — that glues "2>&1;"
+	// into one token and drops tools from the inventory.
+	for _, segment := range shellCommandSegments(strings.ToLower(command)) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		cmd := commandNameBase(segment[0])
+		switch cmd {
+		case "echo", "printf", "true", "false", "cd":
+			continue
+		}
+		args := stripShellRedirectionOnlyArgs(segment[1:])
+		if !subAgentDiagnosticCompilerProbeArgs(args) && !subAgentDiagnosticVersionProbeArgs(args) &&
+			!(subAgentDiagnosticBareProbeTool(cmd) && subAgentDiagnosticProbeArgsAreOnlyRedirection(args)) {
+			continue
+		}
+		if seen[cmd] {
+			continue
+		}
+		seen[cmd] = true
+		tools = append(tools, cmd)
+	}
+	return tools
+}
+
+func subAgentSummaryReportsToolNotFound(summary, tool string) bool {
+	tool = strings.ToLower(strings.TrimSpace(tool))
+	summary = strings.ToLower(summary)
+	if tool == "" || summary == "" {
+		return false
+	}
+	// Prefix forms already include a delimiter before the tool name.
+	for _, form := range []string{
+		"bash: " + tool + ":",
+		"sh: 1: " + tool + ":",
+		"sh: " + tool + ":",
+	} {
+		if strings.Contains(summary, form) {
+			return true
+		}
+	}
+	// "g++: not found" must not match inside "clang++: not found".
+	for _, suffix := range []string{": not found", ": command not found"} {
+		needle := tool + suffix
+		for i := 0; i+len(needle) <= len(summary); i++ {
+			if summary[i:i+len(needle)] != needle {
+				continue
+			}
+			if i > 0 {
+				prev := summary[i-1]
+				// '+' is part of g++/c++/clang++ names — treat as inside a longer tool.
+				if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') || prev == '+' || prev == '_' || prev == '-' {
+					continue
+				}
+			}
+			return true
+		}
 	}
 	return false
 }
@@ -7063,12 +7794,39 @@ func subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd CodingSubAgentCommandRe
 	if cmd.Succeeded || !isSubAgentDiffSelfCheckCommand(cmd.Command) {
 		return false
 	}
+	// Policy rejections are soft for unresolved-command accounting, but they are
+	// not evidence that the remote tree is non-git.
+	if subAgentCommandIsSoftSilencedGitSelfCheckRejection(cmd) {
+		return false
+	}
 	text := strings.TrimSpace(cmd.Command + "\n" + cmd.Summary)
-	return subAgentGitDiffUnavailableBecauseNonGit(text)
+	if subAgentGitDiffUnavailableBecauseNonGit(text) {
+		return true
+	}
+	// Agents often redirect stderr (2>/dev/null) on git self-checks, so the
+	// "not a git repository" marker is lost and only EXIT: 128 / SSH wrapper
+	// noise remains. Treat that as a soft non-git skip so it does not hard-fail
+	// an otherwise successful compile/run step.
+	return subAgentDiffSelfCheckLooksLikeSilencedNonGitFailure(cmd)
+}
+
+// subAgentCommandIsSoftSilencedGitSelfCheckRejection reports policy blocks that
+// told the agent to re-run git status/diff without /dev/null. These must not
+// remain as unresolved hard failures after a correct unsilenced retry.
+func subAgentCommandIsSoftSilencedGitSelfCheckRejection(cmd CodingSubAgentCommandResult) bool {
+	if cmd.Succeeded || !isSubAgentDiffSelfCheckCommand(cmd.Command) {
+		return false
+	}
+	text := strings.ToLower(cmd.Summary)
+	return strings.Contains(text, "拒绝执行被重定向静默") ||
+		strings.Contains(text, "被重定向静默的 git 自检") ||
+		(strings.Contains(text, "2>/dev/null") && strings.Contains(text, "保留 fatal"))
 }
 
 func subAgentCommandIsSoftFailure(cmd CodingSubAgentCommandResult) bool {
-	return subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) || subAgentCommandIsSoftInspectionProbeFailure(cmd)
+	return subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) ||
+		subAgentCommandIsSoftInspectionProbeFailure(cmd) ||
+		subAgentCommandIsSoftSilencedGitSelfCheckRejection(cmd)
 }
 
 func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
@@ -7298,8 +8056,30 @@ func subAgentDiagnosticEchoSeparator(args []string) bool {
 	if text == "" {
 		return true
 	}
+	// Decorative inventory banners only: "=== g++ ===", "---versions---", "***".
+	// Plain prose like "not-a-separator" or "done" must NOT count as a diagnostic
+	// separator, or agents could hide non-probe work inside version inventory chains.
+	if !(strings.Contains(text, "===") || strings.Contains(text, "---") || strings.Contains(text, "***")) {
+		// Pure punctuation separators: "---", "===", "...."
+		onlyDecor := false
+		for _, r := range text {
+			switch r {
+			case '-', '=', '*', '.', ' ', '\t':
+				onlyDecor = true
+			default:
+				return false
+			}
+		}
+		return onlyDecor
+	}
+	// Reject shell metacharacters so echo is not used to smuggle real work.
 	for _, r := range text {
-		if r != '-' && r != '=' && r != '_' && r != '.' && !unicode.IsSpace(r) {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), unicode.IsSpace(r):
+			continue
+		case r == '-' || r == '=' || r == '_' || r == '.' || r == '+' || r == ':' || r == '/' || r == '\\' || r == '*':
+			continue
+		default:
 			return false
 		}
 	}
@@ -7447,6 +8227,34 @@ func isSubAgentDiffSelfCheckCommand(command string) bool {
 		}
 		switch segment[1] {
 		case "diff", "status":
+			return true
+		case "rev-parse":
+			// Used as a non-destructive "is this a git work tree?" probe before
+			// status/diff self-check on remote workspaces.
+			for _, arg := range segment[2:] {
+				if normalizeShellExecutableToken(arg) == "--is-inside-work-tree" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isSubAgentDiffSelfCheckContentCommand reports status/diff probes that actually
+// inspect the working tree. git rev-parse --is-inside-work-tree is only a
+// repository probe and must not alone satisfy the remote diff gate.
+func isSubAgentDiffSelfCheckContentCommand(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return false
+	}
+	for _, segment := range shellCommandSegments(normalized) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) < 2 || commandNameBase(segment[0]) != "git" {
+			continue
+		}
+		if segment[1] == "diff" || segment[1] == "status" {
 			return true
 		}
 	}
@@ -7666,6 +8474,93 @@ func maybeRelaxScaffoldVerification(
 		"plan structure/scaffold step: build/test/lint verification deferred to later implement/build steps; structure confirmed without requiring compile of incomplete stubs"
 }
 
+// maybeRelaxDeferredPlanStepVerification permits an implementation-only plan
+// step to defer executable verification when the same plan explicitly assigns
+// that work to a later build/test step.  This keeps the quality gate aligned
+// with the per-step instruction without weakening ordinary implementation
+// tasks: post-edit confirmation is still required by the caller, and an
+// actual failed verification command is never relaxed.
+func maybeRelaxDeferredPlanStepVerification(
+	title, description, fullTask string,
+	verificationStatus codingSubAgentQualityStatus,
+	verificationSummary string,
+) (codingSubAgentQualityStatus, string) {
+	verificationStatus, verificationSummary = maybeRelaxScaffoldVerification(title, description, verificationStatus, verificationSummary)
+	if verificationStatus != codingSubAgentQualityMissing {
+		return verificationStatus, verificationSummary
+	}
+	focus := strings.ToLower(strings.TrimSpace(title + "\n" + description))
+	if !codingPlanTextContainsAny(focus, []string{"implement", "实现", "编码实现", "编写代码"}) {
+		return verificationStatus, verificationSummary
+	}
+	if !codingPlanHasLaterBuildOrTestStep(fullTask) {
+		return verificationStatus, verificationSummary
+	}
+	return codingSubAgentQualityNotNeeded,
+		"plan implementation step: build/test verification explicitly deferred to a later compile/build/test step; post-edit file confirmation passed"
+}
+
+// codingPlanHasLaterBuildOrTestStep recognizes the compact `- T4: 编译项目`
+// lines included in a remote plan-step prompt.  It deliberately requires a
+// numbered current header and a later numbered outline entry, so free-form
+// tasks and plans without a dedicated verifier keep the normal full gate.
+func codingPlanHasLaterBuildOrTestStep(fullTask string) bool {
+	current, ok := codingPlanStepNumberFromHeader(fullTask)
+	if !ok {
+		return false
+	}
+	for _, line := range strings.Split(strings.ToLower(fullTask), "\n") {
+		step, title, ok := codingPlanStepNumberFromOutlineLine(line)
+		if !ok || step <= current {
+			continue
+		}
+		if codingPlanTextContainsAny(title, []string{
+			"build", "compile", "编译", "构建", "test", "测试", "lint", "typecheck",
+		}) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingPlanStepNumberFromHeader(fullTask string) (int, bool) {
+	lower := strings.ToLower(fullTask)
+	idx := strings.Index(lower, "[plan step t")
+	if idx < 0 {
+		return 0, false
+	}
+	return codingPlanLeadingStepNumber(lower[idx+len("[plan step t"):])
+}
+
+func codingPlanStepNumberFromOutlineLine(line string) (int, string, bool) {
+	line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "-"))
+	if !strings.HasPrefix(line, "t") {
+		return 0, "", false
+	}
+	step, ok := codingPlanLeadingStepNumber(line[1:])
+	if !ok {
+		return 0, "", false
+	}
+	colon := strings.Index(line, ":")
+	if colon < 0 {
+		return 0, "", false
+	}
+	return step, strings.TrimSpace(line[colon+1:]), true
+}
+
+func codingPlanLeadingStepNumber(text string) (int, bool) {
+	n := 0
+	found := false
+	for _, ch := range text {
+		if ch < '0' || ch > '9' {
+			break
+		}
+		n = n*10 + int(ch-'0')
+		found = true
+	}
+	return n, found
+}
+
 func summarizeSubAgentVerification(filesModified []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64) (codingSubAgentQualityStatus, string) {
 	if len(filesModified) == 0 {
 		return codingSubAgentQualityNotNeeded, "未检测到文件修改，跳过命令验证要求。"
@@ -7701,6 +8596,15 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 		}
 		return codingSubAgentQualityFailed, fmt.Sprintf("有 %d 条验证命令未通过：%s", len(failed), compactFailedVerificationCommandResults(failed))
 	}
+	// A failed command can be non-blocking for command accounting (for example,
+	// `tree` missing before a chained build).  It still is not evidence that the
+	// build/test portion ran: `&&` short-circuits the rest of that shell line.
+	// Keep scaffold steps eligible for their existing MISSING -> NOT_NEEDED
+	// relaxation, while implementation/build steps must rerun verification as a
+	// standalone command.
+	if !hasSuccessfulSubAgentVerificationCommand(verificationCommands) {
+		return codingSubAgentQualityMissing, "verification command did not reach a successful build/test check; rerun the verifier separately without optional display/probe commands in the same && chain"
+	}
 	var empty []CodingSubAgentCommandResult
 	for _, cmd := range verificationCommands {
 		if cmd.Succeeded && subAgentVerificationOutputLooksEmpty(cmd) {
@@ -7720,6 +8624,15 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 		}
 	}
 	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条有效 bash 验证命令，未检测到未解决错误：%s", len(successful), compactSubAgentVerificationCommandList(successful))
+}
+
+func hasSuccessfulSubAgentVerificationCommand(commands []CodingSubAgentCommandResult) bool {
+	for _, cmd := range commands {
+		if cmd.Succeeded {
+			return true
+		}
+	}
+	return false
 }
 
 func compactSubAgentVerificationCommandList(commands []CodingSubAgentCommandResult) string {
@@ -7908,7 +8821,9 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 		return false
 	}
 	cmd := commandNameBase(segment[0])
-	args := segment[1:]
+	// Ignore pure shell redirections such as 2>&1 so `make 2>&1` / `g++ ... 2>&1`
+	// still count as build/compile verification (common on remote ssh_bash).
+	args := stripShellRedirectionOnlyArgs(segment[1:])
 	if hasInteractiveVerificationArg(args) {
 		return false
 	}
@@ -8066,7 +8981,9 @@ func subAgentCommandLooksLikeExecutableRun(token string) bool {
 // Order matters:
 //  1. Known runners by basename (phpunit, psalm, eslint…) with their arg rules
 //  2. Reject help/list/mutating invocations
-//  3. Accept only project-relative bare binaries (./sysinfo) — not /bin/rm etc.
+//  3. Accept project-relative bare binaries (./sysinfo)
+//  4. Accept absolute project build binaries (/home/.../build/sysinfo) — common
+//     on remote coding hosts — but never system paths like /bin/rm.
 func pathExecutableRunsVerification(token, base string, args []string) bool {
 	base = strings.TrimSpace(strings.ToLower(base))
 	if base == "" {
@@ -8082,9 +8999,67 @@ func pathExecutableRunsVerification(token, base string, args []string) bool {
 	if pathExecutableArgsLookMutating(args) {
 		return false
 	}
-	// Bare acceptance runs must be project-relative so system tools never
-	// satisfy the no-change verification gate by accident.
-	return subAgentCommandIsProjectRelativeExecutable(token)
+	// Bare acceptance runs: ./sysinfo or absolute project build outputs.
+	// System tools must never satisfy the verification gate by accident.
+	return subAgentCommandIsProjectRelativeExecutable(token) ||
+		subAgentCommandLooksLikeProjectBuildBinary(token, args)
+}
+
+// subAgentCommandLooksLikeProjectBuildBinary reports paths to a built project
+// binary, e.g. /home/sysinfo12/build/sysinfo12 or D:\proj\build\app.exe.
+//
+// Tight on purpose: only build/dist/out (and project-local bin/) trees count.
+// Arbitrary /home/foo, /tmp/bar, or C:\Windows\...\.exe must never pass.
+func subAgentCommandLooksLikeProjectBuildBinary(token string, args []string) bool {
+	token = strings.TrimSpace(normalizeShellCommandToken(token))
+	if token == "" || strings.ContainsAny(token, " \t") {
+		return false
+	}
+	// Acceptance runs are bare invocations (no subcommands). Flags like --help
+	// are filtered earlier; any remaining args are treated as non-verify.
+	if len(stripShellRedirectionOnlyArgs(args)) > 0 {
+		return false
+	}
+	lower := strings.ToLower(token)
+	base := pathpkg.Base(token)
+	if base == "" || base == "/" || base == "." || base == ".." ||
+		base == "\\" || strings.EqualFold(base, token) && !strings.ContainsAny(token, `/\`) {
+		return false
+	}
+
+	// Windows drive path: only project build trees, never System32 etc.
+	if len(token) >= 3 && token[1] == ':' && (token[2] == '\\' || token[2] == '/') {
+		if strings.Contains(lower, `\windows\`) || strings.Contains(lower, `/windows/`) ||
+			strings.Contains(lower, `\system32\`) || strings.Contains(lower, `\syswow64\`) ||
+			strings.Contains(lower, `\program files`) {
+			return false
+		}
+		return strings.Contains(lower, `\build\`) || strings.Contains(lower, "/build/") ||
+			strings.Contains(lower, `\dist\`) || strings.Contains(lower, "/dist/") ||
+			strings.Contains(lower, `\out\`) || strings.Contains(lower, "/out/") ||
+			strings.Contains(lower, `\bin\`) || strings.Contains(lower, "/bin/")
+	}
+
+	if !strings.HasPrefix(token, "/") {
+		return false
+	}
+	// System locations never count (even if they contain "bin").
+	for _, prefix := range []string{
+		"/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/local/bin/",
+		"/lib/", "/lib64/", "/usr/lib/", "/dev/", "/proc/", "/sys/", "/etc/",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	// Project build/output trees only (remote CMake/Make layout).
+	return strings.Contains(lower, "/build/") ||
+		strings.Contains(lower, "/dist/") ||
+		strings.Contains(lower, "/out/") ||
+		// project-local bin, not /usr/bin (already rejected by prefix list)
+		(strings.Contains(lower, "/bin/") && (strings.HasPrefix(lower, "/home/") ||
+			strings.HasPrefix(lower, "/tmp/") || strings.HasPrefix(lower, "/var/tmp/") ||
+			strings.HasPrefix(lower, "/opt/")))
 }
 
 // pathExecutableArgsLookMutating catches subcommands that rewrite the tree when
@@ -9436,11 +10411,42 @@ func ninjaOptionConsumesValue(arg string) bool {
 }
 
 func makeRunsVerification(args []string) bool {
-	args = stripMakeOptions(args)
+	args = stripShellRedirectionOnlyArgs(stripMakeOptions(stripShellRedirectionOnlyArgs(args)))
 	if len(args) == 0 {
 		return true
 	}
 	return firstArgIn(args, "test", "check", "build", "all", "lint", "typecheck", "type-check")
+}
+
+// stripShellRedirectionOnlyArgs drops tokens that only redirect streams
+// (2>&1, >/dev/null, 2>/dev/null, …) so they do not look like make/cmake targets.
+func stripShellRedirectionOnlyArgs(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		tok := strings.TrimSpace(normalizeShellExecutableToken(arg))
+		if tok == "" {
+			continue
+		}
+		if tok == "2>&1" || tok == "1>&2" || tok == "&>/dev/null" || tok == ">&/dev/null" {
+			continue
+		}
+		if strings.HasPrefix(tok, ">/") || strings.HasPrefix(tok, ">>/") ||
+			strings.HasPrefix(tok, "1>/") || strings.HasPrefix(tok, "1>>/") ||
+			strings.HasPrefix(tok, "2>/") || strings.HasPrefix(tok, "2>>/") ||
+			strings.HasPrefix(tok, "&>/") || strings.HasPrefix(tok, "&>>/") {
+			continue
+		}
+		// Bare operators without a glued path are also redirections.
+		if tok == ">" || tok == ">>" || tok == "1>" || tok == "1>>" ||
+			tok == "2>" || tok == "2>>" || tok == "&>" || tok == "&>>" {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 func stripMakeOptions(args []string) []string {
@@ -11747,11 +12753,12 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 ## 验证优先流程
 1. 能自动化覆盖的行为变更，应添加或更新聚焦测试；无法合理自动化时，在总结中说明原因。
 2. 修改后运行匹配的验证命令（test/build/lint/typecheck），失败时分析错误后再修复。
-3. 完成前调用 git_diff 自检，确认改动范围符合任务要求。
+3. 完成前调用 git_diff 自检，确认改动范围符合任务要求。若项目不是 Git 仓库，说明该情况并依赖文件审计列表，不要用 bash 反复跑 git status/diff/log，也不要对 git 自检加 2>/dev/null。
 4. 只在用户明确要求或仓库已有流程要求时，才追加 TEST_REPORT.md；不要默认制造报告文件。
 
 ## 禁止行为
 - 禁止执行破坏性删除、清理或 Git 工作区/索引/历史改写命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git switch、git merge/rebase/stash、git add/commit/apply/cherry-pick/revert/rm/mv/update-index/read-tree、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。
+- 禁止对 git status/diff/log 自检使用 2>/dev/null 或 >/dev/null 掩盖错误输出。
 - 禁止不读文件就直接修改；禁止无关重构、无关格式化、依赖 churn 或 speculative feature work。
 - 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。
 `)

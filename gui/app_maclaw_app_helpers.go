@@ -1029,9 +1029,21 @@ func anyMap(value any) map[string]any {
 	return m
 }
 
+// anySlice normalizes common slice shapes produced by JSON decode ([]any) and
+// in-memory builders ([]map[string]any) into a single []any for iteration.
 func anySlice(value any) []any {
-	items, _ := value.([]any)
-	return items
+	switch typed := value.(type) {
+	case []any:
+		return typed
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, item)
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func maclawAppStringListFromAny(value any) []string {

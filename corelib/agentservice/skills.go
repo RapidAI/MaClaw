@@ -463,16 +463,16 @@ func (s *Service) resolveUserHubCenterBaseURLs(p Principal, explicit string) ([]
 		}
 		return baseURLs, nil
 	}
-	candidates := make([]string, 0, len(remote.DefaultRemoteHubCenterURLs)+2)
 	cfg, err := s.getOrLoadUserConfig(p.TenantID, p.UserID)
-	if err == nil {
-		candidates = append(candidates, cfg.AppConfig.RemoteHubCenterURL)
-		candidates = append(candidates, cfg.AppConfig.RemoteHubCenterURLs...)
-	} else {
+	if err != nil {
 		return nil, err
 	}
-	candidates = append(candidates, remote.DefaultRemoteHubCenterURLs...)
-	baseURLs := remote.NormalizeHubCenterURLs(candidates)
+	// Unique enrollment algorithm — same as GUI/TUI HubCenterBaseURLs.
+	baseURLs := remote.EffectiveHubCenterSeeds(
+		cfg.AppConfig.RemoteHubCenterURL,
+		cfg.AppConfig.RemoteHubCenterURLs,
+		remote.DefaultRemoteHubCenterURLs,
+	)
 	if len(baseURLs) == 0 {
 		return nil, fmt.Errorf("hubcenter URL is not configured; activate remote HubCenter first")
 	}
@@ -488,16 +488,9 @@ func (s *Service) rememberUserHubCenterSelection(p Principal, selected string, c
 	if err != nil {
 		return
 	}
-	next := append([]string{selected}, candidates...)
-	next = append(next, remote.DefaultRemoteHubCenterURLs...)
-	next = remote.NormalizeHubCenterURLs(next)
-	public := make([]string, 0, len(next))
-	for _, value := range next {
-		if value == "" || remote.IsLoopbackURL(value) {
-			continue
-		}
-		public = append(public, value)
-	}
+	// Persist only valid public addresses that were actually used/discovered for
+	// this selection — never expand with official DefaultRemoteHubCenterURLs.
+	public := remote.RegisteredPublicHubCenterURLs(selected, candidates)
 	if len(public) == 0 {
 		return
 	}

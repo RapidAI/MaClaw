@@ -3,23 +3,93 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"gopkg.in/yaml.v3"
 )
 
 const maclawAppOneClickPublishTimeout = 3 * time.Minute
 
+const maclawAppHubTLSPreflightCacheTTL = 20 * time.Second
+
+type maclawAppHubTLSPreflightCacheEntry struct {
+	err       error
+	expiresAt time.Time
+	done      chan struct{}
+}
+
+var (
+	maclawAppHubTLSPreflightMu    sync.Mutex
+	maclawAppHubTLSPreflightCache = map[string]*maclawAppHubTLSPreflightCacheEntry{}
+	maclawAppHubTLSCheck          = maclawAppHubTLSPreflight
+)
+
+// PreflightMaclawAppOneClickPublish inspects a package JSON without publishing.
+// Returns structured checks for local queue readiness and remote targets so the
+// UI can warn before the user starts a long one-click run.
+func (a *App) PreflightMaclawAppOneClickPublish(packageJSON string) (map[string]any, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	packageJSON = strings.TrimSpace(packageJSON)
+	if packageJSON == "" {
+		return nil, fmt.Errorf("package payload is empty")
+	}
+	pkg, _, _, err := parseMaclawAppPackage(packageJSON)
+	if err != nil {
+		return a.buildMaclawAppOneClickPreflight(packageJSON, nil, err), nil
+	}
+	return a.buildMaclawAppOneClickPreflight(packageJSON, pkg, nil), nil
+}
+
+// PreflightMaclawAppSubmissionOneClick inspects an existing local-queue row.
+func (a *App) PreflightMaclawAppSubmissionOneClick(submissionID string) (map[string]any, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	submissionID = strings.TrimSpace(submissionID)
+	if submissionID == "" {
+		return nil, fmt.Errorf("submission id is required")
+	}
+	record, err := a.GetMaclawAppPackageSubmission(submissionID)
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, fmt.Errorf("submission %s not found", submissionID)
+	}
+	if record.Package == nil {
+		return nil, fmt.Errorf("submission %s has no package payload", submissionID)
+	}
+	packageJSON, err := maclawAppStableJSON(record.Package)
+	if err != nil {
+		return nil, err
+	}
+	out := a.buildMaclawAppOneClickPreflight(packageJSON, record.Package, nil)
+	out["submission_id"] = record.SubmissionID
+	out["channel"] = record.Channel
+	out["status"] = record.Status
+	return out, nil
+}
+
 // PublishMaclawAppOneClick is the GUI one-click publish:
 //  1. queue a local maclaw.app.pack.v1 submission
-//  2. sync the pack to enterprise Hub when marketplace URL+token are configured
-//  3. upload a skill-market package to HubCenter (and enterprise skill API if policy says so)
+//  2. upload a skill-market package to HubCenter (and enterprise skill API if policy says so)
+//  3. sync the pack to enterprise Hub when marketplace URL+token are configured
 //
+// Skill-market runs before the enterprise Hub pack so dependency skills can obtain
+// HubSkillID / market refs before the publish gate (bundled deps also satisfy the gate).
 // Partial success is returned as a structured map rather than a hard error whenever
 // the local queue step succeeds.
 func (a *App) PublishMaclawAppOneClick(packageJSON string) (map[string]any, error) {
@@ -92,9 +162,7 @@ func (a *App) finishMaclawAppOneClickPublish(ctx context.Context, submissionID, 
 	}
 	targets := out["targets"].(map[string]any)
 
-	// 1) Enterprise Hub pack path (maclaw-apps/submit) when still local-only.
-	// Single queue read: also prefer durable package (resolved/bundled stamps) for skill market.
-	// Capture package before hub sync may rewrite the submission id.
+	// Capture durable package (resolved/bundled stamps) before any remote rewrite.
 	record, _ := a.GetMaclawAppPackageSubmission(submissionID)
 	channel := strings.TrimSpace(stringFromAnyMap(local, "channel"))
 	if record != nil {
@@ -109,34 +177,62 @@ func (a *App) finishMaclawAppOneClickPublish(ctx context.Context, submissionID, 
 			}
 		}
 	}
+
+	// 1) Skill-market first so dependency skills get HubSkillID / market refs
+	// before the enterprise App pack gate runs (avoids chicken-and-egg).
+	// Skip re-upload when the primary skill is already published (common on
+	// partial retry after skill market succeeded and only Hub pack failed).
 	if err := ctx.Err(); err != nil {
-		targets["enterprise_hub_pack"] = map[string]any{"ok": false, "error": err.Error()}
-	} else if channel == "" || channel == "local" {
-		hubRes, hubErr := a.SyncMaclawAppPackageSubmissionToHub(submissionID)
-		if hubErr != nil {
-			targets["enterprise_hub_pack"] = map[string]any{"ok": false, "error": hubErr.Error()}
-		} else {
-			targets["enterprise_hub_pack"] = map[string]any{"ok": true, "result": hubRes}
+		targets["skill_market"] = maclawAppOneClickTargetFail(err)
+	} else if strings.TrimSpace(packageJSON) == "" {
+		targets["skill_market"] = maclawAppOneClickTargetFail(fmt.Errorf("package payload is empty"))
+	} else if a.maclawAppOneClickCanSkipSkillMarket(packageJSON) {
+		targets["skill_market"] = map[string]any{
+			"ok":      true,
+			"skipped": true,
+			"reason":  "primary_skill_already_published",
 		}
+	} else {
+		marketID, marketErr := a.uploadMaclawAppPackageToSkillMarkets(ctx, packageJSON)
+		if marketErr != nil {
+			targets["skill_market"] = maclawAppOneClickTargetFail(marketErr)
+		} else {
+			targets["skill_market"] = map[string]any{"ok": true, "submission_id": marketID}
+		}
+	}
+
+	// Best-effort: always re-stamp resolved_dependencies before Hub pack so
+	// MarkUploaded / prior HubSkillIDs surface even when skill-market was
+	// skipped or failed (partial retry, offline market, etc.).
+	// Skip when the one-click deadline is already exhausted — stamp is local but
+	// PlanMaclawAppInstall can still be expensive.
+	if err := ctx.Err(); err != nil {
+		if t, ok := targets["skill_market"].(map[string]any); ok {
+			t["stamp_skipped"] = err.Error()
+		}
+	} else if stamped, stampErr := a.refreshMaclawAppSubmissionPublishStamps(submissionID); stampErr != nil {
+		log.Printf("[maclaw-app] refresh publish stamps before hub pack: %v", stampErr)
+		if t, ok := targets["skill_market"].(map[string]any); ok {
+			t["stamp_error"] = stampErr.Error()
+		}
+	} else if stamped > 0 {
+		if t, ok := targets["skill_market"].(map[string]any); ok {
+			t["stamped_deps"] = stamped
+		}
+	}
+
+	// 2) Enterprise Hub pack (maclaw-apps/submit). Bundled deps are accepted by
+	// the publish gate; HubSkillIDs / resolved install_refs from step 1 also
+	// satisfy non-bundled deps.
+	if err := ctx.Err(); err != nil {
+		targets["enterprise_hub_pack"] = maclawAppOneClickTargetFail(err)
+	} else if channel == "" || channel == "local" {
+		targets["enterprise_hub_pack"] = a.syncMaclawAppOneClickHubPack(ctx, submissionID, targets)
 	} else {
 		targets["enterprise_hub_pack"] = map[string]any{
 			"ok":      true,
 			"skipped": true,
 			"reason":  "already_" + channel,
-		}
-	}
-
-	// 2) Skill-market targets (HubCenter and/or enterprise skill submit per policy).
-	if err := ctx.Err(); err != nil {
-		targets["skill_market"] = map[string]any{"ok": false, "error": err.Error()}
-	} else if strings.TrimSpace(packageJSON) == "" {
-		targets["skill_market"] = map[string]any{"ok": false, "error": "package payload is empty"}
-	} else {
-		marketID, marketErr := a.uploadMaclawAppPackageToSkillMarkets(ctx, packageJSON)
-		if marketErr != nil {
-			targets["skill_market"] = map[string]any{"ok": false, "error": marketErr.Error()}
-		} else {
-			targets["skill_market"] = map[string]any{"ok": true, "submission_id": marketID}
 		}
 	}
 
@@ -167,6 +263,14 @@ func (a *App) finishMaclawAppOneClickPublish(ctx context.Context, submissionID, 
 	out["partial"] = partial
 	out["published_at"] = time.Now().UTC().Format(time.RFC3339)
 	out["message"] = message
+	// Attach post-run preflight snapshot for UI diagnostics.
+	if rec, _ := a.GetMaclawAppPackageSubmission(effectiveID); rec != nil && rec.Package != nil {
+		if raw, err := maclawAppStableJSON(rec.Package); err == nil {
+			out["preflight"] = a.buildMaclawAppOneClickPreflight(raw, rec.Package, nil)
+		}
+	} else {
+		out["preflight"] = a.buildMaclawAppOneClickPreflight(packageJSON, nil, nil)
+	}
 	return out, nil
 }
 
@@ -208,6 +312,497 @@ func maclawAppOneClickTargetsPartial(targets map[string]any) bool {
 	return false
 }
 
+// maclawAppOneClickCanSkipSkillMarket reports whether the primary app skill is
+// already published (HubSkillID present). Used to avoid re-uploading on partial
+// retries when only the enterprise Hub pack still needs to succeed.
+//
+// Packs without a bound primary skill still use the materialize-to-market path
+// (uploadMaclawAppPackAsSkillMarketZip), so they must NOT skip.
+func (a *App) maclawAppOneClickCanSkipSkillMarket(packageJSON string) bool {
+	if a == nil {
+		return false
+	}
+	skillID := strings.TrimSpace(maclawAppPrimarySkillIDFromPackageJSON(packageJSON))
+	if skillID == "" {
+		// No bound skill id → materialize the pack as a maclaw_app_skill product.
+		return false
+	}
+	name := a.findInstalledNLSkillName(skillID)
+	if name == "" {
+		// Not installed locally → still need materialize upload path.
+		return false
+	}
+	installed := a.installedMaclawAppSkillIndex()
+	for _, key := range []string{name, skillID} {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		if m, ok := installed[key]; ok && strings.TrimSpace(m.HubSkillID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// syncMaclawAppOneClickHubPack runs enterprise Hub pack submit with one
+// stamp-and-retry when the publish gate reports unpublished deps.
+func (a *App) syncMaclawAppOneClickHubPack(ctx context.Context, submissionID string, targets map[string]any) map[string]any {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hubRes, hubErr := a.syncMaclawAppPackageSubmissionToHub(ctx, submissionID)
+	if hubErr == nil {
+		return map[string]any{"ok": true, "result": hubRes}
+	}
+	// Stamp-and-retry covers races where MarkUploaded landed after the pre-hub stamp.
+	if classifyMaclawAppOneClickError(hubErr) == "dep_not_published" {
+		if err := ctx.Err(); err != nil {
+			return maclawAppOneClickTargetFail(err)
+		}
+		if stamped, stampErr := a.refreshMaclawAppSubmissionPublishStamps(submissionID); stampErr == nil && stamped > 0 {
+			if t, ok := targets["skill_market"].(map[string]any); ok {
+				prev := 0
+				switch v := t["stamped_deps"].(type) {
+				case int:
+					prev = v
+				case int64:
+					prev = int(v)
+				case float64:
+					prev = int(v)
+				}
+				t["stamped_deps"] = prev + stamped
+			}
+			if hubRes2, hubErr2 := a.syncMaclawAppPackageSubmissionToHub(ctx, submissionID); hubErr2 == nil {
+				return map[string]any{"ok": true, "result": hubRes2, "retried_after_stamp": true}
+			} else {
+				hubErr = hubErr2
+			}
+		}
+	}
+	return maclawAppOneClickTargetFail(hubErr)
+}
+
+func maclawAppOneClickTargetFail(err error) map[string]any {
+	if err == nil {
+		return map[string]any{"ok": false, "error": "unknown error", "error_code": "target_failed"}
+	}
+	out := map[string]any{
+		"ok":         false,
+		"error":      err.Error(),
+		"error_code": classifyMaclawAppOneClickError(err),
+	}
+	if detail := maclawAppOneClickErrorDetail(err); detail != nil {
+		out["error_detail"] = detail
+	}
+	return out
+}
+
+// maclawAppOneClickErrorDetail extracts the actionable Hub review issue from a
+// remote response. The raw response remains available for diagnostics, but the
+// publish summary must not expose an unformatted JSON blob to operators.
+func maclawAppOneClickErrorDetail(err error) map[string]any {
+	if err == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(err.Error())
+	start := strings.Index(raw, "{")
+	if start < 0 {
+		return nil
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(raw[start:]), &payload) != nil {
+		return nil
+	}
+	nested := anyMap(payload["error"])
+	detail := map[string]any{
+		"code":    firstNonEmpty(stringFromAnyMap(payload, "code"), "REMOTE_PUBLISH_FAILED"),
+		"message": firstNonEmpty(stringFromAnyMap(payload, "message"), stringFromAnyMap(nested, "message")),
+	}
+	if nested != nil {
+		if code := stringFromAnyMap(nested, "code"); code != "" {
+			detail["code"] = code
+		}
+		if issues := nested["issues"]; issues != nil {
+			detail["issues"] = issues
+		}
+	}
+	if strings.TrimSpace(stringFromAnyMap(detail, "message")) == "" {
+		detail["message"] = "Remote publish rejected the package"
+	}
+	return detail
+}
+
+// classifyMaclawAppOneClickError maps remote/target failures to stable UI codes.
+func classifyMaclawAppOneClickError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "install_ref") || strings.Contains(msg, "dependencyverification") || strings.Contains(msg, "dependency verification"):
+		return "dep_not_published"
+	case strings.Contains(msg, "neither bundled") || strings.Contains(msg, "not been published") || strings.Contains(msg, "neither bundled nor published"):
+		return "dep_not_published"
+	case strings.Contains(msg, "认证失败") || strings.Contains(msg, "session refresh") ||
+		(strings.Contains(msg, "session") && (strings.Contains(msg, "expired") || strings.Contains(msg, "invalid"))) ||
+		strings.Contains(msg, "unauthorized") || strings.Contains(msg, " 401") || strings.HasSuffix(msg, "(401)"):
+		return "auth_expired"
+	case strings.Contains(msg, "marketplace url") || strings.Contains(msg, "auth token is not configured") ||
+		strings.Contains(msg, "enterprise hub marketplace"):
+		return "hub_not_configured"
+	case strings.Contains(msg, "remote_email") || strings.Contains(msg, "hub enrollment incomplete"):
+		return "email_not_configured"
+	case strings.Contains(msg, "fingerprint"):
+		return "fingerprint_mismatch"
+	case strings.Contains(msg, "x509:") || strings.Contains(msg, "certificate has expired") ||
+		strings.Contains(msg, "certificate is not yet valid") || strings.Contains(msg, "tls: failed to verify certificate"):
+		return "hub_tls_certificate_invalid"
+	case strings.Contains(msg, "no reachable hubcenter") || strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection refused") || strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "context deadline exceeded"):
+		return "network"
+	case strings.Contains(msg, "package payload is empty"):
+		return "empty_package"
+	default:
+		return "target_failed"
+	}
+}
+
+// buildMaclawAppOneClickPreflight returns a structured readiness report.
+// parseErr, when non-nil, marks package_parse as blocking.
+func (a *App) buildMaclawAppOneClickPreflight(packageJSON string, pkg map[string]any, parseErr error) map[string]any {
+	if a == nil {
+		return map[string]any{
+			"schema":  "maclaw.app.one_click_preflight.v1",
+			"ok":      false,
+			"message": "app is not initialized",
+			"checks":  []map[string]any{},
+		}
+	}
+	checks := make([]map[string]any, 0, 12)
+	var blocking, warnings []string
+	add := func(id, severity, message string, ok bool, extra map[string]any) {
+		row := map[string]any{
+			"id":       id,
+			"ok":       ok,
+			"severity": severity,
+			"message":  message,
+		}
+		for k, v := range extra {
+			row[k] = v
+		}
+		checks = append(checks, row)
+		if !ok {
+			if severity == "error" {
+				blocking = append(blocking, id+": "+message)
+			} else {
+				warnings = append(warnings, id+": "+message)
+			}
+		}
+	}
+
+	if parseErr != nil {
+		add("package_parse", "error", parseErr.Error(), false, map[string]any{"error_code": "package_invalid"})
+		return map[string]any{
+			"schema":                 "maclaw.app.one_click_preflight.v1",
+			"ok":                     false,
+			"ready_for_local":        false,
+			"ready_for_skill_market": false,
+			"ready_for_hub_pack":     false,
+			"checks":                 checks,
+			"blocking":               blocking,
+			"warnings":               warnings,
+			"message":                "package parse failed",
+		}
+	}
+
+	if pkg == nil && strings.TrimSpace(packageJSON) != "" {
+		var err error
+		pkg, _, _, err = parseMaclawAppPackage(packageJSON)
+		if err != nil {
+			return a.buildMaclawAppOneClickPreflight(packageJSON, nil, err)
+		}
+	}
+	if pkg == nil {
+		add("package_parse", "error", "package payload is empty", false, map[string]any{"error_code": "empty_package"})
+	} else {
+		add("package_parse", "info", "package JSON is valid", true, nil)
+	}
+
+	var plan maclawAppInstallPlan
+	if strings.TrimSpace(packageJSON) != "" {
+		if p, err := a.PlanMaclawAppInstall(packageJSON); err != nil {
+			add("install_plan", "error", err.Error(), false, map[string]any{"error_code": "plan_failed"})
+		} else {
+			plan = p
+			add("install_plan", "info", fmt.Sprintf("%d dependencies planned", len(plan.Dependencies)), true, map[string]any{
+				"dependency_count": len(plan.Dependencies),
+			})
+		}
+	}
+
+	if pkg != nil {
+		if issue := firstBlockingMaclawAppReviewIssue(maclawAppReadyReviewIssuesForPackage(pkg, plan)); issue != nil {
+			add("package_ready", "error", issue.Path+": "+issue.Message, false, map[string]any{
+				"error_code": "package_not_ready",
+				"path":       issue.Path,
+			})
+		} else {
+			add("package_ready", "info", "package passes local readiness review", true, nil)
+		}
+	}
+
+	// Dependency resolvability for Hub pack gate.
+	depRows := make([]map[string]any, 0)
+	missingDeps := 0
+	bundledCount := 0
+	publishedCount := 0
+	if pkg != nil {
+		bundled := maclawAppBundledDependenciesFromDoc(pkg)
+		installed := map[string]NLSkillDefinition{}
+		if a != nil {
+			installed = a.installedMaclawAppSkillIndex()
+		}
+		for _, dep := range plan.Dependencies {
+			if !dep.Required {
+				continue
+			}
+			row := map[string]any{"id": dep.ID, "required": true}
+			switch {
+			case maclawAppDependencyIsBundled(bundled, dep):
+				row["status"] = "bundled"
+				bundledCount++
+			case maclawAppDependencyHasRemoteInstallRef(dep):
+				row["status"] = "remote_ref"
+				publishedCount++
+			case dep.SkillID != "" && cskill.IsValidSkillID(dep.SkillID):
+				row["status"] = "skill_id"
+				publishedCount++
+			case maclawAppDependencyHasPublishedHubSkillID(installed, dep):
+				row["status"] = "hub_skill_id"
+				publishedCount++
+			default:
+				row["status"] = "missing"
+				missingDeps++
+			}
+			depRows = append(depRows, row)
+		}
+	}
+	if missingDeps > 0 {
+		add("dependencies", "warn",
+			fmt.Sprintf("%d required skill(s) not bundled/published — Hub pack may fail until upload or bundle", missingDeps),
+			false, map[string]any{
+				"error_code":      "dep_not_published",
+				"missing_count":   missingDeps,
+				"bundled_count":   bundledCount,
+				"published_count": publishedCount,
+				"dependencies":    depRows,
+			})
+	} else if len(depRows) > 0 {
+		add("dependencies", "info",
+			fmt.Sprintf("all %d required deps resolvable (bundled=%d published=%d)", len(depRows), bundledCount, publishedCount),
+			true, map[string]any{
+				"bundled_count":   bundledCount,
+				"published_count": publishedCount,
+				"dependencies":    depRows,
+			})
+	} else {
+		add("dependencies", "info", "no required skill dependencies", true, nil)
+	}
+
+	// Config readiness for remote targets (warnings — local queue still works).
+	cfg, cfgErr := a.LoadConfig()
+	if cfgErr != nil {
+		add("config", "warn", "cannot load config: "+cfgErr.Error(), false, nil)
+	} else {
+		add("config", "info", "config loaded", true, nil)
+		email := strings.TrimSpace(cfg.RemoteEmail)
+		if email == "" || !strings.Contains(email, "@") {
+			add("skill_market_email", "warn", "remote_email not configured — SkillMarket upload will fail", false, map[string]any{
+				"error_code": "email_not_configured",
+			})
+		} else {
+			add("skill_market_email", "info", "remote_email configured", true, nil)
+		}
+		machineID := strings.TrimSpace(cfg.RemoteMachineID)
+		viewer := strings.TrimSpace(cfg.RemoteViewerToken)
+		if machineID == "" || viewer == "" {
+			add("hub_enrollment", "warn", "Hub enrollment incomplete (machine_id/viewer_token) — SkillMarket session refresh may fail", false, map[string]any{
+				"error_code": "email_not_configured",
+			})
+		} else {
+			add("hub_enrollment", "info", "Hub enrollment credentials present", true, nil)
+		}
+		if strings.TrimSpace(cfg.SkillMarketSessionToken) != "" {
+			add("skill_market_session", "info", "SkillMarket session token present", true, nil)
+		} else if viewer != "" {
+			add("skill_market_session", "info", "will use viewer token / machine-login for SkillMarket", true, nil)
+		} else {
+			add("skill_market_session", "warn", "no SkillMarket session or viewer token", false, map[string]any{
+				"error_code": "auth_expired",
+			})
+		}
+		hubBase := capabilityMarketBaseURL(cfg)
+		hubToken := capabilityMarketAuthToken(cfg)
+		if hubBase == "" || hubToken == "" {
+			add("enterprise_hub_market", "warn", "enterprise Hub marketplace URL/token not configured — Hub pack will fail", false, map[string]any{
+				"error_code": "hub_not_configured",
+			})
+		} else if err := maclawAppHubTLSPreflightCached(hubBase); err != nil {
+			add("enterprise_hub_tls", "warn", "enterprise Hub TLS certificate is invalid — Hub pack will fail", false, map[string]any{
+				"error_code": "hub_tls_certificate_invalid",
+				"detail":     err.Error(),
+			})
+		} else {
+			add("enterprise_hub_market", "info", "enterprise Hub marketplace configured", true, map[string]any{
+				"base_url": hubBase,
+			})
+		}
+		if center := strings.TrimSpace(cfg.ConfiguredHubCenterBaseURL()); center == "" {
+			add("hubcenter_identity", "warn", "no public HubCenter enrollment URL — SkillMarket may use discovery seeds only", false, nil)
+		} else {
+			add("hubcenter_identity", "info", "HubCenter enrollment: "+center, true, map[string]any{"base_url": center})
+		}
+	}
+
+	skipMarket := a.maclawAppOneClickCanSkipSkillMarket(packageJSON)
+	if skipMarket {
+		add("skill_market_upload", "info", "primary skill already published — skill market upload can be skipped", true, map[string]any{
+			"can_skip": true,
+		})
+	} else {
+		add("skill_market_upload", "info", "skill market upload will run for primary skill product", true, map[string]any{
+			"can_skip": false,
+		})
+	}
+
+	readyLocal := len(blocking) == 0
+	readySkill := readyLocal
+	readyHub := readyLocal && missingDeps == 0
+	for _, c := range checks {
+		id, _ := c["id"].(string)
+		ok, _ := c["ok"].(bool)
+		if ok {
+			continue
+		}
+		switch id {
+		case "skill_market_email", "hub_enrollment", "skill_market_session":
+			// Already-published primary skill does not need SkillMarket upload.
+			if !skipMarket {
+				readySkill = false
+			}
+		case "enterprise_hub_market", "enterprise_hub_tls", "dependencies":
+			readyHub = false
+		}
+	}
+	if skipMarket && readyLocal {
+		readySkill = true
+	}
+
+	msg := "ready for one-click"
+	if !readyLocal {
+		msg = "blocked: fix package readiness before publish"
+	} else if !readySkill && !readyHub {
+		msg = "local queue OK; remote targets will partially fail"
+	} else if !readySkill {
+		msg = "local queue OK; SkillMarket may fail"
+	} else if !readyHub {
+		msg = "local queue OK; enterprise Hub pack may fail"
+	} else if skipMarket {
+		msg = "ready for one-click (skill market can be skipped)"
+	}
+
+	return map[string]any{
+		"schema":                 "maclaw.app.one_click_preflight.v1",
+		"ok":                     readyLocal,
+		"ready_for_local":        readyLocal,
+		"ready_for_skill_market": readySkill,
+		"ready_for_hub_pack":     readyHub,
+		"checks":                 checks,
+		"blocking":               blocking,
+		"warnings":               warnings,
+		"message":                msg,
+	}
+}
+
+// maclawAppHubTLSPreflight verifies the configured Hub's TLS certificate
+// before one-click publish. It opens only a short handshake (no HTTP request
+// and no credentials) so operators see certificate expiry/clock faults before
+// the local queue records a partial remote failure.
+func maclawAppHubTLSPreflight(baseURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return fmt.Errorf("invalid Enterprise Hub URL: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return nil
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return fmt.Errorf("Enterprise Hub URL has no host")
+	}
+	port := strings.TrimSpace(parsed.Port())
+	if port == "" {
+		port = "443"
+	}
+	const timeout = 4 * time.Second
+	dialer := &net.Dialer{Timeout: timeout}
+	rawConn, err := dialer.DialContext(context.Background(), "tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		return err
+	}
+	defer rawConn.Close()
+	// Dialer.Timeout limits only opening the TCP socket. Bound the TLS
+	// handshake too: a reachable but unhealthy Hub must not leave every
+	// publish preflight waiting indefinitely.
+	if err := rawConn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	conn := tls.Client(rawConn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	if err := conn.HandshakeContext(context.Background()); err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// maclawAppHubTLSPreflightCached avoids repeating the same TLS handshake for
+// every visible publish card. Both healthy and failed checks are cached only
+// briefly; callers arriving together share one in-flight handshake, while a
+// certificate renewal or server-clock correction becomes visible promptly.
+func maclawAppHubTLSPreflightCached(baseURL string) error {
+	key := strings.TrimSpace(baseURL)
+	for {
+		now := time.Now()
+		maclawAppHubTLSPreflightMu.Lock()
+		entry := maclawAppHubTLSPreflightCache[key]
+		if entry != nil && entry.done == nil && now.Before(entry.expiresAt) {
+			err := entry.err
+			maclawAppHubTLSPreflightMu.Unlock()
+			return err
+		}
+		if entry != nil && entry.done != nil {
+			done := entry.done
+			maclawAppHubTLSPreflightMu.Unlock()
+			<-done
+			continue
+		}
+		entry = &maclawAppHubTLSPreflightCacheEntry{done: make(chan struct{})}
+		maclawAppHubTLSPreflightCache[key] = entry
+		maclawAppHubTLSPreflightMu.Unlock()
+
+		err := maclawAppHubTLSCheck(key)
+
+		maclawAppHubTLSPreflightMu.Lock()
+		entry.err = err
+		entry.expiresAt = time.Now().Add(maclawAppHubTLSPreflightCacheTTL)
+		close(entry.done)
+		entry.done = nil
+		maclawAppHubTLSPreflightMu.Unlock()
+		return err
+	}
+}
+
 func maclawAppSubmissionLocalMap(record *maclawAppSubmissionRecord) map[string]any {
 	if record == nil {
 		return map[string]any{}
@@ -247,7 +842,11 @@ func (a *App) stampMaclawAppOneClickMessage(submissionID, message string) {
 	if submissionID == "" || message == "" {
 		return
 	}
-	queue, err := a.readMaclawAppSubmissionQueue()
+	// Locked read-modify-write: avoid TOCTOU with concurrent queue writers
+	// (hub sync, fingerprint refresh, status updates).
+	maclawAppSubmissionQueueMu.Lock()
+	defer maclawAppSubmissionQueueMu.Unlock()
+	queue, err := a.readMaclawAppSubmissionQueueUnlocked()
 	if err != nil {
 		return
 	}
@@ -260,7 +859,7 @@ func (a *App) stampMaclawAppOneClickMessage(submissionID, message string) {
 		}
 		queue.Submissions[i].Message = message
 		queue.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		_ = a.writeMaclawAppSubmissionQueue(queue)
+		_ = a.writeMaclawAppSubmissionQueueUnlocked(queue)
 		return
 	}
 }
@@ -277,21 +876,88 @@ func summarizeMaclawAppOneClickPublish(targets map[string]any) string {
 		if t["ok"] == true {
 			if t["skipped"] == true {
 				parts = append(parts, "enterprise hub pack already synced")
+			} else if t["retried_after_stamp"] == true {
+				parts = append(parts, "enterprise hub pack submitted (after dep stamp retry)")
 			} else {
 				parts = append(parts, "enterprise hub pack submitted")
 			}
 		} else if err := strings.TrimSpace(stringFromAnyMap(t, "error")); err != "" {
-			parts = append(parts, "enterprise hub pack failed: "+err)
+			parts = append(parts, "enterprise hub pack failed: "+maclawAppOneClickHumanizeError(t))
 		}
 	}
 	if t, ok := targets["skill_market"].(map[string]any); ok {
 		if t["ok"] == true {
-			parts = append(parts, "skill market upload ok ("+stringFromAnyMap(t, "submission_id")+")")
+			var msg string
+			if t["skipped"] == true {
+				msg = "skill market skipped (" + firstNonEmpty(stringFromAnyMap(t, "reason"), "already_published") + ")"
+			} else {
+				msg = "skill market upload ok (" + stringFromAnyMap(t, "submission_id") + ")"
+			}
+			if n := stringFromAnyMap(t, "stamped_deps"); n != "" && n != "0" {
+				msg += ", stamped " + n + " dep ref"
+			}
+			parts = append(parts, msg)
 		} else if err := strings.TrimSpace(stringFromAnyMap(t, "error")); err != "" {
-			parts = append(parts, "skill market failed: "+err)
+			parts = append(parts, "skill market failed: "+maclawAppOneClickHumanizeError(t))
 		}
 	}
 	return strings.Join(parts, "; ")
+}
+
+// maclawAppOneClickHumanizeError prefers a short code-based hint, then raw error.
+func maclawAppOneClickHumanizeError(t map[string]any) string {
+	raw := strings.TrimSpace(stringFromAnyMap(t, "error"))
+	switch strings.TrimSpace(stringFromAnyMap(t, "error_code")) {
+	case "dep_not_published":
+		return maclawAppOneClickDependencyErrorHint(t, raw)
+	case "auth_expired":
+		return "SkillMarket session expired — re-login Hub/SkillMarket (" + truncateOneClickErr(raw, 120) + ")"
+	case "hub_not_configured":
+		return "enterprise Hub marketplace URL/token not configured"
+	case "email_not_configured":
+		return "remote_email / Hub enrollment incomplete"
+	case "network":
+		return "network/unreachable HubCenter (" + truncateOneClickErr(raw, 120) + ")"
+	case "hub_tls_certificate_invalid":
+		return "enterprise Hub TLS certificate is expired or not yet valid; renew the certificate or correct the Hub server clock before retrying"
+	case "fingerprint_mismatch":
+		return "package fingerprint mismatch (" + truncateOneClickErr(raw, 120) + ")"
+	case "empty_package":
+		return "package payload is empty"
+	default:
+		return raw
+	}
+}
+
+func maclawAppOneClickDependencyErrorHint(t map[string]any, fallback string) string {
+	detail := anyMap(t["error_detail"])
+	for _, rawIssue := range anySlice(detail["issues"]) {
+		issue := anyMap(rawIssue)
+		if issue == nil {
+			continue
+		}
+		path := strings.TrimSpace(stringFromAny(issue["path"]))
+		message := strings.TrimSpace(stringFromAny(issue["message"]))
+		suggestion := strings.TrimSpace(stringFromAny(issue["suggestion"]))
+		if strings.Contains(strings.ToLower(path+" "+message), "install_ref") {
+			if suggestion == "" {
+				suggestion = "publish the dependency Skill, refresh dependency verification, then retry"
+			}
+			return "a required Skill is missing its install reference; " + suggestion
+		}
+	}
+	return "required Skill dependencies need to be bundled or published before retrying"
+}
+
+func truncateOneClickErr(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max < 4 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
 
 // uploadMaclawAppPackageToSkillMarkets prefers packaging the bound local skill
@@ -371,7 +1037,19 @@ func (a *App) uploadInstalledNLSkillToSkillMarkets(ctx context.Context, skillNam
 		_ = os.Remove(zipPath)
 		_ = os.RemoveAll(tmpDir)
 	}()
-	return a.skillMarketClient.SubmitSkillToConfiguredTargets(ctx, zipPath, email)
+	id, err := a.skillMarketClient.SubmitSkillToConfiguredTargets(ctx, zipPath, email)
+	if err != nil {
+		return "", err
+	}
+	// Stamp HubSkillID so the enterprise Hub pack gate can accept non-bundled
+	// deps after skill-market succeeds first in one-click publish.
+	if a.skillExecutor != nil && strings.TrimSpace(id) != "" {
+		if markErr := a.skillExecutor.MarkUploaded(skillName, id); markErr != nil {
+			// Upload already succeeded; gate may still pass via bundled_dependencies.
+			log.Printf("[maclaw-app] mark skill %q uploaded after market submit failed: %v", skillName, markErr)
+		}
+	}
+	return id, nil
 }
 
 func (a *App) skillMarketUploaderEmail() (string, error) {
@@ -395,11 +1073,9 @@ func maclawAppPrimarySkillIDFromPackageJSON(packageJSON string) string {
 	if id := maclawAppSkillIDFromEntryMap(pkg); id != "" {
 		return id
 	}
-	// Pack with apps[].
-	rawApps, _ := pkg["apps"].([]any)
-	for _, raw := range rawApps {
-		entry, _ := raw.(map[string]any)
-		if id := maclawAppSkillIDFromEntryMap(entry); id != "" {
+	// Pack with apps[] — anySlice covers []any and []map[string]any.
+	for _, raw := range anySlice(pkg["apps"]) {
+		if id := maclawAppSkillIDFromEntryMap(anyMap(raw)); id != "" {
 			return id
 		}
 	}
@@ -459,7 +1135,22 @@ func (a *App) uploadMaclawAppPackAsSkillMarketZip(ctx context.Context, packageJS
 	}
 	defer cleanup()
 
-	return a.skillMarketClient.SubmitSkillToConfiguredTargets(ctx, zipPath, email)
+	id, err := a.skillMarketClient.SubmitSkillToConfiguredTargets(ctx, zipPath, email)
+	if err != nil {
+		return "", err
+	}
+	// Materialized zip may still map to a local primary skill — stamp when present
+	// so the Hub pack dependency gate can see a published identity.
+	if a.skillExecutor != nil && strings.TrimSpace(id) != "" {
+		if skillID := maclawAppPrimarySkillIDFromPackageJSON(packageJSON); skillID != "" {
+			if installedName := a.findInstalledNLSkillName(skillID); installedName != "" {
+				if markErr := a.skillExecutor.MarkUploaded(installedName, id); markErr != nil {
+					log.Printf("[maclaw-app] mark skill %q uploaded after materialize market submit failed: %v", installedName, markErr)
+				}
+			}
+		}
+	}
+	return id, nil
 }
 
 var guiMaclawAppSkillNameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
@@ -610,13 +1301,13 @@ func firstMaclawAppEntryMaps(pkg map[string]any) (entry map[string]any, app map[
 		}
 		return entry, pkg
 	}
-	rawApps, _ := pkg["apps"].([]any)
-	for _, raw := range rawApps {
-		e, _ := raw.(map[string]any)
+	// anySlice accepts both JSON []any and in-memory []map[string]any.
+	for _, raw := range anySlice(pkg["apps"]) {
+		e := anyMap(raw)
 		if e == nil {
 			continue
 		}
-		if a, _ := e["app"].(map[string]any); a != nil {
+		if a := anyMap(e["app"]); a != nil {
 			return e, a
 		}
 		if strings.TrimSpace(stringFromAnyMap(e, "id")) != "" {

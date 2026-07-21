@@ -318,7 +318,7 @@ func (a *App) SubmitMaclawAppPackage(packageJSON string) (map[string]any, error)
 		Package:      pkg,
 		Message:      "queued locally for enterprise market sync",
 	}
-	record.Events = append(record.Events, record.maclawAppSubmissionEvent(now))
+	record.Events = appendMaclawAppSubmissionEvent(record.Events, record.maclawAppSubmissionEvent(now))
 	if err := a.appendMaclawAppSubmission(record); err != nil {
 		return nil, err
 	}
@@ -398,6 +398,18 @@ func (a *App) GetMaclawAppPackageSubmission(submissionID string) (*maclawAppSubm
 // SyncMaclawAppPackageSubmissionToHub uploads one local maclaw.app.pack.v1
 // submission to the configured Enterprise Hub and records the Hub review state.
 func (a *App) SyncMaclawAppPackageSubmissionToHub(submissionID string) (map[string]any, error) {
+	return a.syncMaclawAppPackageSubmissionToHub(context.Background(), submissionID)
+}
+
+// syncMaclawAppPackageSubmissionToHub is the context-aware Hub pack submit path
+// used by one-click publish so the overall timeout can cancel the HTTP round-trip.
+func (a *App) syncMaclawAppPackageSubmissionToHub(ctx context.Context, submissionID string) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	record, err := a.GetMaclawAppPackageSubmission(submissionID)
 	if err != nil {
 		return nil, err
@@ -421,15 +433,30 @@ func (a *App) SyncMaclawAppPackageSubmissionToHub(submissionID string) (map[stri
 	if record.Package == nil {
 		return nil, fmt.Errorf("submission %s has no package payload", record.SubmissionID)
 	}
-	packageSHA, _, err := maclawAppPackageFingerprint(record.Package)
+	packageSHA, packageSize, err := maclawAppPackageFingerprint(record.Package)
 	if err != nil {
 		return nil, err
 	}
+	// Package payload is the upload source of truth for local-queue sync (this
+	// function already rejects non-local channels). If the recorded SHA is stale
+	// (enqueue-time enrichment, later queue edit, or re-fingerprint), refresh it
+	// and continue instead of blocking Hub sync with a fingerprint mismatch.
 	if record.PackageSHA != "" && !strings.EqualFold(strings.TrimSpace(record.PackageSHA), packageSHA) {
-		return nil, fmt.Errorf("submission %s package fingerprint mismatch: recorded %s, current %s", record.SubmissionID, record.PackageSHA, packageSHA)
+		oldSHA := strings.TrimSpace(record.PackageSHA)
+		if err := a.refreshMaclawAppSubmissionPackageFingerprint(record.SubmissionID, packageSHA, packageSize); err != nil {
+			return nil, fmt.Errorf("submission %s package fingerprint mismatch (recorded %s, current %s) and refresh failed: %w", record.SubmissionID, oldSHA, packageSHA, err)
+		}
+		record.PackageSHA = packageSHA
+		if packageSize > 0 {
+			record.PackageSize = packageSize
+		}
+		log.Printf("[maclaw-app-hub] submission %s package fingerprint refreshed: %s -> %s", record.SubmissionID, oldSHA, packageSHA)
 	}
 	packageJSON, err := maclawAppStableJSON(record.Package)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	plan, err := a.PlanMaclawAppInstall(packageJSON)
@@ -441,12 +468,9 @@ func (a *App) SyncMaclawAppPackageSubmissionToHub(submissionID string) (map[stri
 		return nil, fmt.Errorf("maclaw app package is not ready for Hub sync: %s: %s", issue.Path, issue.Message)
 	}
 
-	// Pre-upload gate: verify all required skill dependencies are resolvable
-	// from Hub. A dependency is resolvable if the locally installed skill has
-	// a HubSkillID (assigned when the skill was published to Hub/SkillMarket).
-	// This prevents uploading an App whose dependencies cannot be installed by
-	// receivers who download from the market.
-	if gateErr := a.validateAppDependenciesPublished(plan); gateErr != nil {
+	// Pre-upload gate: required skills must be bundled in the pack and/or
+	// published (HubSkillID / remote install_ref) so receivers can install them.
+	if gateErr := a.validateAppDependenciesPublished(plan, record.Package); gateErr != nil {
 		return nil, gateErr
 	}
 
@@ -457,13 +481,17 @@ func (a *App) SyncMaclawAppPackageSubmissionToHub(submissionID string) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, base+"/api/capabilities/maclaw-apps/submit", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/capabilities/maclaw-apps/submit", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Timeout: 60 * time.Second}
+	timeout, err := maclawAppHubSubmitHTTPTimeout(ctx, 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -695,7 +723,7 @@ func (a *App) UpdateMaclawAppPackageSubmissionStatus(submissionID string, update
 		} else if status == "published" {
 			queue.Submissions[i].PublishedAt = now
 		}
-		queue.Submissions[i].Events = append(queue.Submissions[i].Events, queue.Submissions[i].maclawAppSubmissionEvent(now))
+		queue.Submissions[i].Events = appendMaclawAppSubmissionEvent(queue.Submissions[i].Events, queue.Submissions[i].maclawAppSubmissionEvent(now))
 		queue.UpdatedAt = now
 		return true, a.writeMaclawAppSubmissionQueueUnlocked(queue)
 	}
@@ -881,6 +909,416 @@ func (a *App) appendMaclawAppSubmission(record maclawAppSubmissionRecord) error 
 	if len(queue.Submissions) > 200 {
 		queue.Submissions = queue.Submissions[:200]
 	}
+	return a.writeMaclawAppSubmissionQueueUnlocked(queue)
+}
+
+// refreshMaclawAppSubmissionPublishStamps re-enriches a local-queue package with
+// HubSkillID / install_ref stamps from currently installed skills. Used after
+// skill-market upload in one-click publish so the Hub pack gate and receivers
+// see resolved_dependencies without requiring a re-queue.
+//
+// Returns the number of newly stamped install_ref entries (0 when nothing changed).
+// Plan/enrich runs outside the queue mutex so long install planning does not
+// block concurrent submission status / fingerprint updates.
+func (a *App) refreshMaclawAppSubmissionPublishStamps(submissionID string) (int, error) {
+	if a == nil {
+		return 0, fmt.Errorf("app is not initialized")
+	}
+	submissionID = strings.TrimSpace(submissionID)
+	if submissionID == "" {
+		return 0, fmt.Errorf("submission_id is required")
+	}
+
+	// Snapshot package under lock, then release before Plan/enrich.
+	maclawAppSubmissionQueueMu.RLock()
+	queueSnap, err := a.readMaclawAppSubmissionQueueUnlocked()
+	if err != nil {
+		maclawAppSubmissionQueueMu.RUnlock()
+		return 0, err
+	}
+	var pkgSnap map[string]any
+	channel := ""
+	found := false
+	for i := range queueSnap.Submissions {
+		if queueSnap.Submissions[i].SubmissionID != submissionID {
+			continue
+		}
+		found = true
+		channel = queueSnap.Submissions[i].Channel
+		if queueSnap.Submissions[i].Package != nil {
+			// Deep clone so unlock is safe for concurrent queue writers.
+			pkgSnap = cloneMapAny(queueSnap.Submissions[i].Package)
+		}
+		break
+	}
+	maclawAppSubmissionQueueMu.RUnlock()
+	if !found {
+		return 0, fmt.Errorf("submission %s not found", submissionID)
+	}
+	if pkgSnap == nil {
+		return 0, fmt.Errorf("submission %s has no package payload", submissionID)
+	}
+	// Only local-queue drafts are rewriteable before Hub rename.
+	if ch := strings.TrimSpace(strings.ToLower(channel)); ch != "" && ch != "local" {
+		return 0, nil
+	}
+
+	packageJSON, err := maclawAppStableJSON(pkgSnap)
+	if err != nil {
+		return 0, err
+	}
+	plan, err := a.PlanMaclawAppInstall(packageJSON)
+	if err != nil {
+		return 0, err
+	}
+	dependencies := cloneMaclawAppPlanDependencies(plan.Dependencies)
+	a.enrichDependenciesWithHubSkillID(dependencies)
+	enrichedDeps := maclawAppSerializableResolvedDeps(dependencies)
+	if len(enrichedDeps) == 0 {
+		return 0, nil
+	}
+
+	// Phase 1 write lock: merge onto *current* package, then release for fingerprint.
+	maclawAppSubmissionQueueMu.Lock()
+	queue, err := a.readMaclawAppSubmissionQueueUnlocked()
+	if err != nil {
+		maclawAppSubmissionQueueMu.Unlock()
+		return 0, err
+	}
+	idx := -1
+	for i := range queue.Submissions {
+		if queue.Submissions[i].SubmissionID == submissionID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		maclawAppSubmissionQueueMu.Unlock()
+		return 0, fmt.Errorf("submission %s not found", submissionID)
+	}
+	rec := &queue.Submissions[idx]
+	if rec.Package == nil {
+		maclawAppSubmissionQueueMu.Unlock()
+		return 0, fmt.Errorf("submission %s has no package payload", submissionID)
+	}
+	if ch := strings.TrimSpace(strings.ToLower(rec.Channel)); ch != "" && ch != "local" {
+		maclawAppSubmissionQueueMu.Unlock()
+		return 0, nil
+	}
+	stamped := countNewMaclawAppResolvedStamps(maclawAppResolvedInstallRefSet(rec.Package), enrichedDeps)
+	baseSHA := strings.TrimSpace(rec.PackageSHA)
+	pkg := applyMaclawAppResolvedDepsToPackage(rec.Package, enrichedDeps)
+	changed, changeErr := maclawAppPackagePayloadChanged(rec.Package, pkg)
+	if changeErr != nil {
+		maclawAppSubmissionQueueMu.Unlock()
+		return 0, changeErr
+	}
+	if !changed {
+		maclawAppSubmissionQueueMu.Unlock()
+		return 0, nil
+	}
+	maclawAppSubmissionQueueMu.Unlock()
+
+	// Fingerprint outside the exclusive lock (can be non-trivial for large packs).
+	packageSHA, packageSize, fpErr := maclawAppPackageFingerprint(pkg)
+	if fpErr != nil {
+		return 0, fpErr
+	}
+
+	// Phase 2 write lock: re-check + commit (or re-merge if concurrent edit).
+	maclawAppSubmissionQueueMu.Lock()
+	defer maclawAppSubmissionQueueMu.Unlock()
+	queue, err = a.readMaclawAppSubmissionQueueUnlocked()
+	if err != nil {
+		return 0, err
+	}
+	idx = -1
+	for i := range queue.Submissions {
+		if queue.Submissions[i].SubmissionID == submissionID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, fmt.Errorf("submission %s not found", submissionID)
+	}
+	rec = &queue.Submissions[idx]
+	if rec.Package == nil {
+		return 0, fmt.Errorf("submission %s has no package payload", submissionID)
+	}
+	if ch := strings.TrimSpace(strings.ToLower(rec.Channel)); ch != "" && ch != "local" {
+		return 0, nil
+	}
+	// If the package moved under us (or had no SHA yet when we snapshotted),
+	// re-merge onto the latest payload and re-hash so concurrent queue edits
+	// are not clobbered by a stale phase-1 merge.
+	currentSHA := strings.TrimSpace(rec.PackageSHA)
+	if baseSHA == "" || !strings.EqualFold(currentSHA, baseSHA) {
+		stamped = countNewMaclawAppResolvedStamps(maclawAppResolvedInstallRefSet(rec.Package), enrichedDeps)
+		pkg = applyMaclawAppResolvedDepsToPackage(rec.Package, enrichedDeps)
+		changed, changeErr = maclawAppPackagePayloadChanged(rec.Package, pkg)
+		if changeErr != nil {
+			return 0, changeErr
+		}
+		if !changed {
+			return 0, nil
+		}
+		packageSHA, packageSize, fpErr = maclawAppPackageFingerprint(pkg)
+		if fpErr != nil {
+			return 0, fpErr
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	rec.Package = pkg
+	rec.PackageSHA = packageSHA
+	if packageSize > 0 {
+		rec.PackageSize = packageSize
+	}
+	// Do not overwrite rec.Message — one-click / user-facing summaries live there.
+	// Audit the stamp via Events only.
+	note := fmt.Sprintf("dependency install references refreshed after skill publish (%d new resolved stamp)", stamped)
+	if stamped != 1 {
+		note = fmt.Sprintf("dependency install references refreshed after skill publish (%d new resolved stamps)", stamped)
+	}
+	evt := rec.maclawAppSubmissionEvent(now)
+	evt.Message = note
+	rec.Events = appendMaclawAppSubmissionEvent(rec.Events, evt)
+	queue.UpdatedAt = now
+	if err := a.writeMaclawAppSubmissionQueueUnlocked(queue); err != nil {
+		return 0, err
+	}
+	return stamped, nil
+}
+
+// maxMaclawAppSubmissionEvents keeps durable queue rows bounded under repeated
+// one-click / status stamp churn.
+const maxMaclawAppSubmissionEvents = 40
+
+func appendMaclawAppSubmissionEvent(events []maclawAppSubmissionEvent, evt maclawAppSubmissionEvent) []maclawAppSubmissionEvent {
+	events = append(events, evt)
+	if len(events) <= maxMaclawAppSubmissionEvents {
+		return events
+	}
+	return append([]maclawAppSubmissionEvent(nil), events[len(events)-maxMaclawAppSubmissionEvents:]...)
+}
+
+// maclawAppHubSubmitHTTPTimeout picks the HTTP client timeout for Hub pack
+// submit: min(cap, ctx remaining). Returns ctx.Err() when the deadline has
+// already elapsed so callers do not start a doomed request.
+func maclawAppHubSubmitHTTPTimeout(ctx context.Context, cap time.Duration) (time.Duration, error) {
+	if cap <= 0 {
+		cap = 60 * time.Second
+	}
+	if ctx == nil {
+		return cap, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return cap, nil
+	}
+	remain := time.Until(deadline)
+	if remain <= 0 {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		return 0, context.DeadlineExceeded
+	}
+	if remain < cap {
+		return remain, nil
+	}
+	return cap, nil
+}
+
+func countNewMaclawAppResolvedStamps(prev map[string]string, enrichedDeps []map[string]any) int {
+	stamped := 0
+	for _, entry := range enrichedDeps {
+		id := strings.ToLower(strings.TrimSpace(stringFromAny(entry["id"])))
+		ref := strings.TrimSpace(stringFromAny(entry["install_ref"]))
+		if id == "" || ref == "" {
+			continue
+		}
+		if prev[id] != ref {
+			stamped++
+		}
+	}
+	return stamped
+}
+
+func applyMaclawAppResolvedDepsToPackage(src map[string]any, enrichedDeps []map[string]any) map[string]any {
+	pkg := cloneMapAny(src)
+	if pkg == nil {
+		pkg = map[string]any{}
+	}
+	pkg["resolved_dependencies"] = enrichedDeps
+	injectResolvedDepsIntoAppEntries(pkg, enrichedDeps)
+	maclawAppRefreshDependencyVerificationInstallRefs(pkg, enrichedDeps)
+	return pkg
+}
+
+// maclawAppRefreshDependencyVerificationInstallRefs keeps the durable
+// governance proof aligned with resolved_dependencies. Hub validates the
+// dependencyVerification skills/dependencies lists directly, so refreshing only
+// the package-level resolved_dependencies leaves an otherwise published Skill
+// without the required install_ref proof.
+func maclawAppRefreshDependencyVerificationInstallRefs(pkg map[string]any, enrichedDeps []map[string]any) {
+	if pkg == nil || len(enrichedDeps) == 0 {
+		return
+	}
+	for _, rawEntry := range anySlice(pkg["apps"]) {
+		entry := anyMap(rawEntry)
+		if entry == nil {
+			continue
+		}
+		appID := maclawAppPackageEntryID(entry)
+		app := anyMap(entry["app"])
+		if app == nil {
+			continue
+		}
+		governance := anyMap(app["governance"])
+		if governance == nil {
+			continue
+		}
+		verification := anyMap(firstNonEmptyMaclawAppAny(governance["dependencyVerification"], governance["dependency_verification"]))
+		if verification == nil {
+			continue
+		}
+		for _, key := range []string{"skills", "dependencies"} {
+			items := anySlice(verification[key])
+			if len(items) == 0 {
+				continue
+			}
+			verification[key] = maclawAppRefreshDependencyVerificationItems(items, enrichedDeps, appID)
+		}
+		// Preserve the package's original key style while making the in-memory
+		// map explicit for JSON serialization.
+		if _, ok := governance["dependencyVerification"]; ok {
+			governance["dependencyVerification"] = verification
+		} else {
+			governance["dependency_verification"] = verification
+		}
+	}
+}
+
+func maclawAppRefreshDependencyVerificationItems(items []any, enrichedDeps []map[string]any, appID string) []any {
+	out := make([]any, 0, len(items))
+	for _, rawItem := range items {
+		item := anyMap(rawItem)
+		if item == nil {
+			out = append(out, rawItem)
+			continue
+		}
+		updated := cloneMapAny(item)
+		id := strings.TrimSpace(maclawAppStringValue(updated, "id", "skill_id", "skillId", "canonical_id", "canonicalID"))
+		for _, dep := range enrichedDeps {
+			depID := strings.TrimSpace(stringFromAny(dep["id"]))
+			if id == "" || !strings.EqualFold(id, depID) || !maclawAppResolvedDependencyAppliesToApp(dep, appID) {
+				continue
+			}
+			for _, key := range []string{"install_ref", "source", "install_ref_kind", "install_ref_target", "install_ref_version"} {
+				if value := dep[key]; value != nil && strings.TrimSpace(stringFromAny(value)) != "" {
+					updated[key] = value
+				}
+			}
+			break
+		}
+		out = append(out, updated)
+	}
+	return out
+}
+
+func maclawAppResolvedDependencyAppliesToApp(dep map[string]any, appID string) bool {
+	appIDs := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(dep["app_ids"], dep["appIDs"]))
+	if len(appIDs) == 0 || strings.TrimSpace(appID) == "" {
+		return true
+	}
+	for _, candidate := range appIDs {
+		if strings.EqualFold(strings.TrimSpace(candidate), strings.TrimSpace(appID)) {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppPackagePayloadChanged(before, after map[string]any) (bool, error) {
+	beforeJSON, err := maclawAppStableJSON(before)
+	if err != nil {
+		return false, err
+	}
+	afterJSON, err := maclawAppStableJSON(after)
+	if err != nil {
+		return false, err
+	}
+	return beforeJSON != afterJSON, nil
+}
+
+// maclawAppResolvedInstallRefSet maps dependency id → install_ref from a package doc.
+func maclawAppResolvedInstallRefSet(pkg map[string]any) map[string]string {
+	out := map[string]string{}
+	if pkg == nil {
+		return out
+	}
+	add := func(raw any) {
+		for _, item := range anySlice(raw) {
+			m := anyMap(item)
+			if m == nil {
+				continue
+			}
+			id := strings.ToLower(strings.TrimSpace(stringFromAny(m["id"])))
+			ref := strings.TrimSpace(stringFromAny(m["install_ref"]))
+			if id == "" || ref == "" {
+				continue
+			}
+			out[id] = ref
+		}
+	}
+	add(pkg["resolved_dependencies"])
+	for _, entry := range anySlice(pkg["apps"]) {
+		if em := anyMap(entry); em != nil {
+			add(em["resolved_dependencies"])
+		}
+	}
+	return out
+}
+
+// refreshMaclawAppSubmissionPackageFingerprint updates PackageSHA/Size for a
+// local-queue submission so Hub sync can proceed when the payload is current
+// but the stored fingerprint is stale.
+func (a *App) refreshMaclawAppSubmissionPackageFingerprint(submissionID, packageSHA string, packageSize int) error {
+	submissionID = strings.TrimSpace(submissionID)
+	packageSHA = strings.TrimSpace(packageSHA)
+	if submissionID == "" || packageSHA == "" {
+		return fmt.Errorf("submission_id and package_sha are required")
+	}
+	maclawAppSubmissionQueueMu.Lock()
+	defer maclawAppSubmissionQueueMu.Unlock()
+	queue, err := a.readMaclawAppSubmissionQueueUnlocked()
+	if err != nil {
+		return err
+	}
+	found := false
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range queue.Submissions {
+		if queue.Submissions[i].SubmissionID != submissionID {
+			continue
+		}
+		queue.Submissions[i].PackageSHA = packageSHA
+		if packageSize > 0 {
+			queue.Submissions[i].PackageSize = packageSize
+		}
+		// Keep durable Message (one-click summary); audit via Events only.
+		evt := queue.Submissions[i].maclawAppSubmissionEvent(now)
+		evt.Message = "package fingerprint refreshed for hub sync"
+		queue.Submissions[i].Events = appendMaclawAppSubmissionEvent(queue.Submissions[i].Events, evt)
+		found = true
+		break
+	}
+	if !found {
+		return fmt.Errorf("submission %s not found", submissionID)
+	}
+	queue.UpdatedAt = now
 	return a.writeMaclawAppSubmissionQueueUnlocked(queue)
 }
 

@@ -49,15 +49,15 @@ func parseMaclawAppPackageEntriesFromMap(pkg map[string]any, requirePack bool) (
 	if stringMapValue(pkg, "privateMarker") != "x_maclaw_apps" {
 		return nil, fmt.Errorf("maclaw app package privateMarker must be x_maclaw_apps")
 	}
-	rawApps, ok := pkg["apps"].([]any)
-	if !ok || len(rawApps) == 0 {
+	rawApps := anySlice(pkg["apps"])
+	if len(rawApps) == 0 {
 		return nil, fmt.Errorf("maclaw app package apps must be a non-empty array")
 	}
 	entries := make([]parsedMaclawAppEntry, 0, len(rawApps))
 	seenIDs := make(map[string]struct{}, len(rawApps))
 	for i, raw := range rawApps {
-		entry, ok := raw.(map[string]any)
-		if !ok {
+		entry := anyMap(raw)
+		if entry == nil {
 			return nil, fmt.Errorf("maclaw app package apps[%d] must be an object", i)
 		}
 		parsed, err := parseMaclawAppEntryFromMap(entry, fmt.Sprintf("maclaw app package apps[%d]", i), seenIDs)
@@ -1920,36 +1920,47 @@ func maclawAppCanonicalWorkspaceLayoutRegions(rawRegions []any) []map[string]any
 }
 
 // validateAppDependenciesPublished checks that all required skill dependencies
-// in the install plan are resolvable from Hub/SkillMarket by verifying the
-// corresponding locally-installed skill has a HubSkillID. A HubSkillID is
-// assigned by the server when the skill is first uploaded — its presence means
-// the skill exists in the remote registry and can be found by other machines.
+// are resolvable by receivers. A dependency is OK if ANY of:
+//
+//  1. package includes it in bundled_dependencies (self-contained MiniApp pack)
+//  2. plan has a remote install_ref (enterprise_hub / hubcenter / etc.)
+//  3. plan has a valid skill_id for by-id download
+//  4. local install has HubSkillID (skill was published to Hub/SkillMarket)
 //
 // Called at Hub upload time (SyncMaclawAppPackageSubmissionToHub), NOT at local
-// submit time — the developer may submit locally first, upload the skill, then
-// sync the app to Hub.
-func (a *App) validateAppDependenciesPublished(plan maclawAppInstallPlan) error {
-	installed := a.installedMaclawAppSkillIndex()
+// submit time.
+func (a *App) validateAppDependenciesPublished(plan maclawAppInstallPlan, pkg map[string]any) error {
+	bundled := maclawAppBundledDependenciesFromDoc(pkg)
 	var unpublished []string
+	var installed map[string]NLSkillDefinition
+	installedLoaded := false
 	for _, dep := range plan.Dependencies {
 		if !dep.Required {
 			continue
 		}
-		// If the dependency already declares a remote source with install_ref,
-		// trust it — the receiver can resolve it independently.
-		src := strings.ToLower(strings.TrimSpace(dep.Source))
-		if dep.InstallRef != "" && src != "" && src != "local" {
+		// Self-contained MiniApp pack: receivers install from embedded skill files.
+		if maclawAppDependencyIsBundled(bundled, dep) {
 			continue
 		}
-		// If the dependency has a valid skill_id, the receiver can resolve
-		// it via the by-skill-id download endpoint.
+		// Remote install_ref → receiver resolves from market independently.
+		// Accept when source is non-local OR install_ref_kind is a remote kind
+		// (legacy packs may still have source=local after a late stamp).
+		if maclawAppDependencyHasRemoteInstallRef(dep) {
+			continue
+		}
 		if dep.SkillID != "" && cskill.IsValidSkillID(dep.SkillID) {
 			continue
 		}
-		// Check if the locally installed skill has a HubSkillID (was published).
-		match, found := installed[strings.ToLower(dep.ID)]
-		if found && strings.TrimSpace(match.HubSkillID) != "" {
-			continue // skill was published → receivers can find it by HubSkillID
+		// Lazy-load installed index only when a dep needs HubSkillID proof.
+		if !installedLoaded {
+			if a != nil {
+				installed = a.installedMaclawAppSkillIndex()
+			}
+			installedLoaded = true
+		}
+		// Local skill was published (HubSkillID stamped on install / MarkUploaded).
+		if maclawAppDependencyHasPublishedHubSkillID(installed, dep) {
+			continue
 		}
 		unpublished = append(unpublished, dep.ID)
 	}
@@ -1957,9 +1968,64 @@ func (a *App) validateAppDependenciesPublished(plan maclawAppInstallPlan) error 
 		return nil
 	}
 	if len(unpublished) == 1 {
-		return fmt.Errorf("cannot upload App to Hub: skill dependency %q has not been published to Hub/SkillMarket. Please upload the skill first (manage_skill action=upload name=%s)", unpublished[0], unpublished[0])
+		return fmt.Errorf("cannot upload App to Hub: skill dependency %q is neither bundled in the package nor published to Hub/SkillMarket. Bundle it (installed local skill) or upload the skill first (manage_skill action=upload name=%s)", unpublished[0], unpublished[0])
 	}
-	return fmt.Errorf("cannot upload App to Hub: %d skill dependencies have not been published: %s. Please upload these skills first", len(unpublished), strings.Join(unpublished, ", "))
+	return fmt.Errorf("cannot upload App to Hub: %d skill dependencies are neither bundled nor published: %s", len(unpublished), strings.Join(unpublished, ", "))
+}
+
+func maclawAppDependencyHasPublishedHubSkillID(installed map[string]NLSkillDefinition, dep maclawAppInstallPlanDependency) bool {
+	if installed == nil {
+		return false
+	}
+	for _, key := range []string{dep.ID, dep.InstalledName, dep.CanonicalID, dep.InstallRefTarget} {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		if m, ok := installed[key]; ok && strings.TrimSpace(m.HubSkillID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// maclawAppDependencyHasRemoteInstallRef reports whether the plan dependency
+// already carries a receiver-resolvable remote install coordinate.
+func maclawAppDependencyHasRemoteInstallRef(dep maclawAppInstallPlanDependency) bool {
+	ref := strings.TrimSpace(dep.InstallRef)
+	if ref == "" {
+		return false
+	}
+	src := strings.ToLower(strings.TrimSpace(dep.Source))
+	if src != "" && src != "local" {
+		return true
+	}
+	kind := strings.ToLower(strings.TrimSpace(dep.InstallRefKind))
+	switch kind {
+	case "skillmarket", "market", "hub", "skillhub", "hubcenter", "enterprise_hub", "enterprise":
+		return true
+	}
+	// install_ref that looks like a market/hub URL or scheme is remote even when
+	// source/kind were left empty by an older pack.
+	lower := strings.ToLower(ref)
+	if strings.Contains(lower, "://") || strings.Contains(lower, "enterprise_hub:") || strings.HasPrefix(lower, "hub:") {
+		return true
+	}
+	return false
+}
+
+// maclawAppDependencyIsBundled reports whether pkg bundled_dependencies includes
+// a non-empty skill payload matching dep (MiniApp self-contained publish).
+func maclawAppDependencyIsBundled(bundled maclawAppBundledDependencies, dep maclawAppInstallPlanDependency) bool {
+	for _, skill := range bundled.Skills {
+		if len(skill.Files) == 0 {
+			continue
+		}
+		if maclawAppBundledSkillMatchesDependency(skill, dep) {
+			return true
+		}
+	}
+	return false
 }
 
 func maclawAppPackageEntryID(entryMap map[string]any) string {

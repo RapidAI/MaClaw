@@ -73,14 +73,14 @@ type NLSkillDefinition struct {
 	LastError           string                      `json:"last_error,omitempty"`
 	ReviewReason        string                      `json:"review_reason,omitempty"`
 	// Self-repair audit (from NLSkillEntry runtime state).
-	RepairAttemptCount  int                          `json:"repair_attempt_count,omitempty"`
-	LastRepairAt        string                       `json:"last_repair_at,omitempty"`
-	RepairHistory       []corelib.SkillRepairRecord  `json:"repair_history,omitempty"`
-	OptimizationCount   int                          `json:"optimization_count,omitempty"`
-	LastOptimizedAt     string                       `json:"last_optimized_at,omitempty"`
-	IsMaclawApp         bool                        `json:"is_maclaw_app,omitempty"`
-	MaclawAppCount      int                         `json:"maclaw_app_count,omitempty"`
-	MaclawAppEntry      string                      `json:"maclaw_app_entry,omitempty"`
+	RepairAttemptCount int                         `json:"repair_attempt_count,omitempty"`
+	LastRepairAt       string                      `json:"last_repair_at,omitempty"`
+	RepairHistory      []corelib.SkillRepairRecord `json:"repair_history,omitempty"`
+	OptimizationCount  int                         `json:"optimization_count,omitempty"`
+	LastOptimizedAt    string                      `json:"last_optimized_at,omitempty"`
+	IsMaclawApp        bool                        `json:"is_maclaw_app,omitempty"`
+	MaclawAppCount     int                         `json:"maclaw_app_count,omitempty"`
+	MaclawAppEntry     string                      `json:"maclaw_app_entry,omitempty"`
 }
 
 // QualifiedID returns the canonical unique identifier for this skill definition.
@@ -309,6 +309,15 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 				}
 			} else if configSkill.SkillDir == "" && fs.SkillDir != "" {
 				configSkill.SkillDir = fs.SkillDir
+			}
+			// Disk/scanner HubSkillID (from upload_status package id) must surface
+			// even when a thin config overlay already claims the skill identity —
+			// otherwise one-click publish gate cannot see "published" stamps.
+			if strings.TrimSpace(configSkill.HubSkillID) == "" && strings.TrimSpace(fs.HubSkillID) != "" {
+				configSkill.HubSkillID = fs.HubSkillID
+			}
+			if strings.TrimSpace(configSkill.SkillID) == "" && strings.TrimSpace(fs.SkillID) != "" {
+				configSkill.SkillID = fs.SkillID
 			}
 			// Disk-derived learned/crafted classification must win over weak
 			// config overlays (empty/file/manual). External marketplace sources
@@ -1528,7 +1537,9 @@ type uploadStatusFile struct {
 // For config-based skills, it writes a stable hub/package id into config
 // (never a raw dual-upload submission id).
 // For file-based skills, it writes an upload_status.json next to skill.yaml
-// (submission tracking only; scanner maps that to package id on load).
+// and eagerly patches the scanner cache when a stable package id can be
+// derived (so one-click Hub pack gate can see HubSkillID without waiting
+// for a background rescan). Bare submission ids stay tracking-only.
 func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1548,7 +1559,22 @@ func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
 			if err != nil {
 				return err
 			}
-			return os.WriteFile(filepath.Join(s.SkillDir, "upload_status.json"), data, 0644)
+			if err := os.WriteFile(filepath.Join(s.SkillDir, "upload_status.json"), data, 0644); err != nil {
+				return err
+			}
+			// Match scanner semantics: only promote a stable package id, never a
+			// bare sub-… tracking id (name-only fallback would fake "published").
+			stableID := corelib.StableSkillIdentityFromRef(submissionID, s.HubSkillID)
+			e.clearSkillListCache()
+			if stableID != "" && e.app != nil && e.app.cachedSkillScanner != nil {
+				patched := s
+				patched.HubSkillID = stableID
+				e.app.cachedSkillScanner.UpsertSkills([]corelib.NLSkillEntry{patched})
+			} else if e.app != nil && e.app.cachedSkillScanner != nil {
+				// Ensure next load re-reads disk / upload_status after scan.
+				e.app.cachedSkillScanner.Invalidate()
+			}
+			return nil
 		}
 		// Config-based skill: persist stable package identity only.
 		// Raw "sub-…;enterprise_hub=…" must not become HubSkillID / runtime ref.
@@ -1611,16 +1637,16 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			FallbackForTools:    cloneStringSlice(s.FallbackForTools),
 			RequiresToolsets:    cloneStringSlice(s.RequiresToolsets),
 			FallbackForToolsets: cloneStringSlice(s.FallbackForToolsets),
-			UsageCount:         s.UsageCount,
-			SuccessCount:       s.SuccessCount,
-			FailureCount:       s.FailureCount,
-			LastError:          s.LastError,
-			ReviewReason:       skillReviewReason(s),
-			RepairAttemptCount: s.RepairAttemptCount,
-			LastRepairAt:       s.LastRepairAt,
-			RepairHistory:      append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
-			OptimizationCount:  s.OptimizationCount,
-			LastOptimizedAt:    s.LastOptimizedAt,
+			UsageCount:          s.UsageCount,
+			SuccessCount:        s.SuccessCount,
+			FailureCount:        s.FailureCount,
+			LastError:           s.LastError,
+			ReviewReason:        skillReviewReason(s),
+			RepairAttemptCount:  s.RepairAttemptCount,
+			LastRepairAt:        s.LastRepairAt,
+			RepairHistory:       append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
+			OptimizationCount:   s.OptimizationCount,
+			LastOptimizedAt:     s.LastOptimizedAt,
 		}
 		d.IsMaclawApp, d.MaclawAppCount, d.MaclawAppEntry = inspectMaclawAppSkillMetadata(s.SkillDir)
 		if s.UsageCount > 0 {

@@ -278,12 +278,22 @@ export const phaseLabels: Record<string, string> = {
     style_specification: "风格与视觉规范",
     slide_scripting: "逐页脚本",
     ppt_generation: "PPT 生成",
-    // Bid response workflow
-    tender_analysis: "招标文件解析",
+    // Bid response workflow — current template IDs must match workflowPhaseMeta.generated.ts
+    tender_analysis: "招标解析",
+    qualification: "资质响应",
+    technical: "技术方案",
+    commercial: "商务报价",
+    assembly: "文件组装",
+    // Legacy bid_response phase ids (older persisted workflows)
     qualification_response: "资质与业绩响应",
     technical_proposal: "技术方案编写",
     commercial_proposal: "商务报价编制",
     bid_document_assembly: "投标文件组装与检查",
+    // Bid review workflow (标书检查) — names must match workflowPhaseMeta.generated.ts
+    br_standards: "招标标准解析",
+    br_bid_content: "标书内容解析",
+    br_conformity: "符合性检查",
+    br_fix_report: "修改建议报告",
     // Contract review workflow
     contract_parsing: "合同解析与概览",
     clause_risk_analysis: "条款风险分析",
@@ -437,6 +447,7 @@ export const workflowPhaseOrders: Record<string, string[]> = {
     patent_application: ["pa_disclosure_parsing", "pa_prior_art_search", "pa_claims_drafting", "pa_figures_organization", "pa_description_writing", "pa_document_assembly"],
     us_patent_application: ["us_disclosure_analysis", "us_prior_art_search", "us_claims_drafting", "us_drawings", "us_specification_writing", "us_application_assembly"],
     gaokao_application: ["gaokao_profile", "gaokao_data_search", "gaokao_candidate_ranking", "gaokao_final_plan"],
+    bid_review: ["br_standards", "br_bid_content", "br_conformity", "br_fix_report"],
 };
 
 // fallbackNonDocumentPhaseIDs is re-exported from workflowPhase.ts (the single

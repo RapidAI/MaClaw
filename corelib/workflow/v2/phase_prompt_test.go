@@ -21,8 +21,13 @@ func TestFormDataContainsFilePath(t *testing.T) {
 		{"extension .docx suffix", map[string]interface{}{"doc": "合同.docx"}, true},
 		{"extension .doc suffix", map[string]interface{}{"doc": "交底书.doc"}, true},
 		{"no path just text", map[string]interface{}{"focus_areas": "注意合规性"}, false},
-		{"url is not a unix path", map[string]interface{}{"ref": "https://example.com/file.pdf"}, true}, // ends with .pdf → true
+		{"https url ending .pdf is not a local path", map[string]interface{}{"ref": "https://example.com/file.pdf"}, false},
 		{"url without doc extension", map[string]interface{}{"ref": "https://example.com/page"}, false},
+		{"tender_standard_url only", map[string]interface{}{"tender_standard_url": "https://example.com/tender/xxx"}, false},
+		{"url in path-named field still not local", map[string]interface{}{"tender_standard_path": "https://cdn.example.com/a.pdf"}, false},
+		{"scheme-less host path not local", map[string]interface{}{"tender_standard_path": "example.com/tender/a.pdf"}, false},
+		{"relative folder path still local", map[string]interface{}{"prepared_bid_path": "docs/bid.pdf"}, true},
+		{"mixed url and local path", map[string]interface{}{"tender_standard_url": "https://example.com/tender", "prepared_bid_path": `D:\投标\标书.pdf`}, true},
 		{"empty form", map[string]interface{}{}, false},
 		{"nil form", nil, false},
 		{"underscore field skipped", map[string]interface{}{"_agent_view_variant": "file_mode"}, false},
@@ -396,6 +401,15 @@ func TestPhaseInstructionHasOwnParsingGuidance(t *testing.T) {
 	if !phaseInstructionHasOwnParsingGuidance("pa_disclosure_parsing") {
 		t.Error("pa_disclosure_parsing should be marked as having own parsing guidance")
 	}
+	if !phaseInstructionHasOwnParsingGuidance("br_standards") {
+		t.Error("br_standards should have own parsing guidance")
+	}
+	if !phaseInstructionHasOwnParsingGuidance("br_bid_content") {
+		t.Error("br_bid_content should have own parsing guidance")
+	}
+	if phaseInstructionHasOwnParsingGuidance("br_conformity") {
+		t.Error("br_conformity should use shared guidance when prior form has local paths")
+	}
 	if phaseInstructionHasOwnParsingGuidance("tech_parsing") {
 		t.Error("tech_parsing should NOT be marked (uses shared guidance)")
 	}
@@ -420,6 +434,10 @@ func TestTextContainsFilePath(t *testing.T) {
 		{"CJK char before drive letter", "分析D:\\专利\\file.pdf", true},
 		{"mid-word drive letter", "abcD:\\path should not match", false},
 		{"path at end of text", "文件是D:\\x", true},
+		{"https url with pdf not local path", "请根据 https://example.com/tender/file.pdf 检查标书", false},
+		{"scheme-less host path not local", "请根据 example.com/tender/file.pdf 检查标书", false},
+		{"url plus local path", "标准 https://example.com/a.pdf 标书 D:\\投标\\标书.docx", true},
+		{"bare local pdf name still matches", "帮我审查这个合同.pdf", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -468,5 +486,75 @@ func TestBuildPhasePrompt_NoGuidanceWhenSummaryHasNoPath(t *testing.T) {
 	// "文档解析方法" but must not include the full injected ladder block.
 	if strings.Contains(prompt, "按下面**优先级阶梯**读取") {
 		t.Error("documentParsingGuidance block should NOT be injected when neither FormData nor Summary has a file path")
+	}
+}
+
+func TestBuildPhasePrompt_InheritsPriorPhaseFilePathForParsingGuidance(t *testing.T) {
+	// File path collected only on intake phase; later phase has empty FormData.
+	// Shared doc-parsing guidance must still inject so multi-phase doc workflows
+	// (bid_review, contract_review, academic review, …) keep reading files.
+	state := &WorkflowState{
+		Type:    "bid_review",
+		Summary: "检查标书是否符合招标要求",
+		Phases: []Phase{
+			{
+				ID:   "br_standards",
+				Name: "招标标准解析",
+				FormData: map[string]interface{}{
+					"tender_standard_path": `D:\投标\招标文件.pdf`,
+					"prepared_bid_path":    `D:\投标\投标文件.pdf`,
+				},
+				Output: "标准清单已完成",
+			},
+			{
+				ID:   "br_conformity",
+				Name: "符合性检查",
+				// No FormData on this phase — path lives on phase 0 only.
+			},
+		},
+		CurrentPhase: 1,
+	}
+	// br_conformity does not declare own parsing guidance → shared ladder should inject.
+	prompt := BuildPhasePrompt(state)
+	if !strings.Contains(prompt, "按下面**优先级阶梯**读取") {
+		t.Error("expected documentParsingGuidance from prior-phase form file paths")
+	}
+	// Prior form fields should still be visible as inherited structured context.
+	if !strings.Contains(prompt, "prepared_bid_path") && !strings.Contains(prompt, `D:\投标\投标文件.pdf`) {
+		t.Error("expected prior form file path to appear in inherited structured context")
+	}
+}
+
+func TestBuildPhasePrompt_BidReviewIntakeSkipsSharedParsingGuidance(t *testing.T) {
+	state := &WorkflowState{
+		Type:    "bid_review",
+		Summary: "标书检查",
+		Phases: []Phase{
+			{
+				ID:   "br_standards",
+				Name: "招标标准解析",
+				FormData: map[string]interface{}{
+					"tender_standard_path": `D:\投标\招标文件.pdf`,
+					"prepared_bid_path":    `D:\投标\投标文件.pdf`,
+				},
+			},
+		},
+		CurrentPhase: 0,
+	}
+	prompt := BuildPhasePrompt(state)
+	if strings.Contains(prompt, "按下面**优先级阶梯**读取") {
+		t.Error("br_standards has own parsing guidance; shared ladder should be skipped")
+	}
+	if !strings.Contains(prompt, "tender_standard_path") && !strings.Contains(prompt, "web_fetch") {
+		t.Error("expected bid-review-specific standards instruction content")
+	}
+}
+
+func TestPhaseInstruction_BidReviewPhases(t *testing.T) {
+	for _, id := range []string{"br_standards", "br_bid_content", "br_conformity", "br_fix_report"} {
+		got := phaseInstruction(WorkflowBidReview, id)
+		if strings.TrimSpace(got) == "" {
+			t.Errorf("phaseInstruction(bid_review, %q) empty", id)
+		}
 	}
 }

@@ -1448,18 +1448,54 @@ func (c *AppConfig) SetWorkflowEnabled(v bool) {
 	c.WorkflowEnabled = &v
 }
 
-// SkillHubBaseURL returns the base URL for SkillHub APIs (/api/v1/skills/*).
-// SkillHub is hosted on the HubCenter server, NOT on the user's private Hub.
-// All Skill search, download, install, rate, and update operations use this URL.
+// HubCenterBaseURLs returns HubCenter seed URLs using the unique enrollment
+// algorithm (must stay aligned with remote.EffectiveHubCenterSeeds):
+//
+//  1. Public enrollment identity first (preferred + customs; non-preferred
+//     official defaults like hubs2 are stripped — they are discovery seeds only).
+//  2. Official defaults only when no public registration exists.
+//  3. Never merge defaults over an enrolled public center.
+//
+// defaultHubCenterURL is kept for API compatibility; folded into defaults.
+// URLs are normalized the same way as remote.NormalizeHubCenterURL (scheme + trim).
 func (c *AppConfig) HubCenterBaseURLs(defaultHubCenterURL string, defaultHubCenterURLs []string) []string {
-	seen := make(map[string]struct{})
-	out := make([]string, 0, len(defaultHubCenterURLs)+2)
-	add := func(value string, allowLoopback bool) {
-		value = strings.TrimRight(strings.TrimSpace(value), "/")
-		if value == "" {
-			return
+	if c == nil {
+		return nil
+	}
+	pref := normalizeHubCenterConfigURL(c.RemoteHubCenterURL)
+	// Public enrollment only when preferred itself is public (matches
+	// remote.RegisteredPublicHubCenterURLs). Loopback preferred must not promote
+	// leftover public defaults from remote_hubcenter_urls into the seed list.
+	if pref != "" && !isConfiguredHubCenterLoopbackURL(pref) {
+		public := make([]string, 0, 1+len(c.RemoteHubCenterURLs))
+		seen := make(map[string]struct{}, 1+len(c.RemoteHubCenterURLs))
+		add := func(value string) {
+			value = normalizeHubCenterConfigURL(value)
+			if value == "" || isConfiguredHubCenterLoopbackURL(value) {
+				return
+			}
+			if _, ok := seen[value]; ok {
+				return
+			}
+			seen[value] = struct{}{}
+			public = append(public, value)
 		}
-		if !allowLoopback && isConfiguredHubCenterLoopbackURL(value) {
+		add(c.RemoteHubCenterURL)
+		for _, value := range c.RemoteHubCenterURLs {
+			add(value)
+		}
+		if len(public) == 0 {
+			return []string{pref}
+		}
+		return filterAppConfigEnrollmentPublicURLs(pref, public, defaultHubCenterURL, defaultHubCenterURLs)
+	}
+	// Unregistered / local-dev: loopbacks only + official defaults for discovery.
+	// Do not re-seed leftover public URLs from remote_hubcenter_urls (pollution).
+	out := make([]string, 0, 1+len(c.RemoteHubCenterURLs)+len(defaultHubCenterURLs)+1)
+	seen := make(map[string]struct{}, cap(out))
+	addOut := func(value string) {
+		value = normalizeHubCenterConfigURL(value)
+		if value == "" {
 			return
 		}
 		if _, ok := seen[value]; ok {
@@ -1468,25 +1504,117 @@ func (c *AppConfig) HubCenterBaseURLs(defaultHubCenterURL string, defaultHubCent
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
-	add(c.RemoteHubCenterURL, false)
-	for _, value := range c.RemoteHubCenterURLs {
-		add(value, false)
+	addLoopback := func(value string) {
+		value = normalizeHubCenterConfigURL(value)
+		if value == "" || !isConfiguredHubCenterLoopbackURL(value) {
+			return
+		}
+		addOut(value)
 	}
-	add(defaultHubCenterURL, true)
+	addLoopback(c.RemoteHubCenterURL)
+	for _, value := range c.RemoteHubCenterURLs {
+		addLoopback(value)
+	}
+	addOut(defaultHubCenterURL)
 	for _, value := range defaultHubCenterURLs {
-		add(value, true)
+		addOut(value)
 	}
 	return out
 }
 
+// ConfiguredHubCenterBaseURL returns the public enrollment HubCenter URL
+// (About identity). Empty when preferred is unset/loopback or no public center
+// is configured. Non-preferred official defaults in remote_hubcenter_urls are
+// ignored; loopback preferred never promotes leftover public defaults.
 func (c *AppConfig) ConfiguredHubCenterBaseURL() string {
+	if c == nil {
+		return ""
+	}
+	pref := normalizeHubCenterConfigURL(c.RemoteHubCenterURL)
+	if pref == "" || isConfiguredHubCenterLoopbackURL(pref) {
+		return ""
+	}
+	public := make([]string, 0, 1+len(c.RemoteHubCenterURLs))
 	for _, value := range append([]string{c.RemoteHubCenterURL}, c.RemoteHubCenterURLs...) {
-		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		value = normalizeHubCenterConfigURL(value)
 		if value != "" && !isConfiguredHubCenterLoopbackURL(value) {
-			return value
+			public = append(public, value)
 		}
 	}
-	return ""
+	if len(public) == 0 {
+		return pref
+	}
+	filtered := filterAppConfigEnrollmentPublicURLs(pref, public, "", nil)
+	if len(filtered) == 0 {
+		return pref
+	}
+	return filtered[0]
+}
+
+// filterAppConfigEnrollmentPublicURLs mirrors remote.filterEnrollmentPublicURLs
+// without importing remote (import cycle). Non-preferred official defaults are
+// dropped so polluted remote_hubcenter_urls cannot re-introduce hubs2.
+func filterAppConfigEnrollmentPublicURLs(preferred string, public []string, defaultURL string, defaultURLs []string) []string {
+	pref := normalizeHubCenterConfigURL(preferred)
+	if pref == "" || isConfiguredHubCenterLoopbackURL(pref) {
+		if len(public) > 0 {
+			pref = public[0]
+		}
+	}
+	defaultSet := make(map[string]struct{}, 1+len(defaultURLs)+3)
+	// Always include known built-in defaults when not provided (keep in sync with
+	// remote.DefaultRemoteHubCenterURLs for pollution filtering).
+	for _, u := range []string{
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+		"https://hubs2.maclaw.top",
+	} {
+		defaultSet[u] = struct{}{}
+	}
+	if v := normalizeHubCenterConfigURL(defaultURL); v != "" {
+		defaultSet[v] = struct{}{}
+	}
+	for _, u := range defaultURLs {
+		if v := normalizeHubCenterConfigURL(u); v != "" {
+			defaultSet[v] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(public))
+	seen := make(map[string]struct{}, len(public))
+	add := func(u string) {
+		u = normalizeHubCenterConfigURL(u)
+		if u == "" {
+			return
+		}
+		if _, ok := seen[u]; ok {
+			return
+		}
+		if _, isDefault := defaultSet[u]; isDefault && u != pref {
+			return
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	if pref != "" && !isConfiguredHubCenterLoopbackURL(pref) {
+		add(pref)
+	}
+	for _, u := range public {
+		add(u)
+	}
+	return out
+}
+
+// normalizeHubCenterConfigURL mirrors remote.NormalizeHubCenterURL without
+// importing remote (import cycle). Keep behavior in lockstep with that helper.
+func normalizeHubCenterConfigURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if !strings.Contains(value, "://") {
+		value = "https://" + value
+	}
+	return strings.TrimRight(value, "/")
 }
 
 func (c *AppConfig) SkillHubBaseURL(defaultHubCenterURL string) string {

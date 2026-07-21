@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -125,7 +126,14 @@ func TestResolveHubCenterCandidatesKeepsDefaultFailoverWithCachedSingleNode(t *t
 	}
 	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
 
-	app := &App{hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	// Unregistered: empty public registration so official defaults remain valid seeds.
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
 	app.hubCenterCache.Set("https://hubs2.maclaw.top", []string{"https://hubs2.maclaw.top"})
 
 	got, err := app.resolveHubCenterCandidates(context.Background(), nil)
@@ -154,7 +162,13 @@ func TestResolveHubCenterCandidatesDeprioritizesRecentlyFailedPreferred(t *testi
 	}
 	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
 
-	app := &App{hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
 	app.hubCenterCache.Set("https://hubs2.maclaw.top", []string{"https://hubs2.maclaw.top"})
 	remote.RecordProbeResult("https://hubs2.maclaw.top", false)
 
@@ -170,6 +184,168 @@ func TestResolveHubCenterCandidatesDeprioritizesRecentlyFailedPreferred(t *testi
 	}
 	if got[len(got)-1] != "https://hubs2.maclaw.top" {
 		t.Fatalf("recently failed preferred should be last for recovery: %#v", got)
+	}
+}
+
+func TestResolveHubCenterCandidatesDropsUnregisteredPeersWhenEnrolled(t *testing.T) {
+	remote.ResetFailureMemory()
+	t.Cleanup(remote.ResetFailureMemory)
+
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+		"https://hubs2.maclaw.top",
+	}
+	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
+
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  "https://hubs.maclaw.top",
+		RemoteHubCenterURLs: []string{"http://127.0.0.1:1", "https://hubs.maclaw.top"},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Poisoned cache prefers unregistered HA peer.
+	app.hubCenterCache.Set("https://hubs2.maclaw.top", []string{
+		"https://hubs2.maclaw.top",
+		"https://hubs.maclaw.top",
+		"https://hubs.mypapers.top",
+	})
+
+	got, err := app.resolveHubCenterCandidates(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolveHubCenterCandidates: %v", err)
+	}
+	want := []string{"https://hubs.maclaw.top"}
+	if !remote.StringSliceEqual(got, want) {
+		t.Fatalf("candidates = %#v, want %#v (registered only)", got, want)
+	}
+}
+
+func TestResolveHubCenterSubmitCandidatesUsesRegisteredCenterOnly(t *testing.T) {
+	remote.ResetFailureMemory()
+	t.Cleanup(remote.ResetFailureMemory)
+
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+		"https://hubs2.maclaw.top",
+	}
+	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
+
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{
+		testHomeDir:    tmpHome,
+		hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute),
+	}
+	// Cache may still prefer a broken HA peer from earlier discovery; submit must ignore it.
+	app.hubCenterCache.Set("https://hubs2.maclaw.top", []string{"https://hubs2.maclaw.top", "https://hubs.maclaw.top"})
+	if err := app.SaveConfig(corelib.AppConfig{
+		// Mirrors real About registration: loopback discovery entry + public registered center.
+		RemoteHubCenterURL:  "https://hubs.maclaw.top",
+		RemoteHubCenterURLs: []string{"http://127.0.0.1:61729", "https://hubs.maclaw.top", "https://hubs2.maclaw.top"},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	got, err := app.resolveHubCenterSubmitCandidates(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolveHubCenterSubmitCandidates: %v", err)
+	}
+	want := []string{"https://hubs.maclaw.top"}
+	if !remote.StringSliceEqual(got, want) {
+		t.Fatalf("submit candidates = %#v, want %#v (must match About, no hubs2/defaults)", got, want)
+	}
+}
+
+func TestResolveHubCenterSubmitCandidatesLoopbackDoesNotUsePublicPollution(t *testing.T) {
+	remote.ResetFailureMemory()
+	t.Cleanup(remote.ResetFailureMemory)
+
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+		"https://hubs2.maclaw.top",
+	}
+	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
+
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  "http://127.0.0.1:9",
+		RemoteHubCenterURLs: []string{"http://127.0.0.1:9", "https://hubs2.maclaw.top", "https://hubs.maclaw.top"},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	got, err := app.resolveHubCenterSubmitCandidates(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolveHubCenterSubmitCandidates: %v", err)
+	}
+	// Loopback preferred: seeds = loopback + official defaults (ordered), not pollution-first.
+	if len(got) == 0 || got[0] != "http://127.0.0.1:9" {
+		t.Fatalf("submit candidates = %#v, want loopback first", got)
+	}
+	// Pollution must not appear before official defaults list position; hubs2 only via defaults.
+	for i, u := range got {
+		if u == "https://hubs2.maclaw.top" && i < 1 {
+			t.Fatalf("hubs2 must not outrank loopback: %#v", got)
+		}
+	}
+}
+
+func TestConfiguredHubCenterSubmitURLsSkipsLoopbackUnlessAllowed(t *testing.T) {
+	cfg := corelib.AppConfig{
+		RemoteHubCenterURL:  "http://127.0.0.1:9",
+		RemoteHubCenterURLs: []string{"http://127.0.0.1:9", "https://hubs.maclaw.top/", "https://custom.example"},
+	}
+	got := remote.RegisteredPublicHubCenterURLs(cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+	// Loopback preferred → no public enrollment identity.
+	if len(got) != 0 {
+		t.Fatalf("public submit URLs = %#v, want empty for loopback preferred", got)
+	}
+	gotLoopback := remote.ConfiguredHubCenterURLs("http://127.0.0.1:9", []string{"http://127.0.0.1:9"}, true)
+	if !remote.StringSliceEqual(gotLoopback, []string{"http://127.0.0.1:9"}) {
+		t.Fatalf("loopback-allowed = %#v", gotLoopback)
+	}
+	// Public preferred keeps customs and strips non-preferred official defaults.
+	gotPublic := remote.RegisteredPublicHubCenterURLs("https://hubs.maclaw.top", []string{
+		"https://hubs.maclaw.top", "https://hubs2.maclaw.top", "https://custom.example",
+	})
+	wantPublic := []string{"https://hubs.maclaw.top", "https://custom.example"}
+	if !remote.StringSliceEqual(gotPublic, wantPublic) {
+		t.Fatalf("public preferred = %#v, want %#v", gotPublic, wantPublic)
+	}
+}
+
+func TestAppConfigHubCenterBaseURLsMatchesEffectiveHubCenterSeeds(t *testing.T) {
+	// Guard against drift between corelib AppConfig and remote.EffectiveHubCenterSeeds
+	// (cannot share code due to import cycle).
+	defaults := []string{"https://hubs.mypapers.top", "https://hubs.maclaw.top", "https://hubs2.maclaw.top"}
+	cases := []corelib.AppConfig{
+		{RemoteHubCenterURL: "https://hubs.maclaw.top", RemoteHubCenterURLs: []string{"http://127.0.0.1:1", "https://hubs.maclaw.top"}},
+		{RemoteHubCenterURL: "http://127.0.0.1:9", RemoteHubCenterURLs: []string{"http://127.0.0.1:9"}},
+		{RemoteHubCenterURL: "hubs.maclaw.top"},
+		{},
+	}
+	for i, cfg := range cases {
+		got := cfg.HubCenterBaseURLs(defaults[0], defaults)
+		want := remote.EffectiveHubCenterSeeds(cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs, defaults)
+		if !remote.StringSliceEqual(got, want) {
+			t.Fatalf("case %d HubCenterBaseURLs=%#v EffectiveHubCenterSeeds=%#v", i, got, want)
+		}
 	}
 }
 
@@ -240,12 +416,20 @@ func TestGetHubCenterJSONDoesNotPromoteDefaultFailoverOverLoopback(t *testing.T)
 	remote.DefaultRemoteHubCenterURLs = []string{"https://hubs.maclaw.top"}
 	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
 
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}))
 	defer server.Close()
 
-	app := &App{hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	// Unregistered local/dev: only loopback preferred; defaults are seeds only.
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL}}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
 	app.hubCenterCache.Set(server.URL, []string{server.URL})
 
 	var dest map[string]bool

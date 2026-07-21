@@ -2,7 +2,7 @@
   "name": "maclaw-acp",
   "displayName": "MaClaw ACP",
   "description": "MaClaw AI coding assistant over ACP — chat lives in the bottom panel, never blocks your Explorer.",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "publisher": "maclaw",
   "license": "MIT",
   "private": true,

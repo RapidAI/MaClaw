@@ -1491,6 +1491,8 @@ export function InstallSelectedMaclawAppPackageFromHub(arg1:string,arg2:Array<st
 export function SubmitMaclawAppPackage(arg1:string):Promise<any>;
 export function PublishMaclawAppOneClick(arg1:string):Promise<any>;
 export function PublishMaclawAppSubmissionOneClick(arg1:string):Promise<any>;
+export function PreflightMaclawAppOneClickPublish(arg1:string):Promise<any>;
+export function PreflightMaclawAppSubmissionOneClick(arg1:string):Promise<any>;
 export function ListMaclawAppPackageSubmissions(arg1:number):Promise<Array<any>>;
 export function GetMaclawAppPackageSubmission(arg1:string):Promise<any>;
 export function SyncMaclawAppPackageSubmissionToHub(arg1:string):Promise<any>;
