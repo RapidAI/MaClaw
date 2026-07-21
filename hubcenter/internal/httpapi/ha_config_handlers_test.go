@@ -522,3 +522,22 @@ func TestClientHubCentersEndpointReturnsConfiguredNodeCatalog(t *testing.T) {
 		t.Fatalf("current node count = %d", currentCount)
 	}
 }
+
+func TestBuildClientHubCentersViewPrefersLegacyPeerPublicURL(t *testing.T) {
+	view := buildClientHubCentersView(config.HAConfig{
+		Enabled:      true,
+		NodeID:       "hc-1",
+		NodeName:     "HubCenter 1",
+		AdvertiseURL: "http://10.0.0.1:9388",
+		Peers: []config.HAPeerConfig{{
+			Enabled:   true,
+			NodeID:    "hc-2",
+			Name:      "HubCenter 2",
+			BaseURL:   "http://10.0.0.2:9388",
+			PublicURL: "https://hubs-2.example.com",
+		}},
+	})
+	if len(view.URLs) != 2 || view.URLs[1] != "https://hubs-2.example.com" {
+		t.Fatalf("legacy URLs = %v", view.URLs)
+	}
+}

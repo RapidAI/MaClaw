@@ -1551,6 +1551,33 @@ func TestComputeQualityDegradesWhenLagAndBacklogAreBothHigh(t *testing.T) {
 	}
 }
 
+func TestInternalURLForPublicOriginUsesPeerTransportURL(t *testing.T) {
+	svc := NewService("hc-1", "HubCenter 1", "http://10.0.0.1:9388", "secret", []StaticPeer{{
+		NodeID:    "hc-2",
+		NodeName:  "HubCenter 2",
+		BaseURL:   "http://10.0.0.2:9388",
+		PublicURL: "https://hubs-2.example.com",
+	}})
+	if got := svc.InternalURLForPublicOrigin("https://hubs-2.example.com/"); got != "http://10.0.0.2:9388" {
+		t.Fatalf("InternalURLForPublicOrigin() = %q", got)
+	}
+	if got := svc.InternalURLForPublicOrigin("https://unknown.example.com"); got != "" {
+		t.Fatalf("unexpected unknown origin mapping: %q", got)
+	}
+}
+
+func TestOwnsPublicOriginUsesNodeLocalPublicURL(t *testing.T) {
+	svc := NewService("hc-1", "hc-1", "http://10.0.0.1:9388", "secret", nil)
+	svc.SetPublicURL("https://hubs-1.example.com/")
+
+	if !svc.OwnsPublicOrigin("https://HUBS-1.example.com") {
+		t.Fatal("expected this node to own its configured public origin")
+	}
+	if svc.OwnsPublicOrigin("https://hubs-2.example.com") {
+		t.Fatal("must not claim a peer public origin")
+	}
+}
+
 func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 	now := time.Date(2026, 4, 25, 9, 0, 0, 0, time.UTC)
 	opsRepo := &fakeHASyncOpRepo{ops: []*store.HASyncOp{

@@ -59,6 +59,28 @@ func TestScriptExtension(t *testing.T) {
 	}
 }
 
+func TestValidateCraftScriptLanguage(t *testing.T) {
+	tests := []struct {
+		name     string
+		script   string
+		language string
+		wantErr  bool
+	}{
+		{name: "accepts Python", language: "python", script: "import sys\nprint('ok')"},
+		{name: "rejects JavaScript as Python", language: "python", script: "const fs = require('fs');\nconsole.log('bad')", wantErr: true},
+		{name: "accepts Node", language: "node", script: "const fs = require('fs');\nconsole.log('ok')"},
+		{name: "rejects Python as Node", language: "node", script: "from pathlib import Path\nprint('bad')", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCraftScriptLanguage(tt.script, tt.language)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateCraftScriptLanguage() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestSanitizeFilename(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -240,6 +262,18 @@ func TestBuildCraftSystemPrompt_AddsArtifactRepairGuards(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q: %s", want, prompt)
 		}
+	}
+}
+
+func TestBuildCraftPromptReinforcesSelectedRuntimeLanguage(t *testing.T) {
+	request := craftToolRequest{RuntimeLanguage: "python"}
+	system := buildCraftSystemPrompt(request, craftRuntimeAvailability{Python: "C:/Users/demo/.maclaw/python/install/python.exe"}, craftAttemptResult{})
+	if !strings.Contains(system, "Python 运行时不得输出 JavaScript/Node 脚本") {
+		t.Fatalf("system prompt should prohibit cross-language scripts: %s", system)
+	}
+	user := buildCraftUserPrompt(request, craftAttemptResult{Attempts: 1, VerificationMessage: "generated script does not match the selected Python runtime"})
+	if !strings.Contains(user, "只输出选定语言的可执行源码") {
+		t.Fatalf("repair prompt should reinforce language correction: %s", user)
 	}
 }
 

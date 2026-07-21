@@ -760,7 +760,10 @@ func AdminCapabilityMaclawAppReviewHandler(svc *capability.Service, decision str
 			ApprovedScopes []string               `json:"approved_scopes,omitempty"`
 			ReviewIssues   []maclawAppReviewIssue `json:"review_issues,omitempty"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := decodeOptionalJSONBody(r.Body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+			return
+		}
 		item, err := svc.Get(ctx, capabilityID)
 		if errors.Is(err, capability.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "CAPABILITY_NOT_FOUND", "capability not found")
@@ -775,18 +778,28 @@ func AdminCapabilityMaclawAppReviewHandler(svc *capability.Service, decision str
 			writeError(w, http.StatusBadRequest, "NOT_MACLAW_APP_CAPABILITY", "capability is not a MaClaw App submission")
 			return
 		}
-		currentStatus := strings.TrimSpace(item.Status)
+		currentStatus := strings.ToLower(strings.TrimSpace(item.Status))
 		if currentStatus == "approved" || currentStatus == "published" || currentStatus == "revoked" {
 			writeError(w, http.StatusConflict, "MACLAW_APP_REVIEW_TERMINAL", "reviewed MaClaw App capability cannot be changed here")
 			return
 		}
+		if decision != "approve" && decision != "reject" {
+			writeError(w, http.StatusBadRequest, "INVALID_REVIEW_DECISION", "review decision must be approve or reject")
+			return
+		}
+		if currentStatus != "pending_review" && currentStatus != "review_failed" {
+			writeError(w, http.StatusConflict, "MACLAW_APP_NOT_REVIEWABLE", "MaClaw App capability is not awaiting review")
+			return
+		}
 		nextStatus := "approved"
 		reviewState := "approved"
+		var reviewIssues []map[string]any
 		if decision == "reject" {
 			nextStatus = "review_failed"
 			reviewState = "review_failed"
 			reason := strings.TrimSpace(req.Reason)
-			if reason == "" && len(req.ReviewIssues) == 0 {
+			reviewIssues = maclawAppReviewIssuesToMaps(req.ReviewIssues)
+			if reason == "" && len(reviewIssues) == 0 {
 				writeError(w, http.StatusBadRequest, "REJECTION_REASON_REQUIRED", "rejection reason or review_issues is required")
 				return
 			}
@@ -812,21 +825,19 @@ func AdminCapabilityMaclawAppReviewHandler(svc *capability.Service, decision str
 		if strings.TrimSpace(req.RiskLevel) != "" {
 			metadata["risk_level"] = strings.TrimSpace(req.RiskLevel)
 		}
-		if len(req.ApprovedScopes) > 0 {
+		if decision == "approve" && len(req.ApprovedScopes) > 0 {
 			metadata["approved_scopes"] = compactStringList(req.ApprovedScopes)
 		}
 		if decision == "reject" {
-			issues := req.ReviewIssues
-			if len(issues) == 0 {
-				issues = []maclawAppReviewIssue{{
-					Path:       "app.governance",
-					Severity:   "error",
-					Message:    strings.TrimSpace(req.Reason),
-					Suggestion: "revise the MaClaw App package and resubmit",
-				}}
+			if len(reviewIssues) == 0 {
+				reviewIssues = maclawAppReviewIssuesToMaps([]maclawAppReviewIssue{{
+					Path: "app.governance", Severity: "error", Message: strings.TrimSpace(req.Reason), Suggestion: "revise the MaClaw App package and resubmit",
+				}})
 			}
-			metadata["review_issues"] = maclawAppReviewIssuesToMaps(issues)
+			metadata["review_issues"] = reviewIssues
 			metadata["review_reason"] = strings.TrimSpace(req.Reason)
+			delete(metadata, "approved_at")
+			delete(metadata, "approved_scopes")
 		} else {
 			metadata["approved_at"] = reviewedAt
 			delete(metadata, "review_issues")
@@ -852,6 +863,27 @@ func AdminCapabilityMaclawAppReviewHandler(svc *capability.Service, decision str
 			},
 		})
 	}
+}
+
+// decodeOptionalJSONBody accepts an empty body for actions whose metadata is
+// optional, while rejecting malformed JSON and trailing JSON values. The latter
+// prevents a partially decoded request from being applied unexpectedly.
+func decodeOptionalJSONBody(body io.Reader, dst any) error {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain a single JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func isEnterpriseMaclawAppCapability(item capability.CapabilitySummary, metadata map[string]any) bool {
@@ -891,7 +923,10 @@ func AdminCapabilityMaclawAppPublishHandler(svc *capability.Service) http.Handle
 			ReleaseChannel string `json:"release_channel,omitempty"`
 			Notes          string `json:"notes,omitempty"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := decodeOptionalJSONBody(r.Body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+			return
+		}
 		item, err := svc.Get(ctx, capabilityID)
 		if errors.Is(err, capability.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "CAPABILITY_NOT_FOUND", "capability not found")

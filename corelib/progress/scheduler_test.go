@@ -90,11 +90,20 @@ func TestSchedule_DecisionMatrix(t *testing.T) {
 
 		// --- Embedding unavailable (relevance = -1) ---
 		{
-			name: "no embedding + same domain → Merge",
+			name: "no embedding + same domain + medium → Queue to avoid merging independent tasks",
 			input: ScheduleInput{
 				Relevance:   -1,
 				DomainMatch: true,
 				Structure:   StructureSignal{Length: 15, IsMedium: true},
+			},
+			expected: ActionQueue,
+		},
+		{
+			name: "no embedding + same domain + short → Merge",
+			input: ScheduleInput{
+				Relevance:   -1,
+				DomainMatch: true,
+				Structure:   StructureSignal{Length: 3, IsShort: true},
 			},
 			expected: ActionMerge,
 		},
@@ -222,7 +231,6 @@ func TestCosineSimilarity(t *testing.T) {
 		})
 	}
 }
-
 
 func TestCharOverlapRatio(t *testing.T) {
 	tests := []struct {

@@ -49,7 +49,7 @@ func (a *App) BranchConversationAt(entryIndex int) (ConversationBranchResult, er
 		return ConversationBranchResult{}, fmt.Errorf("无法在任务执行期间创建分支，请先等待任务完成")
 	}
 
-	mem := a.aiConversationMemory
+	mem := a.currentConversationMemory()
 	if mem == nil {
 		return ConversationBranchResult{}, fmt.Errorf("conversation memory not initialized")
 	}
@@ -105,7 +105,7 @@ func (a *App) GetConversationBranchPoints() ([]ConversationBranchPoint, error) {
 		return nil, nil
 	}
 
-	mem := a.aiConversationMemory
+	mem := a.currentConversationMemory()
 	if mem == nil {
 		return nil, nil
 	}

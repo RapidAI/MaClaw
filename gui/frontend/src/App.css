@@ -456,6 +456,316 @@
     line-height: 1.45;
 }
 
+/* Problem reports are a focused operational workflow, not a generic settings form. */
+.modal-content.problem-report-dialog {
+    width: min(680px, 92vw);
+    max-height: min(760px, 86vh);
+    overflow: auto;
+    padding: 26px 28px 22px;
+    text-align: left;
+}
+
+.problem-report-dialog__header {
+    margin-bottom: 6px;
+}
+
+.problem-report-dialog__header h3 {
+    color: var(--theme-text-primary);
+    font-size: 1.18rem;
+    letter-spacing: -0.01em;
+}
+
+.problem-report-dialog .modal-close {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+}
+
+.problem-report-dialog .modal-close:focus-visible,
+.problem-report-dialog__attachment-list li button:focus-visible,
+.problem-report-dialog .about-action-button:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.problem-report-dialog__intro {
+    max-width: 58ch;
+    margin-bottom: 18px;
+}
+
+.problem-report-dialog__collection {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    margin: 0 0 20px;
+    padding: 14px 16px;
+    border: 1px solid var(--theme-border);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+}
+
+.problem-report-dialog__collection-copy {
+    min-width: 0;
+}
+
+.problem-report-dialog__collection-copy strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--theme-text-primary);
+    font-size: 0.9rem;
+}
+
+.problem-report-dialog__collection .setting-desc {
+    margin: 0;
+    max-width: 55ch;
+}
+
+.problem-report-dialog__version {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin: -6px 0 18px;
+    padding: 9px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    color: var(--theme-text-secondary);
+    font-size: 0.8rem;
+}
+
+.problem-report-dialog__version code {
+    color: var(--theme-text-primary);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.78rem;
+}
+
+.problem-report-dialog__field {
+    display: grid;
+    gap: 7px;
+    margin: 0 0 16px;
+}
+
+.problem-report-dialog__field .form-label {
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.84rem;
+    font-weight: 600;
+}
+
+.problem-report-dialog__field .form-label em {
+    color: var(--theme-danger, #d75b5b);
+    font-style: normal;
+}
+
+.problem-report-dialog__field .form-input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.problem-report-dialog__field textarea.form-input {
+    min-height: 126px;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.problem-report-dialog__attachment-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.problem-report-dialog__attachment-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0;
+    padding: 10px;
+    list-style: none;
+}
+
+.problem-report-dialog__attachment-list li {
+    position: relative;
+    width: 108px;
+    min-width: 0;
+}
+
+.problem-report-dialog__attachment-preview,
+.problem-report-dialog__attachment-placeholder {
+    display: block;
+    width: 108px;
+    height: 76px;
+    box-sizing: border-box;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface-muted);
+}
+
+.problem-report-dialog__attachment-preview {
+    object-fit: cover;
+    transition: opacity 160ms ease-out;
+}
+
+.problem-report-dialog__attachment-placeholder {
+    display: grid;
+    place-items: center;
+    color: var(--theme-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.problem-report-dialog__attachment-name {
+    display: block;
+    margin-top: 5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+}
+
+.problem-report-dialog__attachment-list .problem-report-dialog__attachment-remove {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    display: inline-grid;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    place-items: center;
+    border: 1px solid var(--theme-border);
+    border-radius: 50%;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 1rem;
+    line-height: 1;
+    transition: transform 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out;
+}
+
+.problem-report-dialog__attachment-list .problem-report-dialog__attachment-remove:hover:not(:disabled) {
+    border-color: var(--theme-danger, #d75b5b);
+    color: var(--theme-danger, #d75b5b);
+}
+
+.problem-report-dialog__attachment-list .problem-report-dialog__attachment-remove:active:not(:disabled) {
+    transform: scale(0.92);
+}
+
+.problem-report-dialog__attachment-list .problem-report-dialog__attachment-remove:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .problem-report-dialog__attachment-preview,
+    .problem-report-dialog__attachment-list .problem-report-dialog__attachment-remove {
+        transition: none;
+    }
+}
+
+.problem-report-dialog__history {
+    display: grid;
+    gap: 7px;
+    margin: 0 0 16px;
+}
+
+.problem-report-dialog__history .form-label {
+    color: var(--theme-text-primary);
+    font-weight: 600;
+}
+
+.problem-report-dialog__history-list {
+    display: grid;
+    max-height: 138px;
+    overflow: auto;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+}
+
+.problem-report-dialog__history-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    color: var(--theme-text-secondary);
+    font-size: 0.8rem;
+}
+
+.problem-report-dialog__history-item + .problem-report-dialog__history-item {
+    border-top: 1px solid var(--theme-border);
+}
+
+.problem-report-dialog__history-item code {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.76rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.problem-report-dialog__message {
+    padding: 9px 12px;
+    border-radius: 8px;
+    background: var(--theme-surface-muted);
+}
+
+.problem-report-dialog .form-input:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 1px;
+}
+
+.problem-report-dialog button:disabled {
+    cursor: not-allowed;
+}
+
+.problem-report-dialog .setting-desc {
+    overflow-wrap: anywhere;
+}
+
+.problem-report-dialog .modal-actions.problem-report-dialog__actions {
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--theme-border);
+}
+
+@media (max-width: 520px) {
+    .modal-content.problem-report-dialog {
+        width: min(100vw - 24px, 680px);
+        max-height: 90vh;
+        padding: 20px 18px 16px;
+    }
+
+    .problem-report-dialog__collection {
+        align-items: flex-start;
+    }
+
+    .problem-report-dialog .modal-actions.problem-report-dialog__actions {
+        justify-content: stretch;
+    }
+
+    .problem-report-dialog .modal-actions.problem-report-dialog__actions > button {
+        flex: 1 1 auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .problem-report-dialog *,
+    .problem-report-dialog *::before,
+    .problem-report-dialog *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+    }
+}
+
 .about-contact-dialog .modal-actions,
 .about-mobile-auth-qr-dialog .modal-actions {
     display: flex;
@@ -5407,6 +5717,209 @@ body {
     gap: 8px;
 }
 
+.pet-help-button {
+    min-height: 32px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--theme-border);
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+    font-weight: 650;
+    cursor: pointer;
+    line-height: 1.2;
+}
+
+.pet-help-button:hover {
+    border-color: rgba(99, 102, 241, 0.45);
+    color: #4f46e5;
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.pet-help-button:focus-visible {
+    outline: 2px solid rgba(99, 102, 241, 0.45);
+    outline-offset: 2px;
+}
+
+.pet-help-button--inline {
+    min-height: 36px;
+}
+
+/* Three actions on one row: Install Zip | Browse | Guide */
+.pet-pack-install-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(3.25rem, 0.55fr) minmax(4.5rem, 0.9fr);
+    gap: 8px;
+    align-items: stretch;
+}
+
+.pet-pack-install-row > button {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 36px;
+    padding-inline: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Uninstall is a single full-width control — do not reuse the 3-col install grid */
+.pet-pack-uninstall-row {
+    display: flex;
+    align-items: center;
+}
+
+.pet-pack-uninstall-row .pet-uninstall-button {
+    width: 100%;
+}
+
+.pet-install-button {
+    min-height: 36px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary, #6366f1) 35%, transparent);
+    background: color-mix(in srgb, var(--theme-primary, #6366f1) 14%, transparent);
+    color: var(--theme-primary, #4f46e5);
+    font-size: 0.8rem;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.pet-install-button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-primary, #6366f1) 22%, transparent);
+}
+
+.pet-install-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--theme-primary, #6366f1) 45%, transparent);
+    outline-offset: 2px;
+}
+
+.pet-install-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.pet-install-error {
+    margin: 8px 0 0;
+    color: #c43d34;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.pet-install-notice {
+    margin: 8px 0 0;
+    color: #4f7f6f;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.pet-section-spacer {
+    margin-top: 12px;
+}
+
+.pet-upgrade-chip {
+    margin-top: 8px;
+}
+
+.pet-skin-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 4px 0 2px;
+}
+
+.pet-skin-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    line-height: 1.2;
+    border: 1px solid var(--theme-border);
+    color: var(--theme-text-secondary);
+    background: var(--theme-surface);
+}
+
+.pet-skin-badge--official {
+    border-color: rgba(99, 102, 241, 0.28);
+    color: #4f46e5;
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.pet-skin-badge--user {
+    border-color: rgba(79, 127, 111, 0.3);
+    color: #3d6b5c;
+    background: rgba(79, 127, 111, 0.1);
+}
+
+.pet-skin-badge--ver {
+    opacity: 0.85;
+}
+
+.pet-skin-badge--invalid {
+    border-color: rgba(220, 38, 38, 0.35);
+    color: #b91c1c;
+    background: rgba(254, 226, 226, 0.65);
+}
+
+.pet-skin-option--invalid {
+    opacity: 0.88;
+    border-style: dashed;
+}
+
+.pet-skin-option--invalid .pet-skin-thumb {
+    filter: grayscale(0.35);
+}
+
+.pet-uninstall-button {
+    min-height: 36px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(196, 61, 52, 0.35);
+    background: rgba(196, 61, 52, 0.08);
+    color: #b91c1c;
+    font-size: 0.8rem;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.pet-uninstall-button:hover:not(:disabled) {
+    background: rgba(196, 61, 52, 0.14);
+}
+
+.pet-uninstall-button:focus-visible {
+    outline: 2px solid rgba(196, 61, 52, 0.45);
+    outline-offset: 2px;
+}
+
+.pet-uninstall-button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.pet-packs-dir-hint {
+    margin: 8px 0 0;
+    font-size: 0.72rem;
+    color: var(--theme-text-secondary);
+    word-break: break-all;
+    line-height: 1.4;
+}
+
+.pet-packs-dir-hint code {
+    font-size: 0.7rem;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--theme-surface);
+    border: 1px solid var(--theme-border);
+}
+
+.pet-preview-avatar[data-pet-variant="default"] .pet-preview-image {
+    /* figurative frames already include face — keep marks subtle */
+    filter: none;
+}
+
 .pet-save-state {
     min-height: 22px;
     padding: 3px 8px;
@@ -5899,7 +6412,7 @@ body {
 
 .pet-preview-state-row {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
 }
 
@@ -6343,6 +6856,17 @@ body {
 
     .pet-switch-row {
         justify-content: flex-start;
+    }
+
+    /* Keep install actions on one row; shrink type slightly */
+    .pet-pack-install-row {
+        grid-template-columns: minmax(0, 1.4fr) minmax(2.75rem, 0.5fr) minmax(3.5rem, 0.8fr);
+        gap: 6px;
+    }
+
+    .pet-pack-install-row > button {
+        font-size: 0.72rem;
+        padding-inline: 6px;
     }
 
     .pet-skin-grid,
@@ -14996,183 +15520,4 @@ body {
     --theme-link-color: #000000;
     --theme-info-bg: rgba(0, 0, 0, 0.03);
     --theme-on-primary: #ffffff;
-}
-
-/* ---- Desktop pet settings / preview (pet pack system) ---- */
-.pet-help-button {
-    min-height: 32px;
-    padding: 6px 12px;
-    border-radius: 8px;
-    border: 1px solid var(--theme-border);
-    background: var(--theme-surface);
-    color: var(--theme-text-secondary);
-    font-size: 0.78rem;
-    font-weight: 650;
-    cursor: pointer;
-    line-height: 1.2;
-}
-
-.pet-help-button:hover {
-    border-color: rgba(99, 102, 241, 0.45);
-    color: #4f46e5;
-    background: rgba(99, 102, 241, 0.08);
-}
-
-.pet-help-button:focus-visible {
-    outline: 2px solid rgba(99, 102, 241, 0.45);
-    outline-offset: 2px;
-}
-
-.pet-help-button--inline {
-    min-height: 34px;
-}
-
-.pet-pack-install-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-}
-
-.pet-install-button {
-    min-height: 34px;
-    padding: 6px 14px;
-    border-radius: 8px;
-    border: 1px solid rgba(99, 102, 241, 0.35);
-    background: rgba(99, 102, 241, 0.12);
-    color: #4338ca;
-    font-size: 0.8rem;
-    font-weight: 650;
-    cursor: pointer;
-}
-
-.pet-install-button:hover:not(:disabled) {
-    background: rgba(99, 102, 241, 0.2);
-}
-
-.pet-install-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-.pet-install-error {
-    margin: 8px 0 0;
-    color: #c43d34;
-    font-size: 0.78rem;
-    font-weight: 600;
-}
-
-.pet-install-notice {
-    margin: 8px 0 0;
-    color: #4f7f6f;
-    font-size: 0.78rem;
-    font-weight: 600;
-}
-
-.pet-section-spacer {
-    margin-top: 12px;
-}
-
-.pet-upgrade-chip {
-    margin-top: 8px;
-}
-
-.pet-skin-badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin: 4px 0 2px;
-}
-
-.pet-skin-badge {
-    display: inline-flex;
-    align-items: center;
-    min-height: 18px;
-    padding: 1px 6px;
-    border-radius: 999px;
-    font-size: 0.62rem;
-    font-weight: 700;
-    line-height: 1.2;
-    border: 1px solid var(--theme-border);
-    color: var(--theme-text-secondary);
-    background: var(--theme-surface);
-}
-
-.pet-skin-badge--official {
-    border-color: rgba(99, 102, 241, 0.28);
-    color: #4f46e5;
-    background: rgba(99, 102, 241, 0.08);
-}
-
-.pet-skin-badge--user {
-    border-color: rgba(79, 127, 111, 0.3);
-    color: #3d6b5c;
-    background: rgba(79, 127, 111, 0.1);
-}
-
-.pet-skin-badge--ver {
-    opacity: 0.85;
-}
-
-.pet-skin-badge--invalid {
-    border-color: rgba(220, 38, 38, 0.35);
-    color: #b91c1c;
-    background: rgba(254, 226, 226, 0.65);
-}
-
-.pet-skin-option--invalid {
-    opacity: 0.88;
-    border-style: dashed;
-}
-
-.pet-skin-option--invalid .pet-skin-thumb {
-    filter: grayscale(0.35);
-}
-
-.pet-uninstall-button {
-    min-height: 34px;
-    padding: 6px 14px;
-    border-radius: 8px;
-    border: 1px solid rgba(196, 61, 52, 0.35);
-    background: rgba(196, 61, 52, 0.08);
-    color: #b91c1c;
-    font-size: 0.8rem;
-    font-weight: 650;
-    cursor: pointer;
-}
-
-.pet-uninstall-button:hover:not(:disabled) {
-    background: rgba(196, 61, 52, 0.14);
-}
-
-.pet-uninstall-button:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-}
-
-.pet-packs-dir-hint {
-    margin: 8px 0 0;
-    font-size: 0.72rem;
-    color: var(--theme-text-secondary);
-    word-break: break-all;
-    line-height: 1.4;
-}
-
-.pet-packs-dir-hint code {
-    font-size: 0.7rem;
-    padding: 1px 4px;
-    border-radius: 4px;
-    background: var(--theme-surface);
-    border: 1px solid var(--theme-border);
-}
-
-.pet-preview-avatar[data-pet-variant="default"] .pet-preview-image {
-    /* figurative frames already include face — keep marks subtle */
-    filter: none;
-}
-
-.pet-preview-state-row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
 }

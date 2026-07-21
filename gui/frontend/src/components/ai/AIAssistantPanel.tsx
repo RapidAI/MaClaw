@@ -37,7 +37,7 @@ import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText, isInstallCommandText, normalizeInstallCommandText } from "./composeAction";
 import { InlineChatCard } from "./InlineChatCard";
-import { AssistantWelcomeView, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
+import { AssistantWelcomeView, syncLocalStartMenuTemplates, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
 import { WelcomeTemplateSaveOfferBanner } from "./WelcomeTemplateSaveOffer";
 import {
     loadRemoteSSHPassword,
@@ -1182,6 +1182,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
     const handleRemoteCodingReconnect = useCallback(async (opts?: { auto?: boolean }) => {
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        // Capture tab identity before awaiting SSH. The user may switch tabs
+        // while the connection is in flight; its queued IM prompt must still
+        // belong to the tab that initiated this reconnect.
+        const reconnectTabId = activeTab?.type === "project" ? activeTab.id : "";
         if (!projectPath) return;
         if (remoteReconnectInFlightRef.current) return;
         const snap = remoteReconnectRef.current;
@@ -1253,6 +1257,21 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 requestAnimationFrame(() => {
                     inputRef.current?.focus();
                 });
+                // An IM-started remote task must not send its prompt until the
+                // workbench is armed.  Keep the prompt in tab state (rather than
+                // an event payload) so automatic and manual reconnect share the
+                // same one-shot path and no password ever leaves the browser vault.
+                const tabId = reconnectTabId;
+                const pendingState = tabId ? getTabState(tabId) : undefined;
+                const pendingInitial = pendingState?.pendingRemoteInitialMessage;
+                if (tabId && pendingInitial?.text.trim()) {
+                    saveTabState(tabId, { ...pendingState, pendingRemoteInitialMessage: undefined });
+                    if (preparingProjectTabIdsRef.current.has(tabId)) {
+                        pendingRemoteInitialSendRef.current.set(tabId, { text: pendingInitial.text, projectPath });
+                    } else {
+                        void sendMessageForTabRef.current?.(pendingInitial.text, { tabId, project_path: projectPath });
+                    }
+                }
             }
         } catch (err) {
             // autoKey stays set on failure so we do not loop on a bad/stale password.
@@ -1268,7 +1287,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             remoteReconnectInFlightRef.current = false;
         }
-    }, [activeTab?.projectPath, activeTab?.type, lang]);
+    }, [activeTab?.id, activeTab?.projectPath, activeTab?.type, getTabState, lang, saveTabState]);
     /**
      * On identity-field blur: trim values and recall vault password only when the
      * bound target actually changed — never clobber a password the user is editing
@@ -2210,7 +2229,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [preparingProjectTabIds, setPreparingProjectTabIds] = useState<Set<string>>(() => new Set());
     const preparingProjectTabIdsRef = useRef<Set<string>>(new Set());
     const [preparingProjectTabModes, setPreparingProjectTabModes] = useState<Map<string, NonNullable<PendingProjectTabOpen["prepareMode"]>>>(() => new Map());
-    const deferredProjectInitialSendsRef = useRef<Map<string, string[]>>(new Map());
+    const deferredProjectInitialSendsRef = useRef<Map<string, Array<{ text: string; options?: Record<string, unknown> }>>>(new Map());
+    /** IM remote prompts awaiting SSH reconnect, keyed by their project tab. */
+    const pendingRemoteInitialSendRef = useRef<Map<string, { text: string; projectPath: string }>>(new Map());
     const projectPrepareTimersRef = useRef<Map<string, number>>(new Map());
     const sendMessageForTabRef = useRef<((text: string, options?: Record<string, unknown>) => Promise<boolean>) | null>(null);
     const activeTabIdRef = useRef<string>(activeTab.id);
@@ -2625,8 +2646,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setProjectTabPreparing(tabId, false);
         const deferred = deferredProjectInitialSendsRef.current.get(tabId) || [];
         deferredProjectInitialSendsRef.current.delete(tabId);
-        for (const text of deferred) {
-            void sendMessageForTabRef.current?.(text, { tabId, project_path: projectPath });
+        for (const deferredSend of deferred) {
+            void sendMessageForTabRef.current?.(deferredSend.text, {
+                ...deferredSend.options,
+                tabId,
+                project_path: projectPath,
+            });
+        }
+        const pendingRemote = pendingRemoteInitialSendRef.current.get(tabId);
+        if (pendingRemote) {
+            pendingRemoteInitialSendRef.current.delete(tabId);
+            void sendMessageForTabRef.current?.(pendingRemote.text, {
+                tabId,
+                project_path: projectPath || pendingRemote.projectPath,
+            });
         }
     }, [setProjectTabPreparing]);
     const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteNeedsReconnect?: boolean } | boolean) => {
@@ -2763,11 +2796,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const isProjectSend = !!resolvedProjectPath;
         if (isProjectSend && resolvedProjectPath) {
             if (resolvedTabId) clearedProjectTabIdsRef.current.delete(resolvedTabId);
-            const mergedOptions = {
+            const mergedOptions: Record<string, unknown> = {
                 ...options,
                 tabId: resolvedTabId,
                 project_path: resolvedProjectPath,
             };
+            const pendingIMCompletion = resolvedTabId ? getTabState(resolvedTabId)?.pendingIMCompletion : undefined;
+            if (pendingIMCompletion) {
+                if (!mergedOptions.im_platform) mergedOptions.im_platform = pendingIMCompletion.platform;
+                if (!mergedOptions.im_target_uid) mergedOptions.im_target_uid = pendingIMCompletion.targetUID;
+				if (mergedOptions.im_is_group === undefined) mergedOptions.im_is_group = pendingIMCompletion.isGroup;
+                if (!mergedOptions.im_task_title) mergedOptions.im_task_title = pendingIMCompletion.taskTitle;
+            }
             const contextTabId = String(mergedOptions.tabId || '');
             const contextHistory = contextTabId === liveActiveTab.id
                 ? projectTabMessages
@@ -2809,6 +2849,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (sent === false && currentRound?.seq === roundSeq) {
                     projectTabRoundsRef.current.delete(roundKey);
                     setProjectTabRouteVersion(version => version + 1);
+                }
+                if (sent !== false && pendingIMCompletion && resolvedTabId) {
+                    const current = getTabState(resolvedTabId);
+                    if (current?.pendingIMCompletion) {
+                        saveTabState(resolvedTabId, { ...current, pendingIMCompletion: undefined });
+                    }
                 }
                 return sent;
             }, (err: unknown) => {
@@ -2881,7 +2927,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const projectPath = typeof options?.project_path === "string" ? options.project_path : "";
         if (tabId && projectPath && preparingProjectTabIdsRef.current.has(tabId)) {
             const deferred = deferredProjectInitialSendsRef.current.get(tabId) || [];
-            deferred.push(text);
+            deferred.push({ text, options });
             deferredProjectInitialSendsRef.current.set(tabId, deferred);
             console.info("[AIAssistantPanel] defer project send until prepare completes", { tabId, projectPath, textLength: text.trim().length });
             return Promise.resolve(true);
@@ -2900,6 +2946,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             setProjectTabPreparing(tabId, false);
             deferredProjectInitialSendsRef.current.delete(tabId);
+            pendingRemoteInitialSendRef.current.delete(tabId);
         }
         for (const [roundKey, round] of projectTabRoundsRef.current) {
             if (round.tabId !== tabId) continue;
@@ -3972,10 +4019,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     ]);
     const handleWelcomeTemplateOfferSave = useCallback(() => {
         if (!welcomeTemplateOffer) return;
-        saveWelcomeCustomTemplate({
+        const { templates } = saveWelcomeCustomTemplate({
             title: welcomeTemplateOffer.title,
             body: welcomeTemplateOffer.body,
         });
+        // This save entry point is outside AssistantWelcomeView; keep its
+        // snapshot on the same ordered, password-free sync path.
+        syncLocalStartMenuTemplates(templates);
         setWelcomeTemplateOffer(null);
     }, [welcomeTemplateOffer]);
     const handleWelcomeTemplateOfferDismiss = useCallback(() => {

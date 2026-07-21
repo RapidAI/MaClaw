@@ -136,7 +136,7 @@ func (h *IMMessageHandler) startAgentLoopMilestoneTracker(userID, userText strin
 	cleanup := func() {
 		tracker.Stop()
 		if h.interruptHandler != nil {
-			h.interruptHandler.ClearTracker(userID)
+			h.interruptHandler.ClearTrackerIfCurrent(userID, tracker)
 		}
 	}
 	if h.interruptHandler != nil {

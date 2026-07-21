@@ -85,7 +85,7 @@ func (h *SkillHandlers) GetSkill(w http.ResponseWriter, r *http.Request) {
 		skillError(w, http.StatusBadRequest, "skill id is required")
 		return
 	}
-	s, err := h.store.Get(id)
+	s, err := h.store.GetVisible(id)
 	if err != nil {
 		skillError(w, http.StatusNotFound, err.Error())
 		return
@@ -99,7 +99,7 @@ func (h *SkillHandlers) DownloadSkill(w http.ResponseWriter, r *http.Request) {
 		skillError(w, http.StatusBadRequest, "skill id is required")
 		return
 	}
-	s, err := h.store.Get(id)
+	s, err := h.store.GetCurrentVisible(id)
 	if err != nil {
 		skillError(w, http.StatusNotFound, err.Error())
 		return
@@ -122,8 +122,24 @@ func (h *SkillHandlers) DownloadBySkillID(w http.ResponseWriter, r *http.Request
 		skillError(w, http.StatusNotFound, "skill_id not found: "+skillID)
 		return
 	}
-	// Return the full skill (same format as DownloadSkill by UUID)
-	s, err := h.store.Get(meta.ID)
+	// Return the current public skill (same format as DownloadSkill by UUID).
+	s, err := h.store.GetVisible(meta.ID)
+	if err != nil {
+		skillError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+// AdminGetSkill exposes a complete revision to authorized catalog managers,
+// including revisions intentionally hidden from the public catalog.
+func (h *SkillHandlers) AdminGetSkill(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		skillError(w, http.StatusBadRequest, "skill id is required")
+		return
+	}
+	s, err := h.store.Get(id)
 	if err != nil {
 		skillError(w, http.StatusNotFound, err.Error())
 		return

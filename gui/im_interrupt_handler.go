@@ -26,7 +26,8 @@ type imInterruptHandler struct {
 	// embedder computes message embeddings for relevance scoring.
 	// Set via SetEmbedder after the embedding model is loaded.
 	// May be nil or NoopEmbedder — relevance degrades to -1 (unavailable).
-	embedder embedding.Embedder
+	embedderMu sync.RWMutex
+	embedder   embedding.Embedder
 }
 
 func newIMInterruptHandler(h *IMMessageHandler) *imInterruptHandler {
@@ -36,23 +37,32 @@ func newIMInterruptHandler(h *IMMessageHandler) *imInterruptHandler {
 // SetEmbedder configures the embedder for semantic relevance computation.
 // Called from app.go / activateEmbedderAsync after the embedding model loads.
 func (ih *imInterruptHandler) SetEmbedder(emb embedding.Embedder) {
+	ih.embedderMu.Lock()
+	defer ih.embedderMu.Unlock()
 	ih.embedder = emb
+}
+
+func (ih *imInterruptHandler) currentEmbedder() embedding.Embedder {
+	ih.embedderMu.RLock()
+	defer ih.embedderMu.RUnlock()
+	return ih.embedder
 }
 
 // EmbedderForSubAgent returns the configured embedder for use by SubAgent
 // skill selection. Returns nil if no embedder is loaded.
 func (ih *imInterruptHandler) EmbedderForSubAgent() embedding.Embedder {
-	return ih.embedder
+	return ih.currentEmbedder()
 }
 
 // EmbedText computes the embedding vector for the given text.
 // Returns nil if no embedder is available or embedding fails.
 // Used by runAgentLoop to pre-compute taskEmbed for relevance scoring.
 func (ih *imInterruptHandler) EmbedText(text string) []float32 {
-	if ih.embedder == nil || embedding.IsNoop(ih.embedder) {
+	emb := ih.currentEmbedder()
+	if emb == nil || embedding.IsNoop(emb) {
 		return nil
 	}
-	vec, err := ih.embedder.Embed(text)
+	vec, err := emb.Embed(text)
 	if err != nil {
 		return nil
 	}
@@ -69,6 +79,20 @@ func (ih *imInterruptHandler) SetTracker(userID string, tracker *progress.AgentP
 // ClearTracker removes the milestone tracker for a user.
 func (ih *imInterruptHandler) ClearTracker(userID string) {
 	ih.milestoneTrackers.Delete(userID)
+}
+
+// ClearTrackerIfCurrent removes tracker only when it is still the tracker
+// published for this user. A cancelled loop may finish after its replacement
+// has started; unconditional cleanup would otherwise make the replacement
+// lose interruption relevance and fall back to broad domain matching.
+func (ih *imInterruptHandler) ClearTrackerIfCurrent(userID string, tracker *progress.AgentProgressTracker) {
+	if tracker == nil {
+		return
+	}
+	current, ok := ih.milestoneTrackers.Load(userID)
+	if ok && current == tracker {
+		ih.milestoneTrackers.CompareAndDelete(userID, current)
+	}
 }
 
 // TryInterrupt implements progress.InterruptHandler.
@@ -97,9 +121,21 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	var relevance float64 = -1
 	if tracker != nil {
 		taskEmbed := tracker.Buffer().TaskEmbed()
-		if taskEmbed != nil && ih.embedder != nil && !embedding.IsNoop(ih.embedder) {
-			if msgEmbed, err := ih.embedder.Embed(messageText); err == nil && len(msgEmbed) > 0 {
-				relevance = progress.CosineSimilarity(taskEmbed, msgEmbed)
+		emb := ih.currentEmbedder()
+		if emb != nil && !embedding.IsNoop(emb) {
+			// A task can start during embedding startup, before runAgentLoop had an
+			// embedder available. Recover on the first interruption and cache the
+			// result, instead of permanently using the broad domain-only fallback.
+			if len(taskEmbed) == 0 {
+				if vec, err := emb.Embed(tracker.Buffer().TaskDesc()); err == nil && len(vec) > 0 {
+					tracker.Buffer().SetTaskEmbed(vec)
+					taskEmbed = vec
+				}
+			}
+			if len(taskEmbed) > 0 {
+				if msgEmbed, err := emb.Embed(messageText); err == nil && len(msgEmbed) > 0 {
+					relevance = progress.CosineSimilarity(taskEmbed, msgEmbed)
+				}
 			}
 		}
 	}
@@ -265,6 +301,14 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			Structure:   structure,
 		})
 		ih.handler.accumulateInjection(userID, injection)
+		// A merged message must actively steer the in-flight operation. Without
+		// this, it can sit in pendingInjection until the current round completes;
+		// if that round is the final one, loop cleanup discards it after we have
+		// already told the user it was incorporated. RequestReplan cancels the
+		// current replannable operation so the next round drains the injection.
+		if ctx := ih.handler.getSessionLoopCtx(userID); ctx != nil && !ctx.IsCancelled() {
+			ctx.RequestReplan()
+		}
 		return progress.InterruptResult{
 			Handled: true,
 			Action:  progress.ActionMerge,

@@ -2412,7 +2412,7 @@ func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
 		"git diff",
 		"git diff --stat",
 		"git status --short",
-		"git status --short; git diff --stat",
+		"git status --short && git diff --stat",
 		"bash -lc \"git diff -- src/main.py\"",
 		"git rev-parse --is-inside-work-tree",
 	}
@@ -2432,6 +2432,37 @@ func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
 		if isRemoteDiffSelfCheckCommand(command) {
 			t.Fatalf("isRemoteDiffSelfCheckCommand(%q) = true, want false", command)
 		}
+	}
+}
+
+func TestRemoteDiffSelfCheckRequiresAuditableExitStatus(t *testing.T) {
+	for _, command := range []string{
+		"git status --short && git diff --stat",
+		"cd /repo && git status --short",
+	} {
+		if !isAuditableRemoteDiffSelfCheckCommand(command) {
+			t.Fatalf("transparent diff self-check must be auditable: %q", command)
+		}
+	}
+	for _, command := range []string{
+		`cd /repo && git status --short; echo "=== EXIT: $? ==="`,
+		"git diff --stat 2>&1",
+		"git status --short | cat",
+		"git status --short || git diff --stat",
+		"git status --short & git diff --stat",
+		"git status --short; git diff --stat",
+		"git log --oneline; git diff --stat",
+	} {
+		if isAuditableRemoteDiffSelfCheckCommand(command) {
+			t.Fatalf("failure-masking diff self-check must not be auditable: %q", command)
+		}
+	}
+
+	status, summary := summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: `cd /repo && git status --short; echo "=== EXIT: $? ==="`, Succeeded: true, Summary: "fatal: not a git repository\n=== EXIT: 128 ===\nEXIT: 0", seq: 2},
+	}, 1)
+	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "git diff/status") {
+		t.Fatalf("masked git self-check must not pass diff evidence, got (%q, %q)", status, summary)
 	}
 }
 
@@ -10491,6 +10522,23 @@ func TestSummarizeSubAgentVerificationRejectsSuppressedFailureCommands(t *testin
 		!strings.Contains(summary, "output redirection") ||
 		!strings.Contains(summary, "extra commands") {
 		t.Fatalf("suppressed verification commands should produce targeted missing summary, got (%q, %q)", status, summary)
+	}
+}
+
+func TestUnsafeVerificationExcludesGitSelfChecks(t *testing.T) {
+	for _, command := range []string{
+		"git status --short; git diff --stat",
+		`cd /repo && git status --short; echo "=== EXIT: $? ==="`,
+	} {
+		if isUnsafeSubAgentVerificationCommand(command) {
+			t.Fatalf("git self-check must not be classified as unsafe verification: %q", command)
+		}
+	}
+	if !isUnsafeSubAgentVerificationCommand("go test ./...; echo done") {
+		t.Fatal("actual test followed by another command must remain unsafe")
+	}
+	if !isUnsafeSubAgentVerificationCommand("git status --short; go test ./...; echo done") {
+		t.Fatal("a git self-check must not hide an unsafe verifier later in the command")
 	}
 }
 func TestSummarizeSubAgentVerificationCapsFailedCommands(t *testing.T) {

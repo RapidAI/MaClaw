@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
 type appEmbeddingTestEmbedder struct {
@@ -172,5 +174,136 @@ func TestFullActivationTreatsCachedButInactiveEmbedderAsNotReused(t *testing.T) 
 	}
 	if emb.closed.Load() {
 		t.Fatalf("cached embedder should not be closed")
+	}
+}
+
+func TestEmbeddingActivationWiresDesktopAndHubIMInterruptHandlers(t *testing.T) {
+	app := &App{}
+	desktopHandler := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	hubHandler := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	app.imHandler = desktopHandler
+	app.remoteSessions = &RemoteSessionManager{hubClient: &RemoteHubClient{imHandler: hubHandler}}
+	emb := &appEmbeddingTestEmbedder{}
+
+	app.wireEmbedderToIMHandlers(emb, true)
+
+	if desktopHandler.interruptHandler.currentEmbedder() != emb {
+		t.Fatal("desktop IM interrupt handler did not receive the active embedder")
+	}
+	if hubHandler.interruptHandler.currentEmbedder() != emb {
+		t.Fatal("Hub IM interrupt handler did not receive the active embedder")
+	}
+}
+
+func TestEmbeddingActivationWiresLocalGatewayInterruptHandlers(t *testing.T) {
+	app := &App{}
+	weixinHandler := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	telegramHandler := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	qqHandler := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	lansengerHandler := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	thirdPartyHandler := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	app.weixinGateway = &weixinGatewayManager{localHandler: weixinHandler}
+	app.telegramGateway = &telegramGatewayManager{localHandler: telegramHandler}
+	app.qqBotGateway = &qqBotGatewayManager{localHandler: qqHandler}
+	app.lansengerGateway = &lansengerGatewayManager{localHandler: lansengerHandler}
+	app.thirdPartyGateway = &thirdPartyGatewayManager{localHandler: thirdPartyHandler}
+	emb := &appEmbeddingTestEmbedder{}
+
+	app.wireEmbedderToIMHandlers(emb, false)
+
+	for name, handler := range map[string]*IMMessageHandler{
+		"weixin": weixinHandler, "telegram": telegramHandler, "qq": qqHandler,
+		"lansenger": lansengerHandler, "third-party": thirdPartyHandler,
+	} {
+		if handler.interruptHandler.currentEmbedder() != emb {
+			t.Fatalf("%s interrupt handler did not receive the active embedder", name)
+		}
+	}
+}
+
+func TestHubClientReusesExistingDesktopIMHandler(t *testing.T) {
+	app := &App{}
+	desktopHandler := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	app.imHandler = desktopHandler
+	hub := &RemoteHubClient{app: app}
+
+	if got := hub.ensureIMHandler(); got != desktopHandler {
+		t.Fatal("Hub client should reuse the existing desktop IM handler")
+	}
+	if app.imHandler != desktopHandler {
+		t.Fatal("Hub initialization must not replace the desktop IM handler")
+	}
+}
+
+func TestNewIMMessageHandlerDoesNotReplaceActiveAppHandler(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	active := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	app.imHandler = active
+
+	created := NewIMMessageHandler(app, nil)
+	if created == active {
+		t.Fatal("test requires a distinct temporary handler")
+	}
+	if app.imHandler != active {
+		t.Fatal("temporary handler construction must not replace an active app handler")
+	}
+}
+
+func TestResetLocalGatewayHandlerKeepsSharedConversationMemoryUsable(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	shared := app.ensureConversationMemory()
+	manager := &weixinGatewayManager{app: app, localHandler: &IMMessageHandler{memory: shared}}
+
+	manager.resetLocalHandler()
+	if manager.currentLocalHandler() != nil {
+		t.Fatal("local handler should be detached on reset")
+	}
+	if got := app.ensureConversationMemory(); got != shared {
+		t.Fatal("gateway reset must retain the shared app conversation memory")
+	}
+}
+
+func TestConcurrentHandlerDependenciesShareSingleAppInstances(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	const workers = 16
+	memories := make(chan *agent.ConversationMemory, workers)
+	confirmations := make(chan *aiConfirmationStore, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			memories <- app.ensureConversationMemory()
+			confirmations <- app.ensureAIConfirmationStore()
+		}()
+	}
+	wg.Wait()
+	close(memories)
+	close(confirmations)
+	for memory := range memories {
+		if memory != app.aiConversationMemory {
+			t.Fatal("concurrent initialization created more than one conversation memory")
+		}
+	}
+	for confirmation := range confirmations {
+		if confirmation != app.aiConfirmationStore {
+			t.Fatal("concurrent initialization created more than one confirmation store")
+		}
+	}
+}
+
+func TestInterruptRecoversTaskEmbeddingLoadedAfterTaskStart(t *testing.T) {
+	const userID = "im:embedding-recovery"
+	handler := &IMMessageHandler{}
+	handler.setSessionLoopCtx(userID, NewLoopContext("active-task", 3, nil))
+	interrupt := newIMInterruptHandler(handler)
+	tracker := progress.NewAgentProgressTracker(nil, "检查现有项目的测试覆盖率", "unknown", nil)
+	defer tracker.Stop()
+	interrupt.SetTracker(userID, tracker)
+	interrupt.SetEmbedder(&appEmbeddingTestEmbedder{})
+
+	_ = interrupt.TryInterrupt(userID, "补充：也检查失败用例")
+	if got := tracker.Buffer().TaskEmbed(); len(got) == 0 {
+		t.Fatal("interrupt should cache the task embedding when it becomes available after task start")
 	}
 }

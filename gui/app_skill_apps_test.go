@@ -1380,7 +1380,7 @@ func TestWithSkillAppInputFileAliasesSynthesizesOutputPath(t *testing.T) {
 			"staged_path": "/tmp/maclaw/report.pdf",
 		},
 	})
-	want := filepath.Join("/tmp/maclaw", "report.docx")
+	want := filepath.Join("/tmp/maclaw", "report_output.docx")
 	if got["output"] != want {
 		t.Fatalf("output = %#v, want %q (synthesized from input + output_mode)", got["output"], want)
 	}
@@ -1401,7 +1401,7 @@ func TestWithSkillAppInputFileAliasesSynthesizesPersistentOutputForStagedInput(t
 		},
 	})
 
-	want := filepath.Join(baseDir, "data", "app-outputs", "input-123", "report.txt")
+	want := filepath.Join(baseDir, "data", "app-outputs", "input-123", "report_output.txt")
 	if got["output"] != want {
 		t.Fatalf("output = %#v, want persistent path %q", got["output"], want)
 	}
@@ -1425,7 +1425,7 @@ func TestWithSkillAppInputFileAliasesSynthesizesPersistentPDFOutputForStagedPDF(
 		},
 	})
 
-	want := filepath.Join(baseDir, "data", "app-outputs", "input-456", "paper.pdf")
+	want := filepath.Join(baseDir, "data", "app-outputs", "input-456", "paper_output.pdf")
 	if got["output"] != want {
 		t.Fatalf("output = %#v, want persistent PDF path %q", got["output"], want)
 	}
@@ -1465,10 +1465,10 @@ func TestSynthesizeSkillAppOutputPathVariousFormats(t *testing.T) {
 		format     string
 		wantSuffix string
 	}{
-		{"/tmp/demo.pdf", "docx", "demo.docx"},
-		{"/tmp/demo.pdf", "txt", "demo.txt"},
-		{"/tmp/demo.xlsx", "json", "demo.json"},
-		{"/tmp/a b c.PDF", "docx", "a b c.docx"},
+		{"/tmp/demo.pdf", "docx", "demo_output.docx"},
+		{"/tmp/demo.pdf", "txt", "demo_output.txt"},
+		{"/tmp/demo.xlsx", "json", "demo_output.json"},
+		{"/tmp/a b c.PDF", "docx", "a b c_output.docx"},
 		{"", "docx", ""},
 		{"/tmp/demo.pdf", "", ""},
 	}

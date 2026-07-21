@@ -169,6 +169,7 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 			NodeID:        id,
 			NodeName:      strings.TrimSpace(peer.NodeName),
 			BaseURL:       strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/"),
+			PublicURL:     strings.TrimRight(strings.TrimSpace(peer.PublicURL), "/"),
 			PublicKeyPEM:  strings.TrimSpace(peer.PublicKeyPEM),
 			ServiceStatus: "unknown",
 			ClusterStatus: "unknown",
@@ -200,6 +201,51 @@ func (s *Service) SetPublicURL(publicURL string) {
 		return
 	}
 	s.publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
+}
+
+// PublicURL returns the node-local client-facing URL configured for HA.
+func (s *Service) PublicURL() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.publicURL
+}
+
+// OwnsPublicOrigin reports whether originURL belongs to this node.  The value
+// is deliberately sourced from this process's HA configuration, not from a
+// HA-replicated system setting: attachment files are never replicated.
+func (s *Service) OwnsPublicOrigin(originURL string) bool {
+	if s == nil {
+		return false
+	}
+	originURL = strings.TrimRight(strings.TrimSpace(originURL), "/")
+	publicURL := strings.TrimRight(strings.TrimSpace(s.PublicURL()), "/")
+	return originURL != "" && publicURL != "" && strings.EqualFold(originURL, publicURL)
+}
+
+// InternalURLForPublicOrigin resolves a report's client-facing origin URL to
+// the peer's HA transport URL.  Administrative peer calls must not depend on
+// the public reverse proxy: that proxy may be unhealthy while the HA service
+// itself remains reachable on its advertised address.
+func (s *Service) InternalURLForPublicOrigin(originURL string) string {
+	if s == nil {
+		return ""
+	}
+	originURL = strings.TrimRight(strings.TrimSpace(originURL), "/")
+	if originURL == "" {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, peer := range s.peers {
+		if peer == nil || !strings.EqualFold(strings.TrimRight(peer.PublicURL, "/"), originURL) {
+			continue
+		}
+		return strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/")
+	}
+	return ""
 }
 
 // clientFacingURL returns the URL that should be exposed to external clients.

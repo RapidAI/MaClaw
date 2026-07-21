@@ -1771,6 +1771,177 @@ func TestAdminCapabilityMaclawAppReviewRejectsWithIssues(t *testing.T) {
 	}
 }
 
+func TestAdminCapabilityMaclawAppReviewRejectsUnsupportedDecision(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType:    corelib.CapabilityTypeSkill,
+		Publisher:         "author@example.com",
+		CapabilityID:      "invalid-review-decision-app",
+		GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:invalid-review-decision-app",
+		DisplayName:       "Invalid Review Decision App",
+		Source:            corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:         "maclaw_app_upload",
+		Status:            "pending_review",
+		MetadataJSON:      jsonObjectString(map[string]any{"is_maclaw_app": true, "product_kind": "maclaw_app_skill", "maclaw_app_id": "invalid-review-decision-app", "review_state": "pending_review"}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:invalid-review-decision-app@abc",
+		ManifestJSON:      jsonObjectString(map[string]any{"schema": "maclaw.app.v1"}),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "pending_review",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed maclaw app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/"+seeded.ID+"/review", nil)
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppReviewHandler(svc, "archive")(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("review status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "INVALID_REVIEW_DECISION" {
+		t.Fatalf("response=%+v", resp)
+	}
+	item, err := svc.Get(ctx, seeded.ID)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	if item.Status != "pending_review" {
+		t.Fatalf("status changed after unsupported decision: %q", item.Status)
+	}
+}
+
+func TestAdminCapabilityMaclawAppReviewRejectsMalformedJSON(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/app/approve", bytes.NewBufferString(`{"reviewer":`))
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", "app")
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppReviewHandler(svc, "approve")(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("review status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "INVALID_JSON" {
+		t.Fatalf("response=%+v", resp)
+	}
+}
+
+func TestAdminCapabilityMaclawAppReviewRejectClearsStaleApprovalMetadata(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType:    corelib.CapabilityTypeSkill,
+		Publisher:         "author@example.com",
+		CapabilityID:      "review-metadata-reset-app",
+		GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:review-metadata-reset-app",
+		DisplayName:       "Review Metadata Reset App",
+		Source:            corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:         "maclaw_app_upload",
+		Status:            "review_failed",
+		MetadataJSON:      jsonObjectString(map[string]any{"is_maclaw_app": true, "product_kind": "maclaw_app_skill", "maclaw_app_id": "review-metadata-reset-app", "review_state": "approved", "approved_at": "2026-01-01T00:00:00Z", "approved_scopes": []string{"app.run"}}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:review-metadata-reset-app@abc",
+		ManifestJSON:      jsonObjectString(map[string]any{"schema": "maclaw.app.v1"}),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "review_failed",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed maclaw app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/"+seeded.ID+"/reject", bytes.NewBufferString(`{"reason":"package must be revised before approval"}`))
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppReviewHandler(svc, "reject")(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reject status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	item, err := svc.Get(ctx, seeded.ID)
+	if err != nil {
+		t.Fatalf("get rejected app: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(item.MetadataJSON), &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if _, ok := metadata["approved_at"]; ok {
+		t.Fatalf("rejected metadata retained approved_at: %+v", metadata)
+	}
+	if _, ok := metadata["approved_scopes"]; ok {
+		t.Fatalf("rejected metadata retained approved_scopes: %+v", metadata)
+	}
+	if metadata["review_state"] != "review_failed" || metadata["review_reason"] == "" {
+		t.Fatalf("rejection metadata=%+v", metadata)
+	}
+}
+
+func TestAdminCapabilityMaclawAppReviewRejectRequiresUsableIssue(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	seeded, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		CapabilityType:    corelib.CapabilityTypeSkill,
+		Publisher:         "author@example.com",
+		CapabilityID:      "blank-review-issue-app",
+		GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":maclaw-app:blank-review-issue-app",
+		DisplayName:       "Blank Review Issue App",
+		Source:            corelib.CapabilitySourceEnterpriseHub,
+		ManagedBy:         "maclaw_app_upload",
+		Status:            "pending_review",
+		MetadataJSON:      jsonObjectString(map[string]any{"is_maclaw_app": true, "product_kind": "maclaw_app_skill", "maclaw_app_id": "blank-review-issue-app", "review_state": "pending_review"}),
+		Version:           "1",
+		VersionKey:        "enterprise_hub:skill:maclaw-app:blank-review-issue-app@abc",
+		ManifestJSON:      jsonObjectString(map[string]any{"schema": "maclaw.app.v1"}),
+		TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw.app.pack.v1"}),
+		CompatibilityJSON: jsonObjectString(map[string]any{"requires_maclaw_app_runtime": true}),
+		VersionStatus:     "pending_review",
+		SetCurrentVersion: true,
+	})
+	if err != nil {
+		t.Fatalf("seed maclaw app: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/maclaw-apps/"+seeded.ID+"/reject", bytes.NewBufferString(`{"review_issues":[{"path":"app.governance"}]}`))
+	req.Header.Set("X-Tenant-ID", "tenant_a")
+	req.SetPathValue("id", seeded.ID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityMaclawAppReviewHandler(svc, "reject")(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("reject status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "REJECTION_REASON_REQUIRED" {
+		t.Fatalf("response=%+v", resp)
+	}
+}
+
 func TestCapabilitySkillSubmitUpsertsSameSkillAcrossUploaders(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
@@ -2532,9 +2703,9 @@ func TestResolveSkillPackagePathRejectsTraversalPackageFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := &capability.CapabilitySummary{
-		ID:             "cap-1",
-		CapabilityID:   "safe-skill",
-		MetadataJSON:   `{"package_file":"../secret.zip"}`,
+		ID:           "cap-1",
+		CapabilityID: "safe-skill",
+		MetadataJSON: `{"package_file":"../secret.zip"}`,
 	}
 	if path, err := resolveSkillPackagePath(item, dataDir, tenantID); err == nil {
 		t.Fatalf("expected traversal package_file to be rejected, got path=%s", path)

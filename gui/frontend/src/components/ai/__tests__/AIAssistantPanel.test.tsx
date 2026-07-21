@@ -2236,6 +2236,50 @@ describe('AIAssistantPanel property tests', () => {
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
+    it('sends an IM remote prompt exactly once after SSH reconnect succeeds', async () => {
+        window.localStorage.clear();
+        const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
+        saveRemoteSSHPassword('10.0.0.17', 'deploy', 'remembered-secret', 22, '/srv/app');
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => rearmed
+            ? { kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, remote_host: '10.0.0.17', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '' }
+            : { kind: 'remote', armed: false, needs_reconnect: true, turn_count: 0, remote_host: '10.0.0.17', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '' });
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/im-remote-autostart',
+                taskTitle: 'IM remote task',
+                initialMessage: 'Deploy the release candidate',
+                autoSend: true,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.17',
+                remoteNeedsReconnect: true,
+                imPlatform: 'lansenger',
+                imTargetUID: 'user-17',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+            'Deploy the release candidate',
+            expect.objectContaining({
+                project_path: 'D:/tasks/im-remote-autostart',
+                im_platform: 'lansenger',
+                im_target_uid: 'user-17',
+            }),
+        ));
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+        // Test cleanup normally resets this mock after the test; reset here as
+        // this test changes its implementation for the following reconnect case.
+        prepareRemoteCodingEnvironmentMock.mockReset();
+        prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+    });
+
     it('does not auto-reconnect while the user is typing a password (vault empty)', async () => {
         window.localStorage.clear();
         createProjectTabSessionMock.mockResolvedValueOnce(undefined);

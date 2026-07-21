@@ -110,6 +110,11 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 	// Wire to UIC immediately (creates UIC if not yet created via classifierOnce).
 	a.initEarlyClassifier()
 	a.unifiedClassifier.SetEmbedder(emb)
+	// The interrupt path needs the same runtime even before the broader async
+	// vector-search wiring completes. Otherwise a task submitted during startup
+	// can permanently capture a nil task embedding and fall back to broad intent
+	// matching when a second IM message arrives.
+	a.wireEmbedderToIMHandlers(emb, true)
 
 	// Mark intent embedding as active so activateEmbedderAsync doesn't double-load.
 	a.intentEmbeddingActive.Store(true)
@@ -231,7 +236,7 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 			a.toolRouter.SetEmbedder(noop)
 		}
 		if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
-			if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.toolBuilder != nil {
+			if handler := a.remoteSessions.hubClient.currentIMHandler(); handler != nil && handler.toolBuilder != nil {
 				handler.toolBuilder.SetEmbedder(noop)
 			}
 		}
@@ -638,17 +643,10 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	}
 	log.Println("[embedding] UnifiedIntentClassifier upgraded: L2 embedding + L3 LLM now available")
 
-	// Wire embedder into tool builder.
-	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
-		if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.toolBuilder != nil {
-			handler.toolBuilder.SetEmbedder(emb)
-		}
-		// Wire embedder into interrupt handler for semantic relevance scoring.
-		if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.interruptHandler != nil {
-			handler.interruptHandler.SetEmbedder(emb)
-			log.Println("[embedding] interrupt handler embedder wired")
-		}
-	}
+	// Wire the shared runtime to every current IM handler. The desktop handler
+	// and Hub handler are created on different startup paths, so wiring only one
+	// of them leaves active conversations silently without relevance scoring.
+	a.wireEmbedderToIMHandlers(emb, true)
 
 	// Pre-warm tool embedding cache by running a dummy route. This triggers
 	// FuseScores 鈫?GetBatch which synchronously computes and caches embeddings
@@ -657,7 +655,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	if a.imHandler != nil {
 		handler = a.imHandler
 	} else if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
-		handler = a.remoteSessions.hubClient.imHandler
+		handler = a.remoteSessions.hubClient.currentIMHandler()
 	}
 	if handler != nil {
 		handler.WarmupTools()
@@ -722,6 +720,10 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 	a.initEarlyClassifier()
 	a.unifiedClassifier.SetEmbedder(emb)
 	a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
+	// Intent-only activation is also useful for interruption relevance. It is
+	// deliberately available when vector search is off, so this must not wait for
+	// activateEmbedderAsync (which correctly exits in that configuration).
+	a.wireEmbedderToIMHandlers(emb, false)
 	if a.toolRouter != nil {
 		a.toolRouter.SetUnifiedClassifier(a.unifiedClassifier)
 	}
@@ -785,6 +787,65 @@ func sameEmbedder(left, right embedding.Embedder) (same bool) {
 		}
 	}()
 	return left == right
+}
+
+// activeInterruptEmbedder returns the single local embedding runtime shared by
+// intent and vector-search features. It is intentionally separate from the
+// vector-search enabled flag: interruption relevance remains valuable even
+// when users turn off memory/tool vector retrieval.
+func (a *App) activeInterruptEmbedder() embedding.Embedder {
+	if a == nil {
+		return nil
+	}
+	a.embeddingMu.Lock()
+	defer a.embeddingMu.Unlock()
+	if a.intentEmbedder == nil || embedding.IsNoop(a.intentEmbedder) {
+		return nil
+	}
+	return a.intentEmbedder
+}
+
+// wireEmbedderToIMHandlers keeps every IM entry point on the same semantic
+// relevance runtime. Tool routing only receives this runtime when vector search
+// is enabled; interruption relevance stays available independently.
+func (a *App) wireEmbedderToIMHandlers(emb embedding.Embedder, wireTools bool) {
+	if a == nil || emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+	wire := func(handler *IMMessageHandler) {
+		if handler == nil {
+			return
+		}
+		if wireTools && handler.toolBuilder != nil {
+			handler.toolBuilder.SetEmbedder(emb)
+		}
+		if handler.interruptHandler != nil {
+			handler.interruptHandler.SetEmbedder(emb)
+		}
+	}
+	wire(a.imHandler)
+	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
+		wire(a.remoteSessions.hubClient.currentIMHandler())
+	}
+	// Local gateway handlers own their own per-user loop locks and must receive
+	// the same relevance runtime. Without this, only desktop/Hub messages get
+	// embeddings while WeChat/Telegram/QQ/etc. silently fall back to broad
+	// domain matching.
+	if a.weixinGateway != nil {
+		wire(a.weixinGateway.currentLocalHandler())
+	}
+	if a.telegramGateway != nil {
+		wire(a.telegramGateway.currentLocalHandler())
+	}
+	if a.qqBotGateway != nil {
+		wire(a.qqBotGateway.currentLocalHandler())
+	}
+	if a.lansengerGateway != nil {
+		wire(a.lansengerGateway.currentLocalHandler())
+	}
+	if a.thirdPartyGateway != nil {
+		wire(a.thirdPartyGateway.currentLocalHandler())
+	}
 }
 
 // buildIntentLLMFunc creates a LLMClassifyFunc callback that uses the app's

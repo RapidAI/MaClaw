@@ -5,12 +5,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"image"
+	_ "image/jpeg"
+	"image/png"
 	"io"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,6 +32,9 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	_ "golang.org/x/image/bmp"
+	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
@@ -65,6 +73,16 @@ type App struct {
 	// fsnotify watcher uses this to suppress redundant config-updated events
 	// triggered by our own writes (debounce window: 500ms).
 	configLastInternalWrite atomic.Int64
+	// pendingBugReportUpload keeps the most recent locally-created diagnostics
+	// archive available after an upload failure. It is deliberately kept outside
+	// config: the archive contains sensitive diagnostics and should not become a
+	// permanent application setting.
+	pendingBugReportUploadMu sync.Mutex
+	pendingBugReportUpload   *pendingBugReportUpload
+	// bugReportUploadMu serializes archive creation and retry uploads. Without
+	// this, a second submission could remove the first pending archive while a
+	// retry is still streaming it to HubCenter.
+	bugReportUploadMu sync.Mutex
 
 	// Managers to reduce struct complexity
 	managers                           *AppManagers
@@ -160,7 +178,9 @@ type App struct {
 	imHandler                         *IMMessageHandler
 	ioRelay                           *SessionIORelay
 	aiConversationMemory              *agent.ConversationMemory
+	conversationMemoryMu              sync.Mutex
 	aiConfirmationStore               *aiConfirmationStore
+	confirmationStoreMu               sync.Mutex
 	swarmOrchestrator                 *swarm.SwarmOrchestrator
 	swarmInitOnce                     sync.Once // per-App; package-level Once would skip init for later test Apps
 	memoryCompressor                  *MemoryCompressor
@@ -211,6 +231,8 @@ type App struct {
 	telegramGateway                   *telegramGatewayManager
 	weixinGateway                     *weixinGatewayManager
 	lansengerGateway                  *lansengerGatewayManager
+	localStartMenu                    *localStartMenuService
+	localStartMenuMu                  sync.Mutex
 	lansengerWatch                    *lansengerWatchService
 	lansengerWatchOnce                sync.Once
 	thirdPartyGateway                 *thirdPartyGatewayManager
@@ -310,6 +332,16 @@ type App struct {
 
 	// Notification cache: in-memory LRU cache of up to 10 unread notifications.
 	notifCache *notificationCache
+}
+
+type pendingBugReportUpload struct {
+	zipPath       string
+	includedFiles int
+}
+
+type pendingBugReportUploadMetadata struct {
+	ZipPath       string `json:"zip_path"`
+	IncludedFiles int    `json:"included_files"`
 }
 
 func (a *App) ensureExperienceLifecycleSink() lifecycle.EventSink {
@@ -602,7 +634,7 @@ func (a *App) scheduleWarmFrozenMemorySnapshot() {
 	}
 	handler := a.imHandler
 	if handler == nil && a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
-		handler = a.remoteSessions.hubClient.imHandler
+		handler = a.remoteSessions.hubClient.currentIMHandler()
 	}
 	if handler == nil {
 		return
@@ -1505,6 +1537,13 @@ func (a *App) ensureStartupFeedback() {
 }
 
 func (a *App) ensureConversationMemory() *agent.ConversationMemory {
+	// Do not hold the memory lock while bootstrapping remote infrastructure:
+	// that bootstrap can construct handlers which also need this shared memory.
+	if strings.TrimSpace(a.testHomeDir) == "" {
+		a.ensureRemoteInfra()
+	}
+	a.conversationMemoryMu.Lock()
+	defer a.conversationMemoryMu.Unlock()
 	if a.aiConversationMemory != nil {
 		return a.aiConversationMemory
 	}
@@ -1519,22 +1558,42 @@ func (a *App) ensureConversationMemory() *agent.ConversationMemory {
 		}
 		return a.aiConversationMemory
 	}
-	a.ensureRemoteInfra()
-	if a.aiConversationMemory == nil {
-		storePath := filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json")
-		log.Printf("[paths] ai_conversation_memory mode=persistent path=%q", storePath)
-		a.aiConversationMemory = agent.NewPersistentConversationMemory(storePath)
+	storePath := filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json")
+	log.Printf("[paths] ai_conversation_memory mode=persistent path=%q", storePath)
+	a.aiConversationMemory = agent.NewPersistentConversationMemory(storePath)
+	return a.aiConversationMemory
+}
+
+// currentConversationMemory returns the currently published shared memory
+// without creating one. UI/read-only paths use it so a data-directory reset
+// cannot race with an unsynchronised pointer read.
+func (a *App) currentConversationMemory() *agent.ConversationMemory {
+	if a == nil {
+		return nil
 	}
+	a.conversationMemoryMu.Lock()
+	defer a.conversationMemoryMu.Unlock()
 	return a.aiConversationMemory
 }
 
 func (a *App) ensureAIConfirmationStore() *aiConfirmationStore {
 	a.ensureRemoteInfra()
+	a.confirmationStoreMu.Lock()
+	defer a.confirmationStoreMu.Unlock()
 	if a.aiConfirmationStore == nil {
 		storePath := filepath.Join(a.GetDataDir(), "ai_assistant_confirmation.json")
 		log.Printf("[paths] ai_confirmation_store path=%q", storePath)
 		a.aiConfirmationStore = newAIConfirmationStore(storePath)
 	}
+	return a.aiConfirmationStore
+}
+
+func (a *App) currentAIConfirmationStore() *aiConfirmationStore {
+	if a == nil {
+		return nil
+	}
+	a.confirmationStoreMu.Lock()
+	defer a.confirmationStoreMu.Unlock()
 	return a.aiConfirmationStore
 }
 
@@ -1589,11 +1648,8 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		if a.memoryStore != nil {
 			handler.SetMemoryStore(a.memoryStore)
 		}
-		if a.aiConfirmationStore == nil {
-			a.ensureAIConfirmationStore()
-		}
-		if a.aiConfirmationStore != nil {
-			handler.SetConfirmationStore(a.aiConfirmationStore)
+		if store := a.ensureAIConfirmationStore(); store != nil {
+			handler.SetConfirmationStore(store)
 		}
 		a.ensureAITrace()
 		if a.aiTrace != nil {
@@ -1657,6 +1713,14 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		registerKnowledgeTools(handler.registry, a)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
+		// A rebuilt builder starts without its hybrid retriever. Restore it only
+		// when full vector search is active; intent-only embedding must remain
+		// limited to routing and interruption relevance.
+		if a.embeddingActivated.Load() {
+			if emb := a.activeInterruptEmbedder(); emb != nil {
+				handler.toolBuilder.SetEmbedder(emb)
+			}
+		}
 		// Re-sync the router's registry snapshot so late-registered tools
 		// (computer_*, group discussion, knowledge) get Priority/Tags scoring.
 		handler.SetToolRouter(a.toolRouter)
@@ -1664,18 +1728,12 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		if a.skillExecutor != nil {
 			handler.toolBuilder.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
 		}
-		// Reuse the already-loaded embedder if vector search is active.
-		// Do not load a second Gemma model here -that duplicates mmap-backed
-		// state and causes a large idle memory jump right after Hub connect.
-		if a.memoryStore != nil {
-			emb := a.memoryStore.Embedder()
-			if emb != nil && !embedding.IsNoop(emb) {
-				handler.toolBuilder.SetEmbedder(emb)
-				// Wire embedder into interrupt handler for semantic relevance.
-				if handler.interruptHandler != nil {
-					handler.interruptHandler.SetEmbedder(emb)
-				}
-			}
+		// Keep interruption relevance on the intent runtime even when the user
+		// has disabled vector search. Tool vector retrieval was restored above
+		// only when full activation is active, so do not infer that policy from
+		// memoryStore's embedder here.
+		if emb := a.activeInterruptEmbedder(); emb != nil && handler.interruptHandler != nil {
+			handler.interruptHandler.SetEmbedder(emb)
 		}
 		// Wire the statusC into the chat loop's LoopContext so it can drain
 		// background events. This is done lazily: the chat LoopContext gets
@@ -1853,11 +1911,8 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		if a.memoryStore != nil {
 			handler.SetMemoryStore(a.memoryStore)
 		}
-		if a.aiConfirmationStore == nil {
-			a.ensureAIConfirmationStore()
-		}
-		if a.aiConfirmationStore != nil {
-			handler.SetConfirmationStore(a.aiConfirmationStore)
+		if store := a.ensureAIConfirmationStore(); store != nil {
+			handler.SetConfirmationStore(store)
 		}
 		a.ensureAITrace()
 		if a.aiTrace != nil {
@@ -1928,15 +1983,10 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		if a.skillExecutor != nil {
 			handler.toolBuilder.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
 		}
-		// Reuse the already-loaded embedder if vector search is active.
-		if a.memoryStore != nil {
-			emb := a.memoryStore.Embedder()
-			if emb != nil && !embedding.IsNoop(emb) {
-				handler.toolBuilder.SetEmbedder(emb)
-				if handler.interruptHandler != nil {
-					handler.interruptHandler.SetEmbedder(emb)
-				}
-			}
+		// Interruption relevance is useful with intent-only embedding as well;
+		// tool vector retrieval is restored above only for full activation.
+		if emb := a.activeInterruptEmbedder(); emb != nil && handler.interruptHandler != nil {
+			handler.interruptHandler.SetEmbedder(emb)
 		}
 
 		sm := NewSessionMonitor(a.remoteSessions, statusC, 20*time.Second)
@@ -2260,17 +2310,21 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.localMCPManager != nil {
 		a.localMCPManager.StopAll()
 	}
-	if a.aiConversationMemory != nil {
+	a.conversationMemoryMu.Lock()
+	conversationMemory := a.aiConversationMemory
+	a.aiConversationMemory = nil
+	a.conversationMemoryMu.Unlock()
+	if conversationMemory != nil {
 		// Force-flush dirty state to disk BEFORE stopping the persist loop.
 		// When the process is killed by an updater (no graceful shutdown),
 		// the OS-level signal handler may still reach this code path via
 		// Wails OnShutdown. Without an explicit flush, the 150ms debounce
 		// timer in persistLoop may not have fired yet, losing the latest
 		// conversation history and unfinished task slots.
-		if err := a.aiConversationMemory.FlushNow(); err != nil {
+		if err := conversationMemory.FlushNow(); err != nil {
 			log.Printf("[shutdown] conversation memory flush failed: %v", err)
 		}
-		a.aiConversationMemory.Stop()
+		conversationMemory.Stop()
 	}
 	// Pure-coding sticky (.coding_workbench.json): step-status updates use a
 	// debounced disk write; flush all pending + in-memory sessions now.
@@ -2280,8 +2334,12 @@ func (a *App) shutdown(ctx context.Context) {
 	} else {
 		flushAllStickyCodingDebouncedPersist()
 	}
-	if a.aiConfirmationStore != nil {
-		a.aiConfirmationStore.stop()
+	a.confirmationStoreMu.Lock()
+	confirmationStore := a.aiConfirmationStore
+	a.aiConfirmationStore = nil
+	a.confirmationStoreMu.Unlock()
+	if confirmationStore != nil {
+		confirmationStore.stop()
 	}
 	if a.memoryMaintenance != nil {
 		a.memoryMaintenance.Stop()
@@ -5384,16 +5442,22 @@ func (a *App) applyDataDirFromConfig(config corelib.AppConfig) {
 }
 
 func (a *App) resetPathBoundStateForDataDirChange() {
-	if a.aiConversationMemory != nil {
-		if err := a.aiConversationMemory.FlushNow(); err != nil {
+	a.conversationMemoryMu.Lock()
+	conversationMemory := a.aiConversationMemory
+	a.aiConversationMemory = nil
+	a.conversationMemoryMu.Unlock()
+	if conversationMemory != nil {
+		if err := conversationMemory.FlushNow(); err != nil {
 			log.Printf("[config] data_dir_change: conversation memory flush failed: %v", err)
 		}
-		a.aiConversationMemory.Stop()
-		a.aiConversationMemory = nil
+		conversationMemory.Stop()
 	}
-	if a.aiConfirmationStore != nil {
-		a.aiConfirmationStore.stop()
-		a.aiConfirmationStore = nil
+	a.confirmationStoreMu.Lock()
+	confirmationStore := a.aiConfirmationStore
+	a.aiConfirmationStore = nil
+	a.confirmationStoreMu.Unlock()
+	if confirmationStore != nil {
+		confirmationStore.stop()
 	}
 	if a.auditLog != nil {
 		_ = a.auditLog.Close()
@@ -7258,6 +7322,27 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LLMTrajectoryLogging = v
+		case "bug_report_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.BugReportEnabled = v
+		case "bug_report_previous_trajectory":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.BugReportPreviousTrajectory = v
+		case "bug_report_previous_log_detail":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.BugReportPreviousLogDetail = v
 		case "log_detail_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7780,6 +7865,18 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				fa.UpdateSoundConfig(cfg)
 			}
 		}(cfg)
+	}
+	// Reduced-motion / quiet hot-update without full window recreate (K19).
+	if !floatingChanged && petChanged {
+		go func(oldC, newC corelib.AppConfig) {
+			if fa := a.existingFloatingAssistant(); fa != nil {
+				if oldC.PetQuietMode != newC.PetQuietMode ||
+					oldC.PetReducedMotion != newC.PetReducedMotion ||
+					isPetMotionEnabled(oldC) != isPetMotionEnabled(newC) {
+					fa.UpdateMotionConfig(newC)
+				}
+			}
+		}(current, cfg)
 	}
 	if proxyChanged {
 		a.applyAgentProxy()
@@ -9297,6 +9394,603 @@ func (a *App) PackLog(logContent string) (string, error) {
 	}
 	return zipPath, nil
 }
+
+// SetBugReportEnabled starts or stops a bounded diagnostic collection session.
+// Starting clears only logs and trajectories, then forces diagnostic settings.
+// Stopping restores the values saved at the beginning of the session.
+func (a *App) SetBugReportEnabled(enabled bool) (corelib.AppConfig, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.AppConfig{}, err
+	}
+	if cfg.BugReportEnabled == enabled {
+		return cfg, nil
+	}
+	if enabled {
+		a.clearBugReportDiagnostics()
+		return a.PatchConfigFields(map[string]interface{}{
+			"bug_report_enabled":             true,
+			"bug_report_previous_trajectory": cfg.LLMTrajectoryLogging,
+			"bug_report_previous_log_detail": cfg.LogDetailEnabled,
+			"llm_trajectory_logging":         true,
+			"log_detail_enabled":             true,
+		})
+	} else {
+		return a.PatchConfigFields(map[string]interface{}{
+			"bug_report_enabled":     false,
+			"llm_trajectory_logging": cfg.BugReportPreviousTrajectory,
+			"log_detail_enabled":     cfg.BugReportPreviousLogDetail,
+		})
+	}
+}
+
+// clearBugReportDiagnostics empties, but does not remove, the diagnostic
+// directories. Keeping their roots prevents logger reinitialization races;
+// open files on Windows are truncated when removal is unavailable.
+func (a *App) clearBugReportDiagnostics() {
+	for _, name := range []string{"logs", "trajectories"} {
+		dir := filepath.Join(a.getMaclawBaseDir(), name)
+		if info, err := os.Lstat(dir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			// Diagnostic roots must remain inside ~/.maclaw. Never follow a
+			// user-created link here: successful report cleanup must not erase an
+			// arbitrary external directory.
+			log.Printf("[bug-report] skipping symbolic-link diagnostic root %s", dir)
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			log.Printf("[bug-report] cannot create %s directory %s: %v", name, dir, err)
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			log.Printf("[bug-report] cannot read %s directory %s: %v", name, dir, err)
+			continue
+		}
+		for _, entry := range entries {
+			path := filepath.Join(dir, entry.Name())
+			if err := os.RemoveAll(path); err != nil {
+				// Windows does not allow deleting an open diagnostic file. Clear its
+				// contents instead; an inaccessible file must not block future logs.
+				if !entry.IsDir() {
+					if truncateErr := truncateBugReportDiagnosticFile(path); truncateErr == nil {
+						continue
+					}
+				}
+				log.Printf("[bug-report] keeping inaccessible %s entry %s: %v", name, path, err)
+			}
+		}
+	}
+}
+
+// truncateBugReportDiagnosticFile clears a file without replacing its path.
+// Keeping the path is important for loggers that already hold the file open.
+func truncateBugReportDiagnosticFile(path string) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+
+func (a *App) SelectBugReportScreenshots() []string {
+	files, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:   "Select AI assistant screenshots",
+		Filters: []runtime.FileFilter{{DisplayName: "Images (*.png;*.jpg;*.jpeg;*.webp;*.bmp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp;*.bmp"}},
+	})
+	if err != nil {
+		return []string{}
+	}
+	if files == nil {
+		return []string{}
+	}
+	return normalizeBugReportScreenshotPaths(files)
+}
+
+const maxBugReportScreenshots = 12
+
+func normalizeBugReportScreenshotPaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	selected := make([]string, 0, min(len(paths), maxBugReportScreenshots))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		cleanPath := filepath.Clean(path)
+		key := cleanPath
+		if goruntime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		selected = append(selected, cleanPath)
+		if len(selected) == maxBugReportScreenshots {
+			break
+		}
+	}
+	return selected
+}
+
+// BugReportScreenshotPreviewDataURL creates a compact, browser-safe thumbnail
+// for a user-selected diagnostic screenshot.  The frontend receives only image
+// data, never a local file URL/path, and therefore cannot accidentally expose it.
+func (a *App) BugReportScreenshotPreviewDataURL(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("screenshot path is required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() || info.Size() > 10*1024*1024 {
+		return "", fmt.Errorf("screenshot must be an image file no larger than 10 MB")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	config, _, err := image.DecodeConfig(file)
+	if err != nil {
+		return "", fmt.Errorf("inspect screenshot: %w", err)
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 32_000_000 {
+		return "", fmt.Errorf("screenshot dimensions are not supported")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	source, _, err := image.Decode(file)
+	if err != nil {
+		return "", fmt.Errorf("decode screenshot: %w", err)
+	}
+	bounds := source.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return "", fmt.Errorf("screenshot has invalid dimensions")
+	}
+	const maxEdge = 240
+	width, height := bounds.Dx(), bounds.Dy()
+	if width > maxEdge || height > maxEdge {
+		if width >= height {
+			height = max(1, height*maxEdge/width)
+			width = maxEdge
+		} else {
+			width = max(1, width*maxEdge/height)
+			height = maxEdge
+		}
+	}
+	thumbnail := image.NewRGBA(image.Rect(0, 0, width, height))
+	// Catmull-Rom preserves text and UI edges materially better than nearest
+	// neighbour while still producing a compact preview for the report dialog.
+	draw.CatmullRom.Scale(thumbnail, thumbnail.Bounds(), source, bounds, draw.Over, nil)
+	var out bytes.Buffer
+	if err := png.Encode(&out, thumbnail); err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
+}
+
+// SubmitBugReport makes a diagnostics archive and posts it to HubCenter using
+// the existing authenticated SkillMarket session. The local archive is retained
+// for a retry if the request fails.
+func (a *App) SubmitBugReport(osVersion, description string, screenshots []string) (map[string]interface{}, error) {
+	a.bugReportUploadMu.Lock()
+	defer a.bugReportUploadMu.Unlock()
+	osVersion, description = strings.TrimSpace(osVersion), strings.TrimSpace(description)
+	if osVersion == "" || description == "" {
+		return nil, fmt.Errorf("operating system and problem description are required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" || strings.TrimSpace(cfg.SkillMarketSessionToken) == "" {
+		return nil, fmt.Errorf("please sign in to HubCenter before submitting a report")
+	}
+	zipPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("maclaw-diagnostics-%d.zip", time.Now().UnixNano()))
+	out, err := os.Create(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	zw := zip.NewWriter(out)
+	// Until it has become the persisted retry archive, every early exit must
+	// close and remove the partial ZIP. Closing first is essential on Windows,
+	// where an open file cannot be removed.
+	keepArchive, archiveClosed, outputClosed := false, false, false
+	defer func() {
+		if !archiveClosed {
+			_ = zw.Close()
+		}
+		if !outputClosed {
+			_ = out.Close()
+		}
+		if !keepArchive {
+			_ = os.Remove(zipPath)
+		}
+	}()
+	var includedFiles int
+	for _, root := range []string{"logs", "trajectories"} {
+		base := filepath.Join(a.getMaclawBaseDir(), root)
+		baseInfo, statErr := os.Lstat(base)
+		if statErr != nil {
+			if !os.IsNotExist(statErr) {
+				log.Printf("[bug-report] skipping unreadable %s directory %s: %v", root, base, statErr)
+			}
+			continue
+		}
+		if baseInfo.Mode()&os.ModeSymlink != 0 {
+			log.Printf("[bug-report] skipping symbolic-link diagnostic root: %s", base)
+			continue
+		}
+		if !baseInfo.IsDir() {
+			log.Printf("[bug-report] skipping %s because it is not a directory: %s", root, base)
+			continue
+		}
+		if err := filepath.Walk(base, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				if os.IsPermission(walkErr) {
+					log.Printf("[bug-report] skipping inaccessible diagnostic path %s: %v", path, walkErr)
+					return nil
+				}
+				return walkErr
+			}
+			if info == nil || info.IsDir() {
+				return nil
+			}
+			// Diagnostics directories are user-writable. Do not follow symlinks
+			// or read devices/FIFOs, which could leak data outside ~/.maclaw or
+			// block archive creation indefinitely.
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return nil
+			}
+			rel, err := filepath.Rel(a.getMaclawBaseDir(), path)
+			if err != nil {
+				return err
+			}
+			in, err := os.Open(path)
+			if err != nil {
+				if os.IsPermission(err) {
+					log.Printf("[bug-report] skipping unreadable diagnostic file %s: %v", path, err)
+					return nil
+				}
+				return err
+			}
+			w, err := zw.Create(filepath.ToSlash(rel))
+			if err != nil {
+				_ = in.Close()
+				return err
+			}
+			_, err = io.Copy(w, in)
+			closeErr := in.Close()
+			if err == nil {
+				includedFiles++
+			}
+			if err == nil {
+				err = closeErr
+			}
+			return err
+		}); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
+			return nil, err
+		}
+	}
+	if includedFiles == 0 {
+		return nil, fmt.Errorf("no diagnostic files found; enable problem reporting and reproduce the issue before submitting")
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	archiveClosed = true
+	if err := out.Close(); err != nil {
+		return nil, err
+	}
+	outputClosed = true
+	zipInfo, err := os.Stat(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	if zipInfo.Size() > 100<<20 {
+		return nil, fmt.Errorf("diagnostics archive exceeds the 100 MB upload limit")
+	}
+	a.setPendingBugReportUpload(zipPath, includedFiles)
+	keepArchive = true
+	return a.uploadBugReportArchive(zipPath, includedFiles, osVersion, description, screenshots)
+}
+
+// RetryBugReportUpload retries the latest failed submission without recreating
+// the archive. This avoids losing the exact diagnostics captured when the
+// problem occurred.
+func (a *App) RetryBugReportUpload(osVersion, description string, screenshots []string) (map[string]interface{}, error) {
+	a.bugReportUploadMu.Lock()
+	defer a.bugReportUploadMu.Unlock()
+	pending := a.getPendingBugReportUpload()
+	if pending == nil || strings.TrimSpace(pending.zipPath) == "" {
+		return nil, fmt.Errorf("no failed diagnostic upload is available to retry")
+	}
+	if _, err := os.Stat(pending.zipPath); err != nil {
+		a.clearPendingBugReportUpload(pending.zipPath)
+		return nil, fmt.Errorf("saved diagnostics archive is no longer available: %w", err)
+	}
+	return a.uploadBugReportArchive(pending.zipPath, pending.includedFiles, osVersion, description, screenshots)
+}
+
+// HasPendingBugReportUpload reports whether this running desktop client still
+// has diagnostics retained from a failed submission.
+func (a *App) HasPendingBugReportUpload() bool {
+	return a.getPendingBugReportUpload() != nil
+}
+
+func (a *App) pendingBugReportUploadPath() string {
+	return filepath.Join(a.GetTempDir(), "pending-bug-report-upload.json")
+}
+
+func (a *App) isPendingBugReportArchivePath(path string) bool {
+	cleanPath := filepath.Clean(path)
+	rel, err := filepath.Rel(filepath.Clean(a.GetTempDir()), cleanPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	return strings.EqualFold(filepath.Ext(cleanPath), ".zip") && strings.HasPrefix(filepath.Base(cleanPath), "maclaw-diagnostics-")
+}
+
+func (a *App) getPendingBugReportUpload() *pendingBugReportUpload {
+	a.pendingBugReportUploadMu.Lock()
+	defer a.pendingBugReportUploadMu.Unlock()
+	pending := a.pendingBugReportUpload
+	if pending == nil {
+		data, err := os.ReadFile(a.pendingBugReportUploadPath())
+		if err == nil {
+			var saved pendingBugReportUploadMetadata
+			if json.Unmarshal(data, &saved) == nil && a.isPendingBugReportArchivePath(saved.ZipPath) {
+				pending = &pendingBugReportUpload{zipPath: saved.ZipPath, includedFiles: saved.IncludedFiles}
+				a.pendingBugReportUpload = pending
+			}
+		}
+	}
+	if pending == nil || strings.TrimSpace(pending.zipPath) == "" {
+		return nil
+	}
+	info, err := os.Lstat(pending.zipPath)
+	if !a.isPendingBugReportArchivePath(pending.zipPath) || err != nil || !info.Mode().IsRegular() {
+		a.pendingBugReportUpload = nil
+		_ = os.Remove(a.pendingBugReportUploadPath())
+		return nil
+	}
+	return pending
+}
+
+func (a *App) setPendingBugReportUpload(zipPath string, includedFiles int) {
+	a.pendingBugReportUploadMu.Lock()
+	defer a.pendingBugReportUploadMu.Unlock()
+	if !a.isPendingBugReportArchivePath(zipPath) {
+		return
+	}
+	previous := a.pendingBugReportUpload
+	a.pendingBugReportUpload = &pendingBugReportUpload{zipPath: zipPath, includedFiles: includedFiles}
+	metadata, err := json.Marshal(pendingBugReportUploadMetadata{ZipPath: zipPath, IncludedFiles: includedFiles})
+	if err == nil {
+		metadataPath := a.pendingBugReportUploadPath()
+		temporaryPath := metadataPath + ".tmp"
+		if os.WriteFile(temporaryPath, metadata, 0o600) == nil {
+			// Windows cannot replace an existing file with Rename. Removing the
+			// previous small metadata file keeps the persisted retry state current.
+			_ = os.Remove(metadataPath)
+			if err := os.Rename(temporaryPath, metadataPath); err != nil {
+				_ = os.Remove(temporaryPath)
+			}
+		}
+	}
+	if previous != nil && previous.zipPath != zipPath {
+		_ = os.Remove(previous.zipPath)
+	}
+}
+
+func (a *App) clearPendingBugReportUpload(zipPath string) {
+	a.pendingBugReportUploadMu.Lock()
+	defer a.pendingBugReportUploadMu.Unlock()
+	if a.pendingBugReportUpload != nil && a.pendingBugReportUpload.zipPath == zipPath {
+		a.pendingBugReportUpload = nil
+		_ = os.Remove(a.pendingBugReportUploadPath())
+	}
+}
+
+func (a *App) uploadBugReportArchive(zipPath string, includedFiles int, osVersion, description string, screenshots []string) (map[string]interface{}, error) {
+	osVersion, description = strings.TrimSpace(osVersion), strings.TrimSpace(description)
+	if osVersion == "" || description == "" {
+		return nil, fmt.Errorf("operating system and problem description are required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" || strings.TrimSpace(cfg.SkillMarketSessionToken) == "" {
+		return nil, fmt.Errorf("please sign in to HubCenter before submitting a report")
+	}
+	file, err := os.Open(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	convertedScreenshots := make([]string, 0)
+	defer func() {
+		for _, path := range convertedScreenshots {
+			_ = os.Remove(path)
+		}
+	}()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("os_version", osVersion)
+	// Keep this field name aligned with HubCenter's ProblemReport.GUIVersion
+	// (multipart key: gui_version). remoteAppVersion also supplies a stable
+	// fallback for local/dev builds where the linker has not set main.version.
+	_ = mw.WriteField("gui_version", remoteAppVersion())
+	_ = mw.WriteField("description", description)
+	part, err := mw.CreateFormFile("diagnostics", filepath.Base(zipPath))
+	if err != nil {
+		return nil, err
+	}
+	if _, err = io.Copy(part, file); err != nil {
+		return nil, err
+	}
+	for _, path := range normalizeBugReportScreenshotPaths(screenshots) {
+		info, statErr := os.Stat(path)
+		ext := strings.ToLower(filepath.Ext(path))
+		if statErr != nil || info.IsDir() || info.Size() > 10<<20 || (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".webp" && ext != ".bmp") {
+			continue
+		}
+		if ext == ".bmp" {
+			converted, convertErr := a.convertBugReportBMPToPNG(path)
+			if convertErr != nil {
+				return nil, fmt.Errorf("convert BMP screenshot %q: %w", filepath.Base(path), convertErr)
+			}
+			path, ext = converted, ".png"
+			convertedScreenshots = append(convertedScreenshots, converted)
+		}
+		if err := validateBugReportScreenshot(path); err != nil {
+			return nil, fmt.Errorf("invalid screenshot %q: %w", filepath.Base(path), err)
+		}
+		if err := copyBugReportScreenshotPart(mw, path); err != nil {
+			return nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(cfg.RemoteHubCenterURL, "/")+"/api/v1/problem-reports", &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.SkillMarketSessionToken)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("HubCenter rejected report: %s", strings.TrimSpace(string(data)))
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	reportID, hasReportID := result["id"].(string)
+	if !hasReportID || strings.TrimSpace(reportID) == "" {
+		// A 2xx response without a report identifier cannot be treated as a
+		// completed submission: preserve the local archive for retry instead of
+		// discarding diagnostics after a malformed proxy/server response.
+		return nil, fmt.Errorf("HubCenter returned a successful response without a report identifier")
+	}
+	// Close before removing: Windows does not permit deletion of an archive that
+	// this process still has open. The deferred Close remains harmless on the
+	// error paths above.
+	if err := file.Close(); err != nil {
+		log.Printf("[bug-report] close uploaded diagnostics archive %s: %v", zipPath, err)
+	}
+	// A successful upload no longer needs a local copy. Failed requests return
+	// before this point, intentionally preserving it for direct retry.
+	if err := os.Remove(zipPath); err != nil {
+		log.Printf("[bug-report] remove uploaded diagnostics archive %s: %v", zipPath, err)
+	}
+	a.clearPendingBugReportUpload(zipPath)
+	// The HubCenter has accepted the archive. Clear exactly the local data that
+	// was collected for this report so it is not silently included next time.
+	// Cleanup is best-effort: a post-upload Windows file lock must not turn a
+	// successful, already-persisted report into an apparent failed submission.
+	a.clearBugReportDiagnostics()
+	result["diagnostic_file_count"] = includedFiles
+	return result, nil
+}
+
+// ListMyBugReports returns only reports owned by the signed-in HubCenter user.
+func (a *App) ListMyBugReports() (map[string]interface{}, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" || strings.TrimSpace(cfg.SkillMarketSessionToken) == "" {
+		return nil, fmt.Errorf("please sign in to HubCenter to view your reports")
+	}
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(cfg.RemoteHubCenterURL, "/")+"/api/v1/problem-reports/mine", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.SkillMarketSessionToken)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("HubCenter rejected report lookup: %s", strings.TrimSpace(string(data)))
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (a *App) convertBugReportBMPToPNG(source string) (string, error) {
+	in, err := os.Open(source)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	img, _, err := image.Decode(in)
+	if err != nil {
+		return "", err
+	}
+	outPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("bug-report-screenshot-%d.png", time.Now().UnixNano()))
+	out, err := os.Create(outPath)
+	if err != nil {
+		return "", err
+	}
+	err = png.Encode(out, img)
+	closeErr := out.Close()
+	if err != nil {
+		return "", err
+	}
+	return outPath, closeErr
+}
+
+func validateBugReportScreenshot(path string) error {
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	config, format, err := image.DecodeConfig(in)
+	if err != nil {
+		return err
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 50_000_000 {
+		return fmt.Errorf("image dimensions exceed the limit")
+	}
+	if format != "png" && format != "jpeg" && format != "webp" && format != "bmp" {
+		return fmt.Errorf("unsupported image format")
+	}
+	return nil
+}
+
+func copyBugReportScreenshotPart(mw *multipart.Writer, path string) error {
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	part, err := mw.CreateFormFile("screenshots", filepath.Base(path))
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(part, in)
+	return err
+}
+
 // normalizeOpenPath expands portable ~/… home paths and rejects empty results.
 // Windows does not interpret "~", so open/stat must always expand first.
 // Prefer normalizeOpenPathForApp when an *App is available so testHomeDir applies.

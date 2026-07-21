@@ -274,6 +274,7 @@ type IMAgentResponseHandler interface {
 // Used for scheduled task notifications and other non-request-based messages.
 type IMProactiveSender interface {
 	SendProactiveMessage(ctx context.Context, tenantID, userID, text string) error
+	SendProactiveMessageToTarget(ctx context.Context, tenantID, userID, platformName, platformUID, text string) error
 	// SendProactiveFile sends a file to the user's IM channels (e.g. Swarm PDF documents).
 	SendProactiveFile(ctx context.Context, tenantID, userID, b64Data, fileName, mimeType, message string) error
 }
@@ -1324,7 +1325,9 @@ func (g *Gateway) handleIMAgentProgress(ctx *ConnContext, msg Envelope) error {
 		return nil
 	}
 	var payload struct {
-		Text string `json:"text"`
+		Text        string `json:"text"`
+		Platform    string `json:"platform,omitempty"`
+		PlatformUID string `json:"platform_uid,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		log.Printf("[ws] handleIMAgentProgress: parse error for request_id=%s: %v", msg.RequestID, err)
@@ -1346,7 +1349,9 @@ func (g *Gateway) handleIMProactiveMessage(ctx *ConnContext, msg Envelope) error
 		return nil
 	}
 	var payload struct {
-		Text string `json:"text"`
+		Text        string `json:"text"`
+		Platform    string `json:"platform,omitempty"`
+		PlatformUID string `json:"platform_uid,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		log.Printf("[ws] handleIMProactiveMessage: parse error: %v", err)
@@ -1355,7 +1360,13 @@ func (g *Gateway) handleIMProactiveMessage(ctx *ConnContext, msg Envelope) error
 	if payload.Text == "" {
 		return nil
 	}
-	if err := g.IMProactive.SendProactiveMessage(context.Background(), ctx.TenantID, ctx.UserID, payload.Text); err != nil {
+	var err error
+	if strings.TrimSpace(payload.Platform) != "" || strings.TrimSpace(payload.PlatformUID) != "" {
+		err = g.IMProactive.SendProactiveMessageToTarget(context.Background(), ctx.TenantID, ctx.UserID, payload.Platform, payload.PlatformUID, payload.Text)
+	} else {
+		err = g.IMProactive.SendProactiveMessage(context.Background(), ctx.TenantID, ctx.UserID, payload.Text)
+	}
+	if err != nil {
 		log.Printf("[ws] handleIMProactiveMessage: send failed for user_id=%s: %v", ctx.UserID, err)
 	}
 	return nil

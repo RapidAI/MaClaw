@@ -62,6 +62,48 @@ ha:
 		if len(cfg.HA.Peers) != 2 {
 			t.Fatalf("peer count = %d", len(cfg.HA.Peers))
 		}
+		for _, peer := range cfg.HA.Peers {
+			if peer.NodeID == "hc-1" && peer.PublicURL != "https://hubs.mypapers.top" {
+				t.Fatalf("peer public_url = %q", peer.PublicURL)
+			}
+		}
+	})
+
+	t.Run("preserves explicit legacy peer public url", func(t *testing.T) {
+		path := writeConfigFile(t, `
+ha:
+  enabled: true
+  node_id: hc-1
+  advertise_url: http://10.0.0.11:9388
+  cluster_secret: shared-secret
+  peers:
+    - node_id: hc-2
+      base_url: http://10.0.0.12:9388
+      public_url: https://hubs.example.com/
+      enabled: true
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if got := cfg.HA.Peers[0].PublicURL; got != "https://hubs.example.com" {
+			t.Fatalf("peer public_url = %q", got)
+		}
+	})
+
+	t.Run("rejects unsafe ha urls", func(t *testing.T) {
+		for _, value := range []string{"hubs.example.com", "ftp://hubs.example.com", "https://user:pass@hubs.example.com", "https://hubs.example.com?next=x"} {
+			_, err := ResolveHAConfig(HAConfig{
+				Enabled:       true,
+				NodeID:        "hc-1",
+				AdvertiseURL:  value,
+				ClusterSecret: "shared-secret",
+				Peers:         []HAPeerConfig{{Enabled: true, NodeID: "hc-2", BaseURL: "https://hubs-2.example.com"}},
+			})
+			if err == nil {
+				t.Fatalf("unsafe advertise_url accepted: %q", value)
+			}
+		}
 	})
 
 	t.Run("missing cluster secret", func(t *testing.T) {

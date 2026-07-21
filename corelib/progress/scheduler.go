@@ -76,8 +76,11 @@ const (
 //	Non-neg + Medium    Merge                          Queue                          Queue
 //	Non-neg + Long      Merge                          Queue                          Queue
 //
-// When relevance is unavailable (-1), the scheduler falls back to
-// domain match + structure only, which is a graceful degradation.
+// When relevance is unavailable (-1), the scheduler must not treat a shared
+// broad intent domain as proof that two requests are the same task. In
+// particular, two independent model tests are both often classified as
+// non-coding (or the same operational domain). Only a very short follow-up is
+// safe to merge in that degraded mode; medium and long messages are queued.
 func Schedule(input ScheduleInput) ScheduleDecision {
 	s := input.Structure
 	rel := input.Relevance
@@ -116,6 +119,17 @@ func Schedule(input ScheduleInput) ScheduleDecision {
 	}
 
 	// --- Row 2-4: Non-negation ---
+	// A shared intent label is broad evidence, not semantic similarity. When
+	// embeddings are unavailable, do this before the normal high-relevance
+	// branch (which otherwise uses DomainMatch as a temporary proxy) so an
+	// independent medium/long request cannot be injected into the active task.
+	if relUnknown && domainMatch && !s.IsShort {
+		return ScheduleDecision{
+			Action:     ActionQueue,
+			Confidence: 0.45,
+			Reason:     "same domain + medium/long without relevance → queue to isolate tasks",
+		}
+	}
 
 	// When both signals agree (high relevance + same domain), strong Merge.
 	if relHigh && domainMatch {
@@ -136,22 +150,23 @@ func Schedule(input ScheduleInput) ScheduleDecision {
 		}
 	}
 
-	// Domain match alone (relevance unavailable or mid-range) → depends on length.
-	// Short same-domain message → likely supplement ("用C++").
-	// Long same-domain message → could be a new task in the same domain.
+	// Domain match alone is insufficient to merge a medium or long message.
+	// Intent labels are intentionally broad, so two independent requests can
+	// legitimately share one. Without a semantic-similarity signal, reserve
+	// Merge for a very short follow-up such as "用 C++"; queue the rest so the
+	// active task's completion state and context stay isolated.
 	if domainMatch {
-		if s.IsShort || s.IsMedium {
+		if s.IsShort {
 			return ScheduleDecision{
 				Action:     ActionMerge,
 				Confidence: 0.60,
-				Reason:     "same domain + short/medium → likely supplement",
+				Reason:     "same domain + short → likely supplement",
 			}
 		}
-		// Long + same domain + no relevance data → ambiguous, queue to be safe.
 		return ScheduleDecision{
 			Action:     ActionQueue,
 			Confidence: 0.45,
-			Reason:     "same domain + long + no relevance → ambiguous",
+			Reason:     "same domain + medium/long without relevance → queue to isolate tasks",
 		}
 	}
 

@@ -133,15 +133,20 @@ func buildClientHubCentersView(cfg config.HAConfig) clientHubCentersView {
 			})
 		}
 	} else if cfg.NodeID != "" || cfg.AdvertiseURL != "" || cfg.SelfFQDN != "" {
-		// Legacy path (no node catalog): AdvertiseURL and peer.BaseURL are used as-is.
-		// In legacy deployments these are typically already public-facing URLs.
+		// Legacy path (no node catalog): PublicURL is optional for compatibility.
+		// Prefer it whenever configured so clients never receive an HA transport
+		// address that is reachable only between cluster nodes.
 		// For node-catalog deployments (len(cfg.Nodes) > 0), ClientFacingURL() is used above.
 		nodes = append(nodes, clientHubCenterNodeView{NodeID: cfg.NodeID, NodeName: cfg.NodeName, FQDN: cfg.SelfFQDN, BaseURL: normalizeClientHubCenterURL(cfg.AdvertiseURL), Current: true, Configured: cfg.Enabled})
 		for _, peer := range cfg.Peers {
 			if !peer.Enabled {
 				continue
 			}
-			nodes = append(nodes, clientHubCenterNodeView{NodeID: peer.NodeID, NodeName: peer.Name, BaseURL: normalizeClientHubCenterURL(peer.BaseURL), PublicKeyPEM: peer.PublicKeyPEM, Current: false, Configured: cfg.Enabled})
+			peerURL := peer.PublicURL
+			if strings.TrimSpace(peerURL) == "" {
+				peerURL = peer.BaseURL
+			}
+			nodes = append(nodes, clientHubCenterNodeView{NodeID: peer.NodeID, NodeName: peer.Name, BaseURL: normalizeClientHubCenterURL(peerURL), PublicKeyPEM: peer.PublicKeyPEM, Current: false, Configured: cfg.Enabled})
 		}
 	}
 	urls := make([]string, 0, len(nodes))

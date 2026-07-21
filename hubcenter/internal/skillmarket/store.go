@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const timeFmt = time.RFC3339
+// Use sub-second precision so consecutive status changes and deletion
+// tombstones retain their true order during HA snapshot conflict resolution.
+// RFC3339Nano parsing remains backward-compatible with existing RFC3339 rows.
+const timeFmt = time.RFC3339Nano
 
 // Store 鏄?SkillMarket 鐨?SQLite 瀛樺偍灞傦紝瀹炵幇鎵€鏈?Repository 鎺ュ彛銆?
 type Store struct {
@@ -73,6 +76,20 @@ func (s *Store) migrate() error {
 			updated_at  TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_submissions_email ON sm_submissions(email, created_at);`,
+		`CREATE TABLE IF NOT EXISTS sm_problem_reports (
+			id TEXT PRIMARY KEY, reporter_user_id TEXT NOT NULL, reporter_contact TEXT NOT NULL,
+			os_version TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+			admin_note TEXT NOT NULL DEFAULT '', diagnostics_path TEXT NOT NULL DEFAULT '',
+			screenshot_paths TEXT NOT NULL DEFAULT '[]', archived_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL, origin_url TEXT NOT NULL DEFAULT '', gui_version TEXT NOT NULL DEFAULT ''
+		);`,
+		`ALTER TABLE sm_problem_reports ADD COLUMN origin_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sm_problem_reports ADD COLUMN gui_version TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_sm_problem_reports_user ON sm_problem_reports(reporter_user_id, created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_sm_problem_reports_status ON sm_problem_reports(status, created_at DESC);`,
+		`CREATE TABLE IF NOT EXISTS sm_problem_report_tombstones (
+			id TEXT PRIMARY KEY, deleted_at TEXT NOT NULL
+		);`,
 		`CREATE TABLE IF NOT EXISTS sm_purchase_records (
 			id                TEXT PRIMARY KEY,
 			hub_id            TEXT NOT NULL DEFAULT '',

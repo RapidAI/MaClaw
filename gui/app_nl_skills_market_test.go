@@ -429,6 +429,66 @@ func TestSearchMixedSkillsIncludesEnterpriseHubCapabilitiesFirst(t *testing.T) {
 		t.Fatalf("unexpected market source label: %+v", market)
 	}
 }
+
+func TestSearchMixedSkillsReturnsDegradedResultsForWailsClients(t *testing.T) {
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	t.Cleanup(func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	})
+
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/capabilities":
+			metadata, _ := json.Marshal(map[string]any{
+				"product_kind":    "maclaw_app_skill",
+				"is_maclaw_app":   true,
+				"maclaw_app_id":   "degraded-search-app",
+				"maclaw_app_name": "Degraded Search App",
+			})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{{
+				"id": "cap-degraded-search", "capability_type": "skill", "display_name": "Degraded Search App",
+				"current_version_key": "2.0.0", "metadata_json": string(metadata),
+			}}})
+		case "/api/v1/skillmarket/search":
+			http.Error(w, "market temporarily unavailable", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubURL = server.URL
+	cfg.RemoteHubCenterURL = server.URL
+	cfg.RemoteViewerToken = "viewer-token"
+	cfg.SkillSourcesAllowed = []string{corelib.CapabilitySourceEnterpriseHub, "skillhub"}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	results, err := app.SearchMixedSkills("cap-degraded-search")
+	if err != nil {
+		t.Fatalf("SearchMixedSkills() should preserve usable degraded results, got %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "cap-degraded-search" || results[0].Version != "2.0.0" {
+		t.Fatalf("unexpected degraded search results: %#v", results)
+	}
+}
+
 func TestSearchMixedSkillsIncludesGitHubSkillMDResult(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, SetMaclawLLMCurrentModel, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, SetMaclawLLMCurrentModel, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset, SetBugReportEnabled, SelectBugReportScreenshots, BugReportScreenshotPreviewDataURL, SubmitBugReport, RetryBugReportUpload, HasPendingBugReportUpload, ListMyBugReports } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -16,6 +16,35 @@ import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
+
+function clipboardImageExtension(mimeType: string): string {
+    switch (mimeType.toLowerCase()) {
+        case 'image/png': return 'png';
+        case 'image/jpeg': return 'jpg';
+        case 'image/webp': return 'webp';
+        case 'image/bmp': return 'bmp';
+        case 'image/gif': return 'gif';
+        default: return 'png';
+    }
+}
+
+function readClipboardImageBase64(file: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+        reader.onerror = () => reject(reader.error || new Error('Unable to read pasted image'));
+        reader.readAsDataURL(file);
+    });
+}
+
+const BUG_REPORT_SCREENSHOT_MAX_BYTES = 10 * 1024 * 1024;
+
+function appendProblemReportScreenshotPaths(previous: string[], paths: unknown[]): string[] {
+    return [...previous, ...paths]
+        .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+        .filter((value, index, all) => all.indexOf(value) === index)
+        .slice(0, 12);
+}
 import { isVirtualEmployeeOnline } from './components/ai/virtualEmployeeStatus';
 import { participantIdentityKeys, participantIdentityMatches } from './components/ai/participantIdentity';
 import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from './components/ai/digitalEmployeeFeature';
@@ -509,6 +538,9 @@ function App() {
         agentMode?: 'coding_dev' | 'remote_coding_dev';
         remoteHost?: string;
         remoteNeedsReconnect?: boolean;
+        imPlatform?: string;
+        imTargetUID?: string;
+		imIsGroup?: boolean;
     } | null>(null);
     const [pendingExpertOpen, setPendingExpertOpen] = useState<{ expert: ExpertDefinition } | null>(null);
 
@@ -1104,6 +1136,95 @@ function App() {
     const [projectCurrentPage, setProjectCurrentPage] = useState<number>(1);
     const [showInstallLog, setShowInstallLog] = useState(false);
     const [showUpdateModal, setShowUpdateModal] = useState(false);
+    const [showProblemReport, setShowProblemReport] = useState(false);
+    const [problemOS, setProblemOS] = useState('');
+    const [problemDescription, setProblemDescription] = useState('');
+    const [problemScreenshots, setProblemScreenshots] = useState<string[]>([]);
+    const [problemScreenshotPreviews, setProblemScreenshotPreviews] = useState<Record<string, string>>({});
+    const [problemBusy, setProblemBusy] = useState(false);
+    const [problemMessage, setProblemMessage] = useState('');
+    const [problemRetryAvailable, setProblemRetryAvailable] = useState(false);
+    const [myProblemReports, setMyProblemReports] = useState<any[]>([]);
+    const problemDescriptionRef = useRef<HTMLTextAreaElement | null>(null);
+    const problemReportDialogRef = useRef<HTMLDivElement | null>(null);
+    const problemReportReturnFocusRef = useRef<HTMLElement | null>(null);
+    const problemBusyRef = useRef(problemBusy);
+    problemBusyRef.current = problemBusy;
+    useEffect(() => {
+        let cancelled = false;
+        if (problemScreenshots.length === 0) {
+            setProblemScreenshotPreviews(previous => Object.keys(previous).length === 0 ? previous : {});
+            return;
+        }
+        const activePaths = new Set(problemScreenshots);
+        setProblemScreenshotPreviews(previous => {
+            const keys = Object.keys(previous);
+            if (keys.every(path => activePaths.has(path))) return previous;
+            return Object.fromEntries(Object.entries(previous).filter(([path]) => activePaths.has(path)));
+        });
+        // The effect only reruns when the selected paths change. Avoid an
+        // in-flight marker here: React StrictMode intentionally remounts effects
+        // during development, and a cancelled first request must not suppress the
+        // replacement request.
+        const missing = problemScreenshots.filter(path => !problemScreenshotPreviews[path]);
+        if (missing.length === 0) return;
+        void Promise.all(missing.map(async path => {
+            try { return [path, await BugReportScreenshotPreviewDataURL(path)] as const; }
+            catch { return [path, ''] as const; }
+        })).then(entries => {
+            if (cancelled) return;
+            setProblemScreenshotPreviews(previous => {
+                const next = Object.fromEntries(Object.entries(previous).filter(([path]) => problemScreenshots.includes(path)));
+                entries.forEach(([path, preview]) => { if (preview) next[path] = preview; });
+                return next;
+            });
+        });
+        return () => { cancelled = true; };
+    }, [problemScreenshots]);
+    const problemReportStatusLabel = (status: unknown) => {
+        const normalized = String(status || '').trim().toLowerCase();
+        const keys: Record<string, string> = {
+            pending: 'problemReportStatusPending', fixed: 'problemReportStatusFixed', deferred: 'problemReportStatusDeferred',
+            rejected: 'problemReportStatusRejected', archived: 'problemReportStatusArchived',
+        };
+        return keys[normalized] ? t(keys[normalized]) : String(status || '');
+    };
+    useEffect(() => {
+        if (!showProblemReport) return;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && !problemBusyRef.current) {
+                setShowProblemReport(false);
+                return;
+            }
+            if (event.key !== 'Tab') return;
+            const dialog = problemReportDialogRef.current;
+            if (!dialog) return;
+            const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+                'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
+            )).filter(element => !element.hasAttribute('hidden'));
+            if (!focusable.length) {
+                event.preventDefault();
+                return;
+            }
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        const frame = window.requestAnimationFrame(() => problemDescriptionRef.current?.focus());
+        return () => {
+            window.cancelAnimationFrame(frame);
+            window.removeEventListener('keydown', handleKeyDown);
+            problemReportReturnFocusRef.current?.focus();
+            problemReportReturnFocusRef.current = null;
+        };
+    }, [showProblemReport]);
     const [updateResult, setUpdateResult] = useState<any>(null);
     const [appUpdateAvailable, setAppUpdateAvailable] = useState<AssistantUpdatePayload | null>(null);
     const [isDownloading, setIsDownloading] = useState(false);
@@ -2308,6 +2429,32 @@ function App() {
     useEffect(() => {
         if (navTab === 'ai') refreshTasks();
     }, [navTab, refreshTasks]);
+
+    useEffect(() => {
+        return safeEventsOn('im-startmenu-task-created', (raw: any) => {
+            const payload = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return {}; } })() : (raw || {});
+            const projectPath = String(payload.project_path || '').trim();
+            if (!projectPath) return;
+            const agentMode = payload.agent_mode === 'coding_dev' || payload.agent_mode === 'remote_coding_dev'
+                ? payload.agent_mode
+                : undefined;
+            switchTool('ai');
+            setPendingProjectTabOpen({
+                projectPath,
+                taskTitle: String(payload.task_title || '').trim() || projectPath,
+                initialMessage: String(payload.initial_message || '').trim(),
+                autoSend: payload.auto_send !== false,
+                prepareMode: payload.prepare_mode === 'restore-context' ? 'restore-context' : 'new-agent',
+                agentMode,
+                remoteHost: String(payload.remote_host || '').trim() || undefined,
+                remoteNeedsReconnect: payload.remote_needs_reconnect === true,
+				imPlatform: String(payload.im_platform || '').trim() || undefined,
+				imTargetUID: String(payload.im_target_uid || '').trim() || undefined,
+				imIsGroup: payload.im_is_group === true,
+            });
+            refreshTasks();
+        });
+    }, [refreshTasks, switchTool]);
 
     useEffect(() => {
         const refresh = () => {
@@ -4209,6 +4356,19 @@ ${instruction}`;
                                 });
                             }}
                             onShowInstallLog={() => setShowInstallLog(true)}
+                            onOpenProblemReport={() => {
+                                problemReportReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                                setProblemMessage('');
+                                setShowProblemReport(true);
+                                if (!problemOS) GetSystemInfo()
+                                    .then((info: any) => {
+                                        const detectedOS = [info?.os, info?.os_version].filter(Boolean).join(' ') || navigator.userAgent;
+                                        setProblemOS(current => current || detectedOS);
+                                    })
+                                    .catch(() => setProblemOS(current => current || navigator.userAgent));
+                                ListMyBugReports().then((result: any) => setMyProblemReports(Array.isArray(result?.items) ? result.items : [])).catch(() => setMyProblemReports([]));
+                                HasPendingBugReportUpload().then(setProblemRetryAvailable).catch(() => setProblemRetryAvailable(false));
+                            }}
                             onOpenBugReport={() => safeBrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}
                             onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}
                             onRegister={() => setShowMaclawLLMPopup(true)}
@@ -4670,6 +4830,190 @@ ${instruction}`;
                 />
             )}
 
+            {showProblemReport && (
+                <div className="modal-overlay" role="presentation" onMouseDown={(event) => {
+                    if (event.target === event.currentTarget && !problemBusy) setShowProblemReport(false);
+                }}>
+                    <div ref={problemReportDialogRef} className="modal-content problem-report-dialog" role="dialog" aria-modal="true" aria-busy={problemBusy} aria-labelledby="problem-report-title" aria-describedby="problem-report-description">
+                        <div className="about-contact-dialog__header problem-report-dialog__header">
+                            <h3 id="problem-report-title">{t('problemReport')}</h3>
+                            <button className="modal-close" disabled={problemBusy} onClick={() => setShowProblemReport(false)} aria-label={t('close')}>&times;</button>
+                        </div>
+                        <p className="about-contact-dialog__desc problem-report-dialog__intro" id="problem-report-description">{t('problemReportDesc')}</p>
+                        <div className="setting-row problem-report-dialog__collection">
+                            <div className="problem-report-dialog__collection-copy"><strong>{t('problemReportEnable')}</strong><div className="setting-desc">{t('problemReportEnableDesc')}</div></div>
+                            <label className="switch"><input type="checkbox" checked={Boolean((config as any)?.bug_report_enabled)} disabled={problemBusy} onChange={async (event) => {
+                                const requested = event.target.checked;
+                                setProblemBusy(true);
+                                setProblemMessage('');
+                                try {
+                                    const saved = await SetBugReportEnabled(requested);
+                                    setConfig(new main.AppConfig(saved));
+                                } catch (err: any) {
+                                    // This is a controlled input. Restore its visual state when
+                                    // the native operation fails rather than leaving it flickering.
+                                    event.target.checked = Boolean((config as any)?.bug_report_enabled);
+                                    setProblemMessage(String(err?.message || err));
+                                } finally {
+                                    setProblemBusy(false);
+                                }
+                            }} /><span className="slider"></span></label>
+                        </div>
+                        <div className="problem-report-dialog__version" aria-label="MaClaw GUI version"><span>MaClaw GUI</span><code>{APP_VERSION}</code></div>
+                        <label className="problem-report-dialog__field"><span className="form-label">{t('problemReportOS')} <em>*</em></span><input className="form-input" value={problemOS} onChange={event => setProblemOS(event.target.value)} /></label>
+                        <label className="problem-report-dialog__field"><span className="form-label">{t('problemReportDescription')} <em>*</em></span><textarea ref={problemDescriptionRef} className="form-input" rows={5} value={problemDescription} onChange={event => setProblemDescription(event.target.value)} placeholder={t('problemReportDescriptionPlaceholder')} /></label>
+                        <div
+                            className="problem-report-dialog__field problem-report-dialog__attachments-editor"
+                            onPaste={async (event) => {
+                                if (problemBusy || problemScreenshots.length >= 12) return;
+                                const images = Array.from(event.clipboardData?.items || [])
+                                    .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+                                    .map(item => item.getAsFile())
+                                    .filter((file): file is File => file !== null);
+                                if (!images.length) return;
+                                event.preventDefault();
+                                try {
+                                    const slots = Math.max(0, 12 - problemScreenshots.length);
+                                    const accepted = images.slice(0, slots);
+                                    const oversized = accepted.find(file => file.size > BUG_REPORT_SCREENSHOT_MAX_BYTES);
+                                    if (oversized) throw new Error(`Screenshot ${oversized.name || ''} exceeds the 10 MB limit`);
+                                    const savePastedImage = (window as any).go?.main?.App?.SavePastedImage;
+                                    if (typeof savePastedImage !== 'function') throw new Error('Pasted image support is unavailable');
+                                    const paths = await Promise.all(accepted.map(async file => {
+                                        const base64 = await readClipboardImageBase64(file);
+                                        return savePastedImage(base64, clipboardImageExtension(file.type));
+                                    }));
+                                    setProblemScreenshots(prev => appendProblemReportScreenshotPaths(prev, paths));
+                                } catch (err: any) {
+                                    setProblemMessage(String(err?.message || err));
+                                }
+                            }}
+                        >
+                            <div className="problem-report-dialog__attachment-head">
+                                <span className="form-label">{t('problemReportScreenshots')}</span>
+                                <button type="button" className="btn-link about-action-button" disabled={problemBusy || problemScreenshots.length >= 12} onClick={async () => {
+                                    try {
+                                        // Wails may resolve to null when the native file dialog is cancelled.
+                                        // Treat cancellation exactly like selecting no files so the report dialog remains mounted.
+                                        const result = await SelectBugReportScreenshots();
+                                        const files = Array.isArray(result) ? result : [];
+                                        if (!files.length) return;
+                                        setProblemScreenshots(prev => appendProblemReportScreenshotPaths(prev, files));
+                                    } catch (err: any) {
+                                        setProblemMessage(String(err?.message || err));
+                                    }
+                                }}>{t('problemReportAddScreenshots')}</button>
+                            </div>
+                            {problemScreenshots.length > 0 ? (
+                                <>
+                                    <ul className="problem-report-dialog__attachment-list" aria-label={t('problemReportScreenshots')}>
+                                        {problemScreenshots.map((path, index) => {
+                                            const name = path.split(/[\\/]/).pop() || path;
+                                            const preview = problemScreenshotPreviews[path];
+                                            return (
+                                                <li key={path}>
+                                                    {preview ? <img className="problem-report-dialog__attachment-preview" src={preview} alt={name} /> : <span className="problem-report-dialog__attachment-placeholder" aria-hidden="true">IMG</span>}
+                                                    <span className="problem-report-dialog__attachment-name" title={path}>{name}</span>
+                                                    <button
+                                                        type="button"
+                                                        className="btn-link problem-report-dialog__attachment-remove"
+                                                        aria-label={t('problemReportRemoveScreenshot').replace('{name}', name)}
+                                                        title={t('problemReportRemoveScreenshot').replace('{name}', name)}
+                                                        disabled={problemBusy}
+                                                        onClick={() => {
+                                                            setProblemScreenshots(prev => prev.filter((_, itemIndex) => itemIndex !== index));
+                                                            setProblemScreenshotPreviews(prev => {
+                                                                if (!(path in prev)) return prev;
+                                                                const next = { ...prev };
+                                                                delete next[path];
+                                                                return next;
+                                                            });
+                                                        }}
+                                                    >
+                                                        &times;
+                                                    </button>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                    <div className="setting-desc">{t('problemReportScreenshotCount').replace('{count}', String(problemScreenshots.length))}</div>
+                                </>
+                            ) : (
+                                <div className="setting-desc">{t('problemReportNoScreenshots')} {t('problemReportPasteScreenshot')}</div>
+                            )}
+                        </div>
+                        {myProblemReports.length > 0 && (
+                            <section className="problem-report-dialog__history" aria-labelledby="problem-report-history-title">
+                                <span className="form-label" id="problem-report-history-title">{t('myProblemReports')}</span>
+                                <div className="problem-report-dialog__history-list">
+                                    {myProblemReports.map(report => (
+                                        <div className="problem-report-dialog__history-item" key={report.id}>
+                                            <code title={String(report.id)}>{report.id}</code>
+                                            <span>{problemReportStatusLabel(report.status)}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </section>
+                        )}
+                        {problemMessage && <div className="about-contact-dialog__message problem-report-dialog__message" role="status">{problemMessage}</div>}
+                        <div className="modal-actions problem-report-dialog__actions">
+                            <button className="btn-hide" disabled={problemBusy} onClick={() => setShowProblemReport(false)}>
+                                {t('close')}
+                            </button>
+                            {problemRetryAvailable && (
+                                <button
+                                    className="btn-link about-action-button"
+                                    disabled={problemBusy || !problemOS.trim() || !problemDescription.trim()}
+                                    onClick={async () => {
+                                        setProblemBusy(true);
+                                        setProblemMessage('');
+                                        try {
+                                            const report = await RetryBugReportUpload(problemOS, problemDescription, problemScreenshots);
+                                            setProblemRetryAvailable(false);
+                                            setProblemMessage(t('problemReportSubmitted').replace('{id}', String(report?.id || '')));
+                                            setProblemDescription('');
+                                            setProblemScreenshots([]);
+                                            const mine = await ListMyBugReports();
+                                            setMyProblemReports(Array.isArray((mine as any)?.items) ? (mine as any).items : []);
+                                        } catch (err: any) {
+                                            setProblemMessage(String(err?.message || err));
+                                            setProblemRetryAvailable(await HasPendingBugReportUpload().catch(() => false));
+                                        } finally {
+                                            setProblemBusy(false);
+                                        }
+                                    }}
+                                >
+                                    {problemBusy ? t('loading') : t('problemReportRetry')}
+                                </button>
+                            )}
+                            <button
+                                className="btn-primary"
+                                disabled={problemBusy || !problemOS.trim() || !problemDescription.trim()}
+                                onClick={async () => {
+                                    setProblemBusy(true);
+                                    setProblemMessage('');
+                                    try {
+                                        const report = await SubmitBugReport(problemOS, problemDescription, problemScreenshots);
+                                        setProblemRetryAvailable(false);
+                                        setProblemMessage(t('problemReportSubmitted').replace('{id}', String(report?.id || '')));
+                                        setProblemDescription('');
+                                        setProblemScreenshots([]);
+                                        const mine = await ListMyBugReports();
+                                        setMyProblemReports(Array.isArray((mine as any)?.items) ? (mine as any).items : []);
+                                    } catch (err: any) {
+                                        setProblemMessage(String(err?.message || err));
+                                        setProblemRetryAvailable(await HasPendingBugReportUpload().catch(() => false));
+                                    } finally {
+                                        setProblemBusy(false);
+                                    }
+                                }}
+                            >
+                                {problemBusy ? t('loading') : t('problemReportSubmit')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {showUpdateModal && updateResult && (
                 <UpdateModal
                     updateResult={updateResult}

@@ -48,6 +48,15 @@ func newTelegramGatewayManager(app *App) *telegramGatewayManager {
 	}
 }
 
+func (m *telegramGatewayManager) currentLocalHandler() *IMMessageHandler {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.localHandler
+}
+
 // SyncFromConfig reads the current AppConfig and starts or stops the gateway.
 func (m *telegramGatewayManager) SyncFromConfig() {
 	cfg, err := m.app.LoadConfig()
@@ -121,9 +130,7 @@ func (m *telegramGatewayManager) Stop() {
 	lh := m.localHandler
 	m.localHandler = nil
 	m.mu.Unlock()
-	if lh != nil {
-		lh.memory.Stop()
-	}
+	_ = lh // shared App conversation memory remains alive
 	if gw != nil {
 		_ = gw.Stop()
 	}
@@ -168,10 +175,7 @@ func (m *telegramGatewayManager) emitStatusEvent() {
 func (m *telegramGatewayManager) resetLocalHandler() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.localHandler != nil {
-		m.localHandler.memory.Stop()
-		m.localHandler = nil
-	}
+	m.localHandler = nil
 }
 
 // ensureLocalHandler lazily creates a fully-wired IMMessageHandler for local mode.

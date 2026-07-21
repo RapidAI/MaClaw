@@ -32,6 +32,7 @@ func BuildHelpMessage(machineCount int, selectedMachine string, llmEnabled bool)
 	b.WriteString("/ask <设备名> <消息>  — 一次性跨空间交互（不影响当前状态）\n")
 	b.WriteString("/context  — 查看对话上下文\n")
 	b.WriteString("/context clear  — 清除对话上下文\n")
+	b.WriteString("/startmenu  — 从引导页已保存快捷方式启动任务\n")
 	b.WriteString("/help  — 显示此帮助\n")
 
 	// Context-specific hints.

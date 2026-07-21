@@ -83,6 +83,17 @@ export interface AITabState {
     projectPath?: string;
     /** Last active timestamp (ms since epoch), used for overflow sorting and cleanup */
     lastActiveAt?: number;
+    /** One-shot IM completion route for a task opened by Hub /startmenu. */
+    pendingIMCompletion?: {
+        platform: string;
+        targetUID: string;
+		isGroup?: boolean;
+        taskTitle: string;
+    };
+    /** Initial IM prompt held locally until remote SSH is ready. */
+    pendingRemoteInitialMessage?: {
+        text: string;
+    };
 }
 /** Overall state of the AI Assistant Panel tab system */
 export interface AIAssistantPanelTabState {

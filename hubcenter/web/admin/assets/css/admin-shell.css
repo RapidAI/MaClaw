@@ -194,4 +194,13 @@
 .trust-dialog h3{margin:0;color:#262b36;font-size:18px;letter-spacing:-.015em}.trust-dialog p{margin:7px 0 16px;color:#596170;font-size:13px;line-height:1.55}
 .trust-dialog-options{display:grid;gap:8px}.trust-dialog-option{display:flex;align-items:center;gap:10px;min-height:42px;padding:0 12px;border:1px solid #dfe3eb;border-radius:10px;color:#3b414d;cursor:pointer}.trust-dialog-option:has(input:checked){border-color:#8aa0c9;background:#f4f7fc;color:#273d63;font-weight:700}.trust-dialog-option input{width:16px;height:16px;accent-color:#4c6fa9}
 .trust-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.trust-dialog-actions button{min-width:76px}.trust-dialog-actions button:focus-visible,.trust-dialog-option:focus-within{outline:3px solid rgba(76,111,169,.22);outline-offset:2px}
+.skill-version-dialog{width:min(620px,100%);max-height:calc(100vh - 40px);overflow:auto}.skill-version-list{display:grid;gap:8px}.skill-version-row{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:46px;padding:10px 12px;border:1px solid #dfe3eb;border-radius:10px;background:#fff;color:#303541;text-align:left;font:inherit;cursor:pointer}.skill-version-row:hover{border-color:#aab2c1;background:#f8fafc}.skill-version-row:focus-visible{outline:3px solid rgba(76,111,169,.22);outline-offset:2px}.skill-version-row strong{font-size:13px}.skill-version-row span{font-size:12px;color:#667386}.skill-version-detail{margin-top:16px;padding-top:14px;border-top:1px solid #e7eaf0;color:#59636f;font-size:13px;line-height:1.55}.skill-version-detail h4{margin:0 0 6px;color:#303541;font-size:15px}.skill-version-detail p{margin:0 0 10px}.skill-version-detail dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 14px;margin:0}.skill-version-detail dt{color:#667386}.skill-version-detail dd{margin:0;color:#303541;overflow-wrap:anywhere}
 @media(max-width:640px){.trust-dialog-backdrop{padding:14px;place-items:end center}.trust-dialog{padding:18px}.trust-dialog-actions button{flex:1}}
+
+.problem-report-description {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+

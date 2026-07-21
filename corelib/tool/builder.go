@@ -4,6 +4,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -14,6 +15,10 @@ import (
 // filtering: all builtin tools are always included, and the remaining slots are
 // filled by the most relevant dynamic tools based on keyword similarity.
 type DynamicToolBuilder struct {
+	// mu serializes configuration changes with Build. Build mutates its cached
+	// BM25 index, so allowing activation to swap the registry or hybrid retriever
+	// concurrently can otherwise race with an in-flight IM request.
+	mu             sync.Mutex
 	registry       *Registry
 	maxDirectTools int              // threshold before filtering kicks in (default 20)
 	maxDynamic     int              // max non-builtin tools when filtering (default 15)
@@ -39,6 +44,8 @@ func NewDynamicToolBuilder(registry *Registry) *DynamicToolBuilder {
 
 // SetSkillProvider sets the SkillProvider used for skill-aware routing.
 func (b *DynamicToolBuilder) SetSkillProvider(provider SkillProvider) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.skillProvider = provider
 	b.refreshSkillIndex()
 }
@@ -59,6 +66,8 @@ func (b *DynamicToolBuilder) refreshSkillIndex() {
 
 // RefreshSkillIndex forces a rebuild of the skill BM25 index.
 func (b *DynamicToolBuilder) RefreshSkillIndex() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.refreshSkillIndex()
 }
 
@@ -101,12 +110,16 @@ func (b *DynamicToolBuilder) builderSkillMatchScore(userMessage string) (float64
 
 // SetRegistry replaces the registry without discarding the cached BM25 index.
 func (b *DynamicToolBuilder) SetRegistry(registry *Registry) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.registry = registry
 }
 
 // SetEmbedder configures the embedder for hybrid retrieval.
 // If emb is a NoopEmbedder, hybrid is disabled (set to nil).
 func (b *DynamicToolBuilder) SetEmbedder(emb embedding.Embedder) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if embedding.IsNoop(emb) {
 		b.hybrid = nil
 		return
@@ -116,16 +129,22 @@ func (b *DynamicToolBuilder) SetEmbedder(emb embedding.Embedder) {
 
 // SetEnrichmentStore configures the enrichment store for enhanced tool descriptions.
 func (b *DynamicToolBuilder) SetEnrichmentStore(store *EnrichmentStore) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.enrichStore = store
 }
 
 // SetUsageTracker configures the usage tracker for experience-aware scoring.
 func (b *DynamicToolBuilder) SetUsageTracker(tracker *UsageTracker) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.tracker = tracker
 }
 
 // SetReranker configures the LLM listwise reranker. Pass nil to disable.
 func (b *DynamicToolBuilder) SetReranker(rr Reranker) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.reranker = rr
 }
 
@@ -144,6 +163,8 @@ func (b *DynamicToolBuilder) buildEmbeddingText(name, description string) string
 
 // BuildAll returns tool definitions for every available tool (no filtering).
 func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	tools := b.registry.ListAvailable()
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
@@ -167,6 +188,8 @@ func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 // the number of available tools exceeds maxDirectTools.
 // userMessage is used for relevance scoring when filtering is active.
 func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	tools := b.registry.ListAvailable()
 	var skillScore float64
 	var matchedSkills []string

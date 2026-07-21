@@ -2395,7 +2395,14 @@ func (a *App) updateRegisteredMaclawAppDependencySkill(updated corelib.NLSkillEn
 			return browserAutomationSkillRejectedError(updated.Name)
 		}
 		skills[i] = updated
-		return a.skillExecutor.saveSkills(skills)
+		if err := a.skillExecutor.saveSkills(skills); err != nil {
+			return err
+		}
+		a.skillExecutor.clearSkillListCache()
+		if a.cachedSkillScanner != nil {
+			a.cachedSkillScanner.UpsertSkills([]corelib.NLSkillEntry{updated})
+		}
+		return nil
 	}
 	return fmt.Errorf("skill %q not found", updated.Name)
 }

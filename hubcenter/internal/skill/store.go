@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,15 +48,15 @@ func (s *SkillStore) Search(query string, tags []string, page int) SkillSearchRe
 	}
 	queryLower := strings.ToLower(query)
 	queryTerms := strings.Fields(queryLower)
-	var matched []HubSkillMeta
-	for _, meta := range s.index {
-		if !meta.Visible {
-			continue
-		}
-		if matchesSkill(meta, queryTerms, tags) {
-			matched = append(matched, meta)
-		}
-	}
+	// Choose the current revision before matching. Otherwise a query that only
+	// matches an old title or tag could surface the latest revision even though
+	// that revision itself does not match the user's search.
+	matched := groupSkillVersions(s.index)
+	// A hidden latest revision hides the entire public catalog entry. Do not
+	// silently fall back to an older visible revision, because clients would
+	// otherwise install a superseded release as if it were current.
+	matched = onlyVisibleSkillGroups(matched)
+	matched = filterMatchingSkills(matched, queryTerms, tags)
 	total := len(matched)
 	start := (page - 1) * pageSize
 	if start >= total {
@@ -81,7 +82,8 @@ func (s *SkillStore) ListAllPaged(page, perPage int) SkillSearchResult {
 	if perPage < 1 || perPage > 200 {
 		perPage = pageSize
 	}
-	total := len(s.index)
+	items := groupSkillVersions(s.index)
+	total := len(items)
 	start := (page - 1) * perPage
 	if start >= total {
 		return SkillSearchResult{Skills: []HubSkillMeta{}, Total: total, Page: page}
@@ -90,7 +92,7 @@ func (s *SkillStore) ListAllPaged(page, perPage int) SkillSearchResult {
 	if end > total {
 		end = total
 	}
-	return SkillSearchResult{Skills: s.index[start:end], Total: total, Page: page}
+	return SkillSearchResult{Skills: items[start:end], Total: total, Page: page}
 }
 
 func (s *SkillStore) Get(id string) (*HubSkillFull, error) {
@@ -98,6 +100,32 @@ func (s *SkillStore) Get(id string) (*HubSkillFull, error) {
 	defer s.mu.RUnlock()
 	skill, ok := s.skills[id]
 	if !ok {
+		return nil, fmt.Errorf("skill not found: %s", id)
+	}
+	return skill, nil
+}
+
+// GetVisible returns a public skill only when the selected revision is visible.
+// Administrative callers should use Get so they can review hidden revisions.
+func (s *SkillStore) GetVisible(id string) (*HubSkillFull, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	skill, ok := s.skills[id]
+	if !ok || !skill.Visible {
+		return nil, fmt.Errorf("skill not found: %s", id)
+	}
+	return skill, nil
+}
+
+// GetCurrentVisible returns a public skill only when it is both visible and
+// the current revision of its stable SkillID. Historical revisions remain
+// readable through GetVisible for the version-details view, but cannot be
+// downloaded or mutated through public endpoints.
+func (s *SkillStore) GetCurrentVisible(id string) (*HubSkillFull, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	skill, ok := s.skills[id]
+	if !ok || !skill.Visible || !isCurrentRevision(s.index, skill.HubSkillMeta) {
 		return nil, fmt.Errorf("skill not found: %s", id)
 	}
 	return skill, nil
@@ -145,19 +173,23 @@ func (s *SkillStore) GetByID(id string) *HubSkillMeta {
 	return nil
 }
 
-// FindBySkillID searches for a skill by its publisher.name skill_id.
-// Returns the first matching HubSkillMeta, or nil if not found.
+// FindBySkillID returns the latest revision for a stable publisher.name
+// skill_id, or nil if no revision exists.
 func (s *SkillStore) FindBySkillID(skillID string) *HubSkillMeta {
 	if skillID == "" {
 		return nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	versions := make([]HubSkillMeta, 0)
 	for _, sk := range s.skills {
 		if sk.SkillID == skillID {
-			m := sk.HubSkillMeta
-			return &m
+			versions = append(versions, sk.HubSkillMeta)
 		}
+	}
+	if len(versions) > 0 {
+		latest := groupSkillVersions(versions)[0]
+		return &latest
 	}
 	return nil
 }
@@ -233,12 +265,7 @@ func (s *SkillStore) TopByDownloads(n int) []HubSkillMeta {
 	if n <= 0 || len(s.index) == 0 {
 		return nil
 	}
-	var visible []HubSkillMeta
-	for _, m := range s.index {
-		if m.Visible {
-			visible = append(visible, m)
-		}
-	}
+	visible := onlyVisibleSkillGroups(groupSkillVersions(s.index))
 	sort.Slice(visible, func(i, j int) bool {
 		return visible[i].Downloads > visible[j].Downloads
 	})
@@ -324,6 +351,14 @@ func (s *SkillStore) Rate(skillID, maclawID string, score int) error {
 	s.mu.Lock()
 	sk, ok := s.skills[skillID]
 	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("skill not found: %s", skillID)
+	}
+	if !sk.Visible {
+		s.mu.Unlock()
+		return fmt.Errorf("skill not found: %s", skillID)
+	}
+	if !isCurrentRevision(s.index, sk.HubSkillMeta) {
 		s.mu.Unlock()
 		return fmt.Errorf("skill not found: %s", skillID)
 	}
@@ -432,6 +467,252 @@ func matchesSkill(meta HubSkillMeta, queryTerms []string, tags []string) bool {
 		}
 	}
 	return true
+}
+
+func filterMatchingSkills(items []HubSkillMeta, queryTerms, tags []string) []HubSkillMeta {
+	matched := make([]HubSkillMeta, 0, len(items))
+	for _, item := range items {
+		if matchesSkill(item, queryTerms, tags) {
+			matched = append(matched, item)
+		}
+	}
+	return matched
+}
+
+func isCurrentRevision(index []HubSkillMeta, candidate HubSkillMeta) bool {
+	if strings.TrimSpace(candidate.SkillID) == "" {
+		return true
+	}
+	for _, current := range groupSkillVersions(index) {
+		if current.SkillID == candidate.SkillID {
+			return current.ID == candidate.ID
+		}
+	}
+	return false
+}
+
+// groupSkillVersions keeps one catalog entry per stable skill_id. Entries
+// without a stable ID intentionally remain separate, preserving compatibility
+// with legacy uploads. The selected entry is the highest semantic version; an
+// updated timestamp is used as the deterministic fallback for legacy versions.
+func groupSkillVersions(items []HubSkillMeta) []HubSkillMeta {
+	groups := make(map[string][]HubSkillMeta, len(items))
+	order := make([]string, 0, len(items))
+	for _, item := range items {
+		key := strings.TrimSpace(item.SkillID)
+		if key == "" {
+			key = "id:" + item.ID
+		}
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], item)
+	}
+
+	grouped := make([]HubSkillMeta, 0, len(order))
+	for _, key := range order {
+		versions := groups[key]
+		sort.SliceStable(versions, func(i, j int) bool { return skillVersionNewer(versions[i], versions[j]) })
+		latest := versions[0]
+		latest.VersionCount = len(versions)
+		if len(versions) > 1 {
+			latest.VersionHistory = make([]SkillVersionSummary, 0, len(versions))
+			for _, version := range versions {
+				latest.VersionHistory = append(latest.VersionHistory, SkillVersionSummary{
+					ID: version.ID, Version: version.Version, SemVer: version.SemVer,
+					CreatedAt: version.CreatedAt, UpdatedAt: version.UpdatedAt,
+					Status: version.Status, Visible: version.Visible,
+				})
+			}
+		}
+		grouped = append(grouped, latest)
+	}
+	sort.SliceStable(grouped, func(i, j int) bool {
+		if grouped[i].UpdatedAt != grouped[j].UpdatedAt {
+			return grouped[i].UpdatedAt > grouped[j].UpdatedAt
+		}
+		if grouped[i].CreatedAt != grouped[j].CreatedAt {
+			return grouped[i].CreatedAt > grouped[j].CreatedAt
+		}
+		return grouped[i].ID < grouped[j].ID
+	})
+	return grouped
+}
+
+// onlyVisibleSkillGroups filters the public catalog after choosing the latest
+// revision. It also removes hidden historical revisions from the response so
+// their metadata is not exposed by the public search endpoint.
+func onlyVisibleSkillGroups(groups []HubSkillMeta) []HubSkillMeta {
+	visible := make([]HubSkillMeta, 0, len(groups))
+	for _, group := range groups {
+		if !group.Visible {
+			continue
+		}
+		if len(group.VersionHistory) > 0 {
+			history := make([]SkillVersionSummary, 0, len(group.VersionHistory))
+			for _, version := range group.VersionHistory {
+				if version.Visible {
+					history = append(history, version)
+				}
+			}
+			group.VersionHistory = history
+			group.VersionCount = len(history)
+		}
+		visible = append(visible, group)
+	}
+	return visible
+}
+
+func skillVersionNewer(a, b HubSkillMeta) bool {
+	versionA, versionB := firstVersion(a), firstVersion(b)
+	// Only let a version decide precedence when both revisions carry a
+	// semver-shaped value. Legacy labels such as "latest" or "draft" must use
+	// timestamps instead of accidentally sorting lexicographically above a
+	// numeric release.
+	if isSemanticVersion(versionA) && isSemanticVersion(versionB) {
+		if cmp := compareVersion(versionA, versionB); cmp != 0 {
+			return cmp > 0
+		}
+	}
+	if a.UpdatedAt != b.UpdatedAt {
+		return a.UpdatedAt > b.UpdatedAt
+	}
+	if a.CreatedAt != b.CreatedAt {
+		return a.CreatedAt > b.CreatedAt
+	}
+	return a.ID < b.ID
+}
+
+func isSemanticVersion(version string) bool {
+	version = strings.TrimPrefix(strings.TrimSpace(strings.ToLower(version)), "v")
+	version = strings.SplitN(version, "+", 2)[0]
+	core, prerelease, hasPrerelease := splitPrerelease(version)
+	parts := strings.Split(core, ".")
+	if len(parts) == 0 || len(parts) > 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if _, err := strconv.Atoi(part); err != nil {
+			return false
+		}
+	}
+	if !hasPrerelease {
+		return true
+	}
+	return prerelease != ""
+}
+
+func firstVersion(item HubSkillMeta) string {
+	if strings.TrimSpace(item.SemVer) != "" {
+		return item.SemVer
+	}
+	return item.Version
+}
+
+// compareVersion compares common dotted versions (including v-prefixed
+// versions). Numeric parts sort numerically, so v10 correctly follows v9.
+func compareVersion(a, b string) int {
+	a, b = strings.TrimPrefix(strings.TrimSpace(strings.ToLower(a)), "v"), strings.TrimPrefix(strings.TrimSpace(strings.ToLower(b)), "v")
+	// Build metadata does not affect semantic-version precedence.
+	a = strings.SplitN(a, "+", 2)[0]
+	b = strings.SplitN(b, "+", 2)[0]
+	if a == b {
+		return 0
+	}
+	coreA, preA, hasPreA := splitPrerelease(a)
+	coreB, preB, hasPreB := splitPrerelease(b)
+	partsA, partsB := strings.Split(coreA, "."), strings.Split(coreB, ".")
+	maxParts := len(partsA)
+	if len(partsB) > maxParts {
+		maxParts = len(partsB)
+	}
+	for i := 0; i < maxParts; i++ {
+		partA, partB := "0", "0"
+		if i < len(partsA) {
+			partA = partsA[i]
+		}
+		if i < len(partsB) {
+			partB = partsB[i]
+		}
+		numA, errA := strconv.Atoi(partA)
+		numB, errB := strconv.Atoi(partB)
+		if errA == nil && errB == nil && numA != numB {
+			if numA > numB {
+				return 1
+			}
+			return -1
+		}
+		if errA != nil || errB != nil {
+			if partA > partB {
+				return 1
+			}
+			if partA < partB {
+				return -1
+			}
+		}
+	}
+	// A stable release follows its prereleases: 1.0.0 > 1.0.0-rc.1.
+	if hasPreA != hasPreB {
+		if hasPreA {
+			return -1
+		}
+		return 1
+	}
+	if hasPreA {
+		return comparePrerelease(preA, preB)
+	}
+	return 0
+}
+
+func splitPrerelease(version string) (core, prerelease string, hasPrerelease bool) {
+	parts := strings.SplitN(version, "-", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1], true
+	}
+	return version, "", false
+}
+
+func comparePrerelease(a, b string) int {
+	partsA, partsB := strings.Split(a, "."), strings.Split(b, ".")
+	maxParts := len(partsA)
+	if len(partsB) > maxParts {
+		maxParts = len(partsB)
+	}
+	for i := 0; i < maxParts; i++ {
+		if i >= len(partsA) {
+			return -1
+		}
+		if i >= len(partsB) {
+			return 1
+		}
+		numA, errA := strconv.Atoi(partsA[i])
+		numB, errB := strconv.Atoi(partsB[i])
+		if errA == nil && errB == nil {
+			if numA > numB {
+				return 1
+			}
+			if numA < numB {
+				return -1
+			}
+			continue
+		}
+		if errA == nil {
+			return -1
+		}
+		if errB == nil {
+			return 1
+		}
+		if partsA[i] > partsB[i] {
+			return 1
+		}
+		if partsA[i] < partsB[i] {
+			return -1
+		}
+	}
+	return 0
 }
 
 func (s *SkillStore) IncrementDownloadCount(id string) error {

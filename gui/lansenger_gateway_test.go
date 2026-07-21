@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"encoding/json"
@@ -479,6 +479,17 @@ func TestIsLansengerGroupMessage(t *testing.T) {
 	}
 	if isLansengerGroupMessage(lansenger.IncomingMessage{ChatType: "p2p"}) {
 		t.Fatal("p2p must not be treated as a group")
+	}
+}
+
+func TestLansengerLocalStartMenuSessionKeyIsUnambiguous(t *testing.T) {
+	first := lansenger.IncomingMessage{ChatType: "group", GroupID: "a:b", FromUserID: "c"}
+	second := lansenger.IncomingMessage{ChatType: "group", GroupID: "a", FromUserID: "b:c"}
+	if got, want := lansengerLocalStartMenuSessionKey(first), lansengerLocalStartMenuSessionKey(second); got == want {
+		t.Fatalf("distinct target/user pairs collided: %q", got)
+	}
+	if got := lansengerLocalStartMenuSessionKey(first); got != lansengerLocalStartMenuSessionKey(first) {
+		t.Fatalf("session key is not stable: %q", got)
 	}
 }
 

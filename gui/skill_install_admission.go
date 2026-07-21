@@ -594,6 +594,33 @@ func (a *App) skillNameAlreadyRegistered(name string) bool {
 	return false
 }
 
+// installedMixedSkillForUpdate resolves the already-installed skill represented
+// by a HubCenter search/download result. HubSkillID is the stable identity;
+// name is retained as a backwards-compatible fallback for older packages.
+func (a *App) installedMixedSkillForUpdate(hubSkillID, name string) *corelib.NLSkillEntry {
+	if a == nil || a.skillExecutor == nil {
+		return nil
+	}
+	hubSkillID = strings.TrimSpace(hubSkillID)
+	name = strings.TrimSpace(name)
+	for _, existing := range a.skillExecutor.loadSkills() {
+		if hubSkillID != "" && strings.EqualFold(strings.TrimSpace(existing.HubSkillID), hubSkillID) {
+			copy := existing
+			return &copy
+		}
+	}
+	for _, existing := range a.skillExecutor.loadSkills() {
+		// Name fallback is only safe for a legacy local entry that has no
+		// stable Hub identity. Never replace a different Hub package just
+		// because its display name happens to collide.
+		if name != "" && strings.TrimSpace(existing.HubSkillID) == "" && strings.EqualFold(strings.TrimSpace(existing.Name), name) {
+			copy := existing
+			return &copy
+		}
+	}
+	return nil
+}
+
 func candidateInstalledSkillDirs(destRoot string) []string {
 	var dirs []string
 	if directoryHasSkillDoc(destRoot) {

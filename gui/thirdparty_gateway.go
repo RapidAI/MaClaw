@@ -56,6 +56,15 @@ type thirdPartyGatewayManager struct {
 	media        map[string]*thirdPartyMediaObject
 }
 
+func (m *thirdPartyGatewayManager) currentLocalHandler() *IMMessageHandler {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.localHandler
+}
+
 type thirdPartyClientState struct {
 	NextSeq    int64
 	Messages   []thirdPartyOutgoingMessage
@@ -123,9 +132,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 		lh := m.localHandler
 		m.localHandler = nil
 		m.mu.Unlock()
-		if lh != nil {
-			lh.memory.Stop()
-		}
+		_ = lh // shared App conversation memory remains alive
 		if server != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = server.Shutdown(ctx)
@@ -217,9 +224,7 @@ func (m *thirdPartyGatewayManager) Stop() {
 	lh := m.localHandler
 	m.localHandler = nil
 	m.mu.Unlock()
-	if lh != nil {
-		lh.memory.Stop()
-	}
+	_ = lh // shared App conversation memory remains alive
 	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = server.Shutdown(ctx)
@@ -241,10 +246,7 @@ func (m *thirdPartyGatewayManager) emitStatusEvent() {
 func (m *thirdPartyGatewayManager) resetLocalHandler() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.localHandler != nil {
-		m.localHandler.memory.Stop()
-		m.localHandler = nil
-	}
+	m.localHandler = nil
 }
 
 func (m *thirdPartyGatewayManager) handleHealth(w http.ResponseWriter, r *http.Request) {

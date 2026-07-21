@@ -54,11 +54,30 @@ type UserMessage struct {
 	// it to the device for handling (e.g. "workflow:status", "workflow:cancel").
 	SlashCommand string `json:"slash_command,omitempty"`
 
+	// StartMenu is supplied only for a confirmed Hub /startmenu launch. Desktop
+	// clients create a dedicated task/tab from it before processing the message.
+	StartMenu *StartMenuLaunch `json:"start_menu,omitempty"`
+
 	// CancelCtx is an optional external cancellation context. When set,
 	// background task handlers will monitor it and cancel the agent loop
 	// when the context is done (e.g. scheduler timeout or shutdown).
 	// Not serialized — only used for in-process signaling.
 	CancelCtx context.Context `json:"-"`
+}
+
+// StartMenuLaunch contains non-sensitive task metadata carried with a
+// confirmed /startmenu prompt. SSH passwords are intentionally excluded.
+type StartMenuLaunch struct {
+	Title      string `json:"title"`
+	TaskText   string `json:"task_text"`
+	AgentMode  string `json:"agent_mode,omitempty"`
+	WorkingDir string `json:"working_dir,omitempty"`
+	RemoteHost string `json:"remote_host,omitempty"`
+	RemotePort int    `json:"remote_port,omitempty"`
+	RemoteUser string `json:"remote_user,omitempty"`
+	RemoteDir  string `json:"remote_dir,omitempty"`
+	Platform   string `json:"platform,omitempty"`
+	TargetUID  string `json:"target_uid,omitempty"`
 }
 
 // MessageAttachment represents an image or file attached to a message.

@@ -625,6 +625,9 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 	if len(attachments) > 0 {
 		wsMsg["payload"].(map[string]interface{})["attachments"] = attachments
 	}
+	if launch := startMenuTaskFromContext(ctx); launch != nil {
+		wsMsg["payload"].(map[string]interface{})["start_menu"] = startMenuTaskPayload(launch)
+	}
 	if err := r.devices.SendToMachine(machineID, wsMsg); err != nil {
 		log.Printf("[MessageRouter] SendToMachine failed for machine=%s: %v", machineID, err)
 		body := "无法将消息发送到您的设备，请检查连接状态。"
@@ -751,6 +754,32 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 			return nil, ctx.Err()
 		}
 	}
+}
+
+func startMenuTaskPayload(launch *StartMenuTaskLaunch) map[string]interface{} {
+	payload := map[string]interface{}{
+		"title":      strings.TrimSpace(launch.Title),
+		"task_text":  strings.TrimSpace(launch.TaskText),
+		"agent_mode": strings.TrimSpace(launch.AgentMode),
+		"platform":   strings.TrimSpace(launch.Platform),
+		"target_uid": strings.TrimSpace(launch.TargetUID),
+	}
+	if env := launch.CodingEnv; env != nil {
+		if dir := strings.TrimSpace(env.WorkingDir); dir != "" {
+			payload["working_dir"] = dir
+		}
+		if remote := env.Remote; remote != nil {
+			port := remote.Port
+			if port <= 0 || port > 65535 {
+				port = 22
+			}
+			payload["remote_host"] = strings.TrimSpace(remote.Host)
+			payload["remote_port"] = port
+			payload["remote_user"] = strings.TrimSpace(remote.User)
+			payload["remote_dir"] = strings.TrimSpace(remote.WorkDir)
+		}
+	}
+	return payload
 }
 
 // routeBroadcast sends the message to all online machines concurrently and

@@ -228,6 +228,7 @@ type Adapter struct {
 	identity       IdentityResolver
 	limiter        *rateLimiter
 	taskDispatcher *IMTaskDispatcher // optional; nil = synchronous processing (legacy)
+	startMenu      *startMenuService
 }
 
 // NewAdapter creates a new IM Adapter with the given MessageRouter.
@@ -271,6 +272,12 @@ func (a *Adapter) SetContentAuditor(ca *ContentAuditor) {
 	a.contentAuditor = ca
 }
 
+// SetStartMenuTemplateStore enables the /startmenu IM shortcut wizard.
+// The store is expected to expose the same saved templates as the welcome page.
+func (a *Adapter) SetStartMenuTemplateStore(store *StartMenuTemplateStore) {
+	a.startMenu = newStartMenuService(store)
+}
+
 // InitTaskDispatcher creates and wires the background task dispatcher.
 // Must be called after SetCoordinator (if used). capacity is the per-user
 // queue depth (recommended 3-5).
@@ -281,6 +288,7 @@ func (a *Adapter) InitTaskDispatcher(capacity int) {
 		if len(task.Attachments) > 0 {
 			a.messageRouter.StashAttachmentsForTenant(task.TenantID, task.UserID, task.Attachments)
 		}
+		ctx = withStartMenuTask(ctx, task.StartMenu)
 		if a.coordinator != nil {
 			return a.coordinator.Coordinate(ctx, task.UserID, task.PlatformName, task.PlatformUID, task.Text)
 		}
@@ -502,6 +510,45 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	}
 
 	log.Printf("[IM Adapter] command check: text=%q len=%d bytes=[% x]", text, len(text), []byte(text))
+
+	// /startmenu is a short-lived, per-user wizard. Its final confirmed prompt
+	// intentionally falls through to the normal routing path so task execution
+	// remains identical to a user-authored IM task.
+	startMenuLaunch := false
+	var startMenuTask *StartMenuTaskLaunch
+	if a.startMenu != nil {
+		// A confirmed shortcut creates one desktop AI-assistant tab. Reject it
+		// before the wizard consumes its state when the user is in broadcast mode.
+		if text == "/confirm" && a.startMenu.awaitingConfirmation(tenantID, unifiedID) {
+			if selected, ok := a.messageRouter.GetSelectedMachineForTenant(tenantID, unifiedID); ok && selected == broadcastMachineID {
+				a.sendResponse(ctx, plugin, target, menuResponse(400, "请先选择一台设备", "当前处于群聊模式。任务快捷方式会创建一个独立的 AI 助手标签页，请先使用 /call <设备昵称> 选择目标设备后再确认启动。"))
+				return
+			}
+		}
+		result := a.startMenu.handle(ctx, tenantID, unifiedID, text)
+		if result.Handled {
+			if result.Response != nil {
+				a.sendResponse(ctx, plugin, target, result.Response)
+				return
+			}
+			if result.Launch != "" {
+				text = result.Launch
+				msg.Text = text
+				startMenuLaunch = result.LaunchConfirmed
+				if result.LaunchConfirmed {
+					startMenuTask = &StartMenuTaskLaunch{
+						Title:     result.TaskTitle,
+						TaskText:  result.TaskText,
+						AgentMode: result.AgentMode,
+						CodingEnv: result.CodingEnv,
+						Platform:  msg.PlatformName,
+						TargetUID: startMenuReplyTarget(msg),
+					}
+				}
+				log.Printf("[IM Adapter] /startmenu confirmed for user=%s text_len=%d", unifiedID, len(text))
+			}
+		}
+	}
 
 	// 3a. Handle /machines command — list all devices from Hub's perspective.
 	if text == "/machines" || text == "/m" {
@@ -973,7 +1020,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// When the task dispatcher is active and the Coordinator supports it,
 	// try to answer simple questions directly without queuing.
 	if a.taskDispatcher != nil && a.coordinator != nil {
-		if !isIncomingVoiceMessage(msg) {
+		if !startMenuLaunch && !isIncomingVoiceMessage(msg) {
 			if fastResp := a.coordinator.TryFastAnswer(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text); fastResp != nil {
 				// Agent-like answer: pair decorations with this inbound message.
 				a.sendResponse(WithReplyMeta(ctx, msg.PlatformUID, msg.MessageID), plugin, target, fastResp)
@@ -994,6 +1041,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			MessageType:  msg.MessageType,
 			Text:         text,
 			Attachments:  msg.Attachments,
+			StartMenu:    startMenuTask,
 		}
 		queueResp := a.taskDispatcher.Enqueue(task)
 		// Only send the queue ack if the task is actually queued behind
@@ -1045,6 +1093,13 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 
 	// 6. Format and deliver response
 	a.sendResponse(ctx, plugin, target, routeResp)
+}
+
+func startMenuReplyTarget(msg IncomingMessage) string {
+	if target := strings.TrimSpace(msg.ReplyTarget); target != "" {
+		return target
+	}
+	return strings.TrimSpace(msg.PlatformUID)
 }
 
 // DeliverProgress sends a progress text message to a user via the appropriate

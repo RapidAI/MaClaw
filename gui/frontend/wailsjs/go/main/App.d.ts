@@ -844,6 +844,8 @@ export function SetBugReportEnabled(arg1:boolean):Promise<main.AppConfig>;
 
 export function SelectBugReportScreenshots():Promise<Array<string>>;
 
+export function BugReportScreenshotPreviewDataURL(arg1:string):Promise<string>;
+
 export function SubmitBugReport(arg1:string,arg2:string,arg3:Array<string>):Promise<Record<string, any>>;
 
 export function RetryBugReportUpload(arg1:string,arg2:string,arg3:Array<string>):Promise<Record<string, any>>;
@@ -1306,6 +1308,8 @@ export function WelcomeSyncPush(arg1:any):Promise<any>;
 export function WelcomeSyncPull(arg1:any):Promise<any>;
 
 export function WelcomeSyncDelete(arg1:any):Promise<any>;
+
+export function UpdateLocalStartMenuTemplates(arg1:any):Promise<void>;
 
 export function KnowledgeListSources(arg1:any):Promise<Array<any>>;
 

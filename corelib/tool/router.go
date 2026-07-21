@@ -239,6 +239,10 @@ type SkillProvider interface {
 
 // Router selects the most relevant tools for a given user message.
 type Router struct {
+	// mu serializes configuration updates and route construction. Route rebuilds
+	// cached BM25 indexes and reads session state, so it must not overlap an
+	// embedding activation or a second IM request sharing this router.
+	mu                sync.Mutex
 	generator         *DefinitionGenerator
 	registry          *Registry
 	recommender       SkillRecommender
@@ -264,6 +268,8 @@ func NewRouter(generator *DefinitionGenerator) *Router {
 
 // SetSkillProvider sets the SkillProvider used for skill-aware routing.
 func (r *Router) SetSkillProvider(provider SkillProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.skillProvider = provider
 	r.refreshSkillIndex()
 }
@@ -287,6 +293,8 @@ func (r *Router) refreshSkillIndex() {
 // RefreshSkillIndex forces a rebuild of the skill BM25 index.
 // Call this after new skills are learned or existing skills are updated.
 func (r *Router) RefreshSkillIndex() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.refreshSkillIndex()
 }
 
@@ -602,17 +610,23 @@ func isNamedLocalAPIReference(text string) bool {
 
 // SetRegistry sets the Registry used for dynamic builtin detection and tag-based scoring.
 func (r *Router) SetRegistry(reg *Registry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.registry = reg
 }
 
 // SetRecommender sets the SkillRecommender used for recommendation matching.
 func (r *Router) SetRecommender(recommender SkillRecommender) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.recommender = recommender
 }
 
 // SetEmbedder configures the embedder for hybrid retrieval.
 // If emb is a NoopEmbedder, hybrid is disabled (set to nil).
 func (r *Router) SetEmbedder(emb embedding.Embedder) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if embedding.IsNoop(emb) {
 		r.hybrid = nil
 		return
@@ -622,32 +636,44 @@ func (r *Router) SetEmbedder(emb embedding.Embedder) {
 
 // HybridActive returns true if hybrid retrieval is currently enabled.
 func (r *Router) HybridActive() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.hybrid != nil
 }
 
 // SetEnrichmentStore configures the enrichment store for enhanced tool descriptions.
 func (r *Router) SetEnrichmentStore(store *EnrichmentStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.enrichStore = store
 }
 
 // SetUsageTracker configures the usage tracker for experience-aware scoring.
 func (r *Router) SetUsageTracker(tracker *UsageTracker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.tracker = tracker
 }
 
 // SetReranker configures the LLM listwise reranker. Pass nil to disable.
 func (r *Router) SetReranker(rr Reranker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.reranker = rr
 }
 
 // SetIntentClassifier sets the hybrid intent classifier used for semantic
 // intent detection in conditional tool matching and routing decisions.
 func (r *Router) SetIntentClassifier(ic *IntentClassifier) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.intentClassifier = ic
 }
 
 // IntentClassifier returns the configured IntentClassifier, or nil.
 func (r *Router) IntentClassifier() *IntentClassifier {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.intentClassifier
 }
 
@@ -655,11 +681,15 @@ func (r *Router) IntentClassifier() *IntentClassifier {
 // intent-driven conditional tool selection. When non-nil, Route() uses
 // UIC results instead of evaluating local conditional keep rules.
 func (r *Router) SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.unifiedClassifier = uic
 }
 
 // ActivateSessionTool adds a tool to the current session's always-include set.
 func (r *Router) ActivateSessionTool(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if !ShouldPinConditionalTool(name) {
 		return
 	}
@@ -673,6 +703,8 @@ func (r *Router) ActivateSessionTool(name string) {
 // via ActivateSessionTool. This is used by callers (e.g. routeTools) to
 // avoid removing a tool that was previously used in this session.
 func (r *Router) IsSessionPinned(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.sessionTools[name]
 }
 
@@ -681,6 +713,8 @@ func (r *Router) IsSessionPinned(name string) bool {
 // tools that were session-pinned mid-loop (e.g. by discover_tool) but are
 // not yet in the LLM's tool definition list.
 func (r *Router) SessionPinnedToolsMissing(currentNames map[string]bool) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if len(r.sessionTools) == 0 {
 		return nil
 	}
@@ -695,6 +729,8 @@ func (r *Router) SessionPinnedToolsMissing(currentNames map[string]bool) []strin
 
 // ResetSession clears session-activated tools.
 func (r *Router) ResetSession() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.sessionTools = nil
 }
 
@@ -704,7 +740,10 @@ func (r *Router) ResetSession() {
 // pipeline, their embeddings are already warm in ToolEmbeddingCache.
 // No-op when hybrid retrieval is not active.
 func (r *Router) WarmupDeferredEmbeddings(toolDefs []map[string]interface{}) {
-	if r.hybrid == nil || len(toolDefs) == 0 {
+	r.mu.Lock()
+	hybrid := r.hybrid
+	if hybrid == nil || len(toolDefs) == 0 {
+		r.mu.Unlock()
 		return
 	}
 	texts := make(map[string]string, len(toolDefs))
@@ -716,12 +755,13 @@ func (r *Router) WarmupDeferredEmbeddings(toolDefs []map[string]interface{}) {
 		desc := ExtractToolDescription(def)
 		texts[name] = r.buildEmbeddingText(name, desc)
 	}
+	r.mu.Unlock()
 	if len(texts) == 0 {
 		return
 	}
 	// Fire-and-forget: GetBatch populates the cache and triggers async disk save.
 	go func() {
-		_, _ = r.hybrid.toolCache.GetBatch(texts)
+		_, _ = hybrid.toolCache.GetBatch(texts)
 		log.Printf("[Router] warmed up embeddings for %d deferred tools", len(texts))
 	}()
 }
@@ -1081,6 +1121,8 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 // RouteWithOptions is Route plus optional intent rewrite pins / search query.
 func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]interface{}, opts RouteOptions) []map[string]interface{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var condKeep map[string]bool
 	var condFilterOut map[string]bool
 	var cachedICResult *IntentResult
@@ -1728,13 +1770,13 @@ func isExplicitScreenshotRequest(userMessage string) bool {
 // Keep in sync with host auto-extract markers (corelib/agent file_path_expand.go)
 // and GUI file-picker / IM attachment prefixes — string match only, no import cycle.
 const (
-	officePinAutoExtractBegin = "--- auto_extract: begin"
-	officePinAutoExtractEnd   = "--- auto_extract: end"
-	officePinAutoExtractNotice = "[系统已自动解析文档正文"
-	officePinFilePathPrefix    = "[用户选择的本地文件路径]"
+	officePinAutoExtractBegin   = "--- auto_extract: begin"
+	officePinAutoExtractEnd     = "--- auto_extract: end"
+	officePinAutoExtractNotice  = "[系统已自动解析文档正文"
+	officePinFilePathPrefix     = "[用户选择的本地文件路径]"
 	officePinFilePathHistorical = "[之前选择的本地文件路径"
-	officePinAttachmentPrefix  = "[附件:"
-	officePinAttachmentHist    = "[之前的附件:"
+	officePinAttachmentPrefix   = "[附件:"
+	officePinAttachmentHist     = "[之前的附件:"
 )
 
 // officeDocumentExts are extensions the native office(read_document) tool handles

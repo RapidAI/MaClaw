@@ -66,10 +66,10 @@ describe('PetSettingsPanel localization', () => {
             renderPetSettings('zh-Hans');
         });
 
-        expect(screen.getByRole('button', { name: '帮助' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: '打开宠物包创建指南' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '帮助：宠物包创建指南' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '创建指南：宠物包说明' })).toBeTruthy();
         expect(screen.getByRole('button', { name: '选择 Zip 安装' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: '打开 packs 目录' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '浏览用户宠物包目录' })).toBeTruthy();
 
         [
             '桌面宠物',
@@ -119,10 +119,10 @@ describe('PetSettingsPanel localization', () => {
         });
 
         expect(screen.getByText('Desktop Pet')).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Help' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Open pet pack creation guide' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Choose Zip to Install' })).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Open packs folder' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Help: pet pack creation guide' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Guide: pet pack docs' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Install Zip' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Browse user pet packs folder' })).toBeTruthy();
         expect(screen.getByText('Enable Desktop Pet')).toBeTruthy();
         expect(screen.getByText('Idle')).toBeTruthy();
         expect(screen.getByText('Done')).toBeTruthy();
@@ -154,7 +154,7 @@ describe('PetSettingsPanel localization', () => {
         await act(async () => {
             renderPetSettings('en');
         });
-        const btn = screen.getByRole('button', { name: 'Open packs folder' });
+        const btn = screen.getByRole('button', { name: 'Browse user pet packs folder' });
         await act(async () => {
             fireEvent.click(btn);
         });

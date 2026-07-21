@@ -43,6 +43,7 @@ type haNodeRequest struct {
 	NodeID       string `json:"node_id"`
 	NodeName     string `json:"node_name"`
 	AdvertiseURL string `json:"advertise_url"`
+	PublicURL    string `json:"public_url,omitempty"`
 	PublicKeyPEM string `json:"public_key,omitempty"`
 	Enabled      bool   `json:"enabled"`
 }
@@ -51,6 +52,7 @@ type haPeerRequest struct {
 	NodeID       string `json:"node_id"`
 	Name         string `json:"name"`
 	BaseURL      string `json:"base_url"`
+	PublicURL    string `json:"public_url,omitempty"`
 	PublicKeyPEM string `json:"public_key,omitempty"`
 	Enabled      bool   `json:"enabled"`
 }
@@ -399,6 +401,7 @@ func (r haConfigRequest) toConfig() config.HAConfig {
 			NodeID:       node.NodeID,
 			NodeName:     node.NodeName,
 			AdvertiseURL: node.AdvertiseURL,
+			PublicURL:    node.PublicURL,
 			PublicKeyPEM: node.PublicKeyPEM,
 			Enabled:      node.Enabled,
 		})
@@ -409,6 +412,7 @@ func (r haConfigRequest) toConfig() config.HAConfig {
 			NodeID:       peer.NodeID,
 			Name:         peer.Name,
 			BaseURL:      peer.BaseURL,
+			PublicURL:    peer.PublicURL,
 			PublicKeyPEM: peer.PublicKeyPEM,
 			Enabled:      peer.Enabled,
 		})
@@ -442,6 +446,7 @@ func fromHAConfig(cfg config.HAConfig) haConfigRequest {
 			NodeID:       node.NodeID,
 			NodeName:     node.NodeName,
 			AdvertiseURL: node.AdvertiseURL,
+			PublicURL:    node.PublicURL,
 			PublicKeyPEM: node.PublicKeyPEM,
 			Enabled:      node.Enabled,
 		})
@@ -452,6 +457,7 @@ func fromHAConfig(cfg config.HAConfig) haConfigRequest {
 			NodeID:       peer.NodeID,
 			Name:         peer.Name,
 			BaseURL:      peer.BaseURL,
+			PublicURL:    peer.PublicURL,
 			PublicKeyPEM: peer.PublicKeyPEM,
 			Enabled:      peer.Enabled,
 		})

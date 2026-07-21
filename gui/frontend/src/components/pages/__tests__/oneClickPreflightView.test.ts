@@ -14,6 +14,19 @@ function formatOneClickPreflightHint(preflight: Record<string, unknown> | null |
     return String(preflight.message || '').trim();
 }
 
+function oneClickPreflightNeedsRunEvidence(preflight: Record<string, unknown> | null | undefined): boolean {
+    if (!preflight) return false;
+    const isEvidenceGate = (value: unknown) => /testevidence|successful local run evidence/i.test(String(value || ''));
+    if (Array.isArray(preflight.checks) && preflight.checks.some((raw) => {
+        if (!raw || typeof raw !== 'object') return false;
+        const row = raw as Record<string, unknown>;
+        return row.ok !== true && String(row.id || '').trim() === 'package_ready' && isEvidenceGate(row.message);
+    })) return true;
+    return [preflight.blocking, preflight.warnings, preflight.message]
+        .flatMap((value) => Array.isArray(value) ? value : [value])
+        .some(isEvidenceGate);
+}
+
 function summarizeOneClickPreflightView(
     preflight: Record<string, unknown> | null | undefined,
     text: {
@@ -135,6 +148,17 @@ describe('summarizeOneClickPreflightView', () => {
         expect(view.tone).toBe('blocked');
         expect(view.title).toBe(text.oneClickRemoteBlocked);
         expect(view.detail).toContain('package_ready');
+    });
+
+    it('recognizes a legacy top-level run-evidence blocker', () => {
+        expect(oneClickPreflightNeedsRunEvidence({
+            ready_for_local: false,
+            blocking: ['package_ready: missing successful local run evidence'],
+        })).toBe(true);
+        expect(oneClickPreflightNeedsRunEvidence({
+            ready_for_local: false,
+            message: 'missing successful local run evidence',
+        })).toBe(true);
     });
 
     it('treats skill-only gap as warn (may-partial affordance)', () => {

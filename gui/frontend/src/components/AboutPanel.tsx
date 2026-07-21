@@ -57,6 +57,7 @@ type AboutPanelProps = {
     t: (key: string) => string;
     onOpenWebsite: () => void;
     onCheckUpdate: () => void;
+    onOpenProblemReport?: () => void;
     onShowInstallLog: () => void;
     onOpenBugReport: () => void;
     onOpenGithub: () => void;
@@ -172,6 +173,7 @@ export function AboutPanel({
     t,
     onOpenWebsite,
     onCheckUpdate,
+    onOpenProblemReport,
     onShowInstallLog,
     onOpenBugReport,
     onOpenGithub,
@@ -571,6 +573,7 @@ export function AboutPanel({
                         <div className="about-version-row">
                             <span className="about-version-badge">{t("version")} {appVersion}</span>
                             <button className="btn-link about-update-inline-button" onClick={onCheckUpdate}>{t("onlineUpdate")}</button>
+                            {onOpenProblemReport && <button className="btn-link about-update-inline-button" onClick={onOpenProblemReport}>{t("problemReport")}</button>}
                         </div>
                         <div className="about-meta-inline">
                             <span>{t("author")}: {author}</span>
@@ -707,6 +710,7 @@ export function AboutPanel({
                     <div className="about-action-grid">
                         <button className="btn-link about-action-button" onClick={onOpenWebsite}>{t("officialWebsite")}</button>
                         <button className="btn-link about-action-button" onClick={onShowInstallLog}>{t("installLog")}</button>
+                        {onOpenProblemReport && <button className="btn-link about-action-button" onClick={onOpenProblemReport}>{t("problemReport")}</button>}
                         <button className="btn-link about-action-button" onClick={() => setShowHealthDialog(true)}>{t("memoryHealth")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowSystemDoctor(true)}>{t("systemDoctor")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowSecurityEvents(true)}>{t("securityEvents")}</button>

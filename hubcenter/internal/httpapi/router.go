@@ -790,7 +790,17 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	}
 	// Skill Catalog API
 	var searchRemover skillSearchRemover
+	var problemReports *ProblemReportHandlers
 	if smHandlers != nil {
+		problemReports = NewProblemReportHandlers(smHandlers.store, smHandlers.authSvc, smHandlers.dataDir)
+		problemReports.SetOriginURLProvider(hubService.PublicBaseURL)
+		if haSvc != nil {
+			problemReports.SetHASigner(haSvc.SignPeerRequest)
+			problemReports.SetHAClusterSecretProvider(haSvc.ClusterSecret)
+			problemReports.SetHAInternalURLResolver(haSvc.InternalURLForPublicOrigin)
+			problemReports.SetHAOriginOwnershipResolver(haSvc.OwnsPublicOrigin)
+			problemReports.SetHAPublicOriginProvider(haSvc.PublicURL)
+		}
 		searchRemover = smHandlers.SearchService()
 	}
 	skillHandlers := NewSkillHandlers(skillStore, searchRemover)
@@ -803,6 +813,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/v1/skills/{id}/rate", skillHandlers.RateSkill)
 	// SkillHub admin management
 	mux.HandleFunc("GET /api/admin/skillhub/list", RequireAdmin(adminService, skillHandlers.AdminListSkills))
+	mux.HandleFunc("GET /api/admin/skillhub/{id}", RequireAdmin(adminService, skillHandlers.AdminGetSkill))
 	mux.HandleFunc("GET /api/admin/capability-market/external-search", RequireAdmin(adminService, AdminCapabilityMarketExternalSearchHandler()))
 	mux.HandleFunc("POST /api/admin/skillhub/visibility", RequireAdmin(adminService, skillHandlers.AdminSetVisibility))
 	mux.HandleFunc("POST /api/admin/skillhub/trust-level", RequireAdmin(adminService, skillHandlers.AdminSetTrustLevel))
@@ -880,6 +891,31 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/auth/verify-identity", smHandlers.VerifyIdentity)
 		mux.HandleFunc("GET /api/v1/auth/session", smHandlers.ValidateSession)
 		mux.HandleFunc("GET /api/v1/auth/me", smHandlers.CurrentUser)
+		mux.HandleFunc("POST /api/v1/problem-reports", problemReports.Create)
+		mux.HandleFunc("GET /api/v1/problem-reports/mine", problemReports.ListMine)
+		mux.HandleFunc("GET /api/v1/admin/problem-reports", RequireAdmin(adminService, problemReports.AdminList))
+		mux.HandleFunc("PUT /api/v1/admin/problem-reports/{id}", RequireAdmin(adminService, problemReports.AdminUpdate))
+		mux.HandleFunc("DELETE /api/v1/admin/problem-reports/{id}", RequireAdmin(adminService, problemReports.AdminDelete))
+		mux.HandleFunc("GET /api/v1/admin/problem-reports/{id}/attachments", RequireAdmin(adminService, problemReports.AdminAttachmentManifest))
+		mux.HandleFunc("GET /api/v1/admin/problem-reports/{id}/attachments/{file}/link", RequireAdmin(adminService, problemReports.AdminAttachmentLink))
+		mux.HandleFunc("GET /api/v1/admin/problem-reports/{id}/attachments/{file}", RequireAdmin(adminService, problemReports.AdminDownload))
+		if haSvc != nil {
+			mux.HandleFunc("DELETE /api/v1/internal/ha/problem-reports/{id}", func(w http.ResponseWriter, r *http.Request) {
+				if err := haSvc.AuthenticatePeerRequest(r); err != nil {
+					writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+					return
+				}
+				problemReports.HADelete(w, r)
+			})
+			mux.HandleFunc("GET /api/v1/internal/ha/problem-reports/{id}/attachments/{file}", problemReports.HAOriginDownload)
+			mux.HandleFunc("GET /api/v1/internal/ha/problem-reports/{id}/attachments", func(w http.ResponseWriter, r *http.Request) {
+				if err := haSvc.AuthenticatePeerRequest(r); err != nil {
+					writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+					return
+				}
+				problemReports.HAAttachmentManifest(w, r)
+			})
+		}
 		mux.HandleFunc("POST /api/v1/auth/change-password", smHandlers.ChangePassword)
 		mux.HandleFunc("POST /api/v1/auth/resend-activation", gossipRateLimitMiddleware(authLookupRL, smHandlers.ResendActivation))
 		mux.HandleFunc("POST /api/v1/auth/forgot-password", gossipRateLimitMiddleware(authLookupRL, smHandlers.SendPasswordReset))

@@ -3087,11 +3087,11 @@ func synthesizeSkillAppOutputPath(inputPath, outputFormat string) string {
 		dir = outputDir
 	}
 
-	outputPath := filepath.Join(dir, base+"."+outputFormat)
-	// Avoid overwriting input when formats match (e.g. pdf→pdf)
-	if strings.EqualFold(filepath.Clean(outputPath), filepath.Clean(inputPath)) {
-		outputPath = filepath.Join(dir, base+"_output."+outputFormat)
-	}
+	// The selected output format is an artifact contract, not merely a file
+	// extension hint. Always reserve a distinct output path: a PDF→PDF app
+	// must not write its review result into the uploaded source file, and a
+	// staged input must never be mistaken for a successfully generated result.
+	outputPath := filepath.Join(dir, base+"_output."+outputFormat)
 	return outputPath
 }
 

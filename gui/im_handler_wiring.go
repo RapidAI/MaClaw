@@ -562,10 +562,20 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		unifiedClassifier: app.unifiedClassifier,
 		steeringStore:     app.steeringStore,
 	}
-	if app != nil {
-		app.imHandler = h
-	}
+	// Construction is intentionally side-effect free with respect to
+	// app.imHandler. Several paths create short-lived handlers (for example a
+	// manual browser-tool invocation or a local gateway); publishing each one
+	// here could replace the handler that owns an active task and disconnect its
+	// interrupt tracker. The long-lived Hub lifecycle publishes its handler
+	// explicitly after creation.
 	h.interruptHandler = newIMInterruptHandler(h)
+	// A handler can be created after the embedding model was activated (for
+	// example after a Hub reconnect). Inherit the already-loaded shared runtime
+	// immediately instead of waiting for a future activation event that may never
+	// occur during this process lifetime.
+	if emb := app.activeInterruptEmbedder(); emb != nil {
+		h.interruptHandler.SetEmbedder(emb)
+	}
 	// Initialize ToolRegistry and register builtin tools.
 	h.registry = NewToolRegistry()
 	registerBuiltinTools(h.registry, h)
@@ -576,6 +586,15 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	// Register current-Hub MaClaw group discussion tools.
 	registerGroupDiscussionTools(h.registry, app, h)
 	h.toolBuilder = NewDynamicToolBuilder(h.registry)
+	// Handlers may be recreated after full embedding activation (for example a
+	// Hub reconnect). In that case the activation callback will not run again,
+	// so restore tool routing here as well. Intent-only embedding deliberately
+	// does not enable tool vector search.
+	if app != nil && app.embeddingActivated.Load() {
+		if emb := app.activeInterruptEmbedder(); emb != nil {
+			h.toolBuilder.SetEmbedder(emb)
+		}
+	}
 
 	// Initialize automatic topic switch detector.
 	h.topicDetector = newTopicSwitchDetector(func() (*http.Client, corelib.MaclawLLMConfig) {

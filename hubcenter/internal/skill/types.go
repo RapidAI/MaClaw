@@ -18,6 +18,11 @@ type HubSkillMeta struct {
 	RatingSum   int      `json:"rating_sum"`
 	RatingCount int      `json:"rating_count"`
 	AvgRating   float64  `json:"avg_rating"`
+	// VersionCount and VersionHistory are presentation fields populated when a
+	// catalog is listed. They group revisions of the same stable SkillID while
+	// keeping the current (latest) revision as the catalog item.
+	VersionCount   int                   `json:"version_count,omitempty"`
+	VersionHistory []SkillVersionSummary `json:"version_history,omitempty"`
 
 	// SkillMarket 扩展字段
 	Price                        int                    `json:"price,omitempty"`                          // Credits 价格，0 = 免费
@@ -50,6 +55,19 @@ type HubSkillMeta struct {
 	ArtifactContractRequired     bool                   `json:"artifact_contract_required,omitempty"`     // 是否声明输出产物
 	ArtifactContractOutputModes  []string               `json:"artifact_contract_output_modes,omitempty"` // 输出产物类型
 	ArtifactContractPresentation string                 `json:"artifact_contract_presentation,omitempty"` // 产物呈现方式
+}
+
+// SkillVersionSummary is the lightweight revision data needed to present a
+// skill's version history. The complete definition remains available through
+// the existing GET skill endpoint when a revision is selected.
+type SkillVersionSummary struct {
+	ID        string `json:"id"`
+	Version   string `json:"version"`
+	SemVer    string `json:"semver,omitempty"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Status    string `json:"status,omitempty"`
+	Visible   bool   `json:"visible"`
 }
 
 type MaclawAppTestEvidence struct {

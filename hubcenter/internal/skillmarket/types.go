@@ -21,6 +21,27 @@ type SkillMarketUser struct {
 	VerifiedAt        time.Time `json:"verified_at,omitempty"`
 }
 
+// ProblemReport is an authenticated client diagnostic submission. Reporter
+// contact data is deliberately only returned from admin endpoints.
+type ProblemReport struct {
+	ID              string   `json:"id"`
+	ReporterUserID  string   `json:"reporter_user_id"`
+	ReporterContact string   `json:"reporter_contact,omitempty"`
+	OSVersion       string   `json:"os_version"`
+	GUIVersion      string   `json:"gui_version,omitempty"`
+	Description     string   `json:"description"`
+	Status          string   `json:"status"`
+	AdminNote       string   `json:"admin_note,omitempty"`
+	DiagnosticsPath string   `json:"diagnostics_path,omitempty"`
+	ScreenshotPaths []string `json:"screenshot_paths,omitempty"`
+	// OriginURL is the HubCenter that owns the attachment files. HA peers sync
+	// this metadata but never copy diagnostics or screenshots.
+	OriginURL  string    `json:"origin_url,omitempty"`
+	ArchivedAt time.Time `json:"archived_at,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 // ── Credits Transaction ─────────────────────────────────────────────────
 
 // CreditsTransaction 记录一笔 Credits 交易。

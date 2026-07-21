@@ -25,6 +25,10 @@ export interface PendingProjectTabOpen {
     remoteHost?: string;
     /** When true, remote coding SSH needs reconnect (password) before SubAgent runs. */
     remoteNeedsReconnect?: boolean;
+	/** Original IM route for the one-off completion summary. */
+	imPlatform?: string;
+	imTargetUID?: string;
+	imIsGroup?: boolean;
 }
 
 /** Pending expert tab open request (e.g. clicking an expert card on the utilities page). */
@@ -228,6 +232,8 @@ export function usePendingAssistantTabOpen({
     onProjectTabHandledRef.current = onPendingProjectTabOpenHandled;
     const getTabStateRef = useRef(getTabState);
     getTabStateRef.current = getTabState;
+    const saveTabStateRef = useRef(saveTabState);
+    saveTabStateRef.current = saveTabState;
     const hasProjectTabRef = useRef(hasProjectTab);
     hasProjectTabRef.current = hasProjectTab;
 
@@ -236,7 +242,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data and clear pending state synchronously.
         // The guard above prevents re-entry when pending becomes null.
-        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteNeedsReconnect } = pendingProjectTabOpen;
+        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteNeedsReconnect, imPlatform, imTargetUID, imIsGroup } = pendingProjectTabOpen;
         onProjectTabHandledRef.current?.();
 
         // Check if the tab already exists in the tab list BEFORE creating it.
@@ -249,6 +255,31 @@ export function usePendingAssistantTabOpen({
 
         const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, agentMode, remoteHost, remoteNeedsReconnect });
         if (!tab) return;
+        const initialState = getTabStateRef.current?.(tab.id);
+        const hasExistingConversation = initialState?.history &&
+            Array.isArray(initialState.history) &&
+            initialState.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
+        // A duplicate/stale event can focus a pre-existing task tab. Do not
+        // attach its original IM completion route to that tab: the next manual
+        // message would otherwise send an unrelated result back to IM.
+        // Preserve the caller's autoSend contract. IM launches set it to true,
+        // while other callers may intentionally open a remote tab without
+        // submitting an initial prompt.
+        const shouldDeferRemoteInitialSend = autoSend !== false && agentMode === "remote_coding_dev" && !!remoteNeedsReconnect;
+        if (!tabExistedInList && !hasExistingConversation && (imPlatform && imTargetUID || shouldDeferRemoteInitialSend)) {
+            saveTabStateRef.current?.(tab.id, {
+                ...initialState,
+                ...(imPlatform && imTargetUID ? {
+                    pendingIMCompletion: {
+                        platform: imPlatform,
+                        targetUID: imTargetUID,
+						isGroup: !!imIsGroup,
+                        taskTitle,
+                    },
+                } : {}),
+                ...(shouldDeferRemoteInitialSend ? { pendingRemoteInitialMessage: { text: initialMessage || taskTitle } } : {}),
+            });
+        }
         console.info("[usePendingAssistantTabOpen] project tab opened", {
             projectPath,
             tabId: tab.id,
@@ -278,14 +309,14 @@ export function usePendingAssistantTabOpen({
             // to the state map).
             //
             // Either signal being true means this is a reused tab → skip autoSend.
-            const existingState = getTabStateRef.current?.(tab.id);
-            const hasExistingConversation = existingState?.history &&
-                Array.isArray(existingState.history) &&
-                existingState.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
             if (hasExistingConversation || tabExistedInList) return;
 
+            // The remote panel flushes this prompt only after its SSH workbench
+            // has reconnected successfully.
+            if (shouldDeferRemoteInitialSend) return;
+
             const msg = initialMessage || taskTitle;
-            await send(msg, { tabId: tab.id, project_path: tab.projectPath }).catch(() => {});
+            await send(msg, { tabId: tab.id, project_path: tab.projectPath, im_platform: imPlatform, im_target_uid: imTargetUID, im_is_group: !!imIsGroup, im_task_title: taskTitle }).catch(() => {});
         })();
     }, [pendingProjectTabOpen]);
     // ↑ ONLY pendingProjectTabOpen in deps. All callbacks accessed via refs.

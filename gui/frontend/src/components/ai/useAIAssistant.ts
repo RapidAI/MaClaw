@@ -150,6 +150,10 @@ interface SendMessageOptions {
     tabId?: string;
     /** Explicit context window for non-local tabs. Prevents local history bleed. */
     recentMessages?: AIAssistantContextMessage[];
+	/** Original IM route for a one-off /startmenu completion notification. */
+	 im_platform?: string;
+	 im_target_uid?: string;
+	 im_task_title?: string;
 }
 
 type ShowConfirm = (
@@ -885,6 +889,9 @@ function buildAIAssistantSendPayload(
     if (options?.project_path) payload.project_path = normalizeProjectSessionPath(options.project_path);
     if (options?.expert_id) payload.expert_id = String(options.expert_id).trim();
     if (options?.tabId) payload.event_scope_id = options.tabId;
+	if (options?.im_platform) payload.im_platform = String(options.im_platform).trim();
+	if (options?.im_target_uid) payload.im_target_uid = String(options.im_target_uid).trim();
+	if (options?.im_task_title) payload.im_task_title = String(options.im_task_title).trim();
     return payload;
 }
 

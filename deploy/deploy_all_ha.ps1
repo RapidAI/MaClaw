@@ -46,10 +46,25 @@ function Require-Tool {
     param([string]$Name)
 
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
-    if ($null -eq $cmd) {
-        throw "Required tool not found: $Name"
+    if ($null -ne $cmd) {
+        return $cmd.Source
     }
-    return $cmd.Source
+
+    # PuTTY's installer does not always add its directory to PATH.  The
+    # deployment entry point should still work with the standard installation.
+    $knownToolPaths = @()
+    if ($Name -in @('plink.exe', 'pscp.exe')) {
+        $knownToolPaths = @(
+            (Join-Path $env:ProgramFiles ("PuTTY\\{0}" -f $Name)),
+            (Join-Path ${env:ProgramFiles(x86)} ("PuTTY\\{0}" -f $Name))
+        )
+    }
+    foreach ($path in $knownToolPaths) {
+        if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+            return $path
+        }
+    }
+    throw "Required tool not found: $Name"
 }
 
 function Escape-Psd1String {
@@ -348,11 +363,55 @@ function Stage-DeployAssets {
 
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hubcenter\web\admin') -Label 'hubcenter admin web assets'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\admin-core.js') -Label 'hubcenter admin core script'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\problem-reports-tab.js') -Label 'hubcenter problem reports admin script'
+    $hubCenterAdminIndex = Get-Content -LiteralPath (Join-Path $StageRoot 'hubcenter\web\admin\index.html') -Raw
+    if ($hubCenterAdminIndex -notmatch '/admin/assets/js/problem-reports-tab\.js') {
+        throw 'HubCenter admin page does not reference the problem reports script.'
+    }
+    $hubCenterProblemReportsScript = Get-Content -LiteralPath (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\problem-reports-tab.js') -Raw
+    if ($hubCenterProblemReportsScript -notmatch 'URL\.createObjectURL' -or $hubCenterProblemReportsScript -notmatch "Authorization: 'Bearer '") {
+        throw 'HubCenter problem reports script is missing authenticated local attachment download support.'
+    }
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\admin') -Label 'hub admin web assets'
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\dist') -Label 'hub pwa web dist'
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\card_store') -Label 'hub card store web assets'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\index.html') -Label 'hub card store index'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\professional.css') -Label 'hub card store stylesheet'
+
+    # Keep a content manifest in the archive.  The remote script validates the
+    # deployed web trees against it after copying them, so a partial/stale copy
+    # can never be reported as a successful rollout.
+    $manifestRoot = Join-Path $StageRoot 'deploy-manifest'
+    New-Item -ItemType Directory -Path $manifestRoot -Force | Out-Null
+    foreach ($webTree in @(
+            [pscustomobject]@{ Name = 'hubcenter-web'; Root = (Join-Path $StageRoot 'hubcenter\web') },
+            [pscustomobject]@{ Name = 'hub-web'; Root = (Join-Path $StageRoot 'hub\web') }
+        )) {
+        $manifestLines = @(
+            Get-ChildItem -LiteralPath $webTree.Root -File -Recurse -Force |
+                Sort-Object FullName |
+                ForEach-Object {
+                    $relative = $_.FullName.Substring($webTree.Root.Length).TrimStart('\\') -replace '\\', '/'
+                    "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $relative
+                }
+        )
+        if ($manifestLines.Count -eq 0) {
+            throw ("Cannot create empty deploy manifest for {0}" -f $webTree.Name)
+        }
+        # Force LF: GNU sha256sum treats CRLF as part of each filename.
+        [System.IO.File]::WriteAllText((Join-Path $manifestRoot ($webTree.Name + '.sha256')), ($manifestLines -join "`n") + "`n", [System.Text.Encoding]::ASCII)
+    }
+}
+
+function Get-HubCenterProblemReportsScriptSrc {
+    param([string]$AdminIndexPath)
+
+    $html = Get-Content -LiteralPath $AdminIndexPath -Raw
+    $match = [regex]::Match($html, '<script\s+src="(?<src>/admin/assets/js/problem-reports-tab\.js[^\"]*)"')
+    if (-not $match.Success) {
+        throw "HubCenter admin page does not provide a problem reports script URL: $AdminIndexPath"
+    }
+    return $match.Groups['src'].Value
 }
 
 function Build-LocalBinaries {
@@ -571,6 +630,45 @@ function Write-RemoteScript {
         '    cp -f "$target_path" "$target_path.bak"',
         '  fi',
         '  cp -f "$source_path" "$target_path"',
+        '}',
+        '',
+        'verify_web_manifest() {',
+        '  verify_target_dir="$1"',
+        '  verify_manifest="$2"',
+        '  verify_label="$3"',
+        '  if ! command -v sha256sum >/dev/null 2>&1; then',
+        '    echo "[ERROR] sha256sum is required to verify $verify_label assets" >&2',
+        '    exit 1',
+        '  fi',
+        '  if [ ! -f "$verify_manifest" ]; then',
+        '    echo "[ERROR] Missing $verify_label asset manifest: $verify_manifest" >&2',
+        '    exit 1',
+        '  fi',
+        '  echo "[remote] Verifying $verify_label static assets..."',
+        '  (cd "$verify_target_dir" && sha256sum -c "$verify_manifest")',
+        '}',
+        '',
+        'replace_web_tree() {',
+        '  source_dir="$1"',
+        '  target_dir="$2"',
+        '  manifest="$3"',
+        '  label="$4"',
+        '  parent_dir=$(dirname "$target_dir")',
+        '  deploy_nonce=$(date +%s).$$',
+        '  staging_dir="${target_dir}.deploying.${deploy_nonce}"',
+        '  if [ ! -d "$source_dir" ]; then',
+        '    echo "[ERROR] Missing $label source assets: $source_dir" >&2',
+        '    exit 1',
+        '  fi',
+        '  # Stage beside the live directory: the final rename is atomic and',
+        '  # a failed copy leaves the currently served files untouched.',
+        '  mkdir -p "$parent_dir"',
+        '  rm -rf "$staging_dir"',
+        '  mkdir -p "$staging_dir"',
+        '  cp -R "$source_dir"/. "$staging_dir"/',
+        '  verify_web_manifest "$staging_dir" "$manifest" "$label"',
+        '  rm -rf "$target_dir"',
+        '  mv "$staging_dir" "$target_dir"',
         '}',
         '',
         'stop_hubcenter_process() {',
@@ -812,10 +910,7 @@ function Write-RemoteScript {
         '  if [ -f "$SRC_ROOT/hubcenter/configs/config.example.yaml" ]; then',
         '    cp -f "$SRC_ROOT/hubcenter/configs/config.example.yaml" "$REMOTE_HUBCENTER_DIR/configs/config.example.yaml"',
         '  fi',
-        '  if [ -d "$SRC_ROOT/hubcenter/web" ]; then',
-        '    rm -rf "$REMOTE_HUBCENTER_DIR/web"',
-        '    cp -R "$SRC_ROOT/hubcenter/web" "$REMOTE_HUBCENTER_DIR/web"',
-        '  fi',
+        '  replace_web_tree "$SRC_ROOT/hubcenter/web" "$REMOTE_HUBCENTER_DIR/web" "$SRC_ROOT/deploy-manifest/hubcenter-web.sha256" "hubcenter"',
         '  backup_and_write_config "$REMOTE_HUBCENTER_DIR/configs/config.yaml" "$REMOTE_TMP_DIR/$HUBCENTER_CONFIG_BASENAME"',
         '}',
         '',
@@ -836,10 +931,7 @@ function Write-RemoteScript {
         '  if [ -f "$SRC_ROOT/hub/configs/config.example.yaml" ]; then',
         '    cp -f "$SRC_ROOT/hub/configs/config.example.yaml" "$REMOTE_HUB_DIR/configs/config.example.yaml"',
         '  fi',
-        '  if [ -d "$SRC_ROOT/hub/web" ]; then',
-        '    rm -rf "$REMOTE_HUB_DIR/web"',
-        '    cp -R "$SRC_ROOT/hub/web" "$REMOTE_HUB_DIR/web"',
-        '  fi',
+        '  replace_web_tree "$SRC_ROOT/hub/web" "$REMOTE_HUB_DIR/web" "$SRC_ROOT/deploy-manifest/hub-web.sha256" "hub"',
         '  backup_and_write_config "$REMOTE_HUB_DIR/configs/config.yaml" "$REMOTE_TMP_DIR/$HUB_CONFIG_BASENAME"',
         '  BRIDGE_SRC="$SRC_ROOT/openclaw-bridge"',
         '  BRIDGE_DST="$REMOTE_HUB_DIR/openclaw-bridge"',
@@ -1024,6 +1116,26 @@ function Invoke-UrlStatusCheck {
         [int]$TimeoutSec = 10
     )
 
+    $curlExe = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
+    if ($null -ne $curlExe) {
+        $curlArgs = @('--silent', '--show-error', '--output', 'NUL', '--write-out', '%{http_code}', '--max-time', [string]$TimeoutSec)
+        # HTTPS verification is intentionally relaxed only for post-deploy
+        # probes: a peer with a bad certificate must not mask a completed rollout.
+        if ($Url -match '^https://') {
+            $curlArgs += '--insecure'
+        }
+        $curlArgs += @('--request', $Method)
+        if (-not [string]::IsNullOrEmpty($Body) -and $Method -notin @('Get', 'Head')) {
+            $curlArgs += @('--header', ("Content-Type: {0}" -f $ContentType), '--data', $Body)
+        }
+        $curlArgs += $Url
+        $output = & $curlExe.Source @curlArgs
+        if ($LASTEXITCODE -eq 0 -and $output -match '^\d{3}$') {
+            return [int]$output
+        }
+        throw ("curl smoke check failed (exit {0}): {1}" -f $LASTEXITCODE, ($output | Out-String).Trim())
+    }
+
     try {
         $args = @{
             Uri = $Url
@@ -1059,9 +1171,63 @@ function Invoke-UrlStatusCheck {
     }
 }
 
+function Assert-HubCenterProblemReportAdminAsset {
+    param(
+        [string]$BaseUrl,
+        [string]$ExpectedScriptSrc,
+        [int]$TimeoutSec = 10
+    )
+
+    $baseUrl = $BaseUrl.TrimEnd('/')
+    $pagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("hubcenter-admin-{0}.html" -f [guid]::NewGuid().ToString('N'))
+    $scriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("hubcenter-problem-reports-{0}.js" -f [guid]::NewGuid().ToString('N'))
+    try {
+        $curlExe = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
+        if ($null -eq $curlExe) {
+            throw 'curl.exe is required for the problem reports admin asset check'
+        }
+        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --output $pagePath ($baseUrl + '/admin')
+        if ($LASTEXITCODE -ne 0) { throw 'could not fetch admin HTML' }
+        $adminPage = Get-Content -LiteralPath $pagePath -Raw
+        if ($adminPage -notmatch '/admin/assets/js/problem-reports-tab\.js') {
+            throw 'admin HTML does not reference the problem reports script'
+        }
+        $scriptMatch = [regex]::Match($adminPage, '<script\s+src="(?<src>/admin/assets/js/problem-reports-tab\.js[^\"]*)"')
+        if (-not $scriptMatch.Success) {
+            throw 'admin HTML does not provide a problem reports script URL'
+        }
+        $actualScriptSrc = $scriptMatch.Groups['src'].Value
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedScriptSrc) -and $actualScriptSrc -ne $ExpectedScriptSrc) {
+            throw ("admin HTML references stale problem reports script: expected {0}, got {1}" -f $ExpectedScriptSrc, $actualScriptSrc)
+        }
+        $scriptURL = $baseUrl + $actualScriptSrc
+        $separator = if ($scriptURL.Contains('?')) { '&' } else { '?' }
+        # Verify the exact cache-versioned script referenced by the page.  The
+        # nonce also prevents an intermediary cache from making a stale asset
+        # appear healthy immediately after a deployment.
+        $scriptURL += ($separator + 'deploy_check=' + [guid]::NewGuid().ToString('N'))
+        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --header 'Cache-Control: no-cache' --output $scriptPath $scriptURL
+        if ($LASTEXITCODE -ne 0) { throw 'could not fetch the problem reports script' }
+        $script = Get-Content -LiteralPath $scriptPath -Raw
+        if ($script -notmatch 'installWhenAdminShellReady') {
+            throw 'problem reports script is missing or is an obsolete version'
+        }
+        if ($script -notmatch 'URL\.createObjectURL' -or $script -notmatch "Authorization: 'Bearer '") {
+            throw 'problem reports script is missing authenticated local attachment download support'
+        }
+    }
+    catch {
+        throw ("problem reports admin asset check failed: {0}" -f $_.Exception.Message)
+    }
+    finally {
+        Remove-Item -LiteralPath $pagePath, $scriptPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-PostDeploySmokeCheck {
     param(
         [object[]]$Targets,
+        [string]$ExpectedHubCenterProblemReportsScriptSrc,
         [int]$TimeoutSec = 10
     )
 
@@ -1079,6 +1245,17 @@ function Invoke-PostDeploySmokeCheck {
             $checks += [pscustomobject]@{ Label = 'hub card store page'; Url = ("{0}/card_store?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub card store public api'; Url = ("{0}/api/card-store/products?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub card store admin api'; Url = ("{0}/api/admin/card-store/config" -f $target.HubPublicUrl.TrimEnd('/')); Want = 401 }
+        }
+
+        if ($target.DeployHubCenter) {
+            try {
+                Assert-HubCenterProblemReportAdminAsset -BaseUrl ("https://{0}" -f $target.Host) -ExpectedScriptSrc $ExpectedHubCenterProblemReportsScriptSrc -TimeoutSec $TimeoutSec
+                Write-Host ("  - {0}: hubcenter problem reports admin asset -> OK" -f $target.Host)
+            }
+            catch {
+                Write-Host ("  - {0}: hubcenter problem reports admin asset -> ERROR" -f $target.Host)
+                $failures += ("{0}: {1}" -f $target.Host, $_.Exception.Message)
+            }
         }
 
         foreach ($check in $checks) {
@@ -1123,6 +1300,7 @@ function Invoke-RemotePrecheck {
         'PATH="$PATH:/usr/local/go/bin:/root/go/bin"; export PATH',
         '[ -n "$(command -v sh 2>/dev/null)" ] || { echo "missing:sh"; exit 1; }',
         '[ -n "$(command -v tar 2>/dev/null)" ] || { echo "missing:tar"; exit 1; }',
+        '[ -n "$(command -v sha256sum 2>/dev/null)" ] || { echo "missing:sha256sum"; exit 1; }',
         ('mkdir -p {0} >/dev/null 2>&1 || {{ echo "mkdir-failed"; exit 1; }}' -f $mkdirArgs),
         ('[ -w "{0}" ] || {{ echo "not-writable:{0}"; exit 1; }}' -f $Target.RemoteTmpDir)
     )
@@ -1323,6 +1501,8 @@ try {
     $shouldBuildHubCenter = @($targets | Where-Object { $_.DeployHubCenter }).Count -gt 0
     Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub -BuildHubCenter $shouldBuildHubCenter
     Stage-DeployAssets -SourceRoot $rootDir -StageRoot $stageRoot
+    $expectedHubCenterProblemReportsScriptSrc = Get-HubCenterProblemReportsScriptSrc -AdminIndexPath (Join-Path $stageRoot 'hubcenter\web\admin\index.html')
+    Write-Host ("  - HubCenter problem reports script: {0}" -f $expectedHubCenterProblemReportsScriptSrc)
 
     Write-Host '[6/9] Creating deploy archive...' -ForegroundColor Cyan
     & $tarExe -czf $archivePath -C $stageRoot .
@@ -1414,7 +1594,7 @@ try {
     else {
         Write-Host 'Running post-deploy smoke checks...' -ForegroundColor Cyan
         Start-Sleep -Seconds 3
-        Invoke-PostDeploySmokeCheck -Targets $targets
+        Invoke-PostDeploySmokeCheck -Targets $targets -ExpectedHubCenterProblemReportsScriptSrc $expectedHubCenterProblemReportsScriptSrc
     }
 
     Write-Host 'Deployment completed successfully.' -ForegroundColor Green

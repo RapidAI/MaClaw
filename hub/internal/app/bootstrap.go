@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -125,6 +126,17 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	// 2. IM_Adapter 闂?create with a temporary nil identity resolver; we wire
 	//    the real one (PluginIdentityResolver) after plugin registration.
 	imAdapter := im.NewAdapter(messageRouter, nil)
+	startMenuRoot := filepath.Join(hubRuntimeDataDir(cfg, configPath), "welcome-sync")
+	imAdapter.SetStartMenuTemplateStore(im.NewStartMenuTemplateStore(startMenuRoot, func(ctx context.Context, tenantID, userID string) (string, error) {
+		user, err := st.Users.GetByID(ctx, userID)
+		if err != nil {
+			return "", err
+		}
+		if user == nil || (tenantID != "" && user.TenantID != tenantID) {
+			return "", fmt.Errorf("未找到当前用户")
+		}
+		return user.Email, nil
+	}))
 
 	// Wire the PluginIdentityResolver now that the adapter exists.
 	pluginIdentity := im.NewPluginIdentityResolver(imAdapter)
@@ -604,6 +616,25 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		TelegramPlugin:   telegramPlugin,
 		ChatNotifier:     chatNotifier,
 	}, nil
+}
+
+func hubRuntimeDataDir(cfg *config.Config, configPath string) string {
+	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Database.Driver), "sqlite") {
+		dsn := strings.TrimSpace(cfg.Database.DSN)
+		if idx := strings.IndexByte(dsn, '?'); idx >= 0 {
+			dsn = dsn[:idx]
+		}
+		dsn = strings.TrimPrefix(dsn, "file:")
+		if dsn != "" && dsn != ":memory:" && !strings.HasPrefix(dsn, ":memory:") {
+			if dir := filepath.Dir(dsn); dir != "." && dir != "" {
+				return dir
+			}
+		}
+	}
+	if configPath != "" {
+		return filepath.Join(filepath.Dir(configPath), "data")
+	}
+	return "./data"
 }
 
 // userEmailLookup adapts store.UserRepository to im.UserLookup.

@@ -712,6 +712,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         type="button"
                         className="pet-help-button"
                         title={text(lang, '宠物包创建指南', '寵物包建立指南', 'Pet pack creation guide')}
+                        aria-label={text(lang, '帮助：宠物包创建指南', '幫助：寵物包建立指南', 'Help: pet pack creation guide')}
                         onClick={openPetPackHelp}
                     >
                         {text(lang, '帮助', '幫助', 'Help')}
@@ -856,7 +857,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             })}
                         </div>
                         {selectedSkinOption.canUninstall && (
-                            <div className="pet-pack-install-row pet-section-spacer">
+                            <div className="pet-pack-uninstall-row pet-section-spacer">
                                 <button
                                     type="button"
                                     className="pet-uninstall-button"
@@ -904,7 +905,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             <label className="form-label">{text(lang, '安装宠物包', '安裝寵物包', 'Install pack')}</label>
                             <span>{text(lang, '选择本地 pet pack zip（声明式资源，无 JS）。', '選擇本地 pet pack zip（聲明式資源，無 JS）。', 'Pick a local declarative pet pack zip (no JS).')}</span>
                         </div>
-                        <div className="pet-range-row pet-pack-install-row">
+                        <div className="pet-pack-install-row" role="group" aria-label={text(lang, '安装宠物包', '安裝寵物包', 'Install pack')}>
                             <button
                                 type="button"
                                 className="pet-install-button"
@@ -914,23 +915,25 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             >
                                 {installBusy
                                     ? text(lang, '安装中…', '安裝中…', 'Installing…')
-                                    : text(lang, '选择 Zip 安装', '選擇 Zip 安裝', 'Choose Zip to Install')}
+                                    : text(lang, '选择 Zip 安装', '選擇 Zip 安裝', 'Install Zip')}
                             </button>
                             <button
                                 type="button"
                                 className="pet-help-button pet-help-button--inline"
                                 onClick={() => { void openPetPacksFolder(); }}
-                                title={packsDirLabel || undefined}
+                                title={packsDirLabel || text(lang, '打开用户宠物包目录', '開啟使用者寵物包目錄', 'Open user pet packs folder')}
+                                aria-label={text(lang, '浏览用户宠物包目录', '瀏覽使用者寵物包目錄', 'Browse user pet packs folder')}
                             >
-                                {text(lang, '打开 packs 目录', '開啟 packs 目錄', 'Open packs folder')}
+                                {text(lang, '浏览', '瀏覽', 'Browse')}
                             </button>
                             <button
                                 type="button"
                                 className="pet-help-button pet-help-button--inline"
-                                aria-label={text(lang, '打开宠物包创建指南', '開啟寵物包建立指南', 'Open pet pack creation guide')}
+                                title={text(lang, '打开宠物包创建指南', '開啟寵物包建立指南', 'Open pet pack creation guide')}
+                                aria-label={text(lang, '创建指南：宠物包说明', '建立指南：寵物包說明', 'Guide: pet pack docs')}
                                 onClick={openPetPackHelp}
                             >
-                                {text(lang, '创建指南', '建立指南', 'Creation Guide')}
+                                {text(lang, '创建指南', '建立指南', 'Guide')}
                             </button>
                         </div>
                         {packsDirLabel ? (

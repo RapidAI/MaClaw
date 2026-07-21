@@ -81,6 +81,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 				NodeID:       peer.NodeID,
 				NodeName:     peer.Name,
 				BaseURL:      peer.BaseURL,
+				PublicURL:    peer.PublicURL,
 				PublicKeyPEM: peer.PublicKeyPEM,
 			})
 		}
@@ -201,6 +202,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	})
 
 	app.goBackground(processor.Run)
+	app.goBackground(func(ctx context.Context) { httpapi.RunProblemReportArchiver(ctx, smStore) })
 
 	app.goBackground(func(ctx context.Context) {
 		ticker := time.NewTicker(5 * time.Minute)

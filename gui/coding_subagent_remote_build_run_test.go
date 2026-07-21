@@ -3,7 +3,9 @@ package main
 import "testing"
 
 // Regression from ~/.maclaw workbench: T3 ran successfully
-//   mkdir && cmake && make && /home/.../build/sysinfo12
+//
+//	mkdir && cmake && make && /home/.../build/sysinfo12
+//
 // but quality gate said "failure-suppressing shell syntax" because the absolute
 // build binary after && was not treated as verification/acceptance.
 func TestRemoteBuildAndRunAbsoluteBinaryIsVerification(t *testing.T) {
@@ -45,5 +47,41 @@ func TestRemoteBuildAndRunAbsoluteBinaryIsVerification(t *testing.T) {
 	// verification segments. Absolute build binary alone is fine.
 	if !isSubAgentVerificationCommand("/opt/myapp/build/app") {
 		t.Fatal("opt project build binary should count")
+	}
+}
+
+func TestRemoteDocumentationEditDoesNotInvalidatePriorBuildVerification(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		fileEdits: []remoteCodingFileAuditEvent{
+			{Path: "/home/sysinfo17/README.md", Seq: 4},
+		},
+	}
+	verificationFiles, verificationLastEditSeq := cb.remoteVerificationRelevantEdits([]string{"/home/sysinfo17/README.md"})
+	if len(verificationFiles) != 0 {
+		t.Fatalf("documentation-only files must not require build verification: %#v", verificationFiles)
+	}
+	if got := verificationLastEditSeq; got != 0 {
+		t.Fatalf("documentation-only edit sequence = %d, want 0", got)
+	}
+	status, summary := summarizeSubAgentVerification(
+		verificationFiles,
+		[]CodingSubAgentCommandResult{
+			{Command: "cd build && cmake .. && make", Succeeded: true, Summary: "[100%] Built target sysinfo", seq: 2},
+			{Command: "/home/sysinfo17/build/sysinfo", Succeeded: true, Summary: "system information", seq: 3},
+			{Command: `cd /home/sysinfo17 && git status --short; echo "=== EXIT: $? ==="`, Succeeded: true, seq: 5},
+		},
+		verificationLastEditSeq,
+	)
+	if status != codingSubAgentQualityNotNeeded {
+		t.Fatalf("README wrap-up must not require a stale rebuild, got (%q, %q)", status, summary)
+	}
+
+	cb.fileEdits = append(cb.fileEdits, remoteCodingFileAuditEvent{Path: "/home/sysinfo17/CMakeLists.txt", Seq: 6})
+	verificationFiles, verificationLastEditSeq = cb.remoteVerificationRelevantEdits([]string{"/home/sysinfo17/README.md", "/home/sysinfo17/CMakeLists.txt"})
+	if len(verificationFiles) != 1 || verificationFiles[0] != "/home/sysinfo17/CMakeLists.txt" {
+		t.Fatalf("build-config file must require verification: %#v", verificationFiles)
+	}
+	if got := verificationLastEditSeq; got != 6 {
+		t.Fatalf("build-config edit sequence = %d, want 6", got)
 	}
 }

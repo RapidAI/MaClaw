@@ -1053,8 +1053,8 @@ func NewRouter(
 	registerCardStoreStaticRoutes(mux, "./web/card_store", "/card_store")
 	registerStaticRoutes(mux, "./web/connector", "/connector")
 	registerStaticRoutes(mux, "./web/maclaw-app-manual", "/maclaw-app-manual")
+	registerStaticRoutes(mux, "./web/pet-pack-help", "/pet-pack-help")
 	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
 	registerStaticRoutes(mux, "./web/user-ranking", "/user-ranking")
-	registerStaticRoutes(mux, "./web/pet-pack-help", "/pet-pack-help")
-return mux
+	return mux
 }

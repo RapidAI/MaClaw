@@ -349,6 +349,24 @@ type ProactiveSender struct {
 	users       UserLookup
 }
 
+// SendProactiveMessageToTarget delivers a completion notice to the exact IM
+// conversation that launched the task. It intentionally does not fall back to
+// another channel: an explicit target is a routing guarantee, not a broadcast.
+func (p *ProactiveSender) SendProactiveMessageToTarget(ctx context.Context, tenantID, userID, platformName, platformUID, text string) error {
+	if p == nil || p.broadcaster == nil || p.broadcaster.adapter == nil {
+		return fmt.Errorf("IM broadcaster unavailable")
+	}
+	platformName = strings.TrimSpace(platformName)
+	platformUID = strings.TrimSpace(platformUID)
+	if platformName == "" || platformUID == "" || strings.TrimSpace(text) == "" {
+		return fmt.Errorf("IM target or text is empty")
+	}
+	tenantID = normalizeTenantID(tenantID)
+	ctx = store.WithTenant(WithTenant(ctx, tenantID), tenantID)
+	p.broadcaster.adapter.DeliverProgress(ctx, platformName, userID, platformUID, text)
+	return nil
+}
+
 // NewProactiveSender creates a ProactiveSender wired to the broadcaster and user lookup.
 func NewProactiveSender(broadcaster *NotifyBroadcaster, users UserLookup) *ProactiveSender {
 	return &ProactiveSender{broadcaster: broadcaster, users: users}

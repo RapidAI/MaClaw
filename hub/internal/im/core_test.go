@@ -473,6 +473,47 @@ func TestHandleMessage_AgentResponse(t *testing.T) {
 	}
 }
 
+func TestHandleMessage_StartMenuConfirmRejectsBroadcastWithoutConsumingState(t *testing.T) {
+	resetIncomingDedup()
+	plugin := &mockPlugin{name: "test", caps: CapabilityDeclaration{SupportsRichCard: false}}
+	df := &mockDeviceFinder{allMachines: []OnlineMachineInfo{
+		{MachineID: "m1", Name: "one", LLMConfigured: true},
+		{MachineID: "m2", Name: "two", LLMConfigured: true},
+	}}
+	router := NewMessageRouter(df)
+	defer router.Stop()
+	adapter := NewAdapter(router, &mockIdentity{})
+	defer close(adapter.limiter.stopCh)
+	if err := adapter.RegisterPlugin(plugin); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter.startMenu = newStartMenuService(&StartMenuTemplateStore{})
+	key := tenantUserRuntimeKey("", "unified_uid1")
+	adapter.startMenu.states[key] = &startMenuState{
+		Templates: []startMenuTemplate{{Title: "Deploy", Body: "deploy"}},
+		Selected:  0,
+		Confirm:   true,
+		UpdatedAt: time.Now(),
+	}
+	router.mu.Lock()
+	router.selectedMachine[key] = broadcastMachineID
+	router.mu.Unlock()
+
+	adapter.HandleMessage(context.Background(), IncomingMessage{
+		PlatformName: "test",
+		PlatformUID:  "uid1",
+		Text:         "/confirm",
+	})
+
+	if !strings.Contains(plugin.lastText(), "请先选择一台设备") {
+		t.Fatalf("expected broadcast warning, got %q", plugin.lastText())
+	}
+	if !adapter.startMenu.awaitingConfirmation("", "unified_uid1") {
+		t.Fatal("broadcast rejection must preserve the confirmed shortcut state")
+	}
+}
+
 func TestTruncateAtLine(t *testing.T) {
 	text := "line1\nline2\nline3\nline4"
 	result := truncateAtLine(text, 15)

@@ -69,6 +69,14 @@ type AppEntry = {
     aboutInfo?: AppAboutInfo;
 };
 
+type AppUpdateCandidate = {
+    version: string;
+    source: 'enterprise_hub' | 'skillmarket' | 'hubcenter';
+    sourceLabel: string;
+    capabilityID: string;
+    app: AppEntry;
+};
+
 type AppIconName = 'receipt' | 'wallet' | 'invoice' | 'warehouse' | 'inventory' | 'customer' | 'users' | 'contract' | 'pdf' | 'shield' | 'sheet' | 'chart' | 'dashboard' | 'database' | 'eraser' | 'truck' | 'calendar' | 'web' | 'sync' | 'bot' | 'shop';
 
 type AppsPageProps = {
@@ -920,6 +928,7 @@ type SkillAppManifestEntry = {
     description?: string;
     category?: string;
     kind?: AppKind | string;
+    version?: string | number;
     icon?: string;
     custom_icon_data_url?: string;
     customIconDataUrl?: string;
@@ -3283,12 +3292,75 @@ function normalizeStoredAppEntry(app: Partial<AppEntry> | undefined, custom = fa
         versionSnapshot: normalizeVersionSnapshot((app as any).versionSnapshot),
         installEvidence,
         workflowContract: normalizeAppWorkflowContract((app as any).workflowContract, kind),
+        marketCapabilityID: String((app as any).marketCapabilityID || '').trim() || undefined,
+        marketInstallSource: ['enterprise_hub', 'skillmarket', 'hubcenter'].includes(String((app as any).marketInstallSource || ''))
+            ? (app as any).marketInstallSource
+            : undefined,
+        marketSourceLabel: String((app as any).marketSourceLabel || '').trim() || undefined,
     };
 }
 
 function normalizeAppVersion(value: unknown) {
     const version = Number(value);
     return Number.isFinite(version) && version > 0 ? Math.floor(version) : 1;
+}
+
+function appVersionText(app: AppEntry): string {
+    const snapshot = String(app.versionSnapshot?.app_entry_version || '').trim();
+    return snapshot || String(app.version ?? 1);
+}
+
+/** Compare SemVer-like versions without letting 1.10 collapse to 1.1. */
+function compareAppVersions(left: unknown, right: unknown): number {
+    const normalize = (value: unknown) => String(value ?? '').trim().replace(/^v/i, '');
+    const a = normalize(left);
+    const b = normalize(right);
+    const semantic = /^(\d+(?:\.\d+)*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/;
+    const aMatch = a.match(semantic);
+    const bMatch = b.match(semantic);
+    if (aMatch && bMatch) {
+        const av = aMatch[1].split('.').map((part) => Number(part));
+        const bv = bMatch[1].split('.').map((part) => Number(part));
+        const length = Math.max(av.length, bv.length);
+        for (let index = 0; index < length; index += 1) {
+            const delta = (av[index] || 0) - (bv[index] || 0);
+            if (delta !== 0) return delta;
+        }
+        const aPrerelease = aMatch[2] || '';
+        const bPrerelease = bMatch[2] || '';
+        // A stable release outranks the matching prerelease. Build metadata
+        // intentionally does not affect precedence (SemVer 2.0.0 §11).
+        if (!aPrerelease || !bPrerelease) return aPrerelease ? -1 : bPrerelease ? 1 : 0;
+        const aParts = aPrerelease.split('.');
+        const bParts = bPrerelease.split('.');
+        const compareNumericIdentifier = (first: string, second: string) => {
+            const normalizedFirst = first.replace(/^0+(?=\d)/, '');
+            const normalizedSecond = second.replace(/^0+(?=\d)/, '');
+            if (normalizedFirst.length !== normalizedSecond.length) return normalizedFirst.length - normalizedSecond.length;
+            return normalizedFirst.localeCompare(normalizedSecond);
+        };
+        for (let index = 0; index < Math.max(aParts.length, bParts.length); index += 1) {
+            const first = aParts[index];
+            const second = bParts[index];
+            if (first === undefined || second === undefined) return first === undefined ? -1 : 1;
+            const firstNumeric = /^\d+$/.test(first);
+            const secondNumeric = /^\d+$/.test(second);
+            if (firstNumeric && secondNumeric) {
+                const delta = compareNumericIdentifier(first, second);
+                if (delta !== 0) return delta;
+                continue;
+            }
+            if (firstNumeric !== secondNumeric) return firstNumeric ? -1 : 1;
+            const delta = first.localeCompare(second, undefined, { sensitivity: 'base' });
+            if (delta !== 0) return delta;
+        }
+        return 0;
+    }
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function appUpdateSourcePriority(source: AppUpdateCandidate['source']) {
+    return source === 'enterprise_hub' ? 0 : source === 'hubcenter' ? 1 : 2;
 }
 
 /** Panel apps eligible for the 审核/发布 surface (not market/DataSrv/disabled installs). */
@@ -4637,6 +4709,7 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
     const skillOutputModes = skillBinding?.outputModes || skillBinding?.output_modes || [];
     const resultContract = normalizeAppResultContract(binding?.resultContract || app?.resultContract || governance?.resultContract || governance?.result_contract, kind, skillOutputModes);
     const testEvidence = governance?.testEvidence || governance?.test_evidence;
+    const appEntryVersion = String(app?.version || raw?.version || entry?.version || '').trim();
     const importedRunEvidence = normalizeImportedRunEvidence(testEvidence ? {
         ...testEvidence,
         runID: testEvidence.runID || testEvidence.runId || testEvidence.run_id,
@@ -4653,7 +4726,8 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
         customIconDataUrl: normalizeCustomIconDataUrl(app?.customIconDataUrl || app?.custom_icon_data_url || app?.panel?.customIconDataUrl || entry?.custom_icon_data_url || entry?.customIconDataUrl),
         accent: String(app?.panel?.accent || defaultAccentForKind(kind)),
         pinned: !!app?.panel?.pinned,
-        version: normalizeAppVersion(app?.version || (raw as any)?.version),
+        version: normalizeAppVersion(appEntryVersion || 1),
+        versionSnapshot: appEntryVersion ? { app_entry_version: appEntryVersion } : undefined,
         source: 'skill',
         importedRunEvidence,
         workflowContract: governance?.workflowContract || governance?.workflow_contract,
@@ -6115,18 +6189,65 @@ async function preflightMaclawAppSubmissionOneClick(submissionID: string): Promi
     }
 }
 
+function formatOneClickPreflightCheck(id: string, message: string): string {
+    if (id === 'package_ready' && /testevidence|successful local run evidence/i.test(message)) {
+        return '缺少一次成功运行证据。请点击“去修复”，完整运行应用一次后返回此处发布。';
+    }
+    if (id === 'dependencies' && /not bundled\/published/i.test(message)) {
+        return '有必需 Skill 尚未发布或打包，Enterprise Hub 发布可能失败。请先处理依赖。';
+    }
+    if (id === 'enterprise_hub_tls') {
+        return 'Enterprise Hub 的 TLS 证书不可用。请更新证书或校正服务器时间后重试。';
+    }
+    return message;
+}
+
+function normalizeOneClickPreflightMessage(message: string): string {
+    const raw = String(message || '').trim();
+    if (/testevidence|successful local run evidence/i.test(raw)) return formatOneClickPreflightCheck('package_ready', raw);
+    if (/not bundled\/published/i.test(raw)) return formatOneClickPreflightCheck('dependencies', raw);
+    if (/x509:|certificate has expired|certificate is not yet valid|tls: failed to verify certificate/i.test(raw)) return formatOneClickPreflightCheck('enterprise_hub_tls', raw);
+    return raw;
+}
+
+function oneClickPreflightNeedsRunEvidence(preflight: Record<string, unknown> | null | undefined): boolean {
+    if (!preflight) return false;
+    const isEvidenceGate = (value: unknown) => /testevidence|successful local run evidence/i.test(String(value || ''));
+    if (Array.isArray(preflight.checks) && preflight.checks.some((raw) => {
+        if (!raw || typeof raw !== 'object') return false;
+        const row = raw as Record<string, unknown>;
+        return row.ok !== true
+            && String(row.id || '').trim() === 'package_ready'
+            && isEvidenceGate(row.message);
+    })) return true;
+    // Older Hub versions may return only a top-level reason. Keep the same
+    // recovery action available instead of stranding the user on a blocker.
+    return [preflight.blocking, preflight.warnings, preflight.message]
+        .flatMap((value) => Array.isArray(value) ? value : [value])
+        .some(isEvidenceGate);
+}
+
 /** Short user-facing line from a preflight report (blocking first, then warnings). */
 function formatOneClickPreflightHint(preflight: Record<string, unknown> | null | undefined): string {
     if (!preflight) return '';
+    const checks = Array.isArray(preflight.checks) ? preflight.checks : [];
+    for (const raw of checks) {
+        if (!raw || typeof raw !== 'object') continue;
+        const row = raw as Record<string, unknown>;
+        if (row.ok === true) continue;
+        const id = String(row.id || '').trim();
+        const message = String(row.message || '').trim();
+        if (id && message) return formatOneClickPreflightCheck(id, message);
+    }
     const blocking = Array.isArray(preflight.blocking) ? preflight.blocking.map(String).filter(Boolean) : [];
     if (blocking.length > 0) {
-        return blocking.slice(0, 2).join(' · ');
+        return blocking.slice(0, 2).map(normalizeOneClickPreflightMessage).join(' · ');
     }
     const warnings = Array.isArray(preflight.warnings) ? preflight.warnings.map(String).filter(Boolean) : [];
     if (warnings.length > 0) {
-        return warnings.slice(0, 2).join(' · ');
+        return warnings.slice(0, 2).map(normalizeOneClickPreflightMessage).join(' · ');
     }
-    return String(preflight.message || '').trim();
+    return normalizeOneClickPreflightMessage(String(preflight.message || '').trim());
 }
 
 type OneClickPublishErrorDetail = {
@@ -6295,7 +6416,7 @@ function summarizeOneClickPreflightView(
                 id,
                 ok: row.ok === true,
                 severity: String(row.severity || (row.ok === true ? 'info' : 'warn')),
-                message: String(row.message || id),
+                message: formatOneClickPreflightCheck(id, String(row.message || id)),
             });
         }
     }
@@ -6309,7 +6430,14 @@ function summarizeOneClickPreflightView(
         title = text.oneClickRemoteWarn;
     }
     const detail = formatOneClickPreflightHint(preflight) || String(preflight.message || '').trim();
-    return { tone, title, detail, readyLocal, readySkill, readyHub, lines: lines.slice(0, 6) };
+    // Failure reasons deserve the panel; healthy infrastructure checks merely
+    // add noise when a release is blocked.
+    const actionableLines = lines.filter((line) => !line.ok);
+    // Local readiness failures are already represented in the publish-check
+    // grid below. Keep this remote preflight as one concise action message
+    // rather than repeating the same blocker and pushing the repair button
+    // below the fold.
+    return { tone, title, detail, readyLocal, readySkill, readyHub, lines: tone === 'blocked' ? [] : actionableLines.slice(0, 3) };
 }
 
 type OneClickPreflightBarText = {
@@ -6344,16 +6472,25 @@ function OneClickPreflightBar({
     preflight,
     loading,
     text,
+    lang,
+    onRunEvidenceRepair,
     testId,
     compact = false,
 }: {
     preflight?: Record<string, unknown> | null;
     loading?: boolean;
     text: OneClickPreflightBarText;
+    lang?: string;
+    onRunEvidenceRepair?: () => void;
     testId?: string;
     compact?: boolean;
 }) {
     const view = summarizeOneClickPreflightView(preflight, text, { loading: !!loading && preflight == null });
+    const heading = view.tone === 'blocked'
+        ? localizeText(lang, 'Publishing is blocked', '发布前检查：已阻断', '發佈前檢查：已阻斷')
+        : view.tone === 'warn'
+            ? localizeText(lang, 'Remote publish readiness', '远程发布检查', '遠端發佈檢查')
+            : text.oneClickRemotePreflight;
     return (
         <div
             className={`apps-publish-preflight${compact ? ' apps-publish-preflight--compact' : ''}`}
@@ -6362,11 +6499,18 @@ function OneClickPreflightBar({
             aria-live="polite"
         >
             <div className="apps-publish-preflight__head">
-                <strong>{text.oneClickRemotePreflight}</strong>
+                <strong>{heading}</strong>
                 <em>{view.title}</em>
             </div>
             {view.detail && <p className="apps-publish-preflight__detail">{view.detail}</p>}
-            {view.tone !== 'loading' && view.tone !== 'unknown' && (
+            {view.tone === 'blocked' && oneClickPreflightNeedsRunEvidence(preflight) && onRunEvidenceRepair && (
+                <div className="apps-publish-preflight__action">
+                    <button className="apps-secondary-button" type="button" onClick={onRunEvidenceRepair}>
+                        {localizeText(lang, 'Run app to add evidence', '运行应用并补齐证据', '執行應用程式並補齊證據')}
+                    </button>
+                </div>
+            )}
+            {view.tone !== 'loading' && view.tone !== 'unknown' && view.tone !== 'blocked' && (
                 <div className="apps-publish-preflight__targets" aria-label={text.oneClickRemotePreflight}>
                     <span data-ok={view.readyLocal ? 'true' : 'false'}>{text.oneClickTargetLocal}</span>
                     <span data-ok={view.readySkill ? 'true' : 'false'}>{text.oneClickTargetSkill}</span>
@@ -8338,6 +8482,15 @@ function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel:
     ].filter(Boolean).join('\n');
 }
 
+function appUpdateCandidateFor(app: AppEntry, candidates: Map<string, AppUpdateCandidate>): AppUpdateCandidate | undefined {
+    const capabilityID = String(app.marketCapabilityID || '').trim();
+    if (capabilityID) {
+        const candidate = candidates.get(capabilityID);
+        if (candidate) return candidate;
+    }
+    return appInstallIdentityKeys(app.id).map((key) => candidates.get(key)).find(Boolean);
+}
+
 function buildAppTileAriaLabel(app: AppEntry, text: typeof labels.zh, statusLabel: string, lang?: string) {
     return [app.name, appKindLabel(app.kind, lang), sourceLabelText(app.source, lang), appPanelStatusLabel(app, lang), `${text.appStatus}: ${statusLabel}`].filter(Boolean).join(', ');
 }
@@ -8550,6 +8703,14 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     const [activeOperation, setActiveOperation] = useState<AppOperation | null>(null);
     const [approvalInitialAppFilter, setApprovalInitialAppFilter] = useState('all');
     const [tileMenu, setTileMenu] = useState<{ appId: string; x: number; y: number } | null>(null);
+    const [updateCandidates, setUpdateCandidates] = useState<Map<string, AppUpdateCandidate>>(() => new Map());
+    const [updateCheckState, setUpdateCheckState] = useState<'idle' | 'checking' | 'ready' | 'error'>('idle');
+    const [updatingAppId, setUpdatingAppId] = useState('');
+    const [updateError, setUpdateError] = useState('');
+    const updateCheckRequestRef = useRef(0);
+    const updateCheckInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+    const checkForAppUpdatesRef = useRef<((options?: { force?: boolean }) => Promise<void>) | null>(null);
+    const updatingAppRef = useRef('');
     const [datasrvDiscovery, setDataSrvDiscovery] = useState<DataSrvDiscovery>(emptyDiscovery);
     const [skillDiscovery, setSkillDiscovery] = useState<SkillAppDiscovery>(emptySkillDiscovery);
     const [activeRunRevision, setActiveRunRevision] = useState(0);
@@ -8561,6 +8722,13 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     useEffect(() => {
         persistLayoutState(apps);
     }, [apps]);
+
+    useEffect(() => () => {
+        // Wails searches are not cancellable from this surface. Invalidate an
+        // outstanding response when the page unmounts so it cannot enqueue a
+        // state update after the Apps view has been closed.
+        updateCheckRequestRef.current += 1;
+    }, []);
 
     useEffect(() => {
         if (!tileMenu) return;
@@ -8581,6 +8749,128 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
             window.removeEventListener('scroll', close, true);
         };
     }, [tileMenu]);
+
+    const installedUpdateInputs = useMemo(() => apps
+        // Only apps with a trusted remote source + capability id can be
+        // refreshed. A successfully installed market app retains source=market,
+        // so source alone must not exclude it from future update checks.
+        .filter((app) => !!app.marketInstallSource && !!app.marketCapabilityID)
+        .map((app) => ({
+            app,
+            // Capability IDs are the durable remote identity. Querying them one at
+            // a time also avoids HubCenter's literal substring filtering treating a
+            // joined list of IDs as one impossible search term.
+            query: String(app.marketCapabilityID || '').trim() || String(app.id || '').replace(/^market-/, '').trim(),
+            version: appVersionText(app),
+        })), [apps]);
+    const installedUpdateKey = useMemo(() => installedUpdateInputs
+        .map(({ query, version }) => `${query}@${version}`)
+        .sort()
+        .join('|'), [installedUpdateInputs]);
+
+    const checkForAppUpdates = useCallback(async (options?: { force?: boolean }) => {
+        const checkKey = installedUpdateKey;
+        const inFlight = updateCheckInFlightRef.current;
+        if (!options?.force && inFlight?.key === checkKey) return inFlight.promise;
+        const task = (async () => {
+            const requestID = updateCheckRequestRef.current + 1;
+            updateCheckRequestRef.current = requestID;
+            const installed = installedUpdateInputs.map(({ app }) => app);
+            if (installed.length === 0) {
+                if (requestID === updateCheckRequestRef.current) {
+                    setUpdateCandidates(new Map());
+                    setUpdateCheckState('ready');
+                }
+                return;
+            }
+            setUpdateCheckState('checking');
+            setUpdateError('');
+            try {
+            const queries = Array.from(new Set(installedUpdateInputs
+                .map(({ query }) => query)
+                .filter(Boolean)));
+            const results: any[] = [];
+            const failures: string[] = [];
+            // Marketplace searches fan out to several sources. Keep the client
+            // responsive when a panel has many installed apps without issuing an
+            // unbounded burst of remote requests.
+            let nextQueryIndex = 0;
+            const workers = Array.from({ length: Math.min(3, queries.length) }, async () => {
+                while (nextQueryIndex < queries.length) {
+                    const query = queries[nextQueryIndex++];
+                    try {
+                        const response = await SearchMixedSkills(query);
+                        if (Array.isArray(response)) results.push(...response);
+                    } catch (error: any) {
+                        failures.push(error?.message || String(error || ''));
+                    }
+                }
+            });
+            await Promise.all(workers);
+            const byKey = new Map<string, AppUpdateCandidate>();
+            results.forEach((result) => {
+                if (!isSupportedAppUpdateSource(result)) return;
+                const marketApp = marketAppEntryFromMixedSkillResult(result, lang);
+                if (!marketApp?.marketCapabilityID || !marketApp.marketInstallSource) return;
+                const candidate: AppUpdateCandidate = {
+                    version: String(result?.version || marketApp.version || 1).trim(),
+                    source: marketApp.marketInstallSource,
+                    sourceLabel: marketApp.marketSourceLabel || 'HubCenter',
+                    capabilityID: marketApp.marketCapabilityID,
+                    app: marketApp,
+                };
+                installed.forEach((localApp) => {
+                    const sameCapability = String(localApp.marketCapabilityID || '').trim() === candidate.capabilityID;
+                    const sameApp = sameCapability || appInstallIdentityKeys(localApp.id).some((key) => appInstallIdentityKeys(marketApp.id).includes(key));
+                    if (!sameApp || compareAppVersions(candidate.version, appVersionText(localApp)) <= 0) return;
+                    const key = appInstallIdentityKeys(localApp.id)[0];
+                    const capabilityID = String(localApp.marketCapabilityID || '').trim();
+                    const current = (capabilityID ? byKey.get(capabilityID) : undefined) || (key ? byKey.get(key) : undefined);
+                    if (!current || compareAppVersions(candidate.version, current.version) > 0 || (compareAppVersions(candidate.version, current.version) === 0 && appUpdateSourcePriority(candidate.source) < appUpdateSourcePriority(current.source))) {
+                        if (key) byKey.set(key, candidate);
+                        if (capabilityID) byKey.set(capabilityID, candidate);
+                    }
+                });
+            });
+            if (requestID === updateCheckRequestRef.current) {
+                setUpdateCandidates(byKey);
+                if (results.length === 0 && failures.length > 0) {
+                    setUpdateCheckState('error');
+                    setUpdateError(failures[0]);
+                } else {
+                    // A failed source must not hide updates discovered from the
+                    // remaining apps/sources. Surface a concise warning instead.
+                    setUpdateCheckState('ready');
+                    setUpdateError(failures.length > 0
+                        ? localizeText(lang, 'Some update sources are unavailable. Try again later.', '部分更新来源暂不可用，请稍后重试。', '部分更新來源暫不可用，請稍後重試。')
+                        : '');
+                }
+            }
+            } catch (error: any) {
+            // Keep installed apps fully usable when a remote marketplace is unavailable.
+            if (requestID === updateCheckRequestRef.current) {
+                setUpdateCandidates(new Map());
+                setUpdateCheckState('error');
+                setUpdateError(error?.message || String(error || ''));
+            }
+            }
+        })();
+        updateCheckInFlightRef.current = { key: checkKey, promise: task };
+        try {
+            await task;
+        } finally {
+            if (updateCheckInFlightRef.current?.promise === task) updateCheckInFlightRef.current = null;
+        }
+    }, [installedUpdateInputs, installedUpdateKey, lang]);
+    checkForAppUpdatesRef.current = checkForAppUpdates;
+
+    useEffect(() => {
+        void checkForAppUpdatesRef.current?.();
+    }, [installedUpdateKey]);
+
+    const refreshAppUpdates = useCallback(() => {
+        void checkForAppUpdates({ force: true });
+    }, [checkForAppUpdates]);
 
     useEffect(() => {
         let mounted = true;
@@ -8653,6 +8943,8 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     const panelFilterSummary = filterSummaryText({ query, category, count: filteredApps.length, lang, allLabel: text.all });
     const tileMenuApp = tileMenu ? apps.find((app) => app.id === tileMenu.appId) : undefined;
     const tileMenuPinDisabled = !!tileMenuApp && !tileMenuApp.pinned && apps.filter((app) => app.pinned).length >= maxPinnedApps;
+    const tileMenuUpdate = tileMenuApp ? appUpdateCandidateFor(tileMenuApp, updateCandidates) : undefined;
+    const updateCount = Array.from(new Set(apps.map((app) => appUpdateCandidateFor(app, updateCandidates)?.app.id).filter(Boolean))).length;
     const activeRunSessions = useMemo(() => loadActiveAppRunSessions(), [activeRunRevision]);
     const openTabApps = openTabs.map((id) => apps.find((app) => app.id === id)).filter((app): app is AppEntry => !!app);
     const activeApp = apps.find((app) => app.id === activeTabId) ?? openTabApps[0];
@@ -8886,15 +9178,14 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     };
 
     const installMarketApp = (app: AppEntry) => {
-        const existing = apps.find((item) => appInstallIdentityKeys(app.id).some((id) => appInstallIdentityKeys(item.id).includes(id)));
         setApps((current) => {
             const existingIndex = current.findIndex((item) => appInstallIdentityKeys(app.id).some((id) => appInstallIdentityKeys(item.id).includes(id)));
             if (existingIndex >= 0) {
                 const existing = current[existingIndex];
-                if (normalizeAppVersion(app.version) <= normalizeAppVersion(existing.version)) {
+                if (compareAppVersions(appVersionText(app), appVersionText(existing)) <= 0) {
                     const evidencePatch: Partial<AppEntry> = {};
                     if (app.importedRunEvidence && !existing.importedRunEvidence) evidencePatch.importedRunEvidence = app.importedRunEvidence;
-                    if (app.versionSnapshot && !existing.versionSnapshot) evidencePatch.versionSnapshot = app.versionSnapshot;
+                    if (app.versionSnapshot && compareAppVersions(appVersionText(app), appVersionText(existing)) > 0) evidencePatch.versionSnapshot = app.versionSnapshot;
                     if (app.installEvidence && !existing.installEvidence) evidencePatch.installEvidence = app.installEvidence;
                     if (app.workflowContract && !existing.workflowContract) evidencePatch.workflowContract = app.workflowContract;
                     if (Object.keys(evidencePatch).length === 0) return current;
@@ -8982,9 +9273,58 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
         });
     };
 
+    const updateAppFromMenu = async (app: AppEntry, candidate: AppUpdateCandidate) => {
+        if (updatingAppRef.current) return;
+        updatingAppRef.current = app.id;
+        setUpdatingAppId(app.id);
+        setUpdateError('');
+        // A result from a check that started before installation must not put a
+        // stale update badge back on this app while its files are being swapped.
+        updateCheckRequestRef.current += 1;
+        setUpdateCheckState('ready');
+        try {
+            if (candidate.source === 'enterprise_hub') {
+                const result = await InstallSelectedMaclawAppPackageFromHub(candidate.capabilityID, [String(app.id).replace(/^market-/, '')]) as Record<string, any>;
+                const rawPackage = result?.package || (result?.package_json ? JSON.parse(String(result.package_json)) : null);
+                const parsed = manifestToAppEntries(rawPackage);
+                const updated = parsed.apps.find((entry) => appInstallIdentityKeys(entry.id).some((key) => appInstallIdentityKeys(app.id).includes(key)));
+                if (!updated) throw new Error(text.schemaError);
+                const installAudit = (result?.install_record || null) as BackendAppInstallRecord | null;
+                installMarketApp({
+                    ...updated,
+                    marketCapabilityID: candidate.capabilityID,
+                    marketInstallSource: candidate.source,
+                    marketSourceLabel: candidate.sourceLabel,
+                    versionSnapshot: installRecordVersionSnapshotForApp(installAudit, updated.id),
+                    installEvidence: installEvidenceRecordForApp(installAudit, updated.id),
+                });
+            } else {
+                await InstallMixedSkill(candidate.source === 'hubcenter' ? 'skillmarket' : candidate.source, candidate.capabilityID, candidate.capabilityID);
+                const discovery = await discoverSkillAppManifests();
+                const updated = discovery.candidates.find((entry) => appInstallIdentityKeys(entry.id).some((key) => appInstallIdentityKeys(app.id).includes(key)));
+                if (!updated) throw new Error(pickMiniAppLabel(lang, miniAppLabels.missingDefinition));
+                installMarketApp({ ...updated, marketCapabilityID: candidate.capabilityID, marketInstallSource: candidate.source, marketSourceLabel: candidate.sourceLabel });
+            }
+            setUpdateCandidates((current) => {
+                const next = new Map(current);
+                appInstallIdentityKeys(app.id).forEach((key) => next.delete(key));
+                const capabilityID = String(app.marketCapabilityID || '').trim();
+                if (capabilityID) next.delete(capabilityID);
+                return next;
+            });
+        } catch (error: any) {
+            setUpdateError(error?.message || String(error || localizeText(lang, 'Update failed', '更新失败', '更新失敗')));
+        } finally {
+            updatingAppRef.current = '';
+            setUpdatingAppId('');
+            setTileMenu(null);
+        }
+    };
+
     const renderTile = (app: AppEntry) => {
         const status = appStatusInfo(app);
         const launchIssue = workspaceLaunchByAppId[app.id] || '';
+        const update = appUpdateCandidateFor(app, updateCandidates);
         const moveTileFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
             if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
                 event.preventDefault();
@@ -9010,17 +9350,20 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
         const tooltip = launchIssue
             ? `${buildAppTileTooltip(app, text, status.label, lang)}\n${launchIssue}`
             : buildAppTileTooltip(app, text, status.label, lang);
+        const updateLabel = update
+            ? localizeText(lang, `Update available: ${appVersionText(app)} to ${update.version}`, `可更新：${appVersionText(app)} 至 ${update.version}`, `可更新：${appVersionText(app)} 至 ${update.version}`)
+            : '';
         return (
             <button
                 key={app.id}
-                className={`apps-app-tile ${activeApp?.id === app.id && !studioOpen ? 'is-active' : ''}${launchIssue ? ' has-workspace-issue' : ''}`}
+                className={`apps-app-tile ${activeApp?.id === app.id && !studioOpen ? 'is-active' : ''}${launchIssue ? ' has-workspace-issue' : ''}${update ? ' has-update' : ''}`}
                 data-status={status.key}
                 data-workspace-issue={launchIssue ? 'true' : undefined}
                 style={{ '--apps-icon-color': app.accent } as CSSProperties}
-                title={tooltip}
+                title={[tooltip, updateLabel].filter(Boolean).join('\n')}
                 aria-label={launchIssue
-                    ? `${buildAppTileAriaLabel(app, text, status.label, lang)}. ${launchIssue}`
-                    : buildAppTileAriaLabel(app, text, status.label, lang)}
+                    ? [buildAppTileAriaLabel(app, text, status.label, lang), updateLabel, launchIssue].filter(Boolean).join('. ')
+                    : [buildAppTileAriaLabel(app, text, status.label, lang), updateLabel].filter(Boolean).join('. ')}
                 onClick={() => openApp(app)}
                 onContextMenu={(event) => {
                     event.preventDefault();
@@ -9040,6 +9383,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                                 !
                             </span>
                         ) : null}
+                        {update ? <span className="apps-app-tile__update-badge" aria-label={updateLabel}>{'\u2191'}</span> : null}
                     </span>
 	                <span className="apps-app-label">
                         <span className="apps-app-name">{app.name}</span>
@@ -9095,7 +9439,20 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                             }}
                         >{text.reset}</button>
                     </div>
-                    {panelFilterSummary && <div className="apps-filter-summary" aria-live="polite">{panelFilterSummary}</div>}
+                    {(panelFilterSummary || updateCount > 0 || updateCheckState === 'checking' || updateError || installedUpdateInputs.length > 0) && (
+                        <div className="apps-filter-summary" aria-live="polite">
+                            {[panelFilterSummary, updateCheckState === 'checking'
+                                ? localizeText(lang, 'Checking for updates…', '正在检查更新…', '正在檢查更新…')
+                                : updateCount > 0
+                                    ? localizeText(lang, `${updateCount} update${updateCount === 1 ? '' : 's'} available`, `${updateCount} 个可更新`, `${updateCount} 個可更新`)
+                                    : '', updateError].filter(Boolean).join(' · ')}
+                            {installedUpdateInputs.length > 0 && (
+                                <button type="button" className="apps-update-check" disabled={updateCheckState === 'checking'} onClick={refreshAppUpdates}>
+                                    {localizeText(lang, 'Check updates', '检查更新', '檢查更新')}
+                                </button>
+                            )}
+                        </div>
+                    )}
                     <div className="apps-ops" aria-label={text.operations}>
                         <div className="apps-ops__title">{text.operations}</div>
                         <button className={`apps-ops__item ${activeOperation === 'approval_status' ? 'is-active' : ''}`} type="button" aria-pressed={activeOperation === 'approval_status'} onClick={() => openOperation('approval_status')}>
@@ -9154,10 +9511,25 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                         style={{ left: tileMenu.x, top: tileMenu.y } as CSSProperties}
                         onClick={(event) => event.stopPropagation()}
                     >
+                        {tileMenuUpdate && (
+                            <button
+                                type="button"
+                                role="menuitem"
+                                data-testid={`apps-update-${tileMenuApp.id}`}
+                                autoFocus
+                                disabled={updatingAppId === tileMenuApp.id}
+                                title={localizeText(lang, `Update from ${tileMenuUpdate.sourceLabel}`, `从 ${tileMenuUpdate.sourceLabel} 更新`, `從 ${tileMenuUpdate.sourceLabel} 更新`)}
+                                onClick={() => void updateAppFromMenu(tileMenuApp, tileMenuUpdate)}
+                            >
+                                {updatingAppId === tileMenuApp.id
+                                    ? localizeText(lang, 'Updating…', '正在更新…', '正在更新…')
+                                    : localizeText(lang, `Update to ${tileMenuUpdate.version}`, `更新至 ${tileMenuUpdate.version}`, `更新至 ${tileMenuUpdate.version}`)}
+                            </button>
+                        )}
                         <button
                             type="button"
                             role="menuitem"
-                            autoFocus
+                            autoFocus={!tileMenuUpdate}
                             disabled={tileMenuPinDisabled}
                             title={tileMenuPinDisabled ? text.pinLimitReached : tileMenuApp.pinned ? text.removeFromPinned : text.setAsPinned}
                             onClick={() => {
@@ -12932,6 +13304,10 @@ function manifestToAppEntry(raw: any): AppEntry | null {
         accent: String(app.panel?.accent || defaultAccentForKind(kind)),
         pinned: !!app.panel?.pinned,
         version: normalizeAppVersion(app.version || raw.version),
+        versionSnapshot: (() => {
+            const version = String(app.version || raw.version || '').trim();
+            return version ? { app_entry_version: version } : undefined;
+        })(),
         source: 'market',
         importedRunEvidence,
         workflowContract: governance.workflowContract || governance.workflow_contract,
@@ -12970,7 +13346,12 @@ function manifestToAppEntries(raw: any): { apps: AppEntry[]; error?: string } {
             const error = validateAppManifest(raw.apps[index], `maclaw.app.pack.v1 apps[${index}]`);
             if (error) return { apps: [], error };
         }
-        const parsed = raw.apps.map(manifestToAppEntry).filter((app: AppEntry | null): app is AppEntry => !!app);
+        const parsed = raw.apps.map((entry: any) => {
+            const app = manifestToAppEntry(entry);
+            if (!app) return null;
+            const version = String(entry?.app?.version || entry?.version || '').trim();
+            return version ? { ...app, version: normalizeAppVersion(version), versionSnapshot: { app_entry_version: version } } : app;
+        }).filter((app: AppEntry | null): app is AppEntry => !!app);
         return parsed.length > 0 ? { apps: parsed } : { apps: [], error: 'maclaw.app.pack.v1 has no valid apps' };
     }
     if (Object.prototype.hasOwnProperty.call(raw || {}, 'x_maclaw_apps')) {
@@ -14071,11 +14452,8 @@ function formatInstallRecordTime(value?: string) {
 function appInstallIdentityKeys(appId: string) {
     const id = String(appId || '').trim();
     if (!id) return [];
-    const keys = [id];
-    if (id.startsWith('market-')) keys.push(id.slice('market-'.length));
-    else keys.push(`market-${id}`);
-    if (id.startsWith('datasrv-installed-')) keys.push(id.slice('datasrv-installed-'.length));
-    else keys.push(`datasrv-installed-${id}`);
+    const bare = id.replace(/^market-/, '').replace(/^datasrv-installed-/, '').replace(/^skill-app:/, '');
+    const keys = [id, bare, `market-${bare}`, `datasrv-installed-${bare}`, `skill-app:${bare}`];
     return Array.from(new Set(keys));
 }
 
@@ -14443,6 +14821,21 @@ function marketInstallSourceFromMixedSkillResult(result: any): 'enterprise_hub' 
     const label = String(result?.source_label || result?.sourceLabel || '').trim().toLowerCase();
     if (label.includes('hubcenter') || label.includes('skill market') || label.includes('skillmarket')) return 'skillmarket';
     return 'enterprise_hub';
+}
+
+// Update actions are deliberately limited to the Hub / HubCenter sources that
+// own the installed app capability. Other mixed-search sources may expose a
+// similarly-shaped app, but cannot be safely updated through these installers.
+function isSupportedAppUpdateSource(result: any): boolean {
+    const source = String(result?.source || result?.Source || '').trim().toLowerCase();
+    return source === 'enterprise_hub'
+        || source === 'enterprise'
+        || source === 'hub'
+        || source === 'skill'
+        || source === 'skillmarket'
+        || source === 'skillhub'
+        || source === 'market'
+        || source === 'hubcenter';
 }
 
 function marketAppEntryFromMixedSkillResult(result: any, lang?: string): AppEntry | null {
@@ -16743,6 +17136,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                         );
                         const mayPartialRemote = remoteView.tone === 'warn' && ready;
                         const remoteBlocked = remoteView.tone === 'blocked';
+                        const remoteNeedsRunEvidence = oneClickPreflightNeedsRunEvidence(remotePf?.preflight);
                         return (
                             <article
                                 className={`apps-publish-card${highlightAppId === app.id ? ' is-focus-target' : ''}`}
@@ -16789,6 +17183,10 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                         preflight={remotePf?.preflight}
                                         loading={remotePf === undefined || (!!remotePf?.loading && !remotePf?.preflight)}
                                         text={text}
+                                        lang={lang}
+                                        // This action is tied to the remote evidence gate itself;
+                                        // the PublishPane caller adds the return-to-review context.
+                                        onRunEvidenceRepair={() => onRunApp(app.id)}
                                         testId={`apps-publish-preflight-${app.id}`}
                                     />
                                 )}
@@ -16838,7 +17236,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                             {text.withdrawSubmission}
                                         </button>
                                     )}
-                                    {!ready && (
+                                    {!ready && !remoteNeedsRunEvidence && (
                                         <button className="apps-secondary-button" type="button" onClick={() => fixPublishApp(app)}>
                                             {text.fixReviewIssue}
                                         </button>
@@ -16960,6 +17358,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                                     preflight={queueRemote?.preflight}
                                                     loading={queueRemote === undefined || (!!queueRemote?.loading && !queueRemote?.preflight)}
                                                     text={text}
+                                                    lang={lang}
                                                     compact
                                                     testId={`apps-queue-preflight-${item.submissionID}`}
                                                 />

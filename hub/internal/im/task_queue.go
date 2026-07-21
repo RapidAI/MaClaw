@@ -31,7 +31,36 @@ type IMTask struct {
 	MessageType  string
 	Text         string
 	Attachments  []MessageAttachment
-	EnqueuedAt   time.Time
+	// StartMenu describes a confirmed /startmenu launch. The desktop client uses
+	// it to create a task record and open a dedicated AI assistant tab before
+	// executing the prompt.
+	StartMenu  *StartMenuTaskLaunch
+	EnqueuedAt time.Time
+}
+
+// StartMenuTaskLaunch contains only non-sensitive task setup information.
+// Remote passwords are deliberately never synced from the welcome templates.
+type StartMenuTaskLaunch struct {
+	Title     string              `json:"title"`
+	TaskText  string              `json:"task_text"`
+	AgentMode string              `json:"agent_mode,omitempty"`
+	CodingEnv *startMenuCodingEnv `json:"coding_env,omitempty"`
+	Platform  string              `json:"platform"`
+	TargetUID string              `json:"target_uid"`
+}
+
+type startMenuContextKey struct{}
+
+func withStartMenuTask(ctx context.Context, launch *StartMenuTaskLaunch) context.Context {
+	if launch == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, startMenuContextKey{}, launch)
+}
+
+func startMenuTaskFromContext(ctx context.Context) *StartMenuTaskLaunch {
+	launch, _ := ctx.Value(startMenuContextKey{}).(*StartMenuTaskLaunch)
+	return launch
 }
 
 // TaskQueueStats holds per-user queue statistics.

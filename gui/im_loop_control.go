@@ -501,13 +501,22 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	}
 	return func() {
 		cleanupForegroundQoS()
-		h.clearNonGuidePendingInjection(userID)
-		// Clear per-session state.
+		// Clear per-session state only if this is still the active loop. A
+		// cancellation may time out and deliberately unblock a replacement
+		// request before the old goroutine actually returns. In that case the
+		// old cleanup must never clear the replacement loop's context, task
+		// text, or newly arrived steering injection.
 		state.stateMu.Lock()
-		state.loopCtx = nil
-		state.userText = ""
-		state.endedAt = time.Now()
+		isCurrentLoop := state.loopCtx == ctx
+		if isCurrentLoop {
+			state.loopCtx = nil
+			state.userText = ""
+			state.endedAt = time.Now()
+		}
 		state.stateMu.Unlock()
+		if isCurrentLoop {
+			h.clearNonGuidePendingInjection(userID)
+		}
 		// Clear legacy global fields only if they still point to THIS loop.
 		// Under concurrency another loop may have overwritten them — don't
 		// clobber the other loop's state.

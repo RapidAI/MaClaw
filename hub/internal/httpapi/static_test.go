@@ -198,6 +198,35 @@ func TestRegisterGetCreditsStaticRoutesServesPage(t *testing.T) {
 	}
 }
 
+func TestRegisterPetPackHelpStaticRoutesServesPage(t *testing.T) {
+	dir := t.TempDir()
+	html := `<!doctype html><html><body data-set-lang="zh">pet-pack-help</body></html>`
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(html), 0644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerStaticRoutes(mux, dir, "/pet-pack-help")
+
+	req := httptest.NewRequest(http.MethodGet, "/pet-pack-help", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index status = %d", rec.Code)
+	}
+	if body := rec.Body.String(); body != html {
+		t.Fatalf("index body = %q", body)
+	}
+
+	// Trailing path should still fall back to index for SPA-style static pages.
+	req2 := httptest.NewRequest(http.MethodGet, "/pet-pack-help/", nil)
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("slash status = %d", rec2.Code)
+	}
+}
+
 func TestProfessionalStylesheetsServedByStaticRoutes(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -209,6 +238,7 @@ func TestProfessionalStylesheetsServedByStaticRoutes(t *testing.T) {
 		{name: "get-credits", prefix: "/get-credits", register: registerGetCreditsStaticRoutes},
 		{name: "approval_workflow", prefix: "/approval_workflow", register: registerStaticRoutes},
 		{name: "connector", prefix: "/connector", register: registerStaticRoutes},
+		{name: "pet-pack-help", prefix: "/pet-pack-help", register: registerStaticRoutes},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -560,6 +590,13 @@ func TestAdminMarketplaceWorkflowReviewContracts(t *testing.T) {
 		`global.loadWorkflowReviews = async function()`,
 		`workflowsPanel.style.display = '';`,
 		`var mcpAction = item.capability_type === 'mcp'`,
+		`function jsArg(v)`,
+		`.replace(/"/g, '&quot;')`,
+		`var maclawAppReviewInflight = Object.create(null);`,
+		`if (!id || maclawAppReviewInflight[id]) return;`,
+		`var appReviewBusy = !!maclawAppReviewInflight[String(item.id || '')];`,
+		`maclawAppReviewing: 'Reviewing...'`,
+		`maclawAppReviewing: '\u5ba1\u6838\u4e2d...'`,
 	} {
 		if !strings.Contains(marketplace, want) {
 			t.Fatalf("admin marketplace workflow review contract missing %q", want)
@@ -1144,34 +1181,5 @@ func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
 		if !strings.Contains(adminUI, want) {
 			t.Fatalf("hub admin UI helper missing accessibility contract %q", want)
 		}
-	}
-}
-
-func TestRegisterPetPackHelpStaticRoutesServesPage(t *testing.T) {
-	dir := t.TempDir()
-	html := `<!doctype html><html><body data-set-lang="zh">pet-pack-help</body></html>`
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(html), 0644); err != nil {
-		t.Fatalf("write index: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	registerStaticRoutes(mux, dir, "/pet-pack-help")
-
-	req := httptest.NewRequest(http.MethodGet, "/pet-pack-help", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("index status = %d", rec.Code)
-	}
-	if body := rec.Body.String(); body != html {
-		t.Fatalf("index body = %q", body)
-	}
-
-	// Trailing path should still fall back to index for SPA-style static pages.
-	req2 := httptest.NewRequest(http.MethodGet, "/pet-pack-help/", nil)
-	rec2 := httptest.NewRecorder()
-	mux.ServeHTTP(rec2, req2)
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("slash status = %d", rec2.Code)
 	}
 }

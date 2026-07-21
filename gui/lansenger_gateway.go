@@ -69,6 +69,15 @@ type lansengerGatewayManager struct {
 	groupSummaryAtomic atomic.Pointer[lansengerGroupSummaryService]
 }
 
+func (m *lansengerGatewayManager) currentLocalHandler() *IMMessageHandler {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.localHandler
+}
+
 type lansengerGroupInfoCacheEntry struct {
 	info *lansenger.GroupInfo
 	err  bool // true when last fetch failed (negative cache)
@@ -76,8 +85,8 @@ type lansengerGroupInfoCacheEntry struct {
 }
 
 const (
-	lansengerGroupInfoCacheTTL    = 5 * time.Minute
-	lansengerGroupInfoCacheNegTTL = 30 * time.Second
+	lansengerGroupInfoCacheTTL     = 5 * time.Minute
+	lansengerGroupInfoCacheNegTTL  = 30 * time.Second
 	lansengerGroupInfoFetchTimeout = 2 * time.Second
 )
 
@@ -247,9 +256,7 @@ func (m *lansengerGatewayManager) Stop() {
 	if healthCancel != nil {
 		healthCancel()
 	}
-	if lh != nil {
-		lh.memory.Stop()
-	}
+	_ = lh // shared App conversation memory remains alive
 	if gw != nil {
 		_ = gw.Stop()
 	}
@@ -380,10 +387,7 @@ func (m *lansengerGatewayManager) emitStatusEvent() {
 func (m *lansengerGatewayManager) resetLocalHandler() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.localHandler != nil {
-		m.localHandler.memory.Stop()
-		m.localHandler = nil
-	}
+	m.localHandler = nil
 	m.hubClaimSent = false
 }
 
@@ -423,17 +427,25 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 	// traffic; ignore list / allowlist / disabled policy still block.
 	if isLansengerGroupMessage(msg) {
 		if ok, reason := lansenger.GroupMessageAllowed(msg, groupOpts); !ok {
-			if reason == "require_mention" && m.surveyCandidateBypassesMention(msg) {
-				log.Printf("[lansenger-mgr] survey mention-bypass: group=%s user=%s", msg.GroupID, msg.FromUserID)
-				if m.tryHandleSurveyMessage(msg) {
-					log.Printf("[lansenger-mgr] survey intercept handled (no @): user=%s group=%s", msg.FromUserID, msg.GroupID)
+			// A /startmenu selection is commonly a bare `1`, parameter value,
+			// or /confirm. In local mode it must be able to continue without
+			// making the user @ the bot on every wizard step. This exemption is
+			// session- and user-specific; all other group policy checks still win.
+			if reason == "require_mention" && cfg.IsLansengerLocalMode() && m.app.localStartMenuService().active(lansengerLocalStartMenuSessionKey(msg)) {
+				log.Printf("[lansenger-mgr] local startmenu mention-bypass: group=%s user=%s", msg.GroupID, msg.FromUserID)
+			} else {
+				if reason == "require_mention" && m.surveyCandidateBypassesMention(msg) {
+					log.Printf("[lansenger-mgr] survey mention-bypass: group=%s user=%s", msg.GroupID, msg.FromUserID)
+					if m.tryHandleSurveyMessage(msg) {
+						log.Printf("[lansenger-mgr] survey intercept handled (no @): user=%s group=%s", msg.FromUserID, msg.GroupID)
+						return
+					}
+					// Not an active survey answer — drop (same as require_mention).
 					return
 				}
-				// Not an active survey answer — drop (same as require_mention).
+				log.Printf("[lansenger-mgr] ignoring group message (agent): group=%s user=%s reason=%s", msg.GroupID, msg.FromUserID, reason)
 				return
 			}
-			log.Printf("[lansenger-mgr] ignoring group message (agent): group=%s user=%s reason=%s", msg.GroupID, msg.FromUserID, reason)
-			return
 		}
 	}
 	// /summary [start]: @Bot 群讨论摘要 — always local (needs on-device message buffer).
@@ -982,6 +994,26 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	// Always work from cleaned text so "@Bot /help" matches slash passthrough
 	// the same way as plain "/help".
 	cleanText := stripLansengerBotMentions(msg)
+	// Standalone LANXIN must stay fully local.  Handle the stateful wizard
+	// before generic passthrough consumes /run during an active shortcut flow.
+	menu := m.app.localStartMenuService().handle(lansengerLocalStartMenuSessionKey(msg), cleanText)
+	if menu.Handled {
+		m.mu.Lock()
+		gw := m.gateway
+		m.mu.Unlock()
+		reply := menu.Reply
+		if menu.Confirmed {
+			if err := m.app.openLocalStartMenuTask(menu, "lansenger", lansengerReplyTarget(msg), isLansengerGroupMessage(msg)); err != nil {
+				reply = "启动任务失败：" + err.Error()
+			} else {
+				reply = startMenuTaskCreatedReply(menu.AgentMode == "remote_coding_dev")
+			}
+		}
+		if gw != nil && reply != "" {
+			_ = gw.SendText(context.Background(), buildLansengerOutgoingText(msg, reply, m.currentGroupOpts()))
+		}
+		return
+	}
 	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(cleanText, "lansenger:"+msg.FromUserID); handled {
 		m.mu.Lock()
 		gw := m.gateway
@@ -1096,6 +1128,16 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	}
 
 	m.sendAgentResponse(gw, msg, resp)
+}
+
+func lansengerLocalStartMenuSessionKey(msg lansenger.IncomingMessage) string {
+	// Delimit each part unambiguously. IDs are external input and may contain
+	// ':'; the previous concatenation could make two different conversations
+	// share a wizard state (for example target "a:b" + user "c" versus target
+	// "a" + user "b:c").
+	target := strings.TrimSpace(lansengerReplyTarget(msg))
+	user := strings.TrimSpace(msg.FromUserID)
+	return fmt.Sprintf("lansenger:%d:%s:%d:%s", len(target), target, len(user), user)
 }
 
 // shouldSendLansengerIMDetail controls process/status messages only.  Final

@@ -3,6 +3,7 @@ package skillmarket
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -35,19 +36,28 @@ type SnapshotUser struct {
 }
 
 type Snapshot struct {
-	Users                 []SnapshotUser         `json:"users"`
-	Transactions          []CreditsTransaction   `json:"transactions"`
-	Submissions           []SkillSubmission      `json:"submissions"`
-	Purchases             []PurchaseRecord       `json:"purchases"`
-	Ratings               []Rating               `json:"ratings"`
-	Configs               []AdminConfig          `json:"configs"`
-	Tiers                 []UploaderTier         `json:"tiers"`
-	AuthTokens            []AuthToken            `json:"auth_tokens"`
-	Sessions              []Session              `json:"sessions"`
-	SessionRevocations    []SessionRevocation    `json:"session_revocations"`
-	APIKeys               []APIKey               `json:"api_keys"`
-	PendingKeyOrders      []PendingKeyOrder      `json:"pending_key_orders"`
-	NotificationSequences []NotificationSequence `json:"notification_sequences"`
+	Users                 []SnapshotUser           `json:"users"`
+	Transactions          []CreditsTransaction     `json:"transactions"`
+	Submissions           []SkillSubmission        `json:"submissions"`
+	Purchases             []PurchaseRecord         `json:"purchases"`
+	Ratings               []Rating                 `json:"ratings"`
+	Configs               []AdminConfig            `json:"configs"`
+	Tiers                 []UploaderTier           `json:"tiers"`
+	AuthTokens            []AuthToken              `json:"auth_tokens"`
+	Sessions              []Session                `json:"sessions"`
+	SessionRevocations    []SessionRevocation      `json:"session_revocations"`
+	APIKeys               []APIKey                 `json:"api_keys"`
+	PendingKeyOrders      []PendingKeyOrder        `json:"pending_key_orders"`
+	NotificationSequences []NotificationSequence   `json:"notification_sequences"`
+	ProblemReports        []ProblemReport          `json:"problem_reports"`
+	ProblemReportDeletes  []ProblemReportTombstone `json:"problem_report_deletes"`
+}
+
+// ProblemReportTombstone makes a deletion durable across full HA snapshots
+// without copying any diagnostics attachments.
+type ProblemReportTombstone struct {
+	ID        string `json:"id"`
+	DeletedAt string `json:"deleted_at"`
 }
 
 func (s *Store) SetSyncRecorder(rec SyncRecorder) {
@@ -185,6 +195,8 @@ func (s *Store) CountSnapshotRecords(ctx context.Context) (int64, error) {
 		"sm_api_keys",
 		"sm_pending_key_orders",
 		"sm_notification_sequences",
+		"sm_problem_reports",
+		"sm_problem_report_tombstones",
 	}
 	var total int64
 	for _, table := range tables {
@@ -243,6 +255,12 @@ func (s *Store) DumpSnapshot(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 	if snap.NotificationSequences, err = s.dumpNotificationSequences(ctx); err != nil {
+		return nil, err
+	}
+	if snap.ProblemReports, err = s.dumpProblemReportsForSnapshot(ctx); err != nil {
+		return nil, err
+	}
+	if snap.ProblemReportDeletes, err = s.dumpProblemReportTombstones(ctx); err != nil {
 		return nil, err
 	}
 	return snap, nil
@@ -437,6 +455,41 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 			item.ID, item.NotificationType, item.TargetEmail, item.TriggerContext, item.Subject, item.Body, item.SentCount, fmtTime(item.NextSendAt), boolToInt(item.IsActive), fmtTime(item.CreatedAt), fmtTime(item.UpdatedAt),
 		); err != nil {
 			return fmt.Errorf("insert sm_notification_sequences: %w", err)
+		}
+	}
+	for _, item := range snap.ProblemReports {
+		if item.ID == "" || item.UpdatedAt.IsZero() || item.CreatedAt.IsZero() {
+			continue
+		}
+		var deletedAt string
+		err := tx.QueryRowContext(ctx, `SELECT deleted_at FROM sm_problem_report_tombstones WHERE id = ?`, item.ID).Scan(&deletedAt)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("read sm_problem_report tombstone: %w", err)
+		}
+		if err == nil && !parseTime(deletedAt).Before(item.UpdatedAt) {
+			continue
+		}
+		paths, err := json.Marshal([]string{})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_problem_reports (id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, diagnostics_path, screenshot_paths, origin_url, archived_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET reporter_user_id=excluded.reporter_user_id, reporter_contact=excluded.reporter_contact, os_version=excluded.os_version, gui_version=excluded.gui_version, description=excluded.description, status=excluded.status, admin_note=excluded.admin_note, origin_url=excluded.origin_url, archived_at=excluded.archived_at, created_at=excluded.created_at, updated_at=excluded.updated_at
+			WHERE excluded.updated_at > sm_problem_reports.updated_at OR (excluded.updated_at = sm_problem_reports.updated_at AND excluded.origin_url > sm_problem_reports.origin_url)`, item.ID, canonicalSnapshotUserID(userIDAliases, item.ReporterUserID), item.ReporterContact, item.OSVersion, item.GUIVersion, item.Description, item.Status, item.AdminNote, string(paths), item.OriginURL, fmtTime(item.ArchivedAt), fmtTime(item.CreatedAt), fmtTime(item.UpdatedAt)); err != nil {
+			return fmt.Errorf("insert sm_problem_reports: %w", err)
+		}
+	}
+	for _, item := range snap.ProblemReportDeletes {
+		deletedAt := parseTime(item.DeletedAt)
+		if deletedAt.IsZero() || item.ID == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_problem_report_tombstones (id, deleted_at) VALUES (?, ?)
+			ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at WHERE excluded.deleted_at >= sm_problem_report_tombstones.deleted_at`, item.ID, fmtTime(deletedAt)); err != nil {
+			return fmt.Errorf("insert sm_problem_report tombstone: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sm_problem_reports WHERE id = ? AND updated_at <= ?`, item.ID, fmtTime(deletedAt)); err != nil {
+			return fmt.Errorf("delete tombstoned problem report: %w", err)
 		}
 	}
 
@@ -769,6 +822,43 @@ func (s *Store) dumpNotificationSequences(ctx context.Context) ([]NotificationSe
 		item.IsActive = isActive != 0
 		item.CreatedAt = parseTime(createdAt)
 		item.UpdatedAt = parseTime(updatedAt)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// dumpProblemReportsForSnapshot intentionally omits local attachment paths.
+func (s *Store) dumpProblemReportsForSnapshot(ctx context.Context) ([]ProblemReport, error) {
+	rows, err := s.readDB.QueryContext(ctx, `SELECT id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, origin_url, archived_at, created_at, updated_at FROM sm_problem_reports ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProblemReport
+	for rows.Next() {
+		var item ProblemReport
+		var archivedAt, createdAt, updatedAt string
+		if err := rows.Scan(&item.ID, &item.ReporterUserID, &item.ReporterContact, &item.OSVersion, &item.GUIVersion, &item.Description, &item.Status, &item.AdminNote, &item.OriginURL, &archivedAt, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		item.ArchivedAt, item.CreatedAt, item.UpdatedAt = parseTime(archivedAt), parseTime(createdAt), parseTime(updatedAt)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) dumpProblemReportTombstones(ctx context.Context) ([]ProblemReportTombstone, error) {
+	rows, err := s.readDB.QueryContext(ctx, `SELECT id, deleted_at FROM sm_problem_report_tombstones ORDER BY deleted_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProblemReportTombstone
+	for rows.Next() {
+		var item ProblemReportTombstone
+		if err := rows.Scan(&item.ID, &item.DeletedAt); err != nil {
+			return nil, err
+		}
 		out = append(out, item)
 	}
 	return out, rows.Err()

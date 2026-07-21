@@ -136,6 +136,61 @@ func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
 	}
 }
 
+func TestRemoteHubClientFlushesQueuedIMProactiveMessageAfterConnect(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	received := make(chan map[string]any, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			var msg map[string]any
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			switch msg["type"] {
+			case "auth.machine":
+				_ = conn.WriteJSON(map[string]any{"type": "auth.ok", "payload": map[string]any{"role": "machine"}})
+			case "im.proactive_message":
+				received <- msg
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-queue", RemoteMachineToken: "token-queue"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	client := NewRemoteHubClient(app, NewRemoteSessionManager(app))
+	if err := client.SendIMProactiveMessageToTarget("task complete", "telegram", "group-42"); err != nil {
+		t.Fatalf("queue completion notice: %v", err)
+	}
+	if got := len(client.pendingProactive); got != 1 {
+		t.Fatalf("queued notices = %d, want 1", got)
+	}
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer client.Disconnect()
+	select {
+	case msg := <-received:
+		payload, ok := msg["payload"].(map[string]any)
+		if !ok || payload["text"] != "task complete" || payload["platform"] != "telegram" || payload["platform_uid"] != "group-42" {
+			t.Fatalf("proactive payload = %#v", msg["payload"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued proactive message was not flushed after connect")
+	}
+}
+
 func TestRemoteHubClientConnectAndSyncToolsWithMissingConfigSelector(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

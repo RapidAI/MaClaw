@@ -170,6 +170,20 @@ func (b *MilestoneBuffer) TaskEmbed() []float32 {
 	return out
 }
 
+// SetTaskEmbed caches the embedding for the current task description. It is
+// useful when the task started before the embedding runtime finished loading:
+// the interrupt path can calculate it on its first semantic comparison and
+// retain it for subsequent messages.
+func (b *MilestoneBuffer) SetTaskEmbed(taskEmbed []float32) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if taskEmbed == nil {
+		b.taskEmbed = nil
+		return
+	}
+	b.taskEmbed = append(b.taskEmbed[:0], taskEmbed...)
+}
+
 // SetTaskIntent updates the task intent label. Thread-safe.
 func (b *MilestoneBuffer) SetTaskIntent(intent string) {
 	b.mu.Lock()

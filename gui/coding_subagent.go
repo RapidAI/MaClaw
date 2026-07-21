@@ -8725,8 +8725,22 @@ func filterUnsafeSubAgentVerificationCommands(commands []CodingSubAgentCommandRe
 
 func isUnsafeSubAgentVerificationCommand(command string) bool {
 	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
-	return normalized != "" && suppressesVerificationFailure(normalized)
+	// Shell safety rules apply to actual build/test/lint/typecheck (or project
+	// acceptance-run) commands.  A git status/diff self-check may legitimately
+	// use a semicolon to run its two read-only probes, and must be handled by the
+	// dedicated diff-self-check gate instead of poisoning verification evidence.
+	return normalized != "" && commandContainsSubAgentVerificationSegment(normalized) && suppressesVerificationFailure(normalized)
 }
+
+func commandContainsSubAgentVerificationSegment(command string) bool {
+	for _, segment := range shellCommandSegments(command) {
+		if isSubAgentVerificationCommandSegment(segment) {
+			return true
+		}
+	}
+	return false
+}
+
 func isSubAgentVerificationCommand(command string) bool {
 	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
 	if normalized == "" || suppressesVerificationFailure(normalized) {

@@ -55,11 +55,115 @@ import {
 } from "./welcomeTaskMemory";
 import { WelcomeTemplatesImportPreviewPanel } from "./WelcomeTemplatesImportPreview";
 import {
+	UpdateLocalStartMenuTemplates,
     WelcomeSyncDelete,
     WelcomeSyncPull,
     WelcomeSyncPush,
     WelcomeSyncStatus,
 } from "../../../wailsjs/go/main/App";
+
+// Keep standalone IM shortcuts in the desktop process. This is deliberately
+// separate from cloud sync: LANXIN local mode must not depend on Hub.
+type LocalStartMenuTemplateSnapshot = Array<{
+    title: string;
+    body: string;
+    agentMode?: "coding_dev" | "remote_coding_dev";
+    codingEnv?: {
+        workingDir?: string;
+        remote?: { host?: string; port?: number; user?: string; workDir?: string };
+    };
+}>;
+
+let pendingLocalStartMenuSnapshot: LocalStartMenuTemplateSnapshot | null = null;
+let localStartMenuSyncRunning = false;
+let localStartMenuSyncRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let localStartMenuSyncRetryDelayMs = 250;
+const LOCAL_STARTMENU_SYNC_RETRY_MAX_MS = 5_000;
+
+function localStartMenuSnapshot(templates: WelcomeCustomTemplate[]): LocalStartMenuTemplateSnapshot {
+    // Deliberately enumerate safe fields. `WelcomeStoredCodingEnv.remote.password`
+    // stays in browser storage and can never enter the Wails payload.
+    return templates.map((t) => ({
+        title: t.title,
+        body: t.body,
+        agentMode: t.agentMode,
+        codingEnv: t.codingEnv ? {
+            workingDir: t.codingEnv.workingDir,
+            remote: t.codingEnv.remote ? {
+                host: t.codingEnv.remote.host,
+                port: t.codingEnv.remote.port,
+                user: t.codingEnv.remote.user,
+                workDir: t.codingEnv.remote.workDir,
+            } : undefined,
+        } : undefined,
+    }));
+}
+
+export function syncLocalStartMenuTemplates(templates: WelcomeCustomTemplate[]): void {
+    pendingLocalStartMenuSnapshot = localStartMenuSnapshot(templates);
+    if (localStartMenuSyncRetryTimer !== null) {
+        clearTimeout(localStartMenuSyncRetryTimer);
+        localStartMenuSyncRetryTimer = null;
+    }
+    if (localStartMenuSyncRunning) return;
+    localStartMenuSyncRunning = true;
+
+    const flush = async () => {
+        let failedSnapshot: LocalStartMenuTemplateSnapshot | null = null;
+        try {
+            // Coalesce any number of saves/deletes into ordered snapshots. If an
+            // edit occurs while a Wails call is pending, its newer snapshot is
+            // sent immediately afterwards, so an old response cannot win.
+            while (pendingLocalStartMenuSnapshot) {
+                const snapshot = pendingLocalStartMenuSnapshot;
+                pendingLocalStartMenuSnapshot = null;
+                try {
+                    await UpdateLocalStartMenuTemplates(snapshot);
+                } catch (error) {
+                    failedSnapshot = snapshot;
+                    throw error;
+                }
+            }
+        } catch {
+            // Do not drop a just-saved common task if Wails is temporarily
+            // unavailable during startup. Keep the newest coalesced snapshot
+            // and retry with a bounded backoff; a newer edit replaces it.
+            // Preserve a newer edit if it arrived while the failed call was in
+            // flight; otherwise put the failed snapshot back for retry.
+            if (!pendingLocalStartMenuSnapshot && failedSnapshot) {
+                pendingLocalStartMenuSnapshot = failedSnapshot;
+            }
+            if (pendingLocalStartMenuSnapshot && localStartMenuSyncRetryTimer === null) {
+                const delay = localStartMenuSyncRetryDelayMs;
+                localStartMenuSyncRetryDelayMs = Math.min(
+                    localStartMenuSyncRetryDelayMs * 2,
+                    LOCAL_STARTMENU_SYNC_RETRY_MAX_MS,
+                );
+                localStartMenuSyncRetryTimer = setTimeout(() => {
+                    localStartMenuSyncRetryTimer = null;
+                    if (pendingLocalStartMenuSnapshot && !localStartMenuSyncRunning) {
+                        localStartMenuSyncRunning = true;
+                        void flush();
+                    }
+                }, delay);
+            }
+        } finally {
+            localStartMenuSyncRunning = false;
+            if (!pendingLocalStartMenuSnapshot) {
+                localStartMenuSyncRetryDelayMs = 250;
+            }
+            if (pendingLocalStartMenuSnapshot) {
+                // A retry timer is intentionally allowed to own the next try.
+                // Without it, a persistent IPC failure would spin a hot loop.
+                if (localStartMenuSyncRetryTimer === null) {
+                    localStartMenuSyncRunning = true;
+                    void flush();
+                }
+            }
+        }
+    };
+    void flush();
+}
 import {
     classifyWelcomeCloudError,
     formatWelcomeCloudUpdatedAt,
@@ -282,6 +386,13 @@ export function AssistantWelcomeView({
     const [paramDialog, setParamDialog] = useState<ParamDialogState | null>(null);
     const [recentEntries, setRecentEntries] = useState<WelcomeRecentEntry[]>(() => loadWelcomeRecentEntries());
     const [customTemplates, setCustomTemplates] = useState<WelcomeCustomTemplate[]>(() => loadWelcomeCustomTemplates());
+
+    // Initial bridge for templates that existed before this version. Subsequent
+    // CRUD paths sync immediately below; this also repairs a missing local file.
+    useEffect(() => {
+        syncLocalStartMenuTemplates(customTemplates);
+    // The bridge is intentionally keyed to the snapshot, not cloud state.
+    }, [customTemplates]);
     /** When set, that custom template chip is in rename mode. */
     const [renamingTemplateId, setRenamingTemplateId] = useState<string | null>(null);
     const [renameDraft, setRenameDraft] = useState("");
@@ -606,12 +717,15 @@ export function AssistantWelcomeView({
             codingEnv,
         });
         setCustomTemplates(templates);
+		syncLocalStartMenuTemplates(templates);
         return !!saved;
     }, [paramDialog, isZh]);
 
     const openCustomTemplate = useCallback((tpl: WelcomeCustomTemplate) => {
         if (renamingTemplateId === tpl.id) return;
-        setCustomTemplates(touchWelcomeCustomTemplate(tpl.id));
+        const templates = touchWelcomeCustomTemplate(tpl.id);
+        setCustomTemplates(templates);
+        syncLocalStartMenuTemplates(templates);
         const prompt = customTemplateToWelcomePrompt(tpl);
         openPrompt(prompt, "custom", {
             taskKeyOverride: `custom-id::${tpl.id}`,
@@ -625,7 +739,9 @@ export function AssistantWelcomeView({
             setRenamingTemplateId(null);
             setRenameDraft("");
         }
-        setCustomTemplates(deleteWelcomeCustomTemplate(id));
+        const templates = deleteWelcomeCustomTemplate(id);
+        setCustomTemplates(templates);
+        syncLocalStartMenuTemplates(templates);
     }, [renamingTemplateId]);
 
     const beginRenameCustomTemplate = useCallback((
@@ -640,7 +756,9 @@ export function AssistantWelcomeView({
 
     const commitRenameCustomTemplate = useCallback(() => {
         if (!renamingTemplateId) return;
-        setCustomTemplates(renameWelcomeCustomTemplate(renamingTemplateId, renameDraft));
+        const templates = renameWelcomeCustomTemplate(renamingTemplateId, renameDraft);
+        setCustomTemplates(templates);
+        syncLocalStartMenuTemplates(templates);
         setRenamingTemplateId(null);
         setRenameDraft("");
     }, [renamingTemplateId, renameDraft]);
@@ -657,7 +775,9 @@ export function AssistantWelcomeView({
     ) => {
         event?.stopPropagation();
         event?.preventDefault();
-        setCustomTemplates(moveWelcomeCustomTemplate(id, direction));
+        const templates = moveWelcomeCustomTemplate(id, direction);
+        setCustomTemplates(templates);
+        syncLocalStartMenuTemplates(templates);
     }, []);
 
     const [activeTab, setActiveTab] = useState<string>(() => {
@@ -736,6 +856,7 @@ export function AssistantWelcomeView({
             suppressAutoPushRef.current = true;
         }
         setCustomTemplates(result.templates);
+		syncLocalStartMenuTemplates(result.templates);
         if (result.restoredExtras) {
             setUserRole(loadWelcomeUserRole());
             setRecentEntries(loadWelcomeRecentEntries());

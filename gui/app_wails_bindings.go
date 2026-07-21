@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -279,7 +280,17 @@ func (a *App) SearchSkillHub(query string) ([]HubSkillMeta, error) {
 func (a *App) SearchMixedSkills(query string) ([]MixedSkillSearchResult, error) {
 	a.ensureInteractionInfra()
 	searcher := NewSkillSearcher(NewSkillMarketClient(a))
-	return searcher.SearchAll(context.Background(), query)
+	results, err := searcher.SearchAll(context.Background(), query)
+	// Wails turns a non-nil Go error into a rejected Promise, discarding the
+	// accompanying result slice. A degraded search still has usable results
+	// (for example, Enterprise Hub succeeded while SkillMarket timed out), so
+	// return those to the Apps update checker and other UI search surfaces.
+	// Non-UI callers that need diagnostics use SkillSearcher.SearchAll directly.
+	if degraded, ok := AsSearchDegraded(err); ok {
+		log.Printf("[skill-search] returning %d degraded results to UI: %s", len(results), degraded.Error())
+		return results, nil
+	}
+	return results, err
 }
 
 // InstallMixedSkill installs a skill result from mixed search sources (Wails binding).
@@ -364,10 +375,7 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 			cskill.CleanupStaging(stagingDir)
 			return trace, annotateSkillHubDownloadError(err, trace)
 		}
-		if a.skillNameAlreadyRegistered(skill.Name) {
-			cskill.CleanupStaging(stagingDir)
-			return trace, fmt.Errorf("skill %q already exists", skill.Name)
-		}
+		existing := a.installedMixedSkillForUpdate(downloadID, skill.Name)
 		skill.Source = maclawAppRegisteredDependencySource(string(kind))
 		skill.HubSkillID = firstNonEmpty(downloadID, skill.HubSkillID)
 		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, string(kind))
@@ -375,34 +383,95 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 			cskill.CleanupStaging(stagingDir)
 			return trace, err
 		}
+		// Persist scan evidence in staging, so it moves together with the skill.
+		// Writing after replacement would make a cache-write failure destructive.
+		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return trace, fmt.Errorf("write skill scan cache: %w", err)
+		}
 		committedDir := ""
 		if strings.TrimSpace(skill.SkillDir) != "" {
-			finalRoot, err := a.primarySkillsDir()
-			if err != nil {
-				cskill.CleanupStaging(stagingDir)
-				return trace, err
+			if existing != nil {
+				// Preserve the public skill name and replace its directory atomically.
+				// This is the update path for HubCenter packages; Register deliberately
+				// rejects duplicate names, which otherwise made app updates impossible.
+				skill.Name = existing.Name
+				// The scan cache record is signed over SkillName. We scanned the
+				// downloaded package before adopting the local display name, so
+				// rewrite its staged record with the final identity before moving it.
+				if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
+					cskill.CleanupStaging(stagingDir)
+					return trace, fmt.Errorf("write update scan cache: %w", err)
+				}
+				targetDir := strings.TrimSpace(existing.SkillDir)
+				if targetDir == "" {
+					finalRoot, rootErr := a.primarySkillsDir()
+					if rootErr != nil {
+						cskill.CleanupStaging(stagingDir)
+						return trace, rootErr
+					}
+					targetDir = filepath.Join(finalRoot, skill.Name)
+				}
+				if err := os.MkdirAll(filepath.Dir(targetDir), 0o755); err != nil {
+					cskill.CleanupStaging(stagingDir)
+					return trace, fmt.Errorf("create update directory for skill %q: %w", skill.Name, err)
+				}
+				backupDir := targetDir + ".bak-" + shortRandomHex()
+				hadExistingDir := false
+				if err := os.Rename(targetDir, backupDir); err == nil {
+					hadExistingDir = true
+				} else if !os.IsNotExist(err) {
+					cskill.CleanupStaging(stagingDir)
+					return trace, fmt.Errorf("backup existing skill %q: %w", skill.Name, err)
+				}
+				if err := os.Rename(stagingDir, targetDir); err != nil {
+					if hadExistingDir {
+						_ = os.Rename(backupDir, targetDir)
+					}
+					return trace, fmt.Errorf("replace existing skill %q: %w", skill.Name, err)
+				}
+				committedDir = targetDir
+				skill.SkillDir = targetDir
+				if err := a.updateRegisteredMaclawAppDependencySkill(*skill); err != nil {
+					_ = os.RemoveAll(targetDir)
+					if hadExistingDir {
+						_ = os.Rename(backupDir, targetDir)
+					}
+					return trace, err
+				}
+				if hadExistingDir {
+					_ = os.RemoveAll(backupDir)
+				}
+			} else {
+				finalRoot, err := a.primarySkillsDir()
+				if err != nil {
+					cskill.CleanupStaging(stagingDir)
+					return trace, err
+				}
+				finalDir, err := cskill.CommitStagingToDir(stagingDir, skill.Name, finalRoot)
+				if err != nil {
+					cskill.CleanupStaging(stagingDir)
+					return trace, err
+				}
+				skill.SkillDir = finalDir
+				committedDir = finalDir
 			}
-			finalDir, err := cskill.CommitStagingToDir(stagingDir, skill.Name, finalRoot)
-			if err != nil {
-				cskill.CleanupStaging(stagingDir)
-				return trace, err
-			}
-			skill.SkillDir = finalDir
-			committedDir = finalDir
 		} else {
 			cskill.CleanupStaging(stagingDir)
 		}
-		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
-			if committedDir != "" {
-				_ = os.RemoveAll(committedDir)
+		if existing == nil {
+			if a.skillNameAlreadyRegistered(skill.Name) {
+				if committedDir != "" {
+					_ = os.RemoveAll(committedDir)
+				}
+				return trace, fmt.Errorf("skill %q already exists", skill.Name)
 			}
-			return trace, fmt.Errorf("write skill scan cache: %w", err)
-		}
-		if err := a.skillExecutor.Register(*skill); err != nil {
-			if committedDir != "" {
-				_ = os.RemoveAll(committedDir)
+			if err := a.skillExecutor.Register(*skill); err != nil {
+				if committedDir != "" {
+					_ = os.RemoveAll(committedDir)
+				}
+				return trace, err
 			}
-			return trace, err
 		}
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
 		return trace, nil
@@ -1522,6 +1591,10 @@ type AIAssistantSendRequest struct {
 	ProjectPath                 string                      `json:"project_path,omitempty"`
 	ExpertID                    string                      `json:"expert_id,omitempty"`
 	EventScopeID                string                      `json:"event_scope_id,omitempty"`
+	IMPlatform                  string                      `json:"im_platform,omitempty"`
+	IMTargetUID                 string                      `json:"im_target_uid,omitempty"`
+	IMTaskTitle                 string                      `json:"im_task_title,omitempty"`
+	IMIsGroup                   bool                        `json:"im_is_group,omitempty"`
 }
 
 type AIAssistantContextMessage struct {
@@ -1704,20 +1777,27 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	rawProjectPath := strings.TrimSpace(req.ProjectPath)
 	projectPath := normalizeProjectSessionPath(req.ProjectPath)
 	req.ProjectPath = projectPath
-	if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
-		normalizeArtifactResponseSource(resp)
-		return resp, err
-	}
-	if resp, handled := a.TryHandlePassthroughSlashCommandWithSource(text, "desktop:ai-assistant"); handled {
-		if resp != nil {
-			requestID := strings.TrimSpace(req.RequestID)
-			if requestID == "" {
-				requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
-			}
-			resp.RequestID = requestID
+	// A confirmed /startmenu task may intentionally begin with a slash (for
+	// example an instruction asking the agent to explain or generate a command).
+	// It must run through the normal task loop, not be consumed by a desktop
+	// control/passthrough command handler.
+	isStartMenuLaunch := strings.TrimSpace(req.IMPlatform) != "" && strings.TrimSpace(req.IMTargetUID) != ""
+	if !isStartMenuLaunch {
+		if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
 			normalizeArtifactResponseSource(resp)
+			return resp, err
 		}
-		return resp, nil
+		if resp, handled := a.TryHandlePassthroughSlashCommandWithSource(text, "desktop:ai-assistant"); handled {
+			if resp != nil {
+				requestID := strings.TrimSpace(req.RequestID)
+				if requestID == "" {
+					requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
+				}
+				resp.RequestID = requestID
+				normalizeArtifactResponseSource(resp)
+			}
+			return resp, nil
+		}
 	}
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
@@ -2091,6 +2171,7 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	agentLoopStartedAt := time.Now()
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	agentLoopElapsed = time.Since(agentLoopStartedAt)
+	a.notifyStartMenuTaskCompletion(hubClient, req, resp)
 	if !streamDoneAt.IsZero() {
 		if resp != nil && resp.HandlerTailNanos > 0 {
 			handlerTailElapsed = time.Duration(resp.HandlerTailNanos)
@@ -2219,6 +2300,61 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 
 	// Emit the final response via event so the frontend can process it.
 	emitFinalResponse(resp)
+}
+
+const startMenuCompletionMaxRunes = 1200
+
+func (a *App) notifyStartMenuTaskCompletion(hubClient *RemoteHubClient, req AIAssistantSendRequest, resp *IMAgentResponse) {
+	if strings.TrimSpace(req.IMPlatform) == "" || strings.TrimSpace(req.IMTargetUID) == "" {
+		return
+	}
+	title := strings.TrimSpace(req.IMTaskTitle)
+	if title == "" {
+		title = "任务"
+	}
+	message := "任务「" + title + "」已完成。"
+	if resp == nil || strings.TrimSpace(resp.Error) != "" {
+		reason := "未返回结果"
+		if resp != nil && strings.TrimSpace(resp.Error) != "" {
+			reason = strings.TrimSpace(resp.Error)
+		}
+		message = "任务「" + title + "」执行失败。原因：\n" + truncateStartMenuCompletion(reason)
+	} else {
+		summary := strings.TrimSpace(resp.Text)
+		if summary == "" {
+			summary = "任务已完成，但未返回文字摘要。请在 AI 助手任务标签页查看详情。"
+		}
+		message += "\n结果摘要：\n" + truncateStartMenuCompletion(summary)
+	}
+	if strings.EqualFold(strings.TrimSpace(req.IMPlatform), "lansenger") {
+		if a.lansengerGateway == nil {
+			return
+		}
+		a.lansengerGateway.mu.Lock()
+		gw := a.lansengerGateway.gateway
+		a.lansengerGateway.mu.Unlock()
+		if gw == nil {
+			return
+		}
+		if err := gw.SendText(context.Background(), lansenger.OutgoingText{ToUserID: strings.TrimSpace(req.IMTargetUID), Text: message, IsGroup: req.IMIsGroup}); err != nil {
+			log.Printf("[AI assistant] send local /startmenu completion notice failed: %v", err)
+		}
+		return
+	}
+	if hubClient == nil {
+		return
+	}
+	if err := hubClient.SendIMProactiveMessageToTarget(message, req.IMPlatform, req.IMTargetUID); err != nil {
+		log.Printf("[AI assistant] send /startmenu completion notice failed: %v", err)
+	}
+}
+
+func truncateStartMenuCompletion(text string) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) <= startMenuCompletionMaxRunes {
+		return string(runes)
+	}
+	return string(runes[:startMenuCompletionMaxRunes]) + "…\n\n完整结果请在 AI 助手任务标签页查看。"
 }
 
 // emitAIAssistantResponse pushes the final agent loop response to the frontend

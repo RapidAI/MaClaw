@@ -15,6 +15,7 @@
     .pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:22px}.pager button{height:38px;padding:0 16px;border:1px solid var(--line);border-radius:12px;background:#fff;font:inherit;cursor:pointer}.pager button:disabled{opacity:.45;cursor:default}.pager span{font-size:13px;color:var(--muted)}
     .state{padding:42px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:var(--radius);background:rgba(255,255,255,.72)}
     body{background:#f6f7f9;color:#303541}.wrap{max-width:1180px}.hero{text-align:left;padding:22px 24px;margin-bottom:18px;border:1px solid #e3e7ee;border-radius:14px;background:#fff;box-shadow:0 10px 26px rgba(35,41,55,.05)}.hero h1,.card-name,.summary-card strong{color:#262b36}.hero h1,.card-name{display:flex;align-items:center;gap:10px;position:relative}.hero h1::before,.card-name::before{content:"";display:inline-block;flex:0 0 auto;width:28px;height:28px;border-radius:9px;background:#f3f5f8;border:1px solid #e2e6ee}.hero h1::after,.card-name::after{content:"";position:absolute;top:50%;width:15px;height:15px;transform:translateY(-50%);background:#747b88;-webkit-mask:var(--skillhub-icon) center/15px 15px no-repeat;mask:var(--skillhub-icon) center/15px 15px no-repeat}.hero h1::after{left:7px}.card-name::before{width:24px;height:24px;border-radius:8px}.card-name::after{left:6px;width:13px;height:13px;-webkit-mask-size:13px 13px;mask-size:13px 13px}.hero h1,.card-name{--skillhub-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m12 3.8 6.8 3.7V16L12 20.2 5.2 16V7.5L12 3.8Z'/%3E%3Cpath d='M12 11.9 5.2 7.5'/%3E%3Cpath d='M12 11.9V20.2'/%3E%3Cpath d='m18.8 7.5-6.8 4.4'/%3E%3C/svg%3E")}.hero p,.card-desc,.meta,.footer,.pager span{color:#707684}.toolbar{justify-content:flex-start;padding:12px;border:1px solid #e3e7ee;border-radius:14px;background:#fff;box-shadow:0 8px 20px rgba(35,41,55,.035)}.toolbar input{border-color:#dfe4ec;border-radius:10px;color:#303541}.toolbar input:focus{outline:none;border-color:#aab3c2;box-shadow:0 0 0 3px rgba(116,123,136,.12)}.toolbar button{border-radius:10px;background:linear-gradient(135deg,#f06a7b,#e55468);box-shadow:0 10px 22px rgba(239,106,124,.16)}.summary{justify-content:flex-start}.summary-card,.card,.pager button,.state{background:#fff;border-color:#e3e7ee;border-radius:12px;box-shadow:0 8px 20px rgba(35,41,55,.035);color:#303541}.card{transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease}.card:hover{transform:translateY(-1px);border-color:#cfd5df;box-shadow:0 14px 28px rgba(35,41,55,.06)}.tag{background:#f7f9fc;border-color:#e3e7ee;color:#596170}.trust-official{background:#edf8f2;color:#1d9365}.trust-community{background:#f3f5f8;color:#596170}.trust-unknown{background:#eef1f5;color:#707684}.footer{border-top-color:#e8ebf1}.state{border-style:dashed;background:#fbfcfe}
+    .card-actions{display:flex;justify-content:flex-end;margin-top:auto}.history-button{min-height:32px;padding:0 11px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#344054;font:inherit;font-size:12px;font-weight:650;cursor:pointer}.history-button:hover{border-color:#98a2b3;background:#f8fafc}.history-button:focus-visible{outline:3px solid rgba(37,99,235,.24);outline-offset:2px}.version-overlay{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.42)}.version-dialog{width:min(680px,100%);max-height:min(720px,calc(100vh - 40px));overflow:auto;padding:22px;border-radius:14px;background:#fff;box-shadow:0 8px 16px rgba(15,23,42,.2)}.version-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.version-dialog h2{margin:0;font-size:20px;color:#162033}.version-dialog p{margin:6px 0 18px;color:#475467;font-size:13px;line-height:1.55}.version-close{min-width:34px;height:34px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#344054;font-size:20px;line-height:1;cursor:pointer}.version-list{display:grid;gap:8px}.version-row{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:#162033;text-align:left;font:inherit;cursor:pointer}.version-row:hover{border-color:#98a2b3;background:#f8fafc}.version-row:focus-visible{outline:3px solid rgba(37,99,235,.24);outline-offset:2px}.version-row strong{font-size:14px}.version-row span{font-size:12px;color:#667085}.version-detail{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}.version-detail h3{margin:0 0 8px;font-size:16px;color:#162033}.version-detail dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 14px;margin:0;font-size:13px}.version-detail dt{color:#667085}.version-detail dd{margin:0;color:#344054;overflow-wrap:anywhere}
     @media (max-width:1000px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media (max-width:640px){.wrap{padding:22px 14px 30px}.hero h1{font-size:28px}.toolbar{justify-content:stretch}.toolbar input,.toolbar button{width:100%}.grid{grid-template-columns:1fr}}
   
@@ -88,6 +89,8 @@
       community: { zh: '社区', en: 'Community' },
       unknown: { zh: '未知', en: 'Unknown' }
     };
+
+    Object.assign(I18N, { historyVersions:{zh:'历史版本 ({count})',en:'Version history ({count})'}, historyTitle:{zh:'历史版本',en:'Version history'}, historyDesc:{zh:'选择一个版本查看完整详情。',en:'Select a version to view its complete details.'}, close:{zh:'关闭',en:'Close'}, version:{zh:'版本',en:'Version'}, status:{zh:'状态',en:'Status'}, visible:{zh:'已显示',en:'Visible'}, hidden:{zh:'已隐藏',en:'Hidden'}, detailLoading:{zh:'正在加载详情…',en:'Loading details…'} });
 
     function t(key, vars) {
       var text = (I18N[key] && I18N[key][LANG]) || key;
@@ -165,6 +168,8 @@
         displayName = parts[parts.length - 1];
       }
       var skillIdHtml = skill.skill_id ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(skill.skill_id) + '</div>' : '';
+      var versionCount = Number(skill.version_count || 1);
+      var historyButton = versionCount > 1 ? '<div class="card-actions"><button class="history-button" type="button" data-version-history="' + escapeHtml(skill.id) + '">' + escapeHtml(t('historyVersions', { count: versionCount })) + '</button></div>' : '';
       return '<article class="card" role="listitem" aria-label="' + escapeHtml(displayName) + '">'
         + '<div class="card-name">' + escapeHtml(displayName) + (skill.version ? ' <span style="font-size:12px;color:var(--muted);font-weight:500">v' + escapeHtml(skill.version) + '</span>' : '') + '</div>'
         + skillIdHtml
@@ -172,7 +177,7 @@
         + '<div class="card-desc">' + desc + '</div>'
         + (tags ? '<div class="card-tags">' + tags + '</div>' : '')
         + '<div class="meta"><span>' + t('downloads') + ': ' + formatCompactNumber(skill.downloads || 0) + '</span><span>' + t('rating') + ': ' + ratingText + '</span></div>'
-        + '<div class="footer"><span>' + escapeHtml(dateText) + '</span><span>' + escapeHtml(skill.source_url || '') + '</span></div>'
+        + '<div class="footer"><span>' + escapeHtml(dateText) + '</span><span>' + escapeHtml(skill.source_url || '') + '</span></div>' + historyButton
       + '</article>';
     }
 
@@ -191,7 +196,22 @@
       content.className = 'grid';
       content.setAttribute('role', 'list');
       content.innerHTML = items.map(renderCard).join('');
+      content.querySelectorAll('[data-version-history]').forEach(function(button) { button.addEventListener('click', function() { var skill = items.find(function(item) { return item.id === button.dataset.versionHistory; }); if (skill) openVersionHistory(skill, button); }); });
     }
+
+    function openVersionHistory(skill, trigger) {
+      var priorFocus = trigger || document.activeElement, overlay = document.createElement('div'), dialog = document.createElement('section');
+      overlay.className = 'version-overlay'; dialog.className = 'version-dialog'; dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true');
+      var title = document.createElement('h2'); title.textContent = (skill.maclaw_app_name || skill.display_name || skill.name || '-') + ' · ' + t('historyTitle');
+      var close = document.createElement('button'); close.type = 'button'; close.className = 'version-close'; close.setAttribute('aria-label', t('close')); close.textContent = '×';
+      var head = document.createElement('div'); head.className = 'version-dialog-head'; head.append(title, close);
+      var desc = document.createElement('p'); desc.textContent = t('historyDesc'); var list = document.createElement('div'); list.className = 'version-list'; var detail = document.createElement('div'); detail.className = 'version-detail'; detail.hidden = true;
+      (skill.version_history || []).forEach(function(version, index) { var row = document.createElement('button'); row.type = 'button'; row.className = 'version-row'; var label = version.semver || version.version || '-'; row.innerHTML = '<strong>v' + escapeHtml(label) + (index === 0 ? ' · ' + escapeHtml(LANG === 'zh' ? '当前版本' : 'Current') : '') + '</strong><span>' + escapeHtml(formatDate(version.updated_at || version.created_at)) + '</span>'; row.addEventListener('click', function() { loadVersionDetail(version, detail); }); list.appendChild(row); });
+      dialog.append(head, desc, list, detail); overlay.appendChild(dialog); document.body.appendChild(overlay);
+      function dismiss() { document.removeEventListener('keydown', onKey); overlay.remove(); if (priorFocus && priorFocus.focus) priorFocus.focus(); } function onKey(event) { if (event.key === 'Escape') { event.preventDefault(); dismiss(); } }
+      close.addEventListener('click', dismiss); overlay.addEventListener('click', function(event) { if (event.target === overlay) dismiss(); }); document.addEventListener('keydown', onKey); close.focus();
+    }
+    function loadVersionDetail(version, target) { target.hidden = false; target.textContent = t('detailLoading'); fetch('/api/v1/skills/' + encodeURIComponent(version.id)).then(function(response) { if (!response.ok) throw new Error(response.statusText); return response.json(); }).then(function(detail) { var displayVersion = detail.semver || detail.version || version.semver || version.version || '-'; target.innerHTML = '<h3>v' + escapeHtml(displayVersion) + '</h3><p>' + escapeHtml(detail.description || t('noDescription')) + '</p><dl><dt>' + escapeHtml(t('status')) + '</dt><dd>' + escapeHtml(detail.status || '-') + '</dd><dt>' + escapeHtml(t('version')) + '</dt><dd>' + escapeHtml(displayVersion) + '</dd><dt>' + escapeHtml(t('updated')) + '</dt><dd>' + escapeHtml(formatDate(detail.updated_at || detail.created_at)) + '</dd><dt>' + escapeHtml(t('visible')) + '</dt><dd>' + escapeHtml(detail.visible === false ? t('hidden') : t('visible')) + '</dd></dl>'; }).catch(function(error) { target.textContent = t('loadFailed', { error: error.message || String(error) }); }); }
 
     function renderPager(page, total) {
       var totalPages = Math.max(1, Math.ceil((total || 0) / pageSize));

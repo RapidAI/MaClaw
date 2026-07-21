@@ -54,6 +54,15 @@ type RemoteHubClient struct {
 	reconnecting   atomic.Bool
 	allowReconnect atomic.Bool
 
+	// Completion notices from IM /startmenu must survive a transient Hub
+	// disconnect. Keep a small in-memory FIFO and flush it after reconnect.
+	// This is deliberately memory-only: a desktop restart cannot know whether a
+	// previous WebSocket write reached Hub, so persisting would risk duplicate
+	// IM completion messages.
+	proactiveMu       sync.Mutex
+	pendingProactive  []pendingIMProactiveMessage
+	flushingProactive atomic.Bool
+
 	// reconnectImmediate is set to true when the Hub sends a close(1001)
 	// "going away" frame, indicating a planned shutdown (e.g., redeployment).
 	// The reconnect loop uses a minimal initial backoff (100ms) instead of
@@ -97,6 +106,12 @@ type RemoteHubClient struct {
 	ioRelay *SessionIORelay
 }
 
+type pendingIMProactiveMessage struct {
+	text        string
+	platform    string
+	platformUID string
+}
+
 type veDetailRefreshState struct {
 	mu        sync.Mutex
 	dirty     bool
@@ -120,33 +135,60 @@ const previewFlushInterval = 150 * time.Millisecond
 // than the hub's ping interval (30s). Shared between connectLocked and readLoop.
 const hubPongWait = 90 * time.Second
 
+const maxPendingIMProactiveMessages = 100
+
+var errIMProactiveHubDisconnected = errors.New("hub is not connected")
+
 func NewRemoteHubClient(app *App, manager *RemoteSessionManager) *RemoteHubClient {
 	return &RemoteHubClient{
-		app:            app,
-		manager:        manager,
-		dial:           defaultHubDial,
-		reconnectCh:    make(chan struct{}, 1),
-		previewPending: make(map[string]*pendingPreviewDelta),
-		previewStopCh:  make(chan struct{}),
-		lastSummary:    make(map[string]string),
+		app:              app,
+		manager:          manager,
+		dial:             defaultHubDial,
+		reconnectCh:      make(chan struct{}, 1),
+		previewPending:   make(map[string]*pendingPreviewDelta),
+		previewStopCh:    make(chan struct{}),
+		lastSummary:      make(map[string]string),
+		pendingProactive: make([]pendingIMProactiveMessage, 0),
 	}
 }
 
 func (c *RemoteHubClient) ensureIMHandler() *IMMessageHandler {
-	if c.imHandler != nil {
-		return c.imHandler
-	}
 	c.imHandlerMu.Lock()
 	defer c.imHandlerMu.Unlock()
 	if c.imHandler != nil {
 		return c.imHandler
 	}
-	h := NewIMMessageHandler(c.app, c.manager)
+	// The desktop and Hub transports must share the same handler when one is
+	// already running. Constructing a second handler used to overwrite
+	// app.imHandler inside NewIMMessageHandler, splitting loop/interrupt state
+	// between two instances and making a new Hub message appear unrelated to the
+	// active desktop task.
+	var h *IMMessageHandler
+	if c.app != nil {
+		h = c.app.imHandler
+	}
+	if h == nil {
+		h = NewIMMessageHandler(c.app, c.manager)
+		if c.app != nil {
+			c.app.imHandler = h
+		}
+	}
 	c.imHandler = h
 	if c.configureIMHandler != nil {
 		c.configureIMHandler(h)
 	}
 	return h
+}
+
+// currentIMHandler returns the Hub handler safely while it may be created by
+// an incoming message concurrently with embedding activation.
+func (c *RemoteHubClient) currentIMHandler() *IMMessageHandler {
+	if c == nil {
+		return nil
+	}
+	c.imHandlerMu.Lock()
+	defer c.imHandlerMu.Unlock()
+	return c.imHandler
 }
 
 func defaultHubDial(urlStr string) (*websocket.Conn, error) {
@@ -225,6 +267,7 @@ func (c *RemoteHubClient) Connect() error {
 	// Re-send IM gateway claims for any already-connected gateways that are
 	// in hub mode. This covers both initial connect and reconnect scenarios.
 	go c.syncIMGatewayClaims()
+	go c.flushPendingIMProactiveMessages()
 
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
@@ -604,6 +647,7 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	}
 	c.startPreviewFlusher()
 	go c.syncIMGatewayClaims()
+	go c.flushPendingIMProactiveMessages()
 
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
@@ -1438,6 +1482,30 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 			c.setLastError("im handler not initialized")
 			return
 		}
+		if payload.StartMenu != nil {
+			if !c.app.hasWailsEventsContext() {
+				resp := &IMAgentResponse{Error: "当前设备未打开 AI 助手界面，无法创建任务标签页。请打开桌面端 AI 助手后重试。"}
+				if err := c.sendIMAgentResponse(requestID, resp); err != nil {
+					c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
+				}
+				return
+			}
+			if err := c.openStartMenuTask(payload); err != nil {
+				resp := &IMAgentResponse{Error: "无法创建 AI 助手任务: " + err.Error()}
+				if sendErr := c.sendIMAgentResponse(requestID, resp); sendErr != nil {
+					c.setLastError(fmt.Sprintf("im.agent_response send error: %s", sendErr.Error()))
+				}
+				return
+			}
+			// The new AI assistant tab owns the first agent turn. Do not also run
+			// this Hub-delivered request in the bare IM session, otherwise a single
+			// /startmenu confirmation executes the task twice in two contexts.
+			resp := &IMAgentResponse{Text: startMenuCreatedReply(payload.StartMenu)}
+			if err := c.sendIMAgentResponse(requestID, resp); err != nil {
+				c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
+			}
+			return
+		}
 
 		// Interrupt check: if the agent loop is already running (session mutex held)
 		// and this message is a cancel/merge/status signal, handle it immediately
@@ -1500,16 +1568,80 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 	}()
 }
 
+func startMenuCreatedReply(launch *agent.StartMenuLaunch) string {
+	return startMenuTaskCreatedReply(launch != nil && strings.TrimSpace(launch.AgentMode) == "remote_coding_dev")
+}
+
+func (c *RemoteHubClient) openStartMenuTask(message IMUserMessage) error {
+	if c == nil || c.app == nil || message.StartMenu == nil {
+		return nil
+	}
+	launch := message.StartMenu
+	title := strings.TrimSpace(launch.Title)
+	if title == "" {
+		title = strings.TrimSpace(message.Text)
+	}
+	if title == "" {
+		return fmt.Errorf("任务标题为空")
+	}
+	mode := strings.TrimSpace(launch.AgentMode)
+	var task ProjectSearchResult
+	switch mode {
+	case "remote_coding_dev":
+		if strings.TrimSpace(launch.RemoteHost) == "" || strings.TrimSpace(launch.RemoteUser) == "" || strings.TrimSpace(launch.RemoteDir) == "" {
+			return fmt.Errorf("远程开发环境信息不完整")
+		}
+		port := launch.RemotePort
+		if port <= 0 || port > 65535 {
+			port = 22
+		}
+		task = c.app.CreateRemoteCodingTask(title, launch.RemoteHost, launch.RemoteUser, launch.RemoteDir, port)
+	case "coding_dev":
+		task = c.app.CreateTaskWithMode(title, launch.WorkingDir, mode)
+		if task.ProjectPath != "" {
+			if err := c.app.PrepareLocalCodingEnvironment(task.ProjectPath, launch.WorkingDir); err != nil {
+				return err
+			}
+		}
+	default:
+		task = c.app.CreateTask(title, "")
+	}
+	if strings.TrimSpace(task.ProjectPath) == "" {
+		return fmt.Errorf("创建任务失败")
+	}
+	remoteNeedsReconnect := mode == "remote_coding_dev"
+	initialMessage := strings.TrimSpace(launch.TaskText)
+	if initialMessage == "" {
+		initialMessage = strings.TrimSpace(message.Text)
+	}
+	c.app.emitEvent("im-startmenu-task-created", map[string]interface{}{
+		"project_path":           task.ProjectPath,
+		"task_title":             task.Name,
+		"initial_message":        initialMessage,
+		// The frontend holds remote prompts until SSH reconnect succeeds, then
+		// sends them automatically. Keep this true for parity with local IM
+		// gateways and the user-facing automatic-start message.
+		"auto_send":              true,
+		"prepare_mode":           "new-agent",
+		"agent_mode":             mode,
+		"remote_host":            launch.RemoteHost,
+		"remote_needs_reconnect": remoteNeedsReconnect,
+		"im_platform":            launch.Platform,
+		"im_target_uid":          launch.TargetUID,
+	})
+	return nil
+}
+
 // handleIMCancelSession handles im.cancel_session from Hub - cancels the
 // currently running agent loop so the user can start a new task.
 func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
 	log.Printf("[hub-client] im.cancel_session received")
-	if c.imHandler != nil {
+	if handler := c.currentIMHandler(); handler != nil {
 		var payload struct {
 			UserID string `json:"user_id"`
 		}
 		if len(msg.Payload) > 0 && json.Unmarshal(msg.Payload, &payload) == nil && strings.TrimSpace(payload.UserID) != "" {
-			_, _ = c.imHandler.CancelSessionForUser(payload.UserID)
+			_, _ = handler.CancelSessionForUser(payload.UserID)
 			return
 		}
 		log.Printf("[hub-client] im.cancel_session ignored: missing user_id payload")
@@ -1747,21 +1879,107 @@ func (c *RemoteHubClient) SendSessionImageError(sessionID, errorMsg string) erro
 // SendIMProactiveMessage sends a proactive (non-request-based) message to the
 // Hub for delivery to the user's IM channels. Used for scheduled task results.
 func (c *RemoteHubClient) SendIMProactiveMessage(text string) error {
+	return c.SendIMProactiveMessageToTarget(text, "", "")
+}
+
+// SendIMProactiveMessageToTarget delivers a completion summary to the exact
+// IM conversation that initiated a /startmenu task.
+func (c *RemoteHubClient) SendIMProactiveMessageToTarget(text, platform, platformUID string) error {
+	pending := pendingIMProactiveMessage{
+		text:        strings.TrimSpace(text),
+		platform:    strings.TrimSpace(platform),
+		platformUID: strings.TrimSpace(platformUID),
+	}
+	if pending.text == "" {
+		return nil
+	}
+	// Serialize direct writes with the reconnect FIFO so completion notices are
+	// delivered in creation order even when a reconnect races a new completion.
+	c.proactiveMu.Lock()
+	if len(c.pendingProactive) > 0 {
+		c.enqueueIMProactiveMessageLocked(pending)
+		c.proactiveMu.Unlock()
+		go c.flushPendingIMProactiveMessages()
+		return nil
+	}
+	err := c.writeIMProactiveMessage(pending)
+	if err == nil {
+		c.proactiveMu.Unlock()
+		return nil
+	}
+	c.enqueueIMProactiveMessageLocked(pending)
+	c.proactiveMu.Unlock()
+	if !errors.Is(err, errIMProactiveHubDisconnected) {
+		go c.handleConnectionLoss(err)
+	}
+	return nil
+}
+
+func (c *RemoteHubClient) writeIMProactiveMessage(pending pendingIMProactiveMessage) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
-		return nil // silently drop when not connected, consistent with other Send* methods
+		return errIMProactiveHubDisconnected
 	}
-
 	msg := HubEnvelope{
 		Type:      "im.proactive_message",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
 		Payload: map[string]string{
-			"text": text,
+			"text":         pending.text,
+			"platform":     pending.platform,
+			"platform_uid": pending.platformUID,
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	if err := c.conn.WriteJSON(msg); err != nil {
+		log.Printf("[hub-client] IM proactive message write failed; queueing for reconnect: %v", err)
+		return err
+	}
+	return nil
+}
+
+func (c *RemoteHubClient) enqueueIMProactiveMessageLocked(pending pendingIMProactiveMessage) {
+	if len(c.pendingProactive) >= maxPendingIMProactiveMessages {
+		c.pendingProactive = c.pendingProactive[1:]
+		log.Printf("[hub-client] IM proactive queue full; dropped oldest completion notice")
+	}
+	c.pendingProactive = append(c.pendingProactive, pending)
+}
+
+func (c *RemoteHubClient) flushPendingIMProactiveMessages() {
+	if c.flushingProactive.Swap(true) {
+		return
+	}
+	defer func() {
+		c.flushingProactive.Store(false)
+		// A connect can race this flusher's final disconnected write attempt:
+		// Connect's own flush sees flushingProactive=true and returns, then this
+		// goroutine exits. Re-check after releasing the flag so that race cannot
+		// leave a completion notice stranded until another reconnect.
+		c.proactiveMu.Lock()
+		hasPending := len(c.pendingProactive) > 0
+		c.proactiveMu.Unlock()
+		if hasPending && c.IsConnected() {
+			go c.flushPendingIMProactiveMessages()
+		}
+	}()
+	for {
+		c.proactiveMu.Lock()
+		if len(c.pendingProactive) == 0 {
+			c.proactiveMu.Unlock()
+			return
+		}
+		pending := c.pendingProactive[0]
+		if err := c.writeIMProactiveMessage(pending); err != nil {
+			c.proactiveMu.Unlock()
+			if !errors.Is(err, errIMProactiveHubDisconnected) {
+				go c.handleConnectionLoss(err)
+			}
+			return
+		}
+		c.pendingProactive = c.pendingProactive[1:]
+		c.proactiveMu.Unlock()
+	}
 }
 
 // SendNicknameUpdate sends a runtime nickname change to the Hub.

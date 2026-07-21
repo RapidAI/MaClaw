@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
@@ -45,6 +44,15 @@ func newWeixinGatewayManager(app *App) *weixinGatewayManager {
 		app:    app,
 		status: gatewayConnectionStatusDisconnected,
 	}
+}
+
+func (m *weixinGatewayManager) currentLocalHandler() *IMMessageHandler {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.localHandler
 }
 
 // SyncFromConfig reads the current AppConfig and starts or stops the gateway.
@@ -146,9 +154,9 @@ func (m *weixinGatewayManager) Stop() {
 	lh := m.localHandler
 	m.localHandler = nil
 	m.mu.Unlock()
-	if lh != nil {
-		lh.memory.Stop()
-	}
+	// Local handlers share App's conversation memory; detaching a gateway must
+	// not stop the shared store used by desktop, Hub, or other gateways.
+	_ = lh
 	if gw != nil {
 		_ = gw.Stop()
 	}
@@ -206,9 +214,7 @@ func (m *weixinGatewayManager) onStatusChange(status string) {
 		lh := m.localHandler
 		m.localHandler = nil
 		m.mu.Unlock()
-		if lh != nil {
-			lh.memory.Stop()
-		}
+		_ = lh
 		// Async stop: pollLoop is about to return (emitStatus is the last
 		// call before return), so Stop() will complete quickly once we
 		// release this callback.
@@ -238,10 +244,7 @@ func modeLabel(isLocal bool) string {
 func (m *weixinGatewayManager) resetLocalHandler() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.localHandler != nil {
-		m.localHandler.memory.Stop()
-		m.localHandler = nil
-	}
+	m.localHandler = nil
 }
 
 // onIncomingMessage routes WeChat messages based on config:
@@ -395,14 +398,6 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	}
 	if a.memoryStore != nil {
 		h.SetMemoryStore(a.memoryStore)
-		emb := a.memoryStore.Embedder()
-		if emb != nil && !embedding.IsNoop(emb) {
-			h.toolBuilder.SetEmbedder(emb)
-			// Wire embedder into interrupt handler for semantic relevance.
-			if h.interruptHandler != nil {
-				h.interruptHandler.SetEmbedder(emb)
-			}
-		}
 	}
 	h.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())
 	if a.configManager != nil {

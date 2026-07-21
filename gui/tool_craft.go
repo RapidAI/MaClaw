@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -311,6 +312,19 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 			lastAttempt = craftAttemptResult{Language: request.Language, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "LLM 未能生成有效脚本"}
 			break
 		}
+		if languageErr := validateCraftScriptLanguage(script, request.Language); languageErr != nil {
+			lastAttempt = craftAttemptResult{
+				Script:              script,
+				Language:            request.Language,
+				Attempts:            attempt,
+				VerificationStatus:  craftVerificationExecutionFailed,
+				VerificationMessage: languageErr.Error(),
+			}
+			if !shouldRetryCraftAttempt(request, lastAttempt, attempt, attempts) {
+				break
+			}
+			continue
+		}
 
 		sendProgress("Security scanning generated script before execution...")
 		if report, scanErr := scanCraftedScriptBeforeExecution(ctx, app, request.OriginalTask, script, request.Language, sendProgress); scanErr != nil {
@@ -430,19 +444,28 @@ func shouldAutoRegisterCraftRequest(request craftToolRequest) bool {
 
 func detectAvailableScriptRuntimes() craftRuntimeAvailability {
 	runtimes := craftRuntimeAvailability{
-		Python:     firstAvailableLookPath("python3", "python"),
+		Python:     detectCraftPythonRuntime(),
 		Node:       firstAvailableLookPath("node"),
 		Bash:       firstAvailableLookPath("bash"),
 		PowerShell: firstAvailableLookPath("powershell", "pwsh"),
 	}
-	// On Windows, exec.LookPath may find python in cmd.exe PATH but not in
-	// Git Bash (sh.exe) PATH. If LookPath found python, verify it's a real
-	// executable (not the Microsoft Store stub) and resolve its absolute path
-	// so it works in any shell environment.
-	if runtime.GOOS == "windows" && runtimes.Python != "" {
-		runtimes.Python = resolveWindowsPythonPath(runtimes.Python)
-	}
 	return runtimes
+}
+
+// detectCraftPythonRuntime resolves the same private Python managed by MaClaw
+// before considering the shell PATH. Windows commonly exposes only the
+// Microsoft Store python.exe alias on PATH; treating that alias as a runtime
+// made craft_tool report "python runtime not found" even though the bundled
+// interpreter under ~/.maclaw/python was ready.
+func detectCraftPythonRuntime() string {
+	if managed := pyenv.Detect(); managed.Available && managed.IsPrivate && strings.TrimSpace(managed.PythonPath) != "" {
+		return managed.PythonPath
+	}
+	python := firstAvailableLookPath("python3", "python")
+	if runtime.GOOS == "windows" && python != "" {
+		return resolveWindowsPythonPath(python)
+	}
+	return python
 }
 
 // resolveWindowsPythonPath ensures the Python path is an absolute path that
@@ -593,6 +616,7 @@ func buildCraftSystemPrompt(request craftToolRequest, runtimes craftRuntimeAvail
 	builder.WriteString("\n4. 脚本必须适合非交互执行，失败时打印明确错误到 stderr 并返回非零退出码。")
 	builder.WriteString("\n5. 若能自检，请在成功后打印最终产物路径或简短成功标记。")
 	builder.WriteString("\n6. 不要输出说明、注释块模板或伪代码。")
+	builder.WriteString("\n7. 语言必须严格匹配所选运行时；不要输出其他语言的源码（例如 Python 运行时不得输出 JavaScript/Node 脚本）。")
 	builder.WriteString("\n运行时可用性：")
 	builder.WriteString("\n- python: " + craftRuntimeLabel(runtimes.Python))
 	builder.WriteString("\n- node: " + craftRuntimeLabel(runtimes.Node))
@@ -643,6 +667,9 @@ func buildCraftUserPrompt(request craftToolRequest, previous craftAttemptResult)
 		builder.WriteString(previous.Output)
 		builder.WriteString("\n\n失败原因：\n")
 		builder.WriteString(previous.VerificationMessage)
+		if strings.Contains(strings.ToLower(previous.VerificationMessage), "does not match the selected") {
+			builder.WriteString("\n\n上一次输出的语言与选定运行时不匹配。这次只输出选定语言的可执行源码，不要混入其他语言。")
+		}
 	}
 	return builder.String()
 }
@@ -652,6 +679,30 @@ func craftRuntimeLabel(path string) string {
 		return "unavailable"
 	}
 	return path
+}
+
+// validateCraftScriptLanguage catches obvious cross-language LLM output before
+// it reaches a runtime. A JavaScript script saved as .py otherwise becomes a
+// misleading Python failure after an expensive generation cycle.
+func validateCraftScriptLanguage(script, language string) error {
+	trimmed := strings.TrimSpace(script)
+	if trimmed == "" {
+		return fmt.Errorf("generated script is empty")
+	}
+	lower := strings.ToLower(trimmed)
+	switch normalizeCraftLanguageKind(language) {
+	case craftLanguagePython:
+		firstLine := strings.TrimSpace(strings.SplitN(trimmed, "\n", 2)[0])
+		if strings.HasPrefix(firstLine, "const ") || strings.HasPrefix(firstLine, "let ") || strings.HasPrefix(firstLine, "var ") ||
+			strings.Contains(lower, "require('") || strings.Contains(lower, "require(\"") || strings.Contains(lower, "console.log(") {
+			return fmt.Errorf("generated script does not match the selected Python runtime: it contains JavaScript syntax; regenerate it as Python only")
+		}
+	case craftLanguageNode:
+		if strings.HasPrefix(lower, "#!/usr/bin/env python") || strings.Contains(lower, "import sys\n") || strings.Contains(lower, "from pathlib import ") {
+			return fmt.Errorf("generated script does not match the selected Node runtime: it contains Python syntax; regenerate it as JavaScript only")
+		}
+	}
+	return nil
 }
 
 func shouldRetryCraftAttempt(request craftToolRequest, attempt craftAttemptResult, currentAttempt, maxAttempts int) bool {

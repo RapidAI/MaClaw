@@ -883,6 +883,10 @@ export function SelectBugReportScreenshots() {
   return window['go']['main']['App']['SelectBugReportScreenshots']();
 }
 
+export function BugReportScreenshotPreviewDataURL(arg1) {
+  return window['go']['main']['App']['BugReportScreenshotPreviewDataURL'](arg1);
+}
+
 export function SubmitBugReport(arg1, arg2, arg3) {
   return window['go']['main']['App']['SubmitBugReport'](arg1, arg2, arg3);
 }
@@ -2585,6 +2589,12 @@ export function WelcomeSyncPull(arg1) {
 
 export function WelcomeSyncDelete(arg1) {
   return window['go']['main']['App']['WelcomeSyncDelete'](arg1);
+}
+
+// Local standalone-IM shortcut snapshot. Kept here until Wails bindings are
+// regenerated so the frontend calls the same generated bridge as other APIs.
+export function UpdateLocalStartMenuTemplates(arg1) {
+  return window['go']['main']['App']['UpdateLocalStartMenuTemplates'](arg1);
 }
 
 export function KnowledgeListSources(arg1) {

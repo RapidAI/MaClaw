@@ -6,6 +6,7 @@ type StaticPeer struct {
 	NodeID       string
 	NodeName     string
 	BaseURL      string
+	PublicURL    string
 	PublicKeyPEM string
 }
 
@@ -13,6 +14,7 @@ type PeerRuntimeState struct {
 	NodeID        string     `json:"node_id"`
 	NodeName      string     `json:"node_name"`
 	BaseURL       string     `json:"base_url"`
+	PublicURL     string     `json:"public_url,omitempty"`
 	PublicKeyPEM  string     `json:"public_key,omitempty"`
 	Reachable     bool       `json:"reachable"`
 	RTTMs         int64      `json:"rtt_ms"`

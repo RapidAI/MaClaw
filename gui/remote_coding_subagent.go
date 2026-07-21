@@ -365,7 +365,12 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	existingModified := existingSubAgentModifiedFiles(filesModified, filesCreated)
 	explorationStatus, explorationSummary := summarizeSubAgentExploration(existingModified, filesRead, searchesRun, exploredBeforeFirstEdit)
 	confirmationStatus, confirmationSummary := c.summarizeRemotePostEditConfirmation(filesModified)
-	verificationStatus, verificationSummary := summarizeSubAgentVerification(filesModified, commandsRun, lastEditSeq)
+	// Documentation-only wrap-up edits (for example, recording the already
+	// observed build results in README) do not change the built artifact. They
+	// must not invalidate a successful build/run performed earlier in this same
+	// plan step. Code and build-config edits still require fresh verification.
+	verificationFiles, verificationLastEditSeq := c.remoteVerificationRelevantEdits(filesModified)
+	verificationStatus, verificationSummary := summarizeSubAgentVerification(verificationFiles, commandsRun, verificationLastEditSeq)
 	// Multi-step plan scaffold/init steps create incomplete skeletons and must
 	// not be failed for missing build/test verification. Only relax MISSING when
 	// post-edit re-read confirmation already passed (structure evidence exists).
@@ -536,7 +541,7 @@ func summarizeRemoteDiffSelfCheck(filesModified []string, commands []CodingSubAg
 		if lastEditSeq > 0 && cmd.seq > 0 && cmd.seq < lastEditSeq {
 			continue
 		}
-		if isRemoteDiffSelfCheckCommand(cmd.Command) {
+		if isAuditableRemoteDiffSelfCheckCommand(cmd.Command) {
 			checks = append(checks, cmd)
 		}
 	}
@@ -683,6 +688,71 @@ func isRemoteDiffSelfCheckCommand(command string) bool {
 	return isSubAgentDiffSelfCheckCommand(command)
 }
 
+// isAuditableRemoteDiffSelfCheckCommand accepts only a transparent sequence of
+// directory changes and git status/diff probes joined by `&&`. A trailing
+// `echo $?` or a semicolon chain can make ssh_bash report success even when
+// an earlier git probe failed, so neither can be diff evidence.
+func isAuditableRemoteDiffSelfCheckCommand(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" || !isRemoteDiffSelfCheckCommand(normalized) {
+		return false
+	}
+	fields := shellCommandFields(normalized)
+	// Only `&&` propagates every probe's status to the shell result. Other
+	// operators can hide failures or detach a probe from the command outcome.
+	for _, field := range fields {
+		switch normalizeShellCommandToken(field) {
+		case "||", "|", "&", ";":
+			return false
+		}
+	}
+	for _, field := range shellCommandFields(normalized) {
+		token := normalizeShellCommandToken(field)
+		if token == "2>&1" || token == "1>&2" || isShellVerificationOutputRedirectionToken(token) {
+			return false
+		}
+	}
+	for _, segment := range shellCommandSegments(normalized) {
+		if len(segment) == 0 {
+			continue
+		}
+		if isAuditableGitDiffSelfCheckSegment(segment) {
+			continue
+		}
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		switch commandNameBase(segment[0]) {
+		case "cd", "pushd", "popd":
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isAuditableGitDiffSelfCheckSegment(segment []string) bool {
+	segment = stripVerificationCommandPrefixes(segment)
+	if len(segment) == 0 || commandNameBase(segment[0]) != "git" {
+		return false
+	}
+	for _, arg := range segment[1:] {
+		arg = normalizeShellExecutableToken(arg)
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		switch arg {
+		case "status", "diff":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 func appendRemoteConfirmationSummary(summary string, status codingSubAgentQualityStatus, confirmationSummary string) string {
 	if strings.TrimSpace(confirmationSummary) == "" {
 		return summary
@@ -739,6 +809,37 @@ func (c *remoteCodingCallbacks) remoteFilesMissingPostEditRead() []string {
 		}
 	}
 	return uniqueSortedSubAgentStrings(missing)
+}
+
+func (c *remoteCodingCallbacks) remoteVerificationRelevantEdits(filesModified []string) ([]string, uint64) {
+	if c == nil {
+		return nil, 0
+	}
+	paths := make([]string, 0, len(filesModified))
+	for _, path := range filesModified {
+		if !remoteCodingDocumentationPath(path) {
+			paths = append(paths, path)
+		}
+	}
+	var last uint64
+	for _, edit := range c.fileEdits {
+		if edit.Seq > last && !remoteCodingDocumentationPath(edit.Path) {
+			last = edit.Seq
+		}
+	}
+	return uniqueSortedSubAgentStrings(paths), last
+}
+
+func remoteCodingDocumentationPath(path string) bool {
+	base := strings.ToLower(strings.TrimSpace(pathpkg.Base(strings.ReplaceAll(path, "\\", "/"))))
+	// CMakeLists.txt is build configuration, not documentation.
+	if base == "cmakelists.txt" {
+		return false
+	}
+	if base == "readme" || strings.HasPrefix(base, "readme.") || base == "changelog" || strings.HasPrefix(base, "changelog.") {
+		return true
+	}
+	return strings.HasSuffix(base, ".md") || strings.HasSuffix(base, ".mdx") || strings.HasSuffix(base, ".rst")
 }
 
 func (c *remoteCodingCallbacks) remoteAuditSnapshot() ([]string, []string, []string, []CodingSubAgentSearchResult, bool, []CodingSubAgentCommandResult, uint64) {
@@ -805,7 +906,7 @@ func (c *remoteCodingCallbacks) completeRemoteDiffSelfCheck() {
 		return
 	}
 	result := c.sshBash(map[string]interface{}{
-		"command":     "git status --short; git diff --stat",
+		"command":     "git status --short && git diff --stat",
 		"working_dir": workDir,
 	})
 	if remoteCodingToolOutcome(result) != "success" {

@@ -55,6 +55,7 @@ type HAPeerConfig struct {
 	NodeID       string `yaml:"node_id"`
 	Name         string `yaml:"name"`
 	BaseURL      string `yaml:"base_url"`
+	PublicURL    string `yaml:"public_url,omitempty"`
 	PublicKeyPEM string `yaml:"public_key"`
 	Enabled      bool   `yaml:"enabled"`
 }
@@ -190,6 +191,12 @@ func resolveHANodeCatalog(cfg HAConfig) (HAConfig, error) {
 		if node.AdvertiseURL == "" {
 			return HAConfig{}, fmt.Errorf("ha.nodes[%d].advertise_url is required for enabled node %s", i, node.NodeID)
 		}
+		if !isValidHAURL(node.AdvertiseURL) {
+			return HAConfig{}, fmt.Errorf("ha.nodes[%d].advertise_url is invalid for enabled node %s", i, node.NodeID)
+		}
+		if node.PublicURL != "" && !isValidHAURL(node.PublicURL) {
+			return HAConfig{}, fmt.Errorf("ha.nodes[%d].public_url is invalid for enabled node %s", i, node.NodeID)
+		}
 		if _, ok := seenFQDNs[node.FQDN]; ok {
 			return HAConfig{}, fmt.Errorf("duplicate ha node fqdn: %s", node.FQDN)
 		}
@@ -211,7 +218,7 @@ func resolveHANodeCatalog(cfg HAConfig) (HAConfig, error) {
 			self = &copy
 			continue
 		}
-		peers = append(peers, HAPeerConfig{NodeID: node.NodeID, Name: node.NodeName, BaseURL: node.AdvertiseURL, PublicKeyPEM: node.PublicKeyPEM, Enabled: true})
+		peers = append(peers, HAPeerConfig{NodeID: node.NodeID, Name: node.NodeName, BaseURL: node.AdvertiseURL, PublicURL: node.ClientFacingURL(), PublicKeyPEM: node.PublicKeyPEM, Enabled: true})
 	}
 
 	if self == nil {
@@ -237,6 +244,9 @@ func validateResolvedLegacyHAConfig(cfg HAConfig) error {
 	if strings.TrimSpace(cfg.AdvertiseURL) == "" {
 		return fmt.Errorf("ha.advertise_url is required when ha.enabled=true")
 	}
+	if !isValidHAURL(cfg.AdvertiseURL) {
+		return fmt.Errorf("ha.advertise_url is invalid when ha.enabled=true")
+	}
 	if strings.TrimSpace(cfg.ClusterSecret) == "" {
 		return fmt.Errorf("ha.cluster_secret is required when ha.enabled=true")
 	}
@@ -258,6 +268,12 @@ func validateResolvedLegacyHAConfig(cfg HAConfig) error {
 		}
 		if peerURL == "" {
 			return fmt.Errorf("ha.peers[%d].base_url is required for enabled peer %s", i, peerID)
+		}
+		if !isValidHAURL(peerURL) {
+			return fmt.Errorf("ha.peers[%d].base_url is invalid for enabled peer %s", i, peerID)
+		}
+		if publicURL := strings.TrimSpace(peer.PublicURL); publicURL != "" && !isValidHAURL(publicURL) {
+			return fmt.Errorf("ha.peers[%d].public_url is invalid for enabled peer %s", i, peerID)
 		}
 		if _, ok := seenPeerIDs[peerID]; ok {
 			return fmt.Errorf("duplicate ha peer node_id: %s", peerID)
@@ -288,6 +304,7 @@ func normalizeResolvedHAConfig(cfg HAConfig) HAConfig {
 			NodeID:       strings.TrimSpace(peer.NodeID),
 			Name:         strings.TrimSpace(peer.Name),
 			BaseURL:      NormalizeHAURL(peer.BaseURL),
+			PublicURL:    NormalizeHAURL(peer.PublicURL),
 			PublicKeyPEM: strings.TrimSpace(peer.PublicKeyPEM),
 			Enabled:      peer.Enabled,
 		}
@@ -329,6 +346,11 @@ func NormalizeHAURL(value string) string {
 		return strings.TrimRight(parsed.String(), "/")
 	}
 	return strings.TrimRight(value, "/")
+}
+
+func isValidHAURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
 func NormalizeHAFQDN(value string) string {

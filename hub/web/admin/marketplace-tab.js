@@ -12,7 +12,7 @@
       marketplaceSubtabMarket: 'Enterprise Capability Market',
       marketplaceSubtabWorkflowReviews: 'Workflow Reviews',
       marketplaceSubtabSettings: 'Market Settings',
-      workflowReviewsTitle: 'Approval Workflow Reviews', workflowReviewsDesc: 'Review submitted approval workflows before publishing them into the enterprise capability market.', workflowReviewsEmpty: 'No workflow submissions are waiting for review.', workflowReviewOpen: 'Review', workflowReviewApprove: 'Publish', workflowReviewReject: 'Reject', workflowReviewRejectPrompt: 'Rejection reason (10-2000 characters)', workflowReviewRejectTitle: 'Reject workflow submission', workflowReviewRejectDesc: 'Give the author a clear reason so they can revise and resubmit.', workflowReviewRejectReason: 'Rejection reason', workflowReviewRejectReasonInvalid: 'Reason must be 10-2000 characters.', workflowReviewDetailTitle: 'Review detail', workflowReviewGraphSummary: '{nodes} nodes, {edges} lines', workflowReviewNodesTitle: 'Node configuration', workflowReviewOpenDesigner: 'Open Designer', workflowReviewPublished: 'Workflow published to capability market.', workflowReviewRejected: 'Workflow submission rejected.', workflowReviewLoadFailed: 'Workflow reviews failed: {error}', maclawAppApprove: 'Approve App', maclawAppReject: 'Reject App', maclawAppApproved: 'MaClaw App approved.', maclawAppRejected: 'MaClaw App returned for revision.',
+      workflowReviewsTitle: 'Approval Workflow Reviews', workflowReviewsDesc: 'Review submitted approval workflows before publishing them into the enterprise capability market.', workflowReviewsEmpty: 'No workflow submissions are waiting for review.', workflowReviewOpen: 'Review', workflowReviewApprove: 'Publish', workflowReviewReject: 'Reject', workflowReviewRejectPrompt: 'Rejection reason (10-2000 characters)', workflowReviewRejectTitle: 'Reject workflow submission', workflowReviewRejectDesc: 'Give the author a clear reason so they can revise and resubmit.', workflowReviewRejectReason: 'Rejection reason', workflowReviewRejectReasonInvalid: 'Reason must be 10-2000 characters.', workflowReviewDetailTitle: 'Review detail', workflowReviewGraphSummary: '{nodes} nodes, {edges} lines', workflowReviewNodesTitle: 'Node configuration', workflowReviewOpenDesigner: 'Open Designer', workflowReviewPublished: 'Workflow published to capability market.', workflowReviewRejected: 'Workflow submission rejected.', workflowReviewLoadFailed: 'Workflow reviews failed: {error}', maclawAppApprove: 'Approve App', maclawAppReject: 'Reject App', maclawAppReviewing: 'Reviewing...', maclawAppApproved: 'MaClaw App approved.', maclawAppRejected: 'MaClaw App returned for revision.',
       marketplacePolicyTitle: 'Enterprise Policy', marketplacePolicyDesc: 'Control how MaClaw clients search and install capabilities.',
       marketplaceEnterpriseOnlyInstall: 'Only install from enterprise Hub', marketplaceEnterpriseOnlySearch: 'Only search enterprise Hub', marketplaceViewMode: 'View mode', marketplacePreferredUploadTarget: 'Preferred upload target', marketplaceUploadHubCenter: 'HubCenter', marketplaceUploadEnterpriseHub: 'Enterprise Hub', marketplaceSavePolicy: 'Save Policy',
       marketplaceRequestsTitle: 'Purchase Approvals', marketplaceRequestsDesc: 'Paid HubCenter capabilities wait here until an admin approves online purchase.', marketplaceRequestsStatus: 'Status', marketplaceReload: 'Reload', marketplaceApprove: 'Approve', marketplaceReject: 'Reject', marketplaceNoRequests: 'No acquisition requests match this status.',
@@ -31,7 +31,7 @@
     I18N.zh = Object.assign({}, I18N.zh, {
       navMarketplace: '\u80fd\u529b\u5e02\u573a', navMarketplaceDesc: 'Skill\u3001MCP\u3001\u8d2d\u4e70\u548c\u4e0b\u53d1', marketplaceTabTitle: '\u80fd\u529b\u5e02\u573a', marketplaceTabSubtitle: '\u7ba1\u7406\u4f01\u4e1a Skill/MCP \u7b56\u7565\u3001\u4ed8\u8d39\u5ba1\u6279\u3001\u5bfc\u5165\u548c MCP \u5b9a\u4e49\u3002',
       marketplaceSubtabMarket: '\u4f01\u4e1a\u80fd\u529b\u5e02\u573a', marketplaceSubtabWorkflowReviews: '\u5de5\u4f5c\u6d41\u5ba1\u6838', marketplaceSubtabSettings: '\u80fd\u529b\u5e02\u573a\u8bbe\u7f6e',
-      workflowReviewsTitle: '\u5ba1\u6279\u5de5\u4f5c\u6d41\u5ba1\u6838', workflowReviewsDesc: '\u5ba1\u6838\u5df2\u63d0\u4ea4\u7684\u5ba1\u6279\u5de5\u4f5c\u6d41\uff0c\u901a\u8fc7\u540e\u53d1\u5e03\u5230\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u3002', workflowReviewsEmpty: '\u6682\u65e0\u5f85\u5ba1\u6838\u7684\u5de5\u4f5c\u6d41\u63d0\u4ea4\u3002', workflowReviewOpen: '\u5ba1\u6838', workflowReviewApprove: '\u53d1\u5e03', workflowReviewReject: '\u62d2\u7edd', workflowReviewRejectPrompt: '\u62d2\u7edd\u539f\u56e0\uff0810-2000 \u5b57\uff09', workflowReviewRejectTitle: '\u62d2\u7edd\u5de5\u4f5c\u6d41\u63d0\u4ea4', workflowReviewRejectDesc: '\u8bf7\u7ed9\u4f5c\u8005\u660e\u786e\u539f\u56e0\uff0c\u4fbf\u4e8e\u4fee\u6539\u540e\u91cd\u65b0\u63d0\u4ea4\u3002', workflowReviewRejectReason: '\u62d2\u7edd\u539f\u56e0', workflowReviewRejectReasonInvalid: '\u539f\u56e0\u5fc5\u987b\u4e3a 10-2000 \u4e2a\u5b57\u7b26\u3002', workflowReviewDetailTitle: '\u5ba1\u6838\u8be6\u60c5', workflowReviewGraphSummary: '{nodes} \u4e2a\u8282\u70b9\uff0c{edges} \u6761\u8fde\u7ebf', workflowReviewNodesTitle: '\u8282\u70b9\u914d\u7f6e', workflowReviewOpenDesigner: '\u6253\u5f00\u8bbe\u8ba1\u5668', workflowReviewPublished: '\u5de5\u4f5c\u6d41\u5df2\u53d1\u5e03\u5230\u80fd\u529b\u5e02\u573a\u3002', workflowReviewRejected: '\u5de5\u4f5c\u6d41\u63d0\u4ea4\u5df2\u62d2\u7edd\u3002', workflowReviewLoadFailed: '\u5de5\u4f5c\u6d41\u5ba1\u6838\u52a0\u8f7d\u5931\u8d25\uff1a{error}', maclawAppApprove: '\u901a\u8fc7\u5e94\u7528', maclawAppReject: '\u9000\u56de\u5e94\u7528', maclawAppApproved: 'MaClaw App \u5df2\u901a\u8fc7\u5ba1\u6838\u3002', maclawAppRejected: 'MaClaw App \u5df2\u9000\u56de\u4fee\u6539\u3002',
+      workflowReviewsTitle: '\u5ba1\u6279\u5de5\u4f5c\u6d41\u5ba1\u6838', workflowReviewsDesc: '\u5ba1\u6838\u5df2\u63d0\u4ea4\u7684\u5ba1\u6279\u5de5\u4f5c\u6d41\uff0c\u901a\u8fc7\u540e\u53d1\u5e03\u5230\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u3002', workflowReviewsEmpty: '\u6682\u65e0\u5f85\u5ba1\u6838\u7684\u5de5\u4f5c\u6d41\u63d0\u4ea4\u3002', workflowReviewOpen: '\u5ba1\u6838', workflowReviewApprove: '\u53d1\u5e03', workflowReviewReject: '\u62d2\u7edd', workflowReviewRejectPrompt: '\u62d2\u7edd\u539f\u56e0\uff0810-2000 \u5b57\uff09', workflowReviewRejectTitle: '\u62d2\u7edd\u5de5\u4f5c\u6d41\u63d0\u4ea4', workflowReviewRejectDesc: '\u8bf7\u7ed9\u4f5c\u8005\u660e\u786e\u539f\u56e0\uff0c\u4fbf\u4e8e\u4fee\u6539\u540e\u91cd\u65b0\u63d0\u4ea4\u3002', workflowReviewRejectReason: '\u62d2\u7edd\u539f\u56e0', workflowReviewRejectReasonInvalid: '\u539f\u56e0\u5fc5\u987b\u4e3a 10-2000 \u4e2a\u5b57\u7b26\u3002', workflowReviewDetailTitle: '\u5ba1\u6838\u8be6\u60c5', workflowReviewGraphSummary: '{nodes} \u4e2a\u8282\u70b9\uff0c{edges} \u6761\u8fde\u7ebf', workflowReviewNodesTitle: '\u8282\u70b9\u914d\u7f6e', workflowReviewOpenDesigner: '\u6253\u5f00\u8bbe\u8ba1\u5668', workflowReviewPublished: '\u5de5\u4f5c\u6d41\u5df2\u53d1\u5e03\u5230\u80fd\u529b\u5e02\u573a\u3002', workflowReviewRejected: '\u5de5\u4f5c\u6d41\u63d0\u4ea4\u5df2\u62d2\u7edd\u3002', workflowReviewLoadFailed: '\u5de5\u4f5c\u6d41\u5ba1\u6838\u52a0\u8f7d\u5931\u8d25\uff1a{error}', maclawAppApprove: '\u901a\u8fc7\u5e94\u7528', maclawAppReject: '\u9000\u56de\u5e94\u7528', maclawAppReviewing: '\u5ba1\u6838\u4e2d...', maclawAppApproved: 'MaClaw App \u5df2\u901a\u8fc7\u5ba1\u6838\u3002', maclawAppRejected: 'MaClaw App \u5df2\u9000\u56de\u4fee\u6539\u3002',
       marketplacePolicyTitle: '\u4f01\u4e1a\u7b56\u7565', marketplacePolicyDesc: '\u63a7\u5236 MaClaw \u5ba2\u6237\u7aef\u641c\u7d22\u548c\u5b89\u88c5\u80fd\u529b\u7684\u65b9\u5f0f\u3002', marketplaceEnterpriseOnlyInstall: '\u53ea\u5141\u8bb8\u4ece\u4f01\u4e1a Hub \u5b89\u88c5', marketplaceEnterpriseOnlySearch: '\u53ea\u5141\u8bb8\u641c\u7d22\u4f01\u4e1a Hub', marketplaceViewMode: '\u89c6\u56fe\u6a21\u5f0f', marketplacePreferredUploadTarget: '\u9996\u9009\u4e0a\u4f20\u4f4d\u7f6e', marketplaceUploadHubCenter: 'HubCenter', marketplaceUploadEnterpriseHub: '\u4f01\u4e1a Hub', marketplaceSavePolicy: '\u4fdd\u5b58\u7b56\u7565',
       marketplaceRequestsTitle: '\u8d2d\u4e70\u5ba1\u6279', marketplaceRequestsDesc: '\u4ed8\u8d39 HubCenter \u80fd\u529b\u5728\u7ba1\u7406\u5458\u5ba1\u6279\u540e\u624d\u4f1a\u53d1\u8d77\u5728\u7ebf\u8d2d\u4e70\u3002', marketplaceRequestsStatus: '\u72b6\u6001', marketplaceReload: '\u5237\u65b0', marketplaceApprove: '\u6279\u51c6', marketplaceReject: '\u62d2\u7edd', marketplaceNoRequests: '\u5f53\u524d\u72b6\u6001\u4e0b\u6ca1\u6709\u7533\u8bf7\u3002',
       marketplaceCatalogTitle: '\u4f01\u4e1a\u80fd\u529b', marketplaceCatalogDesc: '\u672c Hub \u80fd\u529b\u5e02\u573a\u53ef\u7528\u7684\u80fd\u529b\u3002', marketplaceCapabilityType: '\u7c7b\u578b', marketplaceCapabilityAll: '\u5168\u90e8', marketplaceMakeRequired: '\u8bbe\u4e3a\u5fc5\u88c5', marketplaceMakeRecommended: '\u8bbe\u4e3a\u63a8\u8350', marketplaceNoCapabilities: '\u6682\u65e0\u5df2\u5bfc\u5165\u80fd\u529b\u3002',
@@ -49,7 +49,11 @@
   const state = { policy: null, capabilities: [], requests: [], externalResults: [], billing: null, workflowReviews: [], workflowReviewDetail: null, rejectingWorkflowReviewId: '', workflowReviewBusy: {} };
   function mp(k, v) { return typeof tr === 'function' ? tr(k, v) : k; }
   function esc(v) { return typeof escapeHtml === 'function' ? escapeHtml(String(v == null ? '' : v)) : String(v == null ? '' : v); }
-  function jsArg(v) { return String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/</g, '\\x3c').replace(/>/g, '\\x3e').replace(/&/g, '\\x26'); }
+  // Values are inserted into a single-quoted JavaScript argument inside a
+  // double-quoted inline event attribute. Escape both contexts; otherwise an
+  // ID containing a double quote terminates the attribute and leaves the
+  // browser compiling a truncated handler ("Unexpected end of input").
+  function jsArg(v) { return String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/</g, '\\x3c').replace(/>/g, '\\x3e').replace(/&/g, '\\x26').replace(/"/g, '&quot;'); }
   function el(id) { return document.getElementById(id); }
   function bool(v, fallback) { return typeof v === 'boolean' ? v : fallback; }
   function jsonText(text, fallback) { const raw = String(text || '').trim(); return raw ? JSON.parse(raw) : fallback; }
@@ -293,7 +297,9 @@
       // MaClaw App review actions (above button grid if applicable)
       var reviewActions = '';
       if (isApp && (item.status === 'pending_review' || item.status === 'review_failed')) {
-        reviewActions = '<div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="approveMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppApprove')) + '</button><button class="btn-danger" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="rejectMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppReject')) + '</button></div>';
+        var appReviewBusy = !!maclawAppReviewInflight[String(item.id || '')];
+        var appReviewDisabled = appReviewBusy ? ' disabled aria-disabled="true"' : '';
+        reviewActions = '<div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="approveMaclawAppCapability(\'' + itemId + '\')"' + appReviewDisabled + '>' + esc(appReviewBusy ? mp('maclawAppReviewing') : mp('maclawAppApprove')) + '</button><button class="btn-danger" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="rejectMaclawAppCapability(\'' + itemId + '\')"' + appReviewDisabled + '>' + esc(appReviewBusy ? mp('maclawAppReviewing') : mp('maclawAppReject')) + '</button></div>';
       } else if (isApp && item.status === 'approved') {
         reviewActions = '<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">' +
           '<button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="publishMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppPublish')) + '</button>' +
@@ -400,8 +406,44 @@
   global.saveMarketplacePolicy = async function() { try { const p = state.policy || {}; p.enterprise_only_install = !!el('marketplaceEnterpriseOnlyInstall').checked; p.enterprise_only_search = !!el('marketplaceEnterpriseOnlySearch').checked; p.view_mode = el('marketplaceViewMode').value || 'merged'; p.preferred_upload_target = el('marketplacePreferredUploadTarget').value || 'hubcenter'; p.managed_deployment = Object.assign({}, p.managed_deployment || {}, { enabled: !!el('marketplaceManagedEnabled').checked, retry_interval_minutes: Math.max(5, Number(el('marketplaceRetryMinutes').value || 60) || 60), reinstall_if_removed: true }); p.recommended_capability = Object.assign({}, p.recommended_capability || {}, { enabled: !!el('marketplaceRecommendedEnabled').checked, allow_user_dismiss: true }); const data = await api('/api/admin/capability-market/policy', { method: 'PUT', body: JSON.stringify({ policy: p }) }); state.policy = data.policy || p; renderPolicy(); setOutput(mp('marketplacePolicySaved')); showToast(mp('marketplacePolicySaved'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   global.approveMarketplaceRequest = async function(id) { try { await api('/api/admin/capability-market/acquisition-requests/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: JSON.stringify({ approval: { mode: 'admin_approved_online_purchase' } }) }); await Promise.all([loadRequests(), loadCapabilities()]); showToast(mp('marketplaceActionDone'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   global.rejectMarketplaceRequest = async function(id) { try { await api('/api/admin/capability-market/acquisition-requests/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ approval: { mode: 'admin_rejected' } }) }); await loadRequests(); showToast(mp('marketplaceActionDone'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
-  global.approveMaclawAppCapability = async function(id) { try { await api('/api/admin/capabilities/maclaw-apps/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: JSON.stringify({ reviewer: 'hub-admin' }) }); await loadCapabilities(); showToast(mp('maclawAppApproved'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
-  global.rejectMaclawAppCapability = async function(id) { try { var reason = 'Rejected by Hub admin. Please revise the MaClaw App package and resubmit.'; await api('/api/admin/capabilities/maclaw-apps/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ reviewer: 'hub-admin', reason: reason, review_issues: [{ path: 'app.governance', severity: 'error', message: reason, suggestion: 'Revise the package and submit it again from App Studio.' }] }) }); await loadCapabilities(); showToast(mp('maclawAppRejected'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
+  var maclawAppReviewInflight = Object.create(null);
+  global.approveMaclawAppCapability = async function(id) {
+    id = String(id || '');
+    if (!id || maclawAppReviewInflight[id]) return;
+    maclawAppReviewInflight[id] = true;
+    renderCapabilities();
+    try {
+      await api('/api/admin/capabilities/maclaw-apps/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: JSON.stringify({ reviewer: 'hub-admin' }) });
+      await loadCapabilities();
+      showToast(mp('maclawAppApproved'), 'success');
+    } catch (err) {
+      const msg = mp('marketplaceSaveFailed', { error: err.message });
+      setOutput(msg);
+      showToast(msg, 'error');
+    } finally {
+      delete maclawAppReviewInflight[id];
+      renderCapabilities();
+    }
+  };
+  global.rejectMaclawAppCapability = async function(id) {
+    id = String(id || '');
+    if (!id || maclawAppReviewInflight[id]) return;
+    maclawAppReviewInflight[id] = true;
+    renderCapabilities();
+    try {
+      var reason = 'Rejected by Hub admin. Please revise the MaClaw App package and resubmit.';
+      await api('/api/admin/capabilities/maclaw-apps/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ reviewer: 'hub-admin', reason: reason, review_issues: [{ path: 'app.governance', severity: 'error', message: reason, suggestion: 'Revise the package and submit it again from App Studio.' }] }) });
+      await loadCapabilities();
+      showToast(mp('maclawAppRejected'), 'success');
+    } catch (err) {
+      const msg = mp('marketplaceSaveFailed', { error: err.message });
+      setOutput(msg);
+      showToast(msg, 'error');
+    } finally {
+      delete maclawAppReviewInflight[id];
+      renderCapabilities();
+    }
+  };
   global.publishMaclawAppCapability = async function(id, pushToHubCenter) {
     id = String(id || '');
     if (!id) return;

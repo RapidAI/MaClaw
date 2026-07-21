@@ -263,6 +263,9 @@ type AppConfig struct {
 	// BugReportEnabled is a temporary diagnostic collection mode. When enabled,
 	// the desktop client remembers and forces trajectory/detail logging, then
 	// restores the original values when the mode is disabled.
+	BugReportEnabled            bool `json:"bug_report_enabled,omitempty"`
+	BugReportPreviousTrajectory bool `json:"bug_report_previous_trajectory,omitempty"`
+	BugReportPreviousLogDetail  bool `json:"bug_report_previous_log_detail,omitempty"`
 	// MemoryRecallLogEnabled enables detailed memory recall logging to a
 	// dedicated file (~/.maclaw/logs/memory_recall.log). Records every recall
 	// operation's query, scores, and returned entries for debugging/improving
