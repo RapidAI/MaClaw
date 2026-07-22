@@ -170,7 +170,7 @@ func guiRegistryAdapter(guiReg *ToolRegistry) *tool.Registry {
 // ---------------------------------------------------------------------------
 
 const (
-	maxToolBudget  = tool.MaxToolBudget
+	maxToolBudget    = tool.MaxToolBudget
 	maxDynamicRouted = tool.MaxDynamicRouted
 )
 

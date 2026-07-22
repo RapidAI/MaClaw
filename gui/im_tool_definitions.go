@@ -307,11 +307,11 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("新的最大轮数（%d-%d）", config.MinAgentIterations, config.MaxAgentIterationsCap)},
 				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
 			}, []string{"max_iterations"}),
-		// --- 合并工具：定时任务 (create/list/delete/update) ---
-		toolDef("manage_schedule", "定时任务管理。action: create/list/delete/update/list_targets。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self=最近会话）。create/update 配 delivery 推送；蓝信 group_name 可解析为 group_id。fail_on_error 默认 false（投递失败只警告）。即时发消息请用 im_message。",
+		// --- 合并工具：定时任务 (create/list/run/pause/resume/delete/update) ---
+		toolDef("manage_schedule", "定时任务管理（所有本地 IM 通道可用）。action: create/list/run/pause/resume/delete/update/list_targets。run 会立即在后台执行指定任务；pause/resume 暂停或恢复任务。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self=最近会话）。create/update 配 delivery 推送；蓝信 group_name 可解析为 group_id。fail_on_error 默认 false（投递失败只警告）。即时发消息请用 im_message。",
 			map[string]interface{}{
-				"action":           map[string]string{"type": "string", "description": "create/list/delete/update/list_targets（list_groups 等别名也可）"},
-				"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
+				"action":           map[string]string{"type": "string", "description": "create/list/run/pause/resume/delete/update/list_targets（execute/trigger/stop/enable/list_groups 等别名也可）"},
+				"id":               map[string]string{"type": "string", "description": "任务 ID（run/pause/resume/delete/update 时必填）"},
 				"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填，update/delete 时可选）"},
 				"task_action":      map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，create/update 时使用）"},
 				"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},

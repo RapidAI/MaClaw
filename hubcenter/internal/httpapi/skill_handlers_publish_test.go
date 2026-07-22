@@ -66,3 +66,30 @@ func TestSkillHandlersPublishSkillRejectsBodyAboveLimit(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestDownloadBySkillIDReturnsCurrentMixedIdentityRevision(t *testing.T) {
+	store := skill.NewSkillStore(t.TempDir())
+	for _, item := range []skill.HubSkillFull{
+		{HubSkillMeta: skill.HubSkillMeta{ID: "legacy-v2", Name: "PDF Translator", ProductKind: "maclaw_app_skill", IsMaclawApp: true, Fingerprint: "author@example.com:PDF Translator", Version: "2", Visible: true, UpdatedAt: "2026-07-20T00:00:00Z"}},
+		{HubSkillMeta: skill.HubSkillMeta{ID: "current-v3", SkillID: "paper.pdf-translator", Name: "PDF Translator", ProductKind: "maclaw_app_skill", IsMaclawApp: true, Fingerprint: "author@example.com:PDF Translator", Version: "3", Visible: true, UpdatedAt: "2026-07-21T00:00:00Z"}},
+	} {
+		if err := store.Publish(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/skills/by-skill-id/paper.pdf-translator/download", nil)
+	req.SetPathValue("skill_id", "paper.pdf-translator")
+	NewSkillHandlers(store, nil).DownloadBySkillID(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got skill.HubSkillFull
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.ID != "current-v3" {
+		t.Fatalf("downloaded id=%q, want current-v3", got.ID)
+	}
+}

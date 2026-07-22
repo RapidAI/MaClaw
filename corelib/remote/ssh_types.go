@@ -25,6 +25,9 @@ type SSHHostConfig struct {
 	Label string `json:"label,omitempty"`
 	// KnownHostsPath 可选的 known_hosts 文件路径。
 	KnownHostsPath string `json:"known_hosts_path,omitempty"`
+	// HostKeyFingerprint pins one SHA256 host-key fingerprint for callers that
+	// maintain a dedicated trust store.
+	HostKeyFingerprint string `json:"host_key_fingerprint,omitempty"`
 	// ConnectTimeout 连接超时，默认 10s。
 	ConnectTimeout time.Duration `json:"connect_timeout,omitempty"`
 	// KeepaliveInterval 心跳间隔，默认 15s（更快检测 NAT/防火墙断连与半开连接）。

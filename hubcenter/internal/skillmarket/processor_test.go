@@ -213,6 +213,48 @@ steps:
 	}
 }
 
+func TestProcessorKeepsPublisherSkillIDRevisionsForHistory(t *testing.T) {
+	store := newTestStore(t)
+	skillStore := hubskill.NewSkillStore(t.TempDir())
+	processor := NewProcessor("", t.TempDir(), store, skillStore, nil, nil, NewVersionManager(store))
+	ctx := context.Background()
+
+	createSubmission := func(id, version string) *SkillSubmission {
+		zipPath := createTestZip(t, map[string]string{
+			"skill.yaml": "id: paper.pdf-translator\nname: PDF Translator\nversion: " + version + "\ndescription: Translate PDFs\n",
+		})
+		sub := &SkillSubmission{ID: id, Email: "seller@test.com", UserID: "seller-1", Status: "pending", ZipPath: zipPath, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		if err := store.CreateSubmission(ctx, sub); err != nil {
+			t.Fatalf("CreateSubmission(%s): %v", id, err)
+		}
+		if err := processor.processOne(ctx, id); err != nil {
+			t.Fatalf("processOne(%s): %v", id, err)
+		}
+		return sub
+	}
+
+	first := createSubmission("sub-pdf-v1", "1.0.0")
+	second := createSubmission("sub-pdf-v2", "2.0.0")
+	firstStored, err := store.GetSubmissionByID(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStored, err := store.GetSubmissionByID(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstStored.SkillID == "" || secondStored.SkillID == "" || firstStored.SkillID == secondStored.SkillID {
+		t.Fatalf("submission IDs = %q, %q; want two immutable revision IDs", firstStored.SkillID, secondStored.SkillID)
+	}
+	if _, err := skillStore.Get(firstStored.SkillID); err != nil {
+		t.Fatalf("first revision missing: %v", err)
+	}
+	listed := skillStore.ListAllPaged(1, 20)
+	if listed.Total != 1 || len(listed.Skills) != 1 || listed.Skills[0].ID != secondStored.SkillID || listed.Skills[0].VersionCount != 2 {
+		t.Fatalf("catalog result = %#v, want latest revision with two-version history", listed)
+	}
+}
+
 func createTestZip(t *testing.T, files map[string]string) string {
 	t.Helper()
 	zipPath := filepath.Join(t.TempDir(), "test.zip")

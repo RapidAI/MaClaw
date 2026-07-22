@@ -41,6 +41,36 @@ func TestNormalizeListenAddressDefaultsToAllInterfaces(t *testing.T) {
 	}
 }
 
+func TestNormalizeSettingsUsesCodexContextDefaultsAndPreservesOverrides(t *testing.T) {
+	defaults := normalizeSettings(Settings{})
+	if defaults.CodexContextWindow != 199000 || defaults.CodexAutoCompactTokenLimit != 180000 {
+		t.Fatalf("Codex defaults = %d/%d, want 199000/180000", defaults.CodexContextWindow, defaults.CodexAutoCompactTokenLimit)
+	}
+
+	overrides := normalizeSettings(Settings{
+		CodexContextWindow:         256000,
+		CodexAutoCompactTokenLimit: 220000,
+	})
+	if overrides.CodexContextWindow != 256000 || overrides.CodexAutoCompactTokenLimit != 220000 {
+		t.Fatalf("Codex overrides = %d/%d, want 256000/220000", overrides.CodexContextWindow, overrides.CodexAutoCompactTokenLimit)
+	}
+}
+
+func TestSaveSettingsRejectsInvalidCodexCompactionThreshold(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	app := NewApp()
+	_, err := app.SaveSettings(Settings{
+		CodexContextWindow:         100000,
+		CodexAutoCompactTokenLimit: 100000,
+	})
+	if err == nil || !strings.Contains(err.Error(), "必须小于上下文长度") {
+		t.Fatalf("SaveSettings error = %v, want invalid Codex threshold error", err)
+	}
+}
+
 func TestNormalizeModelOptionsStripsProviderPrefixAndDeduplicates(t *testing.T) {
 	models := normalizeModelOptions([]ModelOption{
 		{ID: "qax-codegen/Qwen-Flash", Name: "Qwen Flash", ContextWindow: 1000},

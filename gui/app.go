@@ -196,6 +196,7 @@ type App struct {
 	memoryPipelineRunActive           bool
 	foregroundAgentLoops              atomic.Int64
 	compressorMu                      sync.Mutex // guards lazy creation of memoryCompressor
+	scheduledTaskManagerMu            sync.Mutex // guards lazy scheduler creation across concurrent IM gateways
 	scheduledTaskManager              *scheduler.Manager
 	// scheduleTargetCatalogs maps delivery channel → target list (groups/users).
 	// Agent tools use channel as a parameter; new IM platforms only register here.
@@ -963,6 +964,8 @@ func (a *App) isCurrentMemoryPipelineSchedule(seq uint64) bool {
 }
 
 func (a *App) ensureScheduledTaskManager() {
+	a.scheduledTaskManagerMu.Lock()
+	defer a.scheduledTaskManagerMu.Unlock()
 	if a.scheduledTaskManager != nil {
 		return
 	}
@@ -984,6 +987,20 @@ func (a *App) ensureScheduledTaskManager() {
 	} else {
 		fmt.Printf("[ensureScheduledTaskManager] WARNING: failed to init: %v\n", err)
 	}
+}
+
+// scheduledTaskManagerForIMHandler initializes and returns the App-wide
+// scheduler under the same lock that protects its lazy creation. Local gateway
+// handlers can arrive concurrently during startup, so they must not race a
+// first-time assignment while attaching to the shared scheduler.
+func (a *App) scheduledTaskManagerForIMHandler() *scheduler.Manager {
+	if a == nil {
+		return nil
+	}
+	a.ensureScheduledTaskManager()
+	a.scheduledTaskManagerMu.Lock()
+	defer a.scheduledTaskManagerMu.Unlock()
+	return a.scheduledTaskManager
 }
 
 func (a *App) ensureMCPAutoDiscovery() {
@@ -5852,7 +5869,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		log.Printf("[config] SaveConfig:llm_cache_migrate_failed after=%s err=%v", time.Since(start), err)
 		return err
 	}
-	if strings.TrimSpace(oldConfig.DefaultLaunchMode) != "" {
+	if strings.TrimSpace(oldConfig.DefaultLaunchMode) != "" && !userDataMigrationIsConfigRestore(a) {
 		config.DefaultLaunchMode = oldConfig.DefaultLaunchMode
 	}
 	// ── Backend-owned field preservation ──────────────────────────────────
@@ -5866,7 +5883,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	// from the authoritative on-disk config. These fields are only modified
 	// by backend goroutines through PatchConfig (which is atomic under
 	// configMu). The frontend must use PatchConfigFields to modify them.
-	if oldConfigLoaded && strings.TrimSpace(a.testHomeDir) == "" {
+	if oldConfigLoaded && strings.TrimSpace(a.testHomeDir) == "" && !userDataMigrationIsConfigRestore(a) {
 		preserveBackendOwnedFields(&config, &oldConfig)
 	}
 	if a.shouldPreserveHubManagedSecurity(oldConfig) {
@@ -5876,7 +5893,9 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	}
 	// Sync all apikeys across all tools before saving
 	syncStart := time.Now()
-	syncAllProviderApiKeys(a, &oldConfig, &config)
+	if !userDataMigrationIsConfigRestore(a) {
+		syncAllProviderApiKeys(a, &oldConfig, &config)
+	}
 	log.Printf("[config] SaveConfig:sync_api_keys=%s", time.Since(syncStart))
 	writeStart := time.Now()
 	if err := a.saveToPath(path, config); err != nil {

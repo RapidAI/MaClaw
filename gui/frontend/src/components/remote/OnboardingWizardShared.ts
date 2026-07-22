@@ -52,8 +52,10 @@ export type Props = {
     brandDisplayName?: string;
     onClose: () => void;
     onLLMConfigured: () => void;
-    onRegistered: () => void;
-    onSaveField: (patch: Record<string, any>) => void;
+    onRegistered: () => void | Promise<void>;
+    onMigrationCompleted?: () => void | Promise<void>;
+    onOnboardingCompleted?: () => void | Promise<void>;
+    onSaveField: (patch: Record<string, any>) => void | Promise<unknown>;
 };
 
 export const inputStyle: CSSProperties = {

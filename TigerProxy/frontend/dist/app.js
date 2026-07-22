@@ -59,6 +59,8 @@ async function refresh() {
     $("apiKey").value = s.api_key || "";
     $("baseURL").value = s.base_url || "";
     renderModels(s.models || [], s.model_id || "");
+    $("codexContextWindow").value = s.codex_context_window || "";
+    $("codexAutoCompactTokenLimit").value = s.codex_auto_compact_token_limit || "";
     $("email").value = s.email || "";
     $("openaiURL").textContent = status.openai_url || "";
     $("anthropicURL").textContent = status.anthropic_url || "";
@@ -150,11 +152,21 @@ async function save(options = {}) {
   const saveBtn = $("saveBtn");
   setBusy(saveBtn, true, "保存中...");
   try {
+    const codexContextWindow = Number($("codexContextWindow").value);
+    const codexAutoCompactTokenLimit = Number($("codexAutoCompactTokenLimit").value);
+    if (!Number.isSafeInteger(codexContextWindow) || !Number.isSafeInteger(codexAutoCompactTokenLimit) || codexContextWindow <= 0 || codexAutoCompactTokenLimit <= 0) {
+      throw new Error("Codex 上下文长度和压缩启动长度必须为正整数");
+    }
+    if (codexAutoCompactTokenLimit >= codexContextWindow) {
+      throw new Error("Codex 压缩启动长度必须小于上下文长度");
+    }
     await api.SaveSettings({
       listen_address: $("listenAddress").value,
       api_key: $("apiKey").value,
       base_url: $("baseURL").value,
       model_id: $("modelID").value,
+      codex_context_window: codexContextWindow,
+      codex_auto_compact_token_limit: codexAutoCompactTokenLimit,
       email: $("email").value,
     });
     await refresh();

@@ -106,6 +106,24 @@
               <input id="email" disabled />
             </div>
           </div>
+
+          <div class="codex-context-settings" aria-labelledby="codexContextTitle">
+            <div class="codex-context-settings__head">
+              <strong id="codexContextTitle">Codex 上下文与压缩</strong>
+              <span>保存后，点击“配置 Codex”写入 ~/.codex/config.toml</span>
+            </div>
+            <div class="two-fields">
+              <div class="field">
+                <label for="codexContextWindow">上下文长度 <span class="label-hint">Token</span></label>
+                <input id="codexContextWindow" type="number" min="1" max="2147483647" step="1000" inputmode="numeric" aria-describedby="codexContextHint" />
+              </div>
+              <div class="field">
+                <label for="codexAutoCompactTokenLimit">压缩启动长度 <span class="label-hint">Token</span></label>
+                <input id="codexAutoCompactTokenLimit" type="number" min="1" max="2147483647" step="1000" inputmode="numeric" aria-describedby="codexContextHint" />
+              </div>
+            </div>
+            <p id="codexContextHint" class="codex-context-settings__hint">未配置时使用程序默认值。压缩启动长度必须小于上下文长度。</p>
+          </div>
         </div>
       </section>
 

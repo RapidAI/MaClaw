@@ -483,6 +483,7 @@ describe('SidebarTaskManagement', () => {
         // While the create is in flight (SSH dial can take seconds), the user
         // must see progress instead of a silent welcome page.
         expect(await screen.findByTestId('task-autocreate-progress')).toBeTruthy();
+        expect(screen.getByTestId('task-autocreate-progress').textContent).toMatch(/Connecting SSH|\u6b63\u5728\u8fde\u63a5 SSH|\u6b63\u5728\u9023\u7dda SSH/i);
         expect(screen.queryByRole('dialog', { name: 'Create remote coding task' })).toBeNull();
 
         await act(async () => {
@@ -530,6 +531,69 @@ describe('SidebarTaskManagement', () => {
         await waitFor(() => {
             expect((screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement).disabled).toBe(false);
         });
+    });
+
+    it('does not let stale create completion close a newer forced dialog', async () => {
+        let resolveCreate: () => void = () => {};
+        const createTask = vi.fn(() => new Promise<void>((resolve) => {
+            resolveCreate = resolve;
+        }));
+        renderTaskManagement({ createTask });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'coding_dev', name: 'First task', autoCreate: true },
+            }));
+        });
+        await screen.findByTestId('task-autocreate-progress');
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'remote_coding_dev', name: 'Second remote task', autoCreate: true },
+            }));
+        });
+        expect(await screen.findByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
+
+        await act(async () => {
+            resolveCreate();
+            await Promise.resolve();
+        });
+
+        expect(screen.getByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
+        expect((screen.getByLabelText('Task command') as HTMLTextAreaElement).value).toBe('Second remote task');
+    });
+
+    it('does not leak a stale create failure into a newer forced dialog', async () => {
+        let rejectCreate: (error: Error) => void = () => {};
+        const createTask = vi.fn(() => new Promise<void>((_resolve, reject) => {
+            rejectCreate = reject;
+        }));
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+        renderTaskManagement({ createTask });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'coding_dev', name: 'First task', autoCreate: true },
+            }));
+        });
+        await screen.findByTestId('task-autocreate-progress');
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'remote_coding_dev', name: 'Second remote task', autoCreate: true },
+            }));
+        });
+        expect(await screen.findByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
+
+        await act(async () => {
+            rejectCreate(new Error('stale SSH failure'));
+            await Promise.resolve();
+        });
+
+        expect(screen.getByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
+        expect((screen.getByLabelText('Task command') as HTMLTextAreaElement).value).toBe('Second remote task');
+        expect(screen.queryByTestId('create-task-error')).toBeNull();
+        consoleError.mockRestore();
     });
 
     it('opens create dialog prefilled from welcome coding-task event (remote)', async () => {
@@ -615,6 +679,32 @@ describe('SidebarTaskManagement', () => {
         });
     });
 
+    it('moves manual remote creation to the task-list connection progress', async () => {
+        let resolveCreate: () => void = () => {};
+        const createTask = vi.fn(() => new Promise<void>((resolve) => {
+            resolveCreate = resolve;
+        }));
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Fix remote auth bug' } });
+        fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.8' } });
+        fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ubuntu' } });
+        fireEvent.change(screen.getByLabelText('Password'), { target: { value: 's3cret' } });
+        fireEvent.change(screen.getByLabelText('Remote work directory'), { target: { value: '/home/ubuntu/app' } });
+        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+
+        expect(await screen.findByTestId('task-autocreate-progress')).toBeTruthy();
+        expect(screen.queryByRole('dialog', { name: 'Create remote coding task' })).toBeNull();
+
+        await act(async () => {
+            resolveCreate();
+            await Promise.resolve();
+        });
+        await waitFor(() => expect(screen.queryByTestId('task-autocreate-progress')).toBeNull());
+    });
+
     it('prefills remote SSH blanks when switching to remote mode in the create dialog', () => {
         renderTaskManagement({
             tasks: [{
@@ -670,6 +760,14 @@ describe('SidebarTaskManagement', () => {
         await waitFor(() => expect(screen.getByTestId('create-task-error').textContent).toContain('无法连接到远程服务器'));
         // Dialog stays open on failure; title reflects remote coding mode.
         expect(screen.getByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
+        expect((screen.getByLabelText('Task command') as HTMLTextAreaElement).value).toBe('Remote fail');
+        expect((screen.getByLabelText('Host / domain') as HTMLInputElement).value).toBe('10.0.0.1');
+        expect((screen.getByLabelText('Username') as HTMLInputElement).value).toBe('root');
+        expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('bad');
+        expect((screen.getByLabelText('Remote work directory') as HTMLInputElement).value).toBe('/tmp');
+        await waitFor(() => {
+            expect(document.activeElement).toBe(screen.getByLabelText('Password'));
+        });
     });
 
     it('passes coding mode together with the selected working folder', async () => {

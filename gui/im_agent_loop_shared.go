@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -276,6 +277,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	attachments []MessageAttachment,
 	onProgress tool.ProgressCallback,
 	onToken llm.TokenCallback,
+	onNewRound NewRoundCallback,
 	onStreamDone StreamDoneCallback,
 	minIterations int,
 	platform string,
@@ -354,7 +356,6 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		telemetry.PromptABSample = ctx.Runtime.PromptABSample
 		telemetry.PromptSoftFull = ctx.Runtime.PromptSoftFull
 	}
-	defer h.beginAgentLoopRuntime(ctx, userID, userText, platform)()
 	runtimeState := h.beginAgentLoopRuntimeState(ctx, userID, userText, onProgress, onStreamDone, telemetry)
 	defer runtimeState.Cleanup()
 
@@ -399,6 +400,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		route:        startState.RouteDecision,
 		onProgress:   progressOut,
 		onToken:      onToken,
+		onNewRound:   onNewRound,
 		maxIter:      startState.EffectiveMax,
 		httpClient:   startState.HTTPClient,
 	}
@@ -573,6 +575,7 @@ type sharedAgentLoopCallbacks struct {
 	route        modelRouteDecision
 	onProgress   tool.ProgressCallback
 	onToken      llm.TokenCallback
+	onNewRound   NewRoundCallback
 	maxIter      int
 	httpClient   *http.Client
 	escalated    bool
@@ -584,6 +587,10 @@ type sharedAgentLoopCallbacks struct {
 	deliveredPaths       []string
 	fileMaterializeNanos int64
 	filesForwarded       int
+	// Revision last incorporated by TransformConversation. Keeping this at the
+	// conversation boundary (rather than the later HTTP-start boundary) closes
+	// the race where steering arrives between transform and request creation.
+	llmReplanRevision atomic.Int64
 }
 
 // effectivePlatform prefers the pinned turn platform, then loop context.
@@ -761,18 +768,28 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c.loopCtx != nil {
 		requestID = c.loopCtx.Runtime.RequestID
 	}
+	// Keep permission wait and the actual handler under one operation. A steer
+	// arriving anywhere in that window cancels context-aware tools and prevents
+	// a newly-created post-permission context from accidentally reviving the
+	// stale call.
+	execCtx := context.Background()
+	if c.loopCtx != nil {
+		var end context.CancelFunc
+		execCtx, end, _ = c.loopCtx.BeginReplannableOperation(context.Background())
+		if end != nil {
+			defer end()
+		}
+	}
+	// Close the check/start race in core RunLoop: steering may have landed after
+	// its last batch check but before this operation was installed. In that case
+	// no cancel function existed for TryRequestReplan to call, so reject the stale
+	// tool explicitly before permission UI, progress, or handler side effects.
+	if c.LLMReplanRequested() {
+		return sharedToolInterruptedText(execCtx)
+	}
 	toolCallID := newACPToolCallID(name)
 	if isACPProgrammingRequestID(requestID) {
-		pctx := context.Background()
-		var pcancel context.CancelFunc
-		if c.loopCtx != nil {
-			// Prefer live loop cancel so VS Code cancel aborts permission wait.
-			pctx, pcancel, _ = c.loopCtx.BeginReplannableOperation(context.Background())
-			if pcancel != nil {
-				defer pcancel()
-			}
-		}
-		if allowed, reason := globalACPPermission.check(pctx, requestID, name, argsJSON); !allowed {
+		if allowed, reason := globalACPPermission.check(execCtx, requestID, name, argsJSON); !allowed {
 			msg := "[system rejected] " + reason
 			if strings.TrimSpace(reason) == "" {
 				msg = "[system rejected] tool not permitted"
@@ -804,12 +821,30 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	// Filter internal tool chatter the same way as the legacy agent-loop path so
 	// unstyled bash/skill logs never leak into WeChat/QQ as normal chat bubbles.
 	toolProgress := filteredToolProgressCallback(lang, name, c.onProgress, false)
-	exec := c.handler.executeToolDetailedWithUserText(name, argsJSON, c.userText, toolProgress)
+	platform := c.effectivePlatform()
+	policyUserID := c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
+	exec := c.handler.executeToolDetailedWithRuntimeContext(
+		execCtx,
+		policyUserID,
+		loopContextHasExplicitRuntimeOwner(c.loopCtx),
+		platform,
+		name,
+		argsJSON,
+		c.userText,
+		toolProgress,
+	)
+	// A non-context-aware handler cannot be forcibly stopped once entered, but a
+	// steer that arrived before it returned must still suppress downstream side
+	// effects such as file materialization/forwarding and interactive UI opening.
+	if c.LLMReplanRequested() || execCtx.Err() != nil {
+		exec.Text = sharedToolInterruptedText(execCtx)
+		exec.Outcome = toolOutcomeFailed
+		exec.FailureKind = toolFailureHandlerReported
+	}
 	// Materialize [file_base64|…|im] before truncating: shared RunLoop has no
 	// post-tool artifact branch, so this is the only place desktop→WeChat runs.
 	// Pass originating platform so WeChat/Feishu channel turns report channel
 	// delivery success (LocalFilePaths) instead of false "sender unconfigured".
-	platform := c.effectivePlatform()
 	mat := c.handler.materializeToolFilePayloadForPlatform(exec.Text, platform)
 	outText := ""
 	ok := true
@@ -862,6 +897,14 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		})
 	}
 	return outText
+}
+
+func sharedToolInterruptedText(ctx context.Context) string {
+	reason := context.Canceled.Error()
+	if ctx != nil && ctx.Err() != nil {
+		reason = ctx.Err().Error()
+	}
+	return "tool execution interrupted: " + reason
 }
 
 // rewriteRecordAudioMarkerForSharedLoop returns a non-empty rejection string when
@@ -1123,6 +1166,8 @@ func (c *sharedAgentLoopCallbacks) ExecuteToolStructured(name, argsJSON string) 
 	outcome := agent.ToolExecutionOutcomeOK
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "[错误]") ||
+		strings.Contains(strings.ToLower(text), "tool execution interrupted:") ||
+		strings.Contains(strings.ToLower(text), "context canceled") ||
 		strings.Contains(text, "工具执行异常") ||
 		strings.Contains(text, "未知工具") ||
 		strings.Contains(text, "无法转发") ||
@@ -1140,6 +1185,14 @@ func (c *sharedAgentLoopCallbacks) ExecuteToolStructured(name, argsJSON string) 
 func (c *sharedAgentLoopCallbacks) OnToken(delta string) {
 	if c.onToken != nil {
 		c.onToken(delta)
+	}
+}
+
+// OnLLMNewRound implements agent.LLMRoundNotifier. A live-steer replacement
+// uses the same stream-generation boundary as an ordinary next tool round.
+func (c *sharedAgentLoopCallbacks) OnLLMNewRound() {
+	if c != nil && c.onNewRound != nil {
+		c.onNewRound()
 	}
 }
 
@@ -1178,7 +1231,39 @@ func (c *sharedAgentLoopCallbacks) OnEmptyResponse(iteration int) bool {
 }
 
 func (c *sharedAgentLoopCallbacks) TransformConversation(conversation []interface{}) []interface{} {
-	return nil
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	// Snapshot before draining. If steering lands at any point after this read
+	// (including while the pending bag is being drained), its newer revision
+	// remains visible to LLMReplanRequested and cannot be mistaken for content
+	// already incorporated into this request.
+	processedRevision := int64(0)
+	if c.loopCtx != nil {
+		processedRevision = c.loopCtx.ReplanRevision()
+	}
+	next, injected := c.handler.appendPendingSteerInjections(c.userID, conversation, 0)
+	if c.loopCtx != nil {
+		c.llmReplanRevision.Store(processedRevision)
+	}
+	if injected == "" {
+		return nil
+	}
+	return next
+}
+
+// LLMReplanRequested implements agent.LLMReplanAware. RequestReplan cancels
+// only the current model operation; corelib then starts another iteration and
+// TransformConversation injects the user's live steering.
+func (c *sharedAgentLoopCallbacks) LLMReplanRequested() bool {
+	return c != nil && c.loopCtx != nil && c.loopCtx.ReplanRequestedSince(c.llmReplanRevision.Load())
+}
+
+// TryFinalizeLLMResponse implements agent.LLMFinalizationGuard. The same lock
+// used by InjectGuideReference decides whether the final answer or the user's
+// interruption wins; accepted steering can no longer be stranded after commit.
+func (c *sharedAgentLoopCallbacks) TryFinalizeLLMResponse() bool {
+	return c == nil || c.loopCtx == nil || c.loopCtx.TrySealReplans(c.llmReplanRevision.Load())
 }
 
 func (c *sharedAgentLoopCallbacks) maybeEscalateAfterTools() {
@@ -1252,7 +1337,7 @@ func (c *sharedAgentLoopCallbacks) OnLLMUsage(model string, inputTokens, outputT
 
 func (c *sharedAgentLoopCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
 	if c != nil && c.loopCtx != nil {
-		ctx, cancel := c.loopCtx.Context()
+		ctx, end, _ := c.loopCtx.BeginReplannableOperation(context.Background())
 		trace := llm.RequestTrace{
 			Caller:    "shared_agent_loop",
 			OwnerID:   c.userID,
@@ -1261,7 +1346,7 @@ func (c *sharedAgentLoopCallbacks) LLMRequestContext(iteration int) (context.Con
 			Iteration: iteration,
 		}
 		ctx = llm.WithRequestTrace(ctx, trace)
-		return ctx, func(error) { cancel() }, nil
+		return ctx, func(error) { end() }, nil
 	}
 	return nil, nil, fmt.Errorf("no loop context")
 }

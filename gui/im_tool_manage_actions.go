@@ -58,11 +58,14 @@ func normalizeManageTemplateAction(action string) manageTemplateAction {
 type manageScheduleAction string
 
 const (
-	manageScheduleActionUnknown     manageScheduleAction = ""
-	manageScheduleActionCreate      manageScheduleAction = "create"
-	manageScheduleActionList        manageScheduleAction = "list"
-	manageScheduleActionDelete      manageScheduleAction = "delete"
-	manageScheduleActionUpdate      manageScheduleAction = "update"
+	manageScheduleActionUnknown manageScheduleAction = ""
+	manageScheduleActionCreate  manageScheduleAction = "create"
+	manageScheduleActionList    manageScheduleAction = "list"
+	manageScheduleActionRun     manageScheduleAction = "run"
+	manageScheduleActionPause   manageScheduleAction = "pause"
+	manageScheduleActionResume  manageScheduleAction = "resume"
+	manageScheduleActionDelete  manageScheduleAction = "delete"
+	manageScheduleActionUpdate  manageScheduleAction = "update"
 	// list_targets: generic IM delivery destinations (channel=lansenger|…, query optional)
 	manageScheduleActionListTargets manageScheduleAction = "list_targets"
 )
@@ -73,6 +76,12 @@ func normalizeManageScheduleAction(action string) manageScheduleAction {
 		return manageScheduleActionCreate
 	case manageScheduleActionList:
 		return manageScheduleActionList
+	case manageScheduleActionRun, "execute", "trigger", "trigger_now":
+		return manageScheduleActionRun
+	case manageScheduleActionPause, "stop", "disable":
+		return manageScheduleActionPause
+	case manageScheduleActionResume, "enable":
+		return manageScheduleActionResume
 	case manageScheduleActionDelete:
 		return manageScheduleActionDelete
 	case manageScheduleActionUpdate:

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +113,99 @@ func TestMigrationAPILifecycleAndCleanupIdempotency(t *testing.T) {
 	}
 	if _, err := os.Stat(api.exportDir("tenant-a", user.ID, created.ExportID)); !os.IsNotExist(err) {
 		t.Fatalf("expected export dir removed, stat err=%v", err)
+	}
+}
+
+func TestMigrationPublicManifestRejectsSecretBearingFields(t *testing.T) {
+	for _, manifest := range []json.RawMessage{
+		json.RawMessage(`{"version":"v2","api_key":"must-not-reach-hub"}`),
+		json.RawMessage(`{"version":"v2","meta":{"secret_inventory":["provider.api_key"]}}`),
+		json.RawMessage(`{"version":"v2","Version":"shadow"}`),
+		json.RawMessage(`{"version":"v2","files":[],"Files":[]}`),
+	} {
+		if err := validateMigrationPublicManifest(manifest); err == nil {
+			t.Fatalf("expected secret-bearing manifest to be rejected: %s", manifest)
+		}
+	}
+	if err := validateMigrationPublicManifest(json.RawMessage(`{"version":"v2","secret_count":2,"files":[{"path":"config/app_config.json","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`)); err != nil {
+		t.Fatalf("safe public manifest rejected: %v", err)
+	}
+}
+
+func TestMigrationCreateExportRejectsAmbiguousOrUnknownEnvelopeFields(t *testing.T) {
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-envelope", TenantID: "tenant-envelope", Email: "envelope@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(context.Background(), user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, user.TenantID, user.ID, "machine-envelope", "token-envelope", "Envelope Mac")
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, nil)
+	base := `"compressed_size":1,"encrypted_size":1,"encrypted_sha256":"` + strings.Repeat("a", 64) + `","plain_sha256":"` + strings.Repeat("b", 64) + `","chunk_size":262144,"chunk_count":1,"manifest":{"version":"v2"}`
+	for _, body := range []string{
+		`{` + base + `,"Compressed_Size":2}`,
+		`{` + base + `,"api_key":"must-not-reach-hub"}`,
+		`{` + base + `}{"shadow":true}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/migration/exports", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer token-envelope")
+		req.Header.Set("X-Machine-ID", "machine-envelope")
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		mux.ServeHTTP(resp, req)
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("ambiguous create envelope status=%d body=%s request=%s", resp.Code, resp.Body.String(), body)
+		}
+	}
+}
+
+func TestMigrationCreateExportRejectsSpoofedManifestIdentity(t *testing.T) {
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-identity", TenantID: "tenant-identity", Email: "identity@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(context.Background(), user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, user.TenantID, user.ID, "machine-identity", "token-identity", "Identity Mac")
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, nil)
+	payload := bytes.Repeat([]byte("x"), 1024)
+	hash := migrationSHA256Hex(payload)
+	for _, manifest := range []map[string]any{
+		{"version": "v2", "tenant_id": "other-tenant"},
+		{"version": "v2", "user_id": "other-user"},
+		{"version": "v2", "machine_id": "other-machine"},
+	} {
+		resp := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-identity", "token-identity", map[string]any{
+			"compressed_size": int64(len(payload)), "encrypted_size": int64(len(payload)),
+			"encrypted_sha256": hash, "plain_sha256": hash,
+			"chunk_size": migrationMinUploadChunkSize, "chunk_count": 1, "manifest": manifest,
+		})
+		if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte("INVALID_MANIFEST_IDENTITY")) {
+			t.Fatalf("spoofed manifest accepted: status=%d body=%s manifest=%v", resp.Code, resp.Body.String(), manifest)
+		}
+	}
+}
+
+func TestMigrationPublicManifestRejectsNonPortableFilePathsAndCounts(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	for _, manifest := range []json.RawMessage{
+		json.RawMessage(`{"version":"v2","memory_entries":-1}`),
+		json.RawMessage(`{"version":"v2","files":[{"path":"config\\app.json","sha256":"` + sha + `"}]}`),
+		json.RawMessage(`{"version":"v2","files":[{"path":"manifest.json","sha256":"` + sha + `"}]}`),
+		json.RawMessage(`{"version":"v2","files":[{"path":"Config/app.json","sha256":"` + sha + `"},{"path":"config/app.json","sha256":"` + sha + `"}]}`),
+		json.RawMessage(`{"version":"v2","files":[{"path":"C:/config.json","sha256":"` + sha + `"}]}`),
+		json.RawMessage(`{"version":"v2","files":[{"path":"assets/NUL.txt","sha256":"` + sha + `"}]}`),
+		json.RawMessage(`{"version":"v2","files":[{"path":"assets/file. ","sha256":"` + sha + `"}]}`),
+	} {
+		if err := validateMigrationPublicManifest(manifest); err == nil {
+			t.Fatalf("expected unsafe public manifest to be rejected: %s", manifest)
+		}
 	}
 }
 

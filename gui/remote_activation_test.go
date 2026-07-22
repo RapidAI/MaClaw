@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -85,6 +86,98 @@ func TestGetRemoteRegistrationAuthDefaultsMissingCodeLengthToSix(t *testing.T) {
 	if got.Method != "phone" || got.CodeTTLMinutes != 5 || got.CodeLength != 6 {
 		t.Fatalf("registration auth = %#v", got)
 	}
+}
+
+func TestGetRemoteRegistrationAuthClampsInvalidCodeLength(t *testing.T) {
+	for _, codeLength := range []int{0, 3, 9} {
+		t.Run(fmt.Sprintf("length_%d", codeLength), func(t *testing.T) {
+			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"method":"email","code_length":%d}`, codeLength)))
+			}))
+			defer hub.Close()
+
+			got, err := (&App{}).GetRemoteRegistrationAuth(hub.URL, "")
+			if err != nil {
+				t.Fatalf("GetRemoteRegistrationAuth() error = %v", err)
+			}
+			if got.CodeLength != defaultRemoteRegistrationSMSCodeLength {
+				t.Fatalf("code length = %d, want %d", got.CodeLength, defaultRemoteRegistrationSMSCodeLength)
+			}
+		})
+	}
+}
+
+func TestGetRemoteRegistrationAuthFallsBackToEmailWhenEndpointIsUnavailable(t *testing.T) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/registration-auth" {
+			t.Fatalf("unexpected hub path %s", r.URL.Path)
+		}
+		http.NotFound(w, r)
+	}))
+	defer hub.Close()
+
+	app := &App{}
+	got, err := app.GetRemoteRegistrationAuth(hub.URL, "tenant-legacy")
+	if err != nil {
+		t.Fatalf("GetRemoteRegistrationAuth() error = %v", err)
+	}
+	if got.Method != "email" || got.TenantID != "tenant-legacy" || got.CodeTTLMinutes != 5 || got.CodeLength != 6 {
+		t.Fatalf("registration auth fallback = %#v", got)
+	}
+}
+
+func TestGetRemoteRegistrationAuthIgnoresLegacyEmailQuotaMetadata(t *testing.T) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"method":"email","tenant_id":"tenant_email","code_ttl_minutes":5,"code_length":6,"daily_email_limit":3}`))
+	}))
+	defer hub.Close()
+
+	got, err := (&App{}).GetRemoteRegistrationAuth(hub.URL, "")
+	if err != nil {
+		t.Fatalf("GetRemoteRegistrationAuth() error = %v", err)
+	}
+	if got.Method != "email" || got.TenantID != "tenant_email" || got.CodeTTLMinutes != 5 || got.CodeLength != 6 {
+		t.Fatalf("registration auth = %#v", got)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal auth result: %v", err)
+	}
+	if strings.Contains(string(encoded), "daily_email_limit") {
+		t.Fatalf("legacy email quota leaked into client state: %s", encoded)
+	}
+}
+
+func TestGetRemoteRegistrationAuthNormalizesAndValidatesMethod(t *testing.T) {
+	t.Run("normalizes", func(t *testing.T) {
+		hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"method":" PHONE ","tenant_id":" tenant_phone "}`))
+		}))
+		defer hub.Close()
+
+		got, err := (&App{}).GetRemoteRegistrationAuth(hub.URL, "")
+		if err != nil {
+			t.Fatalf("GetRemoteRegistrationAuth() error = %v", err)
+		}
+		if got.Method != "phone" || got.TenantID != "tenant_phone" {
+			t.Fatalf("registration auth = %#v", got)
+		}
+	})
+
+	t.Run("rejects unsupported method", func(t *testing.T) {
+		hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"method":"webauthn"}`))
+		}))
+		defer hub.Close()
+
+		if _, err := (&App{}).GetRemoteRegistrationAuth(hub.URL, ""); err == nil || !strings.Contains(err.Error(), "unsupported method") {
+			t.Fatalf("error = %v, want unsupported-method diagnostic", err)
+		}
+	})
 }
 
 func TestProbeRemoteHubSendsPhoneIdentityAsPhoneNumber(t *testing.T) {

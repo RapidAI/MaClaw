@@ -904,6 +904,30 @@ func TestWriteTigerProxyCodexConfigAddsContextSettings(t *testing.T) {
 	}
 }
 
+func TestWriteTigerProxyCodexConfigWithContextUsesOverrides(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := WriteTigerProxyCodexConfigWithContext("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5", 256000, 220000); err != nil {
+		t.Fatalf("WriteTigerProxyCodexConfigWithContext: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`model_context_window = 256000`,
+		`model_auto_compact_token_limit = 220000`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("TigerProxy config missing override %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestWriteTigerProxyCodexConfigUpdatesExistingContextSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

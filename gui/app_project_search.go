@@ -1115,6 +1115,10 @@ func (a *App) PrepareLocalCodingEnvironment(projectPath, executionDir string) er
 // with the right-hand source preview enabled (pure remote coding workbench).
 // Password is used only for this connect call and is not persisted.
 func (a *App) PrepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int) error {
+	return a.prepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir, sshPort, "")
+}
+
+func (a *App) prepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int, hostKeyFingerprint string) error {
 	if a == nil {
 		return fmt.Errorf("app unavailable")
 	}
@@ -1146,7 +1150,7 @@ func (a *App) PrepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshP
 		return fmt.Errorf("SSH 会话管理器不可用")
 	}
 
-	sessionID, failReason := handler.findOrCreateSSHSessionWithAuth(user, host, sshPort, password, "", "")
+	sessionID, failReason := handler.findOrCreateSSHSessionWithPinnedAuth(user, host, sshPort, password, "", "", strings.TrimSpace(hostKeyFingerprint))
 	if sessionID == "" {
 		return errors.New(sshConnectFailureMessage(user, host, sshPort, failReason))
 	}

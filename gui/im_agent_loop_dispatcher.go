@@ -25,10 +25,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			ResponseSource: "budget_gate",
 		}
 	}
+	// Publish the runtime before choosing the shared/legacy implementation so a
+	// busy-turn steer has one exact consumer regardless of which loop path wins.
+	// Earlier pre-loop phases may still short-circuit and therefore must not
+	// advertise steering acceptance.
+	defer h.beginAgentLoopRuntime(ctx, userID, userText, platform)()
 
 	// Strangler: eligible chat/background turns use shared corelib/agent.RunLoop.
 	if h.shouldUseSharedAgentLoop(ctx, userID, attachments) {
-		return h.runAgentLoopShared(ctx, userID, systemPrompt, history, userText, attachments, onProgress, onToken, onStreamDone, minIterations, platform)
+		return h.runAgentLoopShared(ctx, userID, systemPrompt, history, userText, attachments, onProgress, onToken, onNewRound, onStreamDone, minIterations, platform)
 	}
 
 	recordLegacyAgentLoopTurn()
@@ -43,9 +48,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Captured by the exit defer after prepare/runState are created. Closures see
 	// final values; outcome+Flush run AFTER recover so panic turns are not stamped success.
 	var (
-		trajRecorder *TrajectoryRecorder
-		trajCleanup  func()
-		trajRunState *agentLoopRunState
+		trajRecorder  *TrajectoryRecorder
+		trajCleanup   func()
+		trajRunState  *agentLoopRunState
 		trajTelemetry *agentLoopTelemetry
 	)
 	defer func() {
@@ -103,8 +108,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 	attachLLMTelemetry := telemetry.Attach
 	firstRequestMetrics := telemetry.FirstRequestMetrics
-	defer h.beginAgentLoopRuntime(ctx, userID, userText, platform)()
-
 	runtimeState := h.beginAgentLoopRuntimeState(ctx, userID, userText, onProgress, onStreamDone, telemetry)
 	defer runtimeState.Cleanup()
 	loopCtx := runtimeState.RequestContext

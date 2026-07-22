@@ -34,6 +34,7 @@ require (
 	github.com/viterin/vek v0.4.3
 	github.com/wailsapp/wails/v2 v2.11.0
 	github.com/wdvxdr1123/go-silk v0.0.0-20220304095002-f67345df09ea
+	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.41.0
 	golang.org/x/image v0.37.0
 	golang.org/x/net v0.42.0
@@ -48,6 +49,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 )
 
@@ -84,7 +86,7 @@ require (
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/go-lark/card-builder v1.0.0-beta.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/labstack/echo/v4 v4.13.3 // indirect

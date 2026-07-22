@@ -79,7 +79,7 @@ func TestRunAgentLoopShared_TrajectoryLoggingRecordsConversationAndTools(t *test
 
 	loopCtx := NewLoopContext("chat-shared-trajectory", 4, server.Client())
 	loopCtx.Kind = LoopKindChat
-	resp := h.runAgentLoopShared(loopCtx, "u1", "system prompt", nil, "run shared trajectory", nil, nil, nil, nil, 0, "desktop")
+	resp := h.runAgentLoopShared(loopCtx, "u1", "system prompt", nil, "run shared trajectory", nil, nil, nil, nil, nil, 0, "desktop")
 	if resp == nil {
 		t.Fatal("expected response")
 	}
@@ -492,7 +492,7 @@ func TestRunAgentLoopShared_TrajectoryCancelClosesUnpairedTools(t *testing.T) {
 		t.Fatalf("Register read_file: %v", err)
 	}
 
-	resp := h.runAgentLoopShared(loopCtx, "u1", "system prompt", nil, "cancel mid batch", nil, nil, nil, nil, 0, "desktop")
+	resp := h.runAgentLoopShared(loopCtx, "u1", "system prompt", nil, "cancel mid batch", nil, nil, nil, nil, nil, 0, "desktop")
 	if resp == nil {
 		t.Fatal("expected response")
 	}
@@ -590,7 +590,7 @@ func TestRunAgentLoopShared_TrajectoryAskUserPausedPairsResult(t *testing.T) {
 
 	loopCtx := NewLoopContext("chat-shared-ask-traj", 3, server.Client())
 	loopCtx.Kind = LoopKindChat
-	resp := h.runAgentLoopShared(loopCtx, "u1", "system prompt", nil, "please ask me", nil, nil, nil, nil, 0, "desktop")
+	resp := h.runAgentLoopShared(loopCtx, "u1", "system prompt", nil, "please ask me", nil, nil, nil, nil, nil, 0, "desktop")
 	if resp == nil {
 		t.Fatal("expected response")
 	}

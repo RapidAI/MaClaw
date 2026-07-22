@@ -26,6 +26,12 @@ const (
 	tigerProxyCodexWireAPI            = "responses"
 )
 
+// TigerProxyCodexContextDefaults returns the context settings used when
+// TigerProxy has no user override configured.
+func TigerProxyCodexContextDefaults() (contextWindow, autoCompactTokenLimit int) {
+	return defaultCodexModelContextWindow, defaultCodexAutoCompactTokenLimit
+}
+
 // CodexAuthPath returns ~/.codex/auth.json
 func CodexAuthPath() string {
 	home, _ := os.UserHomeDir()
@@ -56,7 +62,14 @@ func WriteCodexConfigWithClientName(apiKey, baseURL, modelID, providerName, wire
 // WriteTigerProxyCodexConfig writes the TigerProxy-specific Codex settings.
 // Unlike the generic writer, it configures the CodeGen context window defaults.
 func WriteTigerProxyCodexConfig(apiKey, baseURL, modelID string) error {
-	return writeCodexConfigAtWithClientName(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, tigerProxyCodexProviderName, tigerProxyCodexWireAPI, corelib.CodeGenClientName, true)
+	return WriteTigerProxyCodexConfigWithContext(apiKey, baseURL, modelID, 0, 0)
+}
+
+// WriteTigerProxyCodexConfigWithContext writes TigerProxy's Codex settings
+// with optional context overrides. Non-positive values use program defaults.
+func WriteTigerProxyCodexConfigWithContext(apiKey, baseURL, modelID string, contextWindow, autoCompactTokenLimit int) error {
+	contextWindow, autoCompactTokenLimit = normalizeTigerProxyCodexContext(contextWindow, autoCompactTokenLimit)
+	return writeCodexConfigAtWithClientName(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, tigerProxyCodexProviderName, tigerProxyCodexWireAPI, corelib.CodeGenClientName, true, contextWindow, autoCompactTokenLimit)
 }
 
 // WriteCodexConfigAt writes auth.json and config.toml under codexDir using the
@@ -67,10 +80,20 @@ func WriteCodexConfigAt(codexDir, apiKey, baseURL, modelID, providerName, wireAp
 }
 
 func WriteCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName string) error {
-	return writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName, false)
+	return writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName, false, 0, 0)
 }
 
-func writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName string, configureTigerProxyContext bool) error {
+func normalizeTigerProxyCodexContext(contextWindow, autoCompactTokenLimit int) (int, int) {
+	if contextWindow <= 0 {
+		contextWindow = defaultCodexModelContextWindow
+	}
+	if autoCompactTokenLimit <= 0 {
+		autoCompactTokenLimit = defaultCodexAutoCompactTokenLimit
+	}
+	return contextWindow, autoCompactTokenLimit
+}
+
+func writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName string, configureTigerProxyContext bool, contextWindow, autoCompactTokenLimit int) error {
 	if err := ensureCodexProcessesStopped(); err != nil {
 		return err
 	}
@@ -99,7 +122,7 @@ func writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, provid
 	}
 
 	// Step 2: Build config.toml with incremental editing
-	configToml, err := buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, configureTigerProxyContext)
+	configToml, err := buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, configureTigerProxyContext, contextWindow, autoCompactTokenLimit)
 	if err != nil {
 		// Rollback auth.json
 		rollbackFile(authPath, oldAuth)
@@ -127,10 +150,13 @@ func buildCodexConfigToml(configPath, baseURL, modelID, providerName, wireApi st
 }
 
 func buildCodexConfigTomlWithClientName(configPath, baseURL, modelID, providerName, wireApi, clientName string) (string, error) {
-	return buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, false)
+	return buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, false, 0, 0)
 }
 
-func buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName string, configureTigerProxyContext bool) (string, error) {
+func buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName string, configureTigerProxyContext bool, contextWindow, autoCompactTokenLimit int) (string, error) {
+	if configureTigerProxyContext {
+		contextWindow, autoCompactTokenLimit = normalizeTigerProxyCodexContext(contextWindow, autoCompactTokenLimit)
+	}
 	providerName = CodexProviderKey(providerName)
 	if providerName == "" {
 		providerName = "custom"
@@ -148,13 +174,13 @@ func buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName,
 
 	if strings.TrimSpace(existingStr) == "" {
 		// No existing config, generate fresh
-		return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), configureTigerProxyContext), nil
+		return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), configureTigerProxyContext, contextWindow, autoCompactTokenLimit), nil
 	}
 
 	// Incremental edit: update only provider-related fields
 	// We use line-based editing to preserve comments and formatting
 	lines := strings.Split(existingStr, "\n")
-	result := incrementalUpdateCodexToml(lines, providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), configureTigerProxyContext)
+	result := incrementalUpdateCodexToml(lines, providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), configureTigerProxyContext, contextWindow, autoCompactTokenLimit)
 	return result, nil
 }
 
@@ -177,7 +203,7 @@ func BuildCodexConfigTomlContentWithClientName(baseURL, modelID, providerName, w
 	if wireApi == "" {
 		wireApi = "responses"
 	}
-	return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), false)
+	return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), false, 0, 0)
 }
 
 func codexProviderHTTPHeaders(baseURL, clientName string) map[string]string {
@@ -189,7 +215,7 @@ func codexProviderHTTPHeaders(baseURL, clientName string) map[string]string {
 
 // incrementalUpdateCodexToml updates provider fields in existing TOML while
 // preserving MCP servers, profiles, comments, and other user config.
-func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string, configureTigerProxyContext bool) string {
+func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string, configureTigerProxyContext bool, contextWindow, autoCompactTokenLimit int) string {
 	var result []string
 	updatedModelProvider := false
 	updatedModel := false
@@ -254,13 +280,13 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 		}
 
 		if configureTigerProxyContext && currentSection == "" && codexTomlKey(trimmed) == "model_context_window" {
-			result = append(result, fmt.Sprintf("model_context_window = %d", defaultCodexModelContextWindow))
+			result = append(result, fmt.Sprintf("model_context_window = %d", contextWindow))
 			updatedModelContextWindow = true
 			continue
 		}
 
 		if configureTigerProxyContext && currentSection == "" && codexTomlKey(trimmed) == "model_auto_compact_token_limit" {
-			result = append(result, fmt.Sprintf("model_auto_compact_token_limit = %d", defaultCodexAutoCompactTokenLimit))
+			result = append(result, fmt.Sprintf("model_auto_compact_token_limit = %d", autoCompactTokenLimit))
 			updatedAutoCompactTokenLimit = true
 			continue
 		}
@@ -350,10 +376,10 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 			if codexTomlKey(strings.TrimSpace(l)) == "model" {
 				missing := make([]string, 0, 2)
 				if !updatedModelContextWindow {
-					missing = append(missing, fmt.Sprintf("model_context_window = %d", defaultCodexModelContextWindow))
+					missing = append(missing, fmt.Sprintf("model_context_window = %d", contextWindow))
 				}
 				if !updatedAutoCompactTokenLimit {
-					missing = append(missing, fmt.Sprintf("model_auto_compact_token_limit = %d", defaultCodexAutoCompactTokenLimit))
+					missing = append(missing, fmt.Sprintf("model_auto_compact_token_limit = %d", autoCompactTokenLimit))
 				}
 				tail := make([]string, len(result[i+1:]))
 				copy(tail, result[i+1:])
@@ -394,13 +420,13 @@ func isInsideSection(lines []string) bool {
 	return false
 }
 
-func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string, configureTigerProxyContext bool) string {
+func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string, configureTigerProxyContext bool, contextWindow, autoCompactTokenLimit int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "model_provider = %s\n", tomlString(providerName))
 	fmt.Fprintf(&sb, "model = %s\n", tomlString(modelID))
 	if configureTigerProxyContext {
-		fmt.Fprintf(&sb, "model_context_window = %d\n", defaultCodexModelContextWindow)
-		fmt.Fprintf(&sb, "model_auto_compact_token_limit = %d\n", defaultCodexAutoCompactTokenLimit)
+		fmt.Fprintf(&sb, "model_context_window = %d\n", contextWindow)
+		fmt.Fprintf(&sb, "model_auto_compact_token_limit = %d\n", autoCompactTokenLimit)
 	}
 	sb.WriteString("model_reasoning_effort = \"xhigh\"\n")
 	sb.WriteString("disable_response_storage = true\n")

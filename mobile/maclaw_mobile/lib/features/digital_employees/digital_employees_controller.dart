@@ -145,26 +145,42 @@ class DigitalEmployeeTaskController
       return;
     }
     state = const AsyncLoading();
-    final next = await AsyncValue.guard(() async {
+    // Prompt history is convenience data. A local persistence failure must not
+    // prevent the authoritative Hub task from being submitted.
+    try {
       await ref.read(digitalEmployeePromptHistoryProvider.notifier).record(
             employeeId: employeeId,
             prompt: safeText,
           );
+    } on Object {
+      // Best effort only.
+    }
+    final next = await AsyncValue.guard(() async {
       final task = await client.createDigitalEmployeeTask(
         employeeId: employeeId,
         prompt: safeText,
         taskType: taskType,
         context: safeContext,
       );
-      await ref
-          .read(mobileLocalStoreProvider)
-          .saveLastDigitalEmployeeTask(task);
+      try {
+        await ref
+            .read(mobileLocalStoreProvider)
+            .saveLastDigitalEmployeeTask(task);
+      } on Object {
+        // The Hub task already exists. Keep it in live state and poll it even
+        // when the optional local recent-task cache is unavailable.
+      }
       ref.invalidate(digitalEmployeeTaskHistoryProvider);
-      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-            title: '数字员工任务已提交',
-            body: _taskNotificationBody(task),
-            payload: mobileDigitalEmployeeTaskNotificationPayload(task.taskId),
-          );
+      try {
+        await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+              title: '数字员工任务已提交',
+              body: _taskNotificationBody(task),
+              payload:
+                  mobileDigitalEmployeeTaskNotificationPayload(task.taskId),
+            );
+      } on Object {
+        // Notification delivery is optional after Hub accepted the task.
+      }
       return task;
     });
     state = next;
@@ -187,11 +203,9 @@ class DigitalEmployeeTaskController
     }
     final next = await AsyncValue.guard(() async {
       final task = await client.getDigitalEmployeeTask(current.taskId);
-      await ref
-          .read(mobileLocalStoreProvider)
-          .saveLastDigitalEmployeeTask(task);
-      await ref.read(digitalEmployeeTaskHistoryProvider.notifier).refresh();
-      await _notifyTaskFinished(task);
+      await _cacheTaskBestEffort(task);
+      await _refreshHistoryBestEffort();
+      await _notifyTaskFinishedBestEffort(task);
       return task;
     });
     state = next;
@@ -224,13 +238,13 @@ class DigitalEmployeeTaskController
       return;
     }
 
-    await ref.read(mobileLocalStoreProvider).saveLastDigitalEmployeeTask(task);
     state = AsyncData(task);
+    await _cacheTaskBestEffort(task);
 
     // Progress patches are frequent; only refresh history / notify on terminal.
     if (_taskFinished(task)) {
-      await ref.read(digitalEmployeeTaskHistoryProvider.notifier).refresh();
-      await _notifyTaskFinished(task);
+      await _refreshHistoryBestEffort();
+      await _notifyTaskFinishedBestEffort(task);
     }
     _ensurePolling(task);
   }
@@ -277,6 +291,34 @@ class DigitalEmployeeTaskController
           body: _taskNotificationBody(task),
           payload: mobileDigitalEmployeeTaskNotificationPayload(task.taskId),
         );
+  }
+
+  Future<void> _cacheTaskBestEffort(MobileDigitalEmployeeTask task) async {
+    try {
+      await ref
+          .read(mobileLocalStoreProvider)
+          .saveLastDigitalEmployeeTask(task);
+    } on Object {
+      // Hub/realtime state is authoritative; this cache only restores the card.
+    }
+  }
+
+  Future<void> _refreshHistoryBestEffort() async {
+    try {
+      await ref.read(digitalEmployeeTaskHistoryProvider.notifier).refresh();
+    } on Object {
+      // Recent-history refresh must not hide an authoritative task update.
+    }
+  }
+
+  Future<void> _notifyTaskFinishedBestEffort(
+    MobileDigitalEmployeeTask task,
+  ) async {
+    try {
+      await _notifyTaskFinished(task);
+    } on Object {
+      // Notification delivery is optional after the task state is known.
+    }
   }
 
   String _taskNotificationBody(MobileDigitalEmployeeTask task) {

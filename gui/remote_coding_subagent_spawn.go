@@ -18,11 +18,13 @@ var remoteCodingSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 	// todo_write is root/worker-only (requirement breakdown for implement turns).
 	codingRoleExplorer: {
 		"ssh_read_file": true, "ssh_list_dir": true, "ssh_bash": true,
+		codeNavigationToolName: true, reportLocalizationToolName: true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
 		"coding_knowledge_search": true, "knowledge_search": true,
 	},
 	codingRoleReviewer: {
 		"ssh_read_file": true, "ssh_list_dir": true, "ssh_bash": true, "ssh_check_task": true,
+		codeNavigationToolName: true, reportLocalizationToolName: true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
 		"coding_knowledge_search": true, "knowledge_search": true,
 	},

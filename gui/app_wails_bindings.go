@@ -2643,6 +2643,12 @@ func (a *App) InjectAIAssistantGuideReference(text string) (bool, error) {
 // buffer fire to whichever loop most recently updated lastUserID when multiple
 // tabs are running concurrently.
 func (a *App) InjectAIAssistantGuideReferenceForSession(text string, userID string) (bool, error) {
+	return a.InjectAIAssistantGuideReferenceForSessionWithID(text, userID, "", "")
+}
+
+// InjectAIAssistantGuideReferenceForSessionWithID gives durable GUI queue
+// entries exactly-once steering semantics across transient lost RPC responses.
+func (a *App) InjectAIAssistantGuideReferenceForSessionWithID(text string, userID string, launchID string, expectedRequestID string) (bool, error) {
 	a.ensureInteractionInfra()
 	hubClient := a.ensureHubClient()
 	if hubClient == nil {
@@ -2656,7 +2662,26 @@ func (a *App) InjectAIAssistantGuideReferenceForSession(text string, userID stri
 	if targetUserID == "" {
 		targetUserID = activeAIAssistantLoopUserID(handler)
 	}
-	return handler.InjectGuideReference(targetUserID, text), nil
+	return handler.InjectGuideReferenceWithID(targetUserID, text, launchID, expectedRequestID), nil
+}
+
+// HasAIAssistantGuideReferenceForSessionWithID checks whether an identical
+// durable guide launch was accepted, without injecting or requesting replan.
+func (a *App) HasAIAssistantGuideReferenceForSessionWithID(text string, userID string, launchID string, expectedRequestID string) (bool, error) {
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return false, fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	targetUserID, err := normalizeAIAssistantSessionUserID(userID)
+	if err != nil {
+		return false, err
+	}
+	if targetUserID == "" {
+		targetUserID = activeAIAssistantLoopUserID(handler)
+	}
+	return handler.HasAcceptedGuideReference(targetUserID, text, launchID, expectedRequestID), nil
 }
 
 func normalizeAIAssistantSessionUserID(userID string) (string, error) {

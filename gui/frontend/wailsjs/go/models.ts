@@ -212,6 +212,25 @@ export namespace main {
 	    }
 	}
 
+	export class VirtualRepositoryCodingTaskLaunch {
+	    project_path: string;
+	    task_title: string;
+	    agent_mode: string;
+	    remote_host?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new VirtualRepositoryCodingTaskLaunch(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.project_path = source["project_path"];
+	        this.task_title = source["task_title"];
+	        this.agent_mode = source["agent_mode"];
+	        this.remote_host = source["remote_host"];
+	    }
+	}
+
 	export class ProjectSearchResult {
 	    id: string;
 	    name: string;

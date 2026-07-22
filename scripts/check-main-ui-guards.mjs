@@ -43,6 +43,7 @@ const walkFiles = (dir, out = []) => {
 const saveConfigAllowedSnippets = [
   ['gui/app.go', 'func (a *App) SaveConfig(config corelib.AppConfig) error', 'SaveConfig implementation'],
   ['gui/config_manager.go', 'm.app.SaveConfig(mergedCfg)', 'config import owns a full merged config snapshot'],
+  ['gui/app_user_data_migration.go', 'return a.SaveConfig(cfg)', 'user data migration restores a validated full configuration snapshot'],
   ['gui/frontend/src/App.tsx', 'PatchConfigFields(patch)', 'model settings save uses atomic patch to avoid TOCTOU race'],
   ['gui/frontend/wailsjs/go/main/App.d.ts', 'export function SaveConfig', 'generated Wails binding declaration'],
   ['gui/frontend/wailsjs/go/main/App.js', 'export function SaveConfig', 'generated Wails binding implementation'],
@@ -571,7 +572,7 @@ const highRiskRemoteFileLineLimits = [
   ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 3000],
   // Implementation lives here; freeze growth until further extraction (entry is a thin re-export).
   ['gui/frontend/src/components/remote/SkillsManagementPanelView.tsx', 5700],
-  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1880],
+  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 2400],
   ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1290],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],

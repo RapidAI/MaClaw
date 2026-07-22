@@ -78,9 +78,25 @@ func UpdateRegistrationAuthConfigHandler(system store.SystemSettingsRepository) 
 	}
 }
 
-func PublicRegistrationAuthConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+func PublicRegistrationAuthConfigHandler(system store.SystemSettingsRepository, resolvers ...tenantResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantIDFromClientHint(r))
+		var resolver tenantResolver
+		if len(resolvers) > 0 {
+			resolver = resolvers[0]
+		}
+		tenantID := tenantIDFromClientHint(r)
+		if email := strings.TrimSpace(r.URL.Query().Get("email")); email != "" && resolver != nil {
+			if resolved, found, ambiguous, resolveErr := resolver.ResolveTenantByEmail(r.Context(), email); resolveErr != nil {
+				writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_TENANT_LOOKUP_FAILED", resolveErr.Error())
+				return
+			} else if ambiguous {
+				writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", "email is associated with multiple tenants; tenant_id is required")
+				return
+			} else if found && strings.TrimSpace(resolved) != "" {
+				tenantID = strings.TrimSpace(resolved)
+			}
+		}
+		cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
 			return
@@ -90,6 +106,7 @@ func PublicRegistrationAuthConfigHandler(system store.SystemSettingsRepository) 
 			"code_ttl_minutes":   cfg.CodeTTLMinutes,
 			"code_length":        cfg.CodeLength,
 			"daily_sms_limit":    cfg.DailySMSLimit,
+			"tenant_id":          tenantID,
 			"provider":           cfg.Provider,
 			"aliyun_sms_buy_url": cfg.AliyunSMSBuyURL,
 		})
@@ -145,7 +162,7 @@ func normalizeRegistrationAuthConfig(cfg RegistrationAuthConfig) RegistrationAut
 	if cfg.CodeLength <= 0 {
 		cfg.CodeLength = registrationAuthDefaultCodeLength
 	}
-	if cfg.DailySMSLimit <= 0 {
+	if cfg.DailySMSLimit == 0 {
 		cfg.DailySMSLimit = registrationAuthDefaultDailyLimit
 	}
 	cfg.AliyunSMSBuyURL = registrationAuthAliyunSMSBuyURL

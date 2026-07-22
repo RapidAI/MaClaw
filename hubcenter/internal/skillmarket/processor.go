@@ -172,6 +172,20 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	fingerprint := sub.Email + ":" + meta.Name
 	versionNum := 1
 	var prevSkillID string
+	isUpgrade := false
+	if p.versionManager != nil {
+		resolution, err := p.versionManager.ResolveSubmission(ctx, fingerprint)
+		if err != nil {
+			log.Printf("[skillmarket] version resolve error: %v", err)
+		} else {
+			versionNum = resolution.NextVersion
+			prevSkillID = resolution.PrevSkillID
+			isUpgrade = resolution.IsUpgrade
+			if isUpgrade {
+				log.Printf("[skillmarket] version upgrade: %s v%d (prev: %s)", meta.Name, versionNum, prevSkillID)
+			}
+		}
+	}
 	skillID := ""
 	publisherSkillID := "" // new format: publisher.skill-name (used for ownership binding)
 
@@ -228,11 +242,15 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 			log.Printf("[skillmarket] skill_id %s ownership verified for user %s", publisherSkillID, sub.UserID)
 		}
 
-		// Find existing internal UUID for this skill_id (for update scenarios)
-		existingBySkillID := p.skillStore.FindBySkillID(publisherSkillID)
-		if existingBySkillID != nil {
-			skillID = existingBySkillID.ID
-			log.Printf("[skillmarket] reuse internal ID %s for skill_id %s", skillID, publisherSkillID)
+		// Every upgrade needs its own immutable revision record. Reusing the
+		// internal UUID would overwrite the previous JSON file and leave the
+		// catalog with nothing to show in version history.
+		if !isUpgrade {
+			existingBySkillID := p.skillStore.FindBySkillID(publisherSkillID)
+			if existingBySkillID != nil {
+				skillID = existingBySkillID.ID
+				log.Printf("[skillmarket] reuse internal ID %s for skill_id %s", skillID, publisherSkillID)
+			}
 		}
 	}
 
@@ -244,7 +262,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 			meta.ID = ""
 		}
 	}
-	if meta.ID != "" && skillID == "" {
+	if meta.ID != "" && skillID == "" && !isUpgrade {
 		existing := p.skillStore.GetByID(meta.ID)
 		if existing != nil {
 			if existing.Fingerprint == fingerprint {
@@ -266,19 +284,6 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	if skillID == "" {
 		skillID = uuid.New().String()
 		log.Printf("[skillmarket] generated new skill ID %s", skillID)
-	}
-
-	if p.versionManager != nil {
-		resolution, err := p.versionManager.ResolveSubmission(ctx, fingerprint)
-		if err != nil {
-			log.Printf("[skillmarket] version resolve error: %v", err)
-		} else {
-			versionNum = resolution.NextVersion
-			prevSkillID = resolution.PrevSkillID
-			if resolution.IsUpgrade {
-				log.Printf("[skillmarket] version upgrade: %s v%d (prev: %s)", meta.Name, versionNum, prevSkillID)
-			}
-		}
 	}
 
 	if len(securityLabels) > 0 {

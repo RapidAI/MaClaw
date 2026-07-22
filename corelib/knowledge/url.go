@@ -80,19 +80,9 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 	}
 	_ = s.BackfillNodeEmbeddingsForSources(ctx, []string{source.ID})
 	_, _ = s.refreshSourceTopicLinksFast(ctx, source.ID, importTopicLinkLimit, nil)
-	sources := []Source{source}
-	if err := s.hydrateSourceCounts(ctx, sources); err != nil {
-		return Source{}, err
-	}
-	if err := s.hydrateSourceLabels(ctx, sources); err != nil {
-		return Source{}, err
-	}
-	if isDuplicate {
-		sources[0].SaveStatus = SaveStatusDuplicate
-	} else {
-		sources[0].SaveStatus = SaveStatusCreated
-	}
-	return sources[0], nil
+	// Commit is the success boundary. Post-commit hydration is best-effort so
+	// context expiry cannot report a persisted source as failed/retryable.
+	return s.finalizeCommittedSource(ctx, source, isDuplicate), nil
 }
 
 func (s *SQLiteStore) SaveURLs(ctx context.Context, req URLBatchSaveRequest) URLBatchSaveResult {

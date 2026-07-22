@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -29,6 +31,7 @@ const (
 	migrationMinUploadChunkSize        = int64(256 * 1024)
 	migrationMaxUploadChunkSize        = int64(8 * 1024 * 1024)
 	migrationMaxUploadChunks           = 8192
+	migrationMaxCreateBodyBytes        = int64(18 << 20)
 	migrationClaimLease                = 2 * time.Hour
 )
 
@@ -76,6 +79,37 @@ type migrationExportRow struct {
 	UpdatedAt          string
 	ImportedAt         sql.NullString
 	DeletedAt          sql.NullString
+}
+
+type migrationPublicManifest struct {
+	Version        string                              `json:"version"`
+	CreatedAt      time.Time                           `json:"created_at"`
+	TenantID       string                              `json:"tenant_id,omitempty"`
+	TenantName     string                              `json:"tenant_name,omitempty"`
+	UserID         string                              `json:"user_id,omitempty"`
+	Email          string                              `json:"email,omitempty"`
+	MachineID      string                              `json:"machine_id,omitempty"`
+	MachineName    string                              `json:"machine_name,omitempty"`
+	MemoryEntries  int                                 `json:"memory_entries"`
+	KnowledgeBytes int64                               `json:"knowledge_bytes"`
+	AssetBytes     int64                               `json:"asset_bytes"`
+	ConfigSchema   string                              `json:"config_schema_version,omitempty"`
+	ConfigSections int                                 `json:"config_section_count,omitempty"`
+	SecretCount    int                                 `json:"secret_count,omitempty"`
+	ExcludedConfig []string                            `json:"excluded_config_paths,omitempty"`
+	Files          []migrationPublicManifestFileDigest `json:"files"`
+	Meta           *migrationPublicManifestMeta        `json:"meta,omitempty"`
+}
+
+type migrationPublicManifestFileDigest struct {
+	Path   string `json:"path"`
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
+
+type migrationPublicManifestMeta struct {
+	Host     string   `json:"host,omitempty"`
+	Contains []string `json:"contains,omitempty"`
 }
 
 func NewMigrationAPI(db *sql.DB, rootDir string, identity *auth.IdentityService, machines migrationMachineLister, system store.SystemSettingsRepository) *migrationAPI {
@@ -173,6 +207,7 @@ func (api *migrationAPI) handleInstances(w http.ResponseWriter, r *http.Request)
 			item["export_updated_at"] = current.UpdatedAt
 			item["export_size"] = current.CompressedSize
 			item["export_claimed_by_machine_id"] = current.ClaimedByMachineID
+			item["export_manifest"] = json.RawMessage(firstMigrationString(current.ManifestJSON, "{}"))
 		} else {
 			item["has_export"] = false
 		}
@@ -203,7 +238,18 @@ func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Reque
 		ChunkCount      int             `json:"chunk_count"`
 		Manifest        json.RawMessage `json:"manifest"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, migrationMaxCreateBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	if err := validateMigrationJSONStructure(body); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 		return
 	}
@@ -227,6 +273,14 @@ func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Reque
 	manifest := strings.TrimSpace(string(req.Manifest))
 	if manifest == "" {
 		manifest = "{}"
+	}
+	if err := validateMigrationPublicManifest(req.Manifest); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_MANIFEST", err.Error())
+		return
+	}
+	if err := validateMigrationPublicManifestIdentity(req.Manifest, p); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_MANIFEST_IDENTITY", err.Error())
+		return
 	}
 	now := time.Now().UTC()
 	exportID := newMigrationID("mig")
@@ -747,6 +801,173 @@ func validSHA256(v string) bool {
 	}
 	_, err := hex.DecodeString(v)
 	return err == nil
+}
+
+func validateMigrationPublicManifest(raw json.RawMessage) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	if err := validateMigrationJSONStructure(raw); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var manifest migrationPublicManifest
+	if err := decoder.Decode(&manifest); err != nil {
+		return fmt.Errorf("manifest must match the public migration schema")
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return fmt.Errorf("manifest must contain one JSON object")
+	}
+	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
+		return fmt.Errorf("manifest contains invalid counts")
+	}
+	seen := make(map[string]struct{}, len(manifest.Files))
+	for _, file := range manifest.Files {
+		clean, key, err := canonicalMigrationManifestPath(file.Path)
+		if err != nil || file.Bytes < 0 || !validSHA256(file.SHA256) {
+			return fmt.Errorf("manifest contains invalid file metadata")
+		}
+		if key == "manifest.json" {
+			return fmt.Errorf("manifest must not list itself")
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("manifest contains duplicate file path: %s", clean)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+func validateMigrationPublicManifestIdentity(raw json.RawMessage, principal *migrationPrincipal) error {
+	if len(bytes.TrimSpace(raw)) == 0 || principal == nil {
+		return nil
+	}
+	var manifest migrationPublicManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return fmt.Errorf("manifest identity is invalid")
+	}
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "tenant_id", got: strings.TrimSpace(manifest.TenantID), want: store.NormalizeTenantID(principal.TenantID)},
+		{name: "user_id", got: strings.TrimSpace(manifest.UserID), want: strings.TrimSpace(principal.UserID)},
+		{name: "machine_id", got: strings.TrimSpace(manifest.MachineID), want: strings.TrimSpace(principal.MachineID)},
+	}
+	for _, check := range checks {
+		// Older packages may omit identity metadata. When present, it must be
+		// bound to the authenticated uploader rather than trusted client input.
+		got := check.got
+		if check.name == "tenant_id" && got != "" {
+			got = store.NormalizeTenantID(got)
+		}
+		if got != "" && got != check.want {
+			return fmt.Errorf("manifest %s does not match authenticated source", check.name)
+		}
+	}
+	return nil
+}
+
+func validateMigrationJSONStructure(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := walkMigrationJSONValue(decoder, 0); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("manifest must contain one JSON object")
+	}
+	return nil
+}
+
+func walkMigrationJSONValue(decoder *json.Decoder, depth int) error {
+	if depth > 128 {
+		return fmt.Errorf("manifest JSON nesting exceeds 128 levels")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("manifest must contain valid JSON")
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return fmt.Errorf("manifest must contain valid JSON")
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("manifest must contain valid JSON")
+			}
+			identity := strings.ToLower(key)
+			if _, exists := seen[identity]; exists {
+				return fmt.Errorf("manifest contains duplicate field %q", key)
+			}
+			seen[identity] = struct{}{}
+			if err := walkMigrationJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkMigrationJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("manifest must contain valid JSON")
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("manifest must contain valid JSON")
+	}
+	want := json.Delim('}')
+	if delim == '[' {
+		want = ']'
+	}
+	if closing != want {
+		return fmt.Errorf("manifest must contain valid JSON")
+	}
+	return nil
+}
+
+func canonicalMigrationManifestPath(name string) (string, string, error) {
+	if name == "" || strings.TrimSpace(name) != name || strings.Contains(name, "\\") || strings.ContainsRune(name, 0) || strings.HasPrefix(name, "/") {
+		return "", "", fmt.Errorf("path must be canonical and relative")
+	}
+	clean := pathpkg.Clean(name)
+	if clean == "." || clean != name || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", "", fmt.Errorf("path must be canonical and relative")
+	}
+	if !portableMigrationManifestPathSegments(clean) {
+		return "", "", fmt.Errorf("path contains a segment unsupported on Windows")
+	}
+	return clean, strings.ToLower(clean), nil
+}
+
+func portableMigrationManifestPathSegments(name string) bool {
+	for _, segment := range strings.Split(name, "/") {
+		if segment == "" || strings.Contains(segment, ":") || strings.HasSuffix(segment, ".") || strings.HasSuffix(segment, " ") {
+			return false
+		}
+		for _, r := range segment {
+			if r < 0x20 {
+				return false
+			}
+		}
+		base := strings.ToUpper(strings.SplitN(segment, ".", 2)[0])
+		if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+			(len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func migrationExpectedChunkSize(row *migrationExportRow, idx int) int64 {

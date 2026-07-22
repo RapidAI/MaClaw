@@ -37,6 +37,7 @@ type RemoteActivationResult struct {
 
 type RemoteRegistrationAuthResult struct {
 	Method         string `json:"method"`
+	TenantID       string `json:"tenant_id,omitempty"`
 	CodeTTLMinutes int    `json:"code_ttl_minutes,omitempty"`
 	CodeLength     int    `json:"code_length,omitempty"`
 	Provider       string `json:"provider,omitempty"`
@@ -64,18 +65,51 @@ type RemoteSMSSendResult struct {
 	Message           string `json:"message,omitempty"`
 }
 
+func (a *App) SendRemoteRegistrationEmail(hubURL string, email string, tenantID string) (RemoteRegistrationContactResult, error) {
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	email = strings.TrimSpace(strings.ToLower(email))
+	if hubURL == "" {
+		return RemoteRegistrationContactResult{}, fmt.Errorf("hub URL is required")
+	}
+	if email == "" || !strings.Contains(email, "@") {
+		return RemoteRegistrationContactResult{}, fmt.Errorf("INVALID_EMAIL: valid email is required")
+	}
+	payload := map[string]string{"email": email}
+	if strings.TrimSpace(tenantID) != "" {
+		payload["tenant_id"] = strings.TrimSpace(tenantID)
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	resp, err := hubHTTPClient.Post(hubURL+"/api/enroll/email/send-code", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	defer resp.Body.Close()
+	var result RemoteRegistrationContactResult
+	if err := remote.DecodeHTTPJSONResponse(resp, &result, "send registration email code"); err != nil {
+		return RemoteRegistrationContactResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "send email code failed: "+resp.Status)
+	}
+	return result, nil
+}
+
 type RemoteRegistrationContactResult struct {
-	OK                bool   `json:"ok"`
-	Kind              string `json:"kind,omitempty"`
-	TenantID          string `json:"tenant_id,omitempty"`
-	Email             string `json:"email,omitempty"`
-	PhoneNumber       string `json:"phone_number,omitempty"`
-	ExpiresMin        int    `json:"expires_min,omitempty"`
-	CodeLength        int    `json:"code_length,omitempty"`
-	Purpose           string `json:"purpose,omitempty"`
-	DailySMSRemaining int    `json:"daily_sms_remaining,omitempty"`
-	Code              string `json:"code,omitempty"`
-	Message           string `json:"message,omitempty"`
+	OK                    bool   `json:"ok"`
+	Kind                  string `json:"kind,omitempty"`
+	TenantID              string `json:"tenant_id,omitempty"`
+	Email                 string `json:"email,omitempty"`
+	PhoneNumber           string `json:"phone_number,omitempty"`
+	ExpiresMin            int    `json:"expires_min,omitempty"`
+	CodeLength            int    `json:"code_length,omitempty"`
+	Purpose               string `json:"purpose,omitempty"`
+	DailySMSRemaining     int    `json:"daily_sms_remaining,omitempty"`
+	ResendCooldownSeconds int    `json:"resend_cooldown_seconds,omitempty"`
+	Code                  string `json:"code,omitempty"`
+	Message               string `json:"message,omitempty"`
 }
 
 type RemoteRegistrationProfileResult struct {
@@ -311,6 +345,10 @@ func remoteProbeIdentityPayload(identity string) map[string]string {
 }
 
 func (a *App) GetRemoteRegistrationAuth(hubURL string, tenantID string) (RemoteRegistrationAuthResult, error) {
+	return getRemoteRegistrationAuth(hubURL, tenantID, "")
+}
+
+func getRemoteRegistrationAuth(hubURL string, tenantID string, identity string) (RemoteRegistrationAuthResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
 		return RemoteRegistrationAuthResult{Method: "email", CodeTTLMinutes: 5, CodeLength: defaultRemoteRegistrationSMSCodeLength}, nil
@@ -325,11 +363,32 @@ func (a *App) GetRemoteRegistrationAuth(hubURL string, tenantID string) (RemoteR
 			authURL = parsed.String()
 		}
 	}
+	if strings.Contains(strings.TrimSpace(identity), "@") {
+		parsed, err := url.Parse(authURL)
+		if err == nil {
+			q := parsed.Query()
+			q.Set("email", strings.TrimSpace(identity))
+			parsed.RawQuery = q.Encode()
+			authURL = parsed.String()
+		}
+	}
 	resp, err := hubHTTPClient.Get(authURL)
 	if err != nil {
 		return RemoteRegistrationAuthResult{}, fmt.Errorf("load registration auth config: %w", err)
 	}
 	defer resp.Body.Close()
+	// Older Hubs predate the public registration-auth endpoint. Their
+	// registration flow is email-based, so retain a usable, safe default rather
+	// than blocking email sign-in solely because the optional capability endpoint
+	// is unavailable.
+	if resp.StatusCode == http.StatusNotFound {
+		return RemoteRegistrationAuthResult{
+			Method:         "email",
+			TenantID:       strings.TrimSpace(tenantID),
+			CodeTTLMinutes: 5,
+			CodeLength:     defaultRemoteRegistrationSMSCodeLength,
+		}, nil
+	}
 	var result RemoteRegistrationAuthResult
 	if err := remote.DecodeHTTPJSONResponse(resp, &result, "registration auth config"); err != nil {
 		return RemoteRegistrationAuthResult{}, err
@@ -340,16 +399,29 @@ func (a *App) GetRemoteRegistrationAuth(hubURL string, tenantID string) (RemoteR
 	if strings.TrimSpace(result.Method) == "" {
 		return RemoteRegistrationAuthResult{}, fmt.Errorf("registration auth config missing method")
 	}
+	result.Method = strings.ToLower(strings.TrimSpace(result.Method))
+	if result.Method != "email" && result.Method != "phone" {
+		return RemoteRegistrationAuthResult{}, fmt.Errorf("registration auth config has unsupported method %q", result.Method)
+	}
+	result.TenantID = strings.TrimSpace(result.TenantID)
 	if result.CodeTTLMinutes <= 0 {
 		result.CodeTTLMinutes = 5
 	}
-	if result.CodeLength <= 0 {
+	if result.CodeLength < 4 || result.CodeLength > 8 {
 		result.CodeLength = defaultRemoteRegistrationSMSCodeLength
 	}
 	return result, nil
 }
 
 func (a *App) ResolveRemoteRegistrationTarget(identity string) (RemoteRegistrationTargetResult, error) {
+	return a.resolveRemoteRegistrationTarget(identity, "")
+}
+
+func (a *App) ResolveRemoteRegistrationTargetWithInvitation(identity string, invitationCode string) (RemoteRegistrationTargetResult, error) {
+	return a.resolveRemoteRegistrationTarget(identity, invitationCode)
+}
+
+func (a *App) resolveRemoteRegistrationTarget(identity string, invitationCode string) (RemoteRegistrationTargetResult, error) {
 	identity = strings.TrimSpace(identity)
 	if identity == "" {
 		return RemoteRegistrationTargetResult{}, fmt.Errorf("user identity is required")
@@ -360,7 +432,7 @@ func (a *App) ResolveRemoteRegistrationTarget(identity string) (RemoteRegistrati
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	result, _, _, err := remote.NewEnrollmentClient().ResolveHubs(ctx, identity, "", cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
+	result, _, _, err := remote.NewEnrollmentClient().ResolveHubs(ctx, identity, strings.TrimSpace(invitationCode), cfg.RemoteHubCenterURL, cfg.RemoteHubCenterURLs)
 	if err != nil {
 		return RemoteRegistrationTargetResult{}, err
 	}
@@ -377,7 +449,7 @@ func (a *App) ResolveRemoteRegistrationTarget(identity string) (RemoteRegistrati
 }
 
 func (a *App) resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, tenantID string) (RemoteRegistrationTargetResult, error) {
-	auth, err := a.GetRemoteRegistrationAuth(hubURL, tenantID)
+	auth, err := getRemoteRegistrationAuth(hubURL, tenantID, identity)
 	if err != nil {
 		return RemoteRegistrationTargetResult{}, err
 	}
@@ -385,7 +457,7 @@ func (a *App) resolveRemoteRegistrationTargetFromHub(identity, hubURL, hubID, te
 		Identity:       identity,
 		HubURL:         strings.TrimRight(strings.TrimSpace(hubURL), "/"),
 		HubID:          hubID,
-		TenantID:       tenantID,
+		TenantID:       firstNonEmpty(auth.TenantID, tenantID),
 		Method:         auth.Method,
 		CodeTTLMinutes: auth.CodeTTLMinutes,
 		CodeLength:     auth.CodeLength,
@@ -719,6 +791,18 @@ func (a *App) autoRegisterOnStartup(cfg corelib.AppConfig) {
 }
 
 func (a *App) ActivateRemote(email string, invitationCode string, mobile string) (RemoteActivationResult, error) {
+	return a.activateRemoteEmail(email, "", invitationCode, mobile, "", "", "")
+}
+
+func (a *App) ActivateRemoteEmail(hubURL string, email string, verifyCode string, invitationCode string, tenantID string, hubID string) (RemoteActivationResult, error) {
+	verifyCode = strings.TrimSpace(verifyCode)
+	if verifyCode == "" {
+		return RemoteActivationResult{}, fmt.Errorf("verification code is required")
+	}
+	return a.activateRemoteEmail(email, verifyCode, invitationCode, "", hubURL, tenantID, hubID)
+}
+
+func (a *App) activateRemoteEmail(email string, verifyCode string, invitationCode string, mobile string, directHubURL string, tenantID string, hubID string) (RemoteActivationResult, error) {
 	start := time.Now()
 	cfgLoadStart := time.Now()
 	cfg, err := a.LoadConfig()
@@ -735,24 +819,35 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	// Build enrollment config from app config.
 	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
 	enrollCfg := remote.EnrollConfig{
-		Email:          email,
-		InvitationCode: invitationCode,
-		Mobile:         mobile,
-		ClientID:       cfg.RemoteClientID,
-		HubURL:         strings.TrimSpace(cfg.RemoteHubURL),
-		HubCenterURL:   strings.TrimSpace(cfg.RemoteHubCenterURL),
-		HubCenterURLs:  cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs),
-		MachineName:    profile.Name,
-		Platform:       profile.Platform,
-		Hostname:       profile.Hostname,
-		Arch:           profile.Arch,
-		AppVersion:     profile.AppVersion,
-		HeartbeatSec:   profile.HeartbeatSec,
+		Email:            email,
+		VerificationCode: verifyCode,
+		InvitationCode:   invitationCode,
+		Mobile:           mobile,
+		ClientID:         cfg.RemoteClientID,
+		HubURL:           strings.TrimSpace(cfg.RemoteHubURL),
+		HubCenterURL:     strings.TrimSpace(cfg.RemoteHubCenterURL),
+		HubCenterURLs:    cfg.HubCenterBaseURLs(defaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs),
+		MachineName:      profile.Name,
+		Platform:         profile.Platform,
+		Hostname:         profile.Hostname,
+		Arch:             profile.Arch,
+		AppVersion:       profile.AppVersion,
+		HeartbeatSec:     profile.HeartbeatSec,
+		TenantID:         strings.TrimSpace(tenantID),
+		HubID:            strings.TrimSpace(hubID),
 	}
 	// Activation must dynamically confirm the HubCenter -> Hub routing instead
 	// of reusing a cached Hub URL. The HubCenter shown in About should be the
 	// node that actually resolved this registration.
-	enrollCfg.HubURL = ""
+	if strings.TrimSpace(verifyCode) != "" {
+		enrollCfg.HubURL = strings.TrimRight(strings.TrimSpace(directHubURL), "/")
+		enrollCfg.DirectHub = true
+		if enrollCfg.HubURL == "" {
+			return RemoteActivationResult{}, fmt.Errorf("hub URL is required")
+		}
+	} else {
+		enrollCfg.HubURL = ""
+	}
 	if remote.IsLoopbackURL(enrollCfg.HubCenterURL) && hasPublicHubCenterURL(enrollCfg.HubCenterURLs) {
 		enrollCfg.HubCenterURL = ""
 	}

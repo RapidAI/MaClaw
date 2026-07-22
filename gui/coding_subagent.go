@@ -159,6 +159,11 @@ type CodingSubAgentResult struct {
 	QualityStatus     codingSubAgentQualityStatus
 	QualitySummary    string
 	QualityIssueCount int
+
+	// Localization records structured root-cause evidence for bug-fix tasks.
+	// It is nil for non-debugging work and for legacy callers that did not need
+	// the bug-localization workflow.
+	Localization *CodingSubAgentLocalizationEvidence
 }
 
 // CodingSubAgentCommandResult is a compact audit record for a bash command.
@@ -172,12 +177,19 @@ type CodingSubAgentCommandResult struct {
 
 // CodingSubAgentSearchResult is a compact audit record for code exploration.
 type CodingSubAgentSearchResult struct {
-	Tool      string
-	Query     string
-	Path      string
-	Succeeded bool
-	Summary   string
-	seq       uint64
+	Tool             string
+	Query            string
+	Path             string
+	Succeeded        bool
+	Summary          string
+	FetchOffset      int
+	FetchNextOffset  int
+	FetchTotalChars  int
+	FetchHasMore     bool
+	FetchRangeKnown  bool
+	FetchAuditKnown  bool
+	FetchResolvedURL string
+	seq              uint64
 }
 
 // CodingSubAgentGuardrailViolation is a compact audit record for blocked tool use.
@@ -306,6 +318,7 @@ func failedCodingSubAgentStartResult(errMsg string) *CodingSubAgentResult {
 		QualityStatus:     codingSubAgentQualityFailed,
 		QualitySummary:    errMsg,
 		QualityIssueCount: 1,
+		Localization:      nil,
 	}
 	result.Summary = appendSubAgentQualityReportSummary(result.Summary, result)
 	return result
@@ -528,7 +541,11 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq))
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationEvidence(modelSummary, allCommandsRun))
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary, allCommandsRun))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeLocalizationQuality(task.Title+"\n"+task.Description, existingFilesModified, cb.localization.snapshot(), allSearchesRun))
 		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
+	}
+	if status == TaskExecPassed {
+		s.persistLocalizationExperience(task, cb.localization.snapshot(), allCommandsRun)
 	}
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
@@ -578,6 +595,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		QualityStatus:       qualityStatus,
 		QualitySummary:      qualitySummary,
 		QualityIssueCount:   qualityIssueCount,
+		Localization:        cb.localization.snapshot(),
 	}
 }
 
@@ -670,6 +688,7 @@ type codingSubAgentCallbacks struct {
 	searchesRun    []CodingSubAgentSearchResult
 	guardrails     []CodingSubAgentGuardrailViolation
 	dynamicTools   []CodingSubAgentDynamicToolResult
+	localization   codingSubAgentLocalizationState
 	eventSeq       uint64
 	firstEditSeq   uint64
 	lastEditSeq    uint64
@@ -908,6 +927,7 @@ func (c *codingSubAgentCallbacks) dynamicSelectionText() string {
 func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
 	if c.cachedTools == nil {
 		tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
+		tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition())
 
 		// Full workbench extras (web research / clock) — always on for full env.
 		if c.subagent != nil && c.subagent.isFullEnvironment() {
@@ -916,6 +936,15 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 		// Nested explorer/reviewer still need research helpers even without full env.
 		if c.subagent != nil && !c.subagent.isFullEnvironment() && c.subagent.nestDepth > 0 {
 			tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+		}
+		// A lean local CodingSubAgent normally omits network helpers. Bug tasks keep
+		// the research pair available even when the original report looks purely
+		// local: code navigation may discover a third-party/version-sensitive cause
+		// after this tool list has been cached. Without this, the localization gate
+		// could require research that the current agent can no longer perform.
+		if c.subagent != nil && !c.subagent.isFullEnvironment() && c.subagent.nestDepth == 0 &&
+			(codingTaskNeedsLocalization(c.dynamicSelectionText()) || codingTaskNeedsExternalResearch(c.dynamicSelectionText())) {
+			tools = append(tools, buildCodingExternalResearchToolDefinitions()...)
 		}
 
 		inspectionRole := c.subagent != nil && c.subagent.nestDepth > 0 &&
@@ -1219,6 +1248,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
+			if msg := c.requireLocalizationBeforeExistingBugEdit(p, !codingFileExists(p)); msg != "" {
+				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireProjectWriteScope(p); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -1249,6 +1281,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
+			if msg := c.requireLocalizationBeforeExistingBugEdit(p, false); msg != "" {
+				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireProjectWriteScope(p); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -1270,6 +1305,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
+			if msg := c.requireLocalizationBeforeExistingBugEdit(p, false); msg != "" {
+				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
+			}
 			if msg := c.requireProjectWriteScope(p); msg != "" {
 				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
@@ -1342,6 +1380,14 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			c.trackGitDiff(result.Text)
 		}
 		return result
+	case codeNavigationToolName:
+		result := c.executeLocalCodeNavigation(args)
+		if result.Outcome == codingToolOutcomeSuccess {
+			c.trackSearchResult(codeNavigationToolName, args, result.Text, true)
+		}
+		return result
+	case reportLocalizationToolName:
+		return c.executeReportLocalization(args)
 	case "manage_skill":
 		return c.executeManageSkill(args)
 	case "call_mcp_tool":
@@ -1352,14 +1398,24 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		return c.executeKnowledgeSearch(argsJSON)
 	case "web_search":
 		if h == nil {
-			return codingToolExecutionResult{Text: "web_search unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
+			text := "web_search unavailable: host handler missing"
+			c.trackSearchResult("web_search", args, text, false)
+			return codingToolExecutionResult{Text: text, Outcome: codingToolOutcomeFailed}
 		}
-		return codingToolExecutionResult{Text: h.toolWebSearch(args), Outcome: codingToolOutcomeSuccess}
+		text := h.toolWebSearch(args)
+		succeeded := !codingWebResearchResultLooksFailed(text)
+		c.trackSearchResult("web_search", args, text, succeeded)
+		return codingToolExecutionResult{Text: text, Outcome: codingOutcomeFromSuccess(succeeded)}
 	case "web_fetch":
 		if h == nil {
-			return codingToolExecutionResult{Text: "web_fetch unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
+			text := "web_fetch unavailable: host handler missing"
+			c.trackSearchResult("web_fetch", args, text, false)
+			return codingToolExecutionResult{Text: text, Outcome: codingToolOutcomeFailed}
 		}
-		return codingToolExecutionResult{Text: h.toolWebFetch(args), Outcome: codingToolOutcomeSuccess}
+		text := h.toolWebFetch(args)
+		succeeded := !codingWebFetchResultLooksFailed(text)
+		c.trackSearchResult("web_fetch", args, text, succeeded)
+		return codingToolExecutionResult{Text: text, Outcome: codingOutcomeFromSuccess(succeeded)}
 	case "download_file":
 		if h == nil {
 			return codingToolExecutionResult{Text: "download_file unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
@@ -4119,18 +4175,36 @@ func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[st
 	if query == "" {
 		query, _ = args["query"].(string)
 	}
+	if query == "" && strings.EqualFold(strings.TrimSpace(toolName), "web_fetch") {
+		query, _ = args["url"].(string)
+	}
 	path, _ := args["path"].(string)
+	fetchOffset, fetchNextOffset, fetchTotalChars, fetchHasMore, fetchRangeKnown := localizationWebFetchPagination(toolName, args, result)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	seq := c.nextEventSeqLocked()
+	summary := compactSearchResult(result)
+	if strings.EqualFold(strings.TrimSpace(toolName), "web_search") || strings.EqualFold(strings.TrimSpace(toolName), "web_fetch") {
+		summary = truncateLocalizationWebAudit(result)
+	}
 	c.searchesRun = append(c.searchesRun, CodingSubAgentSearchResult{
-		Tool:      toolName,
-		Query:     compactSubAgentSearchText(query),
-		Path:      compactSubAgentPathText(c.displayProjectPath(path)),
-		Succeeded: succeeded,
-		Summary:   compactSearchResult(result),
-		seq:       seq,
+		Tool:             toolName,
+		Query:            compactSubAgentSearchText(query),
+		Path:             compactSubAgentPathText(c.displayProjectPath(path)),
+		Succeeded:        succeeded,
+		Summary:          summary,
+		FetchOffset:      fetchOffset,
+		FetchNextOffset:  fetchNextOffset,
+		FetchTotalChars:  fetchTotalChars,
+		FetchHasMore:     fetchHasMore,
+		FetchRangeKnown:  fetchRangeKnown,
+		FetchAuditKnown:  strings.EqualFold(strings.TrimSpace(toolName), "web_fetch"),
+		FetchResolvedURL: localizationWebFetchResolvedURL(result),
+		seq:              seq,
 	})
+	if strings.EqualFold(strings.TrimSpace(toolName), "web_search") || strings.EqualFold(strings.TrimSpace(toolName), "web_fetch") {
+		log.Printf("[coding-research] %s", localizationResearchToolDebugSummary(c.searchesRun[len(c.searchesRun)-1]))
+	}
 	if succeeded && c.firstSearchSeq == 0 && subAgentSearchProvidesExplorationEvidence(c.searchesRun[len(c.searchesRun)-1]) {
 		c.firstSearchSeq = seq
 	}
@@ -5522,6 +5596,14 @@ func subAgentCommandIsSoftInspectionProbeFailure(cmd CodingSubAgentCommandResult
 	}
 	summary := strings.ToLower(strings.Join(strings.Fields(cmd.Summary), " "))
 
+	// `rg`, `grep`, and `git grep` use exit code 1 for the ordinary negative
+	// result "no matches".  This is inspection evidence, not a failed build or
+	// task action.  Keep exit 2 (bad pattern/I/O), 127 (tool missing), permission
+	// errors, and compounds containing non-inspection commands hard.
+	if subAgentReadOnlySearchNoMatchFailure(cmd.Command, cmd.Summary) {
+		return true
+	}
+
 	// (1) Explicit path existence probes with a missing-path message.
 	if subAgentPathExistenceProbeCommand(cmd.Command) && subAgentSummaryHasMissingPathMarker(summary) {
 		return true
@@ -5572,6 +5654,95 @@ func subAgentCommandIsSoftInspectionProbeFailure(cmd CodingSubAgentCommandResult
 		return true
 	}
 	return false
+}
+
+func subAgentReadOnlySearchNoMatchFailure(command, summary string) bool {
+	if !subAgentSummaryLooksLikeSearchNoMatch(summary) {
+		return false
+	}
+	segments := shellCommandSegments(command)
+	if len(segments) == 0 {
+		return false
+	}
+	hasSearch := false
+	for _, segment := range segments {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		cmd := commandNameBase(segment[0])
+		switch cmd {
+		case "rg", "ripgrep", "grep":
+			hasSearch = true
+		case "git":
+			if len(segment) < 2 || normalizeShellExecutableToken(segment[1]) != "grep" {
+				return false
+			}
+			hasSearch = true
+		case "cd", "pushd", "popd":
+			continue
+		default:
+			return false
+		}
+	}
+	return hasSearch
+}
+
+func subAgentSummaryLooksLikeSearchNoMatch(summary string) bool {
+	if exitCode, found := subAgentSummaryExitCode(summary); found {
+		// rg/grep/git-grep reserve 1 for a clean no-match result. An explicit
+		// operational exit code (normally 2) wins over possibly misleading text.
+		return exitCode == 1
+	}
+	summary = strings.ToLower(strings.Join(strings.Fields(summary), " "))
+	for _, phrase := range []string{
+		"no match", "no matches", "0 matches", "found 0 matches",
+		"no results", "0 results", "found 0 results",
+		"未找到匹配", "没有匹配",
+	} {
+		if strings.Contains(summary, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentSummaryExitCode(summary string) (int, bool) {
+	// Dedicated shell instrumentation is authoritative only when the marker is
+	// a standalone output line. This avoids treating command output such as
+	// `echo "EXIT: 1"` as the shell's actual status.
+	if code, found := remoteCodingParseAuthoritativeExitMarker(summary); found {
+		return code, true
+	}
+	lastCode := 0
+	found := false
+	for _, field := range strings.FieldsFunc(summary, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ';'
+	}) {
+		field = strings.ToLower(strings.TrimSpace(field))
+		value, ok := remoteCodingToolResultLineFieldValue(field, "exit_code", "exit code")
+		if !ok {
+			continue
+		}
+		if remoteCodingExitCodeValueIsZero(value) {
+			lastCode, found = 0, true
+			continue
+		}
+		if remoteCodingExitCodeValueLooksFailed(value) {
+			// Search only distinguishes the conventional no-match code (1) from
+			// every operational failure, so preserve 1 and collapse the rest.
+			digits := strings.FieldsFunc(value, func(r rune) bool {
+				return r < '0' || r > '9'
+			})
+			if len(digits) > 0 && digits[0] == "1" {
+				lastCode = 1
+			} else {
+				lastCode = 2
+			}
+			found = true
+		}
+	}
+	return lastCode, found
 }
 
 func subAgentOptionalTreeDisplayCommandMissing(command, summary string) bool {
@@ -7500,6 +7671,9 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 	unresolvedReversed := make([]CodingSubAgentDynamicToolResult, 0)
 	for i := len(tools) - 1; i >= 0; i-- {
 		tool := tools[i]
+		if subAgentDynamicToolIsSoftFailure(tool) {
+			continue
+		}
 		key := normalizeSubAgentDynamicToolForEvidence(tool)
 		if key == "" {
 			if !tool.Succeeded {
@@ -7520,6 +7694,15 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 		unresolved[len(unresolvedReversed)-1-i] = unresolvedReversed[i]
 	}
 	return unresolved
+}
+
+// Knowledge search is an optional, read-only context aid. Its backend may be
+// unavailable or simply have no indexed material; that must not invalidate
+// edits that have independent exploration, verification, and diff evidence.
+// MCP and skill failures remain hard because they may represent the requested
+// operation itself rather than an optional lookup.
+func subAgentDynamicToolIsSoftFailure(tool CodingSubAgentDynamicToolResult) bool {
+	return !tool.Succeeded && subAgentDynamicToolIsKnowledgeSearch(tool)
 }
 
 func normalizeSubAgentDynamicToolForEvidence(tool CodingSubAgentDynamicToolResult) string {
@@ -12107,7 +12290,7 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 			appendSubAgentBulletList(&b, c.prevOutputs, codingSubAgentPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
 			b.WriteString("\n")
 		}
-		return b.String()
+		return compactCodingSubAgentTaskUserMessage(b.String())
 	}
 	b.WriteString(fmt.Sprintf("请执行以下编码任务：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
 	if c.task.Description != "" {
@@ -12130,7 +12313,12 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		appendSubAgentAcceptanceCriteriaList(&b, c.task.AcceptanceCriteria, codingSubAgentAcceptanceCriteriaMax, codingSubAgentPromptBulletMaxRunes)
 		b.WriteString("\n**验收验证要求**：将最终验证命令或检查结果对应到上述验收标准；无法自动验证的标准必须说明原因，不要只笼统声称完成。\n")
 	}
-	return b.String()
+	return compactCodingSubAgentTaskUserMessage(b.String())
+}
+
+func compactCodingSubAgentTaskUserMessage(message string) string {
+	const overheadBudget = codingSubAgentTaskTitleMaxRunes + 1000
+	return truncateRunesForSubAgent(message, codingSubAgentTaskDescriptionMaxRunes+overheadBudget)
 }
 
 func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
@@ -12142,6 +12330,7 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
 	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
+	b.WriteString("5. For bug fixes, call code_navigation, reproduce or explain why not, reject a plausible alternative, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version; then submit report_localization before editing existing code.\n")
 	b.WriteString("\n**Before finalizing**:\n")
 	b.WriteString("1. After the last edit, run matching verification command(s): test/build/lint/typecheck. Do not present pre-edit verification as final verification.\n")
 	b.WriteString("2. Make the final summary match audit evidence: name actual modified/created file paths, list only verification commands you really ran after editing, map acceptance criteria when present, explain any scope expansion, and include remaining risk or say no known remaining risk.\n\n")
@@ -12522,6 +12711,7 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 		SearchesRun:    searchesRun,
 		QualityStatus:  codingSubAgentQualityPassed,
 		QualitySummary: "inspection-only nested role",
+		Localization:   cb.localization.snapshot(),
 	}
 }
 
@@ -12569,7 +12759,9 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 		b.WriteString(fmt.Sprintf("## 项目路径\n%s\n\n", projectPath))
 	}
 	b.WriteString(`## 可用工具
-- Glob / ripgrep / list_directory / read_file：定位与阅读
+- code_navigation：优先用于符号、定义、引用、调用链与候选定位
+- report_localization：提交结构化根因证据
+- Glob / ripgrep / list_directory / read_file：文本定位与阅读
 - git_diff：只读 diff/status（如可用）
 `)
 	if role == codingRoleReviewer {
@@ -12577,9 +12769,11 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 	}
 	b.WriteString(`
 ## 工作规范
-1. 先搜索再阅读关键文件
-2. 完成后给出结构化发现：关键路径、结论、风险/建议
-3. 禁止 write/edit 改文件；不要改仓库状态
+	1. 先搜索再阅读关键文件
+	2. 故障定位必须输出症状、Top 候选、根因文件/符号、因果路径、复现证据、反证/排除假设、focused test，并调用 report_localization
+	3. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误和官方文档；纯仓内问题也要在 report_localization 说明为何无需联网
+	4. 完成后给出结构化发现：关键路径、结论、外部来源、风险/建议
+	5. 禁止 write/edit 改文件；不要改仓库状态
 `)
 	if strings.TrimSpace(reqCtx) != "" {
 		b.WriteString("\n## 任务上下文\n\n")
@@ -12602,7 +12796,7 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 - 本会话支持多轮续写：用户后续消息仍在同一编程工作台中执行，可继续改码、验证、补测。
 - 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
 - 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
-- 查阅最新文档/报错时可 web_search / web_fetch；需要精确时间时用 current_datetime。
+- 外部知识判定是故障定位的必做步骤：遇到陌生概念/报错、第三方依赖/API/协议、版本或兼容性问题时，必须先 web_search 搜索精确错误与官方文档，再用 web_fetch 阅读最相关来源；不要靠记忆猜测。若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次；provider/网络/配置明确失败则不要重复空转。纯仓内逻辑问题可以不联网，但必须在 report_localization 中说明理由。
 - 子代理（Codex 风格）：复杂/可并行工作时用 spawn_coding_agent 派生子代理。
   - explorer：只读探查（搜索/阅读），返回结构化发现
   - worker：干净上下文实现/修复（不可再嵌套 spawn）
@@ -12785,6 +12979,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 ## Quality audit gates
 - Enforced hard gates: explore before existing-file edits, verify changed tasks, run git_diff, and give inspection/verification evidence for no-change tasks or project-context evidence for new files.
+	- Bug fixes: localize with code_navigation, reproduction and alternatives, make an explicit research decision, then report_localization before editing. Unknown/current/third-party facts require web_search (exact error + component/version) and authoritative sources.
 - Verification evidence must be fresh after the final edit, include real execution output, and be named in the final summary with pass/fail outcome.
 - Empty/weak evidence does not count: blank, "(无输出)", "no tests found", "no tests collected", "[no test files]", "0 tests", "0 examples", list/help/collect-only/dry-run.
 - Final summary: actual modified/created file paths, only verification commands really run/passed, map every acceptance criterion, scope expansion, remaining risk/no known remaining risk.
@@ -12986,6 +13181,8 @@ var codingSubAgentDynamicToolNames = map[string]bool{
 	"goal":                      true,
 	codingSubAgentSpawnToolName: true,
 	codingAgentTodoToolName:     true,
+	codeNavigationToolName:      true,
+	reportLocalizationToolName:  true,
 }
 
 func makeCodingSubAgentToolNameSet(names []string) map[string]bool {
@@ -13063,7 +13260,7 @@ func buildCodingFullEnvExtraToolDefinitions() []map[string]interface{} {
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        "web_search",
-				"description": "Search the web for documentation, APIs, error messages, and current library usage.",
+				"description": "Search the web for unfamiliar concepts, exact error messages, official documentation, APIs, versions, compatibility, and current library usage. For unknown/current/third-party bug facts, use this before guessing or editing; search the quoted error plus component/version.",
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -13117,6 +13314,19 @@ func buildCodingFullEnvExtraToolDefinitions() []map[string]interface{} {
 			},
 		},
 	}
+}
+
+func buildCodingExternalResearchToolDefinitions() []map[string]interface{} {
+	all := buildCodingFullEnvExtraToolDefinitions()
+	out := make([]map[string]interface{}, 0, 2)
+	for _, def := range all {
+		fn, _ := def["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if name == "web_search" || name == "web_fetch" {
+			out = append(out, def)
+		}
+	}
+	return out
 }
 
 // buildCodingGoalToolDefinition exposes persistent /goal lifecycle actions to

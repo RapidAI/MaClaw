@@ -61,8 +61,8 @@ export interface AIAssistantPanelHookActions {
     sendMessage: (text: string, options?: Record<string, unknown>) => Promise<boolean>;
     sendBtwMessage: (query: string) => Promise<void>;
     sendMessageInBackground: (text: string) => Promise<void>;
-    injectSupplementary: (text: string) => Promise<boolean>;
-    guideLaunchReference: (text: string, sessionKey?: string) => Promise<boolean>;
+    injectSupplementary: (text: string, sessionKey?: string) => Promise<boolean>;
+    guideLaunchReference: (text: string, sessionKey?: string, launchId?: string) => Promise<boolean>;
     clearHistory: () => Promise<void>;
     recordSubmittedPrompt: (text: string) => void;
     setDraftInputValue: (text: string) => void;

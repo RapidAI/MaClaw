@@ -170,6 +170,10 @@ export function ActivateRemote(arg1, arg2, arg3) {
   return window['go']['main']['App']['ActivateRemote'](arg1, arg2, arg3);
 }
 
+export function ActivateRemoteEmail(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['ActivateRemoteEmail'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
 export function ActivateRemoteSMS(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['ActivateRemoteSMS'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
@@ -182,6 +186,10 @@ export function ResolveRemoteRegistrationTarget(arg1) {
   return window['go']['main']['App']['ResolveRemoteRegistrationTarget'](arg1);
 }
 
+export function ResolveRemoteRegistrationTargetWithInvitation(arg1, arg2) {
+  return window['go']['main']['App']['ResolveRemoteRegistrationTargetWithInvitation'](arg1, arg2);
+}
+
 export function ProbeRemoteHub(arg1, arg2) {
   return window['go']['main']['App']['ProbeRemoteHub'](arg1, arg2);
 }
@@ -192,6 +200,10 @@ export function GetRemoteRegistrationProfile() {
 
 export function SendRemoteRegistrationSMS(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendRemoteRegistrationSMS'](arg1, arg2, arg3);
+}
+
+export function SendRemoteRegistrationEmail(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendRemoteRegistrationEmail'](arg1, arg2, arg3);
 }
 
 export function SendRemoteRegistrationContactCode(arg1, arg2) {
@@ -1854,6 +1866,14 @@ export function InjectAIAssistantGuideReferenceForSession(arg1, arg2) {
   return window['go']['main']['App']['InjectAIAssistantGuideReferenceForSession'](arg1, arg2);
 }
 
+export function InjectAIAssistantGuideReferenceForSessionWithID(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['InjectAIAssistantGuideReferenceForSessionWithID'](arg1, arg2, arg3, arg4);
+}
+
+export function HasAIAssistantGuideReferenceForSessionWithID(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['HasAIAssistantGuideReferenceForSessionWithID'](arg1, arg2, arg3, arg4);
+}
+
 export function ResolveCriticalConfirm(arg1, arg2) {
   return window['go']['main']['App']['ResolveCriticalConfirm'](arg1, arg2);
 }
@@ -3425,3 +3445,38 @@ export function OpenPetPacksDir() {
 export function GetPetPacksDir() {
   return window['go']['main']['App']['GetPetPacksDir']();
 }
+
+// Virtual Repository bindings (manually maintained until Wails binding
+// generation works on this Windows host again).
+export const ListVirtualRepositories = () => window['go']['main']['App']['ListVirtualRepositories']();
+export const OpenVirtualRepository = (arg1) => window['go']['main']['App']['OpenVirtualRepository'](arg1);
+export const SaveVirtualRepository = (arg1) => window['go']['main']['App']['SaveVirtualRepository'](arg1);
+export const DeleteVirtualRepository = (arg1) => window['go']['main']['App']['DeleteVirtualRepository'](arg1);
+export const SelectVirtualRepositoryRoot = (arg1) => window['go']['main']['App']['SelectVirtualRepositoryRoot'](arg1);
+export const CreateVirtualRepositoryDirectory = (arg1, arg2) => window['go']['main']['App']['CreateVirtualRepositoryDirectory'](arg1, arg2);
+export const CheckoutVirtualRepositoryNode = (arg1, arg2) => window['go']['main']['App']['CheckoutVirtualRepositoryNode'](arg1, arg2);
+export const GetVirtualRepositoryDirectoryStats = (arg1, arg2) => window['go']['main']['App']['GetVirtualRepositoryDirectoryStats'](arg1, arg2);
+export const InspectVirtualRepository = (arg1) => window['go']['main']['App']['InspectVirtualRepository'](arg1);
+export const TestRemoteVirtualRepositoryConnection = (arg1) => window['go']['main']['App']['TestRemoteVirtualRepositoryConnection'](arg1);
+export const CreateRemoteVirtualRepositoryRoot = (arg1) => window['go']['main']['App']['CreateRemoteVirtualRepositoryRoot'](arg1);
+export const SaveRemoteVirtualRepository = (arg1) => window['go']['main']['App']['SaveRemoteVirtualRepository'](arg1);
+export const OpenRemoteVirtualRepository = (arg1) => window['go']['main']['App']['OpenRemoteVirtualRepository'](arg1);
+export const InspectRemoteVirtualRepository = (arg1) => window['go']['main']['App']['InspectRemoteVirtualRepository'](arg1);
+export const CheckoutRemoteVirtualRepositoryNode = (arg1, arg2) => window['go']['main']['App']['CheckoutRemoteVirtualRepositoryNode'](arg1, arg2);
+export const CreateRemoteVirtualRepositoryDirectory = (arg1, arg2) => window['go']['main']['App']['CreateRemoteVirtualRepositoryDirectory'](arg1, arg2);
+export const GetRemoteVirtualRepositoryDirectoryStats = (arg1, arg2) => window['go']['main']['App']['GetRemoteVirtualRepositoryDirectoryStats'](arg1, arg2);
+export const StartVirtualRepositoryCodingTask = (arg1) => window['go']['main']['App']['StartVirtualRepositoryCodingTask'](arg1);
+export const ListRepositoryCredentials = (arg1) => window['go']['main']['App']['ListRepositoryCredentials'](arg1);
+export const SaveRepositoryCredential = (arg1) => window['go']['main']['App']['SaveRepositoryCredential'](arg1);
+export const DeleteRepositoryCredential = (arg1) => window['go']['main']['App']['DeleteRepositoryCredential'](arg1);
+export const SetRepositoryCredentialBinding = (arg1, arg2, arg3) => window['go']['main']['App']['SetRepositoryCredentialBinding'](arg1, arg2, arg3);
+export const ListRepositoryCredentialBindings = (arg1) => window['go']['main']['App']['ListRepositoryCredentialBindings'](arg1);
+export const GetVCSClientStatus = (arg1) => window['go']['main']['App']['GetVCSClientStatus'](arg1);
+export const SearchVCSClient = (arg1) => window['go']['main']['App']['SearchVCSClient'](arg1);
+export const SelectVCSClientExecutable = (arg1) => window['go']['main']['App']['SelectVCSClientExecutable'](arg1);
+export const SetVCSClientExecutable = (arg1, arg2) => window['go']['main']['App']['SetVCSClientExecutable'](arg1, arg2);
+export const ResetVCSClientExecutable = (arg1) => window['go']['main']['App']['ResetVCSClientExecutable'](arg1);
+export const PreviewVirtualRepositoryOperation = (arg1) => window['go']['main']['App']['PreviewVirtualRepositoryOperation'](arg1);
+export const StartVirtualRepositoryOperation = (arg1) => window['go']['main']['App']['StartVirtualRepositoryOperation'](arg1);
+export const GetVirtualRepositoryOperation = (arg1) => window['go']['main']['App']['GetVirtualRepositoryOperation'](arg1);
+export const CancelVirtualRepositoryOperation = (arg1) => window['go']['main']['App']['CancelVirtualRepositoryOperation'](arg1);

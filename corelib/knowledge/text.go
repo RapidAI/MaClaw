@@ -67,19 +67,9 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 	}
 	_ = s.BackfillNodeEmbeddingsForSources(ctx, []string{source.ID})
 	_, _ = s.refreshSourceTopicLinksFast(ctx, source.ID, importTopicLinkLimit, nil)
-	sources := []Source{source}
-	if err := s.hydrateSourceCounts(ctx, sources); err != nil {
-		return Source{}, err
-	}
-	if err := s.hydrateSourceLabels(ctx, sources); err != nil {
-		return Source{}, err
-	}
-	if isDuplicate {
-		sources[0].SaveStatus = SaveStatusDuplicate
-	} else {
-		sources[0].SaveStatus = SaveStatusCreated
-	}
-	return sources[0], nil
+	// The source is durable once Commit succeeds. Hydration only enriches the
+	// returned view, so cancellation here must not trigger duplicate retries.
+	return s.finalizeCommittedSource(ctx, source, isDuplicate), nil
 }
 
 func buildTextSourceAndNodes(req TextSaveRequest, existing Source) (Source, []DocumentNode, error) {

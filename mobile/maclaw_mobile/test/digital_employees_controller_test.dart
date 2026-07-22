@@ -11,6 +11,8 @@ import 'package:maclaw_mobile/features/digital_employees/digital_employee_prompt
 class _FakeMobileLocalStore extends MobileLocalStore {
   MobileDigitalEmployeeTask? lastTask;
   List<DigitalEmployeePromptEntry> prompts = const [];
+  bool failTaskSave = false;
+  bool failPromptSave = false;
 
   @override
   Future<MobileDigitalEmployeeTask?> loadLastDigitalEmployeeTask() async {
@@ -29,6 +31,7 @@ class _FakeMobileLocalStore extends MobileLocalStore {
   Future<void> saveLastDigitalEmployeeTask(
     MobileDigitalEmployeeTask task,
   ) async {
+    if (failTaskSave) throw StateError('task cache unavailable');
     lastTask = task;
   }
 
@@ -41,6 +44,7 @@ class _FakeMobileLocalStore extends MobileLocalStore {
   Future<void> saveDigitalEmployeePrompts(
     List<DigitalEmployeePromptEntry> entries,
   ) async {
+    if (failPromptSave) throw StateError('prompt cache unavailable');
     prompts = entries;
   }
 }
@@ -89,6 +93,18 @@ class _RecordingNotificationService extends MobileNotificationService {
     int? notificationId,
   }) async {
     shown.add((title: title, body: body, payload: payload));
+  }
+}
+
+class _FailingNotificationService extends MobileNotificationService {
+  @override
+  Future<void> showTaskCompleted({
+    required String title,
+    required String body,
+    String? payload,
+    int? notificationId,
+  }) async {
+    throw StateError('notification plugin unavailable');
   }
 }
 
@@ -328,5 +344,115 @@ void main() {
     expect(store.prompts.single.prompt, contains('password=[REDACTED_SECRET]'));
     expect(store.prompts.single.prompt, isNot(contains('raw-secret-token')));
     expect(store.prompts.single.prompt, isNot(contains('prod-password')));
+  });
+
+  test('prompt history failure does not fail Hub task creation', () async {
+    final store = _FakeMobileLocalStore()..failPromptSave = true;
+    final apiClient = _RecordingApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(apiClient),
+        mobileNotificationServiceProvider.overrideWithValue(
+          _RecordingNotificationService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(digitalEmployeeTaskProvider.future);
+
+    await container.read(digitalEmployeeTaskProvider.notifier).createTask(
+          employeeId: 'employee-1',
+          prompt: 'inspect the server',
+        );
+
+    final state = container.read(digitalEmployeeTaskProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.taskId, 'task-created-1');
+    expect(apiClient.createdEmployeeId, 'employee-1');
+  });
+
+  test('recent task cache failure keeps created Hub task live', () async {
+    final store = _FakeMobileLocalStore()..failTaskSave = true;
+    final apiClient = _RecordingApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(apiClient),
+        mobileNotificationServiceProvider.overrideWithValue(
+          _RecordingNotificationService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(digitalEmployeeTaskProvider.future);
+
+    await container.read(digitalEmployeeTaskProvider.notifier).createTask(
+          employeeId: 'employee-1',
+          prompt: 'inspect the server',
+        );
+
+    final state = container.read(digitalEmployeeTaskProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.taskId, 'task-created-1');
+    expect(store.lastTask, isNull);
+  });
+
+  test('notification failure keeps created Hub task live', () async {
+    final store = _FakeMobileLocalStore();
+    final apiClient = _RecordingApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(apiClient),
+        mobileNotificationServiceProvider.overrideWithValue(
+          _FailingNotificationService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(digitalEmployeeTaskProvider.future);
+
+    await container.read(digitalEmployeeTaskProvider.notifier).createTask(
+          employeeId: 'employee-1',
+          prompt: 'inspect the server',
+        );
+
+    final state = container.read(digitalEmployeeTaskProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.taskId, 'task-created-1');
+  });
+
+  test('realtime task remains live when its local cache write fails', () async {
+    final store = _FakeMobileLocalStore()..failTaskSave = true;
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(
+          _RecordingNotificationService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(digitalEmployeeTaskProvider.future);
+
+    const event = MobileRealtimeEvent(
+      type: 'digital_employee_task',
+      payload: {
+        'task_id': 'task-live-cache-failure',
+        'employee_id': 'employee-1',
+        'prompt': 'inspect server',
+        'status': 'in_progress',
+        'message': 'working',
+      },
+    );
+    await container
+        .read(digitalEmployeeTaskProvider.notifier)
+        .applyRealtimeEvent(event);
+
+    final state = container.read(digitalEmployeeTaskProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.taskId, 'task-live-cache-failure');
+    expect(state.valueOrNull?.status, 'in_progress');
   });
 }

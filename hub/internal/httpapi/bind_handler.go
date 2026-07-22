@@ -110,6 +110,39 @@ func deleteVerifyCode(tenantID, email string) {
 	delete(verifyCodes, verifyCodeKey(tenantID, email))
 }
 
+// snapshotVerifyCode returns a detached copy so a failed delivery can restore
+// the previously delivered code without sharing mutable attempt state.
+func snapshotVerifyCode(tenantID, email string) *verifyEntry {
+	verifyMu.Lock()
+	defer verifyMu.Unlock()
+	entry := verifyCodes[verifyCodeKey(tenantID, email)]
+	if entry == nil || time.Now().After(entry.ExpiresAt) {
+		return nil
+	}
+	copy := *entry
+	return &copy
+}
+
+// rollbackVerifyCode restores the previous entry only when the failed send's
+// code is still current. This prevents a late failure from deleting or
+// replacing a newer code created by another request.
+func rollbackVerifyCode(tenantID, email, failedCode string, previous *verifyEntry) bool {
+	verifyMu.Lock()
+	defer verifyMu.Unlock()
+	key := verifyCodeKey(tenantID, email)
+	current := verifyCodes[key]
+	if current == nil || subtle.ConstantTimeCompare([]byte(current.Code), []byte(failedCode)) != 1 {
+		return false
+	}
+	if previous != nil && time.Now().Before(previous.ExpiresAt) {
+		copy := *previous
+		verifyCodes[key] = &copy
+	} else {
+		delete(verifyCodes, key)
+	}
+	return true
+}
+
 func consumeVerifyCode(tenantID, email, code string) (ok bool, locked bool) {
 	verifyMu.Lock()
 	defer verifyMu.Unlock()

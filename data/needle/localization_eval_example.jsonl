@@ -1,0 +1,1 @@
+{"case_id":"example-stack","expected_files":["gui/coding_subagent.go"],"expected_symbols":["summarizeSubAgentExploration"],"ranked_files":["gui/coding_subagent.go"],"ranked_symbols":["summarizeSubAgentExploration"],"tool_calls":2,"duration_ms":100,"irrelevant_reads":0}

@@ -22,19 +22,23 @@ const EnrollTimeout = 25 * time.Second
 
 // EnrollConfig holds all inputs for the enrollment flow.
 type EnrollConfig struct {
-	Email          string   // required
-	InvitationCode string   // optional, for invitation-only hubs
-	Mobile         string   // optional
-	ClientID       string   // existing client_id; empty → auto-generate
-	HubURL         string   // known hub URL; empty → resolve via HubCenter
-	HubCenterURL   string   // explicit HubCenter URL; empty → use defaults
-	HubCenterURLs  []string // additional HubCenter URLs from config
-	MachineName    string   // e.g. hostname
-	Platform       string   // "windows", "mac", "linux"
-	Hostname       string
-	Arch           string // e.g. "amd64", "arm64"
-	AppVersion     string
-	HeartbeatSec   int
+	Email            string   // required
+	VerificationCode string   // optional email OTP; switches to verified enrollment endpoint
+	InvitationCode   string   // optional, for invitation-only hubs
+	Mobile           string   // optional
+	ClientID         string   // existing client_id; empty → auto-generate
+	HubURL           string   // known hub URL; empty → resolve via HubCenter
+	HubCenterURL     string   // explicit HubCenter URL; empty → use defaults
+	HubCenterURLs    []string // additional HubCenter URLs from config
+	MachineName      string   // e.g. hostname
+	Platform         string   // "windows", "mac", "linux"
+	Hostname         string
+	Arch             string // e.g. "amd64", "arm64"
+	AppVersion       string
+	HeartbeatSec     int
+	TenantID         string // resolved tenant for a direct verified enrollment
+	HubID            string // resolved hub metadata for a direct verified enrollment
+	DirectHub        bool   // keep HubURL even when an invitation code is present
 }
 
 // EnrollResult holds the output of a successful enrollment.
@@ -223,8 +227,8 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	hubURL := strings.TrimRight(strings.TrimSpace(cfg.HubURL), "/")
 	var discoveredURLs []string
 	var usedCenterURL string
-	var resolvedHubID string
-	var resolvedTenantID string // tenant_id from invitation code routing
+	resolvedHubID := strings.TrimSpace(cfg.HubID)
+	resolvedTenantID := strings.TrimSpace(cfg.TenantID) // tenant_id from invitation code routing
 
 	// When an invitation code is provided, always resolve via HubCenter even if
 	// a cached HubURL exists. The invitation code may target a different Hub than
@@ -232,7 +236,7 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	// to a new one). HubCenter's invitation code routing ensures the request
 	// reaches the correct Hub that issued the code.
 	hasInvitationCode := strings.TrimSpace(cfg.InvitationCode) != ""
-	if hubURL == "" || hasInvitationCode {
+	if hubURL == "" || (hasInvitationCode && !cfg.DirectHub) {
 		if hasInvitationCode && hubURL != "" {
 			log.Printf("[enrollment] invitation code provided — ignoring cached hub_url=%s, resolving via HubCenter", hubURL)
 		}
@@ -297,6 +301,9 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	if cfg.Mobile != "" {
 		body["mobile"] = strings.TrimSpace(cfg.Mobile)
 	}
+	if cfg.VerificationCode != "" {
+		body["verify_code"] = strings.TrimSpace(cfg.VerificationCode)
+	}
 	// When the hub was resolved via invitation code routing, pass the target
 	// tenant_id so Hub's enrollment handler places the user in the correct tenant.
 	if resolvedTenantID != "" {
@@ -309,7 +316,11 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	}
 
 	// --- Step 5: Send enroll request ---
-	enrollURL := strings.TrimRight(hubURL, "/") + "/api/enroll/start"
+	enrollPath := "/api/enroll/start"
+	if strings.TrimSpace(cfg.VerificationCode) != "" {
+		enrollPath = "/api/enroll/email/verify-and-start"
+	}
+	enrollURL := strings.TrimRight(hubURL, "/") + enrollPath
 	enrollTimeout := c.enrollTimeout()
 	enrollCtx, cancel := context.WithTimeout(ctx, enrollTimeout)
 	defer cancel()
@@ -363,6 +374,22 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	if err := DecodeJSONResponseBody(respBody, &enrollResp); err != nil {
 		log.Printf("[enrollment] enroll 2xx but non-JSON response: %s", responsePreview(respBody))
 		return nil, fmt.Errorf("registration service returned an unexpected response format; please retry later")
+	}
+	// Enrollment policy outcomes such as pending approval and manual binding are
+	// returned as HTTP 2xx by the Hub, but they are not successful machine
+	// activations. Never let callers persist an incomplete credential set or mark
+	// onboarding complete for those responses.
+	if strings.TrimSpace(enrollResp.MachineID) == "" || strings.TrimSpace(enrollResp.MachineToken) == "" {
+		status := strings.TrimSpace(enrollResp.Status)
+		if status == "" {
+			status = "incomplete_enrollment"
+		}
+		code := strings.ToUpper(strings.ReplaceAll(status, "-", "_"))
+		message := strings.TrimSpace(enrollResp.Message)
+		if message == "" {
+			message = "machine enrollment is not complete"
+		}
+		return nil, fmt.Errorf("%s: %s", code, message)
 	}
 
 	// Fill resolved metadata.

@@ -86,17 +86,23 @@ export function SetPassthroughCommandEnabled(arg1:string,arg2:boolean):Promise<v
 
 export function ActivateRemote(arg1:string,arg2:string,arg3:string):Promise<any>;
 
+export function ActivateRemoteEmail(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<any>;
+
 export function ActivateRemoteSMS(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<any>;
 
 export function GetRemoteRegistrationAuth(arg1:string,arg2:string):Promise<any>;
 
 export function ResolveRemoteRegistrationTarget(arg1:string):Promise<any>;
 
+export function ResolveRemoteRegistrationTargetWithInvitation(arg1:string,arg2:string):Promise<any>;
+
 export function ProbeRemoteHub(arg1:string,arg2:string):Promise<any>;
 
 export function GetRemoteRegistrationProfile():Promise<any>;
 
 export function SendRemoteRegistrationSMS(arg1:string,arg2:string,arg3:string):Promise<any>;
+
+export function SendRemoteRegistrationEmail(arg1:string,arg2:string,arg3:string):Promise<any>;
 
 export function SendRemoteRegistrationContactCode(arg1:string,arg2:string):Promise<any>;
 
@@ -939,6 +945,10 @@ export function InjectAIAssistantGuideReference(arg1:string):Promise<boolean>;
 
 export function InjectAIAssistantGuideReferenceForSession(arg1:string,arg2:string):Promise<boolean>;
 
+export function InjectAIAssistantGuideReferenceForSessionWithID(arg1:string,arg2:string,arg3:string,arg4:string):Promise<boolean>;
+
+export function HasAIAssistantGuideReferenceForSessionWithID(arg1:string,arg2:string,arg3:string,arg4:string):Promise<boolean>;
+
 export function ResolveCriticalConfirm(arg1:string,arg2:boolean):Promise<void>;
 
 export function ResolveScopeApproval(arg1:string,arg2:string):Promise<void>;
@@ -1656,3 +1666,37 @@ export function GetPetPackPreviewDataURL(arg1:string):Promise<string>;
 export function GetPetPackStateFrameDataURL(arg1:string,arg2:string,arg3:string):Promise<string>;
 export function OpenPetPacksDir():Promise<void>;
 export function GetPetPacksDir():Promise<string>;
+
+// Virtual Repository bindings (JSON string payloads/results).
+export function ListVirtualRepositories():Promise<string>;
+export function OpenVirtualRepository(arg1:string):Promise<string>;
+export function SaveVirtualRepository(arg1:string):Promise<string>;
+export function DeleteVirtualRepository(arg1:string):Promise<void>;
+export function SelectVirtualRepositoryRoot(arg1:string):Promise<string>;
+export function CreateVirtualRepositoryDirectory(arg1:string,arg2:string):Promise<void>;
+export function CheckoutVirtualRepositoryNode(arg1:string,arg2:string):Promise<void>;
+export function GetVirtualRepositoryDirectoryStats(arg1:string,arg2:string):Promise<string>;
+export function InspectVirtualRepository(arg1:string):Promise<string>;
+export function TestRemoteVirtualRepositoryConnection(arg1:string):Promise<string>;
+export function CreateRemoteVirtualRepositoryRoot(arg1:string):Promise<void>;
+export function SaveRemoteVirtualRepository(arg1:string):Promise<string>;
+export function OpenRemoteVirtualRepository(arg1:string):Promise<string>;
+export function InspectRemoteVirtualRepository(arg1:string):Promise<string>;
+export function CheckoutRemoteVirtualRepositoryNode(arg1:string,arg2:string):Promise<void>;
+export function CreateRemoteVirtualRepositoryDirectory(arg1:string,arg2:string):Promise<void>;
+export function GetRemoteVirtualRepositoryDirectoryStats(arg1:string,arg2:string):Promise<string>;
+export function StartVirtualRepositoryCodingTask(arg1:string):Promise<main.VirtualRepositoryCodingTaskLaunch>;
+export function ListRepositoryCredentials(arg1:string):Promise<string>;
+export function SaveRepositoryCredential(arg1:string):Promise<string>;
+export function DeleteRepositoryCredential(arg1:string):Promise<string>;
+export function SetRepositoryCredentialBinding(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function ListRepositoryCredentialBindings(arg1:string):Promise<string>;
+export function GetVCSClientStatus(arg1:string):Promise<string>;
+export function SearchVCSClient(arg1:string):Promise<string>;
+export function SelectVCSClientExecutable(arg1:string):Promise<string>;
+export function SetVCSClientExecutable(arg1:string,arg2:string):Promise<string>;
+export function ResetVCSClientExecutable(arg1:string):Promise<string>;
+export function PreviewVirtualRepositoryOperation(arg1:string):Promise<string>;
+export function StartVirtualRepositoryOperation(arg1:string):Promise<string>;
+export function GetVirtualRepositoryOperation(arg1:string):Promise<string>;
+export function CancelVirtualRepositoryOperation(arg1:string):Promise<void>;

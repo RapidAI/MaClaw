@@ -250,12 +250,21 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
     // Don't render when queue is empty
     if (queue.length === 0) return null;
 
-    const headerText = localizeText(
-        lang,
-        `${queue.length} queued`,
-        `${queue.length} 条待发送`,
-        `${queue.length} 條待發送`,
-    );
+    const launching = queue.some(entry => !!isEntryInFlight?.(entry.id));
+    const willSendAutomatically = queue.some(entry => entry.autoDrain || entry.steerWhenBusy);
+    const headerText = launching
+        ? localizeText(
+              lang,
+              "Attaching to the running task...",
+              "正在接入当前任务…",
+              "正在接入目前任務…",
+          )
+        : willSendAutomatically ? localizeText(
+              lang,
+              `${queue.length} queued · sent automatically when ready`,
+              `${queue.length} 条待执行 · 就绪后自动发送`,
+              `${queue.length} 條待執行 · 就緒後自動傳送`,
+          ) : localizeText(lang, `${queue.length} queued`, `${queue.length} 条待执行`, `${queue.length} 條待執行`);
 
     return (
         <div
@@ -667,6 +676,15 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                     {getTextPreview(entry.text)}
                 </span>
 
+                {inFlight && (
+                    <span
+                        data-testid={`buffer-entry-status-${entry.id}`}
+                        style={{ flexShrink: 0, color: t.headingColor, fontSize: "11px", fontWeight: 600 }}
+                    >
+                        {localizeText(lang, "Attaching...", "接入中…", "接入中…")}
+                    </span>
+                )}
+
                 {/* Attachment indicators */}
                 {entry.attachments.map((att, idx) => (
                     <span
@@ -718,8 +736,13 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                         lineHeight: 1.2,
                         opacity: inFlight ? 0.45 : 1,
                     }}
-                    aria-label={localizeText(lang, "引导进入下一次 agent loop", "引导进入下一次 agent loop", "引導進入下一次 agent loop")}
-                    title={localizeText(lang, "引导发射", "引导发射", "引導發射")}
+                    aria-label={localizeText(
+                        lang,
+                        "Attach this instruction to the running task now",
+                        "立即将这条指令接入当前任务",
+                        "立即將這條指令接入目前任務",
+                    )}
+                    title={localizeText(lang, "Attach now", "立即接入", "立即接入")}
                 >
                     <AssistantInputIcon name="cornerDownLeft" size={13} />
                 </button>

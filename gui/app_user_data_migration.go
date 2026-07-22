@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/aes"
@@ -14,15 +15,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	pathpkg "path"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -31,13 +37,25 @@ import (
 )
 
 const (
-	userDataMigrationPackageVersion = "maclaw-gui-user-data-migration/v1"
-	userDataMigrationChunkSize      = int64(4 << 20)
-	userDataMigrationAEADChunkSize  = int64(4 << 20)
-	userDataMigrationMaxExpanded    = int64(4) << 30
-	userDataMigrationMaxZipFiles    = 200000
-	userDataMigrationMagic          = "MLMIG01"
-	userDataMigrationJobRetention   = 24 * time.Hour
+	userDataMigrationPackageVersion       = "maclaw-gui-user-data-migration/v2"
+	userDataMigrationLegacyVersion        = "maclaw-gui-user-data-migration/v1"
+	userDataMigrationConfigSchema         = "corelib.AppConfig/v1"
+	userDataMigrationChunkSize            = int64(4 << 20)
+	userDataMigrationAEADChunkSize        = int64(4 << 20)
+	userDataMigrationMaxExpanded          = int64(4) << 30
+	userDataMigrationMaxZipFiles          = 200000
+	userDataMigrationLocalRestoreAttempts = 4
+	userDataMigrationMaxManifest          = 16 << 20
+	userDataMigrationMaxConfigJSON        = int64(64 << 20)
+	userDataMigrationMaxMemoryJSON        = int64(256 << 20)
+	userDataMigrationMaxDownload          = int64(2) << 30
+	userDataMigrationMinChunkSize         = int64(256 << 10)
+	userDataMigrationMaxChunkSize         = int64(8 << 20)
+	userDataMigrationMaxChunks            = 8192
+	userDataMigrationMaxJSONDepth         = 128
+	userDataMigrationMagic                = "MLMIG01"
+	userDataMigrationJobRetention         = 24 * time.Hour
+	userDataMigrationMinPasswordLen       = 12
 )
 
 type userDataMigrationStatus struct {
@@ -78,8 +96,46 @@ type userDataMigrationManifest struct {
 	MemoryEntries  int                           `json:"memory_entries"`
 	KnowledgeBytes int64                         `json:"knowledge_bytes"`
 	AssetBytes     int64                         `json:"asset_bytes"`
+	ConfigSchema   string                        `json:"config_schema_version,omitempty"`
+	ConfigSections int                           `json:"config_section_count,omitempty"`
+	SecretCount    int                           `json:"secret_count,omitempty"`
+	ExcludedConfig []string                      `json:"excluded_config_paths,omitempty"`
 	Files          []userDataMigrationFileDigest `json:"files"`
 	Meta           map[string]interface{}        `json:"meta,omitempty"`
+}
+
+type userDataMigrationConfigPolicy struct {
+	SchemaVersion  string   `json:"schema_version"`
+	Restore        string   `json:"restore"`
+	PreserveTarget []string `json:"preserve_target"`
+	RewriteTarget  []string `json:"rewrite_for_target"`
+	SkipRuntime    []string `json:"skip_runtime"`
+}
+
+type userDataMigrationSecretInventory struct {
+	SchemaVersion string   `json:"schema_version"`
+	Paths         []string `json:"paths"`
+}
+
+var userDataMigrationPreserveTargetConfigPaths = []string{
+	"remote_hub_id", "remote_hub_url", "remote_hubcenter_url", "remote_hubcenter_urls",
+	"remote_enabled", "remote_email", "remote_mobile", "remote_sn", "remote_user_id", "remote_tenant_id",
+	"remote_tenant_name", "remote_machine_id", "remote_machine_name", "remote_machine_token",
+	"remote_viewer_token", "skill_market_session_token", "remote_nickname", "remote_client_id",
+	"hub_security_centralized",
+	// These values identify local projects, devices, permissions or model files
+	// and cannot safely be reused on another machine.
+	"projects", "current_project", "external_skill_dirs", "audio_input_device_id", "audio_output_device_id",
+	"noise_floor_calibrated", "speech_level_calibrated", "local_needle_model_path", "ve_allowed_directories",
+}
+
+var userDataMigrationRewriteTargetConfigPaths = []string{
+	"data_dir", "working_directory",
+}
+
+var userDataMigrationSkipRuntimeConfigPaths = []string{
+	"env_check_done", "last_env_check_time", "onboarding_done", "llm_token_usage",
+	"floating_btn_x", "floating_btn_y", "floating_btn_position_set",
 }
 
 type userDataMigrationFileDigest struct {
@@ -117,8 +173,14 @@ type userDataMigrationJob struct {
 var (
 	userDataMigrationJobs                  sync.Map
 	userDataMigrationCleanupPendingExports sync.Map
+	userDataMigrationConfigRestoreApps     sync.Map
 	userDataMigrationJobStartMu            sync.Mutex
 )
+
+func userDataMigrationIsConfigRestore(app *App) bool {
+	_, ok := userDataMigrationConfigRestoreApps.Load(app)
+	return ok
+}
 
 func (a *App) UserDataMigrationStatus() (userDataMigrationStatus, error) {
 	cfg, loadErr := a.LoadConfig()
@@ -164,6 +226,9 @@ func (a *App) StartUserDataMigrationExport(password, passwordConfirm string, con
 	if password == "" || password != passwordConfirm {
 		return userDataMigrationJob{}, fmt.Errorf("passwords do not match")
 	}
+	if err := validateUserDataMigrationPassword(password); err != nil {
+		return userDataMigrationJob{}, err
+	}
 	if !confirmOverwrite {
 		return userDataMigrationJob{}, fmt.Errorf("export overwrite confirmation is required")
 	}
@@ -188,6 +253,25 @@ func (a *App) StartUserDataMigrationImport(exportID, password string) (userDataM
 	return a.startUserDataMigrationJob("migration.import", func(ctx context.Context, progress func(float64, string)) (map[string]interface{}, error) {
 		return a.runUserDataMigrationImport(ctx, cfg, exportID, password, progress)
 	})
+}
+
+func validateUserDataMigrationPassword(password string) error {
+	if len([]rune(password)) < userDataMigrationMinPasswordLen {
+		return fmt.Errorf("migration password must be at least %d characters", userDataMigrationMinPasswordLen)
+	}
+	var hasLetter, hasNumber bool
+	for _, r := range password {
+		switch {
+		case unicode.IsLetter(r):
+			hasLetter = true
+		case unicode.IsNumber(r):
+			hasNumber = true
+		}
+	}
+	if !hasLetter || !hasNumber {
+		return fmt.Errorf("migration password must contain letters and numbers")
+	}
+	return nil
 }
 
 func (a *App) StartUserDataMigrationCleanup(exportID string) (userDataMigrationJob, error) {
@@ -276,6 +360,7 @@ func (a *App) startUserDataMigrationJob(kind string, run func(context.Context, f
 		UpdatedAt: now,
 	}
 	userDataMigrationJobs.Store(job.ID, job)
+	log.Printf("[onboarding-migration] job_started job_id=%s kind=%s", job.ID, kind)
 	go func(jobID string) {
 		progress := func(v float64, text string) {
 			updateUserDataMigrationJob(jobID, func(job *userDataMigrationJob) {
@@ -288,6 +373,7 @@ func (a *App) startUserDataMigrationJob(kind string, run func(context.Context, f
 				job.Progress = v
 				job.ProgressText = text
 			})
+			log.Printf("[onboarding-migration] job_progress job_id=%s kind=%s progress=%.2f stage=%q", jobID, kind, v, text)
 		}
 		var result map[string]interface{}
 		var err error
@@ -315,6 +401,11 @@ func (a *App) startUserDataMigrationJob(kind string, run func(context.Context, f
 			}
 			job.Result = result
 		})
+		if err != nil {
+			log.Printf("[onboarding-migration] job_failed job_id=%s kind=%s elapsed=%s err=%v", jobID, kind, time.Since(now), err)
+		} else {
+			log.Printf("[onboarding-migration] job_succeeded job_id=%s kind=%s elapsed=%s cleanup_pending=%t", jobID, kind, time.Since(now), result != nil && result["cleanup_pending"] == true)
+		}
 	}(job.ID)
 	return job, nil
 }
@@ -433,6 +524,8 @@ func (a *App) runUserDataMigrationExport(ctx context.Context, cfg userDataMigrat
 }
 
 func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrationClientConfig, exportID, password string, progress func(float64, string)) (result map[string]interface{}, err error) {
+	startedAt := time.Now()
+	log.Printf("[onboarding-migration] import_begin export_id=%s tenant_id=%s user_id=%s machine_id=%s", exportID, cfg.TenantID, cfg.UserID, cfg.MachineID)
 	workDir, err := a.createUserDataMigrationTempDir("migration-import-*")
 	if err != nil {
 		return nil, err
@@ -447,6 +540,7 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 	localRestored := false
 	defer func() {
 		if err != nil && claimed && !localRestored {
+			log.Printf("[onboarding-migration] import_abort_claim export_id=%s elapsed=%s err=%v", exportID, time.Since(startedAt), err)
 			abortCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			_, _ = a.userDataMigrationHubJSON(abortCtx, cfg, http.MethodPost, "/api/v1/migration/imports/"+exportID+"/abort", map[string]interface{}{})
@@ -454,6 +548,7 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 	}()
 	exportMap, _ := claimResp["export"].(map[string]interface{})
 	claimedStatus := strings.ToLower(strings.TrimSpace(fmt.Sprint(exportMap["status"])))
+	log.Printf("[onboarding-migration] import_claimed export_id=%s status=%s", exportID, claimedStatus)
 	if claimedStatus == "deleted" {
 		claimed = false
 		userDataMigrationCleanupPendingExports.Delete(userDataMigrationCleanupPendingKey(cfg, exportID))
@@ -465,6 +560,8 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := a.completeUserDataMigrationImportOnHub(cleanupCtx, cfg, exportID); err != nil {
+			claimed = false // This package was already restored; never abort it on cleanup failure.
+			userDataMigrationCleanupPendingExports.Store(userDataMigrationCleanupPendingKey(cfg, exportID), time.Now().UTC())
 			return nil, fmt.Errorf("Hub cleanup retry failed: %w", err)
 		}
 		claimed = false
@@ -472,14 +569,11 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 		progress(1, "import cleanup completed")
 		return map[string]interface{}{"export_id": exportID, "cleanup_retried": true}, nil
 	}
-	chunkCount := int(userDataMigrationNumberFromMap(exportMap, "chunk_count"))
-	chunkSize := int64(userDataMigrationNumberFromMap(exportMap, "chunk_size"))
-	encryptedSize := int64(userDataMigrationNumberFromMap(exportMap, "encrypted_size"))
-	encryptedHash := strings.TrimSpace(fmt.Sprint(exportMap["encrypted_sha256"]))
-	plainHash := strings.TrimSpace(fmt.Sprint(exportMap["plain_sha256"]))
-	if chunkCount <= 0 || chunkSize <= 0 || encryptedSize <= 0 || encryptedHash == "" || plainHash == "" {
-		return nil, fmt.Errorf("invalid migration export metadata")
+	chunkCount, chunkSize, encryptedSize, compressedSize, encryptedHash, plainHash, err := userDataMigrationDownloadMetadata(exportMap)
+	if err != nil {
+		return nil, err
 	}
+	log.Printf("[onboarding-migration] import_metadata export_id=%s chunks=%d chunk_size=%d encrypted_size=%d compressed_size=%d", exportID, chunkCount, chunkSize, encryptedSize, compressedSize)
 	encryptedPath := filepath.Join(workDir, "migration.mlawenc")
 	progress(0.12, "downloading encrypted chunks")
 	if err := a.downloadUserDataMigrationChunks(ctx, cfg, exportID, encryptedPath, encryptedSize, chunkSize, chunkCount, progress); err != nil {
@@ -494,7 +588,7 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 	}
 	progress(0.72, "decrypting and verifying package")
 	plainPath := filepath.Join(workDir, "migration.zip")
-	if err := decryptUserDataMigrationFile(encryptedPath, plainPath, password, plainHash); err != nil {
+	if err := decryptUserDataMigrationFile(encryptedPath, plainPath, password, plainHash, compressedSize); err != nil {
 		return nil, err
 	}
 	if gotPlain, _, err := userDataMigrationFileSHA256(plainPath); err != nil {
@@ -503,14 +597,22 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 		return nil, fmt.Errorf("decrypted package hash mismatch")
 	}
 	progress(0.82, "restoring local memory and knowledge base")
-	result, err = a.restoreUserDataMigrationPackage(ctx, plainPath, workDir)
+	result, err = a.restoreUserDataMigrationPackageWithRetry(ctx, plainPath, workDir, progress)
 	if err != nil {
-		return nil, err
+		// Keep the restore phase in the job error. The UI can then distinguish a
+		// local restore failure from a transfer failure and show the actionable
+		// underlying cause (for example a locked knowledge database or no disk
+		// space) instead of suggesting that the network is at fault.
+		return nil, fmt.Errorf("restore local migration data: %w", err)
 	}
 	localRestored = true
+	log.Printf("[onboarding-migration] import_local_restore_committed export_id=%s elapsed=%s", exportID, time.Since(startedAt))
+	progress(0.90, "validating restored LLM providers")
+	result["llm_validation"] = userDataMigrationSafeLLMValidation(a.validateUserDataMigrationLLMProviders)
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := a.completeUserDataMigrationImportOnHub(cleanupCtx, cfg, exportID); err != nil {
+		log.Printf("[onboarding-migration] import_cleanup_pending export_id=%s elapsed=%s err=%v", exportID, time.Since(startedAt), err)
 		progress(1, "local import completed; Hub cleanup can be retried")
 		userDataMigrationCleanupPendingExports.Store(userDataMigrationCleanupPendingKey(cfg, exportID), time.Now().UTC())
 		result["export_id"] = exportID
@@ -522,7 +624,262 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 	userDataMigrationCleanupPendingExports.Delete(userDataMigrationCleanupPendingKey(cfg, exportID))
 	progress(1, "import completed")
 	result["export_id"] = exportID
+	log.Printf("[onboarding-migration] import_complete export_id=%s elapsed=%s", exportID, time.Since(startedAt))
 	return result, nil
+}
+
+// dryRunUserDataMigrationImport verifies a Hub migration package end-to-end
+// without touching the target machine's configuration, memory, knowledge base,
+// or attachments. Hub currently requires an import claim before encrypted chunks
+// can be downloaded, so this method always releases that claim before returning.
+func (a *App) dryRunUserDataMigrationImport(ctx context.Context, cfg userDataMigrationClientConfig, exportID, password string, progress func(float64, string)) (result map[string]interface{}, err error) {
+	workDir, err := a.createUserDataMigrationTempDir("migration-import-dry-run-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(workDir)
+
+	progress(0.05, "claiming migration export")
+	claimResp, err := a.userDataMigrationHubJSON(ctx, cfg, http.MethodPost, "/api/v1/migration/imports/"+exportID+"/claim", map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
+	claimed := true
+	defer func() {
+		if !claimed {
+			return
+		}
+		abortCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, abortErr := a.userDataMigrationHubJSON(abortCtx, cfg, http.MethodPost, "/api/v1/migration/imports/"+exportID+"/abort", map[string]interface{}{}); abortErr != nil {
+			if err == nil {
+				err = fmt.Errorf("migration dry-run succeeded but could not release Hub claim: %w", abortErr)
+			} else {
+				err = fmt.Errorf("%w; could not release Hub claim: %v", err, abortErr)
+			}
+		}
+	}()
+
+	exportMap, _ := claimResp["export"].(map[string]interface{})
+	chunkCount, chunkSize, encryptedSize, compressedSize, encryptedHash, plainHash, err := userDataMigrationDownloadMetadata(exportMap)
+	if err != nil {
+		return nil, err
+	}
+	encryptedPath := filepath.Join(workDir, "migration.mlawenc")
+	progress(0.12, "downloading encrypted chunks")
+	if err := a.downloadUserDataMigrationChunks(ctx, cfg, exportID, encryptedPath, encryptedSize, chunkSize, chunkCount, progress); err != nil {
+		return nil, err
+	}
+	gotHash, _, err := userDataMigrationFileSHA256(encryptedPath)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(gotHash, encryptedHash) {
+		return nil, fmt.Errorf("encrypted package hash mismatch")
+	}
+
+	progress(0.72, "decrypting and verifying package")
+	plainPath := filepath.Join(workDir, "migration.zip")
+	if err := decryptUserDataMigrationFile(encryptedPath, plainPath, password, plainHash, compressedSize); err != nil {
+		return nil, err
+	}
+	if gotPlain, _, err := userDataMigrationFileSHA256(plainPath); err != nil {
+		return nil, err
+	} else if !strings.EqualFold(gotPlain, plainHash) {
+		return nil, fmt.Errorf("decrypted package hash mismatch")
+	}
+
+	progress(0.82, "validating migration package without restoring")
+	return a.validateUserDataMigrationPackageForDryRun(ctx, plainPath, workDir)
+}
+
+func (a *App) validateUserDataMigrationPackageForDryRun(ctx context.Context, zipPath, workDir string) (map[string]interface{}, error) {
+	payloadDir := filepath.Join(workDir, "dry-run-payload")
+	if err := userDataMigrationUnzipToDir(zipPath, payloadDir, userDataMigrationMaxExpanded); err != nil {
+		return nil, err
+	}
+	var manifest userDataMigrationManifest
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "manifest.json"), &manifest, userDataMigrationMaxManifest); err != nil {
+		return nil, err
+	}
+	if manifest.Version != userDataMigrationPackageVersion && manifest.Version != userDataMigrationLegacyVersion {
+		return nil, fmt.Errorf("unsupported migration package version %q", manifest.Version)
+	}
+	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 {
+		return nil, fmt.Errorf("migration manifest contains invalid counts")
+	}
+	if err := userDataMigrationVerifyFileDigests(payloadDir, manifest.Files); err != nil {
+		return nil, err
+	}
+	if err := validateUserDataMigrationManifestFileStats(manifest); err != nil {
+		return nil, err
+	}
+	var entries []memory.Entry
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "memory_entries.json"), &entries, userDataMigrationMaxMemoryJSON); err != nil {
+		return nil, err
+	}
+	if len(entries) != manifest.MemoryEntries {
+		return nil, fmt.Errorf("migration memory entry count mismatch")
+	}
+	if _, err := userDataMigrationCleanMemoryEntries(entries); err != nil {
+		return nil, err
+	}
+	knowledgePath := filepath.Join(payloadDir, "knowledge_snapshot.jsonl")
+	repairedKnowledgePath, knowledgeRepair, repairErr := userDataMigrationRepairKnowledgeSnapshot(knowledgePath, filepath.Join(workDir, "knowledge_snapshot.repaired.jsonl"))
+	if repairErr != nil {
+		return nil, repairErr
+	}
+	knowledgePath = repairedKnowledgePath
+	if err := a.validateUserDataMigrationKnowledgeSnapshot(knowledgePath); err != nil {
+		return nil, err
+	}
+	configSections := 0
+	secretCount := 0
+	if manifest.Version == userDataMigrationPackageVersion {
+		if manifest.ConfigSchema != userDataMigrationConfigSchema {
+			return nil, fmt.Errorf("unsupported migration config schema %q", manifest.ConfigSchema)
+		}
+		if manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
+			return nil, fmt.Errorf("migration configuration metadata is invalid")
+		}
+		var incomingConfig map[string]interface{}
+		if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "app_config.json"), &incomingConfig, userDataMigrationMaxConfigJSON); err != nil {
+			return nil, fmt.Errorf("read migration system configuration: %w", err)
+		}
+		if len(incomingConfig) != manifest.ConfigSections {
+			return nil, fmt.Errorf("migration configuration section count mismatch")
+		}
+		if err := validateUserDataMigrationConfigMetadata(payloadDir, manifest, incomingConfig); err != nil {
+			return nil, err
+		}
+		if err := userDataMigrationValidateConfigKeys(incomingConfig); err != nil {
+			return nil, err
+		}
+		configSections = len(incomingConfig)
+		secretCount = len(userDataMigrationSecretPaths(incomingConfig, ""))
+	}
+	_ = ctx
+	return map[string]interface{}{
+		"dry_run":          true,
+		"memory":           map[string]interface{}{"entries": len(entries)},
+		"knowledge":        map[string]interface{}{"validated": true, "bytes": manifest.KnowledgeBytes},
+		"knowledge_repair": knowledgeRepair,
+		"assets":           map[string]interface{}{"bytes": manifest.AssetBytes},
+		"config":           map[string]interface{}{"sections": configSections, "secrets": secretCount},
+		"manifest":         manifest,
+	}, nil
+}
+
+func (a *App) restoreUserDataMigrationPackageWithRetry(ctx context.Context, zipPath, workDir string, progress func(float64, string)) (map[string]interface{}, error) {
+	var lastErr error
+	for attempt := 1; attempt <= userDataMigrationLocalRestoreAttempts; attempt++ {
+		result, err := a.restoreUserDataMigrationPackage(ctx, zipPath, workDir)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if attempt == userDataMigrationLocalRestoreAttempts || !userDataMigrationRetryableLocalRestoreError(err) {
+			break
+		}
+
+		delay := time.Duration(attempt) * time.Second
+		if progress != nil {
+			progress(0.82, fmt.Sprintf("local restore temporarily busy; retrying (%d/%d)", attempt+1, userDataMigrationLocalRestoreAttempts))
+		}
+		log.Printf("[onboarding-migration] local_restore_retry attempt=%d/%d delay=%s err=%v", attempt, userDataMigrationLocalRestoreAttempts, delay, err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return nil, lastErr
+}
+
+func userDataMigrationRetryableLocalRestoreError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"database is locked",
+		"database table is locked",
+		"database is busy",
+		"resource temporarily unavailable",
+		"sharing violation",
+		"being used by another process",
+		"file is being used by another process",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func userDataMigrationSafeLLMValidation(validate func() map[string]interface{}) (result map[string]interface{}) {
+	defer func() {
+		if recover() != nil {
+			// Connectivity validation is diagnostic. A provider implementation must
+			// not turn an already committed local restore into a failed import or
+			// expose panic details that may contain request metadata.
+			result = map[string]interface{}{
+				"tested": 0, "passed": 0, "failed": 0,
+				"providers": []map[string]interface{}{}, "status": "validation_unavailable",
+			}
+		}
+	}()
+	if validate == nil {
+		return map[string]interface{}{
+			"tested": 0, "passed": 0, "failed": 0,
+			"providers": []map[string]interface{}{}, "status": "validation_unavailable",
+		}
+	}
+	return validate()
+}
+
+func (a *App) validateUserDataMigrationLLMProviders() map[string]interface{} {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return map[string]interface{}{"tested": 0, "passed": 0, "failed": 0, "providers": []map[string]interface{}{}, "status": "config_unavailable"}
+	}
+	providers := append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+	if len(providers) == 0 && strings.TrimSpace(cfg.MaclawLLMUrl) != "" && strings.TrimSpace(cfg.MaclawLLMModel) != "" {
+		providers = append(providers, corelib.MaclawLLMProvider{
+			Name: cfg.MaclawLLMCurrentProvider, URL: cfg.MaclawLLMUrl, Key: cfg.MaclawLLMKey,
+			Model: cfg.MaclawLLMModel, Protocol: cfg.MaclawLLMProtocol, ContextLength: cfg.MaclawLLMContextLength,
+			TimeoutSec: cfg.MaclawLLMTimeoutSec,
+		})
+	}
+	items := make([]map[string]interface{}, 0, len(providers))
+	passed := 0
+	for i, provider := range providers {
+		name := strings.TrimSpace(provider.Name)
+		if name == "" {
+			name = fmt.Sprintf("Provider %d", i+1)
+		}
+		item := map[string]interface{}{"name": name, "ok": false}
+		if strings.TrimSpace(provider.URL) == "" || strings.TrimSpace(provider.Model) == "" {
+			item["status"] = "incomplete"
+		} else if _, err := a.TestMaclawLLM(corelib.MaclawLLMConfig{
+			URL: provider.URL, Key: provider.Key, Model: provider.Model, Protocol: provider.Protocol,
+			ContextLength: provider.ContextLength, TimeoutSec: provider.TimeoutSec, MaxOutputTokens: provider.MaxOutputTokens,
+			SupportsVision: provider.SupportsVision, AgentType: provider.AgentType, WireAPI: provider.WireAPI,
+			ProviderName: name, AuthType: provider.AuthType,
+		}); err != nil {
+			// Do not expose provider errors here: upstream failures may contain request
+			// metadata. The settings test action remains available for diagnostics.
+			item["status"] = "connection_failed"
+		} else {
+			item["ok"] = true
+			item["status"] = "passed"
+			passed++
+		}
+		items = append(items, item)
+	}
+	return map[string]interface{}{
+		"tested": len(items), "passed": passed, "failed": len(items) - passed, "providers": items,
+	}
 }
 
 func (a *App) runUserDataMigrationCleanup(ctx context.Context, cfg userDataMigrationClientConfig, exportID string, progress func(float64, string)) (map[string]interface{}, error) {
@@ -615,7 +972,7 @@ func (a *App) createUserDataMigrationTempDir(pattern string) (string, error) {
 
 func (a *App) buildUserDataMigrationPackage(ctx context.Context, cfg userDataMigrationClientConfig, workDir string) (string, userDataMigrationManifest, error) {
 	payloadDir := filepath.Join(workDir, "payload")
-	if err := os.MkdirAll(payloadDir, 0o755); err != nil {
+	if err := os.MkdirAll(payloadDir, 0o700); err != nil {
 		return "", userDataMigrationManifest{}, err
 	}
 	a.ensureMemoryStore()
@@ -625,6 +982,34 @@ func (a *App) buildUserDataMigrationPackage(ctx context.Context, cfg userDataMig
 	entries := a.memoryStore.List("", "")
 	memPath := filepath.Join(payloadDir, "memory_entries.json")
 	if err := userDataMigrationWriteJSONFile(memPath, entries); err != nil {
+		return "", userDataMigrationManifest{}, err
+	}
+	appConfig, err := a.LoadConfig()
+	if err != nil {
+		return "", userDataMigrationManifest{}, fmt.Errorf("load system configuration: %w", err)
+	}
+	migrationConfig, secretPaths, err := userDataMigrationExportableConfig(appConfig)
+	if err != nil {
+		return "", userDataMigrationManifest{}, err
+	}
+	configDir := filepath.Join(payloadDir, "config")
+	if err := userDataMigrationWriteJSONFile(filepath.Join(configDir, "app_config.json"), migrationConfig); err != nil {
+		return "", userDataMigrationManifest{}, err
+	}
+	policy := userDataMigrationConfigPolicy{
+		SchemaVersion:  userDataMigrationConfigSchema,
+		Restore:        "all_fields_except_explicit_exclusions",
+		PreserveTarget: append([]string(nil), userDataMigrationPreserveTargetConfigPaths...),
+		RewriteTarget:  append([]string(nil), userDataMigrationRewriteTargetConfigPaths...),
+		SkipRuntime:    append([]string(nil), userDataMigrationSkipRuntimeConfigPaths...),
+	}
+	if err := userDataMigrationWriteJSONFile(filepath.Join(configDir, "migration_policy.json"), policy); err != nil {
+		return "", userDataMigrationManifest{}, err
+	}
+	if err := userDataMigrationWriteJSONFile(filepath.Join(configDir, "secret_inventory.json"), userDataMigrationSecretInventory{
+		SchemaVersion: userDataMigrationConfigSchema,
+		Paths:         secretPaths,
+	}); err != nil {
 		return "", userDataMigrationManifest{}, err
 	}
 	knowledgePath := filepath.Join(payloadDir, "knowledge_snapshot.jsonl")
@@ -660,13 +1045,25 @@ func (a *App) buildUserDataMigrationPackage(ctx context.Context, cfg userDataMig
 		MemoryEntries:  len(entries),
 		KnowledgeBytes: knowledgeResult.Bytes,
 		AssetBytes:     assetBytes,
-		Meta:           map[string]interface{}{"host": "gui", "contains": []string{"memory", "knowledge", "knowledge_assets"}},
+		ConfigSchema:   userDataMigrationConfigSchema,
+		ConfigSections: len(migrationConfig),
+		SecretCount:    len(secretPaths),
+		ExcludedConfig: userDataMigrationExcludedConfigPaths(),
+		Meta:           map[string]interface{}{"host": "gui", "contains": []string{"config", "memory", "knowledge", "knowledge_assets"}},
+	}
+	if manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 {
+		return "", userDataMigrationManifest{}, fmt.Errorf("migration data size is invalid")
 	}
 	files, err := userDataMigrationDigestDir(payloadDir)
 	if err != nil {
 		return "", userDataMigrationManifest{}, err
 	}
 	manifest.Files = files
+	if encoded, err := json.Marshal(manifest); err != nil {
+		return "", userDataMigrationManifest{}, err
+	} else if len(encoded) > userDataMigrationMaxManifest {
+		return "", userDataMigrationManifest{}, fmt.Errorf("migration manifest exceeds %s", userDataMigrationFormatBytes(userDataMigrationMaxManifest))
+	}
 	if err := userDataMigrationWriteJSONFile(filepath.Join(payloadDir, "manifest.json"), manifest); err != nil {
 		return "", userDataMigrationManifest{}, err
 	}
@@ -684,36 +1081,75 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 		return nil, err
 	}
 	var manifest userDataMigrationManifest
-	if err := userDataMigrationReadJSONFile(filepath.Join(payloadDir, "manifest.json"), &manifest); err != nil {
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "manifest.json"), &manifest, userDataMigrationMaxManifest); err != nil {
 		return nil, err
 	}
-	if manifest.Version != userDataMigrationPackageVersion {
+	if manifest.Version != userDataMigrationPackageVersion && manifest.Version != userDataMigrationLegacyVersion {
 		return nil, fmt.Errorf("unsupported migration package version %q", manifest.Version)
+	}
+	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 {
+		return nil, fmt.Errorf("migration manifest contains invalid counts")
 	}
 	if err := userDataMigrationVerifyFileDigests(payloadDir, manifest.Files); err != nil {
 		return nil, err
 	}
-	var entries []memory.Entry
-	if err := userDataMigrationReadJSONFile(filepath.Join(payloadDir, "memory_entries.json"), &entries); err != nil {
+	if err := validateUserDataMigrationManifestFileStats(manifest); err != nil {
 		return nil, err
 	}
+	var entries []memory.Entry
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "memory_entries.json"), &entries, userDataMigrationMaxMemoryJSON); err != nil {
+		return nil, err
+	}
+	if len(entries) != manifest.MemoryEntries {
+		return nil, fmt.Errorf("migration memory entry count mismatch")
+	}
 	knowledgePath := filepath.Join(payloadDir, "knowledge_snapshot.jsonl")
+	knowledgePath, knowledgeRepair, err := userDataMigrationRepairKnowledgeSnapshot(knowledgePath, filepath.Join(workDir, "knowledge_snapshot.repaired.jsonl"))
+	if err != nil {
+		return nil, err
+	}
 	if err := a.validateUserDataMigrationKnowledgeSnapshot(knowledgePath); err != nil {
 		return nil, err
 	}
+	var incomingConfig map[string]interface{}
+	if manifest.Version == userDataMigrationPackageVersion {
+		if manifest.ConfigSchema != userDataMigrationConfigSchema {
+			return nil, fmt.Errorf("unsupported migration config schema %q", manifest.ConfigSchema)
+		}
+		if manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
+			return nil, fmt.Errorf("migration configuration metadata is invalid")
+		}
+		if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "app_config.json"), &incomingConfig, userDataMigrationMaxConfigJSON); err != nil {
+			return nil, fmt.Errorf("read migration system configuration: %w", err)
+		}
+		if len(incomingConfig) != manifest.ConfigSections {
+			return nil, fmt.Errorf("migration configuration section count mismatch")
+		}
+		if err := validateUserDataMigrationConfigMetadata(payloadDir, manifest, incomingConfig); err != nil {
+			return nil, err
+		}
+	}
+	rollbackKnowledge, err := a.prepareUserDataMigrationKnowledgeRollback(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("backup target knowledge base: %w", err)
+	}
 
-	memoryCount, rollbackMemory, err := a.applyUserDataMigrationMemory(entries)
+	configSections, secretCount, rollbackConfig, err := a.applyUserDataMigrationConfig(incomingConfig)
 	if err != nil {
 		return nil, err
+	}
+	memoryCount, rollbackMemory, err := a.applyUserDataMigrationMemory(entries)
+	if err != nil {
+		return nil, userDataMigrationRollbackError(err, rollbackConfig)
 	}
 	assetSrc := filepath.Join(payloadDir, "knowledge_assets")
 	assetBytes, rollbackAssets, commitAssets, err := a.replaceUserDataMigrationKnowledgeAssets(assetSrc, workDir)
 	if err != nil {
-		return nil, userDataMigrationRollbackError(err, rollbackMemory)
+		return nil, userDataMigrationRollbackError(err, rollbackMemory, rollbackConfig)
 	}
 	knowledgeResult, err := a.importUserDataMigrationKnowledgeSnapshot(knowledgePath, workDir)
 	if err != nil {
-		return nil, userDataMigrationRollbackError(err, rollbackAssets, rollbackMemory)
+		return nil, userDataMigrationRollbackError(err, rollbackKnowledge, rollbackAssets, rollbackMemory, rollbackConfig)
 	}
 	if commitAssets != nil {
 		commitAssets()
@@ -723,17 +1159,396 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 		"memory": map[string]interface{}{
 			"entries": memoryCount,
 		},
-		"knowledge": knowledgeResult,
+		"knowledge":        knowledgeResult,
+		"knowledge_repair": knowledgeRepair,
 		"assets": map[string]interface{}{
 			"bytes": assetBytes,
+		},
+		"config": map[string]interface{}{
+			"sections": configSections,
+			"secrets":  secretCount,
+			"schema":   manifest.ConfigSchema,
 		},
 		"manifest": manifest,
 	}, nil
 }
 
+// userDataMigrationRepairKnowledgeSnapshot removes orphaned cards and facts
+// from an otherwise valid snapshot. Older knowledge-store versions could leave
+// cards pointing to document nodes already removed during source maintenance.
+// Those records cannot be restored faithfully and previously made the whole
+// migration fail at 82%. Valid records are preserved verbatim.
+func userDataMigrationRepairKnowledgeSnapshot(inputPath, outputPath string) (string, map[string]int, error) {
+	type record struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	type nodeRef struct {
+		ID string `json:"id"`
+	}
+	type cardRef struct {
+		ID     string `json:"id"`
+		NodeID string `json:"node_id"`
+	}
+	type factRef struct {
+		CardID string `json:"card_id"`
+	}
+
+	// A migration snapshot can be multiple gigabytes. Do not retain every JSONL
+	// record while repairing it: collect the two small reference sets in separate
+	// passes, then stream the repaired output in a third pass.
+	forEachRecord := func(fn func(record, string) error) error {
+		in, err := os.Open(inputPath)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		scanner := bufio.NewScanner(in)
+		scanner.Buffer(make([]byte, 1024*1024), 128*1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var item record
+			if err := json.Unmarshal([]byte(line), &item); err != nil {
+				return fmt.Errorf("read migration knowledge snapshot: %w", err)
+			}
+			if err := fn(item, line); err != nil {
+				return err
+			}
+		}
+		return scanner.Err()
+	}
+
+	nodeIDs := make(map[string]struct{})
+	if err := forEachRecord(func(item record, _ string) error {
+		if item.Type == "node" {
+			var node nodeRef
+			if err := json.Unmarshal(item.Data, &node); err != nil {
+				return fmt.Errorf("read migration knowledge node: %w", err)
+			}
+			if node.ID = strings.TrimSpace(node.ID); node.ID != "" {
+				nodeIDs[node.ID] = struct{}{}
+			}
+		}
+		return nil
+	}); err != nil {
+		return "", nil, err
+	}
+
+	validCards := make(map[string]struct{})
+	if err := forEachRecord(func(item record, _ string) error {
+		if item.Type != "card" {
+			return nil
+		}
+		var card cardRef
+		if err := json.Unmarshal(item.Data, &card); err != nil {
+			return fmt.Errorf("read migration knowledge card: %w", err)
+		}
+		if card.ID = strings.TrimSpace(card.ID); card.ID == "" {
+			return nil
+		}
+		if nodeID := strings.TrimSpace(card.NodeID); nodeID == "" {
+			validCards[card.ID] = struct{}{}
+			return nil
+		} else if _, ok := nodeIDs[nodeID]; ok {
+			validCards[card.ID] = struct{}{}
+		}
+		return nil
+	}); err != nil {
+		return "", nil, err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o700); err != nil {
+		return "", nil, err
+	}
+	out, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", nil, err
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			_ = out.Close()
+			_ = os.Remove(outputPath)
+		}
+	}()
+	writer := bufio.NewWriterSize(out, 1024*1024)
+	repair := map[string]int{"orphaned_cards": 0, "orphaned_facts": 0}
+	if err := forEachRecord(func(item record, line string) error {
+		skip := false
+		switch item.Type {
+		case "card":
+			var card cardRef
+			if err := json.Unmarshal(item.Data, &card); err != nil {
+				return fmt.Errorf("read migration knowledge card: %w", err)
+			}
+			_, keep := validCards[strings.TrimSpace(card.ID)]
+			skip = !keep
+			if skip {
+				repair["orphaned_cards"]++
+			}
+		case "fact":
+			var fact factRef
+			if err := json.Unmarshal(item.Data, &fact); err != nil {
+				return fmt.Errorf("read migration knowledge fact: %w", err)
+			}
+			_, keep := validCards[strings.TrimSpace(fact.CardID)]
+			skip = !keep
+			if skip {
+				repair["orphaned_facts"]++
+			}
+		}
+		if skip {
+			return nil
+		}
+		if _, err := writer.WriteString(line); err != nil {
+			return fmt.Errorf("write repaired migration knowledge snapshot: %w", err)
+		}
+		if err := writer.WriteByte('\n'); err != nil {
+			return fmt.Errorf("write repaired migration knowledge snapshot: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return "", nil, err
+	}
+	if err := writer.Flush(); err != nil {
+		return "", nil, fmt.Errorf("flush repaired migration knowledge snapshot: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return "", nil, fmt.Errorf("close repaired migration knowledge snapshot: %w", err)
+	}
+	completed = true
+	return outputPath, repair, nil
+}
+
 func (a *App) restoreUserDataMigrationMemory(entries []memory.Entry) error {
 	_, _, err := a.applyUserDataMigrationMemory(entries)
 	return err
+}
+
+func userDataMigrationExportableConfig(cfg corelib.AppConfig) (map[string]interface{}, []string, error) {
+	out, err := userDataMigrationCompleteConfigMap(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, path := range userDataMigrationExcludedConfigPaths() {
+		delete(out, path)
+	}
+	secretPaths := userDataMigrationSecretPaths(out, "")
+	return out, secretPaths, nil
+}
+
+// userDataMigrationCompleteConfigMap serializes every top-level AppConfig field,
+// including zero, empty and nil values hidden by omitempty. Migration is a full
+// replacement for portable settings, so an empty source value must be able to
+// clear a non-empty value on the target machine.
+func userDataMigrationCompleteConfigMap(cfg corelib.AppConfig) (map[string]interface{}, error) {
+	typeOfConfig := reflect.TypeOf(cfg)
+	valueOfConfig := reflect.ValueOf(cfg)
+	out := make(map[string]interface{}, typeOfConfig.NumField())
+	for i := 0; i < typeOfConfig.NumField(); i++ {
+		field := typeOfConfig.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "" {
+			name = field.Name
+		}
+		if name == "-" {
+			continue
+		}
+		raw, err := json.Marshal(valueOfConfig.Field(i).Interface())
+		if err != nil {
+			return nil, fmt.Errorf("marshal system configuration field %s: %w", name, err)
+		}
+		var normalized interface{}
+		if err := json.Unmarshal(raw, &normalized); err != nil {
+			return nil, fmt.Errorf("normalize system configuration field %s: %w", name, err)
+		}
+		out[name] = normalized
+	}
+	return out, nil
+}
+
+func userDataMigrationValidateConfigKeys(incoming map[string]interface{}) error {
+	known, err := userDataMigrationCompleteConfigMap(corelib.AppConfig{})
+	if err != nil {
+		return err
+	}
+	for key := range incoming {
+		if _, ok := known[key]; !ok {
+			return fmt.Errorf("migration configuration contains unsupported field %q", key)
+		}
+	}
+	return nil
+}
+
+func userDataMigrationSecretPaths(value interface{}, prefix string) []string {
+	var out []string
+	switch current := value.(type) {
+	case map[string]interface{}:
+		keys := make([]string, 0, len(current))
+		for key := range current {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			path := key
+			if prefix != "" {
+				path = prefix + "." + key
+			}
+			if userDataMigrationSecretField(key) && userDataMigrationHasSecretValue(current[key]) {
+				out = append(out, path)
+				continue
+			}
+			out = append(out, userDataMigrationSecretPaths(current[key], path)...)
+		}
+	case []interface{}:
+		for i, item := range current {
+			out = append(out, userDataMigrationSecretPaths(item, fmt.Sprintf("%s[%d]", prefix, i))...)
+		}
+	}
+	return out
+}
+
+func userDataMigrationSecretField(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.NewReplacer("-", "_", " ", "_").Replace(key)
+	compactKey := strings.ReplaceAll(key, "_", "")
+	for _, marker := range []string{
+		"api_key", "apikey", "password", "secret", "passphrase", "authorization", "auth_header",
+		"access_key", "private_key", "credential", "cookie", "bearer",
+	} {
+		if strings.Contains(key, marker) || strings.Contains(compactKey, strings.ReplaceAll(marker, "_", "")) {
+			return true
+		}
+	}
+	if strings.HasSuffix(compactKey, "token") && !strings.HasSuffix(compactKey, "tokenbudget") {
+		return true
+	}
+	return key == "key" || strings.HasSuffix(key, "_key")
+}
+
+func userDataMigrationHasSecretValue(value interface{}) bool {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []interface{}:
+		return len(v) > 0
+	case map[string]interface{}:
+		return len(v) > 0
+	default:
+		return value != nil
+	}
+}
+
+func validateUserDataMigrationConfigMetadata(payloadDir string, manifest userDataMigrationManifest, incomingConfig map[string]interface{}) error {
+	var policy userDataMigrationConfigPolicy
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "migration_policy.json"), &policy, userDataMigrationMaxManifest); err != nil {
+		return fmt.Errorf("read migration configuration policy: %w", err)
+	}
+	if policy.SchemaVersion != userDataMigrationConfigSchema ||
+		policy.Restore != "all_fields_except_explicit_exclusions" ||
+		!userDataMigrationStringSlicesEqual(policy.PreserveTarget, userDataMigrationPreserveTargetConfigPaths) ||
+		!userDataMigrationStringSlicesEqual(policy.RewriteTarget, userDataMigrationRewriteTargetConfigPaths) ||
+		!userDataMigrationStringSlicesEqual(policy.SkipRuntime, userDataMigrationSkipRuntimeConfigPaths) {
+		return fmt.Errorf("migration configuration policy is incompatible with this version")
+	}
+
+	var inventory userDataMigrationSecretInventory
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "secret_inventory.json"), &inventory, userDataMigrationMaxManifest); err != nil {
+		return fmt.Errorf("read migration secret inventory: %w", err)
+	}
+	actualSecretPaths := userDataMigrationSecretPaths(incomingConfig, "")
+	actualExcludedPaths := userDataMigrationExcludedConfigPaths()
+	if inventory.SchemaVersion != userDataMigrationConfigSchema ||
+		len(inventory.Paths) != manifest.SecretCount ||
+		!userDataMigrationStringSlicesEqual(inventory.Paths, actualSecretPaths) {
+		return fmt.Errorf("migration secret inventory is inconsistent")
+	}
+	if !userDataMigrationStringSlicesEqual(manifest.ExcludedConfig, actualExcludedPaths) {
+		return fmt.Errorf("migration excluded configuration metadata is inconsistent")
+	}
+	return nil
+}
+
+func userDataMigrationStringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *App) applyUserDataMigrationConfig(incoming map[string]interface{}) (int, int, func() error, error) {
+	if len(incoming) == 0 {
+		return 0, 0, nil, nil
+	}
+	if err := userDataMigrationValidateConfigKeys(incoming); err != nil {
+		return 0, 0, nil, err
+	}
+	current, err := a.LoadConfig()
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("load target system configuration: %w", err)
+	}
+	currentRaw, err := json.Marshal(current)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	var merged map[string]interface{}
+	if err := json.Unmarshal(currentRaw, &merged); err != nil {
+		return 0, 0, nil, err
+	}
+	for key, value := range incoming {
+		if userDataMigrationContainsPath(userDataMigrationExcludedConfigPaths(), key) {
+			continue
+		}
+		merged[key] = value
+	}
+	mergedRaw, err := json.Marshal(merged)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	var restored corelib.AppConfig
+	if err := json.Unmarshal(mergedRaw, &restored); err != nil {
+		return 0, 0, nil, fmt.Errorf("validate migrated system configuration: %w", err)
+	}
+	secretCount := len(userDataMigrationSecretPaths(incoming, ""))
+	if err := a.saveUserDataMigrationConfig(restored); err != nil {
+		return 0, 0, nil, fmt.Errorf("restore system configuration: %w", err)
+	}
+	rollback := func() error { return a.saveUserDataMigrationConfig(current) }
+	return len(incoming), secretCount, rollback, nil
+}
+
+func (a *App) saveUserDataMigrationConfig(cfg corelib.AppConfig) error {
+	userDataMigrationConfigRestoreApps.Store(a, struct{}{})
+	defer userDataMigrationConfigRestoreApps.Delete(a)
+	return a.SaveConfig(cfg)
+}
+
+func userDataMigrationContainsPath(paths []string, value string) bool {
+	for _, item := range paths {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+func userDataMigrationExcludedConfigPaths() []string {
+	paths := make([]string, 0, len(userDataMigrationPreserveTargetConfigPaths)+len(userDataMigrationRewriteTargetConfigPaths)+len(userDataMigrationSkipRuntimeConfigPaths))
+	paths = append(paths, userDataMigrationPreserveTargetConfigPaths...)
+	paths = append(paths, userDataMigrationRewriteTargetConfigPaths...)
+	paths = append(paths, userDataMigrationSkipRuntimeConfigPaths...)
+	return paths
 }
 
 func (a *App) applyUserDataMigrationMemory(entries []memory.Entry) (int, func() error, error) {
@@ -845,6 +1660,34 @@ func (a *App) importUserDataMigrationKnowledgeSnapshot(path, workDir string) (kn
 	atomic.StoreInt64(&knowledgeSourceCountTime, time.Now().Unix())
 	_ = workDir
 	return result, nil
+}
+
+func (a *App) prepareUserDataMigrationKnowledgeRollback(workDir string) (func() error, error) {
+	backupPath := filepath.Join(workDir, "knowledge_snapshot.backup.jsonl")
+	if _, err := a.KnowledgeExportSnapshotWithOptions(knowledge.ExportOptions{
+		OutputPath:      backupPath,
+		RedactSensitive: false,
+	}); err != nil {
+		return nil, err
+	}
+	return func() error {
+		result, err := a.KnowledgeImportSnapshot(knowledge.SnapshotImportOptions{
+			InputPath:        backupPath,
+			Overwrite:        true,
+			ReplaceAll:       true,
+			AbortOnError:     true,
+			SkipSafetyBackup: true,
+		})
+		if err != nil {
+			return err
+		}
+		if err := userDataMigrationKnowledgeImportError(result); err != nil {
+			return err
+		}
+		atomic.StoreInt64(&knowledgeSourceCountCache, int64(result.Sources))
+		atomic.StoreInt64(&knowledgeSourceCountTime, time.Now().Unix())
+		return nil
+	}, nil
 }
 
 func userDataMigrationKnowledgeImportError(result knowledge.SnapshotImportResult) error {
@@ -1009,17 +1852,40 @@ func (a *App) downloadUserDataMigrationChunks(ctx context.Context, cfg userDataM
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	for i := 0; i < chunkCount; i++ {
-		data, err := a.userDataMigrationHubBytes(ctx, cfg, http.MethodGet, fmt.Sprintf("/api/v1/migration/imports/%s/chunks/%d", exportID, i), nil)
-		if err != nil {
-			return err
+	completed := false
+	defer func() {
+		_ = out.Close()
+		if !completed {
+			_ = os.Remove(path)
 		}
+	}()
+	for i := 0; i < chunkCount; i++ {
 		expectedSize := chunkSize
 		if remaining := size - int64(i)*chunkSize; remaining < expectedSize {
 			expectedSize = remaining
 		}
-		if expectedSize <= 0 || int64(len(data)) != expectedSize {
+		if expectedSize <= 0 {
+			return fmt.Errorf("downloaded migration chunk %d size mismatch", i)
+		}
+		var data []byte
+		for attempt := 0; attempt < 3; attempt++ {
+			data, err = a.userDataMigrationHubBytesLimited(ctx, cfg, http.MethodGet, fmt.Sprintf("/api/v1/migration/imports/%s/chunks/%d", exportID, i), nil, expectedSize, "")
+			if err == nil {
+				break
+			}
+			if attempt == 2 || !userDataMigrationRetryableTransferError(err) {
+				return err
+			}
+			if progress != nil {
+				progress(0.12+0.55*float64(i)/float64(chunkCount), fmt.Sprintf("download temporarily failed; retrying chunk %d/%d (%d/3)", i+1, chunkCount, attempt+2))
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+			}
+		}
+		if int64(len(data)) != expectedSize {
 			return fmt.Errorf("downloaded migration chunk %d size mismatch", i)
 		}
 		if _, err := out.Write(data); err != nil {
@@ -1032,7 +1898,28 @@ func (a *App) downloadUserDataMigrationChunks(ctx context.Context, cfg userDataM
 	} else if st.Size() != size {
 		return fmt.Errorf("downloaded package size mismatch")
 	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	completed = true
 	return nil
+}
+
+func userDataMigrationRetryableTransferError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"context deadline exceeded", "connection reset", "connection refused", "broken pipe",
+		"unexpected eof", "transport is closing", "temporarily unavailable", "returned 429",
+		"returned 500", "returned 502", "returned 503", "returned 504",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func encryptUserDataMigrationFile(inPath, outPath, password, plainHash string) error {
@@ -1097,7 +1984,7 @@ func encryptUserDataMigrationFile(inPath, outPath, password, plainHash string) e
 	return outFile.Close()
 }
 
-func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash string) error {
+func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash string, expectedPlainSize ...int64) error {
 	in, err := os.Open(inPath)
 	if err != nil {
 		return err
@@ -1119,8 +2006,8 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 		return fmt.Errorf("invalid encrypted migration header")
 	}
 	var header userDataMigrationEncryptedHeader
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		return err
+	if err := userDataMigrationDecodeStrictJSON(headerJSON, &header); err != nil {
+		return fmt.Errorf("invalid encrypted migration header: %w", err)
 	}
 	if err := validateUserDataMigrationEncryptedHeader(header); err != nil {
 		return err
@@ -1152,6 +2039,9 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 		if _, err := h.Write(plain); err != nil {
 			return err
 		}
+		if len(expectedPlainSize) > 0 && expectedPlainSize[0] > 0 && int64(len(plain)) != expectedPlainSize[0] {
+			return fmt.Errorf("decrypted package size mismatch")
+		}
 		if _, err := out.Write(plain); err != nil {
 			return err
 		}
@@ -1160,6 +2050,7 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 	if header.ChunkSize <= 0 || header.ChunkSize > 32<<20 {
 		return fmt.Errorf("unsupported encrypted migration package")
 	}
+	var plainBytes int64
 	for index := uint64(0); ; index++ {
 		var frameLen uint32
 		if err := binary.Read(in, binary.BigEndian, &frameLen); err != nil {
@@ -1183,6 +2074,10 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 		if err != nil {
 			return fmt.Errorf("migration password is incorrect or package is corrupted")
 		}
+		plainBytes += int64(len(plain))
+		if len(expectedPlainSize) > 0 && expectedPlainSize[0] > 0 && plainBytes > expectedPlainSize[0] {
+			return fmt.Errorf("decrypted package size mismatch")
+		}
 		if _, err := h.Write(plain); err != nil {
 			return err
 		}
@@ -1190,11 +2085,14 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 			return err
 		}
 	}
+	if len(expectedPlainSize) > 0 && expectedPlainSize[0] > 0 && plainBytes != expectedPlainSize[0] {
+		return fmt.Errorf("decrypted package size mismatch")
+	}
 	return finishUserDataMigrationDecryption(out, h, expectedPlainHash, header.PlainHash)
 }
 
 func validateUserDataMigrationEncryptedHeader(header userDataMigrationEncryptedHeader) error {
-	if header.Version != userDataMigrationPackageVersion || header.KDF != "argon2id" || len(header.Salt) != 16 || len(header.Nonce) != 12 {
+	if (header.Version != userDataMigrationPackageVersion && header.Version != userDataMigrationLegacyVersion) || header.KDF != "argon2id" || len(header.Salt) != 16 || len(header.Nonce) != 12 {
 		return fmt.Errorf("unsupported encrypted migration package")
 	}
 	if header.Time == 0 || header.Time > 10 || header.MemoryKB < 1024 || header.MemoryKB > 256*1024 || header.Threads == 0 || header.Threads > 8 {
@@ -1258,8 +2156,8 @@ func (a *App) userDataMigrationHubJSON(ctx context.Context, cfg userDataMigratio
 	}
 	var out map[string]interface{}
 	if len(data) > 0 {
-		if err := json.Unmarshal(data, &out); err != nil {
-			return nil, err
+		if err := userDataMigrationDecodeStrictJSON(data, &out); err != nil {
+			return nil, fmt.Errorf("invalid Hub migration JSON response: %w", err)
 		}
 	}
 	if out == nil {
@@ -1274,6 +2172,17 @@ func (a *App) userDataMigrationHubRaw(ctx context.Context, cfg userDataMigration
 }
 
 func (a *App) userDataMigrationHubBytes(ctx context.Context, cfg userDataMigrationClientConfig, method, path string, body io.Reader, contentType ...string) ([]byte, error) {
+	value := ""
+	if len(contentType) > 0 {
+		value = contentType[0]
+	}
+	return a.userDataMigrationHubBytesLimited(ctx, cfg, method, path, body, 32<<20, value)
+}
+
+func (a *App) userDataMigrationHubBytesLimited(ctx context.Context, cfg userDataMigrationClientConfig, method, path string, body io.Reader, maxResponseBytes int64, contentType string) ([]byte, error) {
+	if maxResponseBytes <= 0 {
+		return nil, fmt.Errorf("invalid Hub migration response size limit")
+	}
 	req, err := http.NewRequestWithContext(ctx, method, cfg.HubURL+path, body)
 	if err != nil {
 		return nil, err
@@ -1286,19 +2195,57 @@ func (a *App) userDataMigrationHubBytes(ctx context.Context, cfg userDataMigrati
 		req.Header.Set("X-Machine-ID", cfg.MachineID)
 	}
 	req.Header.Set("Accept", "application/json")
-	if body != nil && method != http.MethodGet && len(contentType) > 0 && strings.TrimSpace(contentType[0]) != "" {
-		req.Header.Set("Content-Type", strings.TrimSpace(contentType[0]))
+	if body != nil && method != http.MethodGet && strings.TrimSpace(contentType) != "" {
+		req.Header.Set("Content-Type", strings.TrimSpace(contentType))
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if readErr != nil {
+		return nil, fmt.Errorf("read Hub migration response: %w", readErr)
+	}
+	if int64(len(data)) > maxResponseBytes {
+		return nil, fmt.Errorf("Hub migration API %s %s response exceeds %s", method, path, userDataMigrationFormatBytes(maxResponseBytes))
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Hub migration API %s %s returned %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, fmt.Errorf("Hub migration API %s %s returned %d: %s", method, path, resp.StatusCode, userDataMigrationHubErrorMessage(data))
 	}
 	return data, nil
+}
+
+func userDataMigrationHubErrorMessage(data []byte) string {
+	const fallback = "request failed"
+	if len(data) == 0 {
+		return fallback
+	}
+	var payload map[string]interface{}
+	if err := userDataMigrationDecodeStrictJSON(data, &payload); err != nil {
+		return fallback
+	}
+	for _, value := range []interface{}{payload["message"], payload["code"]} {
+		if text := strings.TrimSpace(fmt.Sprint(value)); text != "" && text != "<nil>" {
+			return userDataMigrationTruncateErrorText(text, 512)
+		}
+	}
+	if nested, ok := payload["error"].(map[string]interface{}); ok {
+		for _, value := range []interface{}{nested["message"], nested["code"]} {
+			if text := strings.TrimSpace(fmt.Sprint(value)); text != "" && text != "<nil>" {
+				return userDataMigrationTruncateErrorText(text, 512)
+			}
+		}
+	}
+	return fallback
+}
+
+func userDataMigrationTruncateErrorText(value string, maxRunes int) string {
+	runes := []rune(value)
+	if maxRunes > 0 && len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "…"
+	}
+	return value
 }
 
 func userDataMigrationFileSHA256(path string) (string, int64, error) {
@@ -1345,11 +2292,20 @@ func userDataMigrationDigestDir(root string) ([]userDataMigrationFileDigest, err
 func userDataMigrationVerifyFileDigests(root string, files []userDataMigrationFileDigest) error {
 	expected := map[string]struct{}{"manifest.json": {}}
 	for _, file := range files {
-		cleanPath := filepath.ToSlash(strings.TrimSpace(file.Path))
-		if cleanPath == "" {
-			return fmt.Errorf("migration manifest contains empty file path")
+		cleanPath, key, err := userDataMigrationCanonicalRelativePath(file.Path)
+		if err != nil {
+			return fmt.Errorf("migration manifest contains invalid file path %q: %w", file.Path, err)
 		}
-		expected[cleanPath] = struct{}{}
+		if key == "manifest.json" {
+			return fmt.Errorf("migration manifest must not list itself")
+		}
+		if _, exists := expected[key]; exists {
+			return fmt.Errorf("migration manifest contains duplicate file path: %s", cleanPath)
+		}
+		if file.Bytes < 0 || !userDataMigrationValidSHA256(file.SHA256) {
+			return fmt.Errorf("migration manifest contains invalid file metadata: %s", cleanPath)
+		}
+		expected[key] = struct{}{}
 		path, err := userDataMigrationSafeJoin(root, cleanPath)
 		if err != nil {
 			return err
@@ -1370,11 +2326,95 @@ func userDataMigrationVerifyFileDigests(root string, files []userDataMigrationFi
 		if err != nil {
 			return err
 		}
-		if _, ok := expected[filepath.ToSlash(rel)]; !ok {
+		_, key, err := userDataMigrationCanonicalRelativePath(filepath.ToSlash(rel))
+		if err != nil {
+			return err
+		}
+		if _, ok := expected[key]; !ok {
 			return fmt.Errorf("migration package contains unexpected file: %s", filepath.ToSlash(rel))
 		}
 		return nil
 	})
+}
+
+func validateUserDataMigrationManifestFileStats(manifest userDataMigrationManifest) error {
+	files := make(map[string]userDataMigrationFileDigest, len(manifest.Files))
+	for _, file := range manifest.Files {
+		clean, _, err := userDataMigrationCanonicalRelativePath(file.Path)
+		if err != nil {
+			return err
+		}
+		files[clean] = file
+	}
+	required := []string{"memory_entries.json", "knowledge_snapshot.jsonl"}
+	if manifest.Version == userDataMigrationPackageVersion {
+		required = append(required, "config/app_config.json", "config/migration_policy.json", "config/secret_inventory.json")
+	}
+	for _, name := range required {
+		if _, ok := files[name]; !ok {
+			return fmt.Errorf("migration manifest is missing required file: %s", name)
+		}
+	}
+	if files["knowledge_snapshot.jsonl"].Bytes != manifest.KnowledgeBytes {
+		return fmt.Errorf("migration knowledge byte count mismatch")
+	}
+	var assetBytes int64
+	for name, file := range files {
+		if strings.HasPrefix(name, "knowledge_assets/") {
+			if file.Bytes > int64(^uint64(0)>>1)-assetBytes {
+				return fmt.Errorf("migration asset byte count overflow")
+			}
+			assetBytes += file.Bytes
+		}
+	}
+	if assetBytes != manifest.AssetBytes {
+		return fmt.Errorf("migration asset byte count mismatch")
+	}
+	return nil
+}
+
+func userDataMigrationCanonicalRelativePath(name string) (string, string, error) {
+	if name == "" || strings.TrimSpace(name) != name || strings.Contains(name, "\\") || strings.ContainsRune(name, 0) || strings.HasPrefix(name, "/") {
+		return "", "", fmt.Errorf("path must be a canonical relative slash path")
+	}
+	clean := pathpkg.Clean(name)
+	if clean == "." || clean != name || strings.HasPrefix(clean, "../") || clean == ".." {
+		return "", "", fmt.Errorf("path must be a canonical relative slash path")
+	}
+	if !userDataMigrationPortablePathSegments(clean) {
+		return "", "", fmt.Errorf("path contains a segment unsupported on Windows")
+	}
+	// Migration packages are portable. Use a case-insensitive identity on every
+	// platform so a package accepted on Linux cannot become ambiguous on Windows.
+	key := strings.ToLower(clean)
+	return clean, key, nil
+}
+
+func userDataMigrationPortablePathSegments(name string) bool {
+	for _, segment := range strings.Split(name, "/") {
+		if segment == "" || strings.Contains(segment, ":") || strings.HasSuffix(segment, ".") || strings.HasSuffix(segment, " ") {
+			return false
+		}
+		for _, r := range segment {
+			if r < 0x20 {
+				return false
+			}
+		}
+		base := strings.ToUpper(strings.SplitN(segment, ".", 2)[0])
+		if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+			(len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func userDataMigrationValidSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func userDataMigrationZipDir(root, zipPath string) error {
@@ -1448,21 +2488,50 @@ func userDataMigrationUnzipToDir(zipPath, dest string, maxExpandedBytes int64) e
 		return fmt.Errorf("migration package contains too many files")
 	}
 	expandedBytes := uint64(0)
+	seenFiles := make(map[string]struct{}, len(zr.File))
+	seenDirs := make(map[string]struct{})
+	declaredDirs := make(map[string]struct{})
 	for _, f := range zr.File {
 		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
 		}
+		entryName := strings.TrimSuffix(f.Name, "/")
+		cleanName, key, err := userDataMigrationCanonicalRelativePath(entryName)
+		if err != nil {
+			return fmt.Errorf("zip contains invalid entry path %q: %w", f.Name, err)
+		}
 		if f.FileInfo().IsDir() {
+			if _, fileExists := seenFiles[key]; fileExists {
+				return fmt.Errorf("zip entry path collides with a file: %s", f.Name)
+			}
+			if _, exists := declaredDirs[key]; exists {
+				return fmt.Errorf("zip contains duplicate directory entry: %s", f.Name)
+			}
+			declaredDirs[key] = struct{}{}
+			seenDirs[key] = struct{}{}
 			continue
 		}
+		if _, exists := seenFiles[key]; exists {
+			return fmt.Errorf("zip contains duplicate file entry: %s", f.Name)
+		}
+		if _, exists := seenDirs[key]; exists {
+			return fmt.Errorf("zip entry path collides with a directory: %s", f.Name)
+		}
+		for parent := pathpkg.Dir(key); parent != "."; parent = pathpkg.Dir(parent) {
+			if _, exists := seenFiles[parent]; exists {
+				return fmt.Errorf("zip entry path has file parent: %s", f.Name)
+			}
+			seenDirs[parent] = struct{}{}
+		}
+		seenFiles[key] = struct{}{}
 		if maxExpandedBytes > 0 && f.UncompressedSize64 > uint64(maxExpandedBytes)-expandedBytes {
 			return fmt.Errorf("migration package expands beyond %s", userDataMigrationFormatBytes(maxExpandedBytes))
 		}
-		outPath, err := userDataMigrationSafeJoin(dest, f.Name)
+		outPath, err := userDataMigrationSafeJoin(dest, cleanName)
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o700); err != nil {
 			return err
 		}
 		rc, err := f.Open()
@@ -1519,7 +2588,7 @@ func userDataMigrationCopyDirInto(destRoot, srcRoot, destName string) (int64, er
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return err
 		}
 		in, err := os.Open(path)
@@ -1569,7 +2638,7 @@ func userDataMigrationSafeJoin(root, name string) (string, error) {
 }
 
 func userDataMigrationWriteJSONFile(path string, v interface{}) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(v, "", "  ")
@@ -1584,7 +2653,157 @@ func userDataMigrationReadJSONFile(path string, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, v)
+	return userDataMigrationDecodeStrictJSON(data, v)
+}
+
+func userDataMigrationReadJSONFileLimited(path string, v interface{}, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return fmt.Errorf("invalid JSON size limit")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > maxBytes {
+		return fmt.Errorf("migration JSON file exceeds %s", userDataMigrationFormatBytes(maxBytes))
+	}
+	return userDataMigrationDecodeStrictJSON(data, v)
+}
+
+func userDataMigrationDecodeStrictJSON(data []byte, v interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := userDataMigrationWalkJSONValue(decoder, 0); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("migration JSON file contains trailing data")
+		}
+		return fmt.Errorf("invalid migration JSON: %w", err)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("invalid migration JSON: %w", err)
+	}
+	return nil
+}
+
+func userDataMigrationWalkJSONValue(decoder *json.Decoder, depth int) error {
+	if depth > userDataMigrationMaxJSONDepth {
+		return fmt.Errorf("migration JSON nesting exceeds %d levels", userDataMigrationMaxJSONDepth)
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("invalid migration JSON: %w", err)
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return fmt.Errorf("invalid migration JSON: %w", err)
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("invalid migration JSON object key")
+			}
+			identity := strings.ToLower(key)
+			if _, exists := seen[identity]; exists {
+				return fmt.Errorf("migration JSON file contains duplicate field %q", key)
+			}
+			seen[identity] = struct{}{}
+			if err := userDataMigrationWalkJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := userDataMigrationWalkJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("invalid migration JSON delimiter")
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("invalid migration JSON: %w", err)
+	}
+	want := json.Delim('}')
+	if delim == '[' {
+		want = ']'
+	}
+	if closing != want {
+		return fmt.Errorf("invalid migration JSON delimiter")
+	}
+	return nil
+}
+
+func userDataMigrationDownloadMetadata(m map[string]interface{}) (int, int64, int64, int64, string, string, error) {
+	chunkCount64, ok := userDataMigrationStrictPositiveInt64(m, "chunk_count")
+	if !ok || chunkCount64 > userDataMigrationMaxChunks {
+		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+	}
+	chunkSize, ok := userDataMigrationStrictPositiveInt64(m, "chunk_size")
+	if !ok || chunkSize < userDataMigrationMinChunkSize || chunkSize > userDataMigrationMaxChunkSize {
+		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+	}
+	encryptedSize, ok := userDataMigrationStrictPositiveInt64(m, "encrypted_size")
+	if !ok || encryptedSize > userDataMigrationMaxDownload {
+		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+	}
+	compressedSize, ok := userDataMigrationStrictPositiveInt64(m, "compressed_size")
+	if !ok || compressedSize > userDataMigrationMaxExpanded || compressedSize > encryptedSize {
+		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+	}
+	maxOverhead := int64(1<<20) + chunkCount64*64
+	if encryptedSize > compressedSize+maxOverhead {
+		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+	}
+	expectedChunks := (encryptedSize + chunkSize - 1) / chunkSize
+	if expectedChunks != chunkCount64 {
+		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+	}
+	encryptedHash := strings.TrimSpace(fmt.Sprint(m["encrypted_sha256"]))
+	plainHash := strings.TrimSpace(fmt.Sprint(m["plain_sha256"]))
+	if !userDataMigrationValidSHA256(encryptedHash) || !userDataMigrationValidSHA256(plainHash) {
+		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+	}
+	return int(chunkCount64), chunkSize, encryptedSize, compressedSize, strings.ToLower(encryptedHash), strings.ToLower(plainHash), nil
+}
+
+func userDataMigrationStrictPositiveInt64(m map[string]interface{}, key string) (int64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	switch value := m[key].(type) {
+	case float64:
+		if value <= 0 || value > float64(int64(^uint64(0)>>1)) || value != float64(int64(value)) {
+			return 0, false
+		}
+		return int64(value), true
+	case json.Number:
+		v, err := value.Int64()
+		return v, err == nil && v > 0
+	case int:
+		return int64(value), value > 0
+	case int64:
+		return value, value > 0
+	case int32:
+		return int64(value), value > 0
+	default:
+		return 0, false
+	}
 }
 
 func userDataMigrationRandomBytes(n int) []byte {

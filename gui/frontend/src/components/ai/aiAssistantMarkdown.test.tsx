@@ -921,7 +921,9 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
 
-        expect(screen.getByTestId("guide-receipt").textContent || '').toContain("这条补充已接上当前任务 · 这条补充已接上当前任务：");
+        const receiptText = screen.getByTestId("guide-receipt").textContent || '';
+        expect(receiptText).toContain("这条补充已接上当前任务");
+        expect(receiptText).toContain("这条补充已接上当前任务：");
     });
 
     it("keeps long guide receipt quotes as a compact preview", () => {

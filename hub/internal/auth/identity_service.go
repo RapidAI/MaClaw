@@ -102,6 +102,7 @@ type EnrollOption func(*enrollOptions)
 type enrollOptions struct {
 	Language      string
 	PhoneVerified bool
+	EmailVerified bool
 }
 
 // WithLanguage sets the UI language for registration emails.
@@ -111,6 +112,34 @@ func WithLanguage(lang string) EnrollOption {
 
 func WithPhoneVerifiedRegistration() EnrollOption {
 	return func(o *enrollOptions) { o.PhoneVerified = true }
+}
+
+func WithEmailVerifiedRegistration() EnrollOption {
+	return func(o *enrollOptions) { o.EmailVerified = true }
+}
+
+// ValidateEmailEnrollment applies the same routing and tenant policy checks used
+// by enrollment before an unauthenticated verification email is sent.
+func (s *IdentityService) ValidateEmailEnrollment(ctx context.Context, email string) error {
+	email = normalizeEmail(email)
+	if email == "" {
+		return ErrInvalidEmail
+	}
+	if err := s.ensureEmailAllowed(ctx, email); err != nil {
+		return err
+	}
+	tenantID := tenantIDFromContext(ctx)
+	user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, email)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, email); err != nil {
+			return err
+		}
+		return s.ensureUserRouteAllowed(ctx, email)
+	}
+	return nil
 }
 
 func (s *IdentityService) TenantDisplayName(ctx context.Context, tenantID string) string {
@@ -374,6 +403,10 @@ func (s *IdentityService) syncUserRoute(ctx context.Context, email string) {
 func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineName, platform, clientID, invitationCode string, opts ...EnrollOption) (*EnrollmentResult, error) {
 	email = normalizeEmail(email)
 	tenantID := tenantIDFromContext(ctx)
+	var eopts enrollOptions
+	for _, opt := range opts {
+		opt(&eopts)
+	}
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
@@ -483,17 +516,21 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 			// Send dedicated registration verification email (explains 70% bonus).
 			// If sending fails, grant the benefit directly — don't penalize the user
 			// for server-side email delivery issues.
-			var eopts enrollOptions
-			for _, opt := range opts {
-				opt(&eopts)
-			}
 			if eopts.PhoneVerified {
 				_ = s.grantPhoneVerifiedBenefitForUser(ctx, user.ID, email)
+			} else if eopts.EmailVerified {
+				_ = s.grantEmailConfirmedBenefitForUser(ctx, user.ID, email)
+				_ = s.users.MarkEmailVerified(ctx, tenantID, email)
 			} else if _, notifyErr := s.sendRegistrationVerification(ctx, email, eopts.Language); notifyErr != nil {
 				_ = s.grantEmailConfirmedBenefitForUser(ctx, user.ID, email)
 				_ = s.users.MarkEmailVerified(ctx, tenantID, email)
 			}
 		}
+	}
+
+	if user != nil && eopts.EmailVerified && strings.EqualFold(user.Email, email) && !user.EmailVerified {
+		_ = s.grantEmailConfirmedBenefitForUser(ctx, user.ID, email)
+		_ = s.users.MarkEmailVerified(ctx, tenantID, email)
 	}
 
 	// When a user was enrolled via invitation code, replace all existing routes

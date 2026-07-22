@@ -65,14 +65,14 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 	log.Printf("[knowledge_import_share] start knowledge_id=%s api_url=%s", resolvedKnowledgeID, apiURL)
 
 	// 120s timeout covers metadata fetch + package download over potentially slow networks.
-	ctx, cancel := context.WithTimeout(c.parentContext(), 120*time.Second)
-	defer cancel()
+	downloadCtx, cancelDownload := context.WithTimeout(c.parentContext(), 120*time.Second)
 
 	authHeader := buildShareAuthHeader(hubToken)
 
 	// Step 1: Fetch share metadata.
-	shareMetadata, err := fetchShareMetadata(ctx, apiURL, authHeader)
+	shareMetadata, err := fetchShareMetadata(downloadCtx, apiURL, authHeader)
 	if err != nil {
+		cancelDownload()
 		log.Printf("[knowledge_import_share] metadata fetch failed: %v", err)
 		return fmt.Sprintf("Error: failed to fetch share metadata: %v", err)
 	}
@@ -80,6 +80,7 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 	// Step 2: Resolve package URL from metadata.
 	packageURL := resolveSharePackageURL(apiURL, shareMetadata)
 	if packageURL == "" {
+		cancelDownload()
 		log.Printf("[knowledge_import_share] no package_url in metadata for %s", resolvedKnowledgeID)
 		// No package URL — return metadata so the agent can inform the user.
 		metaJSON, _ := json.Marshal(map[string]interface{}{
@@ -93,7 +94,8 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 	}
 
 	// Step 3: Download the package.
-	pkg, err := downloadSharePackage(ctx, packageURL, authHeader)
+	pkg, err := downloadSharePackage(downloadCtx, packageURL, authHeader)
+	cancelDownload()
 	if err != nil {
 		log.Printf("[knowledge_import_share] package download failed: %v (url=%s)", err, packageURL)
 		return fmt.Sprintf("Error: failed to download knowledge package: %v", err)
@@ -121,7 +123,7 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 	}
 
 	// Step 5: Import into local knowledge store.
-	importResult := knowledge.ImportPackageSources(ctx, c.knowledgeStore, convertPkgSources(pkg.Sources), knowledge.PackageImportOptions{
+	importResult := knowledge.ImportPackageSources(c.parentContext(), c.knowledgeStore, convertPkgSources(pkg.Sources), knowledge.PackageImportOptions{
 		OwnerID:   c.principal.UserID,
 		TenantID:  c.principal.TenantID,
 		TopicHint: pkg.Manifest.Title,
@@ -153,16 +155,24 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 		resolvedKnowledgeID, importResult.Imported, importResult.Skipped, importResult.Total, len(truncatedSources), len(importResult.Warnings))
 
 	resultJSON, _ := json.Marshal(map[string]interface{}{
-		"status":            "imported",
-		"knowledge_id":      resolvedKnowledgeID,
-		"package_id":        pkg.Manifest.PackageID,
-		"title":             pkg.Manifest.Title,
-		"imported":          importResult.Imported,
-		"skipped":           importResult.Skipped,
-		"total":             importResult.Total,
-		"warnings":          importResult.Warnings,
-		"content_truncated": len(truncatedSources) > 0,
-		"truncated_sources": truncatedSources,
+		// Keep the established tool-response status for compatibility. Callers
+		// that need the precise outcome should use import_status.
+		"status":              "imported",
+		"import_status":       importResult.Status,
+		"knowledge_id":        resolvedKnowledgeID,
+		"package_id":          pkg.Manifest.PackageID,
+		"title":               pkg.Manifest.Title,
+		"imported":            importResult.Imported,
+		"skipped":             importResult.Skipped,
+		"failed":              importResult.Failed,
+		"total":               importResult.Total,
+		"imported_source_ids": importResult.ImportedSourceIDs,
+		"skipped_source_ids":  importResult.SkippedSourceIDs,
+		"failed_source_ids":   importResult.FailedSourceIDs,
+		"retry_source_ids":    importResult.RetrySourceIDs,
+		"warnings":            importResult.Warnings,
+		"content_truncated":   len(truncatedSources) > 0,
+		"truncated_sources":   truncatedSources,
 	})
 	return string(resultJSON)
 }
@@ -226,10 +236,7 @@ func (c *coreAgentCallbacks) executeKnowledgeImportPackage(args map[string]inter
 		return fmt.Sprintf("Error: package declares %d sources but only contains %d. The package may be incomplete.", pkg.Manifest.SourceCount, len(pkg.Sources))
 	}
 
-	ctx, cancel := context.WithTimeout(c.parentContext(), 60*time.Second)
-	defer cancel()
-
-	importResult := knowledge.ImportPackageSources(ctx, c.knowledgeStore, convertPkgSources(pkg.Sources), knowledge.PackageImportOptions{
+	importResult := knowledge.ImportPackageSources(c.parentContext(), c.knowledgeStore, convertPkgSources(pkg.Sources), knowledge.PackageImportOptions{
 		OwnerID:   c.principal.UserID,
 		TenantID:  c.principal.TenantID,
 		TopicHint: pkg.Manifest.Title,
@@ -237,13 +244,21 @@ func (c *coreAgentCallbacks) executeKnowledgeImportPackage(args map[string]inter
 	})
 
 	resultJSON, _ := json.Marshal(map[string]interface{}{
-		"status":     "imported",
-		"package_id": pkg.Manifest.PackageID,
-		"title":      pkg.Manifest.Title,
-		"imported":   importResult.Imported,
-		"skipped":    importResult.Skipped,
-		"total":      importResult.Total,
-		"warnings":   importResult.Warnings,
+		// Keep the established tool-response status for compatibility. Callers
+		// that need the precise outcome should use import_status.
+		"status":              "imported",
+		"import_status":       importResult.Status,
+		"package_id":          pkg.Manifest.PackageID,
+		"title":               pkg.Manifest.Title,
+		"imported":            importResult.Imported,
+		"skipped":             importResult.Skipped,
+		"failed":              importResult.Failed,
+		"total":               importResult.Total,
+		"imported_source_ids": importResult.ImportedSourceIDs,
+		"skipped_source_ids":  importResult.SkippedSourceIDs,
+		"failed_source_ids":   importResult.FailedSourceIDs,
+		"retry_source_ids":    importResult.RetrySourceIDs,
+		"warnings":            importResult.Warnings,
 	})
 	return string(resultJSON)
 }

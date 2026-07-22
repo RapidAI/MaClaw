@@ -118,7 +118,7 @@ func (s *SkillStore) GetVisible(id string) (*HubSkillFull, error) {
 }
 
 // GetCurrentVisible returns a public skill only when it is both visible and
-// the current revision of its stable SkillID. Historical revisions remain
+// the current revision of its version group. Historical revisions remain
 // readable through GetVisible for the version-details view, but cannot be
 // downloaded or mutated through public endpoints.
 func (s *SkillStore) GetCurrentVisible(id string) (*HubSkillFull, error) {
@@ -173,23 +173,27 @@ func (s *SkillStore) GetByID(id string) *HubSkillMeta {
 	return nil
 }
 
-// FindBySkillID returns the latest revision for a stable publisher.name
-// skill_id, or nil if no revision exists.
+// FindBySkillID returns the current revision for a stable publisher.name
+// skill_id, including a current revision linked through a legacy identity
+// alias (such as the upload fingerprint).
 func (s *SkillStore) FindBySkillID(skillID string) *HubSkillMeta {
+	skillID = strings.TrimSpace(skillID)
 	if skillID == "" {
 		return nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	versions := make([]HubSkillMeta, 0)
-	for _, sk := range s.skills {
-		if sk.SkillID == skillID {
-			versions = append(versions, sk.HubSkillMeta)
+	for _, current := range groupSkillVersions(s.index) {
+		if strings.EqualFold(current.SkillID, skillID) {
+			result := current
+			return &result
 		}
-	}
-	if len(versions) > 0 {
-		latest := groupSkillVersions(versions)[0]
-		return &latest
+		for _, revision := range current.VersionHistory {
+			if candidate, ok := s.skills[revision.ID]; ok && strings.EqualFold(candidate.SkillID, skillID) {
+				result := current
+				return &result
+			}
+		}
 	}
 	return nil
 }
@@ -480,38 +484,68 @@ func filterMatchingSkills(items []HubSkillMeta, queryTerms, tags []string) []Hub
 }
 
 func isCurrentRevision(index []HubSkillMeta, candidate HubSkillMeta) bool {
-	if strings.TrimSpace(candidate.SkillID) == "" {
-		return true
-	}
 	for _, current := range groupSkillVersions(index) {
-		if current.SkillID == candidate.SkillID {
-			return current.ID == candidate.ID
+		if current.ID == candidate.ID {
+			return true
+		}
+		for _, revision := range current.VersionHistory {
+			if revision.ID == candidate.ID {
+				return false
+			}
 		}
 	}
-	return false
+	// An item missing from the catalog index is not a historical revision.
+	return true
 }
 
-// groupSkillVersions keeps one catalog entry per stable skill_id. Entries
-// without a stable ID intentionally remain separate, preserving compatibility
-// with legacy uploads. The selected entry is the highest semantic version; an
-// updated timestamp is used as the deterministic fallback for legacy versions.
+// groupSkillVersions keeps one catalog entry per skill identity. Older uploads
+// may have no skill_id, and a migration may leave versions with different IDs.
+// Therefore identities are joined through every reliable alias carried by a
+// record, rather than picking a single field and accidentally splitting a
+// version history.
 func groupSkillVersions(items []HubSkillMeta) []HubSkillMeta {
-	groups := make(map[string][]HubSkillMeta, len(items))
-	order := make([]string, 0, len(items))
-	for _, item := range items {
-		key := strings.TrimSpace(item.SkillID)
-		if key == "" {
-			key = "id:" + item.ID
+	parents := make([]int, len(items))
+	for i := range parents {
+		parents[i] = i
+	}
+	var find func(int) int
+	find = func(i int) int {
+		if parents[i] != i {
+			parents[i] = find(parents[i])
 		}
-		if _, ok := groups[key]; !ok {
-			order = append(order, key)
+		return parents[i]
+	}
+	join := func(a, b int) {
+		a, b = find(a), find(b)
+		if a != b {
+			parents[b] = a
 		}
-		groups[key] = append(groups[key], item)
+	}
+	seen := make(map[string]int, len(items)*2)
+	ambiguousWeakAliases := ambiguousWeakVersionAliases(items)
+	for i, item := range items {
+		for _, alias := range skillVersionAliases(item, ambiguousWeakAliases) {
+			if previous, ok := seen[alias]; ok {
+				join(i, previous)
+				continue
+			}
+			seen[alias] = i
+		}
+	}
+
+	groups := make(map[int][]HubSkillMeta, len(items))
+	order := make([]int, 0, len(items))
+	for i, item := range items {
+		root := find(i)
+		if _, ok := groups[root]; !ok {
+			order = append(order, root)
+		}
+		groups[root] = append(groups[root], item)
 	}
 
 	grouped := make([]HubSkillMeta, 0, len(order))
-	for _, key := range order {
-		versions := groups[key]
+	for _, root := range order {
+		versions := groups[root]
 		sort.SliceStable(versions, func(i, j int) bool { return skillVersionNewer(versions[i], versions[j]) })
 		latest := versions[0]
 		latest.VersionCount = len(versions)
@@ -537,6 +571,97 @@ func groupSkillVersions(items []HubSkillMeta) []HubSkillMeta {
 		return grouped[i].ID < grouped[j].ID
 	})
 	return grouped
+}
+
+// skillVersionAliases returns identity aliases that can safely link revisions.
+// Fingerprint is uploader_email + ":" + skill_name in the upload processor,
+// so it bridges legacy revisions and newer skill_id-based revisions without
+// merging same-named skills from different publishers. Weak aliases are
+// deliberately ignored when the catalog contains more than one explicit
+// skill_id for the same alias.
+func skillVersionAliases(item HubSkillMeta, ambiguousWeakAliases map[string]bool) []string {
+	aliases := make([]string, 0, 3)
+	if skillID := strings.TrimSpace(item.SkillID); skillID != "" {
+		aliases = append(aliases, "skill:"+normalizeVersionIdentity(skillID))
+	}
+	if fingerprint := strings.TrimSpace(item.Fingerprint); fingerprint != "" {
+		alias := "fingerprint:" + normalizeVersionIdentity(fingerprint)
+		if !ambiguousWeakAliases[alias] {
+			aliases = append(aliases, alias)
+		}
+	}
+	if appID := strings.TrimSpace(item.MaclawAppID); appID != "" {
+		publisher := firstNonEmpty(item.UploaderID, item.UploaderEmail, item.Author)
+		if publisher != "" {
+			aliases = append(aliases, "app-id:"+normalizeVersionIdentity(publisher)+":"+normalizeVersionIdentity(appID))
+		} else {
+			aliases = append(aliases, "app-id:"+normalizeVersionIdentity(appID))
+		}
+	}
+	if item.IsMaclawApp || item.ProductKind == "maclaw_app_skill" {
+		publisher := firstNonEmpty(item.UploaderID, item.UploaderEmail, item.Author)
+		name := firstNonEmpty(item.MaclawAppName, item.Name)
+		if publisher != "" && name != "" {
+			alias := "legacy-app:" + normalizeVersionIdentity(publisher) + ":" + normalizeVersionIdentity(name)
+			if !ambiguousWeakAliases[alias] {
+				aliases = append(aliases, alias)
+			}
+		}
+	}
+	if len(aliases) == 0 {
+		aliases = append(aliases, "id:"+item.ID)
+	}
+	return aliases
+}
+
+// ambiguousWeakVersionAliases identifies weak aliases attached to more than
+// one explicit skill_id. They can bridge old records, but must never collapse
+// independently declared modern skills that happen to share a display name.
+func ambiguousWeakVersionAliases(items []HubSkillMeta) map[string]bool {
+	idsByAlias := make(map[string]map[string]struct{})
+	for _, item := range items {
+		skillID := normalizeVersionIdentity(item.SkillID)
+		if skillID == "" {
+			continue
+		}
+		weakAliases := make([]string, 0, 2)
+		if fingerprint := normalizeVersionIdentity(item.Fingerprint); fingerprint != "" {
+			weakAliases = append(weakAliases, "fingerprint:"+fingerprint)
+		}
+		if item.IsMaclawApp || item.ProductKind == "maclaw_app_skill" {
+			publisher := firstNonEmpty(item.UploaderID, item.UploaderEmail, item.Author)
+			name := firstNonEmpty(item.MaclawAppName, item.Name)
+			if publisher != "" && name != "" {
+				weakAliases = append(weakAliases, "legacy-app:"+normalizeVersionIdentity(publisher)+":"+normalizeVersionIdentity(name))
+			}
+		}
+		for _, alias := range weakAliases {
+			if idsByAlias[alias] == nil {
+				idsByAlias[alias] = make(map[string]struct{})
+			}
+			idsByAlias[alias][skillID] = struct{}{}
+		}
+	}
+	ambiguous := make(map[string]bool)
+	for alias, ids := range idsByAlias {
+		if len(ids) > 1 {
+			ambiguous[alias] = true
+		}
+	}
+	return ambiguous
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func normalizeVersionIdentity(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
 // onlyVisibleSkillGroups filters the public catalog after choosing the latest

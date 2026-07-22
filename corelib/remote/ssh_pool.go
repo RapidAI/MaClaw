@@ -2,6 +2,7 @@ package remote
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +33,7 @@ func NewSSHPool() *SSHPool {
 // Acquire 获取或创建到指定主机的 SSH 连接。
 func (p *SSHPool) Acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	cfg.Defaults()
-	hostID := cfg.SSHHostID()
+	hostID := sshPoolKey(cfg)
 
 	// 先尝试从池中取出候选连接（不持锁做网络 I/O）
 	p.mu.Lock()
@@ -81,7 +82,7 @@ func (p *SSHPool) Acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	// 新建连接（在锁外）
 	client, err := dialSSH(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("ssh dial %s: %w", hostID, err)
+		return nil, fmt.Errorf("ssh dial %s: %w", cfg.SSHHostID(), err)
 	}
 
 	p.mu.Lock()
@@ -95,7 +96,7 @@ func (p *SSHPool) Acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	}
 	p.conns[hostID] = &poolEntry{
 		client:    client,
-		hostID:    hostID,
+		hostID:    cfg.SSHHostID(),
 		createdAt: time.Now(),
 		refCount:  1,
 	}
@@ -110,7 +111,7 @@ func (p *SSHPool) Acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 // Release 释放连接引用。当引用计数归零时主动关闭连接，避免空闲连接泄漏。
 func (p *SSHPool) Release(cfg SSHHostConfig) {
 	cfg.Defaults()
-	hostID := cfg.SSHHostID()
+	hostID := sshPoolKey(cfg)
 
 	var toClose *ssh.Client
 	p.mu.Lock()
@@ -128,16 +129,33 @@ func (p *SSHPool) Release(cfg SSHHostConfig) {
 	}
 }
 
-// Close 关闭指定主机的连接。
+func sshPoolKey(cfg SSHHostConfig) string {
+	base := cfg.SSHHostID()
+	if fingerprint := strings.TrimSpace(cfg.HostKeyFingerprint); fingerprint != "" {
+		return base + "|fingerprint=" + fingerprint
+	}
+	if knownHostsPath := strings.TrimSpace(cfg.KnownHostsPath); knownHostsPath != "" {
+		return base + "|known-hosts=" + knownHostsPath
+	}
+	return base + "|legacy-unverified"
+}
+
+// Close closes all pooled connections for a public user@host:port ID,
+// including entries isolated by host-key policy.
 func (p *SSHPool) Close(hostID string) {
 	p.mu.Lock()
-	entry, ok := p.conns[hostID]
-	if ok {
-		delete(p.conns, hostID)
+	entries := make([]*poolEntry, 0, 1)
+	for key, entry := range p.conns {
+		if key == hostID || strings.HasPrefix(key, hostID+"|") {
+			entries = append(entries, entry)
+			delete(p.conns, key)
+		}
 	}
 	p.mu.Unlock()
-	if ok && entry.client != nil {
-		_ = entry.client.Close()
+	for _, entry := range entries {
+		if entry != nil && entry.client != nil {
+			_ = entry.client.Close()
+		}
 	}
 }
 
@@ -163,8 +181,11 @@ func (p *SSHPool) Stats() map[string]int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	stats := make(map[string]int, len(p.conns))
-	for id, e := range p.conns {
-		stats[id] = e.refCount
+	for _, e := range p.conns {
+		// Pool entries are isolated by host-key policy internally, but stats are
+		// externally observable. Aggregate by the public host ID so pinned
+		// fingerprints and known_hosts paths never leak into UI or logs.
+		stats[e.hostID] += e.refCount
 	}
 	return stats
 }
@@ -173,7 +194,7 @@ func (p *SSHPool) Stats() map[string]int {
 // 带 5 秒超时保护，避免半开 TCP 连接导致 SendRequest 长时间阻塞。
 func (p *SSHPool) IsAlive(cfg SSHHostConfig) bool {
 	cfg.Defaults()
-	hostID := cfg.SSHHostID()
+	hostID := sshPoolKey(cfg)
 
 	p.mu.Lock()
 	entry, found := p.conns[hostID]
@@ -199,7 +220,7 @@ func (p *SSHPool) IsAlive(cfg SSHHostConfig) bool {
 // 返回新的 ssh.Client。
 func (p *SSHPool) Reconnect(cfg SSHHostConfig) (*ssh.Client, error) {
 	cfg.Defaults()
-	hostID := cfg.SSHHostID()
+	hostID := sshPoolKey(cfg)
 
 	// 清理旧连接
 	p.mu.Lock()
@@ -215,7 +236,7 @@ func (p *SSHPool) Reconnect(cfg SSHHostConfig) (*ssh.Client, error) {
 	// 新建连接
 	client, err := dialSSH(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("ssh reconnect %s: %w", hostID, err)
+		return nil, fmt.Errorf("ssh reconnect %s: %w", cfg.SSHHostID(), err)
 	}
 
 	p.mu.Lock()
@@ -228,7 +249,7 @@ func (p *SSHPool) Reconnect(cfg SSHHostConfig) (*ssh.Client, error) {
 	}
 	p.conns[hostID] = &poolEntry{
 		client:    client,
-		hostID:    hostID,
+		hostID:    cfg.SSHHostID(),
 		createdAt: time.Now(),
 		refCount:  1,
 	}

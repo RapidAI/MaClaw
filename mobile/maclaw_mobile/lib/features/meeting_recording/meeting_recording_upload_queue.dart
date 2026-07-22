@@ -87,7 +87,7 @@ class MeetingRecordingUploadQueue {
             status: 'uploading',
             message: '正在上传录音',
             updatedAt: DateTime.now().toUtc());
-        await _store.saveMeetingRecordingUpload(current);
+        await _saveAfterRemoteSessionBestEffort(current);
       }
       final session = await _api.getMeetingRecording(current.recordingId);
       final sessionStatus = session.status.toLowerCase();
@@ -97,7 +97,7 @@ class MeetingRecordingUploadQueue {
           message: session.message.isEmpty ? '录音已提交处理' : session.message,
           updatedAt: DateTime.now().toUtc(),
         );
-        await _store.saveMeetingRecordingUpload(current);
+        await _saveAfterRemoteSessionBestEffort(current);
         await _releaseLocalAudioIfDelivered(current);
         return current;
       }
@@ -109,7 +109,7 @@ class MeetingRecordingUploadQueue {
           message: meetingRecordingProcessingMessage(current.processMode),
           updatedAt: DateTime.now().toUtc(),
         );
-        await _store.saveMeetingRecordingUpload(current);
+        await _saveAfterRemoteSessionBestEffort(current);
         await _releaseLocalAudioIfDelivered(current);
         return current;
       }
@@ -132,7 +132,7 @@ class MeetingRecordingUploadQueue {
               message:
                   '已上传 ${(raf.positionSync() * 100 / total).clamp(0, 100).toStringAsFixed(0)}%',
               updatedAt: DateTime.now().toUtc());
-          await _store.saveMeetingRecordingUpload(current);
+          await _saveAfterRemoteSessionBestEffort(current);
         }
       } finally {
         await raf.close();
@@ -150,7 +150,7 @@ class MeetingRecordingUploadQueue {
           status: 'processing',
           message: meetingRecordingProcessingMessage(current.processMode),
           updatedAt: DateTime.now().toUtc());
-      await _store.saveMeetingRecordingUpload(current);
+      await _saveAfterRemoteSessionBestEffort(current);
       await _releaseLocalAudioIfDelivered(current);
       return current;
     } on Object catch (e) {
@@ -166,15 +166,27 @@ class MeetingRecordingUploadQueue {
           message: '正在重新建立上传会话',
           updatedAt: DateTime.now().toUtc(),
         );
-        await _store.saveMeetingRecordingUpload(reset);
+        await _saveAfterRemoteSessionBestEffort(reset);
         return _upload(reset, mayRecreateExpiredSession: false);
       }
       current = current.copyWith(
           status: 'pending',
           message: '等待网络重试：$e',
           updatedAt: DateTime.now().toUtc());
-      await _store.saveMeetingRecordingUpload(current);
+      await _saveAfterRemoteSessionBestEffort(current);
       return current;
+    }
+  }
+
+  Future<void> _saveAfterRemoteSessionBestEffort(
+    MeetingRecordingUpload task,
+  ) async {
+    try {
+      await _store.saveMeetingRecordingUpload(task);
+    } on Object {
+      // Once Hub has created a session, SQLite is recovery metadata rather
+      // than the authoritative operation. Keep uploading with the in-memory
+      // recording ID so a cache outage cannot turn success into a duplicate.
     }
   }
 
@@ -189,16 +201,23 @@ class MeetingRecordingUploadQueue {
   /// After Hub has accepted processing, the resumable upload is no longer the
   /// source of recovery. Drop the phone's duplicate raw audio to avoid filling
   /// device storage; Hub retains its governed copy until retention expiry.
-  Future<void> _releaseLocalAudioIfDelivered(MeetingRecordingUpload task) async {
+  Future<void> _releaseLocalAudioIfDelivered(
+      MeetingRecordingUpload task) async {
     final file = File(task.localPath);
     try {
       if (await file.exists()) {
         await file.delete();
       }
-      await _store.removeMeetingRecordingUpload(task.localId);
     } on FileSystemException {
       // Keep the SQLite task when OS cleanup fails so a later cache cleanup or
       // user action can reclaim it without losing recovery metadata.
+      return;
+    }
+    try {
+      await _store.removeMeetingRecordingUpload(task.localId);
+    } on Object {
+      // Hub already owns the recording. Failure to remove stale local recovery
+      // metadata must not downgrade the completed remote operation.
     }
   }
 

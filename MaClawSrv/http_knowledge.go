@@ -862,12 +862,18 @@ func (s *HTTPServer) startKnowledgePackageImportJob(kind string, p agentservice.
 			RootPath:  "share://" + pkg.Manifest.PackageID,
 		})
 		return map[string]interface{}{
-			"package_id": pkg.Manifest.PackageID,
-			"title":      pkg.Manifest.Title,
-			"imported":   importResult.Imported,
-			"skipped":    importResult.Skipped,
-			"total":      importResult.Total,
-			"warnings":   importResult.Warnings,
+			"import_status":       importResult.Status,
+			"package_id":          pkg.Manifest.PackageID,
+			"title":               pkg.Manifest.Title,
+			"imported":            importResult.Imported,
+			"skipped":             importResult.Skipped,
+			"failed":              importResult.Failed,
+			"total":               importResult.Total,
+			"imported_source_ids": importResult.ImportedSourceIDs,
+			"skipped_source_ids":  importResult.SkippedSourceIDs,
+			"failed_source_ids":   importResult.FailedSourceIDs,
+			"retry_source_ids":    importResult.RetrySourceIDs,
+			"warnings":            importResult.Warnings,
 		}, nil
 	})
 }

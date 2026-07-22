@@ -32,6 +32,86 @@ func testCodingIntentClassifier() *intent.UnifiedIntentClassifier {
 	})
 }
 
+func TestIsIMManagementRequest(t *testing.T) {
+	for _, text := range []string{
+		"查询定时任务",
+		"执行任务 abc",
+		"暂停任务 abc",
+		"把日报推送到微信",
+		"schedule list",
+	} {
+		if !isIMManagementRequest(text) {
+			t.Fatalf("isIMManagementRequest(%q) = false, want true", text)
+		}
+	}
+	for _, text := range []string{"解释一下循环调度的原理", "帮我写一个倒计时脚本", "你好"} {
+		if isIMManagementRequest(text) {
+			t.Fatalf("isIMManagementRequest(%q) = true, want false", text)
+		}
+	}
+}
+
+func TestEnsureIMManagementToolsRoutedUsesCurrentRequestOnly(t *testing.T) {
+	routed := ensureIMManagementToolsRouted(nil, []map[string]interface{}{
+		toolDef("manage_schedule", "schedule", nil, nil),
+		toolDef("im_message", "im", nil, nil),
+	}, "查询定时任务")
+	if len(routed) != 1 || extractToolName(routed[0]) != "manage_schedule" {
+		t.Fatalf("routed = %#v, want only manage_schedule", routed)
+	}
+	if got := ensureIMManagementToolsRouted(nil, []map[string]interface{}{toolDef("im_message", "im", nil, nil)}, "你好"); len(got) != 0 {
+		t.Fatalf("unrelated request unexpectedly routed IM management tool: %#v", got)
+	}
+}
+
+func TestEnsureIMManagementToolsRoutedPreservesAllExplicitToolsAtBudget(t *testing.T) {
+	routed := make([]map[string]interface{}, 0, maxToolBudget)
+	allTools := make([]map[string]interface{}, 0, maxToolBudget+2)
+	for i := 0; i < maxToolBudget; i++ {
+		item := toolDef(fmt.Sprintf("filler_%d", i), "unrelated tool", nil, nil)
+		routed = append(routed, item)
+		allTools = append(allTools, item)
+	}
+	allTools = append(allTools,
+		toolDef("manage_schedule", "schedule", nil, nil),
+		toolDef("im_message", "IM message", nil, nil),
+	)
+
+	routed = ensureIMManagementToolsRouted(routed, allTools, "定时任务执行后推送到微信")
+	if len(routed) != maxToolBudget {
+		t.Fatalf("routed tool count = %d, want budget %d", len(routed), maxToolBudget)
+	}
+	got := make(map[string]bool, len(routed))
+	for _, item := range routed {
+		got[extractToolName(item)] = true
+	}
+	for _, name := range []string{"manage_schedule", "im_message"} {
+		if !got[name] {
+			t.Fatalf("explicit tool %q was dropped at the routing budget, got %v", name, got)
+		}
+	}
+}
+
+func TestRouteToolsWithoutRouterKeepsExplicitIMManagementTools(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := []map[string]interface{}{
+		toolDef("read_file", "read", nil, nil),
+		toolDef("manage_schedule", "schedule", nil, nil),
+		toolDef("im_message", "IM message", nil, nil),
+	}
+
+	routed := handler.routeTools("定时任务执行后推送到微信", tools)
+	got := make(map[string]bool, len(routed))
+	for _, item := range routed {
+		got[extractToolName(item)] = true
+	}
+	for _, name := range []string{"manage_schedule", "im_message"} {
+		if !got[name] {
+			t.Fatalf("router fallback omitted explicit tool %q, got %v", name, got)
+		}
+	}
+}
+
 func testIntentClassifier(label string) *intent.UnifiedIntentClassifier {
 	return intent.New(intent.Config{
 		Embedder: embedding.NoopEmbedder{},

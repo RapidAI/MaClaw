@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, useMemo, useId } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo, useId, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { colors, radius } from "./styles";
 import { QRCodeSVG } from "qrcode.react";
@@ -7,11 +7,14 @@ import {
     SaveMaclawLLMProviders,
     TestMaclawLLM,
     ActivateRemote,
+    ActivateRemoteEmail,
     ActivateRemoteSMS,
     GetRemoteRegistrationAuth,
     ResolveRemoteRegistrationTarget,
+    ResolveRemoteRegistrationTargetWithInvitation,
     ProbeRemoteHub,
     SendRemoteRegistrationSMS,
+    SendRemoteRegistrationEmail,
     StartOpenAIOAuth,
     CancelOpenAIOAuth,
     StartCodeGenSSO,
@@ -26,6 +29,10 @@ import {
     GetRemoteConnectionStatus,
     GetHubLLMServiceStatus,
     RedeemHubLLMService,
+    UserDataMigrationInstances,
+    UserDataMigrationStatus,
+    StartUserDataMigrationImport,
+    GetUserDataMigrationJob,
 } from "../../../wailsjs/go/main/App";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
@@ -58,6 +65,20 @@ import {
     type Props,
 } from "./OnboardingWizardShared";
 import { KNOWN_USER_AGENTS, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, nextCustomAgentValue } from "./userAgent";
+import { canSubmitEmailVerification, emailVerificationCooldownSeconds, normalizeEmailVerificationTarget, sanitizeEmailVerificationCode } from "./emailVerification";
+import {
+    completeOnboardingAfterMigration,
+    findOnboardingMigrationPackage,
+    isMigrationJobRunning,
+    migrationErrorMessage,
+    migrationJobId,
+    migrationJobStatus,
+    migrationProgressPercent,
+    optimisticMigrationRunningJob,
+    pollUntilMigrationJobTerminal,
+    shouldShowMigrationPassword,
+    type OnboardingMigrationPackage,
+} from "./onboardingMigration";
 
 function extractDailySMSLimit(message: string): number | null {
     const match = message.match(/max\s+(\d+)\s+per\s+day/i);
@@ -66,10 +87,24 @@ function extractDailySMSLimit(message: string): number | null {
     return Number.isFinite(limit) && limit > 0 ? limit : null;
 }
 
-export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
+export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onMigrationCompleted, onOnboardingCompleted, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
     const hubT = useCallback((en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans), [lang]);
     const registrationIdentityInputId = useId();
+    const onboardingDiagnostic = useCallback((stage: string, fields: Record<string, unknown> = {}, level: "info" | "warn" | "error" = "info") => {
+        const payload = { tag: "onboarding", stage, level, ts: Date.now(), ...fields };
+        if (level === "error") console.error("[onboarding]", stage, fields);
+        else if (level === "warn") console.warn("[onboarding]", stage, fields);
+        else console.info("[onboarding]", stage, fields);
+        try {
+            const logDiagnostic = (window as any).go?.main?.App?.LogFrontendDiagnostic;
+            if (typeof logDiagnostic === "function") {
+                void Promise.resolve(logDiagnostic(payload)).catch(() => {});
+            }
+        } catch {
+            // Diagnostics must never affect onboarding.
+        }
+    }, []);
 
     // Track the app-level theme mode so the portal (rendered outside #App) can
     // inherit dark-mode CSS variables. Uses MutationObserver for live updates.
@@ -120,6 +155,14 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [invRequired, setInvRequired] = useState(false);
     const [invError, setInvError] = useState("");
     const [showConfirm, setShowConfirm] = useState(false);
+    const [emailCode, setEmailCode] = useState("");
+    const [emailCodeLength, setEmailCodeLength] = useState(6);
+    const [emailCodeSending, setEmailCodeSending] = useState(false);
+    const [emailCodeCountdown, setEmailCodeCountdown] = useState(0);
+    const [emailCodeTarget, setEmailCodeTarget] = useState("");
+    const [emailCodeError, setEmailCodeError] = useState("");
+    const emailCodeInputRef = useRef<HTMLInputElement>(null);
+    const emailCodeRequestRef = useRef(0);
     const [vipFlag, setVipFlag] = useState(false);
     const [redeemCode, setRedeemCode] = useState("");
     const [freeTrial, setFreeTrial] = useState(true);
@@ -138,6 +181,15 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [regBusy, setRegBusy] = useState(false);
     const [regDone, setRegDone] = useState(false);
     const [hubConnecting, setHubConnecting] = useState(false);
+    const [migrationPackage, setMigrationPackage] = useState<OnboardingMigrationPackage | null>(null);
+    const [migrationDecisionPending, setMigrationDecisionPending] = useState(false);
+    const [migrationPassword, setMigrationPassword] = useState("");
+    const [migrationJob, setMigrationJob] = useState<Record<string, any> | null>(null);
+    const [migrationError, setMigrationError] = useState("");
+    const [migrationStarting, setMigrationStarting] = useState(false);
+    const [migrationPromptDismissed, setMigrationPromptDismissed] = useState(false);
+    const migrationPollRef = useRef(0);
+    const migrationStartingRef = useRef(false);
     const [qrCodeURL, setQrCodeURL] = useState("");
     const [embeddedSSOLoading, setEmbeddedSSOLoading] = useState(false);
     const [embeddedSSOError, setEmbeddedSSOError] = useState("");
@@ -278,7 +330,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             setRegistrationAuthMethod(method);
             setRegistrationAuthError("");
             const nextLength = Number(cfg?.code_length || 6);
-            setSmsCodeLength(Number.isFinite(nextLength) && nextLength > 0 ? nextLength : 6);
+            setSmsCodeLength(Number.isFinite(nextLength) && nextLength >= 4 && nextLength <= 8 ? nextLength : 6);
         }).catch(() => {
             if (!cancelled && authProbeVersion === registrationTargetVersionRef.current) {
                 setRegistrationAuthMethod(null);
@@ -301,6 +353,18 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         }, 1000);
         return () => window.clearInterval(timer);
     }, [smsCountdown]);
+
+    useEffect(() => {
+        if (emailCodeCountdown <= 0) return;
+        const timer = window.setInterval(() => setEmailCodeCountdown(prev => Math.max(0, prev - 1)), 1000);
+        return () => window.clearInterval(timer);
+    }, [emailCodeCountdown]);
+
+    useEffect(() => {
+        if (showConfirm) window.setTimeout(() => emailCodeInputRef.current?.focus(), 0);
+    }, [showConfirm]);
+
+    useEffect(() => () => { migrationPollRef.current += 1; }, []);
 
     // Check WeChat status on mount — only treat explicit "connected"/"confirmed" as bound
     useEffect(() => {
@@ -382,27 +446,37 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
+                if (migrationPackage && !migrationPromptDismissed) return;
                 if (showOfflineModeNotice) {
                     setShowOfflineModeNotice(false);
                     return;
                 }
-                if (!showConfirm) onClose();
+                if (showConfirm) {
+                    if (!regBusy) setShowConfirm(false);
+                    return;
+                }
+                onClose();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onClose, showConfirm, showOfflineModeNotice]);
+    }, [migrationPackage, migrationPromptDismissed, onClose, regBusy, showConfirm, showOfflineModeNotice]);
 
     useEffect(() => {
         const allDone = isOnboardingComplete(onboardingFlow, { regDone: effectiveRegDone, llmDone, wxCompleted });
-        if (allDone) {
+        if (allDone && !migrationPackage && !migrationDecisionPending) {
             onSaveField({ onboarding_done: true });
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [onboardingFlow, effectiveRegDone, llmDone, wxCompleted, onClose, onSaveField]);
+    }, [onboardingFlow, effectiveRegDone, llmDone, wxCompleted, migrationDecisionPending, migrationPackage, onClose, onSaveField]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
+    const migrationStatus = migrationJobStatus(migrationJob?.status);
+    const migrationImportSucceeded = migrationStatus === "succeeded";
+    const migrationJobFailed = migrationStatus === "failed";
+    const migrationJobRunning = isMigrationJobRunning(migrationJob?.status, migrationStarting);
+    const showMigrationPassword = shouldShowMigrationPassword(migrationJob);
     const regResultWarning = regResult?.tone === "warning";
     const normalizedRegPhone = normalizeSMSPhone(regPhone);
     const trimmedRegistrationIdentity = regEmail.trim();
@@ -445,12 +519,17 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     const returnToRegistrationIdentity = useCallback(() => {
         registrationTargetVersionRef.current += 1;
+        emailCodeRequestRef.current += 1;
         setRegistrationStage("identity");
         setRegResult(null);
         setRegistrationTargetResolving(false);
         setSmsCode("");
         setSmsTargetPhone("");
         setSmsPurpose("registration");
+        setEmailCode("");
+        setEmailCodeTarget("");
+        setEmailCodeError("");
+        setShowConfirm(false);
         setRedeemCode("");
     }, []);
 
@@ -756,10 +835,291 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             setRegResult({ ok: false, msg: t("请输入邮箱", "Please enter email") });
             return;
         }
+        setEmailCode("");
+        setEmailCodeError("");
         setShowConfirm(true);
+        void handleSendEmailCode();
+    };
+
+    const handleSendEmailCode = async () => {
+        const target = normalizeEmailVerificationTarget(regEmail);
+        if (!target || emailCodeSending || emailCodeCountdown > 0) return;
+        const requestID = emailCodeRequestRef.current + 1;
+        emailCodeRequestRef.current = requestID;
+        setEmailCodeSending(true);
+        setEmailCodeTarget("");
+        setEmailCode("");
+        setEmailCodeError("");
+        setRegResult(null);
+        try {
+            let targetHubURL = registrationHubUrl || hubUrl;
+            let targetTenantID = registrationTenantID;
+            let targetHubID = registrationHubID;
+            if (invCode.trim()) {
+                const route = await ResolveRemoteRegistrationTargetWithInvitation(target, invCode.trim().toUpperCase()) as any;
+                if (emailCodeRequestRef.current !== requestID) return;
+                targetHubURL = String(route?.hub_url || route?.HubURL || targetHubURL).trim();
+                targetTenantID = String(route?.tenant_id || route?.TenantID || "").trim();
+                targetHubID = String(route?.hub_id || route?.HubID || "").trim();
+                setRegistrationHubUrl(targetHubURL);
+                setRegistrationTenantID(targetTenantID);
+                setRegistrationHubID(targetHubID);
+            }
+            const result = await SendRemoteRegistrationEmail(targetHubURL, target, targetTenantID) as any;
+            if (emailCodeRequestRef.current !== requestID) return;
+            const length = Number(result?.code_length || 6);
+            setEmailCodeLength(Number.isFinite(length) && length >= 4 && length <= 8 ? length : 6);
+            const confirmedTenantID = String(result?.tenant_id || result?.TenantID || targetTenantID).trim();
+            if (confirmedTenantID) setRegistrationTenantID(confirmedTenantID);
+            setEmailCodeTarget(target);
+			setEmailCodeCountdown(emailVerificationCooldownSeconds(result?.resend_cooldown_seconds));
+        } catch (e) {
+            if (emailCodeRequestRef.current !== requestID) return;
+			setEmailCodeError(localizeEmailVerificationError(e));
+        } finally {
+            if (emailCodeRequestRef.current === requestID) setEmailCodeSending(false);
+        }
+    };
+
+    const localizeEmailVerificationError = (error: unknown) => {
+        const message = String(error || "");
+        if (/INVALID_VERIFY_CODE/i.test(message)) return t("验证码不正确或已过期，请重新输入", "The verification code is incorrect or expired.");
+        if (/VERIFY_LOCKED/i.test(message)) return t("错误次数过多，请重新获取验证码", "Too many attempts. Request a new code.");
+        if (/RATE_LIMITED/i.test(message)) return t("验证码发送过于频繁，请稍后重试", "Please wait before requesting another code.");
+        if (/MAIL_NOT_CONFIGURED|MAIL_SEND_FAILED/i.test(message)) return t("Hub 邮件服务不可用，请联系管理员", "Hub email delivery is unavailable. Contact an administrator.");
+        if (/INVITATION_CODE_NOT_ROUTED|INVALID_INVITATION_CODE/i.test(message)) return t("邀请码无效或无法找到对应 Hub", "The invitation code is invalid or cannot be routed to a Hub.");
+        return message;
+    };
+
+    const formatMigrationBytes = (value: number) => {
+        if (!Number.isFinite(value) || value <= 0) return "-";
+        if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+        if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+        if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+        return `${value} B`;
+    };
+
+    const formatMigrationTimestamp = (value: string) => {
+        const raw = String(value || "").trim();
+        if (!raw) return "-";
+        const parsed = new Date(raw);
+        return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString() : "-";
+    };
+
+    const localizeMigrationProgress = (value: unknown) => {
+        const raw = String(value || "").trim();
+        const lower = raw.toLowerCase();
+        if (lower === "claiming migration export") return t("正在认领迁移包", "Claiming migration package");
+        if (lower === "downloading encrypted chunks") return t("正在下载加密数据", "Downloading encrypted data");
+        if (lower.startsWith("downloaded ")) return t("正在下载迁移数据", raw);
+        if (lower === "decrypting and verifying package") return t("正在解密并校验迁移包", "Decrypting and verifying package");
+        if (lower === "restoring local memory and knowledge base") return t("正在恢复系统配置、记忆与知识库", "Restoring settings, memory, and knowledge base");
+        if (/^local restore temporarily busy; retrying \(\d+\/\d+\)$/i.test(raw)) return t("本地数据暂时被占用，正在自动重试", raw);
+        if (lower === "validating restored llm providers") return t("正在验证已恢复的模型配置", "Validating restored model configuration");
+        if (lower === "import completed") return t("迁入完成", "Move-in completed");
+        return raw || t("正在准备迁入", "Preparing move-in");
+    };
+
+    const localizeMigrationError = (error: unknown) => {
+        const message = migrationErrorMessage(error);
+        const withDetail = (zh: string, en: string) => `${t(zh, en)}\n${t(`详细原因：${message}`, `Details: ${message}`)}`;
+        // Order matters: more specific backend messages first.
+        if (/password is incorrect|package is corrupted/i.test(message)) {
+            return withDetail("迁移密码不正确或数据包已损坏，请重新输入密码后重试", "The migration password is incorrect or the package is corrupted. Re-enter the password and retry.");
+        }
+        if (/migration password must be at least|must contain letters and numbers/i.test(message)) {
+            return withDetail("迁移密码不符合要求，请重新输入", "The migration password does not meet requirements. Try again.");
+        }
+        if (/another migration job is already running/i.test(message)) {
+            return withDetail("已有迁移任务正在执行，请稍后重试", "Another migration task is already running. Try again shortly.");
+        }
+        if (/encrypted package hash mismatch|downloaded package size mismatch|downloaded migration chunk/i.test(message)) {
+            return withDetail("下载的迁移包校验失败，请检查网络后重试", "The downloaded migration package failed validation. Check the network and retry.");
+        }
+        if (/decrypted package|hash mismatch|integrity/i.test(message)) {
+            return withDetail("迁移包校验失败，请在旧设备重新迁出", "The migration package failed validation. Move it out again from the old device.");
+        }
+        if (/migration job status unavailable|migration job .* not found|migration job id missing/i.test(message)) {
+            return withDetail("暂时无法读取迁入进度，请稍后重试", "Unable to read move-in progress right now. Try again shortly.");
+        }
+        if (/restore local migration data/i.test(message)) {
+            return withDetail("恢复本地数据失败。这通常不是网络问题，请根据下方原因处理后重试", "Restoring local data failed. This is usually not a network issue; resolve the detail below and retry.");
+        }
+        return withDetail("迁入未完成", "Move-in did not complete.");
+    };
+
+    const continueExistingOnboarding = () => {
+        migrationPollRef.current += 1;
+        migrationStartingRef.current = false;
+        setMigrationStarting(false);
+        setMigrationPromptDismissed(true);
+        setMigrationDecisionPending(false);
+        setMigrationPackage(null);
+        setMigrationPassword("");
+        setMigrationJob(null);
+        setMigrationError("");
+    };
+
+    const checkForMigrationPackage = async (): Promise<boolean> => {
+        const discoveryStartedAt = performance.now();
+        onboardingDiagnostic("migration.discovery_started");
+        setMigrationDecisionPending(true);
+        setMigrationError("");
+        const [statusResult, instancesResult] = await Promise.allSettled([
+            UserDataMigrationStatus(),
+            UserDataMigrationInstances(),
+        ]);
+        if (statusResult.status === "rejected" && instancesResult.status === "rejected") {
+            onboardingDiagnostic("migration.discovery_failed", { elapsed_ms: Math.round(performance.now() - discoveryStartedAt), status_error: String(statusResult.reason), instances_error: String(instancesResult.reason) }, "warn");
+            setMigrationDecisionPending(false);
+            return false;
+        }
+        try {
+            const status = statusResult.status === "fulfilled" ? statusResult.value : {};
+            const instances = instancesResult.status === "fulfilled" ? instancesResult.value : {};
+            const candidate = findOnboardingMigrationPackage(status, instances);
+            if (!candidate) {
+                onboardingDiagnostic("migration.discovery_completed", { elapsed_ms: Math.round(performance.now() - discoveryStartedAt), package_found: false });
+                setMigrationDecisionPending(false);
+                return false;
+            }
+            const signedInUserID = String((status as any)?.user_id || "").trim();
+            const signedInEmail = normalizeEmailVerificationTarget(String((status as any)?.email || ""));
+            const manifestUserID = String(candidate.manifest?.user_id || "").trim();
+            const manifestEmail = normalizeEmailVerificationTarget(String(candidate.manifest?.email || ""));
+            if ((manifestUserID && signedInUserID && manifestUserID !== signedInUserID)
+                || (manifestEmail && signedInEmail && manifestEmail !== signedInEmail)) {
+                onboardingDiagnostic("migration.package_identity_mismatch", { export_id: candidate.exportId, has_manifest_user_id: !!manifestUserID, has_manifest_email: !!manifestEmail }, "warn");
+                setMigrationDecisionPending(false);
+                return false;
+            }
+            setMigrationPackage(candidate);
+            setMigrationPromptDismissed(false);
+            onboardingDiagnostic("migration.discovery_completed", { elapsed_ms: Math.round(performance.now() - discoveryStartedAt), package_found: true, export_id: candidate.exportId, status: candidate.status, size: candidate.size, source_machine_id: candidate.sourceMachineId });
+            return true;
+        } catch (error) {
+            // Migration discovery is optional. Malformed or transient responses
+            // must not block an otherwise successful sign-in.
+            onboardingDiagnostic("migration.discovery_response_unusable", { elapsed_ms: Math.round(performance.now() - discoveryStartedAt), error: String(error) }, "warn");
+            setMigrationDecisionPending(false);
+            return false;
+        }
+    };
+
+    const finishMigrationOnboarding = async () => {
+        await completeOnboardingAfterMigration({
+            markComplete: () => onOnboardingCompleted
+                ? onOnboardingCompleted()
+                : onSaveField({ onboarding_done: true }),
+            close: onClose,
+            refresh: onMigrationCompleted,
+            onRefreshError: error => console.warn("[onboarding] post-migration refresh failed", error),
+        });
+    };
+
+    const startOnboardingMigration = async () => {
+        const completingSuccessfulImport = migrationJobStatus(migrationJob?.status) === "succeeded";
+        // migrationStartingRef is the mutex; status===running alone is not enough
+        // because we optimistically mark running before Start returns.
+        if (!migrationPackage || (!completingSuccessfulImport && !migrationPassword) || migrationStartingRef.current) return;
+        if (!completingSuccessfulImport && migrationJobStatus(migrationJob?.status) === "running" && migrationJobId(migrationJob)) {
+            // A real backend job is already in flight; avoid starting a second one.
+            return;
+        }
+        migrationStartingRef.current = true;
+        setMigrationStarting(true);
+        setMigrationError("");
+        // Leave the password form immediately on retry so a previous failure
+        // does not look like the wizard jumped back mid-flight. Do not keep a
+        // previous failed job id — that would look like an active backend job.
+        if (!completingSuccessfulImport) {
+            setMigrationJob(prev => optimisticMigrationRunningJob(prev));
+        }
+        const pollID = migrationPollRef.current + 1;
+        migrationPollRef.current = pollID;
+        let importSucceeded = completingSuccessfulImport;
+        const migrationStartedAt = performance.now();
+        onboardingDiagnostic("migration.restore_started", { export_id: migrationPackage.exportId, retry_completion_only: completingSuccessfulImport });
+        try {
+            if (completingSuccessfulImport) {
+                await finishMigrationOnboarding();
+                return;
+            }
+            let nextJob = await StartUserDataMigrationImport(migrationPackage.exportId, migrationPassword) as Record<string, any>;
+            const jobID = migrationJobId(nextJob);
+            onboardingDiagnostic("migration.job_created", { export_id: migrationPackage.exportId, job_id: jobID, status: nextJob?.status });
+            if (!jobID) {
+                const startError = nextJob?.error != null && String(nextJob.error).trim() !== ""
+                    ? migrationErrorMessage(nextJob.error)
+                    : "";
+                throw new Error(startError || "migration job id missing");
+            }
+            // Keep the password until success so a post-download failure (wrong
+            // password / integrity check) can be retried without retyping.
+            setMigrationJob(nextJob);
+            nextJob = await pollUntilMigrationJobTerminal(jobID, async (id) => {
+                return await GetUserDataMigrationJob(id) as Record<string, any>;
+            }, {
+                initialJob: nextJob,
+                isCancelled: () => migrationPollRef.current !== pollID,
+                onUpdate: (job) => {
+                    if (migrationPollRef.current === pollID) setMigrationJob(job);
+                },
+            });
+            if (migrationPollRef.current !== pollID) return;
+            if (migrationJobStatus(nextJob?.status) !== "succeeded") {
+                throw new Error(migrationErrorMessage(nextJob?.error) || "migration failed");
+            }
+            importSucceeded = true;
+            setMigrationPassword("");
+            onboardingDiagnostic("migration.restore_succeeded", {
+                export_id: migrationPackage.exportId,
+                job_id: nextJob?.id,
+                elapsed_ms: Math.round(performance.now() - migrationStartedAt),
+                cleanup_pending: nextJob?.result?.cleanup_pending === true,
+            });
+            await finishMigrationOnboarding();
+        } catch (error) {
+            const detail = migrationErrorMessage(error);
+            onboardingDiagnostic("migration.restore_or_completion_failed", {
+                export_id: migrationPackage.exportId,
+                elapsed_ms: Math.round(performance.now() - migrationStartedAt),
+                import_succeeded: importSucceeded,
+                error: detail,
+            }, "error");
+            if (migrationPollRef.current === pollID) {
+                if (importSucceeded) {
+                    setMigrationError(t(
+                        "数据已恢复，但暂时无法保存设置完成状态。请点击“完成设置”重试；不会重复迁入数据。",
+                        "Your data was restored, but setup completion could not be saved. Select Finish setup to retry; your data will not be imported again.",
+                    ));
+                    setMigrationJob(prev => prev
+                        ? { ...prev, status: "succeeded", progress: 1 }
+                        : { status: "succeeded", progress: 1 });
+                } else {
+                    setMigrationError(localizeMigrationError(error));
+                    setMigrationJob(prev => prev
+                        ? { ...prev, status: "failed", error: detail || String(prev.error || "") }
+                        : { status: "failed", error: detail });
+                }
+            }
+        } finally {
+            if (migrationPollRef.current === pollID) {
+                migrationStartingRef.current = false;
+                setMigrationStarting(false);
+            }
+        }
     };
 
     const doRegister = async () => {
+        if (registrationAuthMethod !== "phone") {
+            const currentTarget = normalizeEmailVerificationTarget(regEmail);
+            if (emailCodeTarget !== currentTarget || !canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy })) {
+                setEmailCodeError(t("请输入邮件中的完整验证码", "Enter the complete verification code from the email."));
+                setShowConfirm(true);
+                return;
+            }
+        }
         setShowConfirm(false);
         setRegBusy(true);
         setRegResult(null);
@@ -771,7 +1131,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         try {
             const result = registrationAuthMethod === "phone"
                 ? await ActivateRemoteSMS(registrationHubUrl || hubUrl, normalizeSMSPhone(regPhone), smsCode.trim(), invCode.trim().toUpperCase(), registrationTenantID, registrationHubID)
-                : await ActivateRemote(regEmail.trim(), invCode.trim().toUpperCase(), "");
+                : await ActivateRemoteEmail(registrationHubUrl || hubUrl, regEmail.trim(), emailCode.trim(), invCode.trim().toUpperCase(), registrationTenantID, registrationHubID);
+            onboardingDiagnostic("registration.activation_succeeded", { method: registrationAuthMethod, tenant_id: registrationTenantID, hub_id: registrationHubID, has_phone_number: !!result?.phone_number, has_email: !!result?.email, vip: !!result?.vip_flag });
             if (registrationAuthMethod !== "phone") {
                 const phoneNumber = normalizeSMSPhone(String(result?.phone_number || ""));
                 if (phoneNumber) onSaveField({ remote_mobile: phoneNumber });
@@ -782,6 +1143,21 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 onSaveField(fields);
             }
             if (result?.vip_flag) setVipFlag(true);
+            if (registrationAuthMethod !== "phone") setMigrationDecisionPending(true);
+            // Activation has already persisted the Hub credentials. Parent-panel
+            // refresh is useful, but it must not delay migration discovery or
+            // turn a successful sign-in into a blocked onboarding state.
+            void Promise.resolve(onRegistered()).catch(error => {
+                console.warn("[onboarding] parent registration refresh failed", error);
+            });
+            const migrationFound = registrationAuthMethod !== "phone" && await checkForMigrationPackage();
+            onboardingDiagnostic("registration.post_activation_route", { method: registrationAuthMethod, migration_found: migrationFound });
+            setRegDone(true);
+            if (migrationFound) {
+                setHubConnecting(false);
+                setRegResult({ ok: true, msg: t("邮箱验证成功。发现可恢复的迁出数据", "Email verified. Move-out data is available to restore.") });
+                return;
+            }
             let redeemNote = "";
             if (trimmedRedeemCode) {
                 try {
@@ -815,8 +1191,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 ok: true,
                 msg: `${successMessage}${redeemNote}`,
             });
-            setRegDone(true);
-            onRegistered();
         } catch (e) {
             const errMsg = String(e);
             if (errMsg.includes("INVITATION_CODE_REQUIRED")) {
@@ -847,7 +1221,27 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             } else if (registrationAuthMethod === "phone" && /SMS_|PHONE_ALREADY_REGISTERED|INVALID_PHONE_NUMBER/.test(errMsg)) {
                 if (errMsg.includes("INVALID_SMS_VERIFY_CODE")) setSmsCode("");
                 setRegResult({ ok: false, msg: localizeRegistrationSMSError(e) });
+            } else if (registrationAuthMethod !== "phone" && /INVALID_VERIFY_CODE|VERIFY_LOCKED/.test(errMsg)) {
+                if (errMsg.includes("VERIFY_LOCKED")) setEmailCodeCountdown(0);
+                setEmailCode("");
+                setEmailCodeError(localizeEmailVerificationError(e));
+                setShowConfirm(true);
+            } else if (/MANUAL_BINDING_REQUIRED/.test(errMsg)) {
+                setEmailCode("");
+                setEmailCodeTarget("");
+                setEmailCodeCountdown(0);
+                setRegResult({ ok: false, msg: t("此 Hub 需要管理员先完成设备绑定，请联系管理员后重新获取验证码", "This Hub requires an administrator to bind the device first. Contact your administrator, then request a new code.") });
+            } else if (/PENDING_APPROVAL/.test(errMsg)) {
+                setEmailCode("");
+                setEmailCodeTarget("");
+                setEmailCodeCountdown(0);
+                setRegResult({ ok: false, msg: t("注册申请正在等待管理员审批。审批通过后，请重新获取验证码继续", "Your registration is awaiting administrator approval. Once approved, request a new code to continue.") });
             } else {
+                if (registrationAuthMethod !== "phone") {
+                    setEmailCode("");
+                    setEmailCodeTarget("");
+                    setEmailCodeCountdown(0);
+                }
                 setRegResult({ ok: false, msg: errMsg });
             }
         } finally {
@@ -1019,10 +1413,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     padding: "20px 22px 18px", position: "relative", flexShrink: 0,
                     borderBottom: "1px solid var(--theme-border)",
                 }}>
-                    <button aria-label={t("关闭", "Close")} onClick={onClose} style={{
+                    <button aria-label={t("关闭", "Close")} onClick={() => {
+                        if (!migrationPackage || migrationPromptDismissed) onClose();
+                    }} disabled={!!migrationPackage && !migrationPromptDismissed} style={{
                         position: "absolute", top: 12, right: 14, border: "none",
                         background: "transparent", cursor: "pointer", fontSize: "1.25rem",
                         color: colors.textMuted, lineHeight: 1,
+                        opacity: migrationPackage && !migrationPromptDismissed ? 0.45 : 1,
                     }}>X</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                         <div style={{ minWidth: 0 }}>
@@ -1690,65 +2087,179 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 />
             )}
 
-            {/* ── Confirmation dialog ── */}
+            {migrationPackage && !migrationPromptDismissed && (
+                <div style={{
+                    position: "fixed", inset: 0, background: colors.overlay,
+                    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10010,
+                }}>
+                    <div role="dialog" aria-modal="true" aria-labelledby="onboarding-migration-title" style={{
+                        background: colors.surface, borderRadius: 14, padding: "24px 26px",
+                        maxWidth: 460, width: "calc(100% - 32px)", color: colors.text,
+                        boxShadow: "0 12px 36px rgba(15,23,42,0.18)", boxSizing: "border-box",
+                    }}>
+                        <div id="onboarding-migration-title" style={{ fontSize: 17, fontWeight: 700, marginBottom: 7 }}>
+                            {t("发现可恢复的数据", "Data from another device is available")}
+                        </div>
+                        <p style={{ margin: "0 0 16px", fontSize: 13, lineHeight: 1.55, color: colors.textSecondary }}>
+                            {t("是否将旧设备的系统配置、模型配置、记忆、知识库和附件迁入当前设备？迁入成功后将直接完成设置。", "Restore settings, model configuration, memory, knowledge base, and attachments from your old device? Successful restore completes setup immediately.")}
+                        </p>
+                        <dl style={{
+                            margin: "0 0 14px",
+                            padding: "11px 13px",
+                            borderRadius: 8,
+                            background: "var(--theme-info-bg)",
+                            border: `1px solid ${colors.borderLight}`,
+                            display: "grid",
+                            gridTemplateColumns: "max-content minmax(0, 1fr)",
+                            columnGap: 16,
+                            rowGap: 6,
+                            alignItems: "baseline",
+                            fontSize: 12,
+                            lineHeight: 1.45,
+                            color: colors.textSecondary,
+                            textAlign: "left",
+                        }}>
+                            {([
+                                {
+                                    label: t("来源设备", "Source device"),
+                                    value: migrationPackage.sourceMachineName || migrationPackage.sourceMachineId || "-",
+                                },
+                                {
+                                    label: t("迁出时间", "Move-out time"),
+                                    value: formatMigrationTimestamp(migrationPackage.updatedAt),
+                                },
+                                {
+                                    label: t("数据大小", "Package size"),
+                                    value: formatMigrationBytes(migrationPackage.size),
+                                },
+                            ] as const).map((row) => (
+                                <Fragment key={row.label}>
+                                    <dt style={{ margin: 0, color: colors.text, fontWeight: 600 }}>{row.label}</dt>
+                                    <dd style={{ margin: 0, minWidth: 0, overflowWrap: "anywhere" }}>{row.value}</dd>
+                                </Fragment>
+                            ))}
+                        </dl>
+
+                        {showMigrationPassword ? (
+                            <label style={{ ...labelStyle, display: "block", marginBottom: 12 }}>
+                                <span style={{ display: "block", marginBottom: 6 }}>{t("迁出密码", "Move-out password")}</span>
+                                <input
+                                    type="password"
+                                    autoComplete="current-password"
+                                    autoFocus
+                                    value={migrationPassword}
+                                    onChange={event => { setMigrationPassword(event.target.value); setMigrationError(""); }}
+                                    onKeyDown={event => { if (event.key === "Enter" && migrationPassword && !migrationJobRunning) void startOnboardingMigration(); }}
+                                    placeholder={t("输入旧设备迁出时设置的密码", "Enter the password set on the old device")}
+                                    style={inputStyle}
+                                    disabled={migrationJobRunning}
+                                />
+                            </label>
+                        ) : null}
+
+                        {migrationJob ? (
+                            <div aria-live="polite" style={{ marginBottom: 13 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: migrationJobFailed ? colors.danger : colors.textSecondary, marginBottom: 6 }}>
+                                    <span>
+                                        {migrationJobFailed
+                                            ? t("迁入失败", "Move-in failed")
+                                            : localizeMigrationProgress(migrationJob.progress_text)}
+                                    </span>
+                                    <span>{migrationProgressPercent(migrationJob.progress)}%</span>
+                                </div>
+                                <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={migrationProgressPercent(migrationJob.progress)} style={{ height: 6, borderRadius: 999, background: colors.borderLight, overflow: "hidden" }}>
+                                    <div style={{
+                                        width: `${migrationProgressPercent(migrationJob.progress)}%`,
+                                        height: "100%",
+                                        background: migrationJobFailed ? colors.danger : colors.primary,
+                                        transition: "width 180ms ease-out",
+                                    }} />
+                                </div>
+                            </div>
+                        ) : null}
+
+                        {migrationError ? (
+                            <div role="alert" style={{ ...wizardBannerStyle("error"), marginBottom: 12, whiteSpace: "pre-wrap" }}>{migrationError}</div>
+                        ) : null}
+
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                            <button type="button" onClick={continueExistingOnboarding} disabled={migrationJobRunning || migrationImportSucceeded} style={{
+                                ...wizardGhostButtonStyle, padding: "8px 15px", fontSize: "0.8rem",
+                            }}>
+                                {t("暂不恢复，继续设置", "Not now, continue setup")}
+                            </button>
+                            <button type="button" onClick={() => void startOnboardingMigration()} disabled={(!migrationPassword && !migrationImportSucceeded) || migrationJobRunning} style={{
+                                ...((!migrationPassword && !migrationImportSucceeded) || migrationJobRunning ? wizardDisabledButtonStyle : wizardPrimaryButtonStyle),
+                                width: "auto", padding: "8px 16px", fontSize: "0.8rem",
+                            }}>
+                                {migrationJobRunning
+                                    ? t("正在迁入...", "Restoring...")
+                                    : migrationImportSucceeded
+                                        ? t("完成设置", "Finish setup")
+                                        : migrationJobFailed
+                                            ? t("重试迁入", "Retry restore")
+                                            : t("立即恢复", "Restore now")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Email verification dialog ── */}
             {showConfirm && (
                 <div style={{
                     position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
                     background: colors.overlay, display: "flex",
                     alignItems: "center", justifyContent: "center", zIndex: 10000,
-                }} onClick={() => setShowConfirm(false)}>
+                }} onClick={() => { if (!regBusy) setShowConfirm(false); }}>
                     <div style={{
                         background: colors.surface, borderRadius: 14, padding: "22px 26px",
                         maxWidth: 380, width: "90%", boxShadow: "0 12px 36px rgba(15,23,42,0.18)",
                         color: colors.text,
-                    }} onClick={e => e.stopPropagation()}>
-                        {/* Header: icon + title */}
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                            <span style={{ fontSize: 15, fontWeight: 700 }}>
-                                {t("注册账号", "Confirm Registration")}
-                            </span>
+                    }} role="dialog" aria-modal="true" aria-labelledby="email-verification-title" onClick={e => e.stopPropagation()}>
+                        <div id="email-verification-title" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>
+                            {t("验证邮箱", "Verify your email")}
                         </div>
-                        {/* Description – warning tone */}
+                        <p style={{ margin: "0 0 14px", fontSize: 13, color: colors.textSecondary, lineHeight: 1.5 }} aria-live="polite">
+                            {emailCodeSending
+								? t(`正在向 ${regEmail.trim()} 发送验证码…`, `Sending a verification code to ${regEmail.trim()}…`)
+								: t(`验证码已发送至 ${regEmail.trim()}，请输入邮件中的 ${emailCodeLength} 位数字。`, `We sent a code to ${regEmail.trim()}. Enter the ${emailCodeLength}-digit code from the email.`)}
+                        </p>
                         <div style={{
-                            display: "flex", alignItems: "flex-start", gap: 8,
-                            fontSize: 13, color: colors.danger, lineHeight: 1.5, marginBottom: 12,
-                            padding: "8px 11px", borderRadius: 8,
-                            background: colors.dangerBg, border: `1px solid ${colors.danger}`,
-                            borderColor: "rgba(220,38,38,0.25)",
+                            display: "flex", gap: 8, alignItems: "stretch", marginBottom: 8,
                         }}>
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 2 }}>
-                                <path d="M8 1.5L1 13.5h14L8 1.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" fill="none"/>
-                                <path d="M8 6.5v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                                <circle cx="8" cy="11.5" r="0.7" fill="currentColor"/>
-                            </svg>
-                            <span>{t("请确认当前用户ID。", "Confirm the current user ID.")}</span>
+                            <input ref={emailCodeInputRef} aria-label={t("邮箱验证码", "Email verification code")}
+                                style={{ ...inputStyle, flex: 1, minWidth: 0, fontSize: 20, fontWeight: 700, letterSpacing: "0.22em", textAlign: "center" }}
+                                value={emailCode}
+                                onChange={e => setEmailCode(sanitizeEmailVerificationCode(e.target.value, emailCodeLength))}
+                                onKeyDown={e => { if (e.key === "Enter" && emailCodeTarget === normalizeEmailVerificationTarget(regEmail) && canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy })) void doRegister(); }}
+                                placeholder={"•".repeat(emailCodeLength)} inputMode="numeric" autoComplete="one-time-code" disabled={regBusy} />
+                            <button type="button" onClick={handleSendEmailCode} disabled={emailCodeSending || emailCodeCountdown > 0 || regBusy} style={{
+                                ...wizardGhostButtonStyle, flex: "0 0 104px", padding: "0 10px", fontSize: "0.74rem",
+                                opacity: emailCodeSending || emailCodeCountdown > 0 || regBusy ? 0.62 : 1,
+                            }}>
+                                {emailCodeSending ? t("发送中", "Sending") : emailCodeCountdown > 0 ? `${emailCodeCountdown}s` : t("重新发送", "Resend")}
+                            </button>
                         </div>
-                        {/* Email card */}
-                        <div style={{
-                            padding: "10px 14px", borderRadius: 8,
-                            background: "var(--theme-info-bg)",
-                            border: `1px solid ${colors.borderLight}`,
-                            marginBottom: 10,
-                            display: "flex", alignItems: "center", gap: 10,
-                        }}>
-                            <div style={{ fontSize: 12, color: colors.textMuted, fontWeight: 500, whiteSpace: "nowrap" }}>
-                                {t("ID", "ID", "ID")}
+                        {emailCodeError && (
+                            <div role="alert" style={{ ...wizardBannerStyle("error"), marginTop: 8, marginBottom: 0 }}>
+                                {emailCodeError}
                             </div>
-                            <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, wordBreak: "break-all" }}>
-                                {regEmail}
-                            </div>
+                        )}
+                        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.45 }}>
+                            {t("首次登录会自动创建账号；后续登录同样需要验证。", "First-time sign-in creates the account automatically. Returning sign-ins are verified too.")}
                         </div>
-                        {/* Action buttons */}
                         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
-                            <button onClick={() => setShowConfirm(false)} style={{
+                            <button onClick={() => setShowConfirm(false)} disabled={regBusy} style={{
                                 ...wizardGhostButtonStyle, padding: "8px 18px", fontSize: "0.8rem", color: colors.text,
                             }}>
                                 {t("返回修改", "Go Back")}
                             </button>
-                            <button onClick={doRegister} style={{
-                                ...wizardPrimaryButtonStyle, width: "auto", padding: "8px 18px", fontSize: "0.8rem",
+                            <button onClick={doRegister} disabled={emailCodeTarget !== normalizeEmailVerificationTarget(regEmail) || !canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy })} style={{
+                                ...(emailCodeTarget !== normalizeEmailVerificationTarget(regEmail) || !canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy }) ? wizardDisabledButtonStyle : wizardPrimaryButtonStyle),
+                                width: "auto", padding: "8px 18px", fontSize: "0.8rem",
                             }}>
-                                {t("确认注册", "Confirm & Register")}
+                                {regBusy ? t("验证中...", "Verifying...") : t("验证并继续", "Verify & continue")}
                             </button>
                         </div>
                     </div>

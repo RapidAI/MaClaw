@@ -60,14 +60,16 @@ type App struct {
 }
 
 type Settings struct {
-	ListenAddress string        `json:"listen_address"`
-	APIKey        string        `json:"api_key"`
-	AccessToken   string        `json:"access_token,omitempty"`
-	BaseURL       string        `json:"base_url"`
-	ModelID       string        `json:"model_id,omitempty"`
-	Email         string        `json:"email,omitempty"`
-	UpdatedAt     string        `json:"updated_at,omitempty"`
-	Models        []ModelOption `json:"models,omitempty"`
+	ListenAddress              string        `json:"listen_address"`
+	APIKey                     string        `json:"api_key"`
+	AccessToken                string        `json:"access_token,omitempty"`
+	BaseURL                    string        `json:"base_url"`
+	ModelID                    string        `json:"model_id,omitempty"`
+	CodexContextWindow         int           `json:"codex_context_window,omitempty"`
+	CodexAutoCompactTokenLimit int           `json:"codex_auto_compact_token_limit,omitempty"`
+	Email                      string        `json:"email,omitempty"`
+	UpdatedAt                  string        `json:"updated_at,omitempty"`
+	Models                     []ModelOption `json:"models,omitempty"`
 }
 
 type ModelOption struct {
@@ -194,6 +196,12 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 	if strings.TrimSpace(s.ModelID) == "" {
 		s.ModelID = cur.ModelID
 	}
+	if s.CodexContextWindow <= 0 {
+		s.CodexContextWindow = cur.CodexContextWindow
+	}
+	if s.CodexAutoCompactTokenLimit <= 0 {
+		s.CodexAutoCompactTokenLimit = cur.CodexAutoCompactTokenLimit
+	}
 	if strings.TrimSpace(s.Email) == "" {
 		s.Email = cur.Email
 	}
@@ -201,6 +209,9 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 		s.Models = cur.Models
 	}
 	s = normalizeSettings(s)
+	if s.CodexAutoCompactTokenLimit >= s.CodexContextWindow {
+		return Status{}, fmt.Errorf("Codex 压缩启动长度必须小于上下文长度")
+	}
 
 	// Only restart proxy if settings that affect the running proxy have changed.
 	// Model name, email, API key etc. are just persisted metadata or can be hot-updated.
@@ -485,7 +496,7 @@ func (a *App) ConfigureCodex() (string, error) {
 	// Use the local OpenAI-compatible endpoint as base URL for Codex
 	baseURL := publicBaseURL(s.ListenAddress, "127.0.0.1") + "/v1"
 	apiKey := s.APIKey
-	if err := configfile.WriteTigerProxyCodexConfig(apiKey, baseURL, modelID); err != nil {
+	if err := configfile.WriteTigerProxyCodexConfigWithContext(apiKey, baseURL, modelID, s.CodexContextWindow, s.CodexAutoCompactTokenLimit); err != nil {
 		return "", err
 	}
 
@@ -1148,6 +1159,13 @@ func normalizeSettings(s Settings) Settings {
 	s.AccessToken = strings.TrimSpace(s.AccessToken)
 	s.BaseURL = strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
 	s.ModelID = strings.TrimSpace(s.ModelID)
+	defaultContextWindow, defaultAutoCompactTokenLimit := configfile.TigerProxyCodexContextDefaults()
+	if s.CodexContextWindow <= 0 {
+		s.CodexContextWindow = defaultContextWindow
+	}
+	if s.CodexAutoCompactTokenLimit <= 0 {
+		s.CodexAutoCompactTokenLimit = defaultAutoCompactTokenLimit
+	}
 	s.Email = strings.TrimSpace(s.Email)
 	s.Models = normalizeModelOptions(s.Models)
 	return s

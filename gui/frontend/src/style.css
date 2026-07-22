@@ -2,7 +2,8 @@ html {
     /* background-color is set dynamically by index.html inline script and
        App.tsx useEffect to match the active theme.  Do NOT set it here —
        a static value would flash the wrong colour on theme mismatch. */
-    text-align: center;
+    /* Default left for product UI; set center only on heroes/empty states. */
+    text-align: left;
     color: white;
 }
 
@@ -12,6 +13,7 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Roboto",
     "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
     sans-serif;
+    text-align: left;
 }
 
 @font-face {
@@ -22,9 +24,15 @@ body {
     url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
 }
 
+/* Legacy Wails id; real shell uses #App (see App.css). Keep both left-aligned. */
 #app {
     height: 100vh;
-    text-align: center;
+    text-align: left;
+}
+
+#root {
+    text-align: left;
+    min-height: 100%;
 }
 
 /* Global selection color */

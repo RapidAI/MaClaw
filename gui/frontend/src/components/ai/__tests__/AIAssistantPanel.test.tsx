@@ -4,7 +4,7 @@ import * as fc from 'fast-check';
 import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from '../AIAssistantPanel';
 import { initialState as initialCodePreviewState } from '../useCodePreviewState';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
-import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
+import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistantResult, type NewsCardData, type ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
@@ -1509,7 +1509,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(input.value).toBe('ma');
     });
 
-    it('fires queued input into the next agent loop as guide reference', async () => {
+    it('steers busy-turn input immediately and removes it only after acceptance', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const injectSupplementary = vi.fn().mockResolvedValue(false);
         const guideLaunchReference = vi.fn().mockResolvedValue(true);
@@ -1529,14 +1529,7 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'guide this next' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
-        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
-        expect(fireButton).toBeTruthy();
-        expect(fireButton?.getAttribute('title')).toBe('引导发射');
-        expect(fireButton?.getAttribute('aria-label')).toBe('引导进入下一次 agent loop');
-        fireEvent.click(fireButton!);
-
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('guide this next', 'desktop-user'));
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('guide this next', 'desktop-user', expect.any(String)));
         expect(injectSupplementary).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
@@ -1560,15 +1553,85 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'stay in selected session' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
-        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
-        expect(fireButton).toBeTruthy();
-        fireEvent.click(fireButton!);
-
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('stay in selected session', 'desktop-user'));
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('stay in selected session', 'desktop-user', expect.any(String)));
         expect(injectSupplementary).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
         expect(getByText('stay in selected session')).toBeTruthy();
+    });
+
+    it('falls back to the next normal turn when the busy-turn steer loses the completion race', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const guideLaunchReference = vi.fn().mockResolvedValue(false);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, guideLaunchReference, sendMessage };
+        props.state = { ...props.state, sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true };
+        const { getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'do not lose this instruction' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('do not lose this instruction', 'desktop-user', expect.any(String)));
+        expect(getByTestId('buffer-queue-panel')).toBeTruthy();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, sending: false, streaming: false };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('do not lose this instruction', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('keeps busy slash commands as ordered next turns instead of steering them into the model', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, guideLaunchReference, sendMessage };
+        props.state = { ...props.state, sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/goal revise the release plan' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(guideLaunchReference).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, sending: false, streaming: false };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('/goal revise the release plan', expect.objectContaining({ tabId: 'local' })));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
+    });
+
+    it('does not steer a later message past an earlier queued slash command', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, guideLaunchReference, sendMessage };
+        props.state = { ...props.state, sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+
+        fireEvent.change(input, { target: { value: '/goal keep the release scope' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        fireEvent.change(input, { target: { value: 'also prioritize the migration' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(document.querySelectorAll('[data-testid^="buffer-entry-"]').length).toBe(2));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, sending: false, streaming: false };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, '/goal keep the release scope', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'also prioritize the migration', expect.objectContaining({ tabId: 'local' })));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
     });
 
     it('auto-drains input queued during a busy turn once the assistant is idle', async () => {
@@ -1605,6 +1668,36 @@ describe('AIAssistantPanel property tests', () => {
 
         await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued before idle', expect.objectContaining({ tabId: 'local' })));
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('keeps an automatic queue drain bound to its durable project owner', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
+            id: 'owned-project-auto-drain',
+            text: 'continue project alpha automatically',
+            attachments: [],
+            createdAt: 1,
+            autoDrain: true,
+            sessionKey: 'desktop-user:D:/tasks/project-alpha-auto',
+        }]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const props = defaultPanelProps();
+        props.pendingProjectTabOpen = {
+            projectPath: 'D:/tasks/project-alpha-auto',
+            taskTitle: 'Project alpha auto',
+            autoSend: false,
+        };
+        props.onPendingProjectTabOpenHandled = onHandled;
+        props.state = { ...props.state, messages: [], sending: false, streaming: false, ready: true };
+        props.actions = { ...props.actions, sendMessage };
+        render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+            'continue project alpha automatically',
+            expect.objectContaining({ project_path: 'D:/tasks/project-alpha-auto' }),
+        ));
+        expect(sendMessage.mock.calls[0]?.[1]).not.toHaveProperty('queue_session_key');
     });
 
     it('waits for assistant readiness before auto-draining a persisted type-ahead entry', async () => {
@@ -1725,10 +1818,10 @@ describe('AIAssistantPanel property tests', () => {
         expect(fireButton).toBeTruthy();
         fireEvent.click(fireButton!);
 
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project selected session only', 'desktop-user:D:/tasks/no-global-fallback'));
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project selected session only', 'desktop-user:D:/tasks/no-global-fallback', expect.any(String)));
         expect(injectSupplementary).not.toHaveBeenCalled();
         expect(document.body.textContent || '').toContain('project selected session only');
-        expect(document.body.textContent || '').toContain('我听到了，但这条补充暂时还没接上当前任务');
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
     });
 
     it('renders restored project context as a compact user-facing note', async () => {
@@ -2236,6 +2329,30 @@ describe('AIAssistantPanel property tests', () => {
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
+    it('routes legacy supplementary steering by the queue entry owner', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
+            id: 'legacy-owned-steer',
+            text: 'keep this in the owned session',
+            attachments: [],
+            createdAt: 1,
+            sessionKey: 'desktop-user',
+        }]));
+        const injectSupplementary = vi.fn().mockResolvedValue(true);
+        const { queryByTestId } = renderPanel({
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
+            actions: { guideLaunchReference: undefined as any, injectSupplementary },
+        });
+
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+        await waitFor(() => expect(injectSupplementary).toHaveBeenCalledWith(
+            'keep this in the owned session',
+            'desktop-user',
+        ));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
     it('sends an IM remote prompt exactly once after SSH reconnect succeeds', async () => {
         window.localStorage.clear();
         const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
@@ -2611,8 +2728,10 @@ describe('AIAssistantPanel property tests', () => {
         expect(fireButton).toBeTruthy();
         fireEvent.click(fireButton!);
 
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('pending guide lock', 'desktop-user'));
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('pending guide lock', 'desktop-user', expect.any(String)));
         await waitFor(() => expect((document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true));
+        expect(document.body.textContent || '').toContain('Attaching to the running task');
+        expect(document.body.textContent || '').toContain('Attaching...');
         expect((document.querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
         expect((document.querySelector('[data-testid^="delete-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
 
@@ -2877,18 +2996,13 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'project guide context' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
-        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
-        expect(fireButton).toBeTruthy();
-        fireEvent.click(fireButton!);
-
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project guide context', 'desktop-user:D:/tasks/weather'));
-        await waitFor(() => expect(document.body.textContent || '').toContain('这条补充已接上当前任务'));
-        expect(getByTestId('guide-receipt')).toBeTruthy();
-        expect(document.body.textContent || '').toContain('project guide context');
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project guide context', 'desktop-user:D:/tasks/weather', expect.any(String)));
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(1));
+        expect(document.body.textContent || '').not.toContain('嗯，接住了');
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
 
         fireEvent.click(getByTestId('ai-tab-local'));
-        expect(document.body.textContent || '').not.toContain('这条补充已接上当前任务');
+        expect(document.body.textContent || '').not.toContain('project guide context');
         expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
     });
 
@@ -2925,7 +3039,7 @@ describe('AIAssistantPanel property tests', () => {
         const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
         expect(fireButton).toBeTruthy();
         fireEvent.click(fireButton!);
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('delayed project guide', 'desktop-user:D:/tasks/delayed-guide'));
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('delayed project guide', 'desktop-user:D:/tasks/delayed-guide', expect.any(String)));
 
         fireEvent.click(getByTestId('ai-tab-local'));
         resolveGuide(true);
@@ -2939,11 +3053,72 @@ describe('AIAssistantPanel property tests', () => {
             fireEvent.click(getByTestId('ai-tab-overflow-btn'));
             fireEvent.click(getByText('Delayed guide task'));
         }
-        await waitFor(() => expect(document.body.textContent || '').toContain('这条补充已接上当前任务'));
-        expect(getByTestId('guide-receipt')).toBeTruthy();
-        expect(document.body.textContent || '').toContain('delayed project guide');
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(1));
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
+        expect(document.body.textContent || '').not.toContain('delayed project guide');
     });
-    it('preserves multiple rapid project guide reference echoes', async () => {
+
+	it('does not record a stale guide after its session queue is forgotten in flight', async () => {
+		localStorage.removeItem('ai_assistant_buffer_queue');
+		let resolveGuide!: (value: boolean) => void;
+		const guideLaunchReference = vi.fn(() => new Promise<boolean>(resolve => { resolveGuide = resolve; }));
+		const recordSubmittedPrompt = vi.fn();
+		const { getByTestId, queryByTestId } = renderPanel({
+			state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
+			actions: { guideLaunchReference, recordSubmittedPrompt },
+		});
+		const input = getByTestId('ai-input') as HTMLTextAreaElement;
+		fireEvent.change(input, { target: { value: 'forgotten while attaching' } });
+		fireEvent.keyDown(input, { key: 'Enter' });
+		await waitFor(() => expect(guideLaunchReference).toHaveBeenCalled());
+
+		act(() => forgetAIAssistantSessionRounds('desktop-user'));
+		expect(queryByTestId('buffer-queue-panel')).toBeNull();
+		resolveGuide(true);
+		await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(1));
+		expect(recordSubmittedPrompt).not.toHaveBeenCalled();
+	});
+    it('routes a queued guide by its durable session owner after a tab switch', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
+            id: 'owned-project-guide',
+            text: 'stay with project alpha',
+            attachments: [],
+            createdAt: 1,
+            sessionKey: 'desktop-user:D:/tasks/project-alpha',
+        }]));
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByTestId, getByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-alpha',
+                taskTitle: 'Project alpha',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/project-alpha', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/project-alpha', ready: true },
+            actions: { guideLaunchReference },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByTestId('ai-tab-local'));
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        if (projectTab) {
+            fireEvent.click(projectTab);
+        } else {
+            fireEvent.click(getByTestId('ai-tab-overflow-btn'));
+            fireEvent.click(getByText('Project alpha'));
+        }
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith(
+            'stay with project alpha',
+            'desktop-user:D:/tasks/project-alpha',
+            expect.any(String),
+        ));
+    });
+    it('accepts multiple rapid project guides without synthesizing chat echoes', async () => {
         localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
             { id: 'project-guide-one', text: 'first project guide', attachments: [], createdAt: 1, sessionKey: 'desktop-user:D:/tasks/rapid-guides' },
             { id: 'project-guide-two', text: 'second project guide', attachments: [], createdAt: 2, sessionKey: 'desktop-user:D:/tasks/rapid-guides' },
@@ -2971,8 +3146,9 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(fireButtons[1]);
 
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(2));
-        expect(document.body.textContent || '').toContain('first project guide');
-        expect(document.body.textContent || '').toContain('second project guide');
+        expect(document.body.textContent || '').not.toContain('first project guide');
+        expect(document.body.textContent || '').not.toContain('second project guide');
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
 
         fireEvent.click(getByTestId('ai-tab-local'));
         expect(document.body.textContent || '').not.toContain('first project guide');
@@ -4456,7 +4632,8 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'project detached should queue' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(getByText('project detached should queue')).toBeTruthy());
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(document.body.textContent || '').toContain('project detached should queue');
         expect(sendMessage).not.toHaveBeenCalled();
     });
 

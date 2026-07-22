@@ -161,8 +161,10 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		if ctx == nil {
 			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "none", "")}, true
 		}
-		h.markTaskCancelledByUser(msg.UserID)
 		ctx.Cancel()
+		// Close steer acceptance before clearing pending injections; this keeps
+		// cancel and busy-turn Enter from creating an accepted orphan.
+		h.markTaskCancelledByUser(msg.UserID)
 		cancelMsg := localizedIMCancelMessage(responseLang, "task", truncateRunes(taskText, 30))
 		return &IMAgentResponse{Text: cancelMsg}, true
 	}

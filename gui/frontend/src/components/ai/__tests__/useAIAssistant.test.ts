@@ -37,6 +37,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InjectAIAssistantSupplementaryForSession: vi.fn(async () => false),
     InjectAIAssistantGuideReference: vi.fn(async () => true),
     InjectAIAssistantGuideReferenceForSession: vi.fn(async () => true),
+    InjectAIAssistantGuideReferenceForSessionWithID: vi.fn(async () => true),
+    HasAIAssistantGuideReferenceForSessionWithID: vi.fn(async () => false),
     SubmitAgentView: vi.fn(async () => ({ text: 'submitted', error: '' })),
     DismissAgentView: vi.fn(async () => ({ text: 'dismissed', error: '' })),
 }));
@@ -50,8 +52,8 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
+import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
     return renderHook(() => useAIAssistant(options));
@@ -136,6 +138,10 @@ function resetAppMocks() {
     (InjectAIAssistantGuideReference as any).mockImplementation(async () => true);
     (InjectAIAssistantGuideReferenceForSession as any).mockReset();
     (InjectAIAssistantGuideReferenceForSession as any).mockImplementation(async () => true);
+    (InjectAIAssistantGuideReferenceForSessionWithID as any).mockReset();
+    (InjectAIAssistantGuideReferenceForSessionWithID as any).mockImplementation(async () => true);
+    (HasAIAssistantGuideReferenceForSessionWithID as any).mockReset();
+    (HasAIAssistantGuideReferenceForSessionWithID as any).mockImplementation(async () => false);
     (SubmitAgentView as any).mockReset();
     (SubmitAgentView as any).mockImplementation(async () => ({ text: 'submitted', error: '' }));
     (DismissAgentView as any).mockReset();
@@ -237,29 +243,12 @@ function deferred<T>() {
 }
 
 describe('useAIAssistant property tests', () => {
-    it('formats accepted guide notices as delivery receipts with quoted input', () => {
-        const zhHans = buildGuideReferenceAcceptedNotice('需要最新的\n顺便核对来源', 'zh-Hans');
-        expect(zhHans).toContain('这条补充已接上当前任务');
-        expect(zhHans).toContain('> 需要最新的\n> 顺便核对来源');
-        expect(zhHans).toContain('下一步会顺着这点继续');
-
-        const en = buildGuideReferenceAcceptedNotice('fresh sources please', 'en');
-        expect(en).toContain('Added to the running task');
-        expect(en).toContain('> fresh sources please');
-        expect(en).toContain('The next step will work from this point');
-
-        const zhHant = buildGuideReferenceAcceptedNotice('需要最新的', 'zh-Hant');
-        expect(zhHant).toContain('這條補充已接上目前任務');
-        expect(zhHant).toContain('> 需要最新的');
-        expect(zhHant).toContain('下一步會順著這點繼續');
-    });
-
     it('formats rejected guide notices without implying the task accepted the input', () => {
         expect(buildGuideReferenceRejectedNotice('没有运行中的 loop', 'zh-Hans')).toBe(
-            '我听到了，但这条补充暂时还没接上当前任务：\n> 没有运行中的 loop\n\n等助手空闲后，把它作为普通消息发出就可以，我会直接处理。',
+            '当前步骤已先结束，这条指令未能接入：\n> 没有运行中的 loop\n\n它仍在待执行队列中，将自动作为下一轮指令发送。',
         );
         expect(buildGuideReferenceRejectedNotice('no active loop', 'en')).toBe(
-            'I heard you, but I could not attach this to the current task yet:\n> no active loop\n\nOnce the assistant is idle, send it as a normal message and I will handle it directly.',
+            'The running step ended before this instruction could attach:\n> no active loop\n\nIt remains queued and will be sent automatically as the next turn.',
         );
     });
 
@@ -328,7 +317,7 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
-    it('shows localized guide reference echo for the local desktop session', async () => {
+    it('shows an accepted local guide reference as the user interjection itself', async () => {
         const { result } = renderAssistantHook({ lang: 'zh-Hans' });
 
         let accepted = false;
@@ -339,14 +328,15 @@ describe('useAIAssistant property tests', () => {
         expect(accepted).toBe(true);
         expect(InjectAIAssistantGuideReferenceForSession).toHaveBeenCalledWith('下一轮参考这个', 'desktop-user');
         expect(InjectAIAssistantGuideReference).not.toHaveBeenCalled();
-        const contents = messageContents(result.current.messages).join('\n');
-        expect(contents).toContain('这条补充已接上当前任务');
-        expect(contents).toContain('> 下一轮参考这个');
-        expect(contents).toContain('下一步会顺着这点继续');
-        expect(result.current.messages.find(message => message.content.includes('下一轮参考这个'))?.kind).toBe('guideReceipt');
+        expect(result.current.messages).toHaveLength(1);
+        expect(result.current.messages[0]).toMatchObject({
+            role: 'user',
+            content: '下一轮参考这个',
+            sessionKey: 'desktop-user',
+        });
     });
 
-    it('does not echo project guide references into the local desktop history', async () => {
+    it('binds an accepted project guide interjection to the project session', async () => {
         const { result } = renderAssistantHook();
 
         let accepted = false;
@@ -356,10 +346,185 @@ describe('useAIAssistant property tests', () => {
 
         expect(accepted).toBe(true);
         expect(InjectAIAssistantGuideReferenceForSession).toHaveBeenCalledWith('项目参考', 'desktop-user:D:/tasks/demo');
-        expect(messageContents(result.current.messages)).not.toContain('这条补充已接上当前任务：\n> 项目参考');
+        expect(result.current.messages.at(-1)).toMatchObject({
+            role: 'user',
+            content: '项目参考',
+            sessionKey: 'desktop-user:D:/tasks/demo',
+        });
     });
 
-    it('shows guide rejection feedback when the active loop rejects it', async () => {
+    it('passes a durable queue ID to the idempotent guide transport', async () => {
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.guideLaunchReference('only once', 'desktop-user', 'buf-123');
+        });
+
+        expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledWith(
+            'only once',
+            'desktop-user',
+            'buf-123',
+			'',
+        );
+        expect(InjectAIAssistantGuideReferenceForSession).not.toHaveBeenCalledWith('only once', 'desktop-user');
+    });
+
+	it('binds a durable guide to the currently active request', async () => {
+		const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+		(SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+		const { result } = renderAssistantHook();
+
+		await act(async () => {
+			void result.current.sendMessage('active work');
+			await Promise.resolve();
+		});
+		const request = parseSentRequest();
+		await act(async () => {
+			expect(await result.current.guideLaunchReference('change direction', 'desktop-user', 'buf-active')).toBe(true);
+		});
+
+		expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledWith(
+			'change direction', 'desktop-user', 'buf-active', request.request_id,
+		);
+		pending.resolve({ text: 'done', error: '', fields: null, actions: null, request_id: request.request_id || '' });
+		await act(async () => { await pending.promise; });
+	});
+
+	it('binds a guide to a detached busy project round after the visible round changes', async () => {
+		const first = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+		const second = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+		(SendAIAssistantMessage as any)
+			.mockImplementationOnce(() => first.promise)
+			.mockImplementationOnce(() => second.promise);
+		const { result } = renderAssistantHook();
+
+		await act(async () => {
+			void result.current.sendMessage('project one', { project_path: 'D:/tasks/one' });
+			await Promise.resolve();
+		});
+		const firstRequest = parseSentRequest(0);
+		await act(async () => {
+			void result.current.sendMessage('project two', { project_path: 'D:/tasks/two' });
+			await Promise.resolve();
+		});
+		const secondRequest = parseSentRequest(1);
+
+		await act(async () => {
+			expect(await result.current.guideLaunchReference(
+				'change project one', 'desktop-user:D:/tasks/one', 'buf-detached',
+			)).toBe(true);
+		});
+		expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledWith(
+			'change project one', 'desktop-user:D:/tasks/one', 'buf-detached', firstRequest.request_id,
+		);
+
+		first.resolve({ text: 'one done', error: '', fields: null, actions: null, request_id: firstRequest.request_id || '' });
+		second.resolve({ text: 'two done', error: '', fields: null, actions: null, request_id: secondRequest.request_id || '' });
+		await act(async () => { await Promise.all([first.promise, second.promise]); });
+	});
+
+    it('shows a retried accepted durable guide only once in chat history', async () => {
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            expect(await result.current.guideLaunchReference('same accepted steer', 'desktop-user', 'buf-same')).toBe(true);
+            expect(await result.current.guideLaunchReference('same accepted steer', 'desktop-user', 'buf-same')).toBe(true);
+        });
+
+        expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledTimes(2);
+        expect(result.current.messages.filter(message => message.content === 'same accepted steer')).toHaveLength(1);
+    });
+
+    it('allows a durable guide ID to be displayed again after its session is forgotten', async () => {
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            expect(await result.current.guideLaunchReference('reused after reset', 'desktop-user', 'buf-reused')).toBe(true);
+        });
+        act(() => forgetAIAssistantSessionRounds('desktop-user'));
+        await act(async () => {
+            expect(await result.current.guideLaunchReference('reused after reset', 'desktop-user', 'buf-reused')).toBe(true);
+        });
+
+        expect(result.current.messages.filter(message => message.content === 'reused after reset')).toHaveLength(2);
+    });
+
+	it('does not resurrect a guide interjection when acceptance arrives after session forget', async () => {
+		const acceptance = deferred<boolean>();
+		(InjectAIAssistantGuideReferenceForSessionWithID as any).mockImplementationOnce(() => acceptance.promise);
+		const { result } = renderAssistantHook();
+		let pending!: Promise<boolean>;
+
+		act(() => {
+			pending = result.current.guideLaunchReference('late accepted steer', 'desktop-user', 'buf-late-forget');
+		});
+		act(() => forgetAIAssistantSessionRounds('desktop-user'));
+		acceptance.resolve(true);
+		await act(async () => { expect(await pending).toBe(true); });
+
+		expect(result.current.messages.some(message => message.content === 'late accepted steer')).toBe(false);
+	});
+
+	it('does not resurrect a guide interjection when acceptance arrives after clear history', async () => {
+		const acceptance = deferred<boolean>();
+		(InjectAIAssistantGuideReferenceForSessionWithID as any).mockImplementationOnce(() => acceptance.promise);
+		const { result } = renderAssistantHook();
+		let pending!: Promise<boolean>;
+
+		act(() => {
+			pending = result.current.guideLaunchReference('late after clear', 'desktop-user', 'buf-late-clear');
+		});
+		await act(async () => { await result.current.clearHistory(); });
+		acceptance.resolve(true);
+		await act(async () => { expect(await pending).toBe(true); });
+
+		expect(result.current.messages.some(message => message.content === 'late after clear')).toBe(false);
+	});
+
+    it('retries a lost guide response with the same durable queue ID', async () => {
+        (InjectAIAssistantGuideReferenceForSessionWithID as any)
+            .mockRejectedValueOnce(new Error('lost Wails response'))
+            .mockResolvedValueOnce(true);
+        const { result } = renderAssistantHook();
+
+        let accepted = false;
+        await act(async () => {
+            accepted = await result.current.guideLaunchReference('retry safely', 'desktop-user', 'buf-retry');
+        });
+
+        expect(accepted).toBe(true);
+        expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledTimes(2);
+        expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenNthCalledWith(
+			1, 'retry safely', 'desktop-user', 'buf-retry', '',
+        );
+        expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenNthCalledWith(
+			2, 'retry safely', 'desktop-user', 'buf-retry', '',
+        );
+        expect(result.current.messages.filter(message => message.content === 'retry safely')).toHaveLength(1);
+    });
+
+    it('resolves two lost guide responses through a read-only acceptance check', async () => {
+        (InjectAIAssistantGuideReferenceForSessionWithID as any).mockRejectedValue(new Error('lost response'));
+        (HasAIAssistantGuideReferenceForSessionWithID as any).mockResolvedValueOnce(true);
+        const { result } = renderAssistantHook();
+
+        let accepted = false;
+        await act(async () => {
+            accepted = await result.current.guideLaunchReference('accepted despite transport loss', 'desktop-user', 'buf-status');
+        });
+
+        expect(accepted).toBe(true);
+        expect(InjectAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledTimes(2);
+        expect(HasAIAssistantGuideReferenceForSessionWithID).toHaveBeenCalledWith(
+            'accepted despite transport loss',
+            'desktop-user',
+            'buf-status',
+			'',
+        );
+        expect(result.current.messages.filter(message => message.content === 'accepted despite transport loss')).toHaveLength(1);
+    });
+
+    it('keeps guide transport rejection out of chat history', async () => {
         (InjectAIAssistantGuideReferenceForSession as any).mockResolvedValueOnce(false);
         const { result } = renderAssistantHook({ lang: 'zh-Hans' });
 
@@ -369,8 +534,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(accepted).toBe(false);
-        expect(messageContents(result.current.messages)).toContain('我听到了，但这条补充暂时还没接上当前任务：\n> 没有运行中的 loop\n\n等助手空闲后，把它作为普通消息发出就可以，我会直接处理。');
-        expect(result.current.messages.find(message => message.content.includes('没有运行中的 loop'))?.kind).toBe('guideRejection');
+        expect(result.current.messages).toHaveLength(0);
     });
 
     it('background launch stores visible session, job, and run identifiers in a system message', async () => {
@@ -3471,6 +3635,29 @@ describe('useAIAssistant property tests', () => {
         );
         expect(InjectAIAssistantSupplementary).not.toHaveBeenCalled();
         expect(SendAIAssistantMessage).not.toHaveBeenCalled();
+    });
+
+    it('keeps an explicit supplementary owner across active-session changes', async () => {
+        (InjectAIAssistantSupplementaryForSession as any).mockResolvedValueOnce(true);
+        let activeSessionKey = 'desktop-user:D:/tasks/alpha';
+        const { result, rerender } = renderHook(() => useAIAssistant({ activeSessionKey }));
+        const injectOwned = result.current.injectSupplementary;
+
+        activeSessionKey = 'desktop-user:D:/tasks/beta';
+        rerender();
+        await act(async () => {
+            await injectOwned('owned supplementary', 'desktop-user:D:/tasks/alpha');
+        });
+
+        expect(InjectAIAssistantSupplementaryForSession).toHaveBeenCalledWith(
+            'owned supplementary',
+            'desktop-user:D:/tasks/alpha',
+        );
+        expect(result.current.messages.at(-1)).toMatchObject({
+            role: 'user',
+            content: 'owned supplementary',
+            sessionKey: 'desktop-user:D:/tasks/alpha',
+        });
     });
 
     it('normalizes action styles from assistant responses', async () => {

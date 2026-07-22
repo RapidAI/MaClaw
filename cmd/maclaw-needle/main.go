@@ -44,6 +44,8 @@ func main() {
 		err = cmdEvalShadow(os.Args[2:])
 	case "eval-predictions":
 		err = cmdEvalPredictions(os.Args[2:])
+	case "eval-localization":
+		err = cmdEvalLocalization(os.Args[2:])
 	case "quality-gate":
 		err = cmdQualityGate(os.Args[2:])
 	case "calibrate-threshold":
@@ -74,6 +76,31 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func cmdEvalLocalization(args []string) error {
+	fs := flag.NewFlagSet("eval-localization", flag.ExitOnError)
+	in := fs.String("in", "", "bug-localization prediction JSONL")
+	out := fs.String("out", "", "optional JSON report path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*in) == "" {
+		return fmt.Errorf("-in is required")
+	}
+	rows, err := needledata.ReadLocalizationPredictions(*in)
+	if err != nil {
+		return err
+	}
+	report := needledata.EvaluateLocalizations(rows)
+	data, _ := json.MarshalIndent(report, "", "  ")
+	if *out != "" {
+		if err := os.WriteFile(*out, data, 0o644); err != nil {
+			return err
+		}
+	}
+	fmt.Println(string(data))
+	return nil
 }
 
 func cmdGenerateSeed(args []string) error {
@@ -1702,6 +1729,7 @@ commands:
   report-dataset  summarize training records or event logs
   eval-shadow     compare shadow Needle predictions against final decisions
   eval-predictions evaluate a prediction JSONL against exported records
+  eval-localization evaluate ranked bug-localization predictions (Hit@K/MRR/latency)
   quality-gate    enforce promotion thresholds for a trained artifact
   calibrate-threshold choose/update min-conf by accuracy and accepted coverage
   promote-artifact copy a candidate artifact into the active slot after quality gate

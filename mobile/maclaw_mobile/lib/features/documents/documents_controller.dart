@@ -60,7 +60,9 @@ Object mapDocumentStorageError(Object error, {bool isZh = true}) {
     return StateError(
       message.isNotEmpty
           ? message
-          : (isZh ? '没有权限操作该文稿。' : 'You do not have permission for this document.'),
+          : (isZh
+              ? '没有权限操作该文稿。'
+              : 'You do not have permission for this document.'),
     );
   }
   if (message.isNotEmpty) {
@@ -165,14 +167,17 @@ class DocumentDraftHistoryController
     if (client == null) {
       final isZh = ref.read(appStringsProvider).isZh;
       throw StateError(
-        isZh ? '请先登录 MaClaw 官方服务。' : 'Sign in to MaClaw official service first.',
+        isZh
+            ? '请先登录 MaClaw 官方服务。'
+            : 'Sign in to MaClaw official service first.',
       );
     }
     try {
       await client.deleteDocumentDraft(id);
     } on Object catch (error) {
       if (!isDocumentDraftAlreadyGone(error)) {
-        throw mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
+        throw mapDocumentStorageError(error,
+            isZh: ref.read(appStringsProvider).isZh);
       }
       // 404 / DRAFT_NOT_FOUND: treat as already deleted on Hub.
     }
@@ -253,7 +258,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         template: template,
         content: safeContent,
       );
-      await _cacheDraft(draft);
+      await _cacheDraftBestEffort(draft);
       ref.invalidate(documentQuotaProvider);
       state = AsyncData(
         DocumentsState(
@@ -263,7 +268,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         ),
       );
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
+      final mapped = mapDocumentStorageError(error,
+          isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -284,8 +290,16 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     try {
       final job =
           await client.exportDocument(draftId: draft.id, format: format);
-      await ref.read(mobileLocalStoreProvider).saveLastDocumentExportJob(job);
-      await _notifyExportFinished(job, draft.title);
+      try {
+        await ref.read(mobileLocalStoreProvider).saveLastDocumentExportJob(job);
+      } on Object {
+        // The Hub export job is authoritative; local resume cache is optional.
+      }
+      try {
+        await _notifyExportFinished(job, draft.title);
+      } on Object {
+        // Notification delivery is optional after Hub created the export job.
+      }
       state = AsyncData(
         DocumentsState(
           draft: draft,
@@ -296,7 +310,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       );
       _ensureExportPolling(job);
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
+      final mapped = mapDocumentStorageError(error,
+          isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -341,8 +356,6 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         title: safeTitle,
         markdown: safeMarkdown,
       );
-      await _cacheDraft(updated);
-      ref.invalidate(documentQuotaProvider);
       state = AsyncData(
         DocumentsState(
           draft: updated,
@@ -351,8 +364,11 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
           lastUploadPath: current.lastUploadPath,
         ),
       );
+      await _cacheDraftBestEffort(updated);
+      ref.invalidate(documentQuotaProvider);
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
+      final mapped = mapDocumentStorageError(error,
+          isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -368,7 +384,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     // from the last known draft in local cache so the page does not stick.
     var current = state.valueOrNull;
     if (current == null && state.hasError) {
-      final cached = await ref.read(mobileLocalStoreProvider).loadLastDocumentDraft();
+      final cached =
+          await ref.read(mobileLocalStoreProvider).loadLastDocumentDraft();
       if (cached != null) {
         current = DocumentsState(draft: cached);
         state = AsyncData(current);
@@ -396,13 +413,6 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         draftId: draftId,
         action: action,
       );
-      await _cacheDraft(updated);
-      ref.invalidate(mobileJobsProvider);
-      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
-            title: '文档处理完成',
-            body: _documentNotificationBody('${draft.title} 已完成 $action。'),
-            payload: mobileDocumentDraftNotificationPayload(updated.id),
-          );
       state = AsyncData(
         DocumentsState(
           draft: updated,
@@ -411,12 +421,23 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
           lastUploadPath: current.lastUploadPath,
         ),
       );
+      await _cacheDraftBestEffort(updated);
+      ref.invalidate(mobileJobsProvider);
+      try {
+        await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+              title: '文档处理完成',
+              body: _documentNotificationBody('${draft.title} 已完成 $action。'),
+              payload: mobileDocumentDraftNotificationPayload(updated.id),
+            );
+      } on Object {
+        // Hub processing succeeded; notification delivery is optional.
+      }
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
+      final mapped = mapDocumentStorageError(error,
+          isZh: ref.read(appStringsProvider).isZh);
       var msg = mapped is StateError ? mapped.message : mapped.toString();
       if (isDocumentDraftAlreadyGone(error)) {
-        msg =
-            '该文稿在服务器上不存在或已删除。请重新导入，或从上方文稿库打开一篇有效文档后再试。';
+        msg = '该文稿在服务器上不存在或已删除。请重新导入，或从上方文稿库打开一篇有效文档后再试。';
       }
       // Stay on AsyncData so the document UI and AI buttons remain usable.
       state = AsyncData(
@@ -435,10 +456,6 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     if (client == null || current == null || job == null) return;
     try {
       final refreshed = await client.getDocumentExportJob(job.jobId);
-      await ref
-          .read(mobileLocalStoreProvider)
-          .saveLastDocumentExportJob(refreshed);
-      await _notifyExportFinished(refreshed, current.draft?.title ?? '文档');
       state = AsyncData(
         DocumentsState(
           draft: current.draft,
@@ -447,10 +464,16 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
           lastUploadPath: current.lastUploadPath,
         ),
       );
+      await _cacheExportBestEffort(refreshed);
+      await _notifyExportBestEffort(
+        refreshed,
+        current.draft?.title ?? '文档',
+      );
       _ensureExportPolling(refreshed);
     } on Object catch (error) {
       if (silent) return;
-      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
+      final mapped = mapDocumentStorageError(error,
+          isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -469,7 +492,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     // Already finished: dismiss the task card without hitting Hub again.
     if (upload.status == 'ready' || upload.status == 'failed') {
       if (upload.draft != null) {
-        await _cacheDraft(upload.draft!);
+        await _cacheDraftBestEffort(upload.draft!);
         _bindDraftForAssistant(upload.draft);
       }
       state = AsyncData(
@@ -487,28 +510,27 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     // Keep UI stable — never AsyncLoading-wipe the whole documents page.
     try {
       final refreshed = await client.getDocumentUploadTask(upload.taskId);
-      await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
-            refreshed,
-            sourcePath: current.lastUploadPath,
-          );
-      await _notifyUploadReady(refreshed);
-      if (refreshed.draft != null) {
-        await _cacheDraft(refreshed.draft!);
-        if (refreshed.status == 'ready' || refreshed.status == 'needs_ocr') {
-          _bindDraftForAssistant(refreshed.draft);
-        }
-      }
       final finished =
           refreshed.status == 'ready' || refreshed.status == 'failed';
       state = AsyncData(
         DocumentsState(
           draft: refreshed.draft ?? current.draft,
           exportJob: refreshed.draft == null ? current.exportJob : null,
-          // Hide card once finished so user is not stuck on "刷新状态".
           uploadTask: finished ? null : refreshed,
           lastUploadPath: current.lastUploadPath,
         ),
       );
+      await _cacheUploadBestEffort(
+        refreshed,
+        sourcePath: current.lastUploadPath,
+      );
+      await _notifyUploadBestEffort(refreshed);
+      if (refreshed.draft != null) {
+        await _cacheDraftBestEffort(refreshed.draft!);
+        if (refreshed.status == 'ready' || refreshed.status == 'needs_ocr') {
+          _bindDraftForAssistant(refreshed.draft);
+        }
+      }
       if (!finished) {
         _ensureUploadPolling(refreshed);
       }
@@ -540,7 +562,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         );
         return;
       }
-      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
+      final mapped = mapDocumentStorageError(error,
+          isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -567,8 +590,6 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     final current = state.valueOrNull ?? const DocumentsState();
     final job = DocumentExportJob.fromJson(payload);
     if (job.jobId.isEmpty) return;
-    await ref.read(mobileLocalStoreProvider).saveLastDocumentExportJob(job);
-    await _notifyExportFinished(job, current.draft?.title ?? '文档');
     state = AsyncData(
       DocumentsState(
         draft: current.draft,
@@ -577,6 +598,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         lastUploadPath: current.lastUploadPath,
       ),
     );
+    await _cacheExportBestEffort(job);
+    await _notifyExportBestEffort(job, current.draft?.title ?? '文档');
     _ensureExportPolling(job);
   }
 
@@ -584,17 +607,6 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     final current = state.valueOrNull ?? const DocumentsState();
     final upload = MobileDocumentUploadTask.fromJson(payload);
     if (upload.taskId.isEmpty) return;
-    await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
-          upload,
-          sourcePath: current.lastUploadPath,
-        );
-    await _notifyUploadReady(upload);
-    if (upload.draft != null) {
-      await _cacheDraft(upload.draft!);
-      if (upload.status == 'ready' || upload.status == 'needs_ocr') {
-        _bindDraftForAssistant(upload.draft);
-      }
-    }
     state = AsyncData(
       DocumentsState(
         draft: upload.draft ?? current.draft,
@@ -603,6 +615,17 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         lastUploadPath: current.lastUploadPath,
       ),
     );
+    await _cacheUploadBestEffort(
+      upload,
+      sourcePath: current.lastUploadPath,
+    );
+    await _notifyUploadBestEffort(upload);
+    if (upload.draft != null) {
+      await _cacheDraftBestEffort(upload.draft!);
+      if (upload.status == 'ready' || upload.status == 'needs_ocr') {
+        _bindDraftForAssistant(upload.draft);
+      }
+    }
     _ensureUploadPolling(upload);
   }
 
@@ -618,9 +641,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     final isZh = ref.read(appStringsProvider).isZh;
     if (client == null || current?.draft == null) {
       throw StateError(
-        isZh
-            ? '请先登录并创建文档草稿。'
-            : 'Sign in and create a document draft first.',
+        isZh ? '请先登录并创建文档草稿。' : 'Sign in and create a document draft first.',
       );
     }
     if (job.status != 'ready') {
@@ -725,23 +746,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     state = AsyncData(current.copyWith(clearOperationError: true));
     try {
       final upload = await client.uploadDocument(path);
-      await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
-            upload,
-            sourcePath: path,
-          );
-      await _notifyUploadReady(upload);
-      if (upload.draft != null) {
-        await _cacheDraft(upload.draft!);
-        if (upload.status == 'ready' ||
-            upload.status == 'needs_ocr' ||
-            upload.status == 'queued' ||
-            upload.status == 'in_progress') {
-          _bindDraftForAssistant(upload.draft);
-        }
-      }
-      ref.invalidate(documentQuotaProvider);
-      final finished =
-          upload.status == 'ready' || upload.status == 'failed';
+      final finished = upload.status == 'ready' || upload.status == 'failed';
       state = AsyncData(
         DocumentsState(
           draft: upload.draft ?? current.draft,
@@ -750,11 +755,24 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
           lastUploadPath: path,
         ),
       );
+      await _cacheUploadBestEffort(upload, sourcePath: path);
+      await _notifyUploadBestEffort(upload);
+      if (upload.draft != null) {
+        await _cacheDraftBestEffort(upload.draft!);
+        if (upload.status == 'ready' ||
+            upload.status == 'needs_ocr' ||
+            upload.status == 'queued' ||
+            upload.status == 'in_progress') {
+          _bindDraftForAssistant(upload.draft);
+        }
+      }
+      ref.invalidate(documentQuotaProvider);
       if (!finished) {
         _ensureUploadPolling(upload);
       }
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
+      final mapped = mapDocumentStorageError(error,
+          isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -824,6 +842,58 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         );
   }
 
+  Future<void> _cacheDraftBestEffort(DocumentDraft draft) async {
+    try {
+      await _cacheDraft(draft);
+    } on Object {
+      // The server draft remains usable in live state. A local cache failure
+      // must not be presented as a failed create.
+    }
+  }
+
+  Future<void> _cacheExportBestEffort(DocumentExportJob job) async {
+    try {
+      await ref.read(mobileLocalStoreProvider).saveLastDocumentExportJob(job);
+    } on Object {
+      // Hub state remains authoritative; this cache only resumes the card.
+    }
+  }
+
+  Future<void> _notifyExportBestEffort(
+    DocumentExportJob job,
+    String draftTitle,
+  ) async {
+    try {
+      await _notifyExportFinished(job, draftTitle);
+    } on Object {
+      // Notification delivery must not hide an authoritative export update.
+    }
+  }
+
+  Future<void> _cacheUploadBestEffort(
+    MobileDocumentUploadTask upload, {
+    required String? sourcePath,
+  }) async {
+    try {
+      await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
+            upload,
+            sourcePath: sourcePath,
+          );
+    } on Object {
+      // Hub upload state is authoritative; this cache only resumes the card.
+    }
+  }
+
+  Future<void> _notifyUploadBestEffort(
+    MobileDocumentUploadTask upload,
+  ) async {
+    try {
+      await _notifyUploadReady(upload);
+    } on Object {
+      // Notification delivery must not hide an authoritative upload update.
+    }
+  }
+
   void _bindDraftForAssistant(DocumentDraft? draft) {
     final id = draft?.id.trim() ?? '';
     if (id.isEmpty) return;
@@ -870,9 +940,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
 
   String shareTextForDraft(DocumentDraft draft) {
     final s = ref.read(appStringsProvider);
-    final title = draft.title.trim().isEmpty
-        ? s.unnamedDocument
-        : draft.title.trim();
+    final title =
+        draft.title.trim().isEmpty ? s.unnamedDocument : draft.title.trim();
     return redactMobileSensitiveText('# $title\n\n${draft.markdown}');
   }
 
@@ -895,7 +964,8 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
     final bytes = await client.downloadDocumentOriginal(draft);
     final root = await getTemporaryDirectory();
-    final dir = Directory('${root.path}${Platform.pathSeparator}$outboundShareDirName');
+    final dir =
+        Directory('${root.path}${Platform.pathSeparator}$outboundShareDirName');
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }

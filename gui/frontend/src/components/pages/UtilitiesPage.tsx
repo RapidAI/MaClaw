@@ -45,10 +45,11 @@ import { meetingRecordBaseTitle, meetingRecordCardDesc } from './utilitiesMeetin
 import { ExpertEditorDialog } from './ExpertEditorDialog';
 import type { ExpertDefinition } from '../ai/expertTypes';
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON } from '../ai/expertTypes';
+import { VirtualRepositoryWorkspace } from './VirtualRepositoryWorkspace';
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
-type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results';
+type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository';
 
 type SurveySummary = {
     id: string;
@@ -100,7 +101,7 @@ async function getApp(): Promise<any | null> {
 }
 
 /** Stroke icons for home tool cards — same conventions as the AppsPage icon set. */
-const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' }) => {
+const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' }) => {
     const common = {
         viewBox: '0 0 24 24',
         fill: 'none',
@@ -130,6 +131,13 @@ const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' }) => {
             return (
                 <svg {...common}>
                     <path d="m8 7-5 5 5 5M16 7l5 5-5 5" />
+                </svg>
+            );
+        case 'repository':
+            return (
+                <svg {...common}>
+                    <path d="M3 6.5h7l2 2h9v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                    <path d="M8 13h8M12 10v6" />
                 </svg>
             );
     }
@@ -260,12 +268,14 @@ export const UtilitiesPage = ({
     lang,
     onStartMeetingRecord,
     onOpenExpert,
+    onOpenVirtualRepositoryTask,
 }: {
     lang?: string;
     /** Open a new agent tab and send the meeting-recording command. */
     onStartMeetingRecord?: () => void | Promise<void>;
     /** Open an expert conversation tab in the AI assistant panel. */
     onOpenExpert?: (expert: ExpertDefinition) => void;
+    onOpenVirtualRepositoryTask?: (launch: { project_path: string; task_title: string; agent_mode: 'coding_dev' | 'remote_coding_dev'; remote_host?: string }) => void;
 }) => {
     const isZh = !lang || lang.startsWith('zh');
     const [view, setView] = useState<View>('home');
@@ -631,6 +641,10 @@ export const UtilitiesPage = ({
         vscodeExtDesc: isZh
             ? '安装 MaClaw 一方扩展，聊天固定在 VS Code 底部面板，不遮挡文件管理器'
             : 'Install the first-party MaClaw extension — chat stays in the bottom panel, never hides the Explorer',
+        virtualRepositoryCard: isZh ? '虚拟仓库' : 'Virtual Repository',
+        virtualRepositoryDesc: isZh
+            ? '将 Git、SVN 与编译输出等本地目录组织成一棵可移植的虚拟目录树'
+            : 'Organize Git, SVN, and local build-output directories in a portable virtual tree',
         vscodeMissingTitle: isZh ? '未检测到 VS Code' : 'VS Code not found',
         vscodeMissingMsg: isZh
             ? '启动前需要先安装 Visual Studio Code。是否打开官方下载页面？'
@@ -1414,10 +1428,14 @@ export const UtilitiesPage = ({
         }
     };
 
+    if (view === 'virtual-repository') {
+        return <VirtualRepositoryWorkspace isZh={isZh} onBack={() => setView('home')} onOpenCodingTask={onOpenVirtualRepositoryTask} />;
+    }
+
     if (view === 'home') {
         const toolCards: Array<{
             key: string;
-            icon: 'survey' | 'meeting' | 'vscode';
+            icon: 'survey' | 'meeting' | 'vscode' | 'repository';
             title: string;
             desc: string;
             cta: string;
@@ -1425,6 +1443,14 @@ export const UtilitiesPage = ({
             disabled?: boolean;
             onClick: () => void;
         }> = [
+            {
+                key: 'virtual-repository',
+                icon: 'repository',
+                title: t.virtualRepositoryCard,
+                desc: t.virtualRepositoryDesc,
+                cta: t.open,
+                onClick: () => setView('virtual-repository'),
+            },
             {
                 key: 'survey',
                 icon: 'survey',

@@ -572,7 +572,7 @@ export function RemoteSessionList(props: Props) {
     };
 
     return (
-        <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, overflow: "hidden" }}>
+        <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, overflow: "hidden", textAlign: "left" }}>
             {/* Header with tabs */}
             <div style={{ padding: "12px 14px 0" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0", borderBottom: `1px solid ${colors.border}` }}>

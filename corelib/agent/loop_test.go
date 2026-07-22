@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -79,6 +80,124 @@ type contextProviderCallbacks struct {
 	*mockCallbacks
 	started  int32
 	finished int32
+}
+
+type replanCallbacks struct {
+	*mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	contexts        atomic.Int32
+	finished        atomic.Int32
+	newRounds       atomic.Int32
+}
+
+type finalizationRaceCallbacks struct {
+	*mockCallbacks
+	DefaultLoopHooks
+	finalizeCalls atomic.Int32
+	steerPending  atomic.Bool
+}
+
+type retryBackoffReplanCallbacks struct {
+	*mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	contexts        atomic.Int32
+}
+
+type toolCommitReplanCallbacks struct {
+	*mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	finalChecks     atomic.Int32
+}
+
+func (m *toolCommitReplanCallbacks) LLMReplanRequested() bool {
+	if m.finalChecks.Add(1) == 3 && m.revision.Load() == m.requestRevision.Load() {
+		m.steerPending.Store(true)
+		m.revision.Add(1)
+	}
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *toolCommitReplanCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	m.requestRevision.Store(m.revision.Load())
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "do not run the stale tool"})
+}
+
+func (m *retryBackoffReplanCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	m.requestRevision.Store(m.revision.Load())
+	m.contexts.Add(1)
+	return context.Background(), func(error) {}, nil
+}
+
+func (m *retryBackoffReplanCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *retryBackoffReplanCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "steer during retry backoff"})
+}
+
+func (m *finalizationRaceCallbacks) TryFinalizeLLMResponse() bool {
+	if m.finalizeCalls.Add(1) == 1 {
+		m.steerPending.Store(true)
+		return false
+	}
+	return true
+}
+
+func (m *finalizationRaceCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "late steering won finalization race"})
+}
+
+func (m *replanCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
+	_ = iteration
+	revision := m.revision.Load()
+	m.requestRevision.Store(revision)
+	m.contexts.Add(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	if revision == 0 {
+		m.steerPending.Store(true)
+		m.revision.Add(1)
+		cancel()
+	}
+	return ctx, func(error) {
+		cancel()
+		m.finished.Add(1)
+	}, nil
+}
+
+func (m *replanCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *replanCallbacks) OnLLMNewRound() { m.newRounds.Add(1) }
+
+func (m *replanCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "use SQLite instead"})
 }
 
 type stopAfterFirstToolCallbacks struct {
@@ -164,6 +283,199 @@ func TestRunLoop_UsesHostLLMRequestContext(t *testing.T) {
 	}
 	if atomic.LoadInt32(&cb.started) != 1 || atomic.LoadInt32(&cb.finished) != 1 {
 		t.Fatalf("context lifecycle started=%d finished=%d, want 1/1", cb.started, cb.finished)
+	}
+}
+
+func TestRunLoop_ReplanReplacesCancelledRequestWithoutSpendingIteration(t *testing.T) {
+	var requests atomic.Int32
+	var sawSteer atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if err := r.Context().Err(); err != nil {
+			return nil, err
+		}
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		for _, msg := range req.Messages {
+			if msg["role"] == "user" && strings.Contains(fmt.Sprint(msg["content"]), "use SQLite instead") {
+				sawSteer.Store(true)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"switched to SQLite"}}]}`)),
+		}, nil
+	})}
+
+	cb := &replanCallbacks{mockCallbacks: &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "build a database", nil, client, cb)
+	if result.Error != "" || result.Text != "switched to SQLite" {
+		t.Fatalf("RunLoop result = %+v, want replacement response", result)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("HTTP requests = %d, want cancelled attempt plus replacement", requests.Load())
+	}
+	if cb.contexts.Load() != 2 || cb.finished.Load() != 2 {
+		t.Fatalf("context lifecycle started=%d finished=%d, want 2/2", cb.contexts.Load(), cb.finished.Load())
+	}
+	if cb.newRounds.Load() != 1 {
+		t.Fatalf("new-round notifications = %d, want 1", cb.newRounds.Load())
+	}
+	if !sawSteer.Load() {
+		t.Fatal("replacement request did not include live steering")
+	}
+}
+
+func TestRunLoop_FinalizationGuardRegeneratesWithoutSpendingIteration(t *testing.T) {
+	var requests atomic.Int32
+	var sawLateSteer atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "late steering won finalization race") {
+				sawLateSteer.Store(true)
+			}
+		}
+		text := "stale final"
+		if sawLateSteer.Load() {
+			text = "steered final"
+		}
+		body := fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","content":%q}}]}`, text)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	cb := &finalizationRaceCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 1, sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "steered final" {
+		t.Fatalf("RunLoop result = %+v, want steered final", result)
+	}
+	if requests.Load() != 2 || cb.finalizeCalls.Load() != 2 || !sawLateSteer.Load() {
+		t.Fatalf("requests=%d finalize=%d sawSteer=%v", requests.Load(), cb.finalizeCalls.Load(), sawLateSteer.Load())
+	}
+}
+
+func TestRunLoop_ReplanInterruptsTransientRetryBackoff(t *testing.T) {
+	var requests atomic.Int32
+	var sawSteer atomic.Bool
+	cb := &retryBackoffReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key", WireAPI: "responses"},
+		maxIter: 1, sysPrompt: "sys",
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		if n == 1 {
+			if n == 1 {
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					cb.steerPending.Store(true)
+					cb.revision.Add(1)
+				}()
+			}
+			return nil, newLLMHTTPError(http.StatusServiceUnavailable, "temporary")
+		}
+		var req struct {
+			Input []map[string]interface{} `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		for _, msg := range req.Input {
+			if strings.Contains(fmt.Sprint(msg["content"]), "steer during retry backoff") {
+				sawSteer.Store(true)
+			}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"resp_steered","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"steered retry"}]}]}`))}, nil
+	})}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "steered retry" || !sawSteer.Load() {
+		t.Fatalf("RunLoop result=%+v sawSteer=%v", result, sawSteer.Load())
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("replan waited through retry backoff: %v", elapsed)
+	}
+	if requests.Load() != 2 || cb.contexts.Load() != 2 {
+		t.Fatalf("requests=%d contexts=%d, want 2/2", requests.Load(), cb.contexts.Load())
+	}
+}
+
+func TestRunLoop_ReplanBeforeToolCommitPreventsStaleSideEffect(t *testing.T) {
+	var requests atomic.Int32
+	var sawSteer atomic.Bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "do not run the stale tool") {
+				sawSteer.Store(true)
+			}
+		}
+		body := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"stale","type":"function","function":{"name":"bash","arguments":"{\"command\":\"echo stale\"}"}}]},"finish_reason":"tool_calls"}]}`
+		if n > 1 {
+			body = `{"choices":[{"message":{"role":"assistant","content":"changed course"},"finish_reason":"stop"}]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	cb := &toolCommitReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 1, sysPrompt: "sys", toolResult: "stale side effect ran",
+	}}
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "changed course" || !sawSteer.Load() {
+		t.Fatalf("RunLoop result=%+v sawSteer=%v", result, sawSteer.Load())
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("stale tool executed despite steering: %v", cb.toolCalls)
+	}
+}
+
+func TestRunLoop_ReplanInterruptsEmptyResponseBackoff(t *testing.T) {
+	var requests atomic.Int32
+	cb := &retryBackoffReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 1, sysPrompt: "sys",
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		if n == 1 {
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				cb.steerPending.Store(true)
+				cb.revision.Add(1)
+			}()
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":""}}]}`))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"steered after empty"}}]}`))}, nil
+	})}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "steered after empty" {
+		t.Fatalf("RunLoop result=%+v", result)
+	}
+	if elapsed := time.Since(started); elapsed >= 800*time.Millisecond {
+		t.Fatalf("replan waited through empty-response backoff: %v", elapsed)
 	}
 }
 

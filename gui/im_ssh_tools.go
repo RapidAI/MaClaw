@@ -153,13 +153,14 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		port = int(p)
 	}
 	cfg := remote.SSHHostConfig{
-		Host:       host,
-		User:       user,
-		Port:       port,
-		AuthMethod: sshStrArg(args, "auth_method"),
-		KeyPath:    sshStrArg(args, "key_path"),
-		Password:   sshStrArg(args, "password"),
-		Label:      label,
+		Host:               host,
+		User:               user,
+		Port:               port,
+		AuthMethod:         sshStrArg(args, "auth_method"),
+		KeyPath:            sshStrArg(args, "key_path"),
+		Password:           sshStrArg(args, "password"),
+		Label:              label,
+		HostKeyFingerprint: sshStrArg(args, "host_key_fingerprint"),
 	}
 
 	// Check if a running session already exists for this host.
@@ -168,6 +169,11 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	// host when previous ones time out or become unresponsive.
 	// Use force_new=true to bypass and create a new session.
 	forceNew, _ := args["force_new"].(bool)
+	// A pinned connection must never reuse a session created without the same
+	// host-key policy. The connection pool also isolates these configurations.
+	if cfg.HostKeyFingerprint != "" {
+		forceNew = true
+	}
 	if !forceNew {
 		targetID := fmt.Sprintf("%s@%s:%d", user, host, port)
 		if existing := h.findRunningSSHSession(mgr, targetID, label); existing != nil {

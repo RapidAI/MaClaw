@@ -62,8 +62,8 @@ func TestBuildGuideLaunchInjectionIncludesSteeringContract(t *testing.T) {
 	if !strings.Contains(got, "re-evaluate the current plan, tool choice, and answer direction") {
 		t.Fatalf("guide launch injection should require plan and tool re-evaluation: %q", got)
 	}
-	if !strings.Contains(got, "next visible assistant response") || !strings.Contains(got, "acknowledgement that fits the current context") {
-		t.Fatalf("guide launch injection should let the agent acknowledge accepted steering naturally: %q", got)
+	if !strings.Contains(got, "next visible assistant response") || !strings.Contains(got, "Do not emit a canned receipt") {
+		t.Fatalf("guide launch injection should require a natural, non-formulaic response: %q", got)
 	}
 }
 
@@ -231,42 +231,199 @@ func TestInjectGuideReferenceRequestsReplanForActiveSession(t *testing.T) {
 	}
 }
 
-func TestInjectGuideReferenceAcceptsRecentLoopEnd(t *testing.T) {
+func TestInjectGuideReferenceWithIDIsIdempotent(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := NewLoopContext("guide-idempotent", 10, nil)
+	h.setSessionLoopCtx(desktopUserID, ctx)
+
+	if !h.InjectGuideReferenceWithID(desktopUserID, "pivot once", "buf-123") {
+		t.Fatal("first guide launch should be accepted")
+	}
+	first, ok := h.pendingInjection.Load(desktopUserID)
+	if !ok {
+		t.Fatal("first guide launch should be queued")
+	}
+	if !h.InjectGuideReferenceWithID(desktopUserID, "pivot once", "buf-123") {
+		t.Fatal("retry of an accepted guide launch should report success")
+	}
+	second, ok := h.pendingInjection.Load(desktopUserID)
+	if !ok || second != first {
+		t.Fatalf("retry duplicated or changed pending injection: first=%#v second=%#v", first, second)
+	}
+	if !h.InjectGuideReferenceWithID(desktopUserID, "another pivot", "buf-456") {
+		t.Fatal("a distinct guide launch ID should be accepted")
+	}
+	third := mustPendingInjectionString(t, h, desktopUserID)
+	if strings.Count(third, guideLaunchReferenceMarker) != 2 {
+		t.Fatalf("distinct launch should append exactly once, got %#v", third)
+	}
+}
+
+func TestInjectGuideReferenceWithIDConcurrentRetriesInjectOnce(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.setSessionLoopCtx(desktopUserID, NewLoopContext("guide-concurrent-idempotent", 10, nil))
+	const attempts = 16
+	results := make(chan bool, attempts)
+	for i := 0; i < attempts; i++ {
+		go func() {
+			results <- h.InjectGuideReferenceWithID(desktopUserID, "one concurrent pivot", "buf-concurrent")
+		}()
+	}
+	for i := 0; i < attempts; i++ {
+		if !<-results {
+			t.Fatal("all retries of the accepted launch should report success")
+		}
+	}
+	pending := mustPendingInjectionString(t, h, desktopUserID)
+	if strings.Count(pending, guideLaunchReferenceMarker) != 1 {
+		t.Fatalf("concurrent retries injected more than once: %#v", pending)
+	}
+}
+
+func TestInjectGuideReferenceWithIDRejectedAttemptCanRetryLater(t *testing.T) {
+	h := &IMMessageHandler{}
+	if h.InjectGuideReferenceWithID(desktopUserID, "retry when active", "buf-rejected") {
+		t.Fatal("inactive loop should reject the first attempt")
+	}
+	h.setSessionLoopCtx(desktopUserID, NewLoopContext("guide-retry-after-reject", 10, nil))
+	if !h.InjectGuideReferenceWithID(desktopUserID, "retry when active", "buf-rejected") {
+		t.Fatal("a rejected ID must not be cached as permanently rejected")
+	}
+	pending := mustPendingInjectionString(t, h, desktopUserID)
+	if strings.Count(pending, guideLaunchReferenceMarker) != 1 {
+		t.Fatalf("retry after rejection should inject exactly once: %#v", pending)
+	}
+}
+
+func TestInjectGuideReferenceWithIDPrunesExpiredAcceptance(t *testing.T) {
+	h := &IMMessageHandler{}
+	expiredKey := desktopUserID + "\x00buf-expired"
+	expired := &guideLaunchAcceptance{
+		done:       make(chan struct{}),
+		accepted:   true,
+		acceptedAt: time.Now().Add(-guideLaunchAcceptanceTTL - time.Second),
+	}
+	close(expired.done)
+	h.acceptedGuideLaunchIDs.Store(expiredKey, expired)
+	h.setSessionLoopCtx(desktopUserID, NewLoopContext("guide-expired-id", 10, nil))
+
+	if !h.InjectGuideReferenceWithID(desktopUserID, "fresh after expiry", "buf-expired") {
+		t.Fatal("expired acceptance should not suppress a fresh guide launch")
+	}
+	pending := mustPendingInjectionString(t, h, desktopUserID)
+	if strings.Count(pending, guideLaunchReferenceMarker) != 1 || !strings.Contains(pending, "fresh after expiry") {
+		t.Fatalf("fresh launch after expiry was not injected exactly once: %#v", pending)
+	}
+	actual, ok := h.acceptedGuideLaunchIDs.Load(expiredKey)
+	if !ok || actual == expired {
+		t.Fatal("expired acceptance should be replaced by the fresh result")
+	}
+}
+
+func TestInjectGuideReferenceWithIDRejectsSameIDDifferentText(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.setSessionLoopCtx(desktopUserID, NewLoopContext("guide-id-collision", 10, nil))
+	if !h.InjectGuideReferenceWithID(desktopUserID, "original instruction", "buf-collision") {
+		t.Fatal("original guide should be accepted")
+	}
+	if h.InjectGuideReferenceWithID(desktopUserID, "different instruction", "buf-collision") {
+		t.Fatal("same ID with different text must not claim acceptance")
+	}
+	pending := mustPendingInjectionString(t, h, desktopUserID)
+	if strings.Count(pending, guideLaunchReferenceMarker) != 1 || strings.Contains(pending, "different instruction") {
+		t.Fatalf("ID collision changed the accepted instruction: %#v", pending)
+	}
+}
+
+func TestHasAcceptedGuideReferenceIsReadOnly(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.setSessionLoopCtx(desktopUserID, NewLoopContext("guide-status", 10, nil))
+	if !h.InjectGuideReferenceWithID(desktopUserID, "status check", "buf-status") {
+		t.Fatal("guide should be accepted before status check")
+	}
+	before := mustPendingInjectionString(t, h, desktopUserID)
+	if !h.HasAcceptedGuideReference(desktopUserID, "status check", "buf-status") {
+		t.Fatal("status check should find the accepted guide")
+	}
+	after := mustPendingInjectionString(t, h, desktopUserID)
+	if after != before {
+		t.Fatalf("read-only status check changed pending injection: before=%#v after=%#v", before, after)
+	}
+	if h.HasAcceptedGuideReference(desktopUserID, "different text", "buf-status") {
+		t.Fatal("status check must bind the ID to identical text")
+	}
+	if h.HasAcceptedGuideReference(desktopUserID, "status check", "missing-id") {
+		t.Fatal("unknown guide ID must not report accepted")
+	}
+}
+
+func mustPendingInjectionString(t *testing.T, h *IMMessageHandler, userID string) string {
+	t.Helper()
+	raw, ok := h.pendingInjection.Load(userID)
+	if !ok {
+		t.Fatal("expected pending injection")
+	}
+	text, ok := raw.(string)
+	if !ok {
+		t.Fatalf("pending injection has unexpected type %T", raw)
+	}
+	return text
+}
+
+func TestInjectGuideReferenceRejectsCancelledLoopWhileItUnwinds(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := NewLoopContext("cancelled-guide", 10, nil)
+	h.setSessionLoopCtx(desktopUserID, ctx)
+	ctx.Cancel()
+
+	if h.InjectGuideReference(desktopUserID, "must not be stranded") {
+		t.Fatal("cancelled loop must reject guide reference even before runtime cleanup")
+	}
+	if _, ok := h.pendingInjection.Load(desktopUserID); ok {
+		t.Fatal("rejected guide must remain in the client queue, not the backend injection bag")
+	}
+}
+
+func TestInjectGuideReferenceRejectsRecentLoopEndWithoutConsumer(t *testing.T) {
 	h := &IMMessageHandler{}
 	state := h.getSessionLoop(desktopUserID)
 	state.stateMu.Lock()
 	state.endedAt = time.Now()
 	state.stateMu.Unlock()
 
-	if !h.InjectGuideReference(desktopUserID, "late guide") {
-		t.Fatalf("recently finished desktop session should accept guide reference")
+	if h.InjectGuideReference(desktopUserID, "late guide") {
+		t.Fatalf("finished desktop session must not acknowledge a guide without a consumer")
 	}
-	raw, ok := h.pendingPreLoopGuide.Load(desktopUserID)
-	if !ok {
-		t.Fatalf("pending pre-loop guide reference missing")
-	}
-	entry := raw.(*preLoopGuideEntry)
-	if !strings.Contains(entry.Text, "late guide") {
-		t.Fatalf("pending pre-loop guide reference text mismatch: %#v", entry.Text)
+	if _, ok := h.pendingPreLoopGuide.Load(desktopUserID); ok {
+		t.Fatalf("rejected late guide must remain in the client queue, not the pre-loop bag")
 	}
 }
 
-func TestInjectGuideReferenceAcceptsLoopStartingWindow(t *testing.T) {
+func TestInjectGuideReferenceRejectsUnpublishedLoopStartingWindow(t *testing.T) {
+	h := &IMMessageHandler{}
+	state := h.getSessionLoop(desktopUserID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if h.InjectGuideReference(desktopUserID, "starting guide") {
+		t.Fatalf("unpublished starting work must not claim an LLM consumer")
+	}
+	raw, ok := h.pendingPreLoopGuide.Load(desktopUserID)
+	if ok {
+		t.Fatalf("rejected guide must not be stranded in pre-loop storage: %#v", raw)
+	}
+}
+
+func TestInjectGuideReferenceRejectsUnmarkedSessionMutexOwner(t *testing.T) {
 	h := &IMMessageHandler{}
 	state := h.getSessionLoop(desktopUserID)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	if !h.InjectGuideReference(desktopUserID, "starting guide") {
-		t.Fatalf("session entering loop should accept guide reference")
+	if h.InjectGuideReference(desktopUserID, "must not be stranded") {
+		t.Fatal("mutex ownership without an explicit loop start must not accept guide input")
 	}
-	raw, ok := h.pendingPreLoopGuide.Load(desktopUserID)
-	if !ok {
-		t.Fatalf("pending pre-loop guide reference missing")
-	}
-	entry := raw.(*preLoopGuideEntry)
-	if !strings.Contains(entry.Text, "starting guide") {
-		t.Fatalf("pending pre-loop guide reference text mismatch: %#v", entry.Text)
+	if _, ok := h.pendingPreLoopGuide.Load(desktopUserID); ok {
+		t.Fatal("rejected guide must remain in the durable client queue")
 	}
 }
 

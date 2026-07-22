@@ -38,7 +38,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			Required:          required,
 			Source:            "builtin",
 			ExecutionContract: defaultExplicitExecutionContractMetadata(name),
-			Handler:           handler,
+			// Keep platform-aware IM tools on the originating channel. This must
+			// live in registry metadata as well as the legacy fallback allowlist:
+			// registry lookups otherwise suppress runtime-platform injection.
+			RuntimePlatformArg: name == "manage_schedule" || name == "im_message",
+			Handler:            handler,
 		})
 	}
 
@@ -600,12 +604,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"max_iterations"},
 		func(args map[string]interface{}) string { return h.toolSetMaxIterations(args) })
 
-	// --- Merged tool: manage_schedule (create/list/delete/update/list_targets) ---
-	reg("manage_schedule", "定时任务管理。action: create/list/delete/update/list_targets。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self）。create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。即时发消息请用 im_message，不要用定时任务硬绕。",
-		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "interval", "create", "list", "delete", "update", "delivery"},
+	// --- Merged tool: manage_schedule (create/list/run/pause/resume/delete/update/list_targets) ---
+	reg("manage_schedule", "定时任务管理（所有本地 IM 通道可用）。action: create/list/run/pause/resume/delete/update/list_targets。run 会立即在后台执行指定任务；pause/resume 暂停或恢复任务。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self）。create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。即时发消息请用 im_message，不要用定时任务硬绕。",
+		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "interval", "create", "list", "run", "execute", "trigger", "pause", "resume", "delete", "update", "delivery", "im"},
 		map[string]interface{}{
-			"action":           map[string]string{"type": "string", "description": "操作: create/list/delete/update/list_targets"},
-			"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
+			"action":           map[string]string{"type": "string", "description": "操作: create/list/run/pause/resume/delete/update/list_targets"},
+			"id":               map[string]string{"type": "string", "description": "任务 ID（run/pause/resume/delete/update 时必填）"},
 			"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填，update/delete 时可选）"},
 			"task_action":      map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，create/update 时使用）"},
 			"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},
@@ -716,19 +720,19 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("office", "Office/PDF 文档工具（内置原生解析，无需 Python/Word）。action：read_document（推荐，自动识别 .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx）、read_doc/read_docx/read_pdf、read_excel、write_excel、read_pptx、generate_pdf。读文档优先 read_document，禁止对二进制文件用 read_file。若 office 失败或不支持的格式（.ppt/.rtf/.odt/.wps 等），必须继续用 craft_tool 生成解析脚本，不要直接放弃。",
 		ToolCategoryBuiltin, []string{"office", "pdf", "doc", "docx", "excel", "xlsx", "xls", "csv", "pptx", "ppt", "document", "spreadsheet", "presentation", "word"},
 		map[string]interface{}{
-			"action":    map[string]string{"type": "string", "description": "操作类型: read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/generate_pdf"},
-			"content":   map[string]string{"type": "string", "description": "Markdown 格式的文档内容（generate_pdf 时必填）"},
-			"title":     map[string]string{"type": "string", "description": "文档标题，显示在 PDF 封面（generate_pdf 时可选）"},
-			"doc_type":  map[string]string{"type": "string", "description": "文档类型（generate_pdf 时可选）: requirements/design/task_plan。影响文件名前缀，不传则使用通用前缀。"},
-			"phase_id":  map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},
-			"file_path": map[string]string{"type": "string", "description": "文件路径（read_* / write_excel 时必填；也可用 path）"},
-			"path":      map[string]string{"type": "string", "description": "file_path 别名"},
+			"action":       map[string]string{"type": "string", "description": "操作类型: read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/generate_pdf"},
+			"content":      map[string]string{"type": "string", "description": "Markdown 格式的文档内容（generate_pdf 时必填）"},
+			"title":        map[string]string{"type": "string", "description": "文档标题，显示在 PDF 封面（generate_pdf 时可选）"},
+			"doc_type":     map[string]string{"type": "string", "description": "文档类型（generate_pdf 时可选）: requirements/design/task_plan。影响文件名前缀，不传则使用通用前缀。"},
+			"phase_id":     map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},
+			"file_path":    map[string]string{"type": "string", "description": "文件路径（read_* / write_excel 时必填；也可用 path）"},
+			"path":         map[string]string{"type": "string", "description": "file_path 别名"},
 			"max_chars":    map[string]string{"type": "integer", "description": "read_document 可选：本段最大字符数（默认 120000）"},
 			"offset":       map[string]string{"type": "integer", "description": "read_document 可选：从全文的字符偏移继续读（配合 truncated 结果中的 next_offset）"},
 			"line_numbers": map[string]string{"type": "boolean", "description": "read_document 可选：为每行加 L1:/L2: 行号前缀（跨 offset 连续）"},
-			"sheet":     map[string]string{"type": "string", "description": "工作表名称（read_excel 时可选，默认第一个工作表）"},
-			"range":     map[string]string{"type": "string", "description": "A1 表示法的单元格范围，如 A1:D10（read_excel 的 .xlsx/.csv 可选）"},
-			"data":      map[string]string{"type": "object", "description": "写入数据（write_excel 时必填），格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
+			"sheet":        map[string]string{"type": "string", "description": "工作表名称（read_excel 时可选，默认第一个工作表）"},
+			"range":        map[string]string{"type": "string", "description": "A1 表示法的单元格范围，如 A1:D10（read_excel 的 .xlsx/.csv 可选）"},
+			"data":         map[string]string{"type": "object", "description": "写入数据（write_excel 时必填），格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolOffice(args) })
 

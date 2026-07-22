@@ -5,10 +5,12 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	sshagent "golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // dialSSH 根据 SSHHostConfig 建立 SSH 连接。
@@ -19,10 +21,14 @@ func dialSSH(cfg SSHHostConfig) (*ssh.Client, error) {
 		return nil, err
 	}
 
+	hostKeyCallback, err := sshHostKeyCallback(cfg)
+	if err != nil {
+		return nil, err
+	}
 	sshCfg := &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: 生产环境应使用 known_hosts 校验
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         cfg.ConnectTimeout,
 	}
 
@@ -48,6 +54,28 @@ func dialSSH(cfg SSHHostConfig) (*ssh.Client, error) {
 	}
 
 	return ssh.NewClient(sshConn, chans, reqs), nil
+}
+
+func sshHostKeyCallback(cfg SSHHostConfig) (ssh.HostKeyCallback, error) {
+	if pinned := strings.TrimSpace(cfg.HostKeyFingerprint); pinned != "" {
+		return func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			observed := ssh.FingerprintSHA256(key)
+			if observed != pinned {
+				return fmt.Errorf("SSH host key mismatch: expected %s, received %s", pinned, observed)
+			}
+			return nil
+		}, nil
+	}
+	if knownHostsPath := strings.TrimSpace(cfg.KnownHostsPath); knownHostsPath != "" {
+		callback, err := knownhosts.New(knownHostsPath)
+		if err != nil {
+			return nil, fmt.Errorf("load SSH known_hosts: %w", err)
+		}
+		return callback, nil
+	}
+	// Preserve existing SSH-tool behavior; security-sensitive callers such as
+	// Virtual Repository pass an explicit fingerprint.
+	return ssh.InsecureIgnoreHostKey(), nil
 }
 
 // buildAuthMethods 根据配置构建 SSH 认证方法列表。

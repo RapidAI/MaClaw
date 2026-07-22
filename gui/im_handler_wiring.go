@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,7 +96,8 @@ type IMMessageHandler struct {
 	templateManager *remote.SessionTemplateManager
 
 	// Scheduled task manager (lazily initialized via setter).
-	scheduledTaskManager *scheduler.Manager
+	scheduledTaskManagerMu sync.RWMutex
+	scheduledTaskManager   *scheduler.Manager
 
 	traceService *AITraceService
 
@@ -461,6 +463,12 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *preLoopGuideEntry.
 	pendingPreLoopGuide sync.Map
 
+	// acceptedGuideLaunchIDs makes GUI guide-launch RPC retries idempotent. A
+	// call can be accepted by the loop even if its response is lost; retrying
+	// the durable queue entry must not inject the interjection twice. Keyed by
+	// "userID\x00launchID", value is *guideLaunchAcceptance.
+	acceptedGuideLaunchIDs sync.Map
+
 	// cancelledTaskBoundary records that a user explicitly cancelled the
 	// current task. The next normal user message must start a new task instead
 	// of being merged into or classified as a continuation of the cancelled
@@ -763,6 +771,11 @@ func (h *IMMessageHandler) SetTemplateManager(tm *remote.SessionTemplateManager)
 
 // SetScheduledTaskManager configures the scheduled task manager.
 func (h *IMMessageHandler) SetScheduledTaskManager(stm *scheduler.Manager) {
+	if h == nil {
+		return
+	}
+	h.scheduledTaskManagerMu.Lock()
+	defer h.scheduledTaskManagerMu.Unlock()
 	h.scheduledTaskManager = stm
 }
 
@@ -926,8 +939,19 @@ func (h *IMMessageHandler) routeToolsWithOptions(userMessage string, allTools []
 			}
 			filtered = append(filtered, item)
 		}
+		// The router can be unavailable briefly during startup. Explicit IM task
+		// management must still work in that window; otherwise conditional tools
+		// such as manage_schedule and im_message are silently hidden.
+		if isIMManagementRequest(userMessage) {
+			filtered = ensureIMManagementToolsRouted(filtered, allTools, userMessage)
+		}
 		return filtered
 	}
+	// IM task and message management are safe, shared-state tools. Keep them
+	// available for the current request when its intent is explicit, so every
+	// local IM gateway (蓝信、微信、Telegram、QQ、第三方) can use them. Do not
+	// pin them on ToolRouter: App shares that router across IM handlers, and a
+	// pin from one conversation must never leak into another conversation.
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		router.SetUnifiedClassifier(uic)
 	}
@@ -943,6 +967,9 @@ func (h *IMMessageHandler) routeToolsWithOptions(userMessage string, allTools []
 		SkipUnifiedClassifier: skipHeavySemantic,
 	}
 	routed := router.RouteWithOptions(userMessage, allTools, routeOpts)
+	if isIMManagementRequest(userMessage) {
+		routed = ensureIMManagementToolsRouted(routed, allTools, userMessage)
+	}
 	if isExplicitNicknameRequest(userMessage) {
 		return routed
 	}
@@ -954,4 +981,85 @@ func (h *IMMessageHandler) routeToolsWithOptions(userMessage string, allTools []
 		filtered = append(filtered, item)
 	}
 	return filtered
+}
+
+func ensureIMManagementToolsRouted(routed, allTools []map[string]interface{}, userMessage string) []map[string]interface{} {
+	if len(allTools) == 0 {
+		return routed
+	}
+	requested := imManagementToolNames(userMessage)
+	if len(requested) == 0 {
+		return routed
+	}
+	available := make(map[string]map[string]interface{}, len(allTools))
+	for _, item := range allTools {
+		if name := extractToolName(item); name != "" {
+			available[name] = item
+		}
+	}
+	selected := make(map[string]bool, len(routed))
+	for _, item := range routed {
+		selected[extractToolName(item)] = true
+	}
+	missing := make([]map[string]interface{}, 0, len(requested))
+	required := make(map[string]bool, len(requested))
+	for _, name := range requested {
+		required[name] = true
+		item, ok := available[name]
+		if !ok || selected[name] {
+			continue
+		}
+		missing = append(missing, item)
+	}
+	if len(missing) == 0 {
+		return routed
+	}
+
+	// Make room for all missing explicit tools before appending any of them.
+	// Replacing the tail one-by-one can evict a management tool appended in the
+	// previous iteration when several explicit tools are needed (for example,
+	// scheduling a task that pushes its result to an IM channel).
+	toRemove := len(routed) + len(missing) - maxToolBudget
+	if toRemove > 0 {
+		keptReversed := make([]map[string]interface{}, 0, len(routed)-toRemove)
+		removed := 0
+		for i := len(routed) - 1; i >= 0; i-- {
+			name := extractToolName(routed[i])
+			if removed < toRemove && !required[name] {
+				removed++
+				continue
+			}
+			keptReversed = append(keptReversed, routed[i])
+		}
+		routed = make([]map[string]interface{}, len(keptReversed))
+		for i := range keptReversed {
+			routed[len(keptReversed)-1-i] = keptReversed[i]
+		}
+	}
+	return append(routed, missing...)
+}
+
+func imManagementToolNames(userMessage string) []string {
+	s := strings.ToLower(strings.TrimSpace(userMessage))
+	if s == "" {
+		return nil
+	}
+	var names []string
+	for _, marker := range []string{"定时", "日程", "提醒", "cron", "schedule", "timer", "任务管理", "执行任务", "暂停任务", "恢复任务"} {
+		if strings.Contains(s, marker) {
+			names = append(names, "manage_schedule")
+			break
+		}
+	}
+	for _, marker := range []string{"推送", "发到", "发送到", "im_message"} {
+		if strings.Contains(s, marker) {
+			names = append(names, "im_message")
+			break
+		}
+	}
+	return names
+}
+
+func isIMManagementRequest(userMessage string) bool {
+	return len(imManagementToolNames(userMessage)) > 0
 }

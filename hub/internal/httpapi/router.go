@@ -661,7 +661,9 @@ func NewRouter(
 	mux.HandleFunc("POST /api/bind/unbind", bindCORS(BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, userPurger)))
 
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, invitationSvc, securitySvc))
-	mux.HandleFunc("GET /api/enroll/registration-auth", PublicRegistrationAuthConfigHandler(system))
+	mux.HandleFunc("POST /api/enroll/email/send-code", RegistrationEmailSendCodeHandler(identity, mailer))
+	mux.HandleFunc("POST /api/enroll/email/verify-and-start", RegistrationEmailVerifyAndStartHandler(identity, invitationSvc, securitySvc))
+	mux.HandleFunc("GET /api/enroll/registration-auth", PublicRegistrationAuthConfigHandler(system, identity))
 	mux.HandleFunc("POST /api/enroll/sms/send-code", RegistrationSMSSendCodeHandler(identity, system, nil))
 	mux.HandleFunc("POST /api/enroll/sms/verify-and-start", RegistrationSMSVerifyAndStartHandler(identity, system, nil))
 	mux.HandleFunc("POST /api/enroll/profile/send-code", RegistrationContactSendCodeHandler(identity, mailer, system, nil))

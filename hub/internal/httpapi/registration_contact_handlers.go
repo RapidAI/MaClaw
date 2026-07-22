@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	stdmail "net/mail"
 	"strings"
 	"time"
 
@@ -275,7 +276,15 @@ func registrationContactEmailKey(userID, email string) string {
 
 func looksLikeRegistrationContactEmail(email string) bool {
 	email = strings.TrimSpace(email)
-	return email != "" && strings.Contains(email, "@") && strings.Contains(email[strings.LastIndex(email, "@")+1:], ".")
+	if email == "" || strings.ContainsAny(email, "\r\n") {
+		return false
+	}
+	address, err := stdmail.ParseAddress(email)
+	if err != nil || !strings.EqualFold(strings.TrimSpace(address.Address), email) {
+		return false
+	}
+	at := strings.LastIndexByte(email, '@')
+	return at > 0 && at < len(email)-1 && strings.Contains(email[at+1:], ".")
 }
 
 func nowForRegistrationContact() time.Time {

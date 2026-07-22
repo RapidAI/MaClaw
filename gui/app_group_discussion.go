@@ -224,6 +224,13 @@ type GroupDiscussionAuthorizedStartResult struct {
 	Consultation a2a.ConsultationCreateResponse `json:"consultation"`
 	InviteIDs    []string                       `json:"invite_ids,omitempty"`
 	Experts      []a2a.GroupProfile             `json:"experts,omitempty"` // invited experts only
+	InviteErrors []GroupDiscussionInviteError   `json:"invite_errors,omitempty"`
+	Partial      bool                           `json:"partial,omitempty"`
+}
+
+type GroupDiscussionInviteError struct {
+	InviteeID string `json:"invitee_id"`
+	Error     string `json:"error"`
 }
 
 type GroupDiscussionExpertRank struct {
@@ -291,6 +298,7 @@ func (a *App) GroupDiscussionStartAuthorizedConsultation(start GroupDiscussionAu
 	}
 	inviteIDs := make([]string, 0, len(inviteeIDs))
 	invitedExperts := make([]a2a.GroupProfile, 0, len(inviteeIDs))
+	inviteErrors := make([]GroupDiscussionInviteError, 0)
 	for _, toID := range inviteeIDs {
 		if toID == "" || toID == groupDiscussionAgentID(cfg) {
 			continue
@@ -305,16 +313,28 @@ func (a *App) GroupDiscussionStartAuthorizedConsultation(start GroupDiscussionAu
 			ContextPolicy:   cfg.GroupDiscussion.ContextPolicy,
 		})
 		if err != nil {
-			return GroupDiscussionAuthorizedStartResult{}, err
+			inviteErrors = append(inviteErrors, GroupDiscussionInviteError{InviteeID: toID, Error: err.Error()})
+			continue
 		}
-		if inviteID != "" {
-			inviteIDs = append(inviteIDs, inviteID)
-			if expert, ok := expertByID[toID]; ok {
-				invitedExperts = append(invitedExperts, expert)
-			}
+		if inviteID == "" {
+			inviteErrors = append(inviteErrors, GroupDiscussionInviteError{
+				InviteeID: toID,
+				Error:     "Hub accepted the invitation request without returning an invite id",
+			})
+			continue
+		}
+		inviteIDs = append(inviteIDs, inviteID)
+		if expert, ok := expertByID[toID]; ok {
+			invitedExperts = append(invitedExperts, expert)
 		}
 	}
-	return GroupDiscussionAuthorizedStartResult{Consultation: consultation, InviteIDs: inviteIDs, Experts: invitedExperts}, nil
+	return GroupDiscussionAuthorizedStartResult{
+		Consultation: consultation,
+		InviteIDs:    inviteIDs,
+		Experts:      invitedExperts,
+		InviteErrors: inviteErrors,
+		Partial:      len(inviteErrors) > 0,
+	}, nil
 }
 
 func cacheCreatedGroupDiscussion(a *App, out a2a.ConsultationCreateResponse) {

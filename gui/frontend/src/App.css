@@ -1239,6 +1239,8 @@ body {
     box-sizing: border-box;
     box-shadow: var(--shadow-lg);
     padding-top: var(--dwm-top-offset, 0px);
+    /* Reset legacy Wails/html center alignment so lists/forms stay left-aligned. */
+    text-align: left;
 }
 
 /* Windows 11+: the OS provides native DWM rounded corners for frameless
@@ -2186,6 +2188,15 @@ body {
 @keyframes sidebar-task-restore-progress {
     from { transform: translateX(-12%); }
     to { transform: translateX(152%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sidebar-task-progress__bar {
+        width: 100% !important;
+        animation: none !important;
+        transform: none !important;
+        opacity: 0.72;
+    }
 }
 
 .app-loading-log {
@@ -12420,6 +12431,30 @@ body {
     color: var(--theme-danger);
 }
 
+.migration-scope-summary,
+.migration-result-summary {
+    display: grid;
+    gap: 5px;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+
+.migration-scope-summary strong,
+.migration-result-summary strong {
+    color: var(--theme-text-primary);
+    font-size: 0.78rem;
+}
+
+.migration-result-summary {
+    border-color: color-mix(in srgb, var(--theme-success) 35%, var(--theme-border-subtle));
+    background: color-mix(in srgb, var(--theme-success) 8%, var(--theme-surface));
+}
+
 .migration-form-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -12428,6 +12463,12 @@ body {
 
 .migration-form-grid--import {
     grid-template-columns: minmax(260px, 1.3fr) minmax(200px, 0.7fr);
+}
+
+.migration-password-hint {
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.45;
 }
 
 .migration-actions {

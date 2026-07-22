@@ -123,7 +123,9 @@ func (h *SkillHandlers) DownloadBySkillID(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// Return the current public skill (same format as DownloadSkill by UUID).
-	s, err := h.store.GetVisible(meta.ID)
+	// GetCurrentVisible also prevents a legacy alias from resolving to a
+	// superseded revision after version groups have been merged.
+	s, err := h.store.GetCurrentVisible(meta.ID)
 	if err != nil {
 		skillError(w, http.StatusNotFound, err.Error())
 		return

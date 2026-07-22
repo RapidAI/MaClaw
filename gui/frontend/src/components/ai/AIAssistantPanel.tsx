@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ClipboardEvent, type DragEvent } from "react";
 import type { ChatMessage } from "./useAIAssistant";
-import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice } from "./useAIAssistant";
+import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
 import { normalizeASRText, shouldDispatchASRText } from "./asrTextUtils";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
@@ -72,7 +72,7 @@ import { renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
@@ -2781,13 +2781,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const messagesLengthRef = useRef(messages.length);
     messagesLengthRef.current = messages.length;
     const sendMessageForTab = useCallback((text: string, options?: Record<string, unknown>): Promise<boolean> => {
-        const optionProjectPath = typeof options?.project_path === "string" ? options.project_path : undefined;
-        const optionTabId = typeof options?.tabId === "string" ? options.tabId : undefined;
+        // Queue sends carry their durable session owner explicitly. Keep this
+        // panel-only routing hint out of the backend payload after using it.
+        const queueSessionKey = typeof options?.queue_session_key === "string" ? options.queue_session_key.trim() : "";
+        const sendOptions = { ...(options || {}) };
+        delete sendOptions.queue_session_key;
+        const queuedProjectPath = projectPathFromSessionKey(queueSessionKey) || undefined;
+        const queuedExpertId = expertIdFromSessionKey(queueSessionKey) || undefined;
+        const forceLocalQueueRoute = queueSessionKey === "desktop-user";
+        const optionProjectPath = typeof sendOptions.project_path === "string" ? sendOptions.project_path : undefined;
+        const optionTabId = typeof sendOptions.tabId === "string" ? sendOptions.tabId : undefined;
         const liveActiveTab = activeTabRef.current;
         const activeSessionProjectPath = projectPathFromSessionKey(getActiveSessionKey());
-        const resolvedProjectPath = optionProjectPath
-            || (liveActiveTab.type === "project" ? liveActiveTab.projectPath : undefined)
-            || activeSessionProjectPath
+        const resolvedProjectPath = queuedProjectPath
+            || optionProjectPath
+            || (!forceLocalQueueRoute && !queuedExpertId && liveActiveTab.type === "project" ? liveActiveTab.projectPath : undefined)
+            || (!forceLocalQueueRoute && !queuedExpertId ? activeSessionProjectPath : undefined)
             || undefined;
         const resolvedTab = resolvedProjectPath
             ? getTabs().find(t => t.type === "project" && t.projectPath === resolvedProjectPath)
@@ -2797,7 +2806,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (isProjectSend && resolvedProjectPath) {
             if (resolvedTabId) clearedProjectTabIdsRef.current.delete(resolvedTabId);
             const mergedOptions: Record<string, unknown> = {
-                ...options,
+                ...sendOptions,
                 tabId: resolvedTabId,
                 project_path: resolvedProjectPath,
             };
@@ -2866,27 +2875,33 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 throw err;
             });
         }
-        if (liveActiveTab.type === "expert" && liveActiveTab.expertId) {
+        const resolvedExpertId = queuedExpertId || (!forceLocalQueueRoute && liveActiveTab.type === "expert" ? liveActiveTab.expertId : undefined);
+        if (resolvedExpertId) {
             // Expert route: no project path — the backend derives the session
             // userID (desktop-user:expert:<id>) and persona from expert_id.
-            const expertKey = expertSessionKey(liveActiveTab.expertId);
-            clearedProjectTabIdsRef.current.delete(liveActiveTab.id);
+            const expertTab = getTabs().find(tab => tab.type === "expert" && tab.expertId === resolvedExpertId);
+            const expertTabId = optionTabId || expertTab?.id || (liveActiveTab.type === "expert" ? liveActiveTab.id : undefined);
+            const expertKey = expertSessionKey(resolvedExpertId);
+            if (expertTabId) clearedProjectTabIdsRef.current.delete(expertTabId);
             const mergedOptions: Record<string, unknown> = {
-                ...options,
-                tabId: liveActiveTab.id,
-                expert_id: liveActiveTab.expertId,
+                ...sendOptions,
+                tabId: expertTabId,
+                expert_id: resolvedExpertId,
             };
-            (mergedOptions as Record<string, unknown>).recentMessages = buildProjectTabRecentMessages(projectTabMessages);
+            const expertHistory = expertTabId === liveActiveTab.id
+                ? projectTabMessages
+                : ((expertTabId ? getTabState(expertTabId)?.history : []) || []);
+            (mergedOptions as Record<string, unknown>).recentMessages = buildProjectTabRecentMessages(expertHistory as ChatMessage[]);
             console.info("[AIAssistantPanel] send route expert", {
-                tabId: liveActiveTab.id,
-                expertId: liveActiveTab.expertId,
+                tabId: expertTabId,
+                expertId: resolvedExpertId,
                 sessionKey: expertKey,
                 textLength: text.trim().length,
             });
             logAIPanelDiagnostic({
                 event: "send_route_expert",
-                tabId: liveActiveTab.id,
-                expertId: liveActiveTab.expertId,
+                tabId: expertTabId,
+                expertId: resolvedExpertId,
                 sessionKey: expertKey,
                 textLength: text.trim().length,
             });
@@ -2914,10 +2929,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // Only include tabId for tabs that can own a workflow preview (local/project).
         // VE/group tabs don't run workflows — sending their tab ID would overwrite
         // the local tab's event_scope_id mapping on the backend.
-        const shouldIncludeTabScope = canShowAssistantCodingPreviewForTab(liveActiveTab);
+        const localTab = forceLocalQueueRoute ? getTabs().find(tab => tab.type === "local") : liveActiveTab;
+        const shouldIncludeTabScope = !!localTab && canShowAssistantCodingPreviewForTab(localTab);
         const localOptions = shouldIncludeTabScope
-            ? (options ? { ...options, tabId: liveActiveTab.id } : { tabId: liveActiveTab.id })
-            : (options || {});
+            ? { ...sendOptions, tabId: localTab.id }
+            : sendOptions;
         const localSend = sendMessage(text, localOptions as any);
         return localSend.finally(() => markPanelSendInFlight(localSessionKey, false));
     }, [getTabState, getTabs, markPanelSendInFlight, messages, persistProjectTabMsgIds, projectTabMessages, saveTabState, sendMessage]);
@@ -3533,8 +3549,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const submitLocked = inputLocked;
     const prevSubmitLockedRef = useRef(submitLocked);
     const prevShowChatUIRef = useRef(showChatUI);
-    const continueQueueDrainRef = useRef(false);
-    const queueAutoDrainArmedRef = useRef(false);
+    // Drain intent is session-owned. A tab switch must not let one session's
+    // completed send or busy-submit arm another session's manual queue.
+    const continueQueueDrainSessionKeysRef = useRef<Set<string>>(new Set());
+    const queueAutoDrainArmedSessionKeysRef = useRef<Set<string>>(new Set());
     const latestSubmitLockedRef = useRef(submitLocked);
     const latestShowChatUIRef = useRef(showChatUI);
     latestSubmitLockedRef.current = submitLocked;
@@ -3855,7 +3873,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             firingEntryIdsRef.current.clear();
             drainingEntryIdsRef.current.clear();
-            continueQueueDrainRef.current = false;
+            continueQueueDrainSessionKeysRef.current.clear();
+            queueAutoDrainArmedSessionKeysRef.current.clear();
         };
     }, []);
     useEffect(() => {
@@ -4211,9 +4230,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             setQueueInteractionStarted(true);
             // Queue stores the composed command text so /goal (and similar) survive drain.
-            addEntry(text || rawInputValue, attachments, { autoDrain: submitLocked });
+            addEntry(text || rawInputValue, attachments, {
+                autoDrain: submitLocked,
+                // Match Codex CLI: Enter during a regular active turn attempts
+                // same-turn steering immediately. The entry remains durable
+                // until the backend accepts it, then falls back to auto-drain.
+                // Slash commands are independent control turns. Feeding one
+                // into the model as conversational steering would bypass its
+                // backend command handler (/goal, /help, /memory, ...).
+                steerWhenBusy: submitLocked && (activeSessionIsSending || activeSessionIsStreaming) && !activeProjectPreparing && !cancelPending
+                    && !/^[/／]/.test((text || rawInputValue).trim()),
+            });
             if (submitLocked) {
-                queueAutoDrainArmedRef.current = true;
+                queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
             }
             setQueueEditDraftActive(false);
             clearComposerDraft({ clearAttachments: true });
@@ -4237,8 +4266,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
     useEffect(() => {
         if (queue.length === 0) {
-            continueQueueDrainRef.current = false;
-            queueAutoDrainArmedRef.current = false;
+            continueQueueDrainSessionKeysRef.current.delete(activeSessionKey);
+            queueAutoDrainArmedSessionKeysRef.current.delete(activeSessionKey);
         }
         // A diarized voice recording calls its speaker turns synchronously.
         // The second turn may enter the buffer before the first send has made
@@ -4252,8 +4281,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const readyToDrainQueue = readyBase && (!submitLocked || headIsInstall);
         const becameIdle = prevSubmitLockedRef.current && readyToDrainQueue;
         const returnedToChatIdle = !prevShowChatUIRef.current && readyToDrainQueue;
-        const continueIdleDrain = continueQueueDrainRef.current && readyToDrainQueue;
-        const armedIdleDrain = queueAutoDrainArmedRef.current && readyToDrainQueue;
+        const continueIdleDrain = continueQueueDrainSessionKeysRef.current.has(activeSessionKey) && readyToDrainQueue;
+        const armedIdleDrain = queueAutoDrainArmedSessionKeysRef.current.has(activeSessionKey) && readyToDrainQueue;
         const persistedAutoDrain = !!queue[0]?.autoDrain && readyToDrainQueue;
         if ((becameIdle || returnedToChatIdle || continueIdleDrain || armedIdleDrain || persistedAutoDrain) && queue.length > 0 && !queueEditDraftActive) {
             const entry = queue[0];
@@ -4262,15 +4291,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 prevShowChatUIRef.current = showChatUI;
                 return;
             }
-            continueQueueDrainRef.current = false;
-            queueAutoDrainArmedRef.current = false;
+            continueQueueDrainSessionKeysRef.current.delete(activeSessionKey);
+            queueAutoDrainArmedSessionKeysRef.current.delete(activeSessionKey);
             drainingEntryIdsRef.current.add(entry.id);
             refreshQueueInFlight();
             const entryText = entry.text.trim();
+            const entrySessionKey = entry.sessionKey?.trim() || activeSessionKey;
+            const sendEntryAsTurn = (outgoing: string) => sendMessageForTab(outgoing, { queue_session_key: entrySessionKey });
             console.info("[AIAssistantPanel] drain queued input", {
                 activeTabId: activeTab.id,
                 activeTabType: activeTab.type,
                 projectPath: activeTab.projectPath || "",
+                entrySessionKey,
                 entryId: entry.id,
                 textLength: entryText.length,
                 attachmentCount: entry.attachments.length,
@@ -4283,12 +4315,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const drainPromise = entryIsBtw
                 ? dispatchBtwText(entryText)
                 : entryInstall
-                    ? sendMessageForTab(entryInstall)
-                    : sendMessageForTab(buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath)));
+                    ? sendEntryAsTurn(entryInstall)
+                    : sendEntryAsTurn(buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath)));
             drainPromise.then((sent) => {
                 if (sent === false) return;
-                continueQueueDrainRef.current = true;
-                removeEntry(entry.id);
+				// A session forget/queue clear may have removed this item while the
+				// send was unresolved. Only the operation that still owns the durable
+				// queue item may continue draining or mutate prompt history.
+				if (!removeEntry(entry.id)) return;
+				continueQueueDrainSessionKeysRef.current.add(entrySessionKey);
                 // dispatchBtwText already records the prompt; only record normal sends here.
                 if (!entryIsBtw) recordSubmittedPrompt?.(entryInstall ?? entry.text);
             }).catch(() => {}).finally(() => {
@@ -4298,34 +4333,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
-    }, [activeTab.id, activeTab.projectPath, activeTab.type, dispatchBtwText, queue, queueEditDraftActive, queueInFlightVersion, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
-    const appendProjectGuideReferenceEcho = useCallback((text: string, targetTabId: string | null, accepted = true) => {
-        if (!targetTabId) return;
-        const targetTab = tabState.tabs.find(tab => tab.id === targetTabId);
-        if (!targetTab || (targetTab.type !== "project" && targetTab.type !== "expert")) return;
-        const echo: ChatMessage = {
-            id: `guide-reference-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            role: 'system',
-            kind: accepted ? 'guideReceipt' : 'guideRejection',
-            content: accepted ? buildGuideReferenceAcceptedNotice(text, lang || "en") : buildGuideReferenceRejectedNotice(text, lang || "en"),
-            sessionKey: targetTab.type === "expert" ? expertSessionKey(targetTab.expertId) || undefined : undefined,
-            timestamp: Date.now(),
-        };
-        const existingState = getTabState(targetTabId);
-        const nextHistory = mergeChatMessages(existingState?.history, [echo]);
-        saveTabState(targetTabId, {
-            ...existingState,
-            history: nextHistory,
-        });
-        if (activeTabIdRef.current === targetTabId) {
-            setProjectTabMessages(nextHistory);
-        }
-    }, [getTabState, lang, saveTabState, tabState.tabs]);
+    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, dispatchBtwText, queue, queueEditDraftActive, queueInFlightVersion, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
     const handleFireEntry = useCallback(async (id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         const entry = queue.find(item => item.id === id);
         if (!entry) return;
-        const guideTargetTabId = isProjectTabActive ? activeTab.id : null;
+        const entrySessionKey = entry.sessionKey?.trim() || activeSessionKey;
+        const sendEntryAsTurn = (text: string) => sendMessageForTab(text, { queue_session_key: entrySessionKey });
         firingEntryIdsRef.current.add(id);
         refreshQueueInFlight();
         const entryText = entry.text.trim();
@@ -4333,45 +4347,59 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // /btw is a side query, not a main-loop inject — keep its semantics.
             if (isBtwCommandText(entryText) && sendBtwMessage) {
                 const ok = await dispatchBtwText(entryText);
-                if (ok) removeEntry(id);
+				if (ok) removeEntry(id);
                 return;
             }
             // Install slash commands must go through the main send path (backend
             // handles them before the agent loop), not guide/inject.
             const fireInstall = normalizeInstallCommandText(entryText);
             if (fireInstall) {
-                const sent = await sendMessageForTab(fireInstall);
+                const sent = await sendEntryAsTurn(fireInstall);
                 if (sent !== false) {
-                    removeEntry(id);
-                    recordSubmittedPrompt?.(fireInstall);
+					if (removeEntry(id)) recordSubmittedPrompt?.(fireInstall);
                 }
                 return;
             }
             const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
             let injected = false;
             if (guideLaunchReference) {
-                injected = await guideLaunchReference(outgoing, activeSessionKey);
+                // Route by the queue item's durable owner, not whichever tab is
+                // active when an async click/effect eventually runs.
+                injected = await guideLaunchReference(outgoing, entrySessionKey, entry.id);
             } else if (injectSupplementary) {
-                injected = await injectSupplementary(outgoing);
+                injected = await injectSupplementary(outgoing, entrySessionKey);
             }
             if (!injected) {
-                appendProjectGuideReferenceEcho(outgoing, guideTargetTabId, false);
+                // A turn can finish between rendering the busy state and the
+                // steer RPC. Keep the entry, stop retrying steer, and let the
+                // normal queue drain submit it as the next turn.
+                updateEntry(id, entry.text, entry.attachments, { autoDrain: true, steerWhenBusy: false });
                 return;
             }
-            appendProjectGuideReferenceEcho(outgoing, guideTargetTabId, true);
-            removeEntry(id);
-            recordSubmittedPrompt?.(entry.text);
+			if (removeEntry(id)) recordSubmittedPrompt?.(entry.text);
         } catch {
-            if (!isBtwCommandText(entryText)) {
-                const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
-                appendProjectGuideReferenceEcho(outgoing, guideTargetTabId, false);
-            }
+            updateEntry(id, entry.text, entry.attachments, { autoDrain: true, steerWhenBusy: false });
             return;
         } finally {
             firingEntryIdsRef.current.delete(id);
             refreshQueueInFlight();
         }
-    }, [activeSessionKey, activeTab.id, appendProjectGuideReferenceEcho, dispatchBtwText, guideLaunchReference, injectSupplementary, isProjectTabActive, isExpertTabActive, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage]);
+    }, [activeSessionKey, dispatchBtwText, guideLaunchReference, injectSupplementary, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, updateEntry]);
+    useEffect(() => {
+        if (activeProjectPreparing || cancelPending || recordingActive) return;
+        // Preserve conversational order. In particular, a later ordinary
+        // message must not jump ahead of a queued slash/control turn.
+        const pendingSteer = queue[0]?.steerWhenBusy ? queue[0] : undefined;
+        if (!pendingSteer) return;
+        if (!activeSessionIsSending && !activeSessionIsStreaming) {
+            // The turn ended before the effect ran. Convert to an ordinary
+            // auto-draining follow-up instead of claiming it was attached.
+            updateEntry(pendingSteer.id, pendingSteer.text, pendingSteer.attachments, { autoDrain: true, steerWhenBusy: false });
+            return;
+        }
+        if (firingEntryIdsRef.current.has(pendingSteer.id) || drainingEntryIdsRef.current.has(pendingSteer.id)) return;
+        void handleFireEntry(pendingSteer.id);
+    }, [activeProjectPreparing, activeSessionIsSending, activeSessionIsStreaming, cancelPending, handleFireEntry, queue, recordingActive, updateEntry]);
     const handleDeleteEntry = useCallback((id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         removeEntry(id);

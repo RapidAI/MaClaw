@@ -2216,6 +2216,12 @@ func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) strin
 		return h.toolCreateScheduledTask(args)
 	case manageScheduleActionList:
 		return h.toolListScheduledTasks()
+	case manageScheduleActionRun:
+		return h.toolRunScheduledTask(args)
+	case manageScheduleActionPause:
+		return h.toolSetScheduledTaskPaused(args, true)
+	case manageScheduleActionResume:
+		return h.toolSetScheduledTaskPaused(args, false)
 	case manageScheduleActionDelete:
 		return h.toolDeleteScheduledTask(args)
 	case manageScheduleActionUpdate:
@@ -2223,7 +2229,7 @@ func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) strin
 	case manageScheduleActionListTargets:
 		return h.toolListScheduleDeliveryTargets(args)
 	default:
-		return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update/list_targets）", actionText)
+		return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/run/pause/resume/delete/update/list_targets）", actionText)
 	}
 }
 
@@ -2388,8 +2394,35 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 // Scheduled task tool implementations
 // ---------------------------------------------------------------------------
 
+// scheduledTaskManagerForTool returns the App-wide scheduler for an IM handler.
+//
+// Gateway-local handlers are created lazily and cached. A gateway can therefore
+// receive its first message before the desktop task-management panel has caused
+// App.ensureScheduledTaskManager to run. Do not leave that handler permanently
+// detached from the shared scheduler: on the first schedule operation, bind it
+// to the App's manager so IM and the desktop UI always see the same task set.
+func (h *IMMessageHandler) scheduledTaskManagerForTool() *scheduler.Manager {
+	if h == nil {
+		return nil
+	}
+	h.scheduledTaskManagerMu.RLock()
+	manager := h.scheduledTaskManager
+	h.scheduledTaskManagerMu.RUnlock()
+	if manager != nil {
+		return manager
+	}
+	if h.app == nil {
+		return nil
+	}
+	if manager = h.app.scheduledTaskManagerForIMHandler(); manager != nil {
+		h.SetScheduledTaskManager(manager)
+	}
+	return manager
+}
+
 func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) string {
-	if h.scheduledTaskManager == nil {
+	manager := h.scheduledTaskManagerForTool()
+	if manager == nil {
 		return "定时任务管理器未初始化"
 	}
 	name := stringVal(args, "name")
@@ -2433,7 +2466,7 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 	}
 	t.Delivery = d
 
-	id, err := h.scheduledTaskManager.Add(t)
+	id, err := manager.Add(t)
 	if err != nil {
 		return fmt.Sprintf("创建定时任务失败: %s", err.Error())
 	}
@@ -2442,7 +2475,7 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 	h.emitAppEvent("scheduled-tasks-changed")
 
 	// 非一次性任务同步到系统日历
-	if created := h.scheduledTaskManager.Get(id); created != nil && scheduler.IsRecurringTask(created) {
+	if created := manager.Get(id); created != nil && scheduler.IsRecurringTask(created) {
 		go func() {
 			if err := scheduler.SyncTaskToSystemCalendar(created); err != nil {
 				h.appLog(fmt.Sprintf("[scheduled-task] calendar sync failed: %v", err))
@@ -2451,7 +2484,7 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 	}
 
 	// Format next run time for display (reuse calendar Get when possible).
-	task := h.scheduledTaskManager.Get(id)
+	task := manager.Get(id)
 	if task == nil {
 		return fmt.Sprintf("定时任务已创建（ID: %s）", id)
 	}
@@ -2466,10 +2499,11 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 }
 
 func (h *IMMessageHandler) toolListScheduledTasks() string {
-	if h.scheduledTaskManager == nil {
+	manager := h.scheduledTaskManagerForTool()
+	if manager == nil {
 		return "定时任务管理器未初始化"
 	}
-	tasks := h.scheduledTaskManager.List()
+	tasks := manager.List()
 	if len(tasks) == 0 {
 		return "当前没有定时任务。"
 	}
@@ -2513,8 +2547,67 @@ func (h *IMMessageHandler) toolListScheduledTasks() string {
 	return b.String()
 }
 
+// toolRunScheduledTask starts an active scheduled task immediately. TriggerNow
+// deliberately runs asynchronously, so an IM request receives confirmation
+// without waiting for the task's action to complete.
+func (h *IMMessageHandler) toolRunScheduledTask(args map[string]interface{}) string {
+	manager := h.scheduledTaskManagerForTool()
+	if manager == nil {
+		return "定时任务管理器未初始化"
+	}
+	id := stringVal(args, "id")
+	if id == "" {
+		return "缺少 id 参数；请先用 manage_schedule(action=list) 查询任务 ID"
+	}
+	task := manager.Get(id)
+	if task == nil {
+		return fmt.Sprintf("未找到定时任务（ID: %s）", id)
+	}
+	if err := manager.TriggerNow(id); err != nil {
+		return fmt.Sprintf("立即执行定时任务失败: %s", err.Error())
+	}
+	message := fmt.Sprintf("已启动定时任务「%s」（ID: %s），正在后台执行；完成后可再次查询任务状态。", task.Name, id)
+	if task.Delivery != nil && task.Delivery.Active() {
+		message += "已配置的 IM 推送会在执行完成后发送。"
+	}
+	return message
+}
+
+// toolSetScheduledTaskPaused pauses or resumes a task without deleting its
+// schedule. IDs are required so an IM request cannot affect an ambiguous task
+// when multiple tasks use the same display name.
+func (h *IMMessageHandler) toolSetScheduledTaskPaused(args map[string]interface{}, paused bool) string {
+	manager := h.scheduledTaskManagerForTool()
+	if manager == nil {
+		return "定时任务管理器未初始化"
+	}
+	id := stringVal(args, "id")
+	if id == "" {
+		return "缺少 id 参数；请先用 manage_schedule(action=list) 查询任务 ID"
+	}
+	task := manager.Get(id)
+	if task == nil {
+		return fmt.Sprintf("未找到定时任务（ID: %s）", id)
+	}
+	var err error
+	if paused {
+		err = manager.Pause(id)
+	} else {
+		err = manager.Resume(id)
+	}
+	if err != nil {
+		return fmt.Sprintf("更新定时任务状态失败: %s", err.Error())
+	}
+	h.emitAppEvent("scheduled-tasks-changed")
+	if paused {
+		return fmt.Sprintf("已暂停定时任务「%s」（ID: %s）", task.Name, id)
+	}
+	return fmt.Sprintf("已恢复定时任务「%s」（ID: %s）", task.Name, id)
+}
+
 func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) string {
-	if h.scheduledTaskManager == nil {
+	manager := h.scheduledTaskManagerForTool()
+	if manager == nil {
 		return "定时任务管理器未初始化"
 	}
 	id := stringVal(args, "id")
@@ -2524,9 +2617,9 @@ func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) 
 	}
 	var err error
 	if id != "" {
-		err = h.scheduledTaskManager.Delete(id)
+		err = manager.Delete(id)
 	} else {
-		err = h.scheduledTaskManager.DeleteByName(name)
+		err = manager.DeleteByName(name)
 	}
 	if err != nil {
 		return fmt.Sprintf("删除失败: %s", err.Error())
@@ -2536,7 +2629,8 @@ func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) 
 }
 
 func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) string {
-	if h.scheduledTaskManager == nil {
+	manager := h.scheduledTaskManagerForTool()
+	if manager == nil {
 		return "定时任务管理器未初始化"
 	}
 	id := stringVal(args, "id")
@@ -2552,7 +2646,7 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	}
 	// Full replace or partial patch (fail_on_error) without wiping delivery.
 	var current *scheduler.TaskDelivery
-	if cur := h.scheduledTaskManager.Get(id); cur != nil {
+	if cur := manager.Get(id); cur != nil {
 		current = cur.Delivery
 	}
 	if err := scheduler.PrepareDeliveryForUpdate(current, args, func(a map[string]interface{}) (*scheduler.TaskDelivery, error) {
@@ -2560,13 +2654,13 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	}); err != nil {
 		return err.Error()
 	}
-	err := h.scheduledTaskManager.Update(id, args)
+	err := manager.Update(id, args)
 	if err != nil {
 		return fmt.Sprintf("更新失败: %s", err.Error())
 	}
 	h.emitAppEvent("scheduled-tasks-changed")
 	// Show updated task info.
-	if t := h.scheduledTaskManager.Get(id); t != nil {
+	if t := manager.Get(id); t != nil {
 		next := "-"
 		if t.NextRunAt != nil {
 			next = t.NextRunAt.Format("2006-01-02 15:04")
@@ -2586,10 +2680,14 @@ func (h *IMMessageHandler) toolListScheduleDeliveryTargets(args map[string]inter
 	if h.app == nil {
 		return "应用未初始化，无法查询投递目标"
 	}
-	channel := scheduler.DefaultDeliveryChannel(firstNonEmptyArg(
+	channel := firstNonEmptyArg(
 		stringVal(args, "channel"),
 		stringVal(args, "platform"),
-	))
+	)
+	if channel == "" {
+		channel = consumeRuntimePlatformFromToolArgs(args)
+	}
+	channel = scheduler.DefaultDeliveryChannel(channel)
 	query := firstNonEmptyArg(
 		stringVal(args, "query"),
 		stringVal(args, "group_name"),
@@ -2679,6 +2777,9 @@ func parseScheduleDeliveryArgs(args map[string]interface{}) (*scheduler.TaskDeli
 		return nil, nil
 	}
 	channel := firstNonEmptyArg(stringVal(args, "channel"), stringVal(args, "delivery_channel"))
+	if channel == "" {
+		channel = consumeRuntimePlatformFromToolArgs(args)
+	}
 	if channel == "" {
 		channel = scheduler.DeliveryChannelLansenger
 	}

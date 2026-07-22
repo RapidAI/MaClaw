@@ -56,8 +56,8 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 	var injectedText string
 	if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
 		raw, _ := injected.(string)
-		if raw != "" {
-			if isGuideLaunchReferenceInjection(raw) {
+		for _, pending := range splitPendingInjections(raw) {
+			if isGuideLaunchReferenceInjection(pending) {
 				// Guide reference (from buffer queue fire button): always inject
 				// as user-role message regardless of iteration. This matches
 				// Codex's "steer" behavior — the user's steering text lands as
@@ -65,15 +65,19 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 				// The guide is a supplement/correction to the current task, NOT
 				// a cancellation — the agent should complete the original
 				// request while incorporating this additional guidance.
-				guideUserText := stripInjectionPrefix(raw)
+				guideUserText := stripInjectionPrefix(pending)
 				if guideUserText != "" {
 					conversation = append(conversation, map[string]string{
 						"role":    "user",
-						"content": "[用户补充/纠正] " + guideUserText + "\n（请在完成当前任务的基础上，一并处理以上补充内容）",
+						"content": buildLiveSteerUserMessage(guideUserText),
 					})
 					// Return the user-facing text (not the English wrapper) so
 					// callers that gate on injectedText see real steering content.
-					injectedText = guideUserText
+					if injectedText == "" {
+						injectedText = guideUserText
+					} else {
+						injectedText += "\n" + guideUserText
+					}
 					log.Printf("[injection] user=%s guide reference as user-role (iteration=%d): %s", userID, iteration, truncateForLog(guideUserText, 50))
 				} else {
 					log.Printf("[injection] user=%s discarded empty guide reference wrapper (iteration=%d)", userID, iteration)
@@ -83,10 +87,14 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 				// submit) keep the system-role behavior.
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": raw,
+					"content": pending,
 				})
-				injectedText = raw
-				log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(raw, 50))
+				if injectedText == "" {
+					injectedText = pending
+				} else {
+					injectedText += "\n" + pending
+				}
+				log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(pending, 50))
 			}
 		}
 	}
@@ -99,7 +107,7 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 			if time.Since(entry.CreatedAt) <= preLoopGuideMaxAge {
 				conversation = append(conversation, map[string]string{
 					"role":    "user",
-					"content": "[用户补充说明] " + entry.Text,
+					"content": buildLiveSteerUserMessage(entry.Text),
 				})
 				if injectedText == "" {
 					injectedText = entry.Text
@@ -113,4 +121,13 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 		}
 	}
 	return conversation, injectedText
+}
+
+// buildLiveSteerUserMessage gives the model the user's actual interruption and
+// conversational intent. The transport/UI deliberately does not synthesize an
+// acknowledgement: the next real model response should demonstrate that it
+// understood the interruption in whatever way fits the current context.
+func buildLiveSteerUserMessage(text string) string {
+	return "[The user spoke while you were working]\n" + strings.TrimSpace(text) +
+		"\n\nTreat this as live steering within the current conversation. Re-check the next step and incorporate the user's addition or correction before continuing. Let the next visible response naturally show that you understood it, as in a real multi-person conversation: respond to the substance when useful, or simply let the changed work demonstrate it. Do not emit a canned receipt, do not mechanically say that it was received or attached, and do not force a quotation or acknowledgement when that would sound unnatural. Do not treat it as a separate new task."
 }

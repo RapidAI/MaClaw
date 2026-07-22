@@ -26,6 +26,7 @@ type LoopContext struct {
 	iteration                           int // current iteration count
 	status                              LoopState
 	replanRevision                      int64 // increments when live user guidance should interrupt/re-plan
+	replansSealed                       bool  // final response won the accept/commit race; reject later steering
 	currentOperationCancel              context.CancelFunc
 	currentOperation                    *loopReplannableOperation
 	backgroundTaskBoundaryExtensionKeys map[string]struct{}
@@ -253,10 +254,25 @@ func (c *LoopContext) IncrementIteration() int {
 }
 
 func (c *LoopContext) RequestReplan() int64 {
+	revision, _ := c.TryRequestReplan(nil)
+	return revision
+}
+
+// TryRequestReplan atomically queues steering and advances the replan revision.
+// enqueue runs while the final-response gate is held, so an accepted guide can
+// never lose a race to final response commit.
+func (c *LoopContext) TryRequestReplan(enqueue func()) (int64, bool) {
 	if c == nil {
-		return 0
+		return 0, false
 	}
 	c.mu.Lock()
+	if c.replansSealed || c.isCancelledLocked() {
+		c.mu.Unlock()
+		return c.replanRevision, false
+	}
+	if enqueue != nil {
+		enqueue()
+	}
 	c.replanRevision++
 	cancel := c.currentOperationCancel
 	revision := c.replanRevision
@@ -264,7 +280,31 @@ func (c *LoopContext) RequestReplan() int64 {
 	if cancel != nil {
 		cancel()
 	}
-	return revision
+	return revision, true
+}
+
+// TrySealReplans atomically commits a final-response boundary. It succeeds
+// only when TransformConversation has incorporated every accepted revision.
+func (c *LoopContext) TrySealReplans(processedRevision int64) bool {
+	if c == nil {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.replanRevision > processedRevision {
+		return false
+	}
+	c.replansSealed = true
+	return true
+}
+
+func (c *LoopContext) AcceptingReplans() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return !c.replansSealed && !c.isCancelledLocked()
 }
 
 func (c *LoopContext) ReplanRevision() int64 {
@@ -354,11 +394,25 @@ func (c *LoopContext) SetLoopState(s LoopState) {
 
 // Cancel signals the loop to stop.
 func (c *LoopContext) Cancel() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	select {
 	case <-c.CancelC:
 		// already closed
 	default:
 		close(c.CancelC)
+	}
+}
+
+// isCancelledLocked reports cancellation while c.mu is held. Cancel closes
+// CancelC under the same mutex, making cancellation and steer acceptance one
+// atomic decision instead of a check-then-enqueue race.
+func (c *LoopContext) isCancelledLocked() bool {
+	select {
+	case <-c.CancelC:
+		return true
+	default:
+		return false
 	}
 }
 

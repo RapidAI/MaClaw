@@ -360,6 +360,7 @@ export const SidebarTaskManagement = ({
     openProjectTabPaths,
 }: SidebarTaskManagementProps) => {
     const [creatingTask, setCreatingTask] = useState(false);
+    const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
     const [newTaskName, setNewTaskName] = useState('');
     const [newTaskWorkingDir, setNewTaskWorkingDir] = useState('');
@@ -377,6 +378,8 @@ export const SidebarTaskManagement = ({
     const [sceneDetailLoading, setSceneDetailLoading] = useState(false);
     const [openingTaskPath, setOpeningTaskPath] = useState<string | null>(null);
     const creatingTaskRef = useRef(false);
+    /** Invalidates completion UI from a create whose form was superseded by a newer request. */
+    const createTaskGenRef = useRef(0);
     const createBackdropMouseDownRef = useRef(false);
     /** Cancels stale placeholder-selection timers when dialog re-opens or unmounts. */
     const selectPlaceholderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -481,13 +484,21 @@ export const SidebarTaskManagement = ({
         selectPlaceholderGenRef.current += 1;
     };
 
-    const schedulePostOpenFocus = (mode: '' | PureCodingAgentMode, name: string) => {
+    const schedulePostOpenFocus = (mode: '' | PureCodingAgentMode, preferredFieldId?: string) => {
         cancelSelectPlaceholderTimer();
         const gen = selectPlaceholderGenRef.current;
         // After portaled dialog commits (setTimeout > rAF under React 18 batching).
         selectPlaceholderTimerRef.current = setTimeout(() => {
             selectPlaceholderTimerRef.current = null;
             if (!mountedRef.current || selectPlaceholderGenRef.current !== gen) return;
+            if (preferredFieldId) {
+                const preferred = document.getElementById(preferredFieldId) as HTMLInputElement | HTMLTextAreaElement | null;
+                if (preferred && !preferred.disabled) {
+                    preferred.focus();
+                    if ('select' in preferred) preferred.select();
+                    return;
+                }
+            }
             // Welcome param dialog fills the command before open; jump to empty env fields.
             if (mode === 'remote_coding_dev') {
                 const ids = ['task-remote-host', 'task-remote-user', 'task-remote-password', 'task-remote-workdir'] as const;
@@ -549,7 +560,11 @@ export const SidebarTaskManagement = ({
         }
         setCreateError('');
         setCreateDialogOpen(true);
-        schedulePostOpenFocus(mode, name);
+        // A forced welcome event may replace the form while another create is
+        // still in flight. Its eventual completion must not close or overwrite
+        // this newer dialog.
+        createTaskGenRef.current += 1;
+        schedulePostOpenFocus(mode);
     };
     const openCreateDialogRef = useRef(openCreateDialog);
     openCreateDialogRef.current = openCreateDialog;
@@ -571,8 +586,10 @@ export const SidebarTaskManagement = ({
                 // Another create in flight: fall back to prefilled dialog instead of dropping the request.
                 if (taskName && !creatingTaskRef.current) {
                     void (async () => {
+                        const createGen = ++createTaskGenRef.current;
                         creatingTaskRef.current = true;
                         setCreatingTask(true);
+                        setCreatingTaskMode(mode);
                         setCreateError('');
                         try {
                             if (mode === 'remote_coding_dev') {
@@ -598,19 +615,30 @@ export const SidebarTaskManagement = ({
                             // open while creatingTaskRef is set, which would silently swallow
                             // the failure (the welcome param dialog is already closed).
                             creatingTaskRef.current = false;
-                            if (mountedRef.current) setCreatingTask(false);
+                            if (mountedRef.current) {
+                                setCreatingTask(false);
+                                setCreatingTaskMode('');
+                            }
                             // Fall back to dialog with prefilled fields so user can fix and retry.
-                            openCreateDialogRef.current({
-                                mode,
-                                name: taskName,
-                                workingDir,
-                                remote,
-                            });
-                            const msg = extractErrorMessage(err);
-                            if (msg) setCreateError(msg);
+                            if (mountedRef.current && createTaskGenRef.current === createGen) {
+                                openCreateDialogRef.current({
+                                    mode,
+                                    name: taskName,
+                                    workingDir,
+                                    remote,
+                                });
+                                const msg = extractErrorMessage(err);
+                                if (msg) setCreateError(msg);
+                                if (mode === 'remote_coding_dev') {
+                                    schedulePostOpenFocus(mode, 'task-remote-password');
+                                }
+                            }
                         } finally {
                             creatingTaskRef.current = false;
-                            if (mountedRef.current) setCreatingTask(false);
+                            if (mountedRef.current) {
+                                setCreatingTask(false);
+                                setCreatingTaskMode('');
+                            }
                         }
                     })();
                     return;
@@ -771,18 +799,29 @@ export const SidebarTaskManagement = ({
         if (creatingTaskRef.current) return;
         const taskName = normalizeTaskCommandInput(newTaskName);
         if (!taskName) return;
-        if (newTaskMode === 'remote_coding_dev') {
+        const isRemoteCreate = newTaskMode === 'remote_coding_dev';
+        if (isRemoteCreate) {
             if (!remoteHost.trim() || !remoteUser.trim() || !remotePassword || !remoteWorkDir.trim()) {
                 setCreateError(textForLang(lang, 'Please fill host, username, password, and remote work directory.', '请填写主机、用户名、密码和远程工作目录。', '請填寫主機、使用者名稱、密碼和遠端工作目錄。'));
                 return;
             }
         }
         creatingTaskRef.current = true;
+        const createGen = createTaskGenRef.current;
         setCreatingTask(true);
+        setCreatingTaskMode(newTaskMode);
         setCreateError('');
+        // SSH setup can take several seconds. Move remote creation out of the
+        // modal immediately so the task-list connection progress stays visible,
+        // matching the AI welcome-guide flow. Keep form state until success so
+        // a failed connection can reopen with every field intact for retry.
+        if (isRemoteCreate) {
+            cancelSelectPlaceholderTimer();
+            setCreateDialogOpen(false);
+        }
         try {
             const workingDir = newTaskWorkingDir.trim();
-            if (newTaskMode === 'remote_coding_dev') {
+            if (isRemoteCreate) {
                 const portNum = Number.parseInt(remotePort.trim() || '22', 10);
                 await createTask(taskName, undefined, 'remote_coding_dev', {
                     host: remoteHost.trim(),
@@ -799,21 +838,32 @@ export const SidebarTaskManagement = ({
             } else {
                 await createTask(taskName);
             }
-            setCreateDialogOpen(false);
-            setNewTaskName('');
-            setNewTaskWorkingDir('');
-            setNewTaskMode('');
-            setRemoteHost('');
-            setRemotePort('22');
-            setRemoteUser('');
-            setRemotePassword('');
-            setRemoteWorkDir('');
-            setCreateError('');
+            if (mountedRef.current && createTaskGenRef.current === createGen) {
+                setCreateDialogOpen(false);
+                setNewTaskName('');
+                setNewTaskWorkingDir('');
+                setNewTaskMode('');
+                setRemoteHost('');
+                setRemotePort('22');
+                setRemoteUser('');
+                setRemotePassword('');
+                setRemoteWorkDir('');
+                setCreateError('');
+            }
         } catch (error) {
-            setCreateError(extractErrorMessage(error) || textForLang(lang, 'Failed to create task', '创建任务失败', '建立任務失敗'));
+            if (mountedRef.current && createTaskGenRef.current === createGen) {
+                setCreateError(extractErrorMessage(error) || textForLang(lang, 'Failed to create task', '创建任务失败', '建立任務失敗'));
+                if (isRemoteCreate) {
+                    setCreateDialogOpen(true);
+                    schedulePostOpenFocus('remote_coding_dev', 'task-remote-password');
+                }
+            }
         } finally {
             creatingTaskRef.current = false;
-            setCreatingTask(false);
+            if (mountedRef.current) {
+                setCreatingTask(false);
+                setCreatingTaskMode('');
+            }
         }
     };
 
@@ -886,9 +936,11 @@ export const SidebarTaskManagement = ({
                 data-testid="task-autocreate-progress"
                 style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', lineHeight: 1.4 }}
             >
-                <span>{textForLang(lang, 'Creating task… SSH connect may take a few seconds.', '正在创建任务…SSH 连接可能需要几秒钟。', '正在建立任務…SSH 連線可能需要幾秒鐘。')}</span>
+                <span>{creatingTaskMode === 'remote_coding_dev'
+                    ? textForLang(lang, 'Connecting SSH and creating the remote task…', '正在连接 SSH 并创建远程任务…', '正在連線 SSH 並建立遠端任務…')
+                    : textForLang(lang, 'Creating task…', '正在创建任务…', '正在建立任務…')}</span>
                 <span style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}>
-                    <span style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
+                    <span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
                 </span>
             </div>
         )}
@@ -939,7 +991,7 @@ export const SidebarTaskManagement = ({
                         )}
                         {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
                         <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{openingTaskPath === proj.project_path ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...') : (proj.preview || proj.project_path)}</span>
-                        {openingTaskPath === proj.project_path && <span aria-label={textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
+                        {openingTaskPath === proj.project_path && <span aria-label={textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
                     </span>
                     <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); void openSceneDetail(proj.project_path, proj.name); }} disabled={sceneDetailLoading && sceneDetailPath === proj.project_path} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: sceneDetailLoading && sceneDetailPath === proj.project_path ? 0.4 : 0.78, cursor: 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>
                 </div>

@@ -33,6 +33,9 @@ type EnrollStartRequest struct {
 	Language             string `json:"language,omitempty"`
 }
 
+type emailVerifiedEnrollmentContextKey struct{}
+type verifiedEnrollmentTenantContextKey struct{}
+
 type tenantResolver interface {
 	ResolveTenantByEmail(ctx context.Context, email string) (tenantID string, found bool, ambiguous bool, err error)
 }
@@ -69,7 +72,9 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 		// the code validation on the target tenant serves as the authorization check.
 		var tenantID string
 		var err error
-		if strings.TrimSpace(req.TenantID) != "" && strings.TrimSpace(req.InvitationCode) != "" {
+		if verifiedTenant, _ := r.Context().Value(verifiedEnrollmentTenantContextKey{}).(string); strings.TrimSpace(verifiedTenant) != "" {
+			tenantID = strings.TrimSpace(verifiedTenant)
+		} else if strings.TrimSpace(req.TenantID) != "" && strings.TrimSpace(req.InvitationCode) != "" {
 			tenantID = strings.TrimSpace(req.TenantID)
 		} else {
 			tenantID, err = tenantIDForEmailRequest(r, identity, req.Email)
@@ -82,6 +87,9 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 
 		enrollStart := time.Now()
 		var enrollOpts []auth.EnrollOption
+		if verified, _ := r.Context().Value(emailVerifiedEnrollmentContextKey{}).(bool); verified {
+			enrollOpts = append(enrollOpts, auth.WithEmailVerifiedRegistration())
+		}
 		if lang := strings.TrimSpace(req.Language); lang != "" {
 			enrollOpts = append(enrollOpts, auth.WithLanguage(lang))
 		} else if acceptLang := r.Header.Get("Accept-Language"); acceptLang != "" {

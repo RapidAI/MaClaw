@@ -619,6 +619,7 @@ const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
                 console.error("Failed to patch remote config:", err);
                 if (config) setConfig(config);
                 showToastMessage(formatText("remoteSaveFailed", { error: String(err) }), 4000);
+                throw err;
             }
             return;
         }

@@ -4314,7 +4314,11 @@ ${instruction}`;
                     )}
 
                     {navTab === 'utilities' && showUtilitiesEntryEnabled && (
-                        <UtilitiesPage lang={lang} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => { switchTool('ai'); setPendingExpertOpen({ expert }); }} />
+                        <UtilitiesPage lang={lang} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => { switchTool('ai'); setPendingExpertOpen({ expert }); }} onOpenVirtualRepositoryTask={(launch) => {
+                            setPendingProjectTabOpen({ projectPath: launch.project_path, taskTitle: launch.task_title, prepareMode: 'new-agent', autoSend: false, agentMode: launch.agent_mode, remoteHost: launch.remote_host });
+                            switchTool('ai');
+                            refreshTasks();
+                        }} />
                     )}
 
                     {navTab === 'skills' && (
@@ -5504,8 +5508,25 @@ ${instruction}`;
                         await refreshRemotePanel();
                         console.info("[onboarding] App:onRegistered:done");
                     }}
+                    onMigrationCompleted={async () => {
+                        try {
+                            const restored = await callBackend(() => LoadConfig());
+                            setConfig(new main.AppConfig(restored));
+                        } catch (error) {
+                            console.warn('[onboarding] failed to refresh restored config snapshot:', error);
+                        }
+                        try {
+                            await refreshRemotePanel();
+                        } catch (error) {
+                            console.warn('[onboarding] failed to refresh remote panel after migration:', error);
+                        }
+                    }}
+                    onOnboardingCompleted={async () => {
+                        const saved = await callBackend(() => PatchConfigFields({ onboarding_done: true }));
+                        setConfig(new main.AppConfig(saved));
+                    }}
                     onSaveField={(patch) => {
-                        void saveRemoteConfigField(patch as any);
+                        return saveRemoteConfigField(patch as any);
                     }}
                 />
             )}

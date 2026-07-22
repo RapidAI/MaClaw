@@ -128,13 +128,13 @@ func CanonicalDeliveryChannel(channel string) string {
 	}
 	c := strings.ToLower(compact)
 	switch c {
-	case DeliveryChannelLansenger, "lanxin", "lx", "lan":
+	case DeliveryChannelLansenger, "lansengerlocal", "lanxin", "lanxinlocal", "lx", "lan":
 		return DeliveryChannelLansenger
-	case DeliveryChannelWeixin, "wechat", "wx", "wecom":
+	case DeliveryChannelWeixin, "weixinlocal", "wechat", "wechatlocal", "wx", "wecom":
 		return DeliveryChannelWeixin
-	case DeliveryChannelTelegram, "tg":
+	case DeliveryChannelTelegram, "telegramlocal", "tg":
 		return DeliveryChannelTelegram
-	case DeliveryChannelQQ, "qqbot":
+	case DeliveryChannelQQ, "qqlocal", "qqbot", "qqbotlocal":
 		return DeliveryChannelQQ
 	default:
 		// Unknown: keep lowercased original trim (not compact) for forward-compat channels.

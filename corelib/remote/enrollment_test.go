@@ -143,6 +143,51 @@ func TestEnroll_WithExistingHubURL(t *testing.T) {
 	}
 }
 
+func TestEnroll_EmailVerificationUsesVerifiedEndpointAndResolvedTenant(t *testing.T) {
+	var payload struct {
+		Email      string `json:"email"`
+		VerifyCode string `json:"verify_code"`
+		TenantID   string `json:"tenant_id"`
+	}
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/email/verify-and-start" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":        "approved",
+			"email":         "verified@example.com",
+			"tenant_id":     "tenant-verified",
+			"machine_id":    "machine-verified",
+			"machine_token": "token-verified",
+		})
+	}))
+	defer hub.Close()
+
+	client := &EnrollmentClient{HTTPClient: hub.Client()}
+	result, err := client.Enroll(context.Background(), EnrollConfig{
+		Email:            "verified@example.com",
+		VerificationCode: "123456",
+		InvitationCode:   "INVITE-1",
+		HubURL:           hub.URL,
+		TenantID:         "tenant-verified",
+		HubID:            "hub-verified",
+		DirectHub:        true,
+	})
+	if err != nil {
+		t.Fatalf("Enroll() error = %v", err)
+	}
+	if payload.Email != "verified@example.com" || payload.VerifyCode != "123456" || payload.TenantID != "tenant-verified" {
+		t.Fatalf("verified enrollment payload = %#v", payload)
+	}
+	if result.HubID != "hub-verified" || result.MachineID != "machine-verified" || result.MachineToken != "token-verified" {
+		t.Fatalf("verified enrollment result = %#v", result)
+	}
+}
+
 func TestEnroll_NormalizesHeartbeatIntervalInRequest(t *testing.T) {
 	tests := []struct {
 		name string
@@ -271,6 +316,42 @@ func TestEnroll_HubReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "EMAIL_BLOCKED") {
 		t.Errorf("error should contain EMAIL_BLOCKED, got: %v", err)
+	}
+}
+
+func TestEnroll_RejectsNonActivated2xxResponses(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		code   string
+	}{
+		{name: "manual binding", status: "manual_binding_required", code: "MANUAL_BINDING_REQUIRED"},
+		{name: "pending approval", status: "pending_approval", code: "PENDING_APPROVAL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":  tt.status,
+					"email":   "waiting@example.com",
+					"message": "activation is not complete",
+				})
+			}))
+			defer hub.Close()
+
+			client := &EnrollmentClient{HTTPClient: hub.Client()}
+			result, err := client.Enroll(context.Background(), EnrollConfig{
+				Email:  "waiting@example.com",
+				HubURL: hub.URL,
+			})
+			if err == nil {
+				t.Fatalf("Enroll() result = %#v, want error", result)
+			}
+			if !strings.Contains(err.Error(), tt.code) {
+				t.Fatalf("Enroll() error = %q, want code %s", err, tt.code)
+			}
+		})
 	}
 }
 

@@ -77,6 +77,16 @@ func TestDefaultDeliveryChannel(t *testing.T) {
 	if DefaultDeliveryChannel("wechat") != DeliveryChannelWeixin {
 		t.Fatal("wechat")
 	}
+	for input, want := range map[string]string{
+		"lansenger_local": DeliveryChannelLansenger,
+		"weixin_local":    DeliveryChannelWeixin,
+		"telegram_local":  DeliveryChannelTelegram,
+		"qqbot_local":     DeliveryChannelQQ,
+	} {
+		if got := DefaultDeliveryChannel(input); got != want {
+			t.Fatalf("%q -> %q, want %q", input, got, want)
+		}
+	}
 }
 
 func TestRunIMMessageToolDispatch(t *testing.T) {

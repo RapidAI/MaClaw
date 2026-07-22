@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from "react";
 import {
     ListScheduledTasks,
     CreateScheduledTask,
@@ -83,8 +83,8 @@ function deliveryRunStatus(task: ScheduledTask): "none" | "pending" | "ok" | "wa
     if (result.includes("[投递警告]")) return "warn";
     const err = String(task.last_error || "");
     if (err && /delivery|投递|push fail|agent ok/i.test(err)) return "fail";
-    if (task.run_count > 0 && !err) return "ok";
-    if (task.run_count > 0) return "ok"; // agent may have failed; push config still valid
+    // Agent may have failed for non-delivery reasons; push config is still considered healthy after any run.
+    if (task.run_count > 0) return "ok";
     return "pending";
 }
 
@@ -200,8 +200,13 @@ function getDateTimeLocale(lang: string): string {
 
 function fmtDate(s: string | null, lang: string): string {
     if (!s) return "-";
-    try { return new Date(s).toLocaleString(getDateTimeLocale(lang)); }
-    catch { return s; }
+    try {
+        const parsed = new Date(s);
+        if (!Number.isFinite(parsed.getTime())) return s;
+        return parsed.toLocaleString(getDateTimeLocale(lang));
+    } catch {
+        return s;
+    }
 }
 
 function formatInterval(minutes: number, lang: string): string {
@@ -265,6 +270,99 @@ const STATUS_COLORS: Record<string, string> = {
     expired: "var(--theme-text-muted)",
 };
 
+/**
+ * Table-like meta block: fixed left label column + value column.
+ * No border/grid lines. Shape comes from:
+ *  - shared 8rem label column (fits EN "Last result" / "Schedule")
+ *  - continuous label-column wash (vertical band)
+ *  - zebra on value cells only (avoids muddy double-tint on labels)
+ */
+const taskMetaTableStyle: CSSProperties = {
+    margin: 0,
+    borderRadius: radius.sm,
+    overflow: "hidden",
+    background: colors.surfaceMuted,
+    fontSize: "0.72rem",
+    lineHeight: 1.45,
+    textAlign: "left",
+};
+
+const taskMetaRowBaseStyle: CSSProperties = {
+    display: "grid",
+    // Fixed label width (each row is its own grid) so value columns line up.
+    // 8rem fits EN "Last result" / "Schedule" and ZH labels.
+    gridTemplateColumns: "8rem minmax(0, 1fr)",
+    columnGap: 0,
+    alignItems: "stretch",
+    textAlign: "left",
+};
+
+const taskMetaLabelStyle: CSSProperties = {
+    margin: 0,
+    padding: "6px 10px",
+    color: colors.textMuted,
+    fontWeight: 600,
+    whiteSpace: "nowrap",
+    textAlign: "left",
+    // Solid label column (all rows) — reads as a table header column without a vertical rule.
+    background: "color-mix(in srgb, var(--theme-text-muted) 9%, var(--theme-surface-muted))",
+    boxSizing: "border-box",
+    display: "flex",
+    alignItems: "flex-start",
+};
+
+const taskMetaValueStyleBase: CSSProperties = {
+    margin: 0,
+    padding: "6px 10px",
+    minWidth: 0,
+    color: colors.text,
+    overflowWrap: "anywhere",
+    wordBreak: "break-word",
+    textAlign: "left",
+    boxSizing: "border-box",
+};
+
+const taskMetaValueStyleEven: CSSProperties = {
+    ...taskMetaValueStyleBase,
+    background: "transparent",
+};
+
+const taskMetaValueStyleOdd: CSSProperties = {
+    ...taskMetaValueStyleBase,
+    background: "color-mix(in srgb, var(--theme-text-muted) 6%, transparent)",
+};
+
+const taskMetaValueStyleAt = (index: number): CSSProperties => (
+    index % 2 === 0 ? taskMetaValueStyleEven : taskMetaValueStyleOdd
+);
+
+const taskActionBtnBase: CSSProperties = {
+    padding: "3px 8px",
+    fontSize: "0.7rem",
+    cursor: "pointer",
+    background: "none",
+    border: `1px solid ${colors.border}`,
+    borderRadius: radius.sm,
+};
+
+/** Exported for unit tests — keeps list meta rows stable and left-aligned. */
+export function buildTaskMetaRows(
+    task: ScheduledTask,
+    lang: string,
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+    deliveryText?: string,
+): Array<{ label: string; value: string }> {
+    const rows: Array<{ label: string; value: string }> = [
+        { label: t("Action", "执行"), value: task.action || "-" },
+        { label: t("Schedule", "计划"), value: scheduleDesc(task, lang) },
+    ];
+    const push = deliveryText ?? deliverySummary(task.delivery);
+    if (push) rows.push({ label: t("Push", "推送"), value: push });
+    if (task.next_run_at) rows.push({ label: t("Next", "下次"), value: fmtDate(task.next_run_at, lang) });
+    if (task.run_count > 0) rows.push({ label: t("Runs", "已执行"), value: String(task.run_count) });
+    return rows;
+}
+
 export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
@@ -304,10 +402,17 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
     const [triggering, setTriggering] = useState<string | null>(null);
     const mountedRef = useRef(true);
     const loadRequestSeq = useRef(0);
+    const triggerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const { backdropProps: deleteBackdropProps, dialogProps: deleteDialogProps } = useSafeBackdropDismiss(() => setDeleteTarget(null));
     const { backdropProps: formBackdropProps, dialogProps: formDialogProps } = useSafeBackdropDismiss(() => setDlgOpen(false));
 
-    useEffect(() => () => { mountedRef.current = false; }, []);
+    useEffect(() => () => {
+        mountedRef.current = false;
+        if (triggerTimerRef.current !== null) {
+            clearTimeout(triggerTimerRef.current);
+            triggerTimerRef.current = null;
+        }
+    }, []);
 
     const loadTasks = useCallback(async () => {
         const requestSeq = ++loadRequestSeq.current;
@@ -339,15 +444,17 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
         setLxGroupsLoading(true);
         try {
             const res = await ListLansengerGroups();
+            if (!mountedRef.current) return;
             const groups = Array.isArray(res?.groups) ? res.groups : [];
             setLxGroups(groups.map((g: any) => ({
                 group_id: String(g.group_id || g.GroupID || "").trim(),
                 name: String(g.name || g.Name || g.group_id || "").trim(),
             })).filter((g: LansengerGroupRow) => g.group_id));
         } catch {
+            if (!mountedRef.current) return;
             setLxGroups([]);
         } finally {
-            setLxGroupsLoading(false);
+            if (mountedRef.current) setLxGroupsLoading(false);
         }
     }, []);
 
@@ -458,50 +565,78 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                     await UpdateScheduledTask(id, { delivery });
                 }
             }
-            setDlgOpen(false); await loadTasks();
-        } catch (e) { setError(String(e)); }
-        setSaving(false);
+            if (!mountedRef.current) return;
+            setDlgOpen(false);
+            await loadTasks();
+        } catch (e) {
+            if (!mountedRef.current) return;
+            setError(String(e));
+        } finally {
+            if (mountedRef.current) setSaving(false);
+        }
     };
 
     const handleDelete = async (id: string) => {
         setError("");
-        try { await DeleteScheduledTask(id); setDeleteTarget(null); await loadTasks(); }
-        catch (e) { setError(String(e)); }
+        try {
+            await DeleteScheduledTask(id);
+            if (!mountedRef.current) return;
+            setDeleteTarget(null);
+            await loadTasks();
+        } catch (e) {
+            if (!mountedRef.current) return;
+            setError(String(e));
+        }
     };
 
     const handleTogglePause = async (task: ScheduledTask) => {
         setError("");
         try {
-            if (task.status === "active") { await PauseScheduledTask(task.id); }
-            else { await ResumeScheduledTask(task.id); }
+            if (task.status === "active") await PauseScheduledTask(task.id);
+            else await ResumeScheduledTask(task.id);
+            if (!mountedRef.current) return;
             await loadTasks();
-        } catch (e) { setError(String(e)); }
+        } catch (e) {
+            if (!mountedRef.current) return;
+            setError(String(e));
+        }
     };
 
     const handleTrigger = async (id: string) => {
-        setError(""); setTriggering(id);
+        setError("");
+        setTriggering(id);
         try {
             await TriggerScheduledTask(id);
             // Brief visual feedback then refresh — execution continues in background.
-            setTimeout(() => { setTriggering(null); loadTasks(); }, 600);
-        } catch (e) { setError(String(e)); setTriggering(null); }
+            if (triggerTimerRef.current !== null) clearTimeout(triggerTimerRef.current);
+            triggerTimerRef.current = setTimeout(() => {
+                triggerTimerRef.current = null;
+                if (!mountedRef.current) return;
+                setTriggering(null);
+                void loadTasks();
+            }, 600);
+        } catch (e) {
+            if (!mountedRef.current) return;
+            setError(String(e));
+            setTriggering(null);
+        }
     };
 
     return (
-        <div style={{ padding: 0 }}>
+        <div style={{ padding: 0, textAlign: "left" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                 <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
                     {tasks.length} {t("scheduled task(s)", "个定时任务")}
                 </span>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <button onClick={loadTasks} disabled={loading} style={{
+                    <button type="button" onClick={() => void loadTasks()} disabled={loading} style={{
                         ...remoteActionButtonStyle,
                         padding: "4px 12px", fontSize: "0.76rem",
                         opacity: loading ? 0.6 : 1,
                     }}>
                         {t("Refresh", "刷新")}
                     </button>
-                    <button onClick={openCreate} style={{
+                    <button type="button" onClick={openCreate} style={{
                         ...remotePrimaryActionButtonStyle,
                         padding: "4px 14px", fontSize: "0.76rem",
                     }}>
@@ -514,17 +649,30 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
             {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("Loading…", "加载中…")}</div>}
 
             {/* Task list */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "400px", overflowY: "auto" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "400px", overflowY: "auto" }}>
                 {tasks.length === 0 && !loading && (
-                    <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>
+                    <div style={{ fontSize: "0.78rem", color: colors.textMuted, padding: "16px 0" }}>
                         {t("No scheduled tasks. Create one above, or tell MaClaw in chat.", "暂无定时任务。可通过上方按钮创建，或在聊天中告诉 MaClaw 每天9点做XX")}
                     </div>
                 )}
-                {tasks.map(task => (
-                    <div key={task.id} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "8px 10px", background: colors.surface }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                {tasks.map(task => {
+                    const deliveryText = deliverySummary(task.delivery);
+                    const metaRows = buildTaskMetaRows(task, lang, t, deliveryText);
+                    const deliverySt = deliveryRunStatus(task);
+                    const deliveryColor = deliverySt === "none" ? "" : deliveryStatusColor(deliverySt);
+                    const lastResult = task.last_result ? String(task.last_result) : "";
+                    const lastResultPreview = lastResult.length > 400 ? `${lastResult.slice(0, 400)}…` : lastResult;
+
+                    return (
+                    <div key={task.id} style={{
+                        border: `1px solid ${colors.border}`,
+                        borderRadius: radius.md,
+                        padding: "10px 12px",
+                        background: colors.surface,
+                    }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
                             <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
                                     <span style={{
                                         fontSize: "0.66rem", fontWeight: 600, padding: "1px 6px",
                                         borderRadius: radius.sm, color: "#fff",
@@ -537,74 +685,96 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                                             border: `1px solid ${colors.primary}`,
                                         }}>{t("process", "处理型")}</span>
                                     )}
-                                    {(() => {
-                                        const st = deliveryRunStatus(task);
-                                        if (st === "none") return null;
-                                        const c = deliveryStatusColor(st);
-                                        return (
-                                            <span title={deliverySummary(task.delivery) || undefined} style={{
-                                                fontSize: "0.62rem", fontWeight: 600, padding: "1px 5px",
-                                                borderRadius: radius.sm, color: c,
-                                                border: `1px solid ${c}`,
-                                                background: st === "warn" || st === "fail" ? "transparent" : "transparent",
-                                            }}>{deliveryStatusLabel(st, lang)}</span>
-                                        );
-                                    })()}
+                                    {deliverySt !== "none" && (
+                                        <span title={deliveryText || undefined} style={{
+                                            fontSize: "0.62rem", fontWeight: 600, padding: "1px 5px",
+                                            borderRadius: radius.sm, color: deliveryColor,
+                                            border: `1px solid ${deliveryColor}`,
+                                        }}>{deliveryStatusLabel(deliverySt, lang)}</span>
+                                    )}
                                     <span style={{ fontSize: "0.8rem", fontWeight: 600, color: colors.text }}>{task.name}</span>
                                 </div>
-                                <div style={{ fontSize: "0.72rem", color: colors.textMuted, wordBreak: "break-word", maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap" }}>
-                                    Action: {task.action}
-                                    {"\n"}Schedule: {scheduleDesc(task, lang)}
-                                    {deliverySummary(task.delivery) && <>{"\n"}{t("Push", "推送")}: {deliverySummary(task.delivery)}</>}
-                                    {task.next_run_at && <>{"\n"}{t("Next", "下次")}: {fmtDate(task.next_run_at, lang)}</>}
-                                    {task.run_count > 0 && <>{" · "}{t("Runs", "已执行")}: {task.run_count}</>}
+                                <div
+                                    role="table"
+                                    aria-label={t("Task details", "任务详情")}
+                                    style={taskMetaTableStyle}
+                                >
+                                    {metaRows.map((row, index) => (
+                                        <div key={row.label} role="row" style={taskMetaRowBaseStyle}>
+                                            <div role="rowheader" style={taskMetaLabelStyle}>{row.label}</div>
+                                            <div role="cell" style={taskMetaValueStyleAt(index)}>
+                                                {row.value}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {lastResult ? (
+                                        <div role="row" style={taskMetaRowBaseStyle}>
+                                            <div role="rowheader" style={taskMetaLabelStyle}>{t("Last result", "最近结果")}</div>
+                                            <div
+                                                role="cell"
+                                                style={{
+                                                    ...taskMetaValueStyleAt(metaRows.length),
+                                                    maxHeight: 88,
+                                                    overflowY: "auto",
+                                                    whiteSpace: "pre-wrap",
+                                                    fontSize: "0.66rem",
+                                                    color: lastResult.includes("[投递警告]")
+                                                        ? "var(--theme-warning, #c9a227)"
+                                                        : colors.textSecondary,
+                                                }}
+                                            >
+                                                {lastResultPreview}
+                                            </div>
+                                        </div>
+                                    ) : null}
+                                    {task.last_error ? (
+                                        <div role="row" style={taskMetaRowBaseStyle}>
+                                            <div role="rowheader" style={taskMetaLabelStyle}>{t("Error", "错误")}</div>
+                                            <div
+                                                role="cell"
+                                                style={{
+                                                    ...taskMetaValueStyleAt(metaRows.length + (lastResult ? 1 : 0)),
+                                                    background: "color-mix(in srgb, var(--theme-danger) 8%, transparent)",
+                                                    color: colors.danger,
+                                                    whiteSpace: "pre-wrap",
+                                                }}
+                                            >
+                                                {task.last_error}
+                                            </div>
+                                        </div>
+                                    ) : null}
                                 </div>
-                                {task.last_result && (
-                                    <div style={{
-                                        fontSize: "0.66rem", marginTop: 4, color: colors.textSecondary,
-                                        maxHeight: 72, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                                        borderLeft: `2px solid ${String(task.last_result).includes("[投递警告]") ? "var(--theme-warning, #c9a227)" : colors.border}`,
-                                        paddingLeft: 6,
-                                    }}>
-                                        {t("Last result", "最近结果")}: {String(task.last_result).length > 400
-                                            ? `${String(task.last_result).slice(0, 400)}…`
-                                            : task.last_result}
-                                    </div>
-                                )}
-                                {task.last_error && (
-                                    <div style={{ fontSize: "0.68rem", color: colors.danger, marginTop: 2 }}>
-                                        {t("Error", "错误")}: {task.last_error}
-                                    </div>
-                                )}
                             </div>
-                            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                            <div style={{ display: "flex", gap: 4, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
                                 {task.status === "active" && (
-                                    <button onClick={() => handleTrigger(task.id)}
+                                    <button type="button" onClick={() => void handleTrigger(task.id)}
                                         disabled={triggering === task.id}
                                         title={t("Run Now", "立即运行")}
-                                        style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.primary, opacity: triggering === task.id ? 0.5 : 1 }}>
+                                        style={{ ...taskActionBtnBase, color: colors.primary, opacity: triggering === task.id ? 0.5 : 1 }}>
                                         {triggering === task.id ? "..." : "RUN"}
                                     </button>
                                 )}
                                 {task.status !== "expired" && (
-                                    <button onClick={() => handleTogglePause(task)}
+                                    <button type="button" onClick={() => void handleTogglePause(task)}
+                                        disabled={triggering === task.id}
                                         title={task.status === "active" ? t("Pause", "暂停") : t("Resume", "恢复")}
-                                        style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>
-                                        {task.status === "active" ? "PAUSE" : "RUN"}
+                                        style={{ ...taskActionBtnBase, color: colors.textSecondary, opacity: triggering === task.id ? 0.5 : 1 }}>
+                                        {task.status === "active" ? "PAUSE" : "RESUME"}
                                     </button>
                                 )}
-                                <button onClick={() => openEdit(task)} title={t("Edit", "编辑")}
-                                    style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>
+                                <button type="button" onClick={() => openEdit(task)} title={t("Edit", "编辑")}
+                                    style={{ ...taskActionBtnBase, color: colors.textSecondary }}>
                                     EDIT
                                 </button>
-                                <button onClick={() => setDeleteTarget(task.id)} title={t("Delete", "删除")}
-                                    style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger }}>
+                                <button type="button" onClick={() => setDeleteTarget(task.id)} title={t("Delete", "删除")}
+                                    style={{ ...taskActionBtnBase, color: colors.danger }}>
                                     DEL
                                 </button>
                             </div>
                         </div>
                     </div>
-                ))}
+                    );
+                })}
             </div>
 
             {/* Delete confirmation */}
@@ -616,13 +786,13 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                     <div
                         role="dialog"
                         aria-modal="true"
-                        style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                        style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", textAlign: "left", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
                         {...deleteDialogProps}
                     >
                         <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this scheduled task?", "确定删除这个定时任务？")}</p>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                            <button onClick={() => setDeleteTarget(null)} style={{ ...remoteActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Cancel", "取消")}</button>
-                            <button onClick={() => handleDelete(deleteTarget)} style={{ ...remoteDangerActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Delete", "删除")}</button>
+                            <button type="button" onClick={() => setDeleteTarget(null)} style={{ ...remoteActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Cancel", "取消")}</button>
+                            <button type="button" onClick={() => void handleDelete(deleteTarget)} style={{ ...remoteDangerActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Delete", "删除")}</button>
                         </div>
                     </div>
                 </div>
@@ -640,7 +810,7 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                         style={{
                         background: colors.surface, borderRadius: radius.lg, width: 440, maxWidth: "90vw",
                         maxHeight: "85vh", boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
-                        display: "flex", flexDirection: "column",
+                        display: "flex", flexDirection: "column", textAlign: "left",
                         WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
                     } as WailsNoDragStyle}
                         {...formDialogProps}
@@ -895,10 +1065,10 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
 
                         {/* Dialog footer — fixed */}
                         <div style={{ padding: "10px 18px 14px", flexShrink: 0, display: "flex", justifyContent: "flex-end", gap: 8, borderTop: `1px solid ${colors.border}` }}>
-                            <button onClick={() => setDlgOpen(false)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, color: colors.text, cursor: "pointer" }}>
+                            <button type="button" onClick={() => setDlgOpen(false)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, color: colors.text, cursor: "pointer" }}>
                                 {t("Cancel", "取消")}
                             </button>
-                            <button onClick={handleSave} disabled={saving || !fName.trim() || !fAction.trim()} style={{
+                            <button type="button" onClick={() => void handleSave()} disabled={saving || !fName.trim() || !fAction.trim()} style={{
                                 ...remotePrimaryActionButtonStyle,
                                 padding: "5px 14px", fontSize: "0.76rem",
                                 cursor: saving || !fName.trim() || !fAction.trim() ? "default" : "pointer",

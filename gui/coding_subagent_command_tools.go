@@ -127,11 +127,14 @@ func commandSegmentAllowsInformationalExitOne(segment []string) bool {
 		return false
 	}
 	cmd := commandNameBase(segment[0])
+	args := segment[1:]
 	switch cmd {
-	case "rg", "ripgrep", "grep", "findstr", "select-string":
+	case "rg", "ripgrep":
+		return true
+	case "grep", "findstr", "select-string":
 		return true
 	case "git":
-		return gitCommandSubcommand(segment[1:]) == "grep"
+		return gitCommandSubcommand(args) == "grep"
 	}
 	return false
 }

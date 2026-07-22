@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // shouldUseSharedAgentLoopLive mirrors shouldUseSharedAgentLoop but uses the
@@ -231,5 +235,219 @@ func TestSharedAgentLoopCallbacks_RouteTurn(t *testing.T) {
 	cfg, d, ok := cb.RouteTurn("hi")
 	if !ok || cfg.Model != "m1" || d.Source != "aux" || !strings.Contains(d.Reason, "shared") {
 		t.Fatalf("cfg=%+v d=%+v ok=%v", cfg, d, ok)
+	}
+}
+
+func TestSharedAgentLoopCallbacks_TransformConversationInjectsLiveSteer(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "desktop-user:shared-steer"
+	h.accumulateInjection(userID, buildGuideLaunchInjection("switch to SQLite"))
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: userID}
+	conversation := []interface{}{map[string]string{"role": "user", "content": "build a database"}}
+
+	next := cb.TransformConversation(conversation)
+	if len(next) != 2 {
+		t.Fatalf("conversation len = %d, want 2", len(next))
+	}
+	msg, ok := next[1].(map[string]string)
+	if !ok || msg["role"] != "user" || !strings.Contains(msg["content"], "switch to SQLite") {
+		t.Fatalf("unexpected shared steer injection: %#v", next[1])
+	}
+	if _, ok := h.pendingInjection.Load(userID); ok {
+		t.Fatal("shared loop transform should consume pending steer once")
+	}
+}
+
+func TestSharedAgentLoopCallbacks_DetectsReplanRevision(t *testing.T) {
+	ctx := NewLoopContext("shared-replan", 3, nil)
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, userID: "desktop-user:shared-replan", loopCtx: ctx}
+	cb.TransformConversation(nil)
+	_, finish, err := cb.LLMRequestContext(0)
+	if err != nil {
+		t.Fatalf("LLMRequestContext: %v", err)
+	}
+	defer finish(nil)
+	if cb.LLMReplanRequested() {
+		t.Fatal("unexpected replan before steering")
+	}
+	ctx.RequestReplan()
+	if !cb.LLMReplanRequested() {
+		t.Fatal("shared callback did not observe live-steer replan")
+	}
+}
+
+func TestSharedAgentLoopCallbacks_DetectsReplanBetweenTransformAndRequest(t *testing.T) {
+	ctx := NewLoopContext("shared-replan-race", 3, nil)
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, userID: "desktop-user:shared-replan-race", loopCtx: ctx}
+
+	cb.TransformConversation(nil)
+	ctx.RequestReplan() // steering lands after transform, before HTTP setup
+	_, finish, err := cb.LLMRequestContext(0)
+	if err != nil {
+		t.Fatalf("LLMRequestContext: %v", err)
+	}
+	defer finish(nil)
+	if !cb.LLMReplanRequested() {
+		t.Fatal("replan in transform/request race window was lost")
+	}
+}
+
+func TestSharedAgentLoopCallbacks_TransformConsumesExistingReplanRevision(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "desktop-user:shared-existing-replan"
+	ctx := NewLoopContext("shared-existing-replan", 3, nil)
+	h.accumulateInjection(userID, buildGuideLaunchInjection("prefer the existing API"))
+	ctx.RequestReplan()
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: userID, loopCtx: ctx}
+
+	next := cb.TransformConversation([]interface{}{map[string]string{"role": "user", "content": "refactor it"}})
+	if len(next) != 2 {
+		t.Fatalf("conversation len = %d, want injected steer", len(next))
+	}
+	if cb.LLMReplanRequested() {
+		t.Fatal("revision already consumed by transform should not cancel its own replacement request")
+	}
+}
+
+func TestSharedAgentLoopCallbacks_ForwardsNewLLMRound(t *testing.T) {
+	var calls int
+	cb := &sharedAgentLoopCallbacks{onNewRound: func() { calls++ }}
+	cb.OnLLMNewRound()
+	if calls != 1 {
+		t.Fatalf("new-round callback calls = %d, want 1", calls)
+	}
+}
+
+func TestSharedAgentLoopCallbacks_FinalizationRejectsLateAcceptedReplan(t *testing.T) {
+	ctx := NewLoopContext("shared-finalize-race", 3, nil)
+	cb := &sharedAgentLoopCallbacks{loopCtx: ctx}
+	cb.llmReplanRevision.Store(ctx.ReplanRevision())
+	ctx.RequestReplan()
+	if cb.TryFinalizeLLMResponse() {
+		t.Fatal("final response committed despite a newer accepted steer")
+	}
+	cb.llmReplanRevision.Store(ctx.ReplanRevision())
+	if !cb.TryFinalizeLLMResponse() {
+		t.Fatal("final response should commit after the steer revision is consumed")
+	}
+	if ctx.AcceptingReplans() {
+		t.Fatal("committed final response must close steer acceptance")
+	}
+}
+
+func TestSharedAgentLoopCallbacks_LiveSteerCancelsContextAwareTool(t *testing.T) {
+	registry := NewToolRegistry()
+	started := make(chan struct{})
+	if err := registry.Register(RegisteredTool{
+		Name: "blocking_shared_tool",
+		HandlerCtx: func(ctx context.Context, _ map[string]interface{}, _ coretool.ProgressCallback) string {
+			close(started)
+			<-ctx.Done()
+			return "handler observed cancellation"
+		},
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	ctx := NewLoopContext("shared-tool-replan", 3, nil)
+	h := &IMMessageHandler{registry: registry}
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: "desktop-user:shared-tool-replan", loopCtx: ctx}
+	cb.TransformConversation(nil)
+	resultC := make(chan agent.ToolExecutionResult, 1)
+	go func() { resultC <- cb.ExecuteToolStructured("blocking_shared_tool", `{}`) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("context-aware tool did not start")
+	}
+
+	ctx.RequestReplan()
+	select {
+	case result := <-resultC:
+		if result.Outcome != agent.ToolExecutionOutcomeError {
+			t.Fatalf("outcome = %q, want error; result=%q", result.Outcome, result.Result)
+		}
+		if !strings.Contains(result.Result, "tool execution interrupted") {
+			t.Fatalf("missing interruption result: %q", result.Result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live steer did not cancel context-aware tool")
+	}
+	if !cb.LLMReplanRequested() {
+		t.Fatal("cancelled tool did not leave shared loop ready to replan")
+	}
+}
+
+func TestSharedAgentLoopCallbacks_DoesNotStartToolWhenSteerWinsStartRace(t *testing.T) {
+	registry := NewToolRegistry()
+	var calls int
+	if err := registry.Register(RegisteredTool{
+		Name: "must_not_start_after_steer",
+		Handler: func(_ map[string]interface{}) string {
+			calls++
+			return "unexpected execution"
+		},
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	ctx := NewLoopContext("shared-tool-start-race", 3, nil)
+	cb := &sharedAgentLoopCallbacks{
+		handler: &IMMessageHandler{registry: registry},
+		userID:  "desktop-user:shared-tool-start-race",
+		loopCtx: ctx,
+	}
+	cb.TransformConversation(nil)
+	ctx.RequestReplan()
+	result := cb.ExecuteToolStructured("must_not_start_after_steer", `{}`)
+	if calls != 0 {
+		t.Fatalf("stale tool executed %d times", calls)
+	}
+	if result.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(result.Result, "tool execution interrupted") {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestSharedAgentLoopCallbacks_SteerSuppressesPostToolFileMaterialization(t *testing.T) {
+	registry := NewToolRegistry()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := registry.Register(RegisteredTool{
+		Name: "stale_file_payload",
+		Handler: func(_ map[string]interface{}) string {
+			close(started)
+			<-release
+			return `[file_base64|c3RhbGU=|stale.txt|im]`
+		},
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	ctx := NewLoopContext("shared-tool-postprocess-race", 3, nil)
+	cb := &sharedAgentLoopCallbacks{
+		handler: &IMMessageHandler{registry: registry},
+		userID:  "desktop-user:shared-tool-postprocess-race",
+		loopCtx: ctx,
+	}
+	cb.TransformConversation(nil)
+	resultC := make(chan agent.ToolExecutionResult, 1)
+	go func() { resultC <- cb.ExecuteToolStructured("stale_file_payload", `{}`) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	ctx.RequestReplan()
+	close(release)
+	select {
+	case result := <-resultC:
+		if result.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(result.Result, "tool execution interrupted") {
+			t.Fatalf("unexpected result: %+v", result)
+		}
+		if len(cb.deliveredPaths) != 0 || cb.filesForwarded != 0 {
+			t.Fatalf("stale file payload was materialized: paths=%v forwarded=%d", cb.deliveredPaths, cb.filesForwarded)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tool did not return after release")
 	}
 }

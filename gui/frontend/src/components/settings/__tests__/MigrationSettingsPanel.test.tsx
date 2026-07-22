@@ -40,6 +40,13 @@ const migrationInstance = (status: string, claimedBy = '') => ({
     export_claimed_by_machine_id: claimedBy,
     export_size: 2048,
     export_updated_at: '2026-06-20T12:00:00Z',
+    export_manifest: {
+        version: 'maclaw-gui-user-data-migration/v2',
+        config_schema_version: 'corelib.AppConfig/v1',
+        config_section_count: 24,
+        secret_count: 5,
+        memory_entries: 18,
+    },
 });
 
 const renderMigrationPanel = async (instances: unknown[]) => {
@@ -63,6 +70,23 @@ afterEach(() => {
 });
 
 describe('MigrationSettingsPanel', () => {
+    it('requires a strong password for new move-out packages but keeps legacy import passwords usable', async () => {
+        await renderMigrationPanel([migrationInstance('ready')]);
+
+        fireEvent.change(screen.getAllByLabelText('Password')[0], { target: { value: 'weak1' } });
+        fireEvent.change(screen.getByLabelText('Confirm Password'), { target: { value: 'weak1' } });
+        expect((screen.getByRole('button', { name: 'Start Move Out' }) as HTMLButtonElement).disabled).toBe(true);
+
+        const elevenRunes = 'abcdefghi1😀';
+        fireEvent.change(screen.getAllByLabelText('Password')[0], { target: { value: elevenRunes } });
+        fireEvent.change(screen.getByLabelText('Confirm Password'), { target: { value: elevenRunes } });
+        expect((screen.getByRole('button', { name: 'Start Move Out' }) as HTMLButtonElement).disabled).toBe(true);
+
+        fireEvent.change(importPasswordInput(), { target: { value: 'old1' } });
+        const importButton = screen.getByRole('button', { name: 'Start Move In' }) as HTMLButtonElement;
+        await waitFor(() => expect(importButton.disabled).toBe(false));
+    });
+
     it('does not load instances when Hub status already reports a configuration error', async () => {
         (UserDataMigrationStatus as any).mockResolvedValue({
             ...baseStatus,
@@ -79,12 +103,15 @@ describe('MigrationSettingsPanel', () => {
     it('starts a normal move-in for a ready package after password entry', async () => {
         await renderMigrationPanel([migrationInstance('ready')]);
 
-        fireEvent.change(importPasswordInput(), { target: { value: 'secret-pass' } });
+        expect(screen.getByText('Preflight')).toBeTruthy();
+        expect(screen.getByText(/24 settings, 5 secrets, and 18 memories/)).toBeTruthy();
+
+        fireEvent.change(importPasswordInput(), { target: { value: 'secret-pass-2026' } });
         const button = screen.getByRole('button', { name: 'Start Move In' }) as HTMLButtonElement;
         await waitFor(() => expect(button.disabled).toBe(false));
         fireEvent.click(button);
 
-        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'secret-pass'));
+        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'secret-pass-2026'));
         expect(StartUserDataMigrationCleanup).not.toHaveBeenCalled();
     });
 
@@ -107,13 +134,13 @@ describe('MigrationSettingsPanel', () => {
     it('shows move-out progress directly after the move-out action row', async () => {
         await renderMigrationPanel([migrationInstance('ready')]);
 
-        fireEvent.change(screen.getAllByLabelText('Password')[0], { target: { value: 'secret-pass' } });
-        fireEvent.change(screen.getByLabelText('Confirm Password'), { target: { value: 'secret-pass' } });
+        fireEvent.change(screen.getAllByLabelText('Password')[0], { target: { value: 'secret-pass-2026' } });
+        fireEvent.change(screen.getByLabelText('Confirm Password'), { target: { value: 'secret-pass-2026' } });
         const moveOutButton = screen.getByRole('button', { name: 'Start Move Out' }) as HTMLButtonElement;
         await waitFor(() => expect(moveOutButton.disabled).toBe(false));
         fireEvent.click(moveOutButton);
 
-        await waitFor(() => expect(StartUserDataMigrationExport).toHaveBeenCalledWith('secret-pass', 'secret-pass', true));
+        await waitFor(() => expect(StartUserDataMigrationExport).toHaveBeenCalledWith('secret-pass-2026', 'secret-pass-2026', true));
         const section = screen.getByRole('heading', { name: 'Move Out' }).closest('section') as HTMLElement;
         const progress = within(section).getByText('Move-out Progress').closest('.migration-progress-inline') as HTMLElement;
 
@@ -123,12 +150,12 @@ describe('MigrationSettingsPanel', () => {
     it('shows move-in progress directly after the move-in action row and before the package table', async () => {
         await renderMigrationPanel([migrationInstance('ready')]);
 
-        fireEvent.change(importPasswordInput(), { target: { value: 'secret-pass' } });
+        fireEvent.change(importPasswordInput(), { target: { value: 'secret-pass-2026' } });
         const moveInButton = screen.getByRole('button', { name: 'Start Move In' }) as HTMLButtonElement;
         await waitFor(() => expect(moveInButton.disabled).toBe(false));
         fireEvent.click(moveInButton);
 
-        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'secret-pass'));
+        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'secret-pass-2026'));
         const section = screen.getByRole('heading', { name: 'Move In' }).closest('section') as HTMLElement;
         const progress = within(section).getByText('Move-in Progress').closest('.migration-progress-inline') as HTMLElement;
         const table = section.querySelector('.migration-instance-table-wrap') as HTMLElement;
@@ -145,7 +172,7 @@ describe('MigrationSettingsPanel', () => {
         render(<MigrationSettingsPanel lang="zh-Hans" showToastMessage={vi.fn()} />);
         await screen.findByRole('heading', { name: '迁入' });
 
-        fireEvent.change(screen.getAllByLabelText('密码')[1], { target: { value: 'wrong-pass' } });
+        fireEvent.change(screen.getAllByLabelText('密码')[1], { target: { value: 'wrong-pass-2026' } });
         const button = screen.getByRole('button', { name: '开始迁入' }) as HTMLButtonElement;
         await waitFor(() => expect(button.disabled).toBe(false));
         fireEvent.click(button);
@@ -158,12 +185,12 @@ describe('MigrationSettingsPanel', () => {
         await renderMigrationPanel([migrationInstance('importing', 'machine-current')]);
 
         expect(screen.getByText(/already claimed by this machine/i)).toBeTruthy();
-        fireEvent.change(importPasswordInput(), { target: { value: 'resume-pass' } });
+        fireEvent.change(importPasswordInput(), { target: { value: 'resume-pass-2026' } });
         const button = screen.getByRole('button', { name: 'Resume Move In' }) as HTMLButtonElement;
         await waitFor(() => expect(button.disabled).toBe(false));
         fireEvent.click(button);
 
-        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'resume-pass'));
+        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'resume-pass-2026'));
         expect(StartUserDataMigrationCleanup).not.toHaveBeenCalled();
     });
 
@@ -177,12 +204,12 @@ describe('MigrationSettingsPanel', () => {
         });
         await renderMigrationPanel([migrationInstance('importing', 'machine-current')]);
 
-        fireEvent.change(importPasswordInput(), { target: { value: 'resume-pass' } });
+        fireEvent.change(importPasswordInput(), { target: { value: 'resume-pass-2026' } });
         const resumeButton = screen.getByRole('button', { name: 'Resume Move In' }) as HTMLButtonElement;
         await waitFor(() => expect(resumeButton.disabled).toBe(false));
         fireEvent.click(resumeButton);
 
-        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'resume-pass'));
+        await waitFor(() => expect(StartUserDataMigrationImport).toHaveBeenCalledWith('mig-source', 'resume-pass-2026'));
         const cleanupButton = await screen.findByRole('button', { name: 'Retry Cleanup' });
         expect(importPasswordInput().disabled).toBe(true);
         fireEvent.click(cleanupButton);

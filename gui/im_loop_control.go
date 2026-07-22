@@ -45,8 +45,11 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("no active session to cancel")
 	}
-	h.markTaskCancelledByUser(userID)
 	ctx.Cancel()
+	// Close steer acceptance before clearing pending bags. Otherwise a guide can
+	// slip in after the clear and be acknowledged against a loop that is already
+	// being cancelled.
+	h.markTaskCancelledByUser(userID)
 	select {
 	case <-ctx.DoneC:
 	case <-time.After(30 * time.Second):
@@ -147,12 +150,18 @@ func (h *IMMessageHandler) consumeCancelledTaskBoundary(userID string) bool {
 // is currently active (injection accepted), false otherwise.
 func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" || h.hasCancelledTaskBoundary(userID) || !h.hasActiveLoopForUser(userID) {
+	if text == "" || h.hasCancelledTaskBoundary(userID) {
 		return false
 	}
-	h.accumulateInjection(userID, "[用户补充] "+text)
-	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
-		ctx.RequestReplan()
+	// Queue under the same finalization lock used by TrySealReplans. This keeps
+	// the API contract honest: true means the current loop is guaranteed to see
+	// the supplement; a final answer that already committed returns false and no
+	// orphaned injection is left behind.
+	accepted := h.tryInjectActiveReplan(userID, func() {
+		h.accumulateInjection(userID, "[用户补充] "+text)
+	})
+	if !accepted {
+		return false
 	}
 	log.Printf("[inject-supplementary] user=%s text_len=%d", userID, len([]rune(text)))
 	return true
@@ -163,39 +172,172 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 // supplementary message, this guides replanning without becoming an independent
 // chat turn or causing the current session to finalize by itself.
 //
-// When a loop is actively running, the guide is injected as a system message
-// with replan instruction (re-evaluate current plan). When no loop is running
-// yet (message is in preflight/intent-classification), the guide is stored as
-// a pre-loop supplement and injected at iteration 0 as user-role context —
-// because there is no "current plan" to re-evaluate.
+// When a loop is actively running, the guide wrapper is stored in the pending
+// injection bag and requests a replan. The next iteration unwraps it into a
+// user-role live-steering message. During preflight it is stored separately and
+// injected with the same user-role semantics at iteration 0.
 func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
+	return h.InjectGuideReferenceWithID(userID, text, "", "")
+}
+
+type guideLaunchAcceptance struct {
+	done              chan struct{}
+	accepted          bool
+	acceptedAt        time.Time
+	text              string
+	expectedRequestID string
+}
+
+const guideLaunchAcceptanceTTL = 10 * time.Minute
+
+func (h *IMMessageHandler) pruneExpiredGuideLaunchAcceptances(now time.Time) {
+	h.acceptedGuideLaunchIDs.Range(func(key, value any) bool {
+		acceptance, ok := value.(*guideLaunchAcceptance)
+		if !ok || acceptance == nil {
+			return true
+		}
+		// accepted/acceptedAt are published-before close(done). Never inspect
+		// them while the owning injection is still resolving.
+		select {
+		case <-acceptance.done:
+			if acceptance.accepted && !acceptance.acceptedAt.IsZero() && now.Sub(acceptance.acceptedAt) > guideLaunchAcceptanceTTL {
+				h.acceptedGuideLaunchIDs.CompareAndDelete(key, acceptance)
+			}
+		default:
+		}
+		return true
+	})
+}
+
+func (h *IMMessageHandler) clearGuideLaunchAcceptancesForUser(userID string) {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return
+	}
+	prefix := strings.TrimSpace(userID) + "\x00"
+	h.acceptedGuideLaunchIDs.Range(func(key, value any) bool {
+		launchKey, ok := key.(string)
+		if !ok || !strings.HasPrefix(launchKey, prefix) {
+			return true
+		}
+		acceptance, _ := value.(*guideLaunchAcceptance)
+		// Never delete an operation that is still resolving: doing so would let a
+		// same-ID retry inject concurrently. Completed records are safe to forget
+		// when their owning conversation is explicitly reset.
+		if acceptance != nil {
+			select {
+			case <-acceptance.done:
+				h.acceptedGuideLaunchIDs.CompareAndDelete(key, acceptance)
+			default:
+			}
+		}
+		return true
+	})
+}
+
+// HasAcceptedGuideReference reports whether an identical durable GUI launch
+// was already accepted. It is read-only: callers can resolve a lost RPC reply
+// without risking another injection or replan request.
+func (h *IMMessageHandler) HasAcceptedGuideReference(userID, text, launchID string, expectedRequestIDs ...string) bool {
+	userID = strings.TrimSpace(userID)
 	text = strings.TrimSpace(text)
-	if text == "" || !h.canAcceptGuideReferenceForUser(userID) {
+	launchID = strings.TrimSpace(launchID)
+	expectedRequestID := ""
+	if len(expectedRequestIDs) > 0 {
+		expectedRequestID = strings.TrimSpace(expectedRequestIDs[0])
+	}
+	if userID == "" || text == "" || launchID == "" {
 		return false
 	}
-
-	if ctx := h.getSessionLoopCtx(userID); ctx != nil {
-		// Loop is running — use system injection + replan (existing behavior).
-		injection := buildGuideLaunchInjection(text)
-		if injection == "" {
-			return false
-		}
-		h.accumulateInjection(userID, injection)
-		ctx.RequestReplan()
-		log.Printf("[inject-guide-reference] user=%s text_len=%d mode=replan", userID, len([]rune(text)))
-	} else {
-		// Loop not yet started — store as pre-loop guide (user-role supplement).
-		h.accumulatePreLoopGuide(userID, text)
-		log.Printf("[inject-guide-reference] user=%s text_len=%d mode=pre-loop", userID, len([]rune(text)))
+	h.pruneExpiredGuideLaunchAcceptances(time.Now())
+	raw, ok := h.acceptedGuideLaunchIDs.Load(userID + "\x00" + launchID)
+	if !ok {
+		return false
 	}
+	acceptance, ok := raw.(*guideLaunchAcceptance)
+	if !ok || acceptance == nil || acceptance.text != text || acceptance.expectedRequestID != expectedRequestID {
+		return false
+	}
+	<-acceptance.done
+	return acceptance.accepted
+}
+
+// InjectGuideReferenceWithID is the idempotent form used by the GUI queue.
+// A repeated launchID for the same session reports success without appending a
+// second steering directive. IDs are retained only briefly to bound memory.
+func (h *IMMessageHandler) InjectGuideReferenceWithID(userID, text, launchID string, expectedRequestIDs ...string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	launchID = strings.TrimSpace(launchID)
+	expectedRequestID := ""
+	if len(expectedRequestIDs) > 0 {
+		expectedRequestID = strings.TrimSpace(expectedRequestIDs[0])
+	}
+	launchKey := ""
+	var launchAcceptance *guideLaunchAcceptance
+	if launchID != "" {
+		h.pruneExpiredGuideLaunchAcceptances(time.Now())
+		launchKey = strings.TrimSpace(userID) + "\x00" + launchID
+		launchAcceptance = &guideLaunchAcceptance{done: make(chan struct{}), text: text, expectedRequestID: expectedRequestID}
+		actual, loaded := h.acceptedGuideLaunchIDs.LoadOrStore(launchKey, launchAcceptance)
+		if loaded {
+			previous, ok := actual.(*guideLaunchAcceptance)
+			if !ok || previous == nil {
+				return false
+			}
+			// Idempotency only applies to an identical operation. Reusing a key
+			// with different text is a client bug or collision; never acknowledge
+			// the new instruction as if the old one had been delivered.
+			if previous.text != text || previous.expectedRequestID != expectedRequestID {
+				return false
+			}
+			<-previous.done
+			return previous.accepted
+		}
+	}
+	finishLaunch := func(accepted bool) {
+		if launchAcceptance == nil {
+			return
+		}
+		launchAcceptance.accepted = accepted
+		if accepted {
+			launchAcceptance.acceptedAt = time.Now()
+		}
+		close(launchAcceptance.done)
+		if !accepted {
+			h.acceptedGuideLaunchIDs.CompareAndDelete(launchKey, launchAcceptance)
+		}
+	}
+	injection := buildGuideLaunchInjection(text)
+	if injection == "" {
+		finishLaunch(false)
+		return false
+	}
+	accepted, preLoop := h.tryInjectGuideReference(userID, injection, expectedRequestID)
+	finishLaunch(accepted)
+	if !accepted {
+		return false
+	}
+	mode := "replan"
+	if preLoop {
+		mode = "pre-loop"
+	}
+	log.Printf("[inject-guide-reference] user=%s text_len=%d mode=%s", userID, len([]rune(text)), mode)
 	return true
 }
 
 const guideLaunchReferenceMarker = "[\u5f15\u5bfc\u53d1\u5c04\u53c2\u8003]"
 
+// pendingInjectionSeparator preserves the boundary and role of independently
+// accepted interruptions that arrive before the next transform. The previous
+// newline-only concatenation let one guide wrapper turn adjacent legacy/system
+// supplements into user-role content.
+const pendingInjectionSeparator = "\n\x1eMACLAW_PENDING_INJECTION\x1e\n"
+
 const guideLaunchReferenceInstructionPrefix = "The following text was fired by the user from the pre-input buffer via the guide-launch button."
 
-const guideLaunchReferenceInstruction = "The following text was fired by the user from the pre-input buffer via the guide-launch button. Treat it as live user steering for the next agent loop: re-evaluate the current plan, tool choice, and answer direction under this guidance before continuing. If it conflicts with stale reasoning or an in-flight tool decision, the fired guidance wins for the next step. In the next visible assistant response, weave in a concise acknowledgement that fits the current context: briefly refer to the user's point or quote the relevant phrase, make clear it is now guiding the work, then continue with the task. Vary the wording naturally and avoid formulaic canned acknowledgement. Do not treat it as an independent new chat turn, and do not finalize solely because this directive arrived. \u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\u3002"
+const guideLaunchReferenceInstruction = "The following text was fired by the user from the pre-input buffer via the guide-launch button. Treat it as live user steering for the next agent loop: re-evaluate the current plan, tool choice, and answer direction under this guidance before continuing. If it conflicts with stale reasoning or an in-flight tool decision, the fired guidance wins for the next step. Let the next visible assistant response naturally demonstrate that the user's point affected the work, responding to its substance when useful. Do not emit a canned receipt, mechanically announce that it was received or attached, or force a quotation or acknowledgement when that would sound unnatural. Do not treat it as an independent new chat turn, and do not finalize solely because this directive arrived. \u4e0d\u8981\u628a\u5b83\u5f53\u4f5c\u65b0\u7684\u7528\u6237\u56de\u5408\u3002"
 
 func buildGuideLaunchInjection(text string) string {
 	text = strings.TrimSpace(text)
@@ -250,10 +392,16 @@ func (h *IMMessageHandler) pendingGuideLaunchUserText(userID string) string {
 		return ""
 	}
 	text, _ := pending.(string)
-	if !isGuideLaunchReferenceInjection(text) {
-		return ""
+	var guides []string
+	for _, item := range splitPendingInjections(text) {
+		if !isGuideLaunchReferenceInjection(item) {
+			continue
+		}
+		if guide := stripInjectionPrefix(item); guide != "" {
+			guides = append(guides, guide)
+		}
 	}
-	return stripInjectionPrefix(text)
+	return strings.Join(guides, "\n")
 }
 
 func buildGuideSteeredEntryText(guideText, currentText string) string {
@@ -297,11 +445,25 @@ func (h *IMMessageHandler) accumulateInjection(userID, prefixedText string) {
 			continue
 		}
 		oldText, _ := existing.(string)
-		combined := oldText + "\n" + prefixedText
+		combined := oldText + pendingInjectionSeparator + prefixedText
 		if h.pendingInjection.CompareAndSwap(userID, existing, combined) {
 			return
 		}
 	}
+}
+
+func splitPendingInjections(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, pendingInjectionSeparator)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // preLoopGuideEntry holds guide-launch text with a creation timestamp.
@@ -353,11 +515,11 @@ func drainStatusEvents(ctx *LoopContext, conversation *[]interface{}, sendProgre
 	for {
 		select {
 		case evt := <-ctx.StatusC:
-			statusMsg := fmt.Sprintf("[鍚庡彴浜嬩欢] %s", evt.Message)
+			statusMsg := fmt.Sprintf("[Status update] %s", evt.Message)
 			*conversation = append(*conversation, map[string]string{
 				"role": "system", "content": statusMsg,
 			})
-			sendProgress(fmt.Sprintf("馃摗 %s", evt.Message))
+			sendProgress(evt.Message)
 		default:
 			return
 		}
@@ -422,12 +584,12 @@ func (h *IMMessageHandler) beginPureCodingRuntime(ctx *LoopContext, userID, user
 	if h == nil || ctx == nil {
 		return func() {}
 	}
-	h.promotePreLoopGuideToPendingInjection(userID)
 	platform := strings.TrimSpace(ctx.Platform)
 	if platform == "" {
 		platform = "desktop"
 	}
-	return h.beginAgentLoopRuntime(ctx, userID, userText, platform)
+	cleanup := h.beginAgentLoopRuntime(ctx, userID, userText, platform)
+	return cleanup
 }
 
 // promotePreLoopGuideToPendingInjection moves a pending pre-loop guide into the
@@ -483,6 +645,10 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	state.userText = userText
 	state.endedAt = time.Time{}
 	state.stateMu.Unlock()
+	// A guide can be accepted while the session mutex is held during preflight,
+	// before loopCtx is visible. Drain that pre-loop handoff only after publishing
+	// this exact consumer so accepted=true always leads to a reachable iteration.
+	h.promotePreLoopGuideToPendingInjection(userID)
 
 	// Write to legacy global fields (deprecated, kept for tool functions that
 	// don't have access to userID). Under concurrency these may be overwritten
@@ -512,11 +678,14 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 			state.loopCtx = nil
 			state.userText = ""
 			state.endedAt = time.Now()
-		}
-		state.stateMu.Unlock()
-		if isCurrentLoop {
+			// Keep cleanup inside the same publication lock. Otherwise a replacement
+			// loop can publish itself after loopCtx is cleared but before this call,
+			// and the old cleanup may delete the replacement's freshly accepted
+			// supplementary input. Guide entries happened to survive the filter, but
+			// ordinary live speech did not.
 			h.clearNonGuidePendingInjection(userID)
 		}
+		state.stateMu.Unlock()
 		// Clear legacy global fields only if they still point to THIS loop.
 		// Under concurrency another loop may have overwritten them — don't
 		// clobber the other loop's state.
@@ -555,25 +724,13 @@ func (h *IMMessageHandler) clearNonGuidePendingInjection(userID string) {
 }
 
 func trimToGuideLaunchReferenceInjection(text string) string {
-	if !strings.Contains(text, guideLaunchReferenceMarker) {
-		return ""
-	}
-	lines := strings.Split(text, "\n")
-	kept := make([]string, 0, len(lines))
-	for i := 0; i+1 < len(lines); i++ {
-		if isGuideLaunchReferenceHeader(lines, i) {
-			kept = append(kept, lines[i], lines[i+1])
-			i++
-			for i+1 < len(lines) && !isGuideLaunchReferenceHeader(lines, i+1) {
-				i++
-				if isLegacyInjectionPrefixLine(lines[i]) {
-					break
-				}
-				kept = append(kept, lines[i])
-			}
+	var guides []string
+	for _, pending := range splitPendingInjections(text) {
+		if isGuideLaunchReferenceInjection(pending) {
+			guides = append(guides, pending)
 		}
 	}
-	return strings.TrimSpace(strings.Join(kept, "\n"))
+	return strings.Join(guides, pendingInjectionSeparator)
 }
 
 func isLegacyInjectionPrefixLine(line string) bool {

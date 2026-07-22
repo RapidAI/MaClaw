@@ -1037,7 +1037,7 @@ func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 
 func toolAcceptsRuntimePlatformArg(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "manage_skill", "install_skill_hub", "search_and_install_skill", "screenshot", "tts":
+	case "manage_skill", "install_skill_hub", "search_and_install_skill", "screenshot", "tts", "manage_schedule", "im_message":
 		return true
 	default:
 		return false
@@ -1089,7 +1089,9 @@ func registeredToolExecutionResult(text string) toolExecutionResult {
 func registeredToolExecutionResultForContext(text string, ctx context.Context) toolExecutionResult {
 	if ctx != nil && ctx.Err() != nil {
 		if strings.TrimSpace(text) == "" {
-			text = ctx.Err().Error()
+			text = "tool execution interrupted: " + ctx.Err().Error()
+		} else {
+			text = "tool execution interrupted: " + ctx.Err().Error() + "; " + text
 		}
 		return toolExecutionResult{Text: text, Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}
 	}

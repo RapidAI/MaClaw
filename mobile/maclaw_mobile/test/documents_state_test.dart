@@ -66,6 +66,18 @@ class _RecordingNotificationService extends MobileNotificationService {
   }
 }
 
+class _FailingNotificationService extends MobileNotificationService {
+  @override
+  Future<void> showTaskCompleted({
+    required String title,
+    required String body,
+    String? payload,
+    int? notificationId,
+  }) async {
+    throw StateError('notification plugin unavailable');
+  }
+}
+
 class _UploadReadyApiClient extends ApiClient {
   _UploadReadyApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
 
@@ -172,6 +184,78 @@ class _RecordingDraftApiClient extends ApiClient {
     );
   }
 }
+
+class _CreateExportApiClient extends _RecordingDraftApiClient {
+  @override
+  Future<DocumentExportJob> exportDocument({
+    required String draftId,
+    required DocumentExportFormat format,
+  }) async {
+    return DocumentExportJob(
+      jobId: 'export-created',
+      draftId: draftId,
+      format: format,
+      status: 'queued',
+      downloadUrl: '',
+      createdAt: DateTime.utc(2026, 7, 2),
+    );
+  }
+}
+
+class _ReadyExportApiClient extends _RecordingDraftApiClient {
+  @override
+  Future<DocumentExportJob> exportDocument({
+    required String draftId,
+    required DocumentExportFormat format,
+  }) async {
+    return DocumentExportJob(
+      jobId: 'export-ready',
+      draftId: draftId,
+      format: format,
+      status: 'ready',
+      downloadUrl: '/api/mobile/documents/exports/export-ready/download',
+      createdAt: DateTime.utc(2026, 7, 2),
+    );
+  }
+}
+
+class _FailingDocumentCacheStore extends MobileLocalStore {
+  DocumentDraft? initialDraft;
+  bool failDraftSave = false;
+  bool failExportSave = false;
+  bool failUploadSave = false;
+
+  @override
+  Future<DocumentDraft?> loadLastDocumentDraft() async => initialDraft;
+
+  @override
+  Future<MobileDocumentUploadTask?> loadLastDocumentUploadTask() async => null;
+
+  @override
+  Future<String?> loadLastDocumentUploadPath() async => null;
+
+  @override
+  Future<DocumentExportJob?> loadLastDocumentExportJob() async => null;
+
+  @override
+  Future<void> saveLastDocumentDraft(DocumentDraft draft) async {
+    if (failDraftSave) throw StateError('draft cache unavailable');
+  }
+
+  @override
+  Future<void> saveLastDocumentExportJob(DocumentExportJob job) async {
+    if (failExportSave) throw StateError('export cache unavailable');
+  }
+
+  @override
+  Future<void> saveLastDocumentUploadTask(
+    MobileDocumentUploadTask task, {
+    String? sourcePath,
+  }) async {
+    if (failUploadSave) throw StateError('upload cache unavailable');
+  }
+}
+
 class _DownloadExportApiClient extends ApiClient {
   _DownloadExportApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
 
@@ -237,7 +321,8 @@ void main() {
       contains('Authorization: Bearer [REDACTED_TOKEN]'),
     );
     expect(client.updated.single.title, contains('token=[REDACTED_SECRET]'));
-    expect(client.updated.single.markdown, contains('secret=[REDACTED_SECRET]'));
+    expect(
+        client.updated.single.markdown, contains('secret=[REDACTED_SECRET]'));
     expect(client.updated.single.markdown, contains('[REDACTED_PRIVATE_KEY]'));
     final outbound = '${client.created.single.title}\n'
         '${client.created.single.content}\n'
@@ -249,6 +334,214 @@ void main() {
     expect(outbound, isNot(contains('raw-edit-token')));
     expect(outbound, isNot(contains('raw-edit-secret')));
     expect(outbound, isNot(contains('raw-edit-key')));
+  });
+
+  test('draft cache failure does not fail server draft creation', () async {
+    final store = _FailingDocumentCacheStore()..failDraftSave = true;
+    final client = _CreateExportApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(client),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    await container.read(documentsControllerProvider.notifier).createDraft(
+          title: 'incident report',
+          template: DocumentTemplate.report,
+          content: 'created on the server',
+        );
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.draft?.id, 'draft-created');
+    expect(state.valueOrNull?.operationError, isNull);
+  });
+
+  test('export cache failure does not fail server export creation', () async {
+    final store = _FailingDocumentCacheStore()..failExportSave = true;
+    final client = _CreateExportApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(client),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+    await container.read(documentsControllerProvider.notifier).createDraft(
+          title: 'incident report',
+          template: DocumentTemplate.report,
+        );
+
+    await container
+        .read(documentsControllerProvider.notifier)
+        .exportDraft(DocumentExportFormat.pdf);
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.exportJob?.jobId, 'export-created');
+    expect(state.valueOrNull?.operationError, isNull);
+  });
+
+  test('notification failure does not fail a ready server export', () async {
+    final store = _FailingDocumentCacheStore();
+    final client = _ReadyExportApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(client),
+        mobileNotificationServiceProvider.overrideWithValue(
+          _FailingNotificationService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+    await container.read(documentsControllerProvider.notifier).createDraft(
+          title: 'incident report',
+          template: DocumentTemplate.report,
+        );
+
+    await container
+        .read(documentsControllerProvider.notifier)
+        .exportDraft(DocumentExportFormat.pdf);
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.exportJob?.jobId, 'export-ready');
+    expect(state.valueOrNull?.operationError, isNull);
+  });
+
+  test('realtime export remains live when its local cache write fails',
+      () async {
+    final store = _FailingDocumentCacheStore()..failExportSave = true;
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(
+          _RecordingNotificationService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    const event = MobileRealtimeEvent(
+      type: 'document_task',
+      payload: {
+        'job_id': 'export-live-cache-failure',
+        'draft_id': 'draft-1',
+        'format': 'pdf',
+        'status': 'queued',
+        'download_url': '',
+        'created_at': '2026-07-22T00:00:00Z',
+      },
+    );
+    await container
+        .read(documentsControllerProvider.notifier)
+        .applyRealtimeEvent(event);
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.exportJob?.jobId, 'export-live-cache-failure');
+    expect(state.valueOrNull?.operationError, isNull);
+  });
+
+  test('realtime upload remains live when its local cache write fails',
+      () async {
+    final store = _FailingDocumentCacheStore()..failUploadSave = true;
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(
+          _RecordingNotificationService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    const event = MobileRealtimeEvent(
+      type: 'document_task',
+      payload: {
+        'task_id': 'upload-live-cache-failure',
+        'filename': 'incident.pdf',
+        'status': 'in_progress',
+      },
+    );
+    await container
+        .read(documentsControllerProvider.notifier)
+        .applyRealtimeEvent(event);
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.uploadTask?.taskId, 'upload-live-cache-failure');
+    expect(state.valueOrNull?.operationError, isNull);
+  });
+
+  test('draft edit remains successful when its local cache write fails',
+      () async {
+    final store = _FailingDocumentCacheStore()..failDraftSave = true;
+    final client = _CreateExportApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(client),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+    await container.read(documentsControllerProvider.notifier).createDraft(
+          title: 'incident report',
+          template: DocumentTemplate.report,
+          content: 'initial content',
+        );
+
+    await container.read(documentsControllerProvider.notifier).saveDraftEdits(
+          title: 'updated report',
+          markdown: 'updated content',
+        );
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.draft?.title, 'updated report');
+    expect(state.valueOrNull?.operationError, isNull);
+  });
+
+  test('document processing ignores cache and notification failures', () async {
+    final store = _FailingDocumentCacheStore()
+      ..initialDraft = DocumentDraft(
+        id: 'draft-process',
+        title: 'incident report',
+        template: DocumentTemplate.report,
+        markdown: 'initial content',
+        updatedAt: DateTime.utc(2026, 7, 22),
+      )
+      ..failDraftSave = true;
+    final client = _ProcessDraftApiClient();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(client),
+        mobileNotificationServiceProvider.overrideWithValue(
+          _FailingNotificationService(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(documentsControllerProvider.future);
+
+    await container
+        .read(documentsControllerProvider.notifier)
+        .processDraft('summarize');
+
+    final state = container.read(documentsControllerProvider);
+    expect(state.hasError, isFalse);
+    expect(state.valueOrNull?.draft?.id, 'draft-process-processed');
+    expect(state.valueOrNull?.operationError, isNull);
   });
   test(
     'document upload retry is available only for failed imports with source path',

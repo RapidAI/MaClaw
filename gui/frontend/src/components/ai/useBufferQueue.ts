@@ -18,14 +18,17 @@ export interface BufferEntry {
     attachments: AttachmentInfo[];
     createdAt: number;
     autoDrain?: boolean;
+    /** Try to attach this entry to the active turn immediately, Codex-style. */
+    steerWhenBusy?: boolean;
     sessionKey?: string;
 }
 
 export interface UseBufferQueueReturn {
     queue: BufferEntry[];
-    addEntry: (text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean }) => void;
-    removeEntry: (id: string) => void;
-    updateEntry: (id: string, text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean }) => void;
+    addEntry: (text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean; steerWhenBusy?: boolean }) => BufferEntry | null;
+    /** Remove an entry and report whether this call actually owned it. */
+    removeEntry: (id: string) => boolean;
+    updateEntry: (id: string, text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean; steerWhenBusy?: boolean }) => void;
     reorderEntry: (fromIndex: number, toIndex: number) => void;
     /** Extract a single entry from the queue by id, removing it. Returns null if not found. */
     extractEntry: (id: string) => BufferEntry | null;
@@ -45,7 +48,13 @@ export function _resetIdCounter(): void {
 }
 
 function nextBufferId(): string {
-    return `buf-${Date.now()}-${_bufIdCounter++}`;
+    // Date + a module counter can repeat after a renderer restart, which would
+    // make the backend's idempotency key mistake a new interjection for an old
+    // accepted one. Add per-entry entropy while keeping the readable prefix.
+    const entropy = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+    return `buf-${Date.now()}-${_bufIdCounter++}-${entropy}`;
 }
 
 function normalizePersistedAttachment(attachment: any): AttachmentInfo | null {
@@ -78,6 +87,11 @@ function normalizePersistedEntry(entry: any): BufferEntry | null {
         attachments,
         createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
         autoDrain: entry.autoDrain === false ? false : true,
+        // A steer attempt is tied to the in-memory turn that was active when
+        // the user pressed Enter. Never revive it after a reload and risk
+        // attaching stale text to an unrelated turn; restore it as a durable
+        // next-turn message instead.
+        steerWhenBusy: false,
         sessionKey: normalizeSessionKey(entry.sessionKey),
     };
 }
@@ -141,10 +155,6 @@ export function useBufferQueue(sessionKey = DEFAULT_BUFFER_QUEUE_SESSION_KEY): U
             return [];
         }
     });
-    // Skip persisting on the very first render — the lazy initializer already
-    // loaded from localStorage, so writing it back would be a no-op.
-    // Subsequent queue mutations set initializedRef via their callbacks.
-    const initializedRef = useRef(false);
     const queueRef = useRef(queue);
     const activeSessionKeyRef = useRef(activeSessionKey);
     activeSessionKeyRef.current = activeSessionKey;
@@ -155,14 +165,18 @@ export function useBufferQueue(sessionKey = DEFAULT_BUFFER_QUEUE_SESSION_KEY): U
     );
 
     const commitQueue = useCallback((next: BufferEntry[]) => {
-        initializedRef.current = true;
+        // Persist before publishing the render state. Queue acceptance/removal
+        // often follows an awaited backend handoff; deferring this write to an
+        // effect leaves a reload window where accepted input can be replayed or
+        // newly queued input can disappear.
+        persistQueue(next);
         queueRef.current = next;
         setQueue(next);
     }, []);
 
-    const addEntry = useCallback((text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean }) => {
+    const addEntry = useCallback((text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean; steerWhenBusy?: boolean }): BufferEntry | null => {
         // Reject whitespace-only text with no attachments
-        if (!text.trim() && attachments.length === 0) return;
+        if (!text.trim() && attachments.length === 0) return null;
 
         const entry: BufferEntry = {
             id: nextBufferId(),
@@ -170,24 +184,30 @@ export function useBufferQueue(sessionKey = DEFAULT_BUFFER_QUEUE_SESSION_KEY): U
             attachments,
             createdAt: Date.now(),
             autoDrain: options?.autoDrain === false ? false : options?.autoDrain || undefined,
+            steerWhenBusy: options?.steerWhenBusy === true || undefined,
             sessionKey: activeSessionKeyRef.current,
         };
         commitQueue([...queueRef.current, entry]);
+        return entry;
     }, [commitQueue]);
 
     const removeEntry = useCallback((id: string) => {
-        commitQueue(queueRef.current.filter(e => e.id !== id));
+		const current = queueRef.current;
+		if (!current.some(e => e.id === id)) return false;
+		commitQueue(current.filter(e => e.id !== id));
+		return true;
     }, [commitQueue]);
 
     const updateEntry = useCallback(
-        (id: string, text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean }) => {
+        (id: string, text: string, attachments: AttachmentInfo[], options?: { autoDrain?: boolean; steerWhenBusy?: boolean }) => {
             // If both empty, remove the entry
             if (!text.trim() && attachments.length === 0) {
                 commitQueue(queueRef.current.filter(e => e.id !== id));
                 return;
             }
             const autoDrain = options?.autoDrain === false ? false : options?.autoDrain || undefined;
-            commitQueue(queueRef.current.map(e => (e.id === id ? { ...e, text, attachments, autoDrain, sessionKey: normalizeSessionKey(e.sessionKey) } : e)));
+            const steerWhenBusy = options?.steerWhenBusy === true || undefined;
+            commitQueue(queueRef.current.map(e => (e.id === id ? { ...e, text, attachments, autoDrain, steerWhenBusy, sessionKey: normalizeSessionKey(e.sessionKey) } : e)));
         },
         [commitQueue],
     );
@@ -244,17 +264,6 @@ export function useBufferQueue(sessionKey = DEFAULT_BUFFER_QUEUE_SESSION_KEY): U
             return [];
         }
     }, [commitQueue]);
-
-    // Persist queue to localStorage after every mutation.
-    // Skip the first run (mount) — the lazy initializer already loaded from
-    // localStorage, writing it back would be a no-op.
-    useEffect(() => {
-        if (!initializedRef.current) {
-            initializedRef.current = true;
-            return;
-        }
-        persistQueue(queue);
-    }, [queue]);
 
     useEffect(() => {
         const handler = (event: Event) => {

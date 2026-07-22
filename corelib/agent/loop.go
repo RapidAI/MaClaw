@@ -102,6 +102,28 @@ type LLMRequestContextProvider interface {
 	LLMRequestContext(iteration int) (context.Context, func(error), error)
 }
 
+// LLMReplanAware is implemented by hosts that can cancel only the current LLM
+// operation to inject fresh user steering. It is deliberately distinct from
+// ShouldStop: a replan continues the loop, while cancellation ends it.
+type LLMReplanAware interface {
+	LLMReplanRequested() bool
+}
+
+// LLMRoundNotifier is an optional host callback invoked immediately before
+// every LLM request after the first, including a live-steer replacement.
+type LLMRoundNotifier interface {
+	OnLLMNewRound()
+}
+
+// LLMFinalizationGuard lets a host atomically arbitrate final response commit
+// against live steering acceptance. False means a steer won the race and the
+// response must be discarded and regenerated from the transformed conversation.
+type LLMFinalizationGuard interface {
+	TryFinalizeLLMResponse() bool
+}
+
+const maxFreeReplansPerLoop = 64
+
 // ToolAuthorizer is an optional host callback implemented when tool execution
 // must be constrained by an outer policy, such as a workflow phase.
 type ToolAuthorizer interface {
@@ -355,6 +377,8 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		},
 		MaxParallel: 3,
 	}
+	llmRequestAttempts := 0
+	freeReplans := 0
 
 	for iteration := 0; iteration < maxIter; iteration++ {
 		if cb.ShouldStop() {
@@ -381,6 +405,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 
 		// Call LLM with tools via corelib/llm (streaming for real-time display).
+		if llmRequestAttempts > 0 {
+			if notifier, ok := cb.(LLMRoundNotifier); ok {
+				notifier.OnLLMNewRound()
+			}
+		}
+		llmRequestAttempts++
 		ctx, finishLLMRequest, ctxErr := llmRequestContextForLoop(cb, iteration)
 		if ctxErr != nil {
 			return finish(LoopResult{Error: fmt.Sprintf("LLM request context failed: %v", ctxErr), Iterations: iteration, ToolCalls: totalToolCalls})
@@ -480,6 +510,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 
 		resp, err := doLLMRequestWithToolsStream(ctx, aggCFG, reqConversation, tools, httpClient, cb.OnToken)
+		// A host may cancel just this request because new live user steering
+		// arrived. Finish the operation before continuing; the next iteration's
+		// TransformConversation call will append the steering message.
+		if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+			finishLLMRequest(err)
+			// Steering replaces this interrupted model attempt; it must not spend
+			// one of the task's reasoning iterations (especially when maxIter=1).
+			freeReplans++
+			if freeReplans <= maxFreeReplansPerLoop {
+				iteration--
+			}
+			continue
+		}
 		if err != nil {
 			// Retry with exponential backoff for transient errors (503, timeout, network).
 			// SubAgent tasks should be resilient to brief API outages.
@@ -487,12 +530,50 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			for retryAttempt := 1; retryAttempt <= maxLLMRetries && shouldRetrySimpleLLMError(err); retryAttempt++ {
 				backoff := time.Duration(retryAttempt*2) * time.Second
 				log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", retryAttempt, maxLLMRetries, backoff, err)
-				time.Sleep(backoff)
+				// A live steer can arrive while the loop is backing off from a
+				// transient provider error. Poll the replan revision so the user does
+				// not wait 2-6 seconds and then watch stale context retry first.
+				deadline := time.NewTimer(backoff)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				interruptedForReplan := false
+			waitBackoff:
+				for {
+					select {
+					case <-deadline.C:
+						break waitBackoff
+					case <-ticker.C:
+						if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+							interruptedForReplan = true
+							break waitBackoff
+						}
+						if cb.ShouldStop() {
+							break waitBackoff
+						}
+					}
+				}
+				if !deadline.Stop() {
+					select {
+					case <-deadline.C:
+					default:
+					}
+				}
+				ticker.Stop()
+				if interruptedForReplan {
+					break
+				}
 				if cb.ShouldStop() {
 					finishLLMRequest(err)
 					return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
 				}
 				resp, err = doLLMRequestWithTools(ctx, aggCFG, reqConversation, tools, httpClient)
+			}
+			if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+				finishLLMRequest(err)
+				freeReplans++
+				if freeReplans <= maxFreeReplansPerLoop {
+					iteration--
+				}
+				continue
 			}
 			finishLLMRequest(err)
 			if err != nil {
@@ -500,6 +581,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 		} else {
 			finishLLMRequest(nil)
+		}
+		// Cover steering that landed after the HTTP request completed but before
+		// its response was committed as the visible answer.
+		if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+			freeReplans++
+			if freeReplans <= maxFreeReplansPerLoop {
+				iteration--
+			}
+			continue
 		}
 		// Account aggregator usage with aggregator config (sticky model → force after).
 		if resp != nil && resp.Usage != nil {
@@ -625,6 +715,20 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			continue
 		}
 
+		// The model may have completed a tool decision just as live steering
+		// arrived. Re-check before committing that assistant/tool-call turn or
+		// executing any side effect; the user's newer direction must get a chance
+		// to replace stale tool arguments.
+		if len(choice.Message.ToolCalls) > 0 {
+			if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+				freeReplans++
+				if freeReplans <= maxFreeReplansPerLoop {
+					iteration--
+				}
+				continue
+			}
+		}
+
 		// Track consecutive empty responses for hard exit.
 		if strings.TrimSpace(content) == "" && len(choice.Message.ToolCalls) == 0 {
 			consecutiveEmpty++
@@ -642,8 +746,40 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				})
 			}
 
-			// Brief pause before retry to avoid rapid-fire empty requests.
-			time.Sleep(time.Duration(consecutiveEmpty) * time.Second)
+			// Brief pause before retry to avoid rapid-fire empty requests. Keep it
+			// steer-aware so a user correction is not stuck behind a 1-5s sleep.
+			emptyBackoff := time.NewTimer(time.Duration(consecutiveEmpty) * time.Second)
+			emptyTicker := time.NewTicker(50 * time.Millisecond)
+			emptyReplan := false
+		emptyWait:
+			for {
+				select {
+				case <-emptyBackoff.C:
+					break emptyWait
+				case <-emptyTicker.C:
+					if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+						emptyReplan = true
+						break emptyWait
+					}
+					if cb.ShouldStop() {
+						break emptyWait
+					}
+				}
+			}
+			if !emptyBackoff.Stop() {
+				select {
+				case <-emptyBackoff.C:
+				default:
+				}
+			}
+			emptyTicker.Stop()
+			if emptyReplan {
+				freeReplans++
+				if freeReplans <= maxFreeReplansPerLoop {
+					iteration--
+				}
+				continue
+			}
 			if cb.ShouldStop() {
 				return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
 			}
@@ -674,6 +810,21 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			lastNonEmptyContent = content
 		}
 
+		// Before committing a final text response, atomically close live-steer
+		// acceptance. This covers the narrow gap after the earlier revision check:
+		// an accepted interruption either forces regeneration or is rejected by
+		// the host and remains queued for the next normal turn.
+		hasToolCalls := len(choice.Message.ToolCalls) > 0
+		if !hasToolCalls {
+			if guard, ok := cb.(LLMFinalizationGuard); ok && !guard.TryFinalizeLLMResponse() {
+				freeReplans++
+				if freeReplans <= maxFreeReplansPerLoop {
+					iteration--
+				}
+				continue
+			}
+		}
+
 		// Build assistant message for conversation history.
 		assistantMsg := map[string]interface{}{
 			"role":    "assistant",
@@ -691,7 +842,6 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if len(choice.Message.ToolCalls) > 0 {
 			assistantMsg["tool_calls"] = choice.Message.ToolCalls
 		}
-		hasToolCalls := len(choice.Message.ToolCalls) > 0
 		conversation = append(conversation, assistantMsg)
 		historyDelta = append(historyDelta, ConversationEntry{
 			Role:             "assistant",
@@ -738,6 +888,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				})
 			}
 			execResult, syntheticFailure := validateLoopToolArguments(tc.Function.Name, argsJSON)
+			// Once live steering has invalidated this assistant tool batch, preserve
+			// protocol pairing for every remaining tool_call but do not execute its
+			// stale side effect. The next outer iteration injects the new user turn.
+			if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+				execResult = ToolExecutionResult{
+					Result:  "Tool call skipped because newer user guidance arrived before execution.",
+					Outcome: ToolExecutionOutcomeError,
+				}
+				syntheticFailure = true
+			}
 			if !syntheticFailure {
 				var policyRejected bool
 				execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
@@ -843,6 +1003,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				ToolName:    tc.Function.Name,
 				ToolOutcome: string(execResult.Outcome),
 			})
+		}
+
+		// A context-aware tool may have been cancelled by steering while it was
+		// running. All tool_call ids above now have paired results, so replan from
+		// the updated conversation without charging a normal reasoning iteration.
+		if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+			freeReplans++
+			if freeReplans <= maxFreeReplansPerLoop {
+				iteration--
+			}
+			continue
 		}
 
 		// Consecutive same-tool failure guidance: inject AFTER all tool results
@@ -1353,6 +1524,12 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 		resp, err := llm.DoAnthropicRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
 		flushRolePrefixFilter(err)
 		if err != nil {
+			// A live-steer replan deliberately cancels this operation. Do not
+			// immediately issue a fallback request with the same cancelled context;
+			// the outer loop will inject the steering and start a fresh request.
+			if ctx.Err() != nil {
+				return resp, err
+			}
 			// Fallback to non-streaming on error.
 			log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)
 			return llm.DoAnthropicRequest(ctx, cfg, conversation, tools, httpClient)
@@ -1362,6 +1539,9 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 	resp, err := llm.DoOpenAIRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
 	flushRolePrefixFilter(err)
 	if err != nil {
+		if ctx.Err() != nil {
+			return resp, err
+		}
 		log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)
 		return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, httpClient)
 	}

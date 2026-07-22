@@ -183,6 +183,99 @@ func TestGroupDiscussionSendInvitationReturnsJoinFailureForTrustedInvite(t *test
 	}
 }
 
+func TestGroupDiscussionStartAuthorizedConsultationReturnsPartialSuccess(t *testing.T) {
+	inviteHits := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations":
+			_ = json.NewEncoder(w).Encode(a2a.ConsultationCreateResponse{
+				Discussion: a2a.HubDiscussionSummary{ID: "disc-created", Status: "open"},
+				Request:    a2a.GroupConsultationRequest{ID: "request-created"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/experts":
+			_ = json.NewEncoder(w).Encode(a2a.ExpertListResponse{Experts: []a2a.GroupProfile{
+				{AgentID: "expert-fail"},
+				{AgentID: "expert-ok"},
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-created/invites":
+			var invitation a2a.GroupInvitation
+			if err := json.NewDecoder(r.Body).Decode(&invitation); err != nil {
+				t.Fatalf("decode invitation: %v", err)
+			}
+			inviteHits = append(inviteHits, invitation.ToID)
+			if invitation.ToID == "expert-fail" {
+				http.Error(w, "invite rejected", http.StatusBadGateway)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"invite_id": "invite-ok"})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{
+		RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1",
+		GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true},
+	}}
+	result, err := app.GroupDiscussionStartAuthorizedConsultation(GroupDiscussionAuthorizedStartRequest{
+		Request:    a2a.GroupConsultationRequest{Question: "Investigate the incident"},
+		InviteeIDs: []string{"expert-fail", "expert-ok"},
+	})
+	if err != nil {
+		t.Fatalf("GroupDiscussionStartAuthorizedConsultation: %v", err)
+	}
+	if result.Consultation.Discussion.ID != "disc-created" || !result.Partial {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.InviteIDs) != 1 || result.InviteIDs[0] != "invite-ok" {
+		t.Fatalf("invite ids = %v", result.InviteIDs)
+	}
+	if len(result.InviteErrors) != 1 || result.InviteErrors[0].InviteeID != "expert-fail" {
+		t.Fatalf("invite errors = %+v", result.InviteErrors)
+	}
+	if len(inviteHits) != 2 || inviteHits[0] != "expert-fail" || inviteHits[1] != "expert-ok" {
+		t.Fatalf("invite hits = %v", inviteHits)
+	}
+}
+
+func TestGroupDiscussionStartAuthorizedConsultationTreatsMissingInviteIDAsPartial(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations":
+			_ = json.NewEncoder(w).Encode(a2a.ConsultationCreateResponse{
+				Discussion: a2a.HubDiscussionSummary{ID: "disc-created", Status: "open"},
+				Request:    a2a.GroupConsultationRequest{ID: "request-created"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/experts":
+			_ = json.NewEncoder(w).Encode(a2a.ExpertListResponse{})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/a2a/consultations/disc-created/invites":
+			_ = json.NewEncoder(w).Encode(map[string]string{})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{
+		RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1",
+		GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: true},
+	}}
+	result, err := app.GroupDiscussionStartAuthorizedConsultation(GroupDiscussionAuthorizedStartRequest{
+		Request:    a2a.GroupConsultationRequest{Question: "Investigate the incident"},
+		InviteeIDs: []string{"expert-empty"},
+	})
+	if err != nil {
+		t.Fatalf("GroupDiscussionStartAuthorizedConsultation: %v", err)
+	}
+	if result.Consultation.Discussion.ID != "disc-created" || !result.Partial {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.InviteIDs) != 0 || len(result.InviteErrors) != 1 || result.InviteErrors[0].InviteeID != "expert-empty" {
+		t.Fatalf("invite ids=%v errors=%+v", result.InviteIDs, result.InviteErrors)
+	}
+}
+
 func TestGroupDiscussionGetConsultationDetailFallsBackToLocalCacheWhenDisabled(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if err := app.SaveConfig(corelib.AppConfig{GroupDiscussion: corelib.GroupDiscussionConfig{Enabled: false}}); err != nil {

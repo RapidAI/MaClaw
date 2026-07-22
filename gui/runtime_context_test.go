@@ -352,6 +352,20 @@ func TestRegisteredToolRuntimePlatformMetadataCarriesPlatform(t *testing.T) {
 	}
 }
 
+func TestBuiltinIMManagementToolsCarryRuntimePlatform(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}, registry: NewToolRegistry()}
+	registerBuiltinTools(handler.registry, handler)
+	for _, name := range []string{"manage_schedule", "im_message"} {
+		registered, ok := handler.registry.Get(name)
+		if !ok || registered == nil {
+			t.Fatalf("builtin %q is not registered", name)
+		}
+		if !registered.RuntimePlatformArg {
+			t.Fatalf("builtin %q must accept runtime platform metadata", name)
+		}
+	}
+}
+
 func TestOwnerAwareToolEmptyRuntimeOwnerFailsClosedBeforeHandler(t *testing.T) {
 	handler := &IMMessageHandler{registry: NewToolRegistry()}
 	called := false

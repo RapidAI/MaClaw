@@ -332,6 +332,10 @@ func (h *IMMessageHandler) ensureCodingWorkflowRemoteSSHSession(userID string, s
 // Returns the session ID on success; on failure returns "" plus a short
 // human-readable reason suitable for user-facing error messages.
 func (h *IMMessageHandler) findOrCreateSSHSessionWithAuth(user, host string, port int, password, keyPath, label string) (string, string) {
+	return h.findOrCreateSSHSessionWithPinnedAuth(user, host, port, password, keyPath, label, "")
+}
+
+func (h *IMMessageHandler) findOrCreateSSHSessionWithPinnedAuth(user, host string, port int, password, keyPath, label, hostKeyFingerprint string) (string, string) {
 	if h == nil {
 		return "", ""
 	}
@@ -356,6 +360,9 @@ func (h *IMMessageHandler) findOrCreateSSHSessionWithAuth(user, host string, por
 	}
 	if label != "" {
 		args["label"] = label
+	}
+	if hostKeyFingerprint != "" {
+		args["host_key_fingerprint"] = hostKeyFingerprint
 	}
 	result := h.sshConnect(args)
 	if match := extractSSHSessionIDFromConnectResult(result); match != "" {

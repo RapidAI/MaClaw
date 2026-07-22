@@ -217,6 +217,40 @@ func TestCodingSubAgentFullEnvIncludesExtraToolsInBuildTools(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentLeanUnknownDependencyGetsResearchTools(t *testing.T) {
+	sa := &CodingSubAgent{projectPath: t.TempDir()}
+	cb := &codingSubAgentCallbacks{
+		subagent: sa,
+		task: &TaskItem{Title: "fix unknown vendor SDK error after upgrade",
+			Description: "third-party API compatibility failure"},
+	}
+	names := make([]string, 0)
+	for _, def := range cb.BuildTools("fix") {
+		fn, _ := def["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		names = append(names, name)
+	}
+	for _, want := range []string{"web_search", "web_fetch"} {
+		if !containsString(names, want) {
+			t.Fatalf("lean unknown-dependency task missing %q; got %v", want, names)
+		}
+	}
+}
+
+func TestCodingSubAgentLeanGenericBugKeepsResearchToolsAfterCaching(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Title: "fix request failure", Description: "request returns the wrong result"},
+	}
+	first := codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("start diagnosis"))
+	second := codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("code navigation discovered AcmeSDK v2"))
+	for _, want := range []string{"web_search", "web_fetch"} {
+		if !containsStringForTest(first, want) || !containsStringForTest(second, want) {
+			t.Fatalf("generic bug must retain %q across cached tool turns; first=%v second=%v", want, first, second)
+		}
+	}
+}
+
 func TestRearmStickyLocalCodingEnvironment(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := "desktop-user:D:/tasks/x"
@@ -2331,6 +2365,13 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 	}
 
 	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git status --short", Succeeded: false, Summary: "EXIT: 128", seq: 2},
+	}, 1)
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "EXIT: 128") {
+		t.Fatalf("auditable but ambiguous EXIT:128 must not claim non-git skip, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
 		{Command: "git status --short", Succeeded: false, Summary: "fatal: not a git repository", seq: 2},
 		{Command: "git diff --stat", Succeeded: false, Summary: "fatal: bad revision 'HEAD'", seq: 3},
 	}, 1)
@@ -2346,6 +2387,7 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 		{name: "empty diff", command: "git diff", summary: ""},
 		{name: "exit marker only", command: "git diff --stat", summary: "EXIT: 0"},
 		{name: "status clean", command: "git status", summary: "On branch main\nnothing to commit, working tree clean\nEXIT: 0"},
+		{name: "clean remote wrapper", command: "git status --short", summary: "[ssh_root@host:22_1] 状态: running\n$ cd '/repo'\n__maclaw_cd_status=$?\nif [ $__maclaw_cd_status -ne 0 ]; then\n  printf '\\nEXIT: %s\\n' \"$__maclaw_cd_status\"\nelse\n  sh -lc 'git status --short'\n  __maclaw_cmd_status=$?\nfi\nEXIT: 0\nroot@host:/repo#"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status, summary := summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
@@ -2355,6 +2397,54 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 				t.Fatalf("clean remote diff self-check should be suspicious, got (%q, %q)", status, summary)
 			}
 		})
+	}
+
+	if remoteDiffSelfCheckLooksClean(CodingSubAgentCommandResult{
+		Command: "git status --short",
+		Summary: "warning: unable to access optional excludes file\nEXIT: 0",
+	}) {
+		t.Fatal("warning-only status output must not be silently classified as a clean worktree")
+	}
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git status --short", Succeeded: true, Summary: "warning: unable to access optional excludes file\nEXIT: 0", seq: 2},
+	}, 1)
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "未返回可识别的文件改动") {
+		t.Fatalf("warning-only status must not satisfy diff evidence, got (%q, %q)", status, summary)
+	}
+	for _, line := range []string{" M src/main.cpp", "?? new file.txt", "R  old.cpp -> new.cpp", "!! ignored.tmp"} {
+		if !remoteGitStatusPorcelainLine(line, false) {
+			t.Fatalf("expected porcelain change line to be recognized: %q", line)
+		}
+	}
+	for _, line := range []string{"warning: something", "On branch main", "", " M"} {
+		if remoteGitStatusPorcelainLine(line, false) {
+			t.Fatalf("non-porcelain line must not be recognized: %q", line)
+		}
+	}
+	if !remoteGitStatusPorcelainLine("M src/main.cpp", true) || remoteGitStatusPorcelainLine("M src/main.cpp", false) {
+		t.Fatal("one-column-loss compatibility must apply only to the first meaningful line")
+	}
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{Command: "git status --short", Succeeded: true, Summary: "warning: note\nM misleading text\nEXIT: 0", seq: 2},
+	}, 1)
+	if status != codingSubAgentQualityFailed || !strings.Contains(summary, "未返回可识别的文件改动") {
+		t.Fatalf("later one-column text must not masquerade as trimmed porcelain, got (%q, %q)", status, summary)
+	}
+	for _, tc := range []struct {
+		command string
+		status  bool
+		diff    bool
+	}{
+		{command: "git status --short", status: true},
+		{command: "cd /repo && git diff --stat", diff: true},
+		{command: "git --no-pager status --short", status: true},
+		{command: "echo git status", status: false},
+		{command: "git log --format='git status'", status: false},
+	} {
+		hasStatus, hasDiff := remoteDiffSelfCheckProbeKinds(tc.command)
+		if hasStatus != tc.status || hasDiff != tc.diff {
+			t.Fatalf("remoteDiffSelfCheckProbeKinds(%q) = (%v,%v), want (%v,%v)", tc.command, hasStatus, hasDiff, tc.status, tc.diff)
+		}
 	}
 
 	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
@@ -2408,6 +2498,12 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 }
 
 func TestRemoteDiffSelfCheckCommandClassifier(t *testing.T) {
+	if !isAuditableRemoteDiffSelfCheckCommand(remotePostEditDiffSelfCheckCommand) {
+		t.Fatalf("automatic post-edit command must remain auditable: %q", remotePostEditDiffSelfCheckCommand)
+	}
+	if !isSubAgentDiffSelfCheckContentCommand(remotePostEditDiffSelfCheckCommand) {
+		t.Fatalf("automatic post-edit command must provide status/diff content evidence: %q", remotePostEditDiffSelfCheckCommand)
+	}
 	positives := []string{
 		"git diff",
 		"git diff --stat",
@@ -2463,6 +2559,77 @@ func TestRemoteDiffSelfCheckRequiresAuditableExitStatus(t *testing.T) {
 	}, 1)
 	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "git diff/status") {
 		t.Fatalf("masked git self-check must not pass diff evidence, got (%q, %q)", status, summary)
+	}
+
+	// A legacy semicolon chain remains unusable as successful diff evidence, but
+	// its explicit Git fatal is conclusive evidence that the directory is non-Git.
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{
+			Command:   `cd /repo && git status --short; echo "---"; git diff --stat`,
+			Succeeded: false,
+			Summary:   "fatal: not a git repository (or any of the parent directories): .git\n---\nNot a git repository\nEXIT: 129",
+			seq:       2,
+		},
+	}, 1)
+	if status != codingSubAgentQualityNotNeeded || !strings.Contains(summary, "Git") {
+		t.Fatalf("explicit non-git diagnostic from legacy self-check should skip softly, got (%q, %q)", status, summary)
+	}
+	if !remoteDiffSelfCheckHasExplicitNonGitFatal("fatal：不是 Git 仓库\nEXIT: 128") {
+		t.Fatal("localized Git fatal should count as explicit non-git evidence")
+	}
+	if isLegacyRemoteDiffSelfCheckProbeCommand(`git log --oneline`) {
+		t.Fatal("legacy compatibility must require an actual git status/diff content probe")
+	}
+	if !isLegacyRemoteDiffSelfCheckProbeCommand(`git status --short; echo "---"; git log --oneline -5`) {
+		t.Fatal("legacy status plus optional log probe should remain compatible")
+	}
+
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{
+			Command:   `git status --short; git diff --stat`,
+			Succeeded: false,
+			Summary:   "fatal: bad revision 'HEAD'\nEXIT: 128",
+			seq:       2,
+		},
+	}, 1)
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("non-auditable command without explicit non-git evidence must stay missing, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{
+			Command:   `echo "not a git repository"; git status --short`,
+			Succeeded: false,
+			Summary:   "not a git repository\nEXIT: 128",
+			seq:       2,
+		},
+	}, 1)
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("echoed non-git text must not satisfy the remote diff gate, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{
+			Command:   `echo "fatal: not a git repository"; git status --short`,
+			Succeeded: false,
+			Summary:   "fatal: not a git repository\nEXIT: 128",
+			seq:       2,
+		},
+	}, 1)
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("echoed fake fatal must not satisfy the remote diff gate, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeRemoteDiffSelfCheck([]string{"/repo/main.py"}, []CodingSubAgentCommandResult{
+		{
+			Command:   `git status --short; make`,
+			Succeeded: false,
+			Summary:   "fatal: not a git repository\nmake: *** [all] Error 2\nEXIT: 2",
+			seq:       2,
+		},
+	}, 1)
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("mixed git/build command must not be accepted as non-git diff evidence, got (%q, %q)", status, summary)
 	}
 }
 
@@ -2776,7 +2943,9 @@ func TestSubAgentSoftensSilencedNonGitDiffSelfCheckExit128(t *testing.T) {
 		t.Fatalf("silenced git self-check must not produce command failure gate, got %#v", result)
 	}
 
-	// Same soft skip when post-edit verification already passed (edit path).
+	// A silenced EXIT:128 remains soft for command-failure accounting, but is
+	// ambiguous (for example, git log also exits 128 in a valid repo with no
+	// commits) and therefore cannot satisfy the post-edit diff evidence gate.
 	cb = &remoteCodingCallbacks{}
 	cb.trackRemoteFileRead("/repo/main.py")
 	cb.trackRemoteFileChanged("/repo/main.py", false)
@@ -2788,8 +2957,9 @@ func TestSubAgentSoftensSilencedNonGitDiffSelfCheckExit128(t *testing.T) {
 		Summary:   "changed file",
 		ToolCalls: 5,
 	})
-	if result.Status != "success" || strings.Contains(result.Summary, "## 命令状态") {
-		t.Fatalf("post-edit silenced non-git self-check should not hard-fail, got %#v", result)
+	if result.Status != "failed" || !strings.Contains(result.Summary, "MISSING") ||
+		!strings.Contains(result.Error, "git diff/status") {
+		t.Fatalf("ambiguous silenced EXIT:128 must not satisfy post-edit diff evidence, got %#v", result)
 	}
 }
 
@@ -3405,6 +3575,12 @@ func TestRemoteBashCommandWithExitMarker(t *testing.T) {
 	}
 	if got := remoteCodingToolOutcome("1 passed\nEXIT: 0"); got != "success" {
 		t.Fatalf("remote bash EXIT 0 marker should remain success, got %q", got)
+	}
+	if got := remoteCodingToolOutcome("program output\nEXIT: 0\npanic: transport failed"); got != "failed" {
+		t.Fatalf("non-terminal program marker must not hide a later failure, got %q", got)
+	}
+	if got := remoteCodingToolOutcome("1 passed\nEXIT: 0\nroot@host:/repo#"); got != "success" {
+		t.Fatalf("terminal marker followed only by PTY prompt should remain authoritative, got %q", got)
 	}
 }
 
@@ -4947,6 +5123,11 @@ func TestCodingCommandExecutionResultClassifiesExitOneByCommand(t *testing.T) {
 	for _, command := range []string{"rg missing-pattern .", "grep missing file.txt", "git grep missing", "git -C . grep missing", "findstr missing file.txt", "Select-String missing file.txt"} {
 		if !noMatch.succeededForCommand(command) {
 			t.Fatalf("search no-match exit-1 should be informational for %q", command)
+		}
+	}
+	for _, command := range []string{"rg --files -g '*.missing' .", "ripgrep --files -g '*.missing' ."} {
+		if !noMatch.succeededForCommand(command) {
+			t.Fatalf("rg --files empty-filter exit-1 should be informational: %q", command)
 		}
 	}
 	for _, command := range []string{"rg missing . ; go test ./...", "rg missing . && go test ./...", "rg missing . | cat"} {
@@ -7581,6 +7762,11 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 		t.Fatalf("unresolved failed dynamic tool should fail quality summary, got %q, %q, %d", status, summary, count)
 	}
 
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, nil, 0, nil, []CodingSubAgentDynamicToolResult{{Tool: "knowledge_search", Name: "project conventions", Succeeded: false, Summary: "knowledge backend unavailable"}})
+	if status != "passed" || count != 0 || strings.Contains(summary, "dynamic tool failed") {
+		t.Fatalf("optional knowledge search failure must not invalidate verified work, got %q, %q, %d", status, summary, count)
+	}
+
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, nil, 1, nil, []CodingSubAgentDynamicToolResult{
 		{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: false, Summary: "browser closed", seq: 2},
 		{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true, Summary: "ok", seq: 3},
@@ -7821,6 +8007,58 @@ func TestSoftInspectionProbeFailureIsNotUnresolved(t *testing.T) {
 	}})
 	if len(failed) != 1 {
 		t.Fatalf("hard compile failure must remain unresolved, got %#v", failed)
+	}
+
+	// Read-only search tools use exit 1 for an ordinary no-match result. A
+	// post-edit hygiene/search probe must not invalidate otherwise verified work.
+	for _, command := range []string{
+		`rg "TODO|FIXME" src`,
+		`grep -R "TODO" src`,
+		`git grep "TODO" -- src`,
+	} {
+		failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+			Command: command, Succeeded: false, Summary: "EXIT: 1",
+		}})
+		if len(failed) != 0 {
+			t.Fatalf("no-match search %q must be soft, got %#v", command, failed)
+		}
+	}
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command: `rg "TODO" src`, Succeeded: false,
+		Summary: "status: completed\nexit_code: 1 process_alive: false\nno matches",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("background no-match search must be soft, got %#v", failed)
+	}
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command: `rg "TODO" src`, Succeeded: false,
+		Summary: "command echo: EXIT: 2\nno matches\nEXIT: 1\nroot@host:/repo#",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("final instrumented exit marker must win over command echo noise, got %#v", failed)
+	}
+	for _, summary := range []string{
+		"EXIT: 1\nsearch transport failed",
+		"EXIT: 1\nEXIT: 2",
+	} {
+		if subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+			Command: `rg TODO src`, Succeeded: false, Summary: summary,
+		}) {
+			t.Fatalf("an earlier program marker must not override later operational output: %q", summary)
+		}
+	}
+	for _, tc := range []CodingSubAgentCommandResult{
+		{Command: `rg "[" src`, Succeeded: false, Summary: "regex parse error\nEXIT: 2"},
+		{Command: `rg TODO src`, Succeeded: false, Summary: "no matches reported before I/O error\nEXIT: 2"},
+		{Command: `rg TODO src`, Succeeded: false, Summary: `diagnostic echo: EXIT: 1`},
+		{Command: `rg TODO src`, Succeeded: false, Summary: "bash: rg: command not found\nEXIT: 127"},
+		{Command: `rg TODO private`, Succeeded: false, Summary: "permission denied\nEXIT: 2"},
+		{Command: `rg TODO src && go test ./...`, Succeeded: false, Summary: "EXIT: 1"},
+		{Command: `rg --files missing-dir`, Succeeded: false, Summary: "rg: missing-dir: IO error\nEXIT: 2"},
+	} {
+		if subAgentCommandIsSoftInspectionProbeFailure(tc) {
+			t.Fatalf("search operational/compound failure must stay hard: %#v", tc)
+		}
 	}
 
 	// Toolchain probe failure is diagnostic-resolvable only after later verify,

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReferenceForSession, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView, SetDesktopPetState } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView, SetDesktopPetState } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
@@ -2629,33 +2629,18 @@ function formatGuideReferenceQuote(text: string): string {
         .join("\n");
 }
 
-export function buildGuideReferenceAcceptedNotice(text: string, lang: string): string {
-    const quoted = formatGuideReferenceQuote(text);
-    return `${localizeText(
-        lang,
-        "Added to the running task:",
-        "这条补充已接上当前任务：",
-        "這條補充已接上目前任務：",
-    )}\n${quoted}\n\n${localizeText(
-        lang,
-        "The next step will work from this point.",
-        "下一步会顺着这点继续。",
-        "下一步會順著這點繼續。",
-    )}`;
-}
-
 export function buildGuideReferenceRejectedNotice(text: string, lang: string): string {
     const quoted = formatGuideReferenceQuote(text);
     return `${localizeText(
         lang,
-        "I heard you, but I could not attach this to the current task yet:",
-        "我听到了，但这条补充暂时还没接上当前任务：",
-        "我聽到了，但這條補充暫時還沒接上目前任務：",
+        "The running step ended before this instruction could attach:",
+        "当前步骤已先结束，这条指令未能接入：",
+        "目前步驟已先結束，這條指令未能接入：",
     )}\n${quoted}\n\n${localizeText(
         lang,
-        "Once the assistant is idle, send it as a normal message and I will handle it directly.",
-        "等助手空闲后，把它作为普通消息发出就可以，我会直接处理。",
-        "等助手空閒後，把它作為普通訊息發出就可以，我會直接處理。",
+        "It remains queued and will be sent automatically as the next turn.",
+        "它仍在待执行队列中，将自动作为下一轮指令发送。",
+        "它仍在待執行佇列中，將自動作為下一輪指令傳送。",
     )}`;
 }
 
@@ -2825,6 +2810,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const agentViewLifecycleSeqBySessionRef = useRef<Map<string, number>>(new Map());
     const agentViewsBySessionRef = useRef<Map<string, AgentView>>(new Map());
     const forgottenEventSessionsRef = useRef<Map<string, number>>(new Map());
+	// Fences async work that began before a session clear/forget. A late backend
+	// acceptance must not resurrect conversation UI the user explicitly cleared.
+	const sessionResetEpochsRef = useRef<Map<string, number>>(new Map());
+    // A durable queue item may retry the same accepted steer after a caller
+    // times out or remounts. Backend idempotency prevents a second injection;
+    // mirror that guarantee in chat history so the user's interjection appears
+    // exactly once as well.
+    const displayedGuideLaunchIdsRef = useRef<Set<string>>(new Set());
     const initialActiveSessionKey = options?.activeSessionKey || getActiveSessionKey();
     const activeAgentViewSessionKeyRef = useRef(normalizeRuntimeSessionKey(initialActiveSessionKey));
     const hasExplicitAgentViewSessionRef = useRef(!!String(initialActiveSessionKey || '').trim());
@@ -2847,6 +2840,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             controller?.stop();
         }
     }, []);
+
+	const bumpSessionResetEpoch = useCallback((sessionKey: string) => {
+		const normalizedSessionKey = normalizeRuntimeSessionKey(sessionKey || 'desktop-user');
+		sessionResetEpochsRef.current.set(
+			normalizedSessionKey,
+			(sessionResetEpochsRef.current.get(normalizedSessionKey) || 0) + 1,
+		);
+	}, []);
 
     const stopAllResponseTimeouts = useCallback(() => {
         for (const controller of responseTimeoutControllersByRequestRef.current.values()) {
@@ -3595,7 +3596,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
     const forgetInFlightRoundsForSession = useCallback((sessionKey: string) => {
         const normalizedSessionKey = normalizeRuntimeSessionKey(sessionKey || 'desktop-user');
+		bumpSessionResetEpoch(normalizedSessionKey);
         forgottenEventSessionsRef.current.set(normalizedSessionKey, Date.now());
+        const displayedGuidePrefix = `${normalizedSessionKey}\u0000`;
+        for (const launchKey of displayedGuideLaunchIdsRef.current) {
+            if (launchKey.startsWith(displayedGuidePrefix)) {
+                displayedGuideLaunchIdsRef.current.delete(launchKey);
+            }
+        }
         let changed = false;
         for (const [requestId, round] of inFlightRoundsByRequestRef.current) {
             if (normalizeRuntimeSessionKey(round.sessionKey || 'desktop-user') === normalizedSessionKey) {
@@ -3639,7 +3647,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             resetStreamTokenBuffer(currentRound.requestId);
             resetActiveRound(currentRound.generation + 1);
         }
-    }, [clearTransientProgress, notifyForegroundIdle, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
+    }, [bumpSessionResetEpoch, clearTransientProgress, notifyForegroundIdle, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
     const queueStreamToken = useCallback((round: ActiveRound, text: string) => {
         if (!round.assistantMessageId || !text) return;
@@ -4514,6 +4522,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [setSelectedFiles]);
 
     const clearHistory = useCallback(async () => {
+		bumpSessionResetEpoch(activeSessionKeyForEvents() || 'desktop-user');
         stopAllResponseTimeouts();
         resetAllStreamTokenBuffers();
         resetActiveRound();
@@ -4564,7 +4573,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         } finally {
             persistOnUnmountRef.current = true;
         }
-    }, [activeSessionKeyForEvents, clearTransientProgress, doFetchNews, persistUIState, resetActiveRound, resetAllStreamTokenBuffers, setSelectedFiles, stopAllResponseTimeouts]);
+    }, [activeSessionKeyForEvents, bumpSessionResetEpoch, clearTransientProgress, doFetchNews, persistUIState, resetActiveRound, resetAllStreamTokenBuffers, setSelectedFiles, stopAllResponseTimeouts]);
 
     const recordSubmittedPrompt = useCallback((prompt: string) => {
         setSubmittedPrompts(prev => appendSubmittedPrompt(prev, prompt));
@@ -5047,19 +5056,16 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     }, [activeSessionKeyForEvents, clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, forgetInFlightRound, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
     // injectSupplementary sends a supplementary message into the running
-    // agent loop without cancelling it. Returns true if the injection was
-    // accepted (a loop is active), false if no loop is running (caller
-    // should fall back to normal sendMessage).
-    // On success, a user message bubble is added to the chat so the user
-    // sees visual confirmation of what was injected.
-    const injectSupplementary = useCallback(async (text: string): Promise<boolean> => {
+    // agent loop without cancelling it. An explicit session owner prevents
+    // async callers from following a later tab switch into the wrong loop.
+    const injectSupplementary = useCallback(async (text: string, sessionKey?: string): Promise<boolean> => {
         try {
-            const sessionKey = activeSessionKeyForEvents().trim() || 'desktop-user';
-            const accepted = await InjectAIAssistantSupplementaryForSession(text, sessionKey);
+            const normalizedSessionKey = sessionKey?.trim() || activeSessionKeyForEvents().trim() || 'desktop-user';
+            const accepted = await InjectAIAssistantSupplementaryForSession(text, normalizedSessionKey);
             if (accepted) {
                 // Show the injected text as a user message in the chat area
                 // so the user has visual confirmation.
-                setMessages(prev => [...prev, createUserMessage(text, sessionKey || 'desktop-user')]);
+                setMessages(prev => [...prev, createUserMessage(text, normalizedSessionKey)]);
             }
             return accepted;
         } catch {
@@ -5067,24 +5073,80 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
     }, [activeSessionKeyForEvents]);
 
-    const guideLaunchReference = useCallback(async (text: string, sessionKey?: string): Promise<boolean> => {
+    const guideLaunchReference = useCallback(async (text: string, sessionKey?: string, launchId?: string): Promise<boolean> => {
+        const normalizedSessionKey = sessionKey?.trim() || 'desktop-user';
+		const normalizedOwnerSessionKey = normalizeRuntimeSessionKey(normalizedSessionKey);
+		const startedAtResetEpoch = sessionResetEpochsRef.current.get(normalizedOwnerSessionKey) || 0;
+        const normalizedLaunchId = launchId?.trim() || '';
+		const targetSessionKey = normalizeRuntimeSessionKey(normalizedSessionKey);
+		const activeCandidate = activeRoundRef.current;
+		let expectedRound = activeCandidate.phase !== 'idle'
+			&& normalizeRuntimeSessionKey(activeCandidate.sessionKey || 'desktop-user') === targetSessionKey
+			? activeCandidate
+			: undefined;
+		// Parallel project tabs keep non-visible rounds in this map. Binding only
+		// to activeRoundRef would silently drop expected-turn protection whenever
+		// the user steers a busy tab whose round is currently detached.
+		for (const candidate of inFlightRoundsByRequestRef.current.values()) {
+			if (candidate.phase === 'idle' || !candidate.requestId.trim()) continue;
+			if (normalizeRuntimeSessionKey(candidate.sessionKey || 'desktop-user') !== targetSessionKey) continue;
+			if (!expectedRound || candidate.generation > expectedRound.generation) {
+				expectedRound = candidate;
+			}
+		}
+		const expectedRequestId = expectedRound?.requestId.trim() || '';
+        const displayedLaunchKey = normalizedLaunchId
+            ? `${normalizedSessionKey}\u0000${normalizedLaunchId}`
+            : '';
+        const showAcceptedInterjection = () => {
+			if ((sessionResetEpochsRef.current.get(normalizedOwnerSessionKey) || 0) !== startedAtResetEpoch) return;
+            if (displayedLaunchKey) {
+                if (displayedGuideLaunchIdsRef.current.has(displayedLaunchKey)) return;
+                displayedGuideLaunchIdsRef.current.add(displayedLaunchKey);
+            }
+            setMessages(prev => [...prev, createUserMessage(text, normalizedSessionKey)]);
+        };
+        const inject = () => normalizedLaunchId
+			? InjectAIAssistantGuideReferenceForSessionWithID(text, normalizedSessionKey, normalizedLaunchId, expectedRequestId)
+            : InjectAIAssistantGuideReferenceForSession(text, normalizedSessionKey);
         try {
-            const normalizedSessionKey = sessionKey?.trim() || 'desktop-user';
-            const accepted = await InjectAIAssistantGuideReferenceForSession(text, normalizedSessionKey);
-            if (accepted && normalizedSessionKey === 'desktop-user') {
-                setMessages(prev => [...prev, createSystemMessage(buildGuideReferenceAcceptedNotice(text, uiLang), 'desktop-user', 'guideReceipt')]);
-            } else if (!accepted && normalizedSessionKey === 'desktop-user') {
-                setMessages(prev => [...prev, createSystemMessage(buildGuideReferenceRejectedNotice(text, uiLang), 'desktop-user', 'guideRejection')]);
+            const accepted = await inject();
+            if (accepted) {
+                // Preserve the user's actual interjection in the conversation.
+                // The following assistant response can pick it up naturally;
+                // no synthetic acknowledgement or receipt is needed.
+                showAcceptedInterjection();
             }
             return accepted;
         } catch {
-            const normalizedSessionKey = sessionKey?.trim() || 'desktop-user';
-            if (normalizedSessionKey === 'desktop-user') {
-                setMessages(prev => [...prev, createSystemMessage(buildGuideReferenceRejectedNotice(text, uiLang), 'desktop-user', 'guideRejection')]);
+            // A Wails response can be lost after the backend accepted the text.
+            // Retry once with the same durable queue ID; the backend returns the
+            // first result without injecting a duplicate.
+            if (!normalizedLaunchId) return false;
+            try {
+                const accepted = await inject();
+                if (accepted) {
+                    showAcceptedInterjection();
+                }
+                return accepted;
+            } catch {
+                try {
+                    const accepted = await HasAIAssistantGuideReferenceForSessionWithID(
+                        text,
+                        normalizedSessionKey,
+                        normalizedLaunchId,
+						expectedRequestId,
+                    );
+                    if (accepted) {
+                        showAcceptedInterjection();
+                    }
+                    return accepted;
+                } catch {
+                    return false;
+                }
             }
-            return false;
         }
-    }, [uiLang]);
+    }, []);
 
     const submitAgentView = useCallback(async (viewId: string | undefined, data: Record<string, unknown>) => {
         const isWorkflowFormSubmit = typeof viewId === 'string' && viewId.startsWith('workflow:form:');

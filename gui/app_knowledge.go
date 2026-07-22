@@ -130,14 +130,20 @@ type KnowledgeHubShareUpdateRequest struct {
 }
 
 type KnowledgeHubShareImportResult struct {
-	KnowledgeID string         `json:"knowledge_id"`
-	PackageID   string         `json:"package_id,omitempty"`
-	Title       string         `json:"title,omitempty"`
-	DryRun      bool           `json:"dry_run"`
-	Imported    int            `json:"imported"`
-	Skipped     int            `json:"skipped"`
-	Warnings    []string       `json:"warnings,omitempty"`
-	Share       map[string]any `json:"share,omitempty"`
+	ImportStatus      string         `json:"import_status"`
+	KnowledgeID       string         `json:"knowledge_id"`
+	PackageID         string         `json:"package_id,omitempty"`
+	Title             string         `json:"title,omitempty"`
+	DryRun            bool           `json:"dry_run"`
+	Imported          int            `json:"imported"`
+	Skipped           int            `json:"skipped"`
+	Failed            int            `json:"failed"`
+	ImportedSourceIDs []string       `json:"imported_source_ids,omitempty"`
+	SkippedSourceIDs  []string       `json:"skipped_source_ids,omitempty"`
+	FailedSourceIDs   []string       `json:"failed_source_ids,omitempty"`
+	RetrySourceIDs    []string       `json:"retry_source_ids,omitempty"`
+	Warnings          []string       `json:"warnings,omitempty"`
+	Share             map[string]any `json:"share,omitempty"`
 }
 
 type KnowledgeSyncRequest struct {
@@ -171,8 +177,14 @@ type KnowledgeSyncStatus struct {
 
 type KnowledgeSyncResult struct {
 	KnowledgeSyncStatus
+	ImportStatus       string                  `json:"import_status,omitempty"`
 	Imported           int                     `json:"imported,omitempty"`
 	Skipped            int                     `json:"skipped,omitempty"`
+	Failed             int                     `json:"failed,omitempty"`
+	ImportedSourceIDs  []string                `json:"imported_source_ids,omitempty"`
+	SkippedSourceIDs   []string                `json:"skipped_source_ids,omitempty"`
+	FailedSourceIDs    []string                `json:"failed_source_ids,omitempty"`
+	RetrySourceIDs     []string                `json:"retry_source_ids,omitempty"`
 	Warnings           []string                `json:"warnings,omitempty"`
 	Conflicts          []KnowledgeSyncConflict `json:"conflicts,omitempty"`
 	RequiresResolution bool                    `json:"requires_resolution,omitempty"`
@@ -1394,17 +1406,19 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 		token = strings.TrimSpace(cfg.RemoteViewerToken)
 	}
 	authHeader := knowledgeShareBearerToken(token)
-	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 45*time.Second)
-	defer cancel()
-	share, err := fetchGUIKnowledgeShareJSON(ctx, apiURL, authHeader)
+	downloadCtx, cancelDownload := context.WithTimeout(a.knowledgeContext(), 45*time.Second)
+	share, err := fetchGUIKnowledgeShareJSON(downloadCtx, apiURL, authHeader)
 	if err != nil {
+		cancelDownload()
 		return KnowledgeHubShareImportResult{}, err
 	}
 	packageURL := resolveGUIKnowledgePackageURL(apiURL, stringFromAny(share["package_url"]))
 	if packageURL == "" {
+		cancelDownload()
 		return KnowledgeHubShareImportResult{}, fmt.Errorf("knowledge share does not expose a package_url")
 	}
-	pkg, err := fetchGUIKnowledgePackage(ctx, packageURL, authHeader)
+	pkg, err := fetchGUIKnowledgePackage(downloadCtx, packageURL, authHeader)
+	cancelDownload()
 	if err != nil {
 		return KnowledgeHubShareImportResult{}, err
 	}
@@ -1438,13 +1452,19 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 	}
 	if req.DryRun {
 		// Dry-run uses the same classification logic as real import — no store needed.
-		importResult := knowledge.ImportPackageSources(ctx, nil, sources, knowledge.PackageImportOptions{
+		importResult := knowledge.ImportPackageSources(a.knowledgeContext(), nil, sources, knowledge.PackageImportOptions{
 			DryRun:    true,
 			TopicHint: pkg.Manifest.Title,
 			RootPath:  "share://" + knowledgeID,
 		})
 		result.Imported = importResult.Imported
+		result.ImportStatus = importResult.Status
 		result.Skipped = importResult.Skipped
+		result.Failed = importResult.Failed
+		result.ImportedSourceIDs = importResult.ImportedSourceIDs
+		result.SkippedSourceIDs = importResult.SkippedSourceIDs
+		result.FailedSourceIDs = importResult.FailedSourceIDs
+		result.RetrySourceIDs = importResult.RetrySourceIDs
 		result.Warnings = append(result.Warnings, importResult.Warnings...)
 		return result, nil
 	}
@@ -1453,13 +1473,19 @@ func (a *App) KnowledgeImportHubShare(req KnowledgeHubShareImportRequest) (Knowl
 		return result, err
 	}
 	defer store.Close()
-	importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{
+	importResult := knowledge.ImportPackageSources(a.knowledgeContext(), store, sources, knowledge.PackageImportOptions{
 		SaveScope: knowledge.SaveScopePersonal,
 		TopicHint: pkg.Manifest.Title,
 		RootPath:  "share://" + knowledgeID,
 	})
 	result.Imported = importResult.Imported
+	result.ImportStatus = importResult.Status
 	result.Skipped = importResult.Skipped
+	result.Failed = importResult.Failed
+	result.ImportedSourceIDs = importResult.ImportedSourceIDs
+	result.SkippedSourceIDs = importResult.SkippedSourceIDs
+	result.FailedSourceIDs = importResult.FailedSourceIDs
+	result.RetrySourceIDs = importResult.RetrySourceIDs
 	result.Warnings = append(result.Warnings, importResult.Warnings...)
 	return result, nil
 }
@@ -1630,6 +1656,7 @@ func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResu
 	}
 	strategy := strings.ToLower(strings.TrimSpace(req.ConflictStrategy))
 	skippedConflicts := 0
+	skippedConflictSourceIDs := make([]string, 0)
 	if strategy == "" {
 		strategy = "check"
 	}
@@ -1673,6 +1700,7 @@ func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResu
 			}
 			if conflicted {
 				skippedConflicts++
+				skippedConflictSourceIDs = append(skippedConflictSourceIDs, firstNonEmptyKnowledgeValue(source.ID, source.CanonicalURI, source.URI, source.Title))
 				continue
 			}
 			filtered = append(filtered, source)
@@ -1690,8 +1718,14 @@ func (a *App) KnowledgeSyncDownload(req KnowledgeSyncRequest) (KnowledgeSyncResu
 	}
 	return KnowledgeSyncResult{
 		KnowledgeSyncStatus: status,
+		ImportStatus:        importResult.Status,
 		Imported:            importResult.Imported,
 		Skipped:             importResult.Skipped + skippedConflicts,
+		Failed:              importResult.Failed,
+		ImportedSourceIDs:   importResult.ImportedSourceIDs,
+		SkippedSourceIDs:    append(skippedConflictSourceIDs, importResult.SkippedSourceIDs...),
+		FailedSourceIDs:     importResult.FailedSourceIDs,
+		RetrySourceIDs:      importResult.RetrySourceIDs,
 		Warnings:            warnings,
 		Conflicts:           conflicts,
 	}, nil

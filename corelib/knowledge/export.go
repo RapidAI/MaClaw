@@ -919,7 +919,9 @@ func (s *SQLiteStore) exportCards(ctx context.Context, writer *bufio.Writer, red
 		COALESCE(entities_json, '[]'), COALESCE(topics_json, '[]'), COALESCE(tags_json, '[]'),
 		COALESCE(project_path, ''), COALESCE(owner_id, ''), COALESCE(tenant_id, ''), COALESCE(valid_at, ''), COALESCE(invalid_at, ''),
 		confidence, importance, source_trust, created_at, updated_at
-		FROM knowledge_cards ORDER BY source_id, importance DESC, updated_at DESC, id`)
+		FROM knowledge_cards
+		WHERE COALESCE(node_id, '') = '' OR EXISTS (SELECT 1 FROM document_nodes n WHERE n.id = knowledge_cards.node_id)
+		ORDER BY source_id, importance DESC, updated_at DESC, id`)
 	if err != nil {
 		return err
 	}
@@ -951,7 +953,15 @@ func (s *SQLiteStore) exportCards(ctx context.Context, writer *bufio.Writer, red
 func (s *SQLiteStore) exportFacts(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, card_id, source_id, subject, predicate, object, negated,
 		COALESCE(valid_at, ''), COALESCE(invalid_at, ''), confidence
-		FROM knowledge_facts ORDER BY source_id, subject, predicate, id`)
+		FROM knowledge_facts
+		WHERE EXISTS (
+			SELECT 1 FROM knowledge_cards c
+			WHERE c.id = knowledge_facts.card_id
+				AND (COALESCE(c.node_id, '') = '' OR EXISTS (
+					SELECT 1 FROM document_nodes n WHERE n.id = c.node_id
+				))
+		)
+		ORDER BY source_id, subject, predicate, id`)
 	if err != nil {
 		return err
 	}

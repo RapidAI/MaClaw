@@ -87,7 +87,6 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	}
 	deadline.Stop()
 	ticker.Stop()
-
 	waited := time.Since(waitStartedAt)
 	if waited > 500*time.Millisecond {
 		log.Printf("[IM serialization] waited user=%q duration=%v background=%v active_at_wait_start=%v active_loop=%q active_request_id=%q", msg.UserID, waited, msg.IsBackground, activeBeforeLock, activeLoopID, activeRequestID)

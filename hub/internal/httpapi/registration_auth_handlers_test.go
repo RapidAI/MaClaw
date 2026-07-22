@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -157,6 +158,39 @@ func TestPublicRegistrationAuthConfigUsesTenantIDHint(t *testing.T) {
 	}
 	if defaultGot["method"] != "email" {
 		t.Fatalf("default public config = %#v body=%s", defaultGot, defaultRR.Body.String())
+	}
+}
+
+type registrationAuthTenantResolver struct {
+	tenantID string
+}
+
+func (r registrationAuthTenantResolver) ResolveTenantByEmail(_ context.Context, _ string) (string, bool, bool, error) {
+	return r.tenantID, true, false, nil
+}
+
+func TestPublicRegistrationAuthConfigResolvesExistingEmailTenant(t *testing.T) {
+	settings := &testSystemSettingsRepo{values: map[string]string{
+		registrationAuthConfigKey: `{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret"}`,
+		// Legacy per-email quotas must be ignored rather than revived by an
+		// existing tenant setting.
+		"tenant:tenant_email:" + registrationAuthConfigKey: `{"method":"email","daily_email_limit":4}`,
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/enroll/registration-auth?email=old%40example.com", nil)
+	rr := httptest.NewRecorder()
+	PublicRegistrationAuthConfigHandler(settings, registrationAuthTenantResolver{tenantID: "tenant_email"}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["method"] != "email" || got["tenant_id"] != "tenant_email" {
+		t.Fatalf("response = %#v", got)
+	}
+	if _, present := got["daily_email_limit"]; present {
+		t.Fatalf("public config must not advertise the removed email quota: %#v", got)
 	}
 }
 

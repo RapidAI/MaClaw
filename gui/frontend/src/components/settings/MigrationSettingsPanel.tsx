@@ -43,6 +43,7 @@ type MigrationInstance = {
     export_claimed_by_machine_id?: string;
     export_updated_at?: string;
     export_size?: number;
+    export_manifest?: Record<string, any> | null;
 };
 
 type MigrationJob = {
@@ -53,6 +54,11 @@ type MigrationJob = {
     progress_text?: string;
     error?: string;
     result?: Record<string, any>;
+};
+
+const resultNumber = (value: unknown) => {
+    const n = Number(value || 0);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
 };
 
 const textForLang = localizeText;
@@ -85,6 +91,12 @@ const localizeMigrationMessage = (lang: string, value: unknown) => {
     if (lower === 'downloading encrypted chunks') return pick('Downloading encrypted chunks', '正在下载加密分片', '正在下載加密分片');
     if (lower === 'decrypting and verifying package') return pick('Decrypting and verifying package', '正在解密并校验迁移包', '正在解密並校驗遷移包');
     if (lower === 'restoring local memory and knowledge base') return pick('Restoring memory and local knowledge base', '正在恢复记忆与本地知识库', '正在還原記憶與本地知識庫');
+    const restoreRetry = raw.match(/^local restore temporarily busy; retrying \((\d+)\/(\d+)\)$/i);
+    if (restoreRetry) return pick(
+        `Local data is temporarily busy; retrying (${restoreRetry[1]}/${restoreRetry[2]})`,
+        `本地数据暂时被占用，正在重试（${restoreRetry[1]}/${restoreRetry[2]}）`,
+        `本地資料暫時被佔用，正在重試（${restoreRetry[1]}/${restoreRetry[2]}）`,
+    );
     if (lower === 'import completed') return pick('Move-in completed', '迁入已完成', '遷入已完成');
     if (lower === 'completed') return pick('Completed', '已完成', '已完成');
     if (lower === 'checking migration cleanup state') return pick('Checking cleanup state', '正在检查清理状态', '正在檢查清理狀態');
@@ -96,6 +108,8 @@ const localizeMigrationMessage = (lang: string, value: unknown) => {
     }
 
     if (lower.includes('passwords do not match')) return pick('The two passwords do not match.', '两次输入的密码不一致。', '兩次輸入的密碼不一致。');
+    if (lower.includes('migration password must be at least')) return pick('Use at least 12 characters for the migration password.', '迁移密码至少需要 12 个字符。', '遷移密碼至少需要 12 個字元。');
+    if (lower.includes('migration password must contain letters and numbers')) return pick('The migration password must contain letters and numbers.', '迁移密码必须同时包含字母和数字。', '遷移密碼必須同時包含字母和數字。');
     if (lower.includes('migration password is incorrect') || lower.includes('password is incorrect')) return pick('The password is incorrect, or the migration package is corrupted.', '密码不正确，或迁移包已损坏。', '密碼不正確，或遷移包已損壞。');
     if (lower.includes('hash mismatch')) return pick('Migration package integrity check failed. Please move out again and retry.', '迁移包完整性校验失败，请重新迁出后再试。', '遷移包完整性校驗失敗，請重新遷出後再試。');
     if (lower.includes('size mismatch')) return pick('Migration package size check failed. Please retry the transfer.', '迁移包大小校验失败，请重试传输。', '遷移包大小校驗失敗，請重試傳輸。');
@@ -119,7 +133,12 @@ const localizeMigrationError = (lang: string, value: unknown) => {
     const localized = localizeMigrationMessage(lang, raw);
     const isEnglish = textForLang(lang, 'en', 'zh') === 'en';
     if (!raw || localized !== raw || isEnglish) return localized;
-    return textForLang(lang, 'Migration failed. Please check the network, password, and local knowledge base state, then retry.', '迁移过程未完成，请检查网络、密码或本地知识库状态后重试。', '遷移過程未完成，請檢查網路、密碼或本地知識庫狀態後重試。');
+    return textForLang(
+        lang,
+        `Migration failed: ${raw}`,
+        `迁移失败：${raw}`,
+        `遷移失敗：${raw}`,
+    );
 };
 
 const formatBytes = (value?: number) => {
@@ -241,6 +260,7 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                 export_claimed_by_machine_id: String(currentExport?.claimed_by_machine_id || ''),
                 export_updated_at: String(currentExport?.updated_at || ''),
                 export_size: Number(currentExport?.compressed_size || 0),
+                export_manifest: currentExport?.manifest && typeof currentExport.manifest === 'object' ? currentExport.manifest : null,
             });
         }
         return rows;
@@ -291,8 +311,12 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
     const busy = running || submitting || loading;
     const configured = status?.configured === true;
     const ready = configured && !status?.configuration_reason;
-    const canExport = ready && !busy && exportPassword.length > 0 && exportPassword === exportPasswordConfirm;
+    // Match Go's rune-based password length check so non-BMP characters are
+    // counted consistently on the client and server.
+    const passwordStrongEnough = (value: string) => Array.from(value).length >= 12 && /\p{L}/u.test(value) && /\p{N}/u.test(value);
+    const canExport = ready && !busy && passwordStrongEnough(exportPassword) && exportPassword === exportPasswordConfirm;
     const selectedInstance = importableInstances.find((item) => item.export_id === selectedExportID);
+    const selectedManifest = selectedInstance?.export_manifest && typeof selectedInstance.export_manifest === 'object' ? selectedInstance.export_manifest : null;
     const selectedExportStatus = String(selectedInstance?.export_status || '').toLowerCase();
     const selectedClaimedByCurrentMachine = !!status?.machine_id && selectedInstance?.export_claimed_by_machine_id === status.machine_id;
     const localCleanupPending = job?.kind === 'migration.import'
@@ -301,6 +325,8 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
         && String(job?.result?.export_id || '') === selectedExportID;
     const cleanupRetry = selectedClaimedByCurrentMachine && (cleanupRetryStatuses.has(selectedExportStatus) || localCleanupPending);
     const resumeImport = resumableImportStatuses.has(selectedExportStatus) && !!status?.machine_id && selectedInstance?.export_claimed_by_machine_id === status.machine_id;
+    // Import must accept passwords created by older package versions. Strength
+    // policy is enforced only when creating a new move-out package.
     const canImport = ready && !busy && !!selectedExportID && (cleanupRetry || importPassword.length > 0);
     const jobPercent = normalizeProgress(job?.progress);
     const jobTone = String(job?.status || '').toLowerCase() === 'failed' ? 'failed' : String(job?.status || '').toLowerCase() === 'succeeded' ? 'succeeded' : 'running';
@@ -335,6 +361,18 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
             </div>
         );
     };
+    const importSummary = jobIsImport && String(job?.status || '').toLowerCase() === 'succeeded' && job?.result
+        ? {
+            configSections: resultNumber((job.result.config as any)?.sections),
+            secretCount: resultNumber((job.result.config as any)?.secrets),
+            memoryEntries: resultNumber((job.result.memory as any)?.entries),
+            knowledgeSources: resultNumber((job.result.knowledge as any)?.sources),
+            llmTested: resultNumber((job.result.llm_validation as any)?.tested),
+            llmPassed: resultNumber((job.result.llm_validation as any)?.passed),
+            llmFailed: resultNumber((job.result.llm_validation as any)?.failed),
+            cleanupPending: job.result.cleanup_pending === true,
+        }
+        : null;
 
     const startExport = async () => {
         if (exportPassword !== exportPasswordConfirm) {
@@ -379,7 +417,7 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                 <div className="migration-settings-head">
                     <div>
                         <h4>{t('Move Out & In', '\u8fc1\u51fa\u4e0e\u8fc1\u5165', '\u9077\u51fa\u8207\u9077\u5165')}</h4>
-                        <p>{t('Move MaClaw memory and the local knowledge base from an old machine to a new one through the current Hub tenant.', '\u7528\u4e8e\u901a\u8fc7\u5f53\u524d Hub \u79df\u6237\uff0c\u5c06 MaClaw \u8bb0\u5fc6\u4e0e\u672c\u5730\u77e5\u8bc6\u5e93\u4ece\u65e7\u673a\u5668\u8fc1\u79fb\u5230\u65b0\u673a\u5668\u3002', '\u7528\u65bc\u900f\u904e\u76ee\u524d Hub \u79df\u6236\uff0c\u5c07 MaClaw \u8a18\u61b6\u8207\u672c\u5730\u77e5\u8b58\u5eab\u5f9e\u820a\u6a5f\u5668\u9077\u79fb\u5230\u65b0\u6a5f\u5668\u3002')}</p>
+                        <p>{t('Move all system settings, memory, and the local knowledge base from an old machine to a new one through the current Hub tenant.', '通过当前 Hub 租户，将全部系统配置、记忆与本地知识库从旧机器迁移到新机器。', '透過目前 Hub 租戶，將全部系統設定、記憶與本地知識庫從舊機器遷移到新機器。')}</p>
                     </div>
                     <button type="button" className="btn-secondary" onClick={() => void loadState()} disabled={loading || busy}>
                         {loading ? t('Refreshing...', '\u5237\u65b0\u4e2d...', '\u91cd\u65b0\u6574\u7406\u4e2d...') : t('Refresh', '\u5237\u65b0', '\u91cd\u65b0\u6574\u7406')}
@@ -418,8 +456,13 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
 
             <section className="system-settings-card migration-settings-card">
                 <h4>{t('Move Out', '\u8fc1\u51fa', '\u9077\u51fa')}</h4>
+                <div className="migration-scope-summary">
+                    <strong>{t('Included', '迁移内容', '遷移內容')}</strong>
+                    <span>{t('All user-editable system settings, complete LLM provider configuration and API keys, memory, local knowledge base, and attachments.', '全部用户可编辑系统配置、完整 LLM 提供商配置及 API Key、记忆、本地知识库和附件。', '全部使用者可編輯系統設定、完整 LLM 提供商設定及 API Key、記憶、本地知識庫和附件。')}</span>
+                    <small>{t('Hub sign-in sessions, machine identity, machine tokens, logs, caches, and runtime state are not moved.', '不会迁移 Hub 登录会话、机器身份、机器 Token、日志、缓存和运行时状态。', '不會遷移 Hub 登入工作階段、機器身分、機器 Token、日誌、快取和執行階段狀態。')}</small>
+                </div>
                 <div className="migration-alert migration-alert--warning">
-                    {t('Only one migration package is kept on Hub. A new move-out package overwrites the old one and is encrypted with the password entered here.', '\u6bcf\u4e2a\u7528\u6237\u5728 Hub \u4e0a\u53ea\u4fdd\u7559\u4e00\u4efd\u8fc1\u79fb\u5305\u3002\u65b0\u8fc1\u51fa\u4f1a\u8986\u76d6\u65e7\u6570\u636e\uff0c\u5e76\u4f7f\u7528\u672c\u6b21\u8f93\u5165\u7684\u5bc6\u7801\u52a0\u5bc6\u3002', '\u6bcf\u500b\u4f7f\u7528\u8005\u5728 Hub \u4e0a\u53ea\u4fdd\u7559\u4e00\u4efd\u9077\u79fb\u5305\u3002\u65b0\u9077\u51fa\u6703\u8986\u84cb\u820a\u8cc7\u6599\uff0c\u4e26\u4f7f\u7528\u672c\u6b21\u8f38\u5165\u7684\u5bc6\u78bc\u52a0\u5bc6\u3002')}
+                    {t('Only one migration package is kept on Hub. A new move-out overwrites it. The package contains API keys and other secrets, and is encrypted in full with the password entered here.', 'Hub 上只保留一份迁移包，新迁出会覆盖旧数据。迁移包包含 API Key 等密钥，并使用本次输入的密码整体加密。', 'Hub 上只保留一份遷移包，新遷出會覆蓋舊資料。遷移包包含 API Key 等密鑰，並使用本次輸入的密碼整體加密。')}
                 </div>
                 <div className="migration-form-grid">
                     <label className="system-settings-field">
@@ -431,6 +474,7 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                         <input className="form-input" type="password" value={exportPasswordConfirm} onChange={(e) => setExportPasswordConfirm(e.target.value)} autoComplete="new-password" disabled={!ready || busy} />
                     </label>
                 </div>
+                <small className="migration-password-hint">{t('Use at least 12 characters with letters and numbers. This password encrypts API keys and other secrets.', '密码至少 12 个字符，并同时包含字母和数字；它将用于加密 API Key 等密钥。', '密碼至少 12 個字元，並同時包含字母和數字；它將用於加密 API Key 等密鑰。')}</small>
                 <div className="migration-actions">
                     <button type="button" className="btn-primary" onClick={startExport} disabled={!canExport}>
                         {t('Start Move Out', '\u5f00\u59cb\u8fc1\u51fa', '\u958b\u59cb\u9077\u51fa')}
@@ -446,6 +490,21 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
 
             <section className="system-settings-card migration-settings-card">
                 <h4>{t('Move In', '\u8fc1\u5165', '\u9077\u5165')}</h4>
+                {selectedManifest && (
+                    <div className="migration-scope-summary">
+                        <strong>{t('Preflight', '迁入预检', '遷入預檢')}</strong>
+                        <span>{t(
+                            `${resultNumber(selectedManifest.config_section_count)} settings, ${resultNumber(selectedManifest.secret_count)} secrets, and ${resultNumber(selectedManifest.memory_entries)} memories will be restored.`,
+                            `将恢复 ${resultNumber(selectedManifest.config_section_count)} 项系统配置、${resultNumber(selectedManifest.secret_count)} 项密钥和 ${resultNumber(selectedManifest.memory_entries)} 条记忆。`,
+                            `將還原 ${resultNumber(selectedManifest.config_section_count)} 項系統設定、${resultNumber(selectedManifest.secret_count)} 項密鑰和 ${resultNumber(selectedManifest.memory_entries)} 條記憶。`,
+                        )}</span>
+                        <small>{t(
+                            `Package format: ${String(selectedManifest.version || '-')} / config schema: ${String(selectedManifest.config_schema_version || '-')}. Current Hub and machine identity will be preserved.`,
+                            `迁移包格式：${String(selectedManifest.version || '-')}；配置版本：${String(selectedManifest.config_schema_version || '-')}。当前 Hub 与机器身份将被保留。`,
+                            `遷移包格式：${String(selectedManifest.version || '-')}；設定版本：${String(selectedManifest.config_schema_version || '-')}。目前 Hub 與機器身分將被保留。`,
+                        )}</small>
+                    </div>
+                )}
                 <div className="migration-form-grid migration-form-grid--import">
                     <label className="system-settings-field">
                         <span>{t('Source Machine', '\u6765\u6e90\u673a\u5668', '\u4f86\u6e90\u6a5f\u5668')}</span>
@@ -468,10 +527,24 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                         {cleanupRetry ? t('Retry Cleanup', '\u91cd\u8bd5\u6e05\u7406', '\u91cd\u8a66\u6e05\u7406') : resumeImport ? t('Resume Move In', '\u7ee7\u7eed\u8fc1\u5165', '\u7e7c\u7e8c\u9077\u5165') : t('Start Move In', '\u5f00\u59cb\u8fc1\u5165', '\u958b\u59cb\u9077\u5165')}
                     </button>
                     <span className="migration-inline-meta">
-                        {cleanupRetry ? t('Local data has already been restored. This only completes Hub cleanup.', '\u672c\u5730\u6570\u636e\u5df2\u6062\u590d\uff0c\u6b64\u64cd\u4f5c\u53ea\u5b8c\u6210 Hub \u6e05\u7406\u3002', '\u672c\u5730\u8cc7\u6599\u5df2\u9084\u539f\uff0c\u6b64\u64cd\u4f5c\u53ea\u5b8c\u6210 Hub \u6e05\u7406\u3002') : resumeImport ? t('This package was already claimed by this machine. Continuing will verify the password and restore again before cleanup.', '\u8be5\u8fc1\u79fb\u5305\u5df2\u7531\u5f53\u524d\u673a\u5668\u8ba4\u9886\uff0c\u7ee7\u7eed\u65f6\u4f1a\u518d\u6b21\u6821\u9a8c\u5bc6\u7801\u5e76\u6062\u590d\u540e\u6e05\u7406\u3002', '\u8a72\u9077\u79fb\u5305\u5df2\u7531\u76ee\u524d\u6a5f\u5668\u8a8d\u9818\uff0c\u7e7c\u7e8c\u6642\u6703\u518d\u6b21\u6821\u9a57\u5bc6\u78bc\u4e26\u9084\u539f\u5f8c\u6e05\u7406\u3002') : t("Move-in restores the selected package into this machine's memory and local knowledge base.", '\u8fc1\u5165\u4f1a\u5c06\u6240\u9009\u8fc1\u79fb\u5305\u6062\u590d\u5230\u5f53\u524d\u673a\u5668\u7684\u8bb0\u5fc6\u4e0e\u672c\u5730\u77e5\u8bc6\u5e93\u3002', '\u9077\u5165\u6703\u5c07\u6240\u9078\u9077\u79fb\u5305\u9084\u539f\u5230\u76ee\u524d\u6a5f\u5668\u7684\u8a18\u61b6\u8207\u672c\u5730\u77e5\u8b58\u5eab\u3002')}
+                        {cleanupRetry ? t('Local data has already been restored. This only completes Hub cleanup.', '\u672c\u5730\u6570\u636e\u5df2\u6062\u590d\uff0c\u6b64\u64cd\u4f5c\u53ea\u5b8c\u6210 Hub \u6e05\u7406\u3002', '\u672c\u5730\u8cc7\u6599\u5df2\u9084\u539f\uff0c\u6b64\u64cd\u4f5c\u53ea\u5b8c\u6210 Hub \u6e05\u7406\u3002') : resumeImport ? t('This package was already claimed by this machine. Continuing will verify the password and restore again before cleanup.', '\u8be5\u8fc1\u79fb\u5305\u5df2\u7531\u5f53\u524d\u673a\u5668\u8ba4\u9886\uff0c\u7ee7\u7eed\u65f6\u4f1a\u518d\u6b21\u6821\u9a8c\u5bc6\u7801\u5e76\u6062\u590d\u540e\u6e05\u7406\u3002', '\u8a72\u9077\u79fb\u5305\u5df2\u7531\u76ee\u524d\u6a5f\u5668\u8a8d\u9818\uff0c\u7e7c\u7e8c\u6642\u6703\u518d\u6b21\u6821\u9a57\u5bc6\u78bc\u4e26\u9084\u539f\u5f8c\u6e05\u7406\u3002') : t("Move-in restores all system settings, including complete LLM API keys, memory, and the local knowledge base. This machine's Hub and device identity are preserved.", '迁入会恢复全部系统配置（包括完整 LLM API Key）、记忆和本地知识库，并保留当前机器的 Hub 与设备身份。', '遷入會還原全部系統設定（包括完整 LLM API Key）、記憶和本地知識庫，並保留目前機器的 Hub 與裝置身分。')}
                     </span>
                 </div>
                 {renderJobProgress(true)}
+                {importSummary && (
+                    <div className="migration-result-summary" role="status">
+                        <strong>{t('Move-in Summary', '迁入结果', '遷入結果')}</strong>
+                        <span>{t(`${importSummary.configSections} settings restored`, `已恢复 ${importSummary.configSections} 项系统配置`, `已還原 ${importSummary.configSections} 項系統設定`)}</span>
+                        <span>{t(`${importSummary.secretCount} secrets restored without displaying their values`, `已完整恢复 ${importSummary.secretCount} 项密钥（未显示密钥值）`, `已完整還原 ${importSummary.secretCount} 項密鑰（未顯示密鑰值）`)}</span>
+                        <span>{t(`${importSummary.memoryEntries} memories and ${importSummary.knowledgeSources} knowledge sources restored`, `已恢复 ${importSummary.memoryEntries} 条记忆和 ${importSummary.knowledgeSources} 个知识来源`, `已還原 ${importSummary.memoryEntries} 條記憶和 ${importSummary.knowledgeSources} 個知識來源`)}</span>
+                        {importSummary.llmTested > 0 && <span>{t(
+                            `LLM connection checks: ${importSummary.llmPassed} passed, ${importSummary.llmFailed} need attention`,
+                            `LLM 连接验证：${importSummary.llmPassed} 项通过，${importSummary.llmFailed} 项需要处理`,
+                            `LLM 連線驗證：${importSummary.llmPassed} 項通過，${importSummary.llmFailed} 項需要處理`,
+                        )}</span>}
+                        {importSummary.cleanupPending && <small>{t('Local restore is complete; Hub cleanup still needs to be retried.', '本地恢复已完成，仍需重试 Hub 清理。', '本地還原已完成，仍需重試 Hub 清理。')}</small>}
+                    </div>
+                )}
 
                 <div className="migration-instance-table-wrap">
                     <table className="migration-instance-table">

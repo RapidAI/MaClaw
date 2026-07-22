@@ -94,6 +94,7 @@ type RemoteCodingSubAgentResult struct {
 	RouteReason   string
 	FilesModified []string
 	FilesCreated  []string
+	Localization  *CodingSubAgentLocalizationEvidence
 }
 
 // NewRemoteCodingSubAgent creates a SubAgent bound to an existing SSH session.
@@ -275,6 +276,9 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 		cb.completeRemotePostEditAudit()
 	}
 	out := cb.applyRemoteVerificationOutcome(remoteCodingSubAgentResultFromLoopResult(result))
+	if out != nil && out.Status == "success" {
+		r.persistLocalizationExperience(taskDescription, cb.localization.snapshot(), cb.commandsRun)
+	}
 	if out != nil {
 		out.Summary = appendCodingAgentTodoTurnNote(out.Summary, cb.todos.snapshot())
 	}
@@ -351,6 +355,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	// Surface audit paths for sticky multi-turn memory / UI continuity.
 	result.FilesModified = uniqueSortedSubAgentStrings(filesModified)
 	result.FilesCreated = uniqueSortedSubAgentStrings(filesCreated)
+	result.Localization = c.localization.snapshot()
 
 	// Nested explorer/reviewer are inspection-only by tool policy. Do not fail them
 	// for missing post-edit confirmation / git diff / implementation "no change".
@@ -426,6 +431,11 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			explorationSummary = "remote coding subagent edited existing files without reading or searching first"
 		}
 		result.Error = compactSubAgentErrorSummary(explorationSummary)
+		return result
+	}
+	if issue := summarizeLocalizationQuality(c.task+"\n"+c.taskContext, existingModified, c.localization.snapshot(), c.searchesRun); issue != "" {
+		result.Status = "failed"
+		result.Error = compactSubAgentErrorSummary(issue)
 		return result
 	}
 	if confirmationStatus == codingSubAgentQualityMissing {
@@ -543,6 +553,17 @@ func summarizeRemoteDiffSelfCheck(filesModified []string, commands []CodingSubAg
 		}
 		if isAuditableRemoteDiffSelfCheckCommand(cmd.Command) {
 			checks = append(checks, cmd)
+			continue
+		}
+		// Older remote prompts commonly chained status and diff with `;`. Such a
+		// command cannot prove a successful diff check because a later command may
+		// mask an earlier failure. It can, however, conclusively prove that the
+		// directory is not a Git work tree when the captured output retains Git's
+		// explicit fatal diagnostic. Keep only that narrow negative evidence so a
+		// real self-check is not incorrectly reported as entirely missing.
+		if !cmd.Succeeded && isLegacyRemoteDiffSelfCheckProbeCommand(cmd.Command) &&
+			remoteDiffSelfCheckHasExplicitNonGitFatal(cmd.Summary) {
+			checks = append(checks, cmd)
 		}
 	}
 	if len(checks) == 0 {
@@ -601,14 +622,65 @@ func summarizeRemoteDiffSelfCheck(filesModified []string, commands []CodingSubAg
 	if len(clean) == len(contentSuccess) {
 		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检显示工作区干净，但审计记录已有远程文件修改：%s", compactSubAgentVerificationCommandList(clean))
 	}
+	changeEvidence := remoteDiffSelfChecksWithChangeEvidence(contentSuccess)
+	if len(changeEvidence) == 0 {
+		return codingSubAgentQualityFailed, fmt.Sprintf("远程 git diff/status 自检未返回可识别的文件改动（可能只有 warning 或包装输出）：%s", compactSubAgentVerificationCommandList(contentSuccess))
+	}
 	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条远程 diff/status 自检命令：%s", len(contentSuccess), compactSubAgentVerificationCommandList(contentSuccess))
+}
+
+func isLegacyRemoteDiffSelfCheckProbeCommand(command string) bool {
+	if !subAgentCommandIsPureGitSelfCheckProbes(command) {
+		return false
+	}
+	hasContentProbe := false
+	for _, segment := range shellCommandSegments(command) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		switch commandNameBase(segment[0]) {
+		case "echo":
+			if len(segment) != 2 || !subAgentIsDashSeparatorLine(strings.Trim(normalizeShellExecutableToken(segment[1]), "'\"")) {
+				return false
+			}
+		case "printf", "true", ":":
+			// These are accepted by the general soft-failure classifier, but are
+			// unnecessary in the legacy command shape and can manufacture output or
+			// mask a Git exit status. Do not trust them as audit evidence.
+			return false
+		case "git":
+			if isAuditableGitDiffSelfCheckSegment(segment) {
+				hasContentProbe = true
+			}
+		}
+	}
+	return hasContentProbe
+}
+
+func remoteDiffSelfCheckHasExplicitNonGitFatal(summary string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(summary, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
+		if !(strings.HasPrefix(lower, "fatal:") || strings.HasPrefix(lower, "fatal：")) {
+			continue
+		}
+		if subAgentGitDiffUnavailableBecauseNonGit(line) {
+			return true
+		}
+	}
+	return false
 }
 
 func splitRemoteNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResult) ([]CodingSubAgentCommandResult, []CodingSubAgentCommandResult) {
 	nonGit := make([]CodingSubAgentCommandResult, 0)
 	other := make([]CodingSubAgentCommandResult, 0)
 	for _, cmd := range commands {
-		if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+		// The shared classifier intentionally treats ambiguous/silenced EXIT:128
+		// as soft for unresolved-command reporting. The diff quality gate needs
+		// stronger evidence: otherwise a valid repo with no commits (git log 128)
+		// can be mislabeled as non-Git and edits pass without a real diff/status.
+		if !cmd.Succeeded && remoteDiffSelfCheckHasExplicitNonGitFatal(cmd.Summary) {
 			nonGit = append(nonGit, cmd)
 			continue
 		}
@@ -659,20 +731,124 @@ func remoteCleanDiffSelfChecks(commands []CodingSubAgentCommandResult) []CodingS
 	return clean
 }
 
+func remoteDiffSelfChecksWithChangeEvidence(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	evidence := make([]CodingSubAgentCommandResult, 0)
+	for _, cmd := range commands {
+		if remoteDiffSelfCheckHasChangeEvidence(cmd) {
+			evidence = append(evidence, cmd)
+		}
+	}
+	return evidence
+}
+
+func remoteDiffSelfCheckHasChangeEvidence(cmd CodingSubAgentCommandResult) bool {
+	lines := remoteDiffSelfCheckMeaningfulLines(cmd.Summary)
+	if len(lines) == 0 {
+		return false
+	}
+	hasStatus, hasDiff := remoteDiffSelfCheckProbeKinds(cmd.Command)
+	if hasStatus {
+		for i, line := range lines {
+			if remoteGitStatusPorcelainLine(line, i == 0) {
+				return true
+			}
+		}
+		// Keep compatibility with deliberately requested long-format status.
+		joined := strings.ToLower(strings.Join(lines, "\n"))
+		return strings.Contains(joined, "changes not staged for commit") ||
+			strings.Contains(joined, "changes to be committed") ||
+			strings.Contains(joined, "untracked files:")
+	}
+	if hasDiff {
+		for _, line := range lines {
+			text := strings.TrimSpace(line)
+			if strings.HasPrefix(text, "diff --git ") || strings.HasPrefix(text, "@@ ") ||
+				strings.HasPrefix(text, "--- a/") || strings.HasPrefix(text, "+++ b/") {
+				return true
+			}
+			// `git diff --stat` entries use a `path | count +/-` shape.
+			if bar := strings.LastIndex(text, "|"); bar > 0 {
+				right := strings.TrimSpace(text[bar+1:])
+				if strings.ContainsAny(right, "+-") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func remoteDiffSelfCheckProbeKinds(command string) (hasStatus, hasDiff bool) {
+	for _, segment := range shellCommandSegments(strings.ToLower(strings.Join(strings.Fields(command), " "))) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 || commandNameBase(segment[0]) != "git" {
+			continue
+		}
+		for _, arg := range segment[1:] {
+			arg = normalizeShellExecutableToken(arg)
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			switch arg {
+			case "status":
+				hasStatus = true
+			case "diff":
+				hasDiff = true
+			}
+			break
+		}
+	}
+	return hasStatus, hasDiff
+}
+
+func remoteGitStatusPorcelainLine(line string, allowTrimmedLeadingColumn bool) bool {
+	line = strings.TrimRight(line, "\r\n")
+	valid := func(b byte) bool {
+		return strings.ContainsRune(" MADRCU?!T", rune(b))
+	}
+	if len(line) >= 4 && line[2] == ' ' && valid(line[0]) && valid(line[1]) &&
+		(line[0] != ' ' || line[1] != ' ') {
+		return true
+	}
+	// compactCommandResult trims the whole captured result. When the first real
+	// output line is an unstaged porcelain entry (" M path"), that outer trim
+	// removes its significant leading column and leaves "M path". Accept only
+	// this exact one-column-loss shape; later lines retain both columns above.
+	return allowTrimmedLeadingColumn && len(line) >= 3 && line[1] == ' ' && valid(line[0]) && line[0] != ' '
+}
+
+func remoteDiffSelfCheckMeaningfulLines(summary string) []string {
+	lines := strings.Split(strings.ReplaceAll(summary, "\r\n", "\n"), "\n")
+	meaningful := make([]string, 0, len(lines))
+	for _, line := range lines {
+		text := strings.TrimRight(remoteCodingStripSimpleANSI(line), " \t\r")
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || subAgentIsExitMarkerLine(trimmed) || trimmed == "(无输出)" ||
+			remoteDiffSelfCheckShellNoiseLine(text, len(meaningful) == 0) || subAgentIsDashSeparatorLine(trimmed) ||
+			subAgentLooksLikeBase64BlobLine(trimmed) {
+			continue
+		}
+		meaningful = append(meaningful, text)
+	}
+	return meaningful
+}
+
+func remoteDiffSelfCheckShellNoiseLine(line string, firstMeaningfulLine bool) bool {
+	// Porcelain status deliberately uses its first two columns; entries such as
+	// " M file" and "?? file" must be recognized before generic PTY cleanup,
+	// whose TrimSpace-based `$ ` rule would otherwise discard a filename `$ x`.
+	if remoteGitStatusPorcelainLine(line, firstMeaningfulLine) {
+		return false
+	}
+	return subAgentRemoteShellNoiseLine(line)
+}
+
 func remoteDiffSelfCheckLooksClean(cmd CodingSubAgentCommandResult) bool {
 	output := strings.TrimSpace(cmd.Summary)
 	if output == "" {
 		return true
 	}
-	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
-	meaningful := make([]string, 0, len(lines))
-	for _, line := range lines {
-		text := strings.TrimSpace(line)
-		if text == "" || strings.EqualFold(text, "EXIT: 0") || text == "(无输出)" {
-			continue
-		}
-		meaningful = append(meaningful, text)
-	}
+	meaningful := remoteDiffSelfCheckMeaningfulLines(output)
 	if len(meaningful) == 0 {
 		return true
 	}
@@ -895,24 +1071,21 @@ func (c *remoteCodingCallbacks) completeRemoteDiffSelfCheck() {
 		return
 	}
 	workDir := c.defaultRemoteWorkingDir()
-	// Probe first without status/diff so non-git workspaces are recorded as a
-	// soft skip (with fatal text intact) instead of a hard command failure.
-	probe := c.sshBash(map[string]interface{}{
-		"command":     "git rev-parse --is-inside-work-tree",
-		"working_dir": workDir,
-	})
-	if remoteCodingToolOutcome(probe) != "success" {
-		log.Printf("[remote-subagent] git work-tree probe did not pass (often non-git): result=%q", compactCodingSubAgentLogText(probe, 800))
-		return
-	}
+	// One dedicated status probe is sufficient and preserves an auditable exit:
+	// dirty/untracked Git files produce content, a clean tree is detected as
+	// suspicious against the file audit, and a non-Git directory retains Git's
+	// explicit fatal diagnostic for the NOT_NEEDED path. A preliminary rev-parse
+	// used to return early in non-Git directories, leaving no status/diff evidence.
 	result := c.sshBash(map[string]interface{}{
-		"command":     "git status --short && git diff --stat",
+		"command":     remotePostEditDiffSelfCheckCommand,
 		"working_dir": workDir,
 	})
 	if remoteCodingToolOutcome(result) != "success" {
-		log.Printf("[remote-subagent] diff/status audit command did not pass: result=%q", compactCodingSubAgentLogText(result, 800))
+		log.Printf("[remote-subagent] status audit command did not pass (often non-git): result=%q", compactCodingSubAgentLogText(result, 800))
 	}
 }
+
+const remotePostEditDiffSelfCheckCommand = "git status --porcelain=v1 --untracked-files=all"
 
 func (c *remoteCodingCallbacks) nextRemoteAuditSeq() uint64 {
 	if c == nil {
@@ -1031,20 +1204,39 @@ func (c *remoteCodingCallbacks) logRemoteCommandFailure(seq uint64, command, wor
 	)
 }
 
-func (c *remoteCodingCallbacks) trackRemoteSearch(tool, query, path, result string, succeeded bool) {
+func (c *remoteCodingCallbacks) trackRemoteSearch(tool, query, path, result string, succeeded bool, toolArgs ...map[string]interface{}) {
 	if c == nil || strings.TrimSpace(tool) == "" {
 		return
 	}
 	seq := c.nextRemoteAuditSeq()
+	summary := compactSearchResult(result)
+	if strings.EqualFold(strings.TrimSpace(tool), "web_search") || strings.EqualFold(strings.TrimSpace(tool), "web_fetch") {
+		summary = truncateLocalizationWebAudit(result)
+	}
+	var args map[string]interface{}
+	if len(toolArgs) > 0 {
+		args = toolArgs[0]
+	}
+	fetchOffset, fetchNextOffset, fetchTotalChars, fetchHasMore, fetchRangeKnown := localizationWebFetchPagination(tool, args, result)
 	search := CodingSubAgentSearchResult{
-		Tool:      strings.TrimSpace(tool),
-		Query:     compactSubAgentSearchText(query),
-		Path:      compactSubAgentPathText(path),
-		Succeeded: succeeded,
-		Summary:   compactSearchResult(result),
-		seq:       seq,
+		Tool:             strings.TrimSpace(tool),
+		Query:            compactSubAgentSearchText(query),
+		Path:             compactSubAgentPathText(path),
+		Succeeded:        succeeded,
+		Summary:          summary,
+		FetchOffset:      fetchOffset,
+		FetchNextOffset:  fetchNextOffset,
+		FetchTotalChars:  fetchTotalChars,
+		FetchHasMore:     fetchHasMore,
+		FetchRangeKnown:  fetchRangeKnown,
+		FetchAuditKnown:  strings.EqualFold(strings.TrimSpace(tool), "web_fetch"),
+		FetchResolvedURL: localizationWebFetchResolvedURL(result),
+		seq:              seq,
 	}
 	c.searchesRun = append(c.searchesRun, search)
+	if strings.EqualFold(strings.TrimSpace(tool), "web_search") || strings.EqualFold(strings.TrimSpace(tool), "web_fetch") {
+		log.Printf("[remote-research] project=%q %s", remoteLocalizationLogProject(c), localizationResearchToolDebugSummary(search))
+	}
 	if succeeded && c.firstSearchSeq == 0 && subAgentSearchProvidesExplorationEvidence(search) {
 		c.firstSearchSeq = seq
 	}
@@ -1196,8 +1388,10 @@ type remoteCodingCallbacks struct {
 	filesRead      []string
 	fileEdits      []remoteCodingFileAuditEvent
 	fileReads      []remoteCodingFileAuditEvent
+	knownExisting  map[string]bool
 	commandsRun    []CodingSubAgentCommandResult
 	searchesRun    []CodingSubAgentSearchResult
+	localization   codingSubAgentLocalizationState
 
 	// Local workbench extensions (skills / MCP) for full remote coding env.
 	localExtSelected bool
@@ -1327,6 +1521,7 @@ func (c *remoteCodingCallbacks) localWorkbenchCallbacks() *codingSubAgentCallbac
 
 func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interface{} {
 	tools := remoteCodingToolDefinitions()
+	tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition())
 	if c == nil {
 		// Keep the callback contract nil-safe. This is used by lightweight
 		// prompt/tool-surface checks before a concrete remote agent is bound.
@@ -1516,19 +1711,29 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 	case "web_search":
 		if c.agent.handler != nil {
 			result = c.agent.handler.toolWebSearch(args)
+			c.trackRemoteSearch("web_search", remoteArgStr(args, "query"), "web", result, !codingWebResearchResultLooksFailed(result))
 			return result
 		}
-		result = "web_search unavailable"
+		result = "错误: web_search unavailable: host handler missing"
+		c.trackRemoteSearch("web_search", remoteArgStr(args, "query"), "web", result, false)
 		return result
 	case "web_fetch":
 		if c.agent.handler != nil {
 			result = c.agent.handler.toolWebFetch(args)
+			c.trackRemoteSearch("web_fetch", remoteArgStr(args, "url"), "web", result, !codingWebFetchResultLooksFailed(result), args)
 			return result
 		}
 		result = "web_fetch unavailable"
+		c.trackRemoteSearch("web_fetch", remoteArgStr(args, "url"), "web", result, false, args)
 		return result
 	case "current_datetime":
 		result = formatBtwCurrentDateTime()
+		return result
+	case codeNavigationToolName:
+		result = c.executeRemoteCodeNavigation(args)
+		return result
+	case reportLocalizationToolName:
+		result = c.executeRemoteReportLocalization(args)
 		return result
 	case "goal":
 		if c.agent != nil && c.agent.handler != nil {
@@ -1566,8 +1771,16 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 	case "ssh_read_file":
 		result = c.sshReadFile(args)
 	case "ssh_write_file":
+		if msg := c.requireRemoteLocalizationBeforeBugEdit(args, false); msg != "" {
+			result = msg
+			break
+		}
 		result = c.sshWriteFile(args)
 	case "ssh_edit_file":
+		if msg := c.requireRemoteLocalizationBeforeBugEdit(args, true); msg != "" {
+			result = msg
+			break
+		}
 		result = c.sshEditFile(args)
 	case "ssh_bash":
 		result = c.sshBash(args)
@@ -1634,7 +1847,7 @@ func remoteCodingToolOutcome(result string) string {
 	// Instrumented remote bash prints "EXIT: N". That marker is authoritative:
 	// a successful grep/tail of error logs may contain "error:" / "panic:" / "失败"
 	// in the log body while the command itself exited 0.
-	if code, ok := remoteCodingParseExitMarker(result); ok {
+	if code, ok := remoteCodingParseAuthoritativeExitMarker(result); ok {
 		if code != 0 {
 			return "failed"
 		}
@@ -1644,6 +1857,25 @@ func remoteCodingToolOutcome(result string) string {
 		return "failed"
 	}
 	return "success"
+}
+
+// remoteCodingParseAuthoritativeExitMarker accepts a marker only when nothing
+// except SSH/PTTY wrapper noise follows it. A program may legitimately print a
+// standalone line such as "EXIT: 0" before later failing; that line must not
+// override the actual trailing failure text.
+func remoteCodingParseAuthoritativeExitMarker(result string) (int, bool) {
+	lines := strings.Split(result, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(remoteCodingStripSimpleANSI(strings.TrimRight(lines[i], "\r")))
+		if code, ok := remoteCodingParseExitMarker(line); ok {
+			return code, true
+		}
+		if line == "" || subAgentRemoteShellNoiseLine(line) {
+			continue
+		}
+		return 0, false
+	}
+	return 0, false
 }
 
 // remoteCodingParseExitMarker extracts the last instrumented exit marker from
@@ -2372,6 +2604,10 @@ func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string 
 	result := c.execSSH(remoteReadFileRangePythonCommand(path, offset, limit), 10)
 	if remoteCodingToolOutcome(result) == "success" && remoteReadFileResultHasUsefulEvidence(result) {
 		c.trackRemoteFileRead(path)
+		if c.knownExisting == nil {
+			c.knownExisting = make(map[string]bool)
+		}
+		c.knownExisting[remoteCleanPath(path)] = true
 		// A range beginning after line one is useful to the agent but is not a
 		// faithful source preview of the file; keep the user's current preview.
 		if remoteReadCanUpdatePreview(offset) && !remotePreviewOutputIsTransportTruncated(result) {
@@ -3086,6 +3322,8 @@ func buildRemoteInspectionRoleSystemPrompt(projectDir, workDir string, role codi
 	sb.WriteString(`
 ## 工作规范
 1. 先定位相关路径与符号，再深入阅读关键文件
+1a. 故障定位优先 code_navigation；输出必须包含症状、Top 候选、根因文件/符号、因果路径、复现证据、反证/排除假设与建议的 focused test，并用 report_localization 提交结构化结果
+1b. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误与组件版本，优先核对官方文档并记录来源；若只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内问题也要明确说明为何无需联网
 2. 用 ssh_bash 做只读探查（find/rg/ls/git status/diff/test 等）
 3. git status/diff/log 自检不要加 2>/dev/null 或 >/dev/null；若目录不是 Git 仓库，直接在结论中说明即可，不要用重定向掩盖 fatal 信息
 4. 完成后给出结构化发现：关键路径、结论、风险/建议
@@ -3124,6 +3362,7 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 以下第 4、5、6 步是完成任务的质量门禁；只要修改或创建了文件，就必须执行并在最终回复中报告。唯一例外是第 5 步：当前多步骤计划明确把编译/build/test 交给后续独立步骤时，不要提前构建，但第 4、6 步仍为必做项。
 
 1. 修改文件前先 ssh_read_file 确认当前内容
+1a. 修复 bug 时先提取错误文本/堆栈/入口与期望-实际差异；优先调用 code_navigation（远端 .codegraph + codegraph，自动回退 rg/grep）定位定义、引用、调用者/被调用者。形成候选与反证，复现或说明无法复现的原因。对陌生/版本敏感/第三方事实必须调用本地 web_search（精确错误 + 组件/版本）并优先阅读官方来源；若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内逻辑则记录无需搜索的理由。随后调用 report_localization；根因文件与证据不匹配时禁止修改。
 2. 优先做最小、聚焦的修改；不要顺手重构无关代码
 3. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
 4. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容

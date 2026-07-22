@@ -1662,6 +1662,91 @@ func TestSQLiteStoreScanSensitiveContent(t *testing.T) {
 	}
 }
 
+func TestExportSnapshotSkipsOrphanKnowledgeRecords(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	source := Source{
+		ID:          "ksrc_snapshot_orphans",
+		Kind:        SourceKindText,
+		URI:         "knowledge://text/snapshot-orphans",
+		Title:       "Snapshot orphan coverage",
+		ContentHash: "snapshot-orphans",
+		Status:      StatusDistilled,
+		FetchedAt:   now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := store.SaveSource(ctx, source); err != nil {
+		t.Fatalf("SaveSource: %v", err)
+	}
+	if err := store.SaveDocumentNode(ctx, DocumentNode{
+		ID: "kdn_snapshot_valid", SourceID: source.ID, Type: "document", Title: "Valid node", Text: "Valid snapshot node.",
+	}); err != nil {
+		t.Fatalf("SaveDocumentNode: %v", err)
+	}
+	if err := store.SaveCard(ctx, Card{
+		ID: "kcard_snapshot_valid", SourceID: source.ID, NodeID: "kdn_snapshot_valid", Title: "Valid card", Claim: "Valid card is exported.",
+	}); err != nil {
+		t.Fatalf("SaveCard valid: %v", err)
+	}
+	if err := store.SaveCard(ctx, Card{
+		ID: "kcard_snapshot_orphan", SourceID: source.ID, NodeID: "kdn_snapshot_missing", Title: "Orphan card", Claim: "Orphan card is excluded.",
+	}); err != nil {
+		t.Fatalf("SaveCard orphan: %v", err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	if err := insertFact(ctx, tx, Fact{ID: "kfact_snapshot_valid", CardID: "kcard_snapshot_valid", SourceID: source.ID, Subject: "valid", Predicate: "is", Object: "exported"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("insert valid fact: %v", err)
+	}
+	if err := insertFact(ctx, tx, Fact{ID: "kfact_snapshot_orphan_card", CardID: "kcard_snapshot_orphan", SourceID: source.ID, Subject: "orphan", Predicate: "is", Object: "excluded"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("insert orphan-card fact: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	exportPath := filepath.Join(t.TempDir(), "snapshot.jsonl")
+	export, err := store.ExportSnapshot(ctx, ExportOptions{OutputPath: exportPath})
+	if err != nil {
+		t.Fatalf("ExportSnapshot: %v", err)
+	}
+	if export.Cards != 1 || export.Facts != 1 {
+		t.Fatalf("expected only valid knowledge records in export: %#v", export)
+	}
+	exported, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("ReadFile export: %v", err)
+	}
+	for _, excludedID := range []string{"kcard_snapshot_orphan", "kfact_snapshot_orphan_card"} {
+		if strings.Contains(string(exported), excludedID) {
+			t.Fatalf("export contains invalid record %q: %s", excludedID, exported)
+		}
+	}
+
+	restore, err := NewSQLiteStore(filepath.Join(t.TempDir(), "restored.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore restored: %v", err)
+	}
+	defer restore.Close()
+	dryRun, err := restore.ImportSnapshot(ctx, SnapshotImportOptions{InputPath: exportPath, DryRun: true})
+	if err != nil {
+		t.Fatalf("ImportSnapshot dry-run: %v", err)
+	}
+	if dryRun.MissingReferences != 0 || dryRun.Failed != 0 || dryRun.Cards != 1 || dryRun.Facts != 1 {
+		t.Fatalf("export should be self-consistent: %#v", dryRun)
+	}
+}
+
 func TestExportSnapshotTenantOwnerScope(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))

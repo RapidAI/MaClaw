@@ -1,8 +1,12 @@
 package remote
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func TestSSHHostConfig_Defaults(t *testing.T) {
@@ -38,6 +42,64 @@ func TestSSHHostConfig_SSHHostID(t *testing.T) {
 			t.Errorf("SSHHostID() = %q, want %q", got, tt.expect)
 		}
 	}
+}
+
+func TestSSHPoolKeySeparatesHostKeyPolicies(t *testing.T) {
+	base := SSHHostConfig{Host: "example.com", User: "deploy", Port: 22}
+	legacy := sshPoolKey(base)
+	pinnedA := base
+	pinnedA.HostKeyFingerprint = "SHA256:aaa"
+	pinnedB := base
+	pinnedB.HostKeyFingerprint = "SHA256:bbb"
+	if legacy == sshPoolKey(pinnedA) || sshPoolKey(pinnedA) == sshPoolKey(pinnedB) {
+		t.Fatalf("pool keys must isolate legacy and pinned policies: %q %q %q", legacy, sshPoolKey(pinnedA), sshPoolKey(pinnedB))
+	}
+}
+
+func TestSSHPoolStatsDoNotExposeHostKeyPolicy(t *testing.T) {
+	publicHostID := "developer@example.com:22"
+	pool := &SSHPool{conns: map[string]*poolEntry{
+		publicHostID + "|fingerprint=SHA256:secret-pin": {
+			hostID:   publicHostID,
+			refCount: 2,
+		},
+		publicHostID + "|known-hosts=C:\\private\\known_hosts": {
+			hostID:   publicHostID,
+			refCount: 1,
+		},
+	}}
+
+	stats := pool.Stats()
+	if len(stats) != 1 || stats[publicHostID] != 3 {
+		t.Fatalf("Stats() = %#v, want one aggregated public host entry", stats)
+	}
+}
+
+func TestSSHHostKeyCallbackRejectsMismatchedPin(t *testing.T) {
+	keyA, keyB := testSSHSigner(t), testSSHSigner(t)
+	callback, err := sshHostKeyCallback(SSHHostConfig{HostKeyFingerprint: ssh.FingerprintSHA256(keyA.PublicKey())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := callback("example.com:22", nil, keyA.PublicKey()); err != nil {
+		t.Fatalf("matching pin rejected: %v", err)
+	}
+	if err := callback("example.com:22", nil, keyB.PublicKey()); err == nil {
+		t.Fatal("mismatched host key should be rejected")
+	}
+}
+
+func testSSHSigner(t *testing.T) ssh.Signer {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
 }
 
 func TestSSHPool_NewAndStats(t *testing.T) {
