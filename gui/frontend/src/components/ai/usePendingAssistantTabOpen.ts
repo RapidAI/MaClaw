@@ -8,28 +8,10 @@ import { expertSessionKey } from "./aiAssistantPanelSessionUtils";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { isLocalHumanParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
+import type { CodingTaskLaunch } from "./codingTaskLaunch";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
-export interface PendingProjectTabOpen {
-    projectPath: string;
-    taskTitle: string;
-    /** Message to send as the first message in the tab. Defaults to taskTitle if not specified. */
-    initialMessage?: string;
-    /** If true, send initialMessage (or taskTitle) as the first message after tab creation */
-    autoSend?: boolean;
-    /** Changes the preparation copy shown while the new project-backed agent session is being created. */
-    prepareMode?: "restore-context" | "new-agent";
-    /** When set, open the project tab in coding-agent mode (tool-using programming agent). */
-    agentMode?: "coding_dev" | "remote_coding_dev";
-    /** Display-only remote host for remote coding banners. */
-    remoteHost?: string;
-    /** When true, remote coding SSH needs reconnect (password) before SubAgent runs. */
-    remoteNeedsReconnect?: boolean;
-	/** Original IM route for the one-off completion summary. */
-	imPlatform?: string;
-	imTargetUID?: string;
-	imIsGroup?: boolean;
-}
+export type PendingProjectTabOpen = CodingTaskLaunch;
 
 /** Pending expert tab open request (e.g. clicking an expert card on the utilities page). */
 export interface PendingExpertOpen {

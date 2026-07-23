@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
+import { useDialog } from '../CustomDialog';
+import type { CodingTaskLaunch as SharedCodingTaskLaunch } from '../ai/codingTaskLaunch';
 import './VirtualRepositoryWorkspace.css';
 
 type RepoKind = 'git' | 'svn' | 'local';
@@ -7,6 +9,7 @@ type RepoKind = 'git' | 'svn' | 'local';
 type Binding = {
     kind: RepoKind;
     relative_path: string;
+	description?: string;
     remote_url?: string;
 	ref_type?: 'branch' | 'tag';
 	ref_name?: string;
@@ -62,11 +65,69 @@ type Credential = {
     scope?: string;
 };
 
+const isCredential = (value: unknown): value is Credential => {
+	if (!value || typeof value !== 'object') return false;
+	const credential = value as Record<string, unknown>;
+	return typeof credential.id === 'string' && credential.id.trim().length > 0
+		&& typeof credential.name === 'string' && credential.name.trim().length > 0
+		&& (credential.kind === 'git' || credential.kind === 'svn')
+		&& typeof credential.username === 'string' && credential.username.trim().length > 0
+		&& (credential.scope == null || typeof credential.scope === 'string');
+};
+
+const parseCredentials = (raw: unknown, label: string): Credential[] => {
+	const value = parseRequiredJSON<unknown>(raw, label);
+	if (!Array.isArray(value) || value.some((credential) => !isCredential(credential))) {
+		throw new Error(`${label} returned invalid credentials`);
+	}
+	const ids = new Set<string>();
+	if (value.some((credential) => {
+		if (ids.has(credential.id)) return true;
+		ids.add(credential.id);
+		return false;
+	})) throw new Error(`${label} returned duplicate credential ids`);
+	return value;
+};
+
+const isNodeStatus = (value: unknown): value is NodeStatus => {
+	if (!value || typeof value !== 'object') return false;
+	const status = value as Record<string, unknown>;
+	return typeof status.node_id === 'string' && status.node_id.trim().length > 0
+		&& (status.kind === 'git' || status.kind === 'svn' || status.kind === 'local')
+		&& typeof status.exists === 'boolean'
+		&& typeof status.is_repository === 'boolean'
+		&& typeof status.clean === 'boolean'
+		&& ['path', 'branch', 'remote_url', 'status', 'error_code', 'error'].every((key) => status[key] == null || typeof status[key] === 'string');
+};
+
+const parseNodeStatuses = (raw: unknown, label: string): NodeStatus[] => {
+	const value = parseRequiredJSON<unknown>(raw, label);
+	if (!Array.isArray(value) || value.some((status) => !isNodeStatus(status))) {
+		throw new Error(`${label} returned invalid statuses`);
+	}
+	const nodeIDs = new Set<string>();
+	if (value.some((status) => {
+		if (nodeIDs.has(status.node_id)) return true;
+		nodeIDs.add(status.node_id);
+		return false;
+	})) throw new Error(`${label} returned duplicate node statuses`);
+	return value;
+};
+
+const statusNeedsAttention = (status: NodeStatus) => Boolean(status.error_code || status.error);
+
 type CodingTaskLaunch = {
-    project_path: string;
-    task_title: string;
-    agent_mode: 'coding_dev' | 'remote_coding_dev';
-    remote_host?: string;
+    project_path: SharedCodingTaskLaunch['projectPath'];
+    task_title: SharedCodingTaskLaunch['taskTitle'];
+    agent_mode: NonNullable<SharedCodingTaskLaunch['agentMode']>;
+    remote_host?: SharedCodingTaskLaunch['remoteHost'];
+};
+
+type RepositoryContextMenu = {
+	item: any;
+	key: string;
+	x: number;
+	y: number;
 };
 
 const parseJSON = <T,>(raw: unknown, fallback: T): T => {
@@ -123,7 +184,7 @@ const shouldAcceptOperationResult = (current: any, next: any) => {
 	return true;
 };
 
-const retryOperationForResult = (result: any) => {
+	const retryOperationForResult = (result: any) => {
 	const failed = (result?.items || []).filter((item: any) => item.status === 'failed' && item.node_id);
 	const action = result?.action === 'commit_push' && failed.length > 0 && failed.every((item: any) => item.error_code === 'push_failed_after_commit')
 		? 'push'
@@ -134,20 +195,77 @@ const retryOperationForResult = (result: any) => {
 const app = () => (window as any)?.go?.main?.App || null;
 const nodeId = () => `node_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const errorMessage = (error: unknown) => String((error as any)?.message || error);
+// The virtual directory tree is the source of truth for a mapping's checkout
+// location. The persisted relative path is derived for backend compatibility.
+const relativePathsForTree = (nodes: VRepoNode[]) => {
+	const byID = new Map(nodes.map((node) => [node.id, node]));
+	const paths = new Map<string, string>();
+	const resolving = new Set<string>();
+	const resolve = (nodeID: string): string => {
+		const cached = paths.get(nodeID);
+		if (cached !== undefined) return cached;
+		const node = byID.get(nodeID);
+		if (!node?.name?.trim() || resolving.has(nodeID)) return '';
+		resolving.add(nodeID);
+		const parentPath = node.parent_id ? resolve(node.parent_id) : '';
+		resolving.delete(nodeID);
+		const value = node.parent_id && !parentPath ? '' : parentPath ? `${parentPath}/${node.name.trim()}` : node.name.trim();
+		paths.set(nodeID, value);
+		return value;
+	};
+	for (const node of nodes) resolve(node.id);
+	return paths;
+};
+
+const relativePathForTreeNode = (nodes: VRepoNode[], nodeID: string) => relativePathsForTree(nodes).get(nodeID) || '';
+
+const withTreeDerivedMappingPaths = (repository: VRepo): VRepo => ({
+	...repository,
+	nodes: (() => {
+		const paths = relativePathsForTree(repository.nodes);
+		return repository.nodes.map((node) => node.repository ? {
+			...node,
+				repository: { ...node.repository, relative_path: paths.get(node.id) || '' },
+		} : node);
+	})(),
+});
+
+const treeNodeIcon = (kind?: RepoKind) => {
+	if (kind === 'git') return <svg viewBox="0 0 16 16" aria-hidden><path d="M6 3.5 3.5 6 8 10.5l4.5-4.5-2.5-2.5M8 10.5v3M6 3.5v3M8 13.5a1 1 0 1 0 0 2 1 1 0 0 0 0-2M6 5.5a1 1 0 1 0 0 2 1 1 0 0 0 0-2" /></svg>;
+	if (kind === 'svn') return <svg viewBox="0 0 16 16" aria-hidden><path d="M3 4.5h6l1.5 1.5H13v6.5H3zM3 4.5v8M5.5 8h5M5.5 10.5h3" /></svg>;
+	if (kind === 'local') return <svg viewBox="0 0 16 16" aria-hidden><path d="M2.5 4h4l1.2 1.5h5.8v7H2.5zM2.5 6h11" /></svg>;
+	return <svg viewBox="0 0 16 16" aria-hidden><path d="M2.5 4h4l1.2 1.5h5.8v7H2.5z" /></svg>;
+};
+
+// Return true when following a prospective parent chain would either reach the
+// node itself or encounter a pre-existing cycle in a malformed manifest.
+const wouldCreateTreeCycle = (nodes: VRepoNode[], nodeID: string, parentID: string) => {
+	const byID = new Map(nodes.map((node) => [node.id, node]));
+	const visited = new Set<string>();
+	for (let currentID = parentID; currentID;) {
+		if (currentID === nodeID || visited.has(currentID)) return true;
+		visited.add(currentID);
+		currentID = byID.get(currentID)?.parent_id || '';
+	}
+	return false;
+};
 
 export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: { isZh: boolean; onBack: () => void; onOpenCodingTask?: (launch: CodingTaskLaunch) => void }) {
+	const { showConfirm } = useDialog();
     const text = isZh ? {
         title: '虚拟仓库', back: '返回实用工具', newRepo: '新建虚拟仓库', openRepo: '打开已有目录',
-        recent: '最近使用', empty: '尚未创建虚拟仓库', emptyHint: '选择一个根目录，MaClaw 会在其中创建 .vrepo/manifest.json。',
+        recent: '最近使用', repositoryList: '仓库', searchRepositories: '搜索仓库', repositoryCount: '个仓库', noSearchResults: '没有匹配的虚拟仓库', selectRepository: '选择一个虚拟仓库', selectRepositoryHint: '从左侧打开仓库，查看目录映射、健康状态和操作记录。', localRepository: '本机', remoteRepository: '远程 SSH', mappings: '个映射', health: '健康概览', healthy: '正常', needsAttention: '需处理', pendingStatus: '尚未检查', lastOpened: '最近打开', repositoryActions: '仓库操作',
+        empty: '尚未创建虚拟仓库', emptyHint: '选择一个根目录，MaClaw 会在其中创建 .vrepo/manifest.json。',
         name: '名称', root: '根目录', choose: '选择目录', save: '保存', cancel: '取消', refresh: '刷新状态',
         addGroup: '新建虚拟目录', addRepo: '添加映射', credentials: '仓库凭据', svnClient: 'SVN 工具',
-        type: '类型', path: '相对目录', remote: '仓库地址', enabled: '启用', parent: '上级目录', rootNode: '（根）', refType: '版本类型', refName: '分支/标签', defaultRef: '默认分支', checkout: '检出仓库', branchRef: '分支', tagRef: '标签',
+	        type: '类型', path: '目录位置', remote: '仓库地址', enabled: '启用', parent: '上级目录', rootNode: '（根）', refType: '版本类型', refName: '分支/标签', defaultRef: '默认分支', checkout: '检出仓库', checkoutAfterSave: '保存后立即检出', notCheckedOut: '尚未检出', branchRef: '分支', tagRef: '标签',
         edit: '编辑', remove: '删除', openFolder: '打开目录', createDir: '目录不存在时创建', clean: '干净', changed: '有变更',
         local: '纯本地目录', loading: '加载中…', noClient: '未找到 SVN 命令行工具', search: '重新搜索', specify: '指定 svn',
         installSVN: '安装说明',
         foundClient: '已找到', credentialName: '凭据名称', username: '用户名', password: '密码或令牌', scope: '主机/Realm（可选）',
         addCredential: '新增凭据', manageCredentials: '凭据管理', noCredentials: '尚无已保存凭据', passwordHint: '编辑时留空表示不修改',
-        deleteIndex: '从最近使用中移除', manifestNote: '删除这里只移除 MaClaw 索引，不会删除 .vrepo 或真实文件。',
+		deleteIndex: '从最近使用中移除', deleteRepository: '删除虚拟仓库', deleteRepositoryConfirm: '确认从 MaClaw 列表中移除“{name}”？\n\n这不会删除 .vrepo 目录或真实文件，但会解除本机凭据绑定和 SSH 密码保存。', manifestNote: '删除这里只移除 MaClaw 索引，不会删除 .vrepo 或真实文件。',
+		syncNow: '立即同步', syncing: '正在同步…', syncReady: '自动同步已开启', syncSuccess: '已同步', syncConflict: '同步冲突', syncConflictMessage: '“{name}”同时在本机和另一台设备上被修改。是否保留本机版本？', syncConflictCloud: '是否改为采用 Hub 版本？选择“否”会保留两个版本，并将本机版本另存为副本。', useLocal: '保留本机', useCloud: '采用 Hub', keepCopy: '保留副本', syncUnavailable: '同步需要先连接并注册 Hub。',
         commit: '提交', push: '推送', commitPush: '提交并推送', revert: '还原', execute: '执行', preview: '预览',
         commitMessage: '提交说明', repositories: '个仓库', localSkipped: '个本地目录已跳过', revertWarning: '未提交的已跟踪更改将被丢弃；未跟踪文件会保留。',
         operation: '操作', close: '关闭', retryFailed: '重试失败项', calculateSize: '计算大小', files: '文件数', size: '大小', branch: '分支', status: '状态',
@@ -156,16 +274,18 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		cleanStatus: '仓库干净', changedStatus: '仓库有变更', errorStatus: '仓库状态异常',
     } : {
         title: 'Virtual Repository', back: 'Back to utilities', newRepo: 'New virtual repository', openRepo: 'Open existing root',
-        recent: 'Recent', empty: 'No virtual repositories yet', emptyHint: 'Choose a root directory; MaClaw creates .vrepo/manifest.json inside it.',
+        recent: 'Recent', repositoryList: 'Repositories', searchRepositories: 'Search repositories', repositoryCount: 'repositories', noSearchResults: 'No virtual repositories match your search', selectRepository: 'Select a virtual repository', selectRepositoryHint: 'Open a repository from the list to review mappings, health, and operations.', localRepository: 'Local', remoteRepository: 'Remote SSH', mappings: 'mappings', health: 'Health overview', healthy: 'Healthy', needsAttention: 'Needs attention', pendingStatus: 'Not checked', lastOpened: 'Last opened', repositoryActions: 'Repository actions',
+        empty: 'No virtual repositories yet', emptyHint: 'Choose a root directory; MaClaw creates .vrepo/manifest.json inside it.',
         name: 'Name', root: 'Root directory', choose: 'Choose', save: 'Save', cancel: 'Cancel', refresh: 'Refresh status',
         addGroup: 'New virtual folder', addRepo: 'Add mapping', credentials: 'Repository credentials', svnClient: 'SVN client',
-        type: 'Type', path: 'Relative path', remote: 'Repository URL', enabled: 'Enabled', parent: 'Parent folder', rootNode: '(root)', refType: 'Version type', refName: 'Branch/tag', defaultRef: 'Default branch', checkout: 'Checkout repository', branchRef: 'Branch', tagRef: 'Tag',
+	        type: 'Type', path: 'Directory location', remote: 'Repository URL', enabled: 'Enabled', parent: 'Parent folder', rootNode: '(root)', refType: 'Version type', refName: 'Branch/tag', defaultRef: 'Default branch', checkout: 'Checkout repository', checkoutAfterSave: 'Checkout after saving', notCheckedOut: 'Not checked out', branchRef: 'Branch', tagRef: 'Tag',
         edit: 'Edit', remove: 'Remove', openFolder: 'Open folder', createDir: 'Create directory if missing', clean: 'Clean', changed: 'Changed',
         local: 'Local directory', loading: 'Loading…', noClient: 'SVN command line client not found', search: 'Search again', specify: 'Choose svn',
         installSVN: 'Installation guide',
         foundClient: 'Found', credentialName: 'Credential name', username: 'Username', password: 'Password or token', scope: 'Host/realm (optional)',
         addCredential: 'Add credential', manageCredentials: 'Credential manager', noCredentials: 'No saved credentials', passwordHint: 'Leave blank while editing to keep the secret',
-        deleteIndex: 'Remove from recent', manifestNote: 'This only removes the MaClaw index entry; .vrepo and real files remain untouched.',
+		deleteIndex: 'Remove from recent', deleteRepository: 'Delete virtual repository', deleteRepositoryConfirm: 'Remove “{name}” from the MaClaw list?\n\nThis does not delete .vrepo or real files, but it removes local credential bindings and the saved SSH password.', manifestNote: 'This only removes the MaClaw index entry; .vrepo and real files remain untouched.',
+		syncNow: 'Sync now', syncing: 'Syncing…', syncReady: 'Automatic sync is on', syncSuccess: 'Synced', syncConflict: 'Sync conflict', syncConflictMessage: '“{name}” changed both here and on another device. Keep this computer’s version?', syncConflictCloud: 'Use the Hub version instead? Choosing “No” keeps both by saving this computer’s version as a copy.', useLocal: 'Keep local', useCloud: 'Use Hub', keepCopy: 'Keep copy', syncUnavailable: 'Connect and register with Hub before syncing.',
         commit: 'Commit', push: 'Push', commitPush: 'Commit & push', revert: 'Revert', execute: 'Execute', preview: 'Preview',
         commitMessage: 'Commit message', repositories: 'repositories', localSkipped: 'local directories skipped', revertWarning: 'Uncommitted tracked changes will be discarded. Untracked files are preserved.',
         operation: 'Operation', close: 'Close', retryFailed: 'Retry failed', calculateSize: 'Calculate size', files: 'Files', size: 'Size', branch: 'Branch', status: 'Status',
@@ -183,8 +303,10 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const [svn, setSvn] = useState<ClientStatus | null>(null);
-    const [credentials, setCredentials] = useState<Credential[]>([]);
-    const [credentialBindings, setCredentialBindings] = useState<Record<string, string>>({});
+	const [credentials, setCredentials] = useState<Credential[]>([]);
+	const [credentialBindings, setCredentialBindings] = useState<Record<string, string>>({});
+	const [credentialReturnToMapping, setCredentialReturnToMapping] = useState(false);
+	const [mappingDraftBeforeCredentials, setMappingDraftBeforeCredentials] = useState<Record<string, unknown> | null>(null);
     const [operation, setOperation] = useState<{ action: 'commit' | 'push' | 'commit_push' | 'revert'; message: string; preview?: any } | null>(null);
     const [operationResult, setOperationResult] = useState<any>(null);
 	const [operationCancelPending, setOperationCancelPending] = useState(false);
@@ -193,32 +315,258 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
     const [remoteConnection, setRemoteConnection] = useState<any>(null);
     const [startingRepositoryID, setStartingRepositoryID] = useState('');
-    const [openingRepositoryKey, setOpeningRepositoryKey] = useState('');
-    const [selectingRoot, setSelectingRoot] = useState(false);
-    const operationResultRef = useRef<any>(null);
-    const operationDialogRef = useRef<HTMLElement | null>(null);
-    const busyRef = useRef(false);
+	const [openingRepositoryKey, setOpeningRepositoryKey] = useState('');
+	const [repositoryQuery, setRepositoryQuery] = useState('');
+	const deferredRepositoryQuery = useDeferredValue(repositoryQuery);
+	const [removedRepositoryIDs, setRemovedRepositoryIDs] = useState<Set<string>>(() => new Set());
+	const [repositoryContextMenu, setRepositoryContextMenu] = useState<RepositoryContextMenu | null>(null);
+	const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'conflict' | 'error'>('idle');
+	const [syncMessage, setSyncMessage] = useState('');
+	    const [selectingRoot, setSelectingRoot] = useState(false);
+	const [draggedNodeID, setDraggedNodeID] = useState('');
+	const [dropTargetID, setDropTargetID] = useState<string | null>(null);
+	const operationResultRef = useRef<any>(null);
+	const operationDialogRef = useRef<HTMLElement | null>(null);
+	const busyRef = useRef(false);
+	const credentialSaveInFlightRef = useRef(false);
+	const credentialDeleteInFlightRef = useRef(false);
+	const credentialManagerRequestRef = useRef(0);
+	const mappingCredentialRequestRef = useRef(0);
+	const credentialBindingsRequestRef = useRef(0);
+	const repositoryDeletionRef = useRef(false);
     const codingTaskStartingRef = useRef(false);
 	const directoryPickerOpenRef = useRef(false);
 	const operationPreviewRequestRef = useRef(0);
 	const operationStartingRef = useRef(false);
 	const repositorySessionRef = useRef(0);
+	const recentRepositoriesRequestRef = useRef(0);
 		const directoryStatsRequestRef = useRef(0);
 		const remoteConnectionRequestRef = useRef(0);
+		const repositoryContextMenuRef = useRef<HTMLDivElement | null>(null);
+		const repositoryContextMenuActionRef = useRef<HTMLButtonElement | null>(null);
     const operationRunning = operationResult?.status === 'running';
     const mutationLocked = busy || operationRunning;
     busyRef.current = busy;
 
-	const setActiveRepository = (nextRepository: VRepo) => {
+	// The recent list can become large on shared workstations. Prepare its search
+	// text and mapping count only when the backend data changes, then defer the
+	// filtering work so an input event is never held up by a long list render.
+	const repositoryRecords = useMemo(() => repos.filter((item) => !removedRepositoryIDs.has(String(item?.id || '').trim())).map((item, index) => ({
+		item,
+		key: String(item?.id || item?.root_path || `repository-${index}`),
+		searchText: [item?.name, item?.root_path, item?.remote?.host, item?.remote?.user]
+			.map((value) => String(value || '').toLocaleLowerCase())
+			.join('\u0000'),
+		mappingCount: Array.isArray(item?.nodes)
+			? item.nodes.reduce((count: number, node: VRepoNode) => count + Number(Boolean(node.repository)), 0)
+			: 0,
+	})), [repos, removedRepositoryIDs]);
+
+	const filteredRepositories = useMemo(() => {
+		const query = deferredRepositoryQuery.trim().toLocaleLowerCase();
+		return query ? repositoryRecords.filter((record) => record.searchText.includes(query)) : repositoryRecords;
+	}, [repositoryRecords, deferredRepositoryQuery]);
+
+	const repositoryList = repositoryRecords.length ? <aside className="vrepo-repository-list" aria-label={text.repositoryList}>
+		<div className="vrepo-repository-list__head"><strong>{text.repositoryList}</strong><span aria-live="polite">{filteredRepositories.length} {text.repositoryCount}</span></div>
+		<label className="vrepo-repository-list__search"><span className="sr-only">{text.searchRepositories}</span><input value={repositoryQuery} onChange={(event) => setRepositoryQuery(event.target.value)} placeholder={text.searchRepositories} /></label>
+		<div className="vrepo-repository-list__items">
+			{filteredRepositories.map(({ item, key: itemKey, mappingCount }) => {
+				const opening = openingRepositoryKey === itemKey;
+				const active = !!repo && (repo.id === item.id || (!repo.id && repo.root_path === item.root_path));
+					return <div className="vrepo-repository-list__record" key={itemKey} onContextMenu={(event) => openRepositoryContextMenu(event, item, itemKey)}>
+						<button className={`vrepo-repository-list__item${active ? ' is-active' : ''}`} type="button" data-vrepo-repository-key={itemKey} aria-pressed={active} aria-haspopup="menu" aria-expanded={repositoryContextMenu?.key === itemKey} disabled={!!openingRepositoryKey || selectingRoot || mutationLocked} onClick={() => void openRecentRepository(item)} onKeyDown={(event) => {
+							if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+							event.preventDefault();
+							const bounds = event.currentTarget.getBoundingClientRect();
+							openRepositoryContextMenu(event, item, itemKey, { x: bounds.left + Math.min(bounds.width / 2, 40), y: bounds.top + Math.min(bounds.height, 36) });
+						}}>
+						<span className="vrepo-repository-list__item-name"><strong>{item.name}</strong><em>{item.remote ? text.remoteRepository : text.localRepository}</em></span>
+						<span className="vrepo-repository-list__item-path">{opening ? text.loading : item.remote ? `${item.remote.user}@${item.remote.host}` : item.root_path}</span>
+						<span className="vrepo-repository-list__item-meta">{mappingCount} {text.mappings}</span>
+					</button>
+					<button className="vrepo-repository-list__task utilities-link" type="button" disabled={!!startingRepositoryID || !!openingRepositoryKey || selectingRoot || mutationLocked} onClick={() => void startCodingTask(item)}>{startingRepositoryID === item.id ? text.startingCodingTask : text.startCodingTask}</button>
+				</div>;
+			})}
+			{!filteredRepositories.length ? <p className="vrepo-repository-list__empty" role="status">{text.noSearchResults}</p> : null}
+		</div>
+	</aside> : null;
+
+	const setActiveRepository = (nextRepository: VRepo, resetTreeState = false) => {
 		repositorySessionRef.current += 1;
+		if (resetTreeState) {
+			setExpanded({});
+			setDraggedNodeID('');
+			setDropTargetID(null);
+		}
 		setRepo(nextRepository);
 	};
 
-    const loadRecent = useCallback(async () => {
-        const backend = app();
-        if (!backend?.ListVirtualRepositories) return;
-        try { setRepos(parseJSON(await backend.ListVirtualRepositories(), [])); } catch (e: any) { setError(String(e?.message || e)); }
-    }, []);
+	const repositoryIDsMatch = (left: unknown, right: unknown) => String(left || '').trim() === String(right || '').trim();
+
+	const openRepositoryContextMenu = (event: { preventDefault: () => void; clientX?: number; clientY?: number }, item: any, key: string, position?: { x: number; y: number }) => {
+		event.preventDefault();
+		if (repositoryDeletionRef.current || mutationLocked || selectingRoot) return;
+		const x = position?.x ?? event.clientX ?? 0;
+		const y = position?.y ?? event.clientY ?? 0;
+		setRepositoryContextMenu({
+			item,
+			key,
+			x: Math.max(8, Math.min(x, window.innerWidth - 210)),
+			y: Math.max(8, Math.min(y, window.innerHeight - 56)),
+		});
+	};
+
+	const closeRepositoryContextMenu = (restoreFocus = false) => {
+		const key = repositoryContextMenu?.key;
+		setRepositoryContextMenu(null);
+		if (restoreFocus && key) {
+			window.requestAnimationFrame(() => {
+				Array.from(document.querySelectorAll<HTMLElement>('[data-vrepo-repository-key]'))
+					.find((item) => item.dataset.vrepoRepositoryKey === key)
+					?.focus();
+			});
+		}
+	};
+
+	const loadRecent = useCallback(async () => {
+		const backend = app();
+		if (!backend?.ListVirtualRepositories) return;
+		const requestID = ++recentRepositoriesRequestRef.current;
+		try {
+			const recent = parseJSON(await backend.ListVirtualRepositories(), []);
+			if (requestID === recentRepositoriesRequestRef.current) {
+				setRepos(recent);
+				// A deleted entry stays hidden while a lagging index read can still
+				// return it. Once a read confirms it is gone, release the temporary
+				// tombstone so reopening the same root can appear in the future.
+				const returnedIDs = new Set(recent.map((item: any) => String(item?.id || '').trim()).filter(Boolean));
+				setRemovedRepositoryIDs((current) => {
+					const pending = Array.from(current).filter((id) => returnedIDs.has(id));
+					return pending.length === current.size ? current : new Set(pending);
+				});
+			}
+		} catch (e: any) {
+			if (requestID === recentRepositoriesRequestRef.current) setError(String(e?.message || e));
+		}
+	}, []);
+
+	const runRepositorySync = async (initialResolutions: Record<string, string> = {}) => {
+		if (syncStatus === 'syncing') return;
+		const backend = app();
+		if (!backend?.SyncVirtualRepositories) {
+			setSyncStatus('error');
+			setSyncMessage(text.syncUnavailable);
+			return;
+		}
+		setSyncStatus('syncing');
+		setSyncMessage('');
+		try {
+			let resolutions = initialResolutions;
+			for (;;) {
+				const result = parseRequiredJSON<any>(await backend.SyncVirtualRepositories(JSON.stringify(resolutions)), 'Virtual repository sync');
+				if (result?.status === 'success') {
+					setSyncStatus('success');
+					setSyncMessage(result?.last_synced_at ? `${text.syncSuccess} · ${new Date(result.last_synced_at).toLocaleString()}` : text.syncSuccess);
+					await loadRecent();
+					return;
+				}
+				if (result?.status !== 'conflict') throw new Error(result?.message || 'Virtual repository sync returned an invalid status');
+				const conflicts = Array.isArray(result.conflicts) ? result.conflicts : [];
+				if (!conflicts.length) {
+					setSyncStatus('conflict');
+					setSyncMessage(result?.message || text.syncConflict);
+					return;
+				}
+				const next = { ...resolutions };
+				for (const conflict of conflicts) {
+					const name = String(conflict?.name || conflict?.id || text.syncConflict);
+					const keepLocal = await showConfirm(text.syncConflictMessage.replace('{name}', name), text.syncConflict, { confirmText: text.useLocal, cancelText: text.useCloud, confirmVariant: 'danger' });
+					if (keepLocal) { next[String(conflict.id)] = 'local'; continue; }
+					if (String(conflict.kind) === 'repository') {
+						const useCloud = await showConfirm(text.syncConflictCloud, text.syncConflict, { confirmText: text.useCloud, cancelText: text.keepCopy });
+						next[String(conflict.id)] = useCloud ? 'cloud' : 'copy';
+					} else {
+						next[String(conflict.id)] = 'cloud';
+					}
+				}
+				resolutions = next;
+			}
+		} catch (e: any) {
+			setSyncStatus('error');
+			setSyncMessage(errorMessage(e));
+		}
+	};
+
+	const deleteRecentRepository = async (item: any) => {
+		if (repositoryDeletionRef.current || busyRef.current || operationResultRef.current?.status === 'running') return;
+		const id = String(item?.id || '').trim();
+		closeRepositoryContextMenu();
+		if (!id) {
+			setError(isZh ? '该虚拟仓库缺少标识，无法从列表中删除。' : 'This virtual repository has no identifier and cannot be removed from the list.');
+			return;
+		}
+		repositoryDeletionRef.current = true;
+		const name = String(item?.name || id);
+		const confirmed = await showConfirm(text.deleteRepositoryConfirm.replace('{name}', name), text.deleteRepository, {
+			confirmText: text.remove,
+			cancelText: text.cancel,
+			confirmVariant: 'danger',
+		});
+		if (!confirmed || busyRef.current || operationResultRef.current?.status === 'running') {
+			repositoryDeletionRef.current = false;
+			return;
+		}
+		busyRef.current = true;
+		setBusy(true);
+		setError('');
+		try {
+			const backend = app();
+			if (!backend?.DeleteVirtualRepository) {
+				throw new Error(isZh ? '当前版本不支持删除虚拟仓库。' : 'Deleting virtual repositories is not supported by this version.');
+			}
+			await backend.DeleteVirtualRepository(id);
+			setRemovedRepositoryIDs((current) => new Set(current).add(id));
+			const deletingActiveRepository = repositoryIDsMatch(repo?.id, id);
+			if (deletingActiveRepository) {
+				repositorySessionRef.current += 1;
+				setRepo(null);
+				setSelectedId('');
+				setStatuses({});
+				setDirectoryStats(null);
+				setCredentialBindings({});
+			}
+			setRepos((current) => current.filter((candidate) => !repositoryIDsMatch(candidate?.id, id)));
+			void loadRecent();
+		} catch (e: any) {
+			setError(errorMessage(e));
+		} finally {
+			repositoryDeletionRef.current = false;
+			busyRef.current = false;
+			setBusy(false);
+		}
+	};
+
+	useEffect(() => {
+		if (!repositoryContextMenu) return;
+		const focusID = window.setTimeout(() => repositoryContextMenuActionRef.current?.focus(), 0);
+		const dismiss = (event: MouseEvent) => {
+			if (!repositoryContextMenuRef.current?.contains(event.target as Node)) closeRepositoryContextMenu();
+		};
+		const dismissOnEscape = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				closeRepositoryContextMenu(true);
+			}
+		};
+		window.addEventListener('mousedown', dismiss, true);
+		window.addEventListener('keydown', dismissOnEscape, true);
+		return () => {
+			window.clearTimeout(focusID);
+			window.removeEventListener('mousedown', dismiss, true);
+			window.removeEventListener('keydown', dismissOnEscape, true);
+		};
+	}, [repositoryContextMenu]);
 
     const loadSVN = useCallback(async (search = false) => {
         const backend = app();
@@ -261,7 +609,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
 	const createRemoteRoot = async () => {
 		if (busyRef.current) return;
-		if (!window.confirm(text.createRemoteRootConfirm)) return;
+		if (!await showConfirm(text.createRemoteRootConfirm, text.createRemoteRoot, { confirmText: text.createRemoteRoot, cancelText: text.cancel })) return;
 		busyRef.current = true;
 		const request = ++remoteConnectionRequestRef.current;
 		const payload = remoteConnectionPayload();
@@ -292,7 +640,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			const root = await backend?.SelectVirtualRepositoryRoot?.('');
             if (!root) return;
 			const opened = parseRequiredJSON<VRepo>(await backend.OpenVirtualRepository(root), 'Open virtual repository');
-			setActiveRepository(opened); setSelectedId(''); setStatuses({}); setDirectoryStats(null); await loadRecent();
+			setActiveRepository(opened, true); setSelectedId(''); setStatuses({}); setDirectoryStats(null); await loadRecent();
 		} catch (e: any) { setError(String(e?.message || e)); }
         finally { directoryPickerOpenRef.current = false; setSelectingRoot(false); }
     };
@@ -305,14 +653,15 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
     const openRecentRepository = async (item: any) => {
         const key = String(item?.id || item?.root_path || '').trim();
-        if (!key || openingRepositoryKey) return;
+        const isCurrent = !!repo && (repo.id === item?.id || (!repo.id && repo.root_path === item?.root_path));
+        if (!key || openingRepositoryKey || mutationLocked || isCurrent) return;
         setOpeningRepositoryKey(key);
         setError('');
         try {
             const opened = parseRequiredJSON<VRepo>(item.remote
                 ? await app()?.OpenRemoteVirtualRepository?.(item.id)
                 : await app()?.OpenVirtualRepository?.(item.root_path), 'Open virtual repository');
-			setActiveRepository(opened);
+			setActiveRepository(opened, true);
             setSelectedId('');
             setStatuses({});
             setDirectoryStats(null);
@@ -340,28 +689,53 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         const backend = app();
         setBusy(true); setError('');
         try {
-            const saved = nextRepo.remote
-				? parseRequiredJSON<VRepo>(await backend.SaveRemoteVirtualRepository(JSON.stringify({ repository: nextRepo, password: draft.ssh_password || '', trust_host_key: !!draft.trust_host_key })), 'Save remote virtual repository')
-				: parseRequiredJSON<VRepo>(await backend.SaveVirtualRepository(JSON.stringify(nextRepo)), 'Save virtual repository');
+			const normalizedRepo = withTreeDerivedMappingPaths(nextRepo);
+			const saved = normalizedRepo.remote
+				? parseRequiredJSON<VRepo>(await backend.SaveRemoteVirtualRepository(JSON.stringify({ repository: normalizedRepo, password: draft.ssh_password || '', trust_host_key: !!draft.trust_host_key })), 'Save remote virtual repository')
+				: parseRequiredJSON<VRepo>(await backend.SaveVirtualRepository(JSON.stringify(normalizedRepo)), 'Save virtual repository');
 			setActiveRepository(saved); setMode('none'); setDraft({}); await loadRecent();
         } catch (e: any) { setError(String(e?.message || e)); } finally { setBusy(false); }
     };
 
-    const refreshStatus = useCallback(async () => {
-        if (!repo) return;
+	const inspectRepositoryStatuses = useCallback(async (targetRepository: VRepo, repositorySession = repositorySessionRef.current) => {
+		const backend = app();
+		const inspect = targetRepository.remote ? backend?.InspectRemoteVirtualRepository : backend?.InspectVirtualRepository;
+		if (typeof inspect !== 'function') throw new Error(isZh ? '当前版本不支持检查虚拟仓库状态。' : 'This version does not support virtual repository status checks.');
+		if (targetRepository.remote && !targetRepository.id) throw new Error(isZh ? '远程虚拟仓库 ID 缺失。' : 'Remote virtual repository id is missing.');
+		const raw = targetRepository.remote
+			? await inspect(targetRepository.id)
+			: await inspect(targetRepository.root_path);
+		const list = parseNodeStatuses(raw, 'Inspect virtual repository');
+		const mappingKinds = new Map(targetRepository.nodes
+			.filter((node) => !!node.repository)
+			.map((node) => [node.id, node.repository!.kind]));
+		if (list.some((status) => mappingKinds.get(status.node_id) !== status.kind)) {
+			throw new Error('Inspect virtual repository returned a status for an unknown mapping');
+		}
+		const nextStatuses = Object.fromEntries(list.map((item) => [item.node_id, item]));
+		if (repositorySession === repositorySessionRef.current) setStatuses(nextStatuses);
+		return nextStatuses;
+	}, []);
+
+	const refreshStatus = useCallback(async () => {
+		if (!repo) return;
 		const repositorySession = repositorySessionRef.current;
-        setBusy(true); setError('');
-        try {
-            const raw = repo.remote ? await app()?.InspectRemoteVirtualRepository?.(repo.id) : await app()?.InspectVirtualRepository(repo.root_path);
-            const list = parseJSON<NodeStatus[]>(raw, []);
-			if (repositorySession !== repositorySessionRef.current) return;
-            setStatuses(Object.fromEntries(list.map((item) => [item.node_id, item])));
+		setBusy(true); setError('');
+		try {
+			await inspectRepositoryStatuses(repo, repositorySession);
 		} catch (e: any) {
 			if (repositorySession === repositorySessionRef.current) setError(String(e?.message || e));
 		} finally {
 			if (repositorySession === repositorySessionRef.current) setBusy(false);
 		}
-    }, [repo]);
+	}, [repo, inspectRepositoryStatuses]);
+
+	const checkoutRepositoryNode = async (targetRepository: VRepo, targetNodeID: string) => {
+		if (!targetRepository.id) throw new Error(isZh ? '虚拟仓库 ID 缺失，无法检出。' : 'The virtual repository id is missing, so checkout cannot start.');
+		const checkout = targetRepository.remote ? app()?.CheckoutRemoteVirtualRepositoryNode : app()?.CheckoutVirtualRepositoryNode;
+		if (typeof checkout !== 'function') throw new Error(isZh ? '当前版本不支持检出虚拟仓库。' : 'This version does not support virtual repository checkout.');
+		await checkout(targetRepository.id, targetNodeID);
+	};
 
     useEffect(() => {
         try {
@@ -381,28 +755,48 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         } catch { return undefined; }
     }, [refreshStatus]);
 
-    const saveNode = async () => {
+	const saveNode = async () => {
         if (!repo) return;
         const id = draft.id || nodeId();
+        const parentID = String(draft.parent_id || '').trim();
+		if (mode === 'mapping' && !String(draft.name || '').trim()) {
+			setError(isZh ? '映射目录名称不能为空。' : 'A mapping directory name is required.');
+			return;
+		}
+        const parent = parentID ? repo.nodes.find((item) => item.id === parentID) : undefined;
+        if (parentID && (!parent || parent.repository || parentID === id)) {
+            setError(isZh ? '请选择有效的虚拟目录作为上级目录。' : 'Choose a valid virtual folder as the parent.');
+            return;
+        }
+        if (parentID && wouldCreateTreeCycle(repo.nodes, id, parentID)) {
+            setError(isZh ? '不能将目录移动到自身或其子目录中。' : 'A folder cannot be placed inside itself or one of its descendants.');
+            return;
+        }
         const node: VRepoNode = {
-            id, parent_id: draft.parent_id || undefined, name: String(draft.name || '').trim(), order: Number(draft.order || repo.nodes.length * 10 + 10),
+            id, parent_id: parentID || undefined, name: String(draft.name || '').trim(), order: Number(draft.order || repo.nodes.length * 10 + 10),
             repository: mode === 'mapping' ? {
-                kind: draft.kind || 'git', relative_path: String(draft.relative_path || '').trim(),
+				kind: draft.kind || 'git', relative_path: '', description: String(draft.description || '').trim() || undefined,
                 remote_url: draft.kind === 'local' ? undefined : String(draft.remote_url || '').trim(),
 				ref_type: draft.kind === 'local' || !draft.ref_name ? undefined : (draft.ref_type || 'branch'),
 				ref_name: draft.kind === 'local' ? undefined : String(draft.ref_name || '').trim(), enabled: draft.enabled !== false,
             } : undefined,
-        };
-        setBusy(true); setError('');
-        try {
-            if (mode === 'mapping' && draft.create_directory) {
-                if (repo.remote) await app()?.CreateRemoteVirtualRepositoryDirectory?.(repo.id, node.repository?.relative_path || '');
-                else await app()?.CreateVirtualRepositoryDirectory?.(repo.root_path, node.repository?.relative_path || '');
-            }
-            const nodes = repo.nodes.some((item) => item.id === id) ? repo.nodes.map((item) => item.id === id ? node : item) : [...repo.nodes, node];
-            const savePayload = { ...repo, nodes };
+	        };
+	        setBusy(true); setError('');
+	        try {
+	            const nodes = repo.nodes.some((item) => item.id === id) ? repo.nodes.map((item) => item.id === id ? node : item) : [...repo.nodes, node];
+	            const savePayload = withTreeDerivedMappingPaths({ ...repo, nodes });
 			const saved = repo.remote ? parseRequiredJSON<VRepo>(await app()?.SaveRemoteVirtualRepository?.(JSON.stringify({ repository: savePayload })), 'Save remote virtual repository') : parseRequiredJSON<VRepo>(await app()?.SaveVirtualRepository?.(JSON.stringify(savePayload)), 'Save virtual repository');
-            if (saved.id && mode === 'mapping' && draft.kind !== 'local') {
+			let directoryCreationError: unknown;
+			if (mode === 'mapping' && draft.create_directory) {
+				try {
+					const mappedPath = saved.nodes.find((item) => item.id === id)?.repository?.relative_path || '';
+					if (saved.remote) await app()?.CreateRemoteVirtualRepositoryDirectory?.(saved.id, mappedPath);
+					else await app()?.CreateVirtualRepositoryDirectory?.(saved.root_path, mappedPath);
+				} catch (creationError) {
+					directoryCreationError = creationError;
+				}
+			}
+			if (saved.id && mode === 'mapping' && draft.kind !== 'local') {
                 try {
                     await app()?.SetRepositoryCredentialBinding?.(saved.id, id, draft.credential_id || '');
                 } catch (bindingError) {
@@ -416,11 +810,53 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 						? `映射已保存，但凭据绑定更新失败：${errorMessage(bindingError)}`
 						: `The mapping was saved, but its credential binding could not be updated: ${errorMessage(bindingError)}`);
                 }
-                await loadCredentialBindings(saved.id);
-            }
+				await loadCredentialBindings(saved.id);
+			}
 			setActiveRepository(saved); setMode('none'); setDraft({}); await loadRecent();
-            setSelectedId(id);
-        } catch (e: any) { setError(String(e?.message || e)); } finally { setBusy(false); }
+			const savedRepositorySession = repositorySessionRef.current;
+			setSelectedId(id);
+			if (mode === 'mapping') {
+				try {
+					await inspectRepositoryStatuses(saved, savedRepositorySession);
+				} catch (inspectError) {
+					// An inspection failure is distinct from an unchecked-out repository
+					// or a missing local directory. Keep that diagnostic visible so users
+					// can take the appropriate next action without losing the mapping.
+					if (savedRepositorySession === repositorySessionRef.current) {
+						setStatuses((current) => ({ ...current, [id]: {
+							node_id: id, kind: draft.kind || 'git', exists: false, is_repository: false,
+							clean: true, error_code: 'inspection_failed', error: errorMessage(inspectError),
+						} }));
+					}
+				}
+				if (draft.kind !== 'local' && draft.enabled !== false && draft.checkout_after_save) {
+					try {
+						await checkoutRepositoryNode(saved, id);
+					} catch (checkoutError) {
+						if (savedRepositorySession === repositorySessionRef.current) {
+							setError(isZh
+								? `映射已保存，但检出失败：${errorMessage(checkoutError)}`
+								: `The mapping was saved, but checkout failed: ${errorMessage(checkoutError)}`);
+						}
+						return;
+					}
+					try {
+						await inspectRepositoryStatuses(saved, savedRepositorySession);
+					} catch (inspectError) {
+						if (savedRepositorySession === repositorySessionRef.current) {
+							setError(isZh
+								? `映射已保存，检出已完成，但状态刷新失败：${errorMessage(inspectError)}`
+								: `The mapping was saved and checkout completed, but the status refresh failed: ${errorMessage(inspectError)}`);
+						}
+					}
+				}
+			}
+			if (directoryCreationError) {
+				throw new Error(isZh
+					? `映射已保存，但目录创建失败：${errorMessage(directoryCreationError)}`
+					: `The mapping was saved, but its directory could not be created: ${errorMessage(directoryCreationError)}`);
+			}
+	        } catch (e: any) { setError(String(e?.message || e)); } finally { setBusy(false); }
     };
 
     const removeNode = async (id: string) => {
@@ -443,21 +879,38 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			}
         }
         const label = repo.nodes.find((node) => node.id === id)?.name || id;
-        if (!window.confirm(isZh ? `确认从虚拟目录树移除“${label}”及其子项？不会删除真实文件。` : `Remove “${label}” and its children from the virtual tree? Real files will not be deleted.`)) return;
+        if (!await showConfirm(isZh ? `确认从虚拟目录树移除“${label}”及其子项？不会删除真实文件。` : `Remove “${label}” and its children from the virtual tree? Real files will not be deleted.`, text.remove, { confirmText: text.remove, cancelText: text.cancel, confirmVariant: 'danger' })) return;
         await saveRepo({ ...repo, nodes: repo.nodes.filter((node) => !descendants.has(node.id)) });
         setSelectedId('');
     };
 
     const openMappedFolder = async () => {
         if (!repo || !selected?.repository) return;
-        const path = selectedStatus?.path || `${repo.root_path.replace(/[\\/]$/, '')}/${selected.repository.relative_path}`;
+        const path = selectedStatus?.path || `${repo.root_path.replace(/[\\/]$/, '')}/${selected.repository.relative_path || relativePathForTreeNode(repo.nodes, selected.id)}`;
         try { await app()?.OpenFileOrShowInFolder?.(path); } catch (e: any) { setError(String(e?.message || e)); }
     };
 
-    const nodesByParent = useMemo(() => {
+		const nodesByParent = useMemo(() => {
         const result = new Map<string, VRepoNode[]>();
+        const nodes = repo?.nodes || [];
+        const nodesByID = new Map(nodes.map((node) => [node.id, node]));
         for (const node of repo?.nodes || []) {
-            const parentID = node.parent_id || '';
+            // Old manifests can retain a missing parent or a cyclic parent chain after
+            // an interrupted edit. Make those entries visible at the root instead of
+            // allowing a malformed relation to hide them from the tree.
+            let parentID = node.parent_id || '';
+            const ancestors = new Set<string>([node.id]);
+            let parentChainIsValid = true;
+            while (parentID) {
+                if (ancestors.has(parentID) || !nodesByID.has(parentID)) {
+                    parentChainIsValid = false;
+                    break;
+                }
+                ancestors.add(parentID);
+                parentID = nodesByID.get(parentID)?.parent_id || '';
+            }
+            const directParent = node.parent_id ? nodesByID.get(node.parent_id) : undefined;
+            parentID = parentChainIsValid && directParent && !directParent.repository ? directParent.id : '';
             const children = result.get(parentID);
             if (children) children.push(node);
             else result.set(parentID, [node]);
@@ -480,6 +933,14 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         return ids;
     }, [nodesByParent, expanded]);
 
+    const displayParentByNodeID = useMemo(() => {
+        const parents = new Map<string, string>();
+        for (const [parentID, children] of nodesByParent) {
+            for (const child of children) parents.set(child.id, parentID);
+        }
+        return parents;
+    }, [nodesByParent]);
+
     const focusTreeItem = (id: string) => {
         window.requestAnimationFrame(() => {
             const item = Array.from(document.querySelectorAll<HTMLElement>('[data-vrepo-node-id]'))
@@ -488,18 +949,80 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         });
     };
 
-    const renderNodes = (parentId = '', depth = 0): React.ReactNode => (nodesByParent.get(parentId) || []).map((node) => {
+    const focusTreeRoot = () => {
+        window.requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-vrepo-tree-root]')?.focus());
+    };
+
+    const toggleTreeNode = (nodeID: string, isExpanded: boolean) => {
+        if (isExpanded) {
+            const descendants = new Set<string>();
+            const visit = (parentID: string) => {
+                for (const child of nodesByParent.get(parentID) || []) {
+                    descendants.add(child.id);
+                    visit(child.id);
+                }
+            };
+            visit(nodeID);
+            if (descendants.has(selectedId)) {
+                setSelectedId(nodeID);
+                focusTreeItem(nodeID);
+            }
+        }
+        setExpanded((current) => ({ ...current, [nodeID]: !isExpanded }));
+    };
+
+	const canMoveTreeNode = (nodeID: string, parentID: string) => {
+		if (!repo || mutationLocked || !nodeID || nodeID === parentID) return false;
+		const moving = repo.nodes.find((node) => node.id === nodeID);
+		const parent = parentID ? repo.nodes.find((node) => node.id === parentID) : undefined;
+		if (!moving || (parentID && (!parent || parent.repository))) return false;
+		if (parentID && wouldCreateTreeCycle(repo.nodes, nodeID, parentID)) return false;
+		return (moving.parent_id || '') !== parentID;
+	};
+
+	const moveTreeNode = async (nodeID: string, parentID: string) => {
+		if (!repo || mutationLocked || nodeID === parentID) return;
+		const moving = repo.nodes.find((node) => node.id === nodeID);
+		const parent = parentID ? repo.nodes.find((node) => node.id === parentID) : undefined;
+		if (!moving || (parentID && (!parent || parent.repository))) return;
+		if (parentID && wouldCreateTreeCycle(repo.nodes, nodeID, parentID)) return;
+		if (!canMoveTreeNode(nodeID, parentID)) return;
+		const siblings = repo.nodes.filter((node) => (node.parent_id || '') === parentID && node.id !== nodeID);
+		const nextOrder = siblings.reduce((maximum, node) => Math.max(maximum, node.order || 0), 0) + 10;
+		const nextRepo = withTreeDerivedMappingPaths({ ...repo, nodes: repo.nodes.map((node) => node.id === nodeID ? { ...node, parent_id: parentID || undefined, order: nextOrder } : node) });
+		setBusy(true); setError('');
+		try {
+			const saved = repo.remote
+				? parseRequiredJSON<VRepo>(await app()?.SaveRemoteVirtualRepository?.(JSON.stringify({ repository: nextRepo })), 'Save remote virtual repository')
+				: parseRequiredJSON<VRepo>(await app()?.SaveVirtualRepository?.(JSON.stringify(nextRepo)), 'Save virtual repository');
+			setActiveRepository(saved);
+			setSelectedId(nodeID);
+			if (parentID) setExpanded((current) => ({ ...current, [parentID]: true }));
+			await loadRecent();
+		} catch (e: any) { setError(errorMessage(e)); }
+		finally { setBusy(false); setDraggedNodeID(''); setDropTargetID(null); }
+	};
+
+    const renderNodes = (parentId = '', depth = 0, ancestorHasNext: boolean[] = []): React.ReactNode => (nodesByParent.get(parentId) || []).map((node, index, siblings) => {
         const status = statuses[node.id];
         const hasChildren = (nodesByParent.get(node.id)?.length || 0) > 0;
         const isExpanded = expanded[node.id] !== false;
-        return <div key={node.id} className="vrepo-tree__branch">
-            <button type="button" role="treeitem" data-vrepo-node-id={node.id} tabIndex={selectedId === node.id || (!selectedId && visibleNodeIDs[0] === node.id) ? 0 : -1} aria-level={depth + 1} aria-selected={selectedId === node.id} aria-expanded={hasChildren ? isExpanded : undefined} className={`vrepo-tree__item${selectedId === node.id ? ' is-selected' : ''}`} style={{ paddingLeft: `${12 + depth * 18}px` }} onClick={() => setSelectedId(node.id)} onDoubleClick={() => hasChildren && setExpanded((current) => ({ ...current, [node.id]: !isExpanded }))} onKeyDown={(event) => {
+        const isLast = index === siblings.length - 1;
+		const nodeLabel = node.repository ? `${node.name} · ${node.repository.kind.toUpperCase()}` : node.name;
+        return <div key={node.id} className="vrepo-tree__branch" role="none">
+	            <div role="treeitem" aria-label={nodeLabel} draggable={!mutationLocked} data-vrepo-node-id={node.id} tabIndex={selectedId === node.id ? 0 : -1} aria-level={depth + 1} aria-selected={selectedId === node.id} aria-expanded={hasChildren ? isExpanded : undefined} className={`vrepo-tree__item${selectedId === node.id ? ' is-selected' : ''}${draggedNodeID === node.id ? ' is-dragging' : ''}${dropTargetID === node.id ? ' is-drop-target' : ''}`} onDragStart={(event) => { if (mutationLocked) { event.preventDefault(); return; } setDraggedNodeID(node.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', node.id); }} onDragEnd={() => { setDraggedNodeID(''); setDropTargetID(null); }} onDragOver={(event) => { if (!node.repository && canMoveTreeNode(draggedNodeID, node.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTargetID(node.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetID((current) => current === node.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const sourceID = draggedNodeID || event.dataTransfer.getData('text/plain'); void moveTreeNode(sourceID, node.id); }} onClick={(event) => { event.currentTarget.focus(); setSelectedId(node.id); }} onKeyDown={(event) => {
                 const index = visibleNodeIDs.indexOf(node.id);
                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
                     event.preventDefault();
-                    const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? visibleNodeIDs.length - 1 : Math.max(0, Math.min(visibleNodeIDs.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
+					if (event.key === 'Home' || (event.key === 'ArrowUp' && index === 0)) { setSelectedId(''); focusTreeRoot(); return; }
+					const nextIndex = event.key === 'End' ? visibleNodeIDs.length - 1 : Math.max(0, Math.min(visibleNodeIDs.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
                     const nextID = visibleNodeIDs[nextIndex];
                     if (nextID) { setSelectedId(nextID); focusTreeItem(nextID); }
+                    return;
+                }
+                if ((event.key === 'Enter' || event.key === ' ') && hasChildren) {
+                    event.preventDefault();
+                    toggleTreeNode(node.id, isExpanded);
                     return;
                 }
                 if (event.key === 'ArrowRight' && hasChildren) {
@@ -512,18 +1035,22 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
                 }
                 if (event.key === 'ArrowLeft') {
                     if (hasChildren && isExpanded) {
-                        event.preventDefault(); setExpanded((current) => ({ ...current, [node.id]: false }));
-                    } else if (node.parent_id) {
-                        event.preventDefault(); setSelectedId(node.parent_id); focusTreeItem(node.parent_id);
+                        event.preventDefault(); toggleTreeNode(node.id, isExpanded);
+                    } else {
+                        const displayParentID = displayParentByNodeID.get(node.id);
+                        if (!displayParentID) { event.preventDefault(); setSelectedId(''); focusTreeRoot(); return; }
+                        event.preventDefault(); setSelectedId(displayParentID); focusTreeItem(displayParentID);
                     }
                 }
-            }}>
-				<span className="vrepo-tree__chevron" aria-hidden>{hasChildren ? isExpanded ? '▾' : '▸' : ''}</span>
-                <span className="vrepo-tree__kind">{node.repository ? node.repository.kind.toUpperCase() : 'DIR'}</span>
-                <span>{node.name}</span>
+	            }}>
+                    <span className="vrepo-tree__guides" aria-hidden>{ancestorHasNext.map((hasNext, guideIndex) => <span key={guideIndex} className={hasNext ? 'is-active' : ''} />)}</span>
+					{depth > 1 ? <span className={`vrepo-tree__elbow${isLast ? ' is-last' : ''}`} aria-hidden /> : null}
+			{hasChildren ? <button type="button" tabIndex={-1} className="vrepo-tree__chevron" aria-label={`${isExpanded ? (isZh ? '折叠' : 'Collapse') : (isZh ? '展开' : 'Expand')} ${node.name}`} aria-expanded={isExpanded} onClick={(event) => { event.stopPropagation(); toggleTreeNode(node.id, isExpanded); }}>{isExpanded ? '▾' : '▸'}</button> : <span className="vrepo-tree__chevron" aria-hidden />}
+                    <span className={`vrepo-tree__icon${node.repository ? ` is-${node.repository.kind}` : ''}`}>{treeNodeIcon(node.repository?.kind)}</span>
+                    <span className={`vrepo-tree__label${selectedId === node.id ? ' is-selected' : ''}${draggedNodeID === node.id ? ' is-dragging' : ''}${dropTargetID === node.id ? ' is-drop-target' : ''}`} title={node.repository?.description || undefined}>{node.name}</span>
 				{status ? <span className={`vrepo-tree__state ${status.error ? 'is-error' : status.clean ? 'is-clean' : 'is-dirty'}`} role="img" aria-label={status.error ? `${text.errorStatus}: ${status.error}` : status.clean ? text.cleanStatus : text.changedStatus}>{status.error ? '!' : status.clean ? '✓' : '●'}</span> : null}
-            </button>
-            {isExpanded ? renderNodes(node.id, depth + 1) : null}
+	            </div>
+		{isExpanded ? renderNodes(node.id, depth + 1, [...ancestorHasNext, depth > 0 && !isLast]) : null}
         </div>;
     });
 
@@ -531,8 +1058,14 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     const selectedStatus = selected ? statuses[selected.id] : undefined;
 
     const loadCredentialBindings = useCallback(async (repositoryId?: string) => {
+        const requestID = ++credentialBindingsRequestRef.current;
         if (!repositoryId) { setCredentialBindings({}); return; }
-        try { setCredentialBindings(parseJSON(await app()?.ListRepositoryCredentialBindings?.(repositoryId), {})); } catch { setCredentialBindings({}); }
+        try {
+            const nextBindings = parseJSON(await app()?.ListRepositoryCredentialBindings?.(repositoryId), {});
+            if (requestID === credentialBindingsRequestRef.current) setCredentialBindings(nextBindings);
+        } catch {
+            if (requestID === credentialBindingsRequestRef.current) setCredentialBindings({});
+        }
     }, []);
 
 	useEffect(() => {
@@ -547,9 +1080,10 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		const selectedNodeID = selected.id;
 		setError('');
 		try {
+			const relativePath = relativePathForTreeNode(repo.nodes, selected.id);
 			const raw = repo.remote
-				? await app()?.GetRemoteVirtualRepositoryDirectoryStats?.(repo.id, selected.repository.relative_path)
-				: await app()?.GetVirtualRepositoryDirectoryStats?.(repo.root_path, selected.repository.relative_path);
+				? await app()?.GetRemoteVirtualRepositoryDirectoryStats?.(repo.id, relativePath)
+				: await app()?.GetVirtualRepositoryDirectoryStats?.(repo.root_path, relativePath);
 			if (requestID === directoryStatsRequestRef.current && repositorySession === repositorySessionRef.current && selectedNodeID === selectedId) {
 				setDirectoryStats(parseJSON(raw, null));
 			}
@@ -560,31 +1094,86 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		}
 	};
 
-    const startCredentialManager = async () => {
-        setMode('credentials'); setDraft({});
-        try { setCredentials(parseJSON(await app()?.ListRepositoryCredentials?.(''), [])); } catch (e: any) { setError(String(e?.message || e)); }
+	const startCredentialManager = async (returnToMapping = false) => {
+		mappingCredentialRequestRef.current += 1;
+		const requestID = ++credentialManagerRequestRef.current;
+		const mappingDraft = returnToMapping ? { ...draft } : null;
+		setCredentialReturnToMapping(returnToMapping);
+		setMappingDraftBeforeCredentials(mappingDraft);
+		setMode('credentials');
+		// A failed refresh must not expose credentials from a prior manager or
+		// mapping session as if they were current machine-local state.
+		setCredentials([]);
+		// The credential form is a separate draft. Preserve the mapping's selected
+		// repository kind when it launched this flow; otherwise the select can show
+		// its Git fallback while the request serializes no kind at all.
+		setDraft({ kind: mappingDraft?.kind === 'svn' ? 'svn' : 'git' });
+		setError('');
+		try {
+			const nextCredentials = parseCredentials(await app()?.ListRepositoryCredentials?.(''), 'List repository credentials');
+			if (requestID === credentialManagerRequestRef.current) setCredentials(nextCredentials);
+		} catch (e: any) {
+			if (requestID === credentialManagerRequestRef.current) setError(String(e?.message || e));
+		}
     };
 
-    const deleteCredential = async (credential: Credential) => {
-        if (!window.confirm(isZh ? `确认删除凭据“${credential.name}”？所有仓库绑定将同时解除。` : `Delete credential “${credential.name}”? All repository bindings to it will be removed.`)) return;
-        setBusy(true); setError('');
-        try {
-            await app()?.DeleteRepositoryCredential?.(credential.id);
-            setCredentials(parseJSON(await app()?.ListRepositoryCredentials?.(''), []));
-            if (repo?.id) await loadCredentialBindings(repo.id);
-            if (draft.id === credential.id) setDraft({});
-        } catch (e: any) { setError(String(e?.message || e)); } finally { setBusy(false); }
-    };
+	const loadMappingCredentials = async (kind: RepoKind) => {
+		const requestID = ++mappingCredentialRequestRef.current;
+		try {
+			const nextCredentials = parseCredentials(await app()?.ListRepositoryCredentials?.(kind), 'List repository credentials');
+			if (requestID === mappingCredentialRequestRef.current) setCredentials(nextCredentials);
+		} catch (e: any) {
+			if (requestID === mappingCredentialRequestRef.current) setError(String(e?.message || e));
+		}
+	};
+
+	const deleteCredential = async (credential: Credential) => {
+		if (credentialDeleteInFlightRef.current) return;
+		if (!await showConfirm(isZh ? `确认删除凭据“${credential.name}”？所有仓库绑定将同时解除。` : `Delete credential “${credential.name}”? All repository bindings to it will be removed.`, text.remove, { confirmText: text.remove, cancelText: text.cancel, confirmVariant: 'danger' })) return;
+		if (credentialDeleteInFlightRef.current) return;
+		credentialDeleteInFlightRef.current = true;
+		// A list request started before this mutation may resolve afterwards with a
+		// stale snapshot. Invalidate it before applying the authoritative result.
+		credentialManagerRequestRef.current += 1;
+		mappingCredentialRequestRef.current += 1;
+		setBusy(true); setError('');
+		try {
+			await app()?.DeleteRepositoryCredential?.(credential.id);
+			// The delete call is authoritative. Do not turn a successful deletion into
+			// an apparent failure merely because the follow-up list read is unavailable.
+			setCredentials((current) => current.filter((item) => item.id !== credential.id));
+			if (repo?.id) await loadCredentialBindings(repo.id);
+			if (draft.id === credential.id) setDraft({ kind: credential.kind });
+		} catch (e: any) { setError(String(e?.message || e)); } finally { credentialDeleteInFlightRef.current = false; setBusy(false); }
+	};
 
     useEffect(() => { void loadCredentialBindings(repo?.id); }, [repo?.id, loadCredentialBindings]);
 
-    const saveCredential = async () => {
-        setBusy(true); setError('');
-        try {
-            await app()?.SaveRepositoryCredential?.(JSON.stringify(draft));
-            setDraft({}); setCredentials(parseJSON(await app()?.ListRepositoryCredentials?.(''), []));
-        } catch (e: any) { setError(String(e?.message || e)); } finally { setBusy(false); }
-    };
+	const saveCredential = async () => {
+		if (credentialSaveInFlightRef.current) return;
+		credentialSaveInFlightRef.current = true;
+		// Preserve the metadata returned by SaveRepositoryCredential instead of
+		// allowing an older ListRepositoryCredentials response to overwrite it.
+		credentialManagerRequestRef.current += 1;
+		mappingCredentialRequestRef.current += 1;
+		setBusy(true); setError('');
+		try {
+			// Keep the serialized value aligned with the select's visual fallback.
+			// This also protects a newly cleared credential draft from omitting kind.
+			const kind = draft.kind === 'svn' ? 'svn' : 'git';
+			const saved = parseRequiredJSON<unknown>(await app()?.SaveRepositoryCredential?.(JSON.stringify({ ...draft, kind })), 'Save repository credential');
+			if (!isCredential(saved)) throw new Error('Save repository credential returned invalid metadata');
+			// Saving returns the full metadata needed by this view, so update the local
+			// list directly. A separate list read can fail or briefly return stale data.
+			setCredentials((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+			if (credentialReturnToMapping) {
+				setMode('mapping');
+				setDraft({ ...(mappingDraftBeforeCredentials || {}), credential_id: saved.id });
+				setCredentialReturnToMapping(false);
+				setMappingDraftBeforeCredentials(null);
+			} else setDraft({ kind });
+		} catch (e: any) { setError(String(e?.message || e)); } finally { credentialSaveInFlightRef.current = false; setBusy(false); }
+	};
 
     const specifySVN = async () => {
         const backend = app();
@@ -706,13 +1295,13 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     return <div className="utilities-page vrepo-page" data-testid="virtual-repository-workspace">
         <header className="vrepo-header">
             <div><button type="button" className="utilities-link" onClick={onBack}>{text.back}</button><h1>{text.title}</h1>{repo?.remote ? <p className="vrepo-remote-location">{repo.remote.user}@{repo.remote.host}:{repo.remote.port || 22} · {repo.root_path}</p> : null}</div>
-            {repo && mode === 'none' ? <div className="vrepo-actions">
-                <div className="vrepo-actions__setup">
-                    <button type="button" className="secondary" disabled={mutationLocked || selectingRoot} onClick={beginNewRepository}>{text.newRepo}</button>
-                    <button type="button" className="secondary" disabled={mutationLocked || selectingRoot} onClick={() => void openExisting()}>{selectingRoot ? text.loading : text.openRepo}</button>
+            {mode === 'none' && (repo || repos.length > 0) ? <div className="vrepo-actions">
+				<div className="vrepo-actions__setup">
+					<button type="button" className="secondary" disabled={mutationLocked || syncStatus === 'syncing'} onClick={() => void runRepositorySync()}>{syncStatus === 'syncing' ? text.syncing : text.syncNow}</button>
+					<button type="button" className="secondary" disabled={mutationLocked || selectingRoot} onClick={() => void openExisting()}>{selectingRoot ? text.loading : text.openRepo}</button>
+                    <button type="button" disabled={mutationLocked || selectingRoot} onClick={beginNewRepository}>{text.newRepo}</button>
                     {repo?.remote ? <button type="button" className="secondary" disabled={mutationLocked} onClick={() => { setMode('repo'); setRemoteConnection(null); setDraft({ ...repo, location: 'remote', ssh_host: repo.remote?.host || '', ssh_port: repo.remote?.port || 22, ssh_user: repo.remote?.user || '', ssh_password: '' }); }}>{text.editConnection}</button> : null}
                     {repo ? <button type="button" className="secondary" disabled={mutationLocked || !!startingRepositoryID} onClick={() => void startCodingTask(repo)}>{startingRepositoryID === repo.id ? text.startingCodingTask : text.startCodingTask}</button> : null}
-                    {repo ? <button type="button" className="secondary" disabled={mutationLocked} onClick={() => void startCredentialManager()}>{text.credentials}</button> : null}
                 </div>
                 {repo ? <div className="vrepo-actions__operation">
                     <button type="button" className="secondary" disabled={mutationLocked} onClick={() => void refreshStatus()}>{text.refresh}</button>
@@ -720,28 +1309,35 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
                     <button type="button" className="secondary" disabled={mutationLocked} onClick={() => void previewOperation('push')}>{text.push}</button>
                     <button type="button" disabled={mutationLocked} onClick={() => void previewOperation('commit_push')}>{text.commitPush}</button>
                     <button type="button" className="danger" disabled={mutationLocked} onClick={() => void previewOperation('revert')}>{text.revert}</button>
+                    <button type="button" className="secondary" disabled={mutationLocked} onClick={() => void startCredentialManager()}>{text.credentials}</button>
                 </div> : null}
             </div> : null}
-        </header>
-        {error ? <p className="utilities-error" role="alert">{error}</p> : null}
-        {!repo?.remote ? <div className="vrepo-client-status">
-            <strong>{text.svnClient}</strong>
-            {svn?.available ? <span>{text.foundClient}: {svn.version} · <code>{svn.executable}</code> ({svn.source})</span> : <span>{text.noClient}</span>}
-            <button type="button" className="utilities-link" disabled={mutationLocked} onClick={() => void loadSVN(true)}>{text.search}</button>
-            <button type="button" className="utilities-link" disabled={mutationLocked} onClick={() => void specifySVN()}>{text.specify}</button>
-            {!svn?.available ? <button type="button" className="utilities-link" onClick={() => { try { BrowserOpenURL('https://subversion.apache.org/packages.html'); } catch { window.open('https://subversion.apache.org/packages.html', '_blank', 'noopener'); } }}>{text.installSVN}</button> : null}
-        </div> : null}
+		</header>
+		{syncStatus !== 'idle' ? <p className={`vrepo-sync-status is-${syncStatus}`} role={syncStatus === 'error' ? 'alert' : 'status'}>{syncStatus === 'syncing' ? text.syncing : syncMessage || text.syncReady}</p> : null}
+		{error ? <p className="utilities-error" role="alert">{error}</p> : null}
+		{repositoryContextMenu ? <div ref={repositoryContextMenuRef} className="vrepo-repository-menu" role="menu" aria-label={repositoryContextMenu.item?.name || text.repositoryList} style={{ left: repositoryContextMenu.x, top: repositoryContextMenu.y }}>
+			<button ref={repositoryContextMenuActionRef} type="button" role="menuitem" className="danger" disabled={mutationLocked} onClick={() => void deleteRecentRepository(repositoryContextMenu.item)}>{text.deleteRepository}</button>
+		</div> : null}
+        <details className="vrepo-client-status">
+            <summary><strong>{text.svnClient}</strong><span className={svn?.available ? 'is-ready' : 'is-missing'}>{svn?.available ? text.foundClient : text.noClient}</span></summary>
+            <div className="vrepo-client-status__body">
+                {svn?.available ? <span>{svn.version} · <code>{svn.executable}</code> ({svn.source})</span> : null}
+                <button type="button" className="utilities-link" disabled={mutationLocked} onClick={() => void loadSVN(true)}>{text.search}</button>
+                <button type="button" className="utilities-link" disabled={mutationLocked} onClick={() => void specifySVN()}>{text.specify}</button>
+                {!svn?.available ? <button type="button" className="utilities-link" onClick={() => { try { BrowserOpenURL('https://subversion.apache.org/packages.html'); } catch { window.open('https://subversion.apache.org/packages.html', '_blank', 'noopener'); } }}>{text.installSVN}</button> : null}
+            </div>
+        </details>
 
-        {!repo && mode !== 'repo' ? <section className="vrepo-empty">
+        {!repos.length && !repo && mode !== 'repo' ? <section className="vrepo-empty">
             <div className="vrepo-empty__intro">
                 <span className="vrepo-empty__mark" aria-hidden="true">V</span>
                 <div><h2>{text.empty}</h2><p>{text.emptyHint}</p></div>
             </div>
-            <div className="vrepo-empty__actions">
-                <button type="button" disabled={mutationLocked || selectingRoot} onClick={beginNewRepository}>{text.newRepo}</button>
+			<div className="vrepo-empty__actions">
+				<button type="button" className="secondary" disabled={mutationLocked || syncStatus === 'syncing'} onClick={() => void runRepositorySync()}>{syncStatus === 'syncing' ? text.syncing : text.syncNow}</button>
+				<button type="button" disabled={mutationLocked || selectingRoot} onClick={beginNewRepository}>{text.newRepo}</button>
                 <button type="button" className="secondary" disabled={mutationLocked || selectingRoot} onClick={() => void openExisting()}>{selectingRoot ? text.loading : text.openRepo}</button>
             </div>
-            {repos.length ? <><h3>{text.recent}</h3><div className="vrepo-recent">{repos.map((item) => { const itemKey = String(item.id || item.root_path || ''); const opening = openingRepositoryKey === itemKey; return <div className="vrepo-recent__row" key={item.id || item.root_path}><button className="vrepo-recent__open" type="button" disabled={!!openingRepositoryKey || selectingRoot} onClick={() => void openRecentRepository(item)}><strong>{item.name}</strong><span>{opening ? text.loading : item.root_path}</span></button><button className="secondary vrepo-recent__task" type="button" disabled={!!startingRepositoryID || !!openingRepositoryKey || selectingRoot} onClick={() => void startCodingTask(item)}>{startingRepositoryID === item.id ? text.startingCodingTask : text.startCodingTask}</button></div>; })}</div></> : null}
         </section> : null}
 
         {mode === 'repo' ? <section className="vrepo-editor">
@@ -761,10 +1357,17 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	            <div className="vrepo-form-actions"><button type="button" onClick={() => void saveRepo({ ...draft, version: draft.version || 1, name: draft.name || '', root_path: draft.root_path || '', remote: draft.location === 'remote' ? { host: draft.ssh_host || '', port: Number(draft.ssh_port || 22), user: draft.ssh_user || '' } : undefined, nodes: draft.nodes || [] })} disabled={busy || selectingRoot || (draft.location === 'remote' && !(remoteConnection?.connected && remoteConnection?.host_key_trusted && remoteConnection?.root_exists && !remoteConnection?.error_code))}>{text.save}</button><button type="button" className="secondary" disabled={selectingRoot} onClick={() => setMode('none')}>{text.cancel}</button></div>
         </section> : null}
 
-        {repo && mode !== 'repo' && mode !== 'credentials' ? <div className="vrepo-layout">
+		{(repositoryRecords.length || repo) && mode !== 'repo' && mode !== 'credentials' ? <div className="vrepo-management-shell">
+            {repositoryList}
+            {repo ? <div className="vrepo-layout">
             <aside className="vrepo-tree" aria-label={repo.name}>
-				<div className="vrepo-tree__head"><button type="button" className="vrepo-tree__root" aria-pressed={!selectedId} onClick={() => setSelectedId('')}><strong>{repo.name}</strong><span>{repo.root_path}</span></button><div><button type="button" aria-label={text.addGroup} title={text.addGroup} disabled={mutationLocked} onClick={() => { setMode('group'); setDraft({ parent_id: selected?.repository ? selected.parent_id : selectedId }); }}>+DIR</button><button type="button" aria-label={text.addRepo} title={text.addRepo} disabled={mutationLocked} onClick={() => { setMode('mapping'); setDraft({ parent_id: selected?.repository ? selected.parent_id : selectedId, kind: 'git', enabled: true }); }}>+MAP</button></div></div>
-                <div role="tree" aria-label={repo.name}>{renderNodes()}</div>
+				<div className="vrepo-tree__head"><div><strong>{text.repositoryList}</strong><span>{repo.root_path}</span></div><div><button type="button" aria-label={text.addGroup} title={text.addGroup} disabled={mutationLocked} onClick={() => { setMode('group'); setDraft({ parent_id: selected?.repository ? selected.parent_id : selectedId }); }}>+DIR</button><button type="button" aria-label={text.addRepo} title={text.addRepo} disabled={mutationLocked} onClick={() => { if (selected && !selected.repository) { setMode('mapping'); setDraft({ ...selected, kind: 'git', enabled: true }); return; } setMode('mapping'); setDraft({ parent_id: selected?.repository ? selected.parent_id : selectedId, kind: 'git', enabled: true }); }}>+MAP</button></div></div>
+                <div role="tree" aria-label={repo.name} className={dropTargetID === '' ? 'is-root-drop-target' : ''} onDragOver={(event) => { if (event.target === event.currentTarget && canMoveTreeNode(draggedNodeID, '')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTargetID(''); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetID((current) => current === '' ? null : current); }} onDrop={(event) => { if (event.target !== event.currentTarget) return; event.preventDefault(); const sourceID = draggedNodeID || event.dataTransfer.getData('text/plain'); void moveTreeNode(sourceID, ''); }}>
+					<div role="treeitem" aria-level={1} aria-selected={!selectedId} aria-expanded="true" data-vrepo-tree-root tabIndex={!selectedId ? 0 : -1} className={`vrepo-tree__item vrepo-tree__root-item${!selectedId ? ' is-selected' : ''}${dropTargetID === '' ? ' is-drop-target' : ''}`} onClick={(event) => { event.currentTarget.focus(); setSelectedId(''); }} onKeyDown={(event) => { const firstNodeID = visibleNodeIDs[0]; const lastNodeID = visibleNodeIDs[visibleNodeIDs.length - 1]; if ((event.key === 'ArrowDown' || event.key === 'ArrowRight') && firstNodeID) { event.preventDefault(); setSelectedId(firstNodeID); focusTreeItem(firstNodeID); } else if (event.key === 'End' && lastNodeID) { event.preventDefault(); setSelectedId(lastNodeID); focusTreeItem(lastNodeID); } }} onDragOver={(event) => { if (canMoveTreeNode(draggedNodeID, '')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTargetID(''); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetID((current) => current === '' ? null : current); }} onDrop={(event) => { event.preventDefault(); const sourceID = draggedNodeID || event.dataTransfer.getData('text/plain'); void moveTreeNode(sourceID, ''); }}>
+                        <span className="vrepo-tree__chevron" aria-hidden>▾</span><span className="vrepo-tree__icon">{treeNodeIcon()}</span><span className={`vrepo-tree__label${!selectedId ? ' is-selected' : ''}${dropTargetID === '' ? ' is-drop-target' : ''}`}>{repo.name}</span>
+					</div>
+					{renderNodes('', 1)}
+				</div>
             </aside>
             <main className="vrepo-detail">
                 {(mode === 'group' || mode === 'mapping') ? <section className="vrepo-editor">
@@ -772,23 +1375,25 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
                     <label>{text.name}<input value={draft.name || ''} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label>
                     <label>{text.parent}<select value={draft.parent_id || ''} onChange={(e) => setDraft({ ...draft, parent_id: e.target.value })}><option value="">{text.rootNode}</option>{repo.nodes.filter((n) => !n.repository).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}</select></label>
                     {mode === 'mapping' ? <>
+	                        <label>{isZh ? '仓库说明（可选）' : 'Repository description (optional)'}<input value={draft.description || ''} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></label>
                         <label>{text.type}<select value={draft.kind || 'git'} onChange={(e) => setDraft({ ...draft, kind: e.target.value, credential_id: '' })}><option value="git">Git</option><option value="svn">SVN</option><option value="local">{text.local}</option></select></label>
-                        <label>{text.path}<input value={draft.relative_path || ''} onChange={(e) => setDraft({ ...draft, relative_path: e.target.value })} placeholder="build/release" /></label>
-                        {draft.kind !== 'local' ? <><label>{text.remote}<input value={draft.remote_url || ''} onChange={(e) => setDraft({ ...draft, remote_url: e.target.value })} /></label><label>{text.refType}<select value={draft.ref_type || 'branch'} onChange={(e) => setDraft({ ...draft, ref_type: e.target.value })}><option value="branch">{text.branchRef}</option><option value="tag">{text.tagRef}</option></select></label><label>{text.refName}<input value={draft.ref_name || ''} placeholder={text.defaultRef} onChange={(e) => setDraft({ ...draft, ref_name: e.target.value })} /></label><label>{text.credentials}<select value={draft.credential_id || credentialBindings[draft.id] || ''} onFocus={async () => { if (!credentials.length) setCredentials(parseJSON(await app()?.ListRepositoryCredentials?.(draft.kind || ''), [])); }} onChange={(e) => setDraft({ ...draft, credential_id: e.target.value })}><option value="">{text.noCredential}</option>{credentials.filter((item) => item.kind === draft.kind).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select></label></> : null}
-                        <label className="vrepo-check"><input type="checkbox" checked={!!draft.create_directory} onChange={(e) => setDraft({ ...draft, create_directory: e.target.checked })} />{text.createDir}</label>
+							{draft.kind !== 'local' ? <><label>{text.remote}<input value={draft.remote_url || ''} onChange={(e) => setDraft({ ...draft, remote_url: e.target.value })} /></label><label>{text.refType}<select value={draft.ref_type || 'branch'} onChange={(e) => setDraft({ ...draft, ref_type: e.target.value })}><option value="branch">{text.branchRef}</option><option value="tag">{text.tagRef}</option></select></label><label>{text.refName}<input value={draft.ref_name || ''} placeholder={text.defaultRef} onChange={(e) => setDraft({ ...draft, ref_name: e.target.value })} /></label><label>{text.credentials}<div className="vrepo-inline"><select value={draft.credential_id || credentialBindings[draft.id] || ''} onFocus={() => { const kind = draft.kind === 'svn' ? 'svn' : 'git'; if (!credentials.some((item) => item.kind === kind)) void loadMappingCredentials(kind); }} onChange={(e) => setDraft({ ...draft, credential_id: e.target.value })}><option value="">{text.noCredential}</option>{credentials.filter((item) => item.kind === draft.kind).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select><button type="button" className="secondary vrepo-credential-add" onClick={() => void startCredentialManager(true)}>{text.addCredential}</button></div></label></> : null}
+						{draft.kind !== 'local' ? <label className="vrepo-check"><input type="checkbox" disabled={draft.enabled === false} checked={!!draft.checkout_after_save} onChange={(e) => setDraft({ ...draft, checkout_after_save: e.target.checked })} />{text.checkoutAfterSave}</label> : null}
+	                        <label className="vrepo-check"><input type="checkbox" checked={!!draft.create_directory} onChange={(e) => setDraft({ ...draft, create_directory: e.target.checked })} />{text.createDir}</label>
                         <label className="vrepo-check"><input type="checkbox" checked={draft.enabled !== false} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />{text.enabled}</label>
                     </> : null}
                     <div className="vrepo-form-actions"><button type="button" onClick={() => void saveNode()} disabled={busy}>{text.save}</button><button type="button" className="secondary" onClick={() => setMode('none')}>{text.cancel}</button></div>
                 </section> : selected ? <section>
                     <div className="vrepo-detail__title"><div><span className="vrepo-detail__kind">{selected.repository?.kind.toUpperCase() || 'DIR'}</span><h2>{selected.name}</h2></div><div><button type="button" className="secondary" disabled={mutationLocked} onClick={() => { setMode(selected.repository ? 'mapping' : 'group'); setDraft({ ...selected, ...(selected.repository || {}) }); }}>{text.edit}</button><button type="button" className="danger" disabled={mutationLocked} onClick={() => void removeNode(selected.id)}>{text.remove}</button></div></div>
-					{selected.repository ? <><dl className="vrepo-facts"><dt>{text.path}</dt><dd>{selectedStatus?.path || selected.repository.relative_path}</dd>{selected.repository.remote_url ? <><dt>{text.remote}</dt><dd>{selectedStatus?.remote_url || selected.repository.remote_url}</dd></> : null}{selected.repository.ref_name ? <><dt>{selected.repository.ref_type === 'tag' ? text.tagRef : text.branchRef}</dt><dd>{selected.repository.ref_name}</dd></> : null}{selectedStatus?.branch ? <><dt>{text.branch}</dt><dd>{selectedStatus.branch}</dd></> : null}<dt>{text.status}</dt><dd>{selectedStatus?.error || (selectedStatus ? selectedStatus.clean ? text.clean : text.changed : '—')}</dd>{directoryStats && selected.repository.kind === 'local' ? <><dt>{text.files}</dt><dd>{directoryStats.file_count}</dd><dt>{text.size}</dt><dd>{directoryStats.size_bytes.toLocaleString()} bytes</dd></> : null}</dl>{!repo.remote ? <button type="button" className="secondary" onClick={() => void openMappedFolder()}>{text.openFolder}</button> : null}{selected.repository.kind !== 'local' && selectedStatus?.error_code === 'not_checked_out' ? <button type="button" onClick={async () => { try { setBusy(true); if (repo.remote) await app()?.CheckoutRemoteVirtualRepositoryNode?.(repo.id, selected.id); else await app()?.CheckoutVirtualRepositoryNode?.(repo.id, selected.id); await refreshStatus(); } catch (e: any) { setError(errorMessage(e)); } finally { setBusy(false); } }}>{text.checkout}</button> : null}{selected.repository.kind === 'local' ? <button type="button" className="secondary" onClick={() => void loadDirectoryStats()}>{text.calculateSize}</button> : null}</> : null}
+					{selected.repository ? <><dl className="vrepo-facts">{selected.repository.remote_url ? <><dt>{text.remote}</dt><dd>{selectedStatus?.remote_url || selected.repository.remote_url}</dd></> : null}{selected.repository.ref_name ? <><dt>{selected.repository.ref_type === 'tag' ? text.tagRef : text.branchRef}</dt><dd>{selected.repository.ref_name}</dd></> : null}{selectedStatus?.branch ? <><dt>{text.branch}</dt><dd>{selectedStatus.branch}</dd></> : null}<dt>{text.status}</dt><dd>{selectedStatus?.error_code === 'not_checked_out' ? text.notCheckedOut : selectedStatus?.error || (selectedStatus ? selectedStatus.clean ? text.clean : text.changed : text.pendingStatus)}</dd>{directoryStats && selected.repository.kind === 'local' ? <><dt>{text.files}</dt><dd>{directoryStats.file_count}</dd><dt>{text.size}</dt><dd>{directoryStats.size_bytes.toLocaleString()} bytes</dd></> : null}</dl>{!repo.remote ? <button type="button" className="secondary" onClick={() => void openMappedFolder()}>{text.openFolder}</button> : null}{selected.repository.kind !== 'local' ? <button type="button" disabled={mutationLocked} onClick={async () => { try { setBusy(true); setError(''); await checkoutRepositoryNode(repo, selected.id); await refreshStatus(); } catch (e: any) { setError(errorMessage(e)); } finally { setBusy(false); } }}>{text.checkout}</button> : null}{selected.repository.kind === 'local' ? <button type="button" className="secondary" onClick={() => void loadDirectoryStats()}>{text.calculateSize}</button> : null}</> : null}
                     {selectedStatus?.status ? <pre className="vrepo-status-output">{selectedStatus.status}</pre> : null}
-                </section> : <section className="vrepo-placeholder"><h2>{repo.name}</h2><p>.vrepo/manifest.json</p></section>}
+						</section> : <section className="vrepo-overview"><div className="vrepo-overview__title"><div><span>{repo.remote ? text.remoteRepository : text.localRepository}</span><h2>{repo.name}</h2><p>{repo.root_path}</p></div></div><div className="vrepo-health"><div><span>{text.health}</span><strong>{Object.values(statuses).some(statusNeedsAttention) ? text.needsAttention : Object.keys(statuses).length ? text.healthy : text.pendingStatus}</strong></div><div><span>{text.mappings}</span><strong>{repo.nodes.filter((node) => node.repository).length}</strong></div><div><span>{text.location}</span><strong>{repo.remote ? text.remoteRepository : text.localRepository}</strong></div></div><div className="vrepo-overview__next"><h3>{text.repositoryActions}</h3><p>{text.selectRepositoryHint}</p></div></section>}
             </main>
+        </div> : <section className="vrepo-management-placeholder"><h2>{text.selectRepository}</h2><p>{text.selectRepositoryHint}</p></section>}
         </div> : null}
 
-        {mode === 'credentials' ? <section className="vrepo-credentials">
-            <div className="vrepo-detail__title"><h2>{text.manageCredentials}</h2><button type="button" className="secondary" onClick={() => { setMode('none'); setDraft({}); }}>{text.cancel}</button></div>
+		{mode === 'credentials' ? <section className="vrepo-credentials">
+			<div className="vrepo-detail__title"><h2>{text.manageCredentials}</h2><button type="button" className="secondary" disabled={busy} onClick={() => { credentialManagerRequestRef.current += 1; const mappingDraft = mappingDraftBeforeCredentials; setMode(credentialReturnToMapping ? 'mapping' : 'none'); setCredentialReturnToMapping(false); setMappingDraftBeforeCredentials(null); setDraft(mappingDraft || {}); }}>{text.cancel}</button></div>
             <div className="vrepo-credential-layout"><div>{credentials.length ? credentials.map((credential) => <div className="vrepo-credential-row" key={credential.id}><div><strong>{credential.name}</strong><span>{credential.kind.toUpperCase()} · {credential.username} · {credential.scope || text.anyHost}</span></div><div><button type="button" className="secondary" disabled={mutationLocked} onClick={() => setDraft(credential)}>{text.edit}</button><button type="button" className="danger" disabled={mutationLocked} onClick={() => void deleteCredential(credential)}>{text.remove}</button></div></div>) : <p>{text.noCredentials}</p>}</div>
                 <div className="vrepo-editor"><h3>{draft.id ? text.edit : text.addCredential}</h3><label>{text.credentialName}<input value={draft.name || ''} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label>{text.type}<select value={draft.kind || 'git'} disabled={!!draft.id} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}><option value="git">Git</option><option value="svn">SVN</option></select></label><label>{text.username}<input value={draft.username || ''} onChange={(e) => setDraft({ ...draft, username: e.target.value })} /></label><label>{text.password}<input type="password" autoComplete="new-password" value={draft.secret || ''} placeholder={draft.id ? text.passwordHint : ''} onChange={(e) => setDraft({ ...draft, secret: e.target.value })} /></label><label>{text.scope}<input value={draft.scope || ''} onChange={(e) => setDraft({ ...draft, scope: e.target.value })} /></label><button type="button" onClick={() => void saveCredential()} disabled={busy}>{text.save}</button></div>
             </div>

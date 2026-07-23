@@ -69,6 +69,9 @@ func WriteTigerProxyCodexConfig(apiKey, baseURL, modelID string) error {
 // with optional context overrides. Non-positive values use program defaults.
 func WriteTigerProxyCodexConfigWithContext(apiKey, baseURL, modelID string, contextWindow, autoCompactTokenLimit int) error {
 	contextWindow, autoCompactTokenLimit = normalizeTigerProxyCodexContext(contextWindow, autoCompactTokenLimit)
+	if autoCompactTokenLimit >= contextWindow {
+		return fmt.Errorf("Codex auto compact token limit must be less than the context window")
+	}
 	return writeCodexConfigAtWithClientName(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, tigerProxyCodexProviderName, tigerProxyCodexWireAPI, corelib.CodeGenClientName, true, contextWindow, autoCompactTokenLimit)
 }
 

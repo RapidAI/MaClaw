@@ -412,7 +412,10 @@ export interface ChatRecordingSession {
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant' | 'progress' | 'error' | 'system';
-    kind?: 'news' | 'trace' | 'guideReceipt' | 'guideRejection';
+    // Legacy receipt kinds remain parseable so stale local history does not
+    // break after upgrade. guideInjection marks a user bubble that steered the
+    // running turn rather than starting an independent turn.
+    kind?: 'news' | 'trace' | 'guideReceipt' | 'guideRejection' | 'guideInjection';
     content: string;
     /** Reasoning/thinking content from reasoning models (displayed as collapsed gray text). */
     reasoning?: string;
@@ -832,6 +835,10 @@ function buildClientContextMessages(messages: ChatMessage[], startIndex = 0): AI
         .filter(isLocalChatMessage)
         .map(message => {
             if (message.role !== 'user' && message.role !== 'assistant') return null;
+            // A guide-injection bubble is visual audit evidence for steering that
+            // was already consumed by the running loop. Re-sending it later as an
+            // ordinary user turn would duplicate and misrepresent that steering.
+            if (message.kind === 'guideInjection') return null;
             const content = buildClientContextContent(message);
             if (!content) return null;
             return { role: message.role, content };
@@ -2677,6 +2684,13 @@ function createUserMessage(content: string, sessionKey?: string): ChatMessage {
         content,
         sessionKey: ownerSessionKey,
         timestamp: Date.now(),
+    };
+}
+
+function createGuideInjectionMessage(content: string, sessionKey?: string): ChatMessage {
+    return {
+        ...createUserMessage(content, sessionKey),
+        kind: 'guideInjection',
     };
 }
 
@@ -5094,28 +5108,27 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 				expectedRound = candidate;
 			}
 		}
-		const expectedRequestId = expectedRound?.requestId.trim() || '';
-        const displayedLaunchKey = normalizedLaunchId
-            ? `${normalizedSessionKey}\u0000${normalizedLaunchId}`
-            : '';
-        const showAcceptedInterjection = () => {
+			const expectedRequestId = expectedRound?.requestId.trim() || '';
+		const displayedLaunchKey = normalizedLaunchId
+			? `${normalizedSessionKey}\u0000${normalizedLaunchId}`
+			: '';
+		const showAcceptedInjection = () => {
 			if ((sessionResetEpochsRef.current.get(normalizedOwnerSessionKey) || 0) !== startedAtResetEpoch) return;
-            if (displayedLaunchKey) {
-                if (displayedGuideLaunchIdsRef.current.has(displayedLaunchKey)) return;
-                displayedGuideLaunchIdsRef.current.add(displayedLaunchKey);
-            }
-            setMessages(prev => [...prev, createUserMessage(text, normalizedSessionKey)]);
-        };
+			if (displayedLaunchKey) {
+				if (displayedGuideLaunchIdsRef.current.has(displayedLaunchKey)) return;
+				displayedGuideLaunchIdsRef.current.add(displayedLaunchKey);
+			}
+			setMessages(prev => [...prev, createGuideInjectionMessage(text, normalizedSessionKey)]);
+		};
         const inject = () => normalizedLaunchId
 			? InjectAIAssistantGuideReferenceForSessionWithID(text, normalizedSessionKey, normalizedLaunchId, expectedRequestId)
             : InjectAIAssistantGuideReferenceForSession(text, normalizedSessionKey);
         try {
             const accepted = await inject();
             if (accepted) {
-                // Preserve the user's actual interjection in the conversation.
-                // The following assistant response can pick it up naturally;
-                // no synthetic acknowledgement or receipt is needed.
-                showAcceptedInterjection();
+				// Keep the interjection visible, but explicitly distinguish it from
+				// an independent user turn in the bubble chrome.
+				showAcceptedInjection();
             }
             return accepted;
         } catch {
@@ -5125,9 +5138,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (!normalizedLaunchId) return false;
             try {
                 const accepted = await inject();
-                if (accepted) {
-                    showAcceptedInterjection();
-                }
+				if (accepted) showAcceptedInjection();
                 return accepted;
             } catch {
                 try {
@@ -5137,9 +5148,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                         normalizedLaunchId,
 						expectedRequestId,
                     );
-                    if (accepted) {
-                        showAcceptedInterjection();
-                    }
+					if (accepted) showAcceptedInjection();
                     return accepted;
                 } catch {
                     return false;

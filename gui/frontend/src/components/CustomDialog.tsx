@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import { EventsOn } from '../../wailsjs/runtime';
 
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
@@ -89,6 +89,8 @@ const dialogFallback: DialogContextValue = {
 // ── Provider ──
 
 export function DialogProvider({ children }: { children: React.ReactNode }) {
+	const titleId = useId();
+	const messageId = useId();
     const [state, setState] = useState<DialogState>({
         open: false, title: '', message: '', mode: 'alert', lang: 'en',
     });
@@ -235,15 +237,23 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                     onMouseDown={e => { backdropMouseDownRef.current = e.target === e.currentTarget; }}
                     onClick={e => { if (e.target === e.currentTarget && backdropMouseDownRef.current) close(dismissResult); backdropMouseDownRef.current = false; }}
                 >
-                    <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: state.mode === 'prompt' ? '420px' : '320px' }}>
+                    <div
+						className="modal-content"
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby={state.title ? titleId : undefined}
+						aria-describedby={messageId}
+						onClick={e => e.stopPropagation()}
+						style={{ width: state.mode === 'prompt' ? '420px' : '320px' }}
+					>
                         {state.title && (
                             <div className="modal-header">
-                                <h3 style={{ fontSize: '0.88rem', margin: 0 }}>{state.title}</h3>
-                                <button className="btn-close" onClick={() => close(dismissResult)}>×</button>
+                                <h3 id={titleId} style={{ fontSize: '0.88rem', margin: 0 }}>{state.title}</h3>
+                                <button className="btn-close" aria-label={localizeText(state.lang, 'Close', '关闭')} onClick={() => close(dismissResult)}>×</button>
                             </div>
                         )}
                         <div className="modal-body">
-                            <p style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)', margin: 0, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                            <p id={messageId} style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)', margin: 0, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
                                 {state.message}
                             </p>
                             {state.mode === 'prompt' && (

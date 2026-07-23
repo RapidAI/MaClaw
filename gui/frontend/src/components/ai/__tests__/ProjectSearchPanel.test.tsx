@@ -116,6 +116,33 @@ describe("ProjectSearchPanel", () => {
         expect(screen.getByTestId("search-coding-badge")).toBeTruthy();
     });
 
+    it("opens remote coding tasks through tab creation instead of the legacy resume-send fallback", async () => {
+        const search = makeSearch([{
+            id: "p-remote-coding",
+            name: "Remote coding task",
+            project_path: "D:/p/remote-coding",
+            tags: ["remote_coding_dev", "remote_host:10.0.0.12"],
+        }]);
+        const onCreateProjectTab = vi.fn();
+        const onProjectSwitch = vi.fn();
+
+        renderPanel(search, { onCreateProjectTab, onProjectSwitch });
+        fireEvent.click(screen.getByText("Remote coding task"));
+
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith(
+            "D:/p/remote-coding",
+            "Remote coding task",
+            expect.objectContaining({
+                autoSend: false,
+                agentMode: "remote_coding_dev",
+                remoteHost: "10.0.0.12",
+            }),
+        ));
+        expect(onProjectSwitch).not.toHaveBeenCalled();
+        expect(ResumeTask).not.toHaveBeenCalled();
+        expect(screen.getByTestId("search-remote-coding-badge")).toBeTruthy();
+    });
+
     it("loads scene evidence and opens artifact sources", async () => {
         const search = makeSearch([{ id: "p3", name: "Evidence task", project_path: "D:/p/evidence" }]);
         getProjectSceneMock.mockResolvedValue({

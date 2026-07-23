@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -85,6 +86,148 @@ func (h *IMMessageHandler) tryImmediateCurrentTimeDirect(msg IMUserMessage, prov
 		history = h.memory.Load(msg.UserID)
 	}
 	return h.tryDirectExecutionProfile(msg, loopCtx, history)
+}
+
+// tryImmediateScheduleListDirect avoids asking the LLM to route an unambiguous
+// read-only schedule query. The manage_schedule tool is still the single source
+// of truth: this only supplies its deterministic list action directly.
+func (h *IMMessageHandler) tryImmediateScheduleListDirect(msg IMUserMessage, providedLoopCtx *LoopContext) (*IMAgentResponse, bool) {
+	if h == nil || !isExplicitScheduledTaskListQuery(msg.Text) || providedLoopCtx != nil {
+		return nil, false
+	}
+	if _, forced := hardStructuralFullExecutionProfile(msg, false, false); forced {
+		return nil, false
+	}
+	return h.tryImmediateScheduleActionDirect(msg, manageScheduleActionList, "schedule_list", `{"action":"list"}`)
+}
+
+// tryImmediateScheduleRunDirect immediately starts a task only when the user
+// explicitly names a scheduler-generated ID. This prevents a name collision
+// from causing an unintended task to run, while avoiding an LLM routing hop.
+func (h *IMMessageHandler) tryImmediateScheduleRunDirect(msg IMUserMessage, providedLoopCtx *LoopContext) (*IMAgentResponse, bool) {
+	id, ok := explicitScheduledTaskRunID(msg.Text)
+	if h == nil || !ok || providedLoopCtx != nil {
+		return nil, false
+	}
+	if _, forced := hardStructuralFullExecutionProfile(msg, false, false); forced {
+		return nil, false
+	}
+	return h.tryImmediateScheduleActionDirect(msg, manageScheduleActionRun, "schedule_run", `{"action":"run","id":"`+id+`"}`)
+}
+
+// tryImmediateScheduleActionDirect executes an already validated, deterministic
+// manage_schedule operation and records it like the other direct IM paths.
+func (h *IMMessageHandler) tryImmediateScheduleActionDirect(msg IMUserMessage, action manageScheduleAction, taskType, argsJSON string) (*IMAgentResponse, bool) {
+	if h == nil || h.registry == nil {
+		return nil, false
+	}
+	if _, ok := h.registry.Get("manage_schedule"); !ok {
+		return nil, false
+	}
+
+	startedAt := time.Now()
+	result := h.executeToolDetailedWithRuntimeState(
+		msg.UserID,
+		strings.TrimSpace(msg.UserID) != "",
+		msg.Platform,
+		"manage_schedule",
+		argsJSON,
+		msg.Text,
+		nil,
+	)
+	if result.Outcome != toolOutcomeSucceeded || strings.TrimSpace(result.Text) == "" {
+		log.Printf("[exec-direct] fallback request_id=%q user=%q task=%s tool=manage_schedule action=%s outcome=%s failure=%s elapsed=%s",
+			imRequestID(msg), msg.UserID, taskType, action, result.Outcome.String(), string(result.FailureKind), time.Since(startedAt).Round(time.Millisecond))
+		return nil, false
+	}
+
+	runtime := runtimeContextFromIMMessage(msg)
+	text := strings.TrimSpace(result.Text)
+	resp := &IMAgentResponse{
+		Text:           text,
+		RequestID:      imRequestID(msg),
+		SessionKey:     runtime.Conversation.SessionKey,
+		ResponseSource: "direct_execution",
+	}
+	if h.memory != nil && strings.TrimSpace(msg.UserID) != "" {
+		history := append([]agent.ConversationEntry(nil), h.memory.Load(msg.UserID)...)
+		history = append(history,
+			agent.ConversationEntry{Role: "user", Content: msg.Text},
+			agent.ConversationEntry{Role: "assistant", Content: text},
+		)
+		h.saveConversationHistoryTimed(msg.UserID, history, resp)
+	}
+	log.Printf("[exec-direct] done request_id=%q user=%q task=%s tool=manage_schedule action=%s elapsed=%s text_len=%d",
+		resp.RequestID, msg.UserID, taskType, action, time.Since(startedAt).Round(time.Millisecond), len([]rune(text)))
+	imPerfLog("direct_execution", startedAt, resp.RequestID, msg.UserID, "task", taskType, "tool", "manage_schedule", "action", action, "text_len", len([]rune(text)))
+	return resp, true
+}
+
+// isExplicitScheduledTaskListQuery is deliberately narrow: commands which
+// change or run a task must continue through normal planning and confirmation.
+func isExplicitScheduledTaskListQuery(text string) bool {
+	query := strings.ToLower(strings.TrimSpace(text))
+	if query == "" {
+		return false
+	}
+	for _, verb := range []string{
+		"创建", "新建", "添加", "执行", "运行", "触发", "暂停", "恢复", "删除", "移除", "修改", "更新", "设置",
+		"create", "add", "run", "execute", "trigger", "pause", "resume", "delete", "remove", "update", "set",
+	} {
+		if strings.Contains(query, verb) {
+			return false
+		}
+	}
+
+	chineseSchedule := strings.Contains(query, "定时任务") || strings.Contains(query, "计划任务") || strings.Contains(query, "日程任务")
+	if chineseSchedule {
+		for _, verb := range []string{"查看", "查询", "列出", "显示", "有哪些", "有啥", "有何", "什么任务", "任务列表"} {
+			if strings.Contains(query, verb) {
+				return true
+			}
+		}
+	}
+
+	englishSchedule := strings.Contains(query, "scheduled task") || strings.Contains(query, "scheduled tasks") ||
+		strings.Contains(query, "schedule task") || strings.Contains(query, "schedule tasks")
+	if !englishSchedule {
+		return false
+	}
+	for _, verb := range []string{"list", "show", "view", "query", "what scheduled", "which scheduled", "scheduled tasks do i have"} {
+		if strings.Contains(query, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+var scheduledTaskIDInTextPattern = regexp.MustCompile(`(?i)\b\d{12,20}-[0-9a-f]{4}\b`)
+
+// explicitScheduledTaskRunID recognizes only a clear run/execute instruction
+// paired with a native task ID. Scheduler IDs are timestamp plus four hex
+// digits, so ordinary dates and message numbers cannot accidentally match.
+func explicitScheduledTaskRunID(text string) (string, bool) {
+	query := strings.ToLower(strings.TrimSpace(text))
+	if query == "" || !hasScheduledTaskReference(query) {
+		return "", false
+	}
+	hasRunVerb := false
+	for _, verb := range []string{"执行", "运行", "立即运行", "马上执行", "立刻执行", "触发", "run", "execute", "trigger"} {
+		if strings.Contains(query, verb) {
+			hasRunVerb = true
+			break
+		}
+	}
+	if !hasRunVerb {
+		return "", false
+	}
+	return scheduledTaskIDInTextPattern.FindString(query), scheduledTaskIDInTextPattern.MatchString(query)
+}
+
+func hasScheduledTaskReference(query string) bool {
+	return strings.Contains(query, "定时任务") || strings.Contains(query, "计划任务") || strings.Contains(query, "日程任务") ||
+		strings.Contains(query, "scheduled task") || strings.Contains(query, "scheduled tasks") ||
+		strings.Contains(query, "schedule task") || strings.Contains(query, "schedule tasks")
 }
 
 func directExecutionToolName(profile ExecutionProfile) string {

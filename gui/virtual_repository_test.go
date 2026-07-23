@@ -195,7 +195,7 @@ func TestResolveVirtualRepositoryPathRejectsExistingSymlinkEscape(t *testing.T) 
 	}
 }
 
-func TestValidateVirtualRepositoryRejectsCyclesAndDuplicatePaths(t *testing.T) {
+func TestValidateVirtualRepositoryRejectsCyclesAndDuplicateTreePaths(t *testing.T) {
 	root := t.TempDir()
 	repo := &VirtualRepository{Version: 1, Name: "x", RootPath: root, Nodes: []VirtualRepositoryNode{
 		{ID: "a", ParentID: "b", Name: "A"},
@@ -205,11 +205,25 @@ func TestValidateVirtualRepositoryRejectsCyclesAndDuplicatePaths(t *testing.T) {
 		t.Fatal("cycle should fail")
 	}
 	repo.Nodes = []VirtualRepositoryNode{
-		{ID: "a", Name: "A", Repository: &VirtualRepositoryBinding{Kind: "local", RelativePath: "out", Enabled: true}},
-		{ID: "b", Name: "B", Repository: &VirtualRepositoryBinding{Kind: "local", RelativePath: "out", Enabled: true}},
+		{ID: "a", Name: "out", Repository: &VirtualRepositoryBinding{Kind: "local", RelativePath: "first", Enabled: true}},
+		{ID: "b", Name: "out", Repository: &VirtualRepositoryBinding{Kind: "local", RelativePath: "second", Enabled: true}},
 	}
 	if err := validateVirtualRepository(repo); err == nil {
-		t.Fatal("duplicate mapped path should fail")
+		t.Fatal("duplicate mapped tree path should fail")
+	}
+}
+
+func TestValidateVirtualRepositoryDerivesMappingPathFromTree(t *testing.T) {
+	root := t.TempDir()
+	repo := &VirtualRepository{Version: 1, Name: "Repo", RootPath: root, Nodes: []VirtualRepositoryNode{
+		{ID: "services", Name: "services"},
+		{ID: "api", ParentID: "services", Name: "api", Repository: &VirtualRepositoryBinding{Kind: "git", RemoteURL: "https://example.com/api.git", Enabled: true}},
+	}}
+	if err := validateVirtualRepository(repo); err != nil {
+		t.Fatalf("validateVirtualRepository() error = %v", err)
+	}
+	if got := repo.Nodes[1].Repository.RelativePath; got != "services/api" {
+		t.Fatalf("derived mapping path = %q, want %q", got, "services/api")
 	}
 }
 
@@ -559,6 +573,16 @@ func TestValidateVirtualRepositoryRejectsReversedTimestamps(t *testing.T) {
 	}
 }
 
+func TestVirtualRepositoryBindingByRelativePath(t *testing.T) {
+	repo := &VirtualRepository{Nodes: []VirtualRepositoryNode{{Repository: &VirtualRepositoryBinding{Kind: "local", RelativePath: "build/output"}}}}
+	if got := virtualRepositoryBindingByRelativePath(repo, " build/output "); got == nil || got.RelativePath != "build/output" {
+		t.Fatalf("binding lookup=%#v", got)
+	}
+	if got := virtualRepositoryBindingByRelativePath(repo, "other"); got != nil {
+		t.Fatalf("unexpected binding=%#v", got)
+	}
+}
+
 func TestValidateRemoteVirtualRepository(t *testing.T) {
 	repo := &VirtualRepository{Version: 1, Name: "remote", RootPath: "/srv/workspace", Remote: &VirtualRepositoryRemote{Host: "example.com", User: "deploy"}, Nodes: []VirtualRepositoryNode{{ID: "git", Name: "Git", Repository: &VirtualRepositoryBinding{Kind: "git", RelativePath: "services/api", RemoteURL: "https://example.com/api.git", Enabled: true}}}}
 	if err := validateVirtualRepository(repo); err != nil {
@@ -567,11 +591,21 @@ func TestValidateRemoteVirtualRepository(t *testing.T) {
 	if repo.Remote.Port != 22 {
 		t.Fatalf("default remote port=%d", repo.Remote.Port)
 	}
-	for _, invalid := range []string{"../escape", "/absolute", `.vrepo/secret`, `windows\path`} {
+	repo.Nodes[0].Repository.RelativePath = "/maclaw2"
+	if err := validateVirtualRepository(repo); err == nil || !strings.Contains(err.Error(), `use "maclaw2" instead of "/maclaw2"`) {
+		t.Fatalf("absolute mapping path error = %v", err)
+	}
+	repo.Nodes[0].Repository.RelativePath = "services/api"
+	for _, invalid := range []string{"../escape", "folder/../escape", "folder//child", "./child", "/absolute", "//server/share", `.vrepo/secret`, `windows\path`} {
 		if err := validateRemoteVirtualRepositoryRelativePath(invalid); err == nil {
 			t.Fatalf("remote relative path %q should fail", invalid)
 		}
+		repo.Nodes[0].Repository.RelativePath = invalid
+		if err := validateVirtualRepository(repo); err == nil {
+			t.Fatalf("remote repository should reject relative path %q", invalid)
+		}
 	}
+	repo.Nodes[0].Repository.RelativePath = "services/api"
 	repo.RootPath = `C:\workspace`
 	if err := validateVirtualRepository(repo); err == nil {
 		t.Fatal("remote Windows root should fail for POSIX SSH runtime")

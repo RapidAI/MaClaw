@@ -7,6 +7,10 @@ export function buildProjectTabRecentMessages(history: ChatMessage[] | undefined
     return history
         .map(message => {
             if (message.role !== 'user' && message.role !== 'assistant') return null;
+            // A guide-injection bubble records steering that was consumed by the
+            // active loop. Do not replay it as an ordinary historical user turn
+            // when this project/expert tab starts a later request.
+            if (message.kind === 'guideInjection') return null;
             const content = String(message.content || '').trim();
             if (!content) return null;
             return { role: message.role, content };
@@ -115,10 +119,16 @@ export function chatHistoriesEquivalent(left: ChatMessage[] | undefined, right: 
     for (let i = 0; i < a.length; i += 1) {
         const leftMessage = a[i];
         const rightMessage = right[i];
-        if (leftMessage.id !== rightMessage.id) return false;
-        if (leftMessage.content !== rightMessage.content) return false;
-        if (leftMessage.role !== rightMessage.role) return false;
-        if ((leftMessage.requestId || "") !== (rightMessage.requestId || "")) return false;
+        // The common live-sync path reuses message objects that did not change.
+        // Avoid serializing large markdown/tool payloads for those entries.
+        if (leftMessage === rightMessage) continue;
+        // This predicate guards a persistence write, not just a text rerender.
+        // Comparing a selected subset silently loses later updates such as an
+        // injection label, streamed reasoning, task actions, or file evidence
+        // after switching tabs. ChatMessage is intentionally data-only, so a
+        // structural comparison is safe and keeps saved history faithful to the
+        // bubble the user actually saw.
+        if (JSON.stringify(leftMessage) !== JSON.stringify(rightMessage)) return false;
     }
     return true;
 }

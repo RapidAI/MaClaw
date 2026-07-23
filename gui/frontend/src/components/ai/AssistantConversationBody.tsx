@@ -103,6 +103,7 @@ function playStartupChime() {
 }
 
 interface AssistantConversationBodyProps {
+    emptyContent?: ReactNode;
     initLabel: string;
     lang: string;
     messages: ChatMessage[];
@@ -120,6 +121,7 @@ interface AssistantConversationBodyProps {
 }
 
 export function AssistantConversationBody({
+    emptyContent,
     initLabel,
     lang,
     messages,
@@ -177,9 +179,11 @@ export function AssistantConversationBody({
                     <div style={{ color: t.textMuted, fontSize: "11px", opacity: 0.7 }}>{initLabel}</div>
                 </div>
             ) : messages.length === 0 ? (
-                <span style={{ color: t.emptyHint }}>
-                    {lang === "en" ? "Ask me anything..." : "\u6709\u4ec0\u4e48\u53ef\u4ee5\u5e2e\u4f60\u7684\uff1f"}
-                </span>
+                emptyContent !== undefined ? emptyContent : (
+                    <span style={{ color: t.emptyHint }}>
+                        {lang === "en" ? "Ask me anything..." : "\u6709\u4ec0\u4e48\u53ef\u4ee5\u5e2e\u4f60\u7684\uff1f"}
+                    </span>
+                )
             ) : (
                 <>
                     <AssistantPinnedNewsCards messages={pinnedNews} theme={t} />

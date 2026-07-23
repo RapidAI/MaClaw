@@ -19,12 +19,12 @@ const baseCredits: SidebarHubCredits = {
     retryAfterAt: '',
 };
 
-function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction?: boolean; isHubService?: boolean } = {}) {
+function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction?: boolean; isHubService?: boolean; onOpenBackgroundTasks?: () => void } = {}) {
     const openServiceRedeemPage = vi.fn();
     const openHubCreditsPage = vi.fn();
     const openLLMSettingsPage = vi.fn();
     const openHubCardStorePage = vi.fn();
-    render(
+    const rendered = render(
         <SidebarSystemStatus
             lang="zh-Hans"
             maclawLLMOnline={false}
@@ -33,6 +33,8 @@ function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction
             telegramStatus=""
             weixinStatus=""
             lansengerStatus=""
+            backgroundTaskCount={3}
+            onOpenBackgroundTasks={options.onOpenBackgroundTasks}
             sidebarCurrentProviderTokenUsage={{ provider: options.isHubService === false ? '\u79c1\u6709\u670d\u52a1\u5546' : 'MaClaw\u5b98\u65b9', isHubService: options.isHubService ?? true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
             sidebarHubCredits={credits}
             formatSidebarTokens={(value) => String(value)}
@@ -49,10 +51,27 @@ function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction
             openHubCardStorePage={openHubCardStorePage}
         />,
     );
-    return { openServiceRedeemPage, openHubCreditsPage, openLLMSettingsPage, openHubCardStorePage };
+    return { ...rendered, openServiceRedeemPage, openHubCreditsPage, openLLMSettingsPage, openHubCardStorePage };
 }
 
 describe('SidebarSystemStatus Hub credits', () => {
+    it('opens the background task monitor from the background-task status', () => {
+        const onOpenBackgroundTasks = vi.fn();
+        const { unmount } = renderStatus(baseCredits, { onOpenBackgroundTasks });
+
+        fireEvent.click(screen.getByRole('button', { name: '打开后台任务： 3' }));
+
+        expect(onOpenBackgroundTasks).toHaveBeenCalledTimes(1);
+        unmount();
+    });
+
+    it('does not expose a dead background-task control when no navigation handler is available', () => {
+        const { unmount } = renderStatus(baseCredits);
+
+        expect(screen.getByRole('button', { name: '打开后台任务： 3' }).hasAttribute('disabled')).toBe(true);
+        unmount();
+    });
+
     it('opens service redeem from official provider name and card store from cart', () => {
         const { openServiceRedeemPage, openHubCardStorePage, openLLMSettingsPage } = renderStatus(baseCredits);
 

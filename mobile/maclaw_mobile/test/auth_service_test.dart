@@ -57,7 +57,7 @@ void main() {
     expect(adapter.requests.first.path, '/api/entry/resolve');
     expect(adapter.requests.first.data, {'phone_number': '19900001111'});
     expect(adapter.requests.last.baseUrl, 'https://tenant-a.maclaw.top');
-    expect(adapter.requests.last.path, '/api/enroll/sms/send-code');
+    expect(adapter.requests.last.path, '/api/mobile/auth/phone/send-code');
     expect(adapter.requests.last.data, {
       'phone_number': '19900001111',
       'tenant_id': 'tenant-a',
@@ -258,7 +258,8 @@ void main() {
     expect(result.tenantId, 'tenant-a');
     expect(await vault.readHubUrl(), 'https://tenant-a.maclaw.top');
     expect(await vault.readToken(), 'hub-issued-token');
-    expect(adapter.requests.single.path, '/api/enroll/sms/verify-and-start');
+    expect(adapter.requests.single.path,
+        '/api/mobile/auth/phone/verify-and-start');
     expect(adapter.requests.single.data, {
       'phone_number': '19900001111',
       'verify_code': '303246',

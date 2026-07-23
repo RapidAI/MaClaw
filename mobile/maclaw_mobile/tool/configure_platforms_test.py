@@ -21,7 +21,7 @@ class ConfigurePlatformsTest(unittest.TestCase):
         )
         self.assertEqual(
             plist["NSMicrophoneUsageDescription"],
-            "\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u3002",
+            "\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u4e0e\u4f1a\u8bae\u5f55\u97f3\uff0c\u4f1a\u8bae\u5f55\u97f3\u53ef\u5728\u8bbe\u5907\u9501\u5c4f\u6216\u5207\u6362\u5e94\u7528\u540e\u7ee7\u7eed\u3002",
         )
         self.assertEqual(
             plist["NSSpeechRecognitionUsageDescription"],
@@ -63,12 +63,26 @@ class ConfigurePlatformsTest(unittest.TestCase):
         )
         self.assertEqual(
             plist["NSMicrophoneUsageDescription"],
-            "\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u3002",
+            "\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u4e0e\u4f1a\u8bae\u5f55\u97f3\uff0c\u4f1a\u8bae\u5f55\u97f3\u53ef\u5728\u8bbe\u5907\u9501\u5c4f\u6216\u5207\u6362\u5e94\u7528\u540e\u7ee7\u7eed\u3002",
         )
         self.assertEqual(
             plist["NSPhotoLibraryUsageDescription"],
             "\u7528\u4e8e\u4ece\u76f8\u518c\u5bfc\u5165\u56fe\u7247\u6216\u622a\u56fe\u3002",
         )
+
+    def test_ios_background_audio_mode_is_added_without_removing_existing_modes(self) -> None:
+        plist: dict[str, object] = {"UIBackgroundModes": ["fetch", "audio", 7]}
+
+        configure_platforms.apply_ios_background_modes(plist)
+
+        self.assertEqual(plist["UIBackgroundModes"], ["fetch", "audio"])
+
+    def test_ios_background_audio_mode_repairs_invalid_values(self) -> None:
+        plist: dict[str, object] = {"UIBackgroundModes": "audio"}
+
+        configure_platforms.apply_ios_background_modes(plist)
+
+        self.assertEqual(plist["UIBackgroundModes"], ["audio"])
 
     def test_configure_ios_sets_readable_runner_bundle_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

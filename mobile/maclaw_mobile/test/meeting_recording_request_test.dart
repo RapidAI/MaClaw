@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
@@ -52,6 +53,86 @@ class _FailingRemoteRecordingStore extends MobileLocalStore {
   Future<void> removeMeetingRecordingUpload(String localId) async {}
 }
 
+class _LiveRecordingApiClient extends ApiClient {
+  final List<int> uploadedChunks = [];
+  int completeCalls = 0;
+  int processCalls = 0;
+  int createCalls = 0;
+
+  _LiveRecordingApiClient() : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<MobileMeetingRecording> createMeetingRecording({
+    required String title,
+    String purpose = '',
+    String conversationId = '',
+    String contentType = 'audio/mp4',
+  }) async {
+    createCalls++;
+    return const MobileMeetingRecording(
+      recordingId: 'live-recording-1',
+      status: 'uploading',
+      chunkSize: 64 * 1024,
+    );
+  }
+
+  @override
+  Future<MobileMeetingRecording> getMeetingRecording(
+    String recordingId,
+  ) async =>
+      MobileMeetingRecording(
+        recordingId: recordingId,
+        status: 'uploading',
+        chunkSize: 64 * 1024,
+      );
+
+  @override
+  Future<void> uploadMeetingRecordingChunk(
+    String recordingId,
+    int index,
+    Uint8List bytes,
+  ) async {
+    uploadedChunks.add(index);
+  }
+
+  @override
+  Future<MobileMeetingRecording> completeMeetingRecording(
+    String recordingId, {
+    required int chunks,
+    required String sha256,
+    required double durationSec,
+  }) async {
+    completeCalls++;
+    expect(chunks, 3);
+    return MobileMeetingRecording(
+      recordingId: recordingId,
+      status: 'uploaded',
+    );
+  }
+
+  @override
+  Future<MobileMeetingRecording> processMeetingRecording(
+    String recordingId, {
+    String mode = 'minutes',
+  }) async {
+    processCalls++;
+    return MobileMeetingRecording(
+      recordingId: recordingId,
+      status: 'processing',
+    );
+  }
+}
+
+class _MemoryRecordingStore extends MobileLocalStore {
+  @override
+  Future<void> saveMeetingRecordingUpload(
+    MeetingRecordingUpload upload,
+  ) async {}
+
+  @override
+  Future<void> removeMeetingRecordingUpload(String localId) async {}
+}
+
 void main() {
   test('parses the Hub record-audio marker into an assistant request', () {
     final request = parseMeetingRecordingRequest(
@@ -97,6 +178,72 @@ void main() {
     expect(meetingRecordingProcessingMessage('keep'), '正在安全归档音频');
   });
 
+  test('live upload sends stable chunks before recording stops', () async {
+    final directory = await Directory.systemTemp.createTemp('meeting-live-');
+    addTearDown(() async {
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+    final audio = File('${directory.path}${Platform.pathSeparator}audio.wav');
+    await audio.writeAsBytes(List<int>.filled(2 * 64 * 1024 + 9, 7));
+    final api = _LiveRecordingApiClient();
+    final queue = MeetingRecordingUploadQueue(
+      store: _MemoryRecordingStore(),
+      api: api,
+    );
+    final task = await queue.enqueue(
+      localPath: audio.path,
+      title: 'meeting',
+      purpose: '',
+      conversationId: '',
+      durationSec: 0,
+      initialStatus: 'recording',
+    );
+
+    final live = await queue.startLiveUpload(task);
+    final preuploaded = await queue.uploadLiveChunks(live);
+
+    expect(api.uploadedChunks, [0, 1]);
+    expect(api.completeCalls, 0);
+    expect(api.processCalls, 0);
+
+    final finished = await queue.finalizeLiveUpload(
+      preuploaded,
+      durationSec: 2,
+    );
+
+    expect(api.uploadedChunks, [0, 1, 0, 2]);
+    expect(api.completeCalls, 1);
+    expect(api.processCalls, 1);
+    expect(finished.status, 'processing');
+  });
+
+  test('coalesces concurrent live session creation', () async {
+    final api = _LiveRecordingApiClient();
+    final queue = MeetingRecordingUploadQueue(
+      store: _MemoryRecordingStore(),
+      api: api,
+    );
+    final task = await queue.enqueue(
+      localPath:
+          '${Directory.systemTemp.path}${Platform.pathSeparator}live.wav',
+      title: 'meeting',
+      purpose: '',
+      conversationId: '',
+      durationSec: 0,
+      initialStatus: 'recording',
+    );
+
+    final sessions = await Future.wait([
+      queue.startLiveUpload(task),
+      queue.startLiveUpload(task),
+    ]);
+
+    expect(api.createCalls, 1);
+    expect(sessions.map((item) => item.recordingId).toSet(), {
+      'live-recording-1',
+    });
+  });
+
   test('remote recording continues despite local persistence failure',
       () async {
     final directory = await Directory.systemTemp.createTemp('meeting-upload-');
@@ -125,5 +272,38 @@ void main() {
     expect(uploaded.recordingId, 'recording-remote-1');
     expect(uploaded.status, 'processing');
     expect(await audio.exists(), isFalse);
+  });
+
+  test('coalesces duplicate recovery uploads for one persisted recording',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('meeting-upload-');
+    addTearDown(() async {
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+    final audio = File('${directory.path}${Platform.pathSeparator}audio.wav');
+    await audio.writeAsBytes([1, 2, 3]);
+    final api = _RecordingMeetingApiClient();
+    final task = MeetingRecordingUpload(
+      localId: 'same-local-recording',
+      localPath: audio.path,
+      title: 'meeting',
+      updatedAt: DateTime.utc(2026, 7, 23),
+    );
+    final queue = MeetingRecordingUploadQueue(
+      store: _FailingRemoteRecordingStore(),
+      api: api,
+    );
+
+    final results = await Future.wait([queue.upload(task), queue.upload(task)]);
+
+    expect(api.createCalls, 1);
+    expect(api.getCalls, 1);
+    expect(results.map((item) => item.recordingId).toSet(), {
+      'recording-remote-1',
+    });
+  });
+
+  test('meeting uploader requires the authenticated discovered Hub client', () {
+    expect(() => MeetingRecordingUploadQueue(), throwsArgumentError);
   });
 }

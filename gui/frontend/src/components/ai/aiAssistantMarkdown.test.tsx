@@ -889,7 +889,7 @@ describe("renderContentWithCodeBlocks", () => {
 });
 
 describe("renderMessage assistant display guard", () => {
-    it("renders guide receipts as compact status instead of a system card", () => {
+    it("renders legacy guide receipts as compact status instead of a system card", () => {
         render(<div>{renderMessage({
             id: "guide-receipt",
             role: "system",
@@ -898,17 +898,17 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
 
-        const receipt = screen.getByTestId("guide-receipt") as HTMLElement;
+        const receipt = screen.getByTestId("assistant-chat-system-guide-receipt") as HTMLElement;
         expect(receipt.getAttribute("role")).toBe("status");
-        expect(receipt.getAttribute("aria-live")).toBe("polite");
+        expect(receipt.getAttribute("aria-live")).toBeNull();
         expect(receipt.textContent || "").toContain("这条补充已接上当前任务");
         expect(receipt.textContent || "").toContain("下一步会顺着这点继续");
         expect(receipt.textContent || "").toContain("可以顺重搜索一下相关申报软件的资料。");
         expect(receipt.style.border).toBe("");
         expect(receipt.style.background).toBe("");
-        expect(receipt.style.padding).toBe("2px");
+        expect(receipt.style.padding).toBe("");
         const quote = screen.getByText("可以顺重搜索一下相关申报软件的资料。") as HTMLElement;
-        expect(quote.style.fontStyle).toBe("");
+        expect(quote.style.fontStyle).toBe("italic");
         expect(quote.style.opacity).toBe("");
     });
 
@@ -921,12 +921,12 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
 
-        const receiptText = screen.getByTestId("guide-receipt").textContent || '';
+        const receiptText = screen.getByTestId("assistant-chat-system-guide-receipt-repeated-detail").textContent || '';
         expect(receiptText).toContain("这条补充已接上当前任务");
         expect(receiptText).toContain("这条补充已接上当前任务：");
     });
 
-    it("keeps long guide receipt quotes as a compact preview", () => {
+    it("keeps legacy guide receipt detail intact", () => {
         const longQuote = `请优先核对资料来源${"，并标注出处".repeat(20)}。TAIL_SHOULD_STAY_IN_TITLE_ONLY`;
         render(<div>{renderMessage({
             id: "guide-receipt-long",
@@ -936,13 +936,12 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
 
-        const receipt = screen.getByTestId("guide-receipt") as HTMLElement;
-        const quotePreview = receipt.querySelector("div") as HTMLElement;
+        const receipt = screen.getByTestId("assistant-chat-system-guide-receipt-long") as HTMLElement;
+        const quotePreview = receipt.querySelector("div > div:nth-child(2)") as HTMLElement;
         expect(quotePreview.textContent || "").toContain("请优先核对资料来源");
-        expect(quotePreview.textContent || "").toContain("…");
-        expect(quotePreview.textContent || "").not.toContain("TAIL_SHOULD_STAY_IN_TITLE_ONLY");
+        expect(quotePreview.textContent || "").toContain("TAIL_SHOULD_STAY_IN_TITLE_ONLY");
         expect(quotePreview.getAttribute("title")).toBeNull();
-        expect(quotePreview.getAttribute("aria-label")).toBe(quotePreview.textContent);
+        expect(quotePreview.getAttribute("aria-label")).toBeNull();
     });
 
     it("strips Browser role prefixes in the main assistant message path", () => {
@@ -1096,6 +1095,21 @@ describe("renderMessage assistant display guard", () => {
         expect(assistantTail.style.top).toBe("-6px");
         expect(assistantTail.style.transform).toBe("rotate(45deg)");
         expect(assistantTail.style.background).toBe(assistantBubble.style.background);
+    });
+
+    it("marks a fired guide bubble as injected without turning it into a new turn", () => {
+        render(<div>{renderMessage({
+            id: "injected-guide-bubble",
+            role: "user",
+            kind: "guideInjection",
+            content: "Keep the active task focused on the regression.",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
+
+        const group = screen.getByTestId("assistant-chat-user-injected-guide-bubble");
+        expect(group.getAttribute("aria-label")).toBe("Your injected guidance");
+        expect(screen.getByTestId("guide-injection-badge").textContent).toBe("Injected");
+        expect(screen.getByText("Keep the active task focused on the regression.")).toBeTruthy();
     });
 
     it("shows a copy control on assistant replies and copies the full content", async () => {

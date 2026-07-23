@@ -400,7 +400,7 @@ func getRemoteRegistrationAuth(hubURL string, tenantID string, identity string) 
 		return RemoteRegistrationAuthResult{}, fmt.Errorf("registration auth config missing method")
 	}
 	result.Method = strings.ToLower(strings.TrimSpace(result.Method))
-	if result.Method != "email" && result.Method != "phone" {
+	if result.Method != "email" && result.Method != "phone" && result.Method != "mixed" {
 		return RemoteRegistrationAuthResult{}, fmt.Errorf("registration auth config has unsupported method %q", result.Method)
 	}
 	result.TenantID = strings.TrimSpace(result.TenantID)

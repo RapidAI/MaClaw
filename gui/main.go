@@ -137,9 +137,16 @@ func main() {
 	webviewUserDataPath := defaultWebviewUserDataPath()
 	clearWebviewAssetCacheIfNeeded(webviewUserDataPath)
 
-	// Create application with options
-	// Start with compact size for environment check, resize to full after check completes.
+	// Create application with options. The first-run environment check needs a
+	// compact dialog, but a low-resolution desktop cannot safely contain even
+	// that window plus the later workbench resize. Start maximised in that case;
+	// Wails limits a maximised frameless window to the monitor work area, keeping
+	// the taskbar and the app's custom window controls accessible.
+	//
+	// The desktop dimensions are logical pixels, so this also protects displays
+	// whose effective space is reduced by Windows display scaling.
 	envCheckWidth, envCheckHeight := envCheckWindowSize()
+	startMaximised := shouldMaximiseMainWindowForPrimaryScreen()
 	appOptions := &options.App{
 		Title:                    brand.Current().WindowTitle,
 		Frameless:                frameless,
@@ -147,6 +154,7 @@ func main() {
 		Height:                   envCheckHeight,
 		EnableDefaultContextMenu: true,
 		StartHidden:              app.IsAutoStart,
+		WindowStartState:         windowStartState(startMaximised),
 		OnStartup:                app.startup,
 		OnDomReady:               app.domReady,
 		OnShutdown:               app.shutdown,

@@ -8,10 +8,23 @@ EXAMPLE_CONFIG_PATH="$APP_DIR/configs/config.example.yaml"
 PID_FILE="$APP_DIR/data/maclaw-hub.pid"
 LOG_DIR="$APP_DIR/data/logs"
 LOG_FILE="$LOG_DIR/maclaw-hub.out.log"
+MEETING_ASR_WORKER="$APP_DIR/meeting_asr_worker"
+MEETING_ASR_MODEL_DEFAULT="$APP_DIR/data/models/sensevoice-small-q8.gguf"
 
 mkdir -p "$APP_DIR/data" "$LOG_DIR"
 
 cd "$APP_DIR"
+
+# The mobile meeting-recording API discovers its ASR capability from this
+# command.  Keep the worker and its model beside the Hub so deploy_all.cmd can
+# update them atomically with the Hub binary.  Explicit service-manager values
+# still take precedence for installations using a managed external worker.
+if [ -z "${MACLAW_MEETING_TRANSCRIBE_COMMAND:-}" ] && [ -x "$MEETING_ASR_WORKER" ]; then
+  export MACLAW_MEETING_TRANSCRIBE_COMMAND="$MEETING_ASR_WORKER"
+fi
+if [ -z "${MACLAW_MEETING_ASR_MODEL:-}" ] && [ -f "$MEETING_ASR_MODEL_DEFAULT" ]; then
+  export MACLAW_MEETING_ASR_MODEL="$MEETING_ASR_MODEL_DEFAULT"
+fi
 
 if [ ! -f "$CONFIG_PATH" ] && [ -f "$EXAMPLE_CONFIG_PATH" ]; then
   cp -f "$EXAMPLE_CONFIG_PATH" "$CONFIG_PATH"

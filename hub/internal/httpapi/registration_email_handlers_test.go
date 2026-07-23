@@ -9,6 +9,48 @@ import (
 	"time"
 )
 
+func TestRegistrationEmailHandlersHonorPhoneAndMixedPolicies(t *testing.T) {
+	const email = "mixed-policy@example.com"
+	const tenantID = "tenant-email-policy"
+	key := "enroll:" + email
+	settings := &testSystemSettingsRepo{}
+
+	saveRegistrationAuthTestConfig(t, settings, tenantID)
+	sendReq := httptest.NewRequest(http.MethodPost, "/api/enroll/email/send-code", bytes.NewBufferString(`{"email":"`+email+`","tenant_id":"`+tenantID+`"}`))
+	sendRec := httptest.NewRecorder()
+	identity, _, _ := newPreservationTestIdentity(t)
+	RegistrationEmailSendCodeHandler(identity, nil, settings).ServeHTTP(sendRec, sendReq)
+	if sendRec.Code != http.StatusBadRequest || !bytes.Contains(sendRec.Body.Bytes(), []byte("EMAIL_REGISTRATION_DISABLED")) {
+		t.Fatalf("phone policy send status=%d body=%s", sendRec.Code, sendRec.Body.String())
+	}
+
+	if !storeVerifyCode(tenantID, key, "123456") {
+		t.Fatal("store verification code")
+	}
+	t.Cleanup(func() { deleteVerifyCode(tenantID, key) })
+	verifyReq := httptest.NewRequest(http.MethodPost, "/api/enroll/email/verify-and-start", bytes.NewBufferString(`{"email":"`+email+`","tenant_id":"`+tenantID+`","verify_code":"654321"}`))
+	verifyRec := httptest.NewRecorder()
+	RegistrationEmailVerifyAndStartHandler(nil, nil, nil, settings).ServeHTTP(verifyRec, verifyReq)
+	if verifyRec.Code != http.StatusBadRequest || !bytes.Contains(verifyRec.Body.Bytes(), []byte("EMAIL_REGISTRATION_DISABLED")) {
+		t.Fatalf("phone policy verify status=%d body=%s", verifyRec.Code, verifyRec.Body.String())
+	}
+
+	saveRegistrationSMSCredentialsForMixedMode(t, settings, tenantID)
+	mixedSendReq := httptest.NewRequest(http.MethodPost, "/api/enroll/email/send-code", bytes.NewBufferString(`{"email":"`+email+`","tenant_id":"`+tenantID+`"}`))
+	mixedSendRec := httptest.NewRecorder()
+	RegistrationEmailSendCodeHandler(identity, nil, settings).ServeHTTP(mixedSendRec, mixedSendReq)
+	if mixedSendRec.Code != http.StatusInternalServerError || !bytes.Contains(mixedSendRec.Body.Bytes(), []byte("MAIL_NOT_CONFIGURED")) {
+		t.Fatalf("mixed policy should permit email send before mail delivery, status=%d body=%s", mixedSendRec.Code, mixedSendRec.Body.String())
+	}
+
+	mixedVerifyReq := httptest.NewRequest(http.MethodPost, "/api/enroll/email/verify-and-start", bytes.NewBufferString(`{"email":"`+email+`","tenant_id":"`+tenantID+`","verify_code":"654321"}`))
+	mixedVerifyRec := httptest.NewRecorder()
+	RegistrationEmailVerifyAndStartHandler(nil, nil, nil, settings).ServeHTTP(mixedVerifyRec, mixedVerifyReq)
+	if mixedVerifyRec.Code != http.StatusBadRequest || !bytes.Contains(mixedVerifyRec.Body.Bytes(), []byte("INVALID_VERIFY_CODE")) {
+		t.Fatalf("mixed policy should allow email verification, status=%d body=%s", mixedVerifyRec.Code, mixedVerifyRec.Body.String())
+	}
+}
+
 func TestRegistrationEmailVerifyAndStartRejectsInvalidCode(t *testing.T) {
 	email := "otp-login@example.com"
 	tenantID := DefaultTenantID

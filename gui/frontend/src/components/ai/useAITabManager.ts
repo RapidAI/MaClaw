@@ -220,15 +220,16 @@ const VE_TABS_STORAGE_KEY = "ai_assistant_ve_tabs";
 /** Maximum number of messages to persist per tab (keep localStorage bounded). */
 const MAX_PERSISTED_HISTORY_PER_TAB = 50;
 
-function isTransientProjectHistoryMessage(message: unknown): boolean {
-    if (!message || typeof message !== "object") return false;
-    const candidate = message as { role?: unknown; kind?: unknown };
-    return candidate.role === "system" && (candidate.kind === "guideReceipt" || candidate.kind === "guideRejection");
-}
-
 function persistableProjectHistory(history: unknown[]): unknown[] {
+    // Old receipt/rejection rows were generated UI acknowledgements and should
+    // not reappear after an upgrade. A guideInjection, however, is deliberate
+    // audit history for a successful live steer and must remain visible.
     return history
-        .filter(message => !isTransientProjectHistoryMessage(message))
+        .filter((message) => {
+            if (!message || typeof message !== "object") return false;
+            const kind = (message as { kind?: unknown }).kind;
+            return kind !== "guideReceipt" && kind !== "guideRejection";
+        })
         .slice(-MAX_PERSISTED_HISTORY_PER_TAB);
 }
 

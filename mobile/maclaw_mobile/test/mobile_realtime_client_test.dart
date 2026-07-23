@@ -112,6 +112,11 @@ void main() {
     expect(task?.payload['result'], 'ok');
     expect(task?.payload['task_id'], 'task-1');
     expect(task?.payload['status'], 'done');
+    expect(
+      MobileRealtimeEvent.tryParse({'type': 'meeting_recording'})
+          ?.meetingRecording,
+      isTrue,
+    );
     expect(MobileRealtimeEvent.tryParse('not json'), isNull);
   });
 

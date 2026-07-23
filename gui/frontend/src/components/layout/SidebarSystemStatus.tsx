@@ -20,6 +20,8 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     weixinStatus: string;
     lansengerStatus: string;
     backgroundTaskCount?: number;
+    /** Opens System > Monitor with the background-task view selected. */
+    onOpenBackgroundTasks?: () => void;
     localLLMCacheEnabled?: boolean;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
@@ -112,6 +114,7 @@ export const SidebarSystemStatus = ({
     weixinStatus,
     lansengerStatus,
     backgroundTaskCount = 0,
+    onOpenBackgroundTasks,
     localLLMCacheEnabled = false,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
@@ -414,9 +417,16 @@ export const SidebarSystemStatus = ({
                     {renderStatusSignal('LLM', maclawLLMOnline)}
                     {renderStatusSignal('HUB', hubOn, hubTooltip)}
                     {renderStatusSignal('IM', imOnline)}
-                    <span className="sidebar-system-status__signal sidebar-system-status__background-tasks" title={backgroundTaskText}>
+                    <button
+                        type="button"
+                        className="sidebar-system-status__signal sidebar-system-status__background-tasks"
+                        title={backgroundTaskText}
+                        aria-label={textForLang(lang, `Open ${backgroundTaskText}`, `打开${backgroundTaskText}`, `開啟${backgroundTaskText}`)}
+                        onClick={onOpenBackgroundTasks}
+                        disabled={!onOpenBackgroundTasks}
+                    >
                         <span className="sidebar-system-status__signal-label">{backgroundTaskText}</span>
-                    </span>
+                    </button>
                 </div>
 
                 {codingAgentProgress && (

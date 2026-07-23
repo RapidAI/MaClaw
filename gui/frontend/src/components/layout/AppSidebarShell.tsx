@@ -30,6 +30,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     lansengerStatus: string;
     runningTaskCount: number;
     backgroundTaskCount?: number;
+    onOpenBackgroundTasks?: () => void;
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
@@ -128,6 +129,7 @@ export const AppSidebarShell = ({
     lansengerStatus,
     runningTaskCount,
     backgroundTaskCount = 0,
+    onOpenBackgroundTasks,
     t,
     gossipAllowed,
     config,
@@ -247,6 +249,7 @@ export const AppSidebarShell = ({
                         weixinStatus={weixinStatus}
                         lansengerStatus={lansengerStatus}
                         backgroundTaskCount={backgroundTaskCount}
+                        onOpenBackgroundTasks={onOpenBackgroundTasks}
                         config={config}
                         activeTool={activeTool}
                         toolDropdownOpen={toolDropdownOpen}

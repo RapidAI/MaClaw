@@ -10,6 +10,7 @@ import 'package:maclaw_mobile/core/api/mobile_realtime_bridge.dart';
 import 'package:maclaw_mobile/core/api/mobile_realtime_client.dart';
 import 'package:maclaw_mobile/core/api/official_service.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
+import 'package:maclaw_mobile/features/assistant/assistant_controller.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employee.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_controller.dart';
 import 'package:maclaw_mobile/features/documents/documents_controller.dart';
@@ -94,12 +95,14 @@ class _FakeWebSocketChannel extends StreamChannelMixin
     implements WebSocketChannel {
   final StreamController<Object?> inbound;
   final List<Object?> sent;
+  final Future<void> _ready;
   late final WebSocketSink _sink;
 
   _FakeWebSocketChannel({
     required this.inbound,
     required this.sent,
-  }) {
+    Future<void>? ready,
+  }) : _ready = ready ?? Future<void>.value() {
     _sink = _FakeWsSink(
       onAdd: sent.add,
       onClose: () {
@@ -117,7 +120,7 @@ class _FakeWebSocketChannel extends StreamChannelMixin
   WebSocketSink get sink => _sink;
 
   @override
-  Future<void> get ready => Future.value();
+  Future<void> get ready => _ready;
 
   @override
   String? get protocol => null;
@@ -233,7 +236,10 @@ class _RecordingBackendSshFileOperationsController
   }
 }
 
-ProviderContainer _containerWith(MobileRealtimeClient client) {
+ProviderContainer _containerWith(
+  MobileRealtimeClient client, {
+  Duration? reconnectDelay,
+}) {
   return ProviderContainer(
     overrides: [
       sessionControllerProvider.overrideWith(_SignedInSessionController.new),
@@ -241,7 +247,8 @@ ProviderContainer _containerWith(MobileRealtimeClient client) {
       documentsControllerProvider.overrideWith(
         _RecordingDocumentsController.new,
       ),
-      digitalEmployeesProvider.overrideWith(_EmptyDigitalEmployeesController.new),
+      digitalEmployeesProvider
+          .overrideWith(_EmptyDigitalEmployeesController.new),
       digitalEmployeeTaskHistoryProvider
           .overrideWith(_EmptyDigitalEmployeeTaskHistoryController.new),
       digitalEmployeeTaskProvider.overrideWith(
@@ -256,6 +263,8 @@ ProviderContainer _containerWith(MobileRealtimeClient client) {
       backendSshFileOperationsProvider.overrideWith(
         _RecordingBackendSshFileOperationsController.new,
       ),
+      if (reconnectDelay != null)
+        mobileRealtimeReconnectDelayProvider.overrideWithValue(reconnectDelay),
     ],
   );
 }
@@ -282,6 +291,19 @@ void main() {
     await container.read(sessionControllerProvider.future);
     container.read(mobileRealtimeBridgeProvider);
     await Future<void>.delayed(const Duration(milliseconds: 30));
+    final tabId = container.read(assistantTabsProvider).activeTabId;
+    container.read(assistantTabsProvider.notifier).appendMessage(
+          tabId,
+          AssistantConversationMessage.assistant(
+            query: 'record',
+            text: 'processing',
+            meetingRecording: const MeetingRecordingCardData(
+              recordingId: 'meeting-1',
+              title: 'Team sync',
+              status: 'processing',
+            ),
+          ),
+        );
 
     harness
       ..pushJson({'type': 'ready'})
@@ -330,6 +352,19 @@ void main() {
           'status': 'completed',
         },
       })
+      ..pushJson({
+        'type': 'meeting_recording',
+        'recording_id': 'meeting-1',
+        'recording': {
+          'recording_id': 'meeting-1',
+          'status': 'ready',
+          'message': 'minutes ready',
+          'progress': 1,
+          'mode': 'minutes',
+          'minutes_draft_id': 'minutes-1',
+          'audio_available': true,
+        },
+      })
       ..pushJson({'type': 'pong'});
 
     await Future<void>.delayed(const Duration(milliseconds: 80));
@@ -369,6 +404,14 @@ void main() {
       ),
       isTrue,
     );
+    final card = container
+        .read(assistantTabsProvider)
+        .activeTab
+        .messages
+        .last
+        .meetingRecording;
+    expect(card?.status, 'ready');
+    expect(card?.minutesDraftId, 'minutes-1');
   });
 
   test('MCP1 binary pty_out is parsed as ssh_session output_chunk', () {
@@ -392,5 +435,50 @@ void main() {
     expect(event.payload['output_chunk'], 'line\n');
     expect(event.payload['session_id'], 'mobssh_bin');
     expect(event.binaryFrame, isTrue);
+  });
+
+  test('realtime bridge retries a rejected WebSocket upgrade safely', () async {
+    final channels = <_FakeWebSocketChannel>[];
+    var connectCalls = 0;
+    final client = MobileRealtimeClient(
+      readToken: () async => 'token',
+      readHubUrl: () async => maclawOfficialServiceUrl,
+      connect: (_) {
+        connectCalls++;
+        final channel = _FakeWebSocketChannel(
+          inbound: StreamController<Object?>.broadcast(),
+          sent: [],
+          ready: connectCalls == 1
+              ? Future<void>.error(StateError('HTTP upgrade rejected'))
+              : Future<void>.value(),
+        );
+        channels.add(channel);
+        return channel;
+      },
+    );
+    final container = _containerWith(
+      client,
+      reconnectDelay: const Duration(milliseconds: 5),
+    );
+    addTearDown(() async {
+      for (final channel in channels) {
+        if (!channel.inbound.isClosed) await channel.inbound.close();
+      }
+      container.dispose();
+    });
+
+    await container.read(sessionControllerProvider.future);
+    container.read(mobileRealtimeBridgeProvider);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+
+    expect(connectCalls, greaterThanOrEqualTo(2));
+    expect(channels.first.sent, isEmpty);
+    expect(
+      channels[1].sent.any(
+            (message) =>
+                message is String && message.contains('"type":"hello"'),
+          ),
+      isTrue,
+    );
   });
 }

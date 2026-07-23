@@ -503,6 +503,7 @@ describe('AIAssistantPanel property tests', () => {
 
     it('keeps visible input progress while waiting for a workflow form to open', async () => {
         const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
+        const sendMessage = vi.fn().mockResolvedValue(true);
         const { getByTestId } = renderPanel({
             lang: 'en',
             actions: { cancelSession },
@@ -1509,7 +1510,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(input.value).toBe('ma');
     });
 
-    it('steers busy-turn input immediately and removes it only after acceptance', async () => {
+    it('queues busy-turn Enter input without steering the active task', async () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const injectSupplementary = vi.fn().mockResolvedValue(false);
         const guideLaunchReference = vi.fn().mockResolvedValue(true);
@@ -1529,10 +1530,11 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'guide this next' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
-        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('guide this next', 'desktop-user', expect.any(String)));
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(guideLaunchReference).not.toHaveBeenCalled();
         expect(injectSupplementary).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
-        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+        expect(queryByTestId('buffer-queue-panel')).toBeTruthy();
     });
 
     it('keeps rejected local guide fire queued without supplementary fallback', async () => {
@@ -1553,6 +1555,11 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'stay in selected session' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('stay in selected session', 'desktop-user', expect.any(String)));
         expect(injectSupplementary).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
@@ -1571,6 +1578,11 @@ describe('AIAssistantPanel property tests', () => {
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: 'do not lose this instruction' } });
         fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
 
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('do not lose this instruction', 'desktop-user', expect.any(String)));
         expect(getByTestId('buffer-queue-panel')).toBeTruthy();
@@ -2165,6 +2177,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull());
+        expect(queryByTestId('ai-welcome-container')).toBeNull();
+        expect(getByTestId('coding-workbench-empty').textContent || '').toMatch(/Coding environment ready|编程环境已就绪/i);
         // Floating chip remains after session is ready so the user still knows they are in coding mode.
         const readyChip = getByTestId('coding-env-banner');
         const readyText = readyChip.textContent || '';
@@ -2183,7 +2197,7 @@ describe('AIAssistantPanel property tests', () => {
     it('shows a remote coding environment banner with host for remote_coding_dev tabs', async () => {
         createProjectTabSessionMock.mockResolvedValueOnce(undefined);
 
-        const { getByTestId } = renderPanel({
+        const { getByTestId, queryByTestId } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/remote-coding-env-banner',
                 taskTitle: 'Remote coding task',
@@ -2204,6 +2218,10 @@ describe('AIAssistantPanel property tests', () => {
             const ready = (getByTestId('remote-coding-env-banner').textContent || '').toLowerCase();
             expect(ready).not.toMatch(/starting|启动|啟動|connecting|preparing|正在连接|正在連線/);
         }, { timeout: 3000 });
+        expect(queryByTestId('ai-welcome-container')).toBeNull();
+        const emptyState = getByTestId('remote-coding-workbench-empty');
+        expect(emptyState.textContent || '').toMatch(/Remote coding environment connected|远程编程环境已连接/i);
+        expect(emptyState.textContent || '').toContain('10.0.0.8');
         const chip = getByTestId('remote-coding-env-banner');
         const text = chip.textContent || '';
         expect(text).toMatch(/Remote coding environment|Remote ·|远程/i);
@@ -2234,6 +2252,7 @@ describe('AIAssistantPanel property tests', () => {
             message: 'SSH session expired; reconnect required',
         });
 
+        const sendMessage = vi.fn().mockResolvedValue(true);
         const { getByTestId } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/remote-coding-reconnect',
@@ -2245,7 +2264,7 @@ describe('AIAssistantPanel property tests', () => {
             },
             onPendingProjectTabOpenHandled: vi.fn(),
             state: { messages: [], sending: false, streaming: false, ready: true },
-            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+            actions: { sendMessage },
         });
 
         await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
@@ -2255,9 +2274,89 @@ describe('AIAssistantPanel property tests', () => {
             expect((getByTestId('remote-reconnect-workdir') as HTMLInputElement).value).toBe('/var/app');
         });
         // No remembered password → field stays empty and no auto reconnect.
+        await waitFor(() => expect(getByTestId('remote-coding-workbench-empty').textContent || '').toMatch(/needs SSH reconnect|需要重新连接 SSH/i));
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toMatch(/Reconnect SSH|重新连接 SSH/i);
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'inspect the remote build' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('inspect the remote build'));
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect((document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
+        fireEvent.change(getByTestId('ai-input'), { target: { value: '/mcp install remote-helper' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('/mcp install remote-helper'));
+        expect(sendMessage).not.toHaveBeenCalled();
         expect((getByTestId('remote-reconnect-password') as HTMLInputElement).value).toBe('');
         expect(prepareRemoteCodingEnvironmentMock).not.toHaveBeenCalled();
         expect(getByTestId('remote-coding-reconnect-form').textContent || '').toMatch(/Ship payment fix|payment fix/i);
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('does not let a queued remote task bypass SSH reconnect through Send now', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: false,
+            needs_reconnect: true,
+            turn_count: 1,
+            remote_host: '10.0.0.10',
+            remote_user: 'deploy',
+            remote_port: 22,
+            remote_work_dir: '/srv/app',
+            session_plan: '',
+        });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-fire-gate',
+                taskTitle: 'Remote queued fire gate',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.10',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'inspect the remote build' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+        await act(async () => { await Promise.resolve(); });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(getByTestId('buffer-queue-panel').textContent || '').toContain('inspect the remote build');
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('queues externally injected remote task intents until SSH reconnects', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote', armed: false, needs_reconnect: true, turn_count: 1,
+            remote_host: '10.0.0.11', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '',
+        });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-external-gate', taskTitle: 'Remote external gate', autoSend: false,
+                prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: '10.0.0.11',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        window.dispatchEvent(new CustomEvent('maclaw:inject-chat-message', { detail: { text: 'inspect deployment state' } }));
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('inspect deployment state'));
+        expect(sendMessage).not.toHaveBeenCalled();
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
@@ -2393,6 +2492,36 @@ describe('AIAssistantPanel property tests', () => {
         expect(sendMessage).toHaveBeenCalledTimes(1);
         // Test cleanup normally resets this mock after the test; reset here as
         // this test changes its implementation for the following reconnect case.
+        prepareRemoteCodingEnvironmentMock.mockReset();
+        prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+    });
+
+    it('keeps an IM remote prompt pending when its post-reconnect send fails', async () => {
+        window.localStorage.clear();
+        const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
+        saveRemoteSSHPassword('10.0.0.18', 'deploy', 'remembered-secret', 22, '/srv/app');
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => rearmed
+            ? { kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, remote_host: '10.0.0.18', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '' }
+            : { kind: 'remote', armed: false, needs_reconnect: true, turn_count: 0, remote_host: '10.0.0.18', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '' });
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+        const sendMessage = vi.fn().mockResolvedValue(false);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/im-remote-retry', taskTitle: 'IM remote retry', initialMessage: 'Deploy retry candidate',
+                autoSend: true, prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: '10.0.0.18', remoteNeedsReconnect: true,
+                imPlatform: 'lansenger', imTargetUID: 'user-18',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+        expect(sendMessage).toHaveBeenCalledWith('Deploy retry candidate', expect.objectContaining({ project_path: 'D:/tasks/im-remote-retry' }));
+        // A later reconnect can still see the pending message instead of losing it.
+        expect(getByTestId('remote-coding-reconnect-success')).toBeTruthy();
         prepareRemoteCodingEnvironmentMock.mockReset();
         prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
     });
@@ -2996,6 +3125,11 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'project guide context' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project guide context', 'desktop-user:D:/tasks/weather', expect.any(String)));
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(1));
         expect(document.body.textContent || '').not.toContain('嗯，接住了');
@@ -3070,6 +3204,10 @@ describe('AIAssistantPanel property tests', () => {
 		const input = getByTestId('ai-input') as HTMLTextAreaElement;
 		fireEvent.change(input, { target: { value: 'forgotten while attaching' } });
 		fireEvent.keyDown(input, { key: 'Enter' });
+		await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+		const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+		expect(fireButton).toBeTruthy();
+		fireEvent.click(fireButton!);
 		await waitFor(() => expect(guideLaunchReference).toHaveBeenCalled());
 
 		act(() => forgetAIAssistantSessionRounds('desktop-user'));

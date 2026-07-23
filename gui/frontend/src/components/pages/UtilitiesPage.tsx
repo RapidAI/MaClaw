@@ -44,6 +44,7 @@ import { mapLansengerGroupsForSurveyBind, parseWailsJSON } from './utilitiesPars
 import { meetingRecordBaseTitle, meetingRecordCardDesc } from './utilitiesMeetingRecord';
 import { ExpertEditorDialog } from './ExpertEditorDialog';
 import type { ExpertDefinition } from '../ai/expertTypes';
+import type { CodingTaskLaunch } from '../ai/codingTaskLaunch';
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON } from '../ai/expertTypes';
 import { VirtualRepositoryWorkspace } from './VirtualRepositoryWorkspace';
 
@@ -275,7 +276,7 @@ export const UtilitiesPage = ({
     onStartMeetingRecord?: () => void | Promise<void>;
     /** Open an expert conversation tab in the AI assistant panel. */
     onOpenExpert?: (expert: ExpertDefinition) => void;
-    onOpenVirtualRepositoryTask?: (launch: { project_path: string; task_title: string; agent_mode: 'coding_dev' | 'remote_coding_dev'; remote_host?: string }) => void;
+    onOpenVirtualRepositoryTask?: (launch: { project_path: CodingTaskLaunch['projectPath']; task_title: CodingTaskLaunch['taskTitle']; agent_mode: NonNullable<CodingTaskLaunch['agentMode']>; remote_host?: CodingTaskLaunch['remoteHost'] }) => void;
 }) => {
     const isZh = !lang || lang.startsWith('zh');
     const [view, setView] = useState<View>('home');
@@ -1536,7 +1537,7 @@ export const UtilitiesPage = ({
                             data-testid={`utilities-${card.key}-card`}
                             disabled={card.disabled || undefined}
                             aria-busy={card.starting || undefined}
-                            aria-label={card.title}
+                            aria-label={`${card.title}：${card.desc}。${card.cta}`}
                             title={card.desc}
                             onClick={card.onClick}
                         >

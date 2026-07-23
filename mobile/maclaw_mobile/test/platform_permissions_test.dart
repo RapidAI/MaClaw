@@ -4,6 +4,26 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/platform/mobile_permission_evidence.dart';
 
 void main() {
+  test('meeting recorder waveform buffer supports native amplitude updates',
+      () {
+    final source = File(
+      'lib/features/meeting_recording/meeting_recording_screen.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('ValueNotifier<List<double>> _waveform'));
+    expect(
+        source, contains('List<double>.from(_waveform.value, growable: true)'));
+    expect(source, contains('..removeAt(0)'));
+    expect(source, contains('..add(level);'));
+    expect(source, contains('ValueListenableBuilder<List<double>>('));
+    expect(source, contains('audioSource: AndroidAudioSource.mic'));
+    expect(source, contains('manageBluetooth: false'));
+    expect(source, contains('LayoutBuilder('));
+    expect(source, contains('final useTwoRows = constraints.maxWidth < 420'));
+    expect(source, contains('maxLines: 1'));
+    expect(source, contains('softWrap: false'));
+  });
+
   test('permission evidence IDs are scoped, traceable, and non-sensitive', () {
     final id = mobilePermissionGrantEvidence(
       'Microphone permission',
@@ -90,7 +110,12 @@ void main() {
     expect(plist, contains('<key>NSPhotoLibraryUsageDescription</key>'));
     expect(plist, contains('<string>用于从相册导入图片或截图。</string>'));
     expect(plist, contains('<key>NSMicrophoneUsageDescription</key>'));
-    expect(plist, contains('<string>用于语音提问。</string>'));
+    expect(
+      plist,
+      contains('<string>用于语音提问与会议录音，会议录音可在设备锁屏或切换应用后继续。</string>'),
+    );
+    expect(plist, contains('<key>UIBackgroundModes</key>'));
+    expect(plist, contains('<string>audio</string>'));
     expect(plist, contains('<key>NSSpeechRecognitionUsageDescription</key>'));
     expect(plist, contains('<string>用于将语音提问转成文字。</string>'));
     expect(plist, contains('<key>NSLocalNetworkUsageDescription</key>'));
@@ -171,5 +196,61 @@ void main() {
       project,
       contains('CUSTOM_GROUP_ID = group.top.mypapers.maclaw.mobile;'),
     );
+  });
+
+  test('meeting recorder declares an iOS background-audio configuration', () {
+    final source = File(
+      'lib/features/meeting_recording/meeting_recording_screen.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('with WidgetsBindingObserver'));
+    expect(source, contains('didChangeAppLifecycleState'));
+    expect(source, contains('AppLifecycleState.resumed'));
+    expect(source, contains('iosConfig: IosRecordConfig('));
+    expect(source, contains('IosAudioCategoryOption.allowBluetooth'));
+  });
+
+  test('meeting recorder does not recover a user-paused recording on resume',
+      () {
+    final source = File(
+      'lib/features/meeting_recording/meeting_recording_screen.dart',
+    ).readAsStringSync();
+    final start =
+        source.indexOf('Future<void> _reconcileRecordingAfterResume()');
+    final end =
+        source.indexOf('Future<void> _recoverInterruptedRecording()', start);
+
+    expect(start, greaterThanOrEqualTo(0));
+    expect(end, greaterThan(start));
+    final reconcile = source.substring(start, end);
+    expect(reconcile, contains('if (!_active || !_recording) return;'));
+    expect(reconcile, isNot(contains('(!_recording && !_paused)')));
+
+    final stateListenerStart =
+        source.indexOf('_recorder.onStateChanged().listen(');
+    final stateListenerEnd =
+        source.indexOf('_amplitudeSubscription =', stateListenerStart);
+    expect(stateListenerStart, greaterThanOrEqualTo(0));
+    expect(stateListenerEnd, greaterThan(stateListenerStart));
+    final stateListener =
+        source.substring(stateListenerStart, stateListenerEnd);
+    expect(stateListener, contains('state == RecordState.stop'));
+    expect(stateListener, contains('_recording) {'));
+    expect(stateListener, contains('!_changingRecordingState'));
+    expect(
+      stateListener,
+      isNot(contains('state == RecordState.stop && (_recording || _paused)')),
+    );
+    expect(source, contains('bool _changingRecordingState = false;'));
+    expect(source, contains('bool _startingRecording = false;'));
+    expect(
+      source,
+      contains('_stoppingOrUploading || _changingRecordingState'),
+    );
+    expect(source, contains('_startingRecording ||'));
+    expect(source, contains('bool get _recordingActionInProgress'));
+    expect(source, contains('_recordingActionInProgress ? null'));
+    expect(source, contains('void _refreshElapsed()'));
+    expect(source, contains('_refreshElapsed();'));
   });
 }

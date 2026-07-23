@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -695,6 +699,133 @@ func TestTryImmediateCurrentTimeDirectSkipsProvidedLoop(t *testing.T) {
 	resp, handled := h.tryImmediateCurrentTimeDirect(IMUserMessage{Text: "\u73b0\u5728\u51e0\u70b9\uff1f"}, loopCtx)
 	if handled || resp != nil {
 		t.Fatalf("tryImmediateCurrentTimeDirect handled provided loop response=%+v handled=%v, want skip", resp, handled)
+	}
+}
+
+func TestTryImmediateScheduleListDirectUsesManageSchedule(t *testing.T) {
+	baseDir := t.TempDir()
+	manager, err := scheduler.NewManager(filepath.Join(baseDir, "scheduled_tasks.json"))
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	t.Cleanup(manager.Stop)
+	id, err := manager.Add(scheduler.ScheduledTask{
+		Name:       "蓝信日报",
+		Action:     "发送日报",
+		Hour:       9,
+		Minute:     0,
+		DayOfWeek:  -1,
+		DayOfMonth: -1,
+	})
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+
+	app := &App{testHomeDir: baseDir, scheduledTaskManager: manager}
+	h := &IMMessageHandler{app: app, registry: NewToolRegistry()}
+	registerBuiltinTools(h.registry, h)
+	msg := IMUserMessage{
+		UserID:    "lansenger-user",
+		Platform:  "lansenger_local",
+		RequestID: "schedule-list-direct",
+		Text:      "查看下定时任务",
+	}
+	resp, handled := h.tryImmediateScheduleListDirect(msg, nil)
+	if !handled || resp == nil {
+		t.Fatalf("tryImmediateScheduleListDirect handled=%v resp=%+v, want direct response", handled, resp)
+	}
+	if resp.ResponseSource != "direct_execution" || resp.RequestID != msg.RequestID {
+		t.Fatalf("response = %+v, want direct execution with request ID", resp)
+	}
+	if !containsText(resp.Text, "蓝信日报") || !containsText(resp.Text, id) {
+		t.Fatalf("response text = %q, want scheduled task name and ID", resp.Text)
+	}
+}
+
+func TestTryImmediateScheduleListDirectOnlyHandlesReadOnlyQueries(t *testing.T) {
+	for _, text := range []string{"执行定时任务 abc", "帮我创建定时任务", "暂停定时任务 abc"} {
+		if isExplicitScheduledTaskListQuery(text) {
+			t.Fatalf("isExplicitScheduledTaskListQuery(%q) = true, want false", text)
+		}
+	}
+	if !isExplicitScheduledTaskListQuery("查看下定时任务") {
+		t.Fatal("isExplicitScheduledTaskListQuery should recognize an explicit schedule list query")
+	}
+	if !isExplicitScheduledTaskListQuery("list scheduled tasks") {
+		t.Fatal("isExplicitScheduledTaskListQuery should recognize an English schedule list query")
+	}
+
+	h := &IMMessageHandler{}
+	loopCtx := NewLoopContext("existing", 1, nil)
+	if resp, handled := h.tryImmediateScheduleListDirect(IMUserMessage{Text: "查看定时任务"}, loopCtx); handled || resp != nil {
+		t.Fatalf("tryImmediateScheduleListDirect with existing loop = (%+v, %v), want skip", resp, handled)
+	}
+}
+
+func TestTryImmediateScheduleRunDirectUsesManageSchedule(t *testing.T) {
+	baseDir := t.TempDir()
+	manager, err := scheduler.NewManager(filepath.Join(baseDir, "scheduled_tasks.json"))
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	t.Cleanup(manager.Stop)
+	executed := make(chan *scheduler.ScheduledTask, 1)
+	manager.SetExecutor(func(_ context.Context, task *scheduler.ScheduledTask) (string, error) {
+		executed <- task
+		return "done", nil
+	})
+	id, err := manager.Add(scheduler.ScheduledTask{
+		Name:       "蓝信日报",
+		Action:     "发送日报",
+		Hour:       9,
+		Minute:     0,
+		DayOfWeek:  -1,
+		DayOfMonth: -1,
+	})
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+
+	app := &App{testHomeDir: baseDir, scheduledTaskManager: manager}
+	h := &IMMessageHandler{app: app, registry: NewToolRegistry()}
+	registerBuiltinTools(h.registry, h)
+	msg := IMUserMessage{
+		UserID:    "lansenger-user",
+		Platform:  "lansenger_local",
+		RequestID: "schedule-run-direct",
+		Text:      "立即执行定时任务 " + id,
+	}
+	resp, handled := h.tryImmediateScheduleRunDirect(msg, nil)
+	if !handled || resp == nil {
+		t.Fatalf("tryImmediateScheduleRunDirect handled=%v resp=%+v, want direct response", handled, resp)
+	}
+	if resp.ResponseSource != "direct_execution" || !containsText(resp.Text, id) {
+		t.Fatalf("response = %+v, want direct run confirmation with task ID", resp)
+	}
+	select {
+	case task := <-executed:
+		if task.ID != id {
+			t.Fatalf("executed task ID = %q, want %q", task.ID, id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("direct schedule run did not execute the task")
+	}
+}
+
+func TestExplicitScheduledTaskRunIDRequiresRunVerbAndTaskID(t *testing.T) {
+	id := "1710000000000000000-abcd"
+	if got, ok := explicitScheduledTaskRunID("执行定时任务 " + id); !ok || got != id {
+		t.Fatalf("explicitScheduledTaskRunID() = (%q, %v), want (%q, true)", got, ok, id)
+	}
+	for _, text := range []string{
+		"查看定时任务 " + id,
+		"执行任务 " + id,
+		"执行定时任务 123",
+		"执行定时任务 2026-07-22",
+	} {
+		if got, ok := explicitScheduledTaskRunID(text); ok || got != "" {
+			t.Fatalf("explicitScheduledTaskRunID(%q) = (%q, %v), want no match", text, got, ok)
+		}
 	}
 }
 

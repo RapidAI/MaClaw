@@ -2221,6 +2221,13 @@ func (m *tuiModel) resolveIdentityFromTUI(identity, hubCenterURL string) tea.Cmd
 		if method == "phone" && !isPhoneIdentityForTUI(identity) {
 			method = "email"
 		}
+		if method == "mixed" {
+			if isPhoneIdentityForTUI(identity) {
+				method = "phone"
+			} else {
+				method = "email"
+			}
+		}
 		// If Hub requires email auth but identity is a phone number, inform user.
 		if method == "email" && isPhoneIdentityForTUI(identity) && !strings.Contains(identity, "@") {
 			return views.OnboardingResolveIdentityResultMsg{
@@ -3122,10 +3129,10 @@ type tuiCallbacks struct {
 	// history is pre-turn conversation for multi-turn knowledge auto-recall.
 	history []agent.ConversationEntry
 	// MoA council pin for this loop.
-	moaPreset     *moa.ResolvedPreset
-	moaAuto       bool
-	lastUserText  string
-	lastRoute     agent.RouteDecision
+	moaPreset    *moa.ResolvedPreset
+	moaAuto      bool
+	lastUserText string
+	lastRoute    agent.RouteDecision
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.

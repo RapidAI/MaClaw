@@ -160,7 +160,8 @@ func NewRouter(
 	}
 	knowledgeSharePackageDir := filepath.Join(runtimeDataDir, "knowledge-packages")
 	knowledgeSyncPackageDir := filepath.Join(runtimeDataDir, "knowledge-sync")
-	welcomeSyncPackageDir := filepath.Join(runtimeDataDir, "welcome-sync")
+		welcomeSyncPackageDir := filepath.Join(runtimeDataDir, "welcome-sync")
+		virtualRepositorySyncDir := filepath.Join(runtimeDataDir, "virtual-repository-sync")
 	StartKnowledgeSyncCleanup(knowledgeSyncPackageDir)
 	if hubDB != nil && identity != nil {
 		NewMigrationAPI(hubDB, runtimeDataDir, identity, identity.MachinesRepo(), system).RegisterRoutes(mux, requireTenantAdmin)
@@ -306,7 +307,10 @@ func NewRouter(
 	mux.HandleFunc("GET /api/welcome/sync/status", WelcomeSyncStatusHandler(identity, welcomeSyncPackageDir))
 	mux.HandleFunc("PUT /api/welcome/sync", UploadWelcomeSyncHandler(identity, welcomeSyncPackageDir))
 	mux.HandleFunc("GET /api/welcome/sync", DownloadWelcomeSyncHandler(identity, welcomeSyncPackageDir))
-	mux.HandleFunc("DELETE /api/welcome/sync", DeleteWelcomeSyncHandler(identity, welcomeSyncPackageDir))
+		mux.HandleFunc("DELETE /api/welcome/sync", DeleteWelcomeSyncHandler(identity, welcomeSyncPackageDir))
+		// Per-user encrypted virtual repository definitions and credentials.
+		mux.HandleFunc("GET /api/virtual-repositories/sync", VirtualRepositorySyncHandler(identity, virtualRepositorySyncDir))
+		mux.HandleFunc("PUT /api/virtual-repositories/sync", VirtualRepositorySyncHandler(identity, virtualRepositorySyncDir))
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))
@@ -661,11 +665,13 @@ func NewRouter(
 	mux.HandleFunc("POST /api/bind/unbind", bindCORS(BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, userPurger)))
 
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, invitationSvc, securitySvc))
-	mux.HandleFunc("POST /api/enroll/email/send-code", RegistrationEmailSendCodeHandler(identity, mailer))
-	mux.HandleFunc("POST /api/enroll/email/verify-and-start", RegistrationEmailVerifyAndStartHandler(identity, invitationSvc, securitySvc))
+	mux.HandleFunc("POST /api/enroll/email/send-code", RegistrationEmailSendCodeHandler(identity, mailer, system))
+	mux.HandleFunc("POST /api/enroll/email/verify-and-start", RegistrationEmailVerifyAndStartHandler(identity, invitationSvc, securitySvc, system))
 	mux.HandleFunc("GET /api/enroll/registration-auth", PublicRegistrationAuthConfigHandler(system, identity))
 	mux.HandleFunc("POST /api/enroll/sms/send-code", RegistrationSMSSendCodeHandler(identity, system, nil))
 	mux.HandleFunc("POST /api/enroll/sms/verify-and-start", RegistrationSMSVerifyAndStartHandler(identity, system, nil))
+	mux.HandleFunc("POST /api/mobile/auth/phone/send-code", MobileRegistrationSMSSendCodeHandler(identity, system, nil))
+	mux.HandleFunc("POST /api/mobile/auth/phone/verify-and-start", MobileRegistrationSMSVerifyAndStartHandler(identity, system, nil))
 	mux.HandleFunc("POST /api/enroll/profile/send-code", RegistrationContactSendCodeHandler(identity, mailer, system, nil))
 	mux.HandleFunc("POST /api/enroll/profile/verify", RegistrationContactVerifyHandler(identity, system, nil))
 	mux.HandleFunc("GET /api/enroll/profile/current", RegistrationCurrentProfileHandler(identity))

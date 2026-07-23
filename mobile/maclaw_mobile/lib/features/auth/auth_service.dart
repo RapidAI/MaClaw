@@ -62,7 +62,8 @@ class AuthService {
     final normalizedPhone = _requireNormalizedPhoneNumber(phoneNumber);
     // Resolve Hub first so even a timed-out send-code still yields a verifiable
     // pending session (SMS may already have left the server).
-    final routed = await tryOfficialHubCenters<({PhoneLoginHub hub, String hubCenterUrl})>(
+    final routed =
+        await tryOfficialHubCenters<({PhoneLoginHub hub, String hubCenterUrl})>(
       dio: _dio,
       preferredHubCenterUrl: _selectedHubCenterUrl,
       operation: (client, hubCenterUrl) async {
@@ -120,7 +121,8 @@ class AuthService {
           hubCenterUrl: hubCenterUrl,
           expiresMinutes: 5,
           codeLength: 6,
-          resendCooldownSeconds: PhoneLoginRequestResult.defaultResendCooldownSeconds,
+          resendCooldownSeconds:
+              PhoneLoginRequestResult.defaultResendCooldownSeconds,
           deliveryUnconfirmed: true,
         );
       }
@@ -138,7 +140,7 @@ class AuthService {
     final normalizedPhone = _requireNormalizedPhoneNumber(phoneNumber);
     final client = _discoveredHubClient(normalizedHubUrl);
     final response = await client.post<Map<String, dynamic>>(
-      '/api/enroll/sms/send-code',
+      '/api/mobile/auth/phone/send-code',
       data: {
         'phone_number': normalizedPhone,
         if (tenantId.trim().isNotEmpty) 'tenant_id': tenantId.trim(),
@@ -214,7 +216,7 @@ class AuthService {
     final normalizedPhone = _requireNormalizedPhoneNumber(phoneNumber);
     final client = _discoveredHubClient(normalizedHubUrl);
     final response = await client.post<Map<String, dynamic>>(
-      '/api/enroll/sms/verify-and-start',
+      '/api/mobile/auth/phone/verify-and-start',
       data: {
         'phone_number': normalizedPhone,
         'verify_code': verifyCode.trim(),
@@ -389,6 +391,7 @@ class PhoneLoginRequestResult {
   final int expiresMinutes;
   final int codeLength;
   final int resendCooldownSeconds;
+
   /// True when Hub resolve succeeded but send-code ACK was lost/timed out.
   final bool deliveryUnconfirmed;
 
@@ -455,8 +458,7 @@ class PhoneLoginRequestResult {
       codeLength: codeLength ?? this.codeLength,
       resendCooldownSeconds:
           resendCooldownSeconds ?? this.resendCooldownSeconds,
-      deliveryUnconfirmed:
-          deliveryUnconfirmed ?? this.deliveryUnconfirmed,
+      deliveryUnconfirmed: deliveryUnconfirmed ?? this.deliveryUnconfirmed,
     );
   }
 }

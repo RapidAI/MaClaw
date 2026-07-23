@@ -91,6 +91,19 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if resp, handled := h.tryImmediateCurrentTimeDirect(msg, providedLoopCtx); handled {
 		return resp
 	}
+	// Listing scheduled tasks is a deterministic read of local application state.
+	// Route it straight to the built-in tool so every IM channel gets the same
+	// scheduler view as the desktop task-management panel, without depending on
+	// an LLM selecting manage_schedule from its tool budget.
+	if resp, handled := h.tryImmediateScheduleListDirect(msg, providedLoopCtx); handled {
+		return resp
+	}
+	// An explicit task ID makes an immediate run unambiguous. It can use the
+	// same direct tool path as listing, while name-only requests keep normal
+	// agent planning so they cannot select the wrong task.
+	if resp, handled := h.tryImmediateScheduleRunDirect(msg, providedLoopCtx); handled {
+		return resp
+	}
 
 	// Emit immediate progress feedback before any heavy processing (preflight/entry_context).
 	// This ensures the frontend shows "正在思考..." within <100ms of message receipt.

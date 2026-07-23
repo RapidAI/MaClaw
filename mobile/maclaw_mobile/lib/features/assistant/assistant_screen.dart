@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -127,6 +128,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   String _lastVoiceTranscript = '';
   String? _voicePermissionEvidence;
   int _voiceSessionGeneration = 0;
+  bool _voiceHasStartedListening = false;
+  bool _meetingRecordingFlowActive = false;
 
   @override
   void initState() {
@@ -137,18 +140,21 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       (_, next) {
         if (next == null || !mounted) return;
         ref.read(meetingRecordingRequestProvider.notifier).state = null;
-        unawaited(_confirmAndStartMeetingRecording(
-          next.sourceQuery,
-          proposedTitle: next.title,
-          proposedPurpose: next.purpose,
-          hint: next.hint,
-        ));
+        unawaited(
+          _confirmAndStartMeetingRecording(
+            next.sourceQuery,
+            proposedTitle: next.title,
+            proposedPurpose: next.purpose,
+            hint: next.hint,
+          ),
+        );
       },
     );
   }
 
   @override
   void dispose() {
+    _voiceSessionGeneration++;
     unawaited(_voiceInput.stop());
     _queryController.dispose();
     _scrollController.dispose();
@@ -212,7 +218,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     };
     if (directRecordingCommands.contains(normalized)) return true;
 
-    final mentionsMeeting = normalized.contains('会议') || normalized.contains('会');
+    final mentionsMeeting =
+        normalized.contains('会议') || normalized.contains('会');
     final mentionsRecording = normalized.contains('录音') ||
         normalized.contains('记录') ||
         normalized.contains('纪要') ||
@@ -225,6 +232,26 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     String proposedTitle = '',
     String proposedPurpose = '',
     String hint = '',
+  }) async {
+    if (_meetingRecordingFlowActive) return;
+    _meetingRecordingFlowActive = true;
+    try {
+      await _runMeetingRecordingFlow(
+        query,
+        proposedTitle: proposedTitle,
+        proposedPurpose: proposedPurpose,
+        hint: hint,
+      );
+    } finally {
+      _meetingRecordingFlowActive = false;
+    }
+  }
+
+  Future<void> _runMeetingRecordingFlow(
+    String query, {
+    required String proposedTitle,
+    required String proposedPurpose,
+    required String hint,
   }) async {
     final client = ref.read(apiClientProvider);
     if (client == null) {
@@ -255,103 +282,103 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     if (!mounted) return;
     final intent =
         proposedPurpose.trim().isEmpty ? query : proposedPurpose.trim();
-    final titleController = TextEditingController(
-      text: proposedTitle.trim().isEmpty ? '会议录音' : proposedTitle.trim(),
-    );
+    var title = proposedTitle.trim().isEmpty ? '会议录音' : proposedTitle.trim();
     var processMode = capabilities.minutes
         ? 'minutes'
         : capabilities.transcript
             ? 'transcript'
             : 'keep';
-    final consentAccepted = ValueNotifier(false);
+    var consentAccepted = false;
     final approved = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('开始会议录音？'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(
-            hint.trim().isEmpty
-                ? '录音只会在你点击“开始录音”后进行。结束后音频将上传以生成转写和会议纪要。'
-                : hint.trim(),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            '请在开始前取得所有参会者同意。原始音频默认保留 30 天，可在完成后删除；逐字稿和纪要会继续保留。'
-            '以 16kHz 单声道 PCM WAV 估算，每小时约占用 115 MB；受 512 MiB 上传上限限制，单次最多约 4 小时 39 分钟。',
-          ),
-          if (!capabilities.transcript)
-            const Padding(
-              padding: EdgeInsets.only(top: 6),
-              child: Text('当前未确认转写服务可用，本次仅安全归档音频。'),
-            ),
-          ValueListenableBuilder<bool>(
-            valueListenable: consentAccepted,
-            builder: (context, accepted, _) => CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              value: accepted,
-              onChanged: (value) => consentAccepted.value = value ?? false,
-              title: const Text('我已取得所有参会者同意，并确认上传与留存安排'),
-              controlAffinity: ListTileControlAffinity.leading,
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-              controller: titleController,
-              autofocus: true,
-              decoration: const InputDecoration(labelText: '会议主题')),
-          const SizedBox(height: 8),
-          StatefulBuilder(
-            builder: (context, setModalState) =>
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('开始会议录音？'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  hint.trim().isEmpty
+                      ? '录音只会在你点击“开始录音”后进行。结束后音频将上传以生成转写和会议纪要。'
+                      : hint.trim(),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  '请在开始前取得所有参会者同意。原始音频默认保留 30 天，可在完成后删除；逐字稿和纪要会继续保留。'
+                  '以 16kHz 单声道 PCM WAV 估算，每小时约占用 115 MB；受 512 MiB 上传上限限制，单次最多约 4 小时 39 分钟。',
+                ),
+                if (!capabilities.transcript)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 6),
+                    child: Text('当前未确认转写服务可用，本次仅安全归档音频。'),
+                  ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: consentAccepted,
+                  onChanged: (value) =>
+                      setDialogState(() => consentAccepted = value ?? false),
+                  title: const Text('我已取得所有参会者同意，并确认上传与留存安排'),
+                  controlAffinity: ListTileControlAffinity.leading,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  initialValue: title,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: '会议主题'),
+                  onChanged: (value) => title = value,
+                ),
+                const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
-              value: processMode,
-              decoration: const InputDecoration(labelText: '录音完成后'),
-              items: [
-                if (capabilities.minutes)
-                  const DropdownMenuItem(
-                    value: 'minutes',
-                    child: Text('生成纪要和逐字稿'),
-                  ),
-                if (capabilities.transcript)
-                  const DropdownMenuItem(
-                    value: 'transcript',
-                    child: Text('只生成逐字稿'),
-                  ),
-                DropdownMenuItem(value: 'keep', child: Text('仅安全归档音频')),
+                  initialValue: processMode,
+                  decoration: const InputDecoration(labelText: '录音完成后'),
+                  items: [
+                    if (capabilities.minutes)
+                      const DropdownMenuItem(
+                        value: 'minutes',
+                        child: Text('生成纪要和逐字稿'),
+                      ),
+                    if (capabilities.transcript)
+                      const DropdownMenuItem(
+                        value: 'transcript',
+                        child: Text('只生成逐字稿'),
+                      ),
+                    const DropdownMenuItem(
+                      value: 'keep',
+                      child: Text('仅安全归档音频'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    final next = value ?? processMode;
+                    if ((next == 'minutes' && !capabilities.minutes) ||
+                        (next == 'transcript' && !capabilities.transcript)) {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        const SnackBar(content: Text('当前 Hub 未配置所选的转写服务。')),
+                      );
+                      return;
+                    }
+                    setDialogState(() => processMode = next);
+                  },
+                ),
               ],
-              onChanged: (value) {
-                final next = value ?? processMode;
-                if ((next == 'minutes' && !capabilities.minutes) ||
-                    (next == 'transcript' && !capabilities.transcript)) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('当前 Hub 未配置所选的转写服务。')),
-                  );
-                  return;
-                }
-                setModalState(() => processMode = next);
-              },
             ),
           ),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('取消')),
-          ValueListenableBuilder<bool>(
-            valueListenable: consentAccepted,
-            builder: (context, accepted, _) => FilledButton(
-              onPressed:
-                  accepted ? () => Navigator.of(context).pop(true) : null,
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: consentAccepted
+                  ? () => Navigator.of(dialogContext).pop(true)
+                  : null,
               child: const Text('继续'),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
-    consentAccepted.dispose();
-    final title = titleController.text.trim().isEmpty
-        ? '会议录音'
-        : titleController.text.trim();
-    titleController.dispose();
+    title = title.trim().isEmpty ? '会议录音' : title.trim();
     if (approved != true || !mounted) return;
     final tabId = ref.read(assistantTabsProvider).activeTabId;
     ref
@@ -360,19 +387,21 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     ref.read(assistantTabsProvider.notifier).appendMessage(
           tabId,
           AssistantConversationMessage.assistant(
-              query: query,
-              text: '已准备好“$title”。点击开始后我会持续记录会议；结束时将自动上传并生成会议纪要。'),
+            query: query,
+            text: '已准备好“$title”。点击开始后我会持续记录会议；结束时将自动上传并生成会议纪要。',
+          ),
         );
     _setQuery('');
     _scrollConversationToEnd();
     final result = await Navigator.of(context).push<MeetingRecordingResult>(
       MaterialPageRoute(
-          builder: (_) => MeetingRecordingScreen(
-                title: title,
-                purpose: intent,
-                conversationId: tabId,
-                processMode: processMode,
-              )),
+        builder: (_) => MeetingRecordingScreen(
+          title: title,
+          purpose: intent,
+          conversationId: tabId,
+          processMode: processMode,
+        ),
+      ),
     );
     if (!mounted || result == null) return;
     final submittedText = switch (result.processMode) {
@@ -543,17 +572,27 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   Future<void> _toggleVoiceInput() async {
     if (_listening) {
-      _voiceSessionGeneration++;
+      final stoppedSessionGeneration = ++_voiceSessionGeneration;
+      _voiceHasStartedListening = false;
+      // Reflect cancellation immediately. The voice adapter serializes the
+      // native stop behind a pending permission/start operation, which can
+      // otherwise leave the button looking active for several seconds.
+      setState(() {
+        _listening = false;
+        _voiceStatus = '正在停止语音输入';
+      });
       try {
         await _voiceInput.stop();
       } on Object {
         // The platform service may already have stopped after a permission or
         // lifecycle change; the UI still needs to leave listening mode.
       }
-      setState(() {
-        _listening = false;
-        _voiceStatus = '语音输入已停止';
-      });
+      if (!mounted ||
+          stoppedSessionGeneration != _voiceSessionGeneration ||
+          _listening) {
+        return;
+      }
+      setState(() => _voiceStatus = '语音输入已停止');
       return;
     }
     final prefLanguage =
@@ -563,6 +602,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final localeId = assistantSpeechLocaleForLanguage(uiLanguage);
     _lastVoiceTranscript = '';
     _voicePermissionEvidence = null;
+    _voiceHasStartedListening = false;
     final sessionGeneration = ++_voiceSessionGeneration;
     setState(() {
       _listening = true;
@@ -574,14 +614,25 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         onStatus: (status) {
           if (!mounted ||
               sessionGeneration != _voiceSessionGeneration ||
-              !_listening ||
-              (status != 'done' &&
-                  status != 'notListening' &&
-                  status != 'error')) {
+              !_listening) {
             return;
           }
+          if (status == 'listening') {
+            _voiceHasStartedListening = true;
+            return;
+          }
+          if (status != 'done' &&
+              status != 'notListening' &&
+              status != 'error') {
+            return;
+          }
+          // Android/iOS can surface the previous recognition session's
+          // terminal status while the new microphone is opening. Ignore it
+          // until this session has reported that it is actually listening.
+          if (status != 'error' && !_voiceHasStartedListening) return;
           setState(() {
             _listening = false;
+            _voiceHasStartedListening = false;
             _voiceStatus = status == 'error'
                 ? '\u8bed\u97f3\u8bc6\u522b\u670d\u52a1\u4e2d\u65ad\uff0c\u53ef\u7ee7\u7eed\u4f7f\u7528\u6587\u5b57\u8f93\u5165'
                 : '\u8bed\u97f3\u8f93\u5165\u5df2\u5b8c\u6210\uff0c\u8bf7\u68c0\u67e5\u8bc6\u522b\u7ed3\u679c\u540e\u53ef\u53d1\u9001';
@@ -969,24 +1020,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                     ),
                     const SizedBox(height: 6),
                   ],
+                  // Keep the primary text target on its own row. At phone
+                  // widths, fitting three import actions and two send actions
+                  // beside it leaves the field only a few pixels wide.
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      IconButton(
-                        tooltip: '拍照提问',
-                        onPressed: _pickImage,
-                        icon: const Icon(Icons.photo_camera_outlined),
-                      ),
-                      IconButton(
-                        tooltip: '从相册选择截图',
-                        onPressed: _pickGalleryImage,
-                        icon: const Icon(Icons.photo_library_outlined),
-                      ),
-                      IconButton(
-                        tooltip: '导入截图或文件',
-                        onPressed: _pickFile,
-                        icon: const Icon(Icons.attach_file),
-                      ),
                       Expanded(
                         child: TextField(
                           controller: _queryController,
@@ -1074,21 +1113,41 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 6),
-                      IconButton.filledTonal(
-                        tooltip: '后台执行（长任务）',
-                        onPressed: query.trim().isEmpty || !assistantEnabled
-                            ? null
-                            : () => _enqueueBackground(query),
-                        icon: const Icon(Icons.schedule_send_outlined),
-                      ),
-                      const SizedBox(width: 4),
+                      const SizedBox(width: 8),
                       IconButton.filled(
                         tooltip: '发送给 AI 助手',
                         onPressed: query.trim().isEmpty || !assistantEnabled
                             ? null
                             : () => _searchManually(query),
                         icon: const Icon(Icons.arrow_upward),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      IconButton(
+                        tooltip: '拍照提问',
+                        onPressed: _pickImage,
+                        icon: const Icon(Icons.photo_camera_outlined),
+                      ),
+                      IconButton(
+                        tooltip: '从相册选择截图',
+                        onPressed: _pickGalleryImage,
+                        icon: const Icon(Icons.photo_library_outlined),
+                      ),
+                      IconButton(
+                        tooltip: '导入截图或文件',
+                        onPressed: _pickFile,
+                        icon: const Icon(Icons.attach_file),
+                      ),
+                      const Spacer(),
+                      IconButton.filledTonal(
+                        tooltip: '后台执行（长任务）',
+                        onPressed: query.trim().isEmpty || !assistantEnabled
+                            ? null
+                            : () => _enqueueBackground(query),
+                        icon: const Icon(Icons.schedule_send_outlined),
                       ),
                     ],
                   ),
@@ -1508,14 +1567,11 @@ class _AssistantConversationView extends StatelessWidget {
         if (message.meetingRecording != null)
           _MeetingRecordingConversationCard(
             data: message.meetingRecording!,
-            onRetry: message.meetingRecording!.failureCode ==
-                    'AUDIO_MISSING_FOR_RETRY'
-                ? null
-                : () => _retryMeetingRecording(
-                      context,
-                      message.meetingRecording!,
-                      message.query,
-                    ),
+            onProcess: (mode) => _processMeetingRecording(
+              context,
+              message.meetingRecording!,
+              mode,
+            ),
             onDeleteAudio: () => _deleteMeetingRecordingAudio(
               context,
               message.meetingRecording!,
@@ -1538,18 +1594,32 @@ class _AssistantConversationView extends StatelessWidget {
     }
   }
 
-  Future<void> _retryMeetingRecording(
+  Future<void> _processMeetingRecording(
     BuildContext context,
     MeetingRecordingCardData data,
-    String query,
+    String mode,
   ) async {
     final container = ProviderScope.containerOf(context);
     final client = container.read(apiClientProvider);
     if (client == null) return;
     try {
+      final capabilities = await client.getMeetingRecordingCapabilities();
+      final available = switch (mode) {
+        'minutes' => capabilities.minutes,
+        'transcript' => capabilities.transcript,
+        _ => capabilities.keep,
+      };
+      if (!available) {
+        if (!context.mounted) return;
+        final action = mode == 'minutes' ? '会议纪要整理' : '录音转写';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('当前 Hub 尚未配置“$action”服务，原始音频会继续安全保留。')),
+        );
+        return;
+      }
       final updated = await client.processMeetingRecording(
         data.recordingId,
-        mode: data.processMode,
+        mode: mode,
       );
       final tabId = container.read(assistantTabsProvider).activeTabId;
       container.read(assistantTabsProvider.notifier).updateMeetingRecording(
@@ -1562,15 +1632,41 @@ class _AssistantConversationView extends StatelessWidget {
               progress: updated.progress,
               transcriptDraftId: updated.transcriptDraftId,
               minutesDraftId: updated.minutesDraftId,
+              processMode: updated.mode,
               audioAvailable: updated.audioAvailable,
             ),
           );
     } on Object catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('无法重新处理会议录音：$error')),
+        SnackBar(
+          content: Text('无法处理会议录音：${_meetingRecordingProcessError(error)}'),
+        ),
       );
     }
+  }
+
+  String _meetingRecordingProcessError(Object error) {
+    if (error is DioException) {
+      final body = error.response?.data;
+      if (body is Map) {
+        final code = body['code']?.toString();
+        if (code == 'PROCESSING_MODE_UNAVAILABLE') {
+          return '当前 Hub 未配置转写或会议纪要服务。';
+        }
+        if (code == 'AUDIO_MISSING_FOR_RETRY') {
+          return '原始音频已删除或已过期，无法继续处理。';
+        }
+        if (code == 'NOT_READY') {
+          return '该录音正在处理，或已经完成处理。';
+        }
+        final message = body['message']?.toString().trim();
+        if (message != null && message.isNotEmpty) return message;
+      }
+      if (error.response?.statusCode == 401) return '登录已失效，请重新登录。';
+      if (error.response?.statusCode == 409) return '当前录音暂时无法处理，请稍后再试。';
+    }
+    return '请检查网络和 Hub 服务状态后重试。';
   }
 
   Future<void> _deleteMeetingRecordingAudio(
@@ -1622,13 +1718,13 @@ class _AssistantConversationView extends StatelessWidget {
 
 class _MeetingRecordingConversationCard extends StatelessWidget {
   final MeetingRecordingCardData data;
-  final VoidCallback? onRetry;
+  final ValueChanged<String>? onProcess;
   final VoidCallback? onDeleteAudio;
   final VoidCallback? onOpenDocument;
 
   const _MeetingRecordingConversationCard({
     required this.data,
-    this.onRetry,
+    this.onProcess,
     this.onDeleteAudio,
     this.onOpenDocument,
   });
@@ -1640,6 +1736,9 @@ class _MeetingRecordingConversationCard extends StatelessWidget {
     final failed = status.contains('fail') || status.contains('error');
     final ready = status == 'ready';
     final active = !ready && !failed;
+    final canProcess = data.audioAvailable &&
+        !active &&
+        data.failureCode != 'AUDIO_MISSING_FOR_RETRY';
     final title = data.title.trim().isEmpty ? '会议录音' : data.title.trim();
     final label = ready
         ? switch (data.processMode) {
@@ -1714,10 +1813,29 @@ class _MeetingRecordingConversationCard extends StatelessWidget {
               label: const Text('打开会议纪要'),
             ),
           ],
-          if (failed && onRetry != null) ...[
+          if (canProcess && data.processMode == 'keep') ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => onProcess?.call('minutes'),
+                  icon: const Icon(Icons.summarize_outlined, size: 18),
+                  label: const Text('会议纪要整理'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => onProcess?.call('transcript'),
+                  icon: const Icon(Icons.subject_outlined, size: 18),
+                  label: const Text('录音转写'),
+                ),
+              ],
+            ),
+          ],
+          if (failed && canProcess) ...[
             const SizedBox(height: 10),
             OutlinedButton.icon(
-              onPressed: onRetry,
+              onPressed: () => onProcess?.call(data.processMode),
               icon: const Icon(Icons.refresh, size: 18),
               label: const Text('重新处理'),
             ),

@@ -615,6 +615,10 @@ func (a *App) SaveRemoteVirtualRepository(inputJSON string) (string, error) {
 	}
 	log.Printf("[vrepo] save_remote repo=%q nodes=%d status=success duration_ms=%d", repo.ID, len(repo.Nodes), time.Since(started).Milliseconds())
 	data, err := json.Marshal(repo)
+	if err == nil {
+		a.clearVirtualRepositorySyncTombstone("repo", repo.ID)
+		a.scheduleVirtualRepositorySync()
+	}
 	return string(data), err
 }
 
@@ -745,7 +749,7 @@ func (a *App) readRemoteVirtualRepositoryWithClient(client *ssh.Client, item vir
 }
 
 func remoteVirtualRepositoryNodePath(root, relative string) string {
-	return path.Join(strings.TrimRight(root, "/"), path.Clean(relative))
+	return path.Join(strings.TrimRight(root, "/"), relative)
 }
 
 func inspectRemoteVirtualRepositoryNode(ctx context.Context, client *ssh.Client, repo *VirtualRepository, node VirtualRepositoryNode) VirtualRepositoryNodeStatus {
@@ -864,9 +868,13 @@ func (a *App) CreateRemoteVirtualRepositoryDirectory(repositoryID, relative stri
 		return err
 	}
 	defer client.Close()
+	binding := virtualRepositoryBindingByRelativePath(repo, relative)
+	if binding == nil {
+		return errors.New("mapped directory was not found in the saved virtual repository")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err = runRemoteRepositoryCommand(ctx, client, "root=$(realpath "+remoteShellQuote(repo.RootPath)+") || exit 21; target="+remoteShellQuote(remoteVirtualRepositoryNodePath(repo.RootPath, relative))+"; ancestor=\"$target\"; while [ ! -e \"$ancestor\" ]; do next=$(dirname -- \"$ancestor\"); [ \"$next\" = \"$ancestor\" ] && exit 23; ancestor=\"$next\"; done; realancestor=$(realpath \"$ancestor\") || exit 22; case \"$realancestor\" in \"$root\"|\"$root\"/*) mkdir -p -- \"$target\";; *) exit 23;; esac; realtarget=$(realpath \"$target\") || exit 22; case \"$realtarget\" in \"$root\"/*) :;; *) exit 23;; esac")
+	_, err = runRemoteRepositoryCommand(ctx, client, "root=$(realpath "+remoteShellQuote(repo.RootPath)+") || exit 21; target="+remoteShellQuote(remoteVirtualRepositoryNodePath(repo.RootPath, binding.RelativePath))+"; ancestor=\"$target\"; while [ ! -e \"$ancestor\" ]; do next=$(dirname -- \"$ancestor\"); [ \"$next\" = \"$ancestor\" ] && exit 23; ancestor=\"$next\"; done; realancestor=$(realpath \"$ancestor\") || exit 22; case \"$realancestor\" in \"$root\"|\"$root\"/*) mkdir -p -- \"$target\";; *) exit 23;; esac; realtarget=$(realpath \"$target\") || exit 22; case \"$realtarget\" in \"$root\"/*) :;; *) exit 23;; esac")
 	return err
 }
 

@@ -166,6 +166,7 @@ func (a *App) pruneRepositoryCredentialBindingsLocked(repo *VirtualRepository) e
 	}
 	prefix := strings.TrimSpace(repo.ID) + ":"
 	changed := false
+	removed := make([]string, 0)
 	for key, credentialID := range bindings.Bindings {
 		if !strings.HasPrefix(key, prefix) {
 			continue
@@ -175,12 +176,22 @@ func (a *App) pruneRepositoryCredentialBindingsLocked(repo *VirtualRepository) e
 		if !exists || credentialKinds[credentialID] != kind {
 			delete(bindings.Bindings, key)
 			changed = true
+			removed = append(removed, key)
 		}
 	}
 	if !changed {
 		return nil
 	}
-	return writeJSONFile(path, bindings)
+	if err := writeJSONFile(path, bindings); err != nil {
+		return err
+	}
+	// The binding was removed because a repository edit made it invalid. It is
+	// still a user-visible deletion and must be replicated, otherwise another
+	// device can restore it from an older Hub document.
+	for _, key := range removed {
+		a.recordVirtualRepositorySyncTombstone("binding", key)
+	}
+	return nil
 }
 
 func (a *App) loadRepositoryCredentials() (repositoryCredentialFile, error) {
@@ -286,6 +297,10 @@ func (a *App) SaveRepositoryCredential(inputJSON string) (string, error) {
 		return "", err
 	}
 	data, err := json.Marshal(item)
+	if err == nil {
+		a.clearVirtualRepositorySyncTombstone("cred", item.ID)
+		a.scheduleVirtualRepositorySync()
+	}
 	return string(data), err
 }
 
@@ -352,6 +367,13 @@ func (a *App) DeleteRepositoryCredential(id string) (string, error) {
 		return "", err
 	}
 	data, err := json.Marshal(repositoryCredentialDeleteResult{ID: id, AffectedBindings: affected})
+	if err == nil {
+		a.recordVirtualRepositorySyncTombstone("cred", id)
+		for _, binding := range affected {
+			a.recordVirtualRepositorySyncTombstone("binding", binding)
+		}
+		a.scheduleVirtualRepositorySync()
+	}
 	return string(data), err
 }
 
@@ -442,7 +464,16 @@ func (a *App) SetRepositoryCredentialBinding(repositoryID, nodeID, credentialID 
 		}
 		bindings.Bindings[key] = credentialID
 	}
-	return writeJSONFile(path, bindings)
+	err = writeJSONFile(path, bindings)
+	if err == nil {
+		if credentialID == "" {
+			a.recordVirtualRepositorySyncTombstone("binding", key)
+		} else {
+			a.clearVirtualRepositorySyncTombstone("binding", key)
+		}
+		a.scheduleVirtualRepositorySync()
+	}
+	return err
 }
 
 func (a *App) loadVirtualRepositoryIndexItems() ([]virtualRepositoryIndexEntry, error) {

@@ -18,7 +18,10 @@ final mobileNetworkRecoveryProvider = Provider<void>((ref) {
   // First authenticated build and subsequent recovery share the same durable
   // queue. A recording completed while offline therefore resumes without a
   // user having to reopen its conversation.
-  unawaited(MeetingRecordingUploadQueue().resumePending());
+  final client = ref.read(apiClientProvider);
+  if (client != null) {
+    unawaited(MeetingRecordingUploadQueue(api: client).resumePending());
+  }
   var recovering = false;
   ref.listen<AsyncValue<MobileNetworkSnapshot>>(
     mobileNetworkStatusProvider,
@@ -62,7 +65,10 @@ Future<void> _recoverMobileHubState(Ref ref) async {
     unawaited(syncMobilePushPendingFromRef(ref));
     // Meeting audio is persisted before upload; retry it after network/app
     // recovery so an interrupted transfer never loses a completed recording.
-    unawaited(MeetingRecordingUploadQueue().resumePending());
+    final client = ref.read(apiClientProvider);
+    if (client != null) {
+      unawaited(MeetingRecordingUploadQueue(api: client).resumePending());
+    }
   } catch (_) {
     // The normal screen-level retry paths remain available if the Hub comes
     // back between the lifecycle event and the refresh request.

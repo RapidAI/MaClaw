@@ -36,6 +36,8 @@ class _DigitalEmployeeChatScreenState
   final _messages = <_EmployeeChatMessage>[];
   String? _activeTaskId;
   bool _listening = false;
+  bool _voiceHasStartedListening = false;
+  int _voiceSessionGeneration = 0;
   bool _greetingSeeded = false;
 
   @override
@@ -121,6 +123,7 @@ class _DigitalEmployeeChatScreenState
 
   @override
   void dispose() {
+    _voiceSessionGeneration++;
     unawaited(_voiceInput.stop());
     _inputController.dispose();
     _scrollController.dispose();
@@ -391,32 +394,77 @@ class _DigitalEmployeeChatScreenState
   Future<void> _toggleVoice() async {
     final s = ref.read(appStringsProvider);
     if (_listening) {
-      await _voiceInput.stop();
-      if (mounted) setState(() => _listening = false);
+      _voiceSessionGeneration++;
+      // Update first: native stop can be queued behind a permission prompt or
+      // a recognizer transition, while the user should be able to retry now.
+      setState(() {
+        _listening = false;
+        _voiceHasStartedListening = false;
+      });
+      try {
+        await _voiceInput.stop();
+      } on Object {
+        // The platform service may have already stopped. The UI still needs
+        // to leave listening mode so the user can start a fresh session.
+      }
       return;
     }
-    setState(() => _listening = true);
+    setState(() {
+      _listening = true;
+      _voiceHasStartedListening = false;
+    });
+    final sessionGeneration = ++_voiceSessionGeneration;
     try {
       final localeId = s.isZh ? 'zh_CN' : 'en_US';
       final started = await _voiceInput.start(
         localeId: localeId,
         onText: (transcript) {
-          if (!mounted || transcript.trim().isEmpty) return;
+          if (!mounted ||
+              sessionGeneration != _voiceSessionGeneration ||
+              transcript.trim().isEmpty) {
+            return;
+          }
           _inputController.text = transcript.trim();
           _inputController.selection = TextSelection.fromPosition(
             TextPosition(offset: _inputController.text.length),
           );
         },
         onStatus: (status) {
-          if (mounted && (status == 'done' || status == 'notListening')) {
-            setState(() => _listening = false);
+          if (!mounted ||
+              sessionGeneration != _voiceSessionGeneration ||
+              !_listening) {
+            return;
+          }
+          if (status == 'listening') {
+            _voiceHasStartedListening = true;
+            return;
+          }
+          final terminal = status == 'done' || status == 'notListening';
+          if (status == 'error' || (_voiceHasStartedListening && terminal)) {
+            setState(() {
+              _listening = false;
+              _voiceHasStartedListening = false;
+            });
+            if (status == 'error') {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(s.voiceUnavailable)),
+              );
+            }
           }
         },
       );
-      if (!started && mounted) setState(() => _listening = false);
+      if (!started && mounted && sessionGeneration == _voiceSessionGeneration) {
+        setState(() {
+          _listening = false;
+          _voiceHasStartedListening = false;
+        });
+      }
     } on Object {
-      if (mounted) {
-        setState(() => _listening = false);
+      if (mounted && sessionGeneration == _voiceSessionGeneration) {
+        setState(() {
+          _listening = false;
+          _voiceHasStartedListening = false;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(s.voiceUnavailable)),
         );
@@ -555,8 +603,8 @@ class _EmployeeTaskStatus extends ConsumerWidget {
       'authorization_required',
       'waiting_authorization',
     }.contains(task.status);
-    final queuedStuck =
-        task.status == 'queued' && _taskQueuedLongerThan(task, const Duration(seconds: 25));
+    final queuedStuck = task.status == 'queued' &&
+        _taskQueuedLongerThan(task, const Duration(seconds: 25));
     final running = task.status == 'claimed' ||
         task.status == 'running' ||
         task.status == 'in_progress';
@@ -566,7 +614,9 @@ class _EmployeeTaskStatus extends ConsumerWidget {
             'queued' => queuedStuck
                 ? s.remoteStillUnclaimed
                 : s.employeeTaskStatusLabel('queued'),
-            'claimed' || 'running' || 'in_progress' =>
+            'claimed' ||
+            'running' ||
+            'in_progress' =>
               s.employeeTaskStatusLabel('running'),
             'authorization_denied' ||
             'approval_denied' ||

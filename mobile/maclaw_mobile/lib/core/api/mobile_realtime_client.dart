@@ -218,8 +218,8 @@ class MobileRealtimeEvent {
   bool get sshSession => type == 'ssh_session';
   bool get sshTask => type == 'ssh_task';
   bool get sshFileOperation => type == 'ssh_file_operation';
-  bool get assistantJob =>
-      type == 'assistant_job' || type == 'agent_job';
+  bool get meetingRecording => type == 'meeting_recording';
+  bool get assistantJob => type == 'assistant_job' || type == 'agent_job';
   bool get binaryFrame => payload['binary_frame'] == true;
 
   factory MobileRealtimeEvent.fromJson(Map<String, dynamic> json) {

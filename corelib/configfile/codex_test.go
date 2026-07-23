@@ -928,6 +928,21 @@ func TestWriteTigerProxyCodexConfigWithContextUsesOverrides(t *testing.T) {
 	}
 }
 
+func TestWriteTigerProxyCodexConfigWithContextRejectsInvalidThreshold(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	err := WriteTigerProxyCodexConfigWithContext("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5", 180000, 180000)
+	if err == nil || !strings.Contains(err.Error(), "must be less than the context window") {
+		t.Fatalf("WriteTigerProxyCodexConfigWithContext error = %v, want invalid threshold error", err)
+	}
+	if _, err := os.Stat(CodexConfigPath()); !os.IsNotExist(err) {
+		t.Fatalf("config.toml exists after rejected settings, stat err = %v", err)
+	}
+}
+
 func TestWriteTigerProxyCodexConfigUpdatesExistingContextSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

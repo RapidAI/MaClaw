@@ -1505,6 +1505,32 @@ body {
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-success) 18%, transparent);
 }
 
+.sidebar-system-status__background-tasks {
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.64rem;
+}
+
+.sidebar-system-status__background-tasks:hover {
+    color: var(--theme-primary);
+}
+
+.sidebar-system-status__background-tasks:disabled {
+    cursor: default;
+}
+
+.sidebar-system-status__background-tasks:disabled:hover {
+    color: inherit;
+}
+
+.sidebar-system-status__background-tasks:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
 .sidebar-system-status__usage {
     display: flex;
     align-items: center;

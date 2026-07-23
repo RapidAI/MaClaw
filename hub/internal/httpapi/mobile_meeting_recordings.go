@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,7 +68,11 @@ func SetMeetingSpeakerSegmentationWorker(segmenter MeetingSpeakerSegmentationWor
 }
 
 const (
-	meetingRecordingChunkSize      = 4 << 20 // 4 MiB
+	// One MiB gets the first durable upload under way after roughly 33 seconds
+	// for the mobile 16 kHz mono PCM WAV recorder.  Four MiB delayed the first
+	// pre-upload for more than two minutes, which largely defeated recording-time
+	// transfer for short meetings.  The total quota remains unchanged.
+	meetingRecordingChunkSize      = 1 << 20 // 1 MiB
 	meetingRecordingMaxBytes       = 512 << 20
 	meetingRecordingMaxDurationSec = 24 * 60 * 60
 	// PCM WAV produced by the mobile recorder is fixed at 16kHz, mono, S16LE.
@@ -277,7 +282,7 @@ func mobileMeetingRecordingPutChunk(w http.ResponseWriter, r *http.Request, owne
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, meetingRecordingChunkSize+1))
 	if err != nil || len(data) == 0 || len(data) > meetingRecordingChunkSize {
-		writeError(w, http.StatusBadRequest, "INVALID_CHUNK", "chunk must be between 1 byte and 4 MiB")
+		writeError(w, http.StatusBadRequest, "INVALID_CHUNK", "chunk must be between 1 byte and 1 MiB")
 		return
 	}
 	want := strings.TrimSpace(r.Header.Get("X-Chunk-SHA256"))
@@ -463,7 +468,10 @@ func mobileMeetingRecordingClaimFinalize(ownerID, id string) (mobileMeetingRecor
 
 func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, ownerID, id string) {
 	var req mobileMeetingRecordingProcessRequest
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
+		return
+	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	if mode == "" {
 		mode = "minutes"
@@ -472,18 +480,16 @@ func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, owner
 		writeError(w, http.StatusBadRequest, "INVALID_MODE", "mode must be minutes, transcript, or keep")
 		return
 	}
-	transcriptAvailable, minutesAvailable := mobileMeetingRecordingWorkerAvailability()
-	if (mode == "transcript" && !transcriptAvailable) ||
-		(mode == "minutes" && (!transcriptAvailable || !minutesAvailable)) {
-		writeError(w, http.StatusConflict, "PROCESSING_MODE_UNAVAILABLE", "selected meeting processing mode is not configured on this Hub")
-		return
-	}
 	rec, ok := mobileMeetingRecordingOwned(ownerID, id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
 	}
-	if rec.Status != "uploaded" && rec.Status != "ready" && rec.Status != "failed" {
+	if rec.Status == "ready" && (rec.ProcessMode != "keep" || mode == "keep") {
+		writeError(w, http.StatusConflict, "NOT_READY", "completed recording processing cannot be repeated")
+		return
+	}
+	if rec.Status != "uploaded" && rec.Status != "failed" && rec.Status != "ready" {
 		writeError(w, http.StatusConflict, "NOT_READY", "finish uploading before processing")
 		return
 	}
@@ -501,18 +507,60 @@ func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, owner
 		writeError(w, http.StatusConflict, "AUDIO_MISSING_FOR_RETRY", "raw audio is unavailable; record again to retry")
 		return
 	}
-	mobileMeetingRecordingUpdate(id, func(m *mobileMeetingRecording) {
-		m.Status = "processing"
-		m.Message = "queued for transcription"
-		m.Progress = .25
-		m.ProcessMode = mode
-		m.FailureCode = ""
-		m.RetryCount++
-	})
-	mobilePersistState()
+	// Check whether this recording can be retried before worker availability.
+	// Without retained audio, a later worker configuration cannot recover it.
+	transcriptAvailable, minutesAvailable := mobileMeetingRecordingWorkerAvailability()
+	if (mode == "transcript" && !transcriptAvailable) ||
+		(mode == "minutes" && (!transcriptAvailable || !minutesAvailable)) {
+		writeError(w, http.StatusConflict, "PROCESSING_MODE_UNAVAILABLE", "selected meeting processing mode is not configured on this Hub")
+		return
+	}
+	rec, claim := mobileMeetingRecordingClaimProcess(ownerID, id, mode)
+	if claim == "missing" {
+		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
+		return
+	}
+	if claim != "claimed" {
+		writeError(w, http.StatusConflict, "NOT_READY", "recording processing is already in progress")
+		return
+	}
 	go mobileRunMeetingRecording(id)
-	rec, _ = mobileMeetingRecordingOwned(ownerID, id)
 	writeJSON(w, http.StatusAccepted, mobileMeetingRecordingPayload(rec))
+}
+
+// mobileMeetingRecordingClaimProcess atomically transitions an uploaded, failed,
+// or archive-only-ready recording into processing. A ready transcript/minutes
+// result stays immutable, while an archive-only recording may be promoted later
+// when the user explicitly asks for transcription or meeting minutes.
+func mobileMeetingRecordingClaimProcess(ownerID, id, mode string) (mobileMeetingRecording, string) {
+	mobileMeetingRecordings.Lock()
+	rec, ok := mobileMeetingRecordings.items[id]
+	if !ok || rec.OwnerID != ownerID {
+		mobileMeetingRecordings.Unlock()
+		return mobileMeetingRecording{}, "missing"
+	}
+	if rec.Status != "uploaded" && rec.Status != "failed" &&
+		!(rec.Status == "ready" && rec.ProcessMode == "keep" && mode != "keep") {
+		mobileMeetingRecordings.Unlock()
+		return rec, "busy"
+	}
+	rec.Status = "processing"
+	rec.Message = "queued for transcription"
+	rec.Progress = .25
+	rec.ProcessMode = mode
+	rec.FailureCode = ""
+	rec.RetryCount++
+	rec.UpdatedAt = time.Now().UTC()
+	mobileMeetingRecordings.items[id] = rec
+	mobileMeetingRecordings.Unlock()
+	mobilePersistState()
+	mobileRealtimeBroadcast(rec.TenantID, rec.OwnerID, map[string]any{
+		"type":         "meeting_recording",
+		"recording":    mobileMeetingRecordingPayload(rec),
+		"recording_id": rec.ID,
+		"status":       rec.Status,
+	})
+	return rec, "claimed"
 }
 
 func mobileMeetingRecordingMarkAudioMissing(id string) {

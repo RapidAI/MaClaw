@@ -1138,7 +1138,7 @@ function openFileInFolder(event: React.MouseEvent, filePath: string) {
     void OpenFileOrShowInFolder(filePath).catch(() => ShowItemInFolder(filePath));
 }
 
-function parseGuideReceiptContent(content: string): { title: string; detail: string; quote: string } {
+/*function parseGuideReceiptContent(content: string): { title: string; detail: string; quote: string } {
     const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     const titleIndex = lines.findIndex(line => !line.startsWith('>'));
     const title = titleIndex >= 0 ? lines[titleIndex].replace(/[:：]\s*$/, '') : '';
@@ -1199,7 +1199,7 @@ function renderGuideReceipt(msg: ChatMessage, t: Theme): React.ReactNode {
             )}
         </div>
     );
-}
+}*/
 
 /* Render a single ChatMessage */
 
@@ -1216,9 +1216,28 @@ export function renderMessage(
 ): React.ReactNode {
     switch (msg.role) {
         case "user":
+            const isGuideInjection = msg.kind === "guideInjection";
             return (
-                <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={lang === "en" ? "Your message" : "我的消息"} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "10px 0" }}>
-                    <span style={{ margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{lang === "en" ? "You" : "我"}</span>
+                <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? (lang === "en" ? "Your injected guidance" : "我已注入的引导") : (lang === "en" ? "Your message" : "我的消息")} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "10px 0" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>
+                        <span>{lang === "en" ? "You" : "我"}</span>
+                        {isGuideInjection && (
+                            <span
+                                data-testid="guide-injection-badge"
+                                style={{
+                                    padding: "1px 5px",
+                                    borderRadius: 999,
+                                    background: `color-mix(in srgb, ${t.sendBtnBg} 14%, transparent)`,
+                                    color: t.text,
+                                    fontSize: 10,
+                                    fontWeight: 600,
+                                    lineHeight: 1.4,
+                                }}
+                            >
+                                {lang === "en" ? "Injected" : "已注入"}
+                            </span>
+                        )}
+                    </span>
                     <ChatBubbleFrame
                         side="right"
                         background={userChatBubbleBackground(t.sendBtnBg, t.fieldBg)}
@@ -1408,9 +1427,6 @@ export function renderMessage(
                 </div>
             );
         case "system":
-            if (msg.kind === 'guideReceipt') {
-                return renderGuideReceipt(msg, t);
-            }
             return (
                 <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
                     <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "anywhere" }}>

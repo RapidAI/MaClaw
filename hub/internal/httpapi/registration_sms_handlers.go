@@ -57,6 +57,17 @@ type RegistrationSMSVerifyAndStartRequest struct {
 }
 
 func RegistrationSMSSendCodeHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, factory registrationSMSProviderFactory) http.HandlerFunc {
+	return registrationSMSSendCodeHandler(identity, system, factory, false)
+}
+
+// MobileRegistrationSMSSendCodeHandler keeps the public mobile phone-login API
+// available when desktop/web onboarding uses email verification. The endpoint
+// selects a product capability; it does not by itself attest the calling app.
+func MobileRegistrationSMSSendCodeHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, factory registrationSMSProviderFactory) http.HandlerFunc {
+	return registrationSMSSendCodeHandler(identity, system, factory, true)
+}
+
+func registrationSMSSendCodeHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, factory registrationSMSProviderFactory, allowPhoneWhenEmail bool) http.HandlerFunc {
 	if factory == nil {
 		factory = aliyunDypnsProviderForRegistration
 	}
@@ -81,7 +92,8 @@ func RegistrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
 			return
 		}
-		if cfg.Method != registrationAuthMethodPhone {
+		cfg, ok := registrationSMSEffectiveAuthConfig(cfg, allowPhoneWhenEmail)
+		if !ok {
 			writeError(w, http.StatusBadRequest, "PHONE_REGISTRATION_DISABLED", "Phone registration is not enabled")
 			return
 		}
@@ -142,6 +154,17 @@ func RegistrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 }
 
 func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, factory registrationSMSProviderFactory) http.HandlerFunc {
+	return registrationSMSVerifyAndStartHandler(identity, system, factory, false)
+}
+
+// MobileRegistrationSMSVerifyAndStartHandler verifies the code issued by the
+// mobile phone-login API. Its authorization decision deliberately does not
+// depend on the forgeable client_id request field.
+func MobileRegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, factory registrationSMSProviderFactory) http.HandlerFunc {
+	return registrationSMSVerifyAndStartHandler(identity, system, factory, true)
+}
+
+func registrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, factory registrationSMSProviderFactory, allowPhoneWhenEmail bool) http.HandlerFunc {
 	if factory == nil {
 		factory = aliyunDypnsProviderForRegistration
 	}
@@ -172,7 +195,8 @@ func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
 			return
 		}
-		if cfg.Method != registrationAuthMethodPhone {
+		cfg, ok := registrationSMSEffectiveAuthConfig(cfg, allowPhoneWhenEmail)
+		if !ok {
 			writeError(w, http.StatusBadRequest, "PHONE_REGISTRATION_DISABLED", "Phone registration is not enabled")
 			return
 		}
@@ -198,12 +222,12 @@ func RegistrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 			writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_REQUEST", err.Error())
 			return
 		}
-		ok, err := factory(cfg).CheckVerifyCode(r.Context(), checkReq)
+		verified, err := factory(cfg).CheckVerifyCode(r.Context(), checkReq)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "SMS_VERIFY_CHECK_FAILED", err.Error())
 			return
 		}
-		if !ok {
+		if !verified {
 			writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_CODE", "Invalid SMS verification code")
 			return
 		}
@@ -279,6 +303,24 @@ func aliyunDypnsProviderForRegistration(cfg RegistrationAuthConfig) registration
 		AccessKeyID:     cfg.AliyunAccessKeyID,
 		AccessKeySecret: cfg.AliyunAccessKeySecret,
 	}
+}
+
+// registrationSMSEffectiveAuthConfig makes an email-first Hub usable by the
+// separate mobile phone-login capability without relaxing desktop/web rules.
+// The SMS provider credentials are still required and validated when a code is
+// sent; a Hub with no configured SMS provider continues to fail safely.
+func registrationSMSEffectiveAuthConfig(cfg RegistrationAuthConfig, allowPhoneWhenEmail bool) (RegistrationAuthConfig, bool) {
+	if cfg.Method == registrationAuthMethodPhone || cfg.Method == registrationAuthMethodMixed {
+		// The SMS request builder validates credentials as a phone flow while
+		// preserving the stored mixed registration policy for public clients.
+		cfg.Method = registrationAuthMethodPhone
+		return cfg, true
+	}
+	if allowPhoneWhenEmail && cfg.Method == registrationAuthMethodEmail {
+		cfg.Method = registrationAuthMethodPhone
+		return cfg, true
+	}
+	return cfg, false
 }
 
 func lookupPhoneIdentityUser(ctx context.Context, identity *auth.IdentityService, tenantID, phoneNumber string) (*store.User, error) {

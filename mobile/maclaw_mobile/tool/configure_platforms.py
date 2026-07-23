@@ -26,11 +26,13 @@ ANDROID_PACKAGE_ID = IOS_BUNDLE_ID
 
 IOS_USAGE_DESCRIPTIONS = {
     "NSCameraUsageDescription": "\u7528\u4e8e\u62cd\u7167\u63d0\u95ee\u548c\u5bfc\u5165\u56fe\u7247\u6587\u6863\u3002",
-    "NSMicrophoneUsageDescription": "\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u3002",
+    "NSMicrophoneUsageDescription": "\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u4e0e\u4f1a\u8bae\u5f55\u97f3\uff0c\u4f1a\u8bae\u5f55\u97f3\u53ef\u5728\u8bbe\u5907\u9501\u5c4f\u6216\u5207\u6362\u5e94\u7528\u540e\u7ee7\u7eed\u3002",
     "NSSpeechRecognitionUsageDescription": "\u7528\u4e8e\u5c06\u8bed\u97f3\u63d0\u95ee\u8f6c\u6210\u6587\u5b57\u3002",
     "NSPhotoLibraryUsageDescription": "\u7528\u4e8e\u4ece\u76f8\u518c\u5bfc\u5165\u56fe\u7247\u6216\u622a\u56fe\u3002",
     "NSLocalNetworkUsageDescription": "\u7528\u4e8e\u53d1\u73b0 MaClaw \u5b98\u65b9 Hub \u5e76\u540c\u6b65 GUI/agent \u7ba1\u7406\u7684\u540e\u53f0 SSH \u4f1a\u8bdd\u72b6\u6001\u3002",
 }
+
+IOS_BACKGROUND_MODES = ("audio",)
 
 IOS_CORRUPT_USAGE_MARKERS = [
     "?/string>",
@@ -425,6 +427,7 @@ def configure_ios() -> None:
     plist["CFBundleDisplayName"] = "MaClaw Mobile"
     plist["CFBundleName"] = "MaClaw Mobile"
     apply_ios_usage_descriptions(plist)
+    apply_ios_background_modes(plist)
     url_types = plist.setdefault("CFBundleURLTypes", [])
     if not any("maclaw" in item.get("CFBundleURLSchemes", []) for item in url_types):
         url_types.append(
@@ -454,6 +457,17 @@ def apply_ios_usage_descriptions(plist: dict[str, object]) -> None:
     for key, value in IOS_USAGE_DESCRIPTIONS.items():
         if key not in plist or is_corrupt_ios_usage_description(plist[key]):
             plist[key] = value
+
+
+def apply_ios_background_modes(plist: dict[str, object]) -> None:
+    """Preserve existing modes and ensure background recording survives regen."""
+    current = plist.get("UIBackgroundModes", [])
+    modes = current if isinstance(current, list) else []
+    normalized = [mode for mode in modes if isinstance(mode, str) and mode.strip()]
+    for mode in IOS_BACKGROUND_MODES:
+        if mode not in normalized:
+            normalized.append(mode)
+    plist["UIBackgroundModes"] = normalized
 
 
 def is_corrupt_ios_usage_description(value: object) -> bool:

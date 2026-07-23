@@ -27,6 +27,17 @@ func (testMeetingMinutes) Summarize(context.Context, string, string, string) (st
 	return "# Meeting minutes\n- Decision: launch approved.", nil
 }
 
+type blockingMeetingTranscriber struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (w blockingMeetingTranscriber) Transcribe(context.Context, string, string) (string, error) {
+	w.started <- struct{}{}
+	<-w.release
+	return "Alice: approved the launch date.", nil
+}
+
 type failIfCalledMeetingTranscriber struct{}
 
 func (failIfCalledMeetingTranscriber) Transcribe(context.Context, string, string) (string, error) {
@@ -114,6 +125,101 @@ func TestMobileMeetingRecordingRejectsUnavailableProcessingMode(t *testing.T) {
 	stored, ok := mobileMeetingRecordingOwned(enroll.UserID, rec.ID)
 	if !ok || stored.Status != "uploaded" || stored.RetryCount != 0 {
 		t.Fatalf("unavailable mode should not mutate recording: %#v", stored)
+	}
+}
+
+func TestMobileMeetingRecordingRejectsMalformedProcessRequest(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "meeting-invalid-process@example.com")
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := mobileMeetingRecording{ID: "meeting-invalid-process", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploaded", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[rec.ID] = rec
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, rec.ID)
+		mobileMeetingRecordings.Unlock()
+		_ = os.RemoveAll(dir)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/meeting-recordings/"+rec.ID+"/process", strings.NewReader(`{"mode":`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("recordingId", rec.ID)
+	resp := httptest.NewRecorder()
+	MobileMeetingRecordingsHandler(identity).ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "INVALID_JSON") {
+		t.Fatalf("malformed process=%d %s", resp.Code, resp.Body.String())
+	}
+	stored, ok := mobileMeetingRecordingOwned(enroll.UserID, rec.ID)
+	if !ok || stored.Status != "uploaded" || stored.RetryCount != 0 {
+		t.Fatalf("malformed request should not mutate recording: %#v", stored)
+	}
+}
+
+func TestMobileMeetingRecordingRejectsReprocessAfterSuccess(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "meeting-reprocess-ready@example.com")
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := mobileMeetingRecording{ID: "meeting-reprocess-ready", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "ready", ProcessMode: "minutes", RetryCount: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[rec.ID] = rec
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, rec.ID)
+		mobileMeetingRecordings.Unlock()
+		_ = os.RemoveAll(dir)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/meeting-recordings/"+rec.ID+"/process", strings.NewReader(`{"mode":"minutes"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("recordingId", rec.ID)
+	resp := httptest.NewRecorder()
+	MobileMeetingRecordingsHandler(identity).ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict || !strings.Contains(resp.Body.String(), "NOT_READY") {
+		t.Fatalf("reprocess ready=%d %s", resp.Code, resp.Body.String())
+	}
+	stored, ok := mobileMeetingRecordingOwned(enroll.UserID, rec.ID)
+	if !ok || stored.Status != "ready" || stored.RetryCount != 1 {
+		t.Fatalf("ready recording should remain immutable: %#v", stored)
+	}
+}
+
+func TestMobileMeetingRecordingPromotesArchivedAudioToTranscript(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "meeting-promote-archive@example.com")
+	SetMeetingRecordingWorkers(testMeetingTranscriber{}, testMeetingMinutes{})
+	t.Cleanup(func() { SetMeetingRecordingWorkers(nil, nil) })
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := mobileMeetingRecording{ID: "meeting-promote-archive", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "ready", ProcessMode: "keep", RetryCount: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[rec.ID] = rec
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, rec.ID)
+		mobileMeetingRecordings.Unlock()
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/meeting-recordings/"+rec.ID+"/process", strings.NewReader(`{"mode":"transcript"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("recordingId", rec.ID)
+	resp := httptest.NewRecorder()
+	MobileMeetingRecordingsHandler(identity).ServeHTTP(resp, req)
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("promote archive=%d %s", resp.Code, resp.Body.String())
+	}
+	stored, ok := mobileMeetingRecordingOwned(enroll.UserID, rec.ID)
+	if !ok || stored.Status != "processing" || stored.ProcessMode != "transcript" || stored.RetryCount != 2 {
+		t.Fatalf("archive should be promoted for transcription: %#v", stored)
 	}
 }
 
@@ -325,6 +431,21 @@ func TestMobileMeetingRecordingRejectsNonNumericChunkIndex(t *testing.T) {
 	}
 }
 
+func TestMobileMeetingRecordingPayloadUsesResponsiveUploadChunkSize(t *testing.T) {
+	payload := mobileMeetingRecordingPayload(mobileMeetingRecording{
+		ID:        "meeting-upload-chunk-size",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	})
+	chunkSize, ok := payload["chunk_size"].(int)
+	if !ok {
+		t.Fatalf("chunk_size type = %T, want int", payload["chunk_size"])
+	}
+	if chunkSize != 1<<20 {
+		t.Fatalf("chunk_size = %d, want %d", chunkSize, 1<<20)
+	}
+}
+
 func TestMobileMeetingRecordingRequiresChunkHash(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-hash-required@example.com")
@@ -489,7 +610,12 @@ func TestMobileMeetingRecordingRejectsWAVDurationBeyondQuota(t *testing.T) {
 func TestMobileMeetingRecordingProcessRetriesFailedRecording(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-retry@example.com")
+	SetMeetingRecordingWorkers(testMeetingTranscriber{}, testMeetingMinutes{})
+	t.Cleanup(func() { SetMeetingRecordingWorkers(nil, nil) })
 	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	rec := mobileMeetingRecording{
 		ID:          "meeting-retry",
 		OwnerID:     enroll.UserID,
@@ -527,6 +653,55 @@ func TestMobileMeetingRecordingProcessRetriesFailedRecording(t *testing.T) {
 	}
 	if body["status"] != "processing" || body["failure_code"] != "" || body["retry_count"] != float64(2) {
 		t.Fatalf("unexpected retry payload: %#v", body)
+	}
+}
+
+func TestMobileMeetingRecordingRejectsConcurrentProcessRequest(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "meeting-concurrent-process@example.com")
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	SetMeetingRecordingWorkers(blockingMeetingTranscriber{started: started, release: release}, testMeetingMinutes{})
+	t.Cleanup(func() {
+		close(release)
+		SetMeetingRecordingWorkers(nil, nil)
+	})
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := mobileMeetingRecording{ID: "meeting-concurrent-process", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploaded", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[rec.ID] = rec
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, rec.ID)
+		mobileMeetingRecordings.Unlock()
+		_ = os.RemoveAll(dir)
+	})
+	process := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/mobile/meeting-recordings/"+rec.ID+"/process", strings.NewReader(`{"mode":"transcript"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.SetPathValue("recordingId", rec.ID)
+		resp := httptest.NewRecorder()
+		MobileMeetingRecordingsHandler(identity).ServeHTTP(resp, req)
+		return resp
+	}
+	if resp := process(); resp.Code != http.StatusAccepted {
+		t.Fatalf("first process=%d %s", resp.Code, resp.Body.String())
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	if resp := process(); resp.Code != http.StatusConflict || !strings.Contains(resp.Body.String(), "NOT_READY") {
+		t.Fatalf("concurrent process=%d %s", resp.Code, resp.Body.String())
+	}
+	stored, ok := mobileMeetingRecordingOwned(enroll.UserID, rec.ID)
+	if !ok || stored.RetryCount != 1 || stored.Status != "processing" {
+		t.Fatalf("unexpected concurrent state: %#v", stored)
 	}
 }
 

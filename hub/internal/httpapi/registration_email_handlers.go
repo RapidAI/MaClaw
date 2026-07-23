@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 type RegistrationEmailSendCodeRequest struct {
@@ -44,7 +45,11 @@ func registrationEmailLogIdentity(email string) string {
 // RegistrationEmailSendCodeHandler sends the login code before a machine is
 // enrolled. The same endpoint deliberately serves new and returning users so
 // the client never needs to reveal whether an account already exists.
-func RegistrationEmailSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service) http.HandlerFunc {
+func RegistrationEmailSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, systems ...store.SystemSettingsRepository) http.HandlerFunc {
+	var system store.SystemSettingsRepository
+	if len(systems) > 0 {
+		system = systems[0]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		startedAt := time.Now()
 		if identity == nil {
@@ -68,6 +73,17 @@ func RegistrationEmailSendCodeHandler(identity *auth.IdentityService, mailer *ma
 			tenantID, err = tenantIDForEmailRequest(r, identity, email)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+				return
+			}
+		}
+		if system != nil {
+			cfg, configErr := loadRegistrationAuthConfigForTenant(r, system, tenantID)
+			if configErr != nil {
+				writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", configErr.Error())
+				return
+			}
+			if cfg.Method == registrationAuthMethodPhone {
+				writeError(w, http.StatusBadRequest, "EMAIL_REGISTRATION_DISABLED", "Email registration is not enabled")
 				return
 			}
 		}
@@ -119,7 +135,11 @@ func RegistrationEmailSendCodeHandler(identity *auth.IdentityService, mailer *ma
 	}
 }
 
-func RegistrationEmailVerifyAndStartHandler(identity *auth.IdentityService, invSvc *invitation.Service, securitySvc *security.SecurityService) http.HandlerFunc {
+func RegistrationEmailVerifyAndStartHandler(identity *auth.IdentityService, invSvc *invitation.Service, securitySvc *security.SecurityService, systems ...store.SystemSettingsRepository) http.HandlerFunc {
+	var system store.SystemSettingsRepository
+	if len(systems) > 0 {
+		system = systems[0]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		startedAt := time.Now()
 		var req RegistrationEmailVerifyAndStartRequest
@@ -139,6 +159,17 @@ func RegistrationEmailVerifyAndStartHandler(identity *auth.IdentityService, invS
 			tenantID, err = tenantIDForEmailRequest(r, identity, email)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", err.Error())
+				return
+			}
+		}
+		if system != nil {
+			cfg, configErr := loadRegistrationAuthConfigForTenant(r, system, tenantID)
+			if configErr != nil {
+				writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", configErr.Error())
+				return
+			}
+			if cfg.Method == registrationAuthMethodPhone {
+				writeError(w, http.StatusBadRequest, "EMAIL_REGISTRATION_DISABLED", "Email registration is not enabled")
 				return
 			}
 		}

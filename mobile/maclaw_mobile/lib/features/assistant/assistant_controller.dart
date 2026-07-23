@@ -1095,8 +1095,11 @@ class AssistantTabsController extends Notifier<AssistantTabsState> {
     );
   }
 
-  void updateMeetingRecording(String tabId, String recordingId,
-      MeetingRecordingCardData Function(MeetingRecordingCardData) update) {
+  void updateMeetingRecording(
+    String tabId,
+    String recordingId,
+    MeetingRecordingCardData Function(MeetingRecordingCardData) update,
+  ) {
     state = AssistantTabsState(
       activeTabId: state.activeTabId,
       tabs: [
@@ -1123,6 +1126,40 @@ class AssistantTabsController extends Notifier<AssistantTabsState> {
             )
           else
             tab,
+      ],
+    );
+  }
+
+  /// Applies a Hub realtime update to every conversation that owns this
+  /// recording, including inactive tabs.
+  void updateMeetingRecordingById(
+    String recordingId,
+    MeetingRecordingCardData Function(MeetingRecordingCardData) update,
+  ) {
+    if (recordingId.trim().isEmpty) return;
+    state = AssistantTabsState(
+      activeTabId: state.activeTabId,
+      tabs: [
+        for (final tab in state.tabs)
+          tab.copyWith(
+            messages: [
+              for (final message in tab.messages)
+                if (message.meetingRecording?.recordingId == recordingId)
+                  AssistantConversationMessage(
+                    id: message.id,
+                    role: message.role,
+                    text: message.text,
+                    query: message.query,
+                    citations: message.citations,
+                    llmMode: message.llmMode,
+                    llmRequestId: message.llmRequestId,
+                    llmUsageRecordId: message.llmUsageRecordId,
+                    meetingRecording: update(message.meetingRecording!),
+                  )
+                else
+                  message,
+            ],
+          ),
       ],
     );
   }

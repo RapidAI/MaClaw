@@ -38,6 +38,8 @@ type Props = {
     formatText: (key: string, values?: Record<string, string>) => string;
     localizeText: (en: string, zhHans: string, zhHant: string) => string;
     lang: string;
+    /** The monitoring tab to show when this page is opened from another surface. */
+    initialSessionTab?: "remote" | "background" | "scheduled" | "passthrough";
 };
 
 const terminalStatuses = TERMINAL_SESSION_STATUSES;
@@ -90,9 +92,10 @@ export function RemoteSessionList(props: Props) {
         formatText,
         localizeText,
         lang,
+        initialSessionTab = "remote",
     } = props;
 
-    const [sessionTab, setSessionTab] = useState<"remote" | "background" | "scheduled" | "passthrough">("remote");
+    const [sessionTab, setSessionTab] = useState<"remote" | "background" | "scheduled" | "passthrough">(initialSessionTab);
     const [showHistory, setShowHistory] = useState(false);
     const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
     const [consoleSessionId, setConsoleSessionId] = useState<string | null>(null);

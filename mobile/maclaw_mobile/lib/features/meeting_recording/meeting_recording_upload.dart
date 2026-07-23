@@ -35,6 +35,7 @@ class MeetingRecordingUpload {
   MeetingRecordingUpload copyWith({
     String? recordingId,
     String? status,
+    double? durationSec,
     int? nextChunkIndex,
     String? message,
     DateTime? updatedAt,
@@ -50,7 +51,7 @@ class MeetingRecordingUpload {
         contentType: contentType,
         recordingId: clearSession ? '' : (recordingId ?? this.recordingId),
         status: status ?? this.status,
-        durationSec: durationSec,
+        durationSec: durationSec ?? this.durationSec,
         nextChunkIndex:
             clearSession ? 0 : (nextChunkIndex ?? this.nextChunkIndex),
         updatedAt: updatedAt ?? this.updatedAt,

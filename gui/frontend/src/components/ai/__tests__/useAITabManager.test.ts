@@ -374,12 +374,14 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
 
     it("does not restore transient guide receipts from persisted project tab history", async () => {
         const realMessage = { id: "assistant-1", role: "assistant", content: "继续处理", timestamp: 2 };
+        const injection = { id: "injection-1", role: "user", kind: "guideInjection", content: "改为优先验证回归", timestamp: 1 };
         localStorage.setItem("ai_assistant_project_tabs", JSON.stringify([
             { id: "proj-guide", title: "Guide task", projectPath: "D:/tasks/guide" },
         ]));
         localStorage.setItem("ai_assistant_project_tab_histories", JSON.stringify({
             "proj-guide": [
                 { id: "receipt-1", role: "system", kind: "guideReceipt", content: "这条补充已接上当前任务", timestamp: 1 },
+                injection,
                 realMessage,
             ],
         }));
@@ -389,12 +391,13 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
 
         const { result } = renderHook(() => useAITabManager());
 
-        expect(result.current.getTabState("proj-guide")?.history).toEqual([realMessage]);
+        expect(result.current.getTabState("proj-guide")?.history).toEqual([injection, realMessage]);
     });
 
     it("does not persist transient guide receipts in project tab conversation history", async () => {
         vi.useFakeTimers();
         const realMessage = { id: "assistant-1", role: "assistant", content: "继续处理", timestamp: 2 };
+        const injection = { id: "injection-1", role: "user", kind: "guideInjection", content: "改为优先验证回归", timestamp: 1 };
         const { result } = renderHook(() => useAITabManager());
 
         let tab: ReturnType<typeof result.current.createProjectTab> = null;
@@ -408,6 +411,7 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
                 history: [
                     { id: "receipt-1", role: "system", kind: "guideReceipt", content: "这条补充已接上当前任务", timestamp: 1 },
                     { id: "rejection-1", role: "system", kind: "guideRejection", content: "我听到了，但这条补充暂时还没接上当前任务", timestamp: 1 },
+                    injection,
                     realMessage,
                 ],
             });
@@ -418,25 +422,27 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
             await Promise.resolve();
         });
 
-        expect(SaveProjectTabConversation).toHaveBeenCalledWith(tab!.id, [realMessage]);
+        expect(SaveProjectTabConversation).toHaveBeenCalledWith(tab!.id, [injection, realMessage]);
     });
 
     it("cleans transient guide receipts from backend-restored project tab history", async () => {
         const realMessage = { id: "assistant-1", role: "assistant", content: "继续处理", timestamp: 2 };
+        const injection = { id: "injection-1", role: "user", kind: "guideInjection", content: "改为优先验证回归", timestamp: 1 };
         vi.mocked(LoadProjectTabIndex).mockResolvedValue([
             { id: "proj-guide-backend", type: "project", title: "Guide backend", projectPath: "D:/tasks/guide-backend", lastActiveAt: 1, archived: false },
         ] as any);
         vi.mocked(LoadProjectTabConversation).mockResolvedValue([
             { id: "receipt-1", role: "system", kind: "guideReceipt", content: "这条补充已接上当前任务", timestamp: 1 },
             { id: "rejection-1", role: "system", kind: "guideRejection", content: "我听到了，但这条补充暂时还没接上当前任务", timestamp: 1 },
+            injection,
             realMessage,
         ] as any);
 
         const { result } = renderHook(() => useAITabManager());
 
         await waitFor(() => {
-            expect(result.current.getTabState("proj-guide-backend")?.history).toEqual([realMessage]);
-            expect(SaveProjectTabConversation).toHaveBeenCalledWith("proj-guide-backend", [realMessage]);
+            expect(result.current.getTabState("proj-guide-backend")?.history).toEqual([injection, realMessage]);
+            expect(SaveProjectTabConversation).toHaveBeenCalledWith("proj-guide-backend", [injection, realMessage]);
         });
     });
 

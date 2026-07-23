@@ -39,15 +39,15 @@ function anyBody(selector: string, predicate: (body: string) => boolean): boolea
 
 describe('utilities home grid layout', () => {
     it('pins the CTA to the card bottom so CTAs stay level across cards', () => {
-        // margin-top: auto only pushes down inside a column flex container.
-        expect(anyBody('.utilities-tool-card', (b) => /flex-direction\s*:\s*column\b/.test(b))).toBe(true);
-        expect(anyBody('.utilities-tool-card__cta', (b) => /margin-top\s*:\s*auto\b/.test(b))).toBe(true);
+        // The compact two-column grid keeps the action aligned beneath the copy.
+        expect(anyBody('.utilities-tool-card', (b) => /grid-template-columns\s*:\s*32px\s+minmax\(/.test(b))).toBe(true);
+        expect(anyBody('.utilities-tool-card__cta', (b) => /grid-column\s*:\s*2\b/.test(b))).toBe(true);
     });
 
     it('gives cards a uniform footprint (min-height + bounded grid tracks)', () => {
         expect(anyBody('.utilities-tool-card', (b) => /min-height\s*:/.test(b))).toBe(true);
         // Tracks stretch up to a cap instead of 1fr across the whole window.
-        expect(anyBody('.utilities-page__grid', (b) => /minmax\([\s\S]*?360px\s*\)/.test(b))).toBe(true);
+        expect(anyBody('.utilities-page__grid', (b) => /minmax\([\s\S]*?270px\s*\)/.test(b))).toBe(true);
     });
 
     it('keeps the single grid track from overflowing narrow containers', () => {
@@ -61,6 +61,18 @@ describe('utilities home grid layout', () => {
         expect(anyBody('.utilities-tool-card__icon', (b) =>
             /color\s*:\s*var\(\s*--theme-primary\b/.test(b),
         )).toBe(true);
+    });
+
+    it('caps title and description copy so long labels cannot expand compact cards', () => {
+        expect(anyBody('.utilities-tool-card__desc', (b) => /-webkit-line-clamp\s*:\s*2\b/.test(b))).toBe(true);
+        expect(anyBody('.utilities-tool-card__desc', (b) => /overflow-wrap\s*:\s*anywhere\b/.test(b))).toBe(true);
+        expect(anyBody('.utilities-tool-card__title', (b) => /overflow-wrap\s*:\s*anywhere\b/.test(b))).toBe(true);
+        expect(anyBody('.utilities-tool-card__title', (b) => /-webkit-line-clamp\s*:\s*2\b/.test(b))).toBe(true);
+    });
+
+    it('distinguishes unavailable cards from cards that are actively starting', () => {
+        expect(anyBody('.utilities-tool-card:disabled:not(.is-starting)', (b) => /cursor\s*:\s*not-allowed\b/.test(b))).toBe(true);
+        expect(anyBody('.utilities-tool-card.is-starting', (b) => /cursor\s*:\s*wait\b/.test(b))).toBe(true);
     });
 
     it('disables hover motion under prefers-reduced-motion', () => {

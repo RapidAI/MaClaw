@@ -54,7 +54,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于发现 MaClaw 官方 Hub 并同步 GUI/agent 管理的后台 SSH 会话状态。</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>用于语音提问。</string>
+	<string>用于语音提问与会议录音，会议录音可在设备锁屏或切换应用后继续。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>用于从相册导入图片或截图。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

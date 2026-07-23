@@ -188,11 +188,16 @@ func TestUserDataMigrationPackageRestoresFullConfigAndPreservesMachineIdentity(t
 	t.Cleanup(sourceStore.Stop)
 	source := &App{testHomeDir: t.TempDir(), memoryStore: sourceStore}
 	sourceConfig := corelib.AppConfig{
-		Language:             "zh-CN",
-		DefaultProxyPassword: "proxy-secret",
-		MaclawLLMUrl:         "https://llm.example.com/v1",
-		MaclawLLMKey:         "llm-secret-key",
-		MaclawLLMModel:       "model-a",
+		Language:                    "zh-CN",
+		DefaultProxyPassword:        "proxy-secret",
+		MaclawLLMUrl:                "https://llm.example.com/v1",
+		MaclawLLMKey:                "llm-secret-key",
+		MaclawLLMModel:              "model-a",
+		LLMTrajectoryLogging:        true,
+		LogDetailEnabled:            true,
+		BugReportEnabled:            true,
+		BugReportPreviousTrajectory: false,
+		BugReportPreviousLogDetail:  false,
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 			Name: "Custom Provider", URL: "https://provider.example.com/v1", Key: "provider-secret-key", Model: "provider-model",
 			RefreshToken: "refresh-secret", OAuthAccessToken: "oauth-secret",
@@ -224,13 +229,15 @@ func TestUserDataMigrationPackageRestoresFullConfigAndPreservesMachineIdentity(t
 	t.Cleanup(targetStore.Stop)
 	target := &App{testHomeDir: t.TempDir(), memoryStore: targetStore}
 	targetConfig := corelib.AppConfig{
-		Language:           "en",
-		RemoteHubURL:       "https://target-hub.example.com",
-		RemoteEnabled:      true,
-		RemoteMachineID:    "target-machine",
-		RemoteMachineToken: "target-machine-token",
-		RemoteViewerToken:  "target-viewer-token",
-		WorkingDirectory:   `D:\target\workspace`,
+		Language:             "en",
+		LLMTrajectoryLogging: false,
+		LogDetailEnabled:     false,
+		RemoteHubURL:         "https://target-hub.example.com",
+		RemoteEnabled:        true,
+		RemoteMachineID:      "target-machine",
+		RemoteMachineToken:   "target-machine-token",
+		RemoteViewerToken:    "target-viewer-token",
+		WorkingDirectory:     `D:\target\workspace`,
 	}
 	if err := target.SaveConfig(targetConfig); err != nil {
 		t.Fatalf("save target config: %v", err)
@@ -251,6 +258,17 @@ func TestUserDataMigrationPackageRestoresFullConfigAndPreservesMachineIdentity(t
 	}
 	if restored.DefaultProxyPassword != "proxy-secret" || restored.Language != "zh-CN" {
 		t.Fatalf("system configuration was not restored: %#v", restored)
+	}
+	if !restored.BugReportEnabled || !restored.LLMTrajectoryLogging || !restored.LogDetailEnabled ||
+		restored.BugReportPreviousTrajectory || restored.BugReportPreviousLogDetail {
+		t.Fatalf("bug report collection state was not restored: %#v", restored)
+	}
+	stopped, err := target.SetBugReportEnabled(false)
+	if err != nil {
+		t.Fatalf("stop restored bug report collection: %v", err)
+	}
+	if stopped.BugReportEnabled || stopped.LLMTrajectoryLogging || stopped.LogDetailEnabled {
+		t.Fatalf("restored bug report settings were not reversible: %#v", stopped)
 	}
 	if restored.RemoteMachineID != "target-machine" || restored.RemoteMachineToken != "target-machine-token" || restored.RemoteViewerToken != "target-viewer-token" || restored.RemoteHubURL != "https://target-hub.example.com" {
 		t.Fatalf("target machine identity was overwritten: %#v", restored)

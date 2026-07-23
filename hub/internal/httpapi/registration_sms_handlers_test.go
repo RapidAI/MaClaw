@@ -213,6 +213,84 @@ func TestRegistrationSMSSendCodeHandlerUsesTenantPhoneConfig(t *testing.T) {
 	}
 }
 
+func TestRegistrationSMSAllowsMobileRouteWhenTenantUsesEmailRegistration(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationSMSCredentialsForEmailMode(t, st.System, store.DefaultTenantID)
+	provider := &fakeRegistrationSMSProvider{}
+	send := func(handler http.HandlerFunc, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", bytes.NewBufferString(body))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+	regular := RegistrationSMSSendCodeHandler(identity, st.System, func(RegistrationAuthConfig) registrationSMSProvider { return provider })
+	mobile := MobileRegistrationSMSSendCodeHandler(identity, st.System, func(RegistrationAuthConfig) registrationSMSProvider { return provider })
+	if rr := send(regular, `{"phone_number":"19900001111"}`); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "PHONE_REGISTRATION_DISABLED") {
+		t.Fatalf("non-mobile phone login=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := send(mobile, `{"phone_number":"19900001111"}`); rr.Code != http.StatusOK {
+		t.Fatalf("mobile phone login=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.sendReq.PhoneNumber != "19900001111" {
+		t.Fatalf("SMS provider did not receive mobile phone login: %+v", provider.sendReq)
+	}
+}
+
+func TestMobileRegistrationSMSVerifyAndStartUsesSMSCredentialsWhenTenantUsesEmailRegistration(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationSMSCredentialsForEmailMode(t, st.System, store.DefaultTenantID)
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/phone/verify-and-start", bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246","machine_name":"MaClaw Mobile","platform":"mobile","client_id":"maclaw-mobile"}`))
+	rr := httptest.NewRecorder()
+	MobileRegistrationSMSVerifyAndStartHandler(identity, st.System, func(RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mobile verify=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.checkReq.PhoneNumber != "19900001111" || provider.checkReq.VerifyCode != "303246" {
+		t.Fatalf("unexpected check request: %+v", provider.checkReq)
+	}
+}
+
+func TestRegistrationSMSAllowsDesktopPhoneFlowWhenTenantUsesMixedRegistration(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationSMSCredentialsForMixedMode(t, st.System, store.DefaultTenantID)
+	provider := &fakeRegistrationSMSProvider{}
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/send-code", bytes.NewBufferString(`{"phone_number":"19900001111"}`))
+	rr := httptest.NewRecorder()
+	RegistrationSMSSendCodeHandler(identity, st.System, func(RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mixed desktop phone send=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.sendReq.PhoneNumber != "19900001111" {
+		t.Fatalf("unexpected SMS send request: %+v", provider.sendReq)
+	}
+}
+
+func TestRegistrationSMSVerifyAndStartAllowsDesktopPhoneFlowWhenTenantUsesMixedRegistration(t *testing.T) {
+	identity, st, _ := newPreservationTestIdentity(t)
+	saveRegistrationSMSCredentialsForMixedMode(t, st.System, store.DefaultTenantID)
+	provider := &fakeRegistrationSMSProvider{checkPass: true}
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/sms/verify-and-start", bytes.NewBufferString(`{"phone_number":"19900001111","verify_code":"303246","machine_name":"MaClaw","platform":"windows"}`))
+	rr := httptest.NewRecorder()
+	RegistrationSMSVerifyAndStartHandler(identity, st.System, func(RegistrationAuthConfig) registrationSMSProvider {
+		return provider
+	}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mixed desktop phone verify=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if provider.checkReq.PhoneNumber != "19900001111" || provider.checkReq.VerifyCode != "303246" {
+		t.Fatalf("unexpected SMS verification request: %+v", provider.checkReq)
+	}
+}
+
 func TestRegistrationSMSSendCodeHandlerRejectsExistingPhoneUserBeforeSending(t *testing.T) {
 	identity, st, _ := newPreservationTestIdentity(t)
 	saveRegistrationAuthTestConfig(t, st.System, store.DefaultTenantID)
@@ -1114,6 +1192,46 @@ func saveRegistrationAuthTestConfigWithLimit(t *testing.T, settings store.System
 		CodeTTLMinutes:        5,
 		CodeLength:            6,
 		DailySMSLimit:         dailyLimit,
+	})
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := ScopedSystemSettingsForTenant(tenantID, settings).Set(context.Background(), registrationAuthConfigKey, string(data)); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+}
+
+func saveRegistrationSMSCredentialsForEmailMode(t *testing.T, settings store.SystemSettingsRepository, tenantID string) {
+	t.Helper()
+	cfg := normalizeRegistrationAuthConfig(RegistrationAuthConfig{
+		Method:                registrationAuthMethodEmail,
+		AliyunAccessKeyID:     "ak",
+		AliyunAccessKeySecret: "secret",
+		AliyunSignName:        registrationAuthDefaultSignName,
+		CodeTTLMinutes:        5,
+		CodeLength:            6,
+		DailySMSLimit:         registrationAuthDefaultDailyLimit,
+	})
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := ScopedSystemSettingsForTenant(tenantID, settings).Set(context.Background(), registrationAuthConfigKey, string(data)); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+}
+
+func saveRegistrationSMSCredentialsForMixedMode(t *testing.T, settings store.SystemSettingsRepository, tenantID string) {
+	t.Helper()
+	cfg := normalizeRegistrationAuthConfig(RegistrationAuthConfig{
+		Method:                registrationAuthMethodMixed,
+		AliyunAccessKeyID:     "ak",
+		AliyunAccessKeySecret: "secret",
+		AliyunSignName:        registrationAuthDefaultSignName,
+		CodeTTLMinutes:        5,
+		CodeLength:            6,
+		DailySMSLimit:         registrationAuthDefaultDailyLimit,
 	})
 	data, err := json.Marshal(cfg)
 	if err != nil {

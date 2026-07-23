@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../../features/assistant/assistant_controller.dart';
 import '../../features/auth/session_controller.dart';
 import '../../features/digital_employees/digital_employees_controller.dart';
 import '../../features/documents/documents_controller.dart';
@@ -25,6 +26,7 @@ final mobileRealtimeBridgeProvider = Provider<void>((ref) {
   StreamSubscription<dynamic>? subscription;
   Timer? retryTimer;
   var refreshOnReady = true;
+  var connectionGeneration = 0;
   late void Function() startListening;
   WebSocketChannel? channel;
 
@@ -46,6 +48,16 @@ final mobileRealtimeBridgeProvider = Provider<void>((ref) {
     });
   }
 
+  Future<void> closeChannelSafely(WebSocketChannel? target) async {
+    if (target == null) return;
+    try {
+      await target.sink.close();
+    } on Object {
+      // A failed handshake or an already-closed socket must not surface as an
+      // unhandled asynchronous error while the bridge is recovering.
+    }
+  }
+
   Future<void> applyEventSafely(Future<void> Function() apply) async {
     try {
       await apply();
@@ -61,8 +73,8 @@ final mobileRealtimeBridgeProvider = Provider<void>((ref) {
       unawaited(_refreshHubStateAfterRealtimeReconnect(ref));
     }
     if (event.helloAck) {
-      final ok = event.payload['binary_pty'] == true ||
-          event.payload['ok'] == true;
+      final ok =
+          event.payload['binary_pty'] == true || event.payload['ok'] == true;
       if (ok) {
         ref.read(mobileRealtimeBinaryPtyProvider.notifier).state = true;
       }
@@ -127,37 +139,97 @@ final mobileRealtimeBridgeProvider = Provider<void>((ref) {
       );
       return;
     }
+    if (event.meetingRecording) {
+      final recording = event.payload['recording'];
+      final details = recording is Map
+          ? Map<String, dynamic>.from(recording)
+          : event.payload;
+      final recordingId =
+          (details['recording_id'] ?? event.taskId).toString().trim();
+      if (recordingId.isEmpty) return;
+      final audioAvailable = details['audio_available'];
+      ref.read(assistantTabsProvider.notifier).updateMeetingRecordingById(
+            recordingId,
+            (current) => current.copyWith(
+              status: details['status']?.toString() ?? current.status,
+              message: details['message']?.toString() ?? current.message,
+              failureCode:
+                  details['failure_code']?.toString() ?? current.failureCode,
+              progress:
+                  (details['progress'] as num?)?.toDouble() ?? current.progress,
+              transcriptDraftId: details['transcript_draft_id']?.toString() ??
+                  current.transcriptDraftId,
+              minutesDraftId: details['minutes_draft_id']?.toString() ??
+                  current.minutesDraftId,
+              processMode: details['mode']?.toString() ?? current.processMode,
+              audioAvailable: audioAvailable is bool
+                  ? audioAvailable
+                  : current.audioAvailable,
+            ),
+          );
+      ref.invalidate(mobileJobsProvider);
+      return;
+    }
     if (event.assistantJob) {
       // Unified 后台 jobs list + assistant long-task handoff refresh.
       ref.invalidate(mobileJobsProvider);
     }
   }
 
-  void handleDisconnect() {
-    clearSender();
-    unawaited(subscription?.cancel());
-    subscription = null;
-    try {
-      channel?.sink.close();
-    } on Object {
-      // best effort
+  void handleDisconnect(int generation, WebSocketChannel? disconnectedChannel) {
+    // A cancelled/slow handshake can complete after a newer connection is
+    // already active. It must never clear the new sender or schedule a second
+    // reconnect loop.
+    if (disposed || generation != connectionGeneration) return;
+    if (channel != null &&
+        disconnectedChannel != null &&
+        !identical(channel, disconnectedChannel)) {
+      return;
     }
+    clearSender();
+    final activeSubscription = subscription;
+    subscription = null;
+    unawaited(activeSubscription?.cancel() ?? Future<void>.value());
+    final activeChannel = channel ?? disconnectedChannel;
     channel = null;
+    unawaited(closeChannelSafely(activeChannel));
     scheduleReconnect();
   }
 
   startListening = () {
+    if (disposed) return;
     retryTimer?.cancel();
     retryTimer = null;
     refreshOnReady = true;
-    unawaited(subscription?.cancel());
+    final generation = ++connectionGeneration;
+    final previousSubscription = subscription;
     clearSender();
+    subscription = null;
+    unawaited(previousSubscription?.cancel() ?? Future<void>.value());
+    final previousChannel = channel;
+    channel = null;
+    unawaited(closeChannelSafely(previousChannel));
     unawaited(() async {
+      WebSocketChannel? pendingChannel;
+      var disconnected = false;
+
+      void disconnectThisAttempt() {
+        if (disconnected) return;
+        disconnected = true;
+        handleDisconnect(generation, pendingChannel);
+      }
+
       try {
         final client = ref.read(mobileRealtimeClientProvider);
         final ch = await client.connect();
-        if (disposed) {
-          await ch.sink.close();
+        pendingChannel = ch;
+        // WebSocketChannel.connect returns before the HTTP upgrade completes.
+        // Awaiting `ready` here consumes a rejected upgrade (for example a Hub
+        // that does not expose the realtime route) and prevents it becoming an
+        // uncaught asynchronous exception in release builds.
+        await ch.ready;
+        if (disposed || generation != connectionGeneration) {
+          await closeChannelSafely(ch);
           return;
         }
         channel = ch;
@@ -181,12 +253,12 @@ final mobileRealtimeBridgeProvider = Provider<void>((ref) {
               handleEvent(event);
             }
           },
-          onError: (_) => handleDisconnect(),
-          onDone: handleDisconnect,
+          onError: (_, __) => disconnectThisAttempt(),
+          onDone: disconnectThisAttempt,
           cancelOnError: false,
         );
       } on Object {
-        handleDisconnect();
+        disconnectThisAttempt();
       }
     }());
   };
@@ -195,14 +267,11 @@ final mobileRealtimeBridgeProvider = Provider<void>((ref) {
 
   ref.onDispose(() {
     disposed = true;
+    connectionGeneration++;
     retryTimer?.cancel();
     clearSender();
     unawaited(subscription?.cancel());
-    try {
-      channel?.sink.close();
-    } on Object {
-      // ignore
-    }
+    unawaited(closeChannelSafely(channel));
   });
 });
 

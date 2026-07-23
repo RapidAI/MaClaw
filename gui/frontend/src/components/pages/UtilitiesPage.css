@@ -212,10 +212,10 @@
 
 .utilities-page__grid {
     display: grid;
-    /* Uniform card width: stretch to at most 360px, then leave the row clean.
+    /* Compact, uniform cards: 25% smaller than the prior 300–360px tracks.
      * min() keeps the single track from overflowing narrow containers. */
-    grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 360px));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(min(225px, 100%), 270px));
+    gap: 12px;
 }
 
 /*
@@ -223,26 +223,27 @@
  * Set theme text on the control itself; children inherit unless they need secondary/CTA tones.
  */
 .utilities-tool-card {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
     align-items: flex-start;
-    gap: 12px;
-    min-height: 172px;
+    column-gap: 10px;
+    row-gap: 5px;
+    min-height: 129px;
     text-align: left;
-    padding: 18px;
-    border-radius: 12px;
-    border: 1px solid var(--theme-border, #e2e5ea);
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px solid var(--theme-border-subtle, var(--theme-border, #e2e5ea));
     background: var(--theme-surface, #fff);
     color: var(--theme-text-primary, #1a1a1a);
     font: inherit;
     cursor: pointer;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-    transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, opacity 0.15s ease;
+    transition: border-color 0.16s ease-out, background-color 0.16s ease-out, transform 0.16s ease-out, opacity 0.15s ease;
 }
 
 .utilities-tool-card:hover:not(:disabled) {
-    border-color: var(--theme-primary, #3b82f6);
-    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+    border-color: color-mix(in srgb, var(--theme-primary, #3b82f6) 52%, var(--theme-border, #e2e5ea));
+    background: color-mix(in srgb, var(--theme-primary, #3b82f6) 4%, var(--theme-surface, #fff));
     transform: translateY(-1px);
 }
 
@@ -251,7 +252,11 @@
     outline-offset: 2px;
 }
 
-.utilities-tool-card:disabled,
+.utilities-tool-card:disabled:not(.is-starting) {
+    opacity: 0.58;
+    cursor: not-allowed;
+}
+
 .utilities-tool-card.is-starting {
     opacity: 0.72;
     cursor: wait;
@@ -260,41 +265,55 @@
 .utilities-tool-card__icon {
     display: grid;
     place-items: center;
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
     background: color-mix(in srgb, var(--theme-primary, #3b82f6) 10%, transparent);
     color: var(--theme-primary, #3b82f6);
+    grid-row: 1 / span 2;
 }
 
 .utilities-tool-card__icon svg {
-    width: 22px;
-    height: 22px;
+    width: 18px;
+    height: 18px;
 }
 
 .utilities-tool-card__body {
     display: grid;
-    gap: 4px;
+    gap: 3px;
+    min-width: 0;
 }
 
 .utilities-tool-card__title {
+    display: -webkit-box;
+    overflow: hidden;
     font-weight: 700;
-    font-size: 1rem;
+    font-size: 0.94rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
 }
 
 .utilities-tool-card__desc {
-    font-size: 0.82rem;
+    font-size: 0.78rem;
     color: var(--theme-text-secondary, #666);
-    line-height: 1.45;
+    line-height: 1.4;
+    display: -webkit-box;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
 }
 
-/* Pinned to the card bottom so CTAs stay level across cards with uneven descriptions. */
+/* Kept in the content column so actions align across compact cards. */
 .utilities-tool-card__cta {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    margin-top: auto;
-    font-size: 0.8rem;
+    grid-column: 2;
+    margin-top: 0;
+    font-size: 0.75rem;
     color: var(--theme-primary, #3b82f6);
     font-weight: 600;
 }

@@ -284,4 +284,13 @@ func TestSaveVirtualRepositoryPrunesRemovedAndMismatchedCredentialBindings(t *te
 	if bindings != "{}" {
 		t.Fatalf("stale bindings survived manifest save: %s", bindings)
 	}
+	state, err := app.loadVirtualRepositorySyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"binding:repo:keep", "binding:repo:remove"} {
+		if _, exists := state.Tombstones[key]; !exists {
+			t.Fatalf("pruned binding did not leave sync tombstone %q", key)
+		}
+	}
 }

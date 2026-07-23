@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -12,6 +14,7 @@ const (
 	registrationAuthConfigKey          = "registration_auth_config"
 	registrationAuthMethodEmail        = "email"
 	registrationAuthMethodPhone        = "phone"
+	registrationAuthMethodMixed        = "mixed"
 	registrationAuthAliyunSMSBuyURL    = "https://common-buy.aliyun.com/?commodityCode=dypns_smsverify_public_cn#buy"
 	registrationAuthAliyunDypnsAPIName = "Dypnsapi"
 	registrationAuthDefaultTemplate    = "100001"
@@ -56,7 +59,7 @@ func UpdateRegistrationAuthConfigHandler(system store.SystemSettingsRepository) 
 			return
 		}
 		var cfg RegistrationAuthConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		if err := decodeRegistrationAuthConfig(r, &cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
@@ -76,6 +79,29 @@ func UpdateRegistrationAuthConfigHandler(system store.SystemSettingsRepository) 
 		}
 		writeJSON(w, http.StatusOK, cfg)
 	}
+}
+
+const maxRegistrationAuthConfigBodyBytes = 64 << 10
+
+func decodeRegistrationAuthConfig(r *http.Request, cfg *RegistrationAuthConfig) error {
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxRegistrationAuthConfigBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxRegistrationAuthConfigBodyBytes {
+		return errInvalidRegistrationAuth("request body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(cfg); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errInvalidRegistrationAuth("request body must contain one JSON object")
+		}
+		return err
+	}
+	return nil
 }
 
 func PublicRegistrationAuthConfigHandler(system store.SystemSettingsRepository, resolvers ...tenantResolver) http.HandlerFunc {
@@ -174,12 +200,12 @@ func validateRegistrationAuthConfig(cfg RegistrationAuthConfig) error {
 	switch cfg.Method {
 	case registrationAuthMethodEmail:
 		return nil
-	case registrationAuthMethodPhone:
+	case registrationAuthMethodPhone, registrationAuthMethodMixed:
 		if cfg.AliyunAccessKeyID == "" || cfg.AliyunAccessKeySecret == "" {
-			return errInvalidRegistrationAuth("Aliyun AccessKey ID and AccessKey Secret are required for phone registration")
+			return errInvalidRegistrationAuth("Aliyun AccessKey ID and AccessKey Secret are required when phone registration is enabled")
 		}
 		if cfg.AliyunSignName == "" {
-			return errInvalidRegistrationAuth("Aliyun SignName is required for phone registration")
+			return errInvalidRegistrationAuth("Aliyun SignName is required when phone registration is enabled")
 		}
 		if cfg.CodeTTLMinutes < 1 || cfg.CodeTTLMinutes > 30 {
 			return errInvalidRegistrationAuth("verification code TTL must be between 1 and 30 minutes")
@@ -192,7 +218,7 @@ func validateRegistrationAuthConfig(cfg RegistrationAuthConfig) error {
 		}
 		return nil
 	default:
-		return errInvalidRegistrationAuth("registration auth method must be email or phone")
+		return errInvalidRegistrationAuth("registration auth method must be email, phone, or mixed")
 	}
 }
 

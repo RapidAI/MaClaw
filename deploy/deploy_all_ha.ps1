@@ -420,6 +420,7 @@ function Build-LocalBinaries {
         [string]$OutputRoot,
         [string]$HubBinaryName,
         [string]$HubCenterBinaryName,
+        [string]$MeetingASRWorkerBinaryName,
         [string]$BrandBuildTag,
         [bool]$BuildHub,
         [bool]$BuildHubCenter
@@ -487,6 +488,8 @@ function Build-LocalBinaries {
     if ($BuildHub) {
         Write-Host '  - building hub locally...'
         Invoke-GoBuildCmd -OutputPath (Join-Path $binDirForGo $HubBinaryName) -PackagePath './hub/cmd/hub' -Label 'hub'
+        Write-Host '  - building mobile meeting ASR worker locally...'
+        Invoke-GoBuildCmd -OutputPath (Join-Path $binDirForGo $MeetingASRWorkerBinaryName) -PackagePath './hub/cmd/meeting_asr_worker' -Label 'mobile meeting ASR worker'
     }
 }
 function Write-InventoryFile {
@@ -595,6 +598,7 @@ function Write-RemoteScript {
         ': "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"',
         ': "${HUB_BINARY_NAME:=maclaw-hub}"',
         ': "${HUBCENTER_BINARY_NAME:=maclaw-hubcenter}"',
+        ': "${MEETING_ASR_WORKER_BINARY_NAME:=meeting_asr_worker}"',
         ': "${CLEAN_HUBCENTER_DB:=0}"',
         ': "${HUBCENTER_DB_PATH:=./data/codeclaw-hubcenter.db}"',
         '',
@@ -922,6 +926,12 @@ function Write-RemoteScript {
         '  fi',
         '  cp -f "$SRC_ROOT/bin/$HUB_BINARY_NAME" "$REMOTE_HUB_DIR/$HUB_BINARY_NAME"',
         '  chmod +x "$REMOTE_HUB_DIR/$HUB_BINARY_NAME"',
+        '  if [ ! -f "$SRC_ROOT/bin/$MEETING_ASR_WORKER_BINARY_NAME" ]; then',
+        '    echo "[ERROR] Missing mobile meeting ASR worker: $SRC_ROOT/bin/$MEETING_ASR_WORKER_BINARY_NAME" >&2',
+        '    exit 1',
+        '  fi',
+        '  cp -f "$SRC_ROOT/bin/$MEETING_ASR_WORKER_BINARY_NAME" "$REMOTE_HUB_DIR/meeting_asr_worker"',
+        '  chmod +x "$REMOTE_HUB_DIR/meeting_asr_worker"',
         '  if [ -f "$SRC_ROOT/hub/start.sh" ]; then',
         '    cp -f "$SRC_ROOT/hub/start.sh" "$REMOTE_HUB_DIR/start.sh"',
         '    sed -i ''s/\r$//'' "$REMOTE_HUB_DIR/start.sh"',
@@ -1344,6 +1354,7 @@ $brandKey = $Brand.ToLowerInvariant()
 $brandBuildTag = ''
 $hubBinaryName = 'maclaw-hub'
 $hubCenterBinaryName = 'maclaw-hubcenter'
+$meetingASRWorkerBinaryName = 'meeting_asr_worker'
 if ($brandKey -eq 'tigerclaw') {
     $brandBuildTag = 'oem_qianxin'
     $hubBinaryName = 'tigerclaw-hub'
@@ -1499,7 +1510,7 @@ try {
     Write-Host '[5/9] Building local Linux binaries and staging deploy assets...' -ForegroundColor Cyan
     $shouldBuildHub = @($targets | Where-Object { $_.DeployHub }).Count -gt 0
     $shouldBuildHubCenter = @($targets | Where-Object { $_.DeployHubCenter }).Count -gt 0
-    Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub -BuildHubCenter $shouldBuildHubCenter
+    Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -MeetingASRWorkerBinaryName $meetingASRWorkerBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub -BuildHubCenter $shouldBuildHubCenter
     Stage-DeployAssets -SourceRoot $rootDir -StageRoot $stageRoot
     $expectedHubCenterProblemReportsScriptSrc = Get-HubCenterProblemReportsScriptSrc -AdminIndexPath (Join-Path $stageRoot 'hubcenter\web\admin\index.html')
     Write-Host ("  - HubCenter problem reports script: {0}" -f $expectedHubCenterProblemReportsScriptSrc)
@@ -1571,7 +1582,8 @@ try {
             ("export HUB_MODEL_BASE_URL={0}" -f (Quote-ShellEnvValue $hubModelBaseUrl)),
             ("export HUB_MODEL_FILES={0}" -f (Quote-ShellEnvValue $hubModelFiles)),
             ("export HUB_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubBinaryName)),
-            ("export HUBCENTER_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubCenterBinaryName))
+            ("export HUBCENTER_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubCenterBinaryName)),
+            ("export MEETING_ASR_WORKER_BINARY_NAME={0}" -f (Quote-ShellEnvValue $meetingASRWorkerBinaryName))
         )
         if ($target.DeployHubCenter) {
             $envParts += ("export HUBCENTER_CONFIG_BASENAME={0}" -f (Quote-ShellEnvValue $target.HubCenterConfig))

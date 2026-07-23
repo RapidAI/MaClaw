@@ -52,6 +52,7 @@ import type { HistoryDiscussionSummary } from './components/layout/SidebarHistor
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { agentModeFromTaskTags, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
+import { normalizeCodingTaskLaunch, type CodingTaskLaunch } from './components/ai/codingTaskLaunch';
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
 import { getAssistantLightScheme, readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
@@ -357,6 +358,7 @@ function App() {
     const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
+    const [remoteInitialSessionTab, setRemoteInitialSessionTab] = useState<"remote" | "background">("remote");
     const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
     const aiPanelMaximizedWindowRef = useRef(false);
@@ -515,11 +517,17 @@ function App() {
     const [isMarketplaceInstalling, setIsMarketplaceInstalling] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [isManualCheck, setIsManualCheck] = useState(false);
-    /** Allows loading-shell UI (Hide) to finish the same session that env-check uses. */
+    /** Allows every loading-shell exit to use the same safe window transition. */
     const loadingShellCtlRef = useRef<{
         finish: (reason: string) => void;
         begin: (reason: string) => number;
+        complete: (reason: string) => void;
     } | null>(null);
+    // Onboarding is rendered through a portal and must not appear above the
+    // compact environment-check shell. It becomes eligible only after the
+    // environment-check completion path has resized the native window.
+    const [mainWindowReadyForOverlays, setMainWindowReadyForOverlays] = useState(false);
+    const mainWindowReadyForOverlaysRef = useRef(false);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
     const [hubAuthRejectedPrompt, setHubAuthRejectedPrompt] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
@@ -529,20 +537,25 @@ function App() {
     const [chatFontSize, setChatFontSize] = useState<number>(14);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
-    const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<{
-        projectPath: string;
-        taskTitle: string;
-        initialMessage?: string;
-        autoSend?: boolean;
-        prepareMode?: 'restore-context' | 'new-agent';
-        agentMode?: 'coding_dev' | 'remote_coding_dev';
-        remoteHost?: string;
-        remoteNeedsReconnect?: boolean;
-        imPlatform?: string;
-        imTargetUID?: string;
-		imIsGroup?: boolean;
-    } | null>(null);
+    const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<CodingTaskLaunch | null>(null);
     const [pendingExpertOpen, setPendingExpertOpen] = useState<{ expert: ExpertDefinition } | null>(null);
+
+    // Onboarding is a portal rendered outside #App. Route every request
+    // through this guard so it cannot appear while the compact environment
+    // check shell is still the visible application surface.
+    const onboardingRequestedRef = useRef(false);
+    const requestOnboarding = useCallback(() => {
+        onboardingRequestedRef.current = true;
+        if (mainWindowReadyForOverlaysRef.current) {
+            setShowMaclawLLMPopup(true);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (mainWindowReadyForOverlays && onboardingRequestedRef.current) {
+            setShowMaclawLLMPopup(true);
+        }
+    }, [mainWindowReadyForOverlays]);
 
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
@@ -1597,6 +1610,7 @@ function App() {
         // a late timeout from the first boot cannot close a later manual check early,
         // and a permanent "finished" flag cannot block manual re-checks.
         let loadingShellSeq = 0;
+        let completedWindowTransitionSeq = -1;
         let loadingSafetyTimer: number | null = null;
         const clearLoadingSafetyTimer = () => {
             if (loadingSafetyTimer != null) {
@@ -1620,14 +1634,68 @@ function App() {
                 return new main.AppConfig({ projects: [] });
             });
         };
+        const scheduleMainWindowOverlayReadiness = (seq: number) => {
+            // Onboarding is a portal outside #App. Give the workbench two paint
+            // frames after the native resize has completed before admitting
+            // overlays, avoiding a portal over the compact loading shell.
+            window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(() => {
+                    if (seq === loadingShellSeq) {
+                        mainWindowReadyForOverlaysRef.current = true;
+                        setMainWindowReadyForOverlays(true);
+                    }
+                });
+            });
+        };
+        const resizeMainWindow = async () => {
+            try {
+                const size: any = await callBackend(() => GetAdaptiveWindowSize());
+                const w = size?.width || 1360;
+                const h = size?.height || 850;
+                await callBackend(() => ResizeWindow(w, h));
+                return true;
+            } catch {
+                try {
+                    await callBackend(() => ResizeWindow(1360, 850));
+                    return true;
+                } catch {
+                    return false;
+                }
+            }
+        };
+        const completeWindowTransition = async (reason: string, seq: number) => {
+            // The event and the safety timer can race. Complete the native
+            // resize and the React loading-shell transition exactly once for
+            // each startup/manual-check sequence.
+            if (seq !== loadingShellSeq || completedWindowTransitionSeq === seq) return;
+            completedWindowTransitionSeq = seq;
+            clearLoadingSafetyTimer();
+            logStartupTrace('complete-window-transition', { reason, seq });
+
+            // Never leave the app in the compact environment-check geometry.
+            // Keep the resize promise alive after the loading-shell timeout:
+            // Wails can acknowledge a native resize later than a busy startup
+            // WebView. Closing the shell is safe then, but showing a portaled
+            // onboarding dialog is not safe until the resize itself completed.
+            const resizePromise = resizeMainWindow();
+            void resizePromise.then((resized) => {
+                if (resized) scheduleMainWindowOverlayReadiness(seq);
+            });
+            try {
+                await Promise.race([resizePromise, new Promise<void>((resolve) => setTimeout(resolve, 2500))]);
+            } finally {
+                finishLoadingShell(reason, seq);
+            }
+        };
         const armLoadingSafetyTimer = (seq: number) => {
             clearLoadingSafetyTimer();
             // Safety net: if env-check-done is missed (event race) or never emitted,
-            // leave the loading shell so the UI is not a permanent white screen.
+            // promote the window to the main workbench instead of leaving the
+            // compact environment-check geometry behind a portal.
             loadingSafetyTimer = window.setTimeout(() => {
                 if (seq === loadingShellSeq) {
                     logStartupTrace('env-check-done-timeout', { seq });
-                    finishLoadingShell('timeout', seq);
+                    void completeWindowTransition('timeout', seq);
                 }
             }, 15000);
         };
@@ -1635,40 +1703,26 @@ function App() {
             loadingShellSeq += 1;
             const seq = loadingShellSeq;
             logStartupTrace('begin-loading-shell', { reason, seq });
+            // Manual environment checks can start after the initial workbench
+            // is ready. Reset the guard synchronously so a portal request that
+            // arrives before React's next render still cannot cover this shell.
+            mainWindowReadyForOverlaysRef.current = false;
+            setMainWindowReadyForOverlays(false);
             setIsLoading(true);
             armLoadingSafetyTimer(seq);
             return seq;
         };
         loadingShellCtlRef.current = {
-            finish: (reason: string) => finishLoadingShell(reason),
+            finish: (reason: string) => { void completeWindowTransition(reason, loadingShellSeq); },
             begin: beginLoadingShell,
+            complete: (reason: string) => { void completeWindowTransition(reason, loadingShellSeq); },
         };
         // Startup already mounts with isLoading=true — arm the first safety timer.
         armLoadingSafetyTimer(loadingShellSeq);
         const doneHandler = async () => {
             const seq = loadingShellSeq;
             logStartupTrace('env-check-done-received', { seq });
-            // Never leave the UI stuck if ResizeWindow hangs (e.g. webview race).
-            try {
-                const resizePromise = (async () => {
-                    try {
-                        const size: any = await callBackend(() => GetAdaptiveWindowSize());
-                        const w = size?.width || 1360;
-                        const h = size?.height || 850;
-                        await callBackend(() => ResizeWindow(w, h));
-                    } catch {
-                        try {
-                            await callBackend(() => ResizeWindow(1360, 850));
-                        } catch {
-                            /* best-effort */
-                        }
-                    }
-                })();
-                const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2500));
-                await Promise.race([resizePromise, timeout]);
-            } finally {
-                finishLoadingShell('env-check-done', seq);
-            }
+            await completeWindowTransition('env-check-done', seq);
         };
 
         safeEventsOn("env-log", logHandler);
@@ -2075,15 +2129,15 @@ function App() {
         const retryTimer = setTimeout(() => {
             callBackend(() => PingMaclawLLM()).then((s: any) => {
                 if (!s?.online) {
-                    setShowMaclawLLMPopup(true);
+                    requestOnboarding();
                 }
                 // If online now (transient failure recovered), silently skip popup
             }).catch(() => {
-                setShowMaclawLLMPopup(true);
+                requestOnboarding();
             });
         }, 5000);
         return () => clearTimeout(retryTimer);
-    }, [config, maclawLLMOnline]);
+    }, [config, maclawLLMOnline, requestOnboarding]);
 
     const checkTools = async () => {
         try {
@@ -2110,6 +2164,7 @@ function App() {
     const switchTool = (tool: string) => {
         setNavTabNow(tool);
         setToolDropdownOpen(false);
+        if (tool === 'remote') setRemoteInitialSessionTab('remote');
         if (isToolTab(tool)) {
             setActiveTool(tool);
             setActiveTab(0);
@@ -2146,6 +2201,12 @@ function App() {
             }
         }
     };
+
+    const openBackgroundTaskMonitor = useCallback(() => {
+        setRemoteInitialSessionTab('background');
+        setNavTabNow('remote');
+        setToolDropdownOpen(false);
+    }, [setNavTabNow]);
 
     useEffect(() => {
         // Keep settingsTab aligned with the tabs actually shown in the rail
@@ -2425,6 +2486,15 @@ function App() {
     const refreshTasks = useCallback(() => {
         callBackend(() => ListTasks(50)).then((r: any) => setTaskItems(r || [])).catch(() => setTaskItems([]));
     }, []);
+    /** One frontend gateway for every project/coding task handoff into the AI tab. */
+    const openCodingTask = useCallback((launch: Partial<CodingTaskLaunch>) => {
+        const normalized = normalizeCodingTaskLaunch(launch);
+        if (!normalized) return false;
+        setPendingProjectTabOpen(normalized);
+        switchTool('ai');
+        refreshTasks();
+        return true;
+    }, [refreshTasks, switchTool]);
 
     useEffect(() => {
         if (navTab === 'ai') refreshTasks();
@@ -2438,8 +2508,7 @@ function App() {
             const agentMode = payload.agent_mode === 'coding_dev' || payload.agent_mode === 'remote_coding_dev'
                 ? payload.agent_mode
                 : undefined;
-            switchTool('ai');
-            setPendingProjectTabOpen({
+            openCodingTask({
                 projectPath,
                 taskTitle: String(payload.task_title || '').trim() || projectPath,
                 initialMessage: String(payload.initial_message || '').trim(),
@@ -2452,9 +2521,8 @@ function App() {
 				imTargetUID: String(payload.im_target_uid || '').trim() || undefined,
 				imIsGroup: payload.im_is_group === true,
             });
-            refreshTasks();
         });
-    }, [refreshTasks, switchTool]);
+    }, [openCodingTask]);
 
     useEffect(() => {
         const refresh = () => {
@@ -2471,7 +2539,6 @@ function App() {
     const resumeTask = useCallback(async (projectPath: string) => {
         const startedAt = performance.now();
         try {
-            switchTool('ai');
             // Normalize separators so Windows path variants still match list tags.
             const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
             const want = norm(projectPath);
@@ -2514,7 +2581,7 @@ function App() {
                 if (agentMode === 'remote_coding_dev') remoteNeedsReconnect = true;
             }
             console.info("[task_management] task ready", { taskPath: projectPath, title, autoSend: false, agentMode, elapsedMs: Math.round(performance.now() - startedAt) });
-            setPendingProjectTabOpen({
+            openCodingTask({
                 projectPath,
                 taskTitle: title,
                 autoSend: false,
@@ -2522,20 +2589,18 @@ function App() {
                 remoteHost,
                 remoteNeedsReconnect: agentMode === 'remote_coding_dev' ? remoteNeedsReconnect : undefined,
             });
-            refreshTasks();
         } catch (error) {
             console.error("resumeTask failed:", error);
         }
-    }, [refreshTasks, switchTool]);
+    }, [openCodingTask, switchTool]);
 
     const continueWorkflowProject = useCallback(async (projectPath: string) => {
         const sourcePath = projectPath.trim();
         if (!sourcePath) return;
         try {
-            switchTool('ai');
             const proj = taskItemsRef.current.find(p => p.project_path === sourcePath || p.active_workflow?.project_path === sourcePath);
             const title = proj?.name || sourcePath.split(/[\\/]/).pop() || sourcePath;
-            setPendingProjectTabOpen({
+            openCodingTask({
                 projectPath: sourcePath,
                 taskTitle: title,
                 autoSend: false,
@@ -2543,7 +2608,7 @@ function App() {
         } catch (error) {
             console.error("continueWorkflowProject failed:", error);
         }
-    }, [switchTool]);
+    }, [openCodingTask]);
 
     const createTask = useCallback(async (
         name: string,
@@ -2634,8 +2699,7 @@ function App() {
                 refreshTasks();
                 return;
             }
-            switchTool('ai');
-            setPendingProjectTabOpen({
+            openCodingTask({
                 projectPath: created.project_path,
                 taskTitle: created.name || taskName.split('\n')[0]?.trim() || taskName,
                 initialMessage: taskName,
@@ -2644,13 +2708,12 @@ function App() {
                 agentMode,
                 remoteHost,
             });
-            refreshTasks();
         } catch (error) {
             console.error("CreateTask failed:", error);
             // Re-throw so the create dialog can surface the error (e.g. SSH connect failed).
             throw error;
         }
-    }, [refreshTasks, switchTool]);
+    }, [openCodingTask, switchTool]);
 
     const meetingRecordInFlightRef = useRef(false);
     /**
@@ -2670,23 +2733,21 @@ function App() {
                 return;
             }
             setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
-            // Pending before nav: AI panel is remounted when leaving utilities.
-            setPendingProjectTabOpen({
+            // Unified task handoff keeps the tab request and navigation atomic.
+            openCodingTask({
                 projectPath: created.project_path,
                 taskTitle: created.name || taskTitle,
                 initialMessage: command,
                 prepareMode: 'new-agent',
                 autoSend: true,
             });
-            switchTool('ai');
-            refreshTasks();
         } catch (error) {
             console.error('startMeetingRecord failed:', error);
             showToastMessage(failMsg, 4000);
         } finally {
             meetingRecordInFlightRef.current = false;
         }
-    }, [lang, refreshTasks, showToastMessage, switchTool]);
+    }, [lang, openCodingTask, showToastMessage]);
 
     const normalizeSidebarProviderState = useCallback((data?: SidebarProviderStateWire) => {
         const list = (data?.providers ?? data?.Providers ?? [])
@@ -3242,15 +3303,18 @@ function App() {
         return activeBackgroundLoopCount + aiSessionCount;
     }, [remoteSessions, activeBackgroundLoopCount]);
 
-    // Show onboarding wizard if remote registration is not done (checked once on startup).
+    // Show onboarding only after the environment-check completion path has
+    // resized and painted the main workbench. The wizard is portaled to
+    // document.body, so rendering it earlier would place it over the compact
+    // environment-check shell.
     const onboardingRegCheckDone = useRef(false);
     useEffect(() => {
-        if (onboardingRegCheckDone.current || !config || remoteActivationStatus === null) return;
+        if (onboardingRegCheckDone.current || !mainWindowReadyForOverlays || !config || remoteActivationStatus === null) return;
         onboardingRegCheckDone.current = true;
         if (!remoteActivationStatus.activated && !config.onboarding_done) {
-            setShowMaclawLLMPopup(true);
+            requestOnboarding();
         }
-    }, [config, remoteActivationStatus]);
+    }, [config, mainWindowReadyForOverlays, remoteActivationStatus, requestOnboarding]);
     const hasActiveRemoteSessionForTool = !!activeRemoteSessionForTool;
 
     useEffect(() => {
@@ -3906,7 +3970,10 @@ ${instruction}`;
                         isManualCheck ? (
                             <button onClick={() => {
                                 if (loadingShellCtlRef.current) {
-                                    loadingShellCtlRef.current.finish('user-dismiss');
+                                    // A manual check can be dismissed before its completion
+                                    // event. Still restore the main geometry first so an
+                                    // onboarding portal can never inherit the compact shell.
+                                    loadingShellCtlRef.current.complete('user-dismiss');
                                 } else {
                                     setIsLoading(false);
                                     setIsManualCheck(false);
@@ -4008,6 +4075,7 @@ ${instruction}`;
                 lansengerStatus={lansengerStatus}
                 runningTaskCount={runningTaskCount}
                 backgroundTaskCount={backgroundTaskCount}
+                onOpenBackgroundTasks={openBackgroundTaskMonitor}
                 t={t}
                 gossipAllowed={gossipAllowed}
                 config={config}
@@ -4117,7 +4185,7 @@ ${instruction}`;
                             }}
                             actions={{
                                 ...aiAssistant.panelActions,
-                                onOpenOnboarding: () => setShowMaclawLLMPopup(true),
+                                onOpenOnboarding: requestOnboarding,
                                 onTaskPrefsChanged: () => { void refreshSessionsOnly(); },
                             }}
                             window={{
@@ -4259,6 +4327,7 @@ ${instruction}`;
                             translate={translate}
                             formatText={formatText}
                             localizeText={localizeText}
+                            initialSessionTab={remoteInitialSessionTab}
                         />
                     )}
                     {navTab === 'api-store' && (
@@ -4315,9 +4384,7 @@ ${instruction}`;
 
                     {navTab === 'utilities' && showUtilitiesEntryEnabled && (
                         <UtilitiesPage lang={lang} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => { switchTool('ai'); setPendingExpertOpen({ expert }); }} onOpenVirtualRepositoryTask={(launch) => {
-                            setPendingProjectTabOpen({ projectPath: launch.project_path, taskTitle: launch.task_title, prepareMode: 'new-agent', autoSend: false, agentMode: launch.agent_mode, remoteHost: launch.remote_host });
-                            switchTool('ai');
-                            refreshTasks();
+                            openCodingTask({ projectPath: launch.project_path, taskTitle: launch.task_title, prepareMode: 'new-agent', autoSend: false, agentMode: launch.agent_mode, remoteHost: launch.remote_host, remoteNeedsReconnect: false });
                         }} />
                     )}
 
@@ -4375,7 +4442,7 @@ ${instruction}`;
                             }}
                             onOpenBugReport={() => safeBrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}
                             onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}
-                            onRegister={() => setShowMaclawLLMPopup(true)}
+                            onRegister={requestOnboarding}
                             onClearRegistration={async () => {
                                 await clearRemoteActivationState();
                                 // clearRemoteActivationState already refreshes config + activation status
@@ -4846,7 +4913,7 @@ ${instruction}`;
                         <p className="about-contact-dialog__desc problem-report-dialog__intro" id="problem-report-description">{t('problemReportDesc')}</p>
                         <div className="setting-row problem-report-dialog__collection">
                             <div className="problem-report-dialog__collection-copy"><strong>{t('problemReportEnable')}</strong><div className="setting-desc">{t('problemReportEnableDesc')}</div></div>
-                            <label className="switch"><input type="checkbox" checked={Boolean((config as any)?.bug_report_enabled)} disabled={problemBusy} onChange={async (event) => {
+                            <label className="switch"><input type="checkbox" checked={Boolean(config?.bug_report_enabled)} disabled={problemBusy} onChange={async (event) => {
                                 const requested = event.target.checked;
                                 setProblemBusy(true);
                                 setProblemMessage('');
@@ -4854,9 +4921,9 @@ ${instruction}`;
                                     const saved = await SetBugReportEnabled(requested);
                                     setConfig(new main.AppConfig(saved));
                                 } catch (err: any) {
-                                    // This is a controlled input. Restore its visual state when
-                                    // the native operation fails rather than leaving it flickering.
-                                    event.target.checked = Boolean((config as any)?.bug_report_enabled);
+                                    // This controlled input remains bound to the last persisted
+                                    // config snapshot, so a failed native write naturally rolls
+                                    // back without mutating the DOM behind React's back.
                                     setProblemMessage(String(err?.message || err));
                                 } finally {
                                     setProblemBusy(false);
@@ -5541,7 +5608,7 @@ ${instruction}`;
                     )}
                     t={(key) => key === 'cancel' ? localizeText('Later', '稍后', '稍後') : localizeText('Re-register', '重新注册', '重新註冊')}
                     onCancel={() => setHubAuthRejectedPrompt(false)}
-                    onConfirm={() => { setHubAuthRejectedPrompt(false); setShowMaclawLLMPopup(true); }}
+                    onConfirm={() => { setHubAuthRejectedPrompt(false); requestOnboarding(); }}
                 />
             )}
 

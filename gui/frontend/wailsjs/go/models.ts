@@ -662,6 +662,9 @@ export namespace main {
 	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
 	    llm_trajectory_logging: boolean;
+	    bug_report_enabled: boolean;
+	    bug_report_previous_trajectory: boolean;
+	    bug_report_previous_log_detail: boolean;
 	    memory_recall_log_enabled: boolean;
         show_assistant_entry: boolean;
 	    pet_enabled?: boolean;
@@ -852,7 +855,11 @@ export namespace main {
 	        this.ui_mode = source["ui_mode"];
 	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];
-            this.show_assistant_entry = source["show_assistant_entry"];
+	        this.llm_trajectory_logging = source["llm_trajectory_logging"];
+	        this.bug_report_enabled = source["bug_report_enabled"];
+	        this.bug_report_previous_trajectory = source["bug_report_previous_trajectory"];
+	        this.bug_report_previous_log_detail = source["bug_report_previous_log_detail"];
+	        this.show_assistant_entry = source["show_assistant_entry"];
 	        this.pet_enabled = source["pet_enabled"];
 	        this.pet_skin = source["pet_skin"];
 	        this.pet_size = source["pet_size"];
@@ -876,7 +883,6 @@ export namespace main {
 	        this.floating_btn_x = source["floating_btn_x"];
 	        this.floating_btn_y = source["floating_btn_y"];
 	        this.floating_btn_position_set = source["floating_btn_position_set"];
-	        this.llm_trajectory_logging = source["llm_trajectory_logging"];
 	        this.memory_recall_log_enabled = source["memory_recall_log_enabled"];
 	        this.trial_reflect_enabled = source["trial_reflect_enabled"];
 	        this.llm_token_usage = source["llm_token_usage"];

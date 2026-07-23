@@ -95,6 +95,37 @@ func TestUpdateRegistrationAuthConfigSavesDailySMSLimit(t *testing.T) {
 	}
 }
 
+func TestUpdateRegistrationAuthConfigSavesMixedSettings(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	body := bytes.NewBufferString(`{"method":"mixed","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform","code_ttl_minutes":5,"code_length":6,"daily_sms_limit":6}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/settings/registration-auth", body)
+	rr := httptest.NewRecorder()
+
+	UpdateRegistrationAuthConfigHandler(settings).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got RegistrationAuthConfig
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Method != registrationAuthMethodMixed || got.AliyunAccessKeyID != "ak" || got.AliyunAccessKeySecret != "secret" {
+		t.Fatalf("unexpected config: %+v", got)
+	}
+}
+
+func TestUpdateRegistrationAuthConfigRejectsTrailingJSON(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	body := bytes.NewBufferString(`{"method":"email"}{"method":"mixed"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/settings/registration-auth", body)
+	rr := httptest.NewRecorder()
+
+	UpdateRegistrationAuthConfigHandler(settings).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "INVALID_JSON") {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestPublicRegistrationAuthConfigIncludesDailySMSLimit(t *testing.T) {
 	settings := &testSystemSettingsRepo{}
 	body := bytes.NewBufferString(`{"method":"phone","aliyun_access_key_id":"ak","aliyun_access_key_secret":"secret","aliyun_sign_name":"sms-platform","code_ttl_minutes":5,"code_length":6,"daily_sms_limit":6}`)

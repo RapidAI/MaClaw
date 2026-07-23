@@ -28,15 +28,20 @@ class _FakeAssistantVoiceInput implements AssistantVoiceInput {
   final bool ready;
   final bool throwOnStart;
   final bool finishAfterStart;
+  final bool finishBeforeListeningAfterStart;
+  final int finishOnStartNumber;
   final bool errorAfterStart;
   String? localeId;
   bool stopped = false;
+  int startCount = 0;
 
   _FakeAssistantVoiceInput({
     required this.text,
     this.ready = true,
     this.throwOnStart = false,
     this.finishAfterStart = false,
+    this.finishBeforeListeningAfterStart = false,
+    this.finishOnStartNumber = 0,
     this.errorAfterStart = false,
   });
 
@@ -46,6 +51,7 @@ class _FakeAssistantVoiceInput implements AssistantVoiceInput {
     required ValueChanged<String> onText,
     ValueChanged<String>? onStatus,
   }) async {
+    startCount++;
     this.localeId = localeId;
     if (throwOnStart) {
       throw StateError('speech service unavailable');
@@ -53,6 +59,18 @@ class _FakeAssistantVoiceInput implements AssistantVoiceInput {
     if (!ready) return false;
     onText(text);
     if (finishAfterStart) {
+      Future<void>.microtask(() {
+        onStatus?.call('listening');
+        onStatus?.call('done');
+      });
+    }
+    if (finishOnStartNumber == startCount) {
+      Future<void>.microtask(() {
+        onStatus?.call('listening');
+        onStatus?.call('done');
+      });
+    }
+    if (finishBeforeListeningAfterStart) {
       Future<void>.microtask(() => onStatus?.call('done'));
     }
     if (errorAfterStart) {
@@ -143,6 +161,8 @@ class _FakeSearchApiClient extends ApiClient {
     String query, {
     List<String> context = const [],
     List<Map<String, String>> messages = const [],
+    String documentId = '',
+    bool async = false,
   }) async {
     queries.add(query);
     contexts.add(context);
@@ -164,6 +184,7 @@ class _FakeSearchApiClient extends ApiClient {
     String query, {
     List<String> context = const [],
     List<Map<String, String>> messages = const [],
+    String documentId = '',
   }) async* {
     yield await searchWithContext(
       query,
@@ -697,6 +718,45 @@ void main() {
     expect(find.byTooltip('导入截图或文件'), findsOneWidget);
   });
 
+  testWidgets('assistant composer keeps a usable input width on a phone',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          appPreferencesProvider.overrideWith(
+            _TestAppPreferencesController.new,
+          ),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    final input = find.widgetWithText(TextField, '说点什么…');
+    expect(tester.getSize(input).width, greaterThanOrEqualTo(240));
+    expect(
+      tester.getTopLeft(find.byTooltip('拍照提问')).dy,
+      greaterThan(tester.getTopLeft(input).dy),
+    );
+  });
+
   testWidgets('assistant quick prompts fill the mobile query field',
       (tester) async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
@@ -1198,6 +1258,88 @@ void main() {
 
     expect(find.byIcon(Icons.mic_none), findsWidgets);
     expect(find.textContaining('voice prompt'), findsOneWidget);
+  });
+
+  testWidgets('assistant voice input ignores a stale completion while starting',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final voice = _FakeAssistantVoiceInput(
+      text: '',
+      finishBeforeListeningAfterStart: true,
+    );
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          assistantVoiceInputProvider.overrideWithValue(voice),
+          appPreferencesProvider
+              .overrideWith(_TestAppPreferencesController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.mic_none).first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.byIcon(Icons.mic), findsWidgets);
+    expect(find.text('正在听写，识别结果会填入 AI 助手输入框'), findsOneWidget);
+  });
+
+  testWidgets('assistant voice input handles completion after a restart',
+      (tester) async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    final voice = _FakeAssistantVoiceInput(
+      text: '',
+      finishOnStartNumber: 2,
+    );
+    addTearDown(store.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          mobileLocalStoreProvider.overrideWithValue(store),
+          assistantVoiceInputProvider.overrideWithValue(voice),
+          appPreferencesProvider
+              .overrideWith(_TestAppPreferencesController.new),
+          mobileNetworkStatusProvider.overrideWith(
+            (ref) => Stream.value(
+              MobileNetworkSnapshot(
+                quality: MobileNetworkQuality.online,
+                message: 'ok',
+                checkedAt: DateTime.utc(2026, 7, 2),
+              ),
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.mic_none).first);
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.mic).first);
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.mic_none).first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(voice.startCount, 2);
+    expect(find.byIcon(Icons.mic_none), findsWidgets);
   });
 
   testWidgets('assistant voice input exits listening mode after platform error',

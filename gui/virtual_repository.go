@@ -73,6 +73,7 @@ type VirtualRepositoryNode struct {
 type VirtualRepositoryBinding struct {
 	Kind         string `json:"kind"`
 	RelativePath string `json:"relative_path"`
+	Description  string `json:"description,omitempty"`
 	RemoteURL    string `json:"remote_url,omitempty"`
 	RefType      string `json:"ref_type,omitempty"`
 	RefName      string `json:"ref_name,omitempty"`
@@ -254,6 +255,58 @@ func resolveVirtualRepositoryPath(root, relative string, mustExist bool) (string
 	return filepath.Clean(target), nil
 }
 
+// deriveVirtualRepositoryMappingPaths keeps the persisted checkout path as an
+// implementation detail. Users organize mappings exclusively by the virtual
+// directory tree, so each mapping inherits its directory position from its
+// parent chain and name.
+func deriveVirtualRepositoryMappingPaths(v *VirtualRepository) {
+	if v == nil {
+		return
+	}
+	byID := make(map[string]*VirtualRepositoryNode, len(v.Nodes))
+	for i := range v.Nodes {
+		byID[strings.TrimSpace(v.Nodes[i].ID)] = &v.Nodes[i]
+	}
+	paths := make(map[string]string, len(v.Nodes))
+	visiting := make(map[string]bool, len(v.Nodes))
+	var pathFor func(string) string
+	pathFor = func(id string) string {
+		if value, ok := paths[id]; ok {
+			return value
+		}
+		node := byID[id]
+		if node == nil || visiting[id] {
+			return ""
+		}
+		name := strings.TrimSpace(node.Name)
+		if name == "" {
+			return ""
+		}
+		visiting[id] = true
+		parentID := strings.TrimSpace(node.ParentID)
+		parentPath := ""
+		if parentID != "" {
+			parentPath = pathFor(parentID)
+		}
+		visiting[id] = false
+		if parentID != "" && parentPath == "" {
+			return ""
+		}
+		value := name
+		if parentPath != "" {
+			value = path.Join(parentPath, name)
+		}
+		paths[id] = value
+		return value
+	}
+	for i := range v.Nodes {
+		node := &v.Nodes[i]
+		if node.Repository != nil {
+			node.Repository.RelativePath = pathFor(strings.TrimSpace(node.ID))
+		}
+	}
+}
+
 func validateVirtualRepository(v *VirtualRepository) error {
 	if v == nil {
 		return errors.New("virtual repository is required")
@@ -317,6 +370,7 @@ func validateVirtualRepository(v *VirtualRepository) error {
 		}
 		v.RootPath = root
 	}
+	deriveVirtualRepositoryMappingPaths(v)
 	if len(v.Nodes) > virtualRepositoryNodeMaxCount {
 		return fmt.Errorf("virtual repository contains more than %d nodes", virtualRepositoryNodeMaxCount)
 	}
@@ -360,19 +414,29 @@ func validateVirtualRepository(v *VirtualRepository) error {
 		if b.Kind != "git" && b.Kind != "svn" && b.Kind != "local" {
 			return fmt.Errorf("node %q has unsupported kind %q", n.Name, b.Kind)
 		}
-		b.RelativePath = filepath.ToSlash(filepath.Clean(strings.TrimSpace(b.RelativePath)))
+		rawRelativePath := strings.TrimSpace(b.RelativePath)
+		if v.Remote != nil {
+			// Remote mappings follow the remote POSIX filesystem regardless of the
+			// desktop OS. filepath.Clean on Windows treats a leading slash as a
+			// rooted local path and can turn "/name" into "\\name", obscuring the
+			// real validation error.
+			if err := validateRemoteVirtualRepositoryRelativePath(rawRelativePath); err != nil {
+				return fmt.Errorf("node %q: %w", n.Name, err)
+			}
+			b.RelativePath = path.Clean(rawRelativePath)
+		} else {
+			b.RelativePath = filepath.ToSlash(filepath.Clean(rawRelativePath))
+		}
 		if len(b.RelativePath) > virtualRepositoryFieldMaxLength {
 			return fmt.Errorf("node %q repository path is too long", n.Name)
 		}
 		if containsControlCharacter(b.RelativePath) {
 			return fmt.Errorf("node %q repository path contains control characters", n.Name)
 		}
-		if v.Remote != nil {
-			if err := validateRemoteVirtualRepositoryRelativePath(b.RelativePath); err != nil {
+		if v.Remote == nil {
+			if _, err := resolveVirtualRepositoryPath(v.RootPath, b.RelativePath, false); err != nil {
 				return fmt.Errorf("node %q: %w", n.Name, err)
 			}
-		} else if _, err := resolveVirtualRepositoryPath(v.RootPath, b.RelativePath, false); err != nil {
-			return fmt.Errorf("node %q: %w", n.Name, err)
 		}
 		pathKey := b.RelativePath
 		if v.Remote == nil && goruntime.GOOS == "windows" {
@@ -383,6 +447,10 @@ func validateVirtualRepository(v *VirtualRepository) error {
 		}
 		paths[pathKey] = n.Name
 		b.RemoteURL = strings.TrimSpace(b.RemoteURL)
+		b.Description = strings.TrimSpace(b.Description)
+		if len(b.Description) > virtualRepositoryFieldMaxLength || containsControlCharacter(b.Description) {
+			return fmt.Errorf("node %q repository description is invalid", n.Name)
+		}
 		b.RefType = strings.ToLower(strings.TrimSpace(b.RefType))
 		b.RefName = strings.TrimSpace(b.RefName)
 		if b.Kind == "local" {
@@ -611,13 +679,19 @@ func validateVirtualRepositorySSHHost(host string) error {
 
 func validateRemoteVirtualRepositoryRelativePath(relative string) error {
 	relative = strings.TrimSpace(relative)
-	if relative == "" || strings.HasPrefix(relative, "/") || strings.Contains(relative, "\\") {
+	if strings.HasPrefix(relative, "/") {
+		return errors.New("remote repository path must be relative to the virtual repository root (for example, use \"maclaw2\" instead of \"/maclaw2\")")
+	}
+	if relative == "" || strings.Contains(relative, "\\") {
 		return errors.New("remote repository path must be a non-empty POSIX relative path")
 	}
 	if len(relative) > virtualRepositoryFieldMaxLength || containsControlCharacter(relative) {
 		return errors.New("remote repository path is invalid")
 	}
 	clean := path.Clean(relative)
+	if clean != relative {
+		return errors.New("remote repository path must be normalized and must not contain repeated separators, '.' or '..' components")
+	}
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return errors.New("remote repository path escapes the virtual repository root")
 	}
@@ -921,6 +995,10 @@ func (a *App) SaveVirtualRepository(inputJSON string) (string, error) {
 	}
 	log.Printf("[vrepo] save_local repo=%q nodes=%d status=success duration_ms=%d", repo.ID, len(repo.Nodes), time.Since(started).Milliseconds())
 	data, err := json.Marshal(repo)
+	if err == nil {
+		a.clearVirtualRepositorySyncTombstone("repo", repo.ID)
+		a.scheduleVirtualRepositorySync()
+	}
 	return string(data), err
 }
 
@@ -966,10 +1044,12 @@ func (a *App) DeleteVirtualRepository(id string) error {
 	}
 	prefix := id + ":"
 	bindingsChanged := false
+	removedBindings := []string{}
 	for key := range bindingFile.Bindings {
 		if strings.HasPrefix(key, prefix) {
 			delete(bindingFile.Bindings, key)
 			bindingsChanged = true
+			removedBindings = append(removedBindings, key)
 		}
 	}
 	bindingsPath := a.repositoryCredentialBindingsPath()
@@ -990,6 +1070,15 @@ func (a *App) DeleteVirtualRepository(id string) error {
 	// and node bindings become unreachable. The portable/local manifest and all
 	// repository files remain untouched.
 	_ = keyring.Delete(virtualRepositorySSHKeyringService, id)
+	a.recordVirtualRepositorySyncTombstone("repo", id)
+	// A remote repository's SSH password is scoped to the repository id. Keep a
+	// matching tombstone so the encrypted Hub document drops the password too,
+	// instead of retaining a secret for a repository the user deleted.
+	a.recordVirtualRepositorySyncTombstone("ssh", id)
+	for _, binding := range removedBindings {
+		a.recordVirtualRepositorySyncTombstone("binding", binding)
+	}
+	a.scheduleVirtualRepositorySync()
 	return nil
 }
 
@@ -1006,11 +1095,33 @@ func (a *App) SelectVirtualRepositoryRoot(initialPath string) string {
 }
 
 func (a *App) CreateVirtualRepositoryDirectory(root, relativePath string) error {
-	target, err := resolveVirtualRepositoryPath(root, relativePath, false)
+	repo, err := readVirtualRepository(root)
+	if err != nil {
+		return err
+	}
+	binding := virtualRepositoryBindingByRelativePath(repo, relativePath)
+	if binding == nil {
+		return errors.New("mapped directory was not found in the saved virtual repository")
+	}
+	target, err := resolveVirtualRepositoryPath(repo.RootPath, binding.RelativePath, false)
 	if err != nil {
 		return err
 	}
 	return os.MkdirAll(target, 0o755)
+}
+
+func virtualRepositoryBindingByRelativePath(repo *VirtualRepository, relativePath string) *VirtualRepositoryBinding {
+	if repo == nil {
+		return nil
+	}
+	relativePath = strings.TrimSpace(relativePath)
+	for i := range repo.Nodes {
+		binding := repo.Nodes[i].Repository
+		if binding != nil && binding.RelativePath == relativePath {
+			return binding
+		}
+	}
+	return nil
 }
 
 func (a *App) CheckoutVirtualRepositoryNode(repositoryID, nodeID string) error {

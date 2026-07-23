@@ -30,27 +30,27 @@ const defaultExecutionTimeout = 30 * time.Minute
 
 // ScheduledTask represents a single scheduled task.
 type ScheduledTask struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Action          string     `json:"action"`                       // what the agent should do (natural language)
-	Hour            int        `json:"hour"`                         // 0-23
-	Minute          int        `json:"minute"`                       // 0-59
-	DayOfWeek       int        `json:"day_of_week"`                  // -1=every day, 0=Sun..6=Sat
-	DayOfMonth      int        `json:"day_of_month"`                 // -1=any, 1-31
-	IntervalMinutes int        `json:"interval_minutes,omitempty"`   // >0: repeat every N minutes (overrides Hour/Minute for scheduling)
-	StartDate       string     `json:"start_date,omitempty"`         // "2006-01-02", empty=no limit
-	EndDate         string     `json:"end_date,omitempty"`           // "2006-01-02", empty=no limit
-	TaskType        string     `json:"task_type,omitempty"`          // "reminder" (default) or "process"
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Action          string `json:"action"`                     // what the agent should do (natural language)
+	Hour            int    `json:"hour"`                       // 0-23
+	Minute          int    `json:"minute"`                     // 0-59
+	DayOfWeek       int    `json:"day_of_week"`                // -1=every day, 0=Sun..6=Sat
+	DayOfMonth      int    `json:"day_of_month"`               // -1=any, 1-31
+	IntervalMinutes int    `json:"interval_minutes,omitempty"` // >0: repeat every N minutes (overrides Hour/Minute for scheduling)
+	StartDate       string `json:"start_date,omitempty"`       // "2006-01-02", empty=no limit
+	EndDate         string `json:"end_date,omitempty"`         // "2006-01-02", empty=no limit
+	TaskType        string `json:"task_type,omitempty"`        // "reminder" (default) or "process"
 	// Delivery optionally pushes the agent result to an IM channel target
 	// (e.g. Lansenger group or user). Nil/disabled = no structured push.
-	Delivery        *TaskDelivery `json:"delivery,omitempty"`
-	Status          string     `json:"status"`                       // "active", "paused", "expired"
-	CreatedAt       time.Time  `json:"created_at"`
-	LastRunAt       *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt       *time.Time `json:"next_run_at,omitempty"`
-	RunCount        int        `json:"run_count"`
-	LastResult      string     `json:"last_result,omitempty"`
-	LastError       string     `json:"last_error,omitempty"`
+	Delivery   *TaskDelivery `json:"delivery,omitempty"`
+	Status     string        `json:"status"` // "active", "paused", "expired"
+	CreatedAt  time.Time     `json:"created_at"`
+	LastRunAt  *time.Time    `json:"last_run_at,omitempty"`
+	NextRunAt  *time.Time    `json:"next_run_at,omitempty"`
+	RunCount   int           `json:"run_count"`
+	LastResult string        `json:"last_result,omitempty"`
+	LastError  string        `json:"last_error,omitempty"`
 }
 
 // TaskExecutor is called when a task fires. It receives a context (cancelled
@@ -67,7 +67,7 @@ type Manager struct {
 	stopCh          chan struct{}
 	running         bool
 	executor        TaskExecutor
-	onChange        func() // optional callback after task state changes (fire/expire)
+	onChange        func()   // optional callback after task state changes (fire/expire)
 	pendingCatchUps []string // task IDs that need catch-up fire on Start()
 
 	// runningTasks tracks in-flight executor goroutines so they can be
@@ -167,16 +167,17 @@ func (m *Manager) Start() {
 // Stop halts the scheduler and cancels all in-flight task executions.
 func (m *Manager) Stop() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.running {
 		close(m.stopCh)
 		m.running = false
 	}
-	// Cancel all in-flight executor goroutines so they don't outlive the manager.
-	for id, cancel := range m.runningTasks {
+	// Cancel active executions, but leave their lease entries in place until the
+	// goroutines finish their state writes. Otherwise a manual TriggerNow can
+	// start a duplicate task while the cancelled execution is still unwinding.
+	for _, cancel := range m.runningTasks {
 		cancel()
-		delete(m.runningTasks, id)
 	}
+	m.mu.Unlock()
 }
 
 func (m *Manager) loop() {
@@ -261,12 +262,16 @@ func computeExecutionTimeout(task *ScheduledTask) time.Duration {
 }
 
 func (m *Manager) fireByID(id string, executor TaskExecutor) {
-	// Atomically claim the task: read it and clear NextRunAt so the next
-	// tick() won't fire it again while the executor is still running.
+	// Atomically claim the task. Manual runs retain NextRunAt, so checking it
+	// alone is insufficient: use runningTasks as the common execution lease.
 	m.mu.Lock()
 	var taskCopy *ScheduledTask
 	for i, t := range m.tasks {
 		if t.ID == id {
+			if _, running := m.runningTasks[id]; running {
+				m.mu.Unlock()
+				return
+			}
 			if t.NextRunAt == nil {
 				// Already claimed by another goroutine.
 				m.mu.Unlock()
@@ -281,18 +286,15 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 			break
 		}
 	}
-	m.mu.Unlock()
 	if taskCopy == nil {
+		m.mu.Unlock()
 		return
 	}
 
 	timeout := computeExecutionTimeout(taskCopy)
-
-	// Create a cancellable context with the computed timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-
-	// Register the cancel func so Stop() can cancel in-flight tasks.
-	m.mu.Lock()
+	// Register before releasing the task lock, closing the window where a
+	// manual run or another due tick could start the same task concurrently.
 	m.runningTasks[id] = cancel
 	m.mu.Unlock()
 
@@ -341,8 +343,12 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 		if m.isExpired(&m.tasks[i], now) {
 			// Remove the expired task in-place instead of keeping it around.
 			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
-		} else {
+		} else if m.tasks[i].Status == "active" {
 			m.tasks[i].NextRunAt = m.calcNext(&m.tasks[i], now)
+		} else {
+			// A task can be paused while its executor is still unwinding. Keep
+			// it paused; completion may record the result but must not revive it.
+			m.tasks[i].NextRunAt = nil
 		}
 		break
 	}
@@ -447,6 +453,10 @@ func (m *Manager) Delete(id string) error {
 	defer m.mu.Unlock()
 	for i, t := range m.tasks {
 		if t.ID == id {
+			if cancel, running := m.runningTasks[id]; running {
+				cancel()
+				return fmt.Errorf("scheduler: task %q is running; cancellation requested", id)
+			}
 			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
 			return m.save()
 		}
@@ -473,6 +483,9 @@ func (m *Manager) Pause(id string) error {
 	defer m.mu.Unlock()
 	for i := range m.tasks {
 		if m.tasks[i].ID == id {
+			if cancel, running := m.runningTasks[id]; running {
+				cancel()
+			}
 			m.tasks[i].Status = "paused"
 			m.tasks[i].NextRunAt = nil
 			return m.save()
@@ -591,35 +604,7 @@ func (m *Manager) Update(id string, args map[string]interface{}) error {
 // The task must be in "active" status. Execution happens asynchronously
 // in a goroutine (same as scheduled fires); the method returns immediately.
 func (m *Manager) TriggerNow(id string) error {
-	m.mu.RLock()
-	var found bool
-	var status string
-	for _, t := range m.tasks {
-		if t.ID == id {
-			found = true
-			status = t.Status
-			break
-		}
-	}
-	executor := m.executor
-	m.mu.RUnlock()
-
-	if !found {
-		return fmt.Errorf("task %s not found", id)
-	}
-	if status != "active" {
-		return fmt.Errorf("task %s is not active (status=%s)", id, status)
-	}
-
-	// Fire asynchronously so the UI gets an immediate response.
-	go m.fireManual(id, executor)
-	return nil
-}
-
-// fireManual executes a task triggered manually. Unlike fireByID it does not
-// check NextRunAt (the task may not be due yet).
-func (m *Manager) fireManual(id string, executor TaskExecutor) {
-	m.mu.RLock()
+	m.mu.Lock()
 	var taskCopy *ScheduledTask
 	for _, t := range m.tasks {
 		if t.ID == id {
@@ -629,19 +614,38 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 			break
 		}
 	}
-	m.mu.RUnlock()
+	executor := m.executor
 	if taskCopy == nil {
-		return
+		m.mu.Unlock()
+		return fmt.Errorf("task %s not found", id)
 	}
-
-	// Manual triggers use the same timeout as scheduled fires.
-	timeout := computeExecutionTimeout(taskCopy)
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	m.mu.Lock()
+	if taskCopy.Status != "active" {
+		m.mu.Unlock()
+		return fmt.Errorf("task %s is not active (status=%s)", id, taskCopy.Status)
+	}
+	if _, running := m.runningTasks[id]; running {
+		m.mu.Unlock()
+		return fmt.Errorf("task %s is already running", id)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), computeExecutionTimeout(taskCopy))
+	// Claim before starting the goroutine. A second IM command can arrive before
+	// the first goroutine begins, so registering inside fireManual is too late.
 	m.runningTasks[id] = cancel
 	m.mu.Unlock()
 
+	// Fire asynchronously so the UI gets an immediate response.
+	go m.fireManual(taskCopy, executor, ctx, cancel)
+	return nil
+}
+
+// fireManual executes a task triggered manually. Unlike fireByID it does not
+// check NextRunAt (the task may not be due yet).
+func (m *Manager) fireManual(taskCopy *ScheduledTask, executor TaskExecutor, ctx context.Context, cancel context.CancelFunc) {
+	if taskCopy == nil {
+		return
+	}
+	id := taskCopy.ID
+	timeout := computeExecutionTimeout(taskCopy)
 	defer func() {
 		cancel()
 		m.mu.Lock()

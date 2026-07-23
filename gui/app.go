@@ -83,6 +83,15 @@ type App struct {
 	// this, a second submission could remove the first pending archive while a
 	// retry is still streaming it to HubCenter.
 	bugReportUploadMu sync.Mutex
+	// virtualRepositorySyncScheduleMu coalesces rapid local edits into one Hub
+	// synchronization and keeps an offline edit queued for bounded retry.
+	virtualRepositorySyncScheduleMu sync.Mutex
+	virtualRepositorySyncStateMu    sync.Mutex
+	virtualRepositorySyncTimer      *time.Timer
+	// virtualRepositorySyncGeneration advances after every local virtual
+	// repository mutation. A sync run compares it around its network phase so
+	// it never applies an older snapshot over a newly saved local change.
+	virtualRepositorySyncGeneration atomic.Uint64
 
 	// Managers to reduce struct complexity
 	managers                           *AppManagers
@@ -2130,6 +2139,7 @@ func (a *App) startup(ctx context.Context) {
 			a.emitEvent("ai-assistant-init-progress", "ready")
 			// Background: Hub WebSocket connect + auth + sendHello (network I/O).
 			go a.asyncHubConnect()
+			go a.scheduleVirtualRepositorySync()
 		} else if config.RemoteEmail != "" && config.RemoteHubURL != "" {
 			// No full credentials yet -mark ready immediately, auto-register in background.
 			hubPrepStart := time.Now()
@@ -3069,6 +3079,13 @@ func (a *App) SetLanguage(lang string) {
 
 // Greet returns a greeting for the given name
 func (a *App) ResizeWindow(width, height int) {
+	// The frontend calls this after the environment check completes. Preserve the
+	// low-resolution startup policy here as well: on Windows, WindowSetSize can
+	// otherwise change the geometry after the window was initially maximised.
+	if shouldMaximiseMainWindowForPrimaryScreen() {
+		runtime.WindowMaximise(a.ctx)
+		return
+	}
 	runtime.WindowSetSize(a.ctx, width, height)
 	runtime.WindowCenter(a.ctx)
 }

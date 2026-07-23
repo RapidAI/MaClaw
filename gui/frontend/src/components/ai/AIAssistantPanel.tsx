@@ -79,6 +79,7 @@ import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { agentModeFromTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
+import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
@@ -439,10 +440,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         success: string;
         sessionPlan: string;
     }>({ needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" });
+    /** Project whose reconnect state has been hydrated from the backend. */
+    const [remoteReconnectStatusPath, setRemoteReconnectStatusPath] = useState("");
     /** Avoid auto-reconnect loops: key = projectPath|user@host:port after one attempt (success or fail). */
     const remoteAutoReconnectKeyRef = useRef("");
-    /** Prevent concurrent PrepareRemoteCodingEnvironment calls (auto + manual / double effect). */
-    const remoteReconnectInFlightRef = useRef(false);
+    /** In-flight SSH reconnect owner (`projectPath|user@host:port`), so different remote tabs never block each other. */
+    const remoteReconnectInFlightRef = useRef("");
     /**
      * Identity (`user@host:port`) the current form password is bound to.
      * Used so blur/status can detect real host switches vs same-target edits.
@@ -770,6 +773,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pureCodingSessionKeyRef.current = pureCoding && projectPath ? projectSessionKey(projectPath) : "";
         let cancelled = false;
         if (!pureCoding || !projectPath) {
+            setRemoteReconnectStatusPath("");
             // Leaving pure coding: restore global config-driven request|full (no workspace).
             void LoadConfig().then((cfg) => {
                 if (cancelled || pureCodingTabRef.current) return;
@@ -849,8 +853,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return;
         }
         let cancelled = false;
+        setRemoteReconnectStatusPath("");
+        // The reconnect form is rendered from one shared state object. Clear
+        // its visual state before hydrating the newly active coding project so
+        // an in-flight connection from the previous tab cannot make this tab
+        // appear to be connecting to the previous host.
+        setRemoteReconnect(prev => (prev.needsReconnect || prev.host || prev.user || prev.password || prev.connecting || prev.error || prev.success || prev.sessionPlan
+            ? { needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" }
+            : prev));
         void GetCodingWorkbenchStatus(projectPath).then((st) => {
             if (cancelled || !st) return;
+            setRemoteReconnectStatusPath(projectPath);
             const plan = String(st.session_plan || "").trim();
             const execPlan = String(st.execution_plan || "").trim();
             setCodingSessionPlan(plan);
@@ -978,9 +991,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Apply remote reconnect fields before optional follow-up RPCs so a
             // missing/throwing sidecar binding cannot skip SSH form hydration.
             if (!isRemote) {
-                remoteAutoReconnectKeyRef.current = "";
-                remoteReconnectInFlightRef.current = false;
-                remotePasswordBoundIdentityRef.current = "";
                 setRemoteReconnect(prev => (prev.needsReconnect || prev.host || prev.password
                     ? { needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" }
                     : prev));
@@ -992,8 +1002,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const workDir = String(st.remote_work_dir || "").trim();
                 // Vault + identity binding outside setState (updater must stay pure).
                 if (!needs) {
-                    remoteAutoReconnectKeyRef.current = "";
-                    remoteReconnectInFlightRef.current = false;
+                    const projectPrefix = `${projectPath}|`;
+                    // Do not clear another tab's reconnect reservation merely
+                    // because this tab is already connected.
+                    if (remoteAutoReconnectKeyRef.current.startsWith(projectPrefix)) {
+                        remoteAutoReconnectKeyRef.current = "";
+                    }
+                    if (remoteReconnectInFlightRef.current.startsWith(projectPrefix)) {
+                        remoteReconnectInFlightRef.current = "";
+                    }
                     remotePasswordBoundIdentityRef.current = "";
                     setRemoteReconnect(prev => ({
                         ...prev,
@@ -1069,6 +1086,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
         }).catch(() => {
             if (!cancelled && isRemote) {
+                setRemoteReconnectStatusPath(projectPath);
                 setRemoteReconnect(prev => ({
                     ...prev,
                     needsReconnect: true,
@@ -1187,7 +1205,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // belong to the tab that initiated this reconnect.
         const reconnectTabId = activeTab?.type === "project" ? activeTab.id : "";
         if (!projectPath) return;
-        if (remoteReconnectInFlightRef.current) return;
         const snap = remoteReconnectRef.current;
         const host = snap.host.trim();
         const user = snap.user.trim();
@@ -1208,14 +1225,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return;
         }
         const autoKey = `${projectPath}|${remoteSSHPasswordVaultKey(host, user, port)}`;
+        if (remoteReconnectInFlightRef.current === autoKey) return;
         if (opts?.auto) {
             // Effect may have already reserved autoKey; only skip when another attempt is mid-flight.
-            if (remoteAutoReconnectKeyRef.current === autoKey && remoteReconnectInFlightRef.current) {
+            if (remoteAutoReconnectKeyRef.current === autoKey && remoteReconnectInFlightRef.current === autoKey) {
                 return;
             }
             remoteAutoReconnectKeyRef.current = autoKey;
         }
-        remoteReconnectInFlightRef.current = true;
+        remoteReconnectInFlightRef.current = autoKey;
         setRemoteReconnect(prev => ({
             ...prev,
             connecting: true,
@@ -1228,6 +1246,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             await PrepareRemoteCodingEnvironment(projectPath, host, user, password, workDir, port);
             const st = await GetCodingWorkbenchStatus(projectPath);
             const ok = !st?.needs_reconnect && !!st?.armed;
+            const reconnectTabIsActive = activeTabRef.current.id === reconnectTabId
+                && activeTabRef.current.type === "project"
+                && activeTabRef.current.projectPath === projectPath;
             if (ok) {
                 saveRemoteSSHPassword(host, user, password, port, workDir);
                 // Allow a future auto-reconnect after a later disconnect.
@@ -1237,7 +1258,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 // Password shown on failure is bound to this target.
                 remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
             }
-            setRemoteReconnect(prev => ({
+            if (reconnectTabIsActive) setRemoteReconnect(prev => ({
                 ...prev,
                 connecting: false,
                 // Keep password filled on failure so user can retry/edit; clear only after success.
@@ -1249,14 +1270,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     : "",
                 sessionPlan: String(st?.session_plan || prev.sessionPlan || ""),
             }));
-            if (ok && st?.session_plan) {
+            if (reconnectTabIsActive && ok && st?.session_plan) {
                 setCodingSessionPlan(String(st.session_plan));
                 setCodingSessionPlanDraft(String(st.session_plan));
             }
             if (ok) {
-                requestAnimationFrame(() => {
-                    inputRef.current?.focus();
-                });
+                if (reconnectTabIsActive) requestAnimationFrame(() => inputRef.current?.focus());
                 // An IM-started remote task must not send its prompt until the
                 // workbench is armed.  Keep the prompt in tab state (rather than
                 // an event payload) so automatic and manual reconnect share the
@@ -1265,11 +1284,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const pendingState = tabId ? getTabState(tabId) : undefined;
                 const pendingInitial = pendingState?.pendingRemoteInitialMessage;
                 if (tabId && pendingInitial?.text.trim()) {
-                    saveTabState(tabId, { ...pendingState, pendingRemoteInitialMessage: undefined });
                     if (preparingProjectTabIdsRef.current.has(tabId)) {
                         pendingRemoteInitialSendRef.current.set(tabId, { text: pendingInitial.text, projectPath });
                     } else {
-                        void sendMessageForTabRef.current?.(pendingInitial.text, { tabId, project_path: projectPath });
+                        // Clear only once the send handoff has been accepted.
+                        // If the UI unmounts or a transient route error occurs,
+                        // retaining this state allows a later reconnect to retry
+                        // instead of silently losing an IM-started task.
+                        void sendMessageForTabRef.current?.(pendingInitial.text, { tabId, project_path: projectPath })
+                            .then((sent) => {
+                                if (sent === false) return;
+                                const current = getTabState(tabId);
+                                if (current?.pendingRemoteInitialMessage?.text === pendingInitial.text) {
+                                    saveTabState(tabId, { ...current, pendingRemoteInitialMessage: undefined });
+                                }
+                            })
+                            .catch((error) => console.warn("[AIAssistantPanel] pending remote initial send failed", { tabId, projectPath, error }));
                     }
                 }
             }
@@ -1277,7 +1307,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // autoKey stays set on failure so we do not loop on a bad/stale password.
             remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
             const msg = err instanceof Error ? err.message : String(err || "reconnect failed");
-            setRemoteReconnect(prev => ({
+            const reconnectTabIsActive = activeTabRef.current.id === reconnectTabId
+                && activeTabRef.current.type === "project"
+                && activeTabRef.current.projectPath === projectPath;
+            if (reconnectTabIsActive) setRemoteReconnect(prev => ({
                 ...prev,
                 connecting: false,
                 error: msg,
@@ -1285,7 +1318,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 password: prev.password || password,
             }));
         } finally {
-            remoteReconnectInFlightRef.current = false;
+            if (remoteReconnectInFlightRef.current === autoKey) remoteReconnectInFlightRef.current = "";
         }
     }, [activeTab?.id, activeTab?.projectPath, activeTab?.type, getTabState, lang, saveTabState]);
     /**
@@ -1338,19 +1371,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Silent reconnect only with a fully remembered vault password — never mid-typing.
     // Handler is stable (reads remoteReconnectRef), so this does not re-fire on password keystrokes.
     useEffect(() => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        // The reconnect form is project-owned; do not reuse a previous tab's
+        // hydrated state during the brief tab-switch render.
+        if (remoteReconnectStatusPath !== projectPath) return;
         if (!remoteReconnect.needsReconnect || remoteReconnect.connecting) return;
-        if (remoteReconnectInFlightRef.current) return;
         const host = remoteReconnect.host.trim();
         const user = remoteReconnect.user.trim();
         const workDir = remoteReconnect.workDir.trim();
         const port = remoteReconnect.port > 0 ? remoteReconnect.port : 22;
         if (!host || !user || !workDir) return;
         if (!loadRemoteSSHPassword(host, user, port)) return;
-        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
         if (!projectPath) return;
         const autoKey = `${projectPath}|${remoteSSHPasswordVaultKey(host, user, port)}`;
         // Reserve before async so Strict Mode / double-effect cannot start two prepares.
         if (remoteAutoReconnectKeyRef.current === autoKey) return;
+        if (remoteReconnectInFlightRef.current === autoKey) return;
         remoteAutoReconnectKeyRef.current = autoKey;
         remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
         void handleRemoteCodingReconnect({ auto: true });
@@ -1361,6 +1397,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         remoteReconnect.user,
         remoteReconnect.workDir,
         remoteReconnect.port,
+        remoteReconnectStatusPath,
         activeTab?.projectPath,
         activeTab?.type,
         handleRemoteCodingReconnect,
@@ -1395,10 +1432,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingPlanMode(previous);
         }
     }, [activeTab?.projectPath, activeTab?.type, codingPlanMode]);
-    /** Approve / skip / reject pending multi-step plan via workbench slash (runs immediately). */
+    /** Approve / skip / reject pending multi-step plan via the lifecycle-aware task route. */
     const handleCodingPlanGate = useCallback(async (action: "approve" | "skip" | "reject") => {
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
         if (!projectPath) return;
+        // Plan controls are task intents as well. Do not let the compact
+        // workbench controls dispatch into a remote session before SSH is
+        // reconnected (or before the coding environment has finished setup).
+        if (!canDispatchCodingIntent(resolveCodingTaskPhase({
+            agentMode: activeTab?.agentMode,
+            preparing: preparingProjectTabIdsRef.current.has(activeTab.id),
+            remoteNeedsReconnect: activeTab?.agentMode === "remote_coding_dev" && (
+                remoteReconnectStatusPath === projectPath
+                    ? remoteReconnect.needsReconnect
+                    : !!activeTab.remoteNeedsReconnect
+            ),
+        }))) {
+            return;
+        }
         const cmd = action === "approve" ? "/plan approve" : action === "skip" ? "/plan skip" : "/plan reject";
         // Optimistic clear for reject; approve/skip keep pending until runner starts.
         if (action === "reject") {
@@ -1417,11 +1468,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setCodingPendingPlanEditing(false);
                 } catch { /* keep draft; still attempt gate action */ }
             }
-            if (typeof executeAction === "function") {
-                await Promise.resolve(executeAction(cmd));
-            } else if (typeof sendMessage === "function") {
-                await Promise.resolve(sendMessage(cmd));
-            }
+            const sent = await sendMessageForTabRef.current?.(cmd, {
+                tabId: activeTab.id,
+                project_path: projectPath,
+            });
+            if (sent === false) return;
             // Refresh sticky status (pending flag + steps).
             const st = await GetCodingWorkbenchStatus(projectPath);
             setCodingPendingApproval(!!st?.pending_approval);
@@ -1441,7 +1492,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setCodingPendingApproval(!!st?.pending_approval);
             } catch { /* ignore */ }
         }
-    }, [activeTab?.projectPath, activeTab?.type, executeAction, sendMessage, codingPendingPlanEditing, codingPendingPlanDraft]);
+    }, [activeTab?.agentMode, activeTab?.id, activeTab?.projectPath, activeTab?.remoteNeedsReconnect, activeTab?.type, codingPendingPlanEditing, codingPendingPlanDraft, remoteReconnect.needsReconnect, remoteReconnectStatusPath]);
     const handleSavePendingPlanEdit = useCallback(async () => {
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
         if (!projectPath) return;
@@ -2133,6 +2184,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const isCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "coding_dev";
     const isRemoteCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "remote_coding_dev";
     const isPureCodingEnvironment = isCodingDevEnvironment || isRemoteCodingDevEnvironment;
+    // The tab carries the launch-time reconnect signal synchronously. Status RPC
+    // hydration follows asynchronously, so include both sources to avoid briefly
+    // announcing a connected remote workbench with an enabled composer.
+    const activeRemoteProjectPath = isRemoteCodingDevEnvironment ? (activeTab.projectPath || "") : "";
+    const remoteCodingNeedsReconnect = isRemoteCodingDevEnvironment && (
+        remoteReconnectStatusPath === activeRemoteProjectPath
+            ? remoteReconnect.needsReconnect
+            : !!activeTab.remoteNeedsReconnect
+    );
     // Float control chrome: see buildCodingBannerChrome (dark local = muted sage, not neon green).
     const codingBannerChrome = useMemo(
         () => buildCodingBannerChrome({
@@ -2157,7 +2217,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         const pending = !!codingPendingApproval;
         const conflicts = codingConflictCount > 0;
-        const reconnect = !!remoteReconnect.needsReconnect;
+        const reconnect = remoteCodingNeedsReconnect;
         const prev = prevCodingInterruptRef.current;
         if (prev.key !== codingInterruptScopeKey) {
             // New coding tab/session: open float only for plan/SSH; conflicts use the side panel.
@@ -2187,7 +2247,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingConflictOpen(true);
         }
         prevCodingInterruptRef.current = { key: codingInterruptScopeKey, pending, conflicts, reconnect };
-    }, [isPureCodingEnvironment, codingInterruptScopeKey, codingPendingApproval, codingConflictCount, remoteReconnect.needsReconnect]);
+    }, [isPureCodingEnvironment, codingInterruptScopeKey, codingPendingApproval, codingConflictCount, remoteCodingNeedsReconnect]);
     const showChatUI = isLocalTabActive || isProjectTabActive || isExpertTabActive;
     const activeSessionKey = isProjectTabActive && activeTab.projectPath
         ? `desktop-user:${activeTab.projectPath}`
@@ -2234,6 +2294,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const pendingRemoteInitialSendRef = useRef<Map<string, { text: string; projectPath: string }>>(new Map());
     const projectPrepareTimersRef = useRef<Map<string, number>>(new Map());
     const sendMessageForTabRef = useRef<((text: string, options?: Record<string, unknown>) => Promise<boolean>) | null>(null);
+    /** Event-driven entry points share the same lifecycle gate as the composer. */
+    const dispatchTaskIntentRef = useRef<((text: string, options?: Record<string, unknown>) => Promise<boolean>) | null>(null);
     const activeTabIdRef = useRef<string>(activeTab.id);
     const activeTabRef = useRef(activeTab);
     const latestDisplayMessagesRef = useRef<ChatMessage[]>([]);
@@ -2659,9 +2721,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             void sendMessageForTabRef.current?.(pendingRemote.text, {
                 tabId,
                 project_path: projectPath || pendingRemote.projectPath,
-            });
+            }).then((sent) => {
+                if (sent === false) return;
+                const current = getTabState(tabId);
+                if (current?.pendingRemoteInitialMessage?.text === pendingRemote.text) {
+                    saveTabState(tabId, { ...current, pendingRemoteInitialMessage: undefined });
+                }
+            }).catch((error) => console.warn("[AIAssistantPanel] pending remote initial send after prepare failed", {
+                tabId,
+                projectPath: projectPath || pendingRemote.projectPath,
+                error,
+            }));
         }
-    }, [setProjectTabPreparing]);
+    }, [getTabState, saveTabState, setProjectTabPreparing]);
     const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteNeedsReconnect?: boolean } | boolean) => {
         const tabExisted = hasProjectTab(projectPath);
         const prepareMode = typeof options === "object" ? options.prepareMode : "restore-context";
@@ -3498,10 +3570,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.type, busySessionKeys, isBusy, panelSessionIsSending, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys]);
     const activeProjectPreparing = isProjectTabActive && preparingProjectTabIds.has(activeTab.id);
     const activeProjectPrepareMode = activeProjectPreparing ? (preparingProjectTabModes.get(activeTab.id) || "restore-context") : "restore-context";
+    const codingTaskPhase = resolveCodingTaskPhase({
+        agentMode: isPureCodingEnvironment ? activeTab.agentMode : undefined,
+        preparing: activeProjectPreparing,
+        remoteNeedsReconnect: remoteCodingNeedsReconnect,
+    });
+    const codingTaskReadyForIntents = canDispatchCodingIntent(codingTaskPhase);
     const codingEnvDescription = useMemo(() => {
         if (!isPureCodingEnvironment) return "";
         if (isRemoteCodingDevEnvironment) {
-            if (remoteReconnect.needsReconnect) {
+            if (remoteCodingNeedsReconnect) {
                 return localizeText(lang, "SSH session is not connected. Reconnect below (password is remembered on this device) to continue multi-turn remote coding.", "SSH 未连接或已断开。请在下方重连（本机已记忆密码时会自动填充/重连）以继续多轮远程编程。", "SSH 未連線或已中斷。請在下方重連（本機已記憶密碼時會自動填入/重連）以繼續多輪遠端程式開發。");
             }
             if (activeProjectPreparing && activeProjectPrepareMode === "new-agent") {
@@ -3513,7 +3591,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return localizeText(lang, "Starting full coding workbench (tools, Skill/MCP, source preview)…", "正在启动全功能编程工作台（工具 / Skill / MCP / 源码预览）…", "正在啟動全功能程式工作台（工具 / Skill / MCP / 原始碼預覽）…");
         }
         return localizeText(lang, "Full coding workbench (Claude Code / Codex–level intent). Tools, Skill/MCP, web research, multi-turn session memory, and source preview are active. Follow-up messages continue in this coding environment.", "全功能编程工作台（对齐 Claude Code / Codex）。工具、Skill/MCP、联网检索、多轮会话记忆与源码预览已启用；后续消息仍在本编程环境中续写。", "全功能程式工作台（對齊 Claude Code / Codex）。工具、Skill/MCP、聯網檢索、多輪工作階段記憶與原始碼預覽已啟用；後續訊息仍在本程式環境中續寫。");
-    }, [isPureCodingEnvironment, isRemoteCodingDevEnvironment, remoteReconnect.needsReconnect, activeProjectPreparing, activeProjectPrepareMode, lang]);
+    }, [isPureCodingEnvironment, isRemoteCodingDevEnvironment, remoteCodingNeedsReconnect, activeProjectPreparing, activeProjectPrepareMode, lang]);
     // Live record_audio card: hard-lock composer (no type-ahead / no queue) so the
     // user only uses pause/stop on the recording card until it finishes.
     const recordingActive = useMemo(
@@ -3543,7 +3621,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         handleDropBase(event);
     }, [handleDropBase, recordingActive]);
-    const inputLocked = isBusy || cancelPending || activeProjectPreparing || recordingActive;
+    const inputLocked = isBusy || cancelPending || !codingTaskReadyForIntents || recordingActive;
     // Busy agent allows type-ahead queue; live mic does not — keep submitLocked true
     // for lock UI, but send paths hard-return when recordingActive.
     const submitLocked = inputLocked;
@@ -3628,8 +3706,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         const handler = (e: Event) => {
             const detail = (e as CustomEvent).detail;
-            if (detail?.command && sendMessageForTabRef.current) {
-                void sendMessageForTabRef.current(detail.command);
+            if (typeof detail?.command === "string" && detail.command.trim()) {
+                void dispatchTaskIntentRef.current?.(detail.command);
             }
         };
         window.addEventListener('ai-send-branch-command', handler);
@@ -3642,7 +3720,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const text = (e as CustomEvent).detail?.text;
             if (typeof text === "string" && text.trim()) {
                 e.preventDefault(); // Signal to sender that injection was accepted
-                void sendMessageForTabRef.current?.(text.trim());
+                void dispatchTaskIntentRef.current?.(text);
             }
         };
         window.addEventListener('maclaw:inject-chat-message', handler);
@@ -3740,6 +3818,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 : "录音进行中 — 请使用上方录音卡片的暂停/停止")
             : activeProjectPreparing
             ? preparingPlaceholderText
+            : remoteCodingNeedsReconnect
+            ? localizeText(lang, "Reconnect SSH above... type ahead, Enter will wait", "请先在上方重新连接 SSH… 可预输入，Enter 会等待", "請先在上方重新連線 SSH… 可預輸入，Enter 會等待")
             : workflowAwaitingForm
             ? (workflowFormGeneratingDocument
                 ? (lang === "en" ? "Generating the workflow document..." : "正在生成工作流文档…")
@@ -3824,10 +3904,54 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return map;
     }, [branchPoints]);
-    // Show welcome for an idle, empty conversation on local tab or a cleared project tab.
+    // Show welcome for an idle, empty conversation on the local tab or a regular
+    // project tab. Pure coding tabs are already task workbenches; showing the
+    // generic assistant guide after their environment connects hides that state.
     // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
     // modes — the embedded panel is now the primary usage mode.
-    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || isProjectTabActive);
+    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment));
+    const pureCodingEmptyTitle = isRemoteCodingDevEnvironment
+        ? (remoteCodingNeedsReconnect
+            ? localizeText(lang, "Remote coding environment needs SSH reconnect", "远程编程环境需要重新连接 SSH", "遠端程式環境需要重新連線 SSH")
+            : localizeText(lang, "Remote coding environment connected", "远程编程环境已连接", "遠端程式環境已連線"))
+        : localizeText(lang, "Coding environment ready", "编程环境已就绪", "程式環境已就緒");
+    const pureCodingEmptyDescription = remoteCodingNeedsReconnect
+        ? localizeText(lang, "Reconnect above before sending a programming task.", "请先在上方重新连接，再发送编程任务。", "請先在上方重新連線，再傳送程式任務。")
+        : localizeText(lang, "Enter a programming task below to start working in this repository.", "在下方输入编程任务，即可开始处理此仓库。", "在下方輸入程式任務，即可開始處理此倉庫。");
+    const showPureCodingEmptyState = isPureCodingEnvironment
+        && ready
+        && !onboardingIncomplete
+        && !activeProjectPreparing
+        && displayMessages.length === 0
+        && !showThinkingState
+        && !showProcessingState;
+    const pureCodingEmptyContent = isPureCodingEnvironment ? (
+        <div
+            data-testid={isRemoteCodingDevEnvironment ? "remote-coding-workbench-empty" : "coding-workbench-empty"}
+            style={{
+                minHeight: "100%",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 7,
+                padding: "28px 20px",
+                boxSizing: "border-box",
+                textAlign: "center",
+                color: t.textMuted,
+            }}
+        >
+            <div style={{ color: t.text, fontSize: 14, fontWeight: 600 }}>
+                {pureCodingEmptyTitle}
+            </div>
+            {isRemoteCodingDevEnvironment && activeTab.remoteHost ? (
+                <div style={{ color: t.headingColor, fontSize: 12 }}>{activeTab.remoteHost}</div>
+            ) : null}
+            <div style={{ maxWidth: 520, color: t.emptyHint, fontSize: 12, lineHeight: 1.55 }}>
+                {pureCodingEmptyDescription}
+            </div>
+        </div>
+    ) : undefined;
     // Returning to an empty welcome state should clear any leftover save offer.
     useEffect(() => {
         if (showWelcomeView) setWelcomeTemplateOffer(null);
@@ -3966,6 +4090,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const fireSlashInFlightRef = useRef(false);
     const handleFireSlashCommand = useCallback(async (command: FireSlashCommand) => {
         if (!ready || fireSlashInFlightRef.current) return;
+        // Slash palette actions are task intents too.  Do not let this UI-only
+        // shortcut bypass a preparing/disconnected remote coding lifecycle.
+        if (!codingTaskReadyForIntents) {
+            addEntry(command, [], { autoDrain: true, steerWhenBusy: false });
+            queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
+            return;
+        }
         fireSlashInFlightRef.current = true;
         setComposeAction(null);
         // Immediate slash commands (/help, /memory, …) are handled before the agent
@@ -3978,11 +4109,28 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             fireSlashInFlightRef.current = false;
             requestAnimationFrame(() => inputRef.current?.focus());
         }
-    }, [ready, recordSubmittedPrompt, sendMessageForTab]);
+    }, [activeSessionKey, addEntry, codingTaskReadyForIntents, ready, recordSubmittedPrompt, sendMessageForTab]);
     const handleClearInput = useCallback(() => {
         clearComposerDraft({ clearAttachments: false });
     }, [clearComposerDraft]);
     const sendInFlightRef = useRef(false);
+    /**
+     * Single dispatch path for non-composer callers (window events, branch
+     * controls, integrations). Those callers do not have an input widget to
+     * enforce the lifecycle themselves, so queue their intent until the owning
+     * coding environment is prepared and, for remote workbenches, connected.
+     */
+    const dispatchTaskIntent = useCallback(async (text: string, options?: Record<string, unknown>): Promise<boolean> => {
+        const trimmed = text.trim();
+        if (!trimmed) return false;
+        if (!codingTaskReadyForIntents) {
+            const queued = addEntry(trimmed, [], { autoDrain: true, steerWhenBusy: false });
+            if (queued) queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
+            return queued !== null;
+        }
+        return sendMessageForTab(trimmed, options);
+    }, [activeSessionKey, addEntry, codingTaskReadyForIntents, sendMessageForTab]);
+    dispatchTaskIntentRef.current = dispatchTaskIntent;
     /** Welcome param dialog "Send now": dispatch without requiring a second click. */
     const handleWelcomePromptSend = useCallback(async (text: string, meta?: WelcomePromptSubmitMeta) => {
         const trimmed = (text || "").trim();
@@ -4056,6 +4204,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const trimmed = normalizeASRText(text);
         // Honor active compose mode (goal / btw) so voice matches typed send semantics.
         const composed = applyComposeActionToText(trimmed, composeAction);
+        // Remote coding owns every turn, including /btw and install/control
+        // commands. Preserve it in the tab queue until SSH is usable again.
+        if (!codingTaskReadyForIntents) {
+            addEntry(composed, [], { autoDrain: true, steerWhenBusy: false });
+            setComposeAction(null);
+            return;
+        }
         if (isBtwCommandText(composed) && sendBtwMessage) {
             if (sendInFlightRef.current) return;
             sendInFlightRef.current = true;
@@ -4129,7 +4284,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // turn waits for this send, then drains promptly afterwards.
             refreshQueueInFlight();
         }
-    }, [addEntry, clearComposerDraft, composeAction, dispatchBtwText, inputLocked, ready, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, sendBtwMessage, sendMessageForTab, updateInputValue]);
+    }, [addEntry, clearComposerDraft, codingTaskReadyForIntents, composeAction, dispatchBtwText, inputLocked, ready, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, sendBtwMessage, sendMessageForTab, updateInputValue]);
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId || '');
     const { finishVoicePointer, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave } = useAIAssistantVoiceControls({
         inputRef,
@@ -4150,6 +4305,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         const rawInputValue = inputRef.current?.value ?? inputValue;
         const text = applyComposeActionToText(rawInputValue, composeAction);
+        // Do this before the /btw and install fast paths. Those paths normally
+        // bypass busy-state queuing, but a disconnected remote workbench must
+        // not dispatch any tab-owned command until SSH reconnect succeeds.
+        if (!codingTaskReadyForIntents && !queueEditDraftActive) {
+            if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) return;
+            const attachments: AttachmentInfo[] = [...pendingAttachments];
+            for (const fp of selectedFilePaths) {
+                const fileName = fp.split(/[/\\]/).pop() || fp;
+                const ext = "." + (fileName.split(".").pop() || "").toLowerCase();
+                attachments.push({ filePath: fp, isImage: isImageFilePath(fp), fileName, extension: ext });
+            }
+            setQueueInteractionStarted(true);
+            addEntry(text || rawInputValue, attachments, { autoDrain: true, steerWhenBusy: false });
+            queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
+            setComposeAction(null);
+            clearComposerDraft({ clearAttachments: true });
+            return;
+        }
         if (isBtwCommandText(text) && sendBtwMessage) {
             sendInFlightRef.current = true;
             // Clear immediately — SendBtwQuery only resolves after the full side-query loop.
@@ -4232,14 +4405,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Queue stores the composed command text so /goal (and similar) survive drain.
             addEntry(text || rawInputValue, attachments, {
                 autoDrain: submitLocked,
-                // Match Codex CLI: Enter during a regular active turn attempts
-                // same-turn steering immediately. The entry remains durable
-                // until the backend accepts it, then falls back to auto-drain.
-                // Slash commands are independent control turns. Feeding one
-                // into the model as conversational steering would bypass its
-                // backend command handler (/goal, /help, /memory, ...).
-                steerWhenBusy: submitLocked && (activeSessionIsSending || activeSessionIsStreaming) && !activeProjectPreparing && !cancelPending
-                    && !/^[/／]/.test((text || rawInputValue).trim()),
+                // Enter creates a normal durable next-turn queue item. The
+                // user explicitly chooses same-turn steering with this entry's
+                // fire/attach button after it appears in the queue.
+                steerWhenBusy: false,
             });
             if (submitLocked) {
                 queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
@@ -4263,7 +4432,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
     useEffect(() => {
         if (queue.length === 0) {
             continueQueueDrainSessionKeysRef.current.delete(activeSessionKey);
@@ -4278,7 +4447,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const headText = queue[0]?.text?.trim() ?? "";
         const headIsInstall = headText.length > 0 && isInstallCommandText(headText);
         const readyBase = ready && showChatUI && !sendInFlightRef.current;
-        const readyToDrainQueue = readyBase && (!submitLocked || headIsInstall);
+        // A remote coding queue must never drain through a stale/disconnected SSH
+        // workbench. Install commands also wait here: this tab owns a remote
+        // coding session, so every queued control turn must retain that ordering.
+        const readyToDrainQueue = readyBase && codingTaskReadyForIntents && (!submitLocked || headIsInstall);
         const becameIdle = prevSubmitLockedRef.current && readyToDrainQueue;
         const returnedToChatIdle = !prevShowChatUIRef.current && readyToDrainQueue;
         const continueIdleDrain = continueQueueDrainSessionKeysRef.current.has(activeSessionKey) && readyToDrainQueue;
@@ -4333,11 +4505,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
-    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, dispatchBtwText, queue, queueEditDraftActive, queueInFlightVersion, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
+    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, codingTaskReadyForIntents, dispatchBtwText, queue, queueEditDraftActive, queueInFlightVersion, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
     const handleFireEntry = useCallback(async (id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         const entry = queue.find(item => item.id === id);
         if (!entry) return;
+        // "Send now" is still a coding-task intent. A queued remote task may
+        // outlive the connection that created it, so it must wait for the same
+        // lifecycle gate as typed, voice, slash-palette, and auto-drained input.
+        // Leaving the entry intact lets the normal drain resume it after SSH
+        // reconnects (or project preparation completes).
+        if (!codingTaskReadyForIntents) {
+            queueAutoDrainArmedSessionKeysRef.current.add(entry.sessionKey?.trim() || activeSessionKey);
+            return;
+        }
         const entrySessionKey = entry.sessionKey?.trim() || activeSessionKey;
         const sendEntryAsTurn = (text: string) => sendMessageForTab(text, { queue_session_key: entrySessionKey });
         firingEntryIdsRef.current.add(id);
@@ -4384,7 +4565,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             firingEntryIdsRef.current.delete(id);
             refreshQueueInFlight();
         }
-    }, [activeSessionKey, dispatchBtwText, guideLaunchReference, injectSupplementary, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, updateEntry]);
+    }, [activeSessionKey, codingTaskReadyForIntents, dispatchBtwText, guideLaunchReference, injectSupplementary, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, updateEntry]);
     useEffect(() => {
         if (activeProjectPreparing || cancelPending || recordingActive) return;
         // Preserve conversational order. In particular, a later ordinary
@@ -4404,7 +4585,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         removeEntry(id);
     }, [removeEntry]);
-    const isQueueEntryInFlight = useCallback((id: string) => activeProjectPreparing || firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id), [activeProjectPreparing, queueInFlightVersion]);
+    // A queued entry cannot be attached or sent until its coding task has
+    // completed setup and, for remote workbenches, SSH is connected. Reflect
+    // that in the row controls instead of allowing a no-op "Send now" click.
+    const isQueueEntryInFlight = useCallback((id: string) => (
+        !codingTaskReadyForIntents
+        || firingEntryIdsRef.current.has(id)
+        || drainingEntryIdsRef.current.has(id)
+    ), [codingTaskReadyForIntents, queueInFlightVersion]);
     const handleReorderEntry = useCallback((fromIndex: number, toIndex: number) => {
         const moving = queue[fromIndex];
         const target = queue[toIndex];
@@ -4529,6 +4717,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             requestAnimationFrame(() => inputRef.current?.focus());
             return;
         }
+        // Message-card actions ultimately invoke the same agent session as a
+        // typed task. In a pure coding tab, keep them behind the lifecycle
+        // gate so stale confirmation/recovery cards cannot send into a remote
+        // workbench while its SSH connection is unavailable.
+        if (isPureCodingEnvironment && !codingTaskReadyForIntents) return;
         if (!isProjectTabActive || !activeTab.projectPath) {
             return executeAction(command);
         }
@@ -4556,7 +4749,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // logic (__workflow_choice__, __confirm_execution__, etc.) and
         // internally calls sendMessage with proper options.
         return executeAction(command);
-    }, [activeTab.id, activeTab.projectPath, executeAction, isProjectTabActive]);
+    }, [activeTab.id, activeTab.projectPath, codingTaskReadyForIntents, executeAction, isProjectTabActive, isPureCodingEnvironment]);
 
     const handleRecordingComplete = useCallback((result: RecordingCompleteResult, messageId: string) => {
         // Deactivate before sending completion so input unlocks and the card
@@ -4567,9 +4760,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             /* ignore */
         }
         const payload = formatRecordingCompletionMessage(result);
-        const display = formatRecordingCompletionDisplay(result, lang);
-        void sendMessage(payload, { uiAction: true, displayText: display });
-    }, [deactivateRecordingSession, lang, sendMessage]);
+        // A recording card can complete while a remote coding workbench is
+        // reconnecting. Route through the same lifecycle-aware dispatcher so
+        // its completion never jumps ahead of that task's SSH recovery.
+        void dispatchTaskIntent(payload, { uiAction: true, displayText: formatRecordingCompletionDisplay(result, lang) });
+    }, [deactivateRecordingSession, dispatchTaskIntent, lang]);
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
 
@@ -4611,7 +4806,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // isBusy is included only for the last assistant (affects <details open>).
             // Use -1 for undefined content to distinguish from empty string (length 0).
             const contentLen = msg.content == null ? -1 : msg.content.length;
-            const contentKey = `${contentLen}|${msg.reasoning?.length ?? 0}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}`;
+            const contentKey = `${contentLen}|${msg.kind ?? ''}|${msg.reasoning?.length ?? 0}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -4788,13 +4983,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         stepStatuses={codingStepStatuses}
                         pendingApproval={codingPendingApproval}
                         conflictCount={codingConflictCount}
-                        lockExpanded={!!remoteReconnect.needsReconnect}
+                        lockExpanded={remoteCodingNeedsReconnect}
                         expanded={codingControlExpanded}
                         onExpandedChange={setCodingControlExpanded}
                         envDescription={codingEnvDescription}
                     >
                         {/* Defer heavy control tree until expanded — parent would otherwise rebuild it every chat render. */}
-                        {!codingControlExpanded ? null : isRemoteCodingDevEnvironment && remoteReconnect.needsReconnect ? (
+                        {!codingControlExpanded ? null : remoteCodingNeedsReconnect ? (
                             <div data-testid="remote-coding-reconnect-form" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                 <div style={{ fontSize: 12, fontWeight: 600, color: t.headingColor || t.text }}>
                                     {localizeText(lang, "Reconnect remote SSH", "重新连接远程 SSH", "重新連線遠端 SSH")}
@@ -5034,8 +5229,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                         type="button"
                                                         data-testid="coding-plan-approve"
                                                         onClick={() => { void handleCodingPlanGate("approve"); }}
+                                                        disabled={!codingTaskReadyForIntents}
                                                         title={localizeText(lang, "Approve and execute multi-step plan", "批准并执行多步计划", "批准並執行多步計畫")}
-                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: "none", background: codingBannerChrome.btnPrimaryBg, color: codingBannerChrome.btnPrimaryFg, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: "none", background: codingBannerChrome.btnPrimaryBg, color: codingBannerChrome.btnPrimaryFg, fontSize: 11, fontWeight: 600, cursor: codingTaskReadyForIntents ? "pointer" : "not-allowed", opacity: codingTaskReadyForIntents ? 1 : 0.55 }}
                                                     >
                                                         {localizeText(lang, "Approve", "批准执行", "批准執行")}
                                                     </button>
@@ -5043,8 +5239,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                         type="button"
                                                         data-testid="coding-plan-skip"
                                                         onClick={() => { void handleCodingPlanGate("skip"); }}
+                                                        disabled={!codingTaskReadyForIntents}
                                                         title={localizeText(lang, "Skip multi-step plan; run original request as one step", "跳过多步规划，按原请求单步执行", "跳過多步規劃，按原請求單步執行")}
-                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: "pointer" }}
+                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: codingTaskReadyForIntents ? "pointer" : "not-allowed", opacity: codingTaskReadyForIntents ? 1 : 0.55 }}
                                                     >
                                                         {localizeText(lang, "Skip plan", "跳过规划", "跳過規劃")}
                                                     </button>
@@ -5052,8 +5249,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                         type="button"
                                                         data-testid="coding-plan-reject"
                                                         onClick={() => { void handleCodingPlanGate("reject"); }}
+                                                        disabled={!codingTaskReadyForIntents}
                                                         title={localizeText(lang, "Reject and clear pending plan", "拒绝并清除待批计划", "拒絕並清除待批計畫")}
-                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid #dc262655`, background: codingBannerChrome.chipIdleBg, color: "#dc2626", fontSize: 11, cursor: "pointer" }}
+                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid #dc262655`, background: codingBannerChrome.chipIdleBg, color: "#dc2626", fontSize: 11, cursor: codingTaskReadyForIntents ? "pointer" : "not-allowed", opacity: codingTaskReadyForIntents ? 1 : 0.55 }}
                                                     >
                                                         {localizeText(lang, "Reject", "拒绝", "拒絕")}
                                                     </button>
@@ -5410,7 +5608,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         )}
                     </CodingWorkbenchControlPanel>
                 )}
-                {isRemoteCodingDevEnvironment && remoteReconnect.success && !remoteReconnect.needsReconnect && (
+                {isRemoteCodingDevEnvironment && remoteReconnect.success && !remoteCodingNeedsReconnect && (
                     <div
                         data-testid="remote-coding-reconnect-success"
                         data-coding-float-ignore-outside=""
@@ -5462,7 +5660,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     </div>
                 )}
                 {showWelcomeView ? (
-                    <div data-testid="ai-welcome-container" style={{ flex: 1, minHeight: 0, overflow: "auto", background: t.bg, paddingTop: isPureCodingEnvironment ? 40 : 0, boxSizing: "border-box" }}>
+                    <div data-testid="ai-welcome-container" style={{ flex: 1, minHeight: 0, overflow: "auto", background: t.bg, boxSizing: "border-box" }}>
                         <AssistantWelcomeView
                             lang={lang}
                             theme={t}
@@ -5531,7 +5729,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             </div>
                         </div>
                     ) : null}
-                    <AssistantConversationBody initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState} showThinkingState={showThinkingState} theme={t} thinkingText={thinkingText} />
+                    {showPureCodingEmptyState ? pureCodingEmptyContent : null}
+                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState} showThinkingState={showThinkingState} theme={t} thinkingText={thinkingText} />
                     <div ref={outputEndRef} />
                 </div>
                 )}

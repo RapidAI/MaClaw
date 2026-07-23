@@ -132,7 +132,7 @@ func configAgentToolCatalogJSON(providerReg *im.LLMProviderRegistry) string {
 			{"name": "smart_route_all.get", "mode": "read", "desc": "Get smart_route_all toggle"},
 			{"name": "smart_route_all.update", "mode": "write", "desc": "Enable/disable smart_route_all", "args": []string{"enabled"}},
 			{"name": "registration_auth.get", "mode": "read", "desc": "Get registration auth method config"},
-			{"name": "registration_auth.update", "mode": "write", "desc": "Update registration auth method (email|phone)", "args": []string{"method", "aliyun_access_key_id", "aliyun_access_key_secret", "aliyun_sign_name", "aliyun_template_code"}},
+			{"name": "registration_auth.update", "mode": "write", "desc": "Update registration auth method (email|phone|mixed)", "args": []string{"method", "aliyun_access_key_id", "aliyun_access_key_secret", "aliyun_sign_name", "aliyun_template_code"}},
 			{"name": "migration.settings.get", "mode": "read", "desc": "Get tenant migration max package size settings"},
 			{"name": "migration.settings.update", "mode": "write", "desc": "Update tenant migration max compressed package size", "args": []string{"max_compressed_bytes", "max_mb"}},
 			{"name": "feishu.auto_enroll.get", "mode": "read", "desc": "Get Feishu auto-enroll setting"},

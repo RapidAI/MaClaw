@@ -125,4 +125,3 @@ func clampToScreen(w, h, sw, sh int, portrait bool) (int, int) {
 
 	return w, h
 }
-

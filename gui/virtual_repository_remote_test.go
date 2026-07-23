@@ -118,3 +118,12 @@ func TestRemoteVirtualRepositoryManifestOmitsConnectionMetadata(t *testing.T) {
 		t.Fatalf("remote connection metadata leaked into portable manifest: %s", raw)
 	}
 }
+
+func TestRemoteVirtualRepositoryNodePath(t *testing.T) {
+	if got := remoteVirtualRepositoryNodePath("/srv/workspace/", "services/api"); got != "/srv/workspace/services/api" {
+		t.Fatalf("remote node path=%q", got)
+	}
+	if err := validateRemoteVirtualRepositoryRelativePath("services/api"); err != nil {
+		t.Fatal(err)
+	}
+}

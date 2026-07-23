@@ -3452,6 +3452,7 @@ export const ListVirtualRepositories = () => window['go']['main']['App']['ListVi
 export const OpenVirtualRepository = (arg1) => window['go']['main']['App']['OpenVirtualRepository'](arg1);
 export const SaveVirtualRepository = (arg1) => window['go']['main']['App']['SaveVirtualRepository'](arg1);
 export const DeleteVirtualRepository = (arg1) => window['go']['main']['App']['DeleteVirtualRepository'](arg1);
+export const SyncVirtualRepositories = (arg1) => window['go']['main']['App']['SyncVirtualRepositories'](arg1);
 export const SelectVirtualRepositoryRoot = (arg1) => window['go']['main']['App']['SelectVirtualRepositoryRoot'](arg1);
 export const CreateVirtualRepositoryDirectory = (arg1, arg2) => window['go']['main']['App']['CreateVirtualRepositoryDirectory'](arg1, arg2);
 export const CheckoutVirtualRepositoryNode = (arg1, arg2) => window['go']['main']['App']['CheckoutVirtualRepositoryNode'](arg1, arg2);
