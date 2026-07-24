@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
 func TestMobileAgentJobsHandlerRequiresAuth(t *testing.T) {
@@ -18,10 +21,45 @@ func TestMobileAgentJobsHandlerRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestMobileAgentJobActiveCountIsTenantScoped(t *testing.T) {
+	const ownerID = "mobile-agent-job-tenant-scope-owner"
+	const tenantA = "tenant-a"
+	const tenantB = "tenant-b"
+
+	mobileAgentJobs.Lock()
+	mobileAgentJobs.jobs["tenant-a-active"] = mobileAgentJobRecord{
+		OwnerID: ownerID, TenantID: tenantA, Status: mobileAgentJobStatusRunning,
+	}
+	mobileAgentJobs.jobs["tenant-b-active"] = mobileAgentJobRecord{
+		OwnerID: ownerID, TenantID: tenantB, Status: mobileAgentJobStatusQueued,
+	}
+	mobileAgentJobs.jobs["tenant-b-ready"] = mobileAgentJobRecord{
+		OwnerID: ownerID, TenantID: tenantB, Status: mobileAgentJobStatusReady,
+	}
+	mobileAgentJobs.Unlock()
+	t.Cleanup(func() {
+		mobileAgentJobs.Lock()
+		delete(mobileAgentJobs.jobs, "tenant-a-active")
+		delete(mobileAgentJobs.jobs, "tenant-b-active")
+		delete(mobileAgentJobs.jobs, "tenant-b-ready")
+		mobileAgentJobs.Unlock()
+	})
+
+	if got := mobileAgentJobActiveCount(ownerID, tenantA); got != 1 {
+		t.Fatalf("tenant A active jobs=%d want 1", got)
+	}
+	if got := mobileAgentJobActiveCount(ownerID, tenantB); got != 1 {
+		t.Fatalf("tenant B active jobs=%d want 1", got)
+	}
+}
+
 func TestMobileAgentJobsCreateAndGetWithoutLLM(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "mobile-agent-job@example.com")
 	ownerID := enroll.UserID
+	previousSearch := mobileWebSearch
+	mobileWebSearch = func(context.Context, string, int) ([]websearch.SearchResult, error) { return nil, nil }
+	t.Cleanup(func() { mobileWebSearch = previousSearch })
 
 	// Clean any leftover jobs for isolation.
 	mobileAgentJobs.Lock()

@@ -525,7 +525,7 @@ func (a *App) MaterializeProviderByName(providerName string) (corelib.MaclawLLMC
 				key = p.OAuthAccessToken
 			}
 		}
-		return corelib.MaclawLLMConfig{
+		return a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
 			URL:             p.URL,
 			Key:             key,
 			Model:           p.Model,
@@ -538,7 +538,7 @@ func (a *App) MaterializeProviderByName(providerName string) (corelib.MaclawLLMC
 			WireAPI:         wireAPI,
 			ProviderName:    p.Name,
 			AuthType:        p.AuthType,
-		}, nil
+		}), nil
 	}
 	return corelib.MaclawLLMConfig{}, fmt.Errorf("provider %q not found", providerName)
 }
@@ -580,7 +580,7 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 				log.Printf("[LLM] GetMaclawLLMConfig oauth: wire_api=%s key_pfx=%s(%d) oat_pfx=%s(%d) auth=%s",
 					wireAPI, keyPfx, keyLen, oatPfx, oatLen, p.AuthType)
 			}
-			return corelib.MaclawLLMConfig{
+			return a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
 				URL:             p.URL,
 				Key:             key,
 				Model:           p.Model,
@@ -593,7 +593,7 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 				WireAPI:         wireAPI,
 				ProviderName:    p.Name,
 				AuthType:        p.AuthType,
-			}
+			})
 		}
 	}
 	return corelib.MaclawLLMConfig{}
@@ -1206,11 +1206,51 @@ func (a *App) saveVisionProbeResult(supportsVision bool) {
 	}
 }
 
+// normalizeThinkingModeSetting normalizes a user-supplied thinking mode to
+// "" (auto), "enabled", or "disabled". Unknown values fall back to auto.
+func normalizeThinkingModeSetting(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "enabled", "on", "1", "true":
+		return "enabled"
+	case "disabled", "off", "0", "false", "none":
+		return "disabled"
+	default:
+		return ""
+	}
+}
+
+// withGlobalThinkingMode applies the global maclaw_llm_thinking_mode setting
+// to a materialized LLM config. "" leaves provider/model auto behavior.
+func (a *App) withGlobalThinkingMode(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	appCfg, err := a.LoadConfig()
+	if err != nil {
+		return cfg
+	}
+	cfg.ThinkingMode = normalizeThinkingModeSetting(appCfg.MaclawLLMThinkingMode)
+	return cfg
+}
+
+// GetMaclawLLMThinkingMode returns the global thinking mode:
+// "" (auto), "enabled", or "disabled".
+func (a *App) GetMaclawLLMThinkingMode() string {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	return normalizeThinkingModeSetting(cfg.MaclawLLMThinkingMode)
+}
+
+// SetMaclawLLMThinkingMode persists the global thinking mode
+// ("" / "auto" = provider default, "enabled", "disabled").
+func (a *App) SetMaclawLLMThinkingMode(mode string) error {
+	_, err := a.PatchConfigFields(map[string]interface{}{"maclaw_llm_thinking_mode": mode})
+	return err
+}
+
 // GetMaclawAgentMaxIterations returns the configured max agent iterations.
 //   - positive value: use that as the limit
 //   - -1 or 0 (not configured): unlimited → return 0
-func (a *App) GetMaclawAgentMaxIterations() int {
-	cfg, err := a.LoadConfig()
+func (a *App) GetMaclawAgentMaxIterations() int {	cfg, err := a.LoadConfig()
 	if err != nil || cfg.MaclawAgentMaxIterations <= 0 {
 		return config.MaxAgentIterationsCap // not configured → default 300
 	}

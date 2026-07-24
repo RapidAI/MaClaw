@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1963,5 +1964,56 @@ func TestManageSkillRunReportsKnowledgeSkillNotExecutable(t *testing.T) {
 
 	if !strings.Contains(got, "knowledge skill") || !strings.Contains(got, "not directly executable") {
 		t.Fatalf("skillRun() = %q", got)
+	}
+}
+
+func TestFormatTUISkillSearchResultsKeepsSourceInstallArguments(t *testing.T) {
+	githubRef := `{"repo_full_name":"acme/weather","raw_url":"https://raw.githubusercontent.com/acme/weather/main/SKILL.md"}`
+	got := formatTUISkillSearchResults("weather", []skill.HubSearchResult{
+		{ID: "hub-weather", Name: "Hub Weather", Source: "skillhub"},
+		{ID: "weather", Name: "Claw Weather", Source: "clawhub"},
+		{ID: "acme/weather", Name: "GitHub Weather", Source: "github", InstallRef: githubRef},
+	}, "")
+
+	for _, want := range []string{
+		`skill_id="hub-weather", source="skillhub"`,
+		`skill_id="weather", source="clawhub"`,
+		fmt.Sprintf(`skill_id="acme/weather", source="github", install_ref=%q`, githubRef),
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("search output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatTUISkillSearchResultsDoesNotOfferBrokenGitHubInstall(t *testing.T) {
+	got := formatTUISkillSearchResults("weather", []skill.HubSearchResult{{
+		ID: "acme/weather", Name: "GitHub Weather", Source: "github",
+	}}, "")
+
+	if !strings.Contains(got, "缺少 install_ref") {
+		t.Fatalf("search output should explain the missing GitHub install locator:\n%s", got)
+	}
+	if strings.Contains(got, `source="github", install_ref=`) {
+		t.Fatalf("search output should not advertise a GitHub install without an install_ref:\n%s", got)
+	}
+}
+
+func TestFormatTUISkillSearchResultsWarnsAboutBuiltInDownloadTools(t *testing.T) {
+	got := formatTUISkillSearchResults("下载 PDF", []skill.HubSearchResult{{
+		ID: "wget", Name: "wget", Description: "Download files over HTTP", Source: "clawhub",
+	}}, "")
+
+	for _, want := range []string{"web_fetch(save_path=...)", "这是通用下载 Skill"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("search output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatTUISkillSearchResultsRecommendsBuiltInDownloadWhenEmpty(t *testing.T) {
+	got := tuiNoSkillSearchResultsMessage("下载 PDF", "")
+	if !strings.Contains(got, "web_fetch(save_path=...)") {
+		t.Fatalf("empty download search message = %q", got)
 	}
 }

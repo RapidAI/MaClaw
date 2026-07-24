@@ -358,6 +358,9 @@ function App() {
     const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
+    // Keep Utilities alive after its first visit so long-running virtual-repository
+    // work continues when the user briefly switches to the AI assistant.
+    const [utilitiesPageVisited, setUtilitiesPageVisited] = useState(false);
     const [remoteInitialSessionTab, setRemoteInitialSessionTab] = useState<"remote" | "background">("remote");
     const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
@@ -397,6 +400,7 @@ function App() {
     const navTabRef = useRef(navTab);
     const startupNavAppliedRef = useRef(false);
     const setNavTabNow = useCallback((tab: string) => {
+        if (tab === 'utilities') setUtilitiesPageVisited(true);
         navTabRef.current = tab;
         setNavTab(tab);
     }, []);
@@ -2150,8 +2154,7 @@ function App() {
         }
     };
 
-    const handleLangChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-        const newLang = e.target.value;
+    const applyLanguage = useCallback((newLang: string) => {
         setLang(newLang);
         void callBackend(() => SetLanguage(newLang));
         if (config) {
@@ -2159,6 +2162,10 @@ function App() {
             setConfig(newConfig);
             void callBackend(() => PatchConfigFields({ language: newLang })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save language:', err));
         }
+    }, [config]);
+
+    const handleLangChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        applyLanguage(e.target.value);
     };
 
     const switchTool = (tool: string) => {
@@ -4007,6 +4014,31 @@ ${instruction}`;
         );
     }
 
+    // Shared props for the shell status cluster (AI inline quick-settings row +
+    // tool-page full-width strip). Keep one object so the two call sites cannot drift.
+    const appStatusMessageBarProps = {
+        status,
+        lang,
+        config,
+        qqBotStatus,
+        telegramStatus,
+        weixinStatus,
+        lansengerStatus,
+        maclawLLMOnline,
+        maclawLLMConfigured,
+        remoteActivated: !!remoteActivationStatus?.activated,
+        showLansenger: true as const,
+        navTab,
+        settingsTab: resolvedSettingsTab,
+        backgroundInstallStatus,
+        lobsterOffline,
+        lobsterHalf,
+        onOpenIMSettings: () => { setNavTabNow('settings'); selectSettingsTab('im'); },
+        onOpenLLMSettings: () => { setNavTabNow('settings'); selectSettingsTab('llm'); },
+        codingAgentProgress,
+        isDark: aiThemeMode === 'dark',
+    };
+
     const toolCfg = isToolTab(navTab)
         ? (config as any)[navTab]
         : null;
@@ -4148,14 +4180,14 @@ ${instruction}`;
             <div className="main-container" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
                 {/* AI and non-AI panes use separate Suspense roots so a page chunk load
                     never blanks the shared header/status chrome (fallback={null} used to). */}
-                {navTab === 'ai' ? (
+                {navTab === 'ai' && (
                     <Suspense fallback={
                         <div className="app-main-content-loading" role="status" aria-live="polite">
                             {lang === 'zh-Hans' ? '加载助手…' : lang === 'zh-Hant' ? '載入助手…' : 'Loading assistant…'}
                         </div>
                     }>
                     <div className="ai-main-panel-shell">
-                        <AIAssistantPanel
+                    <AIAssistantPanel
                             onClose={() => { switchTool('settings'); }}
                             lang={lang}
                             chatFontSize={chatFontSize}
@@ -4177,6 +4209,20 @@ ${instruction}`;
                             appUpdateAvailable={appUpdateAvailable}
                             onOpenAppUpdate={handleOpenAppUpdate}
                             onDismissAppUpdate={handleDismissAppUpdate}
+                            availableProviders={availableProvidersForSwitch}
+                            onSwitchProvider={handleQuickSwitchProvider}
+                            currentModel={sidebarCurrentModel}
+                            modelOptions={sidebarModelOptions}
+                            modelsLoading={sidebarModelsLoading}
+                            onSwitchModel={handleQuickSwitchModel}
+                            onOpenModelMenu={refreshSidebarModelOptions}
+                            onLanguageChange={applyLanguage}
+                            statusSlot={(
+                                <AppStatusMessageBar
+                                    variant="inline"
+                                    {...appStatusMessageBarProps}
+                                />
+                            )}
                             state={{
                                 ...aiAssistant.panelState,
                                 selectedFilePath: aiAssistant.selectedFilePaths?.[0] ?? "",
@@ -4194,12 +4240,11 @@ ${instruction}`;
                                 onToggleMaximize: handleAIPanelMaximizeToggle,
                                 onHideWindow: () => { void callBackend(() => WindowHide()); },
                             }}
-                        />
+                    />
                     </div>
                     </Suspense>
-                ) : (
-                <>
-                <MainTopHeader
+                )}
+                {navTab !== 'ai' && <MainTopHeader
                     navTab={navTab}
                     lang={lang}
                     t={t}
@@ -4215,9 +4260,9 @@ ${instruction}`;
                     handleWindowHide={handleWindowHide}
                     handleWindowMaximizeToggle={handleWindowMaximizeToggle}
                     windowMaximized={windowMaximized}
-                />
+                />}
 
-                <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab}>
+                {navTab !== 'ai' && navTab !== 'utilities' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab}>
                 {/* Settings is outside page Suspense. General panels are eager so the default
                     open path never depends on a lazy chunk (OEM intermittent blank fix). */}
                 {navTab === 'settings' ? (
@@ -4382,12 +4427,6 @@ ${instruction}`;
                         <WorkflowsPage lang={lang} switchToAI={() => setNavTabNow('ai')} />
                     )}
 
-                    {navTab === 'utilities' && showUtilitiesEntryEnabled && (
-                        <UtilitiesPage lang={lang} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => { switchTool('ai'); setPendingExpertOpen({ expert }); }} onOpenVirtualRepositoryTask={(launch) => {
-                            openCodingTask({ projectPath: launch.project_path, taskTitle: launch.task_title, prepareMode: 'new-agent', autoSend: false, agentMode: launch.agent_mode, remoteHost: launch.remote_host, remoteNeedsReconnect: false });
-                        }} />
-                    )}
-
                     {navTab === 'skills' && (
                         <SkillsPage localizeText={localizeText} />
                     )}
@@ -4462,7 +4501,20 @@ ${instruction}`;
                     )}
                 </Suspense>
                 )}
-                </div>
+                </div>}
+                {showUtilitiesEntryEnabled && (navTab === 'utilities' || utilitiesPageVisited) && (
+                    <div className="main-content elegant-scrollbar app-main-content" data-nav-tab="utilities" hidden={navTab !== 'utilities'}>
+                        <Suspense fallback={
+                            <div className="app-main-content-loading" role="status" aria-live="polite">
+                                {localizeText('Loading…', '加载中…', '載入中…')}
+                            </div>
+                        }>
+                            <UtilitiesPage lang={lang} active={navTab === 'utilities'} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => { switchTool('ai'); setPendingExpertOpen({ expert }); }} onOpenVirtualRepositoryTask={(launch) => {
+                                openCodingTask({ projectPath: launch.project_path, taskTitle: launch.task_title, prepareMode: 'new-agent', autoSend: false, agentMode: launch.agent_mode, remoteHost: launch.remote_host, remoteNeedsReconnect: false });
+                            }} />
+                        </Suspense>
+                    </div>
+                )}
 
                 {/* Global Action Bar (Footer) */}
                 {config && isToolTab(navTab) && (
@@ -4828,29 +4880,11 @@ ${instruction}`;
                     </div>
                 )}
 
-                <AppStatusMessageBar
-                    status={status}
-                    lang={lang}
-                    config={config}
-                    qqBotStatus={qqBotStatus}
-                    telegramStatus={telegramStatus}
-                    weixinStatus={weixinStatus}
-                    lansengerStatus={lansengerStatus}
-                    maclawLLMOnline={maclawLLMOnline}
-                    maclawLLMConfigured={maclawLLMConfigured}
-                    remoteActivated={!!remoteActivationStatus?.activated}
-                    showLansenger
-                    navTab={navTab}
-                    settingsTab={resolvedSettingsTab}
-                    backgroundInstallStatus={backgroundInstallStatus}
-                    lobsterOffline={lobsterOffline}
-                    lobsterHalf={lobsterHalf}
-                    onOpenIMSettings={() => { setNavTabNow('settings'); selectSettingsTab('im'); }}
-                    onOpenLLMSettings={() => { setNavTabNow('settings'); selectSettingsTab('llm'); }}
-                    codingAgentProgress={codingAgentProgress}
-                    isDark={aiThemeMode === 'dark'}
-                />
-            </>)}
+                {/* AI tab hosts this bar inline in the quick-settings row; keep a
+                    full-width strip only on tool / settings / utilities pages. */}
+                {navTab !== 'ai' && (
+                    <AppStatusMessageBar {...appStatusMessageBarProps} />
+                )}
         </div>
 
             {/* Modals */}

@@ -35,13 +35,13 @@ func MobileJobsHandler(identity *auth.IdentityService) http.HandlerFunc {
 		}
 
 		jobs := make([]mobileJobItem, 0, 32)
-		jobs = append(jobs, mobileCollectDocumentUploadJobs(ownerID)...)
-		jobs = append(jobs, mobileCollectDocumentExportJobs(ownerID)...)
-		jobs = append(jobs, mobileCollectDocumentProcessJobs(ownerID)...)
-		jobs = append(jobs, mobileCollectDigitalEmployeeJobs(ownerID)...)
-		jobs = append(jobs, mobileCollectBackendSSHJobs(ownerID)...)
-		jobs = append(jobs, mobileCollectAgentJobs(ownerID)...)
-		jobs = append(jobs, mobileCollectMeetingRecordingJobs(ownerID)...)
+		jobs = append(jobs, mobileCollectDocumentUploadJobs(ownerID, principal.TenantID)...)
+		jobs = append(jobs, mobileCollectDocumentExportJobs(ownerID, principal.TenantID)...)
+		jobs = append(jobs, mobileCollectDocumentProcessJobs(ownerID, principal.TenantID)...)
+		jobs = append(jobs, mobileCollectDigitalEmployeeJobs(ownerID, principal.TenantID)...)
+		jobs = append(jobs, mobileCollectBackendSSHJobs(ownerID, principal.TenantID)...)
+		jobs = append(jobs, mobileCollectAgentJobs(ownerID, principal.TenantID)...)
+		jobs = append(jobs, mobileCollectMeetingRecordingJobs(ownerID, principal.TenantID)...)
 
 		sort.SliceStable(jobs, func(i, j int) bool {
 			return jobs[i].UpdatedAt.After(jobs[j].UpdatedAt)
@@ -166,12 +166,12 @@ func mobileJobProgressFromStatus(status string) float64 {
 	}
 }
 
-func mobileCollectDocumentUploadJobs(ownerID string) []mobileJobItem {
+func mobileCollectDocumentUploadJobs(ownerID, tenantID string) []mobileJobItem {
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
 	out := make([]mobileJobItem, 0)
 	for _, rec := range mobileDocuments.uploads {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		title := strings.TrimSpace(rec.Filename)
@@ -195,12 +195,12 @@ func mobileCollectDocumentUploadJobs(ownerID string) []mobileJobItem {
 	return out
 }
 
-func mobileCollectDocumentExportJobs(ownerID string) []mobileJobItem {
+func mobileCollectDocumentExportJobs(ownerID, tenantID string) []mobileJobItem {
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
 	out := make([]mobileJobItem, 0)
 	for _, rec := range mobileDocuments.exports {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		title := "导出"
@@ -222,12 +222,12 @@ func mobileCollectDocumentExportJobs(ownerID string) []mobileJobItem {
 	return out
 }
 
-func mobileCollectDigitalEmployeeJobs(ownerID string) []mobileJobItem {
+func mobileCollectDigitalEmployeeJobs(ownerID, tenantID string) []mobileJobItem {
 	mobileDigitalEmployeeTasks.Lock()
 	defer mobileDigitalEmployeeTasks.Unlock()
 	out := make([]mobileJobItem, 0)
 	for _, rec := range mobileDigitalEmployeeTasks.tasks {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		title := strings.TrimSpace(rec.Prompt)
@@ -255,11 +255,11 @@ func mobileCollectDigitalEmployeeJobs(ownerID string) []mobileJobItem {
 	return out
 }
 
-func mobileCollectBackendSSHJobs(ownerID string) []mobileJobItem {
+func mobileCollectBackendSSHJobs(ownerID, tenantID string) []mobileJobItem {
 	out := make([]mobileJobItem, 0)
 	mobileBackendSSHTasks.Lock()
 	for _, rec := range mobileBackendSSHTasks.tasks {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		title := strings.TrimSpace(rec.Command)
@@ -288,7 +288,7 @@ func mobileCollectBackendSSHJobs(ownerID string) []mobileJobItem {
 
 	mobileBackendSSHFileOperations.Lock()
 	for _, rec := range mobileBackendSSHFileOperations.operations {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		action := strings.TrimSpace(rec.Action)
@@ -320,7 +320,7 @@ func mobileCollectBackendSSHJobs(ownerID string) []mobileJobItem {
 	// Active hub_exec / desktop sessions so the 后台 tab surfaces open control sessions.
 	mobileBackendSSHSessions.Lock()
 	for _, rec := range mobileBackendSSHSessions.sessions {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		status := strings.ToLower(strings.TrimSpace(rec.Status))

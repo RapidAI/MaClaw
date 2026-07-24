@@ -18,8 +18,9 @@ import (
 )
 
 // Plan modes for pure-coding multi-step planning.
-//   - auto: plan then execute immediately (default; current behavior)
-//   - approve: plan then pause for user approve/edit/reject
+//   - auto: adapt to the task; simple changes execute directly, while a real
+//     multi-step plan pauses for confirmation
+//   - approve: prefer planning before implementation and pause for confirmation
 //   - off: never multi-step plan (always single task)
 const (
 	codingPlanModeAuto    = "auto"
@@ -29,11 +30,11 @@ const (
 
 // Step status values for live Todo UI.
 const (
-	codingStepPending   = "pending"
-	codingStepRunning   = "running"
-	codingStepPassed    = "passed"
-	codingStepFailed    = "failed"
-	codingStepSkipped   = "skipped"
+	codingStepPending    = "pending"
+	codingStepRunning    = "running"
+	codingStepPassed     = "passed"
+	codingStepFailed     = "failed"
+	codingStepSkipped    = "skipped"
 	codingStepVerifyFail = "verify_failed"
 )
 
@@ -72,8 +73,8 @@ type codingWorkbenchCheckpoint struct {
 
 // codingCheckpointFileSnap is one file's content at checkpoint time.
 type codingCheckpointFileSnap struct {
-	Path     string `json:"path"`
-	Content  string `json:"content,omitempty"` // small files inlined in sticky JSON
+	Path    string `json:"path"`
+	Content string `json:"content,omitempty"` // small files inlined in sticky JSON
 	// Sidecar is a relative path under MaclawDataDir/coding_checkpoints for larger text files.
 	Sidecar  string `json:"sidecar,omitempty"`
 	Bytes    int    `json:"bytes,omitempty"`
@@ -385,6 +386,46 @@ func (h *IMMessageHandler) promotePendingToApprovedCodingPlan(userID string) (co
 	return pending, true
 }
 
+// restoreApprovedCodingPlanAsPending moves an approved-but-not-yet-run plan
+// back to the confirmation state. This is used only for recoverable launch
+// failures (for example a remote session that dies between approval and the
+// runner preflight), so the user never has to recreate a plan that has not
+// started modifying code.
+func (h *IMMessageHandler) restoreApprovedCodingPlanAsPending(userID string) (codingWorkbenchPendingPlan, bool) {
+	if h == nil {
+		return codingWorkbenchPendingPlan{}, false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return codingWorkbenchPendingPlan{}, false
+	}
+	var restored codingWorkbenchPendingPlan
+	ok := false
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		raw := strings.TrimSpace(mem.ApprovedPlanJSON)
+		if raw == "" {
+			return
+		}
+		if err := json.Unmarshal([]byte(raw), &restored); err != nil || len(restored.Tasks) == 0 {
+			return
+		}
+		mem.PendingPlanJSON = raw
+		mem.PendingPlanMarkdown = restored.Markdown
+		mem.PendingPlanUserText = restored.UserText
+		mem.ApprovedPlanJSON = ""
+		if restored.Markdown != "" {
+			mem.ExecutionPlan = truncateRunesForSubAgent(restored.Markdown, 2000)
+		}
+		mem.StepStatuses = codingWorkbenchStepsFromTasks(restored.Tasks, codingStepPending)
+		ok = true
+	})
+	if !ok {
+		return codingWorkbenchPendingPlan{}, false
+	}
+	h.emitCodingWorkbenchStepsUpdate(userID)
+	return restored, true
+}
+
 func codingWorkbenchStepsFromTasks(tasks []*v2.TaskItem, status string) []codingWorkbenchStepStatus {
 	if status == "" {
 		status = codingStepPending
@@ -531,9 +572,9 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	}
 	steps := append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
 	payload := map[string]interface{}{
-		"user_id":       userID,
-		"project_path":  projectPath,
-		"step_statuses": steps,
+		"user_id":        userID,
+		"project_path":   projectPath,
+		"step_statuses":  steps,
 		"execution_plan": strings.TrimSpace(mem.ExecutionPlan),
 	}
 	h.app.emitEvent("coding-workbench-steps", payload)
@@ -1564,17 +1605,16 @@ func isPathInsideRoot(root, abs string) bool {
 
 func codingPlanApproveActions() []IMResponseAction {
 	return []IMResponseAction{
-		{Label: "批准并执行", Command: "/plan approve", Style: "primary"},
-		{Label: "跳过规划（直接执行）", Command: "/plan skip", Style: "default"},
+		{Label: "开始实施", Command: "/plan approve", Style: "primary"},
+		{Label: "直接执行", Command: "/plan skip", Style: "default"},
 		{Label: "拒绝此规划", Command: "/plan reject", Style: "danger"},
-		{Label: "改为自动规划", Command: "/plan mode auto", Style: "secondary"},
 	}
 }
 
 func formatPendingPlanApprovalText(markdown string, stepCount int) string {
 	var b strings.Builder
-	b.WriteString("## 执行计划待批准\n\n")
-	b.WriteString(fmt.Sprintf("已生成 **%d** 步执行计划。请确认后开始执行（当前为计划批准模式）。\n\n", stepCount))
+	b.WriteString("## 需要确认执行计划\n\n")
+	b.WriteString(fmt.Sprintf("这个请求会影响多个步骤，已整理为 **%d** 步。确认后才会开始修改；也可以跳过计划按原请求直接执行。\n\n", stepCount))
 	if strings.TrimSpace(markdown) != "" {
 		b.WriteString(markdown)
 		b.WriteString("\n\n")

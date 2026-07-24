@@ -3248,13 +3248,15 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             {activeTab === 'search' && (
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-search" aria-labelledby="knowledge-tab-search">
                     <div className="knowledge-search-hero">
-                            <div className="knowledge-search-mode-toggle" role="radiogroup" aria-label={t('Search mode', '检索模式')}>
-                                <button type="button" className="knowledge-mode-button" data-active={searchMode === 'semantic' ? 'true' : undefined} onClick={() => setSearchMode('semantic')}>
-                                    {t('Semantic Search', '语义检索')}
-                                </button>
-                                <button type="button" className="knowledge-mode-button" data-active={searchMode === 'structured' ? 'true' : undefined} onClick={() => setSearchMode('structured')}>
-                                    {t('Table Filters', '表格筛选')}
-                                </button>
+                            <div className="knowledge-search-mode-row">
+                                <div className="knowledge-search-mode-toggle" role="radiogroup" aria-label={t('Search mode', '检索模式')}>
+                                    <button type="button" className="knowledge-mode-button" data-active={searchMode === 'semantic' ? 'true' : undefined} onClick={() => setSearchMode('semantic')}>
+                                        {t('Semantic Search', '语义检索')}
+                                    </button>
+                                    <button type="button" className="knowledge-mode-button" data-active={searchMode === 'structured' ? 'true' : undefined} onClick={() => setSearchMode('structured')}>
+                                        {t('Table Filters', '表格筛选')}
+                                    </button>
+                                </div>
                                 <span className="knowledge-muted-line">{searchMode === 'structured'
                                     ? t('Filter Excel/CSV rows by column values, ranges, and optional keywords.', '按列值、范围和可选关键词筛选 Excel/CSV 行。')
                                     : t('Search cards, facts, documents, and table rows with natural language.', '用自然语言检索卡片、事实、文档和表格行。')}</span>
@@ -3512,9 +3514,9 @@ function ImageResultThumbnail({ sourceID, nodeID, title }: { sourceID: string; n
     };
 
     return (
-        <div className="knowledge-image-thumb" onClick={handleClick} title={title + ' (click to open)'}>
+        <button type="button" className="knowledge-image-thumb" onClick={handleClick} title={title + ' (click to open)'}>
             <img src={thumbPath} alt={title} loading="lazy" />
-        </div>
+        </button>
     );
 }
 

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { isProjectTabOpen, SidebarTaskManagement } from '../SidebarTaskManagement';
+import { isProjectTabOpen, SidebarTaskManagement, taskActivityLabel, workflowStatusForTask } from '../SidebarTaskManagement';
 import type { ComponentProps } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -79,6 +79,54 @@ describe('isProjectTabOpen', () => {
 });
 
 describe('SidebarTaskManagement', () => {
+    it('shows the real workflow status and recent activity rather than a generic workflow badge', () => {
+        renderTaskManagement({
+            tasks: [{
+                ...baseProject,
+                active_workflow: { type: 'coding', phase: 'quality_review', pending_review: true },
+                last_activity: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+            }],
+        });
+
+        expect(screen.getByTestId('task-workflow-status').textContent).toBe('Review needed · Quality Review');
+        expect(screen.getByLabelText('Task status: Review needed · Quality Review')).toBeTruthy();
+        expect(screen.getByTestId('task-last-activity').textContent).toBe('Updated 5m ago');
+        expect(screen.queryByText('Stage output')).toBeNull();
+    });
+
+    it('classifies workflow state without treating a coding task as active runtime', () => {
+        expect(workflowStatusForTask({ status: 'blocked', phase: 'implement' }, 'en')).toEqual({
+            label: 'Needs attention', detail: 'Implement', tone: 'danger',
+        });
+        expect(workflowStatusForTask(undefined, 'en')).toBeNull();
+        expect(taskActivityLabel('2026-01-01T00:00:00.000Z', 'en', Date.parse('2026-01-01T02:00:00.000Z'))).toBe('Updated 2h ago');
+        expect(taskActivityLabel('not-a-date', 'en')).toBe('');
+    });
+
+    it('keeps completed and cancelled workflow snapshots distinct', () => {
+        expect(workflowStatusForTask({ status: 'completed', phase: 'review' }, 'en')).toEqual({
+            label: 'Completed', detail: 'Review', tone: 'success',
+        });
+        expect(workflowStatusForTask({ status: 'cancelled', phase: 'implementation' }, 'en')).toEqual({
+            label: 'Cancelled', detail: 'Implementation', tone: 'neutral',
+        });
+        expect(workflowStatusForTask({ status: 'cancelled', phase: 'implementation', pending_review: true }, 'en')).toEqual({
+            label: 'Cancelled', detail: 'Implementation', tone: 'neutral',
+        });
+        expect(workflowStatusForTask({ status: 'completed', phase: 'review', pending_review: true }, 'en')).toEqual({
+            label: 'Completed', detail: 'Review', tone: 'success',
+        });
+        expect(workflowStatusForTask({ status: ' COMPLETED ', phase: 'review' }, 'en')).toEqual({
+            label: 'Completed', detail: 'Review', tone: 'success',
+        });
+        expect(workflowStatusForTask({ status: 'succeeded', phase: 'review' }, 'en')).toEqual({
+            label: 'Completed', detail: 'Review', tone: 'success',
+        });
+        expect(workflowStatusForTask({ status: 'canceled', phase: 'review', pending_review: true }, 'en')).toEqual({
+            label: 'Cancelled', detail: 'Review', tone: 'neutral',
+        });
+    });
+
     it('switches tasks only on double click', () => {
         const resumeTask = vi.fn();
         renderTaskManagement({ resumeTask });
@@ -259,6 +307,59 @@ describe('SidebarTaskManagement', () => {
         expect(OpenFileOrShowInFolder).toHaveBeenCalledWith('D:/refs/design.md');
     });
 
+    it('keeps the evidence panel actionable when loading fails', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+        getProjectSceneMock
+            .mockRejectedValueOnce(new Error('service unavailable'))
+            .mockResolvedValueOnce({
+                project_path: baseProject.project_path,
+                recent_artifacts: [{ title: 'Evidence after retry' }],
+            });
+        renderTaskManagement();
+
+        fireEvent.click(screen.getByLabelText('Scene details'));
+        expect(await screen.findByText('Could not load evidence')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+        expect(await screen.findByText('Evidence after retry')).toBeTruthy();
+        expect(GetProjectScene).toHaveBeenCalledTimes(2);
+        consoleError.mockRestore();
+    });
+
+    it('ignores a stale evidence response after opening another task', async () => {
+        let resolveFirst: (detail: unknown) => void = () => {};
+        const firstDetail = new Promise<unknown>((resolve) => { resolveFirst = resolve; });
+        getProjectSceneMock
+            .mockReturnValueOnce(firstDetail)
+            .mockResolvedValueOnce({
+                project_path: 'D:/work/tasks/second',
+                name: 'Second task',
+                recent_artifacts: [{ title: 'Second task evidence' }],
+            });
+        renderTaskManagement({
+            tasks: [
+                baseProject,
+                { ...baseProject, id: 'task-2', name: 'Second task', project_path: 'D:/work/tasks/second' },
+            ],
+        });
+
+        fireEvent.click(screen.getAllByLabelText('Scene details')[0]);
+        fireEvent.click(screen.getAllByLabelText('Scene details')[1]);
+        expect(await screen.findByText('Second task evidence')).toBeTruthy();
+
+        await act(async () => {
+            resolveFirst({
+                project_path: baseProject.project_path,
+                name: baseProject.name,
+                recent_artifacts: [{ title: 'Stale first-task evidence' }],
+            });
+            await Promise.resolve();
+        });
+
+        expect(screen.queryByText('Stale first-task evidence')).toBeNull();
+        expect(screen.getByText('Second task evidence')).toBeTruthy();
+    });
+
     it('shows unfinished workflow affordance without changing default task open', async () => {
         const resumeTask = vi.fn();
         const continueWorkflowProject = vi.fn();
@@ -274,7 +375,7 @@ describe('SidebarTaskManagement', () => {
             tasks: [{ ...baseProject, active_workflow: { type: 'coding', phase: 'tasks', project_path: 'D:/work/tasks/source-workflow' } }],
         });
 
-        expect(screen.getByText('Stage output')).toBeTruthy();
+        expect(screen.getByTestId('task-workflow-status').textContent).toBe('In progress · Tasks');
 
         fireEvent.doubleClick(screen.getByText('Build dashboard'));
         expect(resumeTask).toHaveBeenCalledWith(baseProject.project_path);
@@ -284,6 +385,81 @@ describe('SidebarTaskManagement', () => {
         expect(await screen.findByText('Original workflow unfinished')).toBeTruthy();
         fireEvent.click(screen.getByRole('button', { name: 'Continue workflow' }));
 
+        expect(continueWorkflowProject).toHaveBeenCalledWith('D:/work/tasks/source-workflow');
+    });
+
+    it('prevents duplicate workflow continuation while the first request is pending', async () => {
+        let resolveContinuation: () => void = () => {};
+        const continueWorkflowProject = vi.fn(() => new Promise<void>(resolve => { resolveContinuation = resolve; }));
+        getProjectSceneMock.mockResolvedValue({
+            project_path: baseProject.project_path,
+            active_workflow: { type: 'coding', phase: 'tasks', project_path: 'D:/work/tasks/source-workflow' },
+        });
+        renderTaskManagement({ continueWorkflowProject });
+
+        fireEvent.click(screen.getByLabelText('Scene details'));
+        const continueButton = await screen.findByRole('button', { name: 'Continue workflow' });
+        fireEvent.click(continueButton);
+        fireEvent.click(continueButton);
+
+        expect(continueWorkflowProject).toHaveBeenCalledTimes(1);
+        expect((continueButton as HTMLButtonElement).disabled).toBe(true);
+        expect(continueButton.textContent).toBe('Opening workflow...');
+
+        await act(async () => {
+            resolveContinuation();
+            await Promise.resolve();
+        });
+        expect((await screen.findByRole('button', { name: 'Continue workflow' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it.each([
+        ['completed', false, 'Workflow completed'],
+        ['cancelled', true, 'Workflow cancelled'],
+    ])('shows a terminal workflow outcome without offering continuation (%s)', async (status, pending_review, expectedLabel) => {
+        const continueWorkflowProject = vi.fn();
+        getProjectSceneMock.mockResolvedValue({
+            project_path: baseProject.project_path,
+            name: baseProject.name,
+            active_workflow: {
+                type: 'coding',
+                phase: 'review',
+                status,
+                pending_review,
+                project_path: 'D:/work/tasks/source-workflow',
+            },
+        });
+        renderTaskManagement({ continueWorkflowProject });
+
+        fireEvent.click(screen.getByLabelText('Scene details'));
+
+        expect((await screen.findByTestId('task-evidence-workflow-state')).textContent).toBe(expectedLabel);
+        expect(screen.queryByRole('button', { name: 'Continue workflow' })).toBeNull();
+        expect(continueWorkflowProject).not.toHaveBeenCalled();
+    });
+
+    it('keeps recovery available while clearly marking a workflow that needs attention', async () => {
+        const continueWorkflowProject = vi.fn();
+        getProjectSceneMock.mockResolvedValue({
+            project_path: baseProject.project_path,
+            name: baseProject.name,
+            active_workflow: {
+                type: 'coding',
+                phase: 'implementation',
+                status: 'blocked',
+                project_path: 'D:/work/tasks/source-workflow',
+            },
+        });
+        renderTaskManagement({
+            continueWorkflowProject,
+            tasks: [{ ...baseProject, active_workflow: { type: 'coding', phase: 'implementation', status: 'blocked' } }],
+        });
+
+        expect(screen.getByTestId('task-workflow-status').textContent).toBe('Needs attention · Implementation');
+        fireEvent.click(screen.getByLabelText('Scene details'));
+        expect((await screen.findByTestId('task-evidence-workflow-state')).textContent).toBe('Workflow needs attention');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Continue workflow' }));
         expect(continueWorkflowProject).toHaveBeenCalledWith('D:/work/tasks/source-workflow');
     });
 

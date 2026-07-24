@@ -97,6 +97,9 @@ func TestParseVirtualRepositoryOperationRequiresCommitMessage(t *testing.T) {
 	if req, err := parseVirtualRepositoryOperationRequest(`{"action":"revert"}`); err != nil || req.Action != "revert" {
 		t.Fatalf("revert parse: %#v %v", req, err)
 	}
+	if req, err := parseVirtualRepositoryOperationRequest(`{"action":"sync"}`); err != nil || req.Action != "sync" {
+		t.Fatalf("sync parse: %#v %v", req, err)
+	}
 }
 
 func TestParseVirtualRepositoryOperationBoundsCommitMessage(t *testing.T) {
@@ -195,9 +198,24 @@ func TestClassifyVirtualRepositoryOperationErrorPreservesCommitPushStage(t *test
 }
 
 func TestGitPushRequiresConfiguredRemoteURL(t *testing.T) {
-	_, err := executeGitVirtualRepositoryOperation(context.Background(), t.TempDir(), VirtualRepositoryOperationRequest{Action: "push"}, nil, "", "")
+	_, err := executeGitVirtualRepositoryOperation(context.Background(), "git", t.TempDir(), VirtualRepositoryOperationRequest{Action: "push"}, nil, "", "")
 	if err == nil || classifyVirtualRepositoryOperationError(err) != "remote_unavailable" {
 		t.Fatalf("missing remote error = %v", err)
+	}
+}
+
+func TestExecuteVirtualRepositoryOperationWithClientsCachesUnavailableClient(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	clients := virtualRepositoryVCSClients{
+		"git": {Kind: "git", Error: "cached missing Git"},
+	}
+	_, err := app.executeVirtualRepositoryOperationWithClients(context.Background(), &VirtualRepository{RootPath: root}, VirtualRepositoryNode{ID: "git", Repository: &VirtualRepositoryBinding{Kind: "git", RelativePath: "repo", Enabled: true}}, VirtualRepositoryOperationRequest{Action: "push"}, clients)
+	if err == nil || err.Error() != "cached missing Git" {
+		t.Fatalf("cached unavailable Git error = %v", err)
 	}
 }
 

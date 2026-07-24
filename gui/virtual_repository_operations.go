@@ -220,7 +220,7 @@ func parseVirtualRepositoryOperationRequest(inputJSON string) (VirtualRepository
 		return req, errors.New("commit message must not contain NUL characters")
 	}
 	switch req.Action {
-	case "commit", "push", "commit_push", "revert":
+	case "sync", "commit", "push", "commit_push", "revert":
 	default:
 		return req, errors.New("unsupported virtual repository operation")
 	}
@@ -338,13 +338,18 @@ func (a *App) PreviewVirtualRepositoryOperation(inputJSON string) (string, error
 	}
 	previewContext, previewCancel := context.WithTimeout(context.Background(), previewTimeout)
 	defer previewCancel()
+	clients := make(virtualRepositoryVCSClients, 2)
 	for _, node := range targets {
 		if previewContext.Err() != nil {
 			return "", fmt.Errorf("virtual repository operation preview timed out: %w", previewContext.Err())
 		}
-		status := a.inspectVirtualRepositoryNodeContext(previewContext, repo.RootPath, node)
+		var status VirtualRepositoryNodeStatus
 		if remoteClient != nil {
+			// Remote inspection already executes its VCS commands over SSH. Avoid a
+			// redundant local path/client probe whose result is immediately replaced.
 			status = inspectRemoteVirtualRepositoryNode(previewContext, remoteClient, repo, node)
+		} else {
+			status = a.inspectVirtualRepositoryNodeContextWithClients(previewContext, repo.RootPath, node, clients)
 		}
 		item := VirtualRepositoryOperationTarget{NodeID: node.ID, Name: node.Name, Kind: node.Repository.Kind, Path: status.Path, Status: sanitizeVirtualRepositoryOperationResultText(status.Status), Changed: !status.Clean, ErrorCode: status.ErrorCode, Error: sanitizeVirtualRepositoryOperationResultText(status.Error)}
 		if status.Error != "" {
@@ -519,6 +524,7 @@ func (a *App) runVirtualRepositoryOperationJob(ctx context.Context, job *virtual
 			repo = current
 		}
 	}
+	clients := make(virtualRepositoryVCSClients, 2)
 	succeeded, failed := 0, 0
 	for _, node := range targetNodes {
 		if ctx.Err() != nil {
@@ -533,7 +539,7 @@ func (a *App) runVirtualRepositoryOperationJob(ctx context.Context, job *virtual
 		} else if remoteClient != nil {
 			output, execErr = a.executeRemoteVirtualRepositoryOperationWithClient(ctx, remoteClient, repo, node, req)
 		} else {
-			output, execErr = a.executeVirtualRepositoryOperation(ctx, repo, node, req)
+			output, execErr = a.executeVirtualRepositoryOperationWithClients(ctx, repo, node, req, clients)
 		}
 		item.DurationMS = time.Since(started).Milliseconds()
 		if execErr != nil {
@@ -660,6 +666,13 @@ func (a *App) CancelVirtualRepositoryOperation(jobID string) error {
 }
 
 func (a *App) executeVirtualRepositoryOperation(parent context.Context, repo *VirtualRepository, node VirtualRepositoryNode, req VirtualRepositoryOperationRequest) (string, error) {
+	return a.executeVirtualRepositoryOperationWithClients(parent, repo, node, req, nil)
+}
+
+// executeVirtualRepositoryOperationWithClients shares resolved VCS clients
+// across one job. A multi-repository operation therefore validates each client
+// at most once instead of spawning a version process for every target.
+func (a *App) executeVirtualRepositoryOperationWithClients(parent context.Context, repo *VirtualRepository, node VirtualRepositoryNode, req VirtualRepositoryOperationRequest, clients virtualRepositoryVCSClients) (string, error) {
 	if err := validateVirtualRepositoryOperationForBinding(node.Repository, req.Action); err != nil {
 		return "", err
 	}
@@ -677,16 +690,20 @@ func (a *App) executeVirtualRepositoryOperation(parent context.Context, repo *Vi
 		return "", err
 	}
 	if node.Repository.Kind == "git" {
-		return executeGitVirtualRepositoryOperation(ctx, path, req, credential, secret, node.Repository.RemoteURL)
+		client := a.virtualRepositoryVCSClient("git", clients)
+		if !client.Available {
+			return "", errors.New(client.Error)
+		}
+		return executeGitVirtualRepositoryOperation(ctx, client.Executable, path, req, credential, secret, node.Repository.RemoteURL)
 	}
-	client := a.searchSVNClient(false)
+	client := a.virtualRepositoryVCSClient("svn", clients)
 	if !client.Available {
 		return "", errors.New(client.Error)
 	}
 	return executeSVNVirtualRepositoryOperation(ctx, client.Executable, path, req, credential, secret)
 }
 
-func executeGitVirtualRepositoryOperation(ctx context.Context, path string, req VirtualRepositoryOperationRequest, credential *RepositoryCredentialMetadata, secret, expectedRemote string) (string, error) {
+func executeGitVirtualRepositoryOperation(ctx context.Context, executable, path string, req VirtualRepositoryOperationRequest, credential *RepositoryCredentialMetadata, secret, expectedRemote string) (string, error) {
 	var outputs []string
 	extraEnv := []string{"GIT_TERMINAL_PROMPT=0"}
 	// Push the configured URL directly. Inspection has already verified that it
@@ -715,18 +732,25 @@ func executeGitVirtualRepositoryOperation(ctx context.Context, path string, req 
 	}
 	defer cleanup()
 	run := func(args ...string) error {
-		out, err := runVCSCommandEnv(ctx, "git", path, extraEnv, args...)
+		out, err := runVCSCommandEnv(ctx, executable, path, extraEnv, args...)
 		if out != "" {
 			outputs = append(outputs, out)
 		}
 		return err
 	}
 	switch req.Action {
+	case "sync":
+		// Keep an existing checkout current without creating a merge commit. This
+		// makes the in-app action safe to use for both Git worktrees and the
+		// already-checked-out virtual-repository mappings shown in the UI.
+		if err := run("pull", "--ff-only"); err != nil {
+			return strings.Join(outputs, "\n"), err
+		}
 	case "commit", "commit_push":
 		if err := run("add", "-A"); err != nil {
 			return strings.Join(outputs, "\n"), err
 		}
-		staged, err := runVCSCommand(ctx, "git", path, "diff", "--cached", "--name-only")
+		staged, err := runVCSCommand(ctx, executable, path, "diff", "--cached", "--name-only")
 		if err != nil {
 			return strings.Join(outputs, "\n"), err
 		}
@@ -779,6 +803,8 @@ func executeSVNVirtualRepositoryOperation(ctx context.Context, executable, path 
 		return "", err
 	}
 	switch req.Action {
+	case "sync":
+		return runVCSCommandInputEnv(ctx, executable, path, nil, stdin, append([]string{"update"}, auth...)...)
 	case "push":
 		return "SVN commit already uploads changes; push skipped", nil
 	case "commit", "commit_push":

@@ -12,6 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
@@ -30,6 +31,134 @@ func TestTUITextServiceMessagesFollowLanguage(t *testing.T) {
 	zh := tuiText("zh", "serviceRedeemSuccessChat")
 	if !strings.Contains(zh, "服务兑换成功") {
 		t.Fatalf("Chinese redeem text = %q", zh)
+	}
+}
+
+func TestTUISkillDownloadGuidanceFollowsLanguage(t *testing.T) {
+	if got := tuiText("en", "skillBuiltInDownloadGuidance"); !strings.Contains(got, "prefer the built-in") || strings.Contains(got, "通用") {
+		t.Fatalf("English download guidance = %q", got)
+	}
+	if got := tuiText("en", "skillGenericDownloadCaution"); !strings.Contains(got, "generic download Skill") || strings.Contains(got, "提示") {
+		t.Fatalf("English download caution = %q", got)
+	}
+	if got := tuiText("zh", "skillBuiltInDownloadGuidance"); !strings.Contains(got, "download_file") || got == tuiText("en", "skillBuiltInDownloadGuidance") {
+		t.Fatalf("Chinese download guidance = %q", got)
+	}
+}
+
+func TestTUISearchResultInstalledUsesSourceAwareIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    skill.HubSearchResult
+		installed corelib.NLSkillEntry
+	}{
+		{
+			name:      "skillhub hub id",
+			result:    skill.HubSearchResult{ID: "hub-123", Source: "skillhub"},
+			installed: corelib.NLSkillEntry{Name: "Installed Hub", Source: "hub", HubSkillID: "hub-123"},
+		},
+		{
+			name:      "clawhub slug trigger",
+			result:    skill.HubSearchResult{ID: "weather", Name: "Weather Assistant", Source: "clawhub"},
+			installed: corelib.NLSkillEntry{Name: "Weather Assistant", Source: "clawhub", Triggers: []string{"weather"}},
+		},
+		{
+			name:      "github repo url",
+			result:    skill.HubSearchResult{Name: "acme/weather · SKILL.md", Source: "github", RepoURL: "https://github.com/acme/weather"},
+			installed: corelib.NLSkillEntry{Name: "Weather", Source: "github", SourceProject: "https://github.com/acme/weather"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ok, gotName := tuiSearchResultInstalled(tt.result, []corelib.NLSkillEntry{tt.installed})
+			if !ok || gotName != tt.installed.Name {
+				t.Fatalf("tuiSearchResultInstalled() = %v, %q; want true, %q", ok, gotName, tt.installed.Name)
+			}
+		})
+	}
+}
+
+func TestTUISearchResultInstalledDoesNotMatchConflictingStableIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    skill.HubSearchResult
+		installed corelib.NLSkillEntry
+	}{
+		{
+			name:      "clawhub same name different slug",
+			result:    skill.HubSearchResult{ID: "new-weather", Name: "Weather", Source: "clawhub"},
+			installed: corelib.NLSkillEntry{Name: "Weather", Source: "clawhub", Triggers: []string{"old-weather"}},
+		},
+		{
+			name:      "github same name different repo",
+			result:    skill.HubSearchResult{Name: "Weather", Source: "github", RepoURL: "https://github.com/new/weather"},
+			installed: corelib.NLSkillEntry{Name: "Weather", Source: "github", SourceProject: "https://github.com/old/weather"},
+		},
+		{
+			name:      "skillhub conflicting id same skill id",
+			result:    skill.HubSearchResult{ID: "new-id", SkillID: "acme.weather", Source: "skillhub"},
+			installed: corelib.NLSkillEntry{Name: "Weather", Source: "hub", HubSkillID: "old-id", SkillID: "acme.weather"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if ok, name := tuiSearchResultInstalled(tt.result, []corelib.NLSkillEntry{tt.installed}); ok {
+				t.Fatalf("tuiSearchResultInstalled() unexpectedly matched %q", name)
+			}
+		})
+	}
+}
+
+func TestTUIInstalledSkillForInstallRequestUsesSourceLocators(t *testing.T) {
+	githubRef := `{"repo_url":"https://github.com/acme/weather"}`
+	tests := []struct {
+		name       string
+		source     string
+		skillID    string
+		installRef string
+		installed  corelib.NLSkillEntry
+	}{
+		{
+			name: "clawhub slug", source: "clawhub", skillID: "weather",
+			installed: corelib.NLSkillEntry{Name: "Weather Assistant", Source: "clawhub", Triggers: []string{"weather"}},
+		},
+		{
+			name: "github repository", source: "github", skillID: "acme/weather", installRef: githubRef,
+			installed: corelib.NLSkillEntry{Name: "Weather", Source: "github", SourceProject: "https://github.com/acme/weather"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name, ok := tuiInstalledSkillForInstallRequest(tt.source, tt.skillID, tt.installRef, []corelib.NLSkillEntry{tt.installed})
+			if !ok || name != tt.installed.Name {
+				t.Fatalf("tuiInstalledSkillForInstallRequest() = %q, %v; want %q, true", name, ok, tt.installed.Name)
+			}
+		})
+	}
+}
+
+func TestTUIInstalledSkillEntryForInstallRequestUsesSourceLocators(t *testing.T) {
+	githubRef := `{"repo_url":"https://github.com/acme/weather"}`
+	installed := corelib.NLSkillEntry{Name: "Weather", Source: "github", SourceProject: "https://github.com/acme/weather"}
+
+	got, ok := tuiInstalledSkillEntryForInstallRequest("github", "acme/weather", githubRef, []corelib.NLSkillEntry{installed})
+	if !ok || got.Name != installed.Name {
+		t.Fatalf("tuiInstalledSkillEntryForInstallRequest() = %#v, %v; want %#v, true", got, ok, installed)
+	}
+}
+
+func TestToolOperationResultReachesToolView(t *testing.T) {
+	m := &tuiModel{app: &TUIApp{appConfig: corelib.AppConfig{Language: "en"}}, root: views.NewRootModel("en")}
+	updated, cmd := m.Update(views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: false, Message: "install failed"})
+	if cmd != nil {
+		t.Fatalf("tool result command = %v, want nil", cmd)
+	}
+	got := updated.(*tuiModel)
+	if !strings.Contains(got.root.Tools.View(), "install failed") {
+		t.Fatalf("tool result was not rendered in tool view:\n%s", got.root.Tools.View())
 	}
 }
 

@@ -25,6 +25,11 @@ export type MobileDocumentDraftSummary = {
   source_download_url?: string;
   images?: MobileDocumentDraftImage[];
 };
+type MobileLibraryAudio = { content_type?: string; size_bytes?: number; duration_sec?: number; available?: boolean };
+type MobileLibraryProcessing = { status?: string; progress?: number; message?: string; failure_code?: string };
+type MobileLibraryDerivedDocuments = { transcript_draft_id?: string; minutes_draft_id?: string };
+type MobileLibraryItem = MobileDocumentDraftSummary & { type?: 'document' | 'audio'; audio?: MobileLibraryAudio; processing?: MobileLibraryProcessing; derived_documents?: MobileLibraryDerivedDocuments; retention_until?: string };
+type MeetingRecordingAudioPayload = { content_type?: string; data_base64?: string };
 
 type MobileDocumentsPanelProps = {
   lang: string;
@@ -44,6 +49,41 @@ function callListDrafts(limit: number, includeBody: boolean): Promise<MobileDocu
     return Promise.reject(new Error(langMissingBinding()));
   }
   return app.ListMobileDocumentDrafts(limit, includeBody);
+}
+function callListLibraryItems(limit: number): Promise<MobileLibraryItem[]> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.ListMobileLibraryItems) return Promise.reject(new Error('Desktop binding missing ListMobileLibraryItems — rebuild GUI after pull.'));
+  return app.ListMobileLibraryItems(limit);
+}
+function callGetLibraryItem(id: string): Promise<MobileLibraryItem> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.GetMobileLibraryItem) return Promise.reject(new Error('Desktop binding missing GetMobileLibraryItem — rebuild GUI after pull.'));
+  return app.GetMobileLibraryItem(id);
+}
+function callProcessMeetingRecording(id: string): Promise<MobileLibraryItem> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.ProcessMobileMeetingRecording) return Promise.reject(new Error('Desktop binding missing ProcessMobileMeetingRecording — rebuild GUI after pull.'));
+  return app.ProcessMobileMeetingRecording(id);
+}
+function callDeleteMeetingRecording(id: string): Promise<MobileLibraryItem> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.DeleteMobileMeetingRecording) return Promise.reject(new Error('Desktop binding missing DeleteMobileMeetingRecording — rebuild GUI after pull.'));
+  return app.DeleteMobileMeetingRecording(id);
+}
+function callGetMeetingRecordingAudio(id: string): Promise<MeetingRecordingAudioPayload> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.GetMobileMeetingRecordingAudio) return Promise.reject(new Error('Desktop binding missing GetMobileMeetingRecordingAudio — rebuild GUI after pull.'));
+  return app.GetMobileMeetingRecordingAudio(id);
+}
+function callOpenMeetingRecordingAudio(id: string): Promise<string> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.OpenMobileMeetingRecordingAudio) return Promise.reject(new Error('Desktop binding missing OpenMobileMeetingRecordingAudio — rebuild GUI after pull.'));
+  return app.OpenMobileMeetingRecordingAudio(id);
+}
+function callSaveMeetingRecordingAudio(id: string): Promise<string> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.SaveMobileMeetingRecordingAudio) return Promise.reject(new Error('Desktop binding missing SaveMobileMeetingRecordingAudio — rebuild GUI after pull.'));
+  return app.SaveMobileMeetingRecordingAudio(id);
 }
 
 function callGetDraft(id: string): Promise<MobileDocumentDraftSummary> {
@@ -315,6 +355,19 @@ function MobileDocPreviewBody({
     </>
   );
 }
+function isAudioItem(item: MobileLibraryItem | null | undefined): boolean { return item?.type === 'audio'; }
+function isProcessingAudio(item: MobileLibraryItem | null | undefined): boolean { const status = item?.processing?.status || ''; return status === 'processing' || status === 'finalizing'; }
+function hasMeetingMinutes(item: MobileLibraryItem | null | undefined): boolean { return Boolean(item?.derived_documents?.minutes_draft_id); }
+function formatAudioDuration(seconds?: number): string { const total = Math.max(0, Math.round(Number(seconds || 0))); const min = Math.floor(total / 60); return `${min}:${String(total % 60).padStart(2, '0')}`; }
+function formatLibraryFileSize(bytes?: number): string { const value = Math.max(0, Number(bytes || 0)); return value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / (1024 * 1024)).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`; }
+function MeetingRecordingPlayer({ item }: { item: MobileLibraryItem }) {
+  const [src, setSrc] = useState(''); const [error, setError] = useState('');
+  useEffect(() => { let url = ''; let cancelled = false; setSrc(''); setError(''); if (!item.audio?.available) return () => undefined; void callGetMeetingRecordingAudio(item.id).then((payload) => { const raw = String(payload?.data_base64 || ''); if (!raw) throw new Error('empty audio'); const binary = atob(raw); const bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i); url = URL.createObjectURL(new Blob([bytes], { type: String(payload?.content_type || item.audio?.content_type || 'audio/mp4').split(';')[0] })); if (!cancelled) setSrc(url); }).catch((e: any) => { if (!cancelled) setError(String(e?.message || e || 'load failed')); }); return () => { cancelled = true; if (url) URL.revokeObjectURL(url); }; }, [item.id, item.audio?.available, item.audio?.content_type]);
+  if (!item.audio?.available) return <div>Original audio is no longer available. Generated documents remain accessible.</div>;
+  if (error) return <div style={{ color: '#ffb4b4' }}>Unable to load embedded playback. You can still open or save the original audio.</div>;
+  if (!src) return <div>Loading audio…</div>;
+  return <audio controls preload="metadata" src={src} style={{ width: '100%' }} aria-label="Meeting recording playback" />;
+}
 
 async function fileToBase64(file: File): Promise<string> {
   const buf = await file.arrayBuffer();
@@ -454,8 +507,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [banner, setBanner] = useState('');
-  const [drafts, setDrafts] = useState<MobileDocumentDraftSummary[]>([]);
-  const [selected, setSelected] = useState<MobileDocumentDraftSummary | null>(null);
+  const [drafts, setDrafts] = useState<MobileLibraryItem[]>([]);
+  const [selected, setSelected] = useState<MobileLibraryItem | null>(null);
   const [filter, setFilter] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -472,7 +525,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     setLoading(true);
     setError('');
     try {
-      const list = await callListDrafts(80, false);
+      const list = await callListLibraryItems(80);
       setDrafts(Array.isArray(list) ? list : []);
     } catch (e: any) {
       setError(String(e?.message || e || 'load failed'));
@@ -517,15 +570,53 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     });
   }, [drafts, filter]);
 
-  const selectDraft = async (d: MobileDocumentDraftSummary) => {
+  const selectDraft = async (d: MobileLibraryItem) => {
     setSelected(d);
     try {
-      const full = await callGetDraft(d.id);
+      const full = await callGetLibraryItem(d.id);
       setSelected({ ...d, ...full });
     } catch {
       // keep list row
     }
   };
+  const openDocumentFromAudio = async (draftID?: string) => {
+    if (!draftID) return;
+    const existing = drafts.find((item) => item.id === draftID);
+    if (existing) { await selectDraft(existing); return; }
+    try { setSelected(await callGetLibraryItem(draftID)); } catch (e: any) { setError(String(e?.message || e || 'open document failed')); }
+  };
+
+  const processAudio = async (item: MobileLibraryItem) => {
+    if (isProcessingAudio(item)) return;
+    setUploading(true); setError(''); setBanner('');
+    try {
+      const updated = await callProcessMeetingRecording(item.id);
+      setSelected(updated);
+      setDrafts((previous) => previous.map((candidate) => candidate.id === item.id ? { ...candidate, ...updated } : candidate));
+      setBanner(t('Meeting minutes processing started. The status will refresh automatically.', '已开始生成会议纪要，状态将自动刷新。'));
+    } catch (e: any) { setError(String(e?.message || e || 'start meeting minutes failed')); } finally { setUploading(false); }
+  };
+
+  const openAudio = async (item: MobileLibraryItem) => {
+    setUploading(true); setError('');
+    try { const path = await callOpenMeetingRecordingAudio(item.id); setBanner(path ? `Opened original audio: ${path}` : 'Opened original audio'); } catch (e: any) { setError(String(e?.message || e || 'open audio failed')); } finally { setUploading(false); }
+  };
+
+  const saveAudio = async (item: MobileLibraryItem) => {
+    setUploading(true); setError('');
+    try { const path = await callSaveMeetingRecordingAudio(item.id); setBanner(path ? `Saved original audio to ${path}` : t('Save cancelled.', '已取消保存。')); } catch (e: any) { setError(String(e?.message || e || 'save audio failed')); } finally { setUploading(false); }
+  };
+
+  useEffect(() => {
+    if (!open || !selected || !isProcessingAudio(selected)) return undefined;
+    const timer = window.setInterval(() => {
+      void callGetLibraryItem(selected.id).then((updated) => {
+        setSelected((current) => current?.id === updated.id ? updated : current);
+        setDrafts((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item));
+      }).catch(() => undefined);
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [open, selected?.id, selected?.processing?.status]);
 
   const publishFiles = async (files: FileList | File[]) => {
     const list = Array.from(files || []);
@@ -611,14 +702,14 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     }
   };
 
-  const deleteDraft = async (d: MobileDocumentDraftSummary) => {
+  const deleteDraft = async (d: MobileLibraryItem) => {
     const title = d.title || d.id;
     const ok = await showConfirm(
       t(
-        `Delete “${title}” from the shared Hub library? The phone app will no longer be able to open this document.`,
-        `从共享文稿库删除「${title}」？手机端也将无法再看到该文稿。`,
+        isAudioItem(d) ? `Delete “${title}”? The original audio will be removed; generated transcripts and minutes remain.` : `Delete “${title}” from the shared Hub library? The phone app will no longer be able to open this document.`,
+        isAudioItem(d) ? `删除「${title}」？原始音频将被删除，已生成的逐字稿和会议纪要会保留。` : `从共享文稿库删除「${title}」？手机端也将无法再看到该文稿。`,
       ),
-      t('Delete shared document?', '删除共享文稿？'),
+      t(isAudioItem(d) ? 'Delete original audio?' : 'Delete shared document?', isAudioItem(d) ? '删除原始音频？' : '删除共享文稿？'),
       {
         confirmText: t('Delete', '删除'),
         cancelText: t('Cancel', '取消'),
@@ -629,9 +720,19 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     setError('');
     setBanner('');
     try {
-      await callDeleteDraft(d.id);
-      if (selected?.id === d.id) setSelected(null);
-      setBanner(t(`Deleted “${title}”`, `已删除「${title}」`));
+      if (isAudioItem(d)) {
+        const updated = await callDeleteMeetingRecording(d.id);
+        setSelected((current) => current?.id === d.id ? { ...current, ...updated } : current);
+        setDrafts((current) => current.map((item) => item.id === d.id ? { ...item, ...updated } : item));
+      } else {
+        await callDeleteDraft(d.id);
+        if (selected?.id === d.id) setSelected(null);
+      }
+      setBanner(
+        isAudioItem(d)
+          ? t(`Original audio deleted for “${title}”. Generated documents remain available.`, `已删除「${title}」的原始音频，生成的文档仍可打开。`)
+          : t(`Deleted “${title}”`, `已删除「${title}」`),
+      );
       await refresh();
     } catch (e: any) {
       setError(String(e?.message || e || 'delete failed'));
@@ -1085,12 +1186,14 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                           {d.title || d.id}
                         </div>
                         <div style={{ fontSize: '0.72rem', opacity: 0.58, marginTop: 5 }}>
-                          {d.has_original
-                            ? t('Original file', '原件')
-                            : (d.rune_count ?? 0) > 0
-                              ? `${d.rune_count} ${t('chars', '字')}`
-                              : ''}
-                          {d.has_original && d.source_size
+                          {isAudioItem(d)
+                            ? `${d.audio?.available ? t('Recording', '录音') : t('Audio expired', '音频已过期')}${d.audio?.duration_sec ? ` · ${formatAudioDuration(d.audio.duration_sec)}` : ''}${d.audio?.size_bytes ? ` · ${formatLibraryFileSize(d.audio.size_bytes)}` : ''}`
+                            : d.has_original
+                              ? t('Original file', '原件')
+                              : (d.rune_count ?? 0) > 0
+                                ? `${d.rune_count} ${t('chars', '字')}`
+                                : ''}
+                          {!isAudioItem(d) && d.has_original && d.source_size
                             ? ` · ${Math.max(1, Math.round(d.source_size / 1024))} KB`
                             : ''}
                           {d.updated_at
@@ -1114,8 +1217,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                       </button>
                       <button
                         type="button"
-                        title={t('Delete', '删除')}
-                        aria-label={t(`Delete ${d.title || d.id}`, `删除 ${d.title || d.id}`)}
+                        title={t(isAudioItem(d) ? 'Delete original audio' : 'Delete', isAudioItem(d) ? '删除原始音频' : '删除')}
+                        aria-label={t(isAudioItem(d) ? `Delete original audio for ${d.title || d.id}` : `Delete ${d.title || d.id}`, isAudioItem(d) ? `删除 ${d.title || d.id} 的原始音频` : `删除 ${d.title || d.id}`)}
                         onClick={(e) => {
                           e.stopPropagation();
                           void deleteDraft(d);
@@ -1155,7 +1258,15 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                 {selected ? selected.title || selected.id : t('Preview', '预览')}
               </div>
               {selected ? (
-                <>
+                isAudioItem(selected) ? (
+                  <>
+                    <button type="button" style={styles.btnPrimary} onClick={() => void processAudio(selected)} disabled={uploading || isProcessingAudio(selected) || hasMeetingMinutes(selected) || !selected.audio?.available}>
+                      {isProcessingAudio(selected) ? t('Processing…', '处理中…') : hasMeetingMinutes(selected) ? t('Meeting minutes ready', '会议纪要已生成') : selected.processing?.status === 'failed' ? t('Retry meeting minutes', '重试生成纪要') : t('Generate meeting minutes', '生成会议纪要')}
+                    </button>
+                    {selected.audio?.available ? <><button type="button" style={styles.btn} onClick={() => void openAudio(selected)} disabled={uploading}>{t('Open audio', '打开音频')}</button><button type="button" style={styles.btn} onClick={() => void saveAudio(selected)} disabled={uploading}>{t('Save audio', '保存音频')}</button></> : null}
+                    <button type="button" style={{ ...styles.btn, borderColor: 'rgba(220,80,80,0.45)', color: '#ffb4b4' }} onClick={() => void deleteDraft(selected)} disabled={uploading || !selected.audio?.available}>{t('Delete original audio', '删除原始音频')}</button>
+                  </>
+                ) : <>
                   <button type="button" style={styles.btn} onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview}>
                     {t('Copy', '复制')}
                   </button>
@@ -1220,10 +1331,14 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
               }}
             >
               {selected ? (
-                <MobileDocPreviewBody
-                  markdown={selected.markdown || selected.preview || ''}
-                  emptyLabel={t('(empty body)', '（无正文）')}
-                />
+                isAudioItem(selected) ? (
+                  <div aria-live="polite" style={{ display: 'grid', gap: 14, fontFamily: 'inherit' }}>
+                    <MeetingRecordingPlayer item={selected} />
+                    <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div style={{ opacity: 0.7, marginTop: 4 }}>{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div style={{ height: 4, marginTop: 10, background: 'var(--theme-border, #334155)', borderRadius: 2 }}><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #4f7f6f)', borderRadius: 2 }} /></div> : null}</div>
+                    {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>{selected.derived_documents?.transcript_draft_id ? <button type="button" style={styles.btn} onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" style={styles.btnPrimary} onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
+                    {selected.retention_until ? <div style={{ opacity: 0.58, fontSize: '0.78rem' }}>{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
+                  </div>
+                ) : <MobileDocPreviewBody markdown={selected.markdown || selected.preview || ''} emptyLabel={t('(empty body)', '（无正文）')} />
               ) : (
                 t('Select a draft on the left, or drop original files above to share with Mobile.', '请选择左侧文稿，或将原始文件拖到上方以分享到手机。')
               )}

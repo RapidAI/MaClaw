@@ -465,8 +465,10 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                     <div className="deep-crawl-depth-list">
                         {previewResult.by_depth.map(level => (
                             <div key={level.depth} className="deep-crawl-depth-group">
-                                <div
+                                <button
+                                    type="button"
                                     className="deep-crawl-depth-header"
+                                    aria-expanded={expandedDepths.has(level.depth)}
                                     onClick={() => toggleDepth(level.depth)}
                                 >
                                     <span className="deep-crawl-depth-toggle">
@@ -476,7 +478,7 @@ export function DeepCrawlPanel({ lang, onPreview, onStartCrawl, busy }: DeepCraw
                                         `Depth ${level.depth} (${level.total} URLs)`,
                                         `第 ${level.depth} 层 (${level.total} 个 URL)`
                                     )}
-                                </div>
+                                </button>
                                 {expandedDepths.has(level.depth) && (
                                     <div className="deep-crawl-url-list">
                                         {level.urls.map((url, idx) => (

@@ -37,6 +37,12 @@ func (h *IMMessageHandler) sshSessionAlive(sessionID string) bool {
 	if !ok {
 		return false
 	}
+	return sshSessionStatusUsable(status)
+}
+
+// sshSessionStatusUsable is deliberately stricter than "record exists": a
+// retained terminal session cannot accept plan execution and must be recovered.
+func sshSessionStatusUsable(status remote.SessionStatus) bool {
 	return status != remote.SessionExited && status != remote.SessionError
 }
 

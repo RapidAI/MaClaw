@@ -620,7 +620,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "knowledge_search",
-		Description: "Search the local knowledge base (SQLite FTS). Returns ranked results with score, source, and snippet. Use when the user asks about saved documents, imported files, or stored knowledge.",
+		Description: "Search the local knowledge base (SQLite FTS). Returns ranked results with score, source, and snippet. Use when the user asks about saved documents, imported files, or stored knowledge. Also use proactively BEFORE asking the user for task parameters that may already be stored — such as server addresses, login credentials/usernames, environment config, or project paths.",
 		Properties: map[string]interface{}{
 			"query":        map[string]string{"type": "string", "description": "Search query"},
 			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},

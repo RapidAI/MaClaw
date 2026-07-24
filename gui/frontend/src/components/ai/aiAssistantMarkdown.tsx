@@ -4,7 +4,7 @@ import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
-import { buildMarkdownTableModel, isMarkdownTableRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
+import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
 import { localizeText } from "./aiAssistantI18n";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
@@ -476,6 +476,10 @@ export function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] 
     return renderInlineMarkdownRestored(text, t);
 }
 
+// Shared across every chat body line (streaming-friendly: no per-call recompile).
+// GFM unordered markers (-/*/+ ) plus digital-employee bullets (U+2022 •, U+00B7 ·).
+const UNORDERED_LIST_LINE_RE = /^(?:[-*+]|\u2022|\u00b7)\s+(.*)$/;
+
 function renderMarkdownLine(text: string, key: string | number, t: Theme): React.ReactNode {
     const trimmed = text.trimStart();
 
@@ -555,7 +559,8 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
         return <hr key={key} style={{ border: "none", borderTop: `1px solid ${t.divider}`, margin: "8px 0" }} />;
     }
 
-    if (/^[-*]\s/.test(trimmed)) {
+    const unorderedListMatch = trimmed.match(UNORDERED_LIST_LINE_RE);
+    if (unorderedListMatch) {
         const indentPad = orderedListIndentPadding(leadingIndentColumns(text));
         return (
             <div key={key} style={{
@@ -565,7 +570,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
                 ...blockWrapStyle,
             }}>
                 <span style={{ color: t.bulletColor }}>{"\u2022"}</span>{" "}
-                {renderInlineMarkdown(trimmed.slice(2), t)}
+                {renderInlineMarkdown(unorderedListMatch[1], t)}
             </div>
         );
     }
@@ -670,11 +675,18 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
 
     const flushTable = () => {
         if (tableLines.length === 0) return;
+        // Orphan GFM separator rows (common noise before a real table) should not
+        // fall through as raw "|---|---|" text in the chat bubble.
+        if (tableLines.every((line) => isMarkdownTableSeparatorRow(line) || !line.trim())) {
+            tableLines = [];
+            return;
+        }
         const rendered = renderTable(tableLines, `tbl-${elements.length}`, t);
         if (rendered) {
             elements.push(rendered);
         } else {
             for (const tableLine of tableLines) {
+                if (isMarkdownTableSeparatorRow(tableLine)) continue;
                 elements.push(renderMarkdownLine(tableLine, `md-fallback-${elements.length}`, t));
             }
         }

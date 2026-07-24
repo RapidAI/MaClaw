@@ -3373,3 +3373,54 @@ func TestProperty_BrandIsolation_EnsureCodeGenTokenReturnsNil(t *testing.T) {
 		}
 	})
 }
+
+func TestMaclawLLMThinkingMode_GlobalSetting(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+
+	// Default: auto (empty).
+	if got := app.GetMaclawLLMThinkingMode(); got != "" {
+		t.Fatalf("default GetMaclawLLMThinkingMode() = %q, want auto(empty)", got)
+	}
+
+	for _, tc := range []struct{ in, want string }{
+		{in: "enabled", want: "enabled"},
+		{in: "ON", want: "enabled"},
+		{in: "disabled", want: "disabled"},
+		{in: "off", want: "disabled"},
+		{in: "auto", want: ""},
+		{in: "garbage", want: ""},
+	} {
+		if err := app.SetMaclawLLMThinkingMode(tc.in); err != nil {
+			t.Fatalf("SetMaclawLLMThinkingMode(%q) error = %v", tc.in, err)
+		}
+		if got := app.GetMaclawLLMThinkingMode(); got != tc.want {
+			t.Fatalf("GetMaclawLLMThinkingMode() after set %q = %q, want %q", tc.in, got, tc.want)
+		}
+		saved, err := app.LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if got := saved.MaclawLLMThinkingMode; got != tc.want {
+			t.Fatalf("saved MaclawLLMThinkingMode = %q, want %q", got, tc.want)
+		}
+	}
+
+	// Enabled propagates onto the materialized runtime config.
+	if err := app.SetMaclawLLMThinkingMode("enabled"); err != nil {
+		t.Fatalf("SetMaclawLLMThinkingMode(enabled) error = %v", err)
+	}
+	cfg := app.GetMaclawLLMConfig()
+	if cfg.ThinkingMode != "enabled" {
+		t.Fatalf("GetMaclawLLMConfig().ThinkingMode = %q, want enabled", cfg.ThinkingMode)
+	}
+	if err := app.SetMaclawLLMThinkingMode(""); err != nil {
+		t.Fatalf("SetMaclawLLMThinkingMode(empty) error = %v", err)
+	}
+	if got := app.GetMaclawLLMConfig().ThinkingMode; got != "" {
+		t.Fatalf("GetMaclawLLMConfig().ThinkingMode after reset = %q, want auto(empty)", got)
+	}
+}

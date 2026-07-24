@@ -18,6 +18,9 @@ var LightTurnToolAllowlist = map[string]bool{
 	"read_tool_result":       true,
 	"knowledge_search":       true,
 	"knowledge_context_pack": true,
+	// Read-only knowledge lookups are light-safe; writes/imports stay full-only.
+	"knowledge_list_sources": true,
+	"knowledge_stats":        true,
 }
 
 // IsLightTurnToolAllowed reports whether name may run on a light prompt profile.

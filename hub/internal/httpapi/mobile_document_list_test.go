@@ -13,7 +13,7 @@ func TestMobileDocumentDraftDeleteHandler(t *testing.T) {
 	token, enroll := issueViewerToken(t, identity, "doc-del@example.com")
 	mobileDocuments.Lock()
 	mobileDocuments.drafts["d_del_1"] = mobileDocumentDraftRecord{
-		ID: "d_del_1", OwnerID: enroll.UserID, Title: "T", Markdown: "# T\n", UpdatedAt: time.Now().UTC(),
+		ID: "d_del_1", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Title: "T", Markdown: "# T\n", UpdatedAt: time.Now().UTC(),
 	}
 	mobileDocuments.drafts["d_other"] = mobileDocumentDraftRecord{
 		ID: "d_other", OwnerID: "someone-else", Title: "X", Markdown: "x", UpdatedAt: time.Now().UTC(),
@@ -80,7 +80,7 @@ func TestMobileDocumentDraftsListHandler(t *testing.T) {
 	now := time.Now().UTC()
 	mobileDocuments.Lock()
 	mobileDocuments.drafts["d_list_1"] = mobileDocumentDraftRecord{
-		ID: "d_list_1", OwnerID: ownerID, Title: "周报", Template: "report",
+		ID: "d_list_1", OwnerID: ownerID, TenantID: enroll.TenantID, Title: "周报", Template: "report",
 		Markdown: "# 周报\n\n内容", UpdatedAt: now,
 	}
 	mobileDocuments.drafts["d_other"] = mobileDocumentDraftRecord{
@@ -140,5 +140,30 @@ func TestMobileDocumentDraftsListHandler(t *testing.T) {
 	draft, _ := one["draft"].(map[string]any)
 	if draft["markdown"] == nil || draft["title"] != "周报" {
 		t.Fatalf("draft=%#v", one)
+	}
+}
+
+func TestMobileDocumentLibraryKeepsDraftsTenantIsolated(t *testing.T) {
+	owner := "document-library-shared-owner"
+	now := time.Now().UTC()
+	first := mobileDocumentDraftRecord{ID: "draft-tenant-a", OwnerID: owner, TenantID: "tenant-a", Title: "Tenant A", Markdown: "# A", UpdatedAt: now}
+	second := mobileDocumentDraftRecord{ID: "draft-tenant-b", OwnerID: owner, TenantID: "tenant-b", Title: "Tenant B", Markdown: "# B", UpdatedAt: now}
+	mobileDocuments.Lock()
+	mobileDocuments.drafts[first.ID] = first
+	mobileDocuments.drafts[second.ID] = second
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, first.ID)
+		delete(mobileDocuments.drafts, second.ID)
+		mobileDocuments.Unlock()
+	})
+
+	items := mobileLibraryItems(owner, "tenant-a", true, false)
+	if len(items) != 1 || items[0]["id"] != first.ID {
+		t.Fatalf("library documents = %#v", items)
+	}
+	if _, ok := mobileLibraryItemByID(owner, "tenant-a", second.ID); ok {
+		t.Fatal("a tenant must not retrieve another tenant's document draft")
 	}
 }

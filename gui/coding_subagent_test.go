@@ -217,6 +217,27 @@ func TestCodingSubAgentFullEnvIncludesExtraToolsInBuildTools(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentOperationalTaskUsesFocusedNonMutatingTools(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir(), fullEnvironment: true},
+		task:     &TaskItem{Index: 1, Title: "Run the app", Description: "run the app", RequestKind: codingRequestOperational},
+	}
+	names := codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("run the app"))
+	for _, want := range []string{"bash", "read_file", "Glob", "ripgrep", codeNavigationToolName} {
+		if !containsStringForTest(names, want) {
+			t.Fatalf("operational BuildTools missing %q; got %#v", want, names)
+		}
+	}
+	for _, forbidden := range []string{"write_file", "edit_file", "edit_lines", codingSubAgentSpawnToolName, codingAgentTodoToolName, "manage_skill", "call_mcp_tool"} {
+		if containsStringForTest(names, forbidden) {
+			t.Fatalf("operational BuildTools exposed %q; got %#v", forbidden, names)
+		}
+	}
+	if codingTaskShouldEnableSourcePreview(cb.task) {
+		t.Fatal("operational task must not open the source preview")
+	}
+}
+
 func TestCodingSubAgentLeanUnknownDependencyGetsResearchTools(t *testing.T) {
 	sa := &CodingSubAgent{projectPath: t.TempDir()}
 	cb := &codingSubAgentCallbacks{

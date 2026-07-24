@@ -109,8 +109,9 @@ type TaskItem struct {
 	RetryCount         int
 	SessionID          string // session used for this task
 	ErrorSummary       string
-	ResultSummary      string       // compact passed SubAgent summary for downstream task context
-	ExecMode           TaskExecMode // resolved per-task at execution time
+	ResultSummary      string            // compact passed SubAgent summary for downstream task context
+	ExecMode           TaskExecMode      // resolved per-task at execution time
+	RequestKind        codingRequestKind // set by the workbench intent classifier for direct coding turns
 }
 
 type TaskRunHandle struct {

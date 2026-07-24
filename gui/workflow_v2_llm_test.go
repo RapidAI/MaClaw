@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -115,5 +116,28 @@ func TestCallLightweightLLMUsesResponsesWireAPI(t *testing.T) {
 	}
 	if _, ok := gotBody["messages"]; ok {
 		t.Fatalf("request body leaked messages: %#v", gotBody)
+	}
+}
+func TestCallLightweightLLMOnceDoesNotRetryFailedRoutingCall(t *testing.T) {
+	calls := 0
+	handler := &IMMessageHandler{
+		client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return nil, errors.New("routing backend unavailable")
+		})},
+	}
+
+	got := handler.callLightweightLLMOnce(
+		corelib.MaclawLLMConfig{URL: "https://example.test/v1", Model: "small"},
+		"classify",
+		"hi",
+		1,
+	)
+
+	if got != "" {
+		t.Fatalf("response = %q, want empty after failed single attempt", got)
+	}
+	if calls != 1 {
+		t.Fatalf("routing calls = %d, want 1", calls)
 	}
 }

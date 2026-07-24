@@ -386,11 +386,69 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("Existing title")).toBeTruthy();
     });
 
-    it("does not attach a bare heading marker to a following markdown list", () => {
-        render(<div>{renderContentWithCodeBlocks("####\n- Existing list item", lightTheme)}</div>);
+    it("attaches a bare heading marker to a following list-marked title", () => {
+        // Digital employees commonly emit section titles as bare ### + "- title".
+        const { container } = render(<div>{renderContentWithCodeBlocks("###\n- 北京·城区天气预报", lightTheme)}</div>);
 
-        expect(screen.getByText("####")).toBeTruthy();
-        expect(screen.getByText(/Existing list item/)).toBeTruthy();
+        expect(screen.getByText("北京·城区天气预报")).toBeTruthy();
+        expect(container.textContent).not.toContain("###");
+        // List marker is consumed into the heading (not left as a bullet row).
+        expect(container.textContent).not.toMatch(/^[•·]/m);
+    });
+
+    it("attaches a bare heading marker to a unicode-bullet title", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("###\n\u2022 \u4eca\u65e5\u751f\u6d3b\u6307\u6570", lightTheme)}</div>,
+        );
+
+        expect(screen.getByText("\u4eca\u65e5\u751f\u6d3b\u6307\u6570")).toBeTruthy();
+        expect(container.textContent).not.toContain("###");
+    });
+
+    it("renders digital-employee weather tables without a GFM separator", () => {
+        const content = [
+            "好的，我来查一下北京天气。",
+            "|---|---|---|",
+            "|---|---|---|",
+            "",
+            "###",
+            "- 北京·城区天气预报（7月24日更新）",
+            "| 日期 | 天气 | 温度 | 风力 |",
+            "今天 (24日) | 雷阵雨转多云",
+            "→| 30°C / 23°C | <3级 |",
+            "明天 (25日) | 雷阵雨转多云",
+            "→| 30°C / 24°C | <3级 |",
+            // No wrap glyph — continuation still starts with "|".
+            "周一 (27日) | 多云",
+            "| 33°C / 25°C | <3级 |",
+            "",
+            "###",
+            "- 今日生活指数",
+            "- 这几天都有雷阵雨，出门一定带伞！",
+            "\u2022 \u4f53\u611f\u8f83\u70ed\uff0830\u00b0C\u5de6\u53f3\uff09",
+        ].join("\n");
+
+        const { container } = render(<div>{renderContentWithCodeBlocks(content, lightTheme)}</div>);
+
+        // Bare ### should not leak; titles become real headings.
+        expect(container.textContent).not.toContain("###");
+        expect(screen.getByText("北京·城区天气预报（7月24日更新）")).toBeTruthy();
+        expect(screen.getByText("今日生活指数")).toBeTruthy();
+        // Orphan separator noise discarded.
+        expect(container.textContent).not.toMatch(/\|-{3,}/);
+        // Weather grid is a real table with merged split rows (glyph + no-glyph).
+        const table = screen.getByTestId("markdown-table") as HTMLTableElement;
+        expect(table.querySelectorAll("thead th")).toHaveLength(4);
+        expect(table.querySelectorAll("tbody tr")).toHaveLength(3);
+        expect(table.textContent).toContain("日期");
+        expect(table.textContent).toContain("今天 (24日)");
+        expect(table.textContent).toContain("30°C / 23°C");
+        expect(table.textContent).toContain("明天 (25日)");
+        expect(table.textContent).toContain("周一 (27日)");
+        expect(table.textContent).toContain("33°C / 25°C");
+        // Remaining list items still render as bullets (ASCII + unicode).
+        expect(screen.getByText(/这几天都有雷阵雨/)).toBeTruthy();
+        expect(screen.getByText(/\u4f53\u611f\u8f83\u70ed/)).toBeTruthy();
     });
 
     it("splits compact emoji headings even when the previous text has no punctuation", () => {

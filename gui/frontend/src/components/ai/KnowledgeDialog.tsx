@@ -136,20 +136,26 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
                     </h3>
                     <button
                         onClick={onClose}
+                        className="knowledge-dialog-close"
                         style={{
                             background: "none",
                             border: "none",
-                            fontSize: "18px",
+                            fontSize: "16px",
                             cursor: "pointer",
                             color: theme.textMuted,
-                            padding: "4px 8px",
+                            width: "28px",
+                            height: "28px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: 0,
                             borderRadius: "6px",
                             lineHeight: 1,
                         }}
                         title={lang === "en" ? "Close" : "关闭"}
                         aria-label={lang === "en" ? "Close" : "关闭"}
                     >
-                        X
+                        ×
                     </button>
                 </div>
                 <div style={bodyStyle}>

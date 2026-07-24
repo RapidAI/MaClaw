@@ -4,11 +4,61 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+func TestShouldRetryRemoteGitCheckout(t *testing.T) {
+	for _, message := range []string{
+		"gnutls_handshake() failed: The TLS connection was non-properly terminated.",
+		"fatal: unable to access: connection reset by peer",
+		"fatal: unable to access: Could not resolve host: github.com",
+		"fatal: unable to access: OpenSSL SSL_read: Connection reset by peer, errno 104",
+		"RPC failed; curl 56 Recv failure: Connection reset by peer",
+	} {
+		if !shouldRetryRemoteGitCheckout(errors.New(message)) {
+			t.Errorf("transport failure %q was not retried", message)
+		}
+	}
+	for _, message := range []string{
+		"remote: Repository not found.",
+		"fatal: Authentication failed for 'https://github.com/example/private.git/'",
+	} {
+		if shouldRetryRemoteGitCheckout(errors.New(message)) {
+			t.Errorf("non-transient failure %q was retried", message)
+		}
+	}
+	if got := remoteGitCheckoutRetryDelay(2); got != 2*time.Second {
+		t.Fatalf("retry delay = %s, want 2s", got)
+	}
+	if remoteGitCheckoutCleanupTimeout != 15*time.Second {
+		t.Fatalf("cleanup timeout = %s, want 15s", remoteGitCheckoutCleanupTimeout)
+	}
+	stagingPath := remoteGitCheckoutStagingPath("/srv/workspace/source")
+	if !strings.HasPrefix(stagingPath, "/srv/workspace/source.maclaw-checkout-") || stagingPath == "/srv/workspace/source" {
+		t.Fatalf("staging path = %q", stagingPath)
+	}
+}
+
+func TestRemoteGitCheckoutFinalizeCommandDoesNotNestStagingDirectory(t *testing.T) {
+	command := remoteGitCheckoutFinalizeCommand("'/srv/workspace/source'", "'/srv/workspace/source.maclaw-checkout-id'")
+	if !strings.Contains(command, "mv -T -- '/srv/workspace/source.maclaw-checkout-id' '/srv/workspace/source'") {
+		t.Fatalf("finalize command must use an exact target move: %s", command)
+	}
+	if !strings.Contains(command, "test ! -e '/srv/workspace/source' && test ! -L '/srv/workspace/source'") {
+		t.Fatalf("finalize command must reject an existing target or broken symlink: %s", command)
+	}
+	if !strings.Contains(command, "rmdir -- '/srv/workspace/source'") {
+		t.Fatalf("finalize command must only remove an empty target directory: %s", command)
+	}
+	if !strings.Contains(command, "test -d '/srv/workspace/source' && test ! -L '/srv/workspace/source'") {
+		t.Fatalf("finalize command must not inspect or remove a target symlink: %s", command)
+	}
+}
 
 func TestSSHHostKeyFingerprintStable(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)

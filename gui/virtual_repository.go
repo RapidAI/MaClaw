@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -86,11 +87,21 @@ type virtualRepositoryIndex struct {
 }
 
 type virtualRepositoryIndexEntry struct {
-	ID         string                   `json:"id"`
-	Name       string                   `json:"name"`
-	RootPath   string                   `json:"root_path"`
-	Remote     *VirtualRepositoryRemote `json:"remote,omitempty"`
-	LastOpened time.Time                `json:"last_opened"`
+	ID       string                   `json:"id"`
+	Name     string                   `json:"name"`
+	RootPath string                   `json:"root_path"`
+	Remote   *VirtualRepositoryRemote `json:"remote,omitempty"`
+	// Unbound is set only for a local repository definition received from
+	// another machine. It has no filesystem root on this device until the user
+	// explicitly binds it to a local directory.
+	Unbound    bool               `json:"unbound,omitempty"`
+	Definition *VirtualRepository `json:"definition,omitempty"`
+	LastOpened time.Time          `json:"last_opened"`
+}
+
+type virtualRepositoryRootBindingRequest struct {
+	RepositoryID string `json:"repository_id"`
+	RootPath     string `json:"root_path"`
 }
 
 func cloneVirtualRepositoryRemote(remote *VirtualRepositoryRemote) *VirtualRepositoryRemote {
@@ -101,8 +112,29 @@ func cloneVirtualRepositoryRemote(remote *VirtualRepositoryRemote) *VirtualRepos
 	return &copy
 }
 
+// cloneVirtualRepository returns an independent repository definition. A
+// shallow copy is not sufficient because nodes and their bindings are mutable
+// during validation (for example, legacy mapping paths are normalized).
+func cloneVirtualRepository(repo *VirtualRepository) *VirtualRepository {
+	if repo == nil {
+		return nil
+	}
+	copy := *repo
+	copy.Remote = cloneVirtualRepositoryRemote(repo.Remote)
+	copy.Nodes = append([]VirtualRepositoryNode(nil), repo.Nodes...)
+	for i := range copy.Nodes {
+		if repo.Nodes[i].Repository == nil {
+			continue
+		}
+		binding := *repo.Nodes[i].Repository
+		copy.Nodes[i].Repository = &binding
+	}
+	return &copy
+}
+
 type virtualRepositoryLocalSettings struct {
 	Version       int    `json:"version"`
+	GitExecutable string `json:"git_executable,omitempty"`
 	SVNExecutable string `json:"svn_executable,omitempty"`
 }
 
@@ -113,6 +145,9 @@ func loadVirtualRepositoryLocalSettings(path string) (virtualRepositoryLocalSett
 	}
 	if settings.Version != 1 {
 		return settings, fmt.Errorf("unsupported virtual repository local settings version %d", settings.Version)
+	}
+	if len(settings.GitExecutable) > virtualRepositoryFieldMaxLength || containsControlCharacter(settings.GitExecutable) {
+		return settings, errors.New("virtual repository Git executable setting is invalid")
 	}
 	if len(settings.SVNExecutable) > virtualRepositoryFieldMaxLength || containsControlCharacter(settings.SVNExecutable) {
 		return settings, errors.New("virtual repository SVN executable setting is invalid")
@@ -128,6 +163,12 @@ type VCSClientStatus struct {
 	Source     string `json:"source,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
+
+// virtualRepositoryVCSClients stores one resolved command-line client per VCS
+// kind for a single inspect or preview request. Client discovery runs a version
+// command, so resolving it per repository node causes avoidable process launches
+// for a virtual repository with many mappings.
+type virtualRepositoryVCSClients map[string]VCSClientStatus
 
 type VirtualRepositoryNodeStatus struct {
 	NodeID       string `json:"node_id"`
@@ -858,7 +899,7 @@ func validateVirtualRepositoryIndex(index *virtualRepositoryIndex) error {
 		id := strings.TrimSpace(item.ID)
 		name := strings.TrimSpace(item.Name)
 		rootPath := strings.TrimSpace(item.RootPath)
-		if id == "" || name == "" || rootPath == "" {
+		if id == "" || name == "" || (rootPath == "" && !(item.Unbound && item.Remote == nil)) {
 			return errors.New("virtual repository index contains an incomplete entry")
 		}
 		if len(id) > virtualRepositoryNameMaxLength || len(name) > virtualRepositoryNameMaxLength || len(rootPath) > virtualRepositoryFieldMaxLength {
@@ -874,6 +915,19 @@ func validateVirtualRepositoryIndex(index *virtualRepositoryIndex) error {
 			return fmt.Errorf("virtual repository index contains duplicate id %q", id)
 		}
 		seen[id] = struct{}{}
+		if item.Unbound {
+			if item.Remote != nil {
+				return fmt.Errorf("virtual repository index entry %q cannot be both remote and unbound", name)
+			}
+			if rootPath != "" {
+				return fmt.Errorf("virtual repository index entry %q cannot have both a root path and a portable definition", name)
+			}
+			if err := validatePortableLocalVirtualRepositoryDefinition(item.Definition, item.ID, item.Name); err != nil {
+				return fmt.Errorf("virtual repository index entry %q: %w", name, err)
+			}
+		} else if item.Definition != nil {
+			return fmt.Errorf("virtual repository index entry %q has an unexpected portable definition", name)
+		}
 		if item.Remote != nil {
 			if err := validateVirtualRepositorySSHHost(item.Remote.Host); err != nil {
 				return fmt.Errorf("virtual repository index entry %q: %w", name, err)
@@ -887,6 +941,38 @@ func validateVirtualRepositoryIndex(index *virtualRepositoryIndex) error {
 	return nil
 }
 
+// validatePortableLocalVirtualRepositoryDefinition validates the synced form
+// of a local repository. A portable definition deliberately has no filesystem
+// root, while normal manifest validation requires one to verify mapping paths.
+// Validate against the existing system temp directory only for that path-shape
+// check; no files are created or inspected beneath it.
+func validatePortableLocalVirtualRepositoryDefinition(definition *VirtualRepository, id, name string) error {
+	if definition == nil {
+		return errors.New("is missing its portable definition")
+	}
+	if definition.ID != id || definition.Name != name {
+		return errors.New("portable definition does not match the index entry")
+	}
+	if definition.RootPath != "" || definition.Remote != nil {
+		return errors.New("portable definition must be local and rootless")
+	}
+	copy := cloneVirtualRepository(definition)
+	copy.RootPath = os.TempDir()
+	if err := validateVirtualRepository(copy); err != nil {
+		return fmt.Errorf("invalid portable definition: %w", err)
+	}
+	if copy.ID != definition.ID || copy.Name != definition.Name {
+		return errors.New("portable definition contains non-canonical fields")
+	}
+	// Keep the portable copy canonical too. validateVirtualRepository derives
+	// mapping paths from the virtual tree; leaving an old machine's stale path
+	// in an unbound definition would cause needless sync conflicts before the
+	// repository is ever bound on this device.
+	copy.RootPath, copy.Remote = "", nil
+	*definition = *copy
+	return nil
+}
+
 func sameVirtualRepositoryPath(a, b string) bool {
 	a = filepath.Clean(a)
 	b = filepath.Clean(b)
@@ -894,6 +980,30 @@ func sameVirtualRepositoryPath(a, b string) bool {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
+}
+
+// isVirtualRepositoryRootUnavailable recognizes both ordinary missing paths and
+// platform-specific unavailable locations. On Windows, a disconnected drive
+// letter commonly reports ERROR_PATH_NOT_FOUND rather than os.ErrNotExist. It
+// is still recoverable through root repair, not a corrupt repository state.
+func isVirtualRepositoryRootUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrNotExist) || os.IsNotExist(err) {
+		return true
+	}
+	if goruntime.GOOS != "windows" {
+		return false
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		// ERROR_PATH_NOT_FOUND (3), ERROR_INVALID_DRIVE (15), and
+		// ERROR_NOT_READY (21). syscall exposes their numeric Errno values on
+		// every supported build target, unlike the Windows-only constant names.
+		return pathErr.Err == syscall.Errno(3) || pathErr.Err == syscall.Errno(15) || pathErr.Err == syscall.Errno(21)
+	}
+	return false
 }
 
 func (a *App) ListVirtualRepositories() (string, error) {
@@ -912,9 +1022,23 @@ func (a *App) ListVirtualRepositories() (string, error) {
 			items = append(items, map[string]any{"id": item.ID, "name": item.Name, "root_path": item.RootPath, "remote": item.Remote, "available": true})
 			continue
 		}
+		if item.Unbound {
+			items = append(items, map[string]any{"id": item.ID, "name": item.Name, "root_path": "", "nodes": item.Definition.Nodes, "available": false, "unbound": true, "error_code": "location_unavailable", "error": "This repository has not been assigned a root directory on this device"})
+			continue
+		}
 		repo, err := readVirtualRepository(item.RootPath)
 		if err != nil {
-			items = append(items, map[string]any{"id": item.ID, "name": item.Name, "root_path": item.RootPath, "available": false, "error": err.Error()})
+			entry := map[string]any{"id": item.ID, "name": item.Name, "root_path": item.RootPath, "available": false, "error": err.Error()}
+			if isVirtualRepositoryRootUnavailable(err) {
+				// A previously bound root can disappear when a removable disk or a
+				// Windows drive letter is unavailable. It can be reconnected only
+				// to an existing manifest with the same repository ID; unlike an
+				// unbound synced definition, it must never initialize an arbitrary
+				// empty directory because the portable definition is unavailable.
+				entry["error_code"] = "location_unavailable"
+				entry["root_repair"] = true
+			}
+			items = append(items, entry)
 			continue
 		}
 		items = append(items, repo)
@@ -937,6 +1061,102 @@ func (a *App) OpenVirtualRepository(root string) (string, error) {
 	log.Printf("[vrepo] open_local repo=%q nodes=%d status=success duration_ms=%d", repo.ID, len(repo.Nodes), time.Since(started).Milliseconds())
 	data, err := json.Marshal(repo)
 	return string(data), err
+}
+
+// BindVirtualRepositoryRoot attaches a portable local definition received from
+// synchronization to an explicit directory on this machine. It never accepts a
+// missing drive or silently creates a fallback location: a root is a machine
+// binding that the user must choose deliberately.
+func (a *App) BindVirtualRepositoryRoot(inputJSON string) (string, error) {
+	var request virtualRepositoryRootBindingRequest
+	if err := unmarshalVirtualRepositoryInput(inputJSON, "virtual repository root binding", &request); err != nil {
+		return "", err
+	}
+	request.RepositoryID = strings.TrimSpace(request.RepositoryID)
+	if request.RepositoryID == "" || len(request.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.RepositoryID) || strings.ContainsRune(request.RepositoryID, ':') {
+		return "", errors.New("virtual repository id is invalid")
+	}
+	root, err := cleanVirtualRepositoryRoot(request.RootPath)
+	if err != nil {
+		return "", fmt.Errorf("open selected root directory: %w", err)
+	}
+
+	virtualRepositoryStateMu.Lock()
+	defer virtualRepositoryStateMu.Unlock()
+	index := virtualRepositoryIndex{Version: 1, Items: []virtualRepositoryIndexEntry{}}
+	indexPath := a.virtualRepositoryStatePath("virtual-repositories-index.json")
+	if err := readJSONFile(indexPath, &index); err != nil {
+		return "", err
+	}
+	if err := validateVirtualRepositoryIndex(&index); err != nil {
+		return "", err
+	}
+	for i := range index.Items {
+		item := &index.Items[i]
+		if item.ID != request.RepositoryID {
+			continue
+		}
+		if item.Remote != nil {
+			return "", errors.New("remote virtual repositories do not use a local root binding")
+		}
+		unbound := item.Unbound
+		if unbound && item.Definition == nil {
+			return "", errors.New("virtual repository is missing its portable definition")
+		}
+		wasUnavailable := false
+		if !unbound {
+			if _, currentErr := readVirtualRepository(item.RootPath); currentErr == nil {
+				return "", errors.New("virtual repository already has an available local root")
+			} else if !isVirtualRepositoryRootUnavailable(currentErr) {
+				return "", fmt.Errorf("inspect current local root before reconnecting it: %w", currentErr)
+			}
+			wasUnavailable = true
+		}
+		var bound *VirtualRepository
+		existing, readErr := readVirtualRepository(root)
+		switch {
+		case readErr == nil:
+			if existing.ID != item.ID {
+				return "", errors.New("the selected directory contains a different virtual repository")
+			}
+			bound = existing
+		case os.IsNotExist(readErr):
+			if !unbound {
+				return "", errors.New("the selected directory must contain this virtual repository")
+			}
+			if _, manifestErr := os.Stat(virtualRepositoryManifestPath(root)); manifestErr != nil && !os.IsNotExist(manifestErr) {
+				return "", fmt.Errorf("inspect selected root directory: %w", manifestErr)
+			}
+			entries, dirErr := os.ReadDir(root)
+			if dirErr != nil {
+				return "", fmt.Errorf("inspect selected root directory: %w", dirErr)
+			}
+			isEmpty := len(entries) == 0 || (len(entries) == 1 && entries[0].Name() == virtualRepositoryDirName)
+			if !isEmpty {
+				return "", errors.New("the selected directory is not empty; choose an empty directory or one containing this virtual repository")
+			}
+			definition := cloneVirtualRepository(item.Definition)
+			definition.RootPath, definition.Remote = root, nil
+			if err := writeVirtualRepository(definition); err != nil {
+				return "", fmt.Errorf("initialize selected root directory: %w", err)
+			}
+			bound = definition
+		default:
+			return "", fmt.Errorf("read selected root directory: %w", readErr)
+		}
+		item.Name, item.RootPath, item.Remote = bound.Name, bound.RootPath, nil
+		item.Unbound, item.Definition, item.LastOpened = false, nil, time.Now().UTC()
+		if err := writeJSONFile(indexPath, index); err != nil {
+			return "", err
+		}
+		if !wasUnavailable {
+			a.clearVirtualRepositorySyncTombstone("repo", bound.ID)
+			a.scheduleVirtualRepositorySync()
+		}
+		data, err := json.Marshal(bound)
+		return string(data), err
+	}
+	return "", errors.New("virtual repository was not found in recent repositories")
 }
 
 func (a *App) SaveVirtualRepository(inputJSON string) (string, error) {
@@ -979,6 +1199,15 @@ func (a *App) SaveVirtualRepository(inputJSON string) (string, error) {
 		}
 		if !repo.UpdatedAt.Equal(current.UpdatedAt) {
 			return "", errors.New("virtual repository was modified by another window; reopen it before saving")
+		}
+		indexItems, err := a.loadVirtualRepositoryIndexItems()
+		if err != nil {
+			return "", err
+		}
+		for _, item := range indexItems {
+			if item.ID == repo.ID && item.Remote == nil && !sameVirtualRepositoryPath(item.RootPath, repo.RootPath) {
+				return "", errors.New("changing an existing virtual repository root requires MigrateVirtualRepositoryRoot")
+			}
 		}
 	}
 	if err := writeVirtualRepository(&repo); err != nil {
@@ -1199,7 +1428,11 @@ func (a *App) checkoutVirtualRepositoryNode(parent context.Context, repo *Virtua
 			args = append(args, "--branch", node.Repository.RefName, "--single-branch")
 		}
 		args = append(args, sanitizeRepositoryRemoteURL(node.Repository.RemoteURL), target)
-		_, err = runGitVirtualRepositoryCheckout(ctx, args, credential, secret)
+		client := a.searchGitClient(false)
+		if !client.Available {
+			return errors.New(client.Error)
+		}
+		_, err = runGitVirtualRepositoryCheckout(ctx, client.Executable, args, credential, secret)
 		return err
 	}
 	client := a.searchSVNClient(false)
@@ -1214,7 +1447,7 @@ func (a *App) checkoutVirtualRepositoryNode(parent context.Context, repo *Virtua
 	return err
 }
 
-func runGitVirtualRepositoryCheckout(ctx context.Context, args []string, credential *RepositoryCredentialMetadata, secret string) (string, error) {
+func runGitVirtualRepositoryCheckout(ctx context.Context, executable string, args []string, credential *RepositoryCredentialMetadata, secret string) (string, error) {
 	extraEnv := []string{"GIT_TERMINAL_PROMPT=0"}
 	cleanup := func() {}
 	if credential != nil {
@@ -1226,7 +1459,7 @@ func runGitVirtualRepositoryCheckout(ctx context.Context, args []string, credent
 		extraEnv = append(extraEnv, "GIT_ASKPASS="+askPass.path, "GIT_ASKPASS_REQUIRE=force", "MACLAW_VREPO_GIT_USERNAME="+credential.Username, "MACLAW_VREPO_GIT_SECRET="+secret)
 	}
 	defer cleanup()
-	return runVCSCommandEnv(ctx, "git", "", extraEnv, args...)
+	return runVCSCommandEnv(ctx, executable, "", extraEnv, args...)
 }
 
 func (a *App) GetVirtualRepositoryDirectoryStats(root, relativePath string) (string, error) {
@@ -1278,6 +1511,7 @@ func (a *App) InspectVirtualRepository(root string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	statuses := make([]VirtualRepositoryNodeStatus, 0)
+	clients := make(virtualRepositoryVCSClients, 2)
 	for _, node := range repo.Nodes {
 		if node.Repository == nil || !node.Repository.Enabled {
 			continue
@@ -1285,7 +1519,7 @@ func (a *App) InspectVirtualRepository(root string) (string, error) {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		statuses = append(statuses, a.inspectVirtualRepositoryNodeContext(ctx, repo.RootPath, node))
+		statuses = append(statuses, a.inspectVirtualRepositoryNodeContextWithClients(ctx, repo.RootPath, node, clients))
 	}
 	data, err := json.Marshal(statuses)
 	errorsFound := 0
@@ -1301,10 +1535,14 @@ func (a *App) InspectVirtualRepository(root string) (string, error) {
 func (a *App) inspectVirtualRepositoryNode(root string, node VirtualRepositoryNode) VirtualRepositoryNodeStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return a.inspectVirtualRepositoryNodeContext(ctx, root, node)
+	return a.inspectVirtualRepositoryNodeContextWithClients(ctx, root, node, make(virtualRepositoryVCSClients, 2))
 }
 
 func (a *App) inspectVirtualRepositoryNodeContext(ctx context.Context, root string, node VirtualRepositoryNode) VirtualRepositoryNodeStatus {
+	return a.inspectVirtualRepositoryNodeContextWithClients(ctx, root, node, make(virtualRepositoryVCSClients, 2))
+}
+
+func (a *App) inspectVirtualRepositoryNodeContextWithClients(ctx context.Context, root string, node VirtualRepositoryNode, clients virtualRepositoryVCSClients) VirtualRepositoryNodeStatus {
 	b := node.Repository
 	status := VirtualRepositoryNodeStatus{NodeID: node.ID, Kind: b.Kind}
 	path, err := resolveVirtualRepositoryPath(root, b.RelativePath, true)
@@ -1328,7 +1566,13 @@ func (a *App) inspectVirtualRepositoryNodeContext(ctx context.Context, root stri
 		return status
 	}
 	if b.Kind == "git" {
-		inside, runErr := runVCSCommand(ctx, "git", path, "rev-parse", "--is-inside-work-tree")
+		client := a.virtualRepositoryVCSClient("git", clients)
+		if !client.Available {
+			status.ErrorCode = "client_not_found"
+			status.Error = client.Error
+			return status
+		}
+		inside, runErr := runVCSCommand(ctx, client.Executable, path, "rev-parse", "--is-inside-work-tree")
 		if runErr != nil || strings.TrimSpace(inside) != "true" {
 			status.ErrorCode = "not_working_copy"
 			status.Error = virtualRepositoryErrorText(runErr, "not a Git working tree")
@@ -1336,26 +1580,26 @@ func (a *App) inspectVirtualRepositoryNodeContext(ctx context.Context, root stri
 		}
 		status.IsRepository = true
 		if b.RefType == "tag" && b.RefName != "" {
-			status.Branch, err = runVCSCommand(ctx, "git", path, "describe", "--tags", "--exact-match")
+			status.Branch, err = runVCSCommand(ctx, client.Executable, path, "describe", "--tags", "--exact-match")
 			if err != nil {
 				status.ErrorCode, status.Error = "ref_mismatch", fmt.Sprintf("configured tag %q is not checked out", b.RefName)
 				return status
 			}
 		} else {
-			status.Branch, err = runVCSCommand(ctx, "git", path, "symbolic-ref", "--quiet", "--short", "HEAD")
+			status.Branch, err = runVCSCommand(ctx, client.Executable, path, "symbolic-ref", "--quiet", "--short", "HEAD")
 			if err != nil {
 				status.ErrorCode, status.Error = "command_failed", err.Error()
 				return status
 			}
 		}
-		status.RemoteURL, err = runVCSCommand(ctx, "git", path, "remote", "get-url", "origin")
+		status.RemoteURL, err = runVCSCommand(ctx, client.Executable, path, "remote", "get-url", "origin")
 		if err != nil {
 			status.ErrorCode, status.Error = "remote_unavailable", err.Error()
 			return status
 		}
-		status.Status, err = runVCSCommand(ctx, "git", path, "status", "--short")
+		status.Status, err = runVCSCommand(ctx, client.Executable, path, "status", "--short")
 	} else {
-		client := a.searchSVNClient(false)
+		client := a.virtualRepositoryVCSClient("svn", clients)
 		if !client.Available {
 			status.ErrorCode = "client_not_found"
 			status.Error = client.Error
@@ -1394,6 +1638,27 @@ func (a *App) inspectVirtualRepositoryNodeContext(ctx context.Context, root stri
 	}
 	status.Status = strings.TrimSpace(status.Status)
 	status.Clean = status.Status == ""
+	return status
+}
+
+func (a *App) virtualRepositoryVCSClient(kind string, clients virtualRepositoryVCSClients) VCSClientStatus {
+	if clients != nil {
+		if status, ok := clients[kind]; ok {
+			return status
+		}
+	}
+	var status VCSClientStatus
+	switch kind {
+	case "git":
+		status = a.searchGitClient(false)
+	case "svn":
+		status = a.searchSVNClient(false)
+	default:
+		status = VCSClientStatus{Kind: kind, Error: "unsupported VCS client kind"}
+	}
+	if clients != nil {
+		clients[kind] = status
+	}
 	return status
 }
 
@@ -1436,6 +1701,7 @@ func runVCSCommandEnv(ctx context.Context, executable, dir string, extraEnv []st
 
 func runVCSCommandInputEnv(ctx context.Context, executable, dir string, extraEnv []string, stdin string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, executable, args...)
+	hideVCSCommandWindow(cmd)
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}
@@ -1512,7 +1778,7 @@ func (a *App) GetVCSClientStatus(kind string) (string, error) {
 	case "svn":
 		status = a.searchSVNClient(false)
 	case "git":
-		status = validateVCSExecutable("git", "path", "git")
+		status = a.searchGitClient(false)
 	default:
 		return "", errors.New("unsupported VCS client kind")
 	}
@@ -1521,15 +1787,41 @@ func (a *App) GetVCSClientStatus(kind string) (string, error) {
 }
 
 func (a *App) SearchVCSClient(kind string) (string, error) {
-	if !strings.EqualFold(strings.TrimSpace(kind), "svn") {
-		return a.GetVCSClientStatus(kind)
+	var status VCSClientStatus
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "git":
+		status = a.searchGitClient(true)
+	case "svn":
+		status = a.searchSVNClient(true)
+	default:
+		return "", errors.New("unsupported VCS client kind")
 	}
-	status := a.searchSVNClient(true)
 	data, err := json.Marshal(status)
 	return string(data), err
 }
 
-func (a *App) SelectVCSClientExecutable(kind string) string {
+// VCSClientExecutableHint returns the saved executable override, if any. It is
+// intentionally separate from GetVCSClientStatus: reading the configured path
+// should not spawn a VCS process just to populate a file picker's initial path.
+func (a *App) VCSClientExecutableHint(kind string) (string, error) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind != "git" && kind != "svn" {
+		return "", errors.New("unsupported VCS client kind")
+	}
+	settings, err := loadVirtualRepositoryLocalSettings(a.virtualRepositoryStatePath("virtual-repository-local-settings.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if kind == "git" {
+		return settings.GitExecutable, nil
+	}
+	return settings.SVNExecutable, nil
+}
+
+func (a *App) SelectVCSClientExecutable(kind, defaultPath string) string {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if kind != "svn" && kind != "git" {
 		return ""
@@ -1538,7 +1830,11 @@ func (a *App) SelectVCSClientExecutable(kind string) string {
 	if goruntime.GOOS == "windows" {
 		name += ".exe"
 	}
-	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "Select " + strings.ToUpper(kind) + " executable", Filters: []runtime.FileFilter{{DisplayName: name, Pattern: name}}})
+	options := runtime.OpenDialogOptions{Title: "Select " + strings.ToUpper(kind) + " executable", Filters: []runtime.FileFilter{{DisplayName: name, Pattern: name}}}
+	if defaultPath = strings.TrimSpace(defaultPath); defaultPath != "" {
+		options.DefaultDirectory = filepath.Dir(defaultPath)
+	}
+	selection, err := runtime.OpenFileDialog(a.ctx, options)
 	if err != nil {
 		return ""
 	}
@@ -1546,19 +1842,26 @@ func (a *App) SelectVCSClientExecutable(kind string) string {
 }
 
 func (a *App) SetVCSClientExecutable(kind, executablePath string) (string, error) {
-	if !strings.EqualFold(strings.TrimSpace(kind), "svn") {
-		return "", errors.New("only SVN executable override is supported")
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind != "git" && kind != "svn" {
+		return "", errors.New("unsupported VCS client kind")
 	}
-	status := validateVCSExecutable(executablePath, "user", "svn")
+	status := validateVCSExecutable(executablePath, "user", kind)
 	if !status.Available {
 		return "", errors.New(status.Error)
 	}
+	virtualRepositoryStateMu.Lock()
+	defer virtualRepositoryStateMu.Unlock()
 	path := a.virtualRepositoryStatePath("virtual-repository-local-settings.json")
 	settings, err := loadVirtualRepositoryLocalSettings(path)
 	if err != nil {
 		return "", err
 	}
-	settings.SVNExecutable = status.Executable
+	if kind == "git" {
+		settings.GitExecutable = status.Executable
+	} else {
+		settings.SVNExecutable = status.Executable
+	}
 	if err := writeJSONFile(path, settings); err != nil {
 		return "", err
 	}
@@ -1567,19 +1870,48 @@ func (a *App) SetVCSClientExecutable(kind, executablePath string) (string, error
 }
 
 func (a *App) ResetVCSClientExecutable(kind string) (string, error) {
-	if !strings.EqualFold(strings.TrimSpace(kind), "svn") {
-		return "", errors.New("only SVN executable override is supported")
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind != "git" && kind != "svn" {
+		return "", errors.New("unsupported VCS client kind")
 	}
+	virtualRepositoryStateMu.Lock()
 	path := a.virtualRepositoryStatePath("virtual-repository-local-settings.json")
 	settings, err := loadVirtualRepositoryLocalSettings(path)
 	if err != nil {
+		virtualRepositoryStateMu.Unlock()
 		return "", err
 	}
-	settings.SVNExecutable = ""
+	if kind == "git" {
+		settings.GitExecutable = ""
+	} else {
+		settings.SVNExecutable = ""
+	}
 	if err := writeJSONFile(path, settings); err != nil {
+		virtualRepositoryStateMu.Unlock()
 		return "", err
 	}
-	return a.SearchVCSClient("svn")
+	virtualRepositoryStateMu.Unlock()
+	return a.SearchVCSClient(kind)
+}
+
+func (a *App) searchGitClient(ignoreUser bool) VCSClientStatus {
+	if !ignoreUser {
+		settings, err := loadVirtualRepositoryLocalSettings(a.virtualRepositoryStatePath("virtual-repository-local-settings.json"))
+		if err == nil && settings.GitExecutable != "" {
+			if status := validateVCSExecutable(settings.GitExecutable, "user", "git"); status.Available {
+				return status
+			}
+		}
+	}
+	if status := validateVCSExecutable("git", "path", "git"); status.Available {
+		return status
+	}
+	for _, candidate := range commonGitExecutablePaths() {
+		if status := validateVCSExecutable(candidate, "auto", "git"); status.Available {
+			return status
+		}
+	}
+	return VCSClientStatus{Kind: "git", Error: "Git command line client was not found"}
 }
 
 func (a *App) searchSVNClient(ignoreUser bool) VCSClientStatus {
@@ -1611,7 +1943,11 @@ func validateVCSExecutable(candidate, source, kind string) VCSClientStatus {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	version, err := runVCSCommand(ctx, resolved, "", "--version", "--quiet")
+	versionArgs := []string{"--version"}
+	if kind == "svn" {
+		versionArgs = append(versionArgs, "--quiet")
+	}
+	version, err := runVCSCommand(ctx, resolved, "", versionArgs...)
 	if err != nil {
 		status.Error = err.Error()
 		return status
@@ -1632,6 +1968,33 @@ func commonSVNExecutablePaths() []string {
 		filepath.Join("VisualSVN Server", "bin", "svn.exe"),
 		filepath.Join("SlikSvn", "bin", "svn.exe"),
 		filepath.Join("CollabNet", "Subversion Client", "svn.exe"),
+	}
+	var result []string
+	seen := map[string]struct{}{}
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		for _, rel := range relatives {
+			candidate := filepath.Join(root, rel)
+			key := strings.ToLower(candidate)
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				result = append(result, candidate)
+			}
+		}
+	}
+	return result
+}
+
+func commonGitExecutablePaths() []string {
+	if goruntime.GOOS != "windows" {
+		return []string{"/usr/local/bin/git", "/opt/homebrew/bin/git", "/usr/bin/git", "/snap/bin/git"}
+	}
+	roots := []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA")}
+	relatives := []string{
+		filepath.Join("Git", "cmd", "git.exe"),
+		filepath.Join("Git", "bin", "git.exe"),
 	}
 	var result []string
 	seen := map[string]struct{}{}

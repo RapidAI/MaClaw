@@ -400,6 +400,49 @@ func (noOpKnowledgeStore) ImportFiles(context.Context, knowledge.DirectoryImport
 func (noOpKnowledgeStore) Stats(context.Context) (knowledge.Stats, error) {
 	return knowledge.Stats{}, nil
 }
+func (noOpKnowledgeStore) ListSources(context.Context, knowledge.ListSourcesOptions) ([]knowledge.Source, error) {
+	return nil, nil
+}
+func (noOpKnowledgeStore) ListSourceLabels(context.Context, knowledge.ListSourcesOptions) ([]knowledge.SourceLabelSummary, error) {
+	return nil, nil
+}
+func (noOpKnowledgeStore) GetSource(context.Context, string) (knowledge.Source, error) {
+	return knowledge.Source{}, nil
+}
+func (noOpKnowledgeStore) UpdateSourceMetadata(context.Context, knowledge.SourceUpdateRequest) (knowledge.Source, error) {
+	return knowledge.Source{}, nil
+}
+func (noOpKnowledgeStore) UpdateSourceLabels(context.Context, knowledge.SourceLabelUpdateRequest) (knowledge.SourceLabelUpdateResult, error) {
+	return knowledge.SourceLabelUpdateResult{}, nil
+}
+func (noOpKnowledgeStore) EnableSource(context.Context, string) (knowledge.Source, error) {
+	return knowledge.Source{}, nil
+}
+func (noOpKnowledgeStore) DisableSource(context.Context, string) (knowledge.Source, error) {
+	return knowledge.Source{}, nil
+}
+func (noOpKnowledgeStore) DeleteSource(context.Context, string) error { return nil }
+func (noOpKnowledgeStore) RefreshSource(context.Context, string) (knowledge.Source, error) {
+	return knowledge.Source{}, nil
+}
+func (noOpKnowledgeStore) PreviewSourceRefresh(context.Context, string) (knowledge.SourceChangePreview, error) {
+	return knowledge.SourceChangePreview{}, nil
+}
+func (noOpKnowledgeStore) ListImportBatches(context.Context, int) ([]knowledge.ImportBatch, error) {
+	return nil, nil
+}
+func (noOpKnowledgeStore) GetImportBatch(context.Context, string) (knowledge.ImportBatch, error) {
+	return knowledge.ImportBatch{}, nil
+}
+func (noOpKnowledgeStore) ListImportItems(context.Context, string, int) ([]knowledge.ImportItem, error) {
+	return nil, nil
+}
+func (noOpKnowledgeStore) RetryImportBatch(context.Context, knowledge.ImportRetryRequest) (knowledge.DirectoryImportResult, error) {
+	return knowledge.DirectoryImportResult{}, nil
+}
+func (noOpKnowledgeStore) DeleteImportBatch(context.Context, knowledge.ImportBatchDeleteRequest) (knowledge.ImportBatchDeleteResult, error) {
+	return knowledge.ImportBatchDeleteResult{}, nil
+}
 
 type stubKnowledgeStore struct {
 	noOpKnowledgeStore

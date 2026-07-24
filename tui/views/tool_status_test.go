@@ -110,6 +110,143 @@ func TestToolStatus_SkillSearch_Esc(t *testing.T) {
 	}
 }
 
+func TestToolStatusIgnoresStaleSkillSearchResult(t *testing.T) {
+	m := NewToolStatusModel("en")
+	m.beginSkillSearch("Searching first")
+	firstRequestID := m.skillSearchRequest
+	m.beginSkillSearch("Searching second")
+	secondRequestID := m.skillSearchRequest
+
+	m, _ = m.Update(ToolSkillSearchResultMsg{RequestID: firstRequestID, Results: []SkillSearchResult{{Name: "Old result"}}})
+	if len(m.skillResults) != 0 || !m.skillSearching {
+		t.Fatalf("stale result changed active search: results=%#v searching=%v", m.skillResults, m.skillSearching)
+	}
+
+	m, _ = m.Update(ToolSkillSearchResultMsg{RequestID: secondRequestID, Results: []SkillSearchResult{{Name: "Current result"}}})
+	if m.skillSearching || len(m.skillResults) != 1 || m.skillResults[0].Name != "Current result" {
+		t.Fatalf("current result was not applied: results=%#v searching=%v", m.skillResults, m.skillSearching)
+	}
+}
+
+func TestToolStatusEscDismissesInFlightSkillSearch(t *testing.T) {
+	m := NewToolStatusModel("en")
+	m.beginSkillSearch("Searching")
+	requestID := m.skillSearchRequest
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.skillSearching || len(m.skillResults) != 0 || m.skillMessage != "" {
+		t.Fatalf("Esc did not dismiss search: searching=%v results=%#v message=%q", m.skillSearching, m.skillResults, m.skillMessage)
+	}
+
+	m, _ = m.Update(ToolSkillSearchResultMsg{RequestID: requestID, Results: []SkillSearchResult{{Name: "Late result"}}})
+	if len(m.skillResults) != 0 {
+		t.Fatalf("late response restored dismissed search: %#v", m.skillResults)
+	}
+}
+
+func TestToolStatusInstalledSearchResultDoesNotDispatchInstall(t *testing.T) {
+	m := NewToolStatusModel("en")
+	m, _ = m.Update(ToolSkillSearchResultMsg{Results: []SkillSearchResult{{
+		ID: "hub-weather", Name: "Weather", Source: "skillhub", Installed: true, InstalledName: "Weather",
+	}}})
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("installed result should not dispatch install: %v", cmd)
+	}
+	if m.skillConfirming {
+		t.Fatal("installed result should not open install confirmation")
+	}
+	if !strings.Contains(m.skillMessage, "Installed") {
+		t.Fatalf("skill message = %q, want installed state", m.skillMessage)
+	}
+}
+
+func TestToolStatusGitHubResultWithoutInstallRefDoesNotConfirmOrDispatch(t *testing.T) {
+	m := NewToolStatusModel("en")
+	m, _ = m.Update(ToolSkillSearchResultMsg{Results: []SkillSearchResult{{
+		ID: "acme/weather", Name: "GitHub Weather", Source: "github",
+	}}})
+
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil || m.skillConfirming {
+		t.Fatalf("incomplete GitHub result should not confirm or dispatch: cmd=%v confirming=%v", cmd, m.skillConfirming)
+	}
+	if !strings.Contains(m.skillMessage, "metadata is missing") {
+		t.Fatalf("skill message = %q", m.skillMessage)
+	}
+}
+
+func TestToolStatusSuccessfulInstallMarksSelectedSearchResultInstalled(t *testing.T) {
+	m := NewToolStatusModel("en")
+	m, _ = m.Update(ToolSkillSearchResultMsg{Results: []SkillSearchResult{{
+		ID: "weather", Name: "Weather", Source: "clawhub",
+	}}})
+	m, _ = m.Update(ToolOperationResultMsg{Tab: ToolSubSkill, Success: true, Message: "Installed", InstalledName: "Weather"})
+
+	if !m.skillResults[0].Installed || m.skillResults[0].InstalledName != "Weather" {
+		t.Fatalf("installed search result = %#v", m.skillResults[0])
+	}
+}
+
+func TestToolStatusSuccessfulInstallMarksOriginalResultWhenCursorMoved(t *testing.T) {
+	m := NewToolStatusModel("en")
+	m, _ = m.Update(ToolSkillSearchResultMsg{Results: []SkillSearchResult{
+		{ID: "weather", Name: "Weather", Source: "clawhub"},
+		{ID: "calendar", Name: "Calendar", Source: "clawhub"},
+	}})
+	key := m.skillSearchResultKey(m.skillResults[0])
+	m.skillResultCursor = 1
+	m, _ = m.Update(ToolOperationResultMsg{Tab: ToolSubSkill, Success: true, Message: "Installed", InstalledName: "Weather", InstalledSearchResult: key})
+
+	if !m.skillResults[0].Installed || m.skillResults[1].Installed {
+		t.Fatalf("results were marked incorrectly: %#v", m.skillResults)
+	}
+}
+
+func TestToolStatusDoesNotDispatchAnotherInstallWhileOneIsInFlight(t *testing.T) {
+	m := NewToolStatusModel("en")
+	m, _ = m.Update(ToolSkillSearchResultMsg{Results: []SkillSearchResult{{
+		ID: "weather", Name: "Weather", Source: "clawhub",
+	}}})
+
+	// First Enter opens confirmation; the next accepts and dispatches exactly one install.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || !m.skillInstalling {
+		t.Fatalf("expected one in-flight install: cmd=%v installing=%v", cmd, m.skillInstalling)
+	}
+	msg := cmd()
+	if _, ok := msg.(ToolSkillInstallMsg); !ok {
+		t.Fatalf("install command message = %T, want ToolSkillInstallMsg", msg)
+	}
+
+	m, duplicate := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if duplicate != nil || m.skillConfirming {
+		t.Fatalf("duplicate install was not blocked: cmd=%v confirming=%v", duplicate, m.skillConfirming)
+	}
+
+	m, _ = m.Update(ToolOperationResultMsg{Tab: ToolSubSkill, Success: false, Message: "network failed"})
+	if m.skillInstalling {
+		t.Fatal("installing state should clear after its result")
+	}
+}
+
+func TestToolStatusSearchResultShowsSelectedDetailsAndCaution(t *testing.T) {
+	m := NewToolStatusModel("en")
+	m.SetSkills(nil)
+	m, _ = m.Update(ToolSkillSearchResultMsg{Results: []SkillSearchResult{{
+		ID: "download", Name: "Download Tool", Source: "clawhub", Description: "Fetches an HTTP URL.", Caution: "Prefer download_file for simple HTTP downloads.",
+	}}})
+
+	view := stripANSIForTest(m.View())
+	for _, want := range []string{"Fetches an HTTP URL.", "Prefer download_file"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("search view missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestToolStatus_SkillQuickSearchUsesPreset(t *testing.T) {
 	m := NewToolStatusModel("en")
 

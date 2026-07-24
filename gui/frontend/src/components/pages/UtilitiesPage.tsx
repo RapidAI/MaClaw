@@ -93,12 +93,17 @@ type SurveyDetail = SurveySummary & {
     announce_failures?: string[];
 };
 
-async function getApp(): Promise<any | null> {
-    try {
-        return await import('../../../wailsjs/go/main/App');
-    } catch {
-        return null;
+/** Deduplicate the generated Wails binding import; retry after a transient load failure. */
+let appModulePromise: Promise<any | null> | null = null;
+
+function getApp(): Promise<any | null> {
+    if (!appModulePromise) {
+        appModulePromise = import('../../../wailsjs/go/main/App').catch(() => {
+            appModulePromise = null;
+            return null;
+        });
     }
+    return appModulePromise;
 }
 
 /** Stroke icons for home tool cards — same conventions as the AppsPage icon set. */
@@ -267,11 +272,14 @@ const SurveyHelpPanel = ({ title, groups }: { title: string; groups: SurveyOpera
 
 export const UtilitiesPage = ({
     lang,
+    active = true,
     onStartMeetingRecord,
     onOpenExpert,
     onOpenVirtualRepositoryTask,
 }: {
     lang?: string;
+    /** The workspace stays mounted for virtual-repository operations; pause unrelated refreshes while hidden. */
+    active?: boolean;
     /** Open a new agent tab and send the meeting-recording command. */
     onStartMeetingRecord?: () => void | Promise<void>;
     /** Open an expert conversation tab in the AI assistant panel. */
@@ -328,6 +336,10 @@ export const UtilitiesPage = ({
     const vscodeStartingRef = useRef(false);
     const vscodeExtStartingRef = useRef(false);
     const mountedRef = useRef(true);
+    const activeRef = useRef(active);
+    const expertsRequestRef = useRef(0);
+    const surveyListRequestRef = useRef(0);
+    const bindableGroupsRequestRef = useRef(0);
     const selectedIdRef = useRef<string | null>(null);
     const viewRef = useRef<View>(view);
     const busyRef = useRef(busy);
@@ -336,6 +348,16 @@ export const UtilitiesPage = ({
     viewRef.current = view;
     busyRef.current = busy;
     selectedStatusRef.current = selected?.status;
+    activeRef.current = active;
+
+    useEffect(() => {
+        if (active) return;
+        // Invalidate in-flight background reads immediately. A request may finish
+        // between the render that hides this page and its caller observing active.
+        expertsRequestRef.current += 1;
+        surveyListRequestRef.current += 1;
+        bindableGroupsRequestRef.current += 1;
+    }, [active]);
 
     useEffect(() => {
         mountedRef.current = true;
@@ -346,6 +368,7 @@ export const UtilitiesPage = ({
 
     // Mode B / VS Code ACP readiness line on home.
     useEffect(() => {
+        if (!active || view !== 'home') return;
         let cancelled = false;
         (async () => {
             try {
@@ -374,15 +397,16 @@ export const UtilitiesPage = ({
             }
         })();
         return () => { cancelled = true; };
-    }, [isZh, view]);
+    }, [active, isZh, view]);
 
     // AI experts: load the card list whenever the home view is shown.
     const loadExperts = useCallback(async () => {
+        const requestID = ++expertsRequestRef.current;
         try {
             const mod = await getApp();
             if (!mod?.ListExperts) return;
             const raw = await mod.ListExperts();
-            if (!mountedRef.current) return;
+            if (!mountedRef.current || !activeRef.current || requestID !== expertsRequestRef.current) return;
             setExperts(parseExpertListJSON(raw));
         } catch {
             // Backend unavailable (tests / pre-wails) — keep the section empty.
@@ -390,9 +414,9 @@ export const UtilitiesPage = ({
     }, []);
 
     useEffect(() => {
-        if (view !== 'home') return;
+        if (!active || view !== 'home') return;
         void loadExperts();
-    }, [view, loadExperts]);
+    }, [active, view, loadExperts]);
 
     const handleDeleteExpert = useCallback(async () => {
         const target = expertDeleteTarget;
@@ -899,8 +923,10 @@ export const UtilitiesPage = ({
     };
 
     const loadList = useCallback(async () => {
+        const requestID = ++surveyListRequestRef.current;
         setError('');
         const mod = await getApp();
+        if (!mountedRef.current || !activeRef.current || requestID !== surveyListRequestRef.current) return;
         if (!mod?.ListSurveys) {
             setHubOk(false);
             setSurveys([]);
@@ -908,11 +934,13 @@ export const UtilitiesPage = ({
         }
         try {
             const raw = await mod.ListSurveys(JSON.stringify({ status: statusFilter }));
+            if (!mountedRef.current || !activeRef.current || requestID !== surveyListRequestRef.current) return;
             const res = parseWailsJSON<{ surveys?: SurveySummary[] }>(raw) || {};
             const list = res.surveys || [];
             setSurveys(Array.isArray(list) ? list : []);
             setHubOk(true);
         } catch (e: any) {
+            if (!mountedRef.current || !activeRef.current || requestID !== surveyListRequestRef.current) return;
             setHubOk(false);
             setSurveys([]);
             setError(String(e?.message || e || 'Hub unavailable'));
@@ -920,47 +948,48 @@ export const UtilitiesPage = ({
     }, [statusFilter]);
 
     useEffect(() => {
-        if (view === 'survey-list' || view === 'survey-edit') {
+        if (active && (view === 'survey-list' || view === 'survey-edit')) {
             void loadList();
         }
-    }, [view, loadList]);
+    }, [active, view, loadList]);
 
     /** Fetch Lansenger groups the bot has joined (for survey bind UI). */
     const loadBindableGroups = useCallback(async (opts?: { silent?: boolean }) => {
-        if (!mountedRef.current) return;
+        const requestID = ++bindableGroupsRequestRef.current;
+        if (!mountedRef.current || !activeRef.current) return;
         setGroupsLoading(true);
         if (!opts?.silent) {
             setGroupsError('');
         }
         try {
             const mod = await getApp();
-            if (!mountedRef.current) return;
+            if (!mountedRef.current || !activeRef.current || requestID !== bindableGroupsRequestRef.current) return;
             if (!mod?.ListLansengerGroups) {
                 setGroups([]);
                 setGroupsError(isZh ? '当前版本不支持拉取群列表' : 'Group list API unavailable in this build');
                 return;
             }
             const res = await mod.ListLansengerGroups();
-            if (!mountedRef.current) return;
+            if (!mountedRef.current || !activeRef.current || requestID !== bindableGroupsRequestRef.current) return;
             // Wails may return a struct object or a JSON string.
             const mapped = mapLansengerGroupsForSurveyBind(res);
             setGroups(mapped);
             setGroupsError('');
         } catch (e: any) {
-            if (!mountedRef.current) return;
+            if (!mountedRef.current || !activeRef.current || requestID !== bindableGroupsRequestRef.current) return;
             setGroups([]);
             setGroupsError(String(e?.message || e || (isZh ? '拉取群列表失败' : 'Failed to load groups')));
         } finally {
-            if (mountedRef.current) setGroupsLoading(false);
+            if (mountedRef.current && activeRef.current && requestID === bindableGroupsRequestRef.current) setGroupsLoading(false);
         }
     }, [isZh]);
 
     // After create/open, always (re)load joinable groups so "可绑定群" is not stuck empty.
     useEffect(() => {
-        if (view === 'survey-edit' && selected?.id) {
+        if (active && view === 'survey-edit' && selected?.id) {
             void loadBindableGroups({ silent: true });
         }
-    }, [view, selected?.id, loadBindableGroups]);
+    }, [active, view, selected?.id, loadBindableGroups]);
 
     const mapCreateError = (code: string) => {
         if (code === 'choice_needs_two_options') return isZh ? '选择题至少需要 2 个选项' : 'Choice needs 2 options';
@@ -1323,6 +1352,7 @@ export const UtilitiesPage = ({
     // Live refresh when IM gateway emits survey-updated after a submission.
     // Debounce burst submits (rate-limit window / multi-user) into one refresh.
     useEffect(() => {
+        if (!active) return;
         let off: (() => void) | undefined;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let pendingSid: string | undefined;
@@ -1351,7 +1381,7 @@ export const UtilitiesPage = ({
             if (typeof off === 'function') off();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps -- openResults uses refs for soft refresh
-    }, [loadList, isZh]);
+    }, [active, loadList, isZh]);
 
     const saveDraftRef = useRef(saveDraft);
     const createSurveyRef = useRef(createSurvey);
@@ -1360,6 +1390,7 @@ export const UtilitiesPage = ({
 
     // Keyboard: Ctrl/Cmd+S save or create draft; Esc navigate back.
     useEffect(() => {
+        if (!active) return;
         const onKey = (e: KeyboardEvent) => {
             if (busyRef.current) return;
             const key = e.key;
@@ -1393,7 +1424,7 @@ export const UtilitiesPage = ({
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, []);
+    }, [active]);
 
     const exportXlsx = async (filteredOnly: boolean) => {
         if (!selected?.id) return;

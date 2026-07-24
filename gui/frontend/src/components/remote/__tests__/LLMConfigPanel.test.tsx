@@ -6,6 +6,8 @@ const GetMaclawLLMProvidersMock = vi.fn();
 const SaveMaclawLLMProvidersMock = vi.fn();
 const TestMaclawLLMMock = vi.fn();
 const GetMaclawAgentMaxIterationsMock = vi.fn();
+const GetMaclawLLMThinkingModeMock = vi.fn();
+const SetMaclawLLMThinkingModeMock = vi.fn();
 const GetSubAgentConcurrencyMock = vi.fn();
 const GetHubLLMServiceStatusMock = vi.fn();
 const FetchProviderModelsMock = vi.fn();
@@ -21,10 +23,12 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SaveMaclawLLMProviders: (...args: unknown[]) => SaveMaclawLLMProvidersMock(...args),
     TestMaclawLLM: (...args: unknown[]) => TestMaclawLLMMock(...args),
     GetMaclawAgentMaxIterations: (...args: unknown[]) => GetMaclawAgentMaxIterationsMock(...args),
+    GetMaclawLLMThinkingMode: (...args: unknown[]) => GetMaclawLLMThinkingModeMock(...args),
     GetSubAgentConcurrency: (...args: unknown[]) => GetSubAgentConcurrencyMock(...args),
     GetHubLLMServiceStatus: (...args: unknown[]) => GetHubLLMServiceStatusMock(...args),
     LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
     SetMaclawAgentMaxIterations: vi.fn(),
+    SetMaclawLLMThinkingMode: (...args: unknown[]) => SetMaclawLLMThinkingModeMock(...args),
     SetSubAgentConcurrency: vi.fn(),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     CancelOpenAIOAuth: vi.fn(),
@@ -70,6 +74,8 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
         SaveMaclawLLMProvidersMock.mockResolvedValue(undefined);
         GetMaclawAgentMaxIterationsMock.mockResolvedValue(12);
+        GetMaclawLLMThinkingModeMock.mockResolvedValue('');
+        SetMaclawLLMThinkingModeMock.mockResolvedValue(undefined);
         GetSubAgentConcurrencyMock.mockResolvedValue(2);
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false });
         GetMoAConfigMock.mockResolvedValue({ enabled: false, presets: {} });
@@ -131,6 +137,34 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         expect(TestMaclawLLMMock.mock.invocationCallOrder[0]).toBeLessThan(SaveMaclawLLMProvidersMock.mock.invocationCallOrder[0]);
         expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
+    });
+
+    it('persists the global thinking mode via the thinking card', async () => {
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const onButton = await screen.findByTestId('thinking-mode-enabled');
+        const autoButton = screen.getByTestId('thinking-mode-auto');
+
+        fireEvent.click(onButton);
+        await waitFor(() => {
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('enabled');
+        });
+
+        fireEvent.click(autoButton);
+        await waitFor(() => {
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('');
+        });
+    });
+
+    it('reflects the loaded global thinking mode as active', async () => {
+        GetMaclawLLMThinkingModeMock.mockResolvedValue('disabled');
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const offButton = await screen.findByTestId('thinking-mode-disabled');
+        await waitFor(() => {
+            expect(offButton.style.background).not.toBe('');
+        });
     });
 
     it('saves a custom User-Agent value', async () => {

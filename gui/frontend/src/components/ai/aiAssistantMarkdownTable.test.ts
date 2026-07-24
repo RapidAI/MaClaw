@@ -12,9 +12,11 @@ describe("normalizeMarkdownTableLine", () => {
     it("strips unordered and ordered list markers from pipe rows", () => {
         expect(normalizeMarkdownTableLine("- | 今天 | 晴 |")).toBe("| 今天 | 晴 |");
         expect(normalizeMarkdownTableLine("* 20日 | 多云 |")).toBe("20日 | 多云 |");
+        expect(normalizeMarkdownTableLine("+ | a | b |")).toBe("| a | b |");
         expect(normalizeMarkdownTableLine("1. | a | b |")).toBe("| a | b |");
-        expect(normalizeMarkdownTableLine("2) → | 30°C | <3级 |")).toBe("→ | 30°C | <3级 |");
-        expect(normalizeMarkdownTableLine("• | x | y |")).toBe("| x | y |");
+        expect(normalizeMarkdownTableLine("2) \u2192 | 30\u00b0C | <3\u7ea7 |")).toBe("\u2192 | 30\u00b0C | <3\u7ea7 |");
+        expect(normalizeMarkdownTableLine("\u2022 | x | y |")).toBe("| x | y |");
+        expect(normalizeMarkdownTableLine("\u00b7 | p | q |")).toBe("| p | q |");
     });
 
     it("leaves ordinary list items and plain text alone", () => {
@@ -106,5 +108,43 @@ describe("repairMixedNarrativeTable split-row repair", () => {
         expect(parseMarkdownTableCells(repaired.bodyRows[0])).toEqual([
             "20日 (周一)", "雷阵雨转多云", "29°C / 22°C", "<3级",
         ]);
+    });
+
+    it("builds header-led tables without a GFM separator or outer pipes on body rows", () => {
+        const model = buildMarkdownTableModel([
+            "| 日期 | 天气 | 温度 | 风力 |",
+            "今天 (24日) | 雷阵雨转多云",
+            "→| 30°C / 23°C | <3级 |",
+            "明天 (25日) | 雷阵雨转多云",
+            "→| 30°C / 24°C | <3级 |",
+            // Some rows omit the wrap glyph and only use a leading pipe on the continuation.
+            "周一 (27日) | 多云",
+            "| 33°C / 25°C | <3级 |",
+        ]);
+        expect(model).not.toBeNull();
+        expect(model!.headerCells).toEqual(["日期", "天气", "温度", "风力"]);
+        const repaired = repairMixedNarrativeTable(model!);
+        expect(repaired.bodyRows).toHaveLength(3);
+        expect(parseMarkdownTableCells(repaired.bodyRows[0])).toEqual([
+            "今天 (24日)", "雷阵雨转多云", "30°C / 23°C", "<3级",
+        ]);
+        expect(parseMarkdownTableCells(repaired.bodyRows[1])).toEqual([
+            "明天 (25日)", "雷阵雨转多云", "30°C / 24°C", "<3级",
+        ]);
+        expect(parseMarkdownTableCells(repaired.bodyRows[2])).toEqual([
+            "周一 (27日)", "多云", "33°C / 25°C", "<3级",
+        ]);
+    });
+
+    it("returns null for separator-only buffers", () => {
+        expect(buildMarkdownTableModel(["|---|---|---|", "| --- | --- | --- |"])).toBeNull();
+    });
+
+    it("does not treat plain prose with a single pipe as a header-led table", () => {
+        // First data row must start with "|" for headerLed; prose mid-pipe alone is not a table.
+        expect(buildMarkdownTableModel([
+            "Use A | B as labels",
+            "C | D as values",
+        ])).toBeNull();
     });
 });

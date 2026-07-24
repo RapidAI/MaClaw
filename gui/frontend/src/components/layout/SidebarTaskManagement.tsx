@@ -9,6 +9,7 @@ import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { agentModeFromTaskTags, CODING_TASK_COMMAND_MAX_LEN, isPureCodingTaskTags, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { normalizeProjectSessionPath } from '../ai/aiAssistantPanelSessionUtils';
 import { extractErrorMessage } from '../ai/participantAddError';
+import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
 import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
 
 export type TaskManagementItem = {
@@ -44,6 +45,22 @@ export type TaskContextMenu = {
 } | null;
 
 type TaskIconKind = 'pin' | 'reference' | 'coding' | 'remote_coding' | 'task';
+
+type TaskWorkflowStatusTone = 'info' | 'warning' | 'danger' | 'success' | 'neutral';
+
+type TaskWorkflowStatus = {
+    label: string;
+    detail?: string;
+    tone: TaskWorkflowStatusTone;
+};
+
+const TASK_WORKFLOW_STATUS_COLORS: Record<TaskWorkflowStatusTone, { border: string; color: string; background: string }> = {
+    info: { border: 'color-mix(in srgb, var(--theme-primary) 42%, transparent)', color: 'var(--theme-primary)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)' },
+    warning: { border: 'color-mix(in srgb, #d97706 48%, transparent)', color: '#a16207', background: 'color-mix(in srgb, #f59e0b 12%, transparent)' },
+    danger: { border: 'color-mix(in srgb, #dc2626 46%, transparent)', color: '#b91c1c', background: 'color-mix(in srgb, #dc2626 10%, transparent)' },
+    success: { border: 'color-mix(in srgb, #16a34a 44%, transparent)', color: '#15803d', background: 'color-mix(in srgb, #22c55e 10%, transparent)' },
+    neutral: { border: 'color-mix(in srgb, var(--theme-text-muted) 42%, transparent)', color: 'var(--theme-text-muted)', background: 'color-mix(in srgb, var(--theme-text-muted) 9%, transparent)' },
+};
 
 const TASK_ICON_PROPS = {
     fill: 'none',
@@ -95,6 +112,57 @@ const pureCodingBadgeLabel = (proj: TaskManagementItem, lang: string) => {
     }
     return '';
 };
+
+function readableWorkflowPhase(phase?: string): string {
+    const value = (phase || '').trim();
+    if (!value) return '';
+    return value
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+/** The sidebar has workflow snapshots, not live agent runtime data. */
+export function workflowStatusForTask(
+    workflow: TaskManagementItem['active_workflow'],
+    lang: string,
+): TaskWorkflowStatus | null {
+    if (!workflow) return null;
+    const phase = readableWorkflowPhase(workflow.phase);
+    const status = normalizeWorkflowStatus(workflow.status);
+    const detail = phase || undefined;
+    // Terminal status wins over any stale pending-review bit persisted by an
+    // earlier phase update.
+    if (status === WorkflowStatus.Cancelled) {
+        return { label: textForLang(lang, 'Cancelled', '已取消', '已取消'), detail, tone: 'neutral' };
+    }
+    if (status === WorkflowStatus.Completed) {
+        return { label: textForLang(lang, 'Completed', '已完成', '已完成'), detail, tone: 'success' };
+    }
+    if (workflow.pending_review) {
+        return { label: textForLang(lang, 'Review needed', '待审核', '待審核'), detail, tone: 'warning' };
+    }
+    if (/(fail|error|blocked)/.test(String(workflow.status || '').trim().toLowerCase())) {
+        return { label: textForLang(lang, 'Needs attention', '需要处理', '需要處理'), detail, tone: 'danger' };
+    }
+    return { label: textForLang(lang, 'In progress', '进行中', '進行中'), detail, tone: 'info' };
+}
+
+export function taskActivityLabel(value: string | undefined, lang: string, now = Date.now()): string {
+    const timestamp = Date.parse(value || '');
+    if (!Number.isFinite(timestamp)) return '';
+    const seconds = Math.max(0, Math.round((now - timestamp) / 1000));
+    if (seconds < 60) return textForLang(lang, 'Updated just now', '刚刚更新', '剛剛更新');
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return textForLang(lang, `Updated ${minutes}m ago`, `${minutes} 分钟前更新`, `${minutes} 分鐘前更新`);
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return textForLang(lang, `Updated ${hours}h ago`, `${hours} 小时前更新`, `${hours} 小時前更新`);
+    const days = Math.floor(hours / 24);
+    if (days < 7) return textForLang(lang, `Updated ${days}d ago`, `${days} 天前更新`, `${days} 天前更新`);
+    const date = new Date(timestamp);
+    const dateText = Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+    return dateText ? textForLang(lang, `Updated ${dateText}`, `${dateText} 更新`, `${dateText} 更新`) : '';
+}
 
 const TaskTypeIcon = ({ kind, lang }: { kind: TaskIconKind; lang: string }) => {
     const label = taskIconLabel(kind, lang);
@@ -376,6 +444,9 @@ export const SidebarTaskManagement = ({
     const [sceneDetailPath, setSceneDetailPath] = useState<string | null>(null);
     const [sceneDetail, setSceneDetail] = useState<ProjectSceneDetail | null>(null);
     const [sceneDetailLoading, setSceneDetailLoading] = useState(false);
+    const [sceneDetailError, setSceneDetailError] = useState('');
+    /** Invalidates an older evidence request when a row is closed or another row opens. */
+    const sceneDetailRequestGenRef = useRef(0);
     const [openingTaskPath, setOpeningTaskPath] = useState<string | null>(null);
     const creatingTaskRef = useRef(false);
     /** Invalidates completion UI from a create whose form was superseded by a newer request. */
@@ -867,22 +938,37 @@ export const SidebarTaskManagement = ({
         }
     };
 
-    const openSceneDetail = async (projectPath: string, fallbackName?: string) => {
-        if (sceneDetailPath === projectPath) {
+    const openSceneDetail = async (projectPath: string, fallbackName?: string, reload = false) => {
+        if (sceneDetailPath === projectPath && !reload) {
+            sceneDetailRequestGenRef.current += 1;
             setSceneDetailPath(null);
             setSceneDetail(null);
+            setSceneDetailLoading(false);
+            setSceneDetailError('');
             return;
         }
+        const requestGen = ++sceneDetailRequestGenRef.current;
         setSceneDetailPath(projectPath);
+        // Never leave evidence from the previously expanded task visible while
+        // the replacement request is still resolving.
+        setSceneDetail(null);
+        setSceneDetailError('');
         setSceneDetailLoading(true);
         try {
             const detail = await GetProjectScene(projectPath);
-            setSceneDetail((detail || null) as ProjectSceneDetail | null);
+            if (mountedRef.current && sceneDetailRequestGenRef.current === requestGen) {
+                setSceneDetail((detail || null) as ProjectSceneDetail | null);
+            }
         } catch (error) {
             console.error('[SidebarTaskManagement] GetProjectScene failed:', error);
-            setSceneDetail({ project_path: projectPath, name: fallbackName || projectPath, recent_artifacts: [] });
+            if (mountedRef.current && sceneDetailRequestGenRef.current === requestGen) {
+                setSceneDetail({ project_path: projectPath, name: fallbackName || projectPath, recent_artifacts: [] });
+                setSceneDetailError(textForLang(lang, 'Could not load evidence', '无法加载证据', '無法載入證據'));
+            }
         } finally {
-            setSceneDetailLoading(false);
+            if (mountedRef.current && sceneDetailRequestGenRef.current === requestGen) {
+                setSceneDetailLoading(false);
+            }
         }
     };
 
@@ -952,11 +1038,13 @@ export const SidebarTaskManagement = ({
             const taskIconKind = taskIconKindForProject(proj);
             const codingBadge = pureCodingBadgeLabel(proj, lang);
             const pureCoding = isPureCodingTask(proj);
+            const workflowStatus = workflowStatusForTask(proj.active_workflow, lang);
+            const activityLabel = taskActivityLabel(proj.last_activity, lang);
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'}>
-                <div onDoubleClick={() => { void handleTaskDoubleClick(proj.project_path); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${codingBadge ? '\n' + codingBadge : ''}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                <div onDoubleClick={() => { void handleTaskDoubleClick(proj.project_path); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${workflowStatus ? '\n' + [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · ') : ''}${codingBadge ? '\n' + codingBadge : ''}${activityLabel ? '\n' + activityLabel : ''}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <TaskTypeIcon kind={taskIconKind} lang={lang} />
                     <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
-                        {(proj.active_workflow || codingBadge || proj.pinned) && (
+                        {(workflowStatus || codingBadge || proj.pinned) && (
                             <span style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '3px' }}>
                                 {proj.pinned && !pureCoding && (
                                     <span data-testid="task-pinned-badge" style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: '1px solid color-mix(in srgb, var(--theme-text-muted) 36%, transparent)', color: 'var(--theme-text-muted)', background: 'color-mix(in srgb, var(--theme-text-muted) 8%, transparent)', fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35 }}>{textForLang(lang, 'Pinned', '\u7f6e\u9876', '\u7f6e\u9802')}</span>
@@ -986,16 +1074,17 @@ export const SidebarTaskManagement = ({
                                         }}
                                     >{codingBadge}</span>
                                 )}
-                                {proj.active_workflow && <span title={`${proj.active_workflow.type || 'workflow'} ${proj.active_workflow.phase || ''}`.trim()} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: '1px solid color-mix(in srgb, var(--theme-primary) 42%, transparent)', color: 'var(--theme-primary)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)', fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{textForLang(lang, 'Stage output', '\u9636\u6bb5\u4ea7\u51fa', '\u968e\u6bb5\u7522\u51fa')}</span>}
+                                {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
                         {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
                         <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{openingTaskPath === proj.project_path ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...') : (proj.preview || proj.project_path)}</span>
+                        {openingTaskPath !== proj.project_path && activityLabel && <span data-testid="task-last-activity" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{activityLabel}</span>}
                         {openingTaskPath === proj.project_path && <span aria-label={textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
                     </span>
                     <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); void openSceneDetail(proj.project_path, proj.name); }} disabled={sceneDetailLoading && sceneDetailPath === proj.project_path} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: sceneDetailLoading && sceneDetailPath === proj.project_path ? 0.4 : 0.78, cursor: 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>
                 </div>
-                {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={(workflowProjectPath) => { void continueWorkflowProject(workflowProjectPath); }} />}
+                {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={continueWorkflowProject} error={sceneDetailError} onRetry={() => { void openSceneDetail(proj.project_path, proj.name, true); }} />}
             </div>
         })}
 

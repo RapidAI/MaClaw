@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -129,12 +130,25 @@ func (h *IMMessageHandler) executeApprovedCodingPlan(
 	onProgress func(string),
 	onToken func(string),
 ) *IMAgentResponse {
-	pending, ok := h.promotePendingToApprovedCodingPlan(userID)
+	// Validate the current execution context before consuming the pending plan.
+	// A disconnected SSH session or missing local workspace is recoverable; the
+	// user should be able to reconnect/fix the path and press Start again rather
+	// than having to recreate and re-edit the plan.
+	pending, ok := h.loadStickyPendingCodingPlan(userID)
 	if !ok {
 		return &IMAgentResponse{Text: "当前没有待批准的执行计划。可用 `/plan mode approve` 开启批准模式后再发起复杂任务。"}
 	}
+	projectPath, remoteCtx, remote, targetErr := h.resolveCodingPlanExecutionTarget(userID, projectPath, mem)
+	if targetErr != "" {
+		return &IMAgentResponse{Text: "无法开始实施；当前计划已保留。\n\n" + targetErr}
+	}
+	// Re-read atomically through the promotion helper after validation so the
+	// exact latest pending plan is what the runner consumes.
+	pending, ok = h.promotePendingToApprovedCodingPlan(userID)
+	if !ok {
+		return &IMAgentResponse{Text: "待确认计划刚刚被更新或清除，请查看当前计划后重试。"}
+	}
 	marker := codingPlanApproveExecuteMarker
-	mem = h.getStickyCodingWorkbenchMemory(userID)
 
 	loopCtx := NewLoopContext("coding-plan-approve", h.getMaclawAgentMaxIterations(), h.client)
 	if loopCtx != nil {
@@ -147,30 +161,8 @@ func (h *IMMessageHandler) executeApprovedCodingPlan(
 	if onProgress != nil {
 		onProgress(fmt.Sprintf("已批准计划，开始执行 %d 步…", len(pending.Tasks)))
 	}
-	if strings.EqualFold(mem.Kind, "remote") {
-		// Remote: rebuild context from sticky.
-		remoteCtx := remoteCodingTemplateContext{
-			SessionID:  mem.RemoteSessionID,
-			WorkDir:    mem.RemoteWorkDir,
-			ProjectDir: mem.RemoteProjectDir,
-		}
-		if remoteCtx.ProjectDir == "" {
-			remoteCtx.ProjectDir = mem.RemoteWorkDir
-		}
-		if remoteCtx.WorkDir == "" {
-			remoteCtx.WorkDir = remoteCtx.ProjectDir
-		}
-		if remoteCtx.SessionID == "" {
-			return &IMAgentResponse{Text: "远程编程无法执行已批准计划：缺少 SSH 会话。请先重连。"}
-		}
+	if remote {
 		return h.runRemoteCodingTemplateSubAgent(userID, marker+" "+pending.UserText, remoteCtx, loopCtx, onProgress, onToken)
-	}
-	if projectPath == "" {
-		projectPath = strings.TrimSpace(pending.UserText) // shouldn't happen
-		projectPath = strings.TrimSpace(mem.ProjectPath)
-	}
-	if projectPath == "" {
-		return &IMAgentResponse{Text: "无法执行已批准计划：缺少项目路径。"}
 	}
 	_ = msg
 	return h.runCodingTemplateSubAgent(userID, marker+" "+pending.UserText, projectPath, loopCtx, onProgress, onToken)
@@ -190,7 +182,6 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 	} else {
 		orig = strings.TrimSpace(mem.PendingPlanUserText)
 	}
-	h.clearStickyPendingCodingPlan(userID)
 	if strings.TrimSpace(orig) == "" {
 		// No pending — set skip flag for next free-form message.
 		m := h.getStickyCodingWorkbenchMemory(userID)
@@ -198,6 +189,13 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 		h.storeStickyCodingWorkbenchMemory(userID, m)
 		return &IMAgentResponse{Text: "已设置跳过多步规划。请重新发送任务以单步直接执行。"}
 	}
+	// As with approval, do not discard a recoverable plan before checking the
+	// local/remote execution target.
+	projectPath, remoteCtx, remote, targetErr := h.resolveCodingPlanExecutionTarget(userID, projectPath, mem)
+	if targetErr != "" {
+		return &IMAgentResponse{Text: "无法直接执行；当前计划已保留。\n\n" + targetErr}
+	}
+	h.clearStickyPendingCodingPlan(userID)
 	// Force single-task for this original request.
 	m := h.getStickyCodingWorkbenchMemory(userID)
 	m.SkipNextPlan = true
@@ -215,28 +213,61 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 	if onProgress != nil {
 		onProgress("跳过规划，单步直接执行…")
 	}
-	if strings.EqualFold(mem.Kind, "remote") {
-		remoteCtx := remoteCodingTemplateContext{
-			SessionID:  mem.RemoteSessionID,
-			WorkDir:    mem.RemoteWorkDir,
-			ProjectDir: mem.RemoteProjectDir,
-		}
-		if remoteCtx.ProjectDir == "" {
-			remoteCtx.ProjectDir = mem.RemoteWorkDir
-		}
-		if remoteCtx.SessionID == "" {
-			return &IMAgentResponse{Text: "远程编程无法跳过执行：缺少 SSH 会话。"}
-		}
+	if remote {
 		return h.runRemoteCodingTemplateSubAgent(userID, orig, remoteCtx, loopCtx, onProgress, onToken)
-	}
-	if projectPath == "" {
-		projectPath = strings.TrimSpace(mem.ProjectPath)
-	}
-	if projectPath == "" {
-		return &IMAgentResponse{Text: "无法跳过执行：缺少项目路径。"}
 	}
 	_ = msg
 	return h.runCodingTemplateSubAgent(userID, orig, projectPath, loopCtx, onProgress, onToken)
+}
+
+// resolveCodingPlanExecutionTarget validates the workspace before a pending
+// plan is consumed. Remote session recovery must happen here, rather than in
+// the runner, because a recovery failure is recoverable and must leave the
+// pending plan available for a later retry.
+func (h *IMMessageHandler) resolveCodingPlanExecutionTarget(
+	userID, projectPath string,
+	mem stickyCodingWorkbenchMemory,
+) (string, remoteCodingTemplateContext, bool, string) {
+	mem = h.getStickyCodingWorkbenchMemory(userID)
+	if strings.EqualFold(mem.Kind, "remote") {
+		remoteCtx := remoteCodingTemplateContext{
+			SessionID:  strings.TrimSpace(mem.RemoteSessionID),
+			WorkDir:    strings.TrimSpace(mem.RemoteWorkDir),
+			ProjectDir: strings.TrimSpace(mem.RemoteProjectDir),
+		}
+		if remoteCtx.SessionID == "" {
+			return "", remoteCodingTemplateContext{}, true, "远程 SSH 会话缺失。请先重连远程服务器后重试。"
+		}
+		var reconnectErr string
+		remoteCtx, reconnectErr = h.recoverStickyRemoteCodingSSHSession(userID, remoteCtx)
+		if reconnectErr != "" {
+			return "", remoteCodingTemplateContext{}, true, reconnectErr
+		}
+		if strings.TrimSpace(remoteCtx.SessionID) == "" {
+			return "", remoteCodingTemplateContext{}, true, "远程 SSH 会话不可用。请先重连远程服务器后重试。"
+		}
+		if remoteCtx.ProjectDir == "" {
+			remoteCtx.ProjectDir = remoteCtx.WorkDir
+		}
+		if remoteCtx.WorkDir == "" {
+			remoteCtx.WorkDir = remoteCtx.ProjectDir
+		}
+		return "", remoteCtx, true, ""
+	}
+	if strings.TrimSpace(projectPath) == "" {
+		projectPath = strings.TrimSpace(mem.ProjectPath)
+	}
+	if strings.TrimSpace(projectPath) == "" {
+		return "", remoteCodingTemplateContext{}, false, "缺少项目路径。请选择或打开项目后重试。"
+	}
+	info, err := os.Stat(projectPath)
+	if err != nil {
+		return "", remoteCodingTemplateContext{}, false, fmt.Sprintf("项目路径不可用（%v）。请重新选择项目后重试。", err)
+	}
+	if !info.IsDir() {
+		return "", remoteCodingTemplateContext{}, false, "项目路径不是目录。请选择项目文件夹后重试。"
+	}
+	return projectPath, remoteCodingTemplateContext{}, false, ""
 }
 
 // codingPlanApproveExecuteMarker prefixes userText when executing an approved plan.
@@ -248,11 +279,11 @@ func codingWorkbenchSlashHelpText() string {
 		"| 命令 | 说明 |\n" +
 		"|------|------|\n" +
 		"| /plan | 查看当前/待批准执行计划 |\n" +
-		"| /plan approve | 批准并执行待批计划 |\n" +
+		"| /plan approve | 开始实施待确认计划 |\n" +
 		"| /plan skip | 跳过规划，直接按原请求单步执行 |\n" +
 		"| /plan reject | 拒绝并清除待批计划 |\n" +
 		"| /plan edit <steps> | 改写待批计划（至少 2 步）后再批准 |\n" +
-		"| /plan mode auto|approve|off | 规划模式：自动执行 / 需批准 / 关闭多步规划 |\n" +
+		"| /plan mode auto|approve|off | 任务处理：自动决策 / 先给计划 / 快速执行 |\n" +
 		"| /review | Git status + diff 摘要（代码审阅入口） |\n" +
 		"| /test | 运行项目验证命令 |\n" +
 		"| /commit <msg> | git add -A + git commit（不 push） |\n" +
@@ -287,7 +318,7 @@ func codingWorkbenchSlashHelpText() string {
 		"| /route pref auto|primary|reasoning|vision | 编程选模偏好 |\n" +
 		"| /hooks | 查看 .maclaw/hooks.json 生命周期钩子 |\n" +
 		"| /coding-help | 本帮助 |\n\n" +
-		"计划批准模式：/plan mode approve 后，复杂任务会先展示步骤，点「批准并执行」或发送 /plan approve 再跑。\n" +
+		"自动决策会让简单任务直接执行；多步骤任务会先展示计划，点「开始实施」或发送 /plan approve 再执行。/plan mode approve 会优先先给计划。\n" +
 		"Worktree：auto 时并行写改步骤在隔离 worktree 中执行并合并回主树。")
 }
 
@@ -367,7 +398,7 @@ func (h *IMMessageHandler) handleCodingPlanSlash(userID, projectPath, trimmed st
 		modeArg := strings.TrimSpace(body[len("mode"):])
 		if modeArg == "" {
 			cur := h.getStickyCodingPlanMode(userID)
-			return &IMAgentResponse{Text: fmt.Sprintf("当前规划模式：**%s**\n\n可选：`auto`（规划后立即执行）、`approve`（需批准）、`off`（关闭多步规划）", cur)}
+			return &IMAgentResponse{Text: fmt.Sprintf("当前任务处理模式：**%s**\n\n可选：`auto`（自动决策；多步骤任务需确认）、`approve`（优先先给计划）、`off`（快速执行，不做多步规划）", cur)}
 		}
 		mode := normalizeCodingPlanMode(modeArg)
 		h.setStickyCodingPlanMode(userID, mode)

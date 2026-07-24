@@ -629,7 +629,7 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 }
 
 func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
-	return []coreToolSpec{
+	specs := []coreToolSpec{
 		{
 			Name:        "record_audio",
 			Description: "Start an interactive long-form meeting recording. The host opens a native recording UI and resumes after the user stops it. Use this immediately for an explicit request to record a meeting; never use it for an IM voice note.",
@@ -928,6 +928,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"share_link":   map[string]interface{}{"type": "string", "description": "Human-readable share link that also contains import metadata"},
 					"hub_url":      map[string]interface{}{"type": "string", "description": "Optional Hub URL hint"},
 					"hub_token":    map[string]interface{}{"type": "string", "description": "Optional Hub viewer token for private, tenant, or user-list shares"},
+					"dry_run":      map[string]interface{}{"type": "boolean", "description": "Preview importable/skipped items without writing. Default false."},
 				},
 			},
 		},
@@ -1163,6 +1164,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			},
 		},
 	}
+	return append(specs, c.knowledgeManagementToolSpecs()...)
 }
 
 func (c *coreAgentCallbacks) toolCapabilities() []AgentToolCapability {
@@ -1368,6 +1370,43 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeContextPack(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_import_share":
 		return knowledgeToolResult(c.executeKnowledgeImportShare(args))
+	case "knowledge_import_hub_share":
+		// GUI-compatible alias: dry_run defaults to true (preview first),
+		// matching the GUI tool's semantics.
+		if _, ok := args["dry_run"]; !ok {
+			args["dry_run"] = true
+		}
+		return knowledgeToolResult(c.executeKnowledgeImportShare(args))
+	case "knowledge_list_sources":
+		return knowledgeToolResult(c.executeKnowledgeListSources(args))
+	case "knowledge_source_detail":
+		return knowledgeToolResult(c.executeKnowledgeSourceDetail(args))
+	case "knowledge_stats":
+		return knowledgeToolResult(c.executeKnowledgeStats(args))
+	case "knowledge_list_source_labels":
+		return knowledgeToolResult(c.executeKnowledgeListSourceLabels(args))
+	case "knowledge_update_source_labels":
+		return knowledgeToolResult(c.executeKnowledgeUpdateSourceLabels(args))
+	case "knowledge_update_source_metadata":
+		return knowledgeToolResult(c.executeKnowledgeUpdateSourceMetadata(args))
+	case "knowledge_enable_source":
+		return knowledgeToolResult(c.executeKnowledgeSetSourceStatus(args, true))
+	case "knowledge_disable_source":
+		return knowledgeToolResult(c.executeKnowledgeSetSourceStatus(args, false))
+	case "knowledge_delete_source":
+		return knowledgeToolResult(c.executeKnowledgeDeleteSource(args))
+	case "knowledge_refresh_source":
+		return knowledgeToolResult(c.executeKnowledgeRefreshSource(args))
+	case "knowledge_list_import_batches":
+		return knowledgeToolResult(c.executeKnowledgeListImportBatches(args))
+	case "knowledge_list_import_items":
+		return knowledgeToolResult(c.executeKnowledgeListImportItems(args))
+	case "knowledge_retry_import_batch":
+		return knowledgeToolResult(c.executeKnowledgeRetryImportBatch(args))
+	case "knowledge_delete_import_batch":
+		return knowledgeToolResult(c.executeKnowledgeDeleteImportBatch(args))
+	case "knowledge_save_urls":
+		return knowledgeToolResult(c.executeKnowledgeSaveURLs(args))
 	case "knowledge_import_package":
 		return knowledgeToolResult(c.executeKnowledgeImportPackage(args))
 	case "knowledge_export":

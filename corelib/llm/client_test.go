@@ -4861,3 +4861,63 @@ func TestParseSSE_JSONPathUnchanged(t *testing.T) {
 		t.Errorf("finish_reason = %q, want %q", got, "stop")
 	}
 }
+
+func TestBuildResponsesAPIRequestData_ThinkingModeOverride(t *testing.T) {
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+	build := func(cfg corelib.MaclawLLMConfig) map[string]interface{} {
+		t.Helper()
+		_, body, err := BuildResponsesAPIRequestData(cfg, messages, ResponsesAPIRequestOptions{})
+		if err != nil {
+			t.Fatalf("BuildResponsesAPIRequestData returned error: %v", err)
+		}
+		var req map[string]interface{}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("failed to parse responses request body: %v", err)
+		}
+		return req
+	}
+
+	// OpenAI-compatible endpoints (e.g. Volcano Ark) take the chat-style thinking object.
+	ark := corelib.MaclawLLMConfig{URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2", WireAPI: "responses", ThinkingMode: "enabled"}
+	req := build(ark)
+	if thinking, _ := req["thinking"].(map[string]interface{}); thinking["type"] != "enabled" {
+		t.Fatalf("ark enabled thinking = %#v, want type=enabled", req["thinking"])
+	}
+	if _, ok := req["reasoning"]; ok {
+		t.Fatalf("ark enabled leaked reasoning key: %#v", req["reasoning"])
+	}
+
+	ark.ThinkingMode = "disabled"
+	req = build(ark)
+	if thinking, _ := req["thinking"].(map[string]interface{}); thinking["type"] != "disabled" {
+		t.Fatalf("ark disabled thinking = %#v, want type=disabled", req["thinking"])
+	}
+
+	// OpenAI's own Responses API takes reasoning.effort instead.
+	oai := corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-5", WireAPI: "responses", ThinkingMode: "enabled"}
+	req = build(oai)
+	if reasoning, _ := req["reasoning"].(map[string]interface{}); reasoning["effort"] != "medium" {
+		t.Fatalf("openai enabled reasoning = %#v, want effort=medium", req["reasoning"])
+	}
+	oai.ReasoningEffort = "high"
+	req = build(oai)
+	if reasoning, _ := req["reasoning"].(map[string]interface{}); reasoning["effort"] != "high" {
+		t.Fatalf("openai enabled reasoning = %#v, want effort=high", req["reasoning"])
+	}
+	oai.ThinkingMode = "disabled"
+	oai.ReasoningEffort = ""
+	req = build(oai)
+	if reasoning, _ := req["reasoning"].(map[string]interface{}); reasoning["effort"] != "minimal" {
+		t.Fatalf("openai disabled reasoning = %#v, want effort=minimal", req["reasoning"])
+	}
+
+	// Auto (empty) leaves provider defaults untouched.
+	auto := corelib.MaclawLLMConfig{URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2", WireAPI: "responses"}
+	req = build(auto)
+	if _, ok := req["thinking"]; ok {
+		t.Fatalf("auto leaked thinking key: %#v", req["thinking"])
+	}
+	if _, ok := req["reasoning"]; ok {
+		t.Fatalf("auto leaked reasoning key: %#v", req["reasoning"])
+	}
+}

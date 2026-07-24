@@ -483,7 +483,7 @@ func TestMobileUploadPayloadTrackedClearsGhostUploadSourceURL(t *testing.T) {
 	mobileDocuments.Lock()
 	mobileDocuments.uploads["pu-ghost"] = mobileDocumentUploadRecord{
 		TaskID: "pu-ghost", OwnerID: "ow", Status: "needs_ocr",
-		Filename: "a.png",
+		Filename:   "a.png",
 		SourcePath: "missing/up.bin", SourceSize: 12,
 	}
 	payload, repaired := mobileDocumentUploadPayloadTracked(mobileDocuments.uploads["pu-ghost"])
@@ -600,7 +600,7 @@ func TestMobileDocumentOriginalDiskHTTPRoundTrip(t *testing.T) {
 	draftID := "httpd1"
 	mobileDocuments.Lock()
 	mobileDocuments.drafts[draftID] = mobileDocumentDraftRecord{
-		ID: draftID, OwnerID: enroll.UserID, Title: "T", Markdown: "# note",
+		ID: draftID, OwnerID: enroll.UserID, TenantID: enroll.TenantID, Title: "T", Markdown: "# note",
 		SourceFilename: "note.txt", SourceContentType: "text/plain",
 		SourcePath: rel, SourceSize: len(raw), UpdatedAt: time.Now().UTC(),
 	}
@@ -648,13 +648,13 @@ func TestMobileUploadSourceFallsBackToDraftOriginal(t *testing.T) {
 	}
 	mobileDocuments.Lock()
 	mobileDocuments.drafts["fb-draft"] = mobileDocumentDraftRecord{
-		ID: "fb-draft", OwnerID: enroll.UserID, Title: "img",
+		ID: "fb-draft", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Title: "img",
 		SourceFilename: "shot.png", SourceContentType: "image/png",
 		SourcePath: rel, SourceSize: len(raw), UpdatedAt: time.Now().UTC(),
 	}
 	// Upload has no source (released) but is still claimable for OCR.
 	mobileDocuments.uploads["fb-task"] = mobileDocumentUploadRecord{
-		TaskID: "fb-task", OwnerID: enroll.UserID, DraftID: "fb-draft",
+		TaskID: "fb-task", OwnerID: enroll.UserID, TenantID: enroll.TenantID, DraftID: "fb-draft",
 		Filename: "shot.png", ContentType: "image/png",
 		Status: "needs_ocr", ClaimedBy: enroll.MachineID,
 		UploadedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
@@ -705,13 +705,13 @@ func TestMobileUploadSource404ClearsGhostDraftFallbackMeta(t *testing.T) {
 
 	mobileDocuments.Lock()
 	mobileDocuments.drafts["stale-fb"] = mobileDocumentDraftRecord{
-		ID: "stale-fb", OwnerID: enroll.UserID, Title: "gone",
+		ID: "stale-fb", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Title: "gone",
 		SourceFilename: "gone.bin", SourceContentType: "application/octet-stream",
 		SourcePath: "missing/ghost-stale.bin", SourceSize: 99,
 		UpdatedAt: time.Now().UTC(),
 	}
 	mobileDocuments.uploads["stale-task"] = mobileDocumentUploadRecord{
-		TaskID: "stale-task", OwnerID: enroll.UserID, DraftID: "stale-fb",
+		TaskID: "stale-task", OwnerID: enroll.UserID, TenantID: enroll.TenantID, DraftID: "stale-fb",
 		Filename: "gone.bin", Status: "needs_ocr", ClaimedBy: enroll.MachineID,
 		UploadedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}

@@ -25,6 +25,9 @@ import (
 
 const virtualRepositorySSHKeyringService = "MaClaw Virtual Repository SSH"
 
+const remoteGitCheckoutAttempts = 3
+const remoteGitCheckoutCleanupTimeout = 15 * time.Second
+
 var (
 	errRemoteVirtualRepositoryRootSymlink      = errors.New("remote root path must not be a symbolic link")
 	errRemoteVirtualRepositoryRootNotDirectory = errors.New("remote root path exists but is not a directory")
@@ -222,6 +225,74 @@ func runRemoteRepositoryCommandInput(ctx context.Context, client *ssh.Client, co
 			return redactVCSOutput(stdout.String()), errors.New(message)
 		}
 		return redactVCSOutput(stdout.String()), nil
+	}
+}
+
+// shouldRetryRemoteGitCheckout only permits retries for transport failures. In
+// particular, authentication and repository errors must be returned promptly
+// so a bad credential never results in repeated authentication attempts.
+func shouldRetryRemoteGitCheckout(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"gnutls_handshake() failed",
+		"tls connection was non-properly terminated",
+		"tls connection was closed unexpectedly",
+		"connection reset by peer",
+		"connection timed out",
+		"could not resolve host",
+		"recv failure",
+		"ssl_error_syscall",
+		"openssl ssl_connect",
+		"openssl ssl_read",
+		"curl 56",
+		"the remote end hung up unexpectedly",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteGitCheckoutRetryDelay(attempt int) time.Duration {
+	return time.Duration(attempt) * time.Second
+}
+
+func remoteGitCheckoutStagingPath(target string) string {
+	return target + ".maclaw-checkout-" + uuid.NewString()
+}
+
+// cleanupRemoteGitCheckoutStaging never inherits the checkout deadline: once
+// that deadline has elapsed, cleanup still needs a short chance to remove the
+// private staging directory. The separate deadline also prevents a broken SSH
+// session from keeping the UI blocked indefinitely during best-effort cleanup.
+func cleanupRemoteGitCheckoutStaging(client *ssh.Client, quotedStagingTarget string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), remoteGitCheckoutCleanupTimeout)
+	defer cancel()
+	_, err := runRemoteRepositoryCommand(ctx, client, "rm -rf -- "+quotedStagingTarget)
+	return err
+}
+
+func remoteGitCheckoutFinalizeCommand(quotedTarget, quotedStagingTarget string) string {
+	// `-T` makes mv treat the destination as a path, never as a directory to
+	// move into. That keeps a concurrently-created target from silently gaining
+	// a nested staging directory instead of becoming the configured checkout.
+	// Check both -e and -L: a concurrently-created broken symlink makes -e false
+	// but must never be replaced by checkout.
+	return "test ! -e " + quotedTarget + " || { test -d " + quotedTarget + " && test ! -L " + quotedTarget + " && test -z \"$(ls -A " + quotedTarget + ")\" && rmdir -- " + quotedTarget + "; } || exit 1; { test ! -e " + quotedTarget + " && test ! -L " + quotedTarget + "; } || exit 1; mv -T -- " + quotedStagingTarget + " " + quotedTarget
+}
+
+func sleepWithContext(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -572,6 +643,9 @@ func (a *App) SaveRemoteVirtualRepository(inputJSON string) (string, error) {
 		return "", errors.New("remote root directory does not exist; test the connection and explicitly create it first")
 	}
 	destinationChanged := previousLocation != nil && (!sameRemoteVirtualRepositoryEndpoint(previousLocation.Remote, repo.Remote) || previousLocation.RootPath != repo.RootPath)
+	if destinationChanged {
+		return "", errors.New("changing an existing remote virtual repository root requires MigrateVirtualRepositoryRoot")
+	}
 	if isNew || destinationChanged {
 		exists, checkErr := remoteVirtualRepositoryManifestExists(client, repo.RootPath)
 		if checkErr != nil {
@@ -602,6 +676,10 @@ func (a *App) SaveRemoteVirtualRepository(inputJSON string) (string, error) {
 		}
 		return "", err
 	}
+	// The remote manifest is now durable. Advance the generation before the
+	// local-index update below: an in-flight Hub sync may otherwise apply its
+	// older snapshot in the small interval between these two operations.
+	a.markVirtualRepositorySyncMutation()
 	if err := a.updateVirtualRepositoryIndex(&repo); err != nil {
 		log.Printf("[vrepo] save_remote repo=%q nodes=%d status=index_failed duration_ms=%d error=%q", repo.ID, len(repo.Nodes), time.Since(started).Milliseconds(), virtualRepositoryLogError(err))
 		if strings.TrimSpace(input.Password) != "" {
@@ -929,11 +1007,40 @@ func (a *App) CheckoutRemoteVirtualRepositoryNode(repositoryID, nodeID string) (
 			return err
 		}
 		defer cleanup()
-		command := prefix + "git clone "
+		// Clone into an isolated sibling first. A transport failure otherwise leaves
+		// a partly-populated target that blocks the next checkout attempt.
+		stagingTarget := remoteGitCheckoutStagingPath(target)
+		quotedStagingTarget := remoteShellQuote(stagingTarget)
+		defer func() { _ = cleanupRemoteGitCheckoutStaging(client, quotedStagingTarget) }()
+		command := prefix + "git -c http.version=HTTP/1.1 clone "
 		if node.Repository.RefName != "" {
 			command += "--branch " + remoteShellQuote(node.Repository.RefName) + " --single-branch "
 		}
-		_, err = runRemoteRepositoryCommand(ctx, client, command+remoteShellQuote(sanitizeRepositoryRemoteURL(node.Repository.RemoteURL))+" "+quotedTarget)
+		command += remoteShellQuote(sanitizeRepositoryRemoteURL(node.Repository.RemoteURL)) + " " + quotedStagingTarget
+		for attempt := 1; attempt <= remoteGitCheckoutAttempts; attempt++ {
+			if cleanupErr := cleanupRemoteGitCheckoutStaging(client, quotedStagingTarget); cleanupErr != nil {
+				return fmt.Errorf("prepare Git checkout attempt %d: remove temporary directory: %w", attempt, cleanupErr)
+			}
+			_, err = runRemoteRepositoryCommand(ctx, client, command)
+			if err == nil {
+				// The target was verified as absent or empty before cloning. Recheck it
+				// before replacing it so concurrent files are never overwritten.
+				_, err = runRemoteRepositoryCommand(ctx, client, remoteGitCheckoutFinalizeCommand(quotedTarget, quotedStagingTarget))
+				if err != nil {
+					return fmt.Errorf("finalize remote Git checkout: target changed while cloning or could not be replaced; no files were replaced: %w", err)
+				}
+				return nil
+			}
+			if !shouldRetryRemoteGitCheckout(err) || attempt == remoteGitCheckoutAttempts {
+				if attempt > 1 {
+					return fmt.Errorf("Git clone failed after %d attempts: %w", attempt, err)
+				}
+				return err
+			}
+			if waitErr := sleepWithContext(ctx, remoteGitCheckoutRetryDelay(attempt)); waitErr != nil {
+				return waitErr
+			}
+		}
 		return err
 	}
 	command := "svn checkout " + remoteShellQuote(svnRepositoryURLForBinding(node.Repository)) + " " + quotedTarget + " --non-interactive --no-auth-cache "
@@ -1035,6 +1142,8 @@ func (a *App) executeRemoteVirtualRepositoryOperationWithClient(parent context.C
 		}
 		defer cleanup()
 		switch req.Action {
+		case "sync":
+			commands = append(commands, gitPrefix+"git -C "+workingDir+" pull --ff-only")
 		case "commit", "commit_push":
 			commands = append(commands, "git -C "+workingDir+" add -A", "if git -C "+workingDir+" diff --cached --quiet; then echo 'nothing to commit' >&2; exit 44; fi", "git -C "+workingDir+" commit -m "+remoteShellQuote(req.Message))
 			if req.Action == "commit_push" {
@@ -1057,6 +1166,18 @@ func (a *App) executeRemoteVirtualRepositoryOperationWithClient(parent context.C
 		return runRemoteRepositoryCommand(ctx, client, strings.Join(commands, " && "))
 	}
 	switch req.Action {
+	case "sync":
+		command := "svn update " + workingDir + " --non-interactive --no-auth-cache"
+		stdin := ""
+		if credential != nil {
+			help, helpErr := runRemoteRepositoryCommand(ctx, client, "svn help update")
+			if helpErr != nil || !strings.Contains(help, "--password-from-stdin") {
+				return "", &virtualRepositoryOperationError{Code: "credential_unavailable", Err: errors.New("remote SVN client does not support secure password input; upgrade SVN or configure its credential cache")}
+			}
+			command += " --username " + remoteShellQuote(credential.Username) + " --password-from-stdin"
+			stdin = secret + "\n"
+		}
+		return runRemoteRepositoryCommandInput(ctx, client, command, stdin)
 	case "push":
 		return "SVN commit already uploads changes; push skipped", nil
 	case "commit", "commit_push":

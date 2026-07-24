@@ -672,6 +672,10 @@ export function GetMaclawAgentMaxIterations():Promise<number>;
 
 export function SetMaclawAgentMaxIterations(arg1:number):Promise<void>;
 
+export function GetMaclawLLMThinkingMode():Promise<string>;
+
+export function SetMaclawLLMThinkingMode(arg1:string):Promise<void>;
+
 export function GetMoAConfig():Promise<any>;
 
 export function SaveMoAConfig(arg1:any):Promise<void>;
@@ -1666,12 +1670,24 @@ export function GetPetPackPreviewDataURL(arg1:string):Promise<string>;
 export function GetPetPackStateFrameDataURL(arg1:string,arg2:string,arg3:string):Promise<string>;
 export function OpenPetPacksDir():Promise<void>;
 export function GetPetPacksDir():Promise<string>;
+// Mobile library and meeting recording bindings.
+export function ListMobileLibraryItems(arg1:number):Promise<Array<any>>;
+export function GetMobileLibraryItem(arg1:string):Promise<any>;
+export function ProcessMobileMeetingRecording(arg1:string):Promise<any>;
+export function DeleteMobileMeetingRecording(arg1:string):Promise<main.MobileLibraryItem>;
+export function GetMobileMeetingRecordingAudio(arg1:string):Promise<any>;
+export function OpenMobileMeetingRecordingAudio(arg1:string):Promise<string>;
+export function SaveMobileMeetingRecordingAudio(arg1:string):Promise<string>;
 
 // Virtual Repository bindings (JSON string payloads/results).
 export function ListVirtualRepositories():Promise<string>;
 export function OpenVirtualRepository(arg1:string):Promise<string>;
+export function BindVirtualRepositoryRoot(arg1:string):Promise<string>;
 export function SaveVirtualRepository(arg1:string):Promise<string>;
 export function DeleteVirtualRepository(arg1:string):Promise<void>;
+export function SyncVirtualRepositories(arg1:string):Promise<string>;
+export function IsVirtualRepositoryBackgroundSyncPending():Promise<boolean>;
+export function GetVirtualRepositoryBackgroundSyncStatus():Promise<string>;
 export function SelectVirtualRepositoryRoot(arg1:string):Promise<string>;
 export function CreateVirtualRepositoryDirectory(arg1:string,arg2:string):Promise<void>;
 export function CheckoutVirtualRepositoryNode(arg1:string,arg2:string):Promise<void>;
@@ -1693,7 +1709,8 @@ export function SetRepositoryCredentialBinding(arg1:string,arg2:string,arg3:stri
 export function ListRepositoryCredentialBindings(arg1:string):Promise<string>;
 export function GetVCSClientStatus(arg1:string):Promise<string>;
 export function SearchVCSClient(arg1:string):Promise<string>;
-export function SelectVCSClientExecutable(arg1:string):Promise<string>;
+export function VCSClientExecutableHint(arg1:string):Promise<string>;
+export function SelectVCSClientExecutable(arg1:string,arg2:string):Promise<string>;
 export function SetVCSClientExecutable(arg1:string,arg2:string):Promise<string>;
 export function ResetVCSClientExecutable(arg1:string):Promise<string>;
 export function PreviewVirtualRepositoryOperation(arg1:string):Promise<string>;

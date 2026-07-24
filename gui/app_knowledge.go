@@ -3036,6 +3036,9 @@ func (a *App) KnowledgeImportFiles(req knowledge.DirectoryImportRequest, filePat
 		log.Printf("[knowledge] ImportFiles: failed: %v", err)
 	} else {
 		log.Printf("[knowledge] ImportFiles: done total=%d imported=%d skipped=%d failed=%d", result.TotalFiles, result.ImportedFiles, result.SkippedFiles, result.FailedFiles)
+		if result.ImportedFiles > 0 {
+			invalidateKnowledgeSourceCountCache()
+		}
 	}
 	return result, err
 }
@@ -3549,6 +3552,9 @@ func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.Direct
 }
 
 func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImportResult, err error) {
+	if err == nil && result.ImportedFiles > 0 {
+		invalidateKnowledgeSourceCountCache()
+	}
 	knowledgeImportJobsMu.Lock()
 	defer knowledgeImportJobsMu.Unlock()
 	value, ok := knowledgeImportJobs.Load(id)
@@ -3671,7 +3677,11 @@ func (a *App) KnowledgeImportDirectory(req knowledge.DirectoryImportRequest) (kn
 	defer store.Close()
 	req = a.normalizeKnowledgeImportRequest(req)
 	req.DryRun = false
-	return store.ImportDirectory(a.knowledgeContext(), req)
+	result, err := store.ImportDirectory(a.knowledgeContext(), req)
+	if err == nil && result.ImportedFiles > 0 {
+		invalidateKnowledgeSourceCountCache()
+	}
+	return result, err
 }
 
 func (a *App) KnowledgeSaveURL(rawURL string, saveScope string, topicHint string, distillMode string, labels []string, autoLabels bool) (knowledge.Source, error) {
@@ -3684,7 +3694,7 @@ func (a *App) KnowledgeSaveURL(rawURL string, saveScope string, topicHint string
 	if strings.TrimSpace(saveScope) == "" || saveScope == knowledge.SaveScopeProject {
 		projectPath = a.GetCurrentProjectPath()
 	}
-	return store.SaveURL(a.knowledgeContext(), knowledge.URLSaveRequest{
+	source, err := store.SaveURL(a.knowledgeContext(), knowledge.URLSaveRequest{
 		URL:         rawURL,
 		SaveScope:   saveScope,
 		ProjectPath: projectPath,
@@ -3693,6 +3703,10 @@ func (a *App) KnowledgeSaveURL(rawURL string, saveScope string, topicHint string
 		Labels:      labels,
 		AutoLabels:  autoLabels,
 	})
+	if err == nil {
+		invalidateKnowledgeSourceCountCache()
+	}
+	return source, err
 }
 
 func (a *App) KnowledgeSaveURLs(rawURLs []string, saveScope string, topicHint string, distillMode string, labels []string, autoLabels bool) (knowledge.URLBatchSaveResult, error) {
@@ -3705,7 +3719,7 @@ func (a *App) KnowledgeSaveURLs(rawURLs []string, saveScope string, topicHint st
 	if saveScope == "" || saveScope == knowledge.SaveScopeProject {
 		projectPath = a.GetCurrentProjectPath()
 	}
-	return store.SaveURLs(a.knowledgeContext(), knowledge.URLBatchSaveRequest{
+	result := store.SaveURLs(a.knowledgeContext(), knowledge.URLBatchSaveRequest{
 		URLs:        rawURLs,
 		SaveScope:   saveScope,
 		ProjectPath: projectPath,
@@ -3713,7 +3727,9 @@ func (a *App) KnowledgeSaveURLs(rawURLs []string, saveScope string, topicHint st
 		DistillMode: distillMode,
 		Labels:      labels,
 		AutoLabels:  autoLabels,
-	}), nil
+	})
+	invalidateKnowledgeSourceCountCache()
+	return result, nil
 }
 
 func (a *App) KnowledgeDiscoverURLs(req knowledge.URLDiscoveryRequest) (knowledge.URLDiscoveryResult, error) {
@@ -3741,7 +3757,11 @@ func (a *App) KnowledgeSaveText(req knowledge.TextSaveRequest) (knowledge.Source
 	if req.SaveScope == knowledge.SaveScopePersonal || req.SaveScope == knowledge.SaveScopeLocalOnly {
 		req.ProjectPath = ""
 	}
-	return store.SaveText(a.knowledgeContext(), req)
+	source, err := store.SaveText(a.knowledgeContext(), req)
+	if err == nil {
+		invalidateKnowledgeSourceCountCache()
+	}
+	return source, err
 }
 
 func (a *App) normalizeKnowledgeImportRequest(req knowledge.DirectoryImportRequest) knowledge.DirectoryImportRequest {

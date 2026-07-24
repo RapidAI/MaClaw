@@ -106,6 +106,34 @@ func TestStickyPendingPlanRoundTrip(t *testing.T) {
 	h.clearStickyCodingWorkbenchMemory(userID)
 }
 
+func TestRestoreApprovedCodingPlanAsPending(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "desktop-user:restore-approved-plan"
+	tasks := []*v2.TaskItem{
+		{Index: 1, Title: "explore", Description: "map code"},
+		{Index: 2, Title: "implement", Description: "write code", DependsOn: []int{1}},
+	}
+	h.storeStickyPendingCodingPlan(userID, "build auth", "### T1: explore\n### T2: implement", tasks)
+	if _, ok := h.promotePendingToApprovedCodingPlan(userID); !ok {
+		t.Fatal("expected pending plan promotion")
+	}
+	restored, ok := h.restoreApprovedCodingPlanAsPending(userID)
+	if !ok || len(restored.Tasks) != len(tasks) {
+		t.Fatalf("restored=%+v ok=%v", restored, ok)
+	}
+	if pending, ok := h.loadStickyPendingCodingPlan(userID); !ok || pending.UserText != "build auth" || len(pending.Tasks) != len(tasks) {
+		t.Fatalf("pending=%+v ok=%v", pending, ok)
+	}
+	if again, ok := h.restoreApprovedCodingPlanAsPending(userID); ok || len(again.Tasks) != 0 {
+		t.Fatalf("restore must be one-shot, got %+v ok=%v", again, ok)
+	}
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if strings.TrimSpace(mem.ApprovedPlanJSON) != "" {
+		t.Fatalf("approved plan must be cleared after restore: %+v", mem)
+	}
+	h.clearStickyCodingWorkbenchMemory(userID)
+}
+
 func TestStepNeedsVerifyGate(t *testing.T) {
 	if !stepNeedsVerifyGate("verify", "run tests", 3, 3) {
 		t.Fatal("last step should gate")
@@ -213,8 +241,8 @@ func TestMarkRemainingCodingStepsSkippedRewritesPrematurePassed(t *testing.T) {
 	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
 	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
 		{Index: 1, Title: "T1", Status: codingStepFailed},
-		{Index: 2, Title: "T2", Status: codingStepPassed},   // premature agent mark
-		{Index: 3, Title: "T3", Status: codingStepRunning},  // should also skip
+		{Index: 2, Title: "T2", Status: codingStepPassed},  // premature agent mark
+		{Index: 3, Title: "T3", Status: codingStepRunning}, // should also skip
 		{Index: 4, Title: "T4", Status: codingStepPending},
 		{Index: 5, Title: "T5", Status: codingStepSkipped}, // already skipped
 	})

@@ -124,9 +124,9 @@ type ProjectConversationHistoryItem struct {
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
-// ProjectWorkflowState is a compact pointer to an unfinished workflow attached
-// to a task-management artifact. Continue the workflow with ProjectPath; normal
-// opens may use an independent fork for unconstrained follow-up work.
+// ProjectWorkflowState is a compact workflow snapshot attached to a
+// task-management artifact. Active snapshots can be continued with ProjectPath;
+// terminal snapshots preserve the outcome of recent work.
 type ProjectWorkflowState struct {
 	ID            string `json:"id,omitempty"`
 	Type          string `json:"type,omitempty"`
@@ -249,9 +249,11 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	}
 	var records []memory.ProjectRecord
 	if strings.TrimSpace(query) == "" {
-		records = pi.ListRecent(searchLimit)
+		// Filter before limiting so recent automatic memory entries cannot crowd
+		// explicit tasks out of the sidebar while keeping the list work bounded.
+		records = pi.ListRecentMatching(limit, isTaskManagementRecord)
 	} else {
-		records = pi.Search(query, searchLimit)
+		records = pi.SearchMatching(query, limit, isTaskManagementRecord)
 	}
 	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(searchLimit * 2))
 	results := make([]ProjectSearchResult, 0, len(records))
@@ -2748,17 +2750,17 @@ func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState
 			return nil
 		}
 		ownerID := projectSessionOwnerID(path)
-		if a.workflowV2 != nil && a.workflowV2.machine != nil {
-			if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
-				phaseID := ""
-				if phase := state.ActivePhase(); phase != nil {
-					phaseID = phase.ID
+		var terminalV2 *ProjectWorkflowState
+		if a.workflowV2 != nil && a.workflowV2.store != nil {
+			// The task list is a recent-work snapshot, so terminal V2 workflows
+			// belong here too. GetActive intentionally hides them from runtime
+			// routing, whereas the store keeps the latest state for this task.
+			if state, err := a.workflowV2.store.Load(ownerID); err == nil && state != nil {
+				snapshot := projectWorkflowStateFromV2(state)
+				if state.Status == v2.StatusActive {
+					return snapshot
 				}
-				return &ProjectWorkflowState{
-					Type:        state.Type,
-					ProjectPath: state.ProjectPath,
-					Phase:       phaseID,
-				}
+				terminalV2 = snapshot
 			}
 		}
 		if a.workflowEngine != nil {
@@ -2773,7 +2775,7 @@ func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState
 				}
 			}
 		}
-		return nil
+		return terminalV2
 	}
 	if state := lookup(projectPath); state != nil {
 		return state
@@ -2785,6 +2787,30 @@ func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState
 		return nil
 	}
 	return nil
+}
+
+func projectWorkflowStateFromV2(state *v2.WorkflowState) *ProjectWorkflowState {
+	if state == nil {
+		return nil
+	}
+	phaseID := ""
+	if phase := state.ActivePhase(); phase != nil {
+		phaseID = phase.ID
+	} else if len(state.Phases) > 0 && state.Status != v2.StatusActive {
+		// Terminal workflows advance beyond their final phase, so ActivePhase is
+		// nil. Preserve that last phase as useful context in the recent task list.
+		phaseID = state.Phases[len(state.Phases)-1].ID
+	}
+	return &ProjectWorkflowState{
+		ID:          state.ID,
+		Type:        state.Type,
+		ProjectPath: state.ProjectPath,
+		Phase:       phaseID,
+		Status:      string(state.Status),
+		// A cancelled workflow can retain its phase's waiting-confirm status in
+		// storage. Terminal status takes precedence over a stale review marker.
+		PendingReview: state.Status == v2.StatusActive && state.IsWaitingConfirm(),
+	}
 }
 
 func normalizeRecentTaskPathKey(path string) string {

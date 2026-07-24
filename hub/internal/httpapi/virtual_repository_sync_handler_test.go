@@ -88,6 +88,33 @@ func TestVirtualRepositorySyncRejectsStaleRevision(t *testing.T) {
 	}
 }
 
+func TestVirtualRepositorySyncAcceptsIdempotentStaleRevision(t *testing.T) {
+	base := t.TempDir()
+	handler := VirtualRepositorySyncHandler(fakeVEMachineAuth{token: "secret", principals: map[string]*auth.MachinePrincipal{"machine": {TenantID: "tenant", UserID: "user", MachineID: "machine"}}}, base)
+	payload := map[string]any{"version": 1, "value": "same"}
+	first := doVirtualRepositorySyncRequest(t, handler, http.MethodPut, "machine", "secret", map[string]any{"payload": payload})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first = %d: %s", first.Code, first.Body.String())
+	}
+	var view virtualRepositorySyncView
+	if err := json.Unmarshal(first.Body.Bytes(), &view); err != nil || view.Revision == "" {
+		t.Fatalf("view = %+v err=%v", view, err)
+	}
+	// Same canonical payload with a deliberately wrong if_match is not a conflict:
+	// the store already holds this exact document revision.
+	again := doVirtualRepositorySyncRequest(t, handler, http.MethodPut, "machine", "secret", map[string]any{"payload": payload, "if_match_revision": "stale"})
+	if again.Code != http.StatusOK {
+		t.Fatalf("idempotent put = %d: %s", again.Code, again.Body.String())
+	}
+	var againView virtualRepositorySyncView
+	if err := json.Unmarshal(again.Body.Bytes(), &againView); err != nil {
+		t.Fatalf("decode idempotent view: %v", err)
+	}
+	if againView.Revision != view.Revision {
+		t.Fatalf("revision changed on idempotent put: got %q want %q", againView.Revision, view.Revision)
+	}
+}
+
 func TestVirtualRepositorySyncCreateOnlyPreconditionRejectsConcurrentFirstSync(t *testing.T) {
 	base := t.TempDir()
 	handler := VirtualRepositorySyncHandler(fakeVEMachineAuth{token: "secret", principals: map[string]*auth.MachinePrincipal{"machine": {TenantID: "tenant", UserID: "user", MachineID: "machine"}}}, base)

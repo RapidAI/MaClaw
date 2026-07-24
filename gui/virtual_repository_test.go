@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -53,6 +55,70 @@ func TestLocalSettingsRejectUnsupportedVersion(t *testing.T) {
 	}
 	if _, err := loadVirtualRepositoryLocalSettings(path); err == nil || !strings.Contains(err.Error(), "version 2") {
 		t.Fatalf("local settings version error = %v", err)
+	}
+}
+
+func TestGitClientExecutableOverrideIsPersistedAndPreferred(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not available")
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	raw, err := app.SetVCSClientExecutable("git", git)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var set VCSClientStatus
+	if err := json.Unmarshal([]byte(raw), &set); err != nil {
+		t.Fatal(err)
+	}
+	if !set.Available || set.Source != "user" || set.Executable == "" {
+		t.Fatalf("saved Git client status = %+v", set)
+	}
+
+	settings, err := loadVirtualRepositoryLocalSettings(app.virtualRepositoryStatePath("virtual-repository-local-settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.GitExecutable != set.Executable {
+		t.Fatalf("saved Git executable = %q, want %q", settings.GitExecutable, set.Executable)
+	}
+
+	raw, err = app.GetVCSClientStatus("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current VCSClientStatus
+	if err := json.Unmarshal([]byte(raw), &current); err != nil {
+		t.Fatal(err)
+	}
+	if !current.Available || current.Source != "user" || current.Executable != set.Executable {
+		t.Fatalf("current Git client status = %+v, want configured executable %q", current, set.Executable)
+	}
+
+	if _, err := app.ResetVCSClientExecutable("git"); err != nil {
+		t.Fatal(err)
+	}
+	if hint, err := app.VCSClientExecutableHint("git"); err != nil || hint != "" {
+		t.Fatalf("Git executable hint after reset = %q, %v; want empty", hint, err)
+	}
+	settings, err = loadVirtualRepositoryLocalSettings(app.virtualRepositoryStatePath("virtual-repository-local-settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.GitExecutable != "" {
+		t.Fatalf("Git executable after reset = %q, want empty", settings.GitExecutable)
+	}
+}
+
+func TestVirtualRepositoryVCSClientCachesUnavailableLookup(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	clients := virtualRepositoryVCSClients{
+		"git": {Kind: "git", Error: "cached missing Git"},
+	}
+	status := app.virtualRepositoryVCSClient("git", clients)
+	if status.Error != "cached missing Git" {
+		t.Fatalf("cached client status = %+v", status)
 	}
 }
 
@@ -144,6 +210,255 @@ func TestVirtualRepositoryRoundTripAndPortableManifest(t *testing.T) {
 	}
 }
 
+func TestLocalVirtualRepositoryRootMigrationCopiesFilesAndKeepsSource(t *testing.T) {
+	source, destinationParent := t.TempDir(), t.TempDir()
+	destination := filepath.Join(destinationParent, "new-root")
+	if err := os.MkdirAll(filepath.Join(source, "workspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "workspace", "notes.txt"), []byte("migration proof"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := &VirtualRepository{Name: "Migrated", RootPath: source, Nodes: []VirtualRepositoryNode{{ID: "workspace", Name: "workspace", Repository: &VirtualRepositoryBinding{Kind: "local", Enabled: true}}}}
+	if err := writeVirtualRepository(repo); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	previewRaw, err := app.PreviewVirtualRepositoryRootMigration(fmt.Sprintf(`{"repository_id":%q,"destination_root":%q}`, repo.ID, destination))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preview VirtualRepositoryRootMigrationPreview
+	if err := json.Unmarshal([]byte(previewRaw), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if !preview.CanMigrate || preview.SourceFileCount < 2 { // manifest + notes
+		t.Fatalf("unexpected migration preview: %+v", preview)
+	}
+	migratedRaw, err := app.MigrateVirtualRepositoryRoot(fmt.Sprintf(`{"repository_id":%q,"destination_root":%q}`, repo.ID, destination))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrated VirtualRepository
+	if err := json.Unmarshal([]byte(migratedRaw), &migrated); err != nil {
+		t.Fatal(err)
+	}
+	if migrated.RootPath != destination || migrated.ID != repo.ID {
+		t.Fatalf("migration result = %+v", migrated)
+	}
+	if content, err := os.ReadFile(filepath.Join(destination, "workspace", "notes.txt")); err != nil || string(content) != "migration proof" {
+		t.Fatalf("migrated file = %q, %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "workspace", "notes.txt")); err != nil {
+		t.Fatalf("source should be kept after migration: %v", err)
+	}
+	itemsRaw, err := app.ListVirtualRepositories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []VirtualRepository
+	if err := json.Unmarshal([]byte(itemsRaw), &items); err != nil || len(items) != 1 || items[0].RootPath != destination {
+		t.Fatalf("recent index was not switched: %s (%v)", itemsRaw, err)
+	}
+}
+
+func TestLocalVirtualRepositoryRootMigrationPreviewAcceptsNewDestinationDirectory(t *testing.T) {
+	source, destinationParent := t.TempDir(), t.TempDir()
+	destination := filepath.Join(destinationParent, "new-root")
+	repo := &VirtualRepository{Name: "New directory", RootPath: source, Nodes: []VirtualRepositoryNode{}}
+	if err := writeVirtualRepository(repo); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	previewRaw, err := app.PreviewVirtualRepositoryRootMigration(fmt.Sprintf(`{"repository_id":%q,"destination_root":%q}`, repo.ID, destination))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preview VirtualRepositoryRootMigrationPreview
+	if err := json.Unmarshal([]byte(previewRaw), &preview); err != nil || !preview.CanMigrate || preview.DestinationExists {
+		t.Fatalf("preview = %+v, error = %v", preview, err)
+	}
+	if _, err := app.MigrateVirtualRepositoryRoot(fmt.Sprintf(`{"repository_id":%q,"destination_root":%q}`, repo.ID, destination)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(virtualRepositoryManifestPath(destination)); err != nil {
+		t.Fatalf("migration did not create destination root: %v", err)
+	}
+}
+
+func TestLocalVirtualRepositoryRootMigrationRejectsSymlinkDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating directory symlinks requires extra privileges on Windows")
+	}
+	source, destinationParent, linkedTarget := t.TempDir(), t.TempDir(), t.TempDir()
+	destination := filepath.Join(destinationParent, "linked-root")
+	if err := os.Symlink(linkedTarget, destination); err != nil {
+		t.Fatal(err)
+	}
+	repo := &VirtualRepository{Name: "Symlink destination", RootPath: source, Nodes: []VirtualRepositoryNode{}}
+	if err := writeVirtualRepository(repo); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.PreviewVirtualRepositoryRootMigration(fmt.Sprintf(`{"repository_id":%q,"destination_root":%q}`, repo.ID, destination))
+	if err == nil || !strings.Contains(err.Error(), "must not be a symbolic link") {
+		t.Fatalf("preview error = %v, want symlink destination rejection", err)
+	}
+	_, err = app.MigrateVirtualRepositoryRoot(fmt.Sprintf(`{"repository_id":%q,"destination_root":%q}`, repo.ID, destination))
+	if err == nil || !strings.Contains(err.Error(), "must not be a symbolic link") {
+		t.Fatalf("migration error = %v, want symlink destination rejection", err)
+	}
+}
+
+func TestLocalVirtualRepositoryMigrationRejectsSymlinkDirectoryInExistingTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating directory symlinks requires extra privileges on Windows")
+	}
+	source, destination, linkedTarget := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(source, "workspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(linkedTarget, filepath.Join(destination, "workspace")); err != nil {
+		t.Fatal(err)
+	}
+	repo := &VirtualRepository{Name: "Symlink target child", RootPath: source, Nodes: []VirtualRepositoryNode{}}
+	if err := writeVirtualRepository(repo); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.MigrateVirtualRepositoryRoot(fmt.Sprintf(`{"repository_id":%q,"destination_root":%q}`, repo.ID, destination))
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("migration error = %v, want symlink child rejection", err)
+	}
+}
+
+func TestRemoteVirtualRepositoryMigrationCopyCommandStagesOnlyNewDestinations(t *testing.T) {
+	newCommand, newCleanup := remoteVirtualRepositoryMigrationCopyCommand("/srv/source", "/srv/destination", "vrepo_test", false)
+	if !strings.Contains(newCommand, ".vrepo-migration-vrepo_test-") || !strings.Contains(newCommand, "mv --") || !strings.Contains(newCleanup, "rm -rf --") {
+		t.Fatalf("new-destination copy command = %q; cleanup = %q", newCommand, newCleanup)
+	}
+	existingCommand, existingCleanup := remoteVirtualRepositoryMigrationCopyCommand("/srv/source", "/srv/destination", "vrepo_test", true)
+	if strings.Contains(existingCommand, ".vrepo-migration-") || strings.Contains(existingCommand, "mv --") || existingCleanup != "" {
+		t.Fatalf("existing-destination copy command = %q; cleanup = %q", existingCommand, existingCleanup)
+	}
+	if !strings.Contains(existingCommand, "cp -a -n") {
+		t.Fatalf("existing-destination copy must never overwrite a concurrently-created file: %q", existingCommand)
+	}
+}
+
+func TestRemoteVirtualRepositoryMigrationCopyCommandGuardsDestinationRace(t *testing.T) {
+	command, _ := remoteVirtualRepositoryMigrationCopyCommand("/srv/source", "/srv/destination", "vrepo_test", false)
+	for _, guard := range []string{"test ! -e '/srv/destination'", "test ! -L '/srv/destination'", "mv -T --"} {
+		if !strings.Contains(command, guard) {
+			t.Fatalf("new-destination copy command must guard against publication races (%q): %q", guard, command)
+		}
+	}
+}
+
+func TestRemoteVirtualRepositoryMigrationAllowsExistingDirectoriesOnly(t *testing.T) {
+	source, destination := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(source, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(destination, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceDirectory, err := os.Lstat(filepath.Join(source, "docs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationDirectory, err := os.Lstat(filepath.Join(destination, "docs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remoteVirtualRepositoryMigrationPathsConflict(sourceDirectory, destinationDirectory) {
+		t.Fatal("matching directories should be merge points, not migration conflicts")
+	}
+	if err := os.WriteFile(filepath.Join(source, "notes.txt"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "notes.txt"), []byte("destination"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourceFile, err := os.Lstat(filepath.Join(source, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationFile, err := os.Lstat(filepath.Join(destination, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !remoteVirtualRepositoryMigrationPathsConflict(sourceFile, destinationFile) {
+		t.Fatal("existing file must remain a migration conflict")
+	}
+}
+
+func TestLocalVirtualRepositoryRootMigrationRejectsExistingDestinationConflict(t *testing.T) {
+	source, destination := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "same.txt"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "same.txt"), []byte("destination"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := &VirtualRepository{Name: "Conflict", RootPath: source, Nodes: []VirtualRepositoryNode{}}
+	if err := writeVirtualRepository(repo); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.MigrateVirtualRepositoryRoot(fmt.Sprintf(`{"repository_id":%q,"destination_root":%q}`, repo.ID, destination))
+	if err == nil || !strings.Contains(err.Error(), "migration conflict") {
+		t.Fatalf("migration error = %v, want destination conflict", err)
+	}
+	if content, readErr := os.ReadFile(filepath.Join(destination, "same.txt")); readErr != nil || string(content) != "destination" {
+		t.Fatalf("destination file was changed: %q, %v", content, readErr)
+	}
+}
+
+func TestSaveVirtualRepositoryRejectsDirectRootChange(t *testing.T) {
+	source, destination := t.TempDir(), t.TempDir()
+	app := &App{testHomeDir: t.TempDir()}
+	repo := &VirtualRepository{Name: "Protected root", RootPath: source, Nodes: []VirtualRepositoryNode{}}
+	if err := writeVirtualRepository(repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	// A copied manifest makes the destination look valid to the ordinary save
+	// path. It must still be rejected so callers cannot bypass the migration
+	// copy/verification transaction by simply changing root_path.
+	if err := copyVirtualRepositoryTree(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := readVirtualRepository(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SaveVirtualRepository(string(raw)); err == nil || !strings.Contains(err.Error(), "requires MigrateVirtualRepositoryRoot") {
+		t.Fatalf("direct root change error = %v", err)
+	}
+}
+
 func containsJSONKey(data []byte, key string) bool {
 	var value map[string]any
 	_ = json.Unmarshal(data, &value)
@@ -180,6 +495,20 @@ func TestVirtualRepositoryPathsRejectControlCharactersAndOversizedValues(t *test
 		if err := validateRemoteVirtualRepositoryRelativePath(filepath.ToSlash(relative)); err == nil || !strings.Contains(err.Error(), "invalid") {
 			t.Fatalf("remote relative path %q error = %v", truncateVirtualRepositoryDiagnostic(relative, 32), err)
 		}
+	}
+}
+
+func TestVirtualRepositoryRootUnavailableRecognizesWindowsDriveFailures(t *testing.T) {
+	if !isVirtualRepositoryRootUnavailable(os.ErrNotExist) {
+		t.Fatal("ordinary missing roots must be repairable")
+	}
+	pathMissing := &os.PathError{Op: "open", Path: `Z:\workspace\.vrepo\manifest.json`, Err: syscall.Errno(3)}
+	if got := isVirtualRepositoryRootUnavailable(pathMissing); got != (runtime.GOOS == "windows") {
+		t.Fatalf("Windows path-not-found unavailable = %t, want %t", got, runtime.GOOS == "windows")
+	}
+	invalidDrive := &os.PathError{Op: "open", Path: `Z:\workspace\.vrepo\manifest.json`, Err: syscall.Errno(15)}
+	if got := isVirtualRepositoryRootUnavailable(invalidDrive); got != (runtime.GOOS == "windows") {
+		t.Fatalf("Windows invalid-drive unavailable = %t, want %t", got, runtime.GOOS == "windows")
 	}
 }
 
@@ -464,6 +793,24 @@ func TestVirtualRepositoryIndexLookupRejectsInvalidIndex(t *testing.T) {
 
 func TestCommonSVNPathsAreBoundedAndUnique(t *testing.T) {
 	paths := commonSVNExecutablePaths()
+	seen := map[string]bool{}
+	for _, path := range paths {
+		key := path
+		if runtime.GOOS == "windows" {
+			key = filepath.Clean(path)
+		}
+		if seen[key] {
+			t.Fatalf("duplicate path %q", path)
+		}
+		seen[key] = true
+	}
+	if len(paths) > 20 {
+		t.Fatalf("discovery must remain bounded, got %d paths", len(paths))
+	}
+}
+
+func TestCommonGitPathsAreBoundedAndUnique(t *testing.T) {
+	paths := commonGitExecutablePaths()
 	seen := map[string]bool{}
 	for _, path := range paths {
 		key := path

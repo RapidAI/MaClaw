@@ -147,6 +147,14 @@ func handleVirtualRepositorySyncPut(w http.ResponseWriter, r *http.Request, p *a
 		writeError(w, http.StatusInternalServerError, "VREPO_SYNC_READ_FAILED", "virtual repository sync data is unavailable")
 		return
 	}
+	// Revisions are content hashes of the canonical payload. When two devices
+	// converge on the same document, a stale if_match is not a real conflict:
+	// the store already holds exactly what the client is writing.
+	revision := virtualRepositorySyncRevision(plain)
+	if existing != nil && existing.Revision == revision {
+		writeJSON(w, http.StatusOK, virtualRepositorySyncView{HasDocument: true, Revision: existing.Revision, UpdatedAt: existing.UpdatedAt, LimitBytes: virtualRepositorySyncMaxBytes})
+		return
+	}
 	if expected := strings.TrimSpace(req.IfMatchRevision); expected == "*" && existing != nil {
 		// "*" is the create-only precondition used by a desktop that just
 		// observed no document. It closes the first-sync race where two newly
@@ -164,7 +172,6 @@ func handleVirtualRepositorySyncPut(w http.ResponseWriter, r *http.Request, p *a
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	revision := virtualRepositorySyncRevision(plain)
 	meta := &virtualRepositorySyncMeta{TenantID: p.TenantID, UserID: p.UserID, Revision: revision, CreatedAt: now, UpdatedAt: now}
 	if existing != nil {
 		meta.CreatedAt = existing.CreatedAt

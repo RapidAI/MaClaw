@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -312,6 +313,59 @@ func TestListTasksOnlyShowsExplicitTaskManagementRecords(t *testing.T) {
 	}
 }
 
+func TestListTasksFillsLimitPastRecentAutomaticRecords(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	now := time.Now()
+
+	for i := 0; i < 60; i++ {
+		if err := app.memoryStore.Save(memory.Entry{
+			Title:      "Automatic sediment",
+			Content:    "Task: automatic\nResult: generated",
+			Category:   memory.CategoryProjectKnowledge,
+			SourceType: "task_sediment",
+			Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", filepath.Join(app.GetDataDir(), "tasks", fmt.Sprintf("auto-%d", i))},
+			CreatedAt:  now.Add(time.Duration(i) * time.Second),
+			UpdatedAt:  now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("Save automatic sediment %d: %v", i, err)
+		}
+	}
+	created := app.CreateTask("Visible explicit task", "")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty project path")
+	}
+
+	results := app.ListTasks(1)
+	if len(results) != 1 || results[0].ProjectPath != created.ProjectPath {
+		t.Fatalf("ListTasks(1) = %+v, want explicit task %q", results, created.ProjectPath)
+	}
+}
+
+func TestSearchTasksFillsLimitPastMoreRelevantAutomaticRecords(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	now := time.Now()
+	for i := 0; i < 60; i++ {
+		if err := app.memoryStore.Save(memory.Entry{
+			Title:      "Find code automatic",
+			Content:    "Task: automatic\nResult: generated",
+			Category:   memory.CategoryProjectKnowledge,
+			SourceType: "task_sediment",
+			Tags:       []string{"task_sediment", "tangible_output", "output_tool:edit_file", filepath.Join(app.GetDataDir(), "tasks", fmt.Sprintf("search-auto-%d", i))},
+			CreatedAt:  now.Add(time.Duration(i) * time.Second),
+			UpdatedAt:  now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("Save automatic sediment %d: %v", i, err)
+		}
+	}
+	created := app.CreateTask("Find code explicit task", "")
+	results := app.SearchTasks("Find code", 1)
+	if len(results) != 1 || results[0].ProjectPath != created.ProjectPath {
+		t.Fatalf("SearchTasks = %+v, want explicit task %q", results, created.ProjectPath)
+	}
+}
+
 func TestCreateRecentTaskUsesTaskNamePreview(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
@@ -326,15 +380,15 @@ func TestCreateRecentTaskUsesTaskNamePreview(t *testing.T) {
 
 func TestNormalizeCreateTaskMode(t *testing.T) {
 	cases := map[string]string{
-		"":                 "",
-		"chat":             "",
-		"coding_dev":       taskCodingDevTag,
-		"CODING":           taskCodingDevTag,
-		"programming":      taskCodingDevTag,
-		"code":             taskCodingDevTag,
+		"":                  "",
+		"chat":              "",
+		"coding_dev":        taskCodingDevTag,
+		"CODING":            taskCodingDevTag,
+		"programming":       taskCodingDevTag,
+		"code":              taskCodingDevTag,
 		"remote_coding_dev": taskRemoteCodingDevTag,
-		"remote_coding":    taskRemoteCodingDevTag,
-		"remote_code":      taskRemoteCodingDevTag,
+		"remote_coding":     taskRemoteCodingDevTag,
+		"remote_code":       taskRemoteCodingDevTag,
 	}
 	for input, want := range cases {
 		if got := NormalizeCreateTaskMode(input); got != want {
@@ -998,7 +1052,7 @@ func TestRecentTaskWithWorkingDirCarriesExecutionWorkflowState(t *testing.T) {
 	if len(recent) != 1 {
 		t.Fatalf("SearchProjects returned %d results: %+v", len(recent), recent)
 	}
-	if recent[0].ActiveWorkflow == nil || recent[0].ActiveWorkflow.ProjectPath != filepath.Clean(workingDir) || recent[0].ActiveWorkflow.Type != string(workflow.WorkflowCoding) {
+	if recent[0].ActiveWorkflow == nil || recent[0].ActiveWorkflow.ProjectPath != filepath.Clean(workingDir) || recent[0].ActiveWorkflow.Type != string(workflow.WorkflowCoding) || recent[0].ActiveWorkflow.Status != string(workflow.StatusActive) {
 		t.Fatalf("ActiveWorkflow = %#v, want execution-path coding workflow", recent[0].ActiveWorkflow)
 	}
 
@@ -1008,6 +1062,106 @@ func TestRecentTaskWithWorkingDirCarriesExecutionWorkflowState(t *testing.T) {
 	}
 	if scene.ActiveWorkflow == nil || scene.ActiveWorkflow.ProjectPath != filepath.Clean(workingDir) {
 		t.Fatalf("scene ActiveWorkflow = %#v, want execution-path workflow", scene.ActiveWorkflow)
+	}
+}
+
+func TestRecentTaskWithWorkingDirCarriesTerminalWorkflowState(t *testing.T) {
+	for _, status := range []workflow.WorkflowStatus{workflow.StatusCompleted, workflow.StatusCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			app := newProjectSearchTestApp(t)
+			app.workflowEngine = nil
+			app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+			workingDir := filepath.Join(t.TempDir(), string(status)+"-workflow-workdir")
+			task := app.CreateRecentTaskWithWorkingDir("Terminal workflow state "+string(status), workingDir)
+			state := &workflow.WorkflowState{
+				ID:          workflow.GenerateID(projectSessionOwnerID(filepath.Clean(workingDir))),
+				UserID:      projectSessionOwnerID(filepath.Clean(workingDir)),
+				Type:        string(workflow.WorkflowCoding),
+				ProjectPath: filepath.Clean(workingDir),
+				Phases: []workflow.Phase{{
+					ID:     workflow.PhaseCodingRequirements,
+					Name:   "Requirements",
+					Status: workflow.PhaseCompleted,
+				}},
+				CurrentPhase: 1,
+				Status:       status,
+			}
+			if err := app.workflowV2.store.Save(state); err != nil {
+				t.Fatalf("workflowV2 Save failed: %v", err)
+			}
+
+			recent := app.SearchProjects("Terminal workflow state "+string(status), 10)
+			if len(recent) != 1 || recent[0].ActiveWorkflow == nil {
+				t.Fatalf("SearchProjects = %+v, want terminal workflow snapshot", recent)
+			}
+			got := recent[0].ActiveWorkflow
+			if got.Status != string(status) || got.ProjectPath != filepath.Clean(workingDir) || got.Phase != workflow.PhaseCodingRequirements {
+				t.Fatalf("ActiveWorkflow = %#v, want %q workflow for %q", got, status, workingDir)
+			}
+
+			scene, err := app.GetProjectScene(task.ProjectPath)
+			if err != nil {
+				t.Fatalf("GetProjectScene error = %v", err)
+			}
+			if scene.ActiveWorkflow == nil || scene.ActiveWorkflow.Status != string(status) {
+				t.Fatalf("scene ActiveWorkflow = %#v, want terminal %q workflow", scene.ActiveWorkflow, status)
+			}
+		})
+	}
+}
+
+func TestCancelledWorkflowSnapshotDoesNotRequestReview(t *testing.T) {
+	state := &workflow.WorkflowState{
+		ID:          "wf2-cancelled",
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: "D:/work/cancelled",
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingRequirements,
+			Status: workflow.PhaseWaitingConfirm,
+		}},
+		Status: workflow.StatusCancelled,
+	}
+
+	got := projectWorkflowStateFromV2(state)
+	if got == nil || got.Status != string(workflow.StatusCancelled) || got.PendingReview {
+		t.Fatalf("projectWorkflowStateFromV2() = %#v, want cancelled snapshot without pending review", got)
+	}
+	if got.Phase != workflow.PhaseCodingRequirements {
+		t.Fatalf("projectWorkflowStateFromV2().Phase = %q, want %q", got.Phase, workflow.PhaseCodingRequirements)
+	}
+}
+
+func TestRecentTaskPrefersActiveLegacyWorkflowOverTerminalV2Snapshot(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+	app.workflowEngine = workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
+
+	workingDir := filepath.Join(t.TempDir(), "workflow-workdir")
+	task := app.CreateRecentTaskWithWorkingDir("Prefer active workflow", workingDir)
+	ownerID := projectSessionOwnerID(filepath.Clean(workingDir))
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(ownerID),
+		UserID:      ownerID,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: filepath.Clean(workingDir),
+		Status:      workflow.StatusCompleted,
+	}); err != nil {
+		t.Fatalf("workflowV2 Save failed: %v", err)
+	}
+	if _, err := app.workflowEngine.StartWorkflowWithOptions(ownerID, workflow.StructuredIntent{Category: workflow.WorkflowProductDesign, Summary: "design app"}, workflow.WorkflowStartOptions{ProjectPath: filepath.Clean(workingDir)}); err != nil {
+		t.Fatalf("StartWorkflowWithOptions failed: %v", err)
+	}
+
+	recent := app.SearchProjects("Prefer active workflow", 10)
+	if len(recent) != 1 || recent[0].ActiveWorkflow == nil {
+		t.Fatalf("SearchProjects = %+v, want active workflow", recent)
+	}
+	if got := recent[0].ActiveWorkflow; got.Status != string(workflow.StatusActive) || got.Type != string(workflow.WorkflowProductDesign) {
+		t.Fatalf("ActiveWorkflow = %#v, want active legacy workflow", got)
+	}
+	if task.ProjectPath == "" {
+		t.Fatal("CreateRecentTaskWithWorkingDir returned empty project path")
 	}
 }
 
@@ -1597,14 +1751,14 @@ func TestCreateRecentTaskIgnoresBlankName(t *testing.T) {
 
 func TestRecentTaskSlug(t *testing.T) {
 	tests := map[string]string{
-		"Hello World!":             "hello-world",
-		"---Alpha_Beta---":         "alpha_beta",
-		"\u4e2d\u6587\u4efb\u52a1": "\u4e2d\u6587\u4efb\u52a1", // Chinese letters kept
+		"Hello World!":                  "hello-world",
+		"---Alpha_Beta---":              "alpha_beta",
+		"\u4e2d\u6587\u4efb\u52a1":      "\u4e2d\u6587\u4efb\u52a1", // Chinese letters kept
 		"\u6280\u672f\u670d\u52a1 2026": "\u6280\u672f\u670d\u52a1-2026",
-		"  A   B   C  ":            "a-b-c",
-		"!!!":                      "task",
-		"CON":                      "con-task", // Windows reserved device name
-		"com1":                     "com1-task",
+		"  A   B   C  ":                 "a-b-c",
+		"!!!":                           "task",
+		"CON":                           "con-task", // Windows reserved device name
+		"com1":                          "com1-task",
 		"01234567890123456789012345678901234567890123456789": "0123456789012345678901234567890123456789",
 	}
 	for input, want := range tests {

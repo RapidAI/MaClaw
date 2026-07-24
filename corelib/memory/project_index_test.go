@@ -189,6 +189,64 @@ func TestProjectIndex_RecentRequiresTangibleOutput(t *testing.T) {
 	}
 }
 
+func TestProjectIndex_ListRecentMatchingFiltersBeforeSorting(t *testing.T) {
+	pi := NewProjectIndex()
+	now := time.Now()
+	pi.Rebuild([]Entry{
+		{
+			ID: "automatic", Title: "Automatic", Content: "automatic", Category: CategoryTaskArtifact,
+			Tags: []string{"tangible_output", "automatic", "C:/tasks/automatic"}, CreatedAt: now, UpdatedAt: now.Add(2 * time.Minute),
+		},
+		{
+			ID: "older-task", Title: "Older task", Content: "older", Category: CategoryTaskArtifact,
+			Tags: []string{"tangible_output", "task_management", "C:/tasks/older"}, CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			ID: "newer-task", Title: "Newer task", Content: "newer", Category: CategoryTaskArtifact,
+			Tags: []string{"tangible_output", "task_management", "C:/tasks/newer"}, CreatedAt: now, UpdatedAt: now.Add(time.Minute),
+		},
+	})
+
+	matching := pi.ListRecentMatching(1, func(rec ProjectRecord) bool {
+		for _, tag := range rec.Tags {
+			if tag == "task_management" {
+				return true
+			}
+		}
+		return false
+	})
+	if len(matching) != 1 || matching[0].Name != "Newer task" {
+		t.Fatalf("ListRecentMatching = %+v, want newest matching task", matching)
+	}
+}
+
+func TestProjectIndex_SearchMatchingFiltersBeforeLimit(t *testing.T) {
+	pi := NewProjectIndex()
+	now := time.Now()
+	pi.Rebuild([]Entry{
+		{
+			ID: "automatic", Title: "Automatic build", Content: "automatic", Category: CategoryTaskArtifact,
+			Tags: []string{"tangible_output", "automatic", "C:/tasks/automatic"}, CreatedAt: now, UpdatedAt: now.Add(2 * time.Minute),
+		},
+		{
+			ID: "managed", Title: "Managed build", Content: "managed", Category: CategoryTaskArtifact,
+			Tags: []string{"tangible_output", "task_management", "C:/tasks/managed"}, CreatedAt: now, UpdatedAt: now,
+		},
+	})
+
+	matching := pi.SearchMatching("build", 1, func(rec ProjectRecord) bool {
+		for _, tag := range rec.Tags {
+			if tag == "task_management" {
+				return true
+			}
+		}
+		return false
+	})
+	if len(matching) != 1 || matching[0].Name != "Managed build" {
+		t.Fatalf("SearchMatching = %+v, want matching managed task", matching)
+	}
+}
+
 func TestProjectIndex_OutputTitleAndPreviewWin(t *testing.T) {
 	pi := NewProjectIndex()
 	now := time.Now()

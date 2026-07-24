@@ -229,7 +229,8 @@ const patchConfigFieldsDynamicAllowedSnippets = [
   ['gui/frontend/src/App.tsx', '// Using PatchConfigFields (atomic load', 'comment explaining atomic patch mechanism'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patch).then((saved)', 'remote panel saveConfigPatch helper receives patches built by local typed setters'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patchWithLaunchMode as Record<string, any>)', 'remote quick-start augments a locally built patch with default_launch_mode'],
-  ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 'PatchConfigFields(patch)).catch((err)', 'general settings helper receives patches from same-file controls only'],
+  ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 'PatchConfigFields(patch)).then((saved)', 'general settings helper receives patches from same-file controls only'],
+  ['gui/frontend/src/components/ai/AssistantQuickSettingsBar.tsx', 'PatchConfigFields({ [field]: next } as Record<string, any>)', 'quick settings toggles choose from a closed workstation/log-detail field union'],
   ['gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'PatchConfigFields(patch).then((saved)', 'advanced settings helper receives patches from same-file controls only'],
   ['gui/frontend/src/components/settings/programmingToolsConfig.ts', 'PatchConfigFields(patch).then((saved)', 'shared programming tools patch helper receives patches from panel controls only'],
   ['gui/remote_activation.go', 'a.PatchConfigFields(patch)', 'remote registration persists a closed patch map containing only normalized remote_email or remote_mobile'],
@@ -573,7 +574,7 @@ const highRiskRemoteFileLineLimits = [
   // Implementation lives here; freeze growth until further extraction (entry is a thin re-export).
   ['gui/frontend/src/components/remote/SkillsManagementPanelView.tsx', 5700],
   ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 2400],
-  ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1290],
+  ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1400],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
 ];

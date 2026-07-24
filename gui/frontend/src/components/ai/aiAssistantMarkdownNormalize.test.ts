@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
+import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 
 describe("normalizeInlineListMarkers ordered markers", () => {
     it("does not split multi-digit ordered markers at the start of a line", () => {
@@ -98,5 +98,39 @@ describe("normalizeInlineListMarkers ordered markers", () => {
     it("leaves pure prose without ordered-marker shapes unchanged", () => {
         const input = "今天天气不错，适合出行。没有列表。";
         expect(normalizeInlineListMarkers(input)).toBe(input);
+    });
+});
+
+describe("attachBareHeadingMarkers list-title attach", () => {
+    it("attaches bare ### to a following dash-list title", () => {
+        expect(attachBareHeadingMarkers(["###", "- 北京·城区天气预报"])).toEqual([
+            "### 北京·城区天气预报",
+        ]);
+    });
+
+    it("attaches bare ### to a following unicode-bullet title", () => {
+        expect(attachBareHeadingMarkers(["###", "\u2022 \u4eca\u65e5\u751f\u6d3b\u6307\u6570"])).toEqual([
+            "### \u4eca\u65e5\u751f\u6d3b\u6307\u6570",
+        ]);
+    });
+
+    it("still skips real nested headings after a bare marker", () => {
+        expect(attachBareHeadingMarkers(["####", "### Existing title"])).toEqual([
+            "####",
+            "### Existing title",
+        ]);
+    });
+
+    it("promotes only the first list item under a bare marker; later items stay lists", () => {
+        expect(attachBareHeadingMarkers(["###", "- 标题", "- 后续条目"])).toEqual([
+            "### 标题",
+            "- 后续条目",
+        ]);
+    });
+
+    it("attaches bare ### to an ordered-list title", () => {
+        expect(attachBareHeadingMarkers(["###", "1. 生活指数"])).toEqual([
+            "### 生活指数",
+        ]);
     });
 });

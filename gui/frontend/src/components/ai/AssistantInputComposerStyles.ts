@@ -5,12 +5,26 @@ interface ComposerStyleOptions {
     cancelPending: boolean;
     hasInputOverlay: boolean;
     inline: boolean;
+    /**
+     * When true (main AI chat with quick-settings bar below), drop the floating
+     * card's bottom margin so chips own the window bottom edge.
+     * When false (e.g. VE conversation), keep bottom breathing room.
+     */
+    flushBottom?: boolean;
     isExpandedInput: boolean;
     ready: boolean;
     theme: Theme;
 }
 
-export function getAssistantInputComposerStyles({ cancelPending, hasInputOverlay, inline, isExpandedInput, ready, theme: t }: ComposerStyleOptions): {
+export function getAssistantInputComposerStyles({
+    cancelPending,
+    hasInputOverlay,
+    inline,
+    flushBottom = false,
+    isExpandedInput,
+    ready,
+    theme: t,
+}: ComposerStyleOptions): {
     inputBarStyle: CSSProperties;
     inputRowStyle: CSSProperties;
     textareaStyle: CSSProperties;
@@ -18,13 +32,19 @@ export function getAssistantInputComposerStyles({ cancelPending, hasInputOverlay
     toolbarLeftStyle: CSSProperties;
     toolbarRightStyle: CSSProperties;
 } {
+    // Safe-area belongs on the true bottom chrome. With a footer bar below the
+    // composer, only keep a fixed inner pad so we don't double-count insets.
+    const paddingBottom = flushBottom
+        ? "6px"
+        : "max(6px, env(safe-area-inset-bottom))";
+
     return {
         inputBarStyle: {
             display: "flex",
             flexDirection: "column",
             gap: "0px",
             padding: "8px 12px",
-            paddingBottom: "max(6px, env(safe-area-inset-bottom))",
+            paddingBottom,
             background: t.inputBarBg,
             borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
             flex: isExpandedInput ? "1 1 auto" : undefined,
@@ -34,10 +54,16 @@ export function getAssistantInputComposerStyles({ cancelPending, hasInputOverlay
             boxSizing: "border-box",
             overflow: hasInputOverlay ? "visible" : "hidden",
             ["--wails-draggable" as any]: "no-drag",
+            // Floating card: side inset always; bottom inset only when nothing
+            // sits under the composer (VE / standalone). Main chat uses
+            // flushBottom so the quick-settings bar is flush to the window.
+            // When flush, square the bottom corners and drop the bottom border so
+            // it docks into the footer without a double hairline.
             ...(inline ? {} : {
-                margin: "0 10px 10px 10px",
-                borderRadius: "12px",
+                margin: flushBottom ? "0 10px 0 10px" : "0 10px 10px 10px",
+                borderRadius: flushBottom ? "12px 12px 0 0" : "12px",
                 border: `1.5px solid ${t.inputBarBorder}`,
+                borderBottom: flushBottom ? "none" : undefined,
                 boxShadow: t.bg.startsWith("#0")
                     ? "0 2px 12px rgba(0, 0, 0, 0.32), 0 1px 4px rgba(0, 0, 0, 0.18)"
                     : "0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)",

@@ -841,21 +841,40 @@ func skillSearch(app *TUIApp, args map[string]interface{}) string {
 
 	degraded := report.FormatDegradedNote()
 	if len(results) == 0 {
-		if degraded != "" {
-			return fmt.Sprintf("未找到匹配 \"%s\" 的 Skill。\n⚠️ %s\n（源失败时空结果不等于「没有 skill」）", query, degraded)
-		}
-		return fmt.Sprintf("未找到匹配 \"%s\" 的 Skill。", query)
+		return tuiNoSkillSearchResultsMessage(query, degraded)
 	}
 
+	return formatTUISkillSearchResults(query, results, degraded)
+}
+
+func tuiNoSkillSearchResultsMessage(query, degraded string) string {
+	if degraded != "" {
+		return fmt.Sprintf("未找到匹配 \"%s\" 的 Skill。\n⚠️ %s\n（源失败时空结果不等于「没有 skill」）", query, degraded)
+	}
+	if skill.LooksLikeDownloadSearchQuery(query) {
+		return fmt.Sprintf("未找到匹配 \"%s\" 的 Skill。\n优先建议：通用 HTTP/PDF 下载请使用内置 download_file 或 web_fetch(save_path=...)，无需安装下载 Skill。", query)
+	}
+	return fmt.Sprintf("未找到匹配 \"%s\" 的 Skill。", query)
+}
+
+// formatTUISkillSearchResults keeps the search result and its install locator
+// together. In particular, GitHub installs require InstallRef and ClawHub
+// installs must select the ClawHub downloader; a generic skill_id-only hint
+// loses both pieces of information and makes a search result non-installable.
+func formatTUISkillSearchResults(query string, results []skill.HubSearchResult, degraded string) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("搜索 \"%s\" — %d 个结果（SkillHub + ClawHub + GitHub）\n", query, len(results)))
 	if degraded != "" {
 		b.WriteString("⚠️ " + degraded + "\n（部分源失败，列表可能不完整）\n")
 	}
+	if skill.LooksLikeDownloadSearchQuery(query) {
+		b.WriteString("优先建议：通用 HTTP/PDF 下载使用内置 download_file 或 web_fetch(save_path=...)，无需安装下载 Skill。\n")
+	}
 	b.WriteString("\n")
 	for _, s := range results {
+		source := normalizeTUISkillPolicySource(s.Source)
 		sourceLabel := "SkillHub"
-		switch s.Source {
+		switch source {
 		case "clawhub":
 			sourceLabel = "ClawHub"
 		case "github":
@@ -863,8 +882,23 @@ func skillSearch(app *TUIApp, args map[string]interface{}) string {
 		}
 		b.WriteString(fmt.Sprintf("- [%s] %s (v%s): %s (source:%s, trust:%s, downloads:%d)\n",
 			s.ID, s.Name, s.Version, s.Description, sourceLabel, s.TrustLevel, s.Downloads))
+		if skill.LooksLikeGenericDownloadSkill(s.Name, s.Description) {
+			b.WriteString("  提示：这是通用下载 Skill；简单 HTTP/PDF 下载优先使用内置 download_file。\n")
+		}
+
+		switch source {
+		case "clawhub":
+			b.WriteString(fmt.Sprintf("  安装: manage_skill(action=\"install\", skill_id=%q, source=\"clawhub\")\n", s.ID))
+		case "github":
+			if strings.TrimSpace(s.InstallRef) == "" {
+				b.WriteString("  安装信息不完整：GitHub 结果缺少 install_ref，无法安全下载。\n")
+				continue
+			}
+			b.WriteString(fmt.Sprintf("  安装: manage_skill(action=\"install\", skill_id=%q, source=\"github\", install_ref=%q)\n", s.ID, s.InstallRef))
+		default:
+			b.WriteString(fmt.Sprintf("  安装: manage_skill(action=\"install\", skill_id=%q, source=\"skillhub\")\n", s.ID))
+		}
 	}
-	b.WriteString("\n使用 manage_skill(action=\"install\", skill_id=\"<ID>\") 安装。")
 	return b.String()
 }
 
@@ -889,6 +923,7 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 			source = "clawhub"
 		}
 	}
+	source = normalizeTUISkillPolicySource(source)
 	if hubURL == "" {
 		hubURL = commands.ResolveHubCenterWithFailover(app.appConfig, app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL), nil, nil)
 	}
@@ -898,7 +933,8 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	if effectiveSource == "" {
 		effectiveSource = "skillhub"
 	}
-	guardArgs := map[string]interface{}{"action": "install", "skill_id": skillID, "source": effectiveSource, "hub_url": hubURL, "install_ref": sval(args, "install_ref")}
+	installRef := sval(args, "install_ref")
+	guardArgs := map[string]interface{}{"action": "install", "skill_id": skillID, "source": effectiveSource, "hub_url": hubURL, "install_ref": installRef}
 	if ok, reason := enforceClientSecurityPolicy(app.appConfig, "manage_skill", guardArgs); !ok {
 		return reason
 	}
@@ -915,12 +951,8 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 
 	recordTUIDeveloperSkillRisk(app.appConfig, effectiveSource, "install", guardArgs)
 
-	// Check if already installed.
-	for _, s := range app.appConfig.NLSkills {
-		if s.HubSkillID == skillID || (s.Source == "clawhub" && strings.EqualFold(s.Name, skillID)) ||
-			(s.Source == "github" && strings.EqualFold(s.Name, skillID)) {
-			return fmt.Sprintf("Skill '%s' 已安装", s.Name)
-		}
+	if name, installed := tuiInstalledSkillForInstallRequest(effectiveSource, skillID, installRef, app.appConfig.NLSkills); installed {
+		return fmt.Sprintf("Skill '%s' 已安装", name)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -930,11 +962,10 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	var entry *corelib.NLSkillEntry
 	var err error
 
-	switch source {
+	switch effectiveSource {
 	case "clawhub":
 		entry, err = client.DownloadClawHub(ctx, skillID)
 	case "github":
-		installRef := sval(args, "install_ref")
 		if installRef == "" {
 			return "GitHub Skill 缺少 install_ref 参数"
 		}
@@ -951,6 +982,12 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("加载配置失败: %v", err)
 	}
+	// Avoid duplicate entries if another process completed the same install
+	// while this command was downloading the package.
+	if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, cfg.NLSkills); installed {
+		app.appConfig = cfg
+		return fmt.Sprintf("Skill '%s' 已安装", existing.Name)
+	}
 	cfg.NLSkills = append(cfg.NLSkills, *entry)
 	if err := store.SaveConfig(cfg); err != nil {
 		return fmt.Sprintf("保存失败: %v", err)
@@ -958,7 +995,7 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	app.appConfig = cfg
 
 	sourceLabel := "SkillHub"
-	switch source {
+	switch effectiveSource {
 	case "clawhub":
 		sourceLabel = "ClawHub"
 	case "github":

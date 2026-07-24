@@ -188,6 +188,7 @@ func mobileStopMeetingRecordingRetentionCleanupForTest() {
 type mobileDocumentDraftRecord struct {
 	ID        string
 	OwnerID   string
+	TenantID  string
 	Title     string
 	Template  string
 	Markdown  string
@@ -209,6 +210,7 @@ type mobileDocumentExportRecord struct {
 	JobID     string
 	DraftID   string
 	OwnerID   string
+	TenantID  string
 	Format    string
 	Status    string
 	Message   string
@@ -218,6 +220,7 @@ type mobileDocumentExportRecord struct {
 type mobileDocumentUploadRecord struct {
 	TaskID      string
 	OwnerID     string
+	TenantID    string
 	Filename    string
 	ContentType string
 	Status      string
@@ -238,6 +241,7 @@ type mobileDigitalEmployeeTaskRecord struct {
 	TaskID     string
 	EmployeeID string
 	OwnerID    string
+	TenantID   string
 	Prompt     string
 	TaskType   string
 	Context    map[string]string
@@ -398,21 +402,34 @@ func mobileEnsureStateLoaded() {
 		return
 	}
 	mobileDocuments.Lock()
+	stateChanged := false
 	if state.Drafts != nil {
 		// Do not eagerly load multi-MB originals into RAM. Bytes are filled on
 		// demand via mobileDraftLoadSourceBytes; only normalize SourceSize here.
 		// Legacy state.json may still embed SourceBytes — keep them until next persist strips to disk.
 		for id, rec := range state.Drafts {
+			if mobileNormalizePersistedTenantID(&rec.TenantID) {
+				stateChanged = true
+			}
 			mobileNormalizeDraftSourceMeta(&rec)
 			state.Drafts[id] = rec
 		}
 		mobileDocuments.drafts = state.Drafts
 	}
 	if state.Exports != nil {
+		for id, rec := range state.Exports {
+			if mobileNormalizePersistedTenantID(&rec.TenantID) {
+				stateChanged = true
+			}
+			state.Exports[id] = rec
+		}
 		mobileDocuments.exports = state.Exports
 	}
 	if state.Uploads != nil {
 		for id, rec := range state.Uploads {
+			if mobileNormalizePersistedTenantID(&rec.TenantID) {
+				stateChanged = true
+			}
 			mobileNormalizeUploadSourceMeta(&rec)
 			state.Uploads[id] = rec
 		}
@@ -424,13 +441,16 @@ func mobileEnsureStateLoaded() {
 		// After a Hub restart no goroutine can still be assembling the file, so
 		// reopen the resumable chunk stream rather than leaving it stuck forever.
 		for id, rec := range state.MeetingRecordings {
+			if mobileNormalizePersistedTenantID(&rec.TenantID) {
+				stateChanged = true
+			}
 			if rec.Status == "finalizing" {
 				rec.Status = "uploading"
 				rec.Message = "upload finalization interrupted; retry complete"
 				rec.Progress = 0
 				rec.UpdatedAt = time.Now().UTC()
-				state.MeetingRecordings[id] = rec
 			}
+			state.MeetingRecordings[id] = rec
 		}
 		mobileMeetingRecordings.Lock()
 		mobileMeetingRecordings.items = state.MeetingRecordings
@@ -440,20 +460,56 @@ func mobileEnsureStateLoaded() {
 	}
 	mobileDigitalEmployeeTasks.Lock()
 	if state.DigitalEmployeeTasks != nil {
+		for id, rec := range state.DigitalEmployeeTasks {
+			if mobileNormalizePersistedTenantID(&rec.TenantID) {
+				stateChanged = true
+			}
+			state.DigitalEmployeeTasks[id] = rec
+		}
 		mobileDigitalEmployeeTasks.tasks = state.DigitalEmployeeTasks
 	}
 	mobileDigitalEmployeeTasks.Unlock()
 	mobilePushLoadFromState(state.PushDevices, state.PushPending)
 	if state.ServerProfiles != nil {
+		for id, rec := range state.ServerProfiles {
+			if mobileNormalizePersistedTenantID(&rec.TenantID) {
+				stateChanged = true
+			}
+			state.ServerProfiles[id] = rec
+		}
 		mobileServerProfiles.Lock()
 		mobileServerProfiles.profiles = state.ServerProfiles
 		mobileServerProfiles.Unlock()
 	}
 	if state.SSHVaultSecrets != nil {
+		for id, rec := range state.SSHVaultSecrets {
+			if mobileNormalizePersistedTenantID(&rec.TenantID) {
+				stateChanged = true
+			}
+			state.SSHVaultSecrets[id] = rec
+		}
 		mobileSSHVault.Lock()
 		mobileSSHVault.secrets = state.SSHVaultSecrets
 		mobileSSHVault.Unlock()
 	}
+	if stateChanged {
+		mobilePersistState()
+	}
+}
+
+// mobileNormalizePersistedTenantID upgrades legacy state records whose tenant
+// predated tenant-aware authorization. Blank values are intentionally scoped
+// to the default tenant, never treated as shared across tenants.
+func mobileNormalizePersistedTenantID(tenantID *string) bool {
+	if tenantID == nil {
+		return false
+	}
+	normalized := mobileMeetingRecordingTenantID(*tenantID)
+	if normalized == *tenantID {
+		return false
+	}
+	*tenantID = normalized
+	return true
 }
 
 func mobilePersistState() {
@@ -1208,7 +1264,7 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 		"limits": map[string]any{
 			"max_upload_bytes":            caps.MaxUploadBytes,
 			"document_quota_bytes":        caps.DocumentQuotaBytes,
-			"document_quota_used_bytes":   mobileDocumentQuotaUsedBytes(userID),
+			"document_quota_used_bytes":   mobileDocumentQuotaUsedBytes(userID, principal.TenantID),
 			"max_export_jobs":             caps.MaxExportJobs,
 			"hub_file_download_max_bytes": caps.HubFileDownloadMaxBytes,
 		},
@@ -2411,7 +2467,7 @@ func mobileDocumentUploadPayloadTracked(record mobileDocumentUploadRecord) (map[
 	}
 	draftHasOriginal := false
 	if record.DraftID != "" {
-		if draft, ok := mobileDocuments.drafts[record.DraftID]; ok {
+		if draft, ok := mobileDocuments.drafts[record.DraftID]; ok && draft.OwnerID == record.OwnerID && mobileMeetingRecordingTenantMatches(record.TenantID, draft.TenantID) {
 			// Single repair pass — avoid re-statting the same draft for source availability.
 			if mobileDraftRepairSourceMeta(&draft) {
 				mobileDocuments.drafts[record.DraftID] = draft
@@ -2458,7 +2514,7 @@ func mobileUploadDraftOriginal(record mobileDocumentUploadRecord) (draftPtr *mob
 		return nil, false
 	}
 	draft, ok := mobileDocuments.drafts[draftID]
-	if !ok || draft.OwnerID != record.OwnerID {
+	if !ok || draft.OwnerID != record.OwnerID || !mobileMeetingRecordingTenantMatches(record.TenantID, draft.TenantID) {
 		return nil, false
 	}
 	if mobileDraftRepairSourceMeta(&draft) {
@@ -2489,7 +2545,7 @@ func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time
 		return record, false
 	}
 	draft, ok := mobileDocuments.drafts[record.DraftID]
-	if !ok || draft.OwnerID != record.OwnerID {
+	if !ok || draft.OwnerID != record.OwnerID || !mobileMeetingRecordingTenantMatches(record.TenantID, draft.TenantID) {
 		return record, false
 	}
 	// Drop ghost original meta before re-attach / release decisions.
@@ -2802,7 +2858,7 @@ func mobileLookupOwnedDraft(principal *auth.ViewerPrincipal, documentID string) 
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
 	draft, ok := mobileDocuments.drafts[id]
-	if !ok || draft.OwnerID != ownerID {
+	if !ok || draft.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, draft.TenantID) {
 		return mobileDocumentDraftRecord{}, false
 	}
 	return draft, true
@@ -4230,6 +4286,7 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 		record := mobileDocumentDraftRecord{
 			ID:        draftID,
 			OwnerID:   principal.UserID,
+			TenantID:  principal.TenantID,
 			Title:     title,
 			Template:  template,
 			Markdown:  markdown,
@@ -4298,7 +4355,7 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 		mobileDocuments.Lock()
 		prev, okPrev := mobileDocuments.drafts[draftID]
 		mobileDocuments.Unlock()
-		if !okPrev || prev.OwnerID != ownerID {
+		if !okPrev || prev.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, prev.TenantID) {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
@@ -4312,14 +4369,14 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 		now := time.Now().UTC()
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
-		if ok && record.OwnerID == ownerID {
+		if ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			record.Title = title
 			record.Markdown = markdown
 			record.UpdatedAt = now
 			mobileDocuments.drafts[draftID] = record
 		}
 		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != ownerID {
+		if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
@@ -4349,9 +4406,13 @@ func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity 
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer identity missing")
 		return
 	}
+	if mobileMeetingRecordingUsesResultDraft(ownerID, principal.TenantID, draftID) {
+		writeError(w, http.StatusConflict, "MEETING_RESULT_MANAGED_BY_RECORDING", "delete the meeting recording to remove its generated transcript or meeting minutes")
+		return
+	}
 	mobileDocuments.Lock()
 	record, ok := mobileDocuments.drafts[draftID]
-	if !ok || record.OwnerID != ownerID {
+	if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 		// Idempotent: missing draft is treated as already deleted so clients can
 		// clear local cache without a hard failure after Hub restart.
 		mobileDocuments.Unlock()
@@ -4366,7 +4427,7 @@ func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity 
 	delete(mobileDocuments.drafts, draftID)
 	// Drop related upload tasks that pointed at this draft (free quota/source).
 	for taskID, upload := range mobileDocuments.uploads {
-		if upload.OwnerID == ownerID && upload.DraftID == draftID {
+		if upload.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, upload.TenantID) && upload.DraftID == draftID {
 			mobileDeleteDocumentBlob(upload.SourcePath)
 			delete(mobileDocuments.uploads, taskID)
 		}
@@ -4379,6 +4440,24 @@ func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity 
 		"status":   "draft_deleted",
 		"draft_id": draftID,
 	})
+}
+
+// mobileMeetingRecordingUsesResultDraft keeps derived transcript and minutes
+// documents attached to their recording lifecycle. Removing either document
+// directly would leave a completed recording with a dangling result link and
+// make the result impossible to restore once raw audio has been deleted.
+func mobileMeetingRecordingUsesResultDraft(ownerID, tenantID, draftID string) bool {
+	mobileMeetingRecordings.Lock()
+	defer mobileMeetingRecordings.Unlock()
+	for _, recording := range mobileMeetingRecordings.items {
+		if recording.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, recording.TenantID) {
+			continue
+		}
+		if draftID == recording.TranscriptDraftID || draftID == recording.MinutesDraftID {
+			return true
+		}
+	}
+	return false
 }
 
 // MobileDocumentProcessHandler applies lightweight emergency document actions.
@@ -4418,7 +4497,7 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 		}
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
-		ownerOK := ok && record.OwnerID == ownerID
+		ownerOK := ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID)
 		markdownSnapshot := ""
 		if ownerOK {
 			markdownSnapshot = record.Markdown
@@ -4448,13 +4527,13 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 		now := time.Now().UTC()
 		mobileDocuments.Lock()
 		record, ok = mobileDocuments.drafts[draftID]
-		if ok && record.OwnerID == ownerID {
+		if ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			record.Markdown = mobileProcessDocumentMarkdown(action, record.Markdown)
 			record.UpdatedAt = now
 			mobileDocuments.drafts[draftID] = record
 		}
 		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != ownerID {
+		if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
@@ -4665,7 +4744,7 @@ func MobileDocumentExportHandler(identity *auth.IdentityService) http.HandlerFun
 		mobileDocuments.Lock()
 		draft, ok := mobileDocuments.drafts[draftID]
 		mobileDocuments.Unlock()
-		if !ok || draft.OwnerID != principal.UserID {
+		if !ok || draft.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, draft.TenantID) {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
@@ -4682,6 +4761,7 @@ func MobileDocumentExportHandler(identity *auth.IdentityService) http.HandlerFun
 			JobID:     fmt.Sprintf("mobexp_%d", now.UnixNano()),
 			DraftID:   draftID,
 			OwnerID:   principal.UserID,
+			TenantID:  principal.TenantID,
 			Format:    format,
 			Status:    "queued",
 			Message:   "导出任务已提交，等待官方服务生成文件。",
@@ -4713,7 +4793,7 @@ func MobileDocumentExportStatusHandler(identity *auth.IdentityService) http.Hand
 		mobileDocuments.Lock()
 		job, ok := mobileDocuments.exports[jobID]
 		mobileDocuments.Unlock()
-		if !ok || job.OwnerID != principal.UserID {
+		if !ok || job.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, job.TenantID) {
 			writeError(w, http.StatusNotFound, "EXPORT_NOT_FOUND", "export job not found")
 			return
 		}
@@ -4735,7 +4815,7 @@ func MobileDocumentExportDownloadHandler(identity *auth.IdentityService) http.Ha
 		mobileDocuments.Lock()
 		job, ok := mobileDocuments.exports[jobID]
 		mobileDocuments.Unlock()
-		if !ok || job.OwnerID != principal.UserID {
+		if !ok || job.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, job.TenantID) {
 			writeError(w, http.StatusNotFound, "EXPORT_NOT_FOUND", "export job not found")
 			return
 		}
@@ -4746,7 +4826,7 @@ func MobileDocumentExportDownloadHandler(identity *auth.IdentityService) http.Ha
 		mobileDocuments.Lock()
 		draft, hasDraft := mobileDocuments.drafts[job.DraftID]
 		mobileDocuments.Unlock()
-		if !hasDraft || draft.OwnerID != principal.UserID {
+		if !hasDraft || draft.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, draft.TenantID) {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
@@ -5970,6 +6050,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		record := mobileDocumentUploadRecord{
 			TaskID:      taskID,
 			OwnerID:     principal.UserID,
+			TenantID:    principal.TenantID,
 			Filename:    name,
 			ContentType: strings.TrimSpace(header.Header.Get("Content-Type")),
 			Status:      "queued",
@@ -5994,6 +6075,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				draft := mobileDocumentDraftRecord{
 					ID:        draftID,
 					OwnerID:   principal.UserID,
+					TenantID:  principal.TenantID,
 					Title:     strings.TrimSpace(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))),
 					Template:  "report",
 					Markdown:  markdown,
@@ -6020,6 +6102,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			draft := mobileDocumentDraftRecord{
 				ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
 				OwnerID:   principal.UserID,
+				TenantID:  principal.TenantID,
 				Title:     mobileUploadTitle(name),
 				Template:  "report",
 				Markdown:  mobileDraftOriginalOnlyMarkdown(name, body),
@@ -6039,6 +6122,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			draft := mobileDocumentDraftRecord{
 				ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
 				OwnerID:   principal.UserID,
+				TenantID:  principal.TenantID,
 				Title:     mobileUploadTitle(name),
 				Template:  "report",
 				Markdown:  mobileDraftMarkdownFromImage(name, body),
@@ -6059,6 +6143,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		draft := mobileDocumentDraftRecord{
 			ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
 			OwnerID:   principal.UserID,
+			TenantID:  principal.TenantID,
 			Title:     mobileUploadTitle(name),
 			Template:  "report",
 			Markdown:  mobileDraftOriginalOnlyMarkdown(name, body),
@@ -6103,7 +6188,7 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.uploads[taskID]
 		stateChanged := false
-		if ok && record.OwnerID == ownerID {
+		if ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			// Mobile polls status even when no worker is claiming. Reclaim this
 			// task if the worker claim timed out so the UI leaves in_progress.
 			if next, reclaimed := mobileReclaimStaleDocumentUploadIfNeeded(record, now); reclaimed {
@@ -6120,7 +6205,7 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 		}
 		payload, repaired := mobileDocumentUploadPayloadTracked(record)
 		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != ownerID {
+		if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
 			return
 		}
@@ -6193,7 +6278,7 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 		if repaired {
 			mobilePersistState()
 		}
-		if !exists || owner != principal.UserID || !hasSrc {
+		if !exists || owner != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) || !hasSrc {
 			writeError(w, http.StatusNotFound, "UPLOAD_SOURCE_NOT_FOUND", "upload source not found")
 			return
 		}
@@ -6223,7 +6308,7 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 						}
 					}
 					if draftID := strings.TrimSpace(rec.DraftID); draftID != "" && failedPath != "" {
-						if draft, ok := mobileDocuments.drafts[draftID]; ok && draft.OwnerID == owner && len(draft.SourceBytes) == 0 {
+						if draft, ok := mobileDocuments.drafts[draftID]; ok && draft.OwnerID == owner && mobileMeetingRecordingTenantMatches(record.TenantID, draft.TenantID) && len(draft.SourceBytes) == 0 {
 							if strings.TrimSpace(draft.SourcePath) == failedPath {
 								draft.SourcePath = ""
 								draft.SourceSize = 0
@@ -6280,7 +6365,7 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 		// Opportunistic: free upload-side originals for terminal tasks (migration
 		// for records created before release-on-ready).
 		for taskID, record := range mobileDocuments.uploads {
-			if record.OwnerID != principal.UserID {
+			if record.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 				continue
 			}
 			if record.Status != "ready" && record.Status != "failed" {
@@ -6292,7 +6377,7 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 			}
 		}
 		for taskID, record := range mobileDocuments.uploads {
-			if record.OwnerID != principal.UserID {
+			if record.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 				continue
 			}
 			if record.Status != "queued" && record.Status != "needs_ocr" {
@@ -6419,7 +6504,7 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 		now := time.Now().UTC()
 		mobileDocuments.Lock()
 		record, exists := mobileDocuments.uploads[taskID]
-		if exists && record.OwnerID == principal.UserID {
+		if exists && record.OwnerID == principal.UserID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			if strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID {
 				mobileDocuments.Unlock()
 				writeError(w, http.StatusForbidden, "UPLOAD_CLAIMED_BY_OTHER_WORKER", "upload task is claimed by another worker")
@@ -6443,6 +6528,7 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 					draft = mobileDocumentDraftRecord{
 						ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
 						OwnerID:   record.OwnerID,
+						TenantID:  record.TenantID,
 						Title:     mobileUploadTitle(record.Filename),
 						Template:  "report",
 						Markdown:  markdown,
@@ -6474,7 +6560,7 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 		}
 		payload := mobileDocumentUploadPayload(record)
 		mobileDocuments.Unlock()
-		if !exists || record.OwnerID != principal.UserID {
+		if !exists || record.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
 			return
 		}
@@ -7996,6 +8082,7 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 			TaskID:     fmt.Sprintf("mobve_%d", now.UnixNano()),
 			EmployeeID: employeeID,
 			OwnerID:    principal.UserID,
+			TenantID:   principal.TenantID,
 			Prompt:     prompt,
 			TaskType:   taskType,
 			Context:    taskContext,
@@ -8070,6 +8157,9 @@ func mobileDigitalEmployeeTaskClaim(identity *auth.IdentityService, requirePathE
 		// can host so multi-task mobile queues stay FIFO-fair.
 		var claimID string
 		for taskID, record := range mobileDigitalEmployeeTasks.tasks {
+			if !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
+				continue
+			}
 			if record.Status != "queued" {
 				continue
 			}
@@ -8127,6 +8217,9 @@ func mobileWorkerCanClaimDigitalEmployeeTask(
 	principal mobileDigitalEmployeeWorkerPrincipal,
 	registry []digitalEmployeeEntry,
 ) bool {
+	if !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
+		return false
+	}
 	employeeID := strings.TrimSpace(record.EmployeeID)
 	if employeeID == "" {
 		return false
@@ -8261,6 +8354,11 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
+		if !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
+			mobileDigitalEmployeeTasks.Unlock()
+			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
+			return
+		}
 		// Terminal tasks are immutable: reject progress and cross-terminal flips
 		// (e.g. late failed after done) so racing worker PATCHes cannot reopen work.
 		if record.Status == "done" || record.Status == "failed" {
@@ -8354,7 +8452,7 @@ func MobileDigitalEmployeeTaskStatusHandler(identity *auth.IdentityService) http
 		mobileDigitalEmployeeTasks.Lock()
 		record, ok := mobileDigitalEmployeeTasks.tasks[taskID]
 		mobileDigitalEmployeeTasks.Unlock()
-		if !ok || record.OwnerID != principal.UserID {
+		if !ok || record.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}

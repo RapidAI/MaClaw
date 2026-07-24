@@ -103,6 +103,101 @@ func TestRemoteBuildToolsIncludesSpawnOnRoot(t *testing.T) {
 	}
 }
 
+func TestRemoteInquiryToolSurfaceDoesNotExposeLocalExtensions(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{readOnlyInquiry: true, projectDir: "/tmp/app", workDir: "/tmp/app"},
+		task:  "which file implements authentication?",
+	}
+	prompt := cb.BuildSystemPrompt(cb.task, true)
+	if strings.Contains(prompt, "manage_skill") || strings.Contains(prompt, "call_mcp_tool") {
+		t.Fatalf("repository inquiry must not advertise unavailable local extensions: %q", prompt)
+	}
+	for _, name := range codingSubAgentToolDefinitionNamesForTest(cb.BuildTools(cb.task)) {
+		if name == "ssh_write_file" || name == "ssh_edit_file" || name == "manage_skill" || name == "call_mcp_tool" || name == "todo_write" {
+			t.Fatalf("repository inquiry exposed a mutating or unavailable tool: %s", name)
+		}
+	}
+}
+
+func TestRemoteOperationalTaskUsesFocusedNonMutatingSurface(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{operationalRequest: true, projectDir: "/tmp/app", workDir: "/tmp/app"},
+		task:  "run the app",
+	}
+	prompt := cb.BuildSystemPrompt(cb.task, true)
+	if !strings.Contains(prompt, "Remote operational task") {
+		t.Fatalf("expected operational prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Normal build output") {
+		t.Fatalf("operational prompt must allow normal build output, got %q", prompt)
+	}
+	for _, name := range codingSubAgentToolDefinitionNamesForTest(cb.BuildTools(cb.task)) {
+		if name == "ssh_write_file" || name == "ssh_edit_file" || name == codingSubAgentSpawnToolName || name == "todo_write" {
+			t.Fatalf("operational request exposed a mutating or planning tool: %s", name)
+		}
+	}
+	if !isRemoteCodingOperationalTool("ssh_bash") || isRemoteCodingOperationalTool("ssh_write_file") {
+		t.Fatal("unexpected remote operational tool policy")
+	}
+	if rejectCodingOperationalShellCommand("npm run build") != "" {
+		t.Fatal("build should stay available for an operational request")
+	}
+	if rejectCodingOperationalShellCommand("npm install left-pad") == "" {
+		t.Fatal("dependency installation must not be treated as a run/build request")
+	}
+	for _, command := range []string{
+		"go generate ./...",
+		"cargo fix",
+		"cargo clippy --fix",
+		"prettier --write src/app.ts",
+		"protoc --go_out=. api.proto",
+		"python manage.py makemigrations",
+		"sh -c 'echo changed > source.go'",
+		"python -c 'from pathlib import Path; Path(\"source.py\").write_text(\"changed\")'",
+		"node -e 'require(\"fs\").writeFileSync(\"source.js\", \"changed\")'",
+		"npm run build $(touch source.go)",
+	} {
+		if rejectCodingOperationalShellCommand(command) == "" {
+			t.Fatalf("source-mutating operational command was allowed: %q", command)
+		}
+	}
+}
+
+func TestRemoteOriginalRequestKindSurvivesExpandedPlanStep(t *testing.T) {
+	// A plan-expanded prompt may be long and contain implementation words, but
+	// it must not overrule the user's original direct run/build request.
+	readOnly, operational := resolveRemoteCodingRequestFlags(codingRequestOperational, "[Plan step T1/3] implement and verify everything")
+	if readOnly || !operational {
+		t.Fatal("original operational kind must survive plan-step expansion")
+	}
+}
+
+func TestRemoteSourcePreviewOnlyEnabledForImplementation(t *testing.T) {
+	if !remoteCodingShouldEnableSourcePreview(codingRequestImplementation) {
+		t.Fatal("implementation should enable remote source preview")
+	}
+	for _, kind := range []codingRequestKind{codingRequestInquiry, codingRequestOperational, ""} {
+		if remoteCodingShouldEnableSourcePreview(kind) {
+			t.Fatalf("request kind %q must not enable remote source preview", kind)
+		}
+	}
+}
+
+func TestRemoteOperationalQualityRequiresLaunchOrBuildEvidence(t *testing.T) {
+	passed, summary, issues := summarizeRemoteOperationalQuality([]CodingSubAgentCommandResult{{
+		Command: "npm run build", Succeeded: true,
+	}}, 1)
+	if passed != codingSubAgentQualityPassed || issues != 0 || !strings.Contains(summary, "launch/build command evidence") {
+		t.Fatalf("build evidence=%q %q %d", passed, summary, issues)
+	}
+	passed, summary, issues = summarizeRemoteOperationalQuality([]CodingSubAgentCommandResult{{
+		Command: "ls", Succeeded: true,
+	}}, 1)
+	if passed != codingSubAgentQualityFailed || issues != 1 || !strings.Contains(summary, "no launch/build command") {
+		t.Fatalf("listing-only evidence=%q %q %d", passed, summary, issues)
+	}
+}
+
 func TestRemoteBuildToolsExplorerFiltersWrites(t *testing.T) {
 	cb := &remoteCodingCallbacks{
 		agent: &RemoteCodingSubAgent{nestDepth: 1, role: codingRoleExplorer, projectDir: "/tmp/app", workDir: "/tmp/app"},

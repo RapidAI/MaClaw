@@ -1235,8 +1235,6 @@ describe('AIAssistantPanel property tests', () => {
             'Mobile documents (shared Hub library)',
             'Buy service redemption cards',
             'Search tasks',
-            'Voice readback OFF - click to enable',
-            'Switch to dark mode',
             'Knowledge Base',
             'Refresh news',
             'New conversation',

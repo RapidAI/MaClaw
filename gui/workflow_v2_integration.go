@@ -459,7 +459,7 @@ func containsWordBoundary(text, keyword string) bool {
 }
 
 func isWordBoundaryChar(r rune) bool {
-	return r == ' ' || r == '\t' || r == '\n' || r == ',' || r == '.' ||
+	return r == ' ' || r == '	' || r == '\n' || r == ',' || r == '.' ||
 		r == '!' || r == '?' || r == ';' || r == ':' || r == '"' || r == '\'' ||
 		r == '(' || r == ')' || r == '[' || r == ']' || r == '{' || r == '}' ||
 		r == '/' || r == '-' || r == '_' || unicode.IsPunct(r) || unicode.IsSpace(r) ||
@@ -2473,7 +2473,6 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 	return h.finalizeCodingImplementation(userID, state, cp.Tasks, merged, report, cancelled, true, cp, onProgress)
 }
 
-
 // buildCodingRemoteTaskPrompt builds the remote SubAgent task description and
 // requirements/design context (shared by first-run and checkpoint retry paths).
 func buildCodingRemoteTaskPrompt(task *v2.TaskItem, reqCtx, designCtx string) (desc, taskContext string) {
@@ -2499,7 +2498,6 @@ func buildCodingRemoteTaskPrompt(task *v2.TaskItem, reqCtx, designCtx string) (d
 	}
 	return desc, strings.Join(parts, "\n\n")
 }
-
 
 // autoRetryFailedCodingTasks runs one automatic failed-only subset pass shared by
 // local and remote first-run coding execution. DependsOn is stripped so TaskRunner
@@ -2859,7 +2857,7 @@ func workflowEventProjectPath(state *v2.WorkflowState) string {
 // runCodingTemplateSubAgent executes the pure-coding workbench turn.
 // Complex requests may be auto-planned into multiple ordered TaskItems and
 // executed sequentially via TaskRunner; simple requests stay single-task.
-// Plan mode "approve" pauses after planning until /plan approve.
+// Complex plans pause for confirmation in both adaptive and plan-first modes.
 func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPath string, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
 	ensureLoopCtxUserID(loopCtx, userID)
 	// Register after cancel check, before planning, so guide-launch during plan
@@ -2892,6 +2890,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	var planMarkdown string
 	var planned bool
 	recordUserText := userText
+	var decision codingRequestDecision
 	if approved, ok := h.takeStickyApprovedCodingPlan(userID); ok {
 		tasks = approved.Tasks
 		planMarkdown = approved.Markdown
@@ -2901,6 +2900,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 		// Strip approve marker from display text.
 		userText = recordUserText
+		decision = approvedCodingPlanDecision()
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("执行已批准计划（%d 步）…", len(tasks)))
 		}
@@ -2915,15 +2915,19 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			userText = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(userText), codingPlanApproveExecuteMarker))
 			recordUserText = userText
 		}
+		decision = h.resolveCodingRequestDecision(recordUserText)
 		hooks := loadCodingWorkbenchHooks(projectPath)
 		if prePlan := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_plan"); prePlan.Report != "" {
 			log.Printf("[coding-hooks] pre_plan: %s", truncateRunesV2(prePlan.Report, 200))
 		}
 		// Note: pre_plan fail_on_error does not abort planning (user still needs a plan);
 		// step-level fail_on_error is enforced on pre_step / pre_verify.
-		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasks(userID, userText, projectPath, sessionMem, onProgress, onToken)
-		// Approve mode: resolve already stored pending; return without executing.
-		if planned && normalizeCodingPlanMode(sessionMem.PlanMode) == codingPlanModeApprove {
+		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasksWithDecision(userID, userText, projectPath, sessionMem, decision, onProgress, onToken)
+		// A complex plan is a confirmation boundary in both local and remote
+		// workbenches.  The planner has already persisted it; return the same
+		// actionable prompt regardless of whether the user selected the default
+		// adaptive mode or the explicit plan-first preference.
+		if planned {
 			if _, hasPending := h.loadStickyPendingCodingPlan(userID); hasPending {
 				text := formatPendingPlanApprovalText(planMarkdown, len(tasks))
 				if onToken != nil {
@@ -2946,12 +2950,17 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
 		planned = false
 	}
+	requestKind := decision.Kind
+	inquiry := requestKind == codingRequestInquiry
+	sourcePreview := requestKind == codingRequestImplementation
 
 	log.Printf("[workflow-v2] pure coding: user=%s project=%s task=%q sticky_turn=%d prev_outputs=%d planned=%v steps=%d",
 		userID, projectPath, truncateRunesV2(userText, 80), sessionMem.TurnCount, len(prevOutputs), planned, len(tasks))
 
 	if onProgress != nil {
-		if planned {
+		if inquiry {
+			onProgress("仓库分析：正在只读检查")
+		} else if planned {
 			onProgress(fmt.Sprintf("全功能编程工作台：按计划执行 %d 步", len(tasks)))
 		} else if sessionMem.TurnCount > 0 {
 			onProgress(fmt.Sprintf("全功能编程工作台：继续第 %d 轮执行", sessionMem.TurnCount+1))
@@ -2964,12 +2973,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
 	worktreeMode := h.getStickyCodingWorktreeMode(userID)
-	// One preview session for the whole pure-coding turn so multi-step writes
-	// accumulate in the right-hand source panel.
-	// Frontend auto_open session_start keeps existing tabs (does not wipe the map).
-	// Preview content is filled by: arm restore (sticky), mid-turn write_file events,
-	// and end-of-turn emitCodingWorkbenchSourcePreview — no turn-start full re-read
-	// (avoids double disk I/O and forceOpen race with session_start ordering).
+	// Start a fresh source-preview session for each turn. Inquiry and operational
+	// sessions use the non-auto-open variant: both may read files while answering
+	// or locating an artifact, but neither should look like a source change.
 	codeSessionID := newCodingSubAgentCodeSessionID("coding-workbench", userID)
 	if loopCtx != nil {
 		loopCtx.codeSessionID = codeSessionID
@@ -2977,8 +2983,15 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// Route with tab project path (managed task dir), not exec/working_dir.
 	// Frontend shouldAcceptCodeEventForProject filters on activeTab.projectPath.
 	previewRoutePath := codePreviewRouteProjectPath(userID, projectPath)
-	emitCodingSubAgentCodeSessionStart(h.app, codeSessionID, previewRoutePath)
-	defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, previewRoutePath)
+	if !sourcePreview {
+		if h.app != nil && h.app.codeEventEmitter != nil {
+			h.app.codeEventEmitter.EmitSessionStart(codeSessionID, previewRoutePath)
+		}
+		defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, previewRoutePath)
+	} else {
+		emitCodingSubAgentCodeSessionStart(h.app, codeSessionID, previewRoutePath)
+		defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, previewRoutePath)
+	}
 	// Multi-step plans already encode explore→implement→verify; TDD doubling is too heavy.
 	// Parallel waves: explore-only steps with softened deps can fan out (MaxParallel=3).
 	// Write steps may isolate into git worktrees when mode is auto/always.
@@ -3033,14 +3046,17 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			))
 		}
 
-		// Optional git worktree isolation for write-capable steps.
+		// Worktree isolation is only for implementation turns. A simple local
+		// run/build/demo request must execute in the selected project directly:
+		// isolating it can hide generated build output from the user and is an
+		// unnecessary source of Git/worktree side effects.
 		stepProject := config.ProjectPath
 		if stepProject == "" {
 			stepProject = projectPath
 		}
 		var wt *codingWorkbenchWorktree
 		waveSize := config.WaveSize
-		useWT := shouldUseCodingWorktree(worktreeMode, planned, t.Title, t.Description, maxParallel, waveSize, t.DependsOn)
+		useWT := codingWorkbenchShouldUseWorktree(requestKind, worktreeMode, planned, t.Title, t.Description, maxParallel, waveSize, t.DependsOn)
 		if useWT {
 			created, wtErr := createCodingWorkbenchWorktree(projectPath, t.Index, t.Title)
 			if wtErr != nil {
@@ -3066,6 +3082,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			Description: t.Description,
 			Files:       t.Files,
 			DependsOn:   t.DependsOn,
+			RequestKind: requestKind,
 		}
 		var fn subAgentTaskFunc
 		if runTaskWithSubAgent != nil {
@@ -3127,7 +3144,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		if v1Result != nil {
 			// Push step file changes into the right-hand preview immediately
 			// (after worktree path remap so events target the main project).
-			emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, v1Result.FilesModified, v1Result.FilesCreated, previewRoutePath)
+			if sourcePreview {
+				emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, v1Result.FilesModified, v1Result.FilesCreated, previewRoutePath)
+			}
 			usageMu.Lock()
 			lastCodingResult = v1Result
 			totalToolCalls += v1Result.ToolCalls
@@ -3262,8 +3281,8 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// Single-task turns used to always enable TDD. That is correct for
 	// "fix the login bug" but wrong for operational pings like
 	// "运行下生成的游戏" — those must not enter red/green test generation.
-	tddMode := shouldEnableCodingTDD(recordUserText, planned, len(tasks))
-	operational := looksLikeCodingOperationalRequest(recordUserText)
+	tddMode := false
+	operational := requestKind == codingRequestOperational
 	if tddMode {
 		log.Printf("[workflow-v2] pure coding: TDD enabled for single implement task user=%s", userID)
 	}
@@ -3350,7 +3369,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		previewCreated = lastCodingResult.FilesCreated
 	}
 	stickyFiles := uniqueSortedSubAgentStrings(append(append([]string{}, sessionMem.FilesModified...), sessionMem.FilesCreated...))
-	emittedPreview := emitCodingWorkbenchSourcePreview(h.app, codeSessionID, projectPath, previewModified, previewCreated, stickyFiles, true, true, previewRoutePath)
+	emittedPreview := []string(nil)
+	if sourcePreview {
+		emittedPreview = emitCodingWorkbenchSourcePreview(h.app, codeSessionID, projectPath, previewModified, previewCreated, stickyFiles, true, true, previewRoutePath)
+	}
 	h.recordStickyLocalCodingTurn(userID, projectPath, recordUserText, lastCodingResult)
 	// Bash-only turns: no tool audit and no prior sticky → end-of-turn used a
 	// project scan. Persist those paths so re-arm can restore the preview.
@@ -3382,10 +3404,13 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 
 	// Populate TraceEventCount so /goal continuation does not false-pause after
 	// two pure-coding turns (no-tool suppression uses TraceEventCount as proxy).
-	header := codingWorkbenchRunHeader(planned, len(tasks), runResults)
+	header := codingWorkbenchRunHeader(requestKind, planned, len(tasks), runResults)
 	memAfter := h.getStickyCodingWorkbenchMemory(userID)
 	costLine := formatCodingSessionCostLine(memAfter)
 	body := fmt.Sprintf("%s\n项目路径：%s\n\n%s", header, projectPath, report)
+	if inquiry {
+		body = fmt.Sprintf("%s\n项目路径：%s\n只读检查：未修改任何文件。\n\n%s", header, projectPath, report)
+	}
 	if costLine != "" {
 		body = body + "\n\n" + costLine
 	}
@@ -3536,9 +3561,15 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	var reconnectErr string
 	remoteCtx, reconnectErr = h.recoverStickyRemoteCodingSSHSession(userID, remoteCtx)
 	if reconnectErr != "" {
+		if _, restored := h.restoreApprovedCodingPlanAsPending(userID); restored {
+			return &IMAgentResponse{Text: "远程连接暂不可用，已将待执行计划恢复为待确认状态。请重连后再次点击“开始实施”。\n\n" + reconnectErr}
+		}
 		return &IMAgentResponse{Text: reconnectErr}
 	}
 	if strings.TrimSpace(remoteCtx.SessionID) == "" {
+		if _, restored := h.restoreApprovedCodingPlanAsPending(userID); restored {
+			return &IMAgentResponse{Text: "远程 SSH 会话不可用，已将待执行计划恢复为待确认状态。请重连后再次点击“开始实施”。"}
+		}
 		return &IMAgentResponse{Text: "远程编程无法启动：缺少 SSH 会话。请先连接远程服务器。"}
 	}
 	if remoteCtx.ProjectDir == "" {
@@ -3576,6 +3607,16 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	var planMarkdown string
 	var planned bool
 	recordUserText := userText
+	decisionForRecord := func() codingRequestDecision {
+		if decision, ok := normalizeCodingRequestDecision(codingRequestDecision{
+			Kind:      remoteCtx.RequestKind,
+			NeedsPlan: remoteCtx.RequestNeedsPlan,
+		}); ok {
+			return decision
+		}
+		return h.resolveCodingRequestDecision(recordUserText)
+	}
+	var decision codingRequestDecision
 	if approved, ok := h.takeStickyApprovedCodingPlan(userID); ok {
 		tasks = approved.Tasks
 		planMarkdown = approved.Markdown
@@ -3584,6 +3625,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			recordUserText = s
 			userText = s
 		}
+		decision = approvedCodingPlanDecision()
 		h.persistCodingWorkbenchPlans(userID, planMarkdown, "")
 		h.setStickyCodingStepStatuses(userID, codingWorkbenchStepsFromTasks(tasks, codingStepPending))
 	} else {
@@ -3591,11 +3633,12 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			userText = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(userText), codingPlanApproveExecuteMarker))
 			recordUserText = userText
 		}
+		decision = decisionForRecord()
 		if prePlan := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_plan"); prePlan.Report != "" {
 			log.Printf("[coding-hooks] remote pre_plan: %s", truncateRunesV2(prePlan.Report, 200))
 		}
-		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasks(userID, userText, remoteCtx.ProjectDir, sessionMem, onProgress, onToken)
-		if planned && normalizeCodingPlanMode(sessionMem.PlanMode) == codingPlanModeApprove {
+		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasksWithDecision(userID, userText, remoteCtx.ProjectDir, sessionMem, decision, onProgress, onToken)
+		if planned {
 			if _, hasPending := h.loadStickyPendingCodingPlan(userID); hasPending {
 				text := formatPendingPlanApprovalText(planMarkdown, len(tasks))
 				return &IMAgentResponse{Text: text, Actions: codingPlanApproveActions()}
@@ -3609,6 +3652,12 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
 		planned = false
 	}
+	// Preserve the kind of the user's actual turn for the remote subagent. The
+	// expanded per-step prompt may include a prior session plan, which must not
+	// make a short remote "run it" follow-up look like implementation work.
+	// The normalized root decision is canonical for every remote plan step.
+	remoteCtx.RequestKind = decision.Kind
+	remoteCtx.RequestNeedsPlan = decision.NeedsPlan
 
 	buildRemoteTaskText := func(step *v2.TaskItem, stepIdx, stepTotal int) string {
 		return buildRemoteCodingPlanStepText(
@@ -3697,11 +3746,15 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}
 		taskText := buildRemoteTaskText(step, stepIdx, len(tasks))
 
-		// Remote write isolation (temp dir copy) when worktree mode allows.
+		// Remote write isolation is only for implementation turns. A simple
+		// run/build/demo task must execute in the chosen project directly: an
+		// isolated copy would add SSH writes and can hide its generated build
+		// output from the user without improving safety.
 		stepRemoteCtx := remoteCtx
 		var isolate *remoteCodingIsolate
 		wtMode := h.getStickyCodingWorktreeMode(userID)
-		if shouldUseRemoteCodingIsolate(wtMode, planned, step.Title, step.Description, step.DependsOn) {
+		if remoteCtx.RequestKind == codingRequestImplementation &&
+			shouldUseRemoteCodingIsolate(wtMode, planned, step.Title, step.Description, step.DependsOn) {
 			allowCopy := normalizeCodingWorktreeMode(wtMode) == codingWorktreeModeAlways
 			iso, isoErr := createRemoteCodingIsolate(h, remoteCtx.SessionID, remoteCtx.ProjectDir, step.Index, allowCopy)
 			if isoErr != nil {
@@ -3961,7 +4014,10 @@ func (h *IMMessageHandler) recoverStickyRemoteCodingSSHSession(userID string, re
 	if h == nil || strings.TrimSpace(remoteCtx.SessionID) == "" {
 		return remoteCtx, ""
 	}
-	if _, ok := h.ensureSSHManager().Get(remoteCtx.SessionID); ok {
+	// A managed record can outlive its underlying connection. Treat terminal
+	// states like a missing session so the normal recovery path can create a
+	// fresh connection rather than sending the approved plan into a dead PTY.
+	if h.sshSessionAlive(remoteCtx.SessionID) {
 		return remoteCtx, ""
 	}
 
@@ -4040,7 +4096,11 @@ var remoteCodingTemplateRunner remoteCodingTemplateRunnerFunc
 
 func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, userText string, onProgress func(string), onToken func(string)) *RemoteCodingSubAgentResult {
 	subAgent := NewRemoteCodingSubAgent(h, cfg, httpClient, remoteCtx.SessionID, remoteCtx.WorkDir, remoteCtx.ProjectDir, loopCtx)
-	subAgent.SetSourcePreviewEnabled(true)
+	subAgent.requestKind = remoteCtx.RequestKind
+	// The preview is a code-change affordance. Keep it out of simple remote
+	// inquiry/run/build turns: they may read files to locate an artifact, but
+	// force-opening a diff-like panel would incorrectly suggest source changes.
+	subAgent.SetSourcePreviewEnabled(remoteCodingShouldEnableSourcePreview(remoteCtx.RequestKind))
 	// Wire approval BEFORE SetCallbacks so we never briefly install a
 	// prompt-everything state that could race with the first tool call.
 	// Input-box "完全控制" (full) skips path + high-risk prompts.
@@ -4063,9 +4123,32 @@ func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLL
 	return subAgent.ExecuteTask(userText, "")
 }
 
+func remoteCodingShouldEnableSourcePreview(kind codingRequestKind) bool {
+	return kind == codingRequestImplementation
+}
+
+// codingWorkbenchShouldUseWorktree centralizes the request-kind boundary for
+// local pure-coding turns. Operational/inquiry requests execute in the selected
+// project; only implementation turns may receive write isolation.
+func codingWorkbenchShouldUseWorktree(kind codingRequestKind, mode string, planned bool, title, description string, maxParallel, waveSize int, dependsOn []int) bool {
+	return kind == codingRequestImplementation &&
+		shouldUseCodingWorktree(mode, planned, title, description, maxParallel, waveSize, dependsOn)
+}
+
 // callLightweightLLM makes a quick non-streaming LLM call for lightweight
 // workflow classification helpers.
 func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, systemPrompt, userText string, timeoutSec int) string {
+	return h.callLightweightLLMWithAttempts(cfg, systemPrompt, userText, timeoutSec, 2)
+}
+
+// callLightweightLLMOnce is for latency-sensitive routing decisions. A failed
+// classifier safely falls back to the conservative implementation posture, so
+// retrying it only makes simple turns feel mechanically slow.
+func (h *IMMessageHandler) callLightweightLLMOnce(cfg corelib.MaclawLLMConfig, systemPrompt, userText string, timeoutSec int) string {
+	return h.callLightweightLLMWithAttempts(cfg, systemPrompt, userText, timeoutSec, 1)
+}
+
+func (h *IMMessageHandler) callLightweightLLMWithAttempts(cfg corelib.MaclawLLMConfig, systemPrompt, userText string, timeoutSec, maxAttempts int) string {
 	if h == nil || h.client == nil {
 		return ""
 	}
@@ -4074,7 +4157,9 @@ func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, syste
 		map[string]string{"role": "user", "content": userText},
 	}
 
-	const maxAttempts = 2
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "workflow-v2-lightweight"})
 		resp, err := doSimpleLLMRequest(ctx, cfg, messages, h.client, time.Duration(timeoutSec)*time.Second)
@@ -4121,9 +4206,11 @@ type pendingWorkflowChoice struct {
 }
 
 type remoteCodingTemplateContext struct {
-	SessionID  string
-	WorkDir    string
-	ProjectDir string
+	SessionID        string
+	WorkDir          string
+	ProjectDir       string
+	RequestKind      codingRequestKind
+	RequestNeedsPlan bool
 }
 
 func scrubActivePhaseSensitiveFormData(state *v2.WorkflowState) bool {

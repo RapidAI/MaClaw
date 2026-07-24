@@ -1387,6 +1387,14 @@ export function SetMaclawAgentMaxIterations(arg1) {
   return window['go']['main']['App']['SetMaclawAgentMaxIterations'](arg1);
 }
 
+export function GetMaclawLLMThinkingMode() {
+  return window['go']['main']['App']['GetMaclawLLMThinkingMode']();
+}
+
+export function SetMaclawLLMThinkingMode(arg1) {
+  return window['go']['main']['App']['SetMaclawLLMThinkingMode'](arg1);
+}
+
 export function GetMoAConfig() {
   return window['go']['main']['App']['GetMoAConfig']();
 }
@@ -3442,6 +3450,15 @@ export function OpenPetPacksDir() {
   return window['go']['main']['App']['OpenPetPacksDir']();
 }
 
+
+// Mobile library and meeting recording bindings.
+export const ListMobileLibraryItems = (arg1) => window['go']['main']['App']['ListMobileLibraryItems'](arg1);
+export const GetMobileLibraryItem = (arg1) => window['go']['main']['App']['GetMobileLibraryItem'](arg1);
+export const ProcessMobileMeetingRecording = (arg1) => window['go']['main']['App']['ProcessMobileMeetingRecording'](arg1);
+export const DeleteMobileMeetingRecording = (arg1) => window['go']['main']['App']['DeleteMobileMeetingRecording'](arg1);
+export const GetMobileMeetingRecordingAudio = (arg1) => window['go']['main']['App']['GetMobileMeetingRecordingAudio'](arg1);
+export const OpenMobileMeetingRecordingAudio = (arg1) => window['go']['main']['App']['OpenMobileMeetingRecordingAudio'](arg1);
+export const SaveMobileMeetingRecordingAudio = (arg1) => window['go']['main']['App']['SaveMobileMeetingRecordingAudio'](arg1);
 export function GetPetPacksDir() {
   return window['go']['main']['App']['GetPetPacksDir']();
 }
@@ -3450,9 +3467,14 @@ export function GetPetPacksDir() {
 // generation works on this Windows host again).
 export const ListVirtualRepositories = () => window['go']['main']['App']['ListVirtualRepositories']();
 export const OpenVirtualRepository = (arg1) => window['go']['main']['App']['OpenVirtualRepository'](arg1);
+export const BindVirtualRepositoryRoot = (arg1) => window['go']['main']['App']['BindVirtualRepositoryRoot'](arg1);
 export const SaveVirtualRepository = (arg1) => window['go']['main']['App']['SaveVirtualRepository'](arg1);
+export const PreviewVirtualRepositoryRootMigration = (arg1) => window['go']['main']['App']['PreviewVirtualRepositoryRootMigration'](arg1);
+export const MigrateVirtualRepositoryRoot = (arg1) => window['go']['main']['App']['MigrateVirtualRepositoryRoot'](arg1);
 export const DeleteVirtualRepository = (arg1) => window['go']['main']['App']['DeleteVirtualRepository'](arg1);
 export const SyncVirtualRepositories = (arg1) => window['go']['main']['App']['SyncVirtualRepositories'](arg1);
+export const IsVirtualRepositoryBackgroundSyncPending = () => window['go']['main']['App']['IsVirtualRepositoryBackgroundSyncPending']();
+export const GetVirtualRepositoryBackgroundSyncStatus = () => window['go']['main']['App']['GetVirtualRepositoryBackgroundSyncStatus']();
 export const SelectVirtualRepositoryRoot = (arg1) => window['go']['main']['App']['SelectVirtualRepositoryRoot'](arg1);
 export const CreateVirtualRepositoryDirectory = (arg1, arg2) => window['go']['main']['App']['CreateVirtualRepositoryDirectory'](arg1, arg2);
 export const CheckoutVirtualRepositoryNode = (arg1, arg2) => window['go']['main']['App']['CheckoutVirtualRepositoryNode'](arg1, arg2);
@@ -3474,7 +3496,8 @@ export const SetRepositoryCredentialBinding = (arg1, arg2, arg3) => window['go']
 export const ListRepositoryCredentialBindings = (arg1) => window['go']['main']['App']['ListRepositoryCredentialBindings'](arg1);
 export const GetVCSClientStatus = (arg1) => window['go']['main']['App']['GetVCSClientStatus'](arg1);
 export const SearchVCSClient = (arg1) => window['go']['main']['App']['SearchVCSClient'](arg1);
-export const SelectVCSClientExecutable = (arg1) => window['go']['main']['App']['SelectVCSClientExecutable'](arg1);
+export const VCSClientExecutableHint = (arg1) => window['go']['main']['App']['VCSClientExecutableHint'](arg1);
+export const SelectVCSClientExecutable = (arg1, arg2) => window['go']['main']['App']['SelectVCSClientExecutable'](arg1, arg2);
 export const SetVCSClientExecutable = (arg1, arg2) => window['go']['main']['App']['SetVCSClientExecutable'](arg1, arg2);
 export const ResetVCSClientExecutable = (arg1) => window['go']['main']['App']['ResetVCSClientExecutable'](arg1);
 export const PreviewVirtualRepositoryOperation = (arg1) => window['go']['main']['App']['PreviewVirtualRepositoryOperation'](arg1);

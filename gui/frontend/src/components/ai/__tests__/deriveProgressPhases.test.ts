@@ -354,6 +354,34 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
         expect(screen.getByRole('button', { name: 'Ops Intake, Missing doc' })).toBeTruthy();
     });
 
+    it('uses the active scheme danger tokens for a failed quality gate', () => {
+        const dangerTheme = {
+            ...testTheme,
+            dangerColor: '#9f1239',
+            dangerBg: '#fff1f2',
+            dangerText: '#111111',
+        };
+        render(React.createElement(WorkflowDocPreview, {
+            phaseDocuments: new Map([['requirements', '# Requirements']]),
+            currentPhaseID: 'requirements',
+            latestDocumentPhaseID: 'requirements',
+            phases: [{ id: 'requirements', name: 'Requirements', index: 0, expectsDocument: true }],
+            workflowType: 'coding',
+            gateResults: new Map([['requirements', {
+                phase_id: 'requirements',
+                passed: false,
+                items: [],
+                checked_at: '2026-07-24T00:00:00Z',
+            }]]),
+            lang: 'en',
+            theme: dangerTheme,
+        }));
+
+        const failedPhase = screen.getByRole('button', { name: 'Requirements, Needs changes' });
+        expect(failedPhase.style.borderColor).toBe('rgb(159, 18, 57)');
+        expect(failedPhase.style.background).toBe('rgb(255, 241, 242)');
+    });
+
     // afterEach cleanup is auto-registered by @testing-library/react under vitest globals;
     // the explicit unmount in the progress loop guards against cross-render query bleed.
     it('cleans up rendered output between cases', () => {

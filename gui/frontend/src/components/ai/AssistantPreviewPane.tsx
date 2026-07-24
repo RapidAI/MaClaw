@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CodePreviewPanel, darkCodePreviewTheme, lightCodePreviewTheme } from "./CodePreviewPanel";
+import { CodePreviewPanel, createCodePreviewTheme, maximumContrastInkOnFill } from "./CodePreviewPanel";
 import { WorkflowDocPreview } from "./WorkflowDocPreview";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { contrastingInkOnFill, type Theme } from "./aiAssistantPanelTheme";
 import { AgentTaskPanel } from "./AgentTaskPanel";
 import type { AgentView } from "./agentViewTypes";
 import type { CodePreviewUIState } from "./useCodePreviewState";
@@ -35,7 +35,6 @@ interface AssistantPreviewPaneProps {
     startPreviewResize: () => void;
     onToggleMaximize?: () => void;
     theme: Theme;
-    themeMode: "dark" | "light";
     workflowState: WorkflowUIState;
 }
 
@@ -181,9 +180,9 @@ function PreviewTabRail({
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
-                            border: `1px solid ${active ? (mode === "conflict" ? "#dc2626" : theme.headingColor) : "transparent"}`,
-                            background: active ? theme.codeBg : "transparent",
-                            color: active ? (mode === "conflict" ? "#dc2626" : theme.headingColor) : theme.textMuted,
+                            border: `1px solid ${active ? (mode === "conflict" ? theme.errorBorder : theme.headingColor) : "transparent"}`,
+                            background: active ? (mode === "conflict" ? theme.errorBg : theme.codeBg) : "transparent",
+                            color: active ? (mode === "conflict" ? theme.errorText : theme.headingColor) : theme.textMuted,
                             borderRadius: "6px",
                             cursor: "pointer",
                             fontSize: "9px",
@@ -207,8 +206,8 @@ function PreviewTabRail({
                                     height: 12,
                                     padding: "0 3px",
                                     borderRadius: 999,
-                                    background: "#dc2626",
-                                    color: "#fff",
+                                    background: theme.errorText,
+                                    color: maximumContrastInkOnFill(theme.errorText),
                                     fontSize: 8,
                                     lineHeight: "12px",
                                     textAlign: "center",
@@ -252,7 +251,6 @@ export function AssistantPreviewPane({
     startPreviewResize,
     onToggleMaximize,
     theme,
-    themeMode,
     workflowState,
 }: AssistantPreviewPaneProps) {
     const [activeMode, setActiveMode] = useState<PreviewPaneMode>("workflow");
@@ -312,13 +310,21 @@ export function AssistantPreviewPane({
     }, [showAgentView, showCodePreview, showWorkflowPreview, showConflict]);
 
     const docPreviewTheme = useMemo(() => ({
+        isDark: theme.isDark === true,
         bg: theme.bg,
         text: theme.text,
         textMuted: theme.textMuted,
         border: theme.divider,
         headerBg: theme.titleBarBg,
         accentColor: theme.btnColor,
-        accentBg: `color-mix(in srgb, ${theme.btnColor} ${themeMode === "dark" ? 12 : 8}%, ${theme.fieldBg})`,
+        accentBg: `color-mix(in srgb, ${theme.btnColor} ${theme.isDark ? 12 : 8}%, ${theme.fieldBg})`,
+        accentText: contrastingInkOnFill(theme.btnColor),
+        successColor: theme.isDark ? "#7aa89a" : "#3f685b",
+        successBg: `color-mix(in srgb, ${theme.isDark ? "#7aa89a" : "#3f685b"} ${theme.isDark ? 18 : 12}%, ${theme.fieldBg})`,
+        successText: maximumContrastInkOnFill(theme.isDark ? "#7aa89a" : "#3f685b"),
+        dangerColor: theme.errorText,
+        dangerBg: theme.errorBg,
+        dangerText: maximumContrastInkOnFill(theme.errorText),
         codeBg: theme.codeBg,
         codeText: theme.codeText,
         codeBlockBg: theme.codeBlockBg,
@@ -327,13 +333,10 @@ export function AssistantPreviewPane({
         linkColor: theme.linkColor,
         quoteBorder: theme.quoteBorder,
         quoteText: theme.quoteText,
-        quoteBg: `color-mix(in srgb, ${theme.quoteBorder} ${themeMode === "dark" ? 14 : 10}%, ${theme.fieldBg})`,
-    }), [theme, themeMode]);
+        quoteBg: `color-mix(in srgb, ${theme.quoteBorder} ${theme.isDark ? 14 : 10}%, ${theme.fieldBg})`,
+    }), [theme]);
 
-    const codeTheme = useMemo(
-        () => themeMode === "dark" ? darkCodePreviewTheme : lightCodePreviewTheme,
-        [themeMode],
-    );
+    const codeTheme = useMemo(() => createCodePreviewTheme(theme), [theme]);
 
     const paneStyle: React.CSSProperties = {
         flex: Math.max(0.2, 1 - splitRatio),

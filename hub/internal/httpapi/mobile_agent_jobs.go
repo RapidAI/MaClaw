@@ -35,23 +35,23 @@ var mobileAgentJobs = struct {
 }
 
 type mobileAgentJobRecord struct {
-	JobID        string
-	OwnerID      string
-	TenantID     string
-	Query        string
-	DocumentID   string
+	JobID         string
+	OwnerID       string
+	TenantID      string
+	Query         string
+	DocumentID    string
 	DocumentTitle string
-	Status       string
-	Answer       string
-	Message      string
-	RequestID    string
+	Status        string
+	Answer        string
+	Message       string
+	RequestID     string
 	// Auth material to re-issue Hub LLM calls as the viewer (not returned to clients).
 	AuthHeader string
 	BaseScheme string
 	BaseHost   string
 	// Chat history for the agent loop.
-	Messages []mobileChatMessage
-	Context  []string
+	Messages  []mobileChatMessage
+	Context   []string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -88,9 +88,9 @@ func MobileAgentJobsHandler(identity *auth.IdentityService, llmHandlers ...http.
 		jobID := strings.TrimSpace(r.PathValue("jobId"))
 		switch {
 		case r.Method == http.MethodGet && jobID != "":
-			mobileAgentJobGet(w, ownerID, jobID)
+			mobileAgentJobGet(w, ownerID, principal.TenantID, jobID)
 		case r.Method == http.MethodGet:
-			mobileAgentJobList(w, ownerID)
+			mobileAgentJobList(w, ownerID, principal.TenantID)
 		case r.Method == http.MethodPost && jobID == "":
 			mobileAgentJobCreate(w, r, principal, officialLLM)
 		default:
@@ -111,7 +111,7 @@ func mobileAgentJobCreate(w http.ResponseWriter, r *http.Request, principal *aut
 		return
 	}
 	ownerID := mobilePrincipalOwnerID(principal)
-	if n := mobileAgentJobActiveCount(ownerID); n >= mobileAgentJobMaxActivePerUser {
+	if n := mobileAgentJobActiveCount(ownerID, principal.TenantID); n >= mobileAgentJobMaxActivePerUser {
 		writeError(w, http.StatusTooManyRequests, "JOB_LIMIT", fmt.Sprintf("at most %d active assistant jobs", mobileAgentJobMaxActivePerUser))
 		return
 	}
@@ -166,19 +166,19 @@ func mobileAgentJobCreate(w http.ResponseWriter, r *http.Request, principal *aut
 	writeJSON(w, http.StatusAccepted, mobileAgentJobPayload(job))
 }
 
-func mobileAgentJobGet(w http.ResponseWriter, ownerID, jobID string) {
+func mobileAgentJobGet(w http.ResponseWriter, ownerID, tenantID, jobID string) {
 	mobileAgentJobs.Lock()
 	job, ok := mobileAgentJobs.jobs[jobID]
 	mobileAgentJobs.Unlock()
-	if !ok || job.OwnerID != ownerID {
+	if !ok || job.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, job.TenantID) {
 		writeError(w, http.StatusNotFound, "JOB_NOT_FOUND", "assistant job not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, mobileAgentJobPayload(job))
 }
 
-func mobileAgentJobList(w http.ResponseWriter, ownerID string) {
-	items := mobileCollectAgentJobs(ownerID)
+func mobileAgentJobList(w http.ResponseWriter, ownerID, tenantID string) {
+	items := mobileCollectAgentJobs(ownerID, tenantID)
 	out := make([]map[string]any, 0, len(items))
 	for _, j := range items {
 		// Re-fetch full payload for list endpoint consistency.
@@ -239,12 +239,14 @@ func mobileAgentJobTitle(job mobileAgentJobRecord) string {
 	return "助手 · " + q
 }
 
-func mobileAgentJobActiveCount(ownerID string) int {
+func mobileAgentJobActiveCount(ownerID, tenantID string) int {
 	mobileAgentJobs.Lock()
 	defer mobileAgentJobs.Unlock()
 	n := 0
 	for _, j := range mobileAgentJobs.jobs {
-		if j.OwnerID == ownerID && mobileJobIsActive(j.Status) {
+		if j.OwnerID == ownerID &&
+			mobileMeetingRecordingTenantMatches(tenantID, j.TenantID) &&
+			mobileJobIsActive(j.Status) {
 			n++
 		}
 	}
@@ -359,12 +361,12 @@ func mobileRunAgentJob(jobID string, principal *auth.ViewerPrincipal, officialLL
 	})
 }
 
-func mobileCollectAgentJobs(ownerID string) []mobileJobItem {
+func mobileCollectAgentJobs(ownerID, tenantID string) []mobileJobItem {
 	mobileAgentJobs.Lock()
 	defer mobileAgentJobs.Unlock()
 	out := make([]mobileJobItem, 0)
 	for _, rec := range mobileAgentJobs.jobs {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		out = append(out, mobileJobItem{
@@ -393,7 +395,7 @@ func mobileEnqueueAgentJobFromSearch(
 	if ownerID == "" {
 		return mobileAgentJobRecord{}, fmt.Errorf("owner required")
 	}
-	if n := mobileAgentJobActiveCount(ownerID); n >= mobileAgentJobMaxActivePerUser {
+	if n := mobileAgentJobActiveCount(ownerID, principal.TenantID); n >= mobileAgentJobMaxActivePerUser {
 		return mobileAgentJobRecord{}, fmt.Errorf("job limit")
 	}
 	query := strings.TrimSpace(req.Query)

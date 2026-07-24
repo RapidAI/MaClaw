@@ -16,146 +16,447 @@ const (
 	codingWorkbenchPlanMinTasks = 2
 )
 
-// looksLikeComplexCodingTask is a cheap heuristic to decide whether pure coding
-// should auto-plan then multi-step execute (vs a single SubAgent turn).
-func looksLikeComplexCodingTask(userText string) bool {
-	userText = strings.TrimSpace(userText)
-	if userText == "" {
+// codingRequestKind is the user-facing level of work expected from a coding
+// environment.  It deliberately describes the request, not whether the
+// workspace happens to be local or reached through SSH: both environments must
+// make the same decision before they start spending time on a workflow.
+type codingRequestKind string
+
+const (
+	codingRequestInquiry        codingRequestKind = "inquiry"
+	codingRequestOperational    codingRequestKind = "operational"
+	codingRequestImplementation codingRequestKind = "implementation"
+)
+
+func isValidCodingRequestKind(kind codingRequestKind) bool {
+	switch kind {
+	case codingRequestInquiry, codingRequestOperational, codingRequestImplementation:
+		return true
+	default:
 		return false
 	}
-	// Goal-continuation turns already carry the objective; avoid re-planning churn.
-	if strings.HasPrefix(userText, "[系统续接]") || strings.Contains(userText, "继续推进目标") {
+}
+
+// codingRequestDecision is produced by a compact model classification before a
+// coding turn starts.  It is intentionally intent-based: we do not infer a
+// destructive execution mode from a phrase such as "build" or "test".
+type codingRequestDecision struct {
+	Kind      codingRequestKind `json:"kind"`
+	NeedsPlan bool              `json:"needs_plan"`
+}
+
+// approvedCodingPlanDecision is intentionally not model-classified: a plan can
+// only reach approval after an implementation turn established a concrete set
+// of write-capable steps. Reclassifying its original text at execution time
+// could incorrectly narrow the tool surface for work the user just approved.
+func approvedCodingPlanDecision() codingRequestDecision {
+	return codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: true}
+}
+
+// normalizeCodingRequestDecision validates a propagated decision and enforces
+// the invariant that only implementation work may have a planning boundary.
+func normalizeCodingRequestDecision(decision codingRequestDecision) (codingRequestDecision, bool) {
+	switch decision.Kind {
+	case codingRequestInquiry, codingRequestOperational:
+		decision.NeedsPlan = false
+		return decision, true
+	case codingRequestImplementation:
+		return decision, true
+	default:
+		return codingRequestDecision{}, false
+	}
+}
+func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingRequestDecision {
+	fallback := codingRequestDecision{
+		Kind:      codingRequestImplementation,
+		NeedsPlan: codingRequestNeedsPlanFallback(userText),
+	}
+	if h == nil || h.client == nil || strings.TrimSpace(userText) == "" {
+		return fallback
+	}
+	cfg := h.getLightweightLLMConfig()
+	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		cfg = h.getMaclawLLMConfig()
+	}
+	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return fallback
+	}
+	const system = `Classify the user's coding-workbench request by intent. Return JSON only.
+
+Schema: {"kind":"inquiry|operational|implementation","needs_plan":true|false}
+
+inquiry: the user wants explanation, inspection, location, or an answer. It is read-only: never run commands or change files.
+operational: the user wants an existing project run, built, tested, or demonstrated, with no source change requested. It may run commands but must not change source files.
+implementation: the user asks to modify, create, fix, or refactor code.
+needs_plan is true only for an implementation request with several coupled steps, broad impact, or meaningful risk. Simple implementation requests execute directly. Questions about how a command works are inquiry, even when they mention build, test, run, or compile. A question asking you to actually run something is operational.
+Do not infer intent from isolated words; judge the complete request.`
+	if decision, ok := parseCodingRequestDecision(h.callLightweightLLMOnce(cfg, system, userText, 5)); ok {
+		return decision
+	}
+	// A missing or malformed classifier answer must never grant a looser mode.
+	// Defaulting to implementation preserves normal review/safety boundaries.
+	return fallback
+}
+
+func parseCodingRequestDecision(raw string) (codingRequestDecision, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return codingRequestDecision{}, false
+	}
+	if i := strings.Index(raw, "{"); i >= 0 {
+		if j := strings.LastIndex(raw, "}"); j > i {
+			raw = raw[i : j+1]
+		}
+	}
+	var decision codingRequestDecision
+	if err := json.Unmarshal([]byte(raw), &decision); err != nil {
+		return codingRequestDecision{}, false
+	}
+	return normalizeCodingRequestDecision(decision)
+}
+
+// codingRequestNeedsPlanFallback is intentionally structural. It is used only
+// when the lightweight classifier is unavailable; it never promotes a request
+// to a more permissive read-only or operational mode based on keywords.
+//
+// It deliberately does not infer plan complexity from the message's wording.
+// Planning is a potentially surprising confirmation boundary, so under a
+// classifier outage only an explicit multi-step structure warrants one.
+func codingRequestNeedsPlanFallback(userText string) bool {
+	return numberedStepCount(strings.TrimSpace(userText)) >= codingWorkbenchPlanMinTasks
+}
+
+// isCodingInquiryTool / filterCodingInquiryTools keep the implementation
+// agents from silently turning a question into a mutation.  The allow-list is
+// intentionally small but includes CodeGraph-aware navigation and the normal
+// read/search primitives.  It is used for both local and remote workbenches.
+func isCodingInquiryTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "list_directory", "glob", "read_file", "search_files", "search_file", "bash",
+		"ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task",
+		codeNavigationToolName, "coding_knowledge_search", "knowledge_search":
+		return true
+	default:
 		return false
 	}
-	if utf8.RuneCountInString(userText) >= 120 {
-		return true
+}
+
+func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if isCodingInquiryTool(name) {
+			out = append(out, tool)
+		}
 	}
-	if strings.Count(userText, "\n") >= 3 {
+	return out
+}
+
+// isCodingOperationalTool is the local counterpart of the remote operational
+// allow-list. A run/build/demo turn may inspect the existing project and run a
+// command, but it must not silently grow into an implementation or planning
+// workflow merely because it is executed locally.
+func isCodingOperationalTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "glob", "ripgrep", "read_file", "list_directory", "bash", codeNavigationToolName,
+		"coding_knowledge_search", "knowledge_search":
 		return true
+	default:
+		return false
 	}
-	// Explicit multi-step markers.
-	if numberedStepCount(userText) >= 2 {
+}
+
+func filterCodingOperationalTools(tools []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if isCodingOperationalTool(name) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+func isRemoteCodingInquiryTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
+		"coding_knowledge_search", "knowledge_search":
 		return true
+	default:
+		return false
 	}
-	lower := strings.ToLower(userText)
-	hits := 0
-	for _, kw := range codingComplexityKeywords {
-		if strings.Contains(lower, kw) {
-			hits++
-			if hits >= 2 {
+}
+
+// rejectCodingInquiryShellCommand provides the second half of the read-only
+// inquiry boundary.  Keeping bash/ssh_bash available is useful for CodeGraph,
+// git history, and targeted searches, but the tool allow-list alone cannot
+// make an arbitrary shell command safe.  This deliberately permits a compact
+// inspection vocabulary and rejects wrappers, builds, tests, package managers,
+// redirects, and every command that could mutate the workspace.
+func rejectCodingInquiryShellCommand(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "a repository inquiry shell command must not be empty"
+	}
+	if codingInquiryShellCommandHasOutputRedirect(command) {
+		return "shell output redirection is unavailable for a read-only repository inquiry"
+	}
+	if strings.Contains(command, "$(") || strings.Contains(command, "${") || strings.Contains(command, "`") || strings.Contains(command, "<(") {
+		return "shell expansion is unavailable for a read-only repository inquiry"
+	}
+	_, segments := normalizeShellCommandSegments(command)
+	if len(segments) == 0 {
+		return "the shell command is unavailable for a read-only repository inquiry"
+	}
+	for _, segment := range segments {
+		if !codingInquiryShellSegmentAllowed(segment) {
+			return fmt.Sprintf("only read-only inspection commands are available for a repository inquiry: %s", command)
+		}
+	}
+	return ""
+}
+
+func codingInquiryShellCommandHasOutputRedirect(command string) bool {
+	for _, raw := range shellCommandFields(command) {
+		token := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if token == "" || token == "2>&1" || token == "1>&2" || token == "2>&2" {
+			continue
+		}
+		if strings.Contains(token, ">") {
+			return true
+		}
+	}
+	return false
+}
+
+func codingInquiryShellSegmentAllowed(segment []string) bool {
+	segment = stripVerificationCommandPrefixes(segment)
+	if len(segment) == 0 {
+		return false
+	}
+	cmd := commandNameBase(segment[0])
+	args := segment[1:]
+	switch cmd {
+	case "ls", "dir", "pwd", "cat", "head", "tail", "rg", "grep", "egrep", "fgrep", "ag", "ack",
+		"wc", "sort", "uniq", "cut", "tr", "stat", "file", "readlink", "realpath", "basename", "dirname",
+		"which", "type", "uname", "id", "whoami", "hostname", "nproc", "getconf", "arch", "tree", "du":
+		return true
+	case "find":
+		for _, arg := range args {
+			switch strings.ToLower(strings.TrimSpace(normalizeShellCommandToken(arg))) {
+			case "-delete", "-exec", "-execdir", "-ok", "-okdir":
+				return false
+			}
+		}
+		return true
+	case "test", "[":
+		return true
+	case "command":
+		return len(args) >= 2 && (args[0] == "-v" || args[0] == "-V")
+	case "git":
+		return codingInquiryGitSubcommandAllowed(args)
+	case "codegraph", "codegraph.cmd":
+		return len(args) > 0 && (strings.EqualFold(args[0], "explore") || strings.EqualFold(args[0], "node"))
+	default:
+		return false
+	}
+}
+
+func codingInquiryGitSubcommandAllowed(args []string) bool {
+	for _, arg := range args {
+		arg = strings.TrimSpace(normalizeShellCommandToken(arg))
+		if arg == "" || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		switch strings.ToLower(arg) {
+		case "status", "diff", "log", "show", "ls-files", "rev-parse", "blame", "grep", "cat-file":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func filterRemoteCodingInquiryTools(tools []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if isRemoteCodingInquiryTool(name) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+// filterRemoteCodingOperationalTools keeps run/build/demo turns focused on the
+// existing remote project.  Unlike an inquiry, ssh_bash remains available to
+// launch or build the artifact; unlike an implementation, no write, planning,
+// or local-extension tool can expand the request into code changes.
+func filterRemoteCodingOperationalTools(tools []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
+			"coding_knowledge_search", "knowledge_search":
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+func isRemoteCodingOperationalTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task", codeNavigationToolName,
+		"coding_knowledge_search", "knowledge_search":
+		return true
+	default:
+		return false
+	}
+}
+
+// rejectCodingOperationalShellCommand protects the direct run/build path from
+// quietly becoming a file-management or dependency-install workflow. Build
+// tools and existing project scripts are intentionally allowed: their normal
+// generated output is part of execution, while direct source/config writes
+// remain implementation work and must be requested explicitly.
+func rejectCodingOperationalShellCommand(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "a run/build/demo shell command must not be empty"
+	}
+	if codingInquiryShellCommandHasOutputRedirect(command) {
+		return "shell output redirection is unavailable for a run/build/demo request"
+	}
+	// A normal launch/build may use ordinary environment variables, but command
+	// and process substitution hide a second command from the task classifier.
+	// They belong to an explicit implementation request where the user can see
+	// and approve the wider scope.
+	if strings.Contains(command, "$(") || strings.Contains(command, "`") || strings.Contains(command, "<(") {
+		return "shell command/process substitution is unavailable for a run/build/demo request"
+	}
+	// Reuse the shared parser for direct/quoted interpreter snippets. The normal
+	// coding path may ask for approval for one of these; operational turns must
+	// reject them outright so `python -c`, `node -e`, or `sh -c` cannot convert a
+	// simple run request into a source-edit request.
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if hasDisallowedShellFileMutation(normalized) {
+		return "source-changing shell commands are unavailable for a run/build/demo request"
+	}
+	_, segments := normalizeShellCommandSegments(command)
+	if len(segments) == 0 {
+		return "the shell command is unavailable for a run/build/demo request"
+	}
+	for _, segment := range segments {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		cmd := commandNameBase(segment[0])
+		args := segment[1:]
+		switch cmd {
+		case "rm", "rmdir", "del", "erase", "mv", "move", "cp", "copy", "mkdir", "md", "touch", "tee", "dd", "chmod", "chown", "install":
+			return fmt.Sprintf("%s is unavailable for a run/build/demo request; ask for an implementation change instead", cmd)
+		case "git":
+			if !codingInquiryGitSubcommandAllowed(args) {
+				return "mutating git commands are unavailable for a run/build/demo request"
+			}
+		case "sed", "perl":
+			for _, arg := range args {
+				if strings.EqualFold(strings.TrimSpace(arg), "-i") || strings.HasPrefix(strings.TrimSpace(arg), "-i") {
+					return fmt.Sprintf("%s -i is unavailable for a run/build/demo request", cmd)
+				}
+			}
+		case "npm", "pnpm", "yarn", "bun":
+			if len(args) > 0 {
+				switch strings.ToLower(strings.TrimSpace(args[0])) {
+				case "install", "i", "add", "remove", "uninstall", "update":
+					return fmt.Sprintf("%s %s is unavailable for a run/build/demo request", cmd, args[0])
+				}
+			}
+		case "pip", "pip3":
+			if len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "install") {
+				return fmt.Sprintf("%s install is unavailable for a run/build/demo request", cmd)
+			}
+		}
+		if isOperationalSourceMutationCommand(cmd, args) {
+			return fmt.Sprintf("%s is a source-generation or auto-fix command and is unavailable for a run/build/demo request", cmd)
+		}
+	}
+	return ""
+}
+
+// isOperationalSourceMutationCommand covers known commands whose primary
+// effect is rewriting tracked source/config. It complements the generic shell
+// write guard; ordinary build output and running an existing application stay
+// permitted. We intentionally do not try to infer effects of arbitrary app
+// scripts: a request to run a program may legitimately write runtime data.
+func isOperationalSourceMutationCommand(cmd string, args []string) bool {
+	firstArg := ""
+	for _, arg := range args {
+		arg = strings.ToLower(strings.TrimSpace(normalizeShellCommandToken(arg)))
+		if arg == "" || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		firstArg = arg
+		break
+	}
+	switch strings.ToLower(cmd) {
+	case "go":
+		return firstArg == "generate" || (firstArg == "mod" && operationalArgsContain(args, "tidy", "edit", "init"))
+	case "cargo":
+		if firstArg == "fix" || firstArg == "fmt" {
+			return true
+		}
+		for _, arg := range args {
+			if strings.EqualFold(strings.TrimSpace(normalizeShellCommandToken(arg)), "--fix") {
+				return true
+			}
+		}
+	case "rustfmt", "gofmt", "dartfmt", "swiftformat":
+		return true
+	case "prettier":
+		return operationalArgsContain(args, "--write", "-w")
+	case "protoc", "buf", "codegen", "openapi-generator", "swagger-codegen":
+		return true
+	case "npx", "pnpx", "yarnx":
+		return firstArg == "prisma" || firstArg == "openapi-generator" || firstArg == "swagger-codegen"
+	case "python", "python3", "py":
+		return firstArg == "manage.py" && operationalArgsContain(args, "makemigrations", "migrate")
+	case "django-admin", "flask":
+		return firstArg == "makemigrations" || firstArg == "migrate"
+	case "alembic":
+		return firstArg == "revision"
+	case "rails":
+		return firstArg == "generate" || firstArg == "g"
+	case "dotnet":
+		return firstArg == "ef" && operationalArgsContain(args, "migrations")
+	}
+	return false
+}
+
+func operationalArgsContain(args []string, values ...string) bool {
+	for _, arg := range args {
+		arg = strings.ToLower(strings.TrimSpace(normalizeShellCommandToken(arg)))
+		for _, value := range values {
+			if arg == value {
 				return true
 			}
 		}
 	}
-	// Chinese multi-step connectors (avoid bare "并" — matches 合并/并发症 false positives).
-	if utf8.RuneCountInString(userText) >= 18 {
-		if strings.Contains(userText, "然后") || strings.Contains(userText, "之后") ||
-			strings.Contains(userText, "以及") || strings.Contains(userText, "同时还") ||
-			strings.Contains(userText, "并且") || strings.Contains(userText, "，并") ||
-			strings.Contains(userText, "并补") || strings.Contains(userText, "并做") ||
-			strings.Contains(userText, "并加") || strings.Contains(userText, "并写") {
-			return true
-		}
-	}
-	// Compound Chinese multi-clause punctuation.
-	if strings.Count(userText, "。") >= 2 || strings.Count(userText, "；") >= 1 {
-		return true
-	}
-	// English multi-sentence only when substantive (avoid "go 1.22" / version dots).
-	if sentenceDotCount(userText) >= 2 && utf8.RuneCountInString(userText) >= 60 {
-		return true
-	}
 	return false
 }
 
-var codingComplexityKeywords = []string{
-	"并实现", "并测试", "并且", "同时还", "然后", "之后", "以及", "还要",
-	"重构", "迁移", "端到端", "完整实现", "完整功能", "模块", "架构", "拆分",
-	"分步", "多步", "前后端", "接口联调", "兼容", "回归",
-	"implement", "refactor", "migrate", "end-to-end", "e2e", "and also",
-	"then ", " plus ", "with tests", "unit test", "integration",
-}
-
-// shouldEnableCodingTDD enables TaskRunner red/green only for single-task turns
-// that look like real implement/fix work. Operational follow-ups such as
-// "运行下生成的游戏" must not enter TDD (that would generate tests for "run").
+// shouldEnableCodingTDD is retained for workflow compatibility. The request
+// decision is already made before execution; red/green is therefore only used
+// when a multi-step plan explicitly enables it elsewhere.
 func shouldEnableCodingTDD(userText string, planned bool, taskCount int) bool {
-	if planned || taskCount != 1 {
-		return false
-	}
-	return !looksLikeCodingOperationalRequest(userText)
-}
-
-// looksLikeCodingOperationalRequest detects short run/build/open/demo style
-// instructions that should execute directly in CodingSubAgent without TDD /
-// implement quality gates.
-func looksLikeCodingOperationalRequest(userText string) bool {
-	text := strings.TrimSpace(userText)
-	if text == "" {
-		return false
-	}
-	// Long / multi-step briefs are not pure ops even if they mention "run".
-	if utf8.RuneCountInString(text) >= 80 || strings.Count(text, "\n") >= 2 {
-		return false
-	}
-	if numberedStepCount(text) >= 2 {
-		return false
-	}
-	lower := strings.ToLower(text)
-
-	// Implementation intent wins over a trailing "and run it".
-	for _, kw := range codingImplementationKeywords {
-		if keywordMatchCI(text, lower, kw) {
-			return false
-		}
-	}
-
-	for _, kw := range codingOperationalKeywords {
-		if keywordMatchCI(text, lower, kw) {
-			return true
-		}
-	}
-	// Ultra-short Chinese run pings only (avoid English bare "start"/"run tests"
-	// false positives like "start coding").
-	if utf8.RuneCountInString(text) <= 12 {
-		if strings.Contains(text, "跑") || strings.Contains(text, "运行") || strings.Contains(text, "启动") {
-			return true
-		}
-	}
 	return false
-}
-
-// keywordMatchCI matches ASCII keywords case-insensitively via lower, and CJK
-// keywords against the original text.
-func keywordMatchCI(text, lower, kw string) bool {
-	kw = strings.TrimSpace(kw)
-	if kw == "" {
-		return false
-	}
-	for _, r := range kw {
-		if r > 127 {
-			return strings.Contains(text, kw)
-		}
-	}
-	return strings.Contains(lower, strings.ToLower(kw))
-}
-
-// Keywords that mean the user wants code written or changed (keep TDD eligible).
-var codingImplementationKeywords = []string{
-	"实现", "开发", "编写", "写个", "写一", "添加", "新增", "修改", "改成", "修复", "重构",
-	"完善", "补全", "完成功能", "实现功能", "加一个", "做一个", "创建", "生成代码",
-	"implement", "refactor", "fix bug", "fix the", "add feature", "add a ",
-	"create ", "write ", "develop ", "change code", "modify ", "patch ", "coding",
-}
-
-// Keywords that mean run/build/open/demo without implementing new code.
-var codingOperationalKeywords = []string{
-	"运行下", "运行一下", "运行游戏", "运行程序", "运行下生成", "跑一下", "跑下",
-	"再跑", "重新跑", "重新运行", "启动一下", "启动游戏", "启动程序", "打开游戏", "演示一下",
-	"看看效果", "看下效果", "试运行", "试一下游戏", "编译一下", "构建一下", "帮我运行", "请运行",
-	"run the game", "run game", "run it", "run the app", "run the program",
-	"launch the", "start the game", "start game", "execute the", "try the game",
-	"build and run", "compile and run", "rerun", "re-run", "run again",
 }
 
 // sentenceDotCount counts '.' that look like sentence terminators, not version
@@ -167,7 +468,7 @@ func sentenceDotCount(text string) int {
 		if r != '.' {
 			continue
 		}
-		// Digit on either side → likely version / decimal.
+		// Digit on either side — likely version / decimal.
 		if i > 0 && i+1 < len(runes) {
 			prev, next := runes[i-1], runes[i+1]
 			if prev >= '0' && prev <= '9' && next >= '0' && next <= '9' {
@@ -179,8 +480,7 @@ func sentenceDotCount(text string) int {
 	return n
 }
 
-// Digit / T-numbered steps only. Bare markdown bullets (- item) are NOT counted —
-// they appear in ordinary "fix: - a - b" lists and would false-trigger multi-step plans.
+// Digit / T-numbered steps only. Bare markdown bullets (- item) are NOT counted — they appear in ordinary "fix: - a - b" lists and would false-trigger multi-step plans.
 var numberedStepLineRe = regexp.MustCompile(`(?m)^\s*(?:\d+[\.\)]|[Tt]\d+\s*[:：])\s+\S+`)
 
 func numberedStepCount(text string) int {
@@ -193,6 +493,27 @@ func numberedStepCount(text string) int {
 func (h *IMMessageHandler) resolveCodingWorkbenchTasks(
 	userID, userText, projectPath string,
 	sessionMem stickyCodingWorkbenchMemory,
+	onProgress func(string),
+	onToken func(string),
+) (tasks []*v2.TaskItem, planMarkdown string, planned bool) {
+	return h.resolveCodingWorkbenchTasksWithDecision(
+		userID,
+		userText,
+		projectPath,
+		sessionMem,
+		h.resolveCodingRequestDecision(userText),
+		onProgress,
+		onToken,
+	)
+}
+
+// resolveCodingWorkbenchTasksWithDecision plans a request using the decision
+// made by its root runner. Keeping the decision as an input is important: the
+// planner and the subagent must act on the same interpretation of a turn.
+func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
+	userID, userText, projectPath string,
+	sessionMem stickyCodingWorkbenchMemory,
+	decision codingRequestDecision,
 	onProgress func(string),
 	onToken func(string),
 ) (tasks []*v2.TaskItem, planMarkdown string, planned bool) {
@@ -212,6 +533,9 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasks(
 		// Drop stale multi-step plan so the banner does not show outdated steps.
 		h.clearStickyCodingExecutionPlan(userID)
 		h.clearStickyCodingStepStatuses(userID)
+		// A new direct task supersedes any unanswered plan from an earlier turn.
+		// Leaving it behind would let a later /plan approve execute stale work.
+		h.clearStickyPendingCodingPlan(userID)
 		return single, "", false
 	}
 	// Plan mode off: never multi-step.
@@ -228,7 +552,7 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasks(
 		}
 		return fallbackSingle("skip next plan")
 	}
-	if !looksLikeComplexCodingTask(userText) {
+	if !decision.NeedsPlan {
 		return fallbackSingle("")
 	}
 	// Short follow-ups in an ongoing session usually mean "continue/fix", not replan.
@@ -270,9 +594,12 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasks(
 		// Seed step statuses as pending for live Todo UI.
 		h.setStickyCodingStepStatuses(userID, codingWorkbenchStepsFromTasks(tasks, codingStepPending))
 	}
-	// Approve mode: plan only; execution waits for /plan approve.
-	// Caller (runCodingTemplateSubAgent) checks pending vs planned+approve.
-	if planMode == codingPlanModeApprove {
+	// Adaptive mode and explicit plan-first mode both stop here once a complex
+	// request has a real multi-step plan.  This is the user control point: a
+	// simple task executes directly, while a broad/risky task shows impact and
+	// steps before it can mutate the workspace.  "off" remains the explicit
+	// fast-execution override.
+	if planMode == codingPlanModeAuto || planMode == codingPlanModeApprove {
 		if userID != "" {
 			h.storeStickyPendingCodingPlan(userID, userText, planMarkdown, tasks)
 		}
@@ -280,7 +607,7 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasks(
 			onProgress(fmt.Sprintf("已规划 %d 个执行步骤，等待批准后执行", len(tasks)))
 		}
 		if onToken != nil {
-			onToken("\n\n## 自动规划（待批准）\n\n" + planMarkdown + "\n\n")
+			onToken("\n\n## 已生成执行计划（待确认）\n\n" + planMarkdown + "\n\n")
 		}
 		log.Printf("[coding-plan] multi-step plan awaiting approve user=%s steps=%d", userID, len(tasks))
 		return tasks, planMarkdown, true
@@ -327,7 +654,7 @@ func (h *IMMessageHandler) planCodingWorkbenchTasks(
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		cfg = h.getMaclawLLMConfig()
 	}
-	if strings.TrimSpace(cfg.URL) == "" {
+	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return "", nil
 	}
 
@@ -566,7 +893,7 @@ func finalizeCodingWorkbenchTasks(tasks []*v2.TaskItem, userText string) []*v2.T
 		}
 	}
 	if !anyDeps && n >= 2 {
-		// Default sequential chain: T2 depends on T1, …
+		// Default sequential chain: each step depends on its predecessor.
 		for i := 1; i < n; i++ {
 			out[i].DependsOn = []int{out[i-1].Index}
 		}
@@ -578,7 +905,7 @@ func finalizeCodingWorkbenchTasks(tasks []*v2.TaskItem, userText string) []*v2.T
 			deps := make([]int, 0, len(t.DependsOn))
 			seen := map[int]bool{}
 			for _, d := range t.DependsOn {
-				// Only earlier steps — prevents cycles and forward-deps that never run.
+				// Only earlier steps prevent cycles and forward dependencies.
 				if d < 1 || d >= t.Index || d > n || seen[d] {
 					continue
 				}
@@ -727,19 +1054,23 @@ func planStepDescriptionForDisplay(desc, title string) string {
 	return truncateRunesV2(desc, 300)
 }
 
-// codingWorkbenchRunHeader summarizes multi-step TaskRunner outcomes for the user.
-func codingWorkbenchRunHeader(planned bool, stepCount int, results []v2.TaskRunResult) string {
+// codingWorkbenchRunHeader summarizes TaskRunner outcomes using the user's
+// requested activity, rather than the implementation detail that the coding
+// workbench executed the turn. A repository inquiry must never be labelled as
+// a completed code change.
+func codingWorkbenchRunHeader(kind codingRequestKind, planned bool, stepCount int, results []v2.TaskRunResult) string {
+	labels := codingWorkbenchLabelsForRequest(kind)
 	if len(results) == 0 {
-		return "编码未完成"
+		return labels.incomplete
 	}
 	if !planned || stepCount <= 1 {
 		if results[0].Status == v2.TaskFailed {
-			return "编码未完成"
+			return labels.incomplete
 		}
 		if results[0].Status == v2.TaskSkipped {
-			return "编码已取消/跳过"
+			return labels.skipped
 		}
-		return "编码完成"
+		return labels.complete
 	}
 	passed, failed, skipped := 0, 0, 0
 	for _, r := range results {
@@ -754,15 +1085,48 @@ func codingWorkbenchRunHeader(planned bool, stepCount int, results []v2.TaskRunR
 	}
 	switch {
 	case passed == 0 && failed == 0 && skipped == 0:
-		return "编码未完成"
+		return labels.incomplete
 	case failed == 0 && skipped == 0 && passed > 0:
-		return fmt.Sprintf("编码完成（已按 %d 步计划执行）", stepCount)
+		return fmt.Sprintf("%s (completed %d planned steps)", labels.complete, stepCount)
 	case failed == 0 && skipped > 0 && passed > 0:
-		return fmt.Sprintf("编码部分完成（%d/%d 步通过，%d 步跳过）", passed, stepCount, skipped)
+		return fmt.Sprintf("%s (%d/%d passed, %d skipped)", labels.partial, passed, stepCount, skipped)
 	case passed == 0 && (failed > 0 || skipped > 0):
-		return fmt.Sprintf("编码未完成（计划 %d 步，通过 %d）", stepCount, passed)
+		return fmt.Sprintf("%s (%d planned steps, %d passed)", labels.incomplete, stepCount, passed)
 	default:
-		return fmt.Sprintf("编码部分完成（%d/%d 步通过，%d 失败，%d 跳过）", passed, stepCount, failed, skipped)
+		return fmt.Sprintf("%s (%d/%d passed, %d failed, %d skipped)", labels.partial, passed, stepCount, failed, skipped)
+	}
+}
+
+type codingWorkbenchRunLabels struct {
+	complete   string
+	partial    string
+	incomplete string
+	skipped    string
+}
+
+func codingWorkbenchLabelsForRequest(kind codingRequestKind) codingWorkbenchRunLabels {
+	switch kind {
+	case codingRequestInquiry:
+		return codingWorkbenchRunLabels{
+			complete:   "Repository analysis complete",
+			partial:    "Repository analysis partially complete",
+			incomplete: "Repository analysis incomplete",
+			skipped:    "Repository analysis cancelled or skipped",
+		}
+	case codingRequestOperational:
+		return codingWorkbenchRunLabels{
+			complete:   "Task complete",
+			partial:    "Task partially complete",
+			incomplete: "Task incomplete",
+			skipped:    "Task cancelled or skipped",
+		}
+	default:
+		return codingWorkbenchRunLabels{
+			complete:   "Coding complete",
+			partial:    "Coding partially complete",
+			incomplete: "Coding incomplete",
+			skipped:    "Coding cancelled or skipped",
+		}
 	}
 }
 

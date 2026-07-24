@@ -1762,3 +1762,59 @@ func hasStructuredCatalogSourceTitle(result knowledge.StructuredCatalogResult, t
 	}
 	return false
 }
+
+func TestMultiKnowledgeStoreListSourcesMergesReadableScopes(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "alpha note", Title: "alpha", TenantID: "tenant-a", OwnerID: "user-a", Labels: []string{"team"}}); err != nil {
+		t.Fatalf("SaveText user-a: %v", err)
+	}
+	if _, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "beta note", Title: "beta", TenantID: "tenant-a", OwnerID: "user-b", Labels: []string{"team", "beta-only"}}); err != nil {
+		t.Fatalf("SaveText user-b: %v", err)
+	}
+
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	multi := newMultiKnowledgeStore(store, access)
+
+	// Default: own scope only.
+	ownOnly, err := multi.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources ownOnly: %v", err)
+	}
+	if len(ownOnly) != 1 || ownOnly[0].OwnerID != "user-a" {
+		t.Fatalf("expected only own source, got %#v", ownOnly)
+	}
+
+	// Grant read access to user-b's scope: both sources appear.
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b", Name: "team"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	merged, err := multi.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: "tenant-a", OwnerID: "user-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources merged: %v", err)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 merged sources, got %d: %#v", len(merged), merged)
+	}
+
+	// Labels merge across scopes with counts summed for shared label names.
+	labels, err := multi.ListSourceLabels(ctx, knowledge.ListSourcesOptions{TenantID: "tenant-a", OwnerID: "user-a"})
+	if err != nil {
+		t.Fatalf("ListSourceLabels: %v", err)
+	}
+	counts := map[string]int{}
+	for _, label := range labels {
+		counts[label.Label] = label.Count
+	}
+	if counts["team"] != 2 {
+		t.Fatalf("expected shared label count 2, got %d: %#v", counts["team"], labels)
+	}
+	if counts["beta-only"] != 1 {
+		t.Fatalf("expected beta-only label count 1, got %d", counts["beta-only"])
+	}
+}

@@ -843,10 +843,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// --- Tool view async messages ---
 	case views.ToolSkillSearchMsg:
-		return m, m.searchSkills(msg.Query)
+		return m, m.searchSkills(msg.Query, msg.RequestID)
 
 	case views.ToolSkillInstallMsg:
-		return m, m.installSkill(msg.SkillID, msg.HubURL, msg.Source, msg.InstallRef)
+		return m, m.installSkill(msg.SkillID, msg.HubURL, msg.Source, msg.InstallRef, msg.SearchResultKey)
 
 	case views.ToolMCPAddMsg:
 		return m, m.addLocalMCP(msg.Entry)
@@ -855,14 +855,19 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.addRemoteMCP(msg.Entry)
 
 	case views.ToolOperationResultMsg:
-		// After successful MCP add, reload config and refresh data.
-		if msg.Success && msg.Tab == views.ToolSubMCP {
+		// After a successful tool mutation, reload the canonical config and
+		// refresh the visible lists. This keeps installed-state badges in search
+		// results aligned with the GUI without waiting for a manual refresh.
+		if msg.Success && (msg.Tab == views.ToolSubMCP || msg.Tab == views.ToolSubSkill) {
 			m.reloadConfigBackedViews()
 			m.refreshToolData()
-			if strings.TrimSpace(msg.Message) != "" {
+			if msg.Tab == views.ToolSubMCP && strings.TrimSpace(msg.Message) != "" {
 				m.root.StatusBar.SetMessage(tuiFormat(m.uiLang(), "mcpAddedReady", msg.Message))
 			}
 		}
+		var cmd tea.Cmd
+		m.root, cmd = m.root.Update(msg)
+		return m, cmd
 
 	case views.ToolRefreshMsg:
 		m.refreshToolData()
@@ -1873,7 +1878,7 @@ func simpleChatMessages(history []agent.ConversationEntry, text string) []interf
 
 // --- Skill / MCP async handlers ---
 
-func (m *tuiModel) searchSkills(query string) tea.Cmd {
+func (m *tuiModel) searchSkills(query string, requestID int) tea.Cmd {
 	lang := m.uiLang()
 	return func() tea.Msg {
 		hubURL := m.app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
@@ -1888,51 +1893,159 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 		client := skill.DefaultHubClient()
 		allowedSources, err := tuiAllowedSkillSearchSourcesForPolicy(m.app.appConfig, query)
 		if err != nil {
-			return views.ToolSkillSearchResultMsg{Error: err.Error()}
+			return views.ToolSkillSearchResultMsg{Error: err.Error(), RequestID: requestID}
 		}
 		report := client.SearchAllFilteredReport(ctx, hubURL, query, allowedSources)
 		hubResults := report.Results
+		localSkills := append(skill.ScanAllSkillDirs(), m.app.appConfig.NLSkills...)
+		hubResults = skill.RerankByLocalHistory(hubResults, localSkills)
 		warn := report.FormatDegradedNote()
+		if skill.LooksLikeDownloadSearchQuery(query) {
+			if warn != "" {
+				warn += "\n"
+			}
+			warn += tuiText(lang, "skillBuiltInDownloadGuidance")
+		}
 
 		if len(hubResults) == 0 {
 			errMsg := tuiText(lang, "skillNoMatch")
 			if warn != "" {
 				errMsg = errMsg + "\n" + warn
 			}
-			return views.ToolSkillSearchResultMsg{Error: errMsg, Warning: warn}
+			return views.ToolSkillSearchResultMsg{Error: errMsg, Warning: warn, RequestID: requestID}
 		}
 
 		results := make([]views.SkillSearchResult, 0, len(hubResults))
 		for _, r := range hubResults {
-			results = append(results, views.SkillSearchResult{
-				ID:         r.ID,
-				Name:       r.Name,
-				Version:    r.Version,
-				Rating:     r.AvgRating,
-				Downloads:  r.Downloads,
-				Trust:      r.TrustLevel,
-				Source:     r.Source,
-				InstallRef: r.InstallRef,
-			})
+			result := views.SkillSearchResult{
+				ID:          r.ID,
+				Name:        r.Name,
+				Description: r.Description,
+				Version:     r.Version,
+				Rating:      r.AvgRating,
+				Downloads:   r.Downloads,
+				Trust:       r.TrustLevel,
+				Source:      r.Source,
+				RepoURL:     r.RepoURL,
+				InstallRef:  r.InstallRef,
+			}
+			result.Installed, result.InstalledName = tuiSearchResultInstalled(r, localSkills)
+			if skill.LooksLikeGenericDownloadSkill(r.Name, r.Description) {
+				result.Caution = tuiText(lang, "skillGenericDownloadCaution")
+			}
+			results = append(results, result)
 		}
-		return views.ToolSkillSearchResultMsg{Results: results, Warning: warn}
+		return views.ToolSkillSearchResultMsg{Results: results, Warning: warn, RequestID: requestID}
 	}
 }
 
-func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRef string) tea.Cmd {
+// tuiSearchResultInstalled mirrors the GUI's source-aware installed-state
+// matching so a result is not offered for installation again under a different
+// display name (notably ClawHub slugs and GitHub repository skills).
+func tuiSearchResultInstalled(result skill.HubSearchResult, installed []corelib.NLSkillEntry) (bool, string) {
+	for _, entry := range installed {
+		if tuiSearchResultMatchesInstalled(result, entry) {
+			return true, entry.Name
+		}
+	}
+	return false, ""
+}
+
+func tuiSearchResultMatchesInstalled(result skill.HubSearchResult, entry corelib.NLSkillEntry) bool {
+	source := normalizeTUISkillPolicySource(result.Source)
+	entrySource := normalizeTUISkillPolicySource(entry.Source)
+	switch source {
+	case "clawhub":
+		if entrySource != "clawhub" {
+			return false
+		}
+		// Prefer the persistent ClawHub slug. Name matching is only safe when
+		// the result has no slug (legacy response), otherwise two publishers can
+		// legitimately use the same display name.
+		if strings.TrimSpace(result.ID) != "" {
+			return tuiStringSliceContainsFold(entry.Triggers, result.ID)
+		}
+		return strings.EqualFold(entry.Name, result.Name)
+	case "github":
+		if entrySource != "github" {
+			return false
+		}
+		// The repository URL is stable across files/paths inside one repository.
+		// Only fall back to display name for legacy results without a repository.
+		if strings.TrimSpace(result.RepoURL) != "" {
+			return strings.EqualFold(entry.SourceProject, result.RepoURL)
+		}
+		return strings.EqualFold(entry.Name, result.Name)
+	default:
+		if entrySource != "hub" {
+			return false
+		}
+		if strings.TrimSpace(result.ID) != "" {
+			return strings.EqualFold(entry.HubSkillID, result.ID)
+		}
+		return strings.TrimSpace(result.SkillID) != "" && strings.EqualFold(entry.SkillID, result.SkillID)
+	}
+}
+
+// tuiInstalledSkillForInstallRequest shares the search UI's source-aware
+// identity rules, so direct installs cannot bypass duplicate detection.
+func tuiInstallRequestSearchResult(source, skillID, installRef string) skill.HubSearchResult {
+	result := skill.HubSearchResult{ID: skillID, Name: skillID, Source: source}
+	if normalizeTUISkillPolicySource(source) == "github" && strings.TrimSpace(installRef) != "" {
+		var candidate skill.GitHubSkillCandidate
+		if json.Unmarshal([]byte(installRef), &candidate) == nil {
+			result.RepoURL = candidate.RepoURL
+		}
+	}
+	return result
+}
+
+func tuiInstalledSkillForInstallRequest(source, skillID, installRef string, installed []corelib.NLSkillEntry) (string, bool) {
+	result := tuiInstallRequestSearchResult(source, skillID, installRef)
+	found, name := tuiSearchResultInstalled(result, installed)
+	return name, found
+}
+
+func tuiInstalledSkillEntryForInstallRequest(source, skillID, installRef string, installed []corelib.NLSkillEntry) (corelib.NLSkillEntry, bool) {
+	result := tuiInstallRequestSearchResult(source, skillID, installRef)
+	for _, entry := range installed {
+		if tuiSearchResultMatchesInstalled(result, entry) {
+			return entry, true
+		}
+	}
+	return corelib.NLSkillEntry{}, false
+}
+
+func tuiStringSliceContainsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(want)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRef, searchResultKey string) tea.Cmd {
 	lang := m.uiLang()
 	return func() tea.Msg {
+		source = normalizeTUISkillPolicySource(source)
+		effectiveSource := source
+		if effectiveSource == "" {
+			effectiveSource = "skillhub"
+		}
 		if source != "clawhub" && source != "github" && hubURL == "" {
 			hubURL = commands.ResolveHubCenterWithFailover(m.app.appConfig, m.app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL), nil, nil)
 		}
 		if m != nil && m.app != nil {
-			guardArgs := map[string]interface{}{"action": "install", "skill_id": skillID, "source": source, "hub_url": hubURL, "install_ref": installRef}
-			if ok, reason := enforceClientSecurityPolicy(m.app.appConfig, "manage_skill", guardArgs); !ok {
+			if !tuiSkillSourceAllowedByPolicy(m.app.appConfig, effectiveSource) {
+				return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: false, Message: fmt.Sprintf("来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, m.app.appConfig.SkillSourcesAllowed)}
+			}
+			if reason, blocked := m.app.appConfig.CapabilityMarketPolicy.RejectNonEnterpriseInstall(effectiveSource, m.app.appConfig.RemoteHubURL); blocked {
 				return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: false, Message: reason}
 			}
-			effectiveSource := source
-			if effectiveSource == "" {
-				effectiveSource = "skillhub"
+			guardArgs := map[string]interface{}{"action": "install", "skill_id": skillID, "source": effectiveSource, "hub_url": hubURL, "install_ref": installRef}
+			if ok, reason := enforceClientSecurityPolicy(m.app.appConfig, "manage_skill", guardArgs); !ok {
+				return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: false, Message: reason}
 			}
 			recordTUIDeveloperSkillRisk(m.app.appConfig, effectiveSource, "install", guardArgs)
 		}
@@ -1944,17 +2057,12 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 		var entry *corelib.NLSkillEntry
 		var err error
 
-		switch source {
+		if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, m.app.appConfig.NLSkills); installed {
+			return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: true, Message: tuiFormat(lang, "skillAlreadyInstalled", existing.Name), InstalledName: existing.Name, InstalledSearchResult: searchResultKey}
+		}
+
+		switch effectiveSource {
 		case "clawhub":
-			// Check if already installed.
-			for _, s := range m.app.appConfig.NLSkills {
-				if s.Source == "clawhub" && strings.EqualFold(s.Name, skillID) {
-					return views.ToolOperationResultMsg{
-						Tab: views.ToolSubSkill, Success: true,
-						Message: tuiFormat(lang, "skillAlreadyInstalled", s.Name),
-					}
-				}
-			}
 			entry, err = client.DownloadClawHub(ctx, skillID)
 		case "github":
 			if installRef == "" {
@@ -1965,15 +2073,6 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 			}
 			entry, err = client.DownloadGitHub(ctx, installRef)
 		default:
-			// Check if already installed.
-			for _, s := range m.app.appConfig.NLSkills {
-				if s.HubSkillID == skillID {
-					return views.ToolOperationResultMsg{
-						Tab: views.ToolSubSkill, Success: true,
-						Message: tuiFormat(lang, "skillAlreadyInstalled", s.Name),
-					}
-				}
-			}
 			entry, err = client.DownloadSkillHub(ctx, hubURL, skillID)
 		}
 
@@ -1992,6 +2091,12 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 				Message: tuiFormat(lang, "configLoadFailed", err.Error()),
 			}
 		}
+		// Re-read before persisting because another TUI/CLI process may have
+		// installed the same skill while this network download was in flight.
+		if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, cfg.NLSkills); installed {
+			m.app.appConfig = cfg
+			return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: true, Message: tuiFormat(lang, "skillAlreadyInstalled", existing.Name), InstalledName: existing.Name, InstalledSearchResult: searchResultKey}
+		}
 		cfg.NLSkills = append(cfg.NLSkills, *entry)
 		if err := store.SaveConfig(cfg); err != nil {
 			return views.ToolOperationResultMsg{
@@ -2002,15 +2107,18 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 		m.app.appConfig = cfg
 
 		sourceLabel := "SkillHub"
-		switch source {
+		switch effectiveSource {
 		case "clawhub":
 			sourceLabel = "ClawHub"
 		case "github":
 			sourceLabel = "GitHub"
 		}
 		return views.ToolOperationResultMsg{
-			Tab: views.ToolSubSkill, Success: true,
-			Message: tuiFormat(lang, "installedFrom", entry.Name, sourceLabel),
+			Tab:                   views.ToolSubSkill,
+			Success:               true,
+			Message:               tuiFormat(lang, "installedFrom", entry.Name, sourceLabel),
+			InstalledName:         entry.Name,
+			InstalledSearchResult: searchResultKey,
 		}
 	}
 }

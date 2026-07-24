@@ -398,10 +398,11 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// Run/build/demo style follow-ups must not enter implement-oriented post-loop
 	// verify+fix (that is for code-change tasks).
 	operational := codingTaskLooksOperational(task)
+	inquiry := codingTaskLooksInquiry(task)
 
 	// Codex-inspired post-loop verification: if the model completed without
 	// errors but didn't run verification itself, automatically verify + fix.
-	if !operational && result.Error == "" && !result.HardExit && !cb.ShouldStop() {
+	if !operational && !inquiry && result.Error == "" && !result.HardExit && !cb.ShouldStop() {
 		if verifyCmd := detectProjectVerifyCommand(s.projectPath); verifyCmd != "" {
 			// Check if model already ran a verification command during the loop
 			if !hasSubAgentSelfVerified(cb) {
@@ -459,7 +460,28 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		qualityIssueCount                       int
 	)
 
-	if operational {
+	if inquiry {
+		// Repository questions are evidence-gathering turns. They must never be
+		// forced through TDD, edit verification, or diff gates just because the
+		// conversation happens to be inside a coding workbench.
+		explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, "repository inquiry: read-only evidence gathering"
+		verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "repository inquiry: no code change requested"
+		diffChecked = false
+		diffSummary = ""
+		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
+		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		if len(allCommandsRun) > 0 {
+			summary = appendSubAgentCommandSummary(summary, allCommandsRun)
+		}
+		cb.emitCommandSummaryEvent(allCommandsRun)
+		if result.ToolCalls == 0 || (len(allFilesRead) == 0 && len(allSearchesRun) == 0 && len(allCommandsRun) == 0) {
+			status = TaskExecFailed
+			errMsg = "repository inquiry completed without inspection evidence"
+			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityFailed, errMsg, 1
+		} else {
+			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityPassed, "repository inquiry: inspection evidence gathered", 0
+		}
+	} else if operational {
 		// Lightweight path: require successful launch/build bash evidence, not
 		// file edits / git_diff / acceptance-criteria matrix.
 		explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, "operational request: exploration not required"
@@ -828,6 +850,7 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 		return c.cachedSystemPrompt
 	}
 	fullEnv := c != nil && c.subagent != nil && c.subagent.isFullEnvironment()
+	operational := c != nil && codingTaskLooksOperational(c.task)
 	prompt := buildCodingSubAgentSystemPrompt(c.task, c.subagent.projectPath, c.reqCtx, c.designCtx, c.prevOutputs)
 	inspectionRole := c != nil && c.subagent != nil && c.subagent.nestDepth > 0 &&
 		(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer)
@@ -843,7 +866,7 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 				buildLocalInspectionRoleSystemPrompt(c.subagent.projectPath, role, c.reqCtx)
 		}
 	}
-	if fullEnv && !inspectionRole {
+	if fullEnv && !inspectionRole && !operational {
 		// Nested workers get full-env tools/skills but must not be told to spawn again.
 		if c.subagent != nil && c.subagent.nestDepth > 0 {
 			prompt = buildNestedFullCodingEnvironmentPromptPreamble() + prompt
@@ -866,7 +889,7 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 	}
 
 	// Skills/MCP for root + nested workers only (inspection roles stay lean).
-	if !inspectionRole {
+	if !inspectionRole && !operational {
 		// Eagerly select relevant skills so both BuildSystemPrompt and BuildTools
 		// have access to the same matchedSkills list.
 		c.ensureMatchedSkillsSelected()
@@ -884,7 +907,7 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 	}
 
 	c.cachedSystemPrompt = prompt
-	c.logCacheEvent("system_prompt", "build", "prompt_chars", len(prompt), "full_env", fullEnv)
+	c.logCacheEvent("system_prompt", "build", "prompt_chars", len(prompt), "full_env", fullEnv, "operational", operational)
 	return prompt
 }
 
@@ -928,6 +951,16 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	if c.cachedTools == nil {
 		tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
 		tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition())
+		if c.task != nil && codingTaskLooksInquiry(c.task) {
+			c.cachedTools = filterCodingInquiryTools(tools)
+			c.logCacheEvent("tools", "build-read-only", "tool_count", len(c.cachedTools))
+			return cloneCodingSubAgentToolDefinitions(c.cachedTools)
+		}
+		if c.task != nil && codingTaskLooksOperational(c.task) {
+			c.cachedTools = filterCodingOperationalTools(tools)
+			c.logCacheEvent("tools", "build-operational", "tool_count", len(c.cachedTools))
+			return cloneCodingSubAgentToolDefinitions(c.cachedTools)
+		}
 
 		// Full workbench extras (web research / clock) — always on for full env.
 		if c.subagent != nil && c.subagent.isFullEnvironment() {
@@ -1118,6 +1151,12 @@ func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 }
 
 func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
+	if c != nil && codingTaskLooksInquiry(c.task) && !isCodingInquiryTool(name) {
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("tool %s is unavailable for a read-only repository inquiry", name), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	if c != nil && codingTaskLooksOperational(c.task) && !isCodingOperationalTool(name) {
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("tool %s is unavailable for a run/build/demo request", name), Outcome: agent.ToolExecutionOutcomeError}
+	}
 	result := c.executeToolWithOutcome(name, argsJSON)
 	outcome := agent.ToolExecutionOutcomeOK
 	switch result.Outcome {
@@ -1326,6 +1365,18 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	case "bash":
 		bashArgs := c.withDefaultWorkingDir(args)
 		if command, _ := bashArgs["command"].(string); command != "" {
+			if codingTaskLooksInquiry(c.task) {
+				if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+					c.trackCommandResult(bashArgs, msg, false)
+					return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
+				}
+			}
+			if codingTaskLooksOperational(c.task) {
+				if msg := rejectCodingOperationalShellCommand(command); msg != "" {
+					c.trackCommandResult(bashArgs, msg, false)
+					return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
+				}
+			}
 			// Hard block: never offer high-risk approval for silenced git self-checks.
 			if msg := rejectSilencedGitSelfCheckCommand(command); msg != "" {
 				c.trackCommandResult(bashArgs, msg, false)
@@ -11772,7 +11823,7 @@ func (c *codingSubAgentCallbacks) emitToolStartedEvent(name string) {
 // successfully read, so the code preview panel shows it during execution.
 // It reads the raw file content from disk (not the formatted tool output).
 func (c *codingSubAgentCallbacks) emitReadFilePreview(filePath string) {
-	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil || !codingTaskShouldEnableSourcePreview(c.task) {
 		return
 	}
 	app := c.subagent.handler.app
@@ -12278,6 +12329,14 @@ func (c *codingSubAgentCallbacks) ShouldStop() bool {
 
 func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	var b strings.Builder
+	if codingTaskLooksInquiry(c.task) {
+		b.WriteString(fmt.Sprintf("请回答下面的仓库/代码问题。先做必要的只读检索，再给出简洁、可核查的结论；不要修改文件、不要写测试、不要创建实现任务。\\n\\n## 问题\\n%s\\n\\n", compactSubAgentTaskDescription(c.task.Description)))
+		b.WriteString("**只读工作要求**：\\n")
+		b.WriteString("1. 项目根目录存在 .codegraph/ 时，优先使用 codegraph explore / codegraph node；否则使用 list_directory、glob、read_file 或搜索。\\n")
+		b.WriteString("2. 最终先回答用户问题，再简要列出查看过的关键目录或文件；不要输出 TDD、任务编号或完整工具流水。\\n")
+		b.WriteString("3. 未明确要求修改时，绝不写入文件、运行构建或测试。\\n")
+		return compactCodingSubAgentTaskUserMessage(b.String())
+	}
 	if codingTaskLooksOperational(c.task) {
 		b.WriteString(fmt.Sprintf("请执行以下操作任务（运行/构建/演示，不要改代码）：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
 		if c.task.Description != "" {
@@ -12347,19 +12406,31 @@ func appendCodingSubAgentOperationalChecklist(b *strings.Builder) {
 	b.WriteString("4. 最终摘要写清：执行了什么命令、退出码/关键输出、是否成功。\n\n")
 }
 
-// codingTaskLooksOperational detects run/build/demo follow-ups that must not use
-// implement-oriented quality gates (file-change / AC / git_diff matrix).
-// Prefer Description (full user text); fall back to Title. Do not join both —
-// that injects a newline and can double length, which weakens the short-ops heuristic.
+// codingTaskRequestKind is propagated from the root workbench classifier. A
+// task not launched by that workbench safely retains implementation behavior.
+func codingTaskRequestKind(task *TaskItem) codingRequestKind {
+	if task != nil {
+		switch task.RequestKind {
+		case codingRequestInquiry, codingRequestOperational, codingRequestImplementation:
+			return task.RequestKind
+		}
+	}
+	return codingRequestImplementation
+}
+
 func codingTaskLooksOperational(task *TaskItem) bool {
-	if task == nil {
-		return false
-	}
-	text := strings.TrimSpace(task.Description)
-	if text == "" {
-		text = strings.TrimSpace(task.Title)
-	}
-	return looksLikeCodingOperationalRequest(text)
+	return codingTaskRequestKind(task) == codingRequestOperational
+}
+
+func codingTaskLooksInquiry(task *TaskItem) bool {
+	return codingTaskRequestKind(task) == codingRequestInquiry
+}
+
+// codingTaskShouldEnableSourcePreview keeps the source/diff affordance scoped
+// to implementation work. The decision is made once by the root workbench and
+// carried with the task; subagents never re-infer intent from task wording.
+func codingTaskShouldEnableSourcePreview(task *TaskItem) bool {
+	return codingTaskRequestKind(task) == codingRequestImplementation
 }
 
 // summarizeOperationalSubAgentQuality requires a successful launch/build-style

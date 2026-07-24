@@ -27,6 +27,10 @@ describe('workflow state document collection', () => {
 
     it('normalizes workflow status before active-state decisions', () => {
         expect(normalizeWorkflowStatus('active')).toBe(WorkflowStatus.Active);
+        expect(normalizeWorkflowStatus(' COMPLETED ')).toBe(WorkflowStatus.Completed);
+        expect(normalizeWorkflowStatus('Cancelled')).toBe(WorkflowStatus.Cancelled);
+        expect(normalizeWorkflowStatus('succeeded')).toBe(WorkflowStatus.Completed);
+        expect(normalizeWorkflowStatus('canceled')).toBe(WorkflowStatus.Cancelled);
         expect(isWorkflowActive('active')).toBe(true);
         expect(isWorkflowActive('completed')).toBe(false);
         expect(isWorkflowActive('unknown')).toBe(false);

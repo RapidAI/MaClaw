@@ -7,6 +7,7 @@ const theme = {
     bg: "#fff",
     text: "#111",
     textMuted: "#64748b",
+    errorText: "#a61b1b",
     titleBarBg: "#f8fafc",
     titleBarBorder: "#e2e8f0",
     divider: "#e2e8f0",
@@ -139,6 +140,16 @@ describe("CodingConflictSidePanel", () => {
         expect(getByTestId("coding-conflict-progress")).toBeTruthy();
         expect(getByTestId("coding-conflict-progress-label").textContent || "").toMatch(/1 of 3|1\/3/);
         expect((getByTestId("coding-conflict-progress-bar") as HTMLElement).style.width).toBe("33%");
+    });
+
+    it("uses the active scheme's error token for conflict emphasis", () => {
+        const { props } = baseProps();
+        const { getByText, getByTestId } = render(
+            <CodingConflictSidePanel {...props} />,
+        );
+
+        expect(getByText("Isolation conflicts").style.color).toBe("rgb(166, 27, 27)");
+        expect(getByTestId("coding-conflict-discard-all").style.color).toBe("rgb(166, 27, 27)");
     });
 
     it("syntax-highlights triple pane code for known extensions", () => {

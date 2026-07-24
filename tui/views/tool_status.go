@@ -48,14 +48,19 @@ type SkillItem struct {
 
 // SkillSearchResult represents a search result from SkillHub, ClawHub, or GitHub.
 type SkillSearchResult struct {
-	ID         string
-	Name       string
-	Version    string
-	Rating     float64
-	Downloads  int
-	Trust      string
-	Source     string // "skillhub", "clawhub", "github"
-	InstallRef string // JSON-serialized GitHubSkillCandidate (github only)
+	ID            string
+	Name          string
+	Description   string
+	Version       string
+	Rating        float64
+	Downloads     int
+	Trust         string
+	Source        string // "skillhub", "clawhub", "github"
+	RepoURL       string // GitHub repository URL (github only)
+	InstallRef    string // JSON-serialized GitHubSkillCandidate (github only)
+	Installed     bool
+	InstalledName string
+	Caution       string
 }
 
 // MCPItem represents a configured MCP server for display.
@@ -69,23 +74,30 @@ type MCPItem struct {
 
 // --- Messages for async operations ---
 
-// ToolSkillSearchMsg triggers a skill search.
-type ToolSkillSearchMsg struct{ Query string }
+// ToolSkillSearchMsg triggers a skill search. RequestID lets the view ignore a
+// stale async response after the user starts a newer search.
+type ToolSkillSearchMsg struct {
+	Query     string
+	RequestID int
+}
 
 // ToolSkillSearchResultMsg returns search results.
 type ToolSkillSearchResultMsg struct {
 	Results []SkillSearchResult
 	Error   string
+	// RequestID identifies the search that produced this response.
+	RequestID int
 	// Warning is non-fatal (e.g. partial source failure / degraded search).
 	Warning string
 }
 
 // ToolSkillInstallMsg triggers a skill install.
 type ToolSkillInstallMsg struct {
-	SkillID    string
-	HubURL     string
-	Source     string // "skillhub", "clawhub", or "github"
-	InstallRef string // JSON-serialized GitHubSkillCandidate (github only)
+	SkillID         string
+	HubURL          string
+	Source          string // "skillhub", "clawhub", or "github"
+	InstallRef      string // JSON-serialized GitHubSkillCandidate (github only)
+	SearchResultKey string // stable identity retained while async install runs
 }
 
 // ToolSkillInstallResultMsg returns install result.
@@ -115,16 +127,18 @@ type ToolStatusModel struct {
 	height int
 
 	// Skill sub-tab state
-	skills            []SkillItem
-	skillCursor       int
-	skillSearch       textinput.Model
-	skillPresetIdx    int
-	skillSearching    bool
-	skillResults      []SkillSearchResult
-	skillResultCursor int
-	skillMessage      string // status message
-	skillConfirming   bool   // true when showing install confirmation dialog
-	skillConfirmIdx   int    // index of the result being confirmed
+	skills             []SkillItem
+	skillCursor        int
+	skillSearch        textinput.Model
+	skillPresetIdx     int
+	skillSearching     bool
+	skillSearchRequest int
+	skillResults       []SkillSearchResult
+	skillResultCursor  int
+	skillMessage       string // status message
+	skillConfirming    bool   // true when showing install confirmation dialog
+	skillConfirmIdx    int    // index of the result being confirmed
+	skillInstalling    bool   // true while an accepted install is still in flight
 
 	// MCP sub-tab state
 	mcpServers           []MCPItem
@@ -366,6 +380,9 @@ func (m ToolStatusModel) Update(msg tea.Msg) (ToolStatusModel, tea.Cmd) {
 		return m, nil
 
 	case ToolSkillSearchResultMsg:
+		if msg.RequestID != 0 && msg.RequestID != m.skillSearchRequest {
+			return m, nil
+		}
 		m.skillSearching = false
 		if msg.Error != "" {
 			m.skillMessage = msg.Error
@@ -398,7 +415,11 @@ func (m ToolStatusModel) Update(msg tea.Msg) (ToolStatusModel, tea.Cmd) {
 	case ToolOperationResultMsg:
 		message := msg.Message
 		if msg.Tab == ToolSubSkill {
+			m.skillInstalling = false
 			m.skillMessage = message
+			if msg.Success && strings.TrimSpace(msg.InstalledName) != "" {
+				m.markSkillSearchResultInstalled(msg.InstalledSearchResult, msg.InstalledName)
+			}
 		} else {
 			m.mcpMessage = message
 		}
@@ -423,6 +444,20 @@ func (m ToolStatusModel) Update(msg tea.Msg) (ToolStatusModel, tea.Cmd) {
 		return m.updateMCP(msg)
 	}
 	return m, nil
+}
+
+func (m *ToolStatusModel) markSkillSearchResultInstalled(key, name string) {
+	for i := range m.skillResults {
+		if key == "" || m.skillSearchResultKey(m.skillResults[i]) == key {
+			m.skillResults[i].Installed = true
+			m.skillResults[i].InstalledName = name
+			return
+		}
+	}
+}
+
+func (m ToolStatusModel) skillSearchResultKey(result SkillSearchResult) string {
+	return strings.ToLower(strings.TrimSpace(result.Source)) + "\x00" + strings.TrimSpace(result.ID) + "\x00" + strings.TrimSpace(result.InstallRef)
 }
 
 type skillSearchPreset struct {
@@ -493,12 +528,26 @@ func (m ToolStatusModel) updateSkill(msg tea.KeyMsg) (ToolStatusModel, tea.Cmd) 
 			m.skillConfirming = false
 			if m.skillConfirmIdx < len(m.skillResults) {
 				sr := m.skillResults[m.skillConfirmIdx]
+				if reason := sr.installBlockedReason(m.lang); reason != "" {
+					m.skillMessage = reason
+					return m, nil
+				}
+				if sr.Installed {
+					name := sr.InstalledName
+					if name == "" {
+						name = sr.Name
+					}
+					m.skillMessage = toolStatusText(m.lang, "installedPrefix") + name
+					return m, nil
+				}
 				m.skillMessage = toolStatusText(m.lang, "installingPrefix") + sr.Name
+				m.skillInstalling = true
 				return m, func() tea.Msg {
 					return ToolSkillInstallMsg{
-						SkillID:    sr.ID,
-						Source:     sr.Source,
-						InstallRef: sr.InstallRef,
+						SkillID:         sr.ID,
+						Source:          sr.Source,
+						InstallRef:      sr.InstallRef,
+						SearchResultKey: m.skillSearchResultKey(sr),
 					}
 				}
 			}
@@ -518,10 +567,10 @@ func (m ToolStatusModel) updateSkill(msg tea.KeyMsg) (ToolStatusModel, tea.Cmd) 
 		case "enter":
 			query := strings.TrimSpace(m.skillSearch.Value())
 			if query != "" {
-				m.skillSearching = true
-				m.skillMessage = toolStatusText(m.lang, "searching")
+				m.beginSkillSearch(toolStatusText(m.lang, "searching"))
 				m.skillSearch.Blur()
-				return m, func() tea.Msg { return ToolSkillSearchMsg{Query: query} }
+				requestID := m.skillSearchRequest
+				return m, func() tea.Msg { return ToolSkillSearchMsg{Query: query, RequestID: requestID} }
 			}
 			return m, nil
 		case "esc":
@@ -567,8 +616,23 @@ func (m ToolStatusModel) updateSkill(msg tea.KeyMsg) (ToolStatusModel, tea.Cmd) 
 		}
 	case "enter":
 		// Show confirmation dialog before installing
+		if m.skillInstalling {
+			return m, nil
+		}
 		if len(m.skillResults) > 0 && m.skillResultCursor < len(m.skillResults) {
 			sr := m.skillResults[m.skillResultCursor]
+			if sr.Installed {
+				name := sr.InstalledName
+				if name == "" {
+					name = sr.Name
+				}
+				m.skillMessage = toolStatusText(m.lang, "installedPrefix") + name
+				return m, nil
+			}
+			if reason := sr.installBlockedReason(m.lang); reason != "" {
+				m.skillMessage = reason
+				return m, nil
+			}
 			m.skillConfirming = true
 			m.skillConfirmIdx = m.skillResultCursor
 			sourceLabel := "SkillHub"
@@ -585,10 +649,11 @@ func (m ToolStatusModel) updateSkill(msg tea.KeyMsg) (ToolStatusModel, tea.Cmd) 
 			return m.startSkillPresetSearch()
 		}
 	case "esc":
-		// Clear search results, go back to installed list
-		if len(m.skillResults) > 0 {
-			m.skillResults = nil
-			m.skillMessage = ""
+		// Dismiss the current search, including a request that is still running.
+		// Incrementing the request identity prevents its late response from
+		// restoring results after the user deliberately returned to the list.
+		if m.skillSearching || len(m.skillResults) > 0 {
+			m.dismissSkillSearch()
 		}
 	case "r":
 		return m, func() tea.Msg { return ToolRefreshMsg{} }
@@ -603,10 +668,24 @@ func (m ToolStatusModel) startSkillPresetSearch() (ToolStatusModel, tea.Cmd) {
 	}
 	label := m.currentSkillSearchPresetLabel()
 	m.skillSearch.SetValue(query)
-	m.skillSearching = true
-	m.skillMessage = toolStatusFormat(m.lang, "searchingPreset", label)
+	m.beginSkillSearch(toolStatusFormat(m.lang, "searchingPreset", label))
 	m.cycleSkillSearchPreset(1)
-	return m, func() tea.Msg { return ToolSkillSearchMsg{Query: query} }
+	requestID := m.skillSearchRequest
+	return m, func() tea.Msg { return ToolSkillSearchMsg{Query: query, RequestID: requestID} }
+}
+
+func (m *ToolStatusModel) beginSkillSearch(message string) {
+	m.skillSearchRequest++
+	m.skillSearching = true
+	m.skillMessage = message
+}
+
+func (m *ToolStatusModel) dismissSkillSearch() {
+	m.skillSearchRequest++
+	m.skillSearching = false
+	m.skillResults = nil
+	m.skillResultCursor = 0
+	m.skillMessage = ""
 }
 
 func (m *ToolStatusModel) cycleSkillSearchPreset(delta int) {
@@ -1258,7 +1337,9 @@ func (m ToolStatusModel) viewSkill() string {
 	// Search bar
 	b.WriteString("  " + m.skillSearch.View() + "\n")
 	if m.skillMessage != "" {
-		b.WriteString("  " + fitDisplay(m.skillMessage, max(12, m.width-2)) + "\n")
+		for _, line := range strings.Split(m.skillMessage, "\n") {
+			b.WriteString("  " + fitDisplay(line, max(12, m.width-2)) + "\n")
+		}
 	}
 	b.WriteString("\n")
 
@@ -1284,6 +1365,9 @@ func (m ToolStatusModel) viewSkill() string {
 			if sr.Source == "github" {
 				metric = fmt.Sprintf("*%d", sr.Downloads)
 			}
+			if sr.Installed {
+				metric = toolStatusText(m.lang, "installedPrefix")
+			}
 			line := fmt.Sprintf("  %s %s %s %s",
 				padDisplay(fitDisplay(sr.Name, nameWidth), nameWidth),
 				padDisplay(fitDisplay(sr.Version, 8), 8),
@@ -1298,6 +1382,15 @@ func (m ToolStatusModel) viewSkill() string {
 		}
 		if end < len(m.skillResults) {
 			b.WriteString(dim.Render("  "+toolStatusFormat(m.lang, "moreBelow", len(m.skillResults)-end)) + "\n")
+		}
+		if m.skillResultCursor >= 0 && m.skillResultCursor < len(m.skillResults) {
+			sr := m.skillResults[m.skillResultCursor]
+			if description := strings.TrimSpace(sr.Description); description != "" {
+				b.WriteString(dim.Render("  "+fitDisplay(description, max(12, m.width-2))) + "\n")
+			}
+			if caution := strings.TrimSpace(sr.Caution); caution != "" {
+				b.WriteString(warn.Render("  "+fitDisplay(caution, max(12, m.width-2))) + "\n")
+			}
 		}
 		return b.String()
 	}
@@ -1346,6 +1439,14 @@ func (m ToolStatusModel) viewSkill() string {
 
 	b.WriteString("\n" + dim.Render("  "+fitDisplay(toolStatusFormat(m.lang, "skillFooter", m.currentSkillSearchPresetLabel()), max(12, m.width-2))))
 	return b.String()
+}
+
+func (sr SkillSearchResult) installBlockedReason(lang string) string {
+	source := strings.TrimSpace(strings.ToLower(sr.Source))
+	if (source == "github" || source == "git_hub") && strings.TrimSpace(sr.InstallRef) == "" {
+		return toolStatusText(lang, "githubInstallMetadataMissing")
+	}
+	return ""
 }
 
 func (m ToolStatusModel) currentSkillSearchPresetLabel() string {
@@ -1693,122 +1794,124 @@ func (m ToolStatusModel) renderCompactRemoteMCPFocusedField() string {
 func toolStatusText(lang, key string) string {
 	if i18n.NormalizeLang(lang) == "en" {
 		texts := map[string]string{
-			"skillSearchPlaceholder":  "Search Skill...",
-			"noSkillResults":          "No matching Skill found",
-			"foundSkillResults":       "Found %d results",
-			"installedPrefix":         "Installed: ",
-			"installingPrefix":        "Installing: ",
-			"searching":               "Searching...",
-			"searchingPreset":         "Searching preset: %s",
-			"confirmInstall":          "Install %s from %s? [Y/n]",
-			"localRequired":           "name and command are required",
-			"localArgsInvalid":        "args contain an unfinished quote",
-			"localEnvInvalid":         "env contains an unfinished quote",
-			"remoteRequired":          "name and URL are required",
-			"remoteSecretRequired":    "selected auth type needs a secret or token",
-			"addingPrefix":            "Adding: ",
-			"subSkill":                "1:Skill",
-			"subMCP":                  "2:MCP",
-			"skillHint":               "←→:preset  Enter/Space:search  s:type  r:refresh",
-			"searchResultsHeader":     "Search results (Enter installs, Esc returns):",
-			"moreAbove":               "... %d more above",
-			"moreBelow":               "... %d more below",
-			"noInstalledSkills":       "No installed Skills. Left/Right chooses a common search; Enter or Space runs it. Press s to type one.",
-			"skillQuickSearch":        "Next quick search preset: %s",
-			"skillPresetChoices":      "Quick presets: %s",
-			"installedSkillCount":     "%d installed Skills:",
-			"skillFooter":             "Up/Down:select  Left/Right:preset(%s)  Enter/Space:search  s:type  r:refresh",
-			"noMCPServers":            "No MCP servers yet.",
-			"mcpNextLocalTemplate":    "Selected local template: %s",
-			"mcpLocalTemplateChoices": "Local templates: %s",
-			"mcpEmptyFooter":          "Left/Right chooses local template. Enter/Space opens it. A opens remote templates.",
-			"mcpServerCount":          "%d configured MCP servers:",
-			"mcpLocal":                "local",
-			"mcpRemote":               "remote",
-			"mcpFooter":               "a:add local  A:add remote  r:refresh  1/2:switch sub-tab",
-			"addLocalMCP":             "Add local MCP server",
-			"addRemoteMCP":            "Add remote MCP server",
-			"fieldName":               "Name:",
-			"fieldCommand":            "Command:",
-			"fieldArgs":               "Args:",
-			"fieldEnv":                "Env:",
-			"fieldTemplate":           "Template:",
-			"fieldAuthType":           "Auth type:",
-			"fieldSecret":             "Secret/Token:",
-			"localMCPHelp":            "Split args by spaces; env format: KEY=VALUE KEY2=VALUE2",
-			"localMCPPresetHelp":      "Left/Right or Space changes template; Enter confirms. Tab adjusts details only if needed.",
-			"remoteMCPPresetHelp":     "Left/Right or Space changes endpoint template; Tab adjusts URL/auth only if needed.",
-			"mcpPresetReady":          "Ready to add:",
-			"mcpPresetQuickHelp":      "Enter confirms this preset. Tab adjusts details if needed. Space changes template.",
-			"mcpPresetNeedsURL":       "URL required before submit",
-			"mcpFormFooter":           "Tab:next  Enter:confirm  Esc:cancel",
-			"placeholderName":         "Name",
-			"placeholderCommand":      "Command (e.g. uvx, npx)",
-			"placeholderArgs":         "Args",
-			"placeholderEnv":          "Env (KEY=VAL ...)",
-			"placeholderEndpoint":     "Endpoint URL",
-			"placeholderSecret":       "Secret or Token",
+			"skillSearchPlaceholder":       "Search Skill...",
+			"noSkillResults":               "No matching Skill found",
+			"foundSkillResults":            "Found %d results",
+			"installedPrefix":              "Installed: ",
+			"installingPrefix":             "Installing: ",
+			"searching":                    "Searching...",
+			"githubInstallMetadataMissing": "GitHub install metadata is missing; search again before installing.",
+			"searchingPreset":              "Searching preset: %s",
+			"confirmInstall":               "Install %s from %s? [Y/n]",
+			"localRequired":                "name and command are required",
+			"localArgsInvalid":             "args contain an unfinished quote",
+			"localEnvInvalid":              "env contains an unfinished quote",
+			"remoteRequired":               "name and URL are required",
+			"remoteSecretRequired":         "selected auth type needs a secret or token",
+			"addingPrefix":                 "Adding: ",
+			"subSkill":                     "1:Skill",
+			"subMCP":                       "2:MCP",
+			"skillHint":                    "←→:preset  Enter/Space:search  s:type  r:refresh",
+			"searchResultsHeader":          "Search results (Enter installs, Esc returns):",
+			"moreAbove":                    "... %d more above",
+			"moreBelow":                    "... %d more below",
+			"noInstalledSkills":            "No installed Skills. Left/Right chooses a common search; Enter or Space runs it. Press s to type one.",
+			"skillQuickSearch":             "Next quick search preset: %s",
+			"skillPresetChoices":           "Quick presets: %s",
+			"installedSkillCount":          "%d installed Skills:",
+			"skillFooter":                  "Up/Down:select  Left/Right:preset(%s)  Enter/Space:search  s:type  r:refresh",
+			"noMCPServers":                 "No MCP servers yet.",
+			"mcpNextLocalTemplate":         "Selected local template: %s",
+			"mcpLocalTemplateChoices":      "Local templates: %s",
+			"mcpEmptyFooter":               "Left/Right chooses local template. Enter/Space opens it. A opens remote templates.",
+			"mcpServerCount":               "%d configured MCP servers:",
+			"mcpLocal":                     "local",
+			"mcpRemote":                    "remote",
+			"mcpFooter":                    "a:add local  A:add remote  r:refresh  1/2:switch sub-tab",
+			"addLocalMCP":                  "Add local MCP server",
+			"addRemoteMCP":                 "Add remote MCP server",
+			"fieldName":                    "Name:",
+			"fieldCommand":                 "Command:",
+			"fieldArgs":                    "Args:",
+			"fieldEnv":                     "Env:",
+			"fieldTemplate":                "Template:",
+			"fieldAuthType":                "Auth type:",
+			"fieldSecret":                  "Secret/Token:",
+			"localMCPHelp":                 "Split args by spaces; env format: KEY=VALUE KEY2=VALUE2",
+			"localMCPPresetHelp":           "Left/Right or Space changes template; Enter confirms. Tab adjusts details only if needed.",
+			"remoteMCPPresetHelp":          "Left/Right or Space changes endpoint template; Tab adjusts URL/auth only if needed.",
+			"mcpPresetReady":               "Ready to add:",
+			"mcpPresetQuickHelp":           "Enter confirms this preset. Tab adjusts details if needed. Space changes template.",
+			"mcpPresetNeedsURL":            "URL required before submit",
+			"mcpFormFooter":                "Tab:next  Enter:confirm  Esc:cancel",
+			"placeholderName":              "Name",
+			"placeholderCommand":           "Command (e.g. uvx, npx)",
+			"placeholderArgs":              "Args",
+			"placeholderEnv":               "Env (KEY=VAL ...)",
+			"placeholderEndpoint":          "Endpoint URL",
+			"placeholderSecret":            "Secret or Token",
 		}
 		if text, ok := texts[key]; ok {
 			return text
 		}
 	}
 	texts := map[string]string{
-		"skillSearchPlaceholder":  "搜索 Skill...",
-		"noSkillResults":          "未找到匹配的 Skill",
-		"foundSkillResults":       "找到 %d 个结果",
-		"installedPrefix":         "已安装: ",
-		"installingPrefix":        "安装中: ",
-		"searching":               "搜索中...",
-		"searchingPreset":         "按预设搜索: %s",
-		"confirmInstall":          "确认安装 %s（来源: %s）？ [Y/n]",
-		"localRequired":           "名称和命令为必填项",
-		"localArgsInvalid":        "参数中有未闭合的引号",
-		"localEnvInvalid":         "环境变量中有未闭合的引号",
-		"remoteRequired":          "名称和 URL 为必填项",
-		"remoteSecretRequired":    "当前认证类型需要填写密钥或 Token",
-		"addingPrefix":            "添加中: ",
-		"subSkill":                "1:技能",
-		"subMCP":                  "2:MCP 服务",
-		"skillHint":               "←→:预设  Enter/Space:搜索  s:输入  r:刷新",
-		"searchResultsHeader":     "搜索结果（Enter 安装，Esc 返回）:",
-		"moreAbove":               "... 上方还有 %d 项",
-		"moreBelow":               "... 下方还有 %d 项",
-		"noInstalledSkills":       "暂无已安装的 Skill。左右选择常用搜索，Enter 或 Space 执行；按 s 可手动搜索。",
-		"skillQuickSearch":        "下一个快速搜索预设：%s",
-		"skillPresetChoices":      "常用预设：%s",
-		"installedSkillCount":     "已安装 %d 个 Skill:",
-		"skillFooter":             "↑↓:选择  ←→:预设(%s)  Enter/Space:搜索  s:输入  r:刷新",
-		"noMCPServers":            "暂无 MCP 服务器。",
-		"mcpNextLocalTemplate":    "当前本地模板：%s",
-		"mcpLocalTemplateChoices": "本地模板：%s",
-		"mcpEmptyFooter":          "左右键选择本地模板，Enter/Space 打开；A 打开远程模板。",
-		"mcpServerCount":          "已配置 %d 个 MCP 服务器:",
-		"mcpLocal":                "本地",
-		"mcpRemote":               "远程",
-		"mcpFooter":               "a:添加本地  A:添加远程  r:刷新  1/2:切换子标签",
-		"addLocalMCP":             "添加本地 MCP 服务器",
-		"addRemoteMCP":            "添加远程 MCP 服务器",
-		"fieldName":               "名称:",
-		"fieldCommand":            "命令:",
-		"fieldArgs":               "参数:",
-		"fieldEnv":                "环境变量:",
-		"fieldTemplate":           "模板:",
-		"fieldAuthType":           "认证类型:",
-		"fieldSecret":             "密钥/Token:",
-		"localMCPHelp":            "参数用空格分隔，环境变量格式: KEY=VALUE KEY2=VALUE2",
-		"localMCPPresetHelp":      "左右键或 Space 切换模板；Enter 确认。必要时按 Tab 调整细节。",
-		"remoteMCPPresetHelp":     "左右键或 Space 切换端点模板；必要时按 Tab 调整 URL/认证。",
-		"mcpPresetReady":          "将添加:",
-		"mcpPresetQuickHelp":      "Enter 使用该预设。必要时 Tab 调整细节。Space 切换模板。",
-		"mcpPresetNeedsURL":       "提交前需要填写 URL",
-		"mcpFormFooter":           "Tab:下一项  Enter:确认  Esc:取消",
-		"placeholderName":         "名称",
-		"placeholderCommand":      "命令 (如 uvx, npx)",
-		"placeholderArgs":         "参数",
-		"placeholderEnv":          "环境变量 (KEY=VAL ...)",
-		"placeholderEndpoint":     "端点 URL",
-		"placeholderSecret":       "密钥或 Token",
+		"skillSearchPlaceholder":       "搜索 Skill...",
+		"noSkillResults":               "未找到匹配的 Skill",
+		"foundSkillResults":            "找到 %d 个结果",
+		"installedPrefix":              "已安装: ",
+		"installingPrefix":             "安装中: ",
+		"searching":                    "搜索中...",
+		"githubInstallMetadataMissing": "缺少 GitHub 安装元数据；请重新搜索后再安装。",
+		"searchingPreset":              "按预设搜索: %s",
+		"confirmInstall":               "确认安装 %s（来源: %s）？ [Y/n]",
+		"localRequired":                "名称和命令为必填项",
+		"localArgsInvalid":             "参数中有未闭合的引号",
+		"localEnvInvalid":              "环境变量中有未闭合的引号",
+		"remoteRequired":               "名称和 URL 为必填项",
+		"remoteSecretRequired":         "当前认证类型需要填写密钥或 Token",
+		"addingPrefix":                 "添加中: ",
+		"subSkill":                     "1:技能",
+		"subMCP":                       "2:MCP 服务",
+		"skillHint":                    "←→:预设  Enter/Space:搜索  s:输入  r:刷新",
+		"searchResultsHeader":          "搜索结果（Enter 安装，Esc 返回）:",
+		"moreAbove":                    "... 上方还有 %d 项",
+		"moreBelow":                    "... 下方还有 %d 项",
+		"noInstalledSkills":            "暂无已安装的 Skill。左右选择常用搜索，Enter 或 Space 执行；按 s 可手动搜索。",
+		"skillQuickSearch":             "下一个快速搜索预设：%s",
+		"skillPresetChoices":           "常用预设：%s",
+		"installedSkillCount":          "已安装 %d 个 Skill:",
+		"skillFooter":                  "↑↓:选择  ←→:预设(%s)  Enter/Space:搜索  s:输入  r:刷新",
+		"noMCPServers":                 "暂无 MCP 服务器。",
+		"mcpNextLocalTemplate":         "当前本地模板：%s",
+		"mcpLocalTemplateChoices":      "本地模板：%s",
+		"mcpEmptyFooter":               "左右键选择本地模板，Enter/Space 打开；A 打开远程模板。",
+		"mcpServerCount":               "已配置 %d 个 MCP 服务器:",
+		"mcpLocal":                     "本地",
+		"mcpRemote":                    "远程",
+		"mcpFooter":                    "a:添加本地  A:添加远程  r:刷新  1/2:切换子标签",
+		"addLocalMCP":                  "添加本地 MCP 服务器",
+		"addRemoteMCP":                 "添加远程 MCP 服务器",
+		"fieldName":                    "名称:",
+		"fieldCommand":                 "命令:",
+		"fieldArgs":                    "参数:",
+		"fieldEnv":                     "环境变量:",
+		"fieldTemplate":                "模板:",
+		"fieldAuthType":                "认证类型:",
+		"fieldSecret":                  "密钥/Token:",
+		"localMCPHelp":                 "参数用空格分隔，环境变量格式: KEY=VALUE KEY2=VALUE2",
+		"localMCPPresetHelp":           "左右键或 Space 切换模板；Enter 确认。必要时按 Tab 调整细节。",
+		"remoteMCPPresetHelp":          "左右键或 Space 切换端点模板；必要时按 Tab 调整 URL/认证。",
+		"mcpPresetReady":               "将添加:",
+		"mcpPresetQuickHelp":           "Enter 使用该预设。必要时 Tab 调整细节。Space 切换模板。",
+		"mcpPresetNeedsURL":            "提交前需要填写 URL",
+		"mcpFormFooter":                "Tab:下一项  Enter:确认  Esc:取消",
+		"placeholderName":              "名称",
+		"placeholderCommand":           "命令 (如 uvx, npx)",
+		"placeholderArgs":              "参数",
+		"placeholderEnv":               "环境变量 (KEY=VAL ...)",
+		"placeholderEndpoint":          "端点 URL",
+		"placeholderSecret":            "密钥或 Token",
 	}
 	if text, ok := texts[key]; ok {
 		return text

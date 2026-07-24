@@ -25,11 +25,12 @@ func ConfigureMobileDocumentQuota(system store.SystemSettingsRepository, securit
 	mobileQuotaSecurity = securitySvc
 }
 
-// mobileDocumentQuotaUsedBytes sums stored emergency document material for an owner:
+// mobileDocumentQuotaUsedBytes sums stored emergency document material for an owner
+// in one tenant:
 // draft markdown bytes + upload source bytes (raw files still on Hub).
 // Dead blob paths are repaired so missing originals do not inflate used quota.
-func mobileDocumentQuotaUsedBytes(ownerID string) int64 {
-	used, repaired := mobileDocumentQuotaScan(ownerID, true)
+func mobileDocumentQuotaUsedBytes(ownerID, tenantID string) int64 {
+	used, repaired := mobileDocumentQuotaScan(ownerID, tenantID, true)
 	if repaired {
 		// Persist outside the scan lock (scan already unlocked).
 		mobilePersistState()
@@ -40,7 +41,7 @@ func mobileDocumentQuotaUsedBytes(ownerID string) int64 {
 // mobileDocumentQuotaScan counts quota while optionally repairing dead original paths.
 // When repair is false, metadata is trusted (fast path for write checks that are under limit).
 // Caller must not hold mobileDocuments.Lock.
-func mobileDocumentQuotaScan(ownerID string, repair bool) (used int64, repaired bool) {
+func mobileDocumentQuotaScan(ownerID, tenantID string, repair bool) (used int64, repaired bool) {
 	ownerID = strings.TrimSpace(ownerID)
 	if ownerID == "" {
 		return 0, false
@@ -49,7 +50,7 @@ func mobileDocumentQuotaScan(ownerID string, repair bool) (used int64, repaired 
 	defer mobileDocuments.Unlock()
 	draftsWithOriginal := make(map[string]struct{})
 	for id, draft := range mobileDocuments.drafts {
-		if draft.OwnerID != ownerID {
+		if draft.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, draft.TenantID) {
 			continue
 		}
 		if repair && mobileDraftRepairSourceMeta(&draft) {
@@ -63,7 +64,7 @@ func mobileDocumentQuotaScan(ownerID string, repair bool) (used int64, repaired 
 		}
 	}
 	for id, upload := range mobileDocuments.uploads {
-		if upload.OwnerID != ownerID {
+		if upload.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, upload.TenantID) {
 			continue
 		}
 		if repair && mobileUploadRepairSourceMeta(&upload) {
@@ -105,7 +106,7 @@ func mobileEffectiveDocumentQuota(ctx context.Context, principal *auth.ViewerPri
 	return caps.DocumentQuotaBytes
 }
 
-func mobileCheckDocumentQuota(ownerID string, additionalBytes int64, limit int64) error {
+func mobileCheckDocumentQuota(ownerID, tenantID string, additionalBytes int64, limit int64) error {
 	if limit <= 0 {
 		limit = 100 * 1024 * 1024
 	}
@@ -113,12 +114,12 @@ func mobileCheckDocumentQuota(ownerID string, additionalBytes int64, limit int64
 		additionalBytes = 0
 	}
 	// Fast path: trust in-memory size metadata (no disk stats).
-	used, _ := mobileDocumentQuotaScan(ownerID, false)
+	used, _ := mobileDocumentQuotaScan(ownerID, tenantID, false)
 	if used+additionalBytes <= limit {
 		return nil
 	}
 	// Over limit: re-scan with repair so ghost blobs cannot block uploads.
-	used, repaired := mobileDocumentQuotaScan(ownerID, true)
+	used, repaired := mobileDocumentQuotaScan(ownerID, tenantID, true)
 	if repaired {
 		mobilePersistState()
 	}
@@ -135,7 +136,7 @@ func mobileCheckDocumentQuotaForPrincipal(ctx context.Context, principal *auth.V
 	}
 	ownerID := mobilePrincipalOwnerID(principal)
 	limit := mobileEffectiveDocumentQuota(ctx, principal)
-	return mobileCheckDocumentQuota(ownerID, additionalBytes, limit)
+	return mobileCheckDocumentQuota(ownerID, principal.TenantID, additionalBytes, limit)
 }
 
 // MobileDocumentQuotaHandler returns current used/limit for the viewer.
@@ -154,24 +155,24 @@ func MobileDocumentQuotaHandler(identity *auth.IdentityService) http.HandlerFunc
 		}
 		mobileEnsureStateLoaded()
 		ownerID := mobilePrincipalOwnerID(principal)
-		used := mobileDocumentQuotaUsedBytes(ownerID)
+		used := mobileDocumentQuotaUsedBytes(ownerID, principal.TenantID)
 		limit := mobileEffectiveDocumentQuota(r.Context(), principal)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"document_quota_bytes":      limit,
 			"document_quota_used_bytes": used,
 			"document_quota_remaining":  maxInt64(0, limit-used),
 			// Helper for clients that show human sizes.
-			"draft_rune_estimate": mobileDocumentDraftRuneEstimate(ownerID),
+			"draft_rune_estimate": mobileDocumentDraftRuneEstimate(ownerID, principal.TenantID),
 		})
 	}
 }
 
-func mobileDocumentDraftRuneEstimate(ownerID string) int64 {
+func mobileDocumentDraftRuneEstimate(ownerID, tenantID string) int64 {
 	var n int64
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
 	for _, draft := range mobileDocuments.drafts {
-		if draft.OwnerID != ownerID {
+		if draft.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, draft.TenantID) {
 			continue
 		}
 		n += int64(utf8.RuneCountInString(draft.Markdown))

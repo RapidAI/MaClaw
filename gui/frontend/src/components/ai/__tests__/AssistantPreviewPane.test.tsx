@@ -125,7 +125,6 @@ function renderPane() {
             splitRatio={0.42}
             startPreviewResize={vi.fn()}
             theme={theme}
-            themeMode="light"
             workflowState={workflowState}
         />,
     );
@@ -145,7 +144,6 @@ function renderPaneWithCodeState(codePreviewState: typeof emptyCodePreviewState 
             splitRatio={0.42}
             startPreviewResize={vi.fn()}
             theme={theme}
-            themeMode="light"
             workflowState={workflowState}
         />,
     );
@@ -199,7 +197,6 @@ describe('AssistantPreviewPane', () => {
                 splitRatio={0.42}
                 startPreviewResize={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -226,7 +223,6 @@ describe('AssistantPreviewPane', () => {
                 splitRatio={0.42}
                 startPreviewResize={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={{ ...workflowState, splitMode: false }}
             />,
         );
@@ -244,7 +240,6 @@ describe('AssistantPreviewPane', () => {
                 splitRatio={0.42}
                 startPreviewResize={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -270,7 +265,6 @@ describe('AssistantPreviewPane', () => {
                 startPreviewResize={vi.fn()}
                 submitAgentView={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -303,7 +297,6 @@ describe('AssistantPreviewPane', () => {
                 startPreviewResize={vi.fn()}
                 submitAgentView={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -326,7 +319,6 @@ describe('AssistantPreviewPane', () => {
                 startPreviewResize={vi.fn()}
                 submitAgentView={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -350,7 +342,6 @@ describe('AssistantPreviewPane', () => {
                 splitRatio={0.42}
                 startPreviewResize={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -375,7 +366,6 @@ describe('AssistantPreviewPane', () => {
                 startPreviewResize={vi.fn()}
                 submitAgentView={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -402,7 +392,6 @@ describe('AssistantPreviewPane', () => {
                 splitRatio={0.42}
                 startPreviewResize={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -427,7 +416,6 @@ describe('AssistantPreviewPane', () => {
                 splitRatio={0.42}
                 startPreviewResize={vi.fn()}
                 theme={theme}
-                themeMode="light"
                 workflowState={workflowState}
             />,
         );
@@ -446,6 +434,40 @@ describe('AssistantPreviewPane', () => {
         expect(screen.getByRole('tab', { name: /Conflicts/ }).getAttribute('aria-selected')).toBe('true');
         // Attribute omitted when CF is the active tab.
         expect(screen.getByTestId('assistant-preview-conflict-slot').getAttribute('aria-hidden')).toBeNull();
+    });
+
+    it('uses the active scheme error tokens for the conflict tab and badge', () => {
+        const themedConflict = {
+            ...theme,
+            errorText: '#8b2747',
+            errorBg: '#f8e8ee',
+            errorBorder: '#c88da1',
+        } as Theme;
+
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                showConflict
+                conflictCount={2}
+                conflictContent={<div>conflict body</div>}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={themedConflict}
+                workflowState={workflowState}
+            />,
+        );
+
+        const conflictTab = screen.getByRole('tab', { name: /Conflicts/ });
+        expect(conflictTab.style.borderColor).toBe('rgb(200, 141, 161)');
+        expect(conflictTab.style.color).toBe('rgb(139, 39, 71)');
+        expect(screen.getByTestId('assistant-preview-conflict-badge').style.background).toBe('rgb(139, 39, 71)');
     });
 
     it('supports keyboard switching between preview tabs', () => {

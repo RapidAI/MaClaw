@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -43,6 +44,50 @@ type MobileDocumentDraftSummary struct {
 	SourceSize        int                        `json:"source_size,omitempty"`
 	SourceDownloadURL string                     `json:"source_download_url,omitempty"`
 	Images            []MobileDocumentDraftImage `json:"images,omitempty"`
+}
+
+// MobileLibraryAudio describes the original recording behind an audio item.
+type MobileLibraryAudio struct {
+	ContentType string  `json:"content_type,omitempty"`
+	SizeBytes   int64   `json:"size_bytes,omitempty"`
+	DurationSec float64 `json:"duration_sec,omitempty"`
+	Available   bool    `json:"available"`
+	DownloadURL string  `json:"download_url,omitempty"`
+}
+
+type MobileLibraryProcessing struct {
+	Status      string  `json:"status,omitempty"`
+	Mode        string  `json:"mode,omitempty"`
+	Progress    float64 `json:"progress,omitempty"`
+	Message     string  `json:"message,omitempty"`
+	FailureCode string  `json:"failure_code,omitempty"`
+}
+
+type MobileLibraryDerivedDocuments struct {
+	TranscriptDraftID string `json:"transcript_draft_id,omitempty"`
+	MinutesDraftID    string `json:"minutes_draft_id,omitempty"`
+}
+
+// MobileMeetingRecordingAudioPayload is intentionally capped in the desktop
+// bridge. It gives the embedded WebView an authenticated playback source while
+// keeping very large recordings on the download/open path instead of buffering
+// them in the GUI process.
+type MobileMeetingRecordingAudioPayload struct {
+	ContentType string `json:"content_type"`
+	Filename    string `json:"filename"`
+	DataBase64  string `json:"data_base64"`
+	SizeBytes   int64  `json:"size_bytes"`
+}
+
+// MobileLibraryItem is the Desktop-facing union of shared Markdown documents
+// and Mobile recordings. It deliberately keeps the two Hub storage models apart.
+type MobileLibraryItem struct {
+	MobileDocumentDraftSummary
+	Type             string                         `json:"type"`
+	Audio            *MobileLibraryAudio            `json:"audio,omitempty"`
+	Processing       *MobileLibraryProcessing       `json:"processing,omitempty"`
+	DerivedDocuments *MobileLibraryDerivedDocuments `json:"derived_documents,omitempty"`
+	RetentionUntil   string                         `json:"retention_until,omitempty"`
 }
 
 // ListMobileDocumentDrafts returns the viewer's mobile/Hub drafts (same library as phone).
@@ -96,6 +141,276 @@ func (a *App) ListMobileDocumentDrafts(limit int, includeBody bool) ([]MobileDoc
 		return []MobileDocumentDraftSummary{}, nil
 	}
 	return payload.Drafts, nil
+}
+
+// ListMobileLibraryItems returns the shared Desktop library, including audio
+// uploaded by Mobile after its recording is finalized on Hub.
+func (a *App) ListMobileLibraryItems(limit int) ([]MobileLibraryItem, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return nil, fmt.Errorf("MaClaw Hub login is required to list the mobile library")
+	}
+	if limit <= 0 {
+		limit = 80
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	q := url.Values{}
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	req, err := http.NewRequest(http.MethodGet, hubURL+"/api/mobile/library/items?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list mobile library failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("list mobile library failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var payload struct {
+		Items []MobileLibraryItem `json:"items"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("decode mobile library: %w", err)
+	}
+	if payload.Items == nil {
+		return []MobileLibraryItem{}, nil
+	}
+	return payload.Items, nil
+}
+
+// GetMobileLibraryItem fetches an audio or document item from the unified Hub view.
+func (a *App) GetMobileLibraryItem(itemID string) (*MobileLibraryItem, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	id := strings.TrimSpace(itemID)
+	if id == "" {
+		return nil, fmt.Errorf("library item id is required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return nil, fmt.Errorf("MaClaw Hub login is required to open the mobile library")
+	}
+	req, err := http.NewRequest(http.MethodGet, hubURL+"/api/mobile/library/items/"+url.PathEscape(id), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get mobile library item failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("get mobile library item failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var payload struct {
+		Item *MobileLibraryItem `json:"item"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("decode mobile library item: %w", err)
+	}
+	if payload.Item == nil || strings.TrimSpace(payload.Item.ID) == "" {
+		return nil, fmt.Errorf("Hub did not return a library item")
+	}
+	return payload.Item, nil
+}
+
+// ProcessMobileMeetingRecording starts the existing Hub ASR + minutes workflow.
+func (a *App) ProcessMobileMeetingRecording(recordingID string) (*MobileLibraryItem, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	id := strings.TrimSpace(recordingID)
+	if id == "" {
+		return nil, fmt.Errorf("recording id is required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return nil, fmt.Errorf("MaClaw Hub login is required to generate meeting minutes")
+	}
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/mobile/meeting-recordings/"+url.PathEscape(id)+"/process", strings.NewReader(`{"mode":"minutes"}`))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("start meeting minutes failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("start meeting minutes failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return a.GetMobileLibraryItem(id)
+}
+
+// DeleteMobileMeetingRecording deletes only the original audio. Hub retains the
+// recording's library entry and any generated transcript/minutes documents.
+func (a *App) DeleteMobileMeetingRecording(recordingID string) (*MobileLibraryItem, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	id := strings.TrimSpace(recordingID)
+	if id == "" {
+		return nil, fmt.Errorf("recording id is required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return nil, fmt.Errorf("MaClaw Hub login is required to delete original meeting audio")
+	}
+	req, err := http.NewRequest(http.MethodDelete, hubURL+"/api/mobile/meeting-recordings/"+url.PathEscape(id)+"/audio", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("delete original meeting audio failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("delete original meeting audio failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return a.GetMobileLibraryItem(id)
+}
+
+const mobileMeetingPlaybackMaxBytes = 128 << 20
+const mobileMeetingDownloadMaxBytes = 512 << 20
+
+func (a *App) fetchMobileMeetingRecordingAudio(recordingID string, maxBytes int64) (string, []byte, string, error) {
+	if a == nil {
+		return "", nil, "", fmt.Errorf("app is not initialized")
+	}
+	id := strings.TrimSpace(recordingID)
+	if id == "" {
+		return "", nil, "", fmt.Errorf("recording id is required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return "", nil, "", err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return "", nil, "", fmt.Errorf("MaClaw Hub login is required to download meeting recordings")
+	}
+	req, err := http.NewRequest(http.MethodGet, hubURL+"/api/mobile/meeting-recordings/"+url.PathEscape(id)+"/audio", nil)
+	if err != nil {
+		return "", nil, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("download meeting audio failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.ContentLength > maxBytes {
+		return "", nil, "", fmt.Errorf("recording exceeds the %d MB desktop limit", maxBytes/(1024*1024))
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if readErr != nil {
+		return "", nil, "", fmt.Errorf("download meeting audio failed: %w", readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", nil, "", fmt.Errorf("download meeting audio failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if int64(len(body)) > maxBytes {
+		return "", nil, "", fmt.Errorf("recording exceeds the %d MB desktop limit", maxBytes/(1024*1024))
+	}
+	filename := "meeting-recording"
+	if disp := strings.TrimSpace(resp.Header.Get("Content-Disposition")); disp != "" {
+		if _, params, parseErr := mime.ParseMediaType(disp); parseErr == nil && strings.TrimSpace(params["filename"]) != "" {
+			filename = filepath.Base(params["filename"])
+		}
+	}
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "audio/mp4"
+	}
+	return filename, body, contentType, nil
+}
+
+// GetMobileMeetingRecordingAudio fetches a reasonably-sized recording through authenticated Hub transport for the embedded audio player.
+func (a *App) GetMobileMeetingRecordingAudio(recordingID string) (*MobileMeetingRecordingAudioPayload, error) {
+	filename, body, contentType, err := a.fetchMobileMeetingRecordingAudio(recordingID, mobileMeetingPlaybackMaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	return &MobileMeetingRecordingAudioPayload{ContentType: contentType, Filename: filename, DataBase64: base64.StdEncoding.EncodeToString(body), SizeBytes: int64(len(body))}, nil
+}
+
+// SaveMobileMeetingRecordingAudio downloads an owned recording and prompts for its destination.
+func (a *App) SaveMobileMeetingRecordingAudio(recordingID string) (string, error) {
+	filename, raw, _, err := a.fetchMobileMeetingRecordingAudio(recordingID, mobileMeetingDownloadMaxBytes)
+	if err != nil {
+		return "", err
+	}
+	if a.ctx == nil {
+		dest := filepath.Join(os.TempDir(), "maclaw_meeting_"+sanitizeMobileOriginalFilename(filename))
+		return dest, os.WriteFile(dest, raw, 0o600)
+	}
+	dest, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{Title: "Save recording", DefaultFilename: sanitizeMobileOriginalFilename(filename), Filters: []runtime.FileFilter{{DisplayName: "Audio files", Pattern: "*.m4a;*.mp3;*.wav;*.aac;*.ogg;*.webm"}, {DisplayName: "All Files (*.*)", Pattern: "*.*"}}})
+	if err != nil || strings.TrimSpace(dest) == "" {
+		return "", err
+	}
+	return dest, os.WriteFile(dest, raw, 0o600)
+}
+
+// OpenMobileMeetingRecordingAudio downloads an owned recording to a private temp directory and opens it with the default media app.
+func (a *App) OpenMobileMeetingRecordingAudio(recordingID string) (string, error) {
+	filename, raw, _, err := a.fetchMobileMeetingRecordingAudio(recordingID, mobileMeetingDownloadMaxBytes)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(os.TempDir(), "maclaw_meeting_recordings")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(dir, sanitizeMobileOriginalFilename(filename))
+	if _, err := os.Stat(dest); err == nil {
+		dest = filepath.Join(dir, fmt.Sprintf("%d_%s", time.Now().UnixNano(), sanitizeMobileOriginalFilename(filename)))
+	}
+	if err := os.WriteFile(dest, raw, 0o600); err != nil {
+		return "", err
+	}
+	if err := a.OpenFileOrShowInFolder(dest); err != nil {
+		return dest, fmt.Errorf("saved recording to %s but open failed: %w", dest, err)
+	}
+	return dest, nil
 }
 
 // CreateMobileDocumentDraft uploads a draft into the shared Hub library so the
@@ -356,7 +671,7 @@ func (a *App) uploadMobileDocumentOriginal(filename string, raw []byte, contentT
 	return nil, fmt.Errorf("Hub upload did not return a draft (status=%v)", uploadPayload["status"])
 }
 
-// percentEncodeRFC5987 encodes a filename for Content-Disposition filename*=UTF-8''…
+// percentEncodeRFC5987 encodes a filename for Content-Disposition filename*=UTF-8”…
 func percentEncodeRFC5987(s string) string {
 	if !utf8.ValidString(s) {
 		s = string([]rune(s))

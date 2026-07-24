@@ -15,7 +15,10 @@ const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])[ \\t]+${digital
 const markdownSensitiveSpanPattern = /(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)|(~[/\\][^\n\r\s*?"<>|]+)/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
 const bareHeadingMarkerLinePattern = /^(#{1,6})(?:\s+#{1,6})*$/;
-const markdownBlockStructureLinePattern = /^(#{1,6}\s+|>\s+|[-*]\s+|\d+[.)]\s+|[-*_]{3,}\s*$|\[KB_IMAGE:)/;
+// Include GFM "+" and common unicode bullets so bare-heading attach refuses list
+// lines even if stripListMarkerForHeadingAttach misses a variant.
+const markdownBlockStructureLinePattern =
+    /^(?:#{1,6}\s+|>\s+|(?:[-*+]|\u2022|\u00b7)\s+|\d+[.)]\s+|[-*_]{3,}\s*$|\[KB_IMAGE:)/;
 const markdownTableStructureLinePattern = /^\|.*\|$|^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/;
 const compactHeadingMarkerPattern = /([^#\n\s])\s*(#{2,6})(?=[^\s#\d.,;:!?，。；：！？、)\]）}])/gu;
 
@@ -89,6 +92,29 @@ function getBareHeadingMarker(line: string): string | null {
     if (!bareHeadingMarkerLinePattern.test(trimmed)) return null;
     const markers = trimmed.split(/\s+/);
     return markers[markers.length - 1] || null;
+}
+
+// Module-level: attachBareHeadingMarkers can walk many lines on long replies.
+const unorderedListMarkerForHeadingAttach = /^(?:[-*+]|\u2022|\u00b7)\s+(\S.*)$/;
+const orderedListMarkerForHeadingAttach = /^\d+[.)]\s+(\S.*)$/;
+
+/**
+ * Digital employees often emit section titles as a bare heading marker on its
+ * own line followed by a list-marked title:
+ *   ###
+ *   - 北京城区天气预报
+ *   • 今日生活指数
+ * Strip the list marker so the title can be attached as real heading text
+ * instead of leaving a raw "###" in the bubble.
+ */
+function stripListMarkerForHeadingAttach(line: string): string | null {
+    const trimmed = line.trimStart();
+    // -, *, +, • (U+2022), · (U+00B7) — keep as escapes so source encoding stays ASCII-safe.
+    const unordered = trimmed.match(unorderedListMarkerForHeadingAttach);
+    if (unordered) return unordered[1];
+    const ordered = trimmed.match(orderedListMarkerForHeadingAttach);
+    if (ordered) return ordered[1];
+    return null;
 }
 
 /**
@@ -179,10 +205,22 @@ export function attachBareHeadingMarkers(lines: string[]): string[] {
             break;
         }
 
-        if (nextIndex < lines.length && canAttachBareHeadingMarkerToLine(lines[nextIndex], lines[nextIndex + 1])) {
-            attached.push(`${headingMarker} ${lines[nextIndex].trimStart()}`);
-            index = nextIndex;
-            continue;
+        if (nextIndex < lines.length) {
+            const nextLine = lines[nextIndex];
+            // Prefer list-stripped title: bare "###" + "• 标题" / "- 标题" → "### 标题".
+            // Must run before the plain-line path so the list marker is consumed
+            // into heading text (not left as a bullet under a raw "###").
+            const listBody = stripListMarkerForHeadingAttach(nextLine);
+            if (listBody && canAttachBareHeadingMarkerToLine(listBody, lines[nextIndex + 1])) {
+                attached.push(`${headingMarker} ${listBody}`);
+                index = nextIndex;
+                continue;
+            }
+            if (canAttachBareHeadingMarkerToLine(nextLine, lines[nextIndex + 1])) {
+                attached.push(`${headingMarker} ${nextLine.trimStart()}`);
+                index = nextIndex;
+                continue;
+            }
         }
 
         attached.push(...pendingLines);

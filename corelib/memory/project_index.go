@@ -268,6 +268,14 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 // Search returns project records matching the query, sorted by relevance.
 // Uses simple substring + tag matching for speed (<1ms).
 func (pi *ProjectIndex) Search(query string, limit int) []ProjectRecord {
+	return pi.SearchMatching(query, limit, nil)
+}
+
+// SearchMatching returns visible output-backed records that match query and
+// predicate, ranked using the same relevance rules as Search. The predicate is
+// applied before the result limit so filtered consumers do not lose matching
+// records to unrelated results.
+func (pi *ProjectIndex) SearchMatching(query string, limit int, predicate func(ProjectRecord) bool) []ProjectRecord {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -278,7 +286,10 @@ func (pi *ProjectIndex) Search(query string, limit int) []ProjectRecord {
 
 	if query == "" {
 		// No query: return all projects sorted by last activity (most recent first).
-		return pi.allSortedByActivityLocked(limit)
+		if predicate == nil {
+			return pi.allSortedByActivityLocked(limit)
+		}
+		return pi.listRecentMatchingLocked(limit, predicate)
 	}
 
 	queryLower := strings.ToLower(query)
@@ -304,6 +315,9 @@ func (pi *ProjectIndex) Search(query string, limit int) []ProjectRecord {
 			}
 		}
 		clone := pi.outputRecordCloneLocked(rec)
+		if predicate != nil && !predicate(clone) {
+			continue
+		}
 		score := pi.scoreRecord(&clone, queryLower, queryTokens)
 		if score > 0 {
 			results = append(results, scored{rec: clone, score: score})
@@ -336,6 +350,47 @@ func (pi *ProjectIndex) ListRecent(limit int) []ProjectRecord {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
 	return pi.allSortedByActivityLocked(limit)
+}
+
+// ListRecentMatching returns the newest visible records matching predicate.
+// It applies the predicate before the limit, so callers can efficiently build
+// filtered views without repeatedly broadening a recent-record query.
+func (pi *ProjectIndex) ListRecentMatching(limit int, predicate func(ProjectRecord) bool) []ProjectRecord {
+	if limit <= 0 {
+		limit = 10
+	}
+	pi.mu.RLock()
+	defer pi.mu.RUnlock()
+	return pi.listRecentMatchingLocked(limit, predicate)
+}
+
+func (pi *ProjectIndex) listRecentMatchingLocked(limit int, predicate func(ProjectRecord) bool) []ProjectRecord {
+	matched := make([]ProjectRecord, 0, min(limit, len(pi.records)))
+	for _, rec := range pi.records {
+		if !rec.HasOutput {
+			continue
+		}
+		if pref, ok := pi.prefs[rec.ProjectPath]; ok && (pref.Hidden || pref.Archived) {
+			continue
+		}
+		clone := pi.outputRecordCloneLocked(rec)
+		if predicate != nil && !predicate(clone) {
+			continue
+		}
+		matched = append(matched, clone)
+	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		iPinned := pi.prefs[matched[i].ProjectPath] != nil && pi.prefs[matched[i].ProjectPath].Pinned
+		jPinned := pi.prefs[matched[j].ProjectPath] != nil && pi.prefs[matched[j].ProjectPath].Pinned
+		if iPinned != jPinned {
+			return iPinned
+		}
+		return matched[i].LastActivity.After(matched[j].LastActivity)
+	})
+	if len(matched) > limit {
+		matched = matched[:limit]
+	}
+	return matched
 }
 
 // Count returns the number of indexed projects.

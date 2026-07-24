@@ -152,6 +152,7 @@ func MobileMeetingRecordingsHandler(identity *auth.IdentityService) http.Handler
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		mobileEnsureStateLoaded()
 		ownerID := mobilePrincipalOwnerID(principal)
 		if ownerID == "" {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer identity missing")
@@ -162,17 +163,17 @@ func MobileMeetingRecordingsHandler(identity *auth.IdentityService) http.Handler
 		case r.Method == http.MethodPost && id == "":
 			mobileMeetingRecordingCreate(w, r, principal, ownerID)
 		case r.Method == http.MethodGet && id != "":
-			mobileMeetingRecordingGet(w, ownerID, id)
+			mobileMeetingRecordingGet(w, ownerID, principal.TenantID, id)
 		case r.Method == http.MethodPut && id != "" && strings.TrimSpace(r.PathValue("chunkIndex")) != "":
-			mobileMeetingRecordingPutChunk(w, r, ownerID, id)
+			mobileMeetingRecordingPutChunk(w, r, ownerID, principal.TenantID, id)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/complete"):
-			mobileMeetingRecordingComplete(w, r, ownerID, id)
+			mobileMeetingRecordingComplete(w, r, ownerID, principal.TenantID, id)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/process"):
-			mobileMeetingRecordingProcess(w, r, ownerID, id)
+			mobileMeetingRecordingProcess(w, r, ownerID, principal.TenantID, id)
 		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/audio"):
-			mobileMeetingRecordingDeleteAudio(w, ownerID, id)
+			mobileMeetingRecordingDeleteAudio(w, ownerID, principal.TenantID, id)
 		case r.Method == http.MethodDelete && id != "":
-			mobileMeetingRecordingDelete(w, ownerID, id)
+			mobileMeetingRecordingDelete(w, ownerID, principal.TenantID, id)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "unsupported meeting recording operation")
 		}
@@ -255,8 +256,8 @@ func mobileMeetingRecordingCreate(w http.ResponseWriter, r *http.Request, princi
 	writeJSON(w, http.StatusCreated, mobileMeetingRecordingPayload(rec))
 }
 
-func mobileMeetingRecordingGet(w http.ResponseWriter, ownerID, id string) {
-	rec, ok := mobileMeetingRecordingOwned(ownerID, id)
+func mobileMeetingRecordingGet(w http.ResponseWriter, ownerID, tenantID, id string) {
+	rec, ok := mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
@@ -264,19 +265,14 @@ func mobileMeetingRecordingGet(w http.ResponseWriter, ownerID, id string) {
 	writeJSON(w, http.StatusOK, mobileMeetingRecordingPayload(rec))
 }
 
-func mobileMeetingRecordingPutChunk(w http.ResponseWriter, r *http.Request, ownerID, id string) {
+func mobileMeetingRecordingPutChunk(w http.ResponseWriter, r *http.Request, ownerID, tenantID, id string) {
 	index := strings.TrimSpace(r.PathValue("chunkIndex"))
 	chunkIndex, err := strconv.Atoi(index)
 	if err != nil || chunkIndex < 0 || chunkIndex >= meetingRecordingMaxChunks {
 		writeError(w, http.StatusBadRequest, "INVALID_CHUNK", "invalid chunk index")
 		return
 	}
-	rec, ok := mobileMeetingRecordingOwned(ownerID, id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
-		return
-	}
-	if rec.Status != "uploading" {
+	if !mobileMeetingRecordingUploadOpen(ownerID, tenantID, id) {
 		writeError(w, http.StatusConflict, "UPLOAD_CLOSED", "recording upload is not open")
 		return
 	}
@@ -299,22 +295,85 @@ func mobileMeetingRecordingPutChunk(w http.ResponseWriter, r *http.Request, owne
 		writeError(w, http.StatusBadRequest, "CHUNK_HASH_MISMATCH", "chunk hash mismatch")
 		return
 	}
-	path := filepath.Join(rec.Dir, fmt.Sprintf("chunk-%d", chunkIndex))
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", "unable to save chunk")
+	if err := mobileMeetingRecordingStoreChunk(ownerID, tenantID, id, chunkIndex, data); err != nil {
+		switch {
+		case errors.Is(err, errMobileMeetingRecordingNotFound):
+			writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
+		case errors.Is(err, errMobileMeetingRecordingUploadClosed):
+			writeError(w, http.StatusConflict, "UPLOAD_CLOSED", "recording upload is not open")
+		default:
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", "unable to save chunk")
+		}
 		return
 	}
 	mobilePersistState()
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func mobileMeetingRecordingComplete(w http.ResponseWriter, r *http.Request, ownerID, id string) {
+func mobileMeetingRecordingUploadOpen(ownerID, tenantID, id string) bool {
+	mobileMeetingRecordings.Lock()
+	defer mobileMeetingRecordings.Unlock()
+	rec, ok := mobileMeetingRecordings.items[id]
+	return ok && rec.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) && rec.Status == "uploading"
+}
+
+var (
+	errMobileMeetingRecordingNotFound     = errors.New("meeting recording not found")
+	errMobileMeetingRecordingUploadClosed = errors.New("meeting recording upload is closed")
+)
+
+// mobileMeetingRecordingStoreChunk writes a chunk to a private temporary file,
+// then verifies and commits it while holding the recording lock. This ensures a
+// late retry cannot add data after complete has transitioned the recording to
+// finalizing.
+func mobileMeetingRecordingStoreChunk(ownerID, tenantID, id string, chunkIndex int, data []byte) error {
+	mobileMeetingRecordings.Lock()
+	rec, ok := mobileMeetingRecordings.items[id]
+	mobileMeetingRecordings.Unlock()
+	if !ok || rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
+		return errMobileMeetingRecordingNotFound
+	}
+
+	temporary, err := os.CreateTemp(rec.Dir, ".chunk-")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+
+	mobileMeetingRecordings.Lock()
+	defer mobileMeetingRecordings.Unlock()
+	rec, ok = mobileMeetingRecordings.items[id]
+	if !ok || rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
+		return errMobileMeetingRecordingNotFound
+	}
+	if rec.Status != "uploading" {
+		return errMobileMeetingRecordingUploadClosed
+	}
+	path := filepath.Join(rec.Dir, fmt.Sprintf("chunk-%d", chunkIndex))
+	// Windows cannot rename over an existing file. The lock keeps finalization
+	// from observing the brief replacement window, so idempotent chunk retries
+	// remain safe on every supported platform.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+func mobileMeetingRecordingComplete(w http.ResponseWriter, r *http.Request, ownerID, tenantID, id string) {
 	var req mobileMeetingRecordingCompleteRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil || req.Chunks <= 0 || req.Chunks > meetingRecordingMaxChunks {
 		writeError(w, http.StatusBadRequest, "INVALID_INPUT", "chunks is required")
 		return
 	}
-	recording, exists := mobileMeetingRecordingOwned(ownerID, id)
+	recording, exists := mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
 	if !exists {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
@@ -327,7 +386,7 @@ func mobileMeetingRecordingComplete(w http.ResponseWriter, r *http.Request, owne
 		writeError(w, http.StatusBadRequest, "INVALID_DURATION", fmt.Sprintf("duration_sec exceeds the %.0f-second limit for this audio format", maxDuration))
 		return
 	}
-	rec, claim := mobileMeetingRecordingClaimFinalize(ownerID, id)
+	rec, claim := mobileMeetingRecordingClaimFinalize(ownerID, tenantID, id)
 	if claim == "missing" {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
@@ -406,7 +465,7 @@ func mobileMeetingRecordingComplete(w http.ResponseWriter, r *http.Request, owne
 		m.DurationSec = req.DurationSec
 	})
 	finalized = true
-	rec, _ = mobileMeetingRecordingOwned(ownerID, id)
+	rec, _ = mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
 	mobilePersistState()
 	writeJSON(w, http.StatusOK, mobileMeetingRecordingPayload(rec))
 }
@@ -444,11 +503,11 @@ func mobileValidateMeetingAudio(path, contentType string) error {
 // mobileMeetingRecordingClaimFinalize atomically closes the chunk stream before
 // reconstructing the final file. This prevents a late/retried PUT from racing
 // with assembly, and makes repeated complete calls deterministic.
-func mobileMeetingRecordingClaimFinalize(ownerID, id string) (mobileMeetingRecording, string) {
+func mobileMeetingRecordingClaimFinalize(ownerID, tenantID, id string) (mobileMeetingRecording, string) {
 	mobileMeetingRecordings.Lock()
 	defer mobileMeetingRecordings.Unlock()
 	rec, ok := mobileMeetingRecordings.items[id]
-	if !ok || rec.OwnerID != ownerID {
+	if !ok || rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 		return mobileMeetingRecording{}, "missing"
 	}
 	switch rec.Status {
@@ -466,7 +525,7 @@ func mobileMeetingRecordingClaimFinalize(ownerID, id string) (mobileMeetingRecor
 	}
 }
 
-func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, ownerID, id string) {
+func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, ownerID, tenantID, id string) {
 	var req mobileMeetingRecordingProcessRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
@@ -480,7 +539,7 @@ func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, owner
 		writeError(w, http.StatusBadRequest, "INVALID_MODE", "mode must be minutes, transcript, or keep")
 		return
 	}
-	rec, ok := mobileMeetingRecordingOwned(ownerID, id)
+	rec, ok := mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
@@ -515,7 +574,7 @@ func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, owner
 		writeError(w, http.StatusConflict, "PROCESSING_MODE_UNAVAILABLE", "selected meeting processing mode is not configured on this Hub")
 		return
 	}
-	rec, claim := mobileMeetingRecordingClaimProcess(ownerID, id, mode)
+	rec, claim := mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode)
 	if claim == "missing" {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
@@ -532,10 +591,10 @@ func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, owner
 // or archive-only-ready recording into processing. A ready transcript/minutes
 // result stays immutable, while an archive-only recording may be promoted later
 // when the user explicitly asks for transcription or meeting minutes.
-func mobileMeetingRecordingClaimProcess(ownerID, id, mode string) (mobileMeetingRecording, string) {
+func mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode string) (mobileMeetingRecording, string) {
 	mobileMeetingRecordings.Lock()
 	rec, ok := mobileMeetingRecordings.items[id]
-	if !ok || rec.OwnerID != ownerID {
+	if !ok || rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 		mobileMeetingRecordings.Unlock()
 		return mobileMeetingRecording{}, "missing"
 	}
@@ -786,8 +845,8 @@ func mobileMeetingRecordingContentType(value string) string {
 	}
 }
 
-func mobileMeetingRecordingDelete(w http.ResponseWriter, ownerID, id string) {
-	rec, ok := mobileMeetingRecordingOwned(ownerID, id)
+func mobileMeetingRecordingDelete(w http.ResponseWriter, ownerID, tenantID, id string) {
+	rec, ok := mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
@@ -809,8 +868,8 @@ func mobileMeetingRecordingDelete(w http.ResponseWriter, ownerID, id string) {
 
 // mobileMeetingRecordingDeleteAudio deletes only the raw audio. Transcript,
 // minutes, document library entries and task metadata remain available.
-func mobileMeetingRecordingDeleteAudio(w http.ResponseWriter, ownerID, id string) {
-	rec, ok := mobileMeetingRecordingOwned(ownerID, id)
+func mobileMeetingRecordingDeleteAudio(w http.ResponseWriter, ownerID, tenantID, id string) {
+	rec, ok := mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
@@ -833,7 +892,7 @@ func mobileMeetingRecordingDeleteAudio(w http.ResponseWriter, ownerID, id string
 		m.Dir = ""
 		m.Message = "raw audio deleted; transcript and minutes remain available"
 	})
-	updated, _ := mobileMeetingRecordingOwned(ownerID, id)
+	updated, _ := mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
 	writeJSON(w, http.StatusOK, mobileMeetingRecordingPayload(updated))
 }
 
@@ -874,6 +933,17 @@ func mobileMeetingRecordingOwned(ownerID, id string) (mobileMeetingRecording, bo
 	defer mobileMeetingRecordings.Unlock()
 	rec, ok := mobileMeetingRecordings.items[id]
 	return rec, ok && rec.OwnerID == ownerID
+}
+
+// mobileMeetingRecordingOwnedForTenant is the authorization boundary for
+// externally addressed recordings. User IDs are normally unique, but the
+// durable recording state is tenant-scoped as well, so both identities must
+// match before a request can read or mutate a recording.
+func mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id string) (mobileMeetingRecording, bool) {
+	mobileMeetingRecordings.Lock()
+	defer mobileMeetingRecordings.Unlock()
+	rec, ok := mobileMeetingRecordings.items[id]
+	return rec, ok && rec.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID)
 }
 func mobileMeetingRecordingUpdate(id string, mutate func(*mobileMeetingRecording)) {
 	mobileMeetingRecordings.Lock()
@@ -941,41 +1011,57 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 	}
 	var transcriptDraft, minutesDraft *mobileDocumentDraftRecord
 	mobileDocuments.Lock()
-	if transcript != "" && strings.TrimSpace(rec.TranscriptDraftID) == "" {
-		draft := mobileDocumentDraftRecord{
-			ID:        fmt.Sprintf("mobdoc_meeting_transcript_%d", now.UnixNano()),
-			OwnerID:   rec.OwnerID,
-			Title:     title + " · Transcript",
-			Template:  "report",
-			Markdown:  mobileMeetingTranscriptMarkdown(title, transcript, rec.SpeakerSegments),
-			UpdatedAt: now,
-		}
-		mobileDocuments.drafts[draft.ID] = draft
-		transcriptDraft = &draft
+	transcriptDraftID := strings.TrimSpace(rec.TranscriptDraftID)
+	if transcript != "" && transcriptDraftID == "" {
+		// A stable ID makes result-document creation idempotent even when the
+		// worker is retried before its recording metadata is persisted.
+		transcriptDraftID = "mobdoc_meeting_transcript_" + rec.ID
 	}
-	if minutes != "" && strings.TrimSpace(rec.MinutesDraftID) == "" {
-		draft := mobileDocumentDraftRecord{
-			ID:        fmt.Sprintf("mobdoc_meeting_minutes_%d", now.UnixNano()),
-			OwnerID:   rec.OwnerID,
-			Title:     title + " · Meeting minutes",
-			Template:  "meeting_minutes",
-			Markdown:  "# " + title + " — Meeting minutes\n\n" + minutes + "\n",
-			UpdatedAt: now,
+	if transcript != "" && transcriptDraftID != "" {
+		if _, exists := mobileDocuments.drafts[transcriptDraftID]; !exists {
+			draft := mobileDocumentDraftRecord{
+				ID:        transcriptDraftID,
+				OwnerID:   rec.OwnerID,
+				TenantID:  rec.TenantID,
+				Title:     title + " · Transcript",
+				Template:  "report",
+				Markdown:  mobileMeetingTranscriptMarkdown(title, transcript, rec.SpeakerSegments),
+				UpdatedAt: now,
+			}
+			mobileDocuments.drafts[draft.ID] = draft
+			transcriptDraft = &draft
 		}
-		mobileDocuments.drafts[draft.ID] = draft
-		minutesDraft = &draft
+	}
+	minutesDraftID := strings.TrimSpace(rec.MinutesDraftID)
+	if minutes != "" && minutesDraftID == "" {
+		minutesDraftID = "mobdoc_meeting_minutes_" + rec.ID
+	}
+	if minutes != "" && minutesDraftID != "" {
+		if _, exists := mobileDocuments.drafts[minutesDraftID]; !exists {
+			draft := mobileDocumentDraftRecord{
+				ID:        minutesDraftID,
+				OwnerID:   rec.OwnerID,
+				TenantID:  rec.TenantID,
+				Title:     title + " · Meeting minutes",
+				Template:  "meeting_minutes",
+				Markdown:  "# " + title + " — Meeting minutes\n\n" + minutes + "\n",
+				UpdatedAt: now,
+			}
+			mobileDocuments.drafts[draft.ID] = draft
+			minutesDraft = &draft
+		}
 	}
 	mobileDocuments.Unlock()
 
-	if transcriptDraft == nil && minutesDraft == nil {
+	if transcriptDraftID == "" && minutesDraftID == "" {
 		return
 	}
 	mobileMeetingRecordingUpdate(rec.ID, func(current *mobileMeetingRecording) {
-		if transcriptDraft != nil && current.TranscriptDraftID == "" {
-			current.TranscriptDraftID = transcriptDraft.ID
+		if transcriptDraftID != "" && current.TranscriptDraftID == "" {
+			current.TranscriptDraftID = transcriptDraftID
 		}
-		if minutesDraft != nil && current.MinutesDraftID == "" {
-			current.MinutesDraftID = minutesDraft.ID
+		if minutesDraftID != "" && current.MinutesDraftID == "" {
+			current.MinutesDraftID = minutesDraftID
 		}
 	})
 	if transcriptDraft != nil {
@@ -1025,12 +1111,12 @@ func mobileMeetingTimestamp(seconds float64) string {
 	return fmt.Sprintf("%02d:%02d:%02d", total/3600, (total/60)%60, total%60)
 }
 
-func mobileCollectMeetingRecordingJobs(ownerID string) []mobileJobItem {
+func mobileCollectMeetingRecordingJobs(ownerID, tenantID string) []mobileJobItem {
 	mobileMeetingRecordings.Lock()
 	defer mobileMeetingRecordings.Unlock()
 	out := make([]mobileJobItem, 0)
 	for _, rec := range mobileMeetingRecordings.items {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		title := strings.TrimSpace(rec.Title)

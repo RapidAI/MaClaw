@@ -2,6 +2,7 @@ import { useMemo, useRef, useState, type ChangeEvent, type Dispatch, type SetSta
 import { PatchConfigFields, SelectWorkingDir } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import { EVENT_MACLAW_CONFIG_CHANGED } from '../../constants/events';
 import { miniAppEntryLabel } from '../../i18n/maclawMiniAppLabels';
 import { GeneralSettingsOptionGrid } from './GeneralSettingsOptionGrid';
 
@@ -16,7 +17,11 @@ type GeneralSettingsPanelProps = {
 const textForLang = localizeText;
 
 const persistConfigPatch = (patch: Record<string, any>, context: string) => {
-    return Promise.resolve(PatchConfigFields(patch)).catch((err) => {
+    return Promise.resolve(PatchConfigFields(patch)).then((saved) => {
+        // Keep other surfaces (e.g. the quick-settings bar) in sync with this change.
+        window.dispatchEvent(new CustomEvent(EVENT_MACLAW_CONFIG_CHANGED, { detail: saved }));
+        return saved;
+    }).catch((err) => {
         console.error(`Failed to save ${context}:`, err);
         throw err;
     });

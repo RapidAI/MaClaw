@@ -20,10 +20,14 @@ export interface MarkdownTableRenderModel extends MarkdownTableModel {
  * Strip a single leading list marker when the remainder is still a pipe row.
  * Display-only normalize — safe to call more than once (idempotent for table lines).
  */
+// ASCII list markers + digital-employee bullets (U+2022 •, U+00B7 ·).
+// Escapes keep source ASCII-safe (same policy as heading-list strip).
+const TABLE_LINE_LIST_MARKER_RE = /^(?:[-*+]|\u2022|\u00b7|\d+[.)])\s+(\S.*)$/;
+
 export function normalizeMarkdownTableLine(line: string): string {
     const trimmed = line.trim();
-    // -, *, +, •, or ordered "1." / "1)"
-    const listMatch = trimmed.match(/^(?:[-*+•]|\d+[.)])\s+(\S.*)$/);
+    // -, *, +, •, ·, or ordered "1." / "1)"
+    const listMatch = trimmed.match(TABLE_LINE_LIST_MARKER_RE);
     if (!listMatch) return line;
     const rest = listMatch[1];
     if (!rest.includes("|")) return line;
@@ -52,8 +56,14 @@ export function buildMarkdownTableModel(tableLines: string[]): MarkdownTableMode
     if (lines.length < 2 || dataRows.length === 0) return null;
     const hasSeparator = lines.some(isMarkdownTableSeparatorRow);
     const allRowsUseOuterPipes = lines.every(line => line.trim().startsWith("|"));
-    if (!hasSeparator && !allRowsUseOuterPipes) return null;
+    // Digital-employee weather tables often ship a pipe header without a GFM
+    // separator, then body rows that omit the leading "|":
+    //   | 日期 | 天气 | 温度 | 风力 |
+    //   今天 (24日) | 雷阵雨转多云
+    //   →| 30°C / 23°C | <3级 |
     let headerCells = parseMarkdownTableCells(dataRows[0]);
+    const headerLed = dataRows[0].trim().startsWith("|") && headerCells.length >= 2;
+    if (!hasSeparator && !allRowsUseOuterPipes && !headerLed) return null;
     const separatorLine = lines.find(isMarkdownTableSeparatorRow) || "";
     const separatorCells = parseMarkdownTableCells(separatorLine);
     if (headerCells.length === 1 && separatorCells.length >= 2) headerCells = [headerCells[0], ""];
@@ -156,7 +166,9 @@ function repairSplitTableRows(model: MarkdownTableModel): MarkdownTableModel {
  * signal "row continues", never standalone values like temperatures or codes.
  */
 function isTableRowContinuationGlyph(cell: string): boolean {
-    return /^(?:→|->|=>|⇒|…|\.{2,3}|—|–|-|~|·|•)$/.test(cell.trim());
+    // Keep glyph classes as escapes so this file stays ASCII-safe under any codepage.
+    // \u2192 →, \u21d2 ⇒, \u2026 …, \u2014 —, \u2013 –, \u00b7 ·, \u2022 •
+    return /^(?:\u2192|->|=>|\u21d2|\u2026|\.{2,3}|\u2014|\u2013|-|~|\u00b7|\u2022)$/.test(cell.trim());
 }
 
 /** Drop trailing empty cells so "| a | b | |" counts as two data cells. */
@@ -175,10 +187,12 @@ function tryMergeSplitTableRow(line: string, nextLine: string | undefined, colum
 
     // Lines are usually pre-normalized; normalize again so direct callers of
     // buildMarkdownTableModel / repair still work with list-prefixed input.
-    const left = trimTrailingEmptyCells(parseMarkdownTableCells(normalizeMarkdownTableLine(line)));
+    const normalizedLeft = normalizeMarkdownTableLine(line);
+    const normalizedNext = normalizeMarkdownTableLine(nextLine);
+    const left = trimTrailingEmptyCells(parseMarkdownTableCells(normalizedLeft));
     if (left.length === 0 || left.length >= columnCount) return null;
 
-    const nextCells = parseMarkdownTableCells(normalizeMarkdownTableLine(nextLine));
+    const nextCells = parseMarkdownTableCells(normalizedNext);
     if (nextCells.length === 0) return null;
 
     // Skip leading blanks (column padding) and pure wrap glyphs ("→", "-").
@@ -204,9 +218,19 @@ function tryMergeSplitTableRow(line: string, nextLine: string | undefined, colum
     if (left.length + rest.length !== columnCount) return null;
 
     if (!sawGlyphMarker) {
-        // No wrap glyph: only the classic streamed form is safe —
-        // one label cell, then exactly the remaining N-1 cells.
-        if (left.length !== 1 || rest.length !== columnCount - 1) return null;
+        // Classic streamed form: one label cell, then exactly the remaining N-1 cells.
+        const classicSplit = left.length === 1 && rest.length === columnCount - 1;
+        // Weather-style without wrap glyph: multi-cell partial row omits leading
+        // "|", continuation is a proper pipe row with the remaining cells.
+        //   周一 (27日) | 多云
+        //   | 33°C / 25°C | <3级 |
+        // left.length >= 2 avoids overlapping classic 1+(N-1). Both-piped short
+        // rows ("| a | 1 |" + "| b | 2 |") stay unmerged.
+        const weatherSplit =
+            left.length >= 2
+            && !normalizedLeft.trim().startsWith("|")
+            && normalizedNext.trim().startsWith("|");
+        if (!classicSplit && !weatherSplit) return null;
     }
 
     return `| ${[...left, ...rest].map(escapeMarkdownTableCell).join(" | ")} |`;

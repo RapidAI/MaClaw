@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,75 +9,76 @@ import (
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
-func TestShouldEnableCodingTDD_SkipsOperationalRunRequests(t *testing.T) {
-	// Pure ops in a sticky coding session must not enter TDD red/green.
-	ops := []string{
-		"运行下生成的游戏",
-		"运行一下游戏",
-		"跑一下",
-		"再跑一次",
-		"run the game",
-		"run it",
-		"build and run",
-	}
-	for _, text := range ops {
-		if !looksLikeCodingOperationalRequest(text) {
-			t.Fatalf("expected operational: %q", text)
-		}
-		if shouldEnableCodingTDD(text, false, 1) {
-			t.Fatalf("TDD must stay off for operational request: %q", text)
+func TestParseCodingRequestDecision(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		kind codingRequestKind
+		plan bool
+	}{
+		{`{"kind":"inquiry","needs_plan":false}`, codingRequestInquiry, false},
+		{`{"kind":"operational","needs_plan":false}`, codingRequestOperational, false},
+		{`{"kind":"operational","needs_plan":true}`, codingRequestOperational, false},
+		{`{"kind":"inquiry","needs_plan":true}`, codingRequestInquiry, false},
+		{`{"kind":"implementation","needs_plan":true}`, codingRequestImplementation, true},
+	} {
+		decision, ok := parseCodingRequestDecision(tc.raw)
+		if !ok || decision.Kind != tc.kind || decision.NeedsPlan != tc.plan {
+			t.Fatalf("parseCodingRequestDecision(%q) = %#v, %v", tc.raw, decision, ok)
 		}
 	}
-	// Real implement/fix single tasks still get TDD.
-	impl := []string{
-		"修复蛇撞墙不结束的 bug",
-		"实现暂停功能",
-		"fix the collision detection",
-		"add a score multiplier",
-	}
-	for _, text := range impl {
-		if looksLikeCodingOperationalRequest(text) {
-			t.Fatalf("implement request should not be operational: %q", text)
+	for _, raw := range []string{"", `{"kind":"unknown","needs_plan":false}`, "not json"} {
+		if _, ok := parseCodingRequestDecision(raw); ok {
+			t.Fatalf("invalid classifier response accepted: %q", raw)
 		}
-		if !shouldEnableCodingTDD(text, false, 1) {
-			t.Fatalf("TDD should stay on for implement request: %q", text)
-		}
-	}
-	// Multi-step planned turns never use TDD (already explore→implement→verify).
-	if shouldEnableCodingTDD("运行下生成的游戏", true, 1) {
-		t.Fatal("planned turns must not enable TDD")
-	}
-	if shouldEnableCodingTDD("实现登录", false, 3) {
-		t.Fatal("multi-task turns must not enable TDD")
-	}
-	// Implement + run still counts as implementation (needs code work).
-	if looksLikeCodingOperationalRequest("实现暂停功能并运行验证") {
-		t.Fatal("implement+run should not be treated as pure operational")
-	}
-	if !shouldEnableCodingTDD("实现暂停功能并运行验证", false, 1) {
-		t.Fatal("implement+run should still enable TDD")
 	}
 }
 
-func TestCodingTaskLooksOperational(t *testing.T) {
-	if !codingTaskLooksOperational(&TaskItem{Title: "运行下生成的游戏", Description: "运行下生成的游戏"}) {
-		t.Fatal("run-game task should be operational")
-	}
-	if !looksLikeCodingOperationalRequest("帮我运行一下") {
-		t.Fatal("帮我运行一下 should be operational")
-	}
-	if codingTaskLooksOperational(&TaskItem{Title: "修复碰撞检测", Description: "蛇撞墙应 game over"}) {
-		t.Fatal("fix task should not be operational")
-	}
-	// Must not treat implement phrasing as operational via bare English "start"/"run".
-	if looksLikeCodingOperationalRequest("start coding") {
-		t.Fatal("start coding must not be operational")
-	}
-	if looksLikeCodingOperationalRequest("实现暂停功能") {
-		t.Fatal("implement request must not be operational")
+func TestResolveCodingWorkbenchTasksWithDecisionKeepsSimpleImplementationDirectInApproveMode(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	tasks, plan, planned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID,
+		"fix the button label",
+		"D:/repo",
+		stickyCodingWorkbenchMemory{PlanMode: codingPlanModeApprove},
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil,
+		nil,
+	)
+	if planned || plan != "" || len(tasks) != 1 {
+		t.Fatalf("simple implementation must stay direct in approve mode: planned=%v plan=%q tasks=%d", planned, plan, len(tasks))
 	}
 }
-
+func TestCodingRequestNeedsPlanFallbackRequiresExplicitSteps(t *testing.T) {
+	for _, text := range []string{
+		strings.Repeat("broad implementation request ", 12),
+		"first investigate the architecture\nthen implement the migration\nfinally verify the deployment",
+	} {
+		if codingRequestNeedsPlanFallback(text) {
+			t.Fatalf("fallback must not create a planning boundary from wording alone: %q", text)
+		}
+	}
+	if !codingRequestNeedsPlanFallback("1. inspect the module\n2. implement the change") {
+		t.Fatal("explicit numbered steps must retain their planning boundary")
+	}
+}
+func TestApprovedCodingPlanDecisionIsAlwaysImplementation(t *testing.T) {
+	decision := approvedCodingPlanDecision()
+	if decision.Kind != codingRequestImplementation || !decision.NeedsPlan {
+		t.Fatalf("approved plan decision = %#v", decision)
+	}
+}
+func TestCodingTaskRequestKindUsesPropagatedDecision(t *testing.T) {
+	if !codingTaskLooksOperational(&TaskItem{RequestKind: codingRequestOperational}) {
+		t.Fatal("operational task should use propagated decision")
+	}
+	if !codingTaskLooksInquiry(&TaskItem{RequestKind: codingRequestInquiry}) {
+		t.Fatal("inquiry task should use propagated decision")
+	}
+	if codingTaskLooksOperational(&TaskItem{Title: "run the app"}) {
+		t.Fatal("subagent must not reclassify task wording")
+	}
+}
 func TestSummarizeOperationalSubAgentQuality(t *testing.T) {
 	// Empty no-tool operational run fails with a clear ops diagnostic (not implement no-change matrix).
 	st, sum, n := summarizeOperationalSubAgentQuality(codingSubAgentAudit{}, agent.LoopResult{ToolCalls: 0})
@@ -195,43 +197,107 @@ func TestIsOperationalInspectionOnlyCommand(t *testing.T) {
 	}
 }
 
-func TestCodingTaskLooksOperationalPrefersDescription(t *testing.T) {
-	// Description is the full user text; title may be truncated noise.
-	if !codingTaskLooksOperational(&TaskItem{Title: "T1", Description: "运行下生成的游戏"}) {
-		t.Fatal("description operational text should win")
+func TestCodingInquiryToolFiltersAreReadOnly(t *testing.T) {
+	if !isCodingInquiryTool("read_file") || !isCodingInquiryTool("code_navigation") {
+		t.Fatal("local inquiry must retain read/navigation tools")
+	}
+	if isCodingInquiryTool("write_file") || isCodingInquiryTool("todo_write") {
+		t.Fatal("local inquiry must not expose mutation/planning tools")
+	}
+	if !isRemoteCodingInquiryTool("ssh_read_file") || !isRemoteCodingInquiryTool("ssh_list_dir") {
+		t.Fatal("remote inquiry must retain SSH read tools")
+	}
+	if isRemoteCodingInquiryTool("ssh_write_file") || isRemoteCodingInquiryTool("ssh_edit_file") {
+		t.Fatal("remote inquiry must not expose SSH write tools")
 	}
 }
 
-func TestLooksLikeComplexCodingTask(t *testing.T) {
-	if looksLikeComplexCodingTask("fix typo") {
-		t.Fatal("simple fix should not be complex")
+func TestCodingOperationalToolFiltersAreNonMutating(t *testing.T) {
+	for _, name := range []string{"bash", "read_file", "Glob", "ripgrep", "code_navigation"} {
+		if !isCodingOperationalTool(name) {
+			t.Fatalf("operational task should retain %q", name)
+		}
 	}
-	if !looksLikeComplexCodingTask("实现用户登录模块，并补齐单元测试，然后做一次回归验证") {
-		t.Fatal("multi-clause Chinese request should be complex")
+	for _, name := range []string{"write_file", "edit_file", "edit_lines", "todo_write", codingSubAgentSpawnToolName, "manage_skill"} {
+		if isCodingOperationalTool(name) {
+			t.Fatalf("operational task must not expose implementation/planning tool %q", name)
+		}
 	}
-	if !looksLikeComplexCodingTask("1. explore auth\n2. implement JWT\n3. add tests\n4. document") {
-		t.Fatal("numbered multi-step should be complex")
+	if rejectCodingOperationalShellCommand("go test ./...") != "" {
+		t.Fatal("normal verification command should remain available to an operational task")
 	}
-	if looksLikeComplexCodingTask("[系统续接] 继续推进目标：ship billing") {
-		t.Fatal("goal continuation should skip auto multi-plan")
+	if rejectCodingOperationalShellCommand("go generate ./...") == "" {
+		t.Fatal("source generation must not be treated as an operational command")
 	}
-	// False positives to avoid.
-	if looksLikeComplexCodingTask("合并这两个 helper 函数") {
-		t.Fatal("合并 should not trigger bare-并 complexity")
+}
+
+func TestCodingInquiryShellCommandsRejectWritesAndAllowInspection(t *testing.T) {
+	for _, command := range []string{
+		"git status --short && git diff --stat",
+		"rg -n 'authentication' . | sort",
+		"find . -maxdepth 2 -type f",
+		"codegraph explore authentication",
+		"codegraph.cmd node AuthenticationService",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+			t.Fatalf("read-only inquiry command should pass: %q: %s", command, msg)
+		}
 	}
-	if looksLikeComplexCodingTask("upgrade go 1.22 toolchain") {
-		t.Fatal("version dots should not count as multi-sentence")
+	for _, command := range []string{
+		"go test ./...",
+		"npm run build",
+		"git branch -D stale",
+		"git config user.name test",
+		"sed 'w generated.txt' README.md",
+		"find . -exec touch changed \\;",
+		"ls $(touch changed)",
+		"cat <(touch changed)",
+		"rg todo > findings.txt",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
+			t.Fatalf("read-only inquiry command should be rejected: %q", command)
+		}
 	}
-	// Bare markdown bullets are not multi-step plans.
-	if looksLikeComplexCodingTask("fix these:\n- typo in a\n- typo in b") {
-		t.Fatal("bullet list alone should not be complex")
+}
+
+func TestResolveCodingWorkbenchTasksAutoPersistsComplexPlanForConfirmation(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	text := "Please do:\n1. inspect the auth module\n2. implement JWT login\n3. add unit tests"
+	tasks, _, planned := h.resolveCodingWorkbenchTasks(userID, text, "D:/repo", stickyCodingWorkbenchMemory{PlanMode: codingPlanModeAuto}, nil, nil)
+	if !planned || len(tasks) != 3 {
+		t.Fatalf("complex auto request should plan: planned=%v steps=%d", planned, len(tasks))
 	}
-	if extractUserProvidedCodingPlan("fix these:\n- typo in a\n- typo in b") != nil {
-		t.Fatal("bullet list alone should not become user plan")
+	if pending, ok := h.loadStickyPendingCodingPlan(userID); !ok || len(pending.Tasks) != 3 {
+		t.Fatalf("complex auto request should await confirmation, pending=%+v ok=%v", pending, ok)
 	}
-	long := strings.Repeat("实现完整功能并验证。", 20)
-	if !looksLikeComplexCodingTask(long) {
-		t.Fatal("long request should be complex")
+}
+
+func TestResolveCodingWorkbenchTasksNewDirectTaskClearsStalePendingPlan(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	h.storeStickyPendingCodingPlan(userID, "old multi-step request", "### T1: old\n### T2: stale", []*v2.TaskItem{
+		{Index: 1, Title: "old", Description: "old"},
+		{Index: 2, Title: "stale", Description: "stale"},
+	})
+	tasks, plan, planned := h.resolveCodingWorkbenchTasks(userID, "fix a typo", "D:/repo", stickyCodingWorkbenchMemory{}, nil, nil)
+	if planned || plan != "" || len(tasks) != 1 {
+		t.Fatalf("new direct task should stay single: planned=%v plan=%q tasks=%d", planned, plan, len(tasks))
+	}
+	if _, ok := h.loadStickyPendingCodingPlan(userID); ok {
+		t.Fatal("new direct task must clear the stale pending plan")
+	}
+}
+
+func TestCodingPlanApprovalActionsMatchConfirmationChoices(t *testing.T) {
+	actions := codingPlanApproveActions()
+	if len(actions) != 3 {
+		t.Fatalf("confirmation should expose exactly start, direct execute, and reject; got %#v", actions)
+	}
+	for _, action := range actions {
+		if action.Command == "/plan mode auto" {
+			t.Fatal("confirmation must not offer a mode switch that leaves the current plan pending")
+		}
 	}
 }
 
@@ -326,18 +392,52 @@ func TestFormatCodingWorkbenchPlanMarkdown(t *testing.T) {
 }
 
 func TestCodingWorkbenchRunHeader(t *testing.T) {
-	if got := codingWorkbenchRunHeader(false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "编码完成" {
+	if got := codingWorkbenchRunHeader(codingRequestImplementation, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "编码完成" {
 		t.Fatalf("single pass: %q", got)
 	}
-	if got := codingWorkbenchRunHeader(true, 3, []v2.TaskRunResult{
+	if got := codingWorkbenchRunHeader(codingRequestImplementation, true, 3, []v2.TaskRunResult{
 		{Status: v2.TaskPassed}, {Status: v2.TaskPassed}, {Status: v2.TaskPassed},
 	}); !strings.Contains(got, "3 步") {
 		t.Fatalf("all pass: %q", got)
 	}
-	if got := codingWorkbenchRunHeader(true, 3, []v2.TaskRunResult{
+	if got := codingWorkbenchRunHeader(codingRequestImplementation, true, 3, []v2.TaskRunResult{
 		{Status: v2.TaskPassed}, {Status: v2.TaskFailed}, {Status: v2.TaskSkipped},
 	}); !strings.Contains(got, "部分完成") {
 		t.Fatalf("partial: %q", got)
+	}
+	if got := codingWorkbenchRunHeader(codingRequestInquiry, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "仓库分析完成" {
+		t.Fatalf("inquiry pass: %q", got)
+	}
+	if got := codingWorkbenchRunHeader(codingRequestInquiry, false, 1, []v2.TaskRunResult{{Status: v2.TaskFailed}}); got != "仓库分析未完成" {
+		t.Fatalf("inquiry failure: %q", got)
+	}
+	if got := codingWorkbenchRunHeader(codingRequestOperational, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "任务完成" {
+		t.Fatalf("operational pass: %q", got)
+	}
+}
+
+func TestCodingWorkbenchRunLabelsStaySpecificToRequestKind(t *testing.T) {
+	for _, kind := range []codingRequestKind{codingRequestInquiry, codingRequestOperational, codingRequestImplementation} {
+		labels := codingWorkbenchLabelsForRequest(kind)
+		if labels.complete == "" || labels.partial == "" || labels.incomplete == "" || labels.skipped == "" {
+			t.Fatalf("kind %q has incomplete labels: %#v", kind, labels)
+		}
+	}
+	if got := codingWorkbenchRunHeader(codingRequestInquiry, true, 2, []v2.TaskRunResult{
+		{Status: v2.TaskPassed}, {Status: v2.TaskSkipped},
+	}); !strings.Contains(got, "仓库分析部分完成") || strings.Contains(got, "编码") {
+		t.Fatalf("inquiry multi-step header must not claim coding: %q", got)
+	}
+}
+
+func TestRepositoryInquiryHeaderAndReportStateNoFilesWereModified(t *testing.T) {
+	header := codingWorkbenchRunHeader(codingRequestInquiry, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}})
+	if header != "仓库分析完成" {
+		t.Fatalf("header = %q", header)
+	}
+	body := fmt.Sprintf("%s\n项目路径：%s\n只读检查：未修改任何文件。\n\n%s", header, "D:/repo", "analysis")
+	if strings.Contains(body, "编码完成") || !strings.Contains(body, "只读检查：未修改任何文件") {
+		t.Fatalf("unexpected inquiry report: %q", body)
 	}
 }
 

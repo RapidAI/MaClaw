@@ -2,6 +2,7 @@ import { useState, type Dispatch, type ReactNode, type SetStateAction } from 're
 import { PatchConfigFields } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import { EVENT_MACLAW_CONFIG_CHANGED } from '../../constants/events';
 import { ModelRoutesSettingsSection } from './ModelRoutesSettingsSection';
 
 type LLMCacheSettingsPanelProps = {
@@ -87,6 +88,8 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
         try {
             const saved = await PatchConfigFields({ llm_prompt_cache: normalizeSwitchPatch(cache, {}) });
             setConfig(new main.AppConfig(saved));
+            // Keep other surfaces (e.g. the quick-settings bar) in sync with this change.
+            window.dispatchEvent(new CustomEvent(EVENT_MACLAW_CONFIG_CHANGED, { detail: saved }));
             showToastMessage?.(textForLang(lang, 'Saved successfully', '\u4fdd\u5b58\u6210\u529f', '\u5132\u5b58\u6210\u529f'));
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

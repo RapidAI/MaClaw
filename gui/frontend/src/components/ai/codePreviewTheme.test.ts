@@ -8,10 +8,13 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+    createCodePreviewTheme,
     darkCodePreviewTheme,
     lightCodePreviewTheme,
+    maximumContrastInkOnFill,
     type CodePreviewTheme,
 } from './CodePreviewPanel';
+import { darkTheme, lightTheme } from './aiAssistantPanelTheme';
 
 // ── All theme property keys ──
 
@@ -121,5 +124,53 @@ describe('Critical color differences', () => {
 
     it('syntax function colors are distinct', () => {
         expect(darkCodePreviewTheme.syntaxFunction).not.toBe(lightCodePreviewTheme.syntaxFunction);
+    });
+});
+
+describe('Active assistant scheme derivation', () => {
+    it('inherits the active assistant surfaces and semantic colors', () => {
+        const preview = createCodePreviewTheme({ ...darkTheme, isDark: true });
+
+        expect(preview.bg).toBe(darkTheme.bg);
+        expect(preview.border).toBe(darkTheme.divider);
+        expect(preview.tabBg).toBe(darkTheme.titleBarBg);
+        expect(preview.tabActiveBg).toBe(darkTheme.fieldBg);
+        expect(preview.diffDeleteBg).toBe(darkTheme.errorBg);
+        expect(preview.diffDeleteText).toBe(darkTheme.errorText);
+    });
+
+    it('changes with the selected assistant scheme instead of only its mode', () => {
+        const alternateLight = {
+            ...lightTheme,
+            bg: '#f3f8ff',
+            titleBarBg: '#e5f0ff',
+            fieldBg: '#ffffff',
+            divider: '#9bb8d6',
+            linkColor: '#0f4c81',
+            pathColor: '#0b5b76',
+        };
+
+        const preview = createCodePreviewTheme(alternateLight);
+
+        expect(preview.bg).toBe(alternateLight.bg);
+        expect(preview.tabBg).toBe(alternateLight.titleBarBg);
+        expect(preview.border).toBe(alternateLight.divider);
+        expect(preview.syntaxKeyword).toBe(alternateLight.linkColor);
+        expect(preview.syntaxNumber).toBe(alternateLight.pathColor);
+    });
+
+    it('uses explicit dark-state semantics when deriving success tones', () => {
+        const preview = createCodePreviewTheme({
+            ...lightTheme,
+            isDark: true,
+        });
+
+        expect(preview.diffAddText).toBe('#7aa89a');
+        expect(preview.diffAddBg).toContain('#7aa89a');
+    });
+
+    it('uses the maximum-contrast ink for the muted dark-mode success fill', () => {
+        const successFill = '#7aa89a';
+        expect(maximumContrastInkOnFill(successFill)).toBe('#111111');
     });
 });

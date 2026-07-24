@@ -250,6 +250,13 @@ func CloseAutoRecallStore() {
 	}
 }
 
+// invalidateKnowledgeSourceCountCache forces the next hasKnowledgeSources call
+// to re-query the DB. Called after knowledge writes so a fresh import is
+// discoverable by auto-recall immediately instead of up to 30s later.
+func invalidateKnowledgeSourceCountCache() {
+	atomic.StoreInt64(&knowledgeSourceCountTime, 0)
+}
+
 // hasKnowledgeSources checks if the knowledge base has any content.
 // Uses a 30-second cache to avoid querying the DB on every message.
 func (h *IMMessageHandler) hasKnowledgeSources() bool {

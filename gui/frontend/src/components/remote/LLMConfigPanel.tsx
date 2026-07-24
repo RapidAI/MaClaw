@@ -6,6 +6,8 @@ import {
     TestMaclawLLM,
     GetMaclawAgentMaxIterations,
     SetMaclawAgentMaxIterations,
+    GetMaclawLLMThinkingMode,
+    SetMaclawLLMThinkingMode,
     GetSubAgentConcurrency,
     SetSubAgentConcurrency,
     StartOpenAIOAuth,
@@ -48,6 +50,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [loading, setLoading] = useState(false);
     const [maxIter, setMaxIter] = useState(0);
     const [subAgentConc, setSubAgentConc] = useState(2);
+    const [thinkingMode, setThinkingMode] = useState("");
     const [hubServiceStatus, setHubServiceStatus] = useState<HubLLMServiceStatus | null>(null);
 
     // Dialog state — track selected provider by index (stable across renames)
@@ -156,10 +159,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setLoadError(null);
         console.info("[LLMConfigPanel] load start");
         try {
-            const [providersResult, iterResult, concResult] = await Promise.allSettled([
+            const [providersResult, iterResult, concResult, thinkingResult] = await Promise.allSettled([
                 withTimeout(GetMaclawLLMProviders(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawLLMProviders"),
                 withTimeout(GetMaclawAgentMaxIterations(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawAgentMaxIterations"),
                 withTimeout(GetSubAgentConcurrency(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetSubAgentConcurrency"),
+                withTimeout(GetMaclawLLMThinkingMode(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawLLMThinkingMode"),
             ]);
             if (loadSeq !== loadSeqRef.current) return;
 
@@ -200,6 +204,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             } else {
                 setSubAgentConc(2);
                 console.warn("[LLMConfigPanel] subagent concurrency load failed", concResult.reason);
+            }
+
+            if (thinkingResult.status === "fulfilled") {
+                const mode = thinkingResult.value;
+                setThinkingMode(mode === "enabled" || mode === "disabled" ? mode : "");
+                console.info("[LLMConfigPanel] thinking mode loaded");
+            } else {
+                setThinkingMode("");
+                console.warn("[LLMConfigPanel] thinking mode load failed", thinkingResult.reason);
             }
 
             if (failed) {
@@ -688,6 +701,47 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                         {subAgentConc === 1 ? t("Sequential", "顺序执行") : `${subAgentConc} ${t("parallel", "路并行")}`}
                     </span>
                 </div>
+            </div>
+
+            {/* Thinking (reasoning) mode — global, applies to all providers */}
+            <div className="llm-config-card" style={{
+                marginBottom: 16, padding: "12px 16px", borderRadius: 6,
+                border: `1px solid ${colors.border}`, background: colors.surface,
+            }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>
+                        {t("Thinking (Reasoning)", "推理（思考过程）")}
+                        <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
+                            {t("Global, applies to all providers", "全局设置，对所有服务商生效")}
+                        </span>
+                    </label>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                    {(["", "enabled", "disabled"] as const).map(mode => {
+                        const active = thinkingMode === mode;
+                        return (
+                            <button key={mode || "auto"}
+                                data-testid={`thinking-mode-${mode || "auto"}`}
+                                onClick={() => { setThinkingMode(mode); SetMaclawLLMThinkingMode(mode).catch(() => {}); }}
+                                style={{
+                                    fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
+                                    background: active ? colors.primaryLight : colors.surface,
+                                    color: active ? colors.primaryDark : colors.text,
+                                    border: `1px solid ${active ? colors.primary : colors.border}`,
+                                    borderRadius: 4, transition: "all 0.15s",
+                                }}>
+                                {mode === "" ? t("Auto", "自动") : mode === "enabled" ? t("On", "开启") : t("Off", "关闭")}
+                            </button>
+                        );
+                    })}
+                </div>
+                <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
+                    {thinkingMode === "enabled"
+                        ? t("Requests thinking output; the chat panel shows the model's thinking process when the provider supports it.", "请求模型输出思考过程；服务商支持时，助手面板会显示“思考过程”。")
+                        : thinkingMode === "disabled"
+                            ? t("Explicitly disables thinking; the model replies directly without a thinking phase.", "显式关闭思考；模型直接回复，不产出思考过程。")
+                            : t("Auto: decided by provider defaults (DeepSeek thinking models are auto-enabled).", "自动：由服务商默认行为决定（DeepSeek 思考模型会自动开启）。")}
+                </p>
             </div>
 
             {/* Multi-model council (MoA) presets — aggregator + reference models */}

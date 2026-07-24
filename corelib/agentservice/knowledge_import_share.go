@@ -122,13 +122,22 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 		return fmt.Sprintf("Error: package declares %d sources but only contains %d. The package may be incomplete.", pkg.Manifest.SourceCount, len(pkg.Sources))
 	}
 
-	// Step 5: Import into local knowledge store.
-	importResult := knowledge.ImportPackageSources(c.parentContext(), c.knowledgeStore, convertPkgSources(pkg.Sources), knowledge.PackageImportOptions{
+	// Step 5: Import into local knowledge store (or preview only when dry_run).
+	dryRun := boolArg(args, "dry_run", false)
+	importOpts := knowledge.PackageImportOptions{
 		OwnerID:   c.principal.UserID,
 		TenantID:  c.principal.TenantID,
 		TopicHint: pkg.Manifest.Title,
 		RootPath:  "share://" + resolvedKnowledgeID,
-	})
+		DryRun:    dryRun,
+	}
+	var importResult knowledge.PackageImportResult
+	if dryRun {
+		// Dry-run uses the same classification logic as real import — no store needed.
+		importResult = knowledge.ImportPackageSources(c.parentContext(), nil, convertPkgSources(pkg.Sources), importOpts)
+	} else {
+		importResult = knowledge.ImportPackageSources(c.parentContext(), c.knowledgeStore, convertPkgSources(pkg.Sources), importOpts)
+	}
 
 	// Report sources that were truncated at export time.
 	var truncatedSources []string
@@ -151,13 +160,18 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 		importResult.Warnings = append(importResult.Warnings, fmt.Sprintf("以下来源的内容在分享时被截断（不完整）: %s", strings.Join(truncatedSources, ", ")))
 	}
 
-	log.Printf("[knowledge_import_share] done knowledge_id=%s imported=%d skipped=%d total=%d truncated=%d warnings=%d",
-		resolvedKnowledgeID, importResult.Imported, importResult.Skipped, importResult.Total, len(truncatedSources), len(importResult.Warnings))
+	log.Printf("[knowledge_import_share] done knowledge_id=%s dry_run=%v imported=%d skipped=%d total=%d truncated=%d warnings=%d",
+		resolvedKnowledgeID, dryRun, importResult.Imported, importResult.Skipped, importResult.Total, len(truncatedSources), len(importResult.Warnings))
 
+	status := "imported"
+	if dryRun {
+		status = "dry_run"
+	}
 	resultJSON, _ := json.Marshal(map[string]interface{}{
 		// Keep the established tool-response status for compatibility. Callers
 		// that need the precise outcome should use import_status.
-		"status":              "imported",
+		"status":              status,
+		"dry_run":             dryRun,
 		"import_status":       importResult.Status,
 		"knowledge_id":        resolvedKnowledgeID,
 		"package_id":          pkg.Manifest.PackageID,

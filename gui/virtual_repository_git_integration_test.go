@@ -44,7 +44,7 @@ func TestGitVirtualRepositoryCommitPushAndRevert(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := VirtualRepositoryOperationRequest{Action: "commit_push", Message: "initial"}
-	if _, err := executeGitVirtualRepositoryOperation(context.Background(), work, req, nil, "", remote); err != nil {
+	if _, err := executeGitVirtualRepositoryOperation(context.Background(), git, work, req, nil, "", remote); err != nil {
 		t.Fatal(err)
 	}
 	if got := gitTestRun(t, git, work, "status", "--porcelain"); got != "" {
@@ -56,7 +56,7 @@ func TestGitVirtualRepositoryCommitPushAndRevert(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(work, "untracked.txt"), []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := executeGitVirtualRepositoryOperation(context.Background(), work, VirtualRepositoryOperationRequest{Action: "revert"}, nil, "", ""); err != nil {
+	if _, err := executeGitVirtualRepositoryOperation(context.Background(), git, work, VirtualRepositoryOperationRequest{Action: "revert"}, nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(file)

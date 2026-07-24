@@ -92,6 +92,18 @@ type App struct {
 	// repository mutation. A sync run compares it around its network phase so
 	// it never applies an older snapshot over a newly saved local change.
 	virtualRepositorySyncGeneration atomic.Uint64
+	// virtualRepositoryBackgroundSyncs counts automatic sync work that should
+	// block the manual Sync button: the short debounce queue and an active run.
+	// Failed-retry waits deliberately do not increment this counter so a Hub or
+	// SSH outage cannot leave the UI stuck on "syncing" for minutes.
+	virtualRepositoryBackgroundSyncs atomic.Int32
+	// Background-sync UI phase/message fields are guarded by
+	// virtualRepositorySyncScheduleMu (same lock as the retry timer).
+	virtualRepositorySyncPhase         string
+	virtualRepositorySyncStatusMessage string
+	virtualRepositorySyncAttempt       int
+	virtualRepositorySyncNextRetryAt   time.Time
+	virtualRepositorySyncTimerBlocksUI bool
 
 	// Managers to reduce struct complexity
 	managers                           *AppManagers
@@ -1423,7 +1435,7 @@ func (a *App) buildSkillAutoSummaryPipeline() *SkillAutoSummaryPipeline {
 		a.skillExecutor,
 		a.skillMarketClient,
 		nil,
-	)
+	).WithNamingLLM(NewSkillEvolutionLLMAdapter(a.GetMaclawLLMConfig))
 }
 
 func (a *App) ensureAITrace() {
@@ -7551,6 +7563,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawAgentMaxIterations = config.EffectiveMaxIterations(v)
+		case "maclaw_llm_thinking_mode":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.MaclawLLMThinkingMode = normalizeThinkingModeSetting(v)
 		case "subagent_concurrency":
 			v, err := intField(key, value)
 			if err != nil {

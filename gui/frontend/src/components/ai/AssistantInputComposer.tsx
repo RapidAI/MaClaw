@@ -25,7 +25,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick,
         handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked,
         hardLockInput = false,
-        inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary,
+        inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, flushBottom = false, isBusy, isSelectionCollapsedAtBoundary,
         lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
         pendingAttachmentsTestId, permissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
         resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner,
@@ -67,11 +67,12 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
             cancelPending,
             hasInputOverlay: !!inputOverlay || autocompleteOpen,
             inline,
+            flushBottom,
             isExpandedInput,
             ready,
             theme: t,
         }),
-        [autocompleteOpen, cancelPending, inline, inputOverlay, isExpandedInput, ready, t],
+        [autocompleteOpen, cancelPending, flushBottom, inline, inputOverlay, isExpandedInput, ready, t],
     );
 
     return (

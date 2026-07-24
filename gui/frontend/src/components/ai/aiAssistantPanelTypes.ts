@@ -7,6 +7,7 @@ import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { AssistantUpdatePayload } from "./AssistantUpdateNotice";
 import type { AssistantDarkSchemeId } from "./assistantDarkSchemes";
 import type { AssistantLightSchemeId } from "./assistantLightSchemes";
+import type { SidebarLLMProviderSummary } from "../../types/appShell";
 
 /**
  * State fields provided by useAIAssistant hook.
@@ -117,6 +118,15 @@ export interface AIAssistantPanelProps {
     appUpdateAvailable?: AssistantUpdatePayload | null;
     onOpenAppUpdate?: () => void;
     onDismissAppUpdate?: (latestVersion: string) => void;
+    /** Bottom quick-settings bar: provider/model quick-switch data and language change handler. */
+    availableProviders?: SidebarLLMProviderSummary[];
+    currentModel?: string;
+    modelOptions?: string[];
+    modelsLoading?: boolean;
+    onSwitchProvider?: (providerName: string) => void;
+    onSwitchModel?: (modelId: string) => void;
+    onOpenModelMenu?: () => void;
+    onLanguageChange?: (lang: string) => void;
     /**
      * Notifies the shell when project tabs open/close so the task list can block
      * removing tasks that still have an open tab.

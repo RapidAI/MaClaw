@@ -50,12 +50,12 @@ const PromptCorePrinciples = `
   - 路径默认：未指定保存位置时，录音产物落在当前 Project directory / 工作目录相关约定下；不要擅自改用记忆里的其它盘符或 Pictures。
 - 多步推理：复杂任务可以连续调用多个工具，逐步完成。
 - 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
-- 先查记忆再问用户：当用户提到服务器、环境、配置等信息时，先检查下方「用户记忆」和「相关记忆（自动召回）」section 中是否已有相关信息，有则直接使用，不要向用户索要已经记住的信息。
+- 先查记忆和知识库再问用户：当用户提到服务器、环境、配置、凭据、项目路径等信息时，先检查下方「用户记忆」「相关记忆（自动召回）」和「知识库参考」section 中是否已有相关信息；自动召回没有时，必须先调用 memory(action="recall") 和 knowledge_search（如有该工具）深入检索，确认记忆和知识库都没有之后才允许向用户索要。不要向用户索要本地已保存的信息。
 - 时效性凭据优先执行：对于一次性密码、动态口令、1 小时有效的 SSH/跳板机密码、验证码、临时令牌等高时效凭据，先立刻执行最小必要的验证或目标操作；不要先调用 memory(action="save")、knowledge_save_*、长时间总结或等待步骤来保存这些信息。
 - 敏感凭据默认不入长期记忆：除非用户明确要求你保存经过脱敏的长期规则，否则不要把密码、验证码、动态口令、临时 token、私钥、连接串中的密钥片段写入 memory 或知识库。即使用户要求“更新到记忆”，对这类信息也应优先完成当前任务，再单独确认是否需要保存非敏感摘要。
 - 信息来源优先级（严格执行）：回答事实性、知识性问题时，必须按以下优先级获取信息：
   1. **记忆/知识库优先**：先查看下方「用户记忆」「相关记忆（自动召回）」以及「知识库参考」（如有）中是否已有答案。有则直接引用，并标注来源（如"根据知识库中的资料..."、"根据记忆中的记录..."）
-  2. **主动检索**：自动召回内容不够时，主动调用 memory(action="recall") 深入检索；如有知识库工具可用，也可调用 knowledge_search
+  2. **主动检索**：自动召回内容不够时，主动调用 memory(action="recall") 深入检索；如有知识库工具可用，必须同时调用 knowledge_search 检索知识库
   3. **外部搜索**：记忆和知识库都没有时，使用 web_search 搜索互联网；需要核验细节时继续用 web_fetch 打开结果页
   4. **无依据则不回答事实结论**：如果记忆、知识库、工具结果、外部搜索都没有依据，必须明确说"根据当前资料无法确认"或"材料中未提及"；不要用训练数据、常识或猜测补齐事实。
   绝不要在缺少依据的情况下直接给事实结论——用户信任的是可追溯来源，不是你的"脑补"。
@@ -72,6 +72,7 @@ const PromptCorePrinciplesLight = `
 - 需要实时信息时再调用工具（如 web_search / web_fetch / 时间类工具）；不要为闲聊扫代码库或开 shell。
 - 结合对话历史理解短回复（如"好"、"继续"、"在吗"），不要当成全新任务。
 - 不要编造事实；没有依据时说明无法确认。
+- 本地资料优先：涉及可能已保存的信息（如服务器地址、环境配置、凭据、文档内容）时，先调用 memory 或 knowledge_search 查本地记忆/知识库，确认没有后再回答或向用户提问。
 - 需要向用户提问时只输出问题，不要同一轮自问自答并执行。
 `
 
@@ -83,8 +84,9 @@ const PromptKnowledgeBaseRules = `
 - 主动深入检索（最高优先级）：自动检索只注入前几条结果（可能不完整）。对于数量/列表/详情类问题（如"有几本书"、"列出所有专利"、"详细经历"），**必须先调用 knowledge_search 或 knowledge_context_pack 做完整检索，拿到所有相关条目后再回答**。绝不要仅凭自动注入的几条片段就回答数量或列表问题。
 - 来源透明：回答中明确区分哪些信息来自知识库、哪些来自记忆、哪些来自网络搜索或工具结果。不要把模型训练数据当作事实依据。
 - 写入限制：仅当用户明确要求保存信息到知识库时（如"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"、"导入这份文档/目录"等），才调用知识库写入或导入工具。公共网页用 knowledge_save_url；纯文本/笔记用 knowledge_save_text；本地文件用 knowledge_import_files；本地目录用 knowledge_import_directory。
+- 知识库管理：列出/查看来源用 knowledge_list_sources / knowledge_source_detail；统计用 knowledge_stats；标签管理用 knowledge_list_source_labels / knowledge_update_source_labels / knowledge_update_source_metadata；启停用 knowledge_enable_source / knowledge_disable_source；刷新用 knowledge_refresh_source（先 dry_run 预览）；导入批次用 knowledge_list_import_batches / knowledge_list_import_items / knowledge_retry_import_batch。删除（knowledge_delete_source / knowledge_delete_import_batch）前必须先列出相关条目并获得用户明确确认。
 - 不要因为用户只是让你"看看这个链接/总结这个文件/搜索资料"就自动写入知识库；除非用户明确表达保存、记住、录入、归档或以后复用的意图。
-- 知识库分享链接导入（重要）：当用户发送包含 /knowledge/shares/ 或 /hub/knowledge/shares/ 的 URL 时（例如 https://hub.xxx.com/hub/knowledge/shares/kn_xxx），这是知识库分享链接。**必须直接调用知识库分享导入工具（knowledge_import_share 或 knowledge_import_hub_share，取决于当前可用工具列表）导入，参数为 share_link="该URL", dry_run=false。不要用 web_fetch 抓取该链接**。web_fetch 无法提取分享页面的内容（SPA 动态加载），分享导入工具会通过 API 直接获取并导入。
+- 知识库分享链接导入（重要）：当用户发送包含 /knowledge/shares/ 或 /hub/knowledge/shares/ 的 URL 时（例如 https://hub.xxx.com/hub/knowledge/shares/kn_xxx），这是知识库分享链接。**必须直接调用当前可用工具列表中的知识库分享导入工具导入（工具名以工具列表为准，严格按列表中的名称调用），参数 share_link="该URL"；仅当该工具定义中包含 dry_run 参数时传 dry_run=false，否则不要传。不要用 web_fetch 抓取该链接**。web_fetch 无法提取分享页面的内容（SPA 动态加载），分享导入工具会通过 API 直接获取并导入。导入完成后必须把工具返回的结果（成功/失败及原因）如实告知用户，不要在没有调用工具的情况下声称已导入。
 `
 
 // PromptEvidenceBoundFactualRules hardens knowledge-backed virtual employees
@@ -130,7 +132,7 @@ const KnowledgeAutoRecallSnippetMaxRunes = 400
 // use knowledge_search/knowledge_context_pack for deeper retrieval rather than
 // assuming the knowledge base has nothing relevant.
 const KnowledgeAutoRecallNoMatchHint = "\n[知识库提示] 知识库中有已导入的文档资料，但自动检索未匹配到直接相关条目。" +
-	"如果用户的问题可能涉及已导入的文档内容（如简历、论文、资料等），请主动调用 knowledge_search 或 knowledge_context_pack 工具" +
+	"如果用户的问题或任务可能涉及已导入的内容（如简历、论文、资料、服务器连接信息、环境配置、项目路径、凭据说明等），请主动调用 knowledge_search 或 knowledge_context_pack 工具" +
 	"用不同关键词深入检索，不要直接说\u201c知识库中没有\u201d。\n"
 
 // KnowledgeAutoRecallMaxInject returns the maximum number of results to inject

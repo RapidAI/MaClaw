@@ -21,7 +21,7 @@ var mobileDocumentImageIDRe = regexp.MustCompile(`^img[0-9]{1,4}$`)
 
 // Limits for embedded document images (DOCX media).
 const (
-	mobileDocumentMaxEmbeddedImages   = 16
+	mobileDocumentMaxEmbeddedImages     = 16
 	mobileDocumentMaxEmbeddedImageBytes = 4 << 20 // 4 MiB per image
 )
 
@@ -127,7 +127,7 @@ func MobileDocumentDraftImageHandler(identity *auth.IdentityService) http.Handle
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
 		var img *mobileDocumentDraftImage
-		if ok && record.OwnerID == ownerID {
+		if ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			for i := range record.Images {
 				if strings.TrimSpace(record.Images[i].ID) == imageID {
 					img = &record.Images[i]
@@ -141,13 +141,13 @@ func MobileDocumentDraftImageHandler(identity *auth.IdentityService) http.Handle
 			blobPath = img.SourcePath
 			contentType = img.ContentType
 			filename = img.Filename
-		} else if ok && record.OwnerID == ownerID {
+		} else if ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			// Fallback: conventional blob key used by extract (draftimg/{draftId}_{imageId}).
 			blobPath = filepath.ToSlash(filepath.Join(filepath.Base(ownerID), "draftimg", filepath.Base(draftID)+"_"+imageID+".bin"))
 			filename = imageID
 		}
 		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != ownerID {
+		if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "image not found")
 			return
 		}

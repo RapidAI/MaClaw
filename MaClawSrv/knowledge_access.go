@@ -557,6 +557,117 @@ func (s *multiKnowledgeStore) ImportFiles(ctx context.Context, req knowledge.Dir
 	return s.store.ImportFiles(ctx, req, filePaths)
 }
 
+// --- Management capabilities (agentservice.KnowledgeStore alignment) ---
+//
+// Read/list operations merge results across the caller's readable scopes
+// (own + shared + public), mirroring Search. Single-source and write
+// operations delegate to the underlying store; the agentservice tool handlers
+// pre-validate ownership against the caller's principal before invoking them.
+
+func (s *multiKnowledgeStore) ListSources(ctx context.Context, opts knowledge.ListSourcesOptions) ([]knowledge.Source, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("knowledge store is not configured")
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	scopes := s.resolveScopes(ctx, opts.TenantID, opts.OwnerID)
+	merged := make([]knowledge.Source, 0, limit)
+	seen := make(map[string]struct{})
+	for _, scope := range scopes {
+		queryOpts := opts
+		queryOpts.TenantID = scope.TenantID
+		queryOpts.OwnerID = scope.OwnerID
+		sources, err := s.store.ListSources(ctx, queryOpts)
+		if err != nil {
+			return nil, err
+		}
+		for _, source := range sources {
+			if _, ok := seen[source.ID]; ok {
+				continue
+			}
+			seen[source.ID] = struct{}{}
+			merged = append(merged, source)
+		}
+	}
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+func (s *multiKnowledgeStore) ListSourceLabels(ctx context.Context, opts knowledge.ListSourcesOptions) ([]knowledge.SourceLabelSummary, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("knowledge store is not configured")
+	}
+	scopes := s.resolveScopes(ctx, opts.TenantID, opts.OwnerID)
+	merged := make([]knowledge.SourceLabelSummary, 0, 32)
+	seen := make(map[string]int)
+	for _, scope := range scopes {
+		queryOpts := opts
+		queryOpts.TenantID = scope.TenantID
+		queryOpts.OwnerID = scope.OwnerID
+		labels, err := s.store.ListSourceLabels(ctx, queryOpts)
+		if err != nil {
+			return nil, err
+		}
+		for _, label := range labels {
+			key := strings.ToLower(strings.TrimSpace(label.Label))
+			if idx, ok := seen[key]; ok {
+				merged[idx].Count += label.Count
+				continue
+			}
+			seen[key] = len(merged)
+			merged = append(merged, label)
+		}
+	}
+	return merged, nil
+}
+
+func (s *multiKnowledgeStore) GetSource(ctx context.Context, id string) (knowledge.Source, error) {
+	return s.store.GetSource(ctx, id)
+}
+func (s *multiKnowledgeStore) UpdateSourceMetadata(ctx context.Context, req knowledge.SourceUpdateRequest) (knowledge.Source, error) {
+	return s.store.UpdateSourceMetadata(ctx, req)
+}
+func (s *multiKnowledgeStore) UpdateSourceLabels(ctx context.Context, req knowledge.SourceLabelUpdateRequest) (knowledge.SourceLabelUpdateResult, error) {
+	return s.store.UpdateSourceLabels(ctx, req)
+}
+func (s *multiKnowledgeStore) EnableSource(ctx context.Context, id string) (knowledge.Source, error) {
+	return s.store.EnableSource(ctx, id)
+}
+func (s *multiKnowledgeStore) DisableSource(ctx context.Context, id string) (knowledge.Source, error) {
+	return s.store.DisableSource(ctx, id)
+}
+func (s *multiKnowledgeStore) DeleteSource(ctx context.Context, id string) error {
+	return s.store.DeleteSource(ctx, id)
+}
+func (s *multiKnowledgeStore) RefreshSource(ctx context.Context, id string) (knowledge.Source, error) {
+	return s.store.RefreshSource(ctx, id)
+}
+func (s *multiKnowledgeStore) PreviewSourceRefresh(ctx context.Context, id string) (knowledge.SourceChangePreview, error) {
+	return s.store.PreviewSourceRefresh(ctx, id)
+}
+func (s *multiKnowledgeStore) ListImportBatches(ctx context.Context, limit int) ([]knowledge.ImportBatch, error) {
+	return s.store.ListImportBatches(ctx, limit)
+}
+func (s *multiKnowledgeStore) GetImportBatch(ctx context.Context, batchID string) (knowledge.ImportBatch, error) {
+	return s.store.GetImportBatch(ctx, batchID)
+}
+func (s *multiKnowledgeStore) ListImportItems(ctx context.Context, batchID string, limit int) ([]knowledge.ImportItem, error) {
+	return s.store.ListImportItems(ctx, batchID, limit)
+}
+func (s *multiKnowledgeStore) RetryImportBatch(ctx context.Context, req knowledge.ImportRetryRequest) (knowledge.DirectoryImportResult, error) {
+	return s.store.RetryImportBatch(ctx, req)
+}
+func (s *multiKnowledgeStore) DeleteImportBatch(ctx context.Context, req knowledge.ImportBatchDeleteRequest) (knowledge.ImportBatchDeleteResult, error) {
+	return s.store.DeleteImportBatch(ctx, req)
+}
+
 func (s *multiKnowledgeStore) CreateImportBatch(ctx context.Context, batch knowledge.ImportBatch) error {
 	return s.store.CreateImportBatch(ctx, batch)
 }

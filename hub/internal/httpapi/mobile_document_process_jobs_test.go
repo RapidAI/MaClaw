@@ -35,8 +35,8 @@ func TestMobileDocumentProcessAsyncEnqueue(t *testing.T) {
 	draftID := "draft_proc_async_1"
 	mobileDocuments.Lock()
 	mobileDocuments.drafts[draftID] = mobileDocumentDraftRecord{
-		ID: draftID, OwnerID: ownerID, Title: "长文",
-		Markdown: "# 标题\n\n正文第一段。",
+		ID: draftID, OwnerID: ownerID, TenantID: enroll.TenantID, Title: "长文",
+		Markdown:  "# 标题\n\n正文第一段。",
 		UpdatedAt: time.Now().UTC(),
 	}
 	mobileDocuments.Unlock()
@@ -130,8 +130,8 @@ func TestMobileDocumentProcessSyncStillWorks(t *testing.T) {
 	draftID := "draft_proc_sync_1"
 	mobileDocuments.Lock()
 	mobileDocuments.drafts[draftID] = mobileDocumentDraftRecord{
-		ID: draftID, OwnerID: enroll.UserID, Title: "短文",
-		Markdown: "# Hi\n\n短正文",
+		ID: draftID, OwnerID: enroll.UserID, TenantID: enroll.TenantID, Title: "短文",
+		Markdown:  "# Hi\n\n短正文",
 		UpdatedAt: time.Now().UTC(),
 	}
 	mobileDocuments.Unlock()

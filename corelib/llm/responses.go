@@ -46,6 +46,13 @@ var responsesReservedKeys = map[string]bool{
 	"web_search_options":    true,
 }
 
+// isOpenAIResponsesEndpoint reports whether the URL targets OpenAI's own
+// Responses API (platform endpoint or Codex subscription backend).
+func isOpenAIResponsesEndpoint(rawURL string) bool {
+	u := strings.ToLower(strings.TrimSpace(rawURL))
+	return strings.Contains(u, "api.openai.com") || IsCodexSubscriptionEndpoint(u)
+}
+
 // BuildResponsesAPIRequestData constructs the endpoint URL and JSON body
 // for a Responses API request.
 func BuildResponsesAPIRequestData(
@@ -98,6 +105,35 @@ func BuildResponsesAPIRequestData(
 			continue
 		}
 		reqBody[k] = v
+	}
+	// Thinking / reasoning controls (mirrors the chat-completions behavior in
+	// client.go): explicit user override only; "" leaves provider defaults.
+	if _, hasReasoning := reqBody["reasoning"]; !hasReasoning {
+		if _, hasThinking := reqBody["thinking"]; !hasThinking {
+			switch strings.ToLower(strings.TrimSpace(cfg.ThinkingMode)) {
+			case "enabled", "on", "1", "true":
+				if isOpenAIResponsesEndpoint(cfg.URL) {
+					effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+					switch effort {
+					case "minimal", "low", "medium", "high":
+					default:
+						effort = "medium"
+					}
+					reqBody["reasoning"] = map[string]interface{}{"effort": effort}
+				} else {
+					// OpenAI-compatible Responses endpoints (e.g. Volcano Ark)
+					// accept the chat-style thinking object.
+					reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
+				}
+			case "disabled", "off", "0", "false", "none":
+				if isOpenAIResponsesEndpoint(cfg.URL) {
+					// Closest portable "off" for OpenAI reasoning models.
+					reqBody["reasoning"] = map[string]interface{}{"effort": "minimal"}
+				} else {
+					reqBody["thinking"] = map[string]interface{}{"type": "disabled"}
+				}
+			}
+		}
 	}
 	// Ensure max_output_tokens is set for Responses API (analogous to ensureMaxOutputTokens for Chat API).
 	// Skip for Codex subscription endpoints (chatgpt.com/backend-api) — they don't support this parameter;

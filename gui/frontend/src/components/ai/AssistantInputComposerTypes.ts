@@ -46,6 +46,11 @@ export interface AssistantInputComposerProps {
     inputRowTestId?: string;
     inputValue: string;
     inline: boolean;
+    /**
+     * Drop floating-card bottom margin when a footer (quick-settings bar)
+     * sits directly under the composer. Default false preserves VE spacing.
+     */
+    flushBottom?: boolean;
     isBusy: boolean;
     isSelectionCollapsedAtBoundary: (direction: "up" | "down") => boolean;
     lang: string;

@@ -1501,8 +1501,18 @@ func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
 	if !handled || resp == nil {
 		t.Fatalf("pending remote template should be consumed, handled=%v resp=%#v", handled, resp)
 	}
-	if !strings.Contains(capturedTask, "deploy from form") || capturedRemote != remoteCtx {
+	if !strings.Contains(capturedTask, "deploy from form") ||
+		capturedRemote.SessionID != remoteCtx.SessionID ||
+		capturedRemote.WorkDir != remoteCtx.WorkDir ||
+		capturedRemote.ProjectDir != remoteCtx.ProjectDir ||
+		capturedRemote.RequestKind != codingRequestImplementation {
 		t.Fatalf("remote template runner received task=%q remote=%#v", capturedTask, capturedRemote)
+	}
+	if nextRaw, pending := handler.pendingTemplateRemoteCoding.Load(userID); pending {
+		next, _ := nextRaw.(remoteCodingTemplateContext)
+		if next.RequestKind != "" {
+			t.Fatalf("re-armed remote context must not retain prior-turn kind: %#v", next)
+		}
 	}
 	// Multi-turn pure remote coding re-arms sticky pending after each turn so
 	// follow-ups stay in RemoteCodingSubAgent (not cleared permanently).
@@ -1557,7 +1567,7 @@ func TestRemoteCodingTemplateFinalSummaryIsNotStreamedTwice(t *testing.T) {
 	resp := handler.runRemoteCodingTemplateSubAgent(
 		"remote-summary-no-duplicate-user",
 		"verify remote project",
-		remoteCodingTemplateContext{SessionID: "ssh-test", WorkDir: "/srv/app", ProjectDir: "/srv/app"},
+		remoteCodingTemplateContext{SessionID: "ssh-test", WorkDir: "/srv/app", ProjectDir: "/srv/app", RequestKind: codingRequestOperational},
 		NewLoopContext("remote-summary-no-duplicate-test", 1, nil),
 		nil,
 		func(text string) { streamed = append(streamed, text) },
@@ -1567,6 +1577,53 @@ func TestRemoteCodingTemplateFinalSummaryIsNotStreamedTwice(t *testing.T) {
 	}
 	if len(streamed) != 0 {
 		t.Fatalf("final response summary must not be emitted through onToken again, got %#v", streamed)
+	}
+}
+
+func TestRemoteOperationalTemplateSkipsIsolationEvenInAlwaysMode(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "remote-operational-no-isolate-user"
+	handler.clearStickyCodingEnvironment(userID)
+	handler.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.WorktreeMode = codingWorktreeModeAlways
+	})
+
+	original := remoteCodingTemplateRunner
+	t.Cleanup(func() { remoteCodingTemplateRunner = original })
+	var captured remoteCodingTemplateContext
+	remoteCodingTemplateRunner = func(_ *IMMessageHandler, _ corelib.MaclawLLMConfig, _ *http.Client, ctx remoteCodingTemplateContext, _ *LoopContext, _ string, _ func(string), _ func(string)) *RemoteCodingSubAgentResult {
+		captured = ctx
+		return &RemoteCodingSubAgentResult{Status: "success", Summary: "app started", ToolCalls: 1}
+	}
+
+	resp := handler.runRemoteCodingTemplateSubAgent(
+		userID,
+		"run the app",
+		remoteCodingTemplateContext{SessionID: "ssh-test", WorkDir: "/srv/app", ProjectDir: "/srv/app", RequestKind: codingRequestOperational},
+		NewLoopContext("remote-operational-no-isolate-test", 1, nil),
+		nil,
+		nil,
+	)
+	if resp == nil || !strings.Contains(resp.Text, "app started") {
+		t.Fatalf("remote operational response=%#v", resp)
+	}
+	if captured.RequestKind != codingRequestOperational {
+		t.Fatalf("request kind=%q, want operational", captured.RequestKind)
+	}
+	if captured.ProjectDir != "/srv/app" || captured.WorkDir != "/srv/app" {
+		t.Fatalf("operational task must not use isolate: %#v", captured)
+	}
+}
+
+func TestLocalOperationalTemplateSkipsWorktreeEvenInAlwaysMode(t *testing.T) {
+	if codingRequestOperational == codingRequestImplementation {
+		t.Fatal("operational request must remain distinct from implementation for worktree routing")
+	}
+	if got := codingWorkbenchShouldUseWorktree(codingRequestOperational, codingWorktreeModeAlways, false, "run the app", "run the app", 1, 1, nil); got {
+		t.Fatal("operational local task must not create a worktree")
+	}
+	if !codingWorkbenchShouldUseWorktree(codingRequestImplementation, codingWorktreeModeAlways, false, "fix app", "fix app", 1, 1, nil) {
+		t.Fatal("implementation task should retain always-mode worktree behavior")
 	}
 }
 

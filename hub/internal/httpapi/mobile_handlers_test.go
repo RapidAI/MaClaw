@@ -2187,6 +2187,45 @@ func TestMobileDigitalEmployeeTaskStatusHandlerRequiresViewerToken(t *testing.T)
 	}
 }
 
+func TestMobileDigitalEmployeeTaskWorkersKeepTenantsIsolated(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-ve-tenant-worker@example.com")
+	clearMobileDigitalEmployeeTasksForTest(t)
+	const taskID = "mobve-other-tenant"
+	mobileDigitalEmployeeTasks.Lock()
+	mobileDigitalEmployeeTasks.tasks[taskID] = mobileDigitalEmployeeTaskRecord{
+		TaskID: taskID, EmployeeID: "ve_" + enroll.MachineID,
+		OwnerID: enroll.UserID, TenantID: "other-tenant", Status: "queued",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	mobileDigitalEmployeeTasks.Unlock()
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/tasks/claim", nil)
+	claimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskClaimAnyHandler(identity).ServeHTTP(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK || !strings.Contains(claimRec.Body.String(), `"status":"empty"`) {
+		t.Fatalf("cross-tenant claim status=%d body=%s", claimRec.Code, claimRec.Body.String())
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"done","result":"should not write"}`))
+	updateReq.SetPathValue("taskId", taskID)
+	updateReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	updateReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	updateRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant update status=%d body=%s, want 404", updateRec.Code, updateRec.Body.String())
+	}
+	mobileDigitalEmployeeTasks.Lock()
+	got := mobileDigitalEmployeeTasks.tasks[taskID]
+	mobileDigitalEmployeeTasks.Unlock()
+	if got.Status != "queued" || got.Result != "" {
+		t.Fatalf("cross-tenant worker mutated task: %#v", got)
+	}
+}
+
 func TestMobileDigitalEmployeeTaskUpdateHandlerRequiresWorkerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/mobve_1", strings.NewReader(`{"status":"done","result":"ok"}`))
 	rec := httptest.NewRecorder()
@@ -2507,12 +2546,14 @@ func TestMobileDigitalEmployeeTaskClaimPrefersOldestQueued(t *testing.T) {
 	mobileDigitalEmployeeTasks.tasks = map[string]mobileDigitalEmployeeTaskRecord{
 		"mobve_new": {
 			TaskID: "mobve_new", EmployeeID: "ve_" + enroll.MachineID, OwnerID: ownerID,
-			Prompt: "newer", TaskType: "general", Status: "queued",
+			TenantID: enroll.TenantID,
+			Prompt:   "newer", TaskType: "general", Status: "queued",
 			CreatedAt: now.Add(2 * time.Minute), UpdatedAt: now.Add(2 * time.Minute),
 		},
 		"mobve_old": {
 			TaskID: "mobve_old", EmployeeID: "ve_" + enroll.MachineID, OwnerID: ownerID,
-			Prompt: "older", TaskType: "general", Status: "queued",
+			TenantID: enroll.TenantID,
+			Prompt:   "older", TaskType: "general", Status: "queued",
 			CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-2 * time.Minute),
 		},
 	}
@@ -2701,6 +2742,7 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 	mobileDocuments.drafts["draft-1"] = mobileDocumentDraftRecord{
 		ID:        "draft-1",
 		OwnerID:   "user-1",
+		TenantID:  "tenant-1",
 		Title:     "\u5e94\u6025\u62a5\u544a",
 		Template:  "report",
 		Markdown:  "# \u5e94\u6025\u62a5\u544a\n\n\u5185\u5bb9",
@@ -2710,6 +2752,7 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 		JobID:     "export-1",
 		DraftID:   "draft-1",
 		OwnerID:   "user-1",
+		TenantID:  "tenant-1",
 		Format:    "markdown",
 		Status:    "ready",
 		CreatedAt: now,
@@ -2717,6 +2760,7 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 	mobileDocuments.uploads["upload-1"] = mobileDocumentUploadRecord{
 		TaskID:     "upload-1",
 		OwnerID:    "user-1",
+		TenantID:   "tenant-1",
 		Filename:   "incident.md",
 		Status:     "ready",
 		DraftID:    "draft-1",
@@ -2730,6 +2774,7 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 		TaskID:     "task-1",
 		EmployeeID: "ve-machine",
 		OwnerID:    "user-1",
+		TenantID:   "tenant-1",
 		Prompt:     "\u68c0\u67e5\u78c1\u76d8",
 		Status:     "queued",
 		Result:     "\u4efb\u52a1\u5df2\u63d0\u4ea4",
@@ -2770,6 +2815,45 @@ func TestMobilePersistentStateRoundTrip(t *testing.T) {
 	}
 	if !hasTask || task.Prompt != "\u68c0\u67e5\u78c1\u76d8" {
 		t.Fatalf("restored task = %#v, present=%v", task, hasTask)
+	}
+}
+
+func TestMobilePersistentStateNormalizesLegacyTenantIDs(t *testing.T) {
+	clearMobileStateForTest(t)
+	path := filepath.Join(t.TempDir(), "mobile-state.json")
+	t.Setenv(mobileStatePathEnv, path)
+	legacy := mobilePersistentState{
+		Drafts:  map[string]mobileDocumentDraftRecord{"draft": {ID: "draft", OwnerID: "owner"}},
+		Exports: map[string]mobileDocumentExportRecord{"export": {JobID: "export", OwnerID: "owner"}},
+		Uploads: map[string]mobileDocumentUploadRecord{"upload": {TaskID: "upload", OwnerID: "owner"}},
+		MeetingRecordings: map[string]mobileMeetingRecording{"recording": {
+			ID: "recording", OwnerID: "owner", Status: "ready",
+			RetentionUntil: time.Now().UTC().Add(time.Hour),
+		}},
+		DigitalEmployeeTasks: map[string]mobileDigitalEmployeeTaskRecord{"task": {TaskID: "task", OwnerID: "owner"}},
+		ServerProfiles:       map[string]mobileServerProfileRecord{"profile": {ProfileID: "profile", OwnerID: "owner"}},
+		SSHVaultSecrets:      map[string]mobileSSHVaultRecord{"secret": {ProfileID: "secret", OwnerID: "owner"}},
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mobileResetStatePersistenceForTest()
+	mobileEnsureStateLoaded()
+	mobileDocuments.Lock()
+	draft, export, upload := mobileDocuments.drafts["draft"], mobileDocuments.exports["export"], mobileDocuments.uploads["upload"]
+	mobileDocuments.Unlock()
+	mobileMeetingRecordings.Lock()
+	recording := mobileMeetingRecordings.items["recording"]
+	mobileMeetingRecordings.Unlock()
+	mobileDigitalEmployeeTasks.Lock()
+	task := mobileDigitalEmployeeTasks.tasks["task"]
+	mobileDigitalEmployeeTasks.Unlock()
+	if draft.TenantID != "default" || export.TenantID != "default" || upload.TenantID != "default" || recording.TenantID != "default" || task.TenantID != "default" {
+		t.Fatalf("legacy state tenant normalization failed: draft=%q export=%q upload=%q recording=%q task=%q", draft.TenantID, export.TenantID, upload.TenantID, recording.TenantID, task.TenantID)
 	}
 }
 
@@ -2943,6 +3027,7 @@ func TestMobileDocumentUploadClaimHandlerClaimsPendingTask(t *testing.T) {
 	mobileDocuments.uploads["upload-claim"] = mobileDocumentUploadRecord{
 		TaskID:      "upload-claim",
 		OwnerID:     enroll.UserID,
+		TenantID:    enroll.TenantID,
 		Filename:    "screenshot.png",
 		ContentType: "image/png",
 		Status:      "needs_ocr",
@@ -2991,6 +3076,7 @@ func TestMobileDocumentUploadClaimHandlerFailsGhostNeedsOCR(t *testing.T) {
 	mobileDocuments.uploads["upload-ghost"] = mobileDocumentUploadRecord{
 		TaskID:     "upload-ghost",
 		OwnerID:    enroll.UserID,
+		TenantID:   enroll.TenantID,
 		Filename:   "gone.png",
 		Status:     "needs_ocr",
 		SourcePath: "missing/ghost.bin",
@@ -3039,6 +3125,7 @@ func TestMobileDocumentUploadClaimHandlerDocumentKindSkipsOCRTasks(t *testing.T)
 	mobileDocuments.uploads["upload-ocr"] = mobileDocumentUploadRecord{
 		TaskID:     "upload-ocr",
 		OwnerID:    enroll.UserID,
+		TenantID:   enroll.TenantID,
 		Filename:   "screenshot.png",
 		Status:     "needs_ocr",
 		UploadedAt: now,
@@ -3047,6 +3134,7 @@ func TestMobileDocumentUploadClaimHandlerDocumentKindSkipsOCRTasks(t *testing.T)
 	mobileDocuments.uploads["upload-doc"] = mobileDocumentUploadRecord{
 		TaskID:      "upload-doc",
 		OwnerID:     enroll.UserID,
+		TenantID:    enroll.TenantID,
 		Filename:    "legacy.doc",
 		Status:      "queued",
 		SourceBytes: []byte("doc"),
@@ -3088,6 +3176,51 @@ func TestMobileDocumentUploadClaimHandlerRequiresMachineToken(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentUploadWorkerOperationsKeepTenantsIsolated(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-worker-tenant@example.com")
+	clearMobileStateForTest(t)
+	now := time.Now().UTC()
+	const taskID = "upload-worker-other-tenant"
+	mobileDocuments.Lock()
+	mobileDocuments.uploads[taskID] = mobileDocumentUploadRecord{
+		TaskID: taskID, OwnerID: enroll.UserID, TenantID: "other-tenant",
+		Filename: "private.png", Status: "needs_ocr", SourceBytes: []byte("source"),
+		UploadedAt: now, UpdatedAt: now,
+	}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileDocuments.Lock()
+		delete(mobileDocuments.uploads, taskID)
+		mobileDocuments.Unlock()
+	})
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/upload/claim", nil)
+	claimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimRec := httptest.NewRecorder()
+	MobileDocumentUploadClaimHandler(identity).ServeHTTP(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK || !strings.Contains(claimRec.Body.String(), `"status":"no_task"`) {
+		t.Fatalf("cross-tenant claim status=%d body=%s", claimRec.Code, claimRec.Body.String())
+	}
+
+	resultReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/"+taskID+"/result", strings.NewReader(`{"status":"ready","markdown":"# should not write"}`))
+	resultReq.SetPathValue("taskId", taskID)
+	resultReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	resultReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	resultRec := httptest.NewRecorder()
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(resultRec, resultReq)
+	if resultRec.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant result status=%d body=%s, want 404", resultRec.Code, resultRec.Body.String())
+	}
+	mobileDocuments.Lock()
+	got := mobileDocuments.uploads[taskID]
+	mobileDocuments.Unlock()
+	if got.Status != "needs_ocr" || got.OCRMarkdown != "" {
+		t.Fatalf("cross-tenant worker mutated task: %#v", got)
+	}
+}
+
 func TestMobileDocumentUploadClaimReclaimsStaleInProgress(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	_, enroll := issueViewerToken(t, identity, "mobile-claim-stale@example.com")
@@ -3097,6 +3230,7 @@ func TestMobileDocumentUploadClaimReclaimsStaleInProgress(t *testing.T) {
 	mobileDocuments.uploads["upload-stale"] = mobileDocumentUploadRecord{
 		TaskID:      "upload-stale",
 		OwnerID:     enroll.UserID,
+		TenantID:    enroll.TenantID,
 		Filename:    "shot.png",
 		Status:      "in_progress",
 		ClaimedBy:   "dead-machine",
@@ -3142,6 +3276,7 @@ func TestMobileDocumentUploadStatusReclaimsStaleInProgress(t *testing.T) {
 	mobileDocuments.uploads["upload-status-stale"] = mobileDocumentUploadRecord{
 		TaskID:      "upload-status-stale",
 		OwnerID:     enroll.UserID,
+		TenantID:    enroll.TenantID,
 		Filename:    "shot.png",
 		Status:      "in_progress",
 		ClaimedBy:   "dead-machine",
@@ -3212,6 +3347,7 @@ func TestMobileDocumentUploadSourceHandlerDownloadsClaimedSource(t *testing.T) {
 	mobileDocuments.uploads["upload-source"] = mobileDocumentUploadRecord{
 		TaskID:      "upload-source",
 		OwnerID:     enroll.UserID,
+		TenantID:    enroll.TenantID,
 		Filename:    "incident.pdf",
 		ContentType: "application/pdf",
 		Status:      "in_progress",
@@ -3248,6 +3384,7 @@ func TestMobileDocumentUploadSourceHandlerRejectsOtherClaimedWorker(t *testing.T
 	mobileDocuments.uploads["upload-source-other"] = mobileDocumentUploadRecord{
 		TaskID:      "upload-source-other",
 		OwnerID:     enroll.UserID,
+		TenantID:    enroll.TenantID,
 		Filename:    "incident.pdf",
 		Status:      "in_progress",
 		ClaimedBy:   "different-machine",
@@ -3277,6 +3414,7 @@ func TestMobileDocumentUploadResultHandlerCompletesQueuedTask(t *testing.T) {
 	mobileDocuments.uploads["upload-queued"] = mobileDocumentUploadRecord{
 		TaskID:     "upload-queued",
 		OwnerID:    enroll.UserID,
+		TenantID:   enroll.TenantID,
 		Filename:   "incident.pdf",
 		Status:     "queued",
 		Message:    "\u5df2\u4e0a\u4f20\uff0c\u7b49\u5f85\u6587\u6863\u89e3\u6790\u7ba1\u7ebf\u5904\u7406\u3002",
@@ -3317,6 +3455,7 @@ func TestMobileDocumentUploadResultHandlerCompletesClaimedTask(t *testing.T) {
 	mobileDocuments.uploads["upload-claimed"] = mobileDocumentUploadRecord{
 		TaskID:    "upload-claimed",
 		OwnerID:   enroll.UserID,
+		TenantID:  enroll.TenantID,
 		Filename:  "screenshot.png",
 		Status:    "in_progress",
 		ClaimedBy: enroll.MachineID,
@@ -3352,6 +3491,7 @@ func TestMobileDocumentUploadResultHandlerRejectsOtherClaimedWorker(t *testing.T
 	mobileDocuments.uploads["upload-other-worker"] = mobileDocumentUploadRecord{
 		TaskID:    "upload-other-worker",
 		OwnerID:   ownerEnroll.UserID,
+		TenantID:  ownerEnroll.TenantID,
 		Filename:  "screenshot.png",
 		Status:    "in_progress",
 		ClaimedBy: "different-machine",
@@ -3380,6 +3520,7 @@ func TestMobileDocumentUploadResultHandlerFailsOCRTask(t *testing.T) {
 	mobileDocuments.uploads["upload-ocr"] = mobileDocumentUploadRecord{
 		TaskID:     "upload-ocr",
 		OwnerID:    enroll.UserID,
+		TenantID:   enroll.TenantID,
 		Filename:   "screenshot.png",
 		Status:     "needs_ocr",
 		DraftID:    "draft-ocr",

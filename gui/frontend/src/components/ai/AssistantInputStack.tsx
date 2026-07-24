@@ -50,6 +50,8 @@ interface AssistantInputStackProps {
     inputRowTestId?: string;
     inputValue: string;
     inline: boolean;
+    /** See AssistantInputComposerProps.flushBottom */
+    flushBottom?: boolean;
     isBusy: boolean;
     isSelectionCollapsedAtBoundary: (direction: "up" | "down") => boolean;
     lang: string;
@@ -94,7 +96,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         handleSaveEdit, handleFireEntry, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp,
         handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
         isEntryInFlight,
-        inputLocked, hardLockInput = false, inputOverlay, allowInputOverflow = true, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
+        inputLocked, hardLockInput = false, inputOverlay, allowInputOverflow = true, inputRef, inputRowTestId, inputValue, inline, flushBottom = false, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
         pendingAttachmentsTestId, permissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
         showVoiceInput, submittedPrompts, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
@@ -190,6 +192,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     inputRowTestId={inputRowTestId}
                     inputValue={inputValue}
                     inline={inline}
+                    flushBottom={flushBottom}
                     isBusy={isBusy}
                     isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
                     lang={lang}

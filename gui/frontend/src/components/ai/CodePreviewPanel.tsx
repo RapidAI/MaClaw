@@ -26,6 +26,7 @@ import type { DiffLine } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
 import type { HighlightToken } from './syntaxHighlight';
 import { MarkdownPreview } from './CodePreviewMarkdown';
+import { relativeLuminance, type Theme } from './aiAssistantPanelTheme';
 import {
     CODE_PREVIEW_FONT_DEFAULT,
     CODE_PREVIEW_FONT_MAX,
@@ -114,6 +115,57 @@ export const lightCodePreviewTheme: CodePreviewTheme = {
     syntaxType: '#2f5f98',
     syntaxOperator: '#334155',
 };
+
+/**
+ * Derive the source-preview palette from the active assistant scheme.
+ *
+ * The preview used to select one of the two fixed palettes above purely from
+ * light/dark mode. That meant alternate assistant schemes changed the chat but
+ * left the source review surface looking like it belonged to another app.
+ */
+export function createCodePreviewTheme(theme: Theme): CodePreviewTheme {
+    const isDark = theme.isDark === true;
+    const success = isDark ? '#7aa89a' : '#3f685b';
+    const successBg = `color-mix(in srgb, ${success} ${isDark ? 18 : 12}%, ${theme.fieldBg})`;
+
+    return {
+        bg: theme.bg,
+        text: theme.codeText || theme.text,
+        textMuted: theme.textMuted,
+        border: theme.divider,
+        lineNumBg: theme.codeBg,
+        lineNumText: theme.textMuted,
+        tabBg: theme.titleBarBg,
+        tabActiveBg: theme.fieldBg,
+        tabActiveText: theme.headingColor,
+        tabHoverBg: `color-mix(in srgb, ${theme.btnColor} ${isDark ? 14 : 8}%, ${theme.titleBarBg})`,
+        diffAddBg: successBg,
+        diffAddText: success,
+        diffDeleteBg: theme.errorBg,
+        diffDeleteText: theme.errorText,
+        syntaxKeyword: theme.linkColor,
+        syntaxString: success,
+        syntaxComment: theme.textMuted,
+        syntaxNumber: theme.pathColor,
+        syntaxFunction: theme.codeText || theme.text,
+        syntaxType: theme.linkColor,
+        syntaxOperator: theme.text,
+    };
+}
+
+/** Choose the more legible neutral ink for muted semantic fills. */
+export function maximumContrastInkOnFill(fillCss: string): string {
+    const fillLuminance = relativeLuminance(fillCss);
+    if (fillLuminance == null) return '#ffffff';
+    const contrast = (foregroundLuminance: number) => {
+        const lighter = Math.max(fillLuminance, foregroundLuminance);
+        const darker = Math.min(fillLuminance, foregroundLuminance);
+        return (lighter + 0.05) / (darker + 0.05);
+    };
+    return contrast(relativeLuminance('#111111')!) >= contrast(relativeLuminance('#ffffff')!)
+        ? '#111111'
+        : '#ffffff';
+}
 // ── Props ──
 
 export interface CodePreviewPanelProps {

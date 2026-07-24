@@ -19,10 +19,10 @@ func TestMobileDocumentQuotaUsedBytes(t *testing.T) {
 
 	mobileDocuments.Lock()
 	mobileDocuments.drafts["q_d1"] = mobileDocumentDraftRecord{
-		ID: "q_d1", OwnerID: owner, Title: "A", Markdown: strings.Repeat("x", 100), UpdatedAt: time.Now().UTC(),
+		ID: "q_d1", OwnerID: owner, TenantID: enroll.TenantID, Title: "A", Markdown: strings.Repeat("x", 100), UpdatedAt: time.Now().UTC(),
 	}
 	mobileDocuments.uploads["q_u1"] = mobileDocumentUploadRecord{
-		TaskID: "q_u1", OwnerID: owner, SourceBytes: []byte(strings.Repeat("y", 50)),
+		TaskID: "q_u1", OwnerID: owner, TenantID: enroll.TenantID, SourceBytes: []byte(strings.Repeat("y", 50)),
 	}
 	mobileDocuments.drafts["q_other"] = mobileDocumentDraftRecord{
 		ID: "q_other", OwnerID: "other", Markdown: strings.Repeat("z", 1000),
@@ -36,7 +36,7 @@ func TestMobileDocumentQuotaUsedBytes(t *testing.T) {
 		mobileDocuments.Unlock()
 	})
 
-	used := mobileDocumentQuotaUsedBytes(owner)
+	used := mobileDocumentQuotaUsedBytes(owner, enroll.TenantID)
 	if used != 150 {
 		t.Fatalf("used=%d want 150", used)
 	}
@@ -57,6 +57,34 @@ func TestMobileDocumentQuotaUsedBytes(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentQuotaKeepsTenantsIsolated(t *testing.T) {
+	owner := "quota-shared-owner"
+	now := time.Now().UTC()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["quota-tenant-a"] = mobileDocumentDraftRecord{ID: "quota-tenant-a", OwnerID: owner, TenantID: "tenant-a", Markdown: strings.Repeat("a", 20), UpdatedAt: now}
+	mobileDocuments.uploads["quota-upload-tenant-a"] = mobileDocumentUploadRecord{TaskID: "quota-upload-tenant-a", OwnerID: owner, TenantID: "tenant-a", SourceBytes: []byte(strings.Repeat("a", 10))}
+	mobileDocuments.drafts["quota-tenant-b"] = mobileDocumentDraftRecord{ID: "quota-tenant-b", OwnerID: owner, TenantID: "tenant-b", Markdown: strings.Repeat("b", 200), UpdatedAt: now}
+	mobileDocuments.uploads["quota-upload-tenant-b"] = mobileDocumentUploadRecord{TaskID: "quota-upload-tenant-b", OwnerID: owner, TenantID: "tenant-b", SourceBytes: []byte(strings.Repeat("b", 100))}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, "quota-tenant-a")
+		delete(mobileDocuments.uploads, "quota-upload-tenant-a")
+		delete(mobileDocuments.drafts, "quota-tenant-b")
+		delete(mobileDocuments.uploads, "quota-upload-tenant-b")
+		mobileDocuments.Unlock()
+	})
+	if used := mobileDocumentQuotaUsedBytes(owner, "tenant-a"); used != 30 {
+		t.Fatalf("tenant-a used=%d want 30", used)
+	}
+	if used := mobileDocumentQuotaUsedBytes(owner, "tenant-b"); used != 300 {
+		t.Fatalf("tenant-b used=%d want 300", used)
+	}
+	if runes := mobileDocumentDraftRuneEstimate(owner, "tenant-a"); runes != 20 {
+		t.Fatalf("tenant-a runes=%d want 20", runes)
+	}
+}
+
 func TestMobileDocumentDraftCreateRespectsQuota(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "quota-create@example.com")
@@ -66,7 +94,7 @@ func TestMobileDocumentDraftCreateRespectsQuota(t *testing.T) {
 	big := strings.Repeat("A", 100*1024*1024-20)
 	mobileDocuments.Lock()
 	mobileDocuments.drafts["q_fill"] = mobileDocumentDraftRecord{
-		ID: "q_fill", OwnerID: owner, Title: "fill", Markdown: big, UpdatedAt: time.Now().UTC(),
+		ID: "q_fill", OwnerID: owner, TenantID: enroll.TenantID, Title: "fill", Markdown: big, UpdatedAt: time.Now().UTC(),
 	}
 	mobileDocuments.Unlock()
 	t.Cleanup(func() {
@@ -107,7 +135,7 @@ func TestMobileDocumentQuotaIgnoresMissingBlobOriginals(t *testing.T) {
 	})
 
 	// Fast path still counts ghost SourceSize (metadata trusted).
-	fast, repairedFast := mobileDocumentQuotaScan(owner, false)
+	fast, repairedFast := mobileDocumentQuotaScan(owner, "default", false)
 	if repairedFast {
 		t.Fatal("fast scan must not repair")
 	}
@@ -115,7 +143,7 @@ func TestMobileDocumentQuotaIgnoresMissingBlobOriginals(t *testing.T) {
 		t.Fatalf("fast used=%d want inflated ghost size", fast)
 	}
 	// Repair path drops missing blobs.
-	used, repaired := mobileDocumentQuotaScan(owner, true)
+	used, repaired := mobileDocumentQuotaScan(owner, "default", true)
 	if !repaired {
 		t.Fatal("expected repair for missing blobs")
 	}
@@ -123,7 +151,7 @@ func TestMobileDocumentQuotaIgnoresMissingBlobOriginals(t *testing.T) {
 		t.Fatalf("used=%d want 4 (markdown only)", used)
 	}
 	// Write check should pass after repair-on-over-limit path.
-	if err := mobileCheckDocumentQuota(owner, 100, 1000); err != nil {
+	if err := mobileCheckDocumentQuota(owner, "default", 100, 1000); err != nil {
 		t.Fatalf("check after ghost repair: %v", err)
 	}
 	mobileDocuments.Lock()
@@ -156,7 +184,7 @@ func TestMobileBootstrapIncludesQuotaUsed(t *testing.T) {
 	token, enroll := issueViewerToken(t, identity, "quota-boot@example.com")
 	mobileDocuments.Lock()
 	mobileDocuments.drafts["qb1"] = mobileDocumentDraftRecord{
-		ID: "qb1", OwnerID: enroll.UserID, Markdown: "hello", UpdatedAt: time.Now().UTC(),
+		ID: "qb1", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Markdown: "hello", UpdatedAt: time.Now().UTC(),
 	}
 	mobileDocuments.Unlock()
 	t.Cleanup(func() {

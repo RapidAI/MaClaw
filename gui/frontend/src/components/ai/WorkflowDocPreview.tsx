@@ -8,17 +8,77 @@ import { WORKFLOW_PHASE_META } from "./workflowPhaseMeta.generated";
 
 let mermaidMod: any = null;
 let mermaidInitPromise: Promise<any> | null = null;
+// Mermaid keeps its configuration in a module-level singleton. Queue complete
+// initialize + render operations so two diagrams cannot interleave palettes.
+let mermaidRenderQueue: Promise<void> = Promise.resolve();
 
 function getMermaid(): Promise<any> {
     if (mermaidMod) return Promise.resolve(mermaidMod);
     if (mermaidInitPromise) return mermaidInitPromise;
     mermaidInitPromise = import("mermaid").then((m) => {
         const mermaid = m.default || m;
-        mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose", suppressErrorRendering: true });
         mermaidMod = mermaid;
         return mermaid;
     });
     return mermaidInitPromise;
+}
+
+function mermaidThemeConfig(theme: DocPreviewTheme) {
+    return {
+        startOnLoad: false,
+        theme: "base",
+        securityLevel: "loose",
+        suppressErrorRendering: true,
+        themeVariables: {
+            background: theme.bg,
+            primaryColor: theme.accentBg,
+            primaryTextColor: theme.text,
+            primaryBorderColor: theme.accentColor,
+            secondaryColor: theme.codeBg,
+            tertiaryColor: theme.headerBg,
+            lineColor: theme.border,
+            textColor: theme.text,
+            mainBkg: theme.codeBg,
+            nodeBorder: theme.border,
+            clusterBkg: theme.headerBg,
+            clusterBorder: theme.border,
+        },
+    };
+}
+
+async function renderMermaid(
+    m: any,
+    id: string,
+    code: string,
+    container: HTMLDivElement | undefined,
+    theme: DocPreviewTheme,
+    isCancelled: () => boolean,
+): Promise<string | null> {
+    let resolveRender: (svg: string | null) => void;
+    let rejectRender: (reason: unknown) => void;
+    const result = new Promise<string | null>((resolve, reject) => {
+        resolveRender = resolve;
+        rejectRender = reject;
+    });
+
+    mermaidRenderQueue = mermaidRenderQueue
+        .catch(() => { /* A prior diagram failure must not block the queue. */ })
+        .then(async () => {
+            try {
+                // A theme/content update can supersede a queued diagram before
+                // it reaches Mermaid. Skip that obsolete render entirely.
+                if (isCancelled()) {
+                    resolveRender(null);
+                    return;
+                }
+                m.initialize(mermaidThemeConfig(theme));
+                const { svg } = await m.render(id, code, container);
+                resolveRender(svg);
+            } catch (error) {
+                rejectRender(error);
+            }
+        });
+    return result;
 }
 
 /**
@@ -90,15 +150,22 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
     useEffect(() => {
         let cancelled = false;
         const sanitized = sanitizeMermaidCode(code);
+        // Do not leave a prior parse error or stale SVG visible while a new
+        // document/theme render is in flight.
+        setError("");
+        setSvg("");
         getMermaid().then(async (m) => {
             if (cancelled) return;
             try {
-                const { svg: rendered } = await m.render(
+                const rendered = await renderMermaid(
+                    m,
                     idRef.current,
                     sanitized.trim(),
                     containerRef.current ?? undefined,
+                    theme,
+                    () => cancelled,
                 );
-                if (!cancelled) setSvg(rendered);
+                if (!cancelled && rendered) setSvg(rendered);
             } catch (e: any) {
                 if (!cancelled) {
                     setError(e?.message || "Mermaid render error");
@@ -111,7 +178,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
             if (!cancelled) setError(e?.message || "Failed to load mermaid");
         });
         return () => { cancelled = true; };
-    }, [code]);
+    }, [code, theme]);
 
     let content: React.ReactNode;
     if (error) {
@@ -154,6 +221,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
 
 /** Theme colors passed from the parent AIAssistantPanel. */
 export interface DocPreviewTheme {
+    isDark?: boolean;
     bg: string;
     text: string;
     textMuted: string;
@@ -161,6 +229,14 @@ export interface DocPreviewTheme {
     headerBg: string;
     accentColor: string;
     accentBg: string;
+    accentText?: string;
+    successColor?: string;
+    successBg?: string;
+    successText?: string;
+    /** Semantic failure tokens for quality gates (kept separate from progress/current). */
+    dangerColor?: string;
+    dangerBg?: string;
+    dangerText?: string;
     codeBg: string;
     codeText: string;
     codeBlockBg: string;
@@ -595,6 +671,11 @@ export function workflowProgressPhaseCardState({
         }
         return { status: "待开始", tone: "pending", emphasized: false };
     }
+    // A completed quality gate with a failure is actionable feedback. It must
+    // remain visible even when the phase is still current and awaiting review.
+    if (gatePassed === false) {
+        return { status: "需调整", tone: "attention", emphasized: true };
+    }
     if (expectsDocument && hasDoc && isCurrent) {
         return { status: "待确认", tone: "current", emphasized: true };
     }
@@ -789,21 +870,36 @@ function WorkflowProgressBoard({
                         isCurrent,
                         isPast,
                     });
+                    const isFailedGate = gate?.passed === false;
+                    const successColor = theme.successColor || (theme.isDark ? "#7aa89a" : "#3f685b");
+                    const successBg = theme.successBg || `color-mix(in srgb, ${successColor} ${theme.isDark ? 18 : 12}%, ${theme.bg})`;
+                    const dangerColor = theme.dangerColor || theme.accentColor;
+                    const dangerBg = theme.dangerBg || theme.accentBg;
+                    const dangerText = theme.dangerText || theme.accentText || "#ffffff";
+                    const accentText = theme.accentText || "#ffffff";
+                    const successText = theme.successText || "#ffffff";
                     const accent = cardState.tone === "current"
                         ? theme.accentColor
                         : cardState.tone === "done"
-                            ? "#4f7f6f"
+                            ? successColor
                             : cardState.tone === "attention"
-                                ? theme.accentColor
+                                ? (isFailedGate ? dangerColor : theme.accentColor)
                                 : theme.textMuted;
                     const nodeLabel = cardState.tone === "done" ? "OK" : cardState.tone === "attention" ? "REV" : String(index + 1);
                     const softToneBg = cardState.tone === "current"
                         ? theme.accentBg
                         : cardState.tone === "done"
-                            ? "rgba(79, 127, 111, 0.08)"
+                            ? successBg
                             : cardState.tone === "attention"
-                                ? theme.accentBg
+                            ? (isFailedGate ? dangerBg : theme.accentBg)
                                 : "transparent";
+                    const cardBorder = isFailedGate ? dangerColor : (isCurrent ? theme.accentColor : theme.border);
+                    const cardBackground = isFailedGate
+                        ? dangerBg
+                        : (isCurrent ? theme.accentBg : (cardState.emphasized ? softToneBg : theme.bg));
+                    const cardInset = isFailedGate
+                        ? dangerColor
+                        : (isCurrent ? theme.accentColor : undefined);
                     const phaseLabel = workflowPhaseLabel(lang, pid, phaseLabelMap);
                     const statusLabel = workflowPhaseStatusLabel(lang, cardState.status);
                     const ariaSeparator = lang === "en" ? ", " : "，";
@@ -819,10 +915,10 @@ function WorkflowProgressBoard({
                                 minHeight: "68px",
                                 padding: "8px 10px",
                                 borderRadius: "7px",
-                                border: `1px solid ${isCurrent ? theme.accentColor : theme.border}`,
-                                background: isCurrent ? theme.accentBg : (cardState.emphasized ? softToneBg : theme.bg),
-                                boxShadow: isCurrent
-                                    ? `0 0 0 1px ${theme.accentColor} inset`
+                                border: `1px solid ${cardBorder}`,
+                                background: cardBackground,
+                                boxShadow: cardInset
+                                    ? `0 0 0 1px ${cardInset} inset`
                                     : isViewingOnly
                                         ? `0 0 0 1px ${theme.border} inset`
                                         : "none",
@@ -847,7 +943,9 @@ function WorkflowProgressBoard({
                                     borderRadius: "50%",
                                     border: `1px solid ${accent}`,
                                     background: cardState.emphasized ? accent : "transparent",
-                                    color: cardState.emphasized ? "#fff" : accent,
+                                    color: cardState.emphasized
+                                        ? (cardState.tone === "done" ? successText : (isFailedGate ? dangerText : accentText))
+                                        : accent,
                                     display: "inline-flex",
                                     alignItems: "center",
                                     justifyContent: "center",
@@ -1222,7 +1320,7 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
                         border: `1px solid ${theme.border}`,
                         // SVGs may have transparent background with dark strokes —
                         // ensure visibility in dark mode by adding a white backdrop.
-                        background: isSvg ? "#ffffff" : undefined,
+                        background: isSvg ? theme.codeBg : undefined,
                         padding: isSvg ? "8px" : undefined,
                     }} />
                     {alt && <div style={{ fontSize: "12px", color: theme.textMuted, marginTop: "4px" }}>{alt}</div>}
@@ -1271,7 +1369,7 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
                 display: "inline-block",
                 verticalAlign: "middle",
                 margin: "4px 0",
-                background: isSvg ? "#ffffff" : undefined,
+                background: isSvg ? theme.codeBg : undefined,
                 padding: isSvg ? "4px" : undefined,
             }} />);
         } else if (match[4]) { // bold
@@ -1372,6 +1470,14 @@ export function WorkflowDocPreview({
 
     const activePhaseID = viewingPhaseID || fallbackPhaseID || currentPhaseID;
     const content = phaseDocuments.get(activePhaseID) || "";
+    // Workflow status, quality-gate, and phase-selection updates can rerender the
+    // panel while the document itself is unchanged. Markdown parsing builds a full
+    // React tree (and may contain Mermaid blocks), so keep that work tied to the
+    // actual document or active scheme rather than every progress update.
+    const renderedContent = useMemo(
+        () => content ? renderMarkdown(content, theme) : null,
+        [content, theme],
+    );
     const gateResult = gateResults.get(activePhaseID);
     const gateItems = Array.isArray(gateResult?.items) ? gateResult.items : [];
     const currentPhaseMeta = useMemo(
@@ -1427,7 +1533,9 @@ export function WorkflowDocPreview({
                         padding: "6px 14px",
                         fontSize: "12px",
                         borderBottom: `1px solid ${theme.border}`,
-                        background: gateResult.passed ? "rgba(79,127,111,0.10)" : theme.accentBg,
+                        background: gateResult.passed
+                            ? (theme.successBg || `color-mix(in srgb, ${theme.successColor || (theme.isDark ? "#7aa89a" : "#3f685b")} ${theme.isDark ? 18 : 12}%, ${theme.bg})`)
+                            : (theme.dangerBg || theme.accentBg),
                         color: theme.text,
                         flexShrink: 0,
                     }}>
@@ -1457,8 +1565,8 @@ export function WorkflowDocPreview({
                     wordBreak: "break-word",
                     textAlign: "left",
                 }}>
-                    {content
-                        ? renderMarkdown(content, theme)
+                    {renderedContent
+                        ? renderedContent
                         : (
                             <MissingWorkflowDocPlaceholder
                                 activePhaseID={activePhaseID}

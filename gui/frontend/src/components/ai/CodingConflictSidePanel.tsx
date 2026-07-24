@@ -3,7 +3,7 @@ import { localizeText } from "./aiAssistantI18n";
 import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme";
 import { isFormFieldTarget, isInsideAriaHidden } from "./codingUiGuards";
 import { detectLanguage, tokenizeLine, type HighlightToken } from "./syntaxHighlight";
-import { darkCodePreviewTheme, lightCodePreviewTheme, type CodePreviewTheme } from "./CodePreviewPanel";
+import { createCodePreviewTheme, type CodePreviewTheme } from "./CodePreviewPanel";
 
 export type CodingConflictItem = {
     id: string;
@@ -38,7 +38,6 @@ export type CodingConflictTriple = {
 export type CodingConflictSidePanelProps = {
     lang?: string;
     theme: Theme;
-    themeMode?: "dark" | "light";
     /** When true, parent (preview pane) owns resize/split chrome. */
     embedded?: boolean;
     splitRatio?: number;
@@ -124,7 +123,6 @@ const TRIPLE_HIGHLIGHT_LINE_CAP = 400;
 export function CodingConflictSidePanel({
     lang,
     theme: t,
-    themeMode = "light",
     embedded = false,
     splitRatio = 0.55,
     startPreviewResize,
@@ -186,7 +184,7 @@ export function CodingConflictSidePanel({
         return () => document.removeEventListener("keydown", onKey, true);
     }, []);
 
-    const codeTheme = themeMode === "dark" ? darkCodePreviewTheme : lightCodePreviewTheme;
+    const codeTheme = useMemo(() => createCodePreviewTheme(t), [t]);
     const total = Math.max(progressTotal, conflicts.length, 0);
     const remaining = conflicts.length;
     const resolved = Math.max(0, total - remaining);
@@ -213,14 +211,19 @@ export function CodingConflictSidePanel({
         };
 
     const primaryFilled = resolvePrimaryFilledColors(t);
+    const dangerColor = t.errorText;
+    const dangerSurface = `color-mix(in srgb, ${dangerColor} 10%, ${t.fieldBg})`;
+    const dangerBorder = `color-mix(in srgb, ${dangerColor} 40%, ${t.fieldBorder})`;
+    const dangerSelectedSurface = `color-mix(in srgb, ${dangerColor} 12%, ${t.fieldBg})`;
+    const dangerSelectedBorder = `color-mix(in srgb, ${dangerColor} 48%, ${t.fieldBorder})`;
     const btnSm = (opts?: { primary?: boolean; danger?: boolean; muted?: boolean }): CSSProperties => ({
         height: 24,
         padding: "0 8px",
         borderRadius: 4,
-        border: opts?.primary ? "none" : `1px solid ${opts?.danger ? "#dc262655" : (t.fieldBorder || "rgba(127,127,127,0.3)")}`,
+        border: opts?.primary ? "none" : `1px solid ${opts?.danger ? dangerBorder : t.fieldBorder}`,
         // Primary CTAs use sendBtn* pair (dark btnColor is light accent, not a fill)
         background: opts?.primary ? primaryFilled.bg : "transparent",
-        color: opts?.primary ? primaryFilled.fg : (opts?.danger ? "#dc2626" : (opts?.muted ? (t.fieldLabel || t.textMuted || t.promptColor) : t.text)),
+        color: opts?.primary ? primaryFilled.fg : (opts?.danger ? dangerColor : (opts?.muted ? (t.fieldLabel || t.textMuted || t.promptColor) : t.text)),
         fontSize: 11,
         cursor: busy ? "wait" : "pointer",
         opacity: busy ? 0.7 : 1,
@@ -241,7 +244,7 @@ export function CodingConflictSidePanel({
                     }}
                 >
                     <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontWeight: 700, color: "#dc2626", fontSize: 13 }}>
+                        <div style={{ fontWeight: 700, color: dangerColor, fontSize: 13 }}>
                             {localizeText(lang, "Isolation conflicts", "隔离冲突", "隔離衝突")}
                             <span style={{ marginLeft: 8, fontWeight: 600, opacity: 0.85 }}>
                                 {remaining}
@@ -268,7 +271,7 @@ export function CodingConflictSidePanel({
                                     style={{
                                         height: 6,
                                         borderRadius: 999,
-                                        background: "color-mix(in srgb, #dc2626 12%, transparent)",
+                                        background: dangerSurface,
                                         overflow: "hidden",
                                     }}
                                     role="progressbar"
@@ -282,7 +285,7 @@ export function CodingConflictSidePanel({
                                             height: "100%",
                                             width: `${Math.round(progressRatio * 100)}%`,
                                             borderRadius: "inherit",
-                                            background: progressRatio >= 1 ? "#16a34a" : (t.btnColor || "#2f5f98"),
+                                            background: progressRatio >= 1 ? codeTheme.diffAddText : t.btnColor,
                                             transition: "width 0.2s ease",
                                         }}
                                     />
@@ -329,10 +332,10 @@ export function CodingConflictSidePanel({
                                     alignItems: "center",
                                     padding: "8px 10px",
                                     borderRadius: 6,
-                                    border: `1px solid ${activeId === c.id ? "#dc262655" : (t.fieldBorder || "rgba(127,127,127,0.25)")}`,
+                                    border: `1px solid ${activeId === c.id ? dangerBorder : t.fieldBorder}`,
                                     background: activeId === c.id
-                                        ? "color-mix(in srgb, #dc2626 8%, transparent)"
-                                        : (t.fieldBg || "transparent"),
+                                        ? dangerSurface
+                                        : t.fieldBg,
                                 }}
                             >
                                 <button
@@ -436,9 +439,9 @@ export function CodingConflictSidePanel({
                                         marginBottom: 12,
                                         padding: 10,
                                         borderRadius: 6,
-                                        border: `1px solid ${selected.includes(d.path) ? "#dc262655" : (t.fieldBorder || "rgba(127,127,127,0.25)")}`,
+                                        border: `1px solid ${selected.includes(d.path) ? dangerSelectedBorder : (t.fieldBorder || "rgba(127,127,127,0.25)")}`,
                                         background: selected.includes(d.path)
-                                            ? "color-mix(in srgb, #dc2626 6%, transparent)"
+                                            ? dangerSelectedSurface
                                             : (t.fieldBg || "transparent"),
                                     }}
                                 >
@@ -485,7 +488,7 @@ export function CodingConflictSidePanel({
                                             onClick={() => onLoadPreview(d.path, previewSide)}
                                             style={{
                                                 ...btnSm({ muted: true }),
-                                                background: focusFile === d.path ? "color-mix(in srgb, #dc2626 12%, transparent)" : "transparent",
+                                                background: focusFile === d.path ? dangerSelectedSurface : "transparent",
                                             }}
                                         >
                                             {localizeText(lang, "3-way preview", "三路预览", "三路預覽")}
@@ -505,8 +508,8 @@ export function CodingConflictSidePanel({
                                                             height: 22,
                                                             padding: "0 8px",
                                                             borderRadius: 4,
-                                                            border: `1px solid ${previewSide === side ? "#dc2626" : (t.fieldBorder || "rgba(127,127,127,0.3)")}`,
-                                                            background: previewSide === side ? "color-mix(in srgb, #dc2626 14%, transparent)" : "transparent",
+                                                            border: `1px solid ${previewSide === side ? dangerSelectedBorder : (t.fieldBorder || "rgba(127,127,127,0.3)")}`,
+                                                            background: previewSide === side ? dangerSelectedSurface : "transparent",
                                                             fontSize: 11,
                                                             cursor: "pointer",
                                                         }}
@@ -539,7 +542,11 @@ export function CodingConflictSidePanel({
                                                 </button>
                                             </div>
 
-                                            {triple ? (
+                                            {triple ? (() => {
+                                                // All three panes show the same file, so resolve the
+                                                // language once rather than once per column/render.
+                                                const language = detectLanguage(d.path);
+                                                return (
                                                 <div data-testid="coding-conflict-triple" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
                                                     {([
                                                         { key: "base" as const, label: "base", data: triple.base },
@@ -551,13 +558,11 @@ export function CodingConflictSidePanel({
                                                         const truncated = allLines.length > TRIPLE_HIGHLIGHT_LINE_CAP;
                                                         const lines = truncated ? allLines.slice(0, TRIPLE_HIGHLIGHT_LINE_CAP) : allLines;
                                                         const gutterW = Math.max(2, String(allLines.length).length) + 1;
-                                                        // Shared path language for all three panes (avoid re-detecting per column).
-                                                        const language = detectLanguage(d.path);
                                                         return (
                                                             <div
                                                                 key={col.key}
                                                                 style={{
-                                                                    border: `1px solid ${previewSide === col.key ? "#dc262655" : (t.fieldBorder || "rgba(127,127,127,0.25)")}`,
+                                                                    border: `1px solid ${previewSide === col.key ? dangerSelectedBorder : (t.fieldBorder || "rgba(127,127,127,0.25)")}`,
                                                                     borderRadius: 4,
                                                                     overflow: "hidden",
                                                                     minWidth: 0,
@@ -569,7 +574,7 @@ export function CodingConflictSidePanel({
                                                                     style={{
                                                                         width: "100%",
                                                                         border: "none",
-                                                                        background: previewSide === col.key ? "color-mix(in srgb, #dc2626 12%, transparent)" : "transparent",
+                                                                        background: previewSide === col.key ? dangerSelectedSurface : "transparent",
                                                                         fontSize: 11,
                                                                         fontWeight: 600,
                                                                         padding: "4px 6px",
@@ -645,7 +650,8 @@ export function CodingConflictSidePanel({
                                                         );
                                                     })}
                                                 </div>
-                                            ) : null}
+                                                );
+                                            })() : null}
 
                                             {preview.missing ? (
                                                 <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 160, overflow: "auto", opacity: 0.7 }}>

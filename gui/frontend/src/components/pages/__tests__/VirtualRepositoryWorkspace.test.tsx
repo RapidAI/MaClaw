@@ -25,6 +25,9 @@ function installBackend() {
 		ListRepositoryCredentialBindings: vi.fn().mockResolvedValue('{}'),
 		SetRepositoryCredentialBinding: vi.fn().mockResolvedValue(undefined),
         OpenVirtualRepository: vi.fn(),
+		BindVirtualRepositoryRoot: vi.fn(),
+		PreviewVirtualRepositoryRootMigration: vi.fn(),
+		MigrateVirtualRepositoryRoot: vi.fn(),
         PreviewVirtualRepositoryOperation: vi.fn(),
         StartVirtualRepositoryOperation: vi.fn(),
         GetVirtualRepositoryOperation: vi.fn(),
@@ -42,6 +45,8 @@ function installBackend() {
 		CheckoutRemoteVirtualRepositoryNode: vi.fn().mockResolvedValue(undefined),
         StartVirtualRepositoryCodingTask: vi.fn(),
 		SyncVirtualRepositories: vi.fn().mockResolvedValue(JSON.stringify({ status: 'success', last_synced_at: '2026-07-23T00:00:00Z' })),
+		IsVirtualRepositoryBackgroundSyncPending: vi.fn().mockResolvedValue(false),
+		GetVirtualRepositoryBackgroundSyncStatus: vi.fn().mockResolvedValue(JSON.stringify({ pending: false, phase: 'idle' })),
     };
     (window as any).go = { main: { App: backend } };
     return backend;
@@ -67,6 +72,29 @@ describe('Virtual repository utility', () => {
         expect(saved.nodes).toEqual([]);
     });
 
+	it('gives every action button a functional tooltip title', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		await screen.findByRole('tree', { name: 'Workspace' });
+		const workspace = screen.getByTestId('virtual-repository-workspace');
+		const buttons = within(workspace).getAllByRole('button');
+		expect(buttons.length).toBeGreaterThan(5);
+		const missing = buttons
+			.filter((button) => !(button.getAttribute('title') || '').trim())
+			.map((button) => (button.textContent || button.getAttribute('aria-label') || button.className || 'button').trim().slice(0, 80));
+		expect(missing).toEqual([]);
+		// Spot-check that short labels still carry a fuller functional description.
+		expect(screen.getByTitle('Refresh checkout and change status for all mappings')).toBeTruthy();
+		expect(screen.getByTitle('Create a virtual folder at this level')).toBeTruthy();
+		expect(screen.getByTitle('Add a Git/SVN/local directory mapping')).toBeTruthy();
+		expect(screen.getByTitle('Start a coding task at this repository root')).toBeTruthy();
+	});
+
 	it('reports an invalid sync result instead of treating it as successful', async () => {
 		const backend = (window as any).go.main.App;
 		backend.SyncVirtualRepositories.mockResolvedValue(JSON.stringify({ status: 'unsupported' }));
@@ -74,6 +102,121 @@ describe('Virtual repository utility', () => {
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Sync now'));
 		expect((await screen.findByRole('alert')).textContent).toContain('invalid status');
+	});
+
+	it('shows a transient cloud revision race as a soft error after the backend retries', async () => {
+		const backend = (window as any).go.main.App;
+		backend.SyncVirtualRepositories.mockResolvedValue(JSON.stringify({ status: 'conflict', reason: 'revision_race', message: 'Cloud data changed while syncing; try again' }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Sync now'));
+		expect(await screen.findByText('Cloud data changed while syncing; try again')).toBeTruthy();
+		expect((await screen.findByRole('alert')).textContent).toContain('Cloud data changed while syncing');
+		expect(backend.SyncVirtualRepositories).toHaveBeenCalledTimes(1);
+	});
+
+	it('disables manual sync when the backend observes a queued automatic sync', async () => {
+		const backend = (window as any).go.main.App;
+		backend.SyncVirtualRepositories.mockResolvedValue(JSON.stringify({ status: 'busy' }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Sync now'));
+		const button = await screen.findByRole('button', { name: 'Syncing in the background…' });
+		expect(button).toHaveProperty('disabled', true);
+	});
+
+	it('rechecks backend sync state after a busy response when its completion event is missed', async () => {
+		vi.useFakeTimers();
+		try {
+			const backend = (window as any).go.main.App;
+			backend.SyncVirtualRepositories.mockResolvedValue(JSON.stringify({ status: 'busy' }));
+			backend.GetVirtualRepositoryBackgroundSyncStatus
+				.mockResolvedValueOnce(JSON.stringify({ pending: false, phase: 'idle' }))
+				.mockResolvedValueOnce(JSON.stringify({ pending: false, phase: 'idle' }));
+			render(<UtilitiesPage lang="en" />);
+			fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+			await act(async () => {});
+			fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+			await act(async () => {});
+			expect(screen.getByRole('button', { name: 'Syncing in the background…' })).toHaveProperty('disabled', true);
+			await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+			expect(screen.getByRole('button', { name: 'Sync now' })).toHaveProperty('disabled', false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+
+	it('disables manual sync while an automatic virtual repository sync is pending', async () => {
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+		expect(handler).toBeTypeOf('function');
+		act(() => handler({ pending: true, phase: 'running' }));
+		const button = await screen.findByRole('button', { name: 'Syncing in the background…' });
+		expect(button).toHaveProperty('disabled', true);
+		act(() => handler({ pending: false, phase: 'idle' }));
+		expect(await screen.findByRole('button', { name: 'Sync now' })).toHaveProperty('disabled', false);
+	});
+
+	it('keeps the Sync button enabled during a failed-retry wait and shows the error', async () => {
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+		act(() => handler({ pending: false, phase: 'retry_wait', message: 'read virtual repository "vrepo-test" for sync: connect SSH', next_retry_at: '2026-07-24T12:00:00Z' }));
+		expect(await screen.findByRole('button', { name: 'Sync now' })).toHaveProperty('disabled', false);
+		expect((await screen.findByRole('status')).textContent).toMatch(/Automatic sync failed|will retry|vrepo-test/i);
+	});
+
+	it('keeps manual sync disabled until the automatic sync state is known', async () => {
+		const backend = (window as any).go.main.App;
+		let resolveStatus!: (value: string) => void;
+		backend.GetVirtualRepositoryBackgroundSyncStatus.mockReturnValue(new Promise((resolve) => { resolveStatus = resolve; }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const checking = await screen.findByRole('button', { name: 'Checking sync status…' });
+		expect(checking).toHaveProperty('disabled', true);
+		fireEvent.click(checking);
+		expect(backend.SyncVirtualRepositories).not.toHaveBeenCalled();
+		await act(async () => resolveStatus(JSON.stringify({ pending: false, phase: 'idle' })));
+		expect(await screen.findByRole('button', { name: 'Sync now' })).toHaveProperty('disabled', false);
+	});
+
+	it('does not let an initial sync-state response overwrite a newer background-sync event', async () => {
+		const backend = (window as any).go.main.App;
+		let resolveStatus!: (value: string) => void;
+		backend.GetVirtualRepositoryBackgroundSyncStatus.mockReturnValue(new Promise((resolve) => { resolveStatus = resolve; }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+		expect(handler).toBeTypeOf('function');
+		act(() => handler({ pending: true, phase: 'running' }));
+		await act(async () => resolveStatus(JSON.stringify({ pending: false, phase: 'idle' })));
+		const button = await screen.findByRole('button', { name: 'Syncing in the background…' });
+		expect(button).toHaveProperty('disabled', true);
+	});
+
+	it('does not let a delayed fallback poll overwrite a newer background-sync event', async () => {
+		vi.useFakeTimers();
+		try {
+			const backend = (window as any).go.main.App;
+			let resolvePoll!: (value: string) => void;
+			backend.GetVirtualRepositoryBackgroundSyncStatus
+				.mockResolvedValueOnce(JSON.stringify({ pending: false, phase: 'idle' }))
+				.mockReturnValueOnce(new Promise((resolve) => { resolvePoll = resolve; }));
+			backend.SyncVirtualRepositories.mockResolvedValue(JSON.stringify({ status: 'busy' }));
+			render(<UtilitiesPage lang="en" />);
+			fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+			await act(async () => {});
+			fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+			await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+			const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+			act(() => handler({ pending: true, phase: 'running' }));
+			await act(async () => resolvePoll(JSON.stringify({ pending: false, phase: 'idle' })));
+			expect(screen.getByRole('button', { name: 'Syncing in the background…' })).toHaveProperty('disabled', true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('saves a remote mapping without asking for a relative path', async () => {
@@ -85,13 +228,74 @@ describe('Virtual repository utility', () => {
         fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
         fireEvent.click(await screen.findByText('Workspace'));
         await screen.findByRole('tree', { name: 'Workspace' });
-        fireEvent.click(screen.getByTitle('Add mapping'));
+        fireEvent.click(screen.getByLabelText('Add mapping'));
         fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Library' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/library.git' } });
 		fireEvent.click(screen.getByText('Save'));
 		await waitFor(() => expect(backend.SaveRemoteVirtualRepository).toHaveBeenCalled());
 		const saved = JSON.parse(backend.SaveRemoteVirtualRepository.mock.calls[0][0]).repository;
 		expect(saved.nodes[0].repository.relative_path).toBe('Library');
+	});
+
+	it('runs a root-migration preflight and shows the resulting copy scope', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('D:\\workspace-moved');
+		backend.PreviewVirtualRepositoryRootMigration.mockResolvedValue(JSON.stringify({
+			repository_id: 'vrepo_1', source_root: 'D:\\workspace', destination_root: 'D:\\workspace-moved', remote: false,
+			source_file_count: 12, source_size_bytes: 2048, destination_file_count: 3, destination_size_bytes: 512,
+			destination_exists: true, destination_has_manifest: false, can_migrate: true,
+		}));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByText('Move root'));
+		fireEvent.click(screen.getByRole('button', { name: 'Choose destination' }));
+		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalled());
+		fireEvent.click(screen.getByRole('button', { name: 'Check migration' }));
+		await waitFor(() => expect(backend.PreviewVirtualRepositoryRootMigration).toHaveBeenCalledWith(JSON.stringify({ repository_id: 'vrepo_1', destination_root: 'D:\\workspace-moved' })));
+		expect(await screen.findByText('Preflight passed. This repository is ready to move.')).toBeTruthy();
+		expect(screen.getByText('12 · 2,048 bytes')).toBeTruthy();
+	});
+
+	it('asks the user to bind a synchronized repository that has no local root', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Synced workspace', root_path: '', nodes: [], available: false, unbound: true, error_code: 'location_unavailable' };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('C:\\workspace');
+		backend.BindVirtualRepositoryRoot.mockResolvedValue(JSON.stringify({ ...repository, root_path: 'C:\\workspace', available: true, unbound: false }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		expect(await screen.findByText('Root directory unavailable')).toBeTruthy();
+		fireEvent.click(screen.getByRole('button', { name: 'Set local root' }));
+		expect(await screen.findByText('This setting is stored only on this computer and never replaces another device’s location.')).toBeTruthy();
+		fireEvent.click(screen.getByRole('button', { name: 'Choose destination' }));
+		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalled());
+		fireEvent.click(screen.getByRole('button', { name: 'Bind root' }));
+		await waitFor(() => expect(backend.BindVirtualRepositoryRoot).toHaveBeenCalledWith(JSON.stringify({ repository_id: 'vrepo_1', root_path: 'C:\\workspace' })));
+	});
+
+	it('reconnects an unavailable local root only to its matching repository', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\offline', nodes: [], available: false, root_repair: true, error_code: 'location_unavailable' };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('C:\\workspace');
+		backend.BindVirtualRepositoryRoot.mockResolvedValue(JSON.stringify({ ...repository, root_path: 'C:\\workspace', available: true, root_repair: false }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const listReconnect = await screen.findByRole('button', { name: 'Reconnect local root' });
+		expect(listReconnect.getAttribute('title')).toBe('Reconnect the matching local root directory');
+		fireEvent.click(listReconnect);
+		expect(await screen.findByText('Choose a directory containing the same virtual repository manifest. No directory contents will be initialized or overwritten.')).toBeTruthy();
+		fireEvent.click(screen.getByRole('button', { name: 'Choose destination' }));
+		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalled());
+		const dialogReconnect = screen.getByRole('button', { name: 'Reconnect root' });
+		// Must describe reconnect, not the generic bind-root tip.
+		expect(dialogReconnect.getAttribute('title')).toBe('Reconnect the matching local root directory');
+		fireEvent.click(dialogReconnect);
+		await waitFor(() => expect(backend.BindVirtualRepositoryRoot).toHaveBeenCalledWith(JSON.stringify({ repository_id: 'vrepo_1', root_path: 'C:\\workspace' })));
 	});
 
 	it('checks a mapping status immediately after saving and offers checkout', async () => {
@@ -103,7 +307,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
 		fireEvent.click(screen.getByText('Save'));
@@ -112,6 +316,84 @@ describe('Virtual repository utility', () => {
 		fireEvent.click(screen.getByText('Checkout repository'));
 		const nodeID = JSON.parse(backend.SaveVirtualRepository.mock.calls[0][0]).nodes[0].id;
 		await waitFor(() => expect(backend.CheckoutVirtualRepositoryNode).toHaveBeenCalledWith('vrepo_1', nodeID));
+	});
+
+	it('recognizes an existing checkout on open and does not offer checkout again', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1,
+			id: 'vrepo_1',
+			name: 'Workspace',
+			root_path: 'D:\\workspace',
+			nodes: [{ id: 'source', name: 'Source', order: 1, repository: { kind: 'git', relative_path: 'Source', remote_url: 'https://example.com/source.git', enabled: true } }],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.InspectVirtualRepository.mockResolvedValue(JSON.stringify([{
+			node_id: 'source', kind: 'git', path: 'D:\\workspace\\Source', exists: true,
+			is_repository: true, clean: true, branch: 'main', remote_url: 'https://example.com/source.git',
+		}]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledWith('D:\\workspace'));
+		fireEvent.click(await screen.findByRole('treeitem', { name: /Source.*git/i }));
+		expect(await screen.findByText('Checked out · Clean')).toBeTruthy();
+		expect(screen.queryByRole('button', { name: 'Checkout repository' })).toBeNull();
+	});
+
+	it('rejects incomplete status responses instead of hiding checkout', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = {
+			version: 1,
+			id: 'vrepo_1',
+			name: 'Workspace',
+			root_path: 'D:\\workspace',
+			nodes: [
+				{ id: 'source', name: 'Source', order: 1, repository: { kind: 'git', relative_path: 'Source', remote_url: 'https://example.com/source.git', enabled: true } },
+				{ id: 'docs', name: 'Docs', order: 2, repository: { kind: 'git', relative_path: 'Docs', remote_url: 'https://example.com/docs.git', enabled: true } },
+			],
+		};
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.InspectVirtualRepository.mockResolvedValue(JSON.stringify([{
+			node_id: 'source', kind: 'git', path: 'D:\\workspace\\Source', exists: true,
+			is_repository: true, clean: true, branch: 'main', remote_url: 'https://example.com/source.git',
+		}]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledWith('D:\\workspace'));
+		expect((await screen.findByRole('alert')).textContent).toContain('returned a status for an unknown mapping');
+		fireEvent.click(await screen.findByRole('treeitem', { name: /Source.*git/i }));
+		expect(screen.getByRole('button', { name: 'Checkout repository' })).toBeTruthy();
+	});
+
+	it('shows checkout progress until the mapping checkout finishes', async () => {
+		const backend = (window as any).go.main.App;
+		let finishCheckout!: () => void;
+		backend.CheckoutVirtualRepositoryNode.mockReturnValue(new Promise<void>((resolve) => { finishCheckout = resolve; }));
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.InspectVirtualRepository.mockImplementation(async () => JSON.stringify([{ node_id: JSON.parse(backend.SaveVirtualRepository.mock.calls[0][0]).nodes[0].id, kind: 'git', exists: false, is_repository: false, clean: true, error_code: 'not_checked_out' }]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
+		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
+		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
+		fireEvent.click(screen.getByText('Save'));
+		const checkout = await screen.findByRole('button', { name: 'Checkout repository' });
+		fireEvent.click(checkout);
+		fireEvent.click(checkout);
+		const pendingCheckout = await screen.findByRole('button', { name: 'Checking out…' });
+		expect((pendingCheckout as HTMLButtonElement).disabled).toBe(true);
+		expect(pendingCheckout.getAttribute('aria-busy')).toBe('true');
+		expect(pendingCheckout.querySelector('.vrepo-button-spinner')).toBeTruthy();
+		expect(backend.CheckoutVirtualRepositoryNode).toHaveBeenCalledTimes(1);
+		await act(async () => { finishCheckout(); });
+		await waitFor(() => expect(screen.getByRole('button', { name: 'Checkout repository' }).getAttribute('aria-busy')).not.toBe('true'));
 	});
 
 	it('checks out a new mapping only when explicitly requested after saving', async () => {
@@ -123,13 +405,13 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
 		fireEvent.click(screen.getByLabelText('Checkout after saving'));
 		fireEvent.click(screen.getByText('Save'));
 		await waitFor(() => expect(backend.CheckoutVirtualRepositoryNode).toHaveBeenCalledWith('vrepo_1', expect.any(String)));
-		await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledTimes(3));
 	});
 
 	it('does not start checkout while saving unless checkout after saving is selected', async () => {
@@ -140,7 +422,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
 		fireEvent.click(screen.getByText('Save'));
@@ -157,7 +439,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
 		fireEvent.click(screen.getByLabelText('Checkout after saving'));
@@ -168,26 +450,20 @@ describe('Virtual repository utility', () => {
 		expect(backend.CheckoutVirtualRepositoryNode).not.toHaveBeenCalled();
 	});
 
-	it('inspects a saved local mapping instead of assuming its directory exists', async () => {
+	it('creates a saved local mapping directory even when it is empty', async () => {
 		const backend = (window as any).go.main.App;
 		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
 		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
 		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
-		backend.InspectVirtualRepository.mockImplementation(async () => JSON.stringify([{
-			node_id: JSON.parse(backend.SaveVirtualRepository.mock.calls[0][0]).nodes[0].id,
-			kind: 'local', exists: false, is_repository: false, clean: true, error_code: 'directory_missing', error: 'Directory does not exist',
-		}]));
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Artifacts' } });
 		fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'local' } });
 		fireEvent.click(screen.getByText('Save'));
-		await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledWith('D:\\workspace'));
-		expect(await screen.findByText('Directory does not exist')).toBeTruthy();
+		await waitFor(() => expect(backend.CreateVirtualRepositoryDirectory).toHaveBeenCalledWith('D:\\workspace', 'Artifacts'));
 	});
-
 	it('reports malformed status responses instead of treating a mapping as healthy', async () => {
 		const backend = (window as any).go.main.App;
 		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
@@ -197,7 +473,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
 		fireEvent.click(screen.getByText('Save'));
@@ -214,7 +490,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
 		fireEvent.click(screen.getByText('Save'));
@@ -236,7 +512,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
 		fireEvent.click(screen.getByLabelText('Checkout after saving'));
@@ -254,7 +530,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/source.git' } });
 		fireEvent.click(screen.getByLabelText('Checkout after saving'));
@@ -275,14 +551,14 @@ describe('Virtual repository utility', () => {
         fireEvent.click(choose);
         fireEvent.click(choose);
         expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalledTimes(1);
-        expect(await screen.findByText('Loading…')).toBeTruthy();
+        expect((await screen.findAllByText('Loading…')).length).toBeGreaterThan(0);
         expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true);
         expect((screen.getByText('Cancel') as HTMLButtonElement).disabled).toBe(true);
         resolveRoot('D:\\workspace');
         await waitFor(() => expect(screen.getByDisplayValue('D:\\workspace')).toBeTruthy());
     });
 
-    it('does not show a stale refresh error after switching repositories', async () => {
+	    it('does not show a stale refresh error after switching repositories', async () => {
         const backend = (window as any).go.main.App;
         const first = { version: 1, id: 'vrepo_1', name: 'First workspace', root_path: 'D:\\first', nodes: [] };
         const second = { version: 1, id: 'vrepo_2', name: 'Second workspace', root_path: 'D:\\second', nodes: [] };
@@ -290,7 +566,9 @@ describe('Virtual repository utility', () => {
         backend.OpenVirtualRepository.mockImplementation(async (root: string) => JSON.stringify(root === 'D:\\second' ? second : first));
         backend.SelectVirtualRepositoryRoot.mockResolvedValue('D:\\second');
         let rejectRefresh!: (error: Error) => void;
-        backend.InspectVirtualRepository.mockReturnValue(new Promise((_, reject) => { rejectRefresh = reject; }));
+        backend.InspectVirtualRepository
+            .mockReturnValueOnce(new Promise((_, reject) => { rejectRefresh = reject; }))
+            .mockResolvedValue('[]');
 
         render(<UtilitiesPage lang="en" />);
         fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
@@ -301,10 +579,37 @@ describe('Virtual repository utility', () => {
         await act(async () => rejectRefresh(new Error('first workspace is unavailable')));
         fireEvent.click(screen.getByText('Open existing root'));
         expect(await screen.findByRole('tree', { name: 'Second workspace' })).toBeTruthy();
-        expect(screen.queryByText('first workspace is unavailable')).toBeNull();
-    });
+	        expect(screen.queryByText('first workspace is unavailable')).toBeNull();
+	    });
 
-    it('keeps the newest recent-repository list when refreshes resolve out of order', async () => {
+		it('does not show a stale automatic inspection error after a newer refresh succeeds', async () => {
+			const backend = (window as any).go.main.App;
+			const repository = {
+				version: 1,
+				id: 'vrepo_1',
+				name: 'Workspace',
+				root_path: 'D:\\workspace',
+				nodes: [{ id: 'source', name: 'Source', order: 1, repository: { kind: 'git', relative_path: 'Source', enabled: true } }],
+			};
+			backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+			backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+			let rejectAutomaticInspection!: (error: Error) => void;
+			backend.InspectVirtualRepository
+				.mockReturnValueOnce(new Promise((_, reject) => { rejectAutomaticInspection = reject; }))
+				.mockResolvedValue(JSON.stringify([{ node_id: 'source', kind: 'git', exists: true, is_repository: true, clean: true }]));
+
+			render(<UtilitiesPage lang="en" />);
+			fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+			fireEvent.click(await screen.findByText('Workspace'));
+			await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledTimes(1));
+			fireEvent.click(screen.getByText('Refresh status'));
+			await waitFor(() => expect(backend.InspectVirtualRepository).toHaveBeenCalledTimes(2));
+			await act(async () => rejectAutomaticInspection(new Error('automatic inspection is unavailable')));
+
+			expect(screen.queryByText('automatic inspection is unavailable')).toBeNull();
+		});
+
+	    it('keeps the newest recent-repository list when refreshes resolve out of order', async () => {
         const backend = (window as any).go.main.App;
         let resolveInitial!: (value: string) => void;
         let resolveAfterSave!: (value: string) => void;
@@ -353,18 +658,19 @@ describe('Virtual repository utility', () => {
         expect(screen.queryByText('999 bytes')).toBeNull();
     });
 
-    it('explains SVN recovery options when auto-discovery fails', async () => {
+	it('explains SVN recovery options when auto-discovery fails', async () => {
         render(<UtilitiesPage lang="en" />);
         fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
         expect(await screen.findByText('SVN command line client not found')).toBeTruthy();
         expect(screen.getByText('SVN command line client not found').closest('details')?.open).toBe(false);
         fireEvent.click(screen.getByText('SVN client'));
-        expect(screen.getByText('Search again')).toBeTruthy();
-        expect(screen.getByText('Choose svn')).toBeTruthy();
-        expect(screen.getByText('Installation guide')).toBeTruthy();
+        const client = screen.getByText('SVN client').closest('details')!;
+        expect(within(client).getByText('Search again')).toBeTruthy();
+        expect(within(client).getByText('Choose svn')).toBeTruthy();
+        expect(within(client).getByText('Installation guide')).toBeTruthy();
     });
 
-    it('manages existing repositories from a searchable list before opening one', async () => {
+	it('manages existing repositories from a searchable list before opening one', async () => {
         const backend = (window as any).go.main.App;
         const local = { version: 1, id: 'local_1', name: 'Product workspace', root_path: 'D:\\product', nodes: [{ id: 'source', name: 'Source', order: 10, repository: { kind: 'git', relative_path: 'src', enabled: true } }] };
         const remote = { version: 1, id: 'remote_1', name: 'Release workspace', root_path: '/srv/release', remote: { host: 'build.example.com', user: 'deploy' }, nodes: [] };
@@ -386,9 +692,57 @@ describe('Virtual repository utility', () => {
         await waitFor(() => expect(backend.OpenVirtualRepository).toHaveBeenCalledWith('D:\\product'));
         expect(await screen.findByRole('tree', { name: 'Product workspace' })).toBeTruthy();
         expect(screen.getByText('Health overview')).toBeTruthy();
-    });
+	});
 
-    it('does not reload the currently open repository from the management list', async () => {
+		it('keeps Git and SVN tools ahead of sync actions, separate from repository operations', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+
+			const toolbar = screen.getByTestId('virtual-repository-workspace').querySelector('.vrepo-actions')!;
+			const topRow = Array.from(toolbar.children).slice(0, 3);
+			expect(topRow[0].textContent).toContain('Git client');
+			expect(topRow[1].textContent).toContain('SVN client');
+			const syncActions = topRow[2] as HTMLElement;
+			// Setup is a single top-row sibling of Git/SVN; actions are direct button children.
+			expect(syncActions.classList.contains('vrepo-actions__setup')).toBe(true);
+			expect(Array.from(syncActions.children).every((child) => child.tagName === 'BUTTON')).toBe(true);
+			expect(syncActions.textContent).toContain('Sync now');
+			expect(syncActions.textContent).toContain('Open existing root');
+			expect(syncActions.textContent).toContain('New virtual repository');
+			expect(syncActions.textContent).not.toContain('Workspace actions');
+			expect(syncActions.textContent).not.toContain('Sync checked-out repositories');
+			await waitFor(() => {
+				expect(toolbar.children[toolbar.children.length - 1]?.textContent).toContain('Repository actions');
+				expect(syncActions.textContent).toContain('Move root');
+				expect(syncActions.querySelectorAll(':scope > button').length).toBeGreaterThanOrEqual(4);
+			});
+	});
+
+	it('uses a concise tool state while keeping the full unavailable-client detail available', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.GetVCSClientStatus.mockImplementation(async (kind: string) => JSON.stringify({ kind, available: false }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+
+		const gitTool = screen.getByText('Git client').closest('details')!;
+		expect(within(gitTool).getByText('Not found')).toBeTruthy();
+		const gitSummary = within(gitTool).getByText('Not found').closest('summary')!;
+		expect(gitSummary.title).toBe('Git client: Git command line client not found');
+		expect(gitSummary.getAttribute('aria-label')).toBe('Git client: Git command line client not found');
+		fireEvent.click(within(gitTool).getByText('Git client'));
+		expect(within(gitTool).getByText('Choose git')).toBeTruthy();
+	});
+
+	it('does not reload the currently open repository from the management list', async () => {
         const backend = (window as any).go.main.App;
         const repository = { version: 1, id: 'local_1', name: 'Product workspace', root_path: 'D:\\product', nodes: [] };
         backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
@@ -423,6 +777,66 @@ describe('Virtual repository utility', () => {
 		fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
 		await waitFor(() => expect(backend.DeleteVirtualRepository).toHaveBeenCalledWith('local_1'));
 		await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Repositories' })).toBeNull());
+	});
+
+	it('offers Git recovery options when the command line client is unavailable', async () => {
+		const backend = (window as any).go.main.App;
+		backend.GetVCSClientStatus.mockImplementation(async (kind: string) => JSON.stringify({ kind, available: false }));
+		backend.VCSClientExecutableHint = vi.fn().mockResolvedValue('D:\\tools\\git.exe');
+		backend.SelectVCSClientExecutable = vi.fn().mockResolvedValue('D:\\tools\\git.exe');
+		backend.SetVCSClientExecutable = vi.fn().mockResolvedValue(JSON.stringify({ kind: 'git', available: true, executable: 'D:\\tools\\git.exe', version: 'git version 2.50.0', source: 'user' }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		expect(await screen.findByText('Git command line client not found')).toBeTruthy();
+		fireEvent.click(screen.getByText('Git client'));
+		const client = screen.getByText('Git client').closest('details')!;
+		expect(within(client).getByText('Search again')).toBeTruthy();
+		fireEvent.click(within(client).getByText('Choose git'));
+		await waitFor(() => expect(backend.VCSClientExecutableHint).toHaveBeenCalledWith('git'));
+		await waitFor(() => expect(backend.SelectVCSClientExecutable).toHaveBeenCalledWith('git', 'D:\\tools\\git.exe'));
+		await waitFor(() => expect(backend.SetVCSClientExecutable).toHaveBeenCalledWith('git', 'D:\\tools\\git.exe'));
+		expect(within(client).getByText('git version 2.50.0', { exact: false })).toBeTruthy();
+		expect(within(client).getByText('(user)', { exact: false })).toBeTruthy();
+		backend.ResetVCSClientExecutable = vi.fn().mockResolvedValue(JSON.stringify({ kind: 'git', available: false }));
+		fireEvent.click(within(client).getByText('Use automatic search'));
+		await waitFor(() => expect(backend.ResetVCSClientExecutable).toHaveBeenCalledWith('git'));
+		await waitFor(() => expect(within(client).queryByText('Use automatic search')).toBeNull());
+	});
+
+	it('prevents duplicate Git client searches while a search is pending', async () => {
+		const backend = (window as any).go.main.App;
+		let finishSearch!: (value: string) => void;
+		backend.GetVCSClientStatus.mockImplementation(async (kind: string) => JSON.stringify({ kind, available: false }));
+		backend.SearchVCSClient = vi.fn().mockReturnValue(new Promise<string>((resolve) => { finishSearch = resolve; }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Git client'));
+		const client = screen.getByText('Git client').closest('details')!;
+		const search = within(client).getByText('Search again');
+		fireEvent.click(search);
+		fireEvent.click(search);
+		expect(backend.SearchVCSClient).toHaveBeenCalledTimes(1);
+		expect((await within(client).findByText('Loading…')) as HTMLButtonElement).toHaveProperty('disabled', true);
+		await act(async () => finishSearch(JSON.stringify({ kind: 'git', available: false })));
+		await waitFor(() => expect(within(client).getByText('Search again')).toBeTruthy());
+	});
+
+	it('keeps a newer Git client search result when the initial status request finishes late', async () => {
+		const backend = (window as any).go.main.App;
+		let finishInitialStatus!: (value: string) => void;
+		backend.GetVCSClientStatus.mockImplementation((kind: string) => kind === 'git'
+			? new Promise<string>((resolve) => { finishInitialStatus = resolve; })
+			: Promise.resolve(JSON.stringify({ kind, available: false })));
+		backend.SearchVCSClient = vi.fn().mockResolvedValue(JSON.stringify({ kind: 'git', available: true, executable: 'D:\\tools\\git.exe', version: 'git version 2.50.0', source: 'user' }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		await waitFor(() => expect(backend.GetVCSClientStatus).toHaveBeenCalledWith('git'));
+		fireEvent.click(await screen.findByText('Git client'));
+		const client = screen.getByText('Git client').closest('details')!;
+		fireEvent.click(within(client).getByText('Search again'));
+		await screen.findByText('git version 2.50.0', { exact: false });
+		await act(async () => finishInitialStatus(JSON.stringify({ kind: 'git', available: false })));
+		await waitFor(() => expect(within(client).getByText('git version 2.50.0', { exact: false })).toBeTruthy());
 	});
 
 	it('does not start a second repository deletion while the first confirmation is pending', async () => {
@@ -495,6 +909,42 @@ describe('Virtual repository utility', () => {
         expect(request.expected_updated_at).toBe('2026-07-22T01:02:03Z');
     });
 
+	it('previews and starts a safe sync for checked-out repositories', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', updated_at: '2026-07-22T01:02:03Z', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.PreviewVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ repository_id: repository.id, updated_at: repository.updated_at, targets: [], skipped_local: 0 }));
+		backend.StartVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ job_id: 'job_1', action: 'sync', status: 'success', items: [] }));
+
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByText('Sync checked-out repositories'));
+		expect(await screen.findByText(/fast-forward-only pull/i)).toBeTruthy();
+		await waitFor(() => expect(backend.PreviewVirtualRepositoryOperation).toHaveBeenCalled());
+		expect(JSON.parse(backend.PreviewVirtualRepositoryOperation.mock.calls[0][0]).action).toBe('sync');
+		fireEvent.click(await screen.findByText('Execute'));
+		await waitFor(() => expect(backend.StartVirtualRepositoryOperation).toHaveBeenCalled());
+		expect(JSON.parse(backend.StartVirtualRepositoryOperation.mock.calls[0][0]).action).toBe('sync');
+	});
+
+	it('localizes repository operation errors in Chinese', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: '工作区', root_path: 'D:\\workspace', updated_at: '2026-07-22T01:02:03Z', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.PreviewVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ repository_id: repository.id, updated_at: repository.updated_at, targets: [{ node_id: 'source', name: '源码', kind: 'git' }], skipped_local: 0 }));
+		backend.StartVirtualRepositoryOperation.mockResolvedValue(JSON.stringify({ job_id: 'job_1', action: 'sync', status: 'failed', items: [{ node_id: 'source', name: '源码', status: 'failed', error: 'repository has not been checked out' }] }));
+
+		render(<UtilitiesPage lang="zh" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('工作区'));
+		fireEvent.click(await screen.findByText('同步已检出仓库'));
+		fireEvent.click(await screen.findByText('执行'));
+		await waitFor(() => expect(screen.getByRole('region').textContent).toContain('仓库尚未检出，请先完成检出后再执行此操作。'));
+	});
+
     it('locks tree mutations while an operation is running', async () => {
         const backend = (window as any).go.main.App;
         const repository = {
@@ -514,8 +964,8 @@ describe('Virtual repository utility', () => {
         fireEvent.click(await screen.findByText('Execute'));
 
         expect(await screen.findByText(/virtual tree and other operations are locked/i)).toBeTruthy();
-        expect((screen.getByTitle('New virtual folder') as HTMLButtonElement).disabled).toBe(true);
-        expect((screen.getByTitle('Add mapping') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByLabelText('New virtual folder') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByLabelText('Add mapping') as HTMLButtonElement).disabled).toBe(true);
         expect((screen.getByText('Repository credentials') as HTMLButtonElement).disabled).toBe(true);
         expect((screen.getByText('Revert') as HTMLButtonElement).disabled).toBe(true);
         expect((screen.getAllByRole('button', { name: /Workspace/ }).find((button) => button.classList.contains('vrepo-repository-list__item')) as HTMLButtonElement).disabled).toBe(true);
@@ -957,11 +1407,11 @@ describe('Virtual repository utility', () => {
 		expect(await screen.findByText('Create remote root')).toBeTruthy();
 		expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true);
 		fireEvent.click(screen.getByText('Create remote root'));
-		const confirmation = await screen.findByRole('dialog');
+		const confirmation = await screen.findByRole('dialog', { name: 'Create remote root' });
 		fireEvent.click(within(confirmation).getByRole('button', { name: 'Create remote root' }));
 		await waitFor(() => expect(backend.CreateRemoteVirtualRepositoryRoot).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(backend.TestRemoteVirtualRepositoryConnection).toHaveBeenCalledTimes(2));
-		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(screen.queryByRole('dialog', { name: 'Create remote root' })).toBeNull();
 		expect(await screen.findByText(/Connected/)).toBeTruthy();
 		expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(false);
 	});
@@ -1017,7 +1467,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Remote workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'CLI' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/cli.git' } });
 		fireEvent.click(screen.getByText('Save'));
@@ -1035,26 +1485,52 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Remote workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Build' } });
 		fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'local' } });
-		fireEvent.click(screen.getByLabelText('Create directory if missing'));
+		expect(screen.getByText('The local mapping directory is created automatically when saved')).toBeTruthy();
 		fireEvent.click(screen.getByText('Save'));
 		await waitFor(() => expect(backend.CreateRemoteVirtualRepositoryDirectory).toHaveBeenCalledWith('remote_1', 'Build'));
 		expect(backend.SaveRemoteVirtualRepository.mock.invocationCallOrder[0]).toBeLessThan(backend.CreateRemoteVirtualRepositoryDirectory.mock.invocationCallOrder[0]);
 	});
 
-    it('starts a coding task from a recent virtual repository and hands it to a new tab', async () => {
+    it('starts a coding task from repository actions and hands it to a new tab', async () => {
         const backend = (window as any).go.main.App;
-        const recent = { id: 'local_1', name: 'Product workspace', root_path: 'D:\\workspace' };
-        backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([recent]));
+        const repository = { version: 1, id: 'local_1', name: 'Product workspace', root_path: 'D:\\workspace', nodes: [] };
+        backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+        backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
         backend.StartVirtualRepositoryCodingTask.mockResolvedValue({ project_path: 'D:\\tasks\\local_1', task_title: 'Product workspace', agent_mode: 'coding_dev' });
         const onOpen = vi.fn();
         render(<UtilitiesPage lang="en" onOpenVirtualRepositoryTask={onOpen} />);
         fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
-        fireEvent.click(await screen.findByText('Start coding task'));
+        fireEvent.click(await screen.findByText('Product workspace'));
+        const actions = await screen.findByRole('group', { name: 'Repository actions' });
+        fireEvent.click(within(actions).getByRole('button', { name: 'Start coding task' }));
         await waitFor(() => expect(backend.StartVirtualRepositoryCodingTask).toHaveBeenCalledWith('local_1'));
         expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ project_path: 'D:\\tasks\\local_1', agent_mode: 'coding_dev' }));
+    });
+
+    it('puts the active repository coding task first in repository actions with a code icon', async () => {
+        const backend = (window as any).go.main.App;
+        const repository = { version: 1, id: 'local_1', name: 'Product workspace', root_path: 'D:\\workspace', nodes: [] };
+        backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+        backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		let resolveLaunch!: (launch: unknown) => void;
+		backend.StartVirtualRepositoryCodingTask.mockReturnValue(new Promise((resolve) => { resolveLaunch = resolve; }));
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+        fireEvent.click(await screen.findByText('Product workspace'));
+        const actions = await screen.findByRole('group', { name: 'Repository actions' });
+        const buttons = within(actions).getAllByRole('button');
+		expect(buttons[0].textContent).toContain('Start coding task');
+		expect(buttons[0].querySelector('svg')).not.toBeNull();
+		expect(screen.queryAllByRole('button', { name: 'Start coding task' })).toHaveLength(1);
+		fireEvent.click(buttons[0]);
+		await waitFor(() => expect(backend.StartVirtualRepositoryCodingTask).toHaveBeenCalledWith('local_1'));
+		expect(buttons[0].getAttribute('aria-busy')).toBe('true');
+		expect(buttons[0].querySelector('.vrepo-button-spinner')).not.toBeNull();
+		resolveLaunch({ project_path: 'D:\\tasks\\local_1', task_title: 'Product workspace', agent_mode: 'coding_dev' });
+		await waitFor(() => expect(buttons[0].getAttribute('aria-busy')).toBe('false'));
     });
 
     it('coalesces rapid recent-repository opening and shows an opening state', async () => {
@@ -1076,18 +1552,21 @@ describe('Virtual repository utility', () => {
 
     it('coalesces rapid coding-task clicks into one backend launch', async () => {
         const backend = (window as any).go.main.App;
-        const recent = { id: 'local_1', name: 'Product workspace', root_path: 'D:\\workspace' };
-        backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([recent]));
+        const repository = { version: 1, id: 'local_1', name: 'Product workspace', root_path: 'D:\\workspace', nodes: [] };
+        backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+        backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
         let resolveLaunch!: (launch: unknown) => void;
         backend.StartVirtualRepositoryCodingTask.mockReturnValue(new Promise((resolve) => { resolveLaunch = resolve; }));
         render(<UtilitiesPage lang="en" />);
         fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
-        const launch = await screen.findByText('Start coding task');
-        fireEvent.click(launch);
-        fireEvent.click(launch);
-        expect(backend.StartVirtualRepositoryCodingTask).toHaveBeenCalledTimes(1);
-        resolveLaunch({ project_path: 'D:\\tasks\\local_1', task_title: 'Product workspace', agent_mode: 'coding_dev' });
-        await waitFor(() => expect((screen.getByText('Start coding task') as HTMLButtonElement).disabled).toBe(false));
+		fireEvent.click(await screen.findByText('Product workspace'));
+		const actions = await screen.findByRole('group', { name: 'Repository actions' });
+		const launch = within(actions).getByRole('button', { name: 'Start coding task' });
+		fireEvent.click(launch);
+		fireEvent.click(launch);
+		expect(backend.StartVirtualRepositoryCodingTask).toHaveBeenCalledTimes(1);
+		resolveLaunch({ project_path: 'D:\\tasks\\local_1', task_title: 'Product workspace', agent_mode: 'coding_dev' });
+		await waitFor(() => expect(launch).toHaveProperty('disabled', false));
     });
 
 	it('coalesces rapid operation execution clicks into one backend job', async () => {
@@ -1240,7 +1719,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Source' } });
 		fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://example.com/src.git' } });
 		const credential = screen.getByLabelText('Repository credentials');
@@ -1261,7 +1740,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'svn' } });
 		fireEvent.click(screen.getByText('Add credential'));
 		await waitFor(() => expect(screen.getByRole('heading', { name: 'Add credential' })).toBeTruthy());
@@ -1286,7 +1765,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		fireEvent.click(screen.getByText('Add credential'));
 		fireEvent.change(screen.getByLabelText('Credential name'), { target: { value: 'GitHub' } });
 		fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } });
@@ -1413,7 +1892,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		const mappingCredentials = screen.getByLabelText('Repository credentials');
 		fireEvent.focus(mappingCredentials);
 		fireEvent.click(screen.getByText('Add credential'));
@@ -1437,7 +1916,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
-		fireEvent.click(await screen.findByTitle('Add mapping'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
 		const mappingCredentials = screen.getByLabelText('Repository credentials');
 		fireEvent.focus(mappingCredentials);
 		await waitFor(() => expect(screen.getByRole('option', { name: /GitHub/ })).toBeTruthy());
@@ -1473,7 +1952,7 @@ describe('Virtual repository utility', () => {
 		fireEvent.click(await screen.findByText('Workspace'));
 		fireEvent.click(await screen.findByText('Repository credentials'));
 		expect(await screen.findByText('GitHub')).toBeTruthy();
-		fireEvent.click(screen.getByText('Cancel'));
+		fireEvent.click(screen.getByText('Close'));
 		fireEvent.click(screen.getByText('Repository credentials'));
 		expect((await screen.findByRole('alert')).textContent).toMatch(/credential state unavailable/i);
 		expect(screen.queryByText('GitHub')).toBeNull();
@@ -1547,7 +2026,7 @@ describe('Virtual repository utility', () => {
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
 		fireEvent.click(await screen.findByText('Repository credentials'));
-		fireEvent.click(screen.getByText('Cancel'));
+		fireEvent.click(screen.getByText('Close'));
 		resolveCredentials(JSON.stringify([{ id: 'cred_1', name: 'Delayed account', kind: 'git', username: 'alice' }]));
 		await act(async () => undefined);
 		expect(screen.queryByText('Credential manager')).toBeNull();

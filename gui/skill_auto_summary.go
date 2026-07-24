@@ -765,6 +765,10 @@ type SkillAutoSummaryPipeline struct {
 	client    *SkillMarketClient
 	activity  *AgentActivityStore
 
+	// namingLLM, when set and configured, generates a semantic skill name
+	// from the task description and tool sequence. nil => heuristic naming.
+	namingLLM skillNamingLLM
+
 	mu        sync.Mutex
 	processed map[string]bool // session_id => already processed (idempotent)
 }
@@ -787,6 +791,13 @@ func NewSkillAutoSummaryPipeline(
 		activity:  activity,
 		processed: make(map[string]bool),
 	}
+}
+
+// WithNamingLLM attaches an optional LLM used to generate semantic skill
+// names. Returns the pipeline for chaining.
+func (p *SkillAutoSummaryPipeline) WithNamingLLM(l skillNamingLLM) *SkillAutoSummaryPipeline {
+	p.namingLLM = l
+	return p
 }
 
 // RunPipeline executes the full skill auto-summary pipeline for a session.
@@ -851,6 +862,11 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 				log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate backup_error=%v", sid, backupErr)
 			} else {
 				log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate backed_up=v%d", sid, ver)
+				// A versioned update must keep the existing skill's identity:
+				// writing the draft's fresh name into the old directory would
+				// orphan the previously registered name and duplicate the
+				// skill in the registry.
+				draft.Name = existing.Name
 				// Write new version.
 				defPath, defFormat := findSkillDefinitionFile(existing.SkillDir)
 				if defPath == "" {
@@ -882,6 +898,33 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		return // Skip new skill creation; either updated or skipped.
 	}
 	log.Printf("[skill-auto-summary] session=%s stage=FindSimilarSkill result=unmatched score=%.2f", sid, simScore)
+
+	// Stage 2.6: NameSkill — ask the LLM for a semantic name based on the
+	// task description and tool sequence. Falls back to the heuristic name
+	// from DraftSkill when the LLM is unavailable or returns junk.
+	// Runs only on the new-skill path: versioned updates keep the existing
+	// skill's name, so naming there would waste the LLM call.
+	if p.namingLLM != nil {
+		var existingNames map[string]bool
+		if p.skillExec != nil {
+			skills := p.skillExec.loadSkills()
+			existingNames = make(map[string]bool, len(skills)*2)
+			for _, s := range skills {
+				existingNames[s.Name] = true
+				// Directory names are derived via toKebabCase, so include the
+				// kebab form too — a _ vs - difference must still count as a
+				// collision.
+				existingNames[toKebabCase(s.Name)] = true
+			}
+		}
+		name, usedLLM := GenerateSkillNameWithLLM(p.namingLLM, draft.Description, draft.Steps, existingNames)
+		source := "fallback"
+		if usedLLM {
+			source = "llm"
+		}
+		log.Printf("[skill-auto-summary] session=%s stage=NameSkill result=%s name=%s", sid, source, name)
+		draft.Name = name
+	}
 
 	// Stage 3: ValidateSkillDraft
 	draft, err = ValidateSkillDraft(draft, p.checker, nil)

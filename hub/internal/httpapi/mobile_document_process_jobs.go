@@ -135,7 +135,7 @@ func mobileRunDocumentProcessJob(jobID string, principal *auth.ViewerPrincipal) 
 	now := time.Now().UTC()
 	mobileDocuments.Lock()
 	record, found := mobileDocuments.drafts[job.DraftID]
-	if !found || record.OwnerID != job.OwnerID {
+	if !found || record.OwnerID != job.OwnerID || !mobileMeetingRecordingTenantMatches(job.TenantID, record.TenantID) {
 		mobileDocuments.Unlock()
 		mobileDocumentProcessJobUpdate(jobID, func(j *mobileDocumentProcessJobRecord) {
 			j.Status = mobileDocProcessStatusFailed
@@ -163,22 +163,22 @@ func mobileRunDocumentProcessJob(jobID string, principal *auth.ViewerPrincipal) 
 			principal.TenantID,
 			principal.UserID,
 			map[string]any{
-				"type":    "document_process_job",
-				"job_id":  job.JobID,
+				"type":     "document_process_job",
+				"job_id":   job.JobID,
 				"draft_id": job.DraftID,
-				"action":  job.Action,
-				"status":  mobileDocProcessStatusReady,
+				"action":   job.Action,
+				"status":   mobileDocProcessStatusReady,
 			},
 		)
 	}
 }
 
-func mobileCollectDocumentProcessJobs(ownerID string) []mobileJobItem {
+func mobileCollectDocumentProcessJobs(ownerID, tenantID string) []mobileJobItem {
 	mobileDocumentProcessJobs.Lock()
 	defer mobileDocumentProcessJobs.Unlock()
 	out := make([]mobileJobItem, 0)
 	for _, rec := range mobileDocumentProcessJobs.jobs {
-		if rec.OwnerID != ownerID {
+		if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
 			continue
 		}
 		out = append(out, mobileJobItem{
@@ -219,7 +219,7 @@ func MobileDocumentProcessJobStatusHandler(identity *auth.IdentityService) http.
 		mobileDocumentProcessJobs.Lock()
 		job, ok := mobileDocumentProcessJobs.jobs[jobID]
 		mobileDocumentProcessJobs.Unlock()
-		if !ok || job.OwnerID != ownerID {
+		if !ok || job.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, job.TenantID) {
 			writeError(w, http.StatusNotFound, "JOB_NOT_FOUND", "document process job not found")
 			return
 		}
@@ -228,7 +228,7 @@ func MobileDocumentProcessJobStatusHandler(identity *auth.IdentityService) http.
 		// a second list call.
 		if job.Status == mobileDocProcessStatusReady {
 			mobileDocuments.Lock()
-			if draft, ok := mobileDocuments.drafts[job.DraftID]; ok && draft.OwnerID == ownerID {
+			if draft, ok := mobileDocuments.drafts[job.DraftID]; ok && draft.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, draft.TenantID) {
 				payload["draft"] = mobileDocumentDraftPayload(draft)
 			}
 			mobileDocuments.Unlock()

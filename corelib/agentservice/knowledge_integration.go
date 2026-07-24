@@ -27,6 +27,24 @@ type KnowledgeStore interface {
 	ImportDirectory(ctx context.Context, req knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error)
 	ImportFiles(ctx context.Context, req knowledge.DirectoryImportRequest, filePaths []string) (knowledge.DirectoryImportResult, error)
 	Stats(ctx context.Context) (knowledge.Stats, error)
+
+	// Management capabilities (aligned with the MaClaw GUI knowledge tool
+	// surface). *knowledge.SQLiteStore already implements all of these.
+	ListSources(ctx context.Context, opts knowledge.ListSourcesOptions) ([]knowledge.Source, error)
+	ListSourceLabels(ctx context.Context, opts knowledge.ListSourcesOptions) ([]knowledge.SourceLabelSummary, error)
+	GetSource(ctx context.Context, id string) (knowledge.Source, error)
+	UpdateSourceMetadata(ctx context.Context, req knowledge.SourceUpdateRequest) (knowledge.Source, error)
+	UpdateSourceLabels(ctx context.Context, req knowledge.SourceLabelUpdateRequest) (knowledge.SourceLabelUpdateResult, error)
+	EnableSource(ctx context.Context, id string) (knowledge.Source, error)
+	DisableSource(ctx context.Context, id string) (knowledge.Source, error)
+	DeleteSource(ctx context.Context, id string) error
+	RefreshSource(ctx context.Context, id string) (knowledge.Source, error)
+	PreviewSourceRefresh(ctx context.Context, id string) (knowledge.SourceChangePreview, error)
+	ListImportBatches(ctx context.Context, limit int) ([]knowledge.ImportBatch, error)
+	GetImportBatch(ctx context.Context, batchID string) (knowledge.ImportBatch, error)
+	ListImportItems(ctx context.Context, batchID string, limit int) ([]knowledge.ImportItem, error)
+	RetryImportBatch(ctx context.Context, req knowledge.ImportRetryRequest) (knowledge.DirectoryImportResult, error)
+	DeleteImportBatch(ctx context.Context, req knowledge.ImportBatchDeleteRequest) (knowledge.ImportBatchDeleteResult, error)
 }
 
 // SetKnowledgeStore wires the knowledge store into the executor.

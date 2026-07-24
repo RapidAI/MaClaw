@@ -86,6 +86,7 @@ import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
+import { AssistantQuickSettingsBar } from "./AssistantQuickSettingsBar";
 import { ComputerUseReadinessBanner } from "./ComputerUseReadinessBanner";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
@@ -407,7 +408,7 @@ async function loadRestoredProjectConversationHistory(projectPath: string): Prom
 }
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate } = props;
+    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onLanguageChange, statusSlot } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -572,6 +573,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return next;
         });
     }, []);
+    // Stable callbacks for the memoized quick-settings bar (inline arrows would
+    // defeat memo on every keystroke-triggered panel re-render).
+    const handleQuickThemeToggle = useCallback(() => {
+        setThemeMode(themeMode === "dark" ? "light" : "dark");
+    }, [themeMode, setThemeMode]);
+    const handleQuickTtsToggle = useCallback(() => {
+        setTtsEnabled(!ttsEnabled);
+    }, [ttsEnabled, setTtsEnabled]);
     // Skill recording: sync state from backend events (per-tab)
     useEffect(() => {
         const off = EventsOn("skill-recording-state-changed", (state: any) => {
@@ -4905,7 +4914,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         <div data-testid="ai-panel-root" style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }} onDragOver={handleDragOver} onDrop={handleDrop}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
@@ -5146,7 +5155,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         </div>
                                         <div data-testid="coding-plan-mode" style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
                                             <span style={{ fontWeight: 600, color: codingBannerChrome.muted }}>
-                                                {localizeText(lang, "Plan mode", "规划模式", "規劃模式")}
+                                                {localizeText(lang, "Task handling", "任务处理", "任務處理")}
                                             </span>
                                             {(["auto", "approve", "off"] as const).map((mode) => (
                                                 <button
@@ -5167,10 +5176,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     }}
                                                 >
                                                     {mode === "auto"
-                                                        ? localizeText(lang, "Auto", "自动", "自動")
+                                                        ? localizeText(lang, "Adaptive", "自动决策", "自動決策")
                                                         : mode === "approve"
-                                                            ? localizeText(lang, "Approve", "需批准", "需批准")
-                                                            : localizeText(lang, "Off", "关闭", "關閉")}
+                                                            ? localizeText(lang, "Plan first", "先给计划", "先給計畫")
+                                                            : localizeText(lang, "Fast execute", "快速执行", "快速執行")}
                                                 </button>
                                             ))}
                                             <span style={{ fontWeight: 600, color: codingBannerChrome.muted, marginLeft: 4 }}>
@@ -5230,10 +5239,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                         data-testid="coding-plan-approve"
                                                         onClick={() => { void handleCodingPlanGate("approve"); }}
                                                         disabled={!codingTaskReadyForIntents}
-                                                        title={localizeText(lang, "Approve and execute multi-step plan", "批准并执行多步计划", "批准並執行多步計畫")}
+                                                        title={localizeText(lang, "Start the confirmed multi-step plan", "开始实施多步计划", "開始實施多步計畫")}
                                                         style={{ height: 22, padding: "0 8px", borderRadius: 4, border: "none", background: codingBannerChrome.btnPrimaryBg, color: codingBannerChrome.btnPrimaryFg, fontSize: 11, fontWeight: 600, cursor: codingTaskReadyForIntents ? "pointer" : "not-allowed", opacity: codingTaskReadyForIntents ? 1 : 0.55 }}
                                                     >
-                                                        {localizeText(lang, "Approve", "批准执行", "批准執行")}
+                                                        {localizeText(lang, "Start", "开始实施", "開始實施")}
                                                     </button>
                                                     <button
                                                         type="button"
@@ -5781,7 +5790,31 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 )}
                 {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
-                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+                {!showWelcomeView && <AssistantQuickSettingsBar lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} workflowEnabled={workflowEnabled} onToggleWorkflow={handleToggleWorkflow} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onLanguageChange={onLanguageChange} statusSlot={statusSlot} />}
+                {/* Welcome hides the chip bar; still surface shell status/warnings.
+                    :empty collapses this wrapper when AppStatusMessageBar returns null. */}
+                {showWelcomeView && statusSlot ? (
+                    <div
+                        data-testid="assistant-status-footer"
+                        className="assistant-status-footer"
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            minHeight: 28,
+                            padding: "0 10px",
+                            paddingBottom: "env(safe-area-inset-bottom, 0px)",
+                            borderTop: `1px solid ${t.titleBarBorder}`,
+                            background: t.titleBarBg,
+                            flexShrink: 0,
+                            boxSizing: "border-box",
+                            minWidth: 0,
+                            overflow: "hidden",
+                        }}
+                    >
+                        {statusSlot}
+                    </div>
+                ) : null}
             </div>
             )}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
@@ -5826,7 +5859,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             <CodingConflictSidePanel
                                 lang={lang}
                                 theme={t}
-                                themeMode={themeMode}
                                 embedded
                                 busy={codingConflictBusy}
                                 progressTotal={codingConflictPeak}
@@ -5879,7 +5911,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         startPreviewResize={startPreviewResize}
                         onToggleMaximize={onToggleMaximize}
                         theme={t}
-                        themeMode={themeMode}
                         workflowState={workflowState}
                     />
                 </Suspense>

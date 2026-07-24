@@ -45,7 +45,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				repaired = true
 			}
 			mobileDocuments.Unlock()
-			if !ok || record.OwnerID != ownerID {
+			if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 				if repaired {
 					mobilePersistState()
 				}
@@ -57,7 +57,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			display := heal.Display
 			if heal.ShouldPersist {
 				mobileDocuments.Lock()
-				if cur, exists := mobileDocuments.drafts[draftID]; exists && cur.OwnerID == ownerID {
+				if cur, exists := mobileDocuments.drafts[draftID]; exists && cur.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, cur.TenantID) {
 					if mobileDraftRepairSourceMeta(&cur) {
 						repaired = true
 					}
@@ -114,7 +114,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 		items := make([]mobileDocumentDraftRecord, 0)
 		repaired := false
 		for id, rec := range mobileDocuments.drafts {
-			if rec.OwnerID != ownerID {
+			if rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, rec.TenantID) {
 				continue
 			}
 			if mobileDraftRepairSourceMeta(&rec) {
@@ -211,12 +211,13 @@ func MobileDocumentDraftSourceHandler(identity *auth.IdentityService) http.Handl
 		filename := record.SourceFilename
 		title := record.Title
 		owner := record.OwnerID
+		tenantID := record.TenantID
 		hasOrig := mobileDraftHasOriginal(record)
 		mobileDocuments.Unlock()
 		if repaired {
 			mobilePersistState()
 		}
-		if !ok || owner != ownerID || !hasOrig {
+		if !ok || owner != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, tenantID) || !hasOrig {
 			writeError(w, http.StatusNotFound, "DRAFT_SOURCE_NOT_FOUND", "original file not found for this draft")
 			return
 		}
@@ -231,7 +232,7 @@ func MobileDocumentDraftSourceHandler(identity *auth.IdentityService) http.Handl
 			// store outages or open errors where the file may still exist.
 			if mobileShouldClearSourceMetaAfterStreamFail(path) {
 				mobileDocuments.Lock()
-				if rec, exists := mobileDocuments.drafts[draftID]; exists && rec.OwnerID == owner {
+				if rec, exists := mobileDocuments.drafts[draftID]; exists && rec.OwnerID == owner && mobileMeetingRecordingTenantMatches(principal.TenantID, rec.TenantID) {
 					if len(rec.SourceBytes) == 0 {
 						rec.SourcePath = ""
 						rec.SourceSize = 0

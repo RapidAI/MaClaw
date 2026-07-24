@@ -196,6 +196,10 @@ var softFullAgentCues = []string{
 	"ssh ", "scp ", "rsync ", "systemctl ", "journalctl ",
 	"write_file", "read_file", "edit_file", "apply_patch",
 	"在终端", "运行命令", "执行命令", "命令行里", "帮我跑", "帮我执行",
+	// Knowledge write/import intents need the full tool surface: light turns
+	// strip import/save tools, so a short "导入知识库" or a bare share link
+	// would leave the model with no way to actually perform the import.
+	"/knowledge/shares/", "导入知识库", "导入共享知识库", "保存到知识库", "加入外脑",
 }
 
 // IsLight reports whether the profile should use the trimmed prompt path.

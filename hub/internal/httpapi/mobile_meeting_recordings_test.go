@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -104,7 +105,7 @@ func TestMobileMeetingRecordingRejectsUnavailableProcessingMode(t *testing.T) {
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-mode-unavailable", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploaded", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-mode-unavailable", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploaded", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -135,7 +136,7 @@ func TestMobileMeetingRecordingRejectsMalformedProcessRequest(t *testing.T) {
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-invalid-process", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploaded", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-invalid-process", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploaded", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -166,7 +167,7 @@ func TestMobileMeetingRecordingRejectsReprocessAfterSuccess(t *testing.T) {
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-reprocess-ready", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "ready", ProcessMode: "minutes", RetryCount: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-reprocess-ready", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "ready", ProcessMode: "minutes", RetryCount: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -199,7 +200,7 @@ func TestMobileMeetingRecordingPromotesArchivedAudioToTranscript(t *testing.T) {
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-promote-archive", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "ready", ProcessMode: "keep", RetryCount: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-promote-archive", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "ready", ProcessMode: "keep", RetryCount: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -341,6 +342,54 @@ func TestMobileMeetingRecordingUploadAndProcess(t *testing.T) {
 	_ = os.RemoveAll(rec.Dir)
 }
 
+func TestMobileStoreMeetingResultDocumentsIsIdempotentAcrossRetry(t *testing.T) {
+	const recordingID = "meeting-result-document-retry"
+	rec := mobileMeetingRecording{
+		ID: recordingID, OwnerID: "meeting-result-owner", TenantID: "meeting-result-tenant",
+		Title: "Result retry", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[recordingID] = rec
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, recordingID)
+		mobileMeetingRecordings.Unlock()
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, "mobdoc_meeting_transcript_"+recordingID)
+		delete(mobileDocuments.drafts, "mobdoc_meeting_minutes_"+recordingID)
+		mobileDocuments.Unlock()
+	})
+
+	mobileStoreMeetingResultDocuments(rec, "verified transcript", "verified minutes")
+	// Simulate a duplicate worker completion that still holds the original
+	// recording snapshot without the newly persisted draft IDs.
+	mobileStoreMeetingResultDocuments(rec, "verified transcript", "verified minutes")
+
+	stored, ok := mobileMeetingRecordingOwnedForTenant(rec.OwnerID, rec.TenantID, recordingID)
+	if !ok {
+		t.Fatal("recording missing")
+	}
+	if stored.TranscriptDraftID != "mobdoc_meeting_transcript_"+recordingID ||
+		stored.MinutesDraftID != "mobdoc_meeting_minutes_"+recordingID {
+		t.Fatalf("unexpected result draft IDs: %#v", stored)
+	}
+	mobileDocuments.Lock()
+	_, transcriptOK := mobileDocuments.drafts[stored.TranscriptDraftID]
+	_, minutesOK := mobileDocuments.drafts[stored.MinutesDraftID]
+	count := 0
+	for _, draft := range mobileDocuments.drafts {
+		if draft.OwnerID == rec.OwnerID && draft.TenantID == rec.TenantID &&
+			(draft.ID == stored.TranscriptDraftID || draft.ID == stored.MinutesDraftID) {
+			count++
+		}
+	}
+	mobileDocuments.Unlock()
+	if !transcriptOK || !minutesOK || count != 2 {
+		t.Fatalf("result drafts transcript=%v minutes=%v count=%d", transcriptOK, minutesOK, count)
+	}
+}
+
 func TestMobileCleanupExpiredMeetingRecordingsPreservesResultMetadata(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("audio"), 0o600); err != nil {
@@ -411,7 +460,7 @@ func TestMobileMeetingRecordingRejectsNonNumericChunkIndex(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-chunk@example.com")
 	dir := t.TempDir()
-	rec := mobileMeetingRecording{ID: "meeting-invalid-chunk", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-invalid-chunk", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -450,7 +499,7 @@ func TestMobileMeetingRecordingRequiresChunkHash(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-hash-required@example.com")
 	dir := t.TempDir()
-	rec := mobileMeetingRecording{ID: "meeting-hash-required", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-hash-required", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -478,7 +527,7 @@ func TestMobileMeetingRecordingRejectsMismatchedCompletedAudioType(t *testing.T)
 	if err := os.WriteFile(dir+"/chunk-0", chunk, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-type-mismatch", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-type-mismatch", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -505,7 +554,7 @@ func TestMobileMeetingRecordingRejectsChunkAfterFinalizeClaim(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-finalize-claim@example.com")
 	dir := t.TempDir()
-	rec := mobileMeetingRecording{ID: "meeting-finalize-claim", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-finalize-claim", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -514,7 +563,7 @@ func TestMobileMeetingRecordingRejectsChunkAfterFinalizeClaim(t *testing.T) {
 		delete(mobileMeetingRecordings.items, rec.ID)
 		mobileMeetingRecordings.Unlock()
 	})
-	if _, claim := mobileMeetingRecordingClaimFinalize(enroll.UserID, rec.ID); claim != "claimed" {
+	if _, claim := mobileMeetingRecordingClaimFinalize(enroll.UserID, enroll.TenantID, rec.ID); claim != "claimed" {
 		t.Fatalf("claim=%q", claim)
 	}
 	req := httptest.NewRequest(http.MethodPut, "/api/mobile/meeting-recordings/"+rec.ID+"/chunks/0", strings.NewReader("audio"))
@@ -528,11 +577,46 @@ func TestMobileMeetingRecordingRejectsChunkAfterFinalizeClaim(t *testing.T) {
 	}
 }
 
+func TestMobileMeetingRecordingStoreChunkRejectsLateUploadAfterFinalize(t *testing.T) {
+	const ownerID = "meeting-late-chunk-owner"
+	const tenantID = "meeting-late-chunk-tenant"
+	const recordingID = "meeting-late-chunk"
+	dir := t.TempDir()
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[recordingID] = mobileMeetingRecording{
+		ID: recordingID, OwnerID: ownerID, TenantID: tenantID, Dir: dir,
+		ContentType: "audio/mp4", Status: "uploading",
+	}
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, recordingID)
+		mobileMeetingRecordings.Unlock()
+	})
+
+	if err := mobileMeetingRecordingStoreChunk(ownerID, tenantID, recordingID, 0, []byte("initial")); err != nil {
+		t.Fatalf("initial chunk: %v", err)
+	}
+	if _, claim := mobileMeetingRecordingClaimFinalize(ownerID, tenantID, recordingID); claim != "claimed" {
+		t.Fatalf("claim=%q", claim)
+	}
+	if err := mobileMeetingRecordingStoreChunk(ownerID, tenantID, recordingID, 0, []byte("late retry")); !errors.Is(err, errMobileMeetingRecordingUploadClosed) {
+		t.Fatalf("late chunk err=%v want upload closed", err)
+	}
+	data, err := os.ReadFile(dir + "/chunk-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "initial" {
+		t.Fatalf("late retry replaced finalized chunk: %q", data)
+	}
+}
+
 func TestMobileMeetingRecordingCompleteReturnsFinalizingForConcurrentRequest(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-complete-finalizing@example.com")
 	dir := t.TempDir()
-	rec := mobileMeetingRecording{ID: "meeting-complete-finalizing", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-complete-finalizing", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -541,7 +625,7 @@ func TestMobileMeetingRecordingCompleteReturnsFinalizingForConcurrentRequest(t *
 		delete(mobileMeetingRecordings.items, rec.ID)
 		mobileMeetingRecordings.Unlock()
 	})
-	if _, claim := mobileMeetingRecordingClaimFinalize(enroll.UserID, rec.ID); claim != "claimed" {
+	if _, claim := mobileMeetingRecordingClaimFinalize(enroll.UserID, enroll.TenantID, rec.ID); claim != "claimed" {
 		t.Fatalf("claim=%q", claim)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/mobile/meeting-recordings/"+rec.ID+"/complete", strings.NewReader(`{"chunks":1}`))
@@ -561,7 +645,7 @@ func TestMobileMeetingRecordingRejectsInvalidDuration(t *testing.T) {
 	if err := os.WriteFile(dir+"/chunk-0", []byte("audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-invalid-duration", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-invalid-duration", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -587,7 +671,7 @@ func TestMobileMeetingRecordingRejectsWAVDurationBeyondQuota(t *testing.T) {
 	if err := os.WriteFile(dir+"/chunk-0", []byte("audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-wav-duration", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/wav", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-wav-duration", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/wav", Status: "uploading", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -619,7 +703,7 @@ func TestMobileMeetingRecordingProcessRetriesFailedRecording(t *testing.T) {
 	rec := mobileMeetingRecording{
 		ID:          "meeting-retry",
 		OwnerID:     enroll.UserID,
-		TenantID:    "default",
+		TenantID:    enroll.TenantID,
 		Title:       "Retry meeting",
 		Dir:         dir,
 		ContentType: "audio/mp4",
@@ -670,7 +754,7 @@ func TestMobileMeetingRecordingRejectsConcurrentProcessRequest(t *testing.T) {
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-concurrent-process", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "uploaded", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-concurrent-process", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "uploaded", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -711,7 +795,7 @@ func TestMobileMeetingRecordingRejectsRetryWhenAudioExpired(t *testing.T) {
 	rec := mobileMeetingRecording{
 		ID:          "meeting-retry-expired",
 		OwnerID:     enroll.UserID,
-		TenantID:    "default",
+		TenantID:    enroll.TenantID,
 		Title:       "Expired retry meeting",
 		Status:      "failed",
 		FailureCode: "ASR_TRANSCRIPTION_FAILED",
@@ -744,7 +828,7 @@ func TestMobileMeetingRecordingRejectsRetryWhenAudioExpired(t *testing.T) {
 func TestMobileMeetingRecordingRejectsKeepWhenAudioMissing(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-keep-missing@example.com")
-	rec := mobileMeetingRecording{ID: "meeting-keep-missing", OwnerID: enroll.UserID, TenantID: "default", Title: "Missing archive", Status: "uploaded", ContentType: "audio/mp4", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-keep-missing", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Title: "Missing archive", Status: "uploaded", ContentType: "audio/mp4", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -809,6 +893,7 @@ func TestMobileMeetingRecordingDeleteAudioKeepsDocuments(t *testing.T) {
 	rec := mobileMeetingRecording{
 		ID:                "meeting-delete-audio",
 		OwnerID:           enroll.UserID,
+		TenantID:          enroll.TenantID,
 		Title:             "Delete raw audio",
 		Dir:               dir,
 		Status:            "ready",
@@ -850,6 +935,50 @@ func TestMobileMeetingRecordingDeleteAudioKeepsDocuments(t *testing.T) {
 	}
 }
 
+func TestMobileMeetingRecordingResultDraftCannotBeDeletedIndependently(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "meeting-result-draft-delete@example.com")
+	const recordingID = "meeting-result-draft-delete"
+	const draftID = "mobdoc_meeting_minutes_meeting-result-draft-delete"
+	recording := mobileMeetingRecording{
+		ID: recordingID, OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Status: "ready", MinutesDraftID: draftID,
+	}
+	draft := mobileDocumentDraftRecord{
+		ID: draftID, OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Title: "Protected meeting minutes", Markdown: "# Meeting minutes",
+	}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[recordingID] = recording
+	mobileMeetingRecordings.Unlock()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts[draftID] = draft
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, recordingID)
+		mobileMeetingRecordings.Unlock()
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, draftID)
+		mobileDocuments.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/drafts/"+draftID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("draftId", draftID)
+	resp := httptest.NewRecorder()
+	MobileDocumentDraftUpdateHandler(identity).ServeHTTP(resp, req)
+	if resp.Code != http.StatusConflict || !strings.Contains(resp.Body.String(), "MEETING_RESULT_MANAGED_BY_RECORDING") {
+		t.Fatalf("delete result draft=%d %s", resp.Code, resp.Body.String())
+	}
+	mobileDocuments.Lock()
+	_, exists := mobileDocuments.drafts[draftID]
+	mobileDocuments.Unlock()
+	if !exists {
+		t.Fatal("derived meeting document was deleted")
+	}
+}
+
 func TestMobileMeetingRecordingRejectsAudioDeleteWhileProcessing(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-audio-in-use@example.com")
@@ -857,7 +986,7 @@ func TestMobileMeetingRecordingRejectsAudioDeleteWhileProcessing(t *testing.T) {
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-audio-in-use", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "processing", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-audio-in-use", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "processing", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
@@ -887,7 +1016,7 @@ func TestMobileMeetingRecordingRejectsFullDeleteWhileProcessing(t *testing.T) {
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("audio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := mobileMeetingRecording{ID: "meeting-delete-in-use", OwnerID: enroll.UserID, TenantID: "default", Dir: dir, ContentType: "audio/mp4", Status: "processing", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	rec := mobileMeetingRecording{ID: "meeting-delete-in-use", OwnerID: enroll.UserID, TenantID: enroll.TenantID, Dir: dir, ContentType: "audio/mp4", Status: "processing", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	mobileMeetingRecordings.Lock()
 	mobileMeetingRecordings.items[rec.ID] = rec
 	mobileMeetingRecordings.Unlock()
