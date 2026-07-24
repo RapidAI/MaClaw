@@ -30,6 +30,39 @@ def write_key_properties(root: Path, store_file: str = "release.jks") -> Path:
 
 
 class BuildAndroidReleaseTest(unittest.TestCase):
+    def test_bump_pubspec_build_version_increments_only_build_number(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pubspec.yaml").write_text(
+                "name: maclaw_mobile\nversion: 1.2.3+45\n",
+                encoding="utf-8",
+            )
+
+            build_name, build_number, version = build_android_release.bump_pubspec_build_version(root)
+
+            self.assertEqual(("1.2.3", "46", "1.2.3+46"), (build_name, build_number, version))
+            self.assertIn("version: 1.2.3+46", (root / "pubspec.yaml").read_text(encoding="utf-8"))
+
+    def test_default_dry_run_reports_next_version_without_writing_pubspec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_key_properties(root)
+            (root / "pubspec.yaml").write_text(
+                "name: maclaw_mobile\nversion: 1.2.3+45\n",
+                encoding="utf-8",
+            )
+            output = StringIO()
+
+            with patch(
+                "verify_android_release_signing.verify_android_release_signing",
+                return_value=[],
+            ), redirect_stdout(output):
+                exit_code = build_android_release.main(["--root", str(root), "--dry-run"])
+
+            self.assertEqual(0, exit_code)
+            self.assertIn("Next build version: 1.2.3+46", output.getvalue())
+            self.assertIn("version: 1.2.3+45", (root / "pubspec.yaml").read_text(encoding="utf-8"))
+
     def test_validate_key_properties_requires_local_file_and_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -188,6 +221,10 @@ class BuildAndroidReleaseTest(unittest.TestCase):
     def test_main_reports_missing_key_properties_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / "pubspec.yaml").write_text(
+                "name: maclaw_mobile\nversion: 1.0.0+41\n",
+                encoding="utf-8",
+            )
             error = StringIO()
 
             with patch(

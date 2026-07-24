@@ -18,6 +18,9 @@ REQUIRED_KEY_PROPERTIES = ("storeFile", "storePassword", "keyAlias", "keyPasswor
 ANDROID_RELEASE_ARTIFACTS = ("apk", "appbundle")
 BUILD_NAME_RE = re.compile(r"^\d+(?:\.\d+){1,3}$")
 BUILD_NUMBER_RE = re.compile(r"^\d+$")
+PUBSPEC_VERSION_RE = re.compile(
+    r"(?m)^(?P<prefix>version:\s*)(?P<name>\d+(?:\.\d+){1,3})\+(?P<number>\d+)(?P<suffix>\s*)$",
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,36 @@ class AndroidReleaseBuildPlan:
 
 def mobile_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def next_pubspec_build_version(root: Path) -> tuple[str, str, str]:
+    """Returns the next Flutter version without changing pubspec.yaml."""
+    path = root / "pubspec.yaml"
+    if not path.exists():
+        raise ValueError(f"Missing Flutter manifest: {path}")
+    match = PUBSPEC_VERSION_RE.search(path.read_text(encoding="utf-8"))
+    if match is None:
+        raise ValueError("pubspec.yaml must contain version: <app-version>+<build-number>")
+    build_name = match.group("name")
+    build_number = str(int(match.group("number")) + 1)
+    return build_name, build_number, f"{build_name}+{build_number}"
+
+
+def bump_pubspec_build_version(root: Path) -> tuple[str, str, str]:
+    """Increments and persists the Android/Flutter build number exactly once."""
+    path = root / "pubspec.yaml"
+    content = path.read_text(encoding="utf-8")
+    match = PUBSPEC_VERSION_RE.search(content)
+    if match is None:
+        raise ValueError("pubspec.yaml must contain version: <app-version>+<build-number>")
+    build_name = match.group("name")
+    build_number = str(int(match.group("number")) + 1)
+    next_version = f"{build_name}+{build_number}"
+    updated = content[: match.start()] + (
+        f"{match.group('prefix')}{next_version}{match.group('suffix')}"
+    ) + content[match.end() :]
+    path.write_text(updated, encoding="utf-8")
+    return build_name, build_number, next_version
 
 
 def _parse_key_properties(path: Path) -> dict[str, str]:
@@ -169,8 +202,14 @@ def main(argv: list[str] | None = None) -> int:
         default="apk",
         help="Signed Android artifact type to build.",
     )
-    parser.add_argument("--build-name", help="Required Flutter build name/version for QA traceability.")
-    parser.add_argument("--build-number", help="Required Flutter build number for QA traceability.")
+    parser.add_argument(
+        "--build-name",
+        help="Optional explicit Flutter build name/version. Supply with --build-number to override automatic versioning.",
+    )
+    parser.add_argument(
+        "--build-number",
+        help="Optional explicit Flutter build number. Supply with --build-name to override automatic versioning.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -210,6 +249,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Android release build cannot start: {exc}", file=sys.stderr)
             return 1
 
+    has_explicit_version = bool(args.build_name) or bool(args.build_number)
+    if has_explicit_version and (not args.build_name or not args.build_number):
+        print(
+            "Android release build cannot start: both --build-name and --build-number must be supplied together.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        if has_explicit_version:
+            build_name = args.build_name
+            build_number = args.build_number
+            version_label = f"{build_name.strip()}+{build_number.strip()}"
+        elif args.dry_run:
+            build_name, build_number, version_label = next_pubspec_build_version(root)
+        else:
+            build_name, build_number, version_label = bump_pubspec_build_version(root)
+    except ValueError as exc:
+        print(f"Android release build cannot start: {exc}", file=sys.stderr)
+        return 1
+
     config_errors = verify_android_release_signing.verify_android_release_signing(root)
     if config_errors:
         print("Android release signing config is not ready:", file=sys.stderr)
@@ -221,8 +281,8 @@ def main(argv: list[str] | None = None) -> int:
         plan = build_plan(
             root,
             artifact=args.artifact,
-            build_name=args.build_name,
-            build_number=args.build_number,
+            build_name=build_name,
+            build_number=build_number,
         )
     except ValueError as exc:
         print(f"Android release build cannot start: {exc}", file=sys.stderr)
@@ -235,6 +295,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print("Android release signing inputs verified.")
+    if has_explicit_version:
+        print(f"Build version override: {version_label}")
+    elif args.dry_run:
+        print(f"Next build version: {version_label} (dry run; pubspec.yaml unchanged)")
+    else:
+        print(f"Build version bumped: {version_label}")
     print(f"Signing store: {plan.key_store_path}")
     print(f"Command: {' '.join(plan.command)}")
     if args.dry_run:
@@ -260,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
             evidence_lines = signed_artifact_evidence.android_evidence_lines(
                 plan.artifact_path,
                 record_dir=args.record_dir,
-                version=f"{args.build_name.strip()}+{args.build_number.strip()}",
+                version=version_label,
                 signing_identity=args.signing_identity or "",
                 installer_channel=args.installer_channel or "",
             )
