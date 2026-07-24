@@ -36,6 +36,11 @@ const (
 
 	// TokenRefreshMargin 是 token 过期前触发刷新的提前量。
 	TokenRefreshMargin = 5 * time.Minute
+
+	// XAIOAuthIssuer is Grok Build's production OIDC issuer.
+	XAIOAuthIssuer = "https://auth.x.ai"
+	// XAIClientID is Grok Build's registered OAuth client ID.
+	XAIClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 )
 
 const (
@@ -52,6 +57,8 @@ type Config struct {
 	Scopes        []string
 	CallbackPath  string
 	Timeout       time.Duration
+	// Referrer is an optional provider-specific authorization parameter.
+	Referrer string
 }
 
 // TokenResult 是 OAuth 流程的返回结果。
@@ -75,6 +82,61 @@ func DefaultConfig() Config {
 		CallbackPath:  "/auth/callback",
 		Timeout:       300 * time.Second,
 	}
+}
+
+// XAIConfig returns the OAuth 2.1/OIDC configuration used by grok-build.
+// Its endpoints are resolved through OIDC discovery before every interactive
+// login or refresh so provider endpoint changes do not require an app update.
+func XAIConfig() Config {
+	return Config{
+		ClientID: XAIClientID,
+		Scopes: []string{
+			"openid", "profile", "email", "offline_access", "grok-cli:access",
+			"api:access", "conversations:read", "conversations:write",
+			"workspaces:read", "workspaces:write",
+		},
+		CallbackPath: "/callback",
+		Timeout:      300 * time.Second,
+		Referrer:     "grok-build",
+	}
+}
+
+type oidcDiscovery struct {
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+}
+
+// DiscoverOIDCEndpoints resolves the first-party xAI authorization and token
+// endpoints from the issuer's OIDC discovery document.
+func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (oidcDiscovery, error) {
+	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
+	if issuer == "" {
+		return oidcDiscovery{}, fmt.Errorf("oidc issuer is required")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/.well-known/openid-configuration", nil)
+	if err != nil {
+		return oidcDiscovery{}, fmt.Errorf("oidc discovery request: %w", err)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return oidcDiscovery{}, fmt.Errorf("oidc discovery request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return oidcDiscovery{}, fmt.Errorf("oidc discovery read: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return oidcDiscovery{}, fmt.Errorf("oidc discovery failed (HTTP %d): %s", resp.StatusCode, truncateBody(body, 512))
+	}
+	var discovery oidcDiscovery
+	if err := json.Unmarshal(body, &discovery); err != nil {
+		return oidcDiscovery{}, fmt.Errorf("oidc discovery parse: %w", err)
+	}
+	if strings.TrimSpace(discovery.AuthorizationEndpoint) == "" || strings.TrimSpace(discovery.TokenEndpoint) == "" {
+		return oidcDiscovery{}, fmt.Errorf("oidc discovery response missing authorization_endpoint or token_endpoint")
+	}
+	return discovery, nil
 }
 
 // codeVerifierChars 是 RFC 7636 允许的 unreserved 字符集 [A-Za-z0-9-._~]。
@@ -113,14 +175,60 @@ func BuildAuthURL(cfg Config, codeChallenge, redirectURI, state string) string {
 	params.Set("code_challenge", codeChallenge)
 	params.Set("code_challenge_method", "S256")
 	params.Set("state", state)
-	// Codex CLI 兼容参数
-	params.Set("id_token_add_organizations", "true")
-	params.Set("codex_cli_simplified_flow", "true")
-	params.Set("originator", "codex_cli_rs")
-	// 强制新登录，避免浏览器中已有的 OpenAI session 导致 unknown_error
-	params.Set("prompt", "login")
+	if cfg.Referrer != "" {
+		params.Set("referrer", cfg.Referrer)
+	} else {
+		// Codex CLI 兼容参数
+		params.Set("id_token_add_organizations", "true")
+		params.Set("codex_cli_simplified_flow", "true")
+		params.Set("originator", "codex_cli_rs")
+		// 强制新登录，避免浏览器中已有的 OpenAI session 导致 unknown_error
+		params.Set("prompt", "login")
+	}
 
 	return cfg.AuthEndpoint + "?" + params.Encode()
+}
+
+// RunXAIOAuthFlowCtx executes Grok Build's OIDC authorization-code flow with
+// PKCE. It uses a dynamic 127.0.0.1 loopback callback and validates state
+// before exchanging the authorization code.
+func RunXAIOAuthFlowCtx(ctx context.Context) (*TokenResult, error) {
+	cfg := XAIConfig()
+	discovery, err := DiscoverOIDCEndpoints(ctx, XAIOAuthIssuer)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AuthEndpoint = discovery.AuthorizationEndpoint
+	cfg.TokenEndpoint = discovery.TokenEndpoint
+
+	verifier, err := GenerateCodeVerifier()
+	if err != nil {
+		return nil, fmt.Errorf("xai oauth: generate code verifier: %w", err)
+	}
+	callbackServer := NewCallbackServer()
+	if err := callbackServer.Start(cfg.CallbackPath); err != nil {
+		return nil, fmt.Errorf("xai oauth: start callback server: %w", err)
+	}
+	defer callbackServer.Stop()
+
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", callbackServer.Port(), cfg.CallbackPath)
+	state := generateState()
+	authURL := BuildAuthURL(cfg, GenerateCodeChallenge(verifier), redirectURI, state)
+	if err := browser.OpenURL(authURL); err != nil {
+		return nil, fmt.Errorf("xai oauth: open browser: %w", err)
+	}
+	code, returnedState, err := callbackServer.WaitForCallbackCtx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("xai oauth: %w", err)
+	}
+	if returnedState != state {
+		return nil, fmt.Errorf("xai oauth: state mismatch")
+	}
+	result, err := ExchangeCode(cfg, code, verifier, redirectURI)
+	if err != nil {
+		return nil, fmt.Errorf("xai oauth: %w", err)
+	}
+	return result, nil
 }
 
 // tokenResponse 是 OpenAI token endpoint 的 JSON 响应结构。

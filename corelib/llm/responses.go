@@ -205,6 +205,7 @@ func NewResponsesAPIRequest(
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
+	ApplyProviderAuthHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	// Codex subscription headers for chatgpt.com/backend-api
 	if IsCodexSubscriptionEndpoint(cfg.URL) {

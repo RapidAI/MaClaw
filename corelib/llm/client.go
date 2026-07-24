@@ -324,6 +324,7 @@ func NewOpenAIChatRequest(
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
+	ApplyProviderAuthHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	return req, data, endpoint, nil
 }

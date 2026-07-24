@@ -142,7 +142,7 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		// xAI's Grok Build source uses grok-build with a 256K context window.
 		// The public xAI endpoint is OpenAI-compatible, so it uses the standard
 		// OpenAI request and model-discovery path.
-		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-build", Protocol: "openai", ContextLength: 256000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-build", Protocol: "openai", AuthType: "oauth", ContextLength: 256000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0"},
@@ -731,6 +731,40 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 	return "", fmt.Errorf("未找到 OpenAI provider")
 }
 
+// StartXAIOAuth starts Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
+// flow. It updates only the managed xAI-Grok provider on success.
+func (a *App) StartXAIOAuth() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	a.oauthMu.Lock()
+	a.oauthCancel = cancel
+	a.oauthMu.Unlock()
+	defer func() {
+		cancel()
+		a.oauthMu.Lock()
+		a.oauthCancel = nil
+		a.oauthMu.Unlock()
+	}()
+
+	result, err := oauth.RunXAIOAuthFlowCtx(ctx)
+	if err != nil {
+		return "", fmt.Errorf("xAI OAuth 登录失败: %w", err)
+	}
+
+	data := a.GetMaclawLLMProviders()
+	for i, p := range data.Providers {
+		if p.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+			continue
+		}
+		data.Providers[i] = oauth.ApplyTokenResult(p, result)
+		if err := a.SaveMaclawLLMProviders(data.Providers, "xAI-Grok"); err != nil {
+			return "", fmt.Errorf("保存 xAI OAuth 配置失败: %w", err)
+		}
+		a.saveOAuthResultToStore("xAI-Grok", result)
+		return "xAI-Grok OAuth 登录成功", nil
+	}
+	return "", fmt.Errorf("未找到 xAI-Grok provider")
+}
+
 // CancelOpenAIOAuth cancels an in-progress OAuth flow, unblocking StartOpenAIOAuth.
 func (a *App) CancelOpenAIOAuth() {
 	a.oauthMu.Lock()
@@ -822,6 +856,18 @@ func (a *App) ensureOAuthToken() error {
 				return a.ensureOAuthTokenViaStore(p, i)
 			}
 			// Fallback path: legacy config.json-based refresh
+			if p.Name == "xAI-Grok" && oauth.NeedsRefresh(p) {
+				if p.RefreshToken == "" {
+					return fmt.Errorf("refresh_token is empty, please re-login (xAI-Grok OAuth)")
+				}
+				result, err := oauth.RefreshXAIToken(context.Background(), p.RefreshToken)
+				if err != nil {
+					return fmt.Errorf("token refresh failed: %w", err)
+				}
+				updated := oauth.ApplyTokenResult(p, result)
+				data.Providers[i] = updated
+				return a.SaveMaclawLLMProviders(data.Providers, data.Current)
+			}
 			cfg := oauth.DefaultConfig()
 			updated, err := oauth.EnsureValidToken(p, cfg, func(up corelib.MaclawLLMProvider) error {
 				data.Providers[i] = up
@@ -873,7 +919,7 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
 	vision := false
 	if llm.IsResponsesAPI() {
-		vision = probeVisionResponsesAPI(url, key, model, llm.UserAgent())
+		vision = probeVisionResponsesAPI(llm)
 	} else {
 		vision = probeVisionSupport(url, key, model, protocol, llm.UserAgent())
 	}
@@ -1113,7 +1159,8 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 
 // probeVisionResponsesAPI sends a tiny 4x4 PNG via the Responses API format
 // and returns true if the model responds with a vision-aware answer.
-func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
+func probeVisionResponsesAPI(probeCfg corelib.MaclawLLMConfig) bool {
+	baseURL, key, model, userAgent := probeCfg.URL, probeCfg.Key, probeCfg.Model, probeCfg.UserAgent()
 	client := &http.Client{Timeout: 35 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1130,7 +1177,6 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 
 	endpoint := strings.TrimRight(baseURL, "/")
 	endpoint = llm.BuildResponsesEndpoint(endpoint)
-	probeCfg := corelib.MaclawLLMConfig{URL: baseURL, Key: key, Model: model, Protocol: "openai"}
 	reqBody := map[string]interface{}{
 		"model": model,
 		"store": false,
@@ -1160,6 +1206,7 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+	llm.ApplyProviderAuthHeaders(req, probeCfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, userAgent)
 	if llm.IsCodexSubscriptionEndpoint(baseURL) {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
@@ -1254,7 +1301,8 @@ func (a *App) SetMaclawLLMThinkingMode(mode string) error {
 // GetMaclawAgentMaxIterations returns the configured max agent iterations.
 //   - positive value: use that as the limit
 //   - -1 or 0 (not configured): unlimited → return 0
-func (a *App) GetMaclawAgentMaxIterations() int {	cfg, err := a.LoadConfig()
+func (a *App) GetMaclawAgentMaxIterations() int {
+	cfg, err := a.LoadConfig()
 	if err != nil || cfg.MaclawAgentMaxIterations <= 0 {
 		return config.MaxAgentIterationsCap // not configured → default 300
 	}

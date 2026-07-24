@@ -26,6 +26,8 @@ func credentialStoreProviderID(provider corelib.MaclawLLMProvider) string {
 		return "anthropic"
 	case provider.Name == "GitHub Copilot" && kind.IsOAuth():
 		return "github-copilot"
+	case provider.Name == "xAI-Grok" && kind.IsOAuth():
+		return "xai-grok"
 	case provider.Name == codegenProviderName && provider.AuthType == "sso":
 		return "codegen"
 	default:
@@ -137,6 +139,8 @@ func (a *App) ensureOAuthTokenViaStore(provider corelib.MaclawLLMProvider, provi
 			syncCred = updated
 			log.Printf("[credential-store] refreshed %s copilot token (expires_at=%d)", storeID, copilotResp.ExpiresAt)
 			return updated, nil
+		case "xai-grok":
+			result, refreshErr = oauth.RefreshXAIToken(context.Background(), old.RefreshToken)
 		default:
 			return old, fmt.Errorf("unknown OAuth provider for refresh: %s", storeID)
 		}
@@ -258,6 +262,8 @@ func (a *App) saveOAuthResultToStore(providerName string, result *oauth.TokenRes
 		storeID = "anthropic"
 	case "GitHub Copilot":
 		storeID = "github-copilot"
+	case "xAI-Grok":
+		storeID = "xai-grok"
 	case codegenProviderName:
 		storeID = "codegen"
 	default:

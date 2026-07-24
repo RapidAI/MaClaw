@@ -31,18 +31,25 @@ const errorHTML = `<!DOCTYPE html>
 
 // CallbackServer 管理本地 HTTP 回调服务器，用于接收 OAuth 授权回调。
 type CallbackServer struct {
-	listener net.Listener
-	port     int
-	codeCh   chan string
-	errCh    chan error
-	server   *http.Server
+	listener   net.Listener
+	port       int
+	codeCh     chan string
+	callbackCh chan callbackResult
+	errCh      chan error
+	server     *http.Server
+}
+
+type callbackResult struct {
+	code  string
+	state string
 }
 
 // NewCallbackServer 创建一个新的 CallbackServer 实例。
 func NewCallbackServer() *CallbackServer {
 	return &CallbackServer{
-		codeCh: make(chan string, 1),
-		errCh:  make(chan error, 1),
+		codeCh:     make(chan string, 1),
+		callbackCh: make(chan callbackResult, 1),
+		errCh:      make(chan error, 1),
 	}
 }
 
@@ -100,6 +107,20 @@ func (s *CallbackServer) WaitForCodeCtx(ctx context.Context) (string, error) {
 	}
 }
 
+// WaitForCallbackCtx waits for an OAuth callback and returns both the code and
+// state parameters. OIDC providers require state validation before exchanging
+// the code, while the legacy OpenAI flow only consumes the code.
+func (s *CallbackServer) WaitForCallbackCtx(ctx context.Context) (code, state string, err error) {
+	select {
+	case callback := <-s.callbackCh:
+		return callback.code, callback.state, nil
+	case err := <-s.errCh:
+		return "", "", err
+	case <-ctx.Done():
+		return "", "", fmt.Errorf("oauth cancelled")
+	}
+}
+
 // Stop 关闭 HTTP 服务器并释放端口。
 func (s *CallbackServer) Stop() {
 	if s.server != nil {
@@ -131,5 +152,13 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, successHTML)
-	s.codeCh <- code
+	state := q.Get("state")
+	select {
+	case s.codeCh <- code:
+	default:
+	}
+	select {
+	case s.callbackCh <- callbackResult{code: code, state: state}:
+	default:
+	}
 }

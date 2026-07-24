@@ -320,7 +320,7 @@ go run ./MaClawSrv
 ## License (Dual License)
 
 * **Open source use**: Free to use in open source projects
-* **Commercial use**: Commercial license required — contact **znsoft@163.com**
+* **Commercial use**: Contact us to obtain commercial authorization free of charge — **znsoft@163.com**
 
 ## About
 

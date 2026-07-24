@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,18 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+// RefreshXAIToken refreshes an xAI OAuth token using the token endpoint
+// currently advertised by xAI's OIDC discovery document.
+func RefreshXAIToken(ctx context.Context, refreshToken string) (*TokenResult, error) {
+	discovery, err := DiscoverOIDCEndpoints(ctx, XAIOAuthIssuer)
+	if err != nil {
+		return nil, err
+	}
+	cfg := XAIConfig()
+	cfg.TokenEndpoint = discovery.TokenEndpoint
+	return RefreshAccessToken(cfg, refreshToken)
+}
 
 // NeedsRefresh 检查 provider 的 access_token 是否即将过期。
 // 如果 AuthType 为空或不是 "oauth"，返回 false（向后兼容）。
