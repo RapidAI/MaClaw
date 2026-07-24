@@ -40,6 +40,7 @@ class DocumentsScreen extends ConsumerStatefulWidget {
 
 class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
   String? _handledSharedIntentId;
+  bool _deleteInFlight = false;
 
   Future<void> _shareDraft(DocumentDraft draft) async {
     final s = ref.read(appStringsProvider);
@@ -80,39 +81,65 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
   }
 
   Future<void> _deleteDraft(DocumentDraft draft) async {
+    // setState is asynchronous; retain a synchronous guard so a rapid second
+    // tap cannot open another confirmation or send another delete request.
+    if (_deleteInFlight) return;
+    _deleteInFlight = true;
     final s = ref.read(appStringsProvider);
     final title =
         draft.title.trim().isEmpty ? s.unnamedDocument : draft.title.trim();
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(s.deleteDocumentTitle),
-        content: Text(s.deleteDocumentConfirm(title)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: Text(s.cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(s.delete),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
     try {
-      await ref.read(documentDraftHistoryProvider.notifier).deleteDraft(draft);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(s.deletedDocument(title))),
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(
+            draft.isManagedMeetingResult
+                ? s.deleteMeetingResultTitle
+                : s.deleteDocumentTitle,
+          ),
+          content: Text(
+            draft.isManagedMeetingResult
+                ? s.deleteMeetingResultConfirm(title)
+                : s.deleteDocumentConfirm(title),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(s.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text(
+                draft.isManagedMeetingResult ? s.deleteAll : s.delete,
+              ),
+            ),
+          ],
+        ),
       );
-    } on Object catch (e) {
-      if (!mounted) return;
-      final msg = e is StateError ? e.message : e.toString();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(s.deleteFailed(msg))),
-      );
+      if (confirmed != true || !mounted) return;
+      try {
+        await ref
+            .read(documentDraftHistoryProvider.notifier)
+            .deleteDraft(draft);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              draft.isManagedMeetingResult
+                  ? s.deletedMeetingResult(title)
+                  : s.deletedDocument(title),
+            ),
+          ),
+        );
+      } on Object catch (e) {
+        if (!mounted) return;
+        final msg = e is StateError ? e.message : e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(s.deleteFailed(msg))),
+        );
+      }
+    } finally {
+      _deleteInFlight = false;
     }
   }
 
@@ -290,7 +317,8 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
                   color: Theme.of(context).colorScheme.primary,
                 ),
                 const SizedBox(width: 8),
-                Text(s.mobileImport, style: Theme.of(context).textTheme.titleMedium),
+                Text(s.mobileImport,
+                    style: Theme.of(context).textTheme.titleMedium),
               ],
             ),
             const SizedBox(height: 6),
@@ -381,9 +409,8 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                     Text(
                       '${shown.length}',
                       style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                     ),
                   ],
@@ -430,7 +457,8 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                         children: [
                           IconButton(
                             tooltip: s.share,
-                            icon: const Icon(Icons.ios_share_outlined, size: 20),
+                            icon:
+                                const Icon(Icons.ios_share_outlined, size: 20),
                             onPressed: () => onShare(draft),
                           ),
                           IconButton(
@@ -508,9 +536,8 @@ class _ActiveDocumentActions extends ConsumerWidget {
                   label: Text(s.summarize),
                 ),
                 FilledButton.tonalIcon(
-                  onPressed: loading
-                      ? null
-                      : () => controller.processDraft('polish'),
+                  onPressed:
+                      loading ? null : () => controller.processDraft('polish'),
                   icon: const Icon(Icons.spellcheck, size: 18),
                   label: Text(s.polish),
                 ),
@@ -532,7 +559,8 @@ class _ActiveDocumentActions extends ConsumerWidget {
                   ),
                   label: Text(
                     s.delete,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    style:
+                        TextStyle(color: Theme.of(context).colorScheme.error),
                   ),
                 ),
                 FilledButton.icon(
@@ -811,9 +839,7 @@ class _DocumentReadonlyPreviewState
     final scheme = Theme.of(context).colorScheme;
     final s = ref.watch(appStringsProvider);
     final body = draft.markdown.trim().isEmpty
-        ? (draft.hasOriginal
-            ? s.documentOriginalOnlyBody
-            : s.documentBodyEmpty)
+        ? (draft.hasOriginal ? s.documentOriginalOnlyBody : s.documentBodyEmpty)
         : draft.markdown;
     return Card(
       child: Padding(
@@ -821,7 +847,8 @@ class _DocumentReadonlyPreviewState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(s.documentPreview, style: Theme.of(context).textTheme.titleMedium),
+            Text(s.documentPreview,
+                style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 4),
             Text(
               s.documentPreviewHint,
@@ -847,7 +874,9 @@ class _DocumentReadonlyPreviewState
               const SizedBox(height: 6),
               Text(
                 s.documentOriginalLabel(
-                  draft.sourceFilename.isEmpty ? draft.id : draft.sourceFilename,
+                  draft.sourceFilename.isEmpty
+                      ? draft.id
+                      : draft.sourceFilename,
                   draft.sourceSize > 0
                       ? ' · ${(draft.sourceSize / 1024).ceil()} KB'
                       : '',
@@ -998,8 +1027,10 @@ class _DocumentAIProcessPanel extends ConsumerWidget {
     final hasDraft = state.valueOrNull?.draft != null;
     final loading = state.isLoading;
     final actions = [
-      _DocumentProcessAction('summarize', s.processSummarizeShort, Icons.summarize_outlined),
-      _DocumentProcessAction('translate', s.translate, Icons.translate_outlined),
+      _DocumentProcessAction(
+          'summarize', s.processSummarizeShort, Icons.summarize_outlined),
+      _DocumentProcessAction(
+          'translate', s.translate, Icons.translate_outlined),
       _DocumentProcessAction('rewrite', s.rewrite, Icons.edit_note_outlined),
       _DocumentProcessAction('expand', s.expand, Icons.unfold_more_outlined),
       _DocumentProcessAction('polish', s.polish, Icons.auto_fix_high_outlined),
@@ -1018,7 +1049,8 @@ class _DocumentAIProcessPanel extends ConsumerWidget {
                   color: Theme.of(context).colorScheme.primary,
                 ),
                 const SizedBox(width: 8),
-                Text(s.aiProcess, style: Theme.of(context).textTheme.titleMedium),
+                Text(s.aiProcess,
+                    style: Theme.of(context).textTheme.titleMedium),
               ],
             ),
             const SizedBox(height: 6),

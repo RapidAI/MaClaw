@@ -88,6 +88,58 @@ func TestMobileLibraryKeepsExpiredResultsButHidesOrphanedAudio(t *testing.T) {
 	}
 }
 
+func TestMobileLibraryLabelsGeneratedMeetingResultsWithParentRecording(t *testing.T) {
+	owner := "library-meeting-result-owner"
+	recording := mobileMeetingRecording{ID: "meeting-parent", OwnerID: owner, Status: "ready", MinutesDraftID: "meeting-minutes"}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[recording.ID] = recording
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, recording.ID)
+		mobileMeetingRecordings.Unlock()
+	})
+
+	item := mobileLibraryDocumentItem(mobileDocumentDraftRecord{ID: recording.MinutesDraftID, OwnerID: owner}, false)
+	if item["managed_by_recording_id"] != recording.ID {
+		t.Fatalf("managed parent=%#v", item)
+	}
+}
+
+func TestMobileLibraryListsMultipleGeneratedResultsWithTheirParents(t *testing.T) {
+	owner := "library-meeting-result-list-owner"
+	now := time.Now().UTC()
+	first := mobileMeetingRecording{ID: "meeting-parent-a", OwnerID: owner, Status: "ready", TranscriptDraftID: "meeting-transcript-a"}
+	second := mobileMeetingRecording{ID: "meeting-parent-b", OwnerID: owner, Status: "ready", MinutesDraftID: "meeting-minutes-b"}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[first.ID] = first
+	mobileMeetingRecordings.items[second.ID] = second
+	mobileMeetingRecordings.Unlock()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts[first.TranscriptDraftID] = mobileDocumentDraftRecord{ID: first.TranscriptDraftID, OwnerID: owner, UpdatedAt: now}
+	mobileDocuments.drafts[second.MinutesDraftID] = mobileDocumentDraftRecord{ID: second.MinutesDraftID, OwnerID: owner, UpdatedAt: now}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, first.ID)
+		delete(mobileMeetingRecordings.items, second.ID)
+		mobileMeetingRecordings.Unlock()
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, first.TranscriptDraftID)
+		delete(mobileDocuments.drafts, second.MinutesDraftID)
+		mobileDocuments.Unlock()
+	})
+
+	items := mobileLibraryItems(owner, "", true, false)
+	parents := map[string]string{}
+	for _, item := range items {
+		parents[stringFromAny(item["id"])] = stringFromAny(item["managed_by_recording_id"])
+	}
+	if parents[first.TranscriptDraftID] != first.ID || parents[second.MinutesDraftID] != second.ID {
+		t.Fatalf("result parents = %#v", parents)
+	}
+}
+
 func TestMobileLibraryKeepsAudioTenantIsolatedAndOmitsZeroRetention(t *testing.T) {
 	owner := "library-tenant-owner"
 	now := time.Now().UTC()

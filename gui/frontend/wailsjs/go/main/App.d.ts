@@ -1675,6 +1675,7 @@ export function ListMobileLibraryItems(arg1:number):Promise<Array<any>>;
 export function GetMobileLibraryItem(arg1:string):Promise<any>;
 export function ProcessMobileMeetingRecording(arg1:string):Promise<any>;
 export function DeleteMobileMeetingRecording(arg1:string):Promise<main.MobileLibraryItem>;
+export function DeleteMobileMeetingRecordingAndResults(arg1:string):Promise<void>;
 export function GetMobileMeetingRecordingAudio(arg1:string):Promise<any>;
 export function OpenMobileMeetingRecordingAudio(arg1:string):Promise<string>;
 export function SaveMobileMeetingRecordingAudio(arg1:string):Promise<string>;

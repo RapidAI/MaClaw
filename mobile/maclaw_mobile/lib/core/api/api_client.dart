@@ -464,6 +464,20 @@ class ApiClient {
     return MobileMeetingRecording.fromJson(response.data ?? const {});
   }
 
+  /// Delete a completed meeting recording with all generated transcripts and
+  /// minutes. Generated results are owned by their recording and cannot be
+  /// deleted through the document-draft endpoint.
+  Future<void> deleteMeetingRecordingAndResults(String recordingId) async {
+    final id = recordingId.trim();
+    if (id.isEmpty) {
+      throw ArgumentError('recordingId is required');
+    }
+    await _dio.delete<void>(
+      '/api/mobile/meeting-recordings/${Uri.encodeComponent(id)}',
+      options: _assistantRequestOptions(),
+    );
+  }
+
   Future<SearchAnswer> search(String query) async {
     return searchWithContext(query);
   }

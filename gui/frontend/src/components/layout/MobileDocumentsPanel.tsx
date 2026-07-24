@@ -28,7 +28,7 @@ export type MobileDocumentDraftSummary = {
 type MobileLibraryAudio = { content_type?: string; size_bytes?: number; duration_sec?: number; available?: boolean };
 type MobileLibraryProcessing = { status?: string; progress?: number; message?: string; failure_code?: string };
 type MobileLibraryDerivedDocuments = { transcript_draft_id?: string; minutes_draft_id?: string };
-type MobileLibraryItem = MobileDocumentDraftSummary & { type?: 'document' | 'audio'; audio?: MobileLibraryAudio; processing?: MobileLibraryProcessing; derived_documents?: MobileLibraryDerivedDocuments; retention_until?: string };
+type MobileLibraryItem = MobileDocumentDraftSummary & { type?: 'document' | 'audio'; audio?: MobileLibraryAudio; processing?: MobileLibraryProcessing; derived_documents?: MobileLibraryDerivedDocuments; managed_by_recording_id?: string; retention_until?: string };
 type MeetingRecordingAudioPayload = { content_type?: string; data_base64?: string };
 
 type MobileDocumentsPanelProps = {
@@ -69,6 +69,11 @@ function callDeleteMeetingRecording(id: string): Promise<MobileLibraryItem> {
   const app = (window as any)?.go?.main?.App;
   if (!app?.DeleteMobileMeetingRecording) return Promise.reject(new Error('Desktop binding missing DeleteMobileMeetingRecording — rebuild GUI after pull.'));
   return app.DeleteMobileMeetingRecording(id);
+}
+function callDeleteMeetingRecordingAndResults(id: string): Promise<void> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.DeleteMobileMeetingRecordingAndResults) return Promise.reject(new Error('Desktop binding missing DeleteMobileMeetingRecordingAndResults — rebuild GUI after pull.'));
+  return app.DeleteMobileMeetingRecordingAndResults(id);
 }
 function callGetMeetingRecordingAudio(id: string): Promise<MeetingRecordingAudioPayload> {
   const app = (window as any)?.go?.main?.App;
@@ -356,6 +361,8 @@ function MobileDocPreviewBody({
   );
 }
 function isAudioItem(item: MobileLibraryItem | null | undefined): boolean { return item?.type === 'audio'; }
+function managedRecordingID(item: MobileLibraryItem | null | undefined): string { return String(item?.managed_by_recording_id || '').trim(); }
+function isManagedMeetingResult(item: MobileLibraryItem | null | undefined): boolean { return managedRecordingID(item) !== ''; }
 function isProcessingAudio(item: MobileLibraryItem | null | undefined): boolean { const status = item?.processing?.status || ''; return status === 'processing' || status === 'finalizing'; }
 function hasMeetingMinutes(item: MobileLibraryItem | null | undefined): boolean { return Boolean(item?.derived_documents?.minutes_draft_id); }
 function formatAudioDuration(seconds?: number): string { const total = Math.max(0, Math.round(Number(seconds || 0))); const min = Math.floor(total / 60); return `${min}:${String(total % 60).padStart(2, '0')}`; }
@@ -515,6 +522,9 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+  // State updates do not take effect until the next render, so use a ref to
+  // synchronously guard the destructive confirmation and request lifecycle.
+  const deleteInFlightRef = useRef(false);
 
   const t = useCallback(
     (en: string, zh: string) => (isZh ? zh : en),
@@ -703,20 +713,35 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
   };
 
   const deleteDraft = async (d: MobileLibraryItem) => {
+    if (deleteInFlightRef.current) return;
+    deleteInFlightRef.current = true;
     const title = d.title || d.id;
-    const ok = await showConfirm(
-      t(
-        isAudioItem(d) ? `Delete “${title}”? The original audio will be removed; generated transcripts and minutes remain.` : `Delete “${title}” from the shared Hub library? The phone app will no longer be able to open this document.`,
-        isAudioItem(d) ? `删除「${title}」？原始音频将被删除，已生成的逐字稿和会议纪要会保留。` : `从共享文稿库删除「${title}」？手机端也将无法再看到该文稿。`,
-      ),
-      t(isAudioItem(d) ? 'Delete original audio?' : 'Delete shared document?', isAudioItem(d) ? '删除原始音频？' : '删除共享文稿？'),
-      {
-        confirmText: t('Delete', '删除'),
-        cancelText: t('Cancel', '取消'),
-        confirmVariant: 'danger',
-      },
-    );
-    if (!ok) return;
+    const recordingID = managedRecordingID(d);
+    const deleteManagedResult = !isAudioItem(d) && recordingID !== '';
+    let ok = false;
+    try {
+      ok = await showConfirm(
+        t(
+          isAudioItem(d) ? `Delete “${title}”? The original audio will be removed; generated transcripts and minutes remain.` : deleteManagedResult ? `Delete the meeting recording for “${title}”? Its original audio and all generated transcripts and meeting minutes will be removed.` : `Delete “${title}” from the shared Hub library? The phone app will no longer be able to open this document.`,
+          isAudioItem(d) ? `删除「${title}」？原始音频将被删除，已生成的逐字稿和会议纪要会保留。` : deleteManagedResult ? `删除「${title}」所属的会议录音？原始音频、逐字稿和会议纪要将一并删除。` : `从共享文稿库删除「${title}」？手机端也将无法再看到该文稿。`,
+        ),
+        t(isAudioItem(d) ? 'Delete original audio?' : deleteManagedResult ? 'Delete meeting recording and results?' : 'Delete shared document?', isAudioItem(d) ? '删除原始音频？' : deleteManagedResult ? '删除会议录音及结果？' : '删除共享文稿？'),
+        {
+          confirmText: t(deleteManagedResult ? 'Delete all' : 'Delete', deleteManagedResult ? '全部删除' : '删除'),
+          cancelText: t('Cancel', '取消'),
+          confirmVariant: 'danger',
+        },
+      );
+    } catch (e: any) {
+      setError(String(e?.message || e || 'delete confirmation failed'));
+      deleteInFlightRef.current = false;
+      return;
+    }
+    if (!ok) {
+      deleteInFlightRef.current = false;
+      return;
+    }
+    setUploading(true);
     setError('');
     setBanner('');
     try {
@@ -724,6 +749,10 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
         const updated = await callDeleteMeetingRecording(d.id);
         setSelected((current) => current?.id === d.id ? { ...current, ...updated } : current);
         setDrafts((current) => current.map((item) => item.id === d.id ? { ...item, ...updated } : item));
+      } else if (deleteManagedResult) {
+        await callDeleteMeetingRecordingAndResults(recordingID);
+        if (selected?.id === d.id) setSelected(null);
+        setDrafts((current) => current.filter((item) => item.id !== d.id && item.id !== recordingID));
       } else {
         await callDeleteDraft(d.id);
         if (selected?.id === d.id) setSelected(null);
@@ -731,11 +760,28 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
       setBanner(
         isAudioItem(d)
           ? t(`Original audio deleted for “${title}”. Generated documents remain available.`, `已删除「${title}」的原始音频，生成的文档仍可打开。`)
+          : deleteManagedResult
+            ? t(`Deleted the meeting recording and generated documents for “${title}”`, `已删除「${title}」所属的会议录音及生成文档`)
           : t(`Deleted “${title}”`, `已删除「${title}」`),
       );
       await refresh();
     } catch (e: any) {
-      setError(String(e?.message || e || 'delete failed'));
+      const message = String(e?.message || e || 'delete failed');
+      if (deleteManagedResult && message.includes('RECORDING_IN_USE')) {
+        setError(t('The meeting recording is still processing. Wait for it to finish, then delete it and its generated documents.', '会议录音仍在处理中。请等待处理完成后，再删除录音及生成文档。'));
+      } else if (deleteManagedResult && message.includes('RECORDING_NOT_FOUND')) {
+        // The recording was deleted elsewhere after this document was listed.
+        // Clear the stale selection instead of leaving a dead destructive action.
+        if (selected?.id === d.id) setSelected(null);
+        setDrafts((current) => current.filter((item) => item.id !== d.id && item.id !== recordingID));
+        setBanner(t('This meeting recording was already deleted. The library has been refreshed.', '该会议录音已在其他位置删除，文稿库已刷新。'));
+        await refresh();
+      } else {
+        setError(message);
+      }
+    } finally {
+      setUploading(false);
+      deleteInFlightRef.current = false;
     }
   };
 
@@ -1217,8 +1263,9 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                       </button>
                       <button
                         type="button"
-                        title={t(isAudioItem(d) ? 'Delete original audio' : 'Delete', isAudioItem(d) ? '删除原始音频' : '删除')}
-                        aria-label={t(isAudioItem(d) ? `Delete original audio for ${d.title || d.id}` : `Delete ${d.title || d.id}`, isAudioItem(d) ? `删除 ${d.title || d.id} 的原始音频` : `删除 ${d.title || d.id}`)}
+                        title={t(isAudioItem(d) ? 'Delete original audio' : isManagedMeetingResult(d) ? 'Delete recording and generated documents' : 'Delete', isAudioItem(d) ? '删除原始音频' : isManagedMeetingResult(d) ? '删除录音及生成文档' : '删除')}
+                        aria-label={t(isAudioItem(d) ? `Delete original audio for ${d.title || d.id}` : isManagedMeetingResult(d) ? `Delete the recording and generated documents for ${d.title || d.id}` : `Delete ${d.title || d.id}`, isAudioItem(d) ? `删除 ${d.title || d.id} 的原始音频` : isManagedMeetingResult(d) ? `删除 ${d.title || d.id} 所属录音及生成文档` : `删除 ${d.title || d.id}`)}
+                        disabled={uploading}
                         onClick={(e) => {
                           e.stopPropagation();
                           void deleteDraft(d);
@@ -1229,9 +1276,9 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                           border: 'none',
                           background: 'transparent',
                           color: 'rgba(255,180,180,0.85)',
-                          cursor: 'pointer',
+                          cursor: uploading ? 'not-allowed' : 'pointer',
                           fontSize: '0.95rem',
-                          opacity: 0.75,
+                          opacity: uploading ? 0.45 : 0.75,
                         }}
                       >
                         ×
@@ -1314,7 +1361,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                     onClick={() => void deleteDraft(selected)}
                     disabled={uploading}
                   >
-                    {t('Delete', '删除')}
+                    {isManagedMeetingResult(selected) ? t('Delete recording and results', '删除录音及生成文档') : t('Delete', '删除')}
                   </button>
                 </>
               ) : null}

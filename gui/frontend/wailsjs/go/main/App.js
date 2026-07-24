@@ -3456,6 +3456,7 @@ export const ListMobileLibraryItems = (arg1) => window['go']['main']['App']['Lis
 export const GetMobileLibraryItem = (arg1) => window['go']['main']['App']['GetMobileLibraryItem'](arg1);
 export const ProcessMobileMeetingRecording = (arg1) => window['go']['main']['App']['ProcessMobileMeetingRecording'](arg1);
 export const DeleteMobileMeetingRecording = (arg1) => window['go']['main']['App']['DeleteMobileMeetingRecording'](arg1);
+export const DeleteMobileMeetingRecordingAndResults = (arg1) => window['go']['main']['App']['DeleteMobileMeetingRecordingAndResults'](arg1);
 export const GetMobileMeetingRecordingAudio = (arg1) => window['go']['main']['App']['GetMobileMeetingRecordingAudio'](arg1);
 export const OpenMobileMeetingRecordingAudio = (arg1) => window['go']['main']['App']['OpenMobileMeetingRecordingAudio'](arg1);
 export const SaveMobileMeetingRecordingAudio = (arg1) => window['go']['main']['App']['SaveMobileMeetingRecordingAudio'](arg1);

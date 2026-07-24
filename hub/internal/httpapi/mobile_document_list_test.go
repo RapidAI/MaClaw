@@ -143,6 +143,72 @@ func TestMobileDocumentDraftsListHandler(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentDraftsListLabelsGeneratedMeetingResultsWithParentRecording(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "mobile-drafts-meeting-parent@example.com")
+	const recordingID = "meeting-document-list-parent"
+	const draftID = "meeting-document-list-transcript"
+	now := time.Now().UTC()
+
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[recordingID] = mobileMeetingRecording{
+		ID: recordingID, OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Status: "ready", TranscriptDraftID: draftID, UpdatedAt: now,
+	}
+	mobileMeetingRecordings.Unlock()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts[draftID] = mobileDocumentDraftRecord{
+		ID: draftID, OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Title: "Meeting transcript", Markdown: "Transcript", UpdatedAt: now,
+	}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, recordingID)
+		mobileMeetingRecordings.Unlock()
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, draftID)
+		mobileDocuments.Unlock()
+	})
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/drafts", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listResp := httptest.NewRecorder()
+	MobileDocumentDraftsListHandler(identity).ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResp.Code, listResp.Body.String())
+	}
+	var listBody struct {
+		Drafts []map[string]any `json:"drafts"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &listBody); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listBody.Drafts {
+		if item["id"] == draftID && item["managed_by_recording_id"] != recordingID {
+			t.Fatalf("list parent=%#v", item)
+		}
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/drafts/"+draftID, nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getReq.SetPathValue("draftId", draftID)
+	getResp := httptest.NewRecorder()
+	MobileDocumentDraftsListHandler(identity).ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", getResp.Code, getResp.Body.String())
+	}
+	var getBody struct {
+		Draft map[string]any `json:"draft"`
+	}
+	if err := json.Unmarshal(getResp.Body.Bytes(), &getBody); err != nil {
+		t.Fatal(err)
+	}
+	if getBody.Draft["managed_by_recording_id"] != recordingID {
+		t.Fatalf("get parent=%#v", getBody.Draft)
+	}
+}
+
 func TestMobileDocumentLibraryKeepsDraftsTenantIsolated(t *testing.T) {
 	owner := "document-library-shared-owner"
 	now := time.Now().UTC()

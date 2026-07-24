@@ -979,6 +979,136 @@ func TestMobileMeetingRecordingResultDraftCannotBeDeletedIndependently(t *testin
 	}
 }
 
+func TestMobileMeetingRecordingDeleteRemovesGeneratedResultDocuments(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "meeting-delete-results@example.com")
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/recording.m4a", []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recording := mobileMeetingRecording{
+		ID: "meeting-delete-results", OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Dir: dir, Status: "ready", TranscriptDraftID: "meeting-delete-results-transcript", MinutesDraftID: "meeting-delete-results-minutes",
+	}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[recording.ID] = recording
+	mobileMeetingRecordings.Unlock()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts[recording.TranscriptDraftID] = mobileDocumentDraftRecord{ID: recording.TranscriptDraftID, OwnerID: enroll.UserID, TenantID: enroll.TenantID}
+	mobileDocuments.drafts[recording.MinutesDraftID] = mobileDocumentDraftRecord{ID: recording.MinutesDraftID, OwnerID: enroll.UserID, TenantID: enroll.TenantID}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, recording.ID)
+		mobileMeetingRecordings.Unlock()
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, recording.TranscriptDraftID)
+		delete(mobileDocuments.drafts, recording.MinutesDraftID)
+		mobileDocuments.Unlock()
+		_ = os.RemoveAll(dir)
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/mobile/meeting-recordings/"+recording.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("recordingId", recording.ID)
+	resp := httptest.NewRecorder()
+	MobileMeetingRecordingsHandler(identity).ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("delete recording=%d %s", resp.Code, resp.Body.String())
+	}
+	mobileDocuments.Lock()
+	_, transcriptExists := mobileDocuments.drafts[recording.TranscriptDraftID]
+	_, minutesExists := mobileDocuments.drafts[recording.MinutesDraftID]
+	mobileDocuments.Unlock()
+	if transcriptExists || minutesExists {
+		t.Fatalf("generated documents remain transcript=%t minutes=%t", transcriptExists, minutesExists)
+	}
+}
+
+func TestMobileMeetingRecordingDeleteAndProcessClaimsCannotRace(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "meeting-delete-process-race@example.com")
+	SetMeetingRecordingWorkers(testMeetingTranscriber{}, testMeetingMinutes{})
+	t.Cleanup(func() { SetMeetingRecordingWorkers(nil, nil) })
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/recording.m4a", []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recording := mobileMeetingRecording{
+		ID: "meeting-delete-process-race", OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Dir: dir, ContentType: "audio/mp4", Status: "failed", FailureCode: "ASR_TRANSCRIPTION_FAILED",
+	}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[recording.ID] = recording
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, recording.ID)
+		mobileMeetingRecordings.Unlock()
+		_ = os.RemoveAll(dir)
+	})
+
+	// Claim processing first, then verify a full delete is refused. Both paths
+	// mutate the same recording map under one lock, so a claimed worker can
+	// never be deleted underneath its audio/transcript work.
+	processReq := httptest.NewRequest(http.MethodPost, "/api/mobile/meeting-recordings/"+recording.ID+"/process", strings.NewReader(`{"mode":"transcript"}`))
+	processReq.Header.Set("Authorization", "Bearer "+token)
+	processReq.SetPathValue("recordingId", recording.ID)
+	processResp := httptest.NewRecorder()
+	MobileMeetingRecordingsHandler(identity).ServeHTTP(processResp, processReq)
+	if processResp.Code != http.StatusAccepted {
+		t.Fatalf("process=%d %s", processResp.Code, processResp.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/mobile/meeting-recordings/"+recording.ID, nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteReq.SetPathValue("recordingId", recording.ID)
+	deleteResp := httptest.NewRecorder()
+	MobileMeetingRecordingsHandler(identity).ServeHTTP(deleteResp, deleteReq)
+	if deleteResp.Code != http.StatusConflict || !strings.Contains(deleteResp.Body.String(), "RECORDING_IN_USE") {
+		t.Fatalf("delete=%d %s", deleteResp.Code, deleteResp.Body.String())
+	}
+}
+
+func TestMobileMeetingRecordingDeleteIsTenantScopedForDerivedDocuments(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "meeting-delete-tenant-scope@example.com")
+	const draftID = "meeting-delete-tenant-shared-draft"
+	recording := mobileMeetingRecording{
+		ID: "meeting-delete-tenant-scope", OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Status: "ready", MinutesDraftID: draftID,
+	}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[recording.ID] = recording
+	mobileMeetingRecordings.Unlock()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts[draftID] = mobileDocumentDraftRecord{ID: draftID, OwnerID: enroll.UserID, TenantID: "another-tenant"}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, recording.ID)
+		mobileMeetingRecordings.Unlock()
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, draftID)
+		mobileDocuments.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/mobile/meeting-recordings/"+recording.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("recordingId", recording.ID)
+	resp := httptest.NewRecorder()
+	MobileMeetingRecordingsHandler(identity).ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("delete recording=%d %s", resp.Code, resp.Body.String())
+	}
+	mobileDocuments.Lock()
+	_, exists := mobileDocuments.drafts[draftID]
+	mobileDocuments.Unlock()
+	if !exists {
+		t.Fatal("cross-tenant draft was deleted")
+	}
+}
+
 func TestMobileMeetingRecordingRejectsAudioDeleteWhileProcessing(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-audio-in-use@example.com")

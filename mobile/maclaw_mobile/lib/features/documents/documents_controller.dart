@@ -65,6 +65,21 @@ Object mapDocumentStorageError(Object error, {bool isZh = true}) {
               : 'You do not have permission for this document.'),
     );
   }
+  if (apiCode == 'MEETING_RESULT_MANAGED_BY_RECORDING' ||
+      blob.contains('managed by recording')) {
+    return StateError(
+      isZh
+          ? '该逐字稿或会议纪要由会议录音管理。请刷新文稿库后删除所属录音及其生成文档。'
+          : 'This transcript or meeting minutes is managed by its recording. Refresh the library, then delete the recording and its generated documents.',
+    );
+  }
+  if (apiCode == 'RECORDING_IN_USE' || blob.contains('recording in use')) {
+    return StateError(
+      isZh
+          ? '会议录音仍在处理中。请等待处理完成后，再删除录音及生成文档。'
+          : 'The meeting recording is still processing. Wait for it to finish, then delete the recording and generated documents.',
+    );
+  }
   if (message.isNotEmpty) {
     return StateError(message);
   }
@@ -91,7 +106,8 @@ bool isDocumentDraftAlreadyGone(Object error) {
   }
   return code == 404 ||
       apiCode == 'DRAFT_NOT_FOUND' ||
-      apiCode == 'UPLOAD_NOT_FOUND';
+      apiCode == 'UPLOAD_NOT_FOUND' ||
+      apiCode == 'RECORDING_NOT_FOUND';
 }
 
 final documentsControllerProvider =
@@ -173,7 +189,13 @@ class DocumentDraftHistoryController
       );
     }
     try {
-      await client.deleteDocumentDraft(id);
+      if (draft.isManagedMeetingResult) {
+        await client.deleteMeetingRecordingAndResults(
+          draft.managedByRecordingId,
+        );
+      } else {
+        await client.deleteDocumentDraft(id);
+      }
     } on Object catch (error) {
       if (!isDocumentDraftAlreadyGone(error)) {
         throw mapDocumentStorageError(error,

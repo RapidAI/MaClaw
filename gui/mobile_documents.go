@@ -83,11 +83,12 @@ type MobileMeetingRecordingAudioPayload struct {
 // and Mobile recordings. It deliberately keeps the two Hub storage models apart.
 type MobileLibraryItem struct {
 	MobileDocumentDraftSummary
-	Type             string                         `json:"type"`
-	Audio            *MobileLibraryAudio            `json:"audio,omitempty"`
-	Processing       *MobileLibraryProcessing       `json:"processing,omitempty"`
-	DerivedDocuments *MobileLibraryDerivedDocuments `json:"derived_documents,omitempty"`
-	RetentionUntil   string                         `json:"retention_until,omitempty"`
+	Type                 string                         `json:"type"`
+	Audio                *MobileLibraryAudio            `json:"audio,omitempty"`
+	Processing           *MobileLibraryProcessing       `json:"processing,omitempty"`
+	DerivedDocuments     *MobileLibraryDerivedDocuments `json:"derived_documents,omitempty"`
+	ManagedByRecordingID string                         `json:"managed_by_recording_id,omitempty"`
+	RetentionUntil       string                         `json:"retention_until,omitempty"`
 }
 
 // ListMobileDocumentDrafts returns the viewer's mobile/Hub drafts (same library as phone).
@@ -306,6 +307,43 @@ func (a *App) DeleteMobileMeetingRecording(recordingID string) (*MobileLibraryIt
 		return nil, fmt.Errorf("delete original meeting audio failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return a.GetMobileLibraryItem(id)
+}
+
+// DeleteMobileMeetingRecordingAndResults removes a completed recording and
+// every transcript/minutes document generated from it. It is used when a user
+// starts deletion from one of those managed result documents.
+func (a *App) DeleteMobileMeetingRecordingAndResults(recordingID string) error {
+	if a == nil {
+		return fmt.Errorf("app is not initialized")
+	}
+	id := strings.TrimSpace(recordingID)
+	if id == "" {
+		return fmt.Errorf("recording id is required")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return fmt.Errorf("MaClaw Hub login is required to delete meeting recordings")
+	}
+	req, err := http.NewRequest(http.MethodDelete, hubURL+"/api/mobile/meeting-recordings/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("delete meeting recording failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("delete meeting recording failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return nil
 }
 
 const mobileMeetingPlaybackMaxBytes = 128 << 20

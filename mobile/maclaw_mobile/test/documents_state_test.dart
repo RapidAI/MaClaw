@@ -185,6 +185,35 @@ class _RecordingDraftApiClient extends ApiClient {
   }
 }
 
+class _ManagedMeetingResultApiClient extends ApiClient {
+  final deletedRecordingIds = <String>[];
+  final deletedDraftIds = <String>[];
+  List<DocumentDraft> drafts;
+
+  _ManagedMeetingResultApiClient(this.drafts)
+      : super(hubUrl: 'https://tenant-a.maclaw.top');
+
+  @override
+  Future<List<DocumentDraft>> listDocumentDrafts({
+    int limit = 50,
+    bool includeBody = false,
+  }) async =>
+      List<DocumentDraft>.from(drafts);
+
+  @override
+  Future<void> deleteMeetingRecordingAndResults(String recordingId) async {
+    deletedRecordingIds.add(recordingId);
+    drafts = drafts
+        .where((draft) => draft.managedByRecordingId != recordingId)
+        .toList();
+  }
+
+  @override
+  Future<void> deleteDocumentDraft(String draftId) async {
+    deletedDraftIds.add(draftId);
+  }
+}
+
 class _CreateExportApiClient extends _RecordingDraftApiClient {
   @override
   Future<DocumentExportJob> exportDocument({
@@ -284,6 +313,49 @@ void _useFakeTemporaryPath(String path) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('managed meeting results delete their recording and all results',
+      () async {
+    final store = MobileLocalStore(executor: NativeDatabase.memory());
+    addTearDown(store.close);
+    final client = _ManagedMeetingResultApiClient([
+      DocumentDraft(
+        id: 'transcript-1',
+        title: 'Team sync transcript',
+        template: DocumentTemplate.report,
+        markdown: 'Transcript',
+        updatedAt: DateTime.utc(2026, 7, 24),
+        managedByRecordingId: 'recording-1',
+      ),
+      DocumentDraft(
+        id: 'minutes-1',
+        title: 'Team sync minutes',
+        template: DocumentTemplate.meetingMinutes,
+        markdown: 'Minutes',
+        updatedAt: DateTime.utc(2026, 7, 24),
+        managedByRecordingId: 'recording-1',
+      ),
+    ]);
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        apiClientProvider.overrideWithValue(client),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final drafts = await container.read(documentDraftHistoryProvider.future);
+    await container
+        .read(documentDraftHistoryProvider.notifier)
+        .deleteDraft(drafts.first);
+
+    expect(client.deletedRecordingIds, ['recording-1']);
+    expect(client.deletedDraftIds, isEmpty);
+    expect(
+      (await container.read(documentDraftHistoryProvider.future)),
+      isEmpty,
+    );
+  });
 
   test('document draft create and edit redact secrets before API', () async {
     final store = MobileLocalStore(executor: NativeDatabase.memory());

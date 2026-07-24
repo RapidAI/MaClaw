@@ -95,8 +95,10 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				// Drop dead blob paths / persist healed markdown.
 				mobilePersistState()
 			}
+			payload := mobileDocumentDraftPayloadWithMarkdown(record, display)
+			mobileDocumentDraftAddMeetingRecordingParent(payload, record)
 			writeJSON(w, http.StatusOK, map[string]any{
-				"draft": mobileDocumentDraftPayloadWithMarkdown(record, display),
+				"draft": payload,
 			})
 			return
 		}
@@ -110,6 +112,10 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			limit = 200
 		}
 
+		// Generated results are owned by their meeting recording. Snapshot that
+		// relationship once so every list item can expose the parent without
+		// repeated recording-map scans while rendering a large document library.
+		resultOwners := mobileMeetingRecordingResultOwners(ownerID, principal.TenantID)
 		mobileDocuments.Lock()
 		items := make([]mobileDocumentDraftRecord, 0)
 		repaired := false
@@ -163,12 +169,24 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			if includeBody {
 				item["markdown"] = display
 			}
+			if recordingID := strings.TrimSpace(resultOwners[rec.ID]); recordingID != "" {
+				item["managed_by_recording_id"] = recordingID
+			}
 			out = append(out, item)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"drafts": out,
 			"count":  len(out),
 		})
+	}
+}
+
+func mobileDocumentDraftAddMeetingRecordingParent(payload map[string]any, record mobileDocumentDraftRecord) {
+	if payload == nil {
+		return
+	}
+	if recordingID := mobileMeetingRecordingResultOwnerID(record.OwnerID, record.TenantID, record.ID); recordingID != "" {
+		payload["managed_by_recording_id"] = recordingID
 	}
 }
 

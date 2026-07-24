@@ -846,8 +846,14 @@ func mobileMeetingRecordingContentType(value string) string {
 }
 
 func mobileMeetingRecordingDelete(w http.ResponseWriter, ownerID, tenantID, id string) {
-	rec, ok := mobileMeetingRecordingOwnedForTenant(ownerID, tenantID, id)
-	if !ok {
+	// Claim removal under the same lock that processing uses to claim a retry.
+	// Checking status before acquiring this lock would allow a concurrent retry to
+	// transition a failed/archive-only recording back to processing just before
+	// this delete removes its audio and metadata.
+	mobileMeetingRecordings.Lock()
+	rec, ok := mobileMeetingRecordings.items[id]
+	if !ok || rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
+		mobileMeetingRecordings.Unlock()
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
 	}
@@ -855,15 +861,55 @@ func mobileMeetingRecordingDelete(w http.ResponseWriter, ownerID, tenantID, id s
 	// create result documents after the request returns. Do not permit a full
 	// record delete until processing reaches a terminal state.
 	if rec.Status == "processing" || rec.Status == "uploading" || rec.Status == "uploaded" || rec.Status == "finalizing" {
+		mobileMeetingRecordings.Unlock()
 		writeError(w, http.StatusConflict, "RECORDING_IN_USE", "wait for recording processing to finish before deleting it")
 		return
 	}
-	mobileMeetingRecordings.Lock()
 	delete(mobileMeetingRecordings.items, id)
 	mobileMeetingRecordings.Unlock()
+	mobileDeleteMeetingResultDocuments(ownerID, tenantID, rec.TranscriptDraftID, rec.MinutesDraftID)
 	mobilePersistState()
 	_ = os.RemoveAll(rec.Dir)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// mobileDeleteMeetingResultDocuments removes the derived library documents
+// together with their parent recording. Result documents cannot be deleted
+// individually because their IDs are part of the recording's durable state.
+func mobileDeleteMeetingResultDocuments(ownerID, tenantID string, draftIDs ...string) {
+	ids := make(map[string]struct{}, len(draftIDs))
+	for _, draftID := range draftIDs {
+		if draftID = strings.TrimSpace(draftID); draftID != "" {
+			ids[draftID] = struct{}{}
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	var blobPaths []string
+	var images []mobileDocumentDraftImage
+	mobileDocuments.Lock()
+	for draftID := range ids {
+		draft, ok := mobileDocuments.drafts[draftID]
+		if !ok || draft.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, draft.TenantID) {
+			continue
+		}
+		blobPaths = append(blobPaths, draft.SourcePath)
+		images = append(images, draft.Images...)
+		delete(mobileDocuments.drafts, draftID)
+		for taskID, upload := range mobileDocuments.uploads {
+			if upload.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, upload.TenantID) && upload.DraftID == draftID {
+				blobPaths = append(blobPaths, upload.SourcePath)
+				delete(mobileDocuments.uploads, taskID)
+			}
+		}
+	}
+	mobileDocuments.Unlock()
+	for _, blobPath := range blobPaths {
+		mobileDeleteDocumentBlob(blobPath)
+	}
+	mobileDraftDeleteImages(images)
 }
 
 // mobileMeetingRecordingDeleteAudio deletes only the raw audio. Transcript,

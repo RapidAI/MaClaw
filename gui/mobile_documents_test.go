@@ -128,3 +128,25 @@ func TestDeleteMobileMeetingRecordingDeletesOnlyOriginalAudio(t *testing.T) {
 		t.Fatalf("delete=%d get=%d item=%#v", deleteCalls, getCalls, item)
 	}
 }
+
+func TestDeleteMobileMeetingRecordingAndResultsUsesFullRecordingEndpoint(t *testing.T) {
+	var deleteCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer viewer-token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/mobile/meeting-recordings/recording-5" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		deleteCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	if err := newMobileDocumentsTestApp(server.URL).DeleteMobileMeetingRecordingAndResults("recording-5"); err != nil {
+		t.Fatalf("DeleteMobileMeetingRecordingAndResults: %v", err)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("delete calls = %d", deleteCalls)
+	}
+}

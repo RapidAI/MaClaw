@@ -4447,17 +4447,36 @@ func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity 
 // directly would leave a completed recording with a dangling result link and
 // make the result impossible to restore once raw audio has been deleted.
 func mobileMeetingRecordingUsesResultDraft(ownerID, tenantID, draftID string) bool {
+	return mobileMeetingRecordingResultOwnerID(ownerID, tenantID, draftID) != ""
+}
+
+// mobileMeetingRecordingResultOwnerID returns the parent lifecycle object for a
+// generated meeting result. The document itself deliberately remains a normal
+// library item so it can be read and exported, but deletion must happen through
+// this parent to avoid leaving dangling transcript/minutes links.
+func mobileMeetingRecordingResultOwnerID(ownerID, tenantID, draftID string) string {
+	return mobileMeetingRecordingResultOwners(ownerID, tenantID)[strings.TrimSpace(draftID)]
+}
+
+// mobileMeetingRecordingResultOwners snapshots the result-document ownership
+// map for one viewer. A library list can then label every generated document
+// without scanning and locking recording state once per draft.
+func mobileMeetingRecordingResultOwners(ownerID, tenantID string) map[string]string {
+	owners := make(map[string]string)
 	mobileMeetingRecordings.Lock()
 	defer mobileMeetingRecordings.Unlock()
 	for _, recording := range mobileMeetingRecordings.items {
 		if recording.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, recording.TenantID) {
 			continue
 		}
-		if draftID == recording.TranscriptDraftID || draftID == recording.MinutesDraftID {
-			return true
+		if draftID := strings.TrimSpace(recording.TranscriptDraftID); draftID != "" {
+			owners[draftID] = recording.ID
+		}
+		if draftID := strings.TrimSpace(recording.MinutesDraftID); draftID != "" {
+			owners[draftID] = recording.ID
 		}
 	}
-	return false
+	return owners
 }
 
 // MobileDocumentProcessHandler applies lightweight emergency document actions.

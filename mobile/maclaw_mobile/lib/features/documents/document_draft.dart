@@ -15,12 +15,17 @@ class DocumentDraft {
   final DocumentTemplate template;
   final String markdown;
   final DateTime updatedAt;
+
   /// Original uploaded file (source of truth for share / AI).
   final bool hasOriginal;
   final String sourceFilename;
   final String sourceContentType;
   final int sourceSize;
   final String sourceDownloadUrl;
+
+  /// Parent recording for generated meeting transcripts/minutes. These results
+  /// must be removed by deleting the recording rather than as standalone drafts.
+  final String managedByRecordingId;
 
   const DocumentDraft({
     required this.id,
@@ -33,6 +38,7 @@ class DocumentDraft {
     this.sourceContentType = '',
     this.sourceSize = 0,
     this.sourceDownloadUrl = '',
+    this.managedByRecordingId = '',
   });
 
   factory DocumentDraft.fromJson(Map<String, dynamic> json) {
@@ -58,6 +64,8 @@ class DocumentDraft {
       sourceContentType: json['source_content_type'] as String? ?? '',
       sourceSize: sourceSize,
       sourceDownloadUrl: json['source_download_url'] as String? ?? '',
+      managedByRecordingId:
+          (json['managed_by_recording_id'] as String? ?? '').trim(),
     );
   }
 
@@ -73,6 +81,8 @@ class DocumentDraft {
       'source_content_type': sourceContentType,
       'source_size': sourceSize,
       'source_download_url': sourceDownloadUrl,
+      if (managedByRecordingId.isNotEmpty)
+        'managed_by_recording_id': managedByRecordingId,
     };
   }
 
@@ -85,6 +95,7 @@ class DocumentDraft {
     String? sourceContentType,
     int? sourceSize,
     String? sourceDownloadUrl,
+    String? managedByRecordingId,
   }) {
     return DocumentDraft(
       id: id,
@@ -97,6 +108,7 @@ class DocumentDraft {
       sourceContentType: sourceContentType ?? this.sourceContentType,
       sourceSize: sourceSize ?? this.sourceSize,
       sourceDownloadUrl: sourceDownloadUrl ?? this.sourceDownloadUrl,
+      managedByRecordingId: managedByRecordingId ?? this.managedByRecordingId,
     );
   }
 
@@ -113,6 +125,8 @@ class DocumentDraft {
         name.endsWith('.gif') ||
         name.endsWith('.bmp');
   }
+
+  bool get isManagedMeetingResult => managedByRecordingId.isNotEmpty;
 }
 
 DocumentTemplate documentTemplateFromWire(String? value) {

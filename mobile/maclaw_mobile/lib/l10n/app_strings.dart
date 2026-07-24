@@ -71,7 +71,8 @@ class AppStrings {
       : 'Enter a valid phone number (digits and common separators).';
   String get connectingOfficial =>
       isZh ? '正在连接 MaClaw 官方服务并发送验证码…' : 'Connecting and sending code…';
-  String get codeSent => isZh ? '验证码已发送，请输入短信验证码。' : 'Code sent. Enter the SMS code.';
+  String get codeSent =>
+      isZh ? '验证码已发送，请输入短信验证码。' : 'Code sent. Enter the SMS code.';
   String get codeMayBeSent => isZh
       ? '短信可能已发出，若已收到请直接输入验证码；未收到请稍后重试。'
       : 'SMS may have been sent. Enter the code if you received it, or retry later.';
@@ -93,10 +94,8 @@ class AppStrings {
   String get hubLibraryEmpty => isZh
       ? '暂无文稿。可从电脑端 MaClaw 创建后刷新，或在下方导入/接收系统分享的文件。'
       : 'No documents yet. Refresh after creating on desktop, or import a shared file below.';
-  String get hubLibraryUnavailable =>
-      isZh ? '文稿库暂不可用' : 'Library unavailable';
-  String get hubLibraryLoading =>
-      isZh ? '加载 Hub 文稿库…' : 'Loading Hub library…';
+  String get hubLibraryUnavailable => isZh ? '文稿库暂不可用' : 'Library unavailable';
+  String get hubLibraryLoading => isZh ? '加载 Hub 文稿库…' : 'Loading Hub library…';
   String get continueProcessing => isZh ? '继续处理' : 'Continue';
   String continueProcessingFor(String title) =>
       isZh ? '继续处理：$title' : 'Continue: $title';
@@ -127,7 +126,8 @@ class AppStrings {
   String get blankDraft => isZh ? '空白草稿' : 'Empty draft';
   String get shareOpened =>
       isZh ? '已打开系统分享，可发送到微信等应用' : 'System share sheet opened';
-  String get documentPreview => isZh ? '文档预览（只读）' : 'Document preview (read-only)';
+  String get documentPreview =>
+      isZh ? '文档预览（只读）' : 'Document preview (read-only)';
   String get documentPreviewHint => isZh
       ? '手机不适合大段改稿。需要改写请到 AI 助手说明意图，或在电脑端 GUI 编辑。'
       : 'Phone is for review. Rewrite via AI assistant, or edit in desktop GUI.';
@@ -135,9 +135,8 @@ class AppStrings {
   String get documentOriginalOnlyBody => isZh
       ? '原件已保存，可分享到微信等。正文提取可能尚未完成。'
       : 'Original file saved. You can share it; text extract may still be pending.';
-  String documentOriginalLabel(String name, String sizePart) => isZh
-      ? '原件：$name$sizePart'
-      : 'Original: $name$sizePart';
+  String documentOriginalLabel(String name, String sizePart) =>
+      isZh ? '原件：$name$sizePart' : 'Original: $name$sizePart';
   String get operationIncomplete => isZh ? '操作未完成' : 'Action failed';
   String get documentServiceError => isZh
       ? '文档服务请求失败，请刷新后重试。若刚导入请确认 Hub 已保存该文稿。'
@@ -152,17 +151,24 @@ class AppStrings {
   String deleteDocumentConfirm(String title) => isZh
       ? '从 Hub 共享库删除「$title」？电脑 GUI 与其它设备也将同步看不到该文稿。'
       : 'Delete “$title” from the Hub library? Desktop GUI will sync the same removal.';
+  String get deleteMeetingResultTitle =>
+      isZh ? '删除会议录音及生成文档' : 'Delete recording and generated documents';
+  String deleteMeetingResultConfirm(String title) => isZh
+      ? '删除「$title」所属的会议录音？原始音频、逐字稿和会议纪要将一并删除。'
+      : 'Delete the meeting recording for “$title”? Its original audio and all generated transcripts and meeting minutes will be removed.';
+  String get deleteAll => isZh ? '全部删除' : 'Delete all';
+  String deletedMeetingResult(String title) => isZh
+      ? '已删除「$title」所属的会议录音及生成文档'
+      : 'Deleted the meeting recording and generated documents for “$title”';
   String deletedDocument(String title) =>
       isZh ? '已删除「$title」' : 'Deleted “$title”';
-  String deleteFailed(String msg) =>
-      isZh ? '删除失败：$msg' : 'Delete failed: $msg';
+  String deleteFailed(String msg) => isZh ? '删除失败：$msg' : 'Delete failed: $msg';
   String shareFailed(Object e) => isZh ? '分享失败：$e' : 'Share failed: $e';
   String shareOriginalFailed(Object e) =>
       isZh ? '分享原件失败：$e' : 'Share original failed: $e';
   String get noOriginalToShare =>
       isZh ? '该文稿没有可分享的原件。' : 'No original file to share.';
-  String get preparingExport =>
-      isZh ? '正在准备导出文件...' : 'Preparing export…';
+  String get preparingExport => isZh ? '正在准备导出文件...' : 'Preparing export…';
   String get exportShareSuccess =>
       isZh ? '导出文件已交给系统分享。' : 'Export handed to system share.';
   String get exportShareDismissed => isZh
@@ -173,8 +179,7 @@ class AppStrings {
       : 'System share unavailable; saved to $path';
   String exportShareFailed(Object error) =>
       isZh ? '分享导出文件失败：$error' : 'Failed to share export: $error';
-  String get documentTextCopied =>
-      isZh ? '文档文本已复制' : 'Document text copied';
+  String get documentTextCopied => isZh ? '文档文本已复制' : 'Document text copied';
   String get documentTextShared =>
       isZh ? '文档文本已发送到系统分享' : 'Document text sent to system share';
   String exportJobStatus(String jobId, String status) =>
@@ -273,12 +278,10 @@ class AppStrings {
       ? '未登录或 Hub 暂不可用。下方仍显示本机缓存的文档/员工任务。'
       : 'Not signed in or Hub unavailable. Local document/employee tasks still show below.';
   String get unifiedJobs => isZh ? '统一任务' : 'Unified jobs';
-  String get noHubLongJobs =>
-      isZh ? '暂无 Hub 侧长任务' : 'No Hub long-running jobs';
+  String get noHubLongJobs => isZh ? '暂无 Hub 侧长任务' : 'No Hub long-running jobs';
   String hubJobsCountLine(int total, int active, {int? filtered}) {
-    final base = isZh
-        ? '共 $total 条 · 进行中 $active'
-        : '$total total · $active active';
+    final base =
+        isZh ? '共 $total 条 · 进行中 $active' : '$total total · $active active';
     if (filtered == null) return base;
     return isZh ? '$base · 筛选 $filtered' : '$base · filtered $filtered';
   }
@@ -294,13 +297,10 @@ class AppStrings {
   String get noRecentHubJobsHint => isZh
       ? '导入/导出、员工派单、SSH 长命令会出现在这里。'
       : 'Import/export, employee tasks, and long SSH commands appear here.';
-  String get filterNoResults =>
-      isZh ? '当前筛选无结果' : 'No results for this filter';
-  String filterNoActive(int n) => isZh
-      ? '没有进行中的任务（筛选内进行中 $n）'
-      : 'No active jobs (active in filter: $n)';
-  String get filterTryOther =>
-      isZh ? '试试「全部」或其他类型' : 'Try All or another type';
+  String get filterNoResults => isZh ? '当前筛选无结果' : 'No results for this filter';
+  String filterNoActive(int n) =>
+      isZh ? '没有进行中的任务（筛选内进行中 $n）' : 'No active jobs (active in filter: $n)';
+  String get filterTryOther => isZh ? '试试「全部」或其他类型' : 'Try All or another type';
   String get documentTasks => isZh ? '文档任务' : 'Document tasks';
   String get noActiveDraft => isZh ? '暂无活动草稿' : 'No active draft';
   String currentDraftLine(String title) =>
@@ -312,13 +312,10 @@ class AppStrings {
   String get noActiveImportExportHint => isZh
       ? '从文档页导入文件或导出后，进度会出现在这里。'
       : 'Import or export from Docs — progress shows here.';
-  String get digitalEmployeeTasks =>
-      isZh ? '数字员工任务' : 'Employee tasks';
-  String get noRecentEmployeeTask =>
-      isZh ? '暂无最近任务' : 'No recent tasks';
+  String get digitalEmployeeTasks => isZh ? '数字员工任务' : 'Employee tasks';
+  String get noRecentEmployeeTask => isZh ? '暂无最近任务' : 'No recent tasks';
   String get employeesPage => isZh ? '员工页' : 'Employees';
-  String recentHistoryCount(int n) =>
-      isZh ? '最近 $n 条' : 'Recent $n';
+  String recentHistoryCount(int n) => isZh ? '最近 $n 条' : 'Recent $n';
 
   String jobKindLabel(String kind) {
     return switch (kind.trim().toLowerCase()) {
@@ -339,11 +336,7 @@ class AppStrings {
     return switch (s) {
       'queued' || 'pending' => isZh ? '排队中' : 'Queued',
       'running' || 'processing' => isZh ? '进行中' : 'Running',
-      'ready' ||
-      'done' ||
-      'completed' ||
-      'success' =>
-        isZh ? '已完成' : 'Done',
+      'ready' || 'done' || 'completed' || 'success' => isZh ? '已完成' : 'Done',
       'failed' || 'error' => isZh ? '失败' : 'Failed',
       'cancelled' || 'canceled' => isZh ? '已取消' : 'Cancelled',
       'agent_claimed' => isZh ? '已接管' : 'Claimed',
@@ -358,8 +351,7 @@ class AppStrings {
   String get employeesSubtitle => isZh
       ? '接入远程服务器/电脑上的能力，让手机发起任务、查看结果和请求授权。'
       : 'Run tasks on remote PCs, review results, and request authorization.';
-  String get accessPolicyTitle =>
-      isZh ? '数字员工访问策略' : 'Employee access policy';
+  String get accessPolicyTitle => isZh ? '数字员工访问策略' : 'Employee access policy';
   String get accessPolicyBody => isZh
       ? '手机端只向 MaClaw 官方服务提交任务。远程服务器或电脑上的数字员工会按机器端策略领取任务；私有、按次授权或需要确认的能力仍由远程端控制，手机不会绕过审批或自动执行高风险操作。'
       : 'Mobile only submits tasks to the official Hub. Remote employees claim work under machine policy; private, per-request, or confirm-required capabilities stay under remote control. The phone never bypasses approval or auto-runs high-risk ops.';
@@ -373,17 +365,15 @@ class AppStrings {
       : 'Assistant handoff received, but no online employee can take tasks. Pull to refresh.';
   String handoffDraftTo(String name) =>
       isZh ? '已从 AI 助手带入任务草稿 → $name' : 'Task draft from assistant → $name';
-  String get handoffInProgress => isZh
-      ? '正在处理来自 AI 助手的任务交接…'
-      : 'Processing assistant handoff…';
+  String get handoffInProgress =>
+      isZh ? '正在处理来自 AI 助手的任务交接…' : 'Processing assistant handoff…';
   String get employeesOnlineSharedHint => isZh
       ? '只列出在线数字员工（共享池可用）。离线不展示；仍受远程访问策略约束。'
       : 'Online employees only (shared pool available). Offline hidden; remote policy still applies.';
   String get employeesOnlineOwnHint => isZh
       ? '只列出在线数字员工（仅自己的分身）。离线不展示；升级服务卡可查看共享池。'
       : 'Online employees only (your twins). Offline hidden; upgrade plan for shared pool.';
-  String get recentEmployeeTasks =>
-      isZh ? '最近数字员工任务' : 'Recent employee tasks';
+  String get recentEmployeeTasks => isZh ? '最近数字员工任务' : 'Recent employee tasks';
   String get recentTasks => isZh ? '最近任务' : 'Recent tasks';
   String recentTasksLoadFailed(Object e) =>
       isZh ? '最近任务加载失败：$e' : 'Failed to load recent tasks: $e';
@@ -393,28 +383,23 @@ class AppStrings {
       isZh ? '任务状态加载失败：$e' : 'Failed to load task status: $e';
   String statusLine(String status) => isZh ? '状态：$status' : 'Status: $status';
   String taskLine(String prompt) => isZh ? '任务：$prompt' : 'Task: $prompt';
-  String claimedByLine(String who) =>
-      isZh ? '领取者：$who' : 'Claimed by: $who';
+  String claimedByLine(String who) => isZh ? '领取者：$who' : 'Claimed by: $who';
   String noteLine(String msg) => isZh ? '说明：$msg' : 'Note: $msg';
   // copyResult already defined under Assistant (same wording).
   String get shareResultTooltip => isZh ? '分享结果' : 'Share result';
   String get makeDraftFromResult => isZh ? '整理为草稿' : 'Save as draft';
-  String get taskResultCopied =>
-      isZh ? '任务结果已复制' : 'Task result copied';
+  String get taskResultCopied => isZh ? '任务结果已复制' : 'Task result copied';
   String get taskResultShared =>
       isZh ? '任务结果已发送到系统分享' : 'Task result sent to system share';
   String get employeeTaskResultTitle =>
       isZh ? '数字员工任务结果' : 'Employee task result';
   String draftFromResultFailed(Object e) =>
       isZh ? '整理为草稿失败：$e' : 'Failed to save draft: $e';
-  String get draftFromResultOk =>
-      isZh ? '已整理为文档草稿' : 'Saved as document draft';
-  String get loadingEmployees =>
-      isZh ? '正在加载数字员工…' : 'Loading employees…';
+  String get draftFromResultOk => isZh ? '已整理为文档草稿' : 'Saved as document draft';
+  String get loadingEmployees => isZh ? '正在加载数字员工…' : 'Loading employees…';
   String get employeesLoadFailed =>
       isZh ? '数字员工加载失败' : 'Failed to load employees';
-  String get noOnlineEmployees =>
-      isZh ? '暂无在线数字员工' : 'No online employees';
+  String get noOnlineEmployees => isZh ? '暂无在线数字员工' : 'No online employees';
   String get noOnlineEmployeesSharedHint => isZh
       ? '仅展示在线员工。请确认电脑端分身已上线，或租户共享池中有在线员工后下拉刷新。'
       : 'Online only. Confirm a desktop twin is online, or shared-pool employees are online, then refresh.';
@@ -469,9 +454,8 @@ class AppStrings {
   String get attachmentSubmitFailed => isZh
       ? '附件提交失败，请到文档页查看错误并重试。'
       : 'Attachment submit failed. Check Docs and retry.';
-  String get attachmentSubmitted => isZh
-      ? '附件已提交到 Hub 文档解析。'
-      : 'Attachment submitted to Hub document parse.';
+  String get attachmentSubmitted =>
+      isZh ? '附件已提交到 Hub 文档解析。' : 'Attachment submitted to Hub document parse.';
   String get attachmentSubmittedContinue => isZh
       ? '附件已提交到 Hub 文档解析，解析完成后可以继续告诉我如何处理。'
       : 'Attachment submitted to Hub document parse. When done, tell me what to do next.';
@@ -485,15 +469,13 @@ class AppStrings {
       ? '已收到，我正在处理这项任务。完成后会把结果发回这里。'
       : 'Got it — working on it. Results will appear here.';
   String get taskFailedDefault => isZh ? '任务执行失败。' : 'Task failed.';
-  String get onlineViaHub =>
-      isZh ? '在线 · 通过所属 Hub 接入' : 'Online · via Hub';
+  String get onlineViaHub => isZh ? '在线 · 通过所属 Hub 接入' : 'Online · via Hub';
   String get offlineCannotSubmit =>
       isZh ? '离线 · 暂不可提交任务' : 'Offline · cannot submit';
   String employeeGreeting(String name) => isZh
       ? '你好，我是$name。告诉我需要处理的服务器、电脑或资料任务，我会通过所属 Hub 执行并把结果带回来。'
       : 'Hi, I am $name. Tell me the server, desktop, or document work — I will run it via Hub and bring results back.';
-  String get remoteStillUnclaimed =>
-      isZh ? '远程仍未领取' : 'Not claimed yet';
+  String get remoteStillUnclaimed => isZh ? '远程仍未领取' : 'Not claimed yet';
   String get taskProcessing => isZh ? '任务处理中' : 'Task in progress';
   String get queuedStuckHint => isZh
       ? '请确认：① 桌面 MaClaw GUI 已登录同一 Hub 账号并在线；② 数字员工已在桌面启用。任务由桌面领取后才会有结果（与 GUI 内聊天通道不同）。'
@@ -503,8 +485,7 @@ class AppStrings {
       : 'Task submitted; waiting for the desktop employee to claim it.';
   String get taskStillProcessingRemote =>
       isZh ? '任务仍在远程处理中' : 'Task still processing remotely';
-  String get waitingRemoteClaimShort =>
-      isZh ? '等待远程' : 'waiting remote';
+  String get waitingRemoteClaimShort => isZh ? '等待远程' : 'waiting remote';
 
   String get employeeTemplateStatus => isZh
       ? '请检查远程电脑/服务器当前运行状态，列出异常、风险和建议操作。'
@@ -545,7 +526,9 @@ class AppStrings {
   String employeeTaskStatusLabel(String status) {
     return switch (status.trim().toLowerCase()) {
       'queued' => isZh ? '等待远程领取' : 'Waiting for remote claim',
-      'claimed' || 'running' || 'in_progress' =>
+      'claimed' ||
+      'running' ||
+      'in_progress' =>
         isZh ? '远程处理中' : 'Processing remotely',
       'approval_required' ||
       'pending_approval' ||
@@ -580,8 +563,7 @@ class AppStrings {
   String get accountSubtitle => isZh
       ? '官方服务绑定、额度、模型/助手联网状态、凭据和本地隐私数据。'
       : 'Official service, quotas, model status, credentials, and privacy.';
-  String get requestNotificationPermission =>
-      isZh ? '通知权限' : 'Notifications';
+  String get requestNotificationPermission => isZh ? '通知权限' : 'Notifications';
   String get privacy => isZh ? '凭据与隐私' : 'Privacy';
   String get speechLanguage => isZh ? '界面与语音语言' : 'UI & speech language';
   String get preferencesLoadFailed =>
@@ -589,9 +571,8 @@ class AppStrings {
 
   // —— Assistant ——
   String get assistantTitle => isZh ? 'AI助手' : 'AI assistant';
-  String get assistantSubtitle => isZh
-      ? '像桌面端一样，随时聊聊、一起处理事情'
-      : 'Chat and get work done, like on desktop';
+  String get assistantSubtitle =>
+      isZh ? '像桌面端一样，随时聊聊、一起处理事情' : 'Chat and get work done, like on desktop';
   String get assistantReplying => isZh ? '助手正在回答…' : 'Assistant is typing…';
   String get assistantAnswer => isZh ? '助手回答' : 'Answer';
   String get shareResult => isZh ? '分享结果' : 'Share';
@@ -617,9 +598,8 @@ class AppStrings {
   String get recallOlder => isZh ? '更早一条' : 'Older';
   String get recallNewer => isZh ? '更新一条' : 'Newer';
   String get recallExit => isZh ? '退出召回' : 'Exit recall';
-  String recallPosition(int position, int total) => isZh
-      ? '历史 $position / $total'
-      : 'History $position / $total';
+  String recallPosition(int position, int total) =>
+      isZh ? '历史 $position / $total' : 'History $position / $total';
 
   // —— Shared intents ——
   String get sharedFileReceived => isZh ? '已接收分享文件' : 'Shared file received';
@@ -641,9 +621,8 @@ class AppStrings {
   String get codeEntryHelper => isZh
       ? '发送回执未确认：收到短信即可在此输入'
       : 'Delivery unconfirmed: enter the SMS code if you received it';
-  String codeSentWithTtl(String ttl) => isZh
-      ? '验证码已发送，请在$ttl输入短信验证码。'
-      : 'Code sent. Enter the SMS code$ttl.';
+  String codeSentWithTtl(String ttl) =>
+      isZh ? '验证码已发送，请在$ttl输入短信验证码。' : 'Code sent. Enter the SMS code$ttl.';
   String get networkTimeoutMaybeSent =>
       isZh ? '网络超时（短信可能已发出）' : 'Network timeout (SMS may have been sent)';
   String get cannotConnectOfficial =>

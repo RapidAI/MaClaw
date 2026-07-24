@@ -80,10 +80,15 @@ func mobileLibraryRequestedTypes(raw string) (documents, audio bool) {
 func mobileLibraryItems(ownerID, tenantID string, includeDocuments, includeAudio bool) []map[string]any {
 	items := make([]map[string]any, 0)
 	if includeDocuments {
+		// Take one immutable relationship snapshot before rendering every draft.
+		// Calling mobileMeetingRecordingResultOwnerID per draft would repeatedly
+		// lock and scan the recording map, which becomes noticeable in a large
+		// shared library full of generated transcripts and minutes.
+		resultOwners := mobileMeetingRecordingResultOwners(ownerID, tenantID)
 		mobileDocuments.Lock()
 		for _, draft := range mobileDocuments.drafts {
 			if draft.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, draft.TenantID) {
-				items = append(items, mobileLibraryDocumentItem(draft, false))
+				items = append(items, mobileLibraryDocumentItemWithParent(draft, false, resultOwners[draft.ID]))
 			}
 		}
 		mobileDocuments.Unlock()
@@ -116,12 +121,16 @@ func mobileLibraryItemByID(ownerID, tenantID, itemID string) (map[string]any, bo
 	draft, draftOK := mobileDocuments.drafts[itemID]
 	mobileDocuments.Unlock()
 	if draftOK && draft.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, draft.TenantID) {
-		return mobileLibraryDocumentItem(draft, true), true
+		return mobileLibraryDocumentItemWithParent(draft, true, mobileMeetingRecordingResultOwnerID(ownerID, tenantID, draft.ID)), true
 	}
 	return nil, false
 }
 
 func mobileLibraryDocumentItem(draft mobileDocumentDraftRecord, includeMarkdown bool) map[string]any {
+	return mobileLibraryDocumentItemWithParent(draft, includeMarkdown, mobileMeetingRecordingResultOwnerID(draft.OwnerID, draft.TenantID, draft.ID))
+}
+
+func mobileLibraryDocumentItemWithParent(draft mobileDocumentDraftRecord, includeMarkdown bool, recordingID string) map[string]any {
 	display := mobileDraftListPreviewMarkdown(draft)
 	item := map[string]any{
 		"id":         draft.ID,
@@ -141,6 +150,12 @@ func mobileLibraryDocumentItem(draft mobileDocumentDraftRecord, includeMarkdown 
 		item["source_content_type"] = strings.TrimSpace(draft.SourceContentType)
 		item["source_size"] = mobileDraftSourceSize(draft)
 		item["source_download_url"] = "/api/mobile/documents/drafts/" + draft.ID + "/source"
+	}
+	// Generated meeting results share the document list with ordinary drafts.
+	// Include their parent recording so clients can use the recording lifecycle
+	// delete action instead of attempting to remove a protected result directly.
+	if recordingID = strings.TrimSpace(recordingID); recordingID != "" {
+		item["managed_by_recording_id"] = recordingID
 	}
 	return item
 }
