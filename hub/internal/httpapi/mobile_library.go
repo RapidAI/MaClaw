@@ -79,24 +79,43 @@ func mobileLibraryRequestedTypes(raw string) (documents, audio bool) {
 
 func mobileLibraryItems(ownerID, tenantID string, includeDocuments, includeAudio bool) []map[string]any {
 	items := make([]map[string]any, 0)
+	// Owner draft IDs are needed for audio visibility (stale draft-ID ghosts).
+	// When documents are already listed, collect IDs in the same pass so a full
+	// library list does not scan mobileDocuments twice.
+	var existingResults map[string]struct{}
 	if includeDocuments {
 		// Take one immutable relationship snapshot before rendering every draft.
 		// Calling mobileMeetingRecordingResultOwnerID per draft would repeatedly
 		// lock and scan the recording map, which becomes noticeable in a large
 		// shared library full of generated transcripts and minutes.
 		resultOwners := mobileMeetingRecordingResultOwners(ownerID, tenantID)
+		if includeAudio {
+			existingResults = make(map[string]struct{})
+		}
 		mobileDocuments.Lock()
-		for _, draft := range mobileDocuments.drafts {
+		for id, draft := range mobileDocuments.drafts {
 			if draft.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, draft.TenantID) {
 				items = append(items, mobileLibraryDocumentItemWithParent(draft, false, resultOwners[draft.ID]))
+				if existingResults != nil {
+					// Index by map key (canonical storage id) and draft.ID when they differ.
+					existingResults[id] = struct{}{}
+					if did := strings.TrimSpace(draft.ID); did != "" {
+						existingResults[did] = struct{}{}
+					}
+				}
 			}
 		}
 		mobileDocuments.Unlock()
 	}
 	if includeAudio {
+		if existingResults == nil {
+			// Audio-only list: still need a draft-ID snapshot, but do it outside
+			// the recordings lock to avoid documents↔recordings lock inversion.
+			existingResults = mobileLibraryExistingDraftIDs(ownerID, tenantID)
+		}
 		mobileMeetingRecordings.Lock()
 		for _, recording := range mobileMeetingRecordings.items {
-			if recording.OwnerID != ownerID || !mobileRecordingTenantMatches(&auth.ViewerPrincipal{TenantID: tenantID}, recording) || !mobileLibraryRecordingVisible(recording) {
+			if recording.OwnerID != ownerID || !mobileRecordingTenantMatches(&auth.ViewerPrincipal{TenantID: tenantID}, recording) || !mobileLibraryRecordingVisible(recording, existingResults) {
 				continue
 			}
 			items = append(items, mobileLibraryRecordingItem(recording))
@@ -113,8 +132,12 @@ func mobileLibraryItemByID(ownerID, tenantID, itemID string) (map[string]any, bo
 	mobileMeetingRecordings.Lock()
 	recording, recordingOK := mobileMeetingRecordings.items[itemID]
 	mobileMeetingRecordings.Unlock()
-	if recordingOK && recording.OwnerID == ownerID && mobileRecordingTenantMatches(&auth.ViewerPrincipal{TenantID: tenantID}, recording) && mobileLibraryRecordingVisible(recording) {
-		return mobileLibraryRecordingItem(recording), true
+	if recordingOK && recording.OwnerID == ownerID && mobileRecordingTenantMatches(&auth.ViewerPrincipal{TenantID: tenantID}, recording) {
+		// Single-item GET: probe at most the two linked draft IDs instead of
+		// scanning the entire document map.
+		if mobileLibraryRecordingVisible(recording, nil) {
+			return mobileLibraryRecordingItem(recording), true
+		}
 	}
 
 	mobileDocuments.Lock()
@@ -160,14 +183,78 @@ func mobileLibraryDocumentItemWithParent(draft mobileDocumentDraftRecord, includ
 	return item
 }
 
-func mobileLibraryRecordingVisible(recording mobileMeetingRecording) bool {
+// mobileLibraryExistingDraftIDs returns the owner's document draft IDs that still
+// exist. Used when deciding whether an audio-less recording should stay listed.
+func mobileLibraryExistingDraftIDs(ownerID, tenantID string) map[string]struct{} {
+	out := make(map[string]struct{})
+	mobileDocuments.Lock()
+	for id, draft := range mobileDocuments.drafts {
+		if draft.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(tenantID, draft.TenantID) {
+			out[id] = struct{}{}
+			// Same dual-key policy as the document list pass: tolerate map-key vs draft.ID drift.
+			if did := strings.TrimSpace(draft.ID); did != "" {
+				out[did] = struct{}{}
+			}
+		}
+	}
+	mobileDocuments.Unlock()
+	return out
+}
+
+// mobileLibraryRecordingLinkedDraftIDs returns the non-empty transcript/minutes
+// draft IDs stored on a recording (at most two).
+func mobileLibraryRecordingLinkedDraftIDs(recording mobileMeetingRecording) []string {
+	ids := make([]string, 0, 2)
+	for _, id := range []string{recording.TranscriptDraftID, recording.MinutesDraftID} {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// mobileLibraryRecordingHasExistingResults reports whether any linked
+// transcript/minutes draft still exists. Stale draft IDs (metadata left after
+// the documents were removed) must not keep a ghost audio row in the library.
+//
+// existingDraftIDs is an optional pre-snapshot used by list endpoints. When nil,
+// only the (at most two) linked draft IDs are probed under one documents lock —
+// preferred for single-item GET.
+func mobileLibraryRecordingHasExistingResults(recording mobileMeetingRecording, existingDraftIDs map[string]struct{}) bool {
+	ids := mobileLibraryRecordingLinkedDraftIDs(recording)
+	if len(ids) == 0 {
+		return false
+	}
+	if existingDraftIDs != nil {
+		for _, id := range ids {
+			if _, ok := existingDraftIDs[id]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	mobileDocuments.Lock()
+	defer mobileDocuments.Unlock()
+	for _, id := range ids {
+		draft, ok := mobileDocuments.drafts[id]
+		if ok && draft.OwnerID == recording.OwnerID && mobileMeetingRecordingTenantMatches(recording.TenantID, draft.TenantID) {
+			return true
+		}
+	}
+	return false
+}
+
+func mobileLibraryRecordingVisible(recording mobileMeetingRecording, existingDraftIDs map[string]struct{}) bool {
 	if recording.Status == "uploading" || recording.Status == "finalizing" || strings.TrimSpace(recording.Status) == "" {
 		return false
 	}
 	if mobileMeetingRecordingAudioAvailable(recording) {
 		return true
 	}
-	return strings.TrimSpace(recording.TranscriptDraftID) != "" || strings.TrimSpace(recording.MinutesDraftID) != ""
+	// Audio gone (deleted or retention expired): keep the row only when it still
+	// anchors real transcript/minutes documents. Pure orphans and stale draft-ID
+	// leftovers are noise and are hidden.
+	return mobileLibraryRecordingHasExistingResults(recording, existingDraftIDs)
 }
 
 func mobileLibraryRecordingItem(recording mobileMeetingRecording) map[string]any {

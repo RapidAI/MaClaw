@@ -1137,6 +1137,40 @@ describe('AIAssistantPanel property tests', () => {
         expect(inputBar.style.flexShrink).toBe('0');
     });
 
+    it('places the quick-settings bar as full-bleed chrome under chat|preview (not inside chat column)', () => {
+        // Regression: when a right preview pane is open, chips/status must span
+        // under both columns. That requires the bar to be a sibling of
+        // content-row under ai-panel-main, not nested in ai-chat-column.
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: {
+                messages: [
+                    makeMsg({ role: 'user', content: 'Earlier question' }),
+                    makeMsg({ role: 'assistant', content: 'Latest answer' }),
+                ],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        const main = getByTestId('ai-panel-main');
+        const contentRow = getByTestId('ai-panel-content-row');
+        const chatColumn = getByTestId('ai-chat-column');
+        const bar = getByTestId('assistant-quick-settings-bar');
+
+        expect(main.contains(contentRow)).toBe(true);
+        expect(main.contains(bar)).toBe(true);
+        expect(contentRow.contains(chatColumn)).toBe(true);
+        // Bar must not live inside the left chat column (would stop at preview edge).
+        expect(chatColumn.contains(bar)).toBe(false);
+        // Bar must not live inside the content row either (would share height with preview).
+        expect(contentRow.contains(bar)).toBe(false);
+        // Sibling under main: content-row then footer chrome.
+        expect(bar.parentElement).toBe(main);
+        expect(contentRow.parentElement).toBe(main);
+    });
+
     it('renders AgentView as an operable right-side task panel and submits structured data', async () => {
         const submitAgentView = vi.fn().mockResolvedValue(undefined);
         const agentView: AgentView = {

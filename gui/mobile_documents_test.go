@@ -110,10 +110,11 @@ func TestDeleteMobileMeetingRecordingDeletesOnlyOriginalAudio(t *testing.T) {
 		switch {
 		case r.Method == http.MethodDelete && r.URL.Path == "/api/mobile/meeting-recordings/recording-4/audio":
 			deleteCalls++
-			_, _ = io.WriteString(w, `{"id":"recording-4"}`)
+			// Match Hub's mobileMeetingRecordingPayload after DELETE /audio.
+			_, _ = io.WriteString(w, `{"recording_id":"recording-4","title":"Standup","status":"ready","message":"raw audio deleted; transcript and minutes remain available","audio_available":true,"duration_sec":12.5,"size_bytes":4096,"minutes_draft_id":"minutes-4","retention_until":"2026-08-22T13:36:00Z","updated_at":"2026-07-25T01:40:00Z"}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/library/items/recording-4":
 			getCalls++
-			_, _ = io.WriteString(w, `{"item":{"id":"recording-4","type":"audio","audio":{"available":false},"derived_documents":{"minutes_draft_id":"minutes-4"}}}`)
+			t.Fatal("mapped DELETE body must not fall back to library GET")
 		default:
 			t.Fatalf("unexpected request = %s %s", r.Method, r.URL.String())
 		}
@@ -124,10 +125,97 @@ func TestDeleteMobileMeetingRecordingDeletesOnlyOriginalAudio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteMobileMeetingRecording: %v", err)
 	}
-	if deleteCalls != 1 || getCalls != 1 || item == nil || item.Audio == nil || item.Audio.Available || item.DerivedDocuments == nil || item.DerivedDocuments.MinutesDraftID != "minutes-4" {
+	// audio_available in the body is ignored: successful DELETE forces unavailable.
+	if deleteCalls != 1 || getCalls != 0 || item == nil || item.ID != "recording-4" || item.Type != "audio" || item.Audio == nil || item.Audio.Available || item.DerivedDocuments == nil || item.DerivedDocuments.MinutesDraftID != "minutes-4" {
+		t.Fatalf("delete=%d get=%d item=%#v", deleteCalls, getCalls, item)
+	}
+	if item.Processing == nil || !strings.Contains(item.Processing.Message, "raw audio deleted") {
+		t.Fatalf("processing message missing: %#v", item.Processing)
+	}
+	if item.RetentionUntil != "2026-08-22T13:36:00Z" {
+		t.Fatalf("retention_until = %q", item.RetentionUntil)
+	}
+}
+
+func TestDeleteMobileMeetingRecordingFallsBackToGetWhenBodyUnusable(t *testing.T) {
+	var deleteCalls, getCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/mobile/meeting-recordings/recording-4b/audio":
+			deleteCalls++
+			// Empty body (legacy / intermediary): map fails → GET.
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/library/items/recording-4b":
+			getCalls++
+			_, _ = io.WriteString(w, `{"item":{"id":"recording-4b","type":"audio","title":"From library","audio":{"available":true},"derived_documents":{"minutes_draft_id":"minutes-new"}}}`)
+		default:
+			t.Fatalf("unexpected request = %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	item, err := newMobileDocumentsTestApp(server.URL).DeleteMobileMeetingRecording("recording-4b")
+	if err != nil {
+		t.Fatalf("DeleteMobileMeetingRecording: %v", err)
+	}
+	if deleteCalls != 1 || getCalls != 1 || item == nil || item.Title != "From library" || item.Audio == nil || item.Audio.Available || item.DerivedDocuments == nil || item.DerivedDocuments.MinutesDraftID != "minutes-new" {
 		t.Fatalf("delete=%d get=%d item=%#v", deleteCalls, getCalls, item)
 	}
 }
+
+func TestDeleteMobileMeetingRecordingStubsWhenBodyAndGetFail(t *testing.T) {
+	var deleteCalls, getCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/mobile/meeting-recordings/recording-4c/audio":
+			deleteCalls++
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/mobile/library/items/recording-4c":
+			getCalls++
+			http.Error(w, `{"code":"LIBRARY_ITEM_NOT_FOUND","message":"library item not found"}`, http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request = %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	item, err := newMobileDocumentsTestApp(server.URL).DeleteMobileMeetingRecording("recording-4c")
+	if err != nil {
+		t.Fatalf("DeleteMobileMeetingRecording: %v", err)
+	}
+	if deleteCalls != 1 || getCalls != 1 || item == nil || item.ID != "recording-4c" || item.Type != "audio" || item.Audio == nil || item.Audio.Available {
+		t.Fatalf("delete=%d get=%d item=%#v", deleteCalls, getCalls, item)
+	}
+	if item.Processing == nil || !strings.Contains(item.Processing.Message, "raw audio deleted") {
+		t.Fatalf("stub message missing: %#v", item.Processing)
+	}
+}
+
+func TestMobileLibraryItemFromMeetingRecordingPayloadOmitsZeroRetention(t *testing.T) {
+	item, ok := mobileLibraryItemFromMeetingRecordingPayload("fallback-id", []byte(`{
+		"recording_id":"rec-z","title":"T","audio_available":true,
+		"retention_until":"0001-01-01T00:00:00Z","transcript_draft_id":"tr-1"
+	}`))
+	if !ok || item == nil || item.ID != "rec-z" || item.RetentionUntil != "" || item.DerivedDocuments == nil || item.DerivedDocuments.TranscriptDraftID != "tr-1" {
+		t.Fatalf("item=%#v ok=%v", item, ok)
+	}
+	if item.Audio == nil || item.Audio.Available {
+		t.Fatalf("mapped delete payload must force unavailable audio: %#v", item.Audio)
+	}
+	if _, ok := mobileLibraryItemFromMeetingRecordingPayload("x", nil); ok {
+		t.Fatal("empty body must not map")
+	}
+	if _, ok := mobileLibraryItemFromMeetingRecordingPayload("x", []byte(`not-json`)); ok {
+		t.Fatal("invalid JSON must not map")
+	}
+	if _, ok := mobileLibraryItemFromMeetingRecordingPayload("x", []byte(`{}`)); ok {
+		t.Fatal("empty object must not map as a recording")
+	}
+	if _, ok := mobileLibraryItemFromMeetingRecordingPayload("x", []byte(`{"code":"LIBRARY_ITEM_NOT_FOUND"}`)); ok {
+		t.Fatal("error envelope must not map as a recording")
+	}
+}
+
 
 func TestDeleteMobileMeetingRecordingAndResultsUsesFullRecordingEndpoint(t *testing.T) {
 	var deleteCalls int

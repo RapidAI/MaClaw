@@ -275,6 +275,11 @@ func (a *App) ProcessMobileMeetingRecording(recordingID string) (*MobileLibraryI
 
 // DeleteMobileMeetingRecording deletes only the original audio. Hub retains the
 // recording's library entry and any generated transcript/minutes documents.
+//
+// Success is defined by DELETE /audio alone. The response body is mapped into a
+// library item so the UI can update without a follow-up GET — older Hub builds
+// hide audio-less recordings without derived documents and returned
+// LIBRARY_ITEM_NOT_FOUND after a successful delete.
 func (a *App) DeleteMobileMeetingRecording(recordingID string) (*MobileLibraryItem, error) {
 	if a == nil {
 		return nil, fmt.Errorf("app is not initialized")
@@ -306,7 +311,139 @@ func (a *App) DeleteMobileMeetingRecording(recordingID string) (*MobileLibraryIt
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("delete original meeting audio failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
-	return a.GetMobileLibraryItem(id)
+	if item, ok := mobileLibraryItemFromMeetingRecordingPayload(id, data); ok {
+		return markMobileLibraryAudioUnavailable(item), nil
+	}
+	// Empty/legacy DELETE bodies: try library GET, then a minimal stub so a
+	// successful delete never surfaces as a hard client error.
+	if full, err := a.GetMobileLibraryItem(id); err == nil && full != nil && strings.TrimSpace(full.ID) != "" {
+		return markMobileLibraryAudioUnavailable(full), nil
+	}
+	return mobileLibraryItemAudioDeletedStub(id), nil
+}
+
+const mobileLibraryAudioDeletedMessage = "raw audio deleted; transcript and minutes remain available"
+
+// markMobileLibraryAudioUnavailable forces available=false after a successful
+// raw-audio delete. Hub may still echo a stale audio_available flag.
+func markMobileLibraryAudioUnavailable(item *MobileLibraryItem) *MobileLibraryItem {
+	if item == nil {
+		return nil
+	}
+	if item.Audio == nil {
+		item.Audio = &MobileLibraryAudio{}
+	}
+	item.Audio.Available = false
+	return item
+}
+
+// mobileLibraryItemAudioDeletedStub is the last-resort library view after a
+// successful raw-audio delete when neither the DELETE body nor GET is usable.
+func mobileLibraryItemAudioDeletedStub(id string) *MobileLibraryItem {
+	return &MobileLibraryItem{
+		MobileDocumentDraftSummary: MobileDocumentDraftSummary{
+			ID:      id,
+			Title:   "Meeting recording",
+			Preview: mobileLibraryAudioDeletedMessage,
+		},
+		Type: "audio",
+		Audio: &MobileLibraryAudio{
+			Available: false,
+		},
+		Processing: &MobileLibraryProcessing{
+			Message: mobileLibraryAudioDeletedMessage,
+		},
+	}
+}
+
+// mobileLibraryItemFromMeetingRecordingPayload maps Hub's
+// mobileMeetingRecordingPayload JSON (returned by DELETE /audio and similar)
+// into the Desktop library item shape so the UI can update without a second GET.
+func mobileLibraryItemFromMeetingRecordingPayload(fallbackID string, data []byte) (*MobileLibraryItem, bool) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, false
+	}
+	var payload struct {
+		RecordingID       string  `json:"recording_id"`
+		ID                string  `json:"id"`
+		Title             string  `json:"title"`
+		Purpose           string  `json:"purpose"`
+		Status            string  `json:"status"`
+		Message           string  `json:"message"`
+		FailureCode       string  `json:"failure_code"`
+		Mode              string  `json:"mode"`
+		Progress          float64 `json:"progress"`
+		DurationSec       float64 `json:"duration_sec"`
+		SizeBytes         int64   `json:"size_bytes"`
+		TranscriptDraftID string  `json:"transcript_draft_id"`
+		MinutesDraftID    string  `json:"minutes_draft_id"`
+		RetentionUntil    string  `json:"retention_until"`
+		UpdatedAt         string  `json:"updated_at"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, false
+	}
+	recordingID := strings.TrimSpace(payload.RecordingID)
+	payloadID := strings.TrimSpace(payload.ID)
+	status := strings.TrimSpace(payload.Status)
+	message := strings.TrimSpace(payload.Message)
+	title := strings.TrimSpace(payload.Title)
+	// Reject bare error envelopes / empty objects served with unexpected 2xx.
+	if recordingID == "" && payloadID == "" && status == "" && message == "" && title == "" &&
+		payload.SizeBytes == 0 && payload.DurationSec == 0 &&
+		strings.TrimSpace(payload.TranscriptDraftID) == "" && strings.TrimSpace(payload.MinutesDraftID) == "" {
+		return nil, false
+	}
+	id := recordingID
+	if id == "" {
+		id = payloadID
+	}
+	if id == "" {
+		id = strings.TrimSpace(fallbackID)
+	}
+	if id == "" {
+		return nil, false
+	}
+	if title == "" {
+		title = "Meeting recording"
+	}
+	preview := strings.TrimSpace(payload.Purpose)
+	if preview == "" {
+		preview = message
+	}
+	if preview == "" {
+		preview = "Meeting recording"
+	}
+	item := &MobileLibraryItem{
+		MobileDocumentDraftSummary: MobileDocumentDraftSummary{
+			ID:        id,
+			Title:     title,
+			UpdatedAt: strings.TrimSpace(payload.UpdatedAt),
+			Preview:   preview,
+		},
+		Type: "audio",
+		Audio: &MobileLibraryAudio{
+			SizeBytes:   payload.SizeBytes,
+			DurationSec: payload.DurationSec,
+			Available:   false, // DELETE /audio always removes the file
+		},
+		Processing: &MobileLibraryProcessing{
+			Status:      status,
+			Mode:        payload.Mode,
+			Progress:    payload.Progress,
+			Message:     message,
+			FailureCode: payload.FailureCode,
+		},
+		DerivedDocuments: &MobileLibraryDerivedDocuments{
+			TranscriptDraftID: payload.TranscriptDraftID,
+			MinutesDraftID:    payload.MinutesDraftID,
+		},
+	}
+	// Hub formats zero times as RFC3339 year 1; omit those from the library item.
+	if ru := strings.TrimSpace(payload.RetentionUntil); ru != "" && !strings.HasPrefix(ru, "0001-01-01") {
+		item.RetentionUntil = ru
+	}
+	return item, true
 }
 
 // DeleteMobileMeetingRecordingAndResults removes a completed recording and

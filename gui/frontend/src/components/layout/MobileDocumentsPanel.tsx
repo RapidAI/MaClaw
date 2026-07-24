@@ -361,8 +361,160 @@ function MobileDocPreviewBody({
   );
 }
 function isAudioItem(item: MobileLibraryItem | null | undefined): boolean { return item?.type === 'audio'; }
+
+/** List subtitle when original audio is gone: distinguish user delete vs retention expiry. */
+function audioUnavailableLabel(item: MobileLibraryItem, t: (en: string, zh: string) => string): string {
+  const msg = String(item.processing?.message || '').toLowerCase();
+  if (msg.includes('deleted')) return t('Audio deleted', '音频已删除');
+  if (msg.includes('expired')) return t('Audio expired', '音频已过期');
+  return t('Audio unavailable', '音频不可用');
+}
+
+function derivedDraftIDs(item: MobileLibraryItem | null | undefined): { transcript: string; minutes: string } {
+  return {
+    transcript: String(item?.derived_documents?.transcript_draft_id || '').trim(),
+    minutes: String(item?.derived_documents?.minutes_draft_id || '').trim(),
+  };
+}
+
+function hasLinkedDerivedDocs(item: MobileLibraryItem | null | undefined): boolean {
+  const ids = derivedDraftIDs(item);
+  return Boolean(ids.transcript || ids.minutes);
+}
+
+/** True when linked draft IDs still appear as separate rows in a library snapshot. */
+function linkedDocsPresentIn(
+  list: MobileLibraryItem[],
+  ids: { transcript: string; minutes: string },
+): boolean {
+  if (!ids.transcript && !ids.minutes) return false;
+  return list.some((item) => item.id === ids.transcript || item.id === ids.minutes);
+}
+
+/** Optimistic / fallback patch after raw-audio delete succeeds. */
+function withAudioDeleted(item: MobileLibraryItem, updated?: MobileLibraryItem | null): MobileLibraryItem {
+  const base = updated ? { ...item, ...updated } : { ...item };
+  const msg =
+    base.processing?.message ||
+    item.processing?.message ||
+    'raw audio deleted; transcript and minutes remain available';
+  return {
+    ...base,
+    type: 'audio',
+    audio: {
+      ...(item.audio || {}),
+      ...(updated?.audio || {}),
+      available: false,
+    },
+    processing: {
+      ...(item.processing || {}),
+      ...(updated?.processing || {}),
+      message: msg,
+    },
+    derived_documents: {
+      ...(item.derived_documents || {}),
+      ...(updated?.derived_documents || {}),
+    },
+  };
+}
 function managedRecordingID(item: MobileLibraryItem | null | undefined): string { return String(item?.managed_by_recording_id || '').trim(); }
-function isManagedMeetingResult(item: MobileLibraryItem | null | undefined): boolean { return managedRecordingID(item) !== ''; }
+
+/** Desktop library delete mode for a row. */
+type LibraryDeleteMode = 'soft-audio' | 'remove-unavailable' | 'full-recording' | 'document';
+
+function libraryDeleteMode(item: MobileLibraryItem): LibraryDeleteMode {
+  if (isAudioItem(item)) {
+    // Audio already gone: full remove (soft-delete again is a no-op and leaves ghosts).
+    // IDs alone decide copy; both branches hit the same full-delete API.
+    if (item.audio?.available === false) {
+      return hasLinkedDerivedDocs(item) ? 'full-recording' : 'remove-unavailable';
+    }
+    return 'soft-audio';
+  }
+  if (managedRecordingID(item)) return 'full-recording';
+  return 'document';
+}
+
+function libraryDeleteRecordingID(item: MobileLibraryItem): string {
+  // Audio rows are the recording itself; managed docs point at their parent recording.
+  if (isAudioItem(item)) return String(item.id || '').trim();
+  return managedRecordingID(item);
+}
+
+function libraryDeleteButtonCopy(
+  item: MobileLibraryItem,
+  t: (en: string, zh: string) => string,
+): { title: string; aria: string } {
+  const name = item.title || item.id;
+  const mode = libraryDeleteMode(item);
+  if (mode === 'soft-audio') {
+    return {
+      title: t('Delete original audio', '删除原始音频'),
+      aria: t(`Delete original audio for ${name}`, `删除 ${name} 的原始音频`),
+    };
+  }
+  if (mode === 'remove-unavailable') {
+    return {
+      title: t('Remove from library', '从文稿库移除'),
+      aria: t(`Remove ${name} from the library`, `从文稿库移除 ${name}`),
+    };
+  }
+  if (mode === 'full-recording') {
+    return {
+      title: t('Delete recording and generated documents', '删除录音及生成文档'),
+      aria: t(`Delete the recording and generated documents for ${name}`, `删除 ${name} 所属录音及生成文档`),
+    };
+  }
+  return {
+    title: t('Delete', '删除'),
+    aria: t(`Delete ${name}`, `删除 ${name}`),
+  };
+}
+
+function libraryDeleteConfirmCopy(
+  mode: LibraryDeleteMode,
+  title: string,
+  t: (en: string, zh: string) => string,
+): { body: string; heading: string; confirmText: string } {
+  if (mode === 'soft-audio') {
+    return {
+      body: t(
+        `Delete “${title}”? The original audio will be removed; generated transcripts and minutes remain.`,
+        `删除「${title}」？原始音频将被删除，已生成的逐字稿和会议纪要会保留。`,
+      ),
+      heading: t('Delete original audio?', '删除原始音频？'),
+      confirmText: t('Delete', '删除'),
+    };
+  }
+  if (mode === 'remove-unavailable') {
+    return {
+      body: t(
+        `Remove “${title}” from the shared library? The original audio is already gone.`,
+        `从文稿库移除「${title}」？原始音频已不存在。`,
+      ),
+      heading: t('Remove from library?', '从文稿库移除？'),
+      confirmText: t('Remove', '移除'),
+    };
+  }
+  if (mode === 'full-recording') {
+    return {
+      body: t(
+        `Delete the meeting recording for “${title}”? Its original audio and all generated transcripts and meeting minutes will be removed.`,
+        `删除「${title}」所属的会议录音？原始音频、逐字稿和会议纪要将一并删除。`,
+      ),
+      heading: t('Delete meeting recording and results?', '删除会议录音及结果？'),
+      confirmText: t('Delete all', '全部删除'),
+    };
+  }
+  return {
+    body: t(
+      `Delete “${title}” from the shared Hub library? The phone app will no longer be able to open this document.`,
+      `从共享文稿库删除「${title}」？手机端也将无法再看到该文稿。`,
+    ),
+    heading: t('Delete shared document?', '删除共享文稿？'),
+    confirmText: t('Delete', '删除'),
+  };
+}
 function isProcessingAudio(item: MobileLibraryItem | null | undefined): boolean { const status = item?.processing?.status || ''; return status === 'processing' || status === 'finalizing'; }
 function hasMeetingMinutes(item: MobileLibraryItem | null | undefined): boolean { return Boolean(item?.derived_documents?.minutes_draft_id); }
 function formatAudioDuration(seconds?: number): string { const total = Math.max(0, Math.round(Number(seconds || 0))); const min = Math.floor(total / 60); return `${min}:${String(total % 60).padStart(2, '0')}`; }
@@ -531,15 +683,22 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     [isZh],
   );
 
-  const refresh = useCallback(async () => {
+  // null = request failed (keep prior list); [] = successful empty library.
+  // Callers must not treat null like "no items" or they drop rows after a
+  // successful mutation when the follow-up list call flakes.
+  const refresh = useCallback(async (): Promise<MobileLibraryItem[] | null> => {
     setLoading(true);
     setError('');
     try {
       const list = await callListLibraryItems(80);
-      setDrafts(Array.isArray(list) ? list : []);
+      const next = Array.isArray(list) ? list : [];
+      setDrafts(next);
+      return next;
     } catch (e: any) {
       setError(String(e?.message || e || 'load failed'));
-      setDrafts([]);
+      // Keep the previous drafts snapshot — wiping on a transient list failure
+      // made soft-delete look like "nothing left in the library".
+      return null;
     } finally {
       setLoading(false);
     }
@@ -716,22 +875,19 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     if (deleteInFlightRef.current) return;
     deleteInFlightRef.current = true;
     const title = d.title || d.id;
-    const recordingID = managedRecordingID(d);
-    const deleteManagedResult = !isAudioItem(d) && recordingID !== '';
+    const mode = libraryDeleteMode(d);
+    const softDeleteAudioOnly = mode === 'soft-audio';
+    const fullDeleteRecording = mode === 'full-recording' || mode === 'remove-unavailable';
+    const recordingKey = libraryDeleteRecordingID(d);
+    const linked = derivedDraftIDs(d);
+    const confirmCopy = libraryDeleteConfirmCopy(mode, title, t);
     let ok = false;
     try {
-      ok = await showConfirm(
-        t(
-          isAudioItem(d) ? `Delete “${title}”? The original audio will be removed; generated transcripts and minutes remain.` : deleteManagedResult ? `Delete the meeting recording for “${title}”? Its original audio and all generated transcripts and meeting minutes will be removed.` : `Delete “${title}” from the shared Hub library? The phone app will no longer be able to open this document.`,
-          isAudioItem(d) ? `删除「${title}」？原始音频将被删除，已生成的逐字稿和会议纪要会保留。` : deleteManagedResult ? `删除「${title}」所属的会议录音？原始音频、逐字稿和会议纪要将一并删除。` : `从共享文稿库删除「${title}」？手机端也将无法再看到该文稿。`,
-        ),
-        t(isAudioItem(d) ? 'Delete original audio?' : deleteManagedResult ? 'Delete meeting recording and results?' : 'Delete shared document?', isAudioItem(d) ? '删除原始音频？' : deleteManagedResult ? '删除会议录音及结果？' : '删除共享文稿？'),
-        {
-          confirmText: t(deleteManagedResult ? 'Delete all' : 'Delete', deleteManagedResult ? '全部删除' : '删除'),
-          cancelText: t('Cancel', '取消'),
-          confirmVariant: 'danger',
-        },
-      );
+      ok = await showConfirm(confirmCopy.body, confirmCopy.heading, {
+        confirmText: confirmCopy.confirmText,
+        cancelText: t('Cancel', '取消'),
+        confirmVariant: 'danger',
+      });
     } catch (e: any) {
       setError(String(e?.message || e || 'delete confirmation failed'));
       deleteInFlightRef.current = false;
@@ -744,38 +900,160 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     setUploading(true);
     setError('');
     setBanner('');
+    // Full recording delete: drop the recording row, managed children, and known draft IDs.
+    const clearRecordingAndResultsFromList = (key: string, extraIDs: string[] = []) => {
+      const drop = new Set([d.id, key, ...extraIDs].map((id) => String(id || '').trim()).filter(Boolean));
+      setDrafts((current) =>
+        current.filter((item) => !drop.has(item.id) && managedRecordingID(item) !== key),
+      );
+      setSelected((current) => {
+        if (!current) return current;
+        if (drop.has(current.id) || managedRecordingID(current) === key) return null;
+        return current;
+      });
+    };
+    // Soft-audio delete: only the audio row goes away. Linked transcript/minutes
+    // documents must stay if Hub still lists them (never pass their IDs here).
+    const clearAudioRowOnly = (audioID: string) => {
+      const id = String(audioID || '').trim();
+      if (!id) return;
+      setDrafts((current) => current.filter((item) => item.id !== id));
+      setSelected((current) => (current?.id === id ? null : current));
+    };
+    const bannerAudioDeletedDocsRemain = () =>
+      setBanner(
+        t(
+          `Original audio deleted for “${title}”. Generated documents remain available.`,
+          `已删除「${title}」的原始音频，生成的文档仍可打开。`,
+        ),
+      );
+    const bannerAudioDeletedNothingLeft = () =>
+      setBanner(
+        t(
+          `Original audio deleted for “${title}”. Nothing left to keep in the library.`,
+          `已删除「${title}」的原始音频，文稿库中已无关联条目。`,
+        ),
+      );
+    /** Reconcile soft-audio delete with the post-refresh library list. */
+    const applySoftAudioDeleteResult = (
+      list: MobileLibraryItem[] | null,
+      patched: MobileLibraryItem,
+      opts?: { keptAudioRow?: boolean },
+    ) => {
+      const patchedLinked = derivedDraftIDs(patched);
+      // List failed after a successful DELETE: leave optimistic UI as the caller set it.
+      if (list === null) {
+        if (opts?.keptAudioRow) bannerAudioDeletedDocsRemain();
+        else bannerAudioDeletedNothingLeft();
+        return;
+      }
+      const row = list.find((item) => item.id === d.id);
+      if (row) {
+        const next = withAudioDeleted(patched, row);
+        setSelected((current) => (current?.id === d.id ? next : current));
+        setDrafts((current) => current.map((item) => (item.id === d.id ? next : item)));
+        bannerAudioDeletedDocsRemain();
+        return;
+      }
+      // Audio row hidden by Hub — remove only that row. Document rows (if any) stay.
+      clearAudioRowOnly(d.id);
+      if (linkedDocsPresentIn(list, patchedLinked) || linkedDocsPresentIn(list, linked)) {
+        bannerAudioDeletedDocsRemain();
+      } else {
+        bannerAudioDeletedNothingLeft();
+      }
+    };
     try {
-      if (isAudioItem(d)) {
-        const updated = await callDeleteMeetingRecording(d.id);
-        setSelected((current) => current?.id === d.id ? { ...current, ...updated } : current);
-        setDrafts((current) => current.map((item) => item.id === d.id ? { ...item, ...updated } : item));
-      } else if (deleteManagedResult) {
-        await callDeleteMeetingRecordingAndResults(recordingID);
-        if (selected?.id === d.id) setSelected(null);
-        setDrafts((current) => current.filter((item) => item.id !== d.id && item.id !== recordingID));
+      if (softDeleteAudioOnly) {
+        const updated = withAudioDeleted(d, await callDeleteMeetingRecording(d.id));
+        const updatedLinked = derivedDraftIDs(updated);
+        // Prefer local evidence of real result docs over raw draft IDs (stale IDs are common ghosts).
+        const localHasResults =
+          hasLinkedDerivedDocs(updated) && linkedDocsPresentIn(drafts, updatedLinked);
+        if (localHasResults) {
+          setSelected((current) => (current?.id === d.id ? updated : current));
+          setDrafts((current) => current.map((item) => (item.id === d.id ? updated : item)));
+          applySoftAudioDeleteResult(await refresh(), updated, { keptAudioRow: true });
+        } else {
+          // No real result docs in the library → Hub will hide the audio row; drop it now.
+          clearAudioRowOnly(d.id);
+          applySoftAudioDeleteResult(await refresh(), updated, { keptAudioRow: false });
+        }
+      } else if (fullDeleteRecording) {
+        if (!recordingKey) {
+          setError(t('Missing meeting recording id for delete.', '删除失败：缺少会议录音 ID。'));
+          return;
+        }
+        await callDeleteMeetingRecordingAndResults(recordingKey);
+        clearRecordingAndResultsFromList(recordingKey, [linked.transcript, linked.minutes]);
+        setBanner(
+          mode === 'remove-unavailable'
+            ? t(`Removed “${title}” from the library`, `已从文稿库移除「${title}」`)
+            : t(
+                `Deleted the meeting recording and generated documents for “${title}”`,
+                `已删除「${title}」所属的会议录音及生成文档`,
+              ),
+        );
+        await refresh();
       } else {
         await callDeleteDraft(d.id);
-        if (selected?.id === d.id) setSelected(null);
+        setSelected((current) => (current?.id === d.id ? null : current));
+        setDrafts((current) => current.filter((item) => item.id !== d.id));
+        setBanner(t(`Deleted “${title}”`, `已删除「${title}」`));
+        await refresh();
       }
-      setBanner(
-        isAudioItem(d)
-          ? t(`Original audio deleted for “${title}”. Generated documents remain available.`, `已删除「${title}」的原始音频，生成的文档仍可打开。`)
-          : deleteManagedResult
-            ? t(`Deleted the meeting recording and generated documents for “${title}”`, `已删除「${title}」所属的会议录音及生成文档`)
-          : t(`Deleted “${title}”`, `已删除「${title}」`),
-      );
-      await refresh();
     } catch (e: any) {
       const message = String(e?.message || e || 'delete failed');
-      if (deleteManagedResult && message.includes('RECORDING_IN_USE')) {
-        setError(t('The meeting recording is still processing. Wait for it to finish, then delete it and its generated documents.', '会议录音仍在处理中。请等待处理完成后，再删除录音及生成文档。'));
-      } else if (deleteManagedResult && message.includes('RECORDING_NOT_FOUND')) {
-        // The recording was deleted elsewhere after this document was listed.
-        // Clear the stale selection instead of leaving a dead destructive action.
-        if (selected?.id === d.id) setSelected(null);
-        setDrafts((current) => current.filter((item) => item.id !== d.id && item.id !== recordingID));
-        setBanner(t('This meeting recording was already deleted. The library has been refreshed.', '该会议录音已在其他位置删除，文稿库已刷新。'));
+      if (softDeleteAudioOnly && message.includes('AUDIO_IN_USE')) {
+        setError(
+          t(
+            'The meeting recording is still processing. Wait for it to finish before deleting the original audio.',
+            '会议录音仍在处理中。请等待处理完成后再删除原始音频。',
+          ),
+        );
+      } else if (fullDeleteRecording && message.includes('RECORDING_IN_USE')) {
+        setError(
+          t(
+            'The meeting recording is still processing. Wait for it to finish, then delete it and its generated documents.',
+            '会议录音仍在处理中。请等待处理完成后，再删除录音及生成文档。',
+          ),
+        );
+      } else if (message.includes('RECORDING_NOT_FOUND') && fullDeleteRecording) {
+        // Full delete: recording already gone — drop the whole family locally.
+        clearRecordingAndResultsFromList(recordingKey || d.id, [linked.transcript, linked.minutes]);
+        setBanner(
+          t(
+            'This meeting recording was already deleted. The library has been refreshed.',
+            '该会议录音已在其他位置删除，文稿库已刷新。',
+          ),
+        );
         await refresh();
+      } else if (message.includes('RECORDING_NOT_FOUND') && softDeleteAudioOnly) {
+        // Soft-delete 404: only drop the audio row; do not assume result docs were wiped.
+        clearAudioRowOnly(d.id);
+        setBanner(
+          t(
+            'This meeting recording was already deleted. The library has been refreshed.',
+            '该会议录音已在其他位置删除，文稿库已刷新。',
+          ),
+        );
+        await refresh();
+      } else if (
+        softDeleteAudioOnly &&
+        (message.includes('LIBRARY_ITEM_NOT_FOUND') || message.includes('get mobile library item failed'))
+      ) {
+        // Legacy desktop/Hub pairing: DELETE may have succeeded while a follow-up
+        // library GET still 404s. Prefer a soft success over a red error banner.
+        const patched = withAudioDeleted(d);
+        const kept =
+          hasLinkedDerivedDocs(patched) && linkedDocsPresentIn(drafts, derivedDraftIDs(patched));
+        if (kept) {
+          setSelected((current) => (current?.id === d.id ? patched : current));
+          setDrafts((current) => current.map((item) => (item.id === d.id ? patched : item)));
+        } else {
+          clearAudioRowOnly(d.id);
+        }
+        applySoftAudioDeleteResult(await refresh(), patched, { keptAudioRow: kept });
       } else {
         setError(message);
       }
@@ -1199,6 +1477,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
               ) : (
                 filtered.map((d) => {
                   const active = selected?.id === d.id;
+                  const deleteCopy = libraryDeleteButtonCopy(d, t);
                   return (
                     <div
                       key={d.id}
@@ -1233,7 +1512,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                         </div>
                         <div style={{ fontSize: '0.72rem', opacity: 0.58, marginTop: 5 }}>
                           {isAudioItem(d)
-                            ? `${d.audio?.available ? t('Recording', '录音') : t('Audio expired', '音频已过期')}${d.audio?.duration_sec ? ` · ${formatAudioDuration(d.audio.duration_sec)}` : ''}${d.audio?.size_bytes ? ` · ${formatLibraryFileSize(d.audio.size_bytes)}` : ''}`
+                            ? `${d.audio?.available ? t('Recording', '录音') : audioUnavailableLabel(d, t)}${d.audio?.duration_sec ? ` · ${formatAudioDuration(d.audio.duration_sec)}` : ''}${d.audio?.size_bytes ? ` · ${formatLibraryFileSize(d.audio.size_bytes)}` : ''}`
                             : d.has_original
                               ? t('Original file', '原件')
                               : (d.rune_count ?? 0) > 0
@@ -1263,8 +1542,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                       </button>
                       <button
                         type="button"
-                        title={t(isAudioItem(d) ? 'Delete original audio' : isManagedMeetingResult(d) ? 'Delete recording and generated documents' : 'Delete', isAudioItem(d) ? '删除原始音频' : isManagedMeetingResult(d) ? '删除录音及生成文档' : '删除')}
-                        aria-label={t(isAudioItem(d) ? `Delete original audio for ${d.title || d.id}` : isManagedMeetingResult(d) ? `Delete the recording and generated documents for ${d.title || d.id}` : `Delete ${d.title || d.id}`, isAudioItem(d) ? `删除 ${d.title || d.id} 的原始音频` : isManagedMeetingResult(d) ? `删除 ${d.title || d.id} 所属录音及生成文档` : `删除 ${d.title || d.id}`)}
+                        title={deleteCopy.title}
+                        aria-label={deleteCopy.aria}
                         disabled={uploading}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1311,7 +1590,14 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                       {isProcessingAudio(selected) ? t('Processing…', '处理中…') : hasMeetingMinutes(selected) ? t('Meeting minutes ready', '会议纪要已生成') : selected.processing?.status === 'failed' ? t('Retry meeting minutes', '重试生成纪要') : t('Generate meeting minutes', '生成会议纪要')}
                     </button>
                     {selected.audio?.available ? <><button type="button" style={styles.btn} onClick={() => void openAudio(selected)} disabled={uploading}>{t('Open audio', '打开音频')}</button><button type="button" style={styles.btn} onClick={() => void saveAudio(selected)} disabled={uploading}>{t('Save audio', '保存音频')}</button></> : null}
-                    <button type="button" style={{ ...styles.btn, borderColor: 'rgba(220,80,80,0.45)', color: '#ffb4b4' }} onClick={() => void deleteDraft(selected)} disabled={uploading || !selected.audio?.available}>{t('Delete original audio', '删除原始音频')}</button>
+                    <button
+                      type="button"
+                      style={{ ...styles.btn, borderColor: 'rgba(220,80,80,0.45)', color: '#ffb4b4' }}
+                      onClick={() => void deleteDraft(selected)}
+                      disabled={uploading}
+                    >
+                      {libraryDeleteButtonCopy(selected, t).title}
+                    </button>
                   </>
                 ) : <>
                   <button type="button" style={styles.btn} onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview}>
@@ -1361,7 +1647,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                     onClick={() => void deleteDraft(selected)}
                     disabled={uploading}
                   >
-                    {isManagedMeetingResult(selected) ? t('Delete recording and results', '删除录音及生成文档') : t('Delete', '删除')}
+                    {libraryDeleteButtonCopy(selected, t).title}
                   </button>
                 </>
               ) : null}
