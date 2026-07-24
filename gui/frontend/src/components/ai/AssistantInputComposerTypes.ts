@@ -48,7 +48,8 @@ export interface AssistantInputComposerProps {
     inline: boolean;
     /**
      * Drop floating-card bottom margin when a footer (quick-settings bar)
-     * sits directly under the composer. Default false preserves VE spacing.
+     * sits directly under the composer. Main chat and VE/group tabs pass true;
+     * default false keeps breathing room when no footer chrome is present.
      */
     flushBottom?: boolean;
     isBusy: boolean;

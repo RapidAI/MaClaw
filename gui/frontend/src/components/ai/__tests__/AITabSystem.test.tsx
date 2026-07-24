@@ -53,6 +53,14 @@ describe('AITabTypes', () => {
         expect(LOCAL_TAB.closable).toBe(false);
         expect(LOCAL_TAB.type).toBe("local");
         expect(LOCAL_TAB.id).toBe("local");
+        expect(LOCAL_TAB.title).toBe("AI 助手");
+    });
+
+    it('createInitialTabState clones LOCAL_TAB so mutations cannot corrupt the constant', () => {
+        const state = createInitialTabState();
+        state.tabs[0].title = "mutated";
+        expect(LOCAL_TAB.title).toBe("AI 助手");
+        expect(state.tabs[0]).not.toBe(LOCAL_TAB);
     });
 });
 

@@ -6,9 +6,10 @@ interface ComposerStyleOptions {
     hasInputOverlay: boolean;
     inline: boolean;
     /**
-     * When true (main AI chat with quick-settings bar below), drop the floating
-     * card's bottom margin so chips own the window bottom edge.
-     * When false (e.g. VE conversation), keep bottom breathing room.
+     * When true (composer docks above the panel quick-settings bar — main chat
+     * and VE/group tabs), drop the floating card's bottom margin/safe-area so
+     * the bar owns the window bottom edge.
+     * When false (standalone / no footer chrome), keep bottom breathing room.
      */
     flushBottom?: boolean;
     isExpandedInput: boolean;
@@ -55,10 +56,11 @@ export function getAssistantInputComposerStyles({
             overflow: hasInputOverlay ? "visible" : "hidden",
             ["--wails-draggable" as any]: "no-drag",
             // Floating card: side inset always; bottom inset only when nothing
-            // sits under the composer (VE / standalone). Main chat uses
-            // flushBottom so the quick-settings bar is flush to the window.
-            // When flush, square the bottom corners and drop the bottom border so
-            // it docks into the footer without a double hairline.
+            // sits under the composer (standalone, no footer chrome). Main chat
+            // and VE/group tabs use flushBottom so the quick-settings bar is
+            // flush to the window. When flush, square the bottom corners and
+            // drop the bottom border so it docks into the footer without a
+            // double hairline.
             ...(inline ? {} : {
                 margin: flushBottom ? "0 10px 0 10px" : "0 10px 10px 10px",
                 borderRadius: flushBottom ? "12px 12px 0 0" : "12px",

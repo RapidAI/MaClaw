@@ -51,14 +51,18 @@ describe('AI Assistant i18n property tests', () => {
         );
     });
 
-    it('Property 1 (extended): AIAssistantPanel title matches language', () => {
-        const langArb = fc.constantFrom('zh-Hans', 'zh-Hant', 'en');
+    it('Property 1 (extended): main AI assistant title matches language', async () => {
+        const { localAssistantTabTitle, localizeText: realLocalizeText } = await import('../aiAssistantI18n');
+        const langArb = fc.constantFrom('zh-Hans', 'zh-Hant', 'en', 'en-US', 'zh-CN', 'zh-TW');
 
         fc.assert(
             fc.property(langArb, (lang) => {
-                const expectedTitle = localizeText(lang, 'AI Assistant', 'AI 助手');
-                const title = localizeText(lang, 'AI Assistant', 'AI 助手');
-                expect(title).toBe(expectedTitle);
+                // Compare against production localizeText (normalizeLang), not the stub above.
+                const expectedTitle = realLocalizeText(lang, 'AI Assistant', 'AI 助手');
+                expect(localAssistantTabTitle(lang)).toBe(expectedTitle);
+                // Explicit product expectation for common codes.
+                if (lang === 'en' || lang === 'en-US') expect(localAssistantTabTitle(lang)).toBe('AI Assistant');
+                else expect(localAssistantTabTitle(lang)).toBe('AI 助手');
             }),
             { numRuns: 100 },
         );

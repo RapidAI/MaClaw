@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { localAssistantTabTitle } from "./aiAssistantI18n";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { DEFAULT_EXPERT_ICON } from "./expertTypes";
@@ -6,10 +7,12 @@ import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } fro
 import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 
+// Re-export so existing imports from AITabItem keep working.
+export { localAssistantTabTitle } from "./aiAssistantI18n";
+
 const textForTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
     lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
 );
-
 
 function participantTitleName(tab: AITab, participantId: string, index: number, lang?: string): string {
     if (isLocalParticipant(tab, participantId)) return localAINameForLang(lang);
@@ -28,6 +31,8 @@ function directVETitleName(tab: AITab, lang?: string): string {
 }
 
 export function getAITabDisplayTitle(tab: AITab, lang?: string): string {
+    // Local main tab always localizes; ignore stored title (legacy "工作台" / static default).
+    if (tab.type === "local") return localAssistantTabTitle(lang);
     if (tab.type === "ve") return directVETitleName(tab, lang);
     if (tab.type === "group" && String(tab.groupTitle || "").trim()) return String(tab.groupTitle || "").trim();
     if (tab.type !== "group" || !tab.veId || !tab.participants?.length) return tab.title;

@@ -12,7 +12,7 @@ const base = {
 };
 
 describe("getAssistantInputComposerStyles", () => {
-    it("keeps floating bottom margin when not flush (VE / standalone)", () => {
+    it("keeps floating bottom margin when not flush (standalone / no footer)", () => {
         const { inputBarStyle } = getAssistantInputComposerStyles({
             ...base,
             inline: false,
@@ -22,7 +22,7 @@ describe("getAssistantInputComposerStyles", () => {
         expect(inputBarStyle.paddingBottom).toBe("max(6px, env(safe-area-inset-bottom))");
     });
 
-    it("drops floating bottom margin when flushBottom (main chat + quick-settings)", () => {
+    it("drops floating bottom margin when flushBottom (main chat / VE + quick-settings)", () => {
         const { inputBarStyle } = getAssistantInputComposerStyles({
             ...base,
             inline: false,

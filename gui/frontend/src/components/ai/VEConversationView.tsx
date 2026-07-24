@@ -1832,6 +1832,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 inputRowTestId="ve-input-row"
                 inputValue={inputText}
                 inline={false}
+                flushBottom
                 isBusy={sending || awaitingReplyVisible || state.streaming}
                 isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
                 lang={lang || "zh"}

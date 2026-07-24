@@ -53,6 +53,7 @@ import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTur
 import { findLatestToolProgressText, formatToolProgressStatus, isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
+import { localAssistantTabTitle } from "./aiAssistantI18n";
 import { getAITabDisplayTitle } from "./AITabItem";
 import type { AITab } from "./AITabTypes";
 import { useAITabManager } from "./useAITabManager";
@@ -3462,8 +3463,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         resetWorkflowState();
         if (agentView) dismissAgentView(agentView.id, undefined, { force: true });
     };
-    // Workbench language: avoid consumer "AI assistant / thinking" persona copy.
-    const title = lang === "en" ? "Workbench" : "\u5de5\u4f5c\u53f0";
+    // Panel chrome title (not per-tab); same i18n source as the local main tab label.
+    const title = localAssistantTabTitle(lang);
     const thinkingText = lang === "en" ? "Working... (you can keep typing)" : "\u5904\u7406\u4e2d\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const processingText = lang === "en" ? "Running tools... (you can keep typing)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const idlePlaceholderText = getComposeActionPlaceholder(composeAction, !lang?.startsWith("en"))
@@ -5896,32 +5897,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ) : null}
             <ComputerUseOperatorPanel lang={lang} />
             </div>
-            {/* Full-bleed bottom chrome: spans chat + code/doc preview columns so
-                status/chips are not cut off under the right pane (project/coding tabs). */}
-            {showChatUI && !showWelcomeView ? (
-                <AssistantQuickSettingsBar lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} workflowEnabled={workflowEnabled} onToggleWorkflow={handleToggleWorkflow} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onLanguageChange={onLanguageChange} statusSlot={statusSlot} />
-            ) : null}
-            {showChatUI && showWelcomeView && statusSlot ? (
-                <div
-                    data-testid="assistant-status-footer"
-                    className="assistant-status-footer"
-                    style={{
-                        display: "flex",
-                        alignItems: "center",
-                        minHeight: 28,
-                        padding: "0 10px",
-                        paddingBottom: "env(safe-area-inset-bottom, 0px)",
-                        borderTop: `1px solid ${t.titleBarBorder}`,
-                        background: t.titleBarBg,
-                        flexShrink: 0,
-                        boxSizing: "border-box",
-                        minWidth: 0,
-                        overflow: "hidden",
-                    }}
-                >
-                    {statusSlot}
-                </div>
-            ) : null}
+            {/* Full-bleed footer under content-row (chat|preview). Always mounted so
+                welcome/guide and VE/group tabs keep the same chrome as normal chat. */}
+            <AssistantQuickSettingsBar lang={lang} theme={t} themeMode={themeMode} onToggleTheme={handleQuickThemeToggle} workflowEnabled={workflowEnabled} onToggleWorkflow={handleToggleWorkflow} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} onToggleTts={handleQuickTtsToggle} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onLanguageChange={onLanguageChange} statusSlot={statusSlot} />
             </div>
         </div>
     );

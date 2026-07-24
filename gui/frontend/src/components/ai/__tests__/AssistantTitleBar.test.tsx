@@ -40,7 +40,7 @@ const renderTitleBar = () => render(
         showMaximizeToggle={false}
         theme={overlayTheme}
         themeMode="light"
-        title="工作台"
+        title="AI 助手"
         trialReflectEnabled={false}
         toggleProjectSearch={vi.fn()}
     />,

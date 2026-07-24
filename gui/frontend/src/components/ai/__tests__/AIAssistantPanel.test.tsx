@@ -1171,6 +1171,76 @@ describe('AIAssistantPanel property tests', () => {
         expect(contentRow.parentElement).toBe(main);
     });
 
+    it('keeps the quick-settings bar on the welcome/guide page (not a status-only footer)', () => {
+        const { getByTestId, queryByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        const main = getByTestId('ai-panel-main');
+        const contentRow = getByTestId('ai-panel-content-row');
+        const bar = getByTestId('assistant-quick-settings-bar');
+        // Same full-bleed placement as normal chat (sibling of content-row).
+        expect(bar.parentElement).toBe(main);
+        expect(contentRow.contains(bar)).toBe(false);
+        expect(getByTestId('assistant-quick-settings-chips')).toBeTruthy();
+        // Welcome no longer swaps the chip bar for a status-only footer.
+        expect(queryByTestId('assistant-status-footer')).toBeNull();
+    });
+
+    it('keeps the quick-settings bar on digital-employee (VE) chat tabs', async () => {
+        const props = defaultPanelProps();
+        props.window = { inline: true };
+        const onPendingVEOpenHandled = vi.fn();
+        const { getByRole, getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...props}
+                pendingVEOpen={{
+                    id: 've-a',
+                    machine_id: 've-a',
+                    name: 'Agent A',
+                    online_status: 'online',
+                    status: 'active',
+                    access_policy: 'public',
+                    skill_description: '',
+                } as any}
+                onPendingVEOpenHandled={onPendingVEOpenHandled}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        await waitFor(() => expect(getByRole('tab', { name: 'Agent A' })).toBeTruthy());
+        // Ensure VE content (not local chat column) is the active surface.
+        await waitFor(() => expect(getByTestId('ve-input-area')).toBeTruthy());
+
+        const main = getByTestId('ai-panel-main');
+        const contentRow = getByTestId('ai-panel-content-row');
+        const bar = getByTestId('assistant-quick-settings-bar');
+        expect(bar.parentElement).toBe(main);
+        expect(contentRow.contains(bar)).toBe(false);
+        expect(getByTestId('assistant-quick-settings-chips')).toBeTruthy();
+        // VE input docks into the footer (flushBottom) — no floating bottom margin.
+        // jsdom may serialize "0 10px 0 10px" as the 2-value form "0px 10px".
+        const veInputBar = getByTestId('ve-input-area') as HTMLElement;
+        expect(veInputBar.style.marginBottom).toBe('0px');
+        expect(veInputBar.style.marginLeft).toBe('10px');
+        expect(veInputBar.style.marginRight).toBe('10px');
+
+        // Still present after pending open is cleared (tab remains active).
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                pendingVEOpen={null}
+                onPendingVEOpenHandled={onPendingVEOpenHandled}
+            />,
+        );
+        await waitFor(() => {
+            expect(getByTestId('assistant-quick-settings-bar')).toBeTruthy();
+            expect(getByTestId('ve-input-area')).toBeTruthy();
+        });
+    });
+
     it('renders AgentView as an operable right-side task panel and submits structured data', async () => {
         const submitAgentView = vi.fn().mockResolvedValue(undefined);
         const agentView: AgentView = {

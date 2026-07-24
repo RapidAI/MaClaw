@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { localAssistantTabTitle } from "../aiAssistantI18n";
 import { AITabItem, getAITabDisplayTitle } from "../AITabItem";
 import type { Theme } from "../aiAssistantPanelTheme";
 
@@ -12,6 +13,18 @@ const theme = {
 } as Theme;
 
 describe("AITabItem", () => {
+    it("localizes the main AI assistant tab title by language", () => {
+        const tab = { id: "local", type: "local" as const, title: "工作台", closable: false };
+        expect(localAssistantTabTitle("en")).toBe("AI Assistant");
+        expect(localAssistantTabTitle("en-US")).toBe("AI Assistant");
+        expect(localAssistantTabTitle("zh-Hans")).toBe("AI 助手");
+        expect(localAssistantTabTitle("zh-Hant")).toBe("AI 助手");
+        // Display ignores stored legacy title and follows language.
+        expect(getAITabDisplayTitle(tab, "en")).toBe("AI Assistant");
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("AI 助手");
+        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("AI 助手");
+    });
+
     it("renders a digital employee avatar when the tab has one", () => {
         const tab = {
             id: "ve-avatar-tab",

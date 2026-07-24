@@ -5,7 +5,7 @@ import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession,
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
-import { localizeText } from "./aiAssistantI18n";
+import { localAssistantTabTitle, localizeText } from "./aiAssistantI18n";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
@@ -1275,14 +1275,14 @@ export function renderMessage(
                 : (msg.localFilePath ? [msg.localFilePath] : []);
             const screenshotBase64 = msg.thumbnailBase64 || msg.imageKey;
             return (
-                <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={lang === "en" ? "AI assistant message" : "AI 助手消息"} style={{
+                <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} style={{
                     display: "flex",
                     flexDirection: "column",
                     alignItems: "flex-start",
                     justifyContent: "flex-start",
                     margin: "10px 0",
                 }}>
-                    <span style={{ margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{lang === "en" ? "AI Assistant" : "AI 助手"}</span>
+                    <span style={{ margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{localAssistantTabTitle(lang)}</span>
                     {(() => {
                         const copyPayload = buildAssistantReplyCopyText(msg.content, msg.unfinishedSlot, lang);
                         const showCopy = copyPayload.trim().length > 0;

@@ -7625,12 +7625,6 @@ body {
     animation: none;
 }
 
-/* Welcome-view shell status host: when AppStatusMessageBar returns null there
-   are no DOM children, so hide the chrome (border/padding) entirely. */
-.assistant-status-footer:empty {
-    display: none !important;
-}
-
 .codex-config-progress-overlay {
     position: absolute;
     inset: 0;
