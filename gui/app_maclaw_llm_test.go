@@ -1968,6 +1968,23 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("DeepSeek Model = %q, want %q", deepseek.Model, "deepseek-v4-flash")
 	}
 
+	xaiGrok, ok := findProviderByName(providers, "xAI-Grok")
+	if !ok {
+		t.Fatalf("providers missing xAI-Grok: %+v", providers)
+	}
+	if xaiGrok.URL != "https://api.x.ai/v1" {
+		t.Errorf("xAI-Grok URL = %q, want %q", xaiGrok.URL, "https://api.x.ai/v1")
+	}
+	if xaiGrok.Model != "grok-build" {
+		t.Errorf("xAI-Grok Model = %q, want %q", xaiGrok.Model, "grok-build")
+	}
+	if xaiGrok.Protocol != "openai" {
+		t.Errorf("xAI-Grok Protocol = %q, want %q", xaiGrok.Protocol, "openai")
+	}
+	if xaiGrok.ContextLength != 256000 {
+		t.Errorf("xAI-Grok ContextLength = %d, want %d", xaiGrok.ContextLength, 256000)
+	}
+
 	zhipuCoding, ok := findProviderByName(providers, "智谱编程")
 	if !ok {
 		t.Fatalf("providers missing 智谱编程: %+v", providers)
@@ -2002,7 +2019,7 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "xAI-Grok", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", "Custom1", "Custom2"}
 	if len(providers) < len(expectedNames) {
 		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
 	}

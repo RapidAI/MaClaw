@@ -194,13 +194,6 @@ MaClaw isn't limited to one interface — collaborate through multiple entry poi
 | **WeChat / Feishu / QQ / Telegram** | Chat with MaClaw through IM channels — give instructions from your phone |
 | **REST API (MaClawSrv)** | Multi-tenant REST service for external programs, automation platforms, and control planes |
 
-### Dual-Mode Experience
-
-| Mode | For | Features |
-|------|-----|----------|
-| **Professional** | Developers, researchers | Full access to all tools, workflows, memory, MCP management |
-| **Simplified** | Office workers, everyday users | Streamlined interface, conversational AI focus, zero-barrier onboarding |
-
 ## Execution Capabilities
 
 ### SSH Remote Management
@@ -278,7 +271,6 @@ Passthrough Tasks are a pre-registered command execution mechanism designed for 
 | Step | What | Details |
 |------|------|---------|
 | **Register** | Email signup | Unlocks remote collaboration |
-| **Choose Mode** | Professional / Simplified | Switchable anytime |
 | **Configure AI** | Select LLM provider | Enter API Key and test connectivity; OAuth and free trial also available |
 | **Bind IM (optional)** | Scan QR for WeChat | Chat with MaClaw from your phone anytime |
 

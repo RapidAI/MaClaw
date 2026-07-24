@@ -29,7 +29,7 @@ const localizeProviderDescription = (
         'Official Claude API': ['Claude 官方 API', 'Claude 官方 API'],
         'Tencent Cloud Claude-compatible endpoint': ['腾讯云 Claude 兼容端点', '騰訊雲 Claude 相容端點'],
         'Official OpenAI API': ['OpenAI 官方 API', 'OpenAI 官方 API'],
-        'xAI Grok API': ['xAI Grok API', 'xAI Grok API'],
+        'xAI Grok Build API': ['xAI Grok Build API', 'xAI Grok Build API'],
         'Tencent Cloud OpenAI-compatible endpoint': ['腾讯云 OpenAI 兼容端点', '騰訊雲 OpenAI 相容端點'],
     };
     const localized = descriptions[description];

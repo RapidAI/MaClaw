@@ -342,6 +342,28 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
     });
 
+    it('quick-fills xAI-Grok Build defaults and tests it through the OpenAI-compatible API', async () => {
+        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: true });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'xAI-Grok' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'xai-secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
+                url: 'https://api.x.ai/v1',
+                key: 'xai-secret',
+                model: 'grok-build',
+                protocol: 'openai',
+                agent_type: 'openclaw',
+                wire_api: '',
+            });
+        });
+    });
+
     it('keeps MaClaw Official visible when official grants are period-limited', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: false,

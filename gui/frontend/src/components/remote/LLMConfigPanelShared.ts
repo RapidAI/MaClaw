@@ -33,7 +33,7 @@ export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string;
     { name: "\u706b\u5c71\u5f15\u64ce Agent Plan", url: "https://ark.cn-beijing.volces.com/api/plan/v3", model: "glm-5.2", context_length: 128000, protocol: "openai", wire_api: "responses" },
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
     { name: "\u817e\u8baf\u4e91", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
-    { name: "xAI (Grok)", url: "https://api.x.ai/v1", model: "grok-3", context_length: 131072 },
+    { name: "xAI-Grok", url: "https://api.x.ai/v1", model: "grok-build", context_length: 256000 },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o", context_length: 128000 },
     { name: "Together AI", url: "https://api.together.xyz/v1", model: "meta-llama/Llama-3-70b-chat-hf", context_length: 128000 },
     { name: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", context_length: 128000 },
