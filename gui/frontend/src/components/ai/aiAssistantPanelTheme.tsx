@@ -188,27 +188,33 @@ export const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
 export const AI_THEME_MODE_LEGACY_STORAGE_KEY = "maclaw.ai.themeMode";
 /* Style constants */
 
-export const overlayStyle: React.CSSProperties = {
+/**
+ * Fixed layer fill safe under `.app-scale-layer` (transform: scale).
+ * Use inset:0 only — never 100vw/100vh (vw/vh ignore the scaled containing
+ * block and clip bottom/right chrome when --ui-scale > 1).
+ */
+const fixedContainingBlockFill: React.CSSProperties = {
     position: "fixed",
     inset: 0,
-    zIndex: 10000,
     display: "flex",
     flexDirection: "column",
-    background: overlayTheme.bg,
+    minHeight: 0,
+    minWidth: 0,
+    boxSizing: "border-box",
     textAlign: "left",
+};
+
+export const overlayStyle: React.CSSProperties = {
+    ...fixedContainingBlockFill,
+    zIndex: 10000,
+    background: overlayTheme.bg,
     boxShadow: "0 0 40px rgba(0,0,0,0.08)",
 };
 
+/** Full-bleed AI panel when the inline assistant is maximized. */
 export const maximizedInlineStyle: React.CSSProperties = {
-    position: "fixed",
-    inset: 0,
+    ...fixedContainingBlockFill,
     zIndex: 12000,
-    display: "flex",
-    flexDirection: "column",
-    width: "100vw",
-    height: "100vh",
-    minHeight: 0,
-    textAlign: "left",
     boxShadow: "0 0 40px rgba(0,0,0,0.12)",
     overflow: "hidden",
 };

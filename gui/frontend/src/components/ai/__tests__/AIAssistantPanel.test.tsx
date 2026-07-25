@@ -5140,6 +5140,29 @@ describe('AIAssistantPanel property tests', () => {
         expect(onToggleMaximize).toHaveBeenCalledTimes(1);
     });
 
+    it('maximized inline panel stays fixed-inset and keeps composer + window controls', () => {
+        // Unit sizing is covered by aiAssistantPanelTheme.test.ts; this checks wiring.
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: true, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const root = getByTestId('ai-panel-root') as HTMLElement;
+        expect(root.style.position).toBe('fixed');
+        // React may keep inset shorthand or expand to top/left.
+        expect(
+            ['0', '0px'].includes(root.style.inset)
+            || root.style.top === '0px' || root.style.top === '0',
+        ).toBe(true);
+        expect(`${root.style.width} ${root.style.height}`).not.toMatch(/\d(?:vw|vh)\b/i);
+
+        expect(getByTestId('ai-input-bar')).toBeTruthy();
+        expect(getByTestId('ai-maximize-toggle').getAttribute('title')).toBe('Restore window');
+        expect(getByTestId('ai-hide-toggle')).toBeTruthy();
+        // Absolute popovers (notifications/update menu) require tools overflow visible.
+        expect(getByTestId('ai-titlebar-tools-group').style.overflow).not.toBe('hidden');
+    });
+
     it('separates title bar tools from window controls', () => {
         const { getByTestId } = renderPanel({
             window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },

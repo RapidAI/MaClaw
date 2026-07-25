@@ -4908,7 +4908,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             );
         });
     }, [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
-    const containerStyle: React.CSSProperties = inline ? (maximized ? { ...maximizedInlineStyle, background: t.bg } : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
+    // maximizedInlineStyle uses inset:0 (not 100vw/100vh) so UI scale transform cannot clip chrome.
+    const containerStyle: React.CSSProperties = !inline
+        ? overlayStyle
+        : maximized
+            ? { ...maximizedInlineStyle, background: t.bg }
+            : {
+                display: "flex",
+                flex: "1 1 0%",
+                flexDirection: "column",
+                minWidth: 0,
+                minHeight: 0,
+                boxSizing: "border-box",
+                overflow: "hidden",
+                background: t.bg,
+                textAlign: "left",
+                width: "100%",
+                height: "100%",
+                position: "relative",
+            };
     const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND || scopeApprovalPending?.kind === LOCAL_HIGH_RISK_APPROVAL_KIND;
     const scopeApprovalIsRemoteHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND;
     return (
