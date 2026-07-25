@@ -4,9 +4,15 @@
  * LLM cache, language). Session/window-level actions stay in the title bar.
  * Optional statusSlot rides the same row on the right (shell status / warnings).
  */
-import { memo, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { LoadConfig, PatchConfigFields } from "../../../wailsjs/go/main/App";
 import { EVENT_MACLAW_CONFIG_CHANGED } from "../../constants/events";
+import { AssistantQuickModelMenuPopover } from "./AssistantQuickModelMenuPopover";
+import {
+    modelIdsEqual,
+    resolveQuickModelList,
+    resolveQuickModelMenuSections,
+} from "./assistantQuickModelMenu";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { TTSLevelBars } from "./TTSLevelBars";
@@ -40,6 +46,8 @@ const LANG_CYCLE: Record<string, string> = {
     "en": "zh-Hant",
     "zh-Hant": "zh-Hans",
 };
+
+const EMPTY_PROVIDERS: SidebarLLMProviderSummary[] = [];
 
 function langShortLabel(lang: string): string {
     if (lang === "en") return "EN";
@@ -139,41 +147,69 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         });
     }, [nextPatchSeq, isLatestPatch]);
 
-    // Model/provider menu
+    // Model/provider menu — neutral picker chip; popover is portaled (no green "ON" look).
     const [menuOpen, setMenuOpen] = useState(false);
-    const menuWrapRef = useRef<HTMLDivElement | null>(null);
+    const modelChipRef = useRef<HTMLButtonElement | null>(null);
+    // State mirror of the chip element so the popover re-measures when the anchor mounts.
+    const [modelChipEl, setModelChipEl] = useState<HTMLButtonElement | null>(null);
+    const setModelChipRef = useCallback((el: HTMLButtonElement | null) => {
+        modelChipRef.current = el;
+        setModelChipEl(el);
+    }, []);
+
+    const providers = availableProviders ?? EMPTY_PROVIDERS;
+    const modelList = useMemo(() => resolveQuickModelList(modelOptions, currentModel), [modelOptions, currentModel]);
+    const { currentProvider, switchableProviders, showProviders, showModels } = useMemo(
+        () => resolveQuickModelMenuSections({
+            providers,
+            modelList,
+            currentModel,
+            modelsLoading,
+            hasSwitchModel: !!onSwitchModel,
+        }),
+        [providers, modelList, currentModel, modelsLoading, onSwitchModel],
+    );
+    const hasModelMenu = !!(onSwitchProvider || onSwitchModel)
+        && (providers.length > 0 || modelList.length > 0 || !!String(currentModel || "").trim());
+    const modelChipLabel = String(currentModel || "").trim() || currentProvider?.name || tr("Model", "模型", "模型");
+
+    const closeModelMenu = useCallback(() => {
+        setMenuOpen(false);
+        // Return focus to the chip after dismiss (Escape / outside click / selection).
+        modelChipRef.current?.focus();
+    }, []);
+
+    // Drop a stale open state when the picker itself disappears (e.g. LLM went offline).
     useEffect(() => {
-        if (!menuOpen) return;
-        const onDown = (e: MouseEvent) => {
-            if (menuWrapRef.current && !menuWrapRef.current.contains(e.target as Node)) setMenuOpen(false);
-        };
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") setMenuOpen(false);
-        };
-        document.addEventListener("mousedown", onDown);
-        document.addEventListener("keydown", onKey);
-        return () => {
-            document.removeEventListener("mousedown", onDown);
-            document.removeEventListener("keydown", onKey);
-        };
-    }, [menuOpen]);
+        if (!hasModelMenu && menuOpen) setMenuOpen(false);
+    }, [hasModelMenu, menuOpen]);
 
-    const providers = availableProviders || [];
-    // App builds the list with the current provider first.
-    const currentProvider = providers[0] || null;
-    const switchableProviders = providers.slice(1);
-    const models = modelOptions || [];
-    const hasModelMenu = !!(onSwitchProvider || onSwitchModel) && (providers.length > 0 || models.length > 0 || !!currentModel);
-    const modelChipLabel = currentModel || currentProvider?.name || tr("Model", "模型", "模型");
+    // Outside-click / Escape / listbox focus live in AssistantQuickModelMenuPopover.
 
-    const openModelMenu = () => {
+    const openModelMenu = useCallback(() => {
         // Side effect stays out of the state updater (StrictMode double-invokes updaters).
-        const next = !menuOpen;
-        setMenuOpen(next);
-        if (next) onOpenModelMenu?.();
-    };
+        if (menuOpen) {
+            setMenuOpen(false);
+            return;
+        }
+        setMenuOpen(true);
+        // Refresh catalog; parent falls back to configured model if fetch fails.
+        onOpenModelMenu?.();
+    }, [menuOpen, onOpenModelMenu]);
 
-    const chipStyle = (active: boolean): CSSProperties => ({
+    const handleSelectProvider = useCallback((name: string) => {
+        closeModelMenu();
+        onSwitchProvider?.(name);
+    }, [closeModelMenu, onSwitchProvider]);
+
+    const handleSelectModel = useCallback((modelId: string) => {
+        const next = String(modelId || "").trim();
+        closeModelMenu();
+        if (!next || modelIdsEqual(next, currentModel)) return;
+        onSwitchModel?.(next);
+    }, [closeModelMenu, currentModel, onSwitchModel]);
+
+    const chipStyle = useCallback((active: boolean): CSSProperties => ({
         display: "inline-flex",
         alignItems: "center",
         gap: 4,
@@ -190,29 +226,17 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         transition: "all 150ms ease",
         flexShrink: 0,
         height: 20,
-    });
+    }), [t.titleBarBorder, t.fieldBg, t.promptColor]);
+
+    // Model chip is a picker, not a boolean switch — never use the green "ON" chip style.
+    const modelChipStyle = useMemo((): CSSProperties => ({
+        ...chipStyle(false),
+        gap: 5,
+    }), [chipStyle]);
+
     const dot = (active: boolean) => (
         <span aria-hidden="true" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: active ? "#4f7f6f" : t.promptColor, opacity: active ? 1 : 0.4, transition: "all 150ms ease" }} />
     );
-
-    const menuItemStyle = (active: boolean): CSSProperties => ({
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        width: "100%",
-        boxSizing: "border-box",
-        padding: "5px 8px",
-        border: "none",
-        borderRadius: 6,
-        background: active ? "rgba(79, 127, 111, 0.12)" : "transparent",
-        color: active ? "#4f7f6f" : t.text,
-        fontSize: 11,
-        fontWeight: active ? 600 : 400,
-        lineHeight: 1.3,
-        cursor: "pointer",
-        textAlign: "left",
-    });
-    const menuLabelStyle: CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 
     const nextLang = LANG_CYCLE[lang] || "zh-Hans";
 
@@ -224,50 +248,51 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         <div data-testid="assistant-quick-settings-bar" style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "0 10px", paddingBottom: "env(safe-area-inset-bottom, 0px)", borderTop: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, overflow: "hidden", flexShrink: 0, boxSizing: "border-box", minWidth: 0 }}>
             <div data-testid="assistant-quick-settings-chips" style={{ display: "flex", alignItems: "center", gap: 6, flex: "1 1 auto", minWidth: 0, overflowX: "auto", overflowY: "visible" }}>
             {hasModelMenu && (
-                <div ref={menuWrapRef} style={{ position: "relative", flexShrink: 0 }}>
-                    <button type="button" data-testid="qs-model-chip" onClick={openModelMenu} aria-expanded={menuOpen} aria-haspopup="listbox" style={chipStyle(menuOpen)} title={tr("Switch model or provider", "切换模型或服务商", "切換模型或服務商")}>
-                        {dot(true)}
+                <div style={{ position: "relative", flexShrink: 0 }}>
+                    <button
+                        type="button"
+                        ref={setModelChipRef}
+                        data-testid="qs-model-chip"
+                        onClick={openModelMenu}
+                        aria-expanded={menuOpen}
+                        aria-haspopup="listbox"
+                        style={modelChipStyle}
+                        // Accessible name comes from visible model label (do not override with a generic aria-label).
+                        title={tr("Switch model or provider", "切换模型或服务商", "切換模型或服務商")}
+                    >
                         <span style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{modelChipLabel}</span>
-                        <svg width="7" height="7" viewBox="0 0 8 8" aria-hidden="true" focusable="false"><path d="M1 3l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                        <svg
+                            width="7"
+                            height="7"
+                            viewBox="0 0 8 8"
+                            aria-hidden="true"
+                            focusable="false"
+                            style={{ transform: menuOpen ? "rotate(180deg)" : "none", transition: "transform 120ms ease", opacity: 0.75 }}
+                        >
+                            <path d="M1 3l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
                     </button>
-                    {menuOpen && (
-                        <div role="listbox" aria-label={tr("Select provider or model", "选择服务商或模型", "選擇服務商或模型")} style={{ position: "absolute", bottom: "100%", left: 0, marginBottom: 4, minWidth: 200, maxWidth: 280, maxHeight: 280, overflowY: "auto", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(15, 23, 42, 0.18)", zIndex: 40000, padding: 4 }}>
-                            {currentProvider && (
-                                <>
-                                    <div aria-hidden="true" style={{ padding: "4px 8px 2px", fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: t.promptColor }}>
-                                        {tr("Providers", "服务商", "服務商")}
-                                    </div>
-                                    <div role="option" aria-selected="true" style={{ ...menuItemStyle(true), cursor: "default" }} title={currentProvider.name}>
-                                        <span aria-hidden="true" style={{ width: 12, flexShrink: 0, textAlign: "center" }}>✓</span>
-                                        <span style={menuLabelStyle}>{currentProvider.name}</span>
-                                    </div>
-                                    {switchableProviders.map((p) => (
-                                        <button key={p.name} type="button" role="option" aria-selected="false" style={menuItemStyle(false)} title={p.name} onClick={() => { setMenuOpen(false); onSwitchProvider?.(p.name); }}>
-                                            <span aria-hidden="true" style={{ width: 12, flexShrink: 0 }} />
-                                            <span style={menuLabelStyle}>{p.name}</span>
-                                        </button>
-                                    ))}
-                                </>
-                            )}
-                            {onSwitchModel && (models.length > 0 || modelsLoading || currentModel) && (
-                                <>
-                                    {currentProvider && <div aria-hidden="true" style={{ height: 1, margin: "4px 6px", background: t.titleBarBorder }} />}
-                                    <div aria-hidden="true" style={{ padding: "4px 8px 2px", fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: t.promptColor }}>
-                                        {modelsLoading ? tr("Models (loading…)", "模型（加载中…）", "模型（載入中…）") : tr("Models", "模型", "模型")}
-                                    </div>
-                                    {(models.length > 0 ? models : (currentModel ? [currentModel] : [])).map((modelId) => {
-                                        const active = modelId === currentModel;
-                                        return (
-                                            <button key={modelId} type="button" role="option" aria-selected={active} style={menuItemStyle(active)} title={modelId} onClick={() => { setMenuOpen(false); onSwitchModel(modelId); }}>
-                                                <span aria-hidden="true" style={{ width: 12, flexShrink: 0, textAlign: "center" }}>{active ? "✓" : ""}</span>
-                                                <span style={menuLabelStyle}>{modelId}</span>
-                                            </button>
-                                        );
-                                    })}
-                                </>
-                            )}
-                        </div>
-                    )}
+                    <AssistantQuickModelMenuPopover
+                        open={menuOpen}
+                        anchorEl={modelChipEl}
+                        theme={t}
+                        listLabel={tr("Select provider or model", "选择服务商或模型", "選擇服務商或模型")}
+                        providersLabel={tr("Providers", "服务商", "服務商")}
+                        modelsLabel={tr("Models", "模型", "模型")}
+                        loadingModelsLabel={tr("Models (loading…)", "模型（加载中…）", "模型（載入中…）")}
+                        emptyModelsLabel={tr("No models listed", "暂无模型列表", "暫無模型列表")}
+                        loadingModelsHint={tr("Loading models…", "正在加载模型…", "正在載入模型…")}
+                        currentProvider={currentProvider}
+                        switchableProviders={switchableProviders}
+                        showProviders={showProviders}
+                        showModels={showModels}
+                        modelList={modelList}
+                        currentModel={currentModel}
+                        modelsLoading={modelsLoading}
+                        onSelectProvider={handleSelectProvider}
+                        onSelectModel={handleSelectModel}
+                        onClose={closeModelMenu}
+                    />
                 </div>
             )}
             <button type="button" data-testid="qs-workflow-toggle" role="switch" aria-checked={!!workflowEnabled} onClick={onToggleWorkflow} style={chipStyle(!!workflowEnabled)} title={workflowEnabled ? tr("Automatic task routing ON - click to disable", "自动决策已开启，点击关闭", "自動決策已開啟，點擊關閉") : tr("Automatic task routing OFF - click to enable", "自动决策已关闭，点击开启", "自動決策已關閉，點擊開啟")} aria-label={workflowEnabled ? tr("Automatic task routing ON - click to disable", "自动决策已开启，点击关闭", "自動決策已開啟，點擊關閉") : tr("Automatic task routing OFF - click to enable", "自动决策已关闭，点击开启", "自動決策已關閉，點擊開啟")}>

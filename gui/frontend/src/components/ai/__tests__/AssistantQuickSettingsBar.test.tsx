@@ -6,8 +6,12 @@ import { AssistantQuickSettingsBar } from '../AssistantQuickSettingsBar';
 import { overlayTheme } from '../aiAssistantPanelTheme';
 import { LoadConfig, PatchConfigFields } from '../../../../wailsjs/go/main/App';
 
+let rectSpy: ReturnType<typeof vi.spyOn> | undefined;
+
 afterEach(() => {
     cleanup();
+    rectSpy?.mockRestore();
+    rectSpy = undefined;
 });
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -38,6 +42,10 @@ const renderBar = (overrides: Partial<Parameters<typeof AssistantQuickSettingsBa
 describe('AssistantQuickSettingsBar', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        // Portal menu uses getBoundingClientRect; give the chip a non-zero box in jsdom.
+        rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+            x: 12, y: 600, top: 600, left: 12, bottom: 620, right: 120, width: 108, height: 20, toJSON: () => ({}),
+        } as DOMRect);
         loadConfigMock.mockResolvedValue({
             workstation_mode: true,
             log_detail_enabled: false,
@@ -116,6 +124,7 @@ describe('AssistantQuickSettingsBar', () => {
     });
 
     it('shows provider and model entries in the model menu', () => {
+        const onOpenModelMenu = vi.fn();
         renderBar({
             availableProviders: [
                 { name: 'hub-official', url: '', isHubService: true, configured: true },
@@ -125,14 +134,131 @@ describe('AssistantQuickSettingsBar', () => {
             modelOptions: ['gpt-5', 'gpt-4o'],
             onSwitchProvider: vi.fn(),
             onSwitchModel: vi.fn(),
-            onOpenModelMenu: vi.fn(),
+            onOpenModelMenu,
         });
         const chip = screen.getByTestId('qs-model-chip');
         expect(chip.textContent).toContain('gpt-5');
         fireEvent.click(chip);
+        expect(onOpenModelMenu).toHaveBeenCalledTimes(1);
         expect(screen.getByRole('listbox')).toBeTruthy();
+        expect(screen.getByTestId('qs-model-menu')).toBeTruthy();
         expect(screen.getByText('openai-custom')).toBeTruthy();
         expect(screen.getByText('gpt-4o')).toBeTruthy();
+    });
+
+    it('keeps the model chip neutral (not green ON style) when the menu is open', () => {
+        renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5', 'grok-3'],
+            onSwitchModel: vi.fn(),
+        });
+        const chip = screen.getByTestId('qs-model-chip');
+        fireEvent.click(chip);
+        expect(screen.getByRole('listbox')).toBeTruthy();
+        // Must not reuse the boolean-switch green active palette.
+        expect(chip.style.color).not.toBe('rgb(79, 127, 111)');
+        expect(chip.style.background).not.toContain('79, 127, 111');
+        expect(chip.style.borderColor || chip.style.border).not.toContain('79, 127, 111');
+    });
+
+    it('portals the model menu to document.body so parent overflow cannot clip it', () => {
+        renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5', 'grok-3'],
+            onSwitchModel: vi.fn(),
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        const menu = screen.getByTestId('qs-model-menu');
+        expect(menu.parentElement).toBe(document.body);
+        expect(menu.style.position).toBe('fixed');
+    });
+
+    it('shows only the model list when there is a single provider', () => {
+        renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5', 'grok-3'],
+            onSwitchProvider: vi.fn(),
+            onSwitchModel: vi.fn(),
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        // Default bar lang is zh-Hans.
+        expect(screen.getByText('模型')).toBeTruthy();
+        expect(screen.getByText('grok-3')).toBeTruthy();
+        expect(screen.queryByText('服务商')).toBeNull();
+        expect(screen.queryByText('xAI-Grok')).toBeNull();
+    });
+
+    it('switches model when a list item is clicked', () => {
+        const onSwitchModel = vi.fn();
+        renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5', 'grok-3'],
+            onSwitchModel,
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        fireEvent.click(screen.getByText('grok-3'));
+        expect(onSwitchModel).toHaveBeenCalledWith('grok-3');
+        expect(screen.queryByRole('listbox')).toBeNull();
+    });
+
+    it('does not re-fire switch when the current model row is clicked', () => {
+        const onSwitchModel = vi.fn();
+        renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5', 'grok-3'],
+            onSwitchModel,
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        // Current row is the selected option; click should only dismiss the menu.
+        fireEvent.click(screen.getByRole('option', { selected: true }));
+        expect(onSwitchModel).not.toHaveBeenCalled();
+        expect(screen.queryByRole('listbox')).toBeNull();
+    });
+
+    it('uses the model name as the accessible name (not a generic switch label)', () => {
+        renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5'],
+            onSwitchModel: vi.fn(),
+        });
+        const chip = screen.getByTestId('qs-model-chip');
+        // No generic aria-label override — SR name comes from visible model text.
+        expect(chip.getAttribute('aria-label')).toBeNull();
+        expect(chip.textContent || '').toContain('grok-4.5');
+        expect(screen.getByRole('button', { name: /grok-4\.5/ })).toBe(chip);
+    });
+
+    it('closes the menu when model picker data disappears', () => {
+        const { rerender } = renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5'],
+            onSwitchModel: vi.fn(),
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        expect(screen.getByRole('listbox')).toBeTruthy();
+        rerender(
+            <AssistantQuickSettingsBar
+                lang="zh-Hans"
+                theme={overlayTheme}
+                themeMode="light"
+                onToggleTheme={vi.fn()}
+                workflowEnabled={false}
+                onToggleWorkflow={vi.fn()}
+                ttsEnabled={false}
+                ttsPlaying={false}
+                onToggleTts={vi.fn()}
+                onLanguageChange={vi.fn()}
+            />,
+        );
+        expect(screen.queryByRole('listbox')).toBeNull();
+        expect(screen.queryByTestId('qs-model-chip')).toBeNull();
     });
 
     it('re-syncs switches when maclaw-config-changed is dispatched (e.g. from settings panels)', async () => {
@@ -188,6 +314,56 @@ describe('AssistantQuickSettingsBar', () => {
         fireEvent.click(screen.getByTestId('qs-model-chip'));
         expect(screen.getByRole('listbox')).toBeTruthy();
         fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByRole('listbox')).toBeNull();
+    });
+
+    it('marks only the current model as a selected option (current provider is context)', () => {
+        renderBar({
+            availableProviders: [
+                { name: 'hub-official', url: '', isHubService: true, configured: true },
+                { name: 'openai-custom', url: 'https://api.example.com', isHubService: false, configured: true },
+            ],
+            currentModel: 'gpt-5',
+            modelOptions: ['gpt-5', 'gpt-4o'],
+            onSwitchProvider: vi.fn(),
+            onSwitchModel: vi.fn(),
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        expect(screen.getByTestId('qs-model-menu-current-provider').textContent).toContain('hub-official');
+        const selected = screen.getAllByRole('option', { selected: true });
+        expect(selected).toHaveLength(1);
+        expect(selected[0].textContent || '').toContain('gpt-5');
+    });
+
+    it('selects a model with keyboard arrows + Enter', () => {
+        const onSwitchModel = vi.fn();
+        renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5', 'grok-3'],
+            onSwitchModel,
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        const listbox = screen.getByRole('listbox');
+        // Rapid arrow + enter must use the post-arrow index (not a stale closure).
+        fireEvent.keyDown(listbox, { key: 'ArrowDown' });
+        fireEvent.keyDown(listbox, { key: 'ArrowDown' }); // wraps to grok-4.5
+        fireEvent.keyDown(listbox, { key: 'ArrowDown' }); // grok-3 again
+        fireEvent.keyDown(listbox, { key: 'Enter' });
+        expect(onSwitchModel).toHaveBeenCalledWith('grok-3');
+        expect(screen.queryByRole('listbox')).toBeNull();
+    });
+
+    it('closes on outside mousedown without relying on querySelector timing', () => {
+        renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5'],
+            onSwitchModel: vi.fn(),
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        expect(screen.getByRole('listbox')).toBeTruthy();
+        fireEvent.mouseDown(document.body);
         expect(screen.queryByRole('listbox')).toBeNull();
     });
 });
