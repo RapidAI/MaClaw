@@ -291,12 +291,8 @@ func (a *App) DownloadEmbeddingModel() error {
 		return a.verifyDownloadedEmbeddingModel(destPath)
 	}
 
-	// 2) Fallback: Hub URL (emit progress & errors to UI).
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	hubURL := strings.TrimRight(cfg.RemoteHubURL, "/")
+	// 2) Fallback: Hub URL (emit progress & errors to UI; lock-free peek).
+	hubURL := a.PeekRemoteHubURLTrimmed()
 	if hubURL == "" {
 		return fmt.Errorf("default download URL is unavailable and Hub URL is not configured")
 	}

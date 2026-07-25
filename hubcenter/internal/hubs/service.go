@@ -404,6 +404,7 @@ func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret stri
 	if s.invitationCodeRoutes == nil {
 		return nil
 	}
+	tenantID = normalizeHubSyncTenantID(tenantID)
 	for _, code := range codes {
 		code = strings.TrimSpace(strings.ToUpper(code))
 		if code == "" {

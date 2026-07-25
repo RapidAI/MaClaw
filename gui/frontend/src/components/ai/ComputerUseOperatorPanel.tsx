@@ -253,6 +253,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
     }, [t]);
 
     useEffect(() => {
+        let flashTimer: ReturnType<typeof setTimeout> | undefined;
         EventsOn(EVENT_COMPUTER_USE_OBSERVE, (data: ObservePayload) => {
             setObserve(data || null);
             if (data?.ok === false) {
@@ -263,32 +264,57 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                     guidance: data.guidance,
                     action: data.action,
                 });
+                // Failed observe updates diagnostics only — do not auto-pop the panel
+                // (smoke/self-check failures used to look like CU "activation").
             } else if (data?.ok === true) {
                 setLastError(null);
+                // Only a successful observe (real agent/desktop activity) opens the panel.
+                setOpen(true);
+                setFlash(true);
+                if (flashTimer) clearTimeout(flashTimer);
+                flashTimer = setTimeout(() => setFlash(false), 600);
             }
-            setOpen(true);
-            setFlash(true);
-            window.setTimeout(() => setFlash(false), 600);
             void refreshHistorySparkline();
         });
         EventsOn(EVENT_COMPUTER_USE_ACTION, (data: ActionPayload) => {
             setActions((prev) => [data, ...prev].slice(0, 16));
-            setOpen(true);
+            // Open on successful actions; failed actions only surface if panel already open
+            // (avoids pop-from-idle when a stray tool error fires outside a desktop task).
+            if (data?.ok !== false) {
+                setOpen(true);
+            }
         });
         EventsOn(EVENT_COMPUTER_USE_ERROR, (data: LastError) => {
             setLastError(data || null);
-            setOpen(true);
+            // Errors refresh readiness banner; do not force-open the operator panel.
         });
         EventsOn(EVENT_COMPUTER_USE_CONTROL, (data: any) => {
             setPaused(!!data?.paused && !data?.stopped);
             setStopped(!!data?.stopped);
-            setOpen(true);
-            if (data?.stopped) {
-                setStatusLine(`${t("Stopped", "已停止", "已停止")} · steps=${data?.steps ?? 0}`);
-            } else if (data?.paused) {
-                setStatusLine(`${t("Paused", "已暂停", "已暫停")} · steps=${data?.steps ?? 0}`);
+            // Keep status in sync without auto-opening on stop/reset/done (avoids
+            // "CU jumped out" when user never started a desktop task this turn).
+            const steps = data?.steps ?? 0;
+            if (data?.stopped || data?.action === "stop") {
+                setStatusLine(`${t("Stopped", "已停止", "已停止")} · steps=${steps}`);
+            } else if (data?.action === "done") {
+                setStopped(false);
+                setPaused(false);
+                setStatusLine(t("Done — session closed", "已完成 — 会话已结束", "已完成 — 會話已結束"));
+            } else if (data?.action === "reset") {
+                setStopped(false);
+                setPaused(false);
+                setStatusLine(t("Idle — waiting for desktop task", "空闲 — 等待桌面任务", "空閒 — 等待桌面任務"));
+            } else if (data?.paused || data?.action === "pause") {
+                // Pause is an operator action (tray/panel) — surface the panel for controls.
+                setOpen(true);
+                setStatusLine(`${t("Paused", "已暂停", "已暫停")} · steps=${steps}`);
+            } else if (data?.action === "resume") {
+                setOpen(true);
+                setStatusLine(`${t("Running", "运行中", "運行中")} · steps=${steps}`);
+            } else if (data?.action === "resume_failed") {
+                setStatusLine(`${t("Resume failed", "恢复失败", "恢復失敗")} · steps=${steps}`);
             } else {
-                setStatusLine(`${t("Running", "运行中", "運行中")} · steps=${data?.steps ?? 0}`);
+                setStatusLine(`${t("Running", "运行中", "運行中")} · steps=${steps}`);
             }
         });
         EventsOn(EVENT_COMPUTER_USE_LOGS, (data: any) => {
@@ -304,6 +330,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
             void refreshLastE2E();
         });
         return () => {
+            if (flashTimer) clearTimeout(flashTimer);
             EventsOff(EVENT_COMPUTER_USE_OBSERVE);
             EventsOff(EVENT_COMPUTER_USE_ACTION);
             EventsOff(EVENT_COMPUTER_USE_ERROR);

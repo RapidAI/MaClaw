@@ -49,4 +49,5 @@ mail:
 
 logging:
   level: info
+  # Runtime logs: hub.log (all) and registration.log (onboarding/registration only).
   dir: ./data/logs

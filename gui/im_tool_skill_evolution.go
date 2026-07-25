@@ -172,9 +172,7 @@ func (h *IMMessageHandler) toolTriggerSkillRepair(args map[string]interface{}) s
 		return `{"ok":false,"error":"skill runner not initialized"}`
 	}
 
-	runner.executor.mu.RLock()
 	skills := runner.executor.loadSkills()
-	runner.executor.mu.RUnlock()
 
 	var found *corelib.NLSkillEntry
 	for i := range skills {
@@ -239,9 +237,7 @@ func (h *IMMessageHandler) toolTriggerSkillRepair(args map[string]interface{}) s
 	runner.markSelfRepairPending(found.Name)
 	if wait {
 		runner.maybeRepairSkillWithForce(found, forced)
-		runner.executor.mu.RLock()
 		skills = runner.executor.loadSkills()
-		runner.executor.mu.RUnlock()
 		payload := map[string]interface{}{
 			"ok":      true,
 			"skill":   found.Name,
@@ -293,9 +289,7 @@ func (h *IMMessageHandler) toolTriggerSkillOptimize(args map[string]interface{})
 	// Load skill entry.
 	var found *corelib.NLSkillEntry
 	if h.app.skillExecutor != nil {
-		h.app.skillExecutor.mu.RLock()
 		skills := h.app.skillExecutor.loadSkills()
-		h.app.skillExecutor.mu.RUnlock()
 		for i := range skills {
 			if skills[i].MatchesName(name) {
 				found = cskill.CloneNLSkillEntry(&skills[i])

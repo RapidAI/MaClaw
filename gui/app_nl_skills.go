@@ -186,7 +186,14 @@ type SkillExecutor struct {
 	manager     *RemoteSessionManager
 	sshMgr      *remote.SSHSessionManager
 	bgTaskMgr   *remote.SSHBackgroundTaskManager
-	mu          sync.RWMutex
+	// mu is retained for backward-compatible test hooks that probe whether
+	// StartRun is independent of skill-list writers; skill table RMW uses
+	// skillListMutateMu only (never hold mu across LoadConfig/configMu).
+	mu sync.RWMutex
+	// skillListMutateMu serializes loadSkills → mutate → saveSkills RMW.
+	// Lock order: skillListMutateMu then configMu (via LoadConfig/PatchConfig).
+	// Never hold configMu and then take skillListMutateMu.
+	skillListMutateMu sync.Mutex
 
 	skillCacheMu  sync.Mutex
 	skillCache    []corelib.NLSkillEntry
@@ -222,11 +229,29 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	if e.app == nil {
 		return skill.ScanAllSkillDirs()
 	}
-	cfg, err := e.app.LoadConfig()
-	if err != nil {
-		return nil
+	// Prefer immutable snaps (lock-free). Skills live on nlSkillsSnap; external
+	// dirs on config snap. Fall back to LoadConfig on cold start.
+	var nlSkills []corelib.NLSkillEntry
+	var externalDirs []string
+	if sk := e.app.PeekNLSkills(); sk != nil {
+		nlSkills = sk
 	}
-	cacheKey := skillLoadCacheKey(cfg.NLSkills, cfg.ExternalSkillDirs, e.cachedSkillScannerVersion())
+	if p := e.app.PeekConfig(); p != nil {
+		externalDirs = p.ExternalSkillDirs
+		if nlSkills == nil {
+			// Legacy snap that still embeds skills.
+			nlSkills = p.NLSkills
+		}
+	}
+	if nlSkills == nil && e.app.PeekConfig() == nil {
+		cfg, err := e.app.LoadConfig()
+		if err != nil {
+			return nil
+		}
+		nlSkills = cfg.NLSkills
+		externalDirs = cfg.ExternalSkillDirs
+	}
+	cacheKey := skillLoadCacheKey(nlSkills, externalDirs, e.cachedSkillScannerVersion())
 	e.skillCacheMu.Lock()
 	if e.skillCache != nil && e.skillCacheKey == cacheKey && time.Since(e.skillCacheAt) < skillLoadCacheTTL {
 		cached := cloneSkillEntries(e.skillCache)
@@ -235,7 +260,7 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	}
 	e.skillCacheMu.Unlock()
 
-	skills := append([]corelib.NLSkillEntry(nil), cfg.NLSkills...)
+	skills := append([]corelib.NLSkillEntry(nil), nlSkills...)
 
 	// Build two indexes: primary by directory path (stable), fallback by Name.
 	knownByDir := make(map[string]int, len(skills))
@@ -249,7 +274,7 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		}
 	}
 
-	fileSkills, fileSkillsReady := e.scanFileSkills(cfg.ExternalSkillDirs)
+	fileSkills, fileSkillsReady := e.scanFileSkills(externalDirs)
 	for _, fs := range fileSkills {
 		// Primary: match by directory path (stable identity).
 		// Fallback: match by Name (backward compat for config entries without SkillDir).
@@ -700,6 +725,9 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
 	if e == nil || e.app == nil {
 		return skill.ScanAllSkillDirs()
 	}
+	if p := e.app.PeekConfig(); p != nil {
+		return scanSkillRoots(e.app.skillScanRootsWithExternal(p.ExternalSkillDirs))
+	}
 	cfg, err := e.app.LoadConfig()
 	if err != nil {
 		return scanSkillRoots(e.app.skillScanRootsWithExternal(nil))
@@ -707,11 +735,25 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
 	return scanSkillRoots(e.app.skillScanRootsWithExternal(cfg.ExternalSkillDirs))
 }
 
+// withSkillListMutate serializes skill-table read-modify-write without holding
+// e.mu across configMu (avoids the lock-order inversion that froze skills UI).
+func (e *SkillExecutor) withSkillListMutate(fn func() error) error {
+	if e == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
+	return fn()
+}
+
 // saveSkills persists skill entries to config.
 // Disk-backed skills (source == "file", or learned/crafted with SkillDir) are
 // saved as thin overlays so config.json is not polluted with YAML-managed
 // steps. Full definitions load from skill.yaml at runtime via loadSkills.
 // Config-only learned/crafted skills (no SkillDir) still store full entries.
+//
+// Callers that loadSkills → mutate → saveSkills must hold skillListMutateMu
+// (via withSkillListMutate) for the whole RMW; saveSkills itself does not lock.
 func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	if e == nil || e.app == nil {
 		return fmt.Errorf("skill executor app not initialized")
@@ -963,8 +1005,9 @@ func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 	if e == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	// skillListMutateMu (not e.mu): serializes RMW without nesting over configMu.
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	name := strings.TrimSpace(entry.Name)
 	if name == "" {
@@ -1073,8 +1116,8 @@ func scanSkillRoots(roots []string) []corelib.NLSkillEntry {
 // are preserved from the caller if non-zero, allowing the experience
 // extractor to carry forward stats when replacing a pattern.
 func (e *SkillExecutor) Update(entry corelib.NLSkillEntry) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	skills := e.loadSkills()
 	for i, s := range skills {
@@ -1113,8 +1156,8 @@ func (e *SkillExecutor) UpdateLearnedSource(entry corelib.NLSkillEntry) error {
 	if e.app == nil {
 		return fmt.Errorf("skill executor app not initialized")
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	name := strings.TrimSpace(entry.Name)
 	if name == "" {
@@ -1188,8 +1231,8 @@ func (e *SkillExecutor) UpdateLearnedSource(entry corelib.NLSkillEntry) error {
 // UpdateStatus changes only the status field of an existing skill.
 // Used by focused lifecycle actions such as setup gating or local review approval.
 func (e *SkillExecutor) UpdateStatus(name, status string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	skills := e.loadSkills()
 	idx := -1
@@ -1226,8 +1269,7 @@ func (e *SkillExecutor) UpdateStatus(name, status string) error {
 // It preserves Name, Source, HubSkillID, SourceProject, Status, and CreatedAt.
 // Network calls are made outside the mutex to avoid blocking other skill operations.
 func (e *SkillExecutor) UpdateFromHub(name string) error {
-	// Phase 1: Read skill info under read lock.
-	e.mu.RLock()
+	// Phase 1: snapshot skill info (loadSkills is self-synchronized).
 	skills := e.loadSkills()
 	var skill corelib.NLSkillEntry
 	found := false
@@ -1247,7 +1289,6 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 			}
 		}
 	}
-	e.mu.RUnlock()
 
 	if !found {
 		return fmt.Errorf("skill %q not found", name)
@@ -1276,8 +1317,8 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 	}
 
 	// Phase 3: Apply update under write lock.
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	// Re-read skills in case they changed while we were doing network I/O.
 	skills = e.loadSkills()
@@ -1324,8 +1365,8 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 
 // Delete removes a Skill by name.
 func (e *SkillExecutor) Delete(name string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	skills := e.loadSkills()
 	found := false
@@ -1419,8 +1460,8 @@ func dirExists(path string) bool {
 // the on-disk skill.yaml/skill.yml name field, renames the directory,
 // and persists the changes to config.json.
 func (e *SkillExecutor) Rename(oldName, newName string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	// Sanitize newName for filesystem safety (strip path separators, illegal chars).
 	newName = skill.SanitizeSkillName(newName)
@@ -1541,8 +1582,8 @@ type uploadStatusFile struct {
 // derived (so one-click Hub pack gate can see HubSkillID without waiting
 // for a background rescan). Bare submission ids stay tracking-only.
 func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	skills := e.loadSkills()
 	for i, s := range skills {
@@ -1594,10 +1635,10 @@ func classifySkillExecutionClass(entry corelib.NLSkillEntry) string {
 }
 
 // List returns all skill definitions.
+// loadSkills takes configMu (via LoadConfig) and skillCacheMu; do not hold e.mu
+// across it — that created lock-order inversions with writers that take
+// skillExecutor.mu after PatchConfig/configMu and made skills UI hang.
 func (e *SkillExecutor) List() []NLSkillDefinition {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
 	skills := e.loadSkills()
 	defs := make([]NLSkillDefinition, 0, len(skills))
 	for _, s := range skills {
@@ -1752,9 +1793,6 @@ func readMaclawAppEntryFromSkillYAML(skillDir string) string {
 // entries with Body populated from skill.md content. This is the bridge between
 // the NL Skill system and the body-aware tool routing pipeline.
 func (e *SkillExecutor) AsRegisteredTools() []tool.RegisteredTool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
 	skills := e.loadSkills()
 	var result []tool.RegisteredTool
 	for _, s := range skills {
@@ -2168,8 +2206,8 @@ func (e *SkillExecutor) ExecuteWithArgs(name string, runArgs map[string]interfac
 		return output, nil
 	}
 
-	// Update usage statistics under write lock.
-	e.mu.Lock()
+	// Update usage statistics under skill-list mutate lock (not e.mu / configMu inversion).
+	e.skillListMutateMu.Lock()
 	skills := e.loadSkills()
 	shouldEmitUsageEvent := false
 	for i, s := range skills {
@@ -2195,7 +2233,7 @@ func (e *SkillExecutor) ExecuteWithArgs(name string, runArgs map[string]interfac
 			break
 		}
 	}
-	e.mu.Unlock()
+	e.skillListMutateMu.Unlock()
 
 	// Notify frontend to refresh skill list with updated stats (outside lock).
 	if shouldEmitUsageEvent && e.app != nil {
@@ -2214,7 +2252,6 @@ type namedSkillExecutionResult struct {
 }
 
 func (e *SkillExecutor) executeSkillByNameDetailed(name string, runArgs map[string]interface{}) namedSkillExecutionResult {
-	e.mu.RLock()
 	var target *corelib.NLSkillEntry
 	for _, s := range e.loadSkills() {
 		if s.MatchesName(name) && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
@@ -2223,7 +2260,6 @@ func (e *SkillExecutor) executeSkillByNameDetailed(name string, runArgs map[stri
 			break
 		}
 	}
-	e.mu.RUnlock()
 
 	if target == nil {
 		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: fmt.Errorf("skill %q not found or disabled", name)}}
@@ -5035,8 +5071,8 @@ func importedStructuredSkillDefinitionPath(skillDir string) (string, string) {
 // for over 30 days and have a success rate below 50% (or were never used).
 // Returns the names of disabled Skills.
 func (e *SkillExecutor) CleanupStaleSkills() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	skills := e.loadSkills()
 	cutoff := time.Now().Add(-30 * 24 * time.Hour)
@@ -5414,7 +5450,6 @@ func (a *App) packageSkillForMarketWithDirForOutbound(skillName string) (string,
 }
 
 func (a *App) packageSkillForMarketWithDirOptions(skillName string, strictOutbound bool) (string, string, error) {
-	a.skillExecutor.mu.RLock()
 	var target *corelib.NLSkillEntry
 	for _, s := range a.skillExecutor.loadSkills() {
 		if s.Name == skillName {
@@ -5423,7 +5458,6 @@ func (a *App) packageSkillForMarketWithDirOptions(skillName string, strictOutbou
 			break
 		}
 	}
-	a.skillExecutor.mu.RUnlock()
 
 	if target == nil {
 		return "", "", fmt.Errorf("skill %q not found", skillName)

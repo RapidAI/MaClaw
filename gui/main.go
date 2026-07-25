@@ -404,39 +404,57 @@ func isTUISubcommand(args []string) bool {
 // initLogFile sets up log output to <MaclawBaseDir>/logs/maclaw.log (with rotation)
 // while keeping stderr as a fallback. Logs are rotated when the file exceeds
 // 10 MB; the previous log is kept as maclaw.log.1.
+//
+// Registration/onboarding lines are always written (even when log_detail_enabled
+// is false) and also teed to registration.log for support diagnosis.
 func initLogFile() {
 	dir := corelib.MaclawLogsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
 	logPath := filepath.Join(dir, "maclaw.log")
+	regPath := filepath.Join(dir, "registration.log")
 
 	// Rotate if existing log exceeds 10 MB.
-	if info, err := os.Stat(logPath); err == nil && info.Size() > 10*1024*1024 {
-		prev := logPath + ".1"
-		_ = os.Remove(prev)
-		_ = os.Rename(logPath, prev)
-	}
+	rotateLogIfLarge(logPath)
+	rotateLogIfLarge(regPath)
 
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return
 	}
+	regF, regErr := os.OpenFile(regPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if regErr != nil {
+		regF = nil
+	}
 	// Write to both file and stderr so console still works during development.
-	mw := &detailAwareLogWriter{file: f, stderr: os.Stderr}
+	mw := &detailAwareLogWriter{file: f, regFile: regF, stderr: os.Stderr}
 	log.SetOutput(mw)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Printf("[maclaw] === started at %s ===", time.Now().Format(time.RFC3339))
-	fmt.Fprintf(os.Stderr, "[maclaw] logging to %s\n", logPath)
+	log.Printf("[maclaw] registration logging path=%s", regPath)
+	fmt.Fprintf(os.Stderr, "[maclaw] logging to %s (registration: %s)\n", logPath, regPath)
+}
+
+func rotateLogIfLarge(logPath string) {
+	if info, err := os.Stat(logPath); err == nil && info.Size() > 10*1024*1024 {
+		prev := logPath + ".1"
+		_ = os.Remove(prev)
+		_ = os.Rename(logPath, prev)
+	}
 }
 
 type detailAwareLogWriter struct {
-	file   io.Writer
-	stderr io.Writer
+	file    io.Writer // maclaw.log
+	regFile io.Writer // registration.log (onboarding/registration only)
+	stderr  io.Writer
 }
 
 func (w *detailAwareLogWriter) Write(p []byte) (int, error) {
-	if !corelib.IsLogDetailEnabled() && !isImportantLogLine(string(p)) {
+	line := string(p)
+	isReg := isRegistrationLogLine(line)
+	// Registration diagnosis must always reach disk, even with log_detail off.
+	if !corelib.IsLogDetailEnabled() && !isReg && !isImportantLogLine(line) {
 		return len(p), nil
 	}
 	// Write sinks independently. io.MultiWriter fails the whole write when any
@@ -446,6 +464,11 @@ func (w *detailAwareLogWriter) Write(p []byte) (int, error) {
 	var firstErr error
 	if w.file != nil {
 		if _, err := w.file.Write(p); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if isReg && w.regFile != nil {
+		if _, err := w.regFile.Write(p); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -470,7 +493,25 @@ func setLogFallback(desktop bool, stderr io.Writer) {
 	log.SetOutput(stderr)
 }
 
+func isRegistrationLogLine(line string) bool {
+	lower := strings.ToLower(line)
+	// Match both "[onboarding]" and "[onboarding-sms]" / "[onboarding-email]" etc.
+	if strings.Contains(lower, "[onboarding") || strings.Contains(lower, "[registration") {
+		return true
+	}
+	// Frontend onboarding wizard diagnostics (LogFrontendDiagnostic with tag=onboarding).
+	// JSON may be compact ("tag":"onboarding") or spaced ("tag": "onboarding").
+	if strings.Contains(lower, "[frontend-diagnostic]") &&
+		(strings.Contains(lower, `"tag":"onboarding"`) || strings.Contains(lower, `"tag": "onboarding"`)) {
+		return true
+	}
+	return false
+}
+
 func isImportantLogLine(line string) bool {
+	if isRegistrationLogLine(line) {
+		return true
+	}
 	lower := strings.ToLower(line)
 	// Keep download/workdir diagnostics visible even when log_detail_enabled is off:
 	// agents land files under working_directory only when these paths are wired correctly.

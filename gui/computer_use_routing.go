@@ -1,7 +1,9 @@
 package main
 
 import (
+	"log"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
@@ -28,56 +30,244 @@ func (h *IMMessageHandler) computerUseEnabled() bool {
 	return computerUseEnabledFromConfig(&cfg)
 }
 
-// computerUseSessionActive is true after a successful computer_* action this process.
-func computerUseSessionActive() bool {
-	globalComputerUse.mu.Lock()
-	defer globalComputerUse.mu.Unlock()
-	return globalComputerUse.activated
+// computerUseStickyTTL is the hard cap after the last successful computer_* action.
+// Root cause of "random reactivation": sticky was process-lifetime.
+const computerUseStickyTTL = 8 * time.Minute
+
+// computerUseStickyDegradedTTL is used when intent cannot be re-evaluated (nil/degraded
+// classifier). Without reclassification, long sticky lets models keep calling
+// computer_observe on pure chat — keep that window short.
+const computerUseStickyDegradedTTL = 2 * time.Minute
+
+// computerUseIntentMinConfidence is the minimum UIC embedding confidence for
+// LabelComputerUse to open the CU surface on a fresh turn.
+// Raised from 0.50 to cut false opens on office/document phrasing.
+const computerUseIntentMinConfidence = 0.65
+
+// computerUseIntentCompetingConfidence is required when office/browser/non_coding
+// also appear as secondary intents (common false-positive pattern: "写 word 简历").
+const computerUseIntentCompetingConfidence = 0.78
+
+// computerUseStickyReleaseConfidence is the minimum non-CU primary confidence that
+// ends sticky session mid-conversation (e.g. user switched to pure chat/coding).
+const computerUseStickyReleaseConfidence = 0.55
+
+// clearComputerUseStickyLocked clears sticky flags. Caller must hold globalComputerUse.mu.
+func clearComputerUseStickyLocked() (changed bool) {
+	if !globalComputerUse.activated && globalComputerUse.activatedAt.IsZero() {
+		return false
+	}
+	globalComputerUse.activated = false
+	globalComputerUse.activatedAt = time.Time{}
+	return true
 }
 
-func markComputerUseSessionActive() {
-	globalComputerUse.mu.Lock()
-	globalComputerUse.activated = true
-	globalComputerUse.mu.Unlock()
-	if UpdateComputerUseTray != nil {
+func notifyComputerUseTrayIf(changed bool) {
+	if changed && UpdateComputerUseTray != nil {
 		UpdateComputerUseTray()
 	}
 }
 
-// computerUseIntentMinConfidence is the minimum UIC embedding confidence for
-// LabelComputerUse to activate the CU surface. Aligned with the Router's
-// UIC conditional-keep threshold convention (0.50).
-const computerUseIntentMinConfidence = 0.50
+// computerUseStickyState returns whether sticky is still valid (hard TTL) and its age.
+// Lazy expiry refreshes the tray when the hard TTL elapses.
+func computerUseStickyState() (active bool, age time.Duration) {
+	globalComputerUse.mu.Lock()
+	if !globalComputerUse.activated {
+		globalComputerUse.mu.Unlock()
+		return false, 0
+	}
+	if globalComputerUse.activatedAt.IsZero() {
+		changed := clearComputerUseStickyLocked()
+		globalComputerUse.mu.Unlock()
+		notifyComputerUseTrayIf(changed)
+		return false, 0
+	}
+	age = time.Since(globalComputerUse.activatedAt)
+	if age < 0 {
+		// Clock skew / time adjustment — treat as expired rather than sticky forever.
+		changed := clearComputerUseStickyLocked()
+		globalComputerUse.mu.Unlock()
+		notifyComputerUseTrayIf(changed)
+		return false, 0
+	}
+	if age > computerUseStickyTTL {
+		changed := clearComputerUseStickyLocked()
+		globalComputerUse.mu.Unlock()
+		notifyComputerUseTrayIf(changed)
+		return false, 0
+	}
+	globalComputerUse.mu.Unlock()
+	return true, age
+}
+
+// computerUseSessionActive is true after a recent successful computer_* action.
+func computerUseSessionActive() bool {
+	active, _ := computerUseStickyState()
+	return active
+}
+
+func markComputerUseSessionActive() {
+	globalComputerUse.mu.Lock()
+	was := globalComputerUse.activated
+	globalComputerUse.activated = true
+	globalComputerUse.activatedAt = time.Now()
+	globalComputerUse.mu.Unlock()
+	// Tray only needs a refresh when entering Active from inactive.
+	notifyComputerUseTrayIf(!was)
+}
+
+// clearComputerUseSessionActive ends sticky CU injection (done / stop / reset /
+// non-CU turn / TTL). Safe to call when already inactive.
+func clearComputerUseSessionActive() {
+	globalComputerUse.mu.Lock()
+	changed := clearComputerUseStickyLocked()
+	globalComputerUse.mu.Unlock()
+	notifyComputerUseTrayIf(changed)
+}
+
+// computerUseActivationInput is the pure input to the CU gate (testable without UIC).
+type computerUseActivationInput struct {
+	Explicit          bool
+	Sticky            bool
+	StickyAge         time.Duration
+	HasClassification bool
+	Classification    intent.ClassificationResult
+}
+
+// computerUseActivationDecision is the pure gate result.
+type computerUseActivationDecision struct {
+	Active      bool
+	ClearSticky bool
+	Reason      string
+}
+
+// decideComputerUseActivation is the pure root-cause gate:
+//
+//  1. Explicit @computer / "computer use" → open
+//  2. Confident LabelComputerUse → open
+//  3. Sticky from recent computer_* activity → open only while the user has not
+//     clearly left desktop control; shortened when classification is unavailable
+func decideComputerUseActivation(in computerUseActivationInput) computerUseActivationDecision {
+	if in.Explicit {
+		return computerUseActivationDecision{Active: true, Reason: "explicit_trigger"}
+	}
+
+	if in.HasClassification && computerUseIntentActivated(in.Classification) {
+		return computerUseActivationDecision{Active: true, Reason: "semantic_computer_use"}
+	}
+
+	if !in.Sticky {
+		return computerUseActivationDecision{Active: false, Reason: "inactive"}
+	}
+
+	// Sticky path: cannot reclassify → short degraded TTL only.
+	if !in.HasClassification || in.Classification.Degraded {
+		if in.StickyAge > computerUseStickyDegradedTTL {
+			return computerUseActivationDecision{
+				Active: false, ClearSticky: true, Reason: "sticky_degraded_ttl",
+			}
+		}
+		return computerUseActivationDecision{Active: true, Reason: "sticky_degraded"}
+	}
+
+	if computerUseStickyShouldRelease(in.Classification) {
+		return computerUseActivationDecision{
+			Active: false, ClearSticky: true, Reason: "sticky_released",
+		}
+	}
+	return computerUseActivationDecision{Active: true, Reason: "sticky"}
+}
 
 // shouldActivateComputerUse decides playbook + tool injection for this turn.
-// Intent detection is semantic: the unified intent classifier (embedding-only
-// fast path, no LLM call) decides whether the message wants desktop GUI
-// operation. Explicit @computer syntax and an already-active CU session
-// always win; when the classifier is unavailable the gate stays closed.
 func (h *IMMessageHandler) shouldActivateComputerUse(userText string) bool {
 	if h == nil || !h.computerUseEnabled() {
 		return false
 	}
-	if computerUseSessionActive() {
-		return true
+
+	sticky, stickyAge := computerUseStickyState()
+	in := computerUseActivationInput{
+		Explicit:  computeruse.HasExplicitTrigger(userText),
+		Sticky:    sticky,
+		StickyAge: stickyAge,
 	}
-	if computeruse.HasExplicitTrigger(userText) {
-		return true
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		in.HasClassification = true
+		in.Classification = uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: userText})
 	}
-	uic := h.getUnifiedClassifier()
-	if uic == nil {
-		return false
+
+	d := decideComputerUseActivation(in)
+	if d.ClearSticky {
+		clearComputerUseSessionActive()
 	}
-	return computerUseIntentActivated(uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: userText}))
+	// Log only state changes / opens — not the common inactive path.
+	if d.Active || d.ClearSticky {
+		log.Printf("[computer-use] gate active=%v clear=%v reason=%s sticky=%v age=%s",
+			d.Active, d.ClearSticky, d.Reason, sticky, stickyAge.Round(time.Millisecond))
+	}
+	return d.Active
 }
 
 // computerUseIntentActivated is the pure decision on a UIC result: the gate
 // opens only for a confident, non-degraded computer_use primary intent.
+// Competing secondaries (office/browser/content) require a clearer win.
 func computerUseIntentActivated(res intent.ClassificationResult) bool {
 	if res.Degraded {
 		return false
 	}
-	return res.Primary == intent.LabelComputerUse && res.Confidence >= computerUseIntentMinConfidence
+	if res.Primary != intent.LabelComputerUse {
+		return false
+	}
+	if res.Confidence < computerUseIntentMinConfidence {
+		return false
+	}
+	if computerUseHasCompetingSecondary(res) && res.Confidence < computerUseIntentCompetingConfidence {
+		return false
+	}
+	return true
+}
+
+func computerUseHasCompetingSecondary(res intent.ClassificationResult) bool {
+	for _, s := range res.Secondary {
+		switch s {
+		case intent.LabelOffice, intent.LabelBrowser, intent.LabelNonCoding,
+			intent.LabelSearch, intent.LabelDocumentDelivery, intent.LabelCoding:
+			return true
+		}
+	}
+	return false
+}
+
+// computerUseStickyShouldRelease ends sticky injection only when the user has
+// clearly left desktop control. Office is intentionally NOT a release label:
+// mid-task follow-ups ("第二段改成简介") often classify as office and must keep
+// computer_* tools. Fresh-turn office false opens are blocked by
+// computerUseIntentActivated + competing secondary threshold instead.
+func computerUseStickyShouldRelease(res intent.ClassificationResult) bool {
+	if res.Degraded {
+		return false
+	}
+	if res.Confidence < computerUseStickyReleaseConfidence {
+		return false
+	}
+	switch res.Primary {
+	case intent.LabelComputerUse,
+		intent.LabelContinuation,
+		intent.LabelUnknown,
+		intent.LabelAmbiguous,
+		intent.LabelOffice,
+		intent.LabelCurrentTime:
+		// Stay sticky: multi-step desktop / soft follow-ups / time checks / uncertain.
+		return false
+	case intent.LabelCoding, intent.LabelBugFix, intent.LabelMaintenance,
+		intent.LabelSearch, intent.LabelBrowser, intent.LabelSSH,
+		intent.LabelKnowledgeWrite, intent.LabelLiveData,
+		intent.LabelNonCoding, intent.LabelDocumentDelivery,
+		intent.LabelBusinessData, intent.LabelWorkflowTask:
+		return true
+	default:
+		// Unknown future labels: release when confidence is already high enough.
+		return true
+	}
 }
 
 // ensureComputerUseTools forces CU tools into the routed list when active.
@@ -86,10 +276,6 @@ func computerUseIntentActivated(res intent.ClassificationResult) bool {
 func ensureComputerUseTools(tools, allTools []map[string]interface{}, active bool) []map[string]interface{} {
 	if !active {
 		return tools
-	}
-	have := make(map[string]bool, len(tools))
-	for _, t := range tools {
-		have[extractToolName(t)] = true
 	}
 	byName := make(map[string]map[string]interface{}, len(allTools))
 	for _, t := range allTools {
@@ -100,16 +286,21 @@ func ensureComputerUseTools(tools, allTools []map[string]interface{}, active boo
 	}
 	out := make([]map[string]interface{}, 0, len(tools)+len(computeruse.ToolNames))
 	// Prefer computer tools first in the list for model attention.
+	seen := make(map[string]bool, len(computeruse.ToolNames))
 	for _, name := range computeruse.ToolNames {
 		if def, ok := byName[name]; ok {
 			out = append(out, def)
-			have[name] = true
+			seen[name] = true
 		}
 	}
 	for _, t := range tools {
 		name := extractToolName(t)
-		if computeruse.IsComputerUseTool(name) {
-			continue // already prepended
+		if name == "" {
+			out = append(out, t)
+			continue
+		}
+		if seen[name] || computeruse.IsComputerUseTool(name) {
+			continue
 		}
 		if computeruse.LegacyGUICompeteTools[name] {
 			continue // demote raw coordinate tools while CU is active
@@ -150,6 +341,17 @@ func emitComputerUseEvent(name string, data interface{}) {
 		return
 	}
 	computerUseEventEmitter(name, data)
+}
+
+// emitComputerUseDoneControl notifies UI that sticky CU session ended via computer_done.
+func emitComputerUseDoneControl(steps int) {
+	emitComputerUseEvent(EventComputerUseControl, map[string]interface{}{
+		"at":      time.Now().Format(time.RFC3339),
+		"action":  "done",
+		"paused":  false,
+		"stopped": false,
+		"steps":   steps,
+	})
 }
 
 // bindComputerUseApp wires YOLO gate + UI event emission for Computer Use.

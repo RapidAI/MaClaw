@@ -36,9 +36,7 @@ type RestoreReport struct {
 // into a zip archive at outputPath.  The archive contains a manifest.json
 // plus one <kebab-name>.json file per skill.
 func (e *SkillExecutor) BackupSkills(outputPath string) error {
-	e.mu.RLock()
 	skills := e.loadSkills()
-	e.mu.RUnlock()
 	for _, skill := range skills {
 		if err := e.scanSkillBeforeArchiveExport(skill); err != nil {
 			return err
@@ -57,9 +55,7 @@ func (e *SkillExecutor) ExportLearnedSkillsZip(names []string, outputPath string
 		return fmt.Errorf("no skill names specified")
 	}
 
-	e.mu.RLock()
 	allSkills := e.loadSkills()
-	e.mu.RUnlock()
 
 	// Build set of requested names.
 	wanted := make(map[string]bool, len(names))
@@ -269,9 +265,10 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 	}
 	mrc.Close()
 
-	// Build a set of existing skill names for duplicate detection
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	// Build a set of existing skill names for duplicate detection.
+	// skillListMutateMu serializes restore RMW without nesting over configMu via e.mu.
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
 
 	existingSkills := e.loadSkills()
 	existingNames := make(map[string]bool, len(existingSkills))

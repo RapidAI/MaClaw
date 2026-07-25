@@ -264,7 +264,179 @@ func TestResolveByEmailUsesOfficialTenantPublicFallbackPolicyForPhone(t *testing
 	}
 }
 
-func TestResolveByEmailPhoneRouteDoesNotMixPublicFallback(t *testing.T) {
+func TestResolveByEmailUsesExplicitDefaultTenantPublicFallbackPolicyForPhone(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	hub := &store.HubInstance{ID: "hub_official_default_phone_public", OwnerEmail: "owner@example.com", Name: "Official Default Phone Hub", BaseURL: "https://official-default-phone.example.com", Visibility: "private", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_official_default_phone_public":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"tenant_default":{"tenant_id":"tenant_default","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "phone:19900001111")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "" {
+		t.Fatalf("expected explicit default tenant phone fallback, got %+v", result)
+	}
+}
+
+func TestResolveByEmailPhoneInvitationOverridesFallback(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	fallbackHub := &store.HubInstance{ID: "hub_phone_fallback", OwnerEmail: "fallback@example.com", Name: "Phone Fallback", BaseURL: "https://phone-fallback.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "fallback-secret", CreatedAt: now, UpdatedAt: now}
+	inviteHub := &store.HubInstance{ID: "hub_phone_invite", OwnerEmail: "invite@example.com", Name: "Phone Invite", BaseURL: "https://phone-invite.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "invite-secret", CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{fallbackHub, inviteHub} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_phone_fallback":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"fallback":{"tenant_id":"fallback","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	if err := st.InvitationCodeRoutes.Upsert(ctx, "phone-invite", inviteHub.ID, "invite_tenant"); err != nil {
+		t.Fatalf("create invitation code route: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	svc.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
+	if err := svc.Rebuild(ctx); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	result, err := svc.ResolveByEmailFromIP(ctx, "phone:19900001111", "", "phone-invite")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != inviteHub.ID || result.Hubs[0].TenantID != "invite_tenant" {
+		t.Fatalf("expected invitation route to override phone fallback, got %+v", result)
+	}
+}
+
+func TestResolveByEmailPhoneInvitationNormalizesDefaultTenant(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	fallbackHub := &store.HubInstance{ID: "hub_phone_default_invite_fallback", OwnerEmail: "fallback@example.com", Name: "Phone Fallback", BaseURL: "https://phone-fallback.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "fallback-secret", CreatedAt: now, UpdatedAt: now}
+	inviteHub := &store.HubInstance{ID: "hub_phone_default_invite", OwnerEmail: "invite@example.com", Name: "Phone Invite", BaseURL: "https://phone-invite.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "invite-secret", CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{fallbackHub, inviteHub} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_phone_default_invite_fallback":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"fallback":{"tenant_id":"fallback","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	if err := st.InvitationCodeRoutes.Upsert(ctx, "phone-default-invite", inviteHub.ID, "tenant_default"); err != nil {
+		t.Fatalf("create invitation code route: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	svc.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
+	result, err := svc.ResolveByEmailFromIP(ctx, "phone:19900001111", "", "phone-default-invite")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != inviteHub.ID || result.Hubs[0].TenantID != "" {
+		t.Fatalf("expected invitation to normalize default tenant, got %+v", result)
+	}
+}
+
+func TestResolveByEmailPhoneUnknownInvitationFallsBack(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	fallbackHub := &store.HubInstance{ID: "hub_phone_unknown_invite_fallback", OwnerEmail: "fallback@example.com", Name: "Phone Fallback", BaseURL: "https://phone-fallback.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "fallback-secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, fallbackHub); err != nil {
+		t.Fatalf("create fallback hub: %v", err)
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_phone_unknown_invite_fallback":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"fallback":{"tenant_id":"fallback","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	svc.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
+	result, err := svc.ResolveByEmailFromIP(ctx, "phone:19900001111", "", "unknown-code")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != fallbackHub.ID || result.Hubs[0].TenantID != "fallback" {
+		t.Fatalf("expected unknown invitation to use the phone fallback, got %+v", result)
+	}
+}
+
+func TestResolveByEmailPhoneConsumedInvitationDoesNotOverrideFallback(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	fallbackHub := &store.HubInstance{ID: "hub_phone_consumed_invite_fallback", OwnerEmail: "fallback@example.com", Name: "Phone Fallback", BaseURL: "https://phone-fallback.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "fallback-secret", CreatedAt: now, UpdatedAt: now}
+	inviteHub := &store.HubInstance{ID: "hub_phone_consumed_invite", OwnerEmail: "invite@example.com", Name: "Phone Invite", BaseURL: "https://phone-invite.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "invite-secret", CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{fallbackHub, inviteHub} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_phone_consumed_invite_fallback":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"fallback":{"tenant_id":"fallback","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	if err := st.InvitationCodeRoutes.Upsert(ctx, "phone-consumed", inviteHub.ID, "invite_tenant"); err != nil {
+		t.Fatalf("create invitation code route: %v", err)
+	}
+	if err := st.InvitationCodeRoutes.MarkUsedByEmail(ctx, "phone-consumed", "phone:18800001111"); err != nil {
+		t.Fatalf("mark invitation code used: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	svc.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
+	result, err := svc.ResolveByEmailFromIP(ctx, "phone:19900001111", "", "phone-consumed")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != fallbackHub.ID || result.Hubs[0].TenantID != "fallback" {
+		t.Fatalf("expected consumed invitation not to override phone fallback, got %+v", result)
+	}
+}
+
+func TestResolveByEmailPhoneConsumedInvitationUsesHistoricalRoute(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	fallbackHub := &store.HubInstance{ID: "hub_phone_consumed_history_fallback", OwnerEmail: "fallback@example.com", Name: "Phone Fallback", BaseURL: "https://phone-fallback.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "fallback-secret", CreatedAt: now, UpdatedAt: now}
+	historicalHub := &store.HubInstance{ID: "hub_phone_consumed_history", OwnerEmail: "history@example.com", Name: "Phone History", BaseURL: "https://phone-history.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "history-secret", CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{fallbackHub, historicalHub} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.System.Set(ctx, systemKeyHubRegistrationPolicies, `{"hubs":{"hub_phone_consumed_history_fallback":{"hub_origin":"official","default_signup_scope":"domain_restricted","tenants":{"fallback":{"tenant_id":"fallback","signup_scope":"public","is_public_fallback":true,"status":"active"}}}}}`); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "phone_consumed_history", HubID: historicalHub.ID, TenantID: "history", Email: "phone:18800001111", IsDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create historical phone route: %v", err)
+	}
+	if err := st.InvitationCodeRoutes.Upsert(ctx, "phone-consumed-history", historicalHub.ID, "history"); err != nil {
+		t.Fatalf("create invitation code route: %v", err)
+	}
+	if err := st.InvitationCodeRoutes.MarkUsedByEmail(ctx, "phone-consumed-history", "phone:18800001111"); err != nil {
+		t.Fatalf("mark invitation code used: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	svc.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
+	result, err := svc.ResolveByEmailFromIP(ctx, "phone:18800001111", "", "phone-consumed-history")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != historicalHub.ID || result.Hubs[0].TenantID != "history" {
+		t.Fatalf("expected consumed invitation to preserve historical phone route, got %+v", result)
+	}
+}
+
+func TestResolveByEmailPhoneHistoricalRouteOverridesFallback(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now()
@@ -290,10 +462,10 @@ func TestResolveByEmailPhoneRouteDoesNotMixPublicFallback(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 	if result.Mode != "single" || len(result.Hubs) != 1 {
-		t.Fatalf("expected only registered phone route, got %+v", result)
+		t.Fatalf("expected only historical phone route, got %+v", result)
 	}
 	if result.Hubs[0].HubID != linkedHub.ID || result.Hubs[0].TenantID != "tenant_registered" {
-		t.Fatalf("unexpected registered phone route: %+v", result.Hubs[0])
+		t.Fatalf("unexpected historical phone route: %+v", result.Hubs[0])
 	}
 }
 
@@ -340,6 +512,24 @@ func TestResolveByEmailCanonicalizesSelfHostedPublicDefaultPolicy(t *testing.T) 
 	}
 	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "" {
 		t.Fatalf("legacy self-hosted public default should canonicalize to official fallback, got %+v", result)
+	}
+}
+
+func TestResolveByEmailRoutesOnlyToExplicitFallbackTenant(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_tenant_fallback", HubOrigin: "official", DefaultSignupScope: "domain_restricted", RegistrationPolicyJSON: `{"tenants":{"public":{"tenant_id":"public","signup_scope":"public","is_public_fallback":true,"status":"active"},"private":{"tenant_id":"private","signup_scope":"domain_restricted","status":"active"}}}`, OwnerEmail: "owner@example.com", Name: "Tenant Fallback Hub", BaseURL: "https://tenant-fallback.example.com", Visibility: "shared", EnrollmentMode: "open", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System)
+	result, err := svc.ResolveByEmail(ctx, "guest@example.net")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if result.Mode != "single" || len(result.Hubs) != 1 || result.Hubs[0].HubID != hub.ID || result.Hubs[0].TenantID != "public" {
+		t.Fatalf("expected only explicit fallback tenant, got %+v", result)
 	}
 }
 

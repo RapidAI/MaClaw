@@ -177,24 +177,41 @@ func (a *App) IsWebviewTransparent() bool {
 // SM_CYFRAME + SM_CXPADDEDBORDER (typically 7–8 px at 100 % DPI).
 // On unaffected Win10 systems this adds a subtle top gap; on affected
 // ones it compensates for the DWM offset.  On Windows 11 it returns 0.
+//
+// Result is cached: OS metrics do not change at runtime.
 func (a *App) GetFramelessTopInset() int {
-	if isWindows11() {
-		return 0
-	}
-	user32 := syscall.NewLazyDLL("user32.dll")
-	getSystemMetrics := user32.NewProc("GetSystemMetrics")
-	if getSystemMetrics.Find() != nil {
-		return 0
-	}
-	const smCYFrame = 33        // SM_CYFRAME — sizing border height
-	const smCXPaddedBorder = 92 // SM_CXPADDEDBORDER — DWM padded border
-	cyFrame, _, _ := getSystemMetrics.Call(uintptr(smCYFrame))
-	cxPadded, _, _ := getSystemMetrics.Call(uintptr(smCXPaddedBorder))
-	inset := int(cyFrame) + int(cxPadded)
-	if inset < 0 || inset > 16 {
-		return 0 // sanity check
-	}
-	return inset
+	return framelessTopInsetCached()
+}
+
+var (
+	framelessTopInsetOnce  sync.Once
+	framelessTopInsetValue int
+)
+
+func framelessTopInsetCached() int {
+	framelessTopInsetOnce.Do(func() {
+		if isWindows11() {
+			framelessTopInsetValue = 0
+			return
+		}
+		user32 := syscall.NewLazyDLL("user32.dll")
+		getSystemMetrics := user32.NewProc("GetSystemMetrics")
+		if getSystemMetrics.Find() != nil {
+			framelessTopInsetValue = 0
+			return
+		}
+		const smCYFrame = 33        // SM_CYFRAME — sizing border height
+		const smCXPaddedBorder = 92 // SM_CXPADDEDBORDER — DWM padded border
+		cyFrame, _, _ := getSystemMetrics.Call(uintptr(smCYFrame))
+		cxPadded, _, _ := getSystemMetrics.Call(uintptr(smCXPaddedBorder))
+		inset := int(cyFrame) + int(cxPadded)
+		if inset < 0 || inset > 16 {
+			framelessTopInsetValue = 0
+			return
+		}
+		framelessTopInsetValue = inset
+	})
+	return framelessTopInsetValue
 }
 
 func (a *App) platformStartup() {

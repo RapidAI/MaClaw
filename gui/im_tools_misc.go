@@ -783,9 +783,7 @@ func (h *IMMessageHandler) toolPatchSkillText(skillName string, args map[string]
 		return "Skill Executor is not initialized"
 	}
 
-	exec.mu.RLock()
 	skills := exec.loadSkills()
-	exec.mu.RUnlock()
 
 	var target *corelib.NLSkillEntry
 	for i := range skills {
@@ -859,9 +857,7 @@ func (h *IMMessageHandler) toolPatchSkillStructured(skillName string, args map[s
 		return "Skill Executor is not initialized"
 	}
 
-	exec.mu.RLock()
 	skills := exec.loadSkills()
-	exec.mu.RUnlock()
 
 	var target *corelib.NLSkillEntry
 	for i := range skills {
@@ -994,9 +990,7 @@ func (h *IMMessageHandler) toolSkillPatchHistory(args map[string]interface{}) st
 		return "Skill Executor 未初始化"
 	}
 
-	exec.mu.RLock()
 	skills := exec.loadSkills()
-	exec.mu.RUnlock()
 
 	var target *corelib.NLSkillEntry
 	for i := range skills {
@@ -1144,9 +1138,7 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 			return idErr
 		}
 		if exec := h.getSkillExecutor(); exec != nil {
-			exec.mu.RLock()
 			skills := exec.loadSkills()
-			exec.mu.RUnlock()
 			for _, s := range skills {
 				if s.MatchesName(name) {
 					if s.UsageCount < 2 {

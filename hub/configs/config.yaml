@@ -44,4 +44,5 @@ mail:
 
 logging:
   level: info
+  # hub.log = all process logs; registration.log = onboarding/registration only.
   dir: ./data/logs

@@ -49,6 +49,7 @@ type snapshotCandidate struct {
 	rank                       int
 	ownerLink                  bool
 	registrationPolicyFallback bool
+	legacyHubPublicSignup      bool
 }
 
 type resolvedCandidate struct {
@@ -312,8 +313,10 @@ func buildRouteSnapshotFromItems(hubItems []*store.HubInstance, linkItems []*sto
 			appendPolicyPublicFallbacks(snap, hub, cfg)
 			continue
 		}
+		// Legacy Hub-wide settings are migrated to the legacy default tenant,
+		// yielding one deterministic target instead of every Hub tenant.
 		if hub.AcceptPublicSignup {
-			snap.publicHubs = append(snap.publicHubs, snapshotCandidate{hub: hub, rank: rankPublicHub, routePriority: 1000})
+			snap.publicHubs = append(snap.publicHubs, snapshotCandidate{hub: hub, tenantID: "", rank: rankPublicHub, routePriority: 1000, registrationPolicyFallback: true, legacyHubPublicSignup: true})
 		}
 	}
 
@@ -370,11 +373,10 @@ func normalizeRegistrationPolicyConfig(cfg registrationPolicyConfig) registratio
 	if cfg.HubOrigin != "official" {
 		cfg.HubOrigin = "self_hosted"
 	}
+	legacyPublicDefault := strings.EqualFold(strings.TrimSpace(cfg.DefaultSignupScope), "public")
 	cfg.DefaultSignupScope = normalizeRegistrationDefaultSignupScope(cfg.DefaultSignupScope)
-	if cfg.DefaultSignupScope == "public" {
-		cfg.HubOrigin = "official"
-	}
 	normalizedTenants := make(map[string]store.HubTenantRegistrationPolicy, len(cfg.Tenants))
+	hasPublicFallback := false
 	for tenantID, policy := range cfg.Tenants {
 		if strings.TrimSpace(policy.TenantID) == "" {
 			policy.TenantID = tenantID
@@ -385,15 +387,24 @@ func normalizeRegistrationPolicyConfig(cfg registrationPolicyConfig) registratio
 		if policy.Status == "" {
 			policy.Status = "active"
 		}
+		if legacyPublicDefault && policy.IsPublicFallback && policy.SignupScope == "inherit" {
+			policy.SignupScope = "public"
+		}
+		if policy.IsPublicFallback && policy.SignupScope == "public" {
+			hasPublicFallback = true
+		}
 		normalizedTenants[policy.TenantID] = policy
 	}
 	cfg.Tenants = normalizedTenants
+	if legacyPublicDefault && hasPublicFallback {
+		cfg.HubOrigin = "official"
+	}
 	return cfg
 }
 
 func normalizeRegistrationDefaultSignupScope(scope string) string {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
-	case "public", "invite_only", "domain_restricted":
+	case "invite_only", "domain_restricted":
 		return strings.ToLower(strings.TrimSpace(scope))
 	default:
 		return "domain_restricted"
@@ -639,7 +650,7 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 			return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_ROUTING_INITIALIZING"}, nil
 		}
 		target, ok := s.invitationCodeRoutes[code]
-		if ok {
+		if ok && strings.TrimSpace(target.UsedByEmail) == "" {
 			hub, exists := s.activeHubsByID[target.HubID]
 			if !exists {
 				return &ResolveResult{Email: email, Mode: "none", Message: "INVITATION_CODE_HUB_OFFLINE"}, nil
@@ -648,16 +659,35 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 			s.mergeCandidate(codeResult, email, snapshotCandidate{hub: hub, tenantID: target.TenantID, rank: rankDefaultLink, routePriority: 0})
 			return buildResolveResult(email, codeResult, ""), nil
 		}
-		// Code not found in routing table — it may have been consumed already
-		// (first registration succeeded and the code was removed from the table).
-		// Fall through to normal email/domain routing, which should now point to
-		// the correct Hub (updated by SyncUserRouteReplaceAll after first enrollment).
+		// A consumed code is retained for administration, but must not route a
+		// different identity to its original tenant. The successful enrollment
+		// has already created the historical user route, so normal routing below
+		// handles that identity while new identities use the public fallback.
 	}
 
 	// No invitation code — fall through to normal email/domain/public routing.
 	resultsByHub := map[string]resolvedCandidate{}
 	merge := func(candidate snapshotCandidate) {
 		s.mergeCandidate(resultsByHub, email, candidate)
+	}
+
+	if isPhoneRouteIdentity(email) {
+		// Existing phone identities retain their historical Hub/tenant route.
+		// New phone identities (with no route) use the explicit public fallback
+		// tenant; a valid invitation code above can always select another target.
+		for _, candidate := range s.resolveEmailRouteCandidates(email) {
+			merge(candidate)
+		}
+		if len(resultsByHub) > 0 {
+			return buildResolveResult(email, resultsByHub, "No phone route found"), nil
+		}
+		phoneFallbacks := map[string]resolvedCandidate{}
+		for _, candidate := range s.publicHubs {
+			if candidate.registrationPolicyFallback && !candidate.legacyHubPublicSignup {
+				s.mergeCandidate(phoneFallbacks, email, candidate)
+			}
+		}
+		return buildResolveResult(email, phoneFallbacks, "No phone fallback tenant configured"), nil
 	}
 
 	defaultHubID := strings.TrimSpace(s.defaultHubIDs[email])
@@ -675,16 +705,6 @@ func (s *routeSnapshot) resolve(email string, clientIP string, invitationCode ..
 	}
 	if s.hasAdminUserRoute(email) {
 		return buildResolveResult(email, resultsByHub, "No available hubs found"), nil
-	}
-	if isPhoneRouteIdentity(email) {
-		if len(resultsByHub) == 0 {
-			for _, candidate := range s.publicHubs {
-				if candidate.registrationPolicyFallback {
-					merge(candidate)
-				}
-			}
-		}
-		return buildResolveResult(email, resultsByHub, "No phone route found"), nil
 	}
 	if hasDirectNonPrivateUserRoute {
 		return buildResolveResult(email, resultsByHub, "No available hubs found"), nil

@@ -59,8 +59,9 @@ func TestComputerUseCalibrationWithRealModel(t *testing.T) {
 		if res.Primary != LabelComputerUse {
 			t.Errorf("%q: primary = %s, want %s", text, res.Primary, LabelComputerUse)
 		}
-		if res.Confidence < 0.50 {
-			t.Errorf("%q: confidence %.3f below the 0.50 activation gate", text, res.Confidence)
+		// GUI gate uses 0.65 min confidence (see gui computerUseIntentMinConfidence).
+		if res.Confidence < 0.65 {
+			t.Errorf("%q: confidence %.3f below the 0.65 activation gate", text, res.Confidence)
 		}
 	}
 
@@ -73,7 +74,8 @@ func TestComputerUseCalibrationWithRealModel(t *testing.T) {
 	for _, text := range guards {
 		res := uic.ClassifyEmbeddingOnly(MessageContext{Text: text})
 		t.Logf("%q → primary=%s conf=%.3f scores=%v", text, res.Primary, res.Confidence, uic.DiagnoseScores(text))
-		if res.Primary == LabelComputerUse && res.Confidence >= 0.50 {
+		// Match production gate: primary CU + conf>=0.65 would open the surface.
+		if res.Primary == LabelComputerUse && res.Confidence >= 0.65 {
 			t.Errorf("%q unexpectedly activates computer_use (conf=%.3f)", text, res.Confidence)
 		}
 	}

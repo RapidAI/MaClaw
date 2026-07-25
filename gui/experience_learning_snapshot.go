@@ -224,9 +224,7 @@ func (a *App) GetExperienceLearningSnapshot() ExperienceLearningSnapshot {
 	var skills []corelib.NLSkillEntry
 	a.ensureSkillRunner()
 	if a.skillExecutor != nil {
-		a.skillExecutor.mu.RLock()
 		skills = a.skillExecutor.loadSkills()
-		a.skillExecutor.mu.RUnlock()
 	}
 	snapshot := buildExperienceLearningSnapshot(a.usageTracker, a.memoryStore, skills)
 	a.ensureSessionStore()

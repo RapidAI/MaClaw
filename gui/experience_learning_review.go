@@ -109,14 +109,8 @@ func (a *App) defaultExperienceReviewReviewer(value string) string {
 		return reviewer
 	}
 	if a != nil {
-		a.configMu.Lock()
-		cfg := a.configCache
-		ok := a.configCacheValid
-		a.configMu.Unlock()
-		if ok {
-			if reviewer := firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID, cfg.RemoteEmail); reviewer != "" {
-				return reviewer
-			}
+		if reviewer := firstNonEmptyGroupString(a.PeekRemoteMachineID(), a.PeekRemoteClientID(), a.PeekRemoteEmail()); reviewer != "" {
+			return reviewer
 		}
 	}
 	return "local"

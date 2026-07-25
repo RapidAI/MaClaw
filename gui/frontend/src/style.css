@@ -24,9 +24,10 @@ body {
     url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
 }
 
-/* Legacy Wails id; real shell uses #App (see App.css). Keep both left-aligned. */
+/* Legacy Wails id; real shell uses #App (see App.css). Keep both left-aligned.
+   Prefer 100% over 100vh so maximised WebView2 does not exceed the work area. */
 #app {
-    height: 100vh;
+    height: 100%;
     text-align: left;
 }
 

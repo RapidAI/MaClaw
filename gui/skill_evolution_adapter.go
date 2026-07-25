@@ -65,16 +65,15 @@ func (r *skillExecutorRegistrar) RegisterSkill(entry *corelib.NLSkillEntry) erro
 	if r.app == nil || r.app.skillExecutor == nil || entry == nil {
 		return fmt.Errorf("skill executor not available")
 	}
-	r.app.skillExecutor.mu.Lock()
-	defer r.app.skillExecutor.mu.Unlock()
-
-	skills := r.app.skillExecutor.loadSkills()
-	// Check for duplicates.
-	for _, s := range skills {
-		if s.Name == entry.Name {
-			return fmt.Errorf("skill %q already registered", entry.Name)
+	return r.app.skillExecutor.withSkillListMutate(func() error {
+		skills := r.app.skillExecutor.loadSkills()
+		// Check for duplicates.
+		for _, s := range skills {
+			if s.Name == entry.Name {
+				return fmt.Errorf("skill %q already registered", entry.Name)
+			}
 		}
-	}
-	skills = append(skills, *entry)
-	return r.app.skillExecutor.saveSkills(skills)
+		skills = append(skills, *entry)
+		return r.app.skillExecutor.saveSkills(skills)
+	})
 }

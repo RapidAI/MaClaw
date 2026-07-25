@@ -30,7 +30,10 @@ type computerUseRuntime struct {
 	ocr        taskengine.OCRProvider
 	ocrSidecar *browser.RapidOCRSidecar // underlying process for Warm(); may be nil
 	logger     func(string)
-	activated  bool // true after first successful computer_* interact/observe
+	// activated is sticky session state after a successful computer_* observe/action.
+	// It expires after computerUseStickyTTL unless refreshed by further CU activity.
+	activated   bool
+	activatedAt time.Time
 }
 
 var globalComputerUse = &computerUseRuntime{}
@@ -301,9 +304,16 @@ func registerComputerUseTools(registry *ToolRegistry) {
 			rt.mu.Lock()
 			sess := rt.session
 			rt.mu.Unlock()
+			steps := 0
 			if sess != nil {
 				sess.RecordAction("done", summary, true, "", false)
+				if p := sess.Policy(); p != nil {
+					steps = p.StepCount()
+				}
 			}
+			// End sticky injection so the next unrelated chat does not keep CU tools.
+			clearComputerUseSessionActive()
+			emitComputerUseDoneControl(steps)
 			return fmt.Sprintf("computer_done: %s", summary)
 		},
 	})

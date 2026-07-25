@@ -1154,6 +1154,8 @@ html, body {
     font-size: 16px;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
+    /* Win10 frameless DWM top inset (overridden by App.tsx after GetFramelessTopInset). */
+    --dwm-top-offset: 0px;
     /* Background colour is set by the inline script in index.html (theme
        colour on all platforms) and refined by the useEffect in App.tsx.
        On Windows 10: overridden to transparent (webview is transparent,
@@ -1180,9 +1182,11 @@ body {
 }
 
 .app-viewport {
-    width: 100vw;
-    height: 100vh;
-    height: 100dvh;
+    /* Use percentage of the webview client area — not 100vw/100vh.
+       On Win10 maximised frameless WebView2, vw/vh can exceed the work area
+       and paint under the taskbar / off-screen edges ("full screen cropped"). */
+    width: 100%;
+    height: 100%;
     overflow: hidden;
     /* Uses themed --theme-page-bg once data-ai-theme is set on this node.
        Without the attribute this fell back to :root light #f3f5f8 and showed
@@ -1190,6 +1194,8 @@ body {
     background-color: var(--theme-page-bg);
     /* Overridden by App.tsx from Auto (DPI-aware) or manual UI zoom. */
     --ui-scale: 1;
+    /* Do NOT set --dwm-top-offset here: a local 0 would shadow the value set on
+       :root by App.tsx (GetFramelessTopInset) and disable the Win10 top inset. */
 }
 
 /* When the webview is transparent (Windows), the viewport wrapper must also
@@ -1253,10 +1259,11 @@ body {
     padding-top: 0;
 }
 
-/* Maximized window fills the entire screen — no rounded corners needed.
+/* Maximized window fills the work area — no rounded corners needed.
    On Windows 10 (transparent webview), border-radius creates transparent
    cutouts at the corners when maximized; removing it fixes that.
-   (border:none kept from later fix so maximized never shows a light stroke.) */
+   (border:none kept from later fix so maximized never shows a light stroke.)
+   Keep --dwm-top-offset padding unless data-native-rounded (Win11) zeros it. */
 #App[data-maximized="true"] {
     border-radius: 0;
     border: none;

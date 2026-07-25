@@ -72,16 +72,23 @@ func registrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 		factory = aliyunDypnsProviderForRegistration
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
 		var req RegistrationSMSSendCodeRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+			log.Printf("[onboarding-sms] send_code_rejected code=INVALID_JSON allow_phone_when_email=%t err=%v", allowPhoneWhenEmail, err)
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
+		phoneLog := registrationPhoneLogIdentity(req.PhoneNumber)
+		tenantHint := strings.TrimSpace(req.TenantID)
 		tenantID := tenantIDForSMSRegistration(r, req.TenantID)
+		hasMachine := strings.TrimSpace(req.MachineID) != "" || strings.TrimSpace(req.MachineToken) != ""
+		log.Printf("[onboarding-sms] send_code_begin phone=%s tenant_hint=%s tenant_id=%s allow_phone_when_email=%t machine=%t", phoneLog, tenantHint, tenantID, allowPhoneWhenEmail, hasMachine)
 		var currentUser *store.User
-		if strings.TrimSpace(req.MachineID) != "" || strings.TrimSpace(req.MachineToken) != "" {
+		if hasMachine {
 			principal, user, ok := authenticateRegistrationContactUser(w, r, identity, tenantID, req.MachineID, req.MachineToken)
 			if !ok {
+				log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=MACHINE_UNAUTHORIZED elapsed=%s", phoneLog, tenantID, time.Since(startedAt))
 				return
 			}
 			tenantID = principal.TenantID
@@ -89,26 +96,33 @@ func registrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 		}
 		cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantID)
 		if err != nil {
+			log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=REGISTRATION_AUTH_LOAD_FAILED err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
 			return
 		}
+		storedMethod := cfg.Method
 		cfg, ok := registrationSMSEffectiveAuthConfig(cfg, allowPhoneWhenEmail)
 		if !ok {
+			log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=PHONE_REGISTRATION_DISABLED stored_method=%s allow_phone_when_email=%t elapsed=%s", phoneLog, tenantID, storedMethod, allowPhoneWhenEmail, time.Since(startedAt))
 			writeError(w, http.StatusBadRequest, "PHONE_REGISTRATION_DISABLED", "Phone registration is not enabled")
 			return
 		}
 		phoneNumber := normalizePhoneNumber(req.PhoneNumber)
+		phoneLog = registrationPhoneLogIdentity(phoneNumber)
 		phoneIdentity, err := phoneRegistrationIdentity(phoneNumber)
 		if err != nil {
+			log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=INVALID_PHONE_NUMBER stored_method=%s err=%v elapsed=%s", phoneLog, tenantID, storedMethod, err, time.Since(startedAt))
 			writeError(w, http.StatusBadRequest, "INVALID_PHONE_NUMBER", err.Error())
 			return
 		}
 		existingUser, err := lookupPhoneIdentityUser(r.Context(), identity, tenantID, phoneNumber)
 		if err != nil {
+			log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=PHONE_REGISTRATION_LOOKUP_FAILED stored_method=%s err=%v elapsed=%s", phoneLog, tenantID, storedMethod, err, time.Since(startedAt))
 			writePhoneRegistrationLookupError(w, errPhoneRegistrationLookup{err: err})
 			return
 		}
 		if currentUser != nil && existingUser != nil && existingUser.ID != currentUser.ID && !canClaimPhoneIdentityForCurrentUser(existingUser, currentUser, phoneIdentity) {
+			log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=PHONE_ALREADY_REGISTERED existing_user=%s current_user=%s elapsed=%s", phoneLog, tenantID, existingUser.ID, currentUser.ID, time.Since(startedAt))
 			writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
 			return
 		}
@@ -116,11 +130,14 @@ func registrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 		if existingUser != nil {
 			business = registrationSMSBusinessVerifyBoundPhone
 		} else if err := ensurePhoneIdentityCanRegister(r.Context(), identity, tenantID, phoneIdentity, currentUser); err != nil {
+			code := registrationPhoneRejectCode(err)
+			log.Printf("[onboarding-sms] send_code_rejected phone=%s account=%s tenant_id=%s code=%s stored_method=%s err=%v elapsed=%s", phoneLog, registrationAccountLogIdentity(phoneIdentity), tenantID, code, storedMethod, err, time.Since(startedAt))
 			writePhoneRegistrationLookupError(w, err)
 			return
 		}
 		smsReq, err := buildAliyunSMSVerifyCodeSendRequest(cfg, business, phoneNumber)
 		if err != nil {
+			log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=INVALID_SMS_VERIFY_REQUEST err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 			writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_REQUEST", err.Error())
 			return
 		}
@@ -129,17 +146,22 @@ func registrationSMSSendCodeHandler(identity *auth.IdentityService, system store
 		remaining, err := reserveRegistrationSMSSend(r.Context(), tenantSystem, phoneNumber, cfg.DailySMSLimit, usageNow)
 		if err != nil {
 			if limitErr, ok := err.(errRegistrationSMSDailyLimit); ok {
+				log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=SMS_DAILY_LIMIT_REACHED limit=%d elapsed=%s", phoneLog, tenantID, limitErr.Limit, time.Since(startedAt))
 				writeError(w, http.StatusTooManyRequests, "SMS_DAILY_LIMIT_REACHED", limitErr.Error())
 				return
 			}
+			log.Printf("[onboarding-sms] send_code_rejected phone=%s tenant_id=%s code=SMS_DAILY_LIMIT_CHECK_FAILED err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 			writeError(w, http.StatusInternalServerError, "SMS_DAILY_LIMIT_CHECK_FAILED", err.Error())
 			return
 		}
 		if err := factory(cfg).SendVerifyCode(r.Context(), smsReq); err != nil {
 			_ = releaseRegistrationSMSSend(r.Context(), tenantSystem, phoneNumber, usageNow)
+			log.Printf("[onboarding-sms] send_code_failed phone=%s tenant_id=%s purpose=%s stored_method=%s err=%v elapsed=%s", phoneLog, tenantID, business, storedMethod, err, time.Since(startedAt))
 			writeError(w, http.StatusBadGateway, "SMS_VERIFY_SEND_FAILED", err.Error())
 			return
 		}
+		existing := existingUser != nil
+		log.Printf("[onboarding-sms] send_code_succeeded phone=%s tenant_id=%s purpose=%s stored_method=%s existing_user=%t remaining=%d elapsed=%s", phoneLog, tenantID, business, storedMethod, existing, remaining, time.Since(startedAt))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":                      true,
 			"tenant_id":               tenantID,
@@ -169,21 +191,30 @@ func registrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 		factory = aliyunDypnsProviderForRegistration
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
 		var req RegistrationSMSVerifyAndStartRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+			log.Printf("[onboarding-sms] verify_rejected code=INVALID_JSON allow_phone_when_email=%t err=%v", allowPhoneWhenEmail, err)
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		if identity == nil {
+			log.Printf("[onboarding-sms] verify_rejected code=IDENTITY_UNAVAILABLE")
 			writeError(w, http.StatusInternalServerError, "IDENTITY_UNAVAILABLE", "Identity service is unavailable")
 			return
 		}
+		phoneLog := registrationPhoneLogIdentity(req.PhoneNumber)
+		tenantHint := strings.TrimSpace(req.TenantID)
 		tenantID := tenantIDForSMSRegistration(r, req.TenantID)
+		clientID := strings.TrimSpace(req.ClientID)
+		hasMachine := strings.TrimSpace(req.MachineID) != "" || strings.TrimSpace(req.MachineToken) != ""
+		log.Printf("[onboarding-sms] verify_begin phone=%s tenant_hint=%s tenant_id=%s client_id=%s machine_name=%q allow_phone_when_email=%t machine=%t", phoneLog, tenantHint, tenantID, clientID, strings.TrimSpace(req.MachineName), allowPhoneWhenEmail, hasMachine)
 		var currentPrincipal *auth.MachinePrincipal
 		var currentUser *store.User
-		if strings.TrimSpace(req.MachineID) != "" || strings.TrimSpace(req.MachineToken) != "" {
+		if hasMachine {
 			principal, user, ok := authenticateRegistrationContactUser(w, r, identity, tenantID, req.MachineID, req.MachineToken)
 			if !ok {
+				log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=MACHINE_UNAUTHORIZED elapsed=%s", phoneLog, tenantID, time.Since(startedAt))
 				return
 			}
 			currentPrincipal = principal
@@ -192,56 +223,70 @@ func registrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 		}
 		cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantID)
 		if err != nil {
+			log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=REGISTRATION_AUTH_LOAD_FAILED err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
 			return
 		}
+		storedMethod := cfg.Method
 		cfg, ok := registrationSMSEffectiveAuthConfig(cfg, allowPhoneWhenEmail)
 		if !ok {
+			log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=PHONE_REGISTRATION_DISABLED stored_method=%s allow_phone_when_email=%t elapsed=%s", phoneLog, tenantID, storedMethod, allowPhoneWhenEmail, time.Since(startedAt))
 			writeError(w, http.StatusBadRequest, "PHONE_REGISTRATION_DISABLED", "Phone registration is not enabled")
 			return
 		}
 		phoneNumber := normalizePhoneNumber(req.PhoneNumber)
+		phoneLog = registrationPhoneLogIdentity(phoneNumber)
 		phoneIdentity, err := phoneRegistrationIdentity(phoneNumber)
 		if err != nil {
+			log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=INVALID_PHONE_NUMBER stored_method=%s err=%v elapsed=%s", phoneLog, tenantID, storedMethod, err, time.Since(startedAt))
 			writeError(w, http.StatusBadRequest, "INVALID_PHONE_NUMBER", err.Error())
 			return
 		}
 		existingUser, err := lookupPhoneIdentityUser(r.Context(), identity, tenantID, phoneNumber)
 		if err != nil {
+			log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=PHONE_REGISTRATION_LOOKUP_FAILED err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 			writePhoneRegistrationLookupError(w, errPhoneRegistrationLookup{err: err})
 			return
 		}
 		if existingUser == nil {
 			if err := ensurePhoneIdentityCanRegister(r.Context(), identity, tenantID, phoneIdentity, currentUser); err != nil {
+				code := registrationPhoneRejectCode(err)
+				log.Printf("[onboarding-sms] verify_rejected phone=%s account=%s tenant_id=%s code=%s stored_method=%s err=%v elapsed=%s", phoneLog, registrationAccountLogIdentity(phoneIdentity), tenantID, code, storedMethod, err, time.Since(startedAt))
 				writePhoneRegistrationLookupError(w, err)
 				return
 			}
 		}
 		checkReq, err := buildAliyunSMSVerifyCodeCheckRequest(phoneNumber, req.VerifyCode, cfg.CodeLength)
 		if err != nil {
+			log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=INVALID_SMS_VERIFY_REQUEST err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 			writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_REQUEST", err.Error())
 			return
 		}
 		verified, err := factory(cfg).CheckVerifyCode(r.Context(), checkReq)
 		if err != nil {
+			log.Printf("[onboarding-sms] verify_failed phone=%s tenant_id=%s code=SMS_VERIFY_CHECK_FAILED err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 			writeError(w, http.StatusBadGateway, "SMS_VERIFY_CHECK_FAILED", err.Error())
 			return
 		}
 		if !verified {
+			log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=INVALID_SMS_VERIFY_CODE stored_method=%s elapsed=%s", phoneLog, tenantID, storedMethod, time.Since(startedAt))
 			writeError(w, http.StatusBadRequest, "INVALID_SMS_VERIFY_CODE", "Invalid SMS verification code")
 			return
 		}
 		if currentUser != nil {
 			if existingUser != nil && existingUser.ID != currentUser.ID && !canClaimPhoneIdentityForCurrentUser(existingUser, currentUser, phoneIdentity) {
+				log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=PHONE_ALREADY_REGISTERED existing_user=%s current_user=%s elapsed=%s", phoneLog, tenantID, existingUser.ID, currentUser.ID, time.Since(startedAt))
 				writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
 				return
 			}
 			ctx := auth.WithTenant(r.Context(), currentPrincipal.TenantID)
 			if err := identity.BindVerifiedPhoneToUser(ctx, currentUser, phoneNumber); err != nil {
 				if isRegistrationContactIdentityConflict(err) {
+					log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=PHONE_ALREADY_REGISTERED err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 					writeError(w, http.StatusConflict, "PHONE_ALREADY_REGISTERED", "Phone number is already registered")
 					return
 				}
+				log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=PHONE_BIND_FAILED err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 				writeError(w, http.StatusInternalServerError, "PHONE_BIND_FAILED", err.Error())
 				return
 			}
@@ -251,6 +296,7 @@ func registrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 			} else if changed {
 				invalidateLLMRuntimeCaches(tenantSystem)
 			}
+			log.Printf("[onboarding-sms] verify_succeeded phone=%s tenant_id=%s kind=bind_profile user_id=%s stored_method=%s elapsed=%s", phoneLog, currentPrincipal.TenantID, currentUser.ID, storedMethod, time.Since(startedAt))
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":              true,
 				"kind":            "phone",
@@ -273,6 +319,7 @@ func registrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 		if existingUser != nil {
 			enrollAccount = existingUser.Email
 			if err := identity.BindVerifiedPhoneToUser(ctx, existingUser, req.PhoneNumber); err != nil {
+				log.Printf("[onboarding-sms] verify_rejected phone=%s tenant_id=%s code=PHONE_BIND_FAILED err=%v elapsed=%s", phoneLog, tenantID, err, time.Since(startedAt))
 				writeError(w, http.StatusInternalServerError, "PHONE_BIND_FAILED", err.Error())
 				return
 			}
@@ -283,8 +330,10 @@ func registrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 				invalidateLLMRuntimeCaches(tenantSystem)
 			}
 		}
+		accountLog := registrationAccountLogIdentity(enrollAccount)
 		resp, err := identity.StartEnrollment(ctx, enrollAccount, req.MachineName, req.Platform, req.ClientID, req.InvitationCode, enrollOpts...)
 		if err != nil {
+			log.Printf("[onboarding-sms] enroll_failed phone=%s tenant_id=%s account=%s stored_method=%s err=%v elapsed=%s", phoneLog, tenantID, accountLog, storedMethod, err, time.Since(startedAt))
 			writeEnrollmentStartError(w, err, resp)
 			return
 		}
@@ -294,6 +343,11 @@ func registrationSMSVerifyAndStartHandler(identity *auth.IdentityService, system
 		if existingUser != nil {
 			respMap["rebound_existing_user"] = true
 		}
+		status := ""
+		if resp != nil {
+			status = resp.Status
+		}
+		log.Printf("[onboarding-sms] verify_succeeded phone=%s tenant_id=%s kind=enroll status=%s account=%s stored_method=%s rebound=%t elapsed=%s", phoneLog, tenantID, status, accountLog, storedMethod, existingUser != nil, time.Since(startedAt))
 		writeJSON(w, http.StatusOK, respMap)
 	}
 }

@@ -460,7 +460,8 @@ func TestSkillRunnerStartRunDoesNotWaitForExecutorMutationLock(t *testing.T) {
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	runner := NewSkillRunner(app.skillExecutor)
 
-	app.skillExecutor.mu.Lock()
+	// Holding skillListMutateMu must not block StartRunForOwner (usage stats write path).
+	app.skillExecutor.skillListMutateMu.Lock()
 	type startResult struct {
 		runID string
 		err   error
@@ -475,10 +476,10 @@ func TestSkillRunnerStartRunDoesNotWaitForExecutorMutationLock(t *testing.T) {
 	select {
 	case res = <-done:
 	case <-time.After(300 * time.Millisecond):
-		app.skillExecutor.mu.Unlock()
-		t.Fatal("StartRunForOwner waited on SkillExecutor.mu; this serializes independent agent starts behind skill stats writes")
+		app.skillExecutor.skillListMutateMu.Unlock()
+		t.Fatal("StartRunForOwner waited on skillListMutateMu; this serializes independent agent starts behind skill stats writes")
 	}
-	app.skillExecutor.mu.Unlock()
+	app.skillExecutor.skillListMutateMu.Unlock()
 	if res.err != nil {
 		t.Fatalf("StartRunForOwner() error = %v", res.err)
 	}

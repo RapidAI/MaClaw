@@ -98,13 +98,9 @@ func (s *cuGateStubEmbedder) Close()   {}
 
 func resetComputerUseSessionForTest(t *testing.T) {
 	t.Helper()
-	globalComputerUse.mu.Lock()
-	globalComputerUse.activated = false
-	globalComputerUse.mu.Unlock()
+	clearComputerUseSessionActive()
 	t.Cleanup(func() {
-		globalComputerUse.mu.Lock()
-		globalComputerUse.activated = false
-		globalComputerUse.mu.Unlock()
+		clearComputerUseSessionActive()
 	})
 }
 
@@ -155,8 +151,256 @@ func TestShouldActivateComputerUseStickySession(t *testing.T) {
 	resetComputerUseSessionForTest(t)
 	markComputerUseSessionActive()
 	h := &IMMessageHandler{}
+	// Without a classifier, sticky alone keeps the gate open (degraded TTL).
 	if !h.shouldActivateComputerUse("随便聊聊") {
 		t.Fatal("active CU session should keep the gate open")
+	}
+}
+
+func TestShouldActivateComputerUseStickyDegradedClassifierTTL(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	markComputerUseSessionActive()
+	// Noop embedder → ClassifyEmbeddingOnly returns Degraded.
+	h := &IMMessageHandler{unifiedClassifier: intent.New(intent.Config{Embedder: embedding.NewNoopEmbedder()})}
+	if !h.shouldActivateComputerUse("继续操作") {
+		t.Fatal("degraded classifier within short sticky TTL must keep gate open")
+	}
+	globalComputerUse.mu.Lock()
+	globalComputerUse.activatedAt = time.Now().Add(-(computerUseStickyDegradedTTL + time.Second))
+	globalComputerUse.mu.Unlock()
+	if h.shouldActivateComputerUse("继续操作") {
+		t.Fatal("degraded classifier past short sticky TTL must close gate")
+	}
+	if computerUseSessionActive() {
+		t.Fatal("degraded sticky expiry must clear flag")
+	}
+}
+
+func TestDecideComputerUseActivation(t *testing.T) {
+	cases := []struct {
+		name        string
+		in          computerUseActivationInput
+		wantActive  bool
+		wantClear   bool
+		wantReason  string
+	}{
+		{
+			name:       "explicit wins",
+			in:         computerUseActivationInput{Explicit: true},
+			wantActive: true,
+			wantReason: "explicit_trigger",
+		},
+		{
+			name: "semantic opens",
+			in: computerUseActivationInput{
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.80},
+			},
+			wantActive: true,
+			wantReason: "semantic_computer_use",
+		},
+		{
+			name: "semantic blocked by competing secondary",
+			in: computerUseActivationInput{
+				HasClassification: true,
+				Classification: intent.ClassificationResult{
+					Primary: intent.LabelComputerUse, Confidence: 0.70,
+					Secondary: []intent.IntentLabel{intent.LabelOffice},
+				},
+			},
+			wantActive: false,
+			wantReason: "inactive",
+		},
+		{
+			name: "sticky continues for office follow-up",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.90},
+			},
+			wantActive: true,
+			wantReason: "sticky",
+		},
+		{
+			name: "sticky released by strong non_coding",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelNonCoding, Confidence: 0.80},
+			},
+			wantActive: false,
+			wantClear:  true,
+			wantReason: "sticky_released",
+		},
+		{
+			name: "sticky degraded within short ttl",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Degraded: true, Primary: intent.LabelUnknown, Confidence: 0.3},
+			},
+			wantActive: true,
+			wantReason: "sticky_degraded",
+		},
+		{
+			name: "sticky degraded past short ttl clears",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: computerUseStickyDegradedTTL + time.Second,
+				HasClassification: false,
+			},
+			wantActive: false,
+			wantClear:  true,
+			wantReason: "sticky_degraded_ttl",
+		},
+		{
+			name: "sticky degraded classification past short ttl clears",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: computerUseStickyDegradedTTL + time.Second,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Degraded: true, Primary: intent.LabelUnknown, Confidence: 0.3},
+			},
+			wantActive: false,
+			wantClear:  true,
+			wantReason: "sticky_degraded_ttl",
+		},
+		{
+			name: "explicit wins over sticky release candidate",
+			in: computerUseActivationInput{
+				Explicit: true, Sticky: true, StickyAge: time.Hour,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelNonCoding, Confidence: 0.99},
+			},
+			wantActive: true,
+			wantReason: "explicit_trigger",
+		},
+		{
+			name: "no sticky no signal",
+			in: computerUseActivationInput{
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.90},
+			},
+			wantActive: false,
+			wantReason: "inactive",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := decideComputerUseActivation(c.in)
+			if d.Active != c.wantActive || d.ClearSticky != c.wantClear || d.Reason != c.wantReason {
+				t.Fatalf("got active=%v clear=%v reason=%q want active=%v clear=%v reason=%q",
+					d.Active, d.ClearSticky, d.Reason, c.wantActive, c.wantClear, c.wantReason)
+			}
+		})
+	}
+}
+
+func TestComputerUseStickyShouldRelease(t *testing.T) {
+	if !computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelNonCoding, Confidence: 0.80,
+	}) {
+		t.Fatal("strong non-coding should release sticky")
+	}
+	if !computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelCoding, Confidence: 0.70,
+	}) {
+		t.Fatal("strong coding should release sticky")
+	}
+	if !computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelSearch, Confidence: 0.60,
+	}) {
+		t.Fatal("strong search should release sticky")
+	}
+	if computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelContinuation, Confidence: 0.90,
+	}) {
+		t.Fatal("continuation must keep sticky for multi-step desktop tasks")
+	}
+	if computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelComputerUse, Confidence: 0.40,
+	}) {
+		t.Fatal("computer_use primary must not release sticky")
+	}
+	// Mid-task document edits often classify as office — must keep CU tools.
+	if computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelOffice, Confidence: 0.90,
+	}) {
+		t.Fatal("office must not release sticky mid desktop task")
+	}
+	if computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelCurrentTime, Confidence: 0.95,
+	}) {
+		t.Fatal("current_time must not release sticky mid desktop task")
+	}
+	if computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelNonCoding, Confidence: 0.40,
+	}) {
+		t.Fatal("weak non-CU must not release sticky")
+	}
+	if computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelNonCoding, Confidence: 0.90, Degraded: true,
+	}) {
+		t.Fatal("degraded classification must not release sticky")
+	}
+}
+
+func TestShouldActivateComputerUseStickyReleaseAndExplicit(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	markComputerUseSessionActive()
+	h := &IMMessageHandler{}
+
+	// Pure sticky (no classifier): gate stays open within degraded TTL.
+	if !h.shouldActivateComputerUse("第二段改成简介") {
+		t.Fatal("sticky without classifier must keep CU for soft follow-ups")
+	}
+
+	// Past degraded TTL with no classifier → clear sticky.
+	globalComputerUse.mu.Lock()
+	globalComputerUse.activatedAt = time.Now().Add(-(computerUseStickyDegradedTTL + time.Second))
+	globalComputerUse.mu.Unlock()
+	if h.shouldActivateComputerUse("随便聊聊") {
+		t.Fatal("sticky without classifier past degraded TTL must not stay open")
+	}
+	if computerUseSessionActive() {
+		t.Fatal("degraded TTL path must clear sticky flag")
+	}
+
+	// Explicit @computer still opens without sticky / classifier.
+	if !h.shouldActivateComputerUse("@computer 点一下确定") {
+		t.Fatal("explicit trigger must activate without sticky")
+	}
+}
+
+func TestShouldActivateComputerUseStickyKeepsOfficeFollowUp(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	markComputerUseSessionActive()
+
+	// Even with a real UIC path, sticky must not drop on office-classified follow-ups.
+	// Use sticky release helper as the gate for office (classifier-independent policy).
+	if computerUseStickyShouldRelease(intent.ClassificationResult{
+		Primary: intent.LabelOffice, Confidence: 0.88,
+	}) {
+		t.Fatal("office follow-up must keep sticky")
+	}
+	h := &IMMessageHandler{}
+	if !h.shouldActivateComputerUse("把第二段改短一点") {
+		t.Fatal("sticky session should keep gate open for soft follow-ups")
+	}
+}
+
+func TestComputerUseSessionActiveTTL(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	markComputerUseSessionActive()
+	if !computerUseSessionActive() {
+		t.Fatal("just marked active should be active")
+	}
+	globalComputerUse.mu.Lock()
+	globalComputerUse.activatedAt = time.Now().Add(-computerUseStickyTTL - time.Second)
+	globalComputerUse.mu.Unlock()
+	if computerUseSessionActive() {
+		t.Fatal("expired sticky must not report active")
+	}
+	if computerUseSessionActive() {
+		t.Fatal("expired sticky should stay cleared after lazy expiry")
 	}
 }
 
@@ -167,8 +411,17 @@ func TestComputerUseIntentActivated(t *testing.T) {
 		want bool
 	}{
 		{"cu above threshold", intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.84}, true},
-		{"cu at threshold", intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.50}, true},
-		{"cu below threshold", intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.49}, false},
+		{"cu at new threshold", intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.65}, true},
+		{"cu below new threshold", intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.50}, false},
+		{"cu old borderline blocked", intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.49}, false},
+		{"cu with office secondary needs higher conf", intent.ClassificationResult{
+			Primary: intent.LabelComputerUse, Confidence: 0.70,
+			Secondary: []intent.IntentLabel{intent.LabelOffice},
+		}, false},
+		{"cu with office secondary high conf ok", intent.ClassificationResult{
+			Primary: intent.LabelComputerUse, Confidence: 0.80,
+			Secondary: []intent.IntentLabel{intent.LabelOffice},
+		}, true},
 		{"other intent wins", intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.95}, false},
 		{"degraded must fail closed", intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.90, Degraded: true}, false},
 		{"unknown degraded", intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.30, Degraded: true}, false},

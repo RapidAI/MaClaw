@@ -396,6 +396,8 @@ export function IsWebviewTransparent():Promise<boolean>;
 
 export function GetFramelessTopInset():Promise<number>;
 
+export function ClampMaximizedWindowToWorkArea():Promise<void>;
+
 export function LaunchInstallerAndExit(arg1:string):Promise<void>;
 
 export function LaunchTool(arg1:string,arg2:boolean,arg3:boolean,arg4:boolean,arg5:string,arg6:string,arg7:boolean):Promise<void>;
@@ -423,6 +425,12 @@ export function ListSkills(arg1:string):Promise<Array<main.Skill>>;
 export function ListSkillsWithInstallStatus(arg1:string,arg2:string,arg3:string):Promise<Array<main.Skill>>;
 
 export function LoadConfig():Promise<main.AppConfig>;
+
+export function LoadConfigForUI():Promise<main.AppConfig>;
+
+export function GetUIShellConfig():Promise<any>;
+
+export function GetSettingsTabConfig(arg1:string):Promise<Record<string, any>>;
 
 export function GetToolCacheStatus():Promise<any>;
 

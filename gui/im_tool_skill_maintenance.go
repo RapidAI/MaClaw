@@ -18,9 +18,7 @@ func (h *IMMessageHandler) toolSkillMaintenanceDrafts(_ map[string]interface{}) 
 	if exec == nil {
 		return "Skill Executor 未初始化"
 	}
-	exec.mu.RLock()
 	skills := exec.loadSkills()
-	exec.mu.RUnlock()
 	drafts := cskill.CollectMaintenanceReviewDrafts(skills, cskill.SkillMaintenancePlanOptions{
 		Now:        time.Now(),
 		MaxActions: 40,
@@ -47,9 +45,7 @@ func (h *IMMessageHandler) toolSkillMaintenancePlan(args map[string]interface{})
 		return "Skill Executor 未初始化"
 	}
 
-	exec.mu.RLock()
 	skills := exec.loadSkills()
-	exec.mu.RUnlock()
 
 	opts := cskill.SkillMaintenancePlanOptions{
 		Now:                 time.Now(),
@@ -101,54 +97,58 @@ func (h *IMMessageHandler) toolExecuteSkillMaintenancePlan(args map[string]inter
 		return `{"ok":false,"dry_run":false,"error":"approved_actions, approved_draft_ids, or approved_review_trace_ids is required when dry_run=false"}`
 	}
 
-	exec.mu.Lock()
-	skills := exec.loadSkills()
-	planOpts := cskill.SkillMaintenancePlanOptions{
-		Now:                 time.Now(),
-		StaleAfterDays:      skillMaintenanceIntArg(args, "stale_after_days"),
-		MinFailureRuns:      skillMaintenanceIntArg(args, "min_failure_runs"),
-		MaxActions:          skillMaintenanceIntArg(args, "max_actions"),
-		DuplicateSimilarity: skillMaintenanceFloatArg(args, "duplicate_similarity"),
-	}
-	plan := cskill.BuildSkillMaintenancePlan(skills, planOpts)
+	var plan cskill.SkillMaintenancePlan
 	var updated []corelib.NLSkillEntry
 	var result cskill.SkillMaintenanceExecutionResult
-	if len(approvedDraftIDs) > 0 {
-		updated, result = cskill.ExecuteReviewedGovernanceDrafts(skills, cskill.GovernanceDraftExecutionOptions{
-			Now:                  time.Now(),
-			DryRun:               dryRun,
-			ReviewedDraftIDs:     approvedDraftIDs,
-			PlanOptions:          planOpts,
-			AllowDuplicateRetire: skillMaintenanceBoolArg(args, "allow_duplicate_retire", false),
-		})
-	} else {
-		updated, result = cskill.ExecuteSkillMaintenancePlan(skills, plan, cskill.SkillMaintenanceExecutionOptions{
-			Now:                  time.Now(),
-			DryRun:               dryRun,
-			ApprovedActions:      approvedActions,
-			AllowDuplicateRetire: skillMaintenanceBoolArg(args, "allow_duplicate_retire", false),
-		})
-	}
-	repairTargets := skillMaintenanceRepairTargets(updated, result)
-	if !dryRun && result.OK {
-		if err := exec.saveSkills(updated); err != nil {
-			exec.mu.Unlock()
-			result.OK = false
-			result.Error = "skill maintenance save failed: " + err.Error()
-			auditErr := h.recordSkillDraftExecutionAudit(approvedReviewTraceIDs, skillDraftExecutionBlocked, result.Error)
-			return skillMaintenanceExecutionPayload(map[string]interface{}{
-				"ok":                           false,
-				"dry_run":                      dryRun,
-				"boundary":                     result.Boundary,
-				"error":                        result.Error,
-				"review_execution_audit_error": skillMaintenanceErrorString(auditErr),
-				"plan_summary":                 plan.Summary,
-				"self_repair_triggers_started": 0,
-				"result":                       result,
+	var repairTargets []corelib.NLSkillEntry
+	if err := exec.withSkillListMutate(func() error {
+		skills := exec.loadSkills()
+		planOpts := cskill.SkillMaintenancePlanOptions{
+			Now:                 time.Now(),
+			StaleAfterDays:      skillMaintenanceIntArg(args, "stale_after_days"),
+			MinFailureRuns:      skillMaintenanceIntArg(args, "min_failure_runs"),
+			MaxActions:          skillMaintenanceIntArg(args, "max_actions"),
+			DuplicateSimilarity: skillMaintenanceFloatArg(args, "duplicate_similarity"),
+		}
+		plan = cskill.BuildSkillMaintenancePlan(skills, planOpts)
+		if len(approvedDraftIDs) > 0 {
+			updated, result = cskill.ExecuteReviewedGovernanceDrafts(skills, cskill.GovernanceDraftExecutionOptions{
+				Now:                  time.Now(),
+				DryRun:               dryRun,
+				ReviewedDraftIDs:     approvedDraftIDs,
+				PlanOptions:          planOpts,
+				AllowDuplicateRetire: skillMaintenanceBoolArg(args, "allow_duplicate_retire", false),
+			})
+		} else {
+			updated, result = cskill.ExecuteSkillMaintenancePlan(skills, plan, cskill.SkillMaintenanceExecutionOptions{
+				Now:                  time.Now(),
+				DryRun:               dryRun,
+				ApprovedActions:      approvedActions,
+				AllowDuplicateRetire: skillMaintenanceBoolArg(args, "allow_duplicate_retire", false),
 			})
 		}
+		repairTargets = skillMaintenanceRepairTargets(updated, result)
+		if !dryRun && result.OK {
+			if err := exec.saveSkills(updated); err != nil {
+				result.OK = false
+				result.Error = "skill maintenance save failed: " + err.Error()
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		auditErr := h.recordSkillDraftExecutionAudit(approvedReviewTraceIDs, skillDraftExecutionBlocked, result.Error)
+		return skillMaintenanceExecutionPayload(map[string]interface{}{
+			"ok":                           false,
+			"dry_run":                      dryRun,
+			"boundary":                     result.Boundary,
+			"error":                        result.Error,
+			"review_execution_audit_error": skillMaintenanceErrorString(auditErr),
+			"plan_summary":                 plan.Summary,
+			"self_repair_triggers_started": 0,
+			"result":                       result,
+		})
 	}
-	exec.mu.Unlock()
 	auditStatus := skillDraftExecutionPreviewed
 	if !result.OK {
 		auditStatus = skillDraftExecutionBlocked

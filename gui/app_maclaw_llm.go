@@ -1787,8 +1787,25 @@ func maclawLLMUsagePricesFromConfig(cfg *corelib.AppConfig, providerName string)
 	return inputPrice, outputPrice
 }
 
+// pendingLLMTokenDelta batches per-provider usage deltas so high-frequency LLM
+// calls do not PatchConfig+AtomicWrite on every completion (was a major source
+// of configMu / disk write storms that froze skills and settings UI).
+type pendingLLMTokenDelta struct {
+	InputTokens        int64
+	OutputTokens       int64
+	CachedInputTokens  int64
+	CacheWriteTokens   int64
+	Requests           int64
+	CachedRequests     int64
+	LocalCacheRequests int64
+	LocalCacheHits     int64
+}
+
+const tokenUsageFlushInterval = 2 * time.Second
+
 // AccumulateLLMTokenUsageWithCache adds token counts plus provider-reported
 // prompt-cache read/write tokens for the given provider.
+// Deltas are coalesced in memory and flushed to config.json on a short timer.
 func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) {
 	if inputTokens == 0 && outputTokens == 0 && cachedInputTokens == 0 && cacheWriteTokens == 0 {
 		return
@@ -1802,33 +1819,24 @@ func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens,
 		return
 	}
 	a.tokenUsageMu.Lock()
-	defer a.tokenUsageMu.Unlock()
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		if cfg.LLMTokenUsage == nil {
-			cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
-		}
-		stat, ok := cfg.LLMTokenUsage[providerName]
-		if !ok || stat == nil {
-			stat = &corelib.TokenUsageStat{}
-			cfg.LLMTokenUsage[providerName] = stat
-		}
-		stat.InputTokens += int64(inputTokens)
-		stat.OutputTokens += int64(outputTokens)
-		stat.TotalTokens = stat.InputTokens + stat.OutputTokens
-		stat.CachedInputTokens += int64(cachedInputTokens)
-		stat.CacheWriteTokens += int64(cacheWriteTokens)
-		inputPrice, outputPrice := maclawLLMUsagePricesFromConfig(cfg, providerName)
-		stat.InputPricePerMTokensRMB = inputPrice
-		stat.OutputPricePerMTokensRMB = outputPrice
-		stat.InputCostRMB, stat.OutputCostRMB, stat.TotalCostRMB = corelib.CalculateLLMCostRMB(stat.InputTokens, stat.OutputTokens, inputPrice, outputPrice)
-		stat.Requests++
-		if cachedInputTokens > 0 {
-			stat.CachedRequests++
-		}
-	}); err != nil {
-		log.Printf("[LLM] AccumulateLLMTokenUsage: save config: %v", err)
-		return
+	if a.tokenUsagePending == nil {
+		a.tokenUsagePending = make(map[string]*pendingLLMTokenDelta)
 	}
+	delta := a.tokenUsagePending[providerName]
+	if delta == nil {
+		delta = &pendingLLMTokenDelta{}
+		a.tokenUsagePending[providerName] = delta
+	}
+	delta.InputTokens += int64(inputTokens)
+	delta.OutputTokens += int64(outputTokens)
+	delta.CachedInputTokens += int64(cachedInputTokens)
+	delta.CacheWriteTokens += int64(cacheWriteTokens)
+	delta.Requests++
+	if cachedInputTokens > 0 {
+		delta.CachedRequests++
+	}
+	a.scheduleTokenUsageFlushLocked()
+	a.tokenUsageMu.Unlock()
 	if a.ctx != nil {
 		a.emitEvent("llm-token-usage-changed", providerName)
 	}
@@ -1842,31 +1850,108 @@ func (a *App) AccumulateLLMLocalCacheRequest(providerName string, hit bool) {
 		return
 	}
 	a.tokenUsageMu.Lock()
-	defer a.tokenUsageMu.Unlock()
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		if cfg.LLMTokenUsage == nil {
-			cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
-		}
-		stat, ok := cfg.LLMTokenUsage[providerName]
-		if !ok || stat == nil {
-			stat = &corelib.TokenUsageStat{}
-			cfg.LLMTokenUsage[providerName] = stat
-		}
-		stat.LocalCacheRequests++
-		if hit {
-			stat.LocalCacheHits++
-		}
-	}); err != nil {
-		log.Printf("[LLM] AccumulateLLMLocalCacheRequest: save config: %v", err)
-		return
+	if a.tokenUsagePending == nil {
+		a.tokenUsagePending = make(map[string]*pendingLLMTokenDelta)
 	}
+	delta := a.tokenUsagePending[providerName]
+	if delta == nil {
+		delta = &pendingLLMTokenDelta{}
+		a.tokenUsagePending[providerName] = delta
+	}
+	delta.LocalCacheRequests++
+	if hit {
+		delta.LocalCacheHits++
+	}
+	a.scheduleTokenUsageFlushLocked()
+	a.tokenUsageMu.Unlock()
 	if a.ctx != nil {
 		a.emitEvent("llm-token-usage-changed", providerName)
 	}
 }
 
+// scheduleTokenUsageFlushLocked starts a single delayed flush if none is pending.
+// Caller must hold tokenUsageMu.
+func (a *App) scheduleTokenUsageFlushLocked() {
+	if a.tokenUsageFlushScheduled {
+		return
+	}
+	a.tokenUsageFlushScheduled = true
+	time.AfterFunc(tokenUsageFlushInterval, func() {
+		a.flushPendingTokenUsage()
+	})
+}
+
+// flushPendingTokenUsage applies coalesced token deltas with one PatchConfig.
+func (a *App) flushPendingTokenUsage() {
+	a.tokenUsageMu.Lock()
+	pending := a.tokenUsagePending
+	a.tokenUsagePending = nil
+	a.tokenUsageFlushScheduled = false
+	a.tokenUsageMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		if cfg.LLMTokenUsage == nil {
+			cfg.LLMTokenUsage = make(map[string]*corelib.TokenUsageStat)
+		}
+		for providerName, delta := range pending {
+			if delta == nil {
+				continue
+			}
+			stat, ok := cfg.LLMTokenUsage[providerName]
+			if !ok || stat == nil {
+				stat = &corelib.TokenUsageStat{}
+				cfg.LLMTokenUsage[providerName] = stat
+			}
+			stat.InputTokens += delta.InputTokens
+			stat.OutputTokens += delta.OutputTokens
+			stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+			stat.CachedInputTokens += delta.CachedInputTokens
+			stat.CacheWriteTokens += delta.CacheWriteTokens
+			stat.Requests += delta.Requests
+			stat.CachedRequests += delta.CachedRequests
+			stat.LocalCacheRequests += delta.LocalCacheRequests
+			stat.LocalCacheHits += delta.LocalCacheHits
+			inputPrice, outputPrice := maclawLLMUsagePricesFromConfig(cfg, providerName)
+			stat.InputPricePerMTokensRMB = inputPrice
+			stat.OutputPricePerMTokensRMB = outputPrice
+			stat.InputCostRMB, stat.OutputCostRMB, stat.TotalCostRMB = corelib.CalculateLLMCostRMB(stat.InputTokens, stat.OutputTokens, inputPrice, outputPrice)
+		}
+	}); err != nil {
+		log.Printf("[LLM] flushPendingTokenUsage: save config: %v", err)
+		// Re-queue failed deltas so usage is not permanently lost.
+		a.tokenUsageMu.Lock()
+		if a.tokenUsagePending == nil {
+			a.tokenUsagePending = pending
+		} else {
+			for name, delta := range pending {
+				if delta == nil {
+					continue
+				}
+				exist := a.tokenUsagePending[name]
+				if exist == nil {
+					a.tokenUsagePending[name] = delta
+					continue
+				}
+				exist.InputTokens += delta.InputTokens
+				exist.OutputTokens += delta.OutputTokens
+				exist.CachedInputTokens += delta.CachedInputTokens
+				exist.CacheWriteTokens += delta.CacheWriteTokens
+				exist.Requests += delta.Requests
+				exist.CachedRequests += delta.CachedRequests
+				exist.LocalCacheRequests += delta.LocalCacheRequests
+				exist.LocalCacheHits += delta.LocalCacheHits
+			}
+		}
+		a.scheduleTokenUsageFlushLocked()
+		a.tokenUsageMu.Unlock()
+	}
+}
+
 // GetLLMTokenUsage returns the token usage stats for a specific provider.
 // If provider is empty, returns stats for the current provider.
+// Pending debounced deltas are merged so UI is not up to 2s stale.
 func (a *App) GetLLMTokenUsage(provider string) *corelib.TokenUsageStat {
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -1878,29 +1963,80 @@ func (a *App) GetLLMTokenUsage(provider string) *corelib.TokenUsageStat {
 	if isRemoteToolTokenUsageProvider(provider) {
 		return &corelib.TokenUsageStat{}
 	}
-	if cfg.LLMTokenUsage == nil {
-		return &corelib.TokenUsageStat{}
-	}
-	if stat, ok := cfg.LLMTokenUsage[provider]; ok {
-		if stat == nil {
-			return &corelib.TokenUsageStat{}
+	stat := &corelib.TokenUsageStat{}
+	if cfg.LLMTokenUsage != nil {
+		if existing, ok := cfg.LLMTokenUsage[provider]; ok && existing != nil {
+			cp := *existing
+			stat = &cp
 		}
-		copy := *stat
-		return &copy
 	}
-	return &corelib.TokenUsageStat{}
+	a.mergePendingTokenUsageInto(provider, stat)
+	return stat
 }
 
 // GetAllLLMTokenUsage returns token usage stats for all providers.
+// Pending debounced deltas are merged so UI is not up to 2s stale.
 func (a *App) GetAllLLMTokenUsage() map[string]*corelib.TokenUsageStat {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return map[string]*corelib.TokenUsageStat{}
 	}
-	if cfg.LLMTokenUsage == nil {
-		return map[string]*corelib.TokenUsageStat{}
+	out := map[string]*corelib.TokenUsageStat{}
+	if cfg.LLMTokenUsage != nil {
+		for k, v := range corelib.FilterRemoteCodingToolTokenUsage(cfg.LLMTokenUsage) {
+			if v == nil {
+				out[k] = &corelib.TokenUsageStat{}
+				continue
+			}
+			cp := *v
+			out[k] = &cp
+		}
 	}
-	return corelib.FilterRemoteCodingToolTokenUsage(cfg.LLMTokenUsage)
+	a.tokenUsageMu.Lock()
+	for name, delta := range a.tokenUsagePending {
+		if delta == nil || isRemoteToolTokenUsageProvider(name) {
+			continue
+		}
+		stat := out[name]
+		if stat == nil {
+			stat = &corelib.TokenUsageStat{}
+			out[name] = stat
+		}
+		applyPendingTokenDelta(stat, delta)
+	}
+	a.tokenUsageMu.Unlock()
+	return out
+}
+
+func (a *App) mergePendingTokenUsageInto(provider string, stat *corelib.TokenUsageStat) {
+	if a == nil || stat == nil {
+		return
+	}
+	provider = strings.TrimSpace(provider)
+	a.tokenUsageMu.Lock()
+	delta := a.tokenUsagePending[provider]
+	if delta != nil {
+		applyPendingTokenDelta(stat, delta)
+	}
+	a.tokenUsageMu.Unlock()
+}
+
+func applyPendingTokenDelta(stat *corelib.TokenUsageStat, delta *pendingLLMTokenDelta) {
+	if stat == nil || delta == nil {
+		return
+	}
+	stat.InputTokens += delta.InputTokens
+	stat.OutputTokens += delta.OutputTokens
+	stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+	stat.CachedInputTokens += delta.CachedInputTokens
+	stat.CacheWriteTokens += delta.CacheWriteTokens
+	stat.Requests += delta.Requests
+	stat.CachedRequests += delta.CachedRequests
+	stat.LocalCacheRequests += delta.LocalCacheRequests
+	stat.LocalCacheHits += delta.LocalCacheHits
+	stat.InputCostRMB, stat.OutputCostRMB, stat.TotalCostRMB = corelib.CalculateLLMCostRMB(
+		stat.InputTokens, stat.OutputTokens, stat.InputPricePerMTokensRMB, stat.OutputPricePerMTokensRMB,
+	)
 }
 
 func isRemoteToolTokenUsageProvider(provider string) bool {
@@ -1910,6 +2046,15 @@ func isRemoteToolTokenUsageProvider(provider string) bool {
 // ResetLLMTokenUsage resets the token usage stats for a specific provider.
 // If provider is empty, resets all providers.
 func (a *App) ResetLLMTokenUsage(provider string) error {
+	// Drop pending deltas so a later flush cannot resurrect reset counters.
+	a.tokenUsageMu.Lock()
+	if provider == "" {
+		a.tokenUsagePending = nil
+	} else if a.tokenUsagePending != nil {
+		delete(a.tokenUsagePending, strings.TrimSpace(provider))
+	}
+	a.tokenUsageMu.Unlock()
+
 	return a.PatchConfig(func(cfg *corelib.AppConfig) {
 		if cfg.LLMTokenUsage == nil {
 			return

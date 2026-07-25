@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, SetMaclawLLMCurrentModel, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset, SetBugReportEnabled, SelectBugReportScreenshots, BugReportScreenshotPreviewDataURL, SubmitBugReport, RetryBugReportUpload, HasPendingBugReportUpload, ListMyBugReports } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfigForUI, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, SetMaclawLLMCurrentModel, IsNativeRoundedCorners, IsWebviewTransparent, GetFramelessTopInset, ClampMaximizedWindowToWorkArea, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset, SetBugReportEnabled, SelectBugReportScreenshots, BugReportScreenshotPreviewDataURL, SubmitBugReport, RetryBugReportUpload, HasPendingBugReportUpload, ListMyBugReports } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -25,6 +25,24 @@ function clipboardImageExtension(mimeType: string): string {
         case 'image/bmp': return 'bmp';
         case 'image/gif': return 'gif';
         default: return 'png';
+    }
+}
+
+/** Toggle maximise, then clamp to work area (Win10 frameless taskbar overflow). */
+async function toggleMaximiseAndClampWorkArea(): Promise<void> {
+    try {
+        // Snapshot before toggle: after restore, skip clamp entirely.
+        const wasMax = await WindowIsMaximised().catch(() => false);
+        WindowToggleMaximise();
+        if (wasMax) {
+            // Restored to normal — no work-area clamp needed.
+            return;
+        }
+        // Entering maximised: wait for OS geometry then clamp under taskbar.
+        await new Promise((r) => setTimeout(r, 80));
+        await ClampMaximizedWindowToWorkArea();
+    } catch {
+        // Window state APIs may be unavailable during shutdown.
     }
 }
 
@@ -380,21 +398,48 @@ function App() {
     }, []);
     useEffect(() => {
         let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-        const syncMaximized = () => {
-            if (debounceTimer) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
+        let clampTimer: ReturnType<typeof setTimeout> | null = null;
+        const requestClamp = () => {
+            // Coalesce rapid resize clamps (monitor move / DPI); backend also
+            // no-ops when geometry already matches work area.
+            if (clampTimer) clearTimeout(clampTimer);
+            clampTimer = setTimeout(() => {
+                void callBackend(() => ClampMaximizedWindowToWorkArea()).catch(() => undefined);
+            }, 80);
+        };
+        const applyWindowState = (isMax: boolean, isFs: boolean) => {
+            const maximised = !!(isMax || isFs);
+            setWindowMaximized(maximised);
+            // Clamp when maximised (mount / toggle / resize / DPI).
+            if (maximised) {
+                requestClamp();
+            }
+        };
+        const syncMaximized = (immediate = false) => {
+            const run = () => {
                 // Window state is a 3-state enum: normal | maximised | fullscreen.
                 // The title bar restore button should show "restore" icon when the
                 // window is in ANY non-normal state (maximised OR fullscreen).
                 Promise.all([callBackend(() => WindowIsMaximised()), callBackend(() => WindowIsFullscreen())]).then(
-                    ([isMax, isFs]) => setWindowMaximized(isMax || isFs)
-                );
-            }, 150);
-        };
-        window.addEventListener('resize', syncMaximized);
-        return () => {
-            window.removeEventListener('resize', syncMaximized);
+                    ([isMax, isFs]) => applyWindowState(!!isMax, !!isFs)
+                ).catch(() => undefined);
+            };
+            if (immediate) {
+                run();
+                return;
+            }
             if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(run, 150);
+        };
+        const onResize = () => syncMaximized(false);
+        // Immediate sync on mount so data-maximized is correct before first paint settles
+        // (startup may already be maximised on low-res displays).
+        syncMaximized(true);
+        window.addEventListener('resize', onResize);
+        return () => {
+            window.removeEventListener('resize', onResize);
+            if (debounceTimer) clearTimeout(debounceTimer);
+            if (clampTimer) clearTimeout(clampTimer);
         };
     }, []);
     const navTabRef = useRef(navTab);
@@ -1027,7 +1072,8 @@ function App() {
         Promise.all([
             callBackend(() => IsNativeRoundedCorners()).catch(() => null),
             callBackend(() => IsWebviewTransparent()).catch(() => null),
-        ]).then(([rounded, transparent]) => {
+            callBackend(() => GetFramelessTopInset()).catch(() => 0),
+        ]).then(([rounded, transparent, topInset]) => {
             if (rounded !== null) setNativeRounded(rounded);
             if (transparent) {
                 setWebviewTransparent(true);
@@ -1037,6 +1083,11 @@ function App() {
                 document.documentElement.style.backgroundColor = '';
                 document.body.style.backgroundColor = '';
             }
+            // Win10 DWM may reserve an invisible top frame on frameless windows.
+            // CSS #App uses padding-top: var(--dwm-top-offset) to compensate.
+            // Set on :root only — do not set on .app-viewport (would shadow).
+            const insetPx = typeof topInset === 'number' && topInset > 0 ? Math.min(Math.round(topInset), 16) : 0;
+            document.documentElement.style.setProperty('--dwm-top-offset', `${insetPx}px`);
         });
     }, []);
     // When theme mode changes after mount, keep non-transparent shells on CSS tokens
@@ -1503,7 +1554,7 @@ function App() {
             const alreadyMaximized = await callBackend(() => WindowIsMaximised());
             if (maximizeSeq !== aiPanelMaximizeSeqRef.current || navTabRef.current !== 'ai') return;
             if (!alreadyMaximized) {
-                void callBackend(() => WindowToggleMaximise());
+                void toggleMaximiseAndClampWorkArea();
                 aiPanelMaximizedWindowRef.current = true;
             }
         } catch {
@@ -1530,7 +1581,7 @@ function App() {
             setAiPanelMaximized(false);
         } else {
             setWindowMaximized(m => !m); // optimistic update for instant icon feedback
-            void callBackend(() => WindowToggleMaximise());
+            void toggleMaximiseAndClampWorkArea();
         }
     };
 
@@ -1828,8 +1879,8 @@ function App() {
             console.error("Failed to load Python environments:", err);
         });
 
-        // Config Logic
-        callBackend(() => LoadConfig()).then((cfg) => {
+        // Config Logic — LoadConfigForUI omits NLSkills (skills come from ListNLSkills).
+        callBackend(() => LoadConfigForUI()).then((cfg) => {
             logStartupTrace('config-loaded-ok', { hasConfig: !!cfg, keys: cfg ? Object.keys(cfg).length : 0 });
             // Apply default launch mode setting on startup
             if (cfg.default_launch_mode === 'remote') {
@@ -1895,7 +1946,7 @@ function App() {
             // Fallback: retry once after a short delay. If the config file was
             // being written by a concurrent SaveConfig, it should be ready now.
             setTimeout(() => {
-                callBackend(() => LoadConfig()).then((cfg) => {
+                callBackend(() => LoadConfigForUI()).then((cfg) => {
                     setConfig(cfg);
                     if (cfg && cfg.language) {
                         setLang(cfg.language);
@@ -1955,7 +2006,7 @@ function App() {
                 applyConfigChange(cfg);
                 return;
             }
-            void callBackend(() => LoadConfig()).then(applyConfigChange).catch((err) => {
+            void callBackend(() => LoadConfigForUI()).then(applyConfigChange).catch((err) => {
                 console.warn('Failed to reload config after config event:', err);
             });
         };
@@ -2870,7 +2921,7 @@ function App() {
 
     const handleLLMProviderChanged = useCallback(() => {
         void refreshSidebarTokenUsage();
-        void callBackend(() => LoadConfig()).then((freshConfig) => setConfig(freshConfig)).catch((err) => {
+        void callBackend(() => LoadConfigForUI()).then((freshConfig) => setConfig(freshConfig)).catch((err) => {
             console.warn('Failed to reload config after LLM provider change:', err);
         });
     }, [refreshSidebarTokenUsage]);
@@ -3179,7 +3230,7 @@ function App() {
 
     const openHubCardStorePage = useCallback(async () => {
         try {
-            const freshConfig = await callBackend(() => LoadConfig());
+            const freshConfig = await callBackend(() => LoadConfigForUI());
             const sourceConfig = freshConfig || config;
             const url = buildHubCardStoreURL((sourceConfig as any)?.remote_hub_url, (sourceConfig as any)?.remote_tenant_id, (sourceConfig as any)?.remote_email, (sourceConfig as any)?.remote_viewer_token, (sourceConfig as any)?.remote_hubcenter_url, (sourceConfig as any)?.remote_hub_id, undefined, (sourceConfig as any)?.remote_tenant_name, (sourceConfig as any)?.remote_user_id, (sourceConfig as any)?.remote_mobile);
             if (url) {
@@ -3194,7 +3245,7 @@ function App() {
 
     const openMaclawAppManualPage = useCallback(async () => {
         try {
-            const freshConfig = await callBackend(() => LoadConfig());
+            const freshConfig = await callBackend(() => LoadConfigForUI());
             const sourceConfig = freshConfig || config;
             const url = buildHubMaclawAppManualURL((sourceConfig as any)?.remote_hub_url, lang);
             if (url) {
@@ -4059,12 +4110,12 @@ ${instruction}`;
         setConfig(newConfig);
         try {
             await callBackend(() => SetDefaultLaunchMode(mode));
-            const freshConfig = await callBackend(() => LoadConfig());
+            const freshConfig = await callBackend(() => LoadConfigForUI());
             setConfig(freshConfig);
         } catch (err) {
             setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
             try {
-                const freshConfig = await callBackend(() => LoadConfig());
+                const freshConfig = await callBackend(() => LoadConfigForUI());
                 setConfig(freshConfig);
             } catch {
                 // Keep the optimistic UI state if recovery load fails.
@@ -4495,7 +4546,7 @@ ${instruction}`;
                                 }
                             }}
                             onRegistrationContactUpdated={() => {
-                                void callBackend(() => LoadConfig()).then((freshConfig) => setConfig(new main.AppConfig(freshConfig))).catch((err) => console.error("Failed to refresh registration contact:", err));
+                                void callBackend(() => LoadConfigForUI()).then((freshConfig) => setConfig(new main.AppConfig(freshConfig))).catch((err) => console.error("Failed to refresh registration contact:", err));
                             }}
                         />
                     )}
@@ -5593,11 +5644,11 @@ ${instruction}`;
                         // Reload config to pick up CodeGen model injected into tool configs by SSO.
                         // Delay slightly to avoid racing with SaveConfig writing the file.
                         setTimeout(() => {
-                            callBackend(() => LoadConfig()).then((c: any) => setConfig(c)).catch((err) => {
+                            callBackend(() => LoadConfigForUI()).then((c: any) => setConfig(c)).catch((err) => {
                                 console.error("Failed to reload config after LLM configured:", err);
                                 // Retry once after a short delay
                                 setTimeout(() => {
-                                    callBackend(() => LoadConfig()).then((c: any) => setConfig(c)).catch((err2) => {
+                                    callBackend(() => LoadConfigForUI()).then((c: any) => setConfig(c)).catch((err2) => {
                                         console.error("Retry reload config also failed:", err2);
                                     });
                                 }, 1000);
@@ -5611,7 +5662,7 @@ ${instruction}`;
                     }}
                     onMigrationCompleted={async () => {
                         try {
-                            const restored = await callBackend(() => LoadConfig());
+                            const restored = await callBackend(() => LoadConfigForUI());
                             setConfig(new main.AppConfig(restored));
                         } catch (error) {
                             console.warn('[onboarding] failed to refresh restored config snapshot:', error);

@@ -52,6 +52,58 @@ func TestDetailAwareLogWriterDropsUnimportantLinesWhenDetailDisabled(t *testing.
 	}
 }
 
+func TestDetailAwareLogWriterAlwaysKeepsRegistrationLines(t *testing.T) {
+	setLogDetailForTest(t, false)
+
+	var file bytes.Buffer
+	var reg bytes.Buffer
+	var stderr bytes.Buffer
+	writer := &detailAwareLogWriter{file: &file, regFile: &reg, stderr: &stderr}
+
+	line := `[registration-contact] phone send rejected code=PHONE_REGISTRATION_DISABLED` + "\n"
+	if _, err := writer.Write([]byte(line)); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if !strings.Contains(file.String(), "PHONE_REGISTRATION_DISABLED") {
+		t.Fatalf("maclaw.log missing registration line: %q", file.String())
+	}
+	if !strings.Contains(reg.String(), "PHONE_REGISTRATION_DISABLED") {
+		t.Fatalf("registration.log missing registration line: %q", reg.String())
+	}
+	if !strings.Contains(stderr.String(), "PHONE_REGISTRATION_DISABLED") {
+		t.Fatalf("stderr missing registration line: %q", stderr.String())
+	}
+
+	// Non-registration noise still dropped with detail off.
+	if _, err := writer.Write([]byte("routine note\n")); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if strings.Contains(file.String(), "routine note") || strings.Contains(reg.String(), "routine note") {
+		t.Fatalf("routine noise leaked into logs: file=%q reg=%q", file.String(), reg.String())
+	}
+}
+
+func TestIsRegistrationLogLine(t *testing.T) {
+	if !isRegistrationLogLine(`[onboarding] ActivateRemote total=1s`) {
+		t.Fatal("expected onboarding important")
+	}
+	if !isRegistrationLogLine(`[onboarding-sms] send_code_begin`) {
+		t.Fatal("expected onboarding-sms")
+	}
+	if !isRegistrationLogLine(`[frontend-diagnostic] {"tag":"onboarding","stage":"x"}`) {
+		t.Fatal("expected onboarding frontend diagnostic")
+	}
+	if !isRegistrationLogLine(`[frontend-diagnostic] {"tag": "onboarding", "stage":"x"}`) {
+		t.Fatal("expected spaced JSON tag form")
+	}
+	if isRegistrationLogLine(`[frontend-diagnostic] {"stage":"app-render-begin"}`) {
+		t.Fatal("non-onboarding frontend diagnostic must not be registration")
+	}
+	if isRegistrationLogLine(`routine startup note`) {
+		t.Fatal("noise must not be registration")
+	}
+}
+
 func TestDetailAwareLogWriterMirrorsStderrWhenConfigured(t *testing.T) {
 	setLogDetailForTest(t, false)
 

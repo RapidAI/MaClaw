@@ -493,9 +493,7 @@ func (m *SkillLifecycleManager) EvaluateInstalledSkills(requireRuntimeProof bool
 	if m.app.skillExecutor == nil {
 		return nil, fmt.Errorf("skill executor not initialized")
 	}
-	m.app.skillExecutor.mu.RLock()
 	skills := append([]corelib.NLSkillEntry(nil), m.app.skillExecutor.loadSkills()...)
-	m.app.skillExecutor.mu.RUnlock()
 
 	statuses := make([]SkillQualityStatus, 0, len(skills))
 	for i := range skills {
@@ -700,8 +698,6 @@ func (m *SkillLifecycleManager) findRegisteredSkill(skillName string) *corelib.N
 	if m.app.skillExecutor == nil {
 		return nil
 	}
-	m.app.skillExecutor.mu.RLock()
-	defer m.app.skillExecutor.mu.RUnlock()
 	for _, s := range m.app.skillExecutor.loadSkills() {
 		if s.MatchesName(skillName) {
 			cp := s

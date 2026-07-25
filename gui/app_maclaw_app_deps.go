@@ -2377,34 +2377,34 @@ func (a *App) updateRegisteredMaclawAppDependencySkill(updated corelib.NLSkillEn
 	if a == nil || a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	a.skillExecutor.mu.Lock()
-	defer a.skillExecutor.mu.Unlock()
-	skills := a.skillExecutor.loadSkills()
-	for i, existing := range skills {
-		if existing.Name != updated.Name {
-			continue
+	return a.skillExecutor.withSkillListMutate(func() error {
+		skills := a.skillExecutor.loadSkills()
+		for i, existing := range skills {
+			if existing.Name != updated.Name {
+				continue
+			}
+			updated.Status = firstNonEmpty(updated.Status, existing.Status)
+			updated.CreatedAt = firstNonEmpty(existing.CreatedAt, updated.CreatedAt)
+			updated.UsageCount = existing.UsageCount
+			updated.SuccessCount = existing.SuccessCount
+			updated.FailureCount = existing.FailureCount
+			updated.LastUsedAt = existing.LastUsedAt
+			updated.LastError = existing.LastError
+			if isShellBrowserAutomationSkillEntry(updated) {
+				return browserAutomationSkillRejectedError(updated.Name)
+			}
+			skills[i] = updated
+			if err := a.skillExecutor.saveSkills(skills); err != nil {
+				return err
+			}
+			a.skillExecutor.clearSkillListCache()
+			if a.cachedSkillScanner != nil {
+				a.cachedSkillScanner.UpsertSkills([]corelib.NLSkillEntry{updated})
+			}
+			return nil
 		}
-		updated.Status = firstNonEmpty(updated.Status, existing.Status)
-		updated.CreatedAt = firstNonEmpty(existing.CreatedAt, updated.CreatedAt)
-		updated.UsageCount = existing.UsageCount
-		updated.SuccessCount = existing.SuccessCount
-		updated.FailureCount = existing.FailureCount
-		updated.LastUsedAt = existing.LastUsedAt
-		updated.LastError = existing.LastError
-		if isShellBrowserAutomationSkillEntry(updated) {
-			return browserAutomationSkillRejectedError(updated.Name)
-		}
-		skills[i] = updated
-		if err := a.skillExecutor.saveSkills(skills); err != nil {
-			return err
-		}
-		a.skillExecutor.clearSkillListCache()
-		if a.cachedSkillScanner != nil {
-			a.cachedSkillScanner.UpsertSkills([]corelib.NLSkillEntry{updated})
-		}
-		return nil
-	}
-	return fmt.Errorf("skill %q not found", updated.Name)
+		return fmt.Errorf("skill %q not found", updated.Name)
+	})
 }
 
 func maclawAppBundledDependenciesForPackageJSON(packageJSON string) maclawAppBundledDependencies {

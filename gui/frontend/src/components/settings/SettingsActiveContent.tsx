@@ -1,5 +1,15 @@
-import { Suspense, type ChangeEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { Suspense, useEffect, useRef, useState, type ChangeEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { GetSettingsTabConfig } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
+import {
+    appConfigFromMergedPlain,
+    configChangeEventHasPayload,
+    configKeysUnchanged,
+    mergeSettingsTabConfigSafe,
+    settingsTabNeedsConfig,
+    snapshotConfigFields,
+} from '../../config/settingsTabConfig';
+import { EVENT_MACLAW_CONFIG_CHANGED } from '../../constants/events';
 import { resolveSettingsTabId, type SettingsTabId } from '../../config/settingsTabs';
 import {
     ASRConfigPanel,
@@ -121,6 +131,10 @@ function wrapPanel(className: string, children: ReactNode) {
     return <div className={className}>{children}</div>;
 }
 
+function appConfigFromMerged(merged: Record<string, any>): main.AppConfig {
+    return appConfigFromMergedPlain(merged, (src) => new main.AppConfig(src)) as main.AppConfig;
+}
+
 /**
  * Renders only the active settings tab body.
  *
@@ -206,6 +220,89 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
     // Resolve before switch so invalid / currently-hidden tabs never paint an empty body.
     const activeTab = resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable });
 
+    // Per-tab fine-grained DTO: merge only the keys this panel needs (backend
+    // GetSettingsTabConfig). Avoids re-shipping full AppConfig on every tab switch.
+    // If global config is already warm, keep painting panels; only block when null.
+    // Per-mount cache: revisit of the same tab skips a redundant bridge call.
+    // On EVENT_MACLAW_CONFIG_CHANGED:
+    //   - with payload: saver already setConfig(full); clear other tabs, keep active warm
+    //   - signal-only (empty detail): force active tab re-fetch
+    const tabNeedsConfig = settingsTabNeedsConfig(activeTab);
+    const tabFetchGen = useRef(0);
+    const loadedTabsRef = useRef<Set<string>>(new Set());
+    const configRef = useRef(config);
+    configRef.current = config;
+    const activeTabRef = useRef(activeTab);
+    activeTabRef.current = activeTab;
+    const [tabCacheEpoch, setTabCacheEpoch] = useState(0);
+
+    useEffect(() => {
+        const invalidate = (ev: Event) => {
+            const detail = (ev as CustomEvent).detail;
+            // Savers dispatch full config as detail after setConfig. Clear other tabs
+            // so they re-fetch on visit, but keep active warm and avoid epoch bump
+            // (epoch bump would re-run the fetch effect and re-render for nothing).
+            if (configChangeEventHasPayload(detail) && configRef.current) {
+                const tab = activeTabRef.current;
+                loadedTabsRef.current.clear();
+                if (settingsTabNeedsConfig(tab)) {
+                    loadedTabsRef.current.add(tab);
+                }
+                return;
+            }
+            // Signal-only invalidation: force active tab re-fetch.
+            loadedTabsRef.current.clear();
+            setTabCacheEpoch((n) => n + 1);
+        };
+        window.addEventListener(EVENT_MACLAW_CONFIG_CHANGED, invalidate);
+        return () => window.removeEventListener(EVENT_MACLAW_CONFIG_CHANGED, invalidate);
+    }, []);
+
+    useEffect(() => {
+        if (!settingsTabNeedsConfig(activeTab)) {
+            return;
+        }
+        // Same tab already merged this mount — skip (user edits stay local until save).
+        if (loadedTabsRef.current.has(activeTab) && configRef.current) {
+            return;
+        }
+        let cancelled = false;
+        const gen = ++tabFetchGen.current;
+        const snapshot = snapshotConfigFields(configRef.current as unknown as Record<string, any>);
+        void GetSettingsTabConfig(activeTab)
+            .then((partial) => {
+                if (cancelled || gen !== tabFetchGen.current) return;
+                loadedTabsRef.current.add(activeTab);
+                if (!partial || typeof partial !== 'object' || Object.keys(partial).length === 0) {
+                    // Cold start with empty DTO: still unblock the panel shell.
+                    if (!configRef.current) {
+                        setConfig((prev) => prev ?? new main.AppConfig({ projects: [] }));
+                    }
+                    return;
+                }
+                // Safe merge: do not overwrite keys the user edited after fetch started.
+                // Skip setConfig entirely when DTO agrees with current state (no re-render).
+                setConfig((prev) => {
+                    const merged = mergeSettingsTabConfigSafe(prev as any, partial, snapshot);
+                    if (configKeysUnchanged(prev as any, merged, Object.keys(partial))) {
+                        return prev as main.AppConfig;
+                    }
+                    return appConfigFromMerged(merged);
+                });
+            })
+            .catch((err) => {
+                if (cancelled || gen !== tabFetchGen.current) return;
+                console.error(`GetSettingsTabConfig(${activeTab}) failed:`, err);
+                // Avoid permanent "Loading settings…" when global config never arrived.
+                if (!configRef.current) {
+                    setConfig((prev) => prev ?? new main.AppConfig({ projects: [] }));
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, setConfig, tabCacheEpoch]); // eslint-disable-line react-hooks/exhaustive-deps -- tab change or cache invalidate
+
     const renderGeneral = () => wrapPanel('settings-content settings-content--stacked', (
         <>
             <GeneralSettingsPanel
@@ -226,6 +323,16 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             />
         </>
     ));
+
+    // Never mount config-backed panels without a config object (pet uses config!).
+    // Keep the shell after a failed cold-start fetch instead of crashing.
+    if (!config && tabNeedsConfig) {
+        return (
+            <SettingsPanelFallback
+                message={localizeText('Loading settings…', '\u6b63\u5728\u52a0\u8f7d\u8bbe\u7f6e\u2026', '\u6b63\u5728\u8f09\u5165\u8a2d\u5b9a\u2026')}
+            />
+        );
+    }
 
     // Eager path: opening Settings lands here most of the time — no lazy suspend.
     if (activeTab === 'general') {

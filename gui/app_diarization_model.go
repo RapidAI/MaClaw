@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/diarization"
@@ -68,11 +67,7 @@ func (a *App) DownloadDiarizationModel() error {
 		}
 	}
 
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	hubURL := a.PeekRemoteHubURLTrimmed()
 	if hubURL == "" {
 		msg := "default download URL is unavailable and Hub URL is not configured"
 		a.emitDiarizationProgress(0, 0, 0, msg)

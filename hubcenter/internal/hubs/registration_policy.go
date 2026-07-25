@@ -72,6 +72,12 @@ func (s *Service) HubRegistrationPolicies(ctx context.Context) (map[string]HubRe
 }
 
 func (s *Service) UpdateHubRegistrationPolicy(ctx context.Context, hubID string, req UpdateHubRegistrationPolicyRequest) (HubRegistrationPolicyConfig, error) {
+	if s == nil || s.hubs == nil || s.settings == nil {
+		return HubRegistrationPolicyConfig{}, ErrInvalidRegistrationPolicy
+	}
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
+
 	hubID = strings.TrimSpace(hubID)
 	if hubID == "" {
 		return HubRegistrationPolicyConfig{}, ErrHubNotFound
@@ -98,11 +104,28 @@ func (s *Service) UpdateHubRegistrationPolicy(ctx context.Context, hubID string,
 	if strings.TrimSpace(req.HubOrigin) != "" {
 		cfg.HubOrigin = normalizeHubOrigin(req.HubOrigin)
 	}
+	legacyPublicDefaultUpdate := false
 	if strings.TrimSpace(req.DefaultSignupScope) != "" {
-		cfg.DefaultSignupScope = normalizeSignupScope(req.DefaultSignupScope)
+		// Public signup is tenant-scoped. A Hub-wide public default would expose
+		// every tenant as a possible registration target. Accept the old payload
+		// shape only when it carries the currently selected tenant, then migrate it.
+		if strings.EqualFold(strings.TrimSpace(req.DefaultSignupScope), "public") {
+			if !req.Tenant.hasUpdate() {
+				return HubRegistrationPolicyConfig{}, ErrInvalidRegistrationPolicy
+			}
+			legacyPublicDefaultUpdate = true
+			cfg.DefaultSignupScope = "domain_restricted"
+		} else {
+			cfg.DefaultSignupScope = normalizeSignupScope(req.DefaultSignupScope)
+		}
 	}
 	cfg = normalizeHubRegistrationPolicyConfig(cfg)
 	if req.Tenant.hasUpdate() {
+		if legacyPublicDefaultUpdate {
+			req.Tenant.SignupScope = "public"
+			publicFallback := true
+			req.Tenant.IsPublicFallback = &publicFallback
+		}
 		policy := mergeTenantRegistrationPolicy(cfg.Tenants[normalizeHubSyncTenantID(req.Tenant.TenantID)], req.Tenant)
 		cfg.Tenants[policy.TenantID] = policy
 	}
@@ -325,6 +348,9 @@ func validateUpdatedRegistrationPolicyStore(state hubRegistrationPolicyStore, up
 	if err := validateHubRegistrationPolicyConfig(updatedCfg); err != nil {
 		return err
 	}
+	if publicFallbackCount(updatedCfg) > 1 {
+		return ErrInvalidRegistrationPolicy
+	}
 	if !hubRegistrationConfigHasPublicFallback(updatedCfg) {
 		return nil
 	}
@@ -354,13 +380,18 @@ func validateHubRegistrationPolicyConfig(cfg HubRegistrationPolicyConfig) error 
 }
 
 func hubRegistrationConfigHasPublicFallback(cfg HubRegistrationPolicyConfig) bool {
+	return publicFallbackCount(cfg) > 0
+}
+
+func publicFallbackCount(cfg HubRegistrationPolicyConfig) int {
 	cfg = normalizeHubRegistrationPolicyConfig(cfg)
+	count := 0
 	for _, policy := range cfg.Tenants {
 		if activePublicFallbackPolicy(cfg, policy) {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func activePublicFallbackPolicy(cfg HubRegistrationPolicyConfig, policy store.HubTenantRegistrationPolicy) bool {
@@ -409,17 +440,27 @@ func (s *Service) saveRegistrationPolicyStore(ctx context.Context, state hubRegi
 
 func normalizeHubRegistrationPolicyConfig(cfg HubRegistrationPolicyConfig) HubRegistrationPolicyConfig {
 	cfg.HubOrigin = normalizeHubOrigin(cfg.HubOrigin)
+	legacyPublicDefault := strings.EqualFold(strings.TrimSpace(cfg.DefaultSignupScope), "public")
 	cfg.DefaultSignupScope = normalizeSignupScope(cfg.DefaultSignupScope)
-	if cfg.DefaultSignupScope == "public" {
-		cfg.HubOrigin = "official"
-	}
 	normalizedTenants := make(map[string]store.HubTenantRegistrationPolicy, len(cfg.Tenants))
+	hasPublicFallback := false
 	for tenantID, value := range cfg.Tenants {
 		if strings.TrimSpace(value.TenantID) == "" {
 			value.TenantID = tenantID
 		}
 		policy := normalizeTenantRegistrationPolicy(value)
+		// Retain only the explicit legacy fallback tenant; do not turn every
+		// tenant inheriting a Hub-wide public default into a public tenant.
+		if legacyPublicDefault && policy.IsPublicFallback && policy.SignupScope == "inherit" {
+			policy.SignupScope = "public"
+		}
+		if policy.IsPublicFallback && policy.SignupScope == "public" {
+			hasPublicFallback = true
+		}
 		normalizedTenants[policy.TenantID] = policy
+	}
+	if legacyPublicDefault && hasPublicFallback {
+		cfg.HubOrigin = "official"
 	}
 	if normalizedTenants == nil {
 		normalizedTenants = map[string]store.HubTenantRegistrationPolicy{}
@@ -439,7 +480,7 @@ func normalizeHubOrigin(value string) string {
 
 func normalizeSignupScope(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "public", "domain_restricted", "invite_only":
+	case "domain_restricted", "invite_only":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return "domain_restricted"

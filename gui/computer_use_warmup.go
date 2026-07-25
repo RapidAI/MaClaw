@@ -787,11 +787,11 @@ func (a *App) buildComputerUseDiagnostics(light bool) map[string]interface{} {
 			diag["uia"] = accessibility.SelfCheckUIA()
 		}
 	}
+	activated := computerUseSessionActive()
 	globalComputerUse.mu.Lock()
 	ocrReady := globalComputerUse.ocrSidecar != nil && globalComputerUse.ocrSidecar.Ready()
 	ocrInstalled := globalComputerUse.ocrSidecar != nil && globalComputerUse.ocrSidecar.Installed()
 	yoloLoaded := globalComputerUse.yolo != nil && globalComputerUse.yolo.Loaded()
-	activated := globalComputerUse.activated
 	globalComputerUse.mu.Unlock()
 	diag["runtime"] = map[string]interface{}{
 		"activated":     activated,

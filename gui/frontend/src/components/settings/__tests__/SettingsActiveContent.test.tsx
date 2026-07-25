@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
 import { SettingsActiveContent } from '../SettingsActiveContent';
 import type { AssistantDarkSchemeId } from '../../ai/assistantDarkSchemes';
 import type { AssistantLightSchemeId } from '../../ai/assistantLightSchemes';
+
+const GetSettingsTabConfigMock = vi.fn();
+
+vi.mock('../../../../wailsjs/go/main/App', () => ({
+    GetSettingsTabConfig: (...args: unknown[]) => GetSettingsTabConfigMock(...args),
+}));
 
 vi.mock('../GeneralSettingsPanel', () => ({
     GeneralSettingsPanel: () => <div data-testid="general-settings">General</div>,
@@ -49,7 +55,8 @@ const baseProps = {
     lang: 'en',
     t: (key: string) => key,
     localizeText: (en: string) => en,
-    config: null,
+    // Warm config so mount tests don't block on the per-tab DTO fetch.
+    config: { language: 'en' } as any,
     setConfig: vi.fn(),
     onLanguageChange: vi.fn(),
     hasWindowsTerminal: false,
@@ -121,12 +128,18 @@ const baseProps = {
 };
 
 describe('SettingsActiveContent', () => {
+    beforeEach(() => {
+        GetSettingsTabConfigMock.mockReset();
+        GetSettingsTabConfigMock.mockResolvedValue({});
+    });
+
     it('mounts only the active general tab body', async () => {
         render(<SettingsActiveContent {...baseProps} settingsTab="general" />);
         expect(await screen.findByTestId('general-settings')).toBeTruthy();
         expect(screen.getByTestId('general-advanced')).toBeTruthy();
         expect(screen.queryByTestId('llm-settings')).toBeNull();
         expect(screen.queryByTestId('im-settings')).toBeNull();
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('general'));
     });
 
     it('switches to the llm tab without keeping general mounted', async () => {
@@ -136,6 +149,7 @@ describe('SettingsActiveContent', () => {
         rerender(<SettingsActiveContent {...baseProps} settingsTab="llm" />);
         expect(await screen.findByTestId('llm-settings')).toBeTruthy();
         expect(screen.queryByTestId('general-settings')).toBeNull();
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('llm'));
     });
 
     it('falls back to general when virtualEmployee is requested but unavailable', async () => {
@@ -147,5 +161,127 @@ describe('SettingsActiveContent', () => {
             />,
         );
         expect(await screen.findByTestId('general-settings')).toBeTruthy();
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('general'));
+    });
+
+    it('merges per-tab DTO into setConfig without stomping local edits', async () => {
+        const setConfig = vi.fn();
+        GetSettingsTabConfigMock.mockResolvedValue({
+            default_proxy_host: '10.0.0.1',
+            default_proxy_port: '8080',
+        });
+        render(
+            <SettingsActiveContent
+                {...baseProps}
+                settingsTab="proxy"
+                config={{ language: 'en', default_proxy_host: 'stale', default_proxy_port: '1' } as any}
+                setConfig={setConfig}
+            />,
+        );
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('proxy'));
+        await waitFor(() => expect(setConfig).toHaveBeenCalled());
+        const updater = setConfig.mock.calls.find((c) => typeof c[0] === 'function')?.[0];
+        expect(typeof updater).toBe('function');
+        // prev still matches snapshot → apply server values.
+        const merged = updater({ language: 'en', default_proxy_host: 'stale', default_proxy_port: '1', projects: [] });
+        expect(merged.default_proxy_host).toBe('10.0.0.1');
+        expect(merged.default_proxy_port).toBe('8080');
+        expect(merged.language).toBe('en');
+        // User edited host after snapshot → keep edit.
+        const kept = updater({ language: 'en', default_proxy_host: 'typed-by-user', default_proxy_port: '1' });
+        expect(kept.default_proxy_host).toBe('typed-by-user');
+        expect(kept.default_proxy_port).toBe('8080');
+    });
+
+    it('skips GetSettingsTabConfig for self-loading tabs like memory', async () => {
+        render(<SettingsActiveContent {...baseProps} settingsTab="memory" />);
+        expect(await screen.findByText('Memory')).toBeTruthy();
+        // Allow microtasks; must remain uncalled.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(GetSettingsTabConfigMock).not.toHaveBeenCalled();
+    });
+
+    it('does not re-fetch the same tab after it has loaded once', async () => {
+        GetSettingsTabConfigMock.mockResolvedValue({ language: 'en' });
+        const { rerender } = render(<SettingsActiveContent {...baseProps} settingsTab="general" />);
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledTimes(1));
+
+        rerender(<SettingsActiveContent {...baseProps} settingsTab="proxy" />);
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('proxy'));
+        const afterProxy = GetSettingsTabConfigMock.mock.calls.length;
+
+        rerender(<SettingsActiveContent {...baseProps} settingsTab="general" />);
+        await new Promise((r) => setTimeout(r, 30));
+        // Revisit general — cached, no extra call.
+        expect(GetSettingsTabConfigMock.mock.calls.length).toBe(afterProxy);
+    });
+
+    it('re-fetches the active tab after signal-only maclaw-config-changed', async () => {
+        GetSettingsTabConfigMock.mockResolvedValue({ language: 'en' });
+        render(<SettingsActiveContent {...baseProps} settingsTab="general" />);
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledTimes(1));
+
+        // Empty detail = invalidate without a full config payload → re-fetch.
+        window.dispatchEvent(new CustomEvent('maclaw-config-changed', { detail: {} }));
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledTimes(2));
+        expect(GetSettingsTabConfigMock).toHaveBeenLastCalledWith('general');
+    });
+
+    it('does not re-fetch active tab when config-changed already carries payload', async () => {
+        GetSettingsTabConfigMock.mockResolvedValue({ language: 'en' });
+        render(<SettingsActiveContent {...baseProps} settingsTab="general" />);
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledTimes(1));
+
+        // Saver already applied full config via setConfig before this event.
+        window.dispatchEvent(new CustomEvent('maclaw-config-changed', {
+            detail: { language: 'en', pause_env_check: true },
+        }));
+        await new Promise((r) => setTimeout(r, 40));
+        expect(GetSettingsTabConfigMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-fetches a different tab after payload event cleared its cache', async () => {
+        GetSettingsTabConfigMock.mockResolvedValue({ language: 'en' });
+        const { rerender } = render(<SettingsActiveContent {...baseProps} settingsTab="general" />);
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('general'));
+
+        rerender(<SettingsActiveContent {...baseProps} settingsTab="proxy" />);
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('proxy'));
+        const afterBoth = GetSettingsTabConfigMock.mock.calls.length;
+
+        window.dispatchEvent(new CustomEvent('maclaw-config-changed', {
+            detail: { language: 'en' },
+        }));
+        await new Promise((r) => setTimeout(r, 20));
+        // Active tab (proxy) kept warm — no extra call yet.
+        expect(GetSettingsTabConfigMock.mock.calls.length).toBe(afterBoth);
+
+        // Leaving and re-entering general should re-fetch (cache was cleared for it).
+        rerender(<SettingsActiveContent {...baseProps} settingsTab="general" />);
+        await waitFor(() => expect(GetSettingsTabConfigMock.mock.calls.length).toBeGreaterThan(afterBoth));
+        expect(GetSettingsTabConfigMock).toHaveBeenLastCalledWith('general');
+    });
+
+    it('does not apply a stale tab DTO after unmount', async () => {
+        let resolveDto: (v: Record<string, any>) => void = () => {};
+        GetSettingsTabConfigMock.mockImplementation(
+            () => new Promise((resolve) => {
+                resolveDto = resolve;
+            }),
+        );
+        const setConfig = vi.fn();
+        const { unmount } = render(
+            <SettingsActiveContent
+                {...baseProps}
+                settingsTab="proxy"
+                config={{ language: 'en' } as any}
+                setConfig={setConfig}
+            />,
+        );
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalled());
+        unmount();
+        resolveDto({ default_proxy_host: 'should-not-apply' });
+        await new Promise((r) => setTimeout(r, 30));
+        expect(setConfig).not.toHaveBeenCalled();
     });
 });

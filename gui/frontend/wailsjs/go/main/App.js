@@ -815,6 +815,10 @@ export function GetFramelessTopInset() {
   return window['go']['main']['App']['GetFramelessTopInset']();
 }
 
+export function ClampMaximizedWindowToWorkArea() {
+  return window['go']['main']['App']['ClampMaximizedWindowToWorkArea']();
+}
+
 export function LaunchInstallerAndExit(arg1) {
   return window['go']['main']['App']['LaunchInstallerAndExit'](arg1);
 }
@@ -861,6 +865,18 @@ export function ListSkillsWithInstallStatus(arg1, arg2, arg3) {
 
 export function LoadConfig() {
   return window['go']['main']['App']['LoadConfig']();
+}
+
+export function LoadConfigForUI() {
+  return window['go']['main']['App']['LoadConfigForUI']();
+}
+
+export function GetUIShellConfig() {
+  return window['go']['main']['App']['GetUIShellConfig']();
+}
+
+export function GetSettingsTabConfig(arg1) {
+  return window['go']['main']['App']['GetSettingsTabConfig'](arg1);
 }
 
 export function GetToolCacheStatus() {

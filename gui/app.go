@@ -265,11 +265,35 @@ type App struct {
 	passthroughRegistry               *PassthroughRegistry
 	iworkerGoalWatch                  *IWorkerGoalWatchService
 	iworkerGoalWatchMu                sync.Mutex
+	// configMu serializes writers (load/mutate/publish). Hot-path readers do NOT
+	// take configMu: they copy from configSnap (atomic.Pointer to an immutable
+	// AppConfig). Writers always publish a fresh heap snapshot via
+	// publishConfigLocked; invalidation stores nil.
+	// Disk I/O uses configDiskMu and must not hold configMu.
 	configMu                          sync.Mutex
+	configSnap                        atomic.Pointer[corelib.AppConfig]
+	// nlSkillsSnap holds the skill table separately so config snaps and token
+	// patches stay small. Always published together with configSnap.
+	nlSkillsSnap                      atomic.Pointer[[]corelib.NLSkillEntry]
+	// configCache / configCacheValid are write-side mirrors kept under configMu
+	// for mutation helpers and for unit tests that seed App{} composites.
+	// Prefer publishedConfig() / publishConfigLocked for all production paths.
 	configCache                       corelib.AppConfig
 	configCacheValid                  bool
+	configDiskMu                      sync.Mutex         // serializes config.json writes
+	// pendingDataDirReset is set under configMu when the effective data dir
+	// changes; drainPendingDataDirReset must run only after releasing configMu
+	// so DB/memory teardown never blocks LoadConfig readers.
+	pendingDataDirReset               atomic.Bool
+	// pendingConfigDiskWrite is set when loadConfigLocked produced an in-memory
+	// config that must be written after releasing configMu (first-run bootstrap,
+	// legacy migration materialize, pet-field migration). Unified drain is
+	// runConfigPostUnlock → drainPendingConfigDiskWrite.
+	pendingConfigDiskWrite            atomic.Bool
 	effectiveBaseDir                  atomic.Value       // stores string
-	tokenUsageMu                      sync.Mutex         // guards AccumulateLLMTokenUsage
+	tokenUsageMu                      sync.Mutex         // guards AccumulateLLMTokenUsage + pending flush
+	tokenUsagePending                 map[string]*pendingLLMTokenDelta
+	tokenUsageFlushScheduled          bool
 	ssoPolling                        *ssoPollingSession // active embedded SSO polling session
 	ssoPollingMu                      sync.Mutex         // guards ssoPolling
 	interactionInfraOnce              sync.Once          // guards ensureInteractionInfra initialization
@@ -392,9 +416,8 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 	}
 	providers := []lifecycle.Provider{memory.NewExperienceProvider(a.memoryStore)}
 	if a.skillExecutor != nil {
-		a.skillExecutor.mu.RLock()
+		// loadSkills uses configMu; do not hold skillExecutor.mu across it.
 		skills := a.skillExecutor.loadSkills()
-		a.skillExecutor.mu.RUnlock()
 		if len(skills) > 0 {
 			providers = append(providers, skill.NewExperienceProvider(skills))
 			providers = append(providers, skill.NewGovernanceDraftProvider(skills, skill.SkillMaintenancePlanOptions{MaxActions: 12}))
@@ -1168,17 +1191,17 @@ func (a *App) ensureEvolutionPipeline() {
 		if a.skillExecutor == nil {
 			return nil
 		}
-		a.skillExecutor.mu.RLock()
-		defer a.skillExecutor.mu.RUnlock()
+		// loadSkills is self-synchronized (skillCacheMu + LoadConfig); avoid e.mu.
 		return a.skillExecutor.loadSkills()
 	}
 	pipeline.SkillSaver = func(skills []corelib.NLSkillEntry) error {
 		if a.skillExecutor == nil {
 			return nil
 		}
-		a.skillExecutor.mu.Lock()
-		defer a.skillExecutor.mu.Unlock()
-		return a.skillExecutor.saveSkills(skills)
+		// Serialize skill-table writes; saveSkills takes configMu via PatchConfig.
+		return a.skillExecutor.withSkillListMutate(func() error {
+			return a.skillExecutor.saveSkills(skills)
+		})
 	}
 	// Wire LLM for optimization and promotion (lazy config  - picks up provider changes).
 	pipeline.LLM = NewSkillEvolutionLLMAdapter(a.GetMaclawLLMConfig)
@@ -1217,14 +1240,12 @@ func (a *App) ensureEvolutionPipeline() {
 		// Find skill dir for the enqueue call.
 		var skillDir string
 		if a.skillExecutor != nil {
-			a.skillExecutor.mu.RLock()
 			for _, s := range a.skillExecutor.loadSkills() {
 				if s.Name == skillName {
 					skillDir = s.SkillDir
 					break
 				}
 			}
-			a.skillExecutor.mu.RUnlock()
 		}
 		if _, err := a.skillLifecycle.EnqueueUpload(
 			context.Background(),
@@ -2274,6 +2295,9 @@ func (a *App) domReady(ctx context.Context) {
 	// Always arm the loop: each attempt re-reads check_update_on_startup so
 	// enabling/disabling mid-session takes effect without a restart.
 	a.startBackgroundUpdateChecks()
+	// Startup may begin maximised (low-res policy). Clamp after first paint so
+	// Win10 frameless windows do not sit under the taskbar.
+	a.scheduleClampMaximizedWindowToWorkArea(120 * time.Millisecond)
 }
 
 // GetUIZoomFactor returns the saved UI zoom factor.
@@ -3097,6 +3121,8 @@ func (a *App) ResizeWindow(width, height int) {
 	// otherwise change the geometry after the window was initially maximised.
 	if shouldMaximiseMainWindowForPrimaryScreen() {
 		runtime.WindowMaximise(a.ctx)
+		// Win10 frameless maximise can cover the taskbar; clamp after the OS settles.
+		a.scheduleClampMaximizedWindowToWorkArea(50 * time.Millisecond)
 		return
 	}
 	runtime.WindowSetSize(a.ctx, width, height)
@@ -3132,6 +3158,7 @@ func (a *App) WindowHide() {
 func (a *App) SetFullscreen(fullscreen bool) {
 	if fullscreen {
 		runtime.WindowMaximise(a.ctx)
+		a.scheduleClampMaximizedWindowToWorkArea(50 * time.Millisecond)
 	} else {
 		runtime.WindowUnmaximise(a.ctx)
 	}
@@ -4775,27 +4802,115 @@ func sanitizeLegacyCodingToolSelection(data []byte) []byte {
 	}
 	return out
 }
+// LoadConfig returns the current app config. All access goes through the
+// unified config transaction protocol in config_txn.go (read snapshot +
+// runConfigPostUnlock). Callers must not take configMu themselves for reads.
 func (a *App) LoadConfig() (corelib.AppConfig, error) {
-	lockStart := time.Now()
-	a.configMu.Lock()
-	lockWait := time.Since(lockStart)
-	if lockWait > 50*time.Millisecond {
-		log.Printf("[config] LoadConfig:lock_wait=%s", lockWait)
-	}
-	defer a.configMu.Unlock()
+	return a.loadConfigSnapshot()
+}
+
+// getConfigForMutationLocked returns a working copy for in-memory mutation.
+// Prefer the write-side configCache (full, including skills) under configMu so
+// token patches do not reassemble skills from a separate snap incorrectly.
+// The returned value owns its slices/maps (cloneAppConfigForMutation).
+func (a *App) getConfigForMutationLocked() (corelib.AppConfig, error) {
 	if a.configCacheValid {
-		corelib.SetLogDetailEnabled(a.configCache.LogDetailEnabled)
-		memory.SetMemoryRecallLogEnabled(a.configCache.MemoryRecallLogEnabled)
-		return a.configCache, nil
+		return cloneAppConfigForMutation(a.configCache), nil
 	}
-	config, err := a.loadConfigLocked()
+	cfg, err := a.loadConfigLocked()
 	if err != nil {
 		return corelib.AppConfig{}, err
 	}
-	a.configCache = config
-	a.configCacheValid = true
-	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
-	return config, nil
+	return cloneAppConfigForMutation(cfg), nil
+}
+
+// LoadConfigForUI is the frontend-facing config load. Same as LoadConfig but
+// omits NLSkills (UI uses ListNLSkills) to shrink Wails JSON payloads.
+func (a *App) LoadConfigForUI() (corelib.AppConfig, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.NLSkills = nil
+	return cfg, nil
+}
+
+// commitConfigToDisk persists config after an in-memory mutation. Prefer the
+// latest published snapshot so concurrent PatchConfig coalesces to last
+// mutation; fall back to the caller snapshot if the cache was invalidated.
+// Disk I/O is serialized inside saveToPath (configDiskMu).
+func (a *App) commitConfigToDisk(path string, fallback corelib.AppConfig) error {
+	toWrite := fallback
+	if cfg, ok := a.publishedConfig(); ok {
+		toWrite = cfg
+	}
+	err := a.saveToPath(path, toWrite)
+	if err == nil {
+		// Any successful full write satisfies deferred bootstrap/pet persists.
+		a.pendingConfigDiskWrite.Store(false)
+	}
+	return err
+}
+
+// applyDataDirFromConfigLocked updates the effective data dir under configMu.
+// When the path changes it only sets pendingDataDirReset — never tear down
+// stores here. Call drainPendingDataDirReset after releasing configMu.
+func (a *App) applyDataDirFromConfigLocked(config corelib.AppConfig) (dataDirChanged bool) {
+	if a == nil {
+		return false
+	}
+	oldBase := a.getMaclawBaseDir()
+	var newBase string
+	if strings.TrimSpace(a.testHomeDir) != "" && strings.TrimSpace(config.DataDir) == "" {
+		newBase = filepath.Join(a.testHomeDir, ".maclaw")
+		corelib.SetMaclawBaseDir(newBase)
+	} else {
+		corelib.SetMaclawBaseDirFromConfig(config.DataDir)
+		newBase = corelib.MaclawBaseDir()
+	}
+	a.effectiveBaseDir.Store(newBase)
+	changed := strings.TrimSpace(oldBase) != "" && filepath.Clean(oldBase) != filepath.Clean(newBase)
+	if changed {
+		a.pendingDataDirReset.Store(true)
+	}
+	return changed
+}
+
+// drainPendingDataDirReset runs path-bound store teardown if a prior locked
+// apply flagged a data-dir change. Safe and idempotent; never call under configMu.
+func (a *App) drainPendingDataDirReset() {
+	if a == nil {
+		return
+	}
+	if a.pendingDataDirReset.CompareAndSwap(true, false) {
+		a.resetPathBoundStateForDataDirChange()
+	}
+}
+
+// drainPendingConfigDiskWrite persists a config snapshot that was prepared
+// under configMu (bootstrap / migration / pet sanitize) without holding the
+// lock across AtomicWrite. Never call under configMu.
+func (a *App) drainPendingConfigDiskWrite(cfg corelib.AppConfig) {
+	if a == nil || !a.pendingConfigDiskWrite.CompareAndSwap(true, false) {
+		return
+	}
+	path, err := a.getConfigPath()
+	if err != nil {
+		a.pendingConfigDiskWrite.Store(true)
+		log.Printf("[config] deferred_disk_write get_path_failed err=%v", err)
+		return
+	}
+	if err := a.commitConfigToDisk(path, cfg); err != nil {
+		a.pendingConfigDiskWrite.Store(true)
+		log.Printf("[config] deferred_disk_write failed err=%v", err)
+		return
+	}
+	log.Printf("[config] deferred_disk_write ok variant=%q", cfg.PetVariant)
+}
+
+// drainPendingPetConfigPersist is a compatibility alias for older call sites.
+func (a *App) drainPendingPetConfigPersist(cfg corelib.AppConfig) {
+	a.drainPendingConfigDiskWrite(cfg)
 }
 
 // sshHostEntries returns configured SSH hosts for form option injection.
@@ -4822,6 +4937,8 @@ func (a *App) sshHostEntries() []corelib.SSHHostEntry {
 }
 
 func (a *App) invalidateConfigCacheLocked() {
+	a.configSnap.Store(nil)
+	a.nlSkillsSnap.Store(nil)
 	a.configCache = corelib.AppConfig{}
 	a.configCacheValid = false
 }
@@ -4982,11 +5099,10 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 					// New-format install path (legacy file migration): figurative pet.
 					corelib.ApplyNewInstallPetDefaults(&config)
 
-					if err := a.saveToPath(path, config); err != nil {
-						return corelib.AppConfig{}, err
-					}
-					a.configCache = config
-					a.configCacheValid = true
+					// Publish in-memory only; disk write is deferred via
+					// pendingConfigDiskWrite → runConfigPostUnlock (no configMu held).
+					a.publishConfigLocked(config)
+					a.pendingConfigDiskWrite.Store(true)
 					// Optional: os.Remove(oldPath)
 					return config, nil
 				}
@@ -5029,12 +5145,10 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		defaultConfig.SandboxMode = "none"
 		// K18: first-run figurative pet (must not come from UnmarshalJSON seed).
 		corelib.ApplyNewInstallPetDefaults(&defaultConfig)
-		err = a.saveToPath(path, defaultConfig)
-		if err == nil {
-			a.configCache = defaultConfig
-			a.configCacheValid = true
-		}
-		return defaultConfig, err
+		// Defer AtomicWrite until after configMu is released.
+		a.publishConfigLocked(defaultConfig)
+		a.pendingConfigDiskWrite.Store(true)
+		return defaultConfig, nil
 	}
 	var config corelib.AppConfig
 	data, err := os.ReadFile(path)
@@ -5451,41 +5565,25 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if err := migrateLLMPromptCacheDirIfNeeded(corelib.DefaultLLMPromptCacheConfig(), config.LLMPromptCache); err != nil {
 		log.Printf("[config] LoadConfig:llm_cache_migrate_failed err=%v", err)
 	}
-	// Persist K18 migration / sanitize so disk matches runtime (criterion 3).
+	// Defer K18 pet migration disk write until after configMu is released so a
+	// cold LoadConfig does not hold the exclusive lock across AtomicWrite.
 	if petConfigMutated {
-		if err := a.saveToPath(path, config); err != nil {
-			log.Printf("[config] LoadConfig:pet_migrate_persist_failed err=%v", err)
-		} else {
-			log.Printf("[config] LoadConfig:pet_migrate_persisted variant=%q migrated=%v", config.PetVariant, config.PetVariantMigrated)
-		}
+		a.pendingConfigDiskWrite.Store(true)
 	}
 	log.Printf("[config] LoadConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
-	a.configCache = config
-	a.configCacheValid = true
-	a.applyDataDirFromConfig(config)
+	// Publish immutable snap + data-dir pointer; heavy reset deferred.
+	a.publishConfigLocked(config)
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
 	return config, nil
 }
 
+// applyDataDirFromConfig updates the effective data dir and, when the path
+// actually changes, resets path-bound stores. Safe to call without configMu.
 func (a *App) applyDataDirFromConfig(config corelib.AppConfig) {
-	if a == nil {
-		return
-	}
-	oldBase := a.getMaclawBaseDir()
-	var newBase string
-	if strings.TrimSpace(a.testHomeDir) != "" && strings.TrimSpace(config.DataDir) == "" {
-		newBase = filepath.Join(a.testHomeDir, ".maclaw")
-		corelib.SetMaclawBaseDir(newBase)
-	} else {
-		corelib.SetMaclawBaseDirFromConfig(config.DataDir)
-		newBase = corelib.MaclawBaseDir()
-	}
-	a.effectiveBaseDir.Store(newBase)
-	if strings.TrimSpace(oldBase) != "" && filepath.Clean(oldBase) != filepath.Clean(newBase) {
-		a.resetPathBoundStateForDataDirChange()
-	}
+	a.applyDataDirFromConfigLocked(config)
+	a.drainPendingDataDirReset()
 }
 
 func (a *App) resetPathBoundStateForDataDirChange() {
@@ -5842,14 +5940,14 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 
 	path, err := a.getConfigPath()
 	if err != nil {
-		a.configMu.Unlock()
+		a.unlockConfigAbort(config)
 		log.Printf("[config] SaveConfig:get_path_failed after=%s err=%v", time.Since(start), err)
 		return err
 	}
 	log.Printf("[config] SaveConfig:path=%q configured_data_dir=%q configured_working_dir=%q", path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory))
 	if err := a.migrateLegacyConfigLocked(path); err != nil {
 		a.invalidateConfigCacheLocked()
-		a.configMu.Unlock()
+		a.unlockConfigAbort(config)
 		log.Printf("[config] SaveConfig:migrate_failed after=%s err=%v", time.Since(start), err)
 		return err
 	}
@@ -5895,7 +5993,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	}
 	if err := migrateLLMPromptCacheDirIfNeeded(oldCacheConfig, config.LLMPromptCache); err != nil {
 		a.invalidateConfigCacheLocked()
-		a.configMu.Unlock()
+		a.unlockConfigAbort(config)
 		log.Printf("[config] SaveConfig:llm_cache_migrate_failed after=%s err=%v", time.Since(start), err)
 		return err
 	}
@@ -5927,17 +6025,6 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		syncAllProviderApiKeys(a, &oldConfig, &config)
 	}
 	log.Printf("[config] SaveConfig:sync_api_keys=%s", time.Since(syncStart))
-	writeStart := time.Now()
-	if err := a.saveToPath(path, config); err != nil {
-		a.invalidateConfigCacheLocked()
-		a.configMu.Unlock()
-		log.Printf("[config] SaveConfig:save_to_path_failed after=%s err=%v", time.Since(writeStart), err)
-		return err
-	}
-	log.Printf("[config] SaveConfig:save_to_path=%s", time.Since(writeStart))
-	a.configCache = config
-	a.configCacheValid = true
-	a.applyDataDirFromConfig(config)
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
 	// Sync workflow enabled/disabled state to the atomic flag so that
@@ -5952,7 +6039,17 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	if a.remoteSessions != nil {
 		hubClient = a.remoteSessions.hubClient
 	}
-	a.configMu.Unlock()
+	// Unified epilogue: publish cache → unlock → post-unlock drains → disk write.
+	// See config_txn.go protocol.
+	writeStart := time.Now()
+	if err := a.unlockConfigAndFinish(config, path, true); err != nil {
+		a.configMu.Lock()
+		a.invalidateConfigCacheLocked()
+		a.configMu.Unlock()
+		log.Printf("[config] SaveConfig:save_to_path_failed after=%s err=%v", time.Since(writeStart), err)
+		return err
+	}
+	log.Printf("[config] SaveConfig:save_to_path=%s", time.Since(writeStart))
 
 	stepStart := time.Now()
 	a.refreshPowerOptimizationStateFromConfig(config)
@@ -6122,8 +6219,7 @@ func (a *App) findNLSkillEntry(skillName string) (*corelib.NLSkillEntry, error) 
 	if a.skillExecutor == nil {
 		return nil, fmt.Errorf("skill executor not initialized")
 	}
-	a.skillExecutor.mu.RLock()
-	defer a.skillExecutor.mu.RUnlock()
+	// loadSkills is self-synchronized; do not hold skillExecutor.mu (configMu inversion).
 	skills := a.skillExecutor.loadSkills()
 	for i := range skills {
 		if skills[i].MatchesName(skillName) || skills[i].Name == skillName {
@@ -6160,26 +6256,31 @@ func (a *App) ApplySkillMaintenanceAction(kind, skillName, relatedSkill string, 
 		out["error"] = "skill executor not initialized"
 		return out
 	}
-	a.skillExecutor.mu.Lock()
-	skills := a.skillExecutor.loadSkills()
-	updated, res := skill.ApplyTargetedMaintenanceAction(
-		skills,
-		kind,
-		skillName,
-		relatedSkill,
-		false, // dry_run always false for this binding (UI already confirmed)
-		confirm,
-		allowDuplicateRetire,
-	)
-	if res.OK && res.Result.ExecutedCount > 0 {
-		if err := a.skillExecutor.saveSkills(updated); err != nil {
-			a.skillExecutor.mu.Unlock()
-			out["error"] = "save failed: " + err.Error()
-			out["result"] = res
-			return out
+	var updated []corelib.NLSkillEntry
+	var res skill.TargetedMaintenanceApplyResult
+	if err := a.skillExecutor.withSkillListMutate(func() error {
+		skills := a.skillExecutor.loadSkills()
+		var saveErr error
+		updated, res = skill.ApplyTargetedMaintenanceAction(
+			skills,
+			kind,
+			skillName,
+			relatedSkill,
+			false, // dry_run always false for this binding (UI already confirmed)
+			confirm,
+			allowDuplicateRetire,
+		)
+		if res.OK && res.Result.ExecutedCount > 0 {
+			if err := a.skillExecutor.saveSkills(updated); err != nil {
+				saveErr = err
+			}
 		}
+		return saveErr
+	}); err != nil {
+		out["error"] = "save failed: " + err.Error()
+		out["result"] = res
+		return out
 	}
-	a.skillExecutor.mu.Unlock()
 
 	if res.OK && res.RequiresIndexRefresh && res.Result.ExecutedCount > 0 {
 		if a.toolRouter != nil {
@@ -6234,9 +6335,7 @@ func (a *App) ListSkillMaintenanceDrafts() map[string]interface{} {
 		out["error"] = "skill executor not initialized"
 		return out
 	}
-	a.skillExecutor.mu.RLock()
 	skills := a.skillExecutor.loadSkills()
-	a.skillExecutor.mu.RUnlock()
 	drafts := skill.CollectMaintenanceReviewDrafts(skills, skill.SkillMaintenancePlanOptions{
 		Now:        time.Now(),
 		MaxActions: 40,
@@ -6531,12 +6630,19 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	}
 
 	a.configMu.Lock()
-	cfg, err := a.loadConfigLocked()
+	cfg, err := a.getConfigForMutationLocked()
 	if err != nil {
-		a.configMu.Unlock()
+		a.unlockConfigAbort(corelib.AppConfig{})
 		return corelib.AppConfig{}, err
 	}
 	current := cfg
+	// Unified abort: any early return before unlockConfigAndFinish runs post-unlock drains.
+	configTxnCommitted := false
+	defer func() {
+		if !configTxnCommitted {
+			a.unlockConfigAbort(cfg)
+		}
+	}()
 	proxyChanged := false
 	policyModeChanged := false
 	imGatewayChanged := false
@@ -6548,132 +6654,112 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "language":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.Language = strings.TrimSpace(v)
 		case "active_tool":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ActiveTool = strings.TrimSpace(v)
 		case "current_project":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.CurrentProject = strings.TrimSpace(v)
 		case "projects":
 			v, err := projectsField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.Projects = v
 		case "favorite_employees":
 			v, err := stringSliceField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.FavoriteEmployees = v
 		case "favorite_employee_names":
 			v, err := stringMapField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.FavoriteEmployeeNames = v
 		case "tool_current_model":
 			tool, model, err := toolCurrentModelField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if err := setToolCurrentModel(&cfg, tool, model); err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 		case "remote_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteEnabled = v
 		case "remote_hub_id":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteHubID = strings.TrimSpace(v)
 		case "remote_hub_url":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteHubURL = strings.TrimSpace(v)
 		case "remote_hubcenter_url":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			v = strings.TrimRight(strings.TrimSpace(v), "/")
 			if v != "" && remote.IsLoopbackURL(v) {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, fmt.Errorf("remote_hubcenter_url must not be a loopback address")
 			}
 			cfg.RemoteHubCenterURL = v
 		case "remote_email":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteEmail = strings.TrimSpace(v)
 		case "remote_mobile":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteMobile = strings.TrimSpace(v)
 		case "onboarding_done":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.OnboardingDone = v
 		case "prefer_beta_channel":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PreferBetaChannel = v
 		case "default_launch_mode":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			launchMode := normalizeLaunchModeKind(v)
 			if launchMode == launchModeInvalid {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, fmt.Errorf("invalid default launch mode: %s", v)
 			}
 			cfg.DefaultLaunchMode = string(launchMode)
 		case "security_policy_mode":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SecurityPolicyMode = strings.TrimSpace(v)
@@ -6681,98 +6767,84 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "sandbox_mode":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SandboxMode = strings.TrimSpace(v)
 		case "network_level":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.NetworkLevel = strings.TrimSpace(v)
 		case "network_allowlist":
 			v, err := stringSliceField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.NetworkAllowlist = v
 		case "yolo_mode_allowed":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.YoloModeAllowed = v
 		case "smart_route_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SmartRouteEnabled = v
 		case "gossip_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.GossipEnabled = v
 		case "file_outbound_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.FileOutboundEnabled = v
 		case "image_outbound_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ImageOutboundEnabled = v
 		case "skill_sources_allowed":
 			v, err := stringSliceField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SkillSourcesAllowed = v
 		case "maclaw_role_name":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawRoleName = strings.TrimSpace(v)
 		case "maclaw_role_description":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawRoleDescription = strings.TrimSpace(v)
 		case "im_progress_nudge_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.IMProgressNudgeEnabled = &v
 		case "knowledge_auto_recall_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.KnowledgeAutoRecallEnabled = &v
 		case "knowledge_auto_recall_min_score":
 			v, err := floatField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 0 {
@@ -6785,14 +6857,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "tool_cache_maintenance":
 			v, err := toolCacheMaintenanceField(key, value, cfg.ToolCacheMaintenance)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ToolCacheMaintenance = v
 		case "qqbot_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.QQBotEnabled = v
@@ -6800,7 +6870,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "qqbot_app_id":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.QQBotAppID = strings.TrimSpace(v)
@@ -6808,7 +6877,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "qqbot_app_secret":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.QQBotAppSecret = v
@@ -6816,7 +6884,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "qqbot_owner_openid":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.QQBotOwnerOpenID = strings.TrimSpace(v)
@@ -6824,7 +6891,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "telegram_bot_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.TelegramBotEnabled = v
@@ -6832,7 +6898,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "telegram_bot_token":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.TelegramBotToken = strings.TrimSpace(v)
@@ -6843,12 +6908,10 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			switch v := value.(type) {
 			case string:
 				if err := id.SetString(v); err != nil {
-					a.configMu.Unlock()
 					return corelib.AppConfig{}, fmt.Errorf("config field %q: %w", key, err)
 				}
 			case float64:
 				if v != float64(int64(v)) {
-					a.configMu.Unlock()
 					return corelib.AppConfig{}, fmt.Errorf("config field %q must be integer", key)
 				}
 				id.SetInt64(int64(v))
@@ -6862,7 +6925,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				// coerce via string
 				s := strings.TrimSpace(fmt.Sprint(value))
 				if err := id.SetString(s); err != nil {
-					a.configMu.Unlock()
 					return corelib.AppConfig{}, fmt.Errorf("config field %q must be chat id string/number", key)
 				}
 			}
@@ -6870,7 +6932,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "lansenger_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerEnabled = v
@@ -6878,7 +6939,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "lansenger_app_id":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerAppID = strings.TrimSpace(v)
@@ -6886,7 +6946,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "lansenger_app_secret":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerAppSecret = v
@@ -6894,7 +6953,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "lansenger_gateway_url":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerGatewayURL = strings.TrimSpace(v)
@@ -6902,7 +6960,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "lansenger_wss_url":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerWSSURL = strings.TrimSpace(v)
@@ -6910,7 +6967,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "lansenger_group_policy":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			// Normalize to open|allowlist|disabled (empty → open via Effective helper).
@@ -6922,55 +6978,47 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			case "disabled", "off", "none":
 				cfg.LansengerGroupPolicy = "disabled"
 			default:
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, fmt.Errorf("lansenger_group_policy must be open, allowlist, or disabled")
 			}
 		case "lansenger_require_mention":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerRequireMention = &v
 		case "lansenger_respond_to_at_all":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerRespondToAtAll = v
 		case "lansenger_auto_mention_reply":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerAutoMentionReply = v
 		case "lansenger_auto_quote_reply":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerAutoQuoteReply = v
 		case "lansenger_allowed_group_ids":
 			ids, err := parseLansengerGroupIDList(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerAllowedGroupIDs = ids
 		case "lansenger_ignored_group_ids":
 			ids, err := parseLansengerGroupIDList(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerIgnoredGroupIDs = ids
 		case "thirdparty_gateway_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ThirdPartyGatewayEnabled = v
@@ -6978,7 +7026,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "thirdparty_gateway_token":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ThirdPartyGatewayToken = strings.TrimSpace(v)
@@ -6986,7 +7033,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "thirdparty_gateway_host":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ThirdPartyGatewayHost = strings.TrimSpace(v)
@@ -6994,11 +7040,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "thirdparty_gateway_port":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 1 || v > 65535 {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, fmt.Errorf("thirdparty_gateway_port must be between 1 and 65535")
 			}
 			cfg.ThirdPartyGatewayPort = v
@@ -7006,7 +7050,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "acp_host_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SetAcpHostEnabled(v)
@@ -7014,11 +7057,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "acp_host_port":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 0 || v > 65535 {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, fmt.Errorf("acp_host_port must be between 0 and 65535 (0 = ephemeral)")
 			}
 			cfg.AcpHostPort = v
@@ -7026,7 +7067,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "acp_host_mirror_ui":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SetAcpHostMirrorUI(v)
@@ -7034,7 +7074,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyEnabled = v
@@ -7042,7 +7081,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_protocol":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyProtocol = strings.TrimSpace(v)
@@ -7050,7 +7088,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_host":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyHost = strings.TrimSpace(v)
@@ -7058,7 +7095,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_port":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyPort = strings.TrimSpace(v)
@@ -7066,7 +7102,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_username":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyUsername = v
@@ -7074,7 +7109,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_password":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyPassword = v
@@ -7082,7 +7116,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_bypass":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyBypass = strings.TrimSpace(v)
@@ -7090,7 +7123,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_scope_maclaw":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyScopeMaclaw = v
@@ -7098,7 +7130,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_scope_coding_tools":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyScopeCodingTools = v
@@ -7106,7 +7137,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "default_proxy_scope_agent":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyScopeAgent = v
@@ -7114,119 +7144,102 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pause_env_check":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PauseEnvCheck = v
 		case "env_check_done":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.EnvCheckDone = v
 		case "use_windows_terminal":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.UseWindowsTerminal = v
 		case "show_ai_trace_entry":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowAITraceEntry = v
 		case "show_app_entry":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowAppEntry = &v
 		case "show_workflow_entry":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowWorkflowEntry = &v
 		case "show_utilities_entry":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowUtilitiesEntry = &v
 		case "survey_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SurveyEnabled = &v
 		case "show_coding_tool_entry":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowCodingToolEntry = v
 		case "show_codex":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowCodex = v
 		case "show_opencode":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowOpenCode = v
 		case "show_codebuddy":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowCodeBuddy = v
 		case "show_iflow":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowIFlow = v
 		case "show_kilo":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowKilo = v
 		case "workstation_mode":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.WorkstationMode = v
 		case "screen_dim_timeout_min":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ScreenDimTimeoutMin = max(0, v)
 		case "remote_heartbeat_sec":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteHeartbeatSec = corelib.NormalizeRemoteHeartbeatIntervalSec(v)
@@ -7236,21 +7249,18 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "agent_response_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.AgentResponseTimeoutSec = v
 		case "skill_runner_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SkillRunnerTimeoutSec = v
 		case "skill_evolution_repair_cooldown_hours":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 0 {
@@ -7263,84 +7273,72 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "skill_evolution_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SetSkillEvolutionEnabled(v)
 		case "maclaw_llm_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawLLMTimeoutSec = v
 		case "maclaw_llm_current_provider":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawLLMCurrentProvider = strings.TrimSpace(v)
 		case "audio_input_device_id":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.AudioInputDeviceID = strings.TrimSpace(v)
 		case "audio_output_device_id":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.AudioOutputDeviceID = strings.TrimSpace(v)
 		case "noise_floor_calibrated":
 			v, err := floatField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.NoiseFloorCalibrated = max(0, v)
 		case "speech_level_calibrated":
 			v, err := floatField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SpeechLevelCalibrated = max(0, v)
 		case "llm_prompt_cache":
 			v, err := cacheField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LLMPromptCache = v
 		case "model_routes":
 			v, err := modelRoutesField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ModelRoutes = v
 		case "coding_route_pref":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.CodingRoutePref = normalizeCodingRoutePref(v)
 		case "coding_route_pref_mirror":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.CodingRoutePrefMirror = v
 		case "coding_checkpoint_sidecar_max_mb":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 0 {
@@ -7353,70 +7351,60 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "gossip_auto_publish":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.GossipAutoPublish = v
 		case "show_hub_ranking":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowHubRanking = &v
 		case "llm_trajectory_logging":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LLMTrajectoryLogging = v
 		case "bug_report_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.BugReportEnabled = v
 		case "bug_report_previous_trajectory":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.BugReportPreviousTrajectory = v
 		case "bug_report_previous_log_detail":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.BugReportPreviousLogDetail = v
 		case "log_detail_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LogDetailEnabled = v
 		case "memory_recall_log_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.MemoryRecallLogEnabled = v
 		case "working_directory":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.WorkingDirectory = strings.TrimSpace(v)
 		case "ui_zoom_factor":
 			v, err := floatField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			// 0 = Auto (DPI-adaptive on the frontend). Manual range [0.5, 2.0].
@@ -7433,7 +7421,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "chat_font_size":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 12 {
@@ -7446,53 +7433,45 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "env_check_interval":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 2 || v > 30 {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, fmt.Errorf("env_check_interval must be between 2 and 30 days")
 			}
 			cfg.EnvCheckInterval = v
 		case "last_env_check_time":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.LastEnvCheckTime = strings.TrimSpace(v)
 		case "workflow_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SetWorkflowEnabled(v)
 		case "vector_search_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.VectorSearchEnabled = v
 		case "screen_parsing_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ScreenParsingEnabled = &v
 		case "computer_use_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ComputerUseEnabled = &v
 		case "computer_use_log_keep_newest":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 0 {
@@ -7505,7 +7484,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "computer_use_log_max_age_days":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			if v < 0 {
@@ -7518,91 +7496,78 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "computer_use_log_auto_prune":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ComputerUseLogAutoPrune = &v
 		case "asr_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ASREnabled = v
 		case "diarization_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.DiarizationEnabled = v
 		case "asr_voice_correction_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.ASRVoiceCorrectionEnabled = v
 		case "tts_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.TTSEnabled = v
 		case "tts_voice_id":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.TTSVoiceID = normalizeTTSVoiceID(v)
 		case "maclaw_agent_max_iterations":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawAgentMaxIterations = config.EffectiveMaxIterations(v)
 		case "maclaw_llm_thinking_mode":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawLLMThinkingMode = normalizeThinkingModeSetting(v)
 		case "subagent_concurrency":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SubAgentConcurrency = corelib.NormalizeSubAgentConcurrency(v)
 		case "subagent_full_access":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.SubAgentFullAccess = v
 		case "trusted_skill_package_key_fingerprints":
 			v, err := stringSliceField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.TrustedSkillPackageKeyFingerprints = v
 		case "trial_reflect_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.TrialReflectEnabled = v
 		case "pet_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetEnabled = v
@@ -7610,7 +7575,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_skin":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetSkin = strings.TrimSpace(v)
@@ -7618,7 +7582,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_size":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetSize = v
@@ -7626,7 +7589,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_motion_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetMotionEnabled = &v
@@ -7634,7 +7596,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_motion_sound_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetMotionSound = &v
@@ -7642,7 +7603,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_motion_sound_preset":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetMotionSoundPreset = strings.TrimSpace(v)
@@ -7650,7 +7610,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_text_interaction_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetTextInteraction = &v
@@ -7658,7 +7617,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_voice_input_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetVoiceInput = v
@@ -7666,7 +7624,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_voice_readback_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetVoiceReadback = v
@@ -7674,7 +7631,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_file_drop_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetFileDropEnabled = &v
@@ -7682,7 +7638,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_interaction_mode":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetInteractionMode = strings.TrimSpace(v)
@@ -7690,7 +7645,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_conversation_mode":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetConversationMode = strings.TrimSpace(v)
@@ -7698,7 +7652,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_readback_mode":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetReadbackMode = strings.TrimSpace(v)
@@ -7706,7 +7659,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_auto_retry_on_no_hear":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetAutoRetryOnNoHear = v
@@ -7714,7 +7666,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_continuous_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetContinuousTimeout = v
@@ -7722,7 +7673,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_quiet_mode":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetQuietMode = v
@@ -7730,7 +7680,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_variant":
 			v, err := stringField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetVariant = strings.TrimSpace(v)
@@ -7742,7 +7691,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_reduced_motion":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetReducedMotion = v
@@ -7750,7 +7698,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "pet_figurative_upgrade_prompt_pending":
 			v, err := boolField(key, value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
 			cfg.PetFigurativeUpgradePromptPending = v
@@ -7758,12 +7705,10 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		case "claude", "codex", "opencode", "codebuddy", "iflow", "kilo":
 			data, err := json.Marshal(value)
 			if err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
 			}
 			var tc corelib.ToolConfig
 			if err := json.Unmarshal(data, &tc); err != nil {
-				a.configMu.Unlock()
 				return corelib.AppConfig{}, fmt.Errorf("config field %q must be ToolConfig object: %w", key, err)
 			}
 			// Sanitize custom model names
@@ -7787,7 +7732,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				cfg.Kilo = tc
 			}
 		default:
-			a.configMu.Unlock()
 			return corelib.AppConfig{}, fmt.Errorf("unsupported config patch field: %s", key)
 		}
 	}
@@ -7805,28 +7749,27 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	if _, ok := patch["llm_prompt_cache"]; ok {
 		if err := migrateLLMPromptCacheDirIfNeeded(current.LLMPromptCache, cfg.LLMPromptCache); err != nil {
 			a.invalidateConfigCacheLocked()
-			a.configMu.Unlock()
 			return corelib.AppConfig{}, err
 		}
 	}
 
 	path, err := a.getConfigPath()
 	if err != nil {
-		a.configMu.Unlock()
 		return corelib.AppConfig{}, err
 	}
-	if err := a.saveToPath(path, cfg); err != nil {
-		a.invalidateConfigCacheLocked()
-		a.configMu.Unlock()
-		return corelib.AppConfig{}, err
-	}
-	a.configCache = cfg
-	a.configCacheValid = true
 	a.workflowDisabled.Store(!cfg.IsWorkflowEnabled())
 	workflowTurnedOff := !cfg.IsWorkflowEnabled() && current.IsWorkflowEnabled()
 	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
-	a.configMu.Unlock()
+	// Unified epilogue: publish → unlock → post-unlock drains → persist.
+	// Mark committed before finish so defer does not double-unlock.
+	configTxnCommitted = true
+	if err := a.unlockConfigAndFinish(cfg, path, true); err != nil {
+		a.configMu.Lock()
+		a.invalidateConfigCacheLocked()
+		a.configMu.Unlock()
+		return corelib.AppConfig{}, err
+	}
 	if fullControl, ok := patch["subagent_full_access"].(bool); ok {
 		recordSubAgentPermissionModeAudit(a, fullControl)
 	}
@@ -7879,7 +7822,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 
 	corelib.SetLogDetailEnabled(cfg.LogDetailEnabled)
 	memory.SetMemoryRecallLogEnabled(cfg.MemoryRecallLogEnabled)
-	a.applyDataDirFromConfig(cfg)
+	// Data dir already applied under configMu before commit; only workspace path remains.
 	corelib.SetWorkspaceDir(cfg.WorkingDirectory)
 	a.refreshPowerOptimizationStateFromConfig(cfg)
 	a.refreshWorkstationMode(cfg)
@@ -7996,8 +7939,10 @@ func (a *App) invalidateOutcomesFromExternalConfigChange(newCfg corelib.AppConfi
 
 // PatchConfig performs an atomic read-modify-write on the config file.
 // The patchFn receives the current config and may modify any fields.
-// The entire operation (load -patch -save) runs under configMu, eliminating
-// the TOCTOU race window that exists when callers do LoadConfig -modify -// SaveConfig with the lock released in between.
+// Mutation and cache publish run under configMu; disk I/O is serialized by
+// configDiskMu outside configMu so concurrent LoadConfig readers are not
+// blocked on AtomicWrite. This eliminates the TOCTOU race of LoadConfig-
+// modify-SaveConfig while keeping the UI path responsive.
 //
 // Use PatchConfig when updating a small number of fields (credentials, flags)
 // while other goroutines may be concurrently modifying the config. Use
@@ -8069,83 +8014,29 @@ func configPatchCaller(skip int) string {
 }
 
 func (a *App) patchConfigIfChanged(patchFn func(cfg *corelib.AppConfig) bool, allowHubManagedSecurity bool) (bool, error) {
-	caller := configPatchCaller(2)
-	a.configMu.Lock()
-	cfg, err := a.loadConfigLocked()
-	if err != nil {
-		a.configMu.Unlock()
-		return false, err
-	}
-	current := cfg
-	changed := patchFn(&cfg)
-	if !changed {
-		a.configCache = current
-		a.configCacheValid = true
-		a.configMu.Unlock()
-		log.Printf("[config] PatchConfig:skip_no_change caller=%q", caller)
-		return false, nil
-	}
-	if !allowHubManagedSecurity && a.shouldPreserveHubManagedSecurity(current) {
-		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
-	} else if !allowHubManagedSecurity && a.hubSecurityExplicitlyCentralizedFalse() {
-		cfg.HubSecurityCentralized = false
-	}
-	sanitizeCodingToolSelection(&cfg)
-	normalizeConfigTimeouts(&cfg)
-	path, err := a.getConfigPath()
-	if err != nil {
-		a.configMu.Unlock()
-		return false, err
-	}
-	if err := a.saveToPath(path, cfg); err != nil {
-		a.invalidateConfigCacheLocked()
-		a.configMu.Unlock()
-		return false, err
-	}
-	a.configCache = cfg
-	a.configCacheValid = true
-	a.applyDataDirFromConfig(cfg)
-	a.configMu.Unlock()
-	log.Printf("[config] PatchConfig:done caller=%q", caller)
-	return true, nil
+	// Unified write protocol — see config_txn.go.
+	return a.mutateConfigMaybe(patchFn, configMutateOpts{
+		allowHubManagedSecurity: allowHubManagedSecurity,
+		caller:                  configPatchCaller(2),
+	})
 }
 
 func (a *App) patchConfig(patchFn func(cfg *corelib.AppConfig), allowHubManagedSecurity bool) error {
-	caller := configPatchCaller(2)
-	a.configMu.Lock()
-	cfg, err := a.loadConfigLocked()
-	if err != nil {
-		a.configMu.Unlock()
-		return err
-	}
-	current := cfg
-	patchFn(&cfg)
-	if !allowHubManagedSecurity && a.shouldPreserveHubManagedSecurity(current) {
-		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
-	} else if !allowHubManagedSecurity && a.hubSecurityExplicitlyCentralizedFalse() {
-		cfg.HubSecurityCentralized = false
-	}
-	sanitizeCodingToolSelection(&cfg)
-	normalizeConfigTimeouts(&cfg)
-	path, err := a.getConfigPath()
-	if err != nil {
-		a.configMu.Unlock()
-		return err
-	}
-	if err := a.saveToPath(path, cfg); err != nil {
-		a.invalidateConfigCacheLocked()
-		a.configMu.Unlock()
-		return err
-	}
-	a.configCache = cfg
-	a.configCacheValid = true
-	a.applyDataDirFromConfig(cfg)
-	a.configMu.Unlock()
-	log.Printf("[config] PatchConfig:done caller=%q", caller)
-	return nil
+	// Unified write protocol — see config_txn.go.
+	return a.mutateConfig(patchFn, configMutateOpts{
+		allowHubManagedSecurity: allowHubManagedSecurity,
+		caller:                  configPatchCaller(2),
+	})
 }
 
+// saveToPath atomically writes config.json. All config disk writers must use
+// this helper so configDiskMu serializes AtomicWrite (including rare paths
+// inside loadConfigLocked such as first-run defaults / pet migration).
+// Do not call while holding configMu if the write can be deferred — holding
+// both locks is only safe when configMu is already held for a cold load.
 func (a *App) saveToPath(path string, config corelib.AppConfig) error {
+	a.configDiskMu.Lock()
+	defer a.configDiskMu.Unlock()
 	err := configfile.AtomicWriteJSON(path, config)
 	if err == nil {
 		a.configLastInternalWrite.Store(time.Now().UnixMilli())

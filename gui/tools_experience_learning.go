@@ -2259,9 +2259,7 @@ func (a *App) QueryExperienceTraceDetails(req ExperienceTraceDetailQuery) Experi
 	var skills []corelib.NLSkillEntry
 	a.ensureSkillRunner()
 	if a.skillExecutor != nil {
-		a.skillExecutor.mu.RLock()
 		skills = a.skillExecutor.loadSkills()
-		a.skillExecutor.mu.RUnlock()
 	}
 	snapshot := buildExperienceLearningSnapshotWithTraceLimit(a.usageTracker, a.memoryStore, 0, skills)
 	details := append([]ExperienceTraceDetail(nil), snapshot.TraceDetails...)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -574,6 +576,764 @@ func TestLoadConfigCachesInMemoryUntilSave(t *testing.T) {
 	}
 	if fresh.RemoteEmail != "external@example.com" {
 		t.Fatalf("fresh RemoteEmail = %q, want %q", fresh.RemoteEmail, "external@example.com")
+	}
+}
+
+// TestLoadConfigStaysResponsiveDuringConcurrentPatches guards the root cause of
+// skills/settings UI freezes: exclusive configMu held across disk writes made
+// concurrent LoadConfig wait tens of seconds under PatchConfig storms.
+func TestLoadConfigStaysResponsiveDuringConcurrentPatches(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("seed LoadConfig: %v", err)
+	}
+
+	const (
+		patchers = 8
+		readers  = 32
+		rounds   = 20
+	)
+	var wg sync.WaitGroup
+	errCh := make(chan error, patchers+readers)
+
+	for i := 0; i < patchers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for r := 0; r < rounds; r++ {
+				if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+					cfg.RemoteClientID = fmt.Sprintf("p%d-r%d", id, r)
+				}); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}(i)
+	}
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := 0; r < rounds; r++ {
+				start := time.Now()
+				if _, err := app.LoadConfig(); err != nil {
+					errCh <- err
+					return
+				}
+				// Cache-hit path under RLock must stay well under the old lock_wait storms.
+				if waited := time.Since(start); waited > 500*time.Millisecond {
+					errCh <- fmt.Errorf("LoadConfig took %s under concurrent PatchConfig", waited)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Final load must succeed and reflect some patched client id.
+	final, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("final LoadConfig: %v", err)
+	}
+	if strings.TrimSpace(final.RemoteClientID) == "" {
+		t.Fatal("expected RemoteClientID to be set by concurrent patches")
+	}
+}
+
+func TestCommitConfigToDiskFallsBackWhenCacheInvalid(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("seed LoadConfig: %v", err)
+	}
+	cfg.RemoteEmail = "fallback@example.com"
+	path, err := app.getConfigPath()
+	if err != nil {
+		t.Fatalf("getConfigPath: %v", err)
+	}
+
+	app.configMu.Lock()
+	app.invalidateConfigCacheLocked()
+	app.configMu.Unlock()
+
+	if err := app.commitConfigToDisk(path, cfg); err != nil {
+		t.Fatalf("commitConfigToDisk fallback: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var disk corelib.AppConfig
+	if err := json.Unmarshal(data, &disk); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if disk.RemoteEmail != "fallback@example.com" {
+		t.Fatalf("RemoteEmail = %q, want fallback@example.com", disk.RemoteEmail)
+	}
+}
+
+func TestTokenUsageDebounceMergesPendingIntoGet(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("seed LoadConfig: %v", err)
+	}
+
+	// Inject pending without scheduling a timer — exercise read-merge only.
+	app.tokenUsageMu.Lock()
+	app.tokenUsagePending = map[string]*pendingLLMTokenDelta{
+		"xAI-Grok": {
+			InputTokens:  11,
+			OutputTokens: 7,
+			Requests:     1,
+		},
+	}
+	app.tokenUsageMu.Unlock()
+
+	stat := app.GetLLMTokenUsage("xAI-Grok")
+	if stat.InputTokens != 11 || stat.OutputTokens != 7 || stat.Requests != 1 {
+		t.Fatalf("merged pending stats = %+v", stat)
+	}
+
+	// Disk/config cache should still be empty until flush.
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.LLMTokenUsage != nil {
+		if s := cfg.LLMTokenUsage["xAI-Grok"]; s != nil && s.InputTokens != 0 {
+			t.Fatalf("config cache should not include unflushed pending, got %+v", s)
+		}
+	}
+
+	app.flushPendingTokenUsage()
+	cfg, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig after flush: %v", err)
+	}
+	s := cfg.LLMTokenUsage["xAI-Grok"]
+	if s == nil || s.InputTokens != 11 || s.OutputTokens != 7 {
+		t.Fatalf("after flush config stats = %+v", s)
+	}
+}
+
+// TestPatchConfigDoesNotBlockReadersOnDiskWrite exercises the publish-cache-
+// then-write pattern: readers must finish while a slow disk lock is held.
+func TestPatchConfigDoesNotBlockReadersOnDiskWrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("seed LoadConfig: %v", err)
+	}
+
+	// Hold configDiskMu to simulate a slow AtomicWrite without holding configMu.
+	app.configDiskMu.Lock()
+
+	done := make(chan error, 1)
+	go func() {
+		// Blocks on disk mu inside saveToPath, but must NOT block LoadConfig.
+		done <- app.PatchConfig(func(cfg *corelib.AppConfig) {
+			cfg.RemoteEmail = "writer@example.com"
+		})
+	}()
+
+	// Give the writer time to publish cache and reach disk lock.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cfg, ok := app.publishedConfig()
+		if ok && cfg.RemoteEmail == "writer@example.com" {
+			break
+		}
+		if time.Now().After(deadline) {
+			app.configDiskMu.Unlock()
+			t.Fatal("timed out waiting for PatchConfig to publish cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	start := time.Now()
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		app.configDiskMu.Unlock()
+		t.Fatalf("LoadConfig during slow write: %v", err)
+	}
+	if waited := time.Since(start); waited > 200*time.Millisecond {
+		app.configDiskMu.Unlock()
+		t.Fatalf("LoadConfig blocked %s while disk write held configDiskMu", waited)
+	}
+	if cfg.RemoteEmail != "writer@example.com" {
+		app.configDiskMu.Unlock()
+		t.Fatalf("RemoteEmail = %q, want writer@example.com from cache publish", cfg.RemoteEmail)
+	}
+
+	app.configDiskMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("PatchConfig: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PatchConfig did not finish after releasing configDiskMu")
+	}
+}
+
+func TestDrainPendingDataDirResetRunsOutsideConfigLock(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("seed LoadConfig: %v", err)
+	}
+
+	// Simulate a locked apply that only flags the pending reset.
+	app.pendingDataDirReset.Store(true)
+	if !app.pendingDataDirReset.Load() {
+		t.Fatal("expected pending data-dir reset flag")
+	}
+	app.runConfigPostUnlock(corelib.AppConfig{})
+	if app.pendingDataDirReset.Load() {
+		t.Fatal("runConfigPostUnlock should clear the data-dir reset flag")
+	}
+	// Second drain is a no-op.
+	app.runConfigPostUnlock(corelib.AppConfig{})
+}
+
+// TestNLSkillsSplitFromConfigSnap ensures skills are not on PeekConfig but
+// remain available via PeekNLSkills / LoadConfig / disk.
+func TestNLSkillsSplitFromConfigSnap(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.NLSkills = []corelib.NLSkillEntry{{Name: "split-skill", Status: "active"}}
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+
+	if p := app.PeekConfig(); p == nil {
+		t.Fatal("PeekConfig nil")
+	} else if len(p.NLSkills) != 0 {
+		t.Fatalf("PeekConfig should omit NLSkills, got %d", len(p.NLSkills))
+	}
+	if sk := app.PeekNLSkills(); len(sk) != 1 || sk[0].Name != "split-skill" {
+		t.Fatalf("PeekNLSkills = %#v", sk)
+	}
+	full, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(full.NLSkills) != 1 {
+		t.Fatalf("LoadConfig should reattach skills, got %d", len(full.NLSkills))
+	}
+	ui, err := app.LoadConfigForUI()
+	if err != nil {
+		t.Fatalf("LoadConfigForUI: %v", err)
+	}
+	if len(ui.NLSkills) != 0 {
+		t.Fatalf("LoadConfigForUI must omit NLSkills, got %d", len(ui.NLSkills))
+	}
+}
+
+// TestGetSettingsTabConfigFiltersByTab ensures per-tab DTOs only expose fields
+// for that settings panel and never ship NLSkills / token usage blobs.
+func TestGetSettingsTabConfigFiltersByTab(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.Language = "zh-Hans"
+		cfg.WorkingDirectory = "/tmp/ws"
+		cfg.DefaultProxyEnabled = true
+		cfg.DefaultProxyHost = "127.0.0.1"
+		cfg.DefaultProxyPort = "7890"
+		cfg.PetEnabled = true
+		cfg.PetSkin = "clawmate"
+		cfg.SecurityPolicyMode = "standard"
+		cfg.RemoteMachineID = "machine-1"
+		cfg.RemoteHeartbeatSec = 30
+		cfg.NLSkills = []corelib.NLSkillEntry{{Name: "heavy-skill", Status: "active"}}
+		cfg.LLMTokenUsage = map[string]*corelib.TokenUsageStat{
+			"p1": {InputTokens: 100},
+		}
+		cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "big-provider"}}
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+
+	proxy, err := app.GetSettingsTabConfig("proxy")
+	if err != nil {
+		t.Fatalf("proxy DTO: %v", err)
+	}
+	if proxy["default_proxy_host"] != "127.0.0.1" {
+		t.Fatalf("proxy host = %#v", proxy["default_proxy_host"])
+	}
+	if _, hasLang := proxy["language"]; hasLang {
+		t.Fatalf("proxy DTO must not include language: %#v", proxy)
+	}
+	if _, hasSkills := proxy["nl_skills"]; hasSkills {
+		t.Fatalf("proxy DTO must not include nl_skills")
+	}
+	if _, hasProviders := proxy["maclaw_llm_providers"]; hasProviders {
+		t.Fatalf("proxy DTO must not include maclaw_llm_providers")
+	}
+	// Projection always includes listed keys (not omitempty-filtered).
+	if _, ok := proxy["default_proxy_enabled"]; !ok {
+		t.Fatalf("proxy DTO must include default_proxy_enabled even when zero-able")
+	}
+	if proxy["default_proxy_enabled"] != true {
+		t.Fatalf("default_proxy_enabled = %#v", proxy["default_proxy_enabled"])
+	}
+
+	general, err := app.GetSettingsTabConfig("general")
+	if err != nil {
+		t.Fatalf("general DTO: %v", err)
+	}
+	if general["language"] != "zh-Hans" {
+		t.Fatalf("general language = %#v", general["language"])
+	}
+	if general["working_directory"] != "/tmp/ws" {
+		t.Fatalf("general working_directory = %#v", general["working_directory"])
+	}
+	if _, hasProxy := general["default_proxy_host"]; hasProxy {
+		t.Fatalf("general DTO must not include proxy fields")
+	}
+
+	pet, err := app.GetSettingsTabConfig("pet")
+	if err != nil {
+		t.Fatalf("pet DTO: %v", err)
+	}
+	if pet["pet_enabled"] != true {
+		t.Fatalf("pet_enabled = %#v", pet["pet_enabled"])
+	}
+	if pet["pet_skin"] != "clawmate" {
+		t.Fatalf("pet_skin = %#v", pet["pet_skin"])
+	}
+
+	// Self-loading tabs return empty maps without leaking unrelated config.
+	empty, err := app.GetSettingsTabConfig("memory")
+	if err != nil {
+		t.Fatalf("memory DTO: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("memory DTO want empty, got %#v", empty)
+	}
+
+	// Unknown tab is a soft no-op.
+	unknown, err := app.GetSettingsTabConfig("not-a-real-tab")
+	if err != nil {
+		t.Fatalf("unknown tab: %v", err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("unknown tab want empty, got %#v", unknown)
+	}
+
+	// Default empty tab id → general.
+	def, err := app.GetSettingsTabConfig("")
+	if err != nil {
+		t.Fatalf("default tab: %v", err)
+	}
+	if def["language"] != "zh-Hans" {
+		t.Fatalf("empty tab should resolve general, language=%#v", def["language"])
+	}
+}
+
+// TestGetSettingsTabConfigIncludesZeroValues ensures false/0 are not dropped
+// (full-config json.Marshal + omitempty used to omit them and leave stale client true).
+func TestGetSettingsTabConfigIncludesZeroValues(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.DefaultProxyEnabled = false
+		cfg.DefaultProxyHost = ""
+		cfg.DefaultProxyPort = ""
+		cfg.PauseEnvCheck = false
+		cfg.UIZoomFactor = 0
+		cfg.ChatFontSize = 0
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+
+	proxy, err := app.GetSettingsTabConfig("proxy")
+	if err != nil {
+		t.Fatalf("proxy: %v", err)
+	}
+	if v, ok := proxy["default_proxy_enabled"]; !ok || v != false {
+		t.Fatalf("default_proxy_enabled want false present, got ok=%v v=%#v", ok, v)
+	}
+	if v, ok := proxy["default_proxy_host"]; !ok || v != "" {
+		t.Fatalf("default_proxy_host want empty string present, got ok=%v v=%#v", ok, v)
+	}
+
+	general, err := app.GetSettingsTabConfig("general")
+	if err != nil {
+		t.Fatalf("general: %v", err)
+	}
+	if v, ok := general["pause_env_check"]; !ok || v != false {
+		t.Fatalf("pause_env_check want false present, got ok=%v v=%#v", ok, v)
+	}
+
+	ui, err := app.GetSettingsTabConfig("ui")
+	if err != nil {
+		t.Fatalf("ui: %v", err)
+	}
+	v, ok := ui["ui_zoom_factor"]
+	if !ok {
+		t.Fatal("ui_zoom_factor missing")
+	}
+	switch n := v.(type) {
+	case float64:
+		if n != 0 {
+			t.Fatalf("ui_zoom_factor = %#v", v)
+		}
+	case int64:
+		if n != 0 {
+			t.Fatalf("ui_zoom_factor = %#v", v)
+		}
+	case int:
+		if n != 0 {
+			t.Fatalf("ui_zoom_factor = %#v", v)
+		}
+	default:
+		t.Fatalf("ui_zoom_factor unexpected type %T %#v", v, v)
+	}
+	if _, ok := ui["chat_font_size"]; !ok {
+		t.Fatal("chat_font_size missing")
+	}
+}
+
+// TestGetSettingsTabConfigUsesSnapWhenWarm ensures the tab DTO path does not
+// require a full disk reload when configSnap is published.
+func TestGetSettingsTabConfigUsesSnapWhenWarm(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.DefaultProxyHost = "snap-host"
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+	if app.PeekConfig() == nil {
+		t.Fatal("expected warm PeekConfig after PatchConfig")
+	}
+	dto, err := app.GetSettingsTabConfig("proxy")
+	if err != nil {
+		t.Fatalf("GetSettingsTabConfig: %v", err)
+	}
+	if dto["default_proxy_host"] != "snap-host" {
+		t.Fatalf("dto host = %#v", dto["default_proxy_host"])
+	}
+}
+
+// TestFilterSettingsTabConfigSkipsHeavyFields is a unit check that projection
+// never walks providers/projects (only listed keys via field index).
+func TestFilterSettingsTabConfigSkipsHeavyFields(t *testing.T) {
+	cfg := corelib.AppConfig{
+		Language:         "en",
+		DefaultProxyHost: "h",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "p", Key: "secret"},
+		},
+		Projects: []corelib.ProjectConfig{{Id: "p1", Name: "big"}},
+		NLSkills: []corelib.NLSkillEntry{{Name: "s"}},
+	}
+	out, err := filterSettingsTabConfig(&cfg, "proxy")
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if out["default_proxy_host"] != "h" {
+		t.Fatalf("host = %#v", out["default_proxy_host"])
+	}
+	for _, banned := range []string{"maclaw_llm_providers", "projects", "nl_skills", "language"} {
+		if _, ok := out[banned]; ok {
+			t.Fatalf("unexpected key %q in %#v", banned, out)
+		}
+	}
+}
+
+// TestSettingsTabFieldKeysMatchAppConfig catches drift when AppConfig JSON tags
+// change or a typo lands in settingsTabFieldKeys.
+func TestSettingsTabFieldKeysMatchAppConfig(t *testing.T) {
+	missing := validateSettingsTabFieldKeys()
+	if len(missing) > 0 {
+		t.Fatalf("settingsTabFieldKeys unknown AppConfig json tags: %v", missing)
+	}
+}
+
+// TestFilterSettingsTabConfigNilSafe ensures a nil cfg does not panic.
+func TestFilterSettingsTabConfigNilSafe(t *testing.T) {
+	out, err := filterSettingsTabConfig(nil, "proxy")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("want nil, got %#v", out)
+	}
+	empty, err := filterSettingsTabConfig(&corelib.AppConfig{}, "memory")
+	if err != nil {
+		t.Fatalf("memory: %v", err)
+	}
+	if empty != nil {
+		t.Fatalf("self-loading tab want nil map, got %#v", empty)
+	}
+}
+
+// TestGetSettingsTabConfigConcurrentTabs exercises parallel tab DTO reads against
+// a warm snap (mirrors settings rail spam / fast tab switching).
+func TestGetSettingsTabConfigConcurrentTabs(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.Language = "en"
+		cfg.DefaultProxyHost = "proxy-host"
+		cfg.PetSkin = "clawmate"
+		cfg.SecurityPolicyMode = "standard"
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+
+	tabs := []string{"general", "proxy", "pet", "security", "system", "memory", "llmCache"}
+	errCh := make(chan error, len(tabs)*8)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		for _, tab := range tabs {
+			wg.Add(1)
+			go func(tab string) {
+				defer wg.Done()
+				dto, err := app.GetSettingsTabConfig(tab)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if tab == "memory" {
+					if len(dto) != 0 {
+						errCh <- fmt.Errorf("memory want empty, got %#v", dto)
+					}
+					return
+				}
+				if dto == nil {
+					errCh <- fmt.Errorf("%s: nil dto", tab)
+				}
+			}(tab)
+		}
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+}
+
+// TestCloneAppConfigForMutationIsolatesNLSkills ensures writers cannot
+// corrupt the published snap by mutating NLSkills in place.
+func TestCloneAppConfigForMutationIsolatesNLSkills(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.NLSkills = []corelib.NLSkillEntry{{
+			Name:   "iso-skill",
+			Status: "active",
+		}}
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+
+	pub, ok := app.publishedConfig()
+	if !ok || len(pub.NLSkills) != 1 {
+		t.Fatalf("published NLSkills = %#v", pub.NLSkills)
+	}
+
+	app.configMu.Lock()
+	working, err := app.getConfigForMutationLocked()
+	if err != nil {
+		app.configMu.Unlock()
+		t.Fatalf("getConfigForMutationLocked: %v", err)
+	}
+	working.NLSkills[0].Status = "disabled"
+	app.configMu.Unlock()
+
+	again, ok := app.publishedConfig()
+	if !ok {
+		t.Fatal("published config missing after mutation clone")
+	}
+	if again.NLSkills[0].Status != "active" {
+		t.Fatalf("published snap corrupted: status=%q want active", again.NLSkills[0].Status)
+	}
+}
+
+// TestPeekConfigAndPostUnlockFastPath covers zero-copy peek + idle post-unlock.
+func TestPeekConfigAndPostUnlockFastPath(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	p := app.PeekConfig()
+	if p == nil {
+		t.Fatal("PeekConfig nil after LoadConfig")
+	}
+	// Idle post-unlock must not clear snap or hang.
+	start := time.Now()
+	app.runConfigPostUnlock(*p)
+	if time.Since(start) > 50*time.Millisecond {
+		t.Fatalf("idle runConfigPostUnlock too slow: %s", time.Since(start))
+	}
+	if app.PeekConfig() == nil {
+		t.Fatal("PeekConfig cleared by idle post-unlock")
+	}
+}
+
+// TestPublishedConfigIsLockFreeHotPath ensures LoadConfig after warm cache
+// does not need configMu (atomic snap). Holding configMu must not block reads.
+func TestPublishedConfigIsLockFreeHotPath(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("seed LoadConfig: %v", err)
+	}
+	// Hold write lock: lock-free publishedConfig must still succeed.
+	app.configMu.Lock()
+	defer app.configMu.Unlock()
+
+	start := time.Now()
+	cfg, ok := app.publishedConfig()
+	if !ok {
+		t.Fatal("expected published snapshot while configMu held")
+	}
+	if time.Since(start) > 50*time.Millisecond {
+		t.Fatalf("publishedConfig blocked under configMu hold: %s", time.Since(start))
+	}
+	if cfg.ActiveTool == "" && !cfg.CheckUpdateOnStartup {
+		// First-run defaults should be present; ActiveTool is normally set.
+		t.Logf("snapshot loaded under write lock: ActiveTool=%q", cfg.ActiveTool)
+	}
+}
+
+// TestFirstRunConfigDefersDiskWriteOutsideLock ensures bootstrap does not hold
+// configMu across AtomicWrite: cache is valid immediately, file appears after
+// runConfigPostUnlock.
+func TestFirstRunConfigDefersDiskWriteOutsideLock(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig first run: %v", err)
+	}
+	if cfg.ActiveTool == "" {
+		t.Fatal("expected default ActiveTool after first-run LoadConfig")
+	}
+	// After LoadConfig returns, deferred disk write must have completed.
+	path := filepath.Join(tmpHome, ".maclaw", "config.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("config.json should exist after deferred bootstrap write: %v", err)
+	}
+	if app.pendingConfigDiskWrite.Load() {
+		t.Fatal("pendingConfigDiskWrite should be clear after LoadConfig post-unlock drain")
+	}
+}
+
+// TestUnifiedConfigTxnPatchUsesPostUnlockProtocol verifies PatchConfig goes
+// through the publish→unlock→persist path (cache visible before disk completes).
+func TestUnifiedConfigTxnPatchUsesPostUnlockProtocol(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("seed LoadConfig: %v", err)
+	}
+
+	app.configDiskMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- app.PatchConfig(func(cfg *corelib.AppConfig) {
+			cfg.RemoteEmail = "txn@example.com"
+		})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		cfg, ok := app.publishedConfig()
+		if ok && cfg.RemoteEmail == "txn@example.com" {
+			break
+		}
+		if time.Now().After(deadline) {
+			app.configDiskMu.Unlock()
+			t.Fatal("timed out waiting for unified txn to publish cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Reader must not block on disk.
+	start := time.Now()
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		app.configDiskMu.Unlock()
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if time.Since(start) > 200*time.Millisecond {
+		app.configDiskMu.Unlock()
+		t.Fatalf("LoadConfig blocked while disk mu held")
+	}
+	if cfg.RemoteEmail != "txn@example.com" {
+		app.configDiskMu.Unlock()
+		t.Fatalf("RemoteEmail = %q", cfg.RemoteEmail)
+	}
+
+	app.configDiskMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("PatchConfig: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PatchConfig hung after disk unlock")
 	}
 }
 

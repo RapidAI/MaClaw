@@ -68,6 +68,16 @@ func TestUpdateHubRegistrationPolicyBodyHubIDHandlesOpaqueHubID(t *testing.T) {
 		t.Fatalf("legacy escaped path hub id registration policy status=%d body=%s", legacyPathResp.Code, legacyPathResp.Body.String())
 	}
 
+	mismatchResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+url.PathEscape(hubID)+"/registration-policy", map[string]any{
+		"hub_id": "different-hub",
+		"tenant": map[string]any{
+			"tenant_id": "tenant_default",
+		},
+	}, token)
+	if mismatchResp.Code != http.StatusBadRequest || !bytes.Contains(mismatchResp.Body.Bytes(), []byte(`"code":"HUB_ID_MISMATCH"`)) {
+		t.Fatalf("mismatched path/body hub ids must be rejected, status=%d body=%s", mismatchResp.Code, mismatchResp.Body.String())
+	}
+
 	rawSlashPathResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/registration-policy", map[string]any{
 		"hub_origin":           "official",
 		"default_signup_scope": "public",

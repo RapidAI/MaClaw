@@ -1197,9 +1197,7 @@ func (a *App) blockedSkillDraftCurrentPlanActions(draftID string) ([]map[string]
 	if a == nil || draftID == "" || a.skillExecutor == nil {
 		return nil, false
 	}
-	a.skillExecutor.mu.RLock()
 	skills := a.skillExecutor.loadSkills()
-	a.skillExecutor.mu.RUnlock()
 	_, result := cskill.ExecuteReviewedGovernanceDrafts(skills, cskill.GovernanceDraftExecutionOptions{DryRun: true, ReviewedDraftIDs: []string{draftID}})
 	out := make([]map[string]string, 0, len(result.Actions))
 	matched := false

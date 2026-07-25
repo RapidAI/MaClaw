@@ -291,7 +291,7 @@ func TestUpdateHubRegistrationPolicyRejectsSelfHostedPublicFallback(t *testing.T
 	}
 }
 
-func TestUpdateHubRegistrationPolicyCanonicalizesPublicDefaultToOfficial(t *testing.T) {
+func TestUpdateHubRegistrationPolicyRejectsPublicHubDefault(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
 	ctx := context.Background()
@@ -302,11 +302,8 @@ func TestUpdateHubRegistrationPolicyCanonicalizesPublicDefaultToOfficial(t *test
 	}
 	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "self_hosted", DefaultSignupScope: "public"})
-	if err != nil {
-		t.Fatalf("update policy: %v", err)
-	}
-	if cfg.HubOrigin != "official" || cfg.DefaultSignupScope != "public" {
-		t.Fatalf("public default should imply official hub origin, got %+v", cfg)
+	if err == nil || !errors.Is(err, ErrInvalidRegistrationPolicy) {
+		t.Fatalf("expected ErrInvalidRegistrationPolicy, got cfg=%+v err=%v", cfg, err)
 	}
 }
 
@@ -321,18 +318,18 @@ func TestUpdateHubRegistrationPolicyAllowsOfficialDefaultTenantPublicFallback(t 
 	}
 	publicFallback := true
 	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
-	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "public", Tenant: UpdateTenantRegistrationPolicyRequest{SignupScope: "inherit", IsPublicFallback: &publicFallback}})
+	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "domain_restricted", Tenant: UpdateTenantRegistrationPolicyRequest{SignupScope: "public", IsPublicFallback: &publicFallback}})
 	if err != nil {
 		t.Fatalf("update policy: %v", err)
 	}
-	if !cfg.Tenants[""].IsPublicFallback || cfg.Tenants[""].SignupScope != "inherit" {
+	if !cfg.Tenants[""].IsPublicFallback || cfg.Tenants[""].SignupScope != "public" {
 		t.Fatalf("expected default tenant public fallback, got %+v", cfg.Tenants[""])
 	}
 	storedHub, err := st.Hubs.GetByID(ctx, hub.ID)
 	if err != nil {
 		t.Fatalf("get stored hub: %v", err)
 	}
-	if storedHub == nil || storedHub.HubOrigin != "official" || storedHub.DefaultSignupScope != "public" {
+	if storedHub == nil || storedHub.HubOrigin != "official" || storedHub.DefaultSignupScope != "domain_restricted" {
 		t.Fatalf("expected hub registration policy fields to sync, got %+v", storedHub)
 	}
 	var storedState store.HubRegistrationPolicyState
@@ -355,15 +352,12 @@ func TestUpdateHubRegistrationPolicyRejectsOriginChangeWithExistingPublicFallbac
 	}
 	publicFallback := true
 	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
-	if _, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "public", Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "public", SignupScope: "public", IsPublicFallback: &publicFallback}}); err != nil {
+	if _, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "domain_restricted", Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "public", SignupScope: "public", IsPublicFallback: &publicFallback}}); err != nil {
 		t.Fatalf("seed public fallback: %v", err)
 	}
 	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "self_hosted"})
-	if err != nil {
-		t.Fatalf("public default should keep origin official until default scope changes: %v", err)
-	}
-	if cfg.HubOrigin != "official" || cfg.DefaultSignupScope != "public" {
-		t.Fatalf("public default should imply official hub origin, got %+v", cfg)
+	if err == nil || !errors.Is(err, ErrInvalidRegistrationPolicy) {
+		t.Fatalf("changing a public fallback hub to self-hosted must fail, got cfg=%+v err=%v", cfg, err)
 	}
 }
 
@@ -440,11 +434,11 @@ func TestHubRegistrationPoliciesDefaultTenantSignupScopeToInherit(t *testing.T) 
 		t.Fatalf("load policies: %v", err)
 	}
 	policy := policies["hub_policy_tenant_inherit"].Tenants["public"]
-	if policy.SignupScope != "inherit" || !policy.IsPublicFallback {
-		t.Fatalf("missing tenant signup_scope should inherit hub default, got %+v", policy)
+	if policy.SignupScope != "public" || !policy.IsPublicFallback {
+		t.Fatalf("legacy public default should migrate only its explicit fallback tenant, got %+v", policy)
 	}
 	if err := validateRegistrationPolicyStore(hubRegistrationPolicyStore{Hubs: policies}); err != nil {
-		t.Fatalf("inherited public fallback should remain valid: %v", err)
+		t.Fatalf("migrated public fallback should remain valid: %v", err)
 	}
 }
 
@@ -484,11 +478,11 @@ func TestUpdateHubRegistrationPolicyIgnoresUnrelatedInvalidStoredPolicy(t *testi
 	}
 	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 
-	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "public"})
+	cfg, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "domain_restricted"})
 	if err != nil {
 		t.Fatalf("update policy should ignore unrelated stale invalid policy: %v", err)
 	}
-	if cfg.HubOrigin != "official" || cfg.DefaultSignupScope != "public" {
+	if cfg.HubOrigin != "official" || cfg.DefaultSignupScope != "domain_restricted" {
 		t.Fatalf("unexpected updated policy: %+v", cfg)
 	}
 }
@@ -515,6 +509,85 @@ func TestUpdateHubRegistrationPolicyRejectsSecondPublicFallback(t *testing.T) {
 	_, err := svc.UpdateHubRegistrationPolicy(ctx, "hub_policy_fallback_b", UpdateHubRegistrationPolicyRequest{HubOrigin: "official", DefaultSignupScope: "public", Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "public-b", SignupScope: "public", IsPublicFallback: &publicFallback}})
 	if err == nil || !errors.Is(err, ErrInvalidRegistrationPolicy) {
 		t.Fatalf("expected ErrInvalidRegistrationPolicy for second public fallback, got %v", err)
+	}
+}
+
+func TestUpdateHubRegistrationPolicyRejectsSecondPublicFallbackInSameHub(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_policy_same_hub_fallback", OwnerEmail: "owner@example.com", Name: "Fallback Hub", BaseURL: "https://fallback.example.com", Status: "online", HubSecretHash: "secret", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	publicFallback := true
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	if _, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "fallback_a", SignupScope: "public", IsPublicFallback: &publicFallback}}); err != nil {
+		t.Fatalf("create first fallback: %v", err)
+	}
+	if _, err := svc.UpdateHubRegistrationPolicy(ctx, hub.ID, UpdateHubRegistrationPolicyRequest{Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "fallback_b", SignupScope: "public", IsPublicFallback: &publicFallback}}); !errors.Is(err, ErrInvalidRegistrationPolicy) {
+		t.Fatalf("expected same-hub second fallback to be rejected, got %v", err)
+	}
+	policies, err := svc.HubRegistrationPolicies(ctx)
+	if err != nil {
+		t.Fatalf("load policies: %v", err)
+	}
+	if count := publicFallbackCount(policies[hub.ID]); count != 1 {
+		t.Fatalf("failed update must leave exactly one public fallback, got %d (%+v)", count, policies[hub.ID])
+	}
+}
+
+func TestUpdateHubRegistrationPolicySerializesCompetingFallbackUpdates(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	for _, hub := range []*store.HubInstance{
+		{ID: "hub_policy_race_a", OwnerEmail: "owner-a@example.com", Name: "Race A", BaseURL: "https://race-a.example.com", Status: "online", HubSecretHash: "secret-a", CreatedAt: now, UpdatedAt: now},
+		{ID: "hub_policy_race_b", OwnerEmail: "owner-b@example.com", Name: "Race B", BaseURL: "https://race-b.example.com", Status: "online", HubSecretHash: "secret-b", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	publicFallback := true
+	type result struct{ err error }
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for _, hubID := range []string{"hub_policy_race_a", "hub_policy_race_b"} {
+		go func(id string) {
+			<-start
+			_, err := svc.UpdateHubRegistrationPolicy(ctx, id, UpdateHubRegistrationPolicyRequest{HubOrigin: "official", Tenant: UpdateTenantRegistrationPolicyRequest{TenantID: "public", SignupScope: "public", IsPublicFallback: &publicFallback}})
+			results <- result{err: err}
+		}(hubID)
+	}
+	close(start)
+	first, second := <-results, <-results
+	successes := 0
+	for _, item := range []result{first, second} {
+		if item.err == nil {
+			successes++
+			continue
+		}
+		if !errors.Is(item.err, ErrInvalidRegistrationPolicy) {
+			t.Fatalf("unexpected competing update error: %v", item.err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one public fallback update to succeed, got %d", successes)
+	}
+	policies, err := svc.HubRegistrationPolicies(ctx)
+	if err != nil {
+		t.Fatalf("load policies: %v", err)
+	}
+	total := 0
+	for _, cfg := range policies {
+		total += publicFallbackCount(cfg)
+	}
+	if total != 1 {
+		t.Fatalf("expected exactly one persisted public fallback, got %d", total)
 	}
 }
 
@@ -641,8 +714,8 @@ func TestSyncHubUserLinkReplaceAllForPhoneKeepsEmailRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveByEmail phone: %v", err)
 	}
-	if len(resolved.Hubs) != 1 || resolved.Hubs[0].HubID != hubB.ID || resolved.Hubs[0].TenantID != "tenant_new" {
-		t.Fatalf("expected phone identity to resolve to hub_b tenant_new, got %+v", resolved)
+	if resolved.Mode != "single" || len(resolved.Hubs) != 1 || resolved.Hubs[0].HubID != hubB.ID || resolved.Hubs[0].TenantID != "tenant_new" {
+		t.Fatalf("phone user link must retain its historical registration target, got %+v", resolved)
 	}
 }
 

@@ -129,14 +129,18 @@ func (s *Service) Rebuild(ctx context.Context) error {
 	// Load invitation code → (hub_id, tenant_id) routes into the snapshot for code-based routing.
 	if s.invitationCodeRoutes != nil {
 		codeRoutes, err := s.invitationCodeRoutes.ListAll(ctx)
-		if err == nil && len(codeRoutes) > 0 {
-			snap.invitationCodeRoutes = make(map[string]invitationCodeTarget, len(codeRoutes))
-			for _, route := range codeRoutes {
-				snap.invitationCodeRoutes[strings.ToUpper(strings.TrimSpace(route.Code))] = invitationCodeTarget{
-					HubID:       route.HubID,
-					TenantID:    route.TenantID,
-					UsedByEmail: route.UsedByEmail,
-				}
+		if err != nil {
+			return err
+		}
+		snap.invitationCodeRoutes = make(map[string]invitationCodeTarget, len(codeRoutes))
+		for _, route := range codeRoutes {
+			if route == nil {
+				continue
+			}
+			snap.invitationCodeRoutes[strings.ToUpper(strings.TrimSpace(route.Code))] = invitationCodeTarget{
+				HubID:       route.HubID,
+				TenantID:    route.TenantID,
+				UsedByEmail: route.UsedByEmail,
 			}
 		}
 	}

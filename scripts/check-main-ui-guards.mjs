@@ -1078,7 +1078,7 @@ requireIncludes('gui/app_nl_skills.go', 'cfg.NLSkills = filtered', 'skill execut
 requireIncludes('gui/weixin_gateway.go', 'saveWeixinLoginConfig(result)', 'Weixin QR login saves through atomic config patch helper');
 requireIncludes('gui/weixin_gateway.go', 'cfg.WeixinToken = result.BotToken', 'Weixin login patch persists token');
 requireIncludes('gui/app_maclaw_llm.go', 'a.PatchConfig(func(cfg *corelib.AppConfig) {', 'LLM token usage updates use atomic config patch');
-requireIncludes('gui/app_maclaw_llm.go', 'stat.LocalCacheRequests++', 'LLM local cache usage counter preserved');
+requireIncludes('gui/app_maclaw_llm.go', 'delta.LocalCacheRequests++', 'LLM local cache usage counter preserved');
 requireIncludes('gui/app_maclaw_llm.go', 'delete(cfg.LLMTokenUsage, provider)', 'LLM token reset patches usage map');
 requireIncludes('gui/app_maclaw_llm.go', 'currentCfg.MaclawLLMProviders = cfg.MaclawLLMProviders', 'Maclaw LLM provider save uses atomic config patch');
 requireIncludes('gui/app_maclaw_llm.go', 'PatchConfigFields(map[string]interface{}{"remote_email": result.Email})', 'CodeGen SSO email backfill uses atomic config patch');

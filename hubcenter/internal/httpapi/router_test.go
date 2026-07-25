@@ -366,7 +366,7 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 	}
 }
 
-func TestEntryResolveHandlerRoutesPhoneNumber(t *testing.T) {
+func TestEntryResolveHandlerRoutesPhoneNumberFromUserLink(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 
 	registerResult := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
@@ -397,8 +397,8 @@ func TestEntryResolveHandlerRoutesPhoneNumber(t *testing.T) {
 	if err := json.Unmarshal(resolveResp.Body.Bytes(), &resolveResult); err != nil {
 		t.Fatalf("decode resolve response: %v", err)
 	}
-	if resolveResult.Mode != "single" || resolveResult.DefaultHubID != hubID || resolveResult.Email != "phone:19900001111" {
-		t.Fatalf("unexpected phone resolve result: %+v", resolveResult)
+	if resolveResult.Mode != "single" || len(resolveResult.Hubs) != 1 || resolveResult.Hubs[0].HubID != hubID || resolveResult.Email != "phone:19900001111" {
+		t.Fatalf("phone user link must select its historical registration target: %+v", resolveResult)
 	}
 
 	barePhoneResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/entry/resolve", map[string]any{
@@ -411,8 +411,8 @@ func TestEntryResolveHandlerRoutesPhoneNumber(t *testing.T) {
 	if err := json.Unmarshal(barePhoneResp.Body.Bytes(), &barePhoneResult); err != nil {
 		t.Fatalf("decode bare phone resolve response: %v", err)
 	}
-	if barePhoneResult.Mode != "single" || barePhoneResult.DefaultHubID != hubID || barePhoneResult.Email != "phone:19900001111" {
-		t.Fatalf("unexpected bare phone resolve result: %+v", barePhoneResult)
+	if barePhoneResult.Mode != "single" || len(barePhoneResult.Hubs) != 1 || barePhoneResult.Hubs[0].HubID != hubID || barePhoneResult.Email != "phone:19900001111" {
+		t.Fatalf("bare phone user link must select its historical registration target: %+v", barePhoneResult)
 	}
 }
 

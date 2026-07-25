@@ -84,12 +84,8 @@ func (a *App) downloadASRModel(autoEnable bool) error {
 		}
 	}
 
-	// Fallback: Hub
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	hubURL := cfg.RemoteHubURL
+	// Fallback: Hub (lock-free peek)
+	hubURL := a.PeekRemoteHubURL()
 	if hubURL == "" {
 		a.emitASRProgress(0, 0, 0, "默认下载地址不可用，且 Hub URL 未配置")
 		return fmt.Errorf("默认下载地址不可用，且 Hub URL 未配置")

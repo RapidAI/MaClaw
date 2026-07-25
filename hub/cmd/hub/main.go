@@ -68,6 +68,9 @@ func runServer(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := app.ConfigureLogging(cfg.Logging.Dir); err != nil {
+		return fmt.Errorf("configure logging: %w", err)
+	}
 
 	a, err := app.Bootstrap(cfg, resolvedConfigPath)
 	if err != nil {

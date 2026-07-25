@@ -7,7 +7,8 @@ import (
 )
 
 // LogFrontendDiagnostic lets narrowly-scoped frontend diagnostics reach the
-// main ~/.maclaw log. Callers must avoid sending full user/assistant content.
+// main ~/.maclaw log (and registration.log when tag=onboarding). Callers must
+// avoid sending full user/assistant content.
 func (a *App) LogFrontendDiagnostic(payload map[string]interface{}) {
 	if len(payload) == 0 {
 		return
@@ -17,6 +18,7 @@ func (a *App) LogFrontendDiagnostic(payload map[string]interface{}) {
 		log.Printf("[frontend-diagnostic] marshal_error=%v", err)
 		return
 	}
+	// Lines with "tag":"onboarding" are always persisted (see isRegistrationLogLine).
 	log.Printf("[frontend-diagnostic] %s", string(encoded))
 }
 

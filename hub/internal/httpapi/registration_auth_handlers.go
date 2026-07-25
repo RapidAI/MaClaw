@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -110,12 +111,16 @@ func PublicRegistrationAuthConfigHandler(system store.SystemSettingsRepository, 
 		if len(resolvers) > 0 {
 			resolver = resolvers[0]
 		}
-		tenantID := tenantIDFromClientHint(r)
-		if email := strings.TrimSpace(r.URL.Query().Get("email")); email != "" && resolver != nil {
-			if resolved, found, ambiguous, resolveErr := resolver.ResolveTenantByEmail(r.Context(), email); resolveErr != nil {
+		tenantHint := tenantIDFromClientHint(r)
+		tenantID := tenantHint
+		emailHint := strings.TrimSpace(r.URL.Query().Get("email"))
+		if emailHint != "" && resolver != nil {
+			if resolved, found, ambiguous, resolveErr := resolver.ResolveTenantByEmail(r.Context(), emailHint); resolveErr != nil {
+				log.Printf("[onboarding-auth] public_config_rejected code=REGISTRATION_AUTH_TENANT_LOOKUP_FAILED tenant_hint=%s err=%v", tenantHint, resolveErr)
 				writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_TENANT_LOOKUP_FAILED", resolveErr.Error())
 				return
 			} else if ambiguous {
+				log.Printf("[onboarding-auth] public_config_rejected code=TENANT_AMBIGUOUS tenant_hint=%s email=%s", tenantHint, registrationEmailLogIdentity(emailHint))
 				writeError(w, http.StatusBadRequest, "TENANT_AMBIGUOUS", "email is associated with multiple tenants; tenant_id is required")
 				return
 			} else if found && strings.TrimSpace(resolved) != "" {
@@ -124,8 +129,16 @@ func PublicRegistrationAuthConfigHandler(system store.SystemSettingsRepository, 
 		}
 		cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantID)
 		if err != nil {
+			log.Printf("[onboarding-auth] public_config_rejected code=REGISTRATION_AUTH_LOAD_FAILED tenant_id=%s err=%v", tenantID, err)
 			writeError(w, http.StatusInternalServerError, "REGISTRATION_AUTH_LOAD_FAILED", err.Error())
 			return
+		}
+		if emailHint != "" {
+			log.Printf("[onboarding-auth] public_config tenant_hint=%s tenant_id=%s method=%s code_len=%d daily_sms_limit=%d email=%s",
+				tenantHint, tenantID, cfg.Method, cfg.CodeLength, cfg.DailySMSLimit, registrationEmailLogIdentity(emailHint))
+		} else {
+			log.Printf("[onboarding-auth] public_config tenant_hint=%s tenant_id=%s method=%s code_len=%d daily_sms_limit=%d",
+				tenantHint, tenantID, cfg.Method, cfg.CodeLength, cfg.DailySMSLimit)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"method":             cfg.Method,

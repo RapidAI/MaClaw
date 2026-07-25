@@ -856,9 +856,7 @@ func (h *IMMessageHandler) proactiveExperienceProviderForUser(userID string) lif
 	}
 	providers := []lifecycle.Provider{corememory.NewExperienceProvider(h.memoryStore)}
 	if exec := h.getSkillExecutor(); exec != nil {
-		exec.mu.RLock()
 		skills := exec.loadSkills()
-		exec.mu.RUnlock()
 		if len(skills) > 0 {
 			providers = append(providers, cskill.NewExperienceProvider(skills))
 			providers = append(providers, cskill.NewGovernanceDraftProvider(skills, cskill.SkillMaintenancePlanOptions{MaxActions: 12}))
@@ -1112,9 +1110,7 @@ func (h *IMMessageHandler) appendMaintenanceExperienceHints(b *strings.Builder) 
 	if exec == nil {
 		return
 	}
-	exec.mu.RLock()
 	skills := exec.loadSkills()
-	exec.mu.RUnlock()
 	if section := cskill.BuildMaintenanceExperiencePromptSection(skills, 5); section != "" {
 		b.WriteString(section)
 	}
@@ -1138,7 +1134,6 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 			continue
 		}
 		// Look up the skill to check its publisher.
-		h.getSkillExecutor().mu.RLock()
 		for _, s := range h.getSkillExecutor().loadSkills() {
 			if s.MatchesName(run.Skill) && s.Publisher != "" && !isShellBrowserAutomationSkillEntry(s) {
 				activePublisher = s.Publisher
@@ -1146,7 +1141,6 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 				break
 			}
 		}
-		h.getSkillExecutor().mu.RUnlock()
 		if activePublisher != "" {
 			break
 		}
@@ -1157,14 +1151,12 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 	}
 
 	// Find sibling skills from the same publisher.
-	h.getSkillExecutor().mu.RLock()
 	var siblings []string
 	for _, s := range h.getSkillExecutor().loadSkills() {
 		if s.Publisher == activePublisher && s.Name != activeSkillName && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive && !isShellBrowserAutomationSkillEntry(s) {
 			siblings = append(siblings, s.Name)
 		}
 	}
-	h.getSkillExecutor().mu.RUnlock()
 
 	// Build the banner.
 	b.WriteString(fmt.Sprintf("\n## Bundle Context\nThis skill is part of the '%s' bundle.", activePublisher))

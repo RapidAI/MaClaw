@@ -36,14 +36,15 @@ func (a *App) ComputerUseResume() error {
 // ComputerUseStop hard-stops Computer Use and best-effort cancels the active
 // desktop AI assistant turn so the agent stops issuing more actions.
 func (a *App) ComputerUseStop() error {
+	// Always drop sticky injection first so the next chat cannot re-enter CU
+	// tools even if session teardown fails.
+	clearComputerUseSessionActive()
 	sess := cuSession()
 	if sess == nil {
+		a.emitComputerUseControl("stop")
 		return fmt.Errorf("computer use session not ready")
 	}
 	sess.Stop()
-	globalComputerUse.mu.Lock()
-	globalComputerUse.activated = false
-	globalComputerUse.mu.Unlock()
 	a.emitComputerUseControl("stop")
 	// Best-effort: cancel current assistant generation so the loop exits.
 	if a != nil {
@@ -57,20 +58,17 @@ func (a *App) ComputerUseStop() error {
 
 // ComputerUseReset clears stop/pause so a new desktop task can run.
 func (a *App) ComputerUseReset() error {
+	clearComputerUseSessionActive()
 	sess := cuSession()
 	if sess == nil {
 		// Recreate empty session.
 		globalComputerUse.mu.Lock()
 		globalComputerUse.session = computeruse.NewSession(computeruse.DefaultConfig())
-		globalComputerUse.activated = false
 		globalComputerUse.mu.Unlock()
 		a.emitComputerUseControl("reset")
 		return nil
 	}
 	sess.ResetControl()
-	globalComputerUse.mu.Lock()
-	globalComputerUse.activated = false
-	globalComputerUse.mu.Unlock()
 	a.emitComputerUseControl("reset")
 	return nil
 }

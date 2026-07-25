@@ -224,8 +224,13 @@ func UpdateHubRegistrationPolicyHandler(service *hubs.Service) http.HandlerFunc 
 			return
 		}
 		hubID := strings.TrimSpace(r.PathValue("id"))
+		bodyHubID := strings.TrimSpace(req.HubID)
+		if hubID != "" && bodyHubID != "" && hubID != bodyHubID {
+			writeError(w, http.StatusBadRequest, "HUB_ID_MISMATCH", "Hub id in path and body must match")
+			return
+		}
 		if hubID == "" {
-			hubID = strings.TrimSpace(req.HubID)
+			hubID = bodyHubID
 		}
 		if hubID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")

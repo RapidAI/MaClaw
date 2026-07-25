@@ -58,6 +58,18 @@ func TestIsImportantLogLineKeepsDownloadWorkdirDiagnostics(t *testing.T) {
 	if isImportantLogLine(`[frontend-diagnostic] {"stage":"app-render-begin"}`) {
 		t.Fatal("noisy frontend diagnostics should not be forced-important")
 	}
+	// Registration / remote onboarding must stay visible even with log_detail off.
+	regMust := []string{
+		`[registration-contact] phone send rejected endpoint=/api/enroll/sms/send-code status=400 code=PHONE_REGISTRATION_DISABLED`,
+		`[onboarding] ActivateRemote PatchConfig machine_id=m1 email=phone:187***`,
+		`[frontend-diagnostic] {"tag":"onboarding","stage":"identity-continue"}`,
+		`[frontend-diagnostic] {"tag": "onboarding", "stage":"identity-continue"}`,
+	}
+	for _, line := range regMust {
+		if !isImportantLogLine(line) || !isRegistrationLogLine(line) {
+			t.Fatalf("expected registration important: %s", line)
+		}
+	}
 }
 
 func TestToolDownloadBaseDirFallsBackToWorkspace(t *testing.T) {

@@ -77,8 +77,9 @@ func (a *App) GetComputerUseStatus() map[string]interface{} {
 	yoloOn := a.GetScreenParsingEnabled()
 	yoloInfo := a.CheckYOLOModel()
 
+	// session_active respects sticky TTL (lazy expiry).
+	activated := computerUseSessionActive()
 	globalComputerUse.mu.Lock()
-	activated := globalComputerUse.activated
 	sess := globalComputerUse.session
 	globalComputerUse.mu.Unlock()
 

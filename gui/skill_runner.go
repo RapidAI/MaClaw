@@ -3448,7 +3448,7 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	successfulSkillName := ""
 
 	lockWaitStart := time.Now()
-	r.executor.mu.Lock()
+	r.executor.skillListMutateMu.Lock()
 	if waited := time.Since(lockWaitStart); waited > 100*time.Millisecond {
 		log.Printf("[skill-runner] usage_stats lock_wait skill=%q waited=%s", skill.Name, waited.Round(time.Millisecond))
 	}
@@ -3492,7 +3492,7 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 			break
 		}
 	}
-	r.executor.mu.Unlock()
+	r.executor.skillListMutateMu.Unlock()
 	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
 		log.Printf("[skill-runner] usage_stats done skill=%q elapsed=%s", skill.Name, elapsed.Round(time.Millisecond))
 	}
@@ -3864,8 +3864,8 @@ func (r *SkillRunner) persistRepairResult(entry *corelib.NLSkillEntry) error {
 		}
 	}
 
-	r.executor.mu.Lock()
-	defer r.executor.mu.Unlock()
+	r.executor.skillListMutateMu.Lock()
+	defer r.executor.skillListMutateMu.Unlock()
 
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
@@ -3953,7 +3953,7 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 	}
 	shouldEmit := false
 
-	r.executor.mu.Lock()
+	r.executor.skillListMutateMu.Lock()
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
 		if s.MatchesName(skillName) {
@@ -3968,7 +3968,7 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 			break
 		}
 	}
-	r.executor.mu.Unlock()
+	r.executor.skillListMutateMu.Unlock()
 
 	if shouldEmit && r.executor.app != nil {
 		r.executor.app.emitEvent(EventSkillUsageUpdated)

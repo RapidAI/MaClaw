@@ -179,8 +179,7 @@ func (a *App) findSkillForAgentView(name string) *corelib.NLSkillEntry {
 	if a == nil || a.skillExecutor == nil || name == "" {
 		return nil
 	}
-	a.skillExecutor.mu.RLock()
-	defer a.skillExecutor.mu.RUnlock()
+	// Do not hold skillExecutor.mu across loadSkills (it takes configMu).
 	for _, item := range a.skillExecutor.loadSkills() {
 		if item.MatchesName(name) {
 			cp := item
