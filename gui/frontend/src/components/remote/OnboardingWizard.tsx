@@ -17,6 +17,8 @@ import {
     SendRemoteRegistrationEmail,
     StartOpenAIOAuth,
     CancelOpenAIOAuth,
+    StartXAIOAuth,
+    CancelXAIOAuth,
     StartCodeGenSSO,
     StartCodeGenSSOEmbedded,
     WaitCodeGenSSOResult,
@@ -661,10 +663,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     };
 
     const handleOAuthLogin = async () => {
+        if (!selectedProvider) return;
         setOauthBusy(true);
         setLlmResult(null);
         try {
-            const msg = await StartOpenAIOAuth();
+            const msg = selectedProvider.name === "xAI-Grok"
+                ? await StartXAIOAuth()
+                : await StartOpenAIOAuth();
             setLlmResult({ ok: true, msg: msg || "OAuth 登录成功" });
             setLlmDone(true);
             onLLMConfigured();
@@ -1831,16 +1836,27 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     {selectedProvider.auth_type === "oauth" ? (
                                         <>
                                             <p style={{ fontSize: "0.76rem", color: colors.textSecondary, margin: "0 0 12px 0", lineHeight: 1.4 }}>
-                                                {t("点击下方按钮，将在浏览器中完成 OpenAI 账号授权。",
-                                                    "Click below to authorize with your OpenAI account in the browser.")}
+                                                {selectedProvider.name === "xAI-Grok"
+                                                    ? t("点击下方按钮，将在浏览器中完成 xAI 账号授权。",
+                                                        "Click below to authorize with your xAI account in the browser.")
+                                                    : t("点击下方按钮，将在浏览器中完成 OpenAI 账号授权。",
+                                                        "Click below to authorize with your OpenAI account in the browser.")}
                                             </p>
                                             <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                 ...wizardPrimaryButtonStyle, cursor: oauthBusy ? "default" : "pointer",
                                             }}>
-                                                {oauthBusy ? t("等待浏览器授权...", "Waiting for browser auth...") : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
+                                                {oauthBusy
+                                                    ? t("等待浏览器授权...", "Waiting for browser auth...")
+                                                    : selectedProvider.name === "xAI-Grok"
+                                                        ? t("使用 xAI 账号登录", "Sign in with xAI")
+                                                        : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
                                             </button>
                                             {oauthBusy && (
-                                                <button onClick={() => { CancelOpenAIOAuth(); setOauthBusy(false); }} style={{
+                                                <button onClick={() => {
+                                                    if (selectedProvider.name === "xAI-Grok") CancelXAIOAuth();
+                                                    else CancelOpenAIOAuth();
+                                                    setOauthBusy(false);
+                                                }} style={{
                                                     ...wizardGhostButtonBlockStyle, color: colors.textMuted,
                                                 }}>
                                                     {t("取消", "Cancel")}

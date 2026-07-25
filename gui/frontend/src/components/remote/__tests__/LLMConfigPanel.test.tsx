@@ -15,6 +15,8 @@ const CreateMobileLLMDesktopQRSessionMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const BrowserOpenURLMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
+const StartXAIOAuthMock = vi.fn();
+const CancelXAIOAuthMock = vi.fn();
 const GetMoAConfigMock = vi.fn();
 const SaveMoAConfigMock = vi.fn();
 
@@ -31,6 +33,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetMaclawLLMThinkingMode: (...args: unknown[]) => SetMaclawLLMThinkingModeMock(...args),
     SetSubAgentConcurrency: vi.fn(),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
+    StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
+    CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
     FetchCodeGenModels: vi.fn(),
@@ -125,6 +129,8 @@ describe('LLMConfigPanel test-and-save flow', () => {
                 protocol: 'openai',
                 agent_type: 'openclaw',
                 wire_api: '',
+                provider_name: 'Custom1',
+                auth_type: '',
             });
         });
 
@@ -338,30 +344,38 @@ describe('LLMConfigPanel test-and-save flow', () => {
                 protocol: 'openai',
                 agent_type: 'openclaw',
                 wire_api: 'responses',
+                provider_name: '火山引擎 Agent Plan',
+                auth_type: '',
             });
         });
     });
 
-    it('quick-fills xAI-Grok Build defaults and tests it through the OpenAI-compatible API', async () => {
-        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: true });
+    it('quick-fills xAI-Grok Build as an OAuth provider', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValueOnce({
+            providers: [
+                { name: 'Custom1', url: '', key: 'previous-api-key', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+            ],
+            current: 'Custom1',
+        }).mockResolvedValueOnce({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: 'oauth-token', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses', is_custom: true },
+            ],
+            current: 'xAI-Grok',
+        });
+        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth logged in');
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
         fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'xAI-Grok' } });
-        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'xai-secret' } });
-        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+        expect(screen.getByRole('button', { name: 'Sign in with xAI' })).toBeTruthy();
+        expect(screen.queryByPlaceholderText('sk-...')).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with xAI' }));
 
         await waitFor(() => {
-            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
-                url: 'https://api.x.ai/v1',
-                key: 'xai-secret',
-                model: 'grok-build',
-                protocol: 'openai',
-                agent_type: 'openclaw',
-                wire_api: '',
-            });
+            expect(StartXAIOAuthMock).toHaveBeenCalledTimes(1);
         });
+        expect(TestMaclawLLMMock).not.toHaveBeenCalled();
     });
 
     it('keeps MaClaw Official visible when official grants are period-limited', async () => {
@@ -622,6 +636,60 @@ describe('LLMConfigPanel test-and-save flow', () => {
             expect(screen.queryByRole('alert')).toBeNull();
         });
         expect(screen.getByRole('button', { name: /Import from Codex CLI/i })).toBeTruthy();
+    });
+
+    it('uses the dedicated xAI OAuth flow', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+            current: 'xAI-Grok',
+        });
+        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth logged in');
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
+
+        await waitFor(() => {
+            expect(StartXAIOAuthMock).toHaveBeenCalledTimes(1);
+        });
+        expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
+    });
+
+    it('cancels an in-progress xAI OAuth flow through its dedicated binding', async () => {
+        StartXAIOAuthMock.mockImplementation(() => new Promise<string>(() => {}));
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+            current: 'xAI-Grok',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Cancel OAuth login' }));
+
+        expect(CancelXAIOAuthMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not save an unsigned xAI OAuth provider', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+            current: 'xAI-Grok',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        expect(await screen.findByText('Please complete OAuth login before saving')).toBeTruthy();
+        expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
     });
 
 });

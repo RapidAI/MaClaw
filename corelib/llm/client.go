@@ -1086,13 +1086,21 @@ func sanitizeOpenAIContentBlocks(blocks []interface{}) []interface{} {
 				text = stringValue(mm["content"])
 			}
 			out = append(out, map[string]interface{}{"type": "text", "text": text})
-		case "image_url":
-			if imageURL := toStringInterfaceMap(mm["image_url"]); imageURL != nil {
+		case "image_url", "input_image":
+			imageURL := toStringInterfaceMap(mm["image_url"])
+			if imageURL == nil {
+				if url := strings.TrimSpace(stringValue(mm["image_url"])); url != "" {
+					imageURL = map[string]interface{}{"url": url}
+				}
+			}
+			if imageURL != nil {
 				clean := map[string]interface{}{}
 				if url := strings.TrimSpace(stringValue(imageURL["url"])); url != "" {
 					clean["url"] = url
 				}
 				if detail := strings.TrimSpace(stringValue(imageURL["detail"])); detail != "" {
+					clean["detail"] = detail
+				} else if detail := strings.TrimSpace(stringValue(mm["detail"])); detail != "" {
 					clean["detail"] = detail
 				}
 				if len(clean) > 0 {
@@ -1112,8 +1120,12 @@ func sanitizeOpenAIContentBlocks(blocks []interface{}) []interface{} {
 					out = append(out, map[string]interface{}{"type": "input_audio", "input_audio": clean})
 				}
 			}
-		case "file":
-			if file := toStringInterfaceMap(mm["file"]); file != nil {
+		case "file", "input_file":
+			file := toStringInterfaceMap(mm["file"])
+			if file == nil && typ == "input_file" {
+				file = mm
+			}
+			if file != nil {
 				clean := map[string]interface{}{}
 				for _, key := range []string{"file_id", "filename", "file_data"} {
 					if value := stringValue(file[key]); value != "" {

@@ -64,7 +64,7 @@ export const recommendedModels: { [provider: string]: { id: string; note?: strin
     "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
     "MiniMax": [{ id: "MiniMax-M2.1" }],
     "DeepSeek": [{ id: "deepseek-chat" }],
-    "xAI-Grok": [{ id: "grok-build" }],
+    "xAI-Grok": [{ id: "grok-4.5", note: "Default" }],
     "XiaoMi": [{ id: "mimo-v2-flash" }],
     "摩尔线程": [{ id: "GLM-4.7" }],
     "快手": [{ id: "kat-coder-pro-v1" }],

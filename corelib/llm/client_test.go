@@ -894,6 +894,36 @@ func TestNewOpenAIChatRequest_SetsHeaders(t *testing.T) {
 	}
 }
 
+func TestNewOpenAIChatRequest_SetsXAIOAuthHeader(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{
+		URL:          "https://api.x.ai/v1",
+		Key:          "xai-oauth-token",
+		Model:        "grok-4.5",
+		ProviderName: "xAI-Grok",
+		AuthType:     "oauth",
+	}
+	req, _, _, err := NewOpenAIChatRequest(context.Background(), cfg,
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{Stream: false})
+	if err != nil {
+		t.Fatalf("NewOpenAIChatRequest returned error: %v", err)
+	}
+	if got := req.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
+		t.Fatalf("X-XAI-Token-Auth = %q, want xai-grok-cli", got)
+	}
+
+	cfg.AuthType = ""
+	req, _, _, err = NewOpenAIChatRequest(context.Background(), cfg,
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{Stream: false})
+	if err != nil {
+		t.Fatalf("NewOpenAIChatRequest returned error: %v", err)
+	}
+	if got := req.Header.Get("X-XAI-Token-Auth"); got != "" {
+		t.Fatalf("API-key-style xAI request sent OAuth marker %q", got)
+	}
+}
+
 func TestOpenAIChatCompletionsEndpointNormalizesBaseURL(t *testing.T) {
 	tests := []struct {
 		name string
@@ -2917,6 +2947,67 @@ func TestResponsesAPIRequestData_NormalizesMissingToolCallLinkage(t *testing.T) 
 	}
 	if call["arguments"] != `{"q":"golang"}` {
 		t.Fatalf("arguments = %#v, want JSON string", call["arguments"])
+	}
+}
+
+func TestResponsesAPIRequestData_PreservesImageInput(t *testing.T) {
+	_, body, err := BuildResponsesAPIRequestData(corelib.MaclawLLMConfig{
+		URL: "https://api.example.com/v1", Model: "vision-model",
+	}, []interface{}{map[string]interface{}{
+		"role": "user",
+		"content": []interface{}{
+			map[string]interface{}{"type": "text", "text": "describe the image"},
+			map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,abc", "detail": "high"}},
+		},
+	}}, ResponsesAPIRequestOptions{})
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData returned error: %v", err)
+	}
+
+	var request map[string]interface{}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	input := request["input"].([]interface{})
+	content := input[0].(map[string]interface{})["content"].([]interface{})
+	image := content[1].(map[string]interface{})
+	if image["type"] != "input_image" || image["image_url"] != "data:image/png;base64,abc" || image["detail"] != "high" {
+		t.Fatalf("image content = %#v, want preserved input_image", image)
+	}
+}
+
+func TestResponsesAPIRequestData_PreservesResponsesFormatMultimodalInput(t *testing.T) {
+	_, body, err := BuildResponsesAPIRequestData(corelib.MaclawLLMConfig{
+		URL: "https://api.example.com/v1", Model: "vision-model",
+	}, []interface{}{map[string]interface{}{
+		"role": "user",
+		"content": []interface{}{
+			map[string]interface{}{"type": "input_text", "content": "describe these inputs"},
+			map[string]interface{}{"type": "input_image", "image_url": "data:image/png;base64,abc", "detail": "high"},
+			map[string]interface{}{"type": "input_file", "file_id": "file_abc"},
+			map[string]interface{}{"type": "input_audio", "input_audio": map[string]interface{}{"data": "AAAA", "format": "wav"}},
+		},
+	}}, ResponsesAPIRequestOptions{})
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData returned error: %v", err)
+	}
+
+	var request map[string]interface{}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	content := request["input"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) != 4 {
+		t.Fatalf("len(content) = %d, want 4: %#v", len(content), content)
+	}
+	if part := content[1].(map[string]interface{}); part["type"] != "input_image" || part["image_url"] != "data:image/png;base64,abc" || part["detail"] != "high" {
+		t.Fatalf("image input = %#v", part)
+	}
+	if part := content[2].(map[string]interface{}); part["type"] != "input_file" || part["file_id"] != "file_abc" {
+		t.Fatalf("file input = %#v", part)
+	}
+	if part := content[3].(map[string]interface{}); part["type"] != "input_audio" {
+		t.Fatalf("audio input = %#v", part)
 	}
 }
 

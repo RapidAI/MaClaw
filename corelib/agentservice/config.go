@@ -413,6 +413,7 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 			AgentType:      provider.AgentType,
 			WireAPI:        strings.TrimSpace(provider.WireAPI),
 			ProviderName:   strings.TrimSpace(provider.Name),
+			AuthType:       strings.TrimSpace(provider.AuthType),
 		}, nil
 	}
 

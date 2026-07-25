@@ -630,6 +630,10 @@ export function TestMaclawLLM(arg1:any):Promise<main.MaclawLLMTestResult>;
 
 export function StartOpenAIOAuth():Promise<string>;
 
+export function StartXAIOAuth():Promise<string>;
+
+export function CancelXAIOAuth():Promise<void>;
+
 export function CancelOpenAIOAuth():Promise<void>;
 
 export function ImportCodexAuth():Promise<string>;

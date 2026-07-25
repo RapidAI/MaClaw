@@ -12,6 +12,9 @@ export interface LLMProvider {
     max_output_tokens?: number; // max output tokens per request (0 = system default 8192/16384)
     is_custom?: boolean;
     auth_type?: string;
+    refresh_token?: string;
+    token_expires_at?: number;
+    oauth_access_token?: string;
     agent_type?: string; // "openclaw" (default) or "claude_code"
     supports_vision?: boolean; // whether the model supports image input
     wire_api?: string; // "chat" (default), "responses", or "responses-ws"
@@ -22,7 +25,7 @@ export const HUB_SERVICE_PROVIDER_NAME = "MaClaw\u5b98\u65b9"; // Must match Go 
 export const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;
 
 /** Known OpenAI-compatible providers for quick-fill in custom provider config. */
-export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number; protocol?: string; agent_type?: string; wire_api?: string }[] = [
+export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number; protocol?: string; auth_type?: string; agent_type?: string; wire_api?: string }[] = [
     { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-5.4", context_length: 128000 },
     { name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
     { name: "\u667a\u8c31\u9f99\u867e", url: "https://open.bigmodel.cn/api/coding/paas/v4", model: "glm-5.1", context_length: 180000 },
@@ -33,7 +36,7 @@ export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string;
     { name: "\u706b\u5c71\u5f15\u64ce Agent Plan", url: "https://ark.cn-beijing.volces.com/api/plan/v3", model: "glm-5.2", context_length: 128000, protocol: "openai", wire_api: "responses" },
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
     { name: "\u817e\u8baf\u4e91", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
-    { name: "xAI-Grok", url: "https://api.x.ai/v1", model: "grok-build", context_length: 256000 },
+    { name: "xAI-Grok", url: "https://api.x.ai/v1", model: "grok-4.5", context_length: 400000, auth_type: "oauth", wire_api: "responses" },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o", context_length: 128000 },
     { name: "Together AI", url: "https://api.together.xyz/v1", model: "meta-llama/Llama-3-70b-chat-hf", context_length: 128000 },
     { name: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", context_length: 128000 },

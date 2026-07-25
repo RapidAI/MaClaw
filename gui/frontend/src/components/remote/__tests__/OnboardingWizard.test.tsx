@@ -18,6 +18,8 @@ const SaveMaclawLLMProvidersMock = vi.fn();
 const TestMaclawLLMMock = vi.fn();
 const ProbeRemoteHubMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
+const StartXAIOAuthMock = vi.fn();
+const CancelXAIOAuthMock = vi.fn();
 const StartCodeGenSSOMock = vi.fn();
 const StartCodeGenSSOEmbeddedMock = vi.fn();
 const WaitCodeGenSSOResultMock = vi.fn();
@@ -45,6 +47,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SendRemoteRegistrationEmail: (...args: unknown[]) => SendRemoteRegistrationEmailMock(...args),
     ProbeRemoteHub: (...args: unknown[]) => ProbeRemoteHubMock(...args),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
+    StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
+    CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
     StartCodeGenSSO: (...args: unknown[]) => StartCodeGenSSOMock(...args),
     StartCodeGenSSOEmbedded: (...args: unknown[]) => StartCodeGenSSOEmbeddedMock(...args),
     WaitCodeGenSSOResult: (...args: unknown[]) => WaitCodeGenSSOResultMock(...args),
@@ -1193,6 +1197,37 @@ describe('OnboardingWizard registration', () => {
         expect(TestMaclawLLMMock.mock.invocationCallOrder[0]).toBeLessThan(SaveMaclawLLMProvidersMock.mock.invocationCallOrder[0]);
         expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
         expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
+    });
+
+    it('uses the dedicated xAI OAuth flow during onboarding', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+        });
+        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth logged in');
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        await continueRegistrationIdentity();
+        fireEvent.click(screen.getByLabelText(/Free trial/));
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        await confirmEmailRegistration();
+        await waitFor(() => {
+            expect(screen.getByText(/Registration successful/)).toBeTruthy();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        fireEvent.click(await screen.findByRole('button', { name: 'xAI-Grok' }));
+        expect(screen.getByText(/authorize with your xAI account/i)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with xAI' }));
+
+        await waitFor(() => {
+            expect(StartXAIOAuthMock).toHaveBeenCalledTimes(1);
+        });
+        expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
+        expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
     });
 
     it('does not save when llm detection fails in step 3', async () => {

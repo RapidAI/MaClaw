@@ -79,6 +79,7 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
+	ApplyProviderAuthHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	resp, err := client.Do(req)
@@ -404,6 +405,10 @@ func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option
 	}
 	if corelib.IsCodeGenURL(cfg.URL) {
 		opts = append(opts, option.WithHeader(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(cfg.UserAgent())))
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.ProviderName), "xAI-Grok") &&
+		strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {
+		opts = append(opts, option.WithHeader("X-XAI-Token-Auth", "xai-grok-cli"))
 	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(time.Duration(timeout)*time.Second))

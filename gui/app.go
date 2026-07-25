@@ -181,6 +181,7 @@ type App struct {
 	hubCenterPersister      *guiHubCenterPersister          // persister for HubCenter URL config
 	oauthMu                 sync.Mutex
 	oauthCancel             context.CancelFunc
+	oauthGeneration         uint64
 	credentialStore         *oauth.FileCredentialStore  // independent OAuth credential storage (credentials.json)
 	anthropicOAuthParams    *oauth.AnthropicOAuthParams // in-progress Anthropic OAuth params
 	copilotDeviceCode       string                      // in-progress GitHub Copilot device code

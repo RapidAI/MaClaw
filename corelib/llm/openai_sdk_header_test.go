@@ -54,6 +54,26 @@ func TestOpenAISDKSendsCodeGenHeaderForCodeGen(t *testing.T) {
 	}
 }
 
+func TestOpenAISDKSendsXAIOAuthHeader(t *testing.T) {
+	client := &http.Client{Transport: openAISDKHeaderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
+			t.Fatalf("X-XAI-Token-Auth = %q, want xai-grok-cli", got)
+		}
+		return openAISDKHeaderResponse(req), nil
+	})}
+
+	resp, err := DoOpenAIRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.5",
+		Protocol: "openai", ProviderName: "xAI-Grok", AuthType: "oauth",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequest() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 type openAISDKHeaderRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn openAISDKHeaderRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

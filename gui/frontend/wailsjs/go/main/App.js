@@ -1299,6 +1299,14 @@ export function StartOpenAIOAuth() {
   return window['go']['main']['App']['StartOpenAIOAuth']();
 }
 
+export function StartXAIOAuth() {
+  return window['go']['main']['App']['StartXAIOAuth']();
+}
+
+export function CancelXAIOAuth() {
+  return window['go']['main']['App']['CancelXAIOAuth']();
+}
+
 export function CancelOpenAIOAuth() {
   return window['go']['main']['App']['CancelOpenAIOAuth']();
 }

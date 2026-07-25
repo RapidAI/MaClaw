@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -22,7 +23,7 @@ func RefreshXAIToken(ctx context.Context, refreshToken string) (*TokenResult, er
 	}
 	cfg := XAIConfig()
 	cfg.TokenEndpoint = discovery.TokenEndpoint
-	return RefreshAccessToken(cfg, refreshToken)
+	return RefreshAccessTokenCtx(ctx, cfg, refreshToken)
 }
 
 // NeedsRefresh 检查 provider 的 access_token 是否即将过期。
@@ -42,13 +43,24 @@ func NeedsRefresh(provider corelib.MaclawLLMProvider) bool {
 // RefreshAccessToken 使用 refresh_token 获取新的 access_token。
 // 直接返回 access_token 用于 Responses API，不做 token exchange。
 func RefreshAccessToken(cfg Config, refreshToken string) (*TokenResult, error) {
+	return RefreshAccessTokenCtx(context.Background(), cfg, refreshToken)
+}
+
+// RefreshAccessTokenCtx refreshes an OAuth credential while preserving caller
+// cancellation and the existing short network timeout.
+func RefreshAccessTokenCtx(ctx context.Context, cfg Config, refreshToken string) (*TokenResult, error) {
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
 	data.Set("client_id", cfg.ClientID)
 
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("token refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.PostForm(cfg.TokenEndpoint, data)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}

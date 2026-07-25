@@ -141,6 +141,33 @@ func TestProperty_BuildAuthURL_RequiredParams(t *testing.T) {
 	})
 }
 
+func TestXAIConfigAndAuthURLMatchGrokBuildContract(t *testing.T) {
+	cfg := XAIConfig()
+	if cfg.ClientID != XAIClientID {
+		t.Fatalf("ClientID = %q, want %q", cfg.ClientID, XAIClientID)
+	}
+	if cfg.CallbackPath != "/callback" || cfg.Referrer != "grok-build" {
+		t.Fatalf("xAI callback/referrer = %q/%q", cfg.CallbackPath, cfg.Referrer)
+	}
+	wantScopes := []string{
+		"openid", "profile", "email", "offline_access", "grok-cli:access",
+		"api:access", "conversations:read", "conversations:write",
+		"workspaces:read", "workspaces:write",
+	}
+	if strings.Join(cfg.Scopes, " ") != strings.Join(wantScopes, " ") {
+		t.Fatalf("scopes = %q, want %q", cfg.Scopes, wantScopes)
+	}
+	cfg.AuthEndpoint = XAIOAuthIssuer + "/authorize"
+	authURL, err := url.Parse(BuildAuthURL(cfg, "challenge", "http://127.0.0.1:4567/callback", "state"))
+	if err != nil {
+		t.Fatalf("parse authorization URL: %v", err)
+	}
+	q := authURL.Query()
+	if q.Get("referrer") != "grok-build" || q.Get("prompt") != "" || q.Get("originator") != "" {
+		t.Fatalf("xAI authorization query = %q", authURL.RawQuery)
+	}
+}
+
 // ─── Task 3.8 ───────────────────────────────────────────────────────────────
 // Unit tests for CallbackServer
 

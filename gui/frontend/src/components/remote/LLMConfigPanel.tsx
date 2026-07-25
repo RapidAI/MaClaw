@@ -12,6 +12,8 @@ import {
     SetSubAgentConcurrency,
     StartOpenAIOAuth,
     CancelOpenAIOAuth,
+    StartXAIOAuth,
+    CancelXAIOAuth,
     ImportCodexAuth,
     StartAnthropicOAuth,
     CompleteAnthropicOAuth,
@@ -125,6 +127,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 });
                 // Wait for user to complete (blocking call)
                 await WaitGitHubCopilotOAuth();
+            } else if (providerName === "xAI-Grok") {
+                // xAI: Grok Build's OIDC Authorization Code + PKCE flow.
+                await StartXAIOAuth();
             } else {
                 // OpenAI: standard PKCE with local callback
                 await StartOpenAIOAuth();
@@ -336,6 +341,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
     const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
     const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
+    // Keep the primary action reachable for an unsigned managed provider so it
+    // can explain the required next step instead of looking permanently inert.
+    const dlgNeedsOAuthLogin = !!dlgProvider &&
+        (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
+        !dlgProvider.key;
 
     // Handler: fetch models from any provider's /models endpoint
     const handleFetchProviderModels = useCallback(async () => {
@@ -453,12 +463,22 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         if (!ep || dlgSelectedIdx === null) return;
         setDlgProviders(prev => {
             const copy = [...prev];
+            const previous = copy[dlgSelectedIdx];
+            if (!previous) return prev;
+            const switchesManagedAuth = previous.auth_type === "oauth" || ep.auth_type === "oauth";
             copy[dlgSelectedIdx] = {
-                ...copy[dlgSelectedIdx],
+                ...previous,
                 name: ep.name,
                 url: ep.url,
                 model: ep.model,
                 protocol: ep.protocol || "openai",
+                auth_type: ep.auth_type || "",
+                // A provider switch must never reuse a token from a different
+                // authentication scheme or show it as a completed OAuth login.
+                key: switchesManagedAuth ? "" : previous.key,
+                refresh_token: switchesManagedAuth ? "" : previous.refresh_token,
+                oauth_access_token: switchesManagedAuth ? "" : previous.oauth_access_token,
+                token_expires_at: switchesManagedAuth ? 0 : previous.token_expires_at,
                 wire_api: ep.wire_api || "",
                 agent_type: ep.agent_type || "",
                 context_length: ep.context_length || 128000,
@@ -491,6 +511,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
         // OAuth / SSO providers: save directly (token already obtained via OAuth/SSO flow)
         if (sp.auth_type === "oauth" || sp.auth_type === "sso") {
+            if (!sp.key) {
+                setDlgSaving(false);
+                setDlgTestResult({
+                    ok: false,
+                    msg: t("Please complete OAuth login before saving", "请先完成 OAuth 登录再保存"),
+                });
+                return;
+            }
             try {
                 const saveName = sp.name;
                 await SaveMaclawLLMProviders(dlgProviders, saveName);
@@ -530,7 +558,19 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 return;
             }
 
-            const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: effectiveAgentType(sp), wire_api: sp.wire_api || "" });
+            // Keep provider identity and auth mode on the probe request. Some
+            // managed providers need provider-specific request headers; xAI's
+            // OAuth endpoint is one such example.
+            const testResult = await TestMaclawLLM({
+                url: sp.url,
+                key: sp.key,
+                model: sp.model,
+                protocol: sp.protocol || "openai",
+                agent_type: effectiveAgentType(sp),
+                wire_api: sp.wire_api || "",
+                provider_name: sp.name,
+                auth_type: sp.auth_type || "",
+            });
             const saveName = sp.name;
             const nextProviders = dlgProviders.map((provider, index) => index === dlgSelectedIdx
                 ? { ...provider, supports_vision: testResult.supports_vision }
@@ -1158,12 +1198,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                         ? t("Sign in with GitHub", "使用 GitHub 账号登录")
                                                         : dlgProvider.name === "Anthropic"
                                                             ? t("Sign in with Claude.ai", "使用 Claude.ai 账号登录")
+                                                            : dlgProvider.name === "xAI-Grok"
+                                                                ? t("Sign in with xAI", "使用 xAI 账号登录")
                                                             : t("Sign in with OpenAI", "使用 OpenAI 账号登录")}
                                             </button>
                                             {oauthBusy && (
-                                                <button onClick={() => {
+                                                <button aria-label={t("Cancel OAuth login", "取消 OAuth 登录")} onClick={() => {
                                                     const name = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
                                                     if (name === "GitHub Copilot") CancelGitHubCopilotOAuth();
+                                                    else if (name === "xAI-Grok") CancelXAIOAuth();
                                                     else CancelOpenAIOAuth();
                                                     setOauthBusy(false);
                                                 }} style={{
@@ -1310,10 +1353,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                         : t("Use This Service", "使用此服务")}
                                 </button>
                             ) : (
-                                <button onClick={dlgHandleSave} disabled={dlgSaving || oauthBusy || (!dlgDirty && !dlgTested)} style={{
-                                    fontSize: "0.76rem", padding: "6px 18px", cursor: (dlgDirty || dlgTested) ? "pointer" : "default",
-                                    background: (dlgDirty || dlgTested) ? colors.primaryLight : colors.bg, color: (dlgDirty || dlgTested) ? colors.primaryDark : colors.textMuted,
-                                    border: `1px solid ${(dlgDirty || dlgTested) ? colors.primary : colors.border}`, borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
+                                <button onClick={dlgHandleSave} disabled={dlgSaving || oauthBusy || (!dlgDirty && !dlgTested && !dlgNeedsOAuthLogin)} style={{
+                                    fontSize: "0.76rem", padding: "6px 18px", cursor: (dlgDirty || dlgTested || dlgNeedsOAuthLogin) ? "pointer" : "default",
+                                    background: (dlgDirty || dlgTested || dlgNeedsOAuthLogin) ? colors.primaryLight : colors.bg, color: (dlgDirty || dlgTested || dlgNeedsOAuthLogin) ? colors.primaryDark : colors.textMuted,
+                                    border: `1px solid ${(dlgDirty || dlgTested || dlgNeedsOAuthLogin) ? colors.primary : colors.border}`, borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
                                 }}>
                                     {dlgSaving ? t("Testing & Saving...", "检测并保存中...") : dlgTested ? t("Save Changes", "保存修改") : t("Test & Save", "检测并保存")}
                                 </button>

@@ -116,6 +116,84 @@ func TestConvertToResponsesInput_TypedMessageWithContentBlocks(t *testing.T) {
 	}
 }
 
+func TestConvertToResponsesInput_PreservesImageURL(t *testing.T) {
+	msgs := []interface{}{map[string]interface{}{
+		"role": "user",
+		"content": []interface{}{
+			map[string]interface{}{"type": "text", "text": "What colour is this image?"},
+			map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,abc"}},
+		},
+	}}
+
+	got := ConvertToResponsesInput(msgs)
+	content := got.Input[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) != 2 {
+		t.Fatalf("len(content) = %d, want 2", len(content))
+	}
+	image := content[1].(map[string]interface{})
+	if image["type"] != "input_image" || image["image_url"] != "data:image/png;base64,abc" {
+		t.Fatalf("image input = %#v, want an input_image data URL", image)
+	}
+}
+
+func TestConvertToResponsesInput_PreservesImageDetail(t *testing.T) {
+	msgs := []interface{}{map[string]interface{}{
+		"role": "user",
+		"content": []interface{}{
+			map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "https://example.com/image.png", "detail": "high"}},
+		},
+	}}
+
+	got := ConvertToResponsesInput(msgs)
+	content := got.Input[0].(map[string]interface{})["content"].([]interface{})
+	image := content[0].(map[string]interface{})
+	if image["detail"] != "high" {
+		t.Fatalf("image detail = %#v, want high", image["detail"])
+	}
+}
+
+func TestConvertToResponsesInput_PreservesResponsesFormatContent(t *testing.T) {
+	got := ConvertToResponsesInput([]interface{}{map[string]interface{}{
+		"role": "user",
+		"content": []interface{}{
+			map[string]interface{}{"type": "input_text", "content": "describe these inputs"},
+			map[string]interface{}{"type": "input_image", "image_url": "data:image/png;base64,abc", "detail": "high"},
+			map[string]interface{}{"type": "input_file", "file_id": "file_abc", "filename": "notes.txt"},
+		},
+	}})
+	content := got.Input[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) != 3 {
+		t.Fatalf("len(content) = %d, want 3: %#v", len(content), content)
+	}
+	if part := content[0].(map[string]interface{}); part["type"] != "input_text" || part["text"] != "describe these inputs" {
+		t.Fatalf("text input = %#v", part)
+	}
+	if part := content[1].(map[string]interface{}); part["type"] != "input_image" || part["image_url"] != "data:image/png;base64,abc" || part["detail"] != "high" {
+		t.Fatalf("image input = %#v", part)
+	}
+	if part := content[2].(map[string]interface{}); part["type"] != "input_file" || part["file_id"] != "file_abc" || part["filename"] != "notes.txt" {
+		t.Fatalf("file input = %#v", part)
+	}
+}
+
+func TestConvertToResponsesInput_PreservesFlatInputAudio(t *testing.T) {
+	got := ConvertToResponsesInput([]interface{}{map[string]interface{}{
+		"role": "user",
+		"content": []interface{}{
+			map[string]interface{}{"type": "input_audio", "data": "AAAA", "format": "wav"},
+		},
+	}})
+	content := got.Input[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) != 1 {
+		t.Fatalf("len(content) = %d, want 1: %#v", len(content), content)
+	}
+	part := content[0].(map[string]interface{})
+	audio := part["input_audio"].(map[string]interface{})
+	if part["type"] != "input_audio" || audio["data"] != "AAAA" || audio["format"] != "wav" {
+		t.Fatalf("audio input = %#v", part)
+	}
+}
+
 func TestConvertToResponsesInput_UserMessage(t *testing.T) {
 	msgs := []interface{}{
 		map[string]interface{}{"role": "user", "content": "What is 2+2?"},

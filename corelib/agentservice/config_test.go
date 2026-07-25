@@ -157,6 +157,33 @@ func TestResolveLLMConfigNormalizesCodeGenSSOAutoProvider(t *testing.T) {
 	}
 }
 
+func TestResolveLLMConfigPreservesXAIOAuthMetadata(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "xAI-Grok",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:             "xAI-Grok",
+			URL:              "https://api.x.ai/v1",
+			Key:              "xai-oauth-token",
+			OAuthAccessToken: "xai-oauth-token",
+			Model:            "grok-4.5",
+			Protocol:         "openai",
+			AuthType:         "oauth",
+			WireAPI:          "responses",
+		}},
+	}
+
+	llmCfg, err := ResolveLLMConfig(cfg)
+	if err != nil {
+		t.Fatalf("ResolveLLMConfig() error = %v", err)
+	}
+	if llmCfg.ProviderName != "xAI-Grok" || llmCfg.AuthType != "oauth" {
+		t.Fatalf("xAI OAuth metadata = provider %q auth %q, want xAI-Grok/oauth", llmCfg.ProviderName, llmCfg.AuthType)
+	}
+	if llmCfg.Key != "xai-oauth-token" || !llmCfg.IsResponsesAPI() {
+		t.Fatalf("xAI OAuth config = %+v", llmCfg)
+	}
+}
+
 func TestNormalizeLLMFlatConfigFillsSelectedProvider(t *testing.T) {
 	cfg := normalizeLLMFlatConfig(corelib.AppConfig{
 		MaclawLLMCurrentProvider: "hub",

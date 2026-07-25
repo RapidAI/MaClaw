@@ -28,8 +28,12 @@ type responsesAPIOutputItem struct {
 }
 
 type responsesAPIContentPart struct {
-	Type string `json:"type"` // "output_text"
+	Type string `json:"type"` // "output_text" or provider-compatible text part
 	Text string `json:"text"`
+	// Some OpenAI-compatible Responses endpoints emit text under content rather
+	// than text. Accept both so a valid vision reply cannot be misclassified as
+	// an empty response.
+	Content string `json:"content"`
 }
 
 type responsesAPIUsageEvent struct {
@@ -73,8 +77,13 @@ func ParseNonStreamResponsesAPIBody(body []byte) (*Response, error) {
 		switch item.Type {
 		case "message":
 			for _, part := range item.Content {
-				if part.Type == "output_text" {
-					textParts = append(textParts, part.Text)
+				switch part.Type {
+				case "output_text", "text", "input_text":
+					if text := strings.TrimSpace(part.Text); text != "" {
+						textParts = append(textParts, text)
+					} else if content := strings.TrimSpace(part.Content); content != "" {
+						textParts = append(textParts, content)
+					}
 				}
 			}
 		case "function_call":

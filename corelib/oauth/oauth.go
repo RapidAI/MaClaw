@@ -224,7 +224,7 @@ func RunXAIOAuthFlowCtx(ctx context.Context) (*TokenResult, error) {
 	if returnedState != state {
 		return nil, fmt.Errorf("xai oauth: state mismatch")
 	}
-	result, err := ExchangeCode(cfg, code, verifier, redirectURI)
+	result, err := ExchangeCodeCtx(ctx, cfg, code, verifier, redirectURI)
 	if err != nil {
 		return nil, fmt.Errorf("xai oauth: %w", err)
 	}
@@ -255,7 +255,13 @@ type codeExchangeResult struct {
 // ChatGPT Codex subscription requests use the OAuth access_token directly as
 // their Bearer credential. Do not exchange it for a platform sk- API key.
 func ExchangeCode(cfg Config, code, codeVerifier, redirectURI string) (*TokenResult, error) {
-	result, err := exchangeCodeInternal(cfg, code, codeVerifier, redirectURI)
+	return ExchangeCodeCtx(context.Background(), cfg, code, codeVerifier, redirectURI)
+}
+
+// ExchangeCodeCtx exchanges an authorization code while respecting caller
+// cancellation (for example when the settings dialog cancels OAuth login).
+func ExchangeCodeCtx(ctx context.Context, cfg Config, code, codeVerifier, redirectURI string) (*TokenResult, error) {
+	result, err := exchangeCodeInternalCtx(ctx, cfg, code, codeVerifier, redirectURI)
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +276,10 @@ func ExchangeCode(cfg Config, code, codeVerifier, redirectURI string) (*TokenRes
 
 // exchangeCodeInternal 是 ExchangeCode 的内部实现，额外返回 id_token。
 func exchangeCodeInternal(cfg Config, code, codeVerifier, redirectURI string) (*codeExchangeResult, error) {
+	return exchangeCodeInternalCtx(context.Background(), cfg, code, codeVerifier, redirectURI)
+}
+
+func exchangeCodeInternalCtx(ctx context.Context, cfg Config, code, codeVerifier, redirectURI string) (*codeExchangeResult, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
@@ -277,7 +287,13 @@ func exchangeCodeInternal(cfg Config, code, codeVerifier, redirectURI string) (*
 	data.Set("redirect_uri", redirectURI)
 	data.Set("client_id", cfg.ClientID)
 
-	resp, err := http.PostForm(cfg.TokenEndpoint, data)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
@@ -542,7 +558,7 @@ func RunOAuthFlowCtx(ctx context.Context, cfg Config) (*TokenResult, error) {
 	}
 
 	// 6. 用授权码换取 token（含 id_token）
-	exchanged, err := exchangeCodeInternal(cfg, code, verifier, redirectURI)
+	exchanged, err := exchangeCodeInternalCtx(ctx, cfg, code, verifier, redirectURI)
 	if err != nil {
 		return nil, fmt.Errorf("oauth flow: %w", err)
 	}

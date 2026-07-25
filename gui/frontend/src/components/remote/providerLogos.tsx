@@ -18,6 +18,28 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
             <path d="M4 16.8h16V20H4v-3.2z" fill="currentColor"/>
         </svg>
     ),
+    Anthropic: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 20 10.1 4h3.8L20 20h-3.4l-1.4-3.8H8.8L7.4 20H4Zm5.8-6.7h4.4L12 7.1l-2.2 6.2Z" fill="currentColor"/>
+        </svg>
+    ),
+    "GitHub Copilot": (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 2.7a9.3 9.3 0 0 0-2.94 18.12c.47.09.64-.2.64-.45v-1.63c-2.61.57-3.16-1.1-3.16-1.1-.42-1.08-1.05-1.37-1.05-1.37-.86-.58.07-.57.07-.57.95.07 1.45.98 1.45.98.85 1.45 2.22 1.03 2.76.79.09-.61.33-1.03.6-1.27-2.08-.24-4.27-1.04-4.27-4.64 0-1.03.37-1.87.97-2.53-.1-.24-.42-1.2.09-2.5 0 0 .79-.25 2.56.97A8.9 8.9 0 0 1 12 7.42c.78 0 1.56.1 2.29.31 1.77-1.22 2.55-.97 2.55-.97.51 1.3.19 2.26.1 2.5.6.66.96 1.5.96 2.53 0 3.61-2.2 4.4-4.28 4.63.34.29.64.84.64 1.69v2.5c0 .25.17.55.65.45A9.3 9.3 0 0 0 12 2.7Z" fill="currentColor"/>
+        </svg>
+    ),
+    "xAI-Grok": (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 4h3.3l2.9 4.5L14 4h3.2l-4.3 6.5L18.7 20h-3.3l-4-6.2L7.2 20H4l5.7-8.7L5 4Z" fill="currentColor"/>
+        </svg>
+    ),
+    "\u706b\u5c71\u5f15\u64ce Agent Plan": (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 6.2 11.9 2 20 6.2v3.4l-8.1 4.2L4 9.6V6.2Z" fill="currentColor"/>
+            <path d="M4 11.5 11.9 15.7 20 11.5v3.3L11.9 19 4 14.8v-3.3Z" fill="currentColor" opacity=".72"/>
+            <path d="M4 16.7 11.9 20.9 20 16.7V20l-8.1 4.2L4 20v-3.3Z" fill="currentColor" opacity=".45" transform="translate(0 -2.2)"/>
+        </svg>
+    ),
     MiniMax: (
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none">
             <path d="M2 20V4l5 8 5-8 5 8 5-8v16" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/>

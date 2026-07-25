@@ -14,7 +14,7 @@ type ResponsesConvertedInput struct {
 //
 // Conversion rules (from design §3):
 //   - system messages → extracted to Instructions (not in Input)
-//   - user messages   → {type:"message", role:"user", content:[{type:"input_text", text:...}]}
+//   - user messages   → {type:"message", role:"user", content:[input_text/input_image/input_file/input_audio...]}
 //   - assistant text  → {type:"message", role:"assistant", content:[{type:"output_text", text:...}]}
 //   - assistant tool_calls → one {type:"function_call", call_id, name, arguments} per call
 //   - tool results    → {type:"function_call_output", call_id, output}
@@ -42,13 +42,11 @@ func ConvertToResponsesInput(messages []interface{}) ResponsesConvertedInput {
 				}
 			}
 		case "user":
-			text := extractContentString(mm)
+			content := convertUserContentToResponsesInput(mm["content"])
 			result.Input = append(result.Input, map[string]interface{}{
-				"type": "message",
-				"role": "user",
-				"content": []interface{}{
-					map[string]interface{}{"type": "input_text", "text": text},
-				},
+				"type":    "message",
+				"role":    "user",
+				"content": content,
 			})
 		case "assistant":
 			text := extractContentString(mm)
@@ -239,6 +237,112 @@ func textFromResponsesContent(raw interface{}) string {
 		}
 		return joinNonEmptyResponsesText(parts)
 	}
+}
+
+// convertUserContentToResponsesInput preserves user content blocks that the
+// Responses API understands, rather than flattening multimodal input to text.
+// This is essential for vision probes and regular image-bearing requests.
+func convertUserContentToResponsesInput(raw interface{}) []interface{} {
+	if text, ok := raw.(string); ok {
+		return []interface{}{map[string]interface{}{"type": "input_text", "text": text}}
+	}
+
+	items := toInterfaceSlice(raw)
+	if len(items) == 0 {
+		return []interface{}{map[string]interface{}{"type": "input_text", "text": stringValue(raw)}}
+	}
+
+	content := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		block := toStringInterfaceMap(item)
+		if block == nil {
+			continue
+		}
+		switch stringField(block, "type") {
+		case "text", "input_text", "output_text":
+			if text := responsesContentText(block); text != "" {
+				content = appendResponsesInputText(content, text)
+			}
+		case "image_url", "input_image":
+			imageURL := ""
+			if rawURL, ok := block["image_url"].(string); ok {
+				imageURL = rawURL
+			} else if image := toStringInterfaceMap(block["image_url"]); image != nil {
+				imageURL = stringField(image, "url")
+			}
+			if imageURL != "" {
+				imagePart := map[string]interface{}{"type": "input_image", "image_url": imageURL}
+				if detail := stringField(block, "detail"); detail != "" {
+					imagePart["detail"] = detail
+				} else if image := toStringInterfaceMap(block["image_url"]); image != nil {
+					if detail := stringField(image, "detail"); detail != "" {
+						imagePart["detail"] = detail
+					}
+				}
+				content = append(content, imagePart)
+			}
+		case "input_audio":
+			audio := toStringInterfaceMap(block["input_audio"])
+			if audio == nil {
+				audio = block
+			}
+			if audio != nil {
+				part := map[string]interface{}{"type": "input_audio"}
+				if data := stringField(audio, "data"); data != "" {
+					part["input_audio"] = map[string]interface{}{"data": data, "format": stringField(audio, "format")}
+					content = append(content, part)
+				}
+			}
+		case "file", "input_file":
+			file := toStringInterfaceMap(block["file"])
+			part := map[string]interface{}{"type": "input_file"}
+			for _, key := range []string{"file_id", "filename", "file_data"} {
+				value := stringField(block, key)
+				if file != nil {
+					if nested := stringField(file, key); nested != "" {
+						value = nested
+					}
+				}
+				if value != "" {
+					part[key] = value
+				}
+			}
+			if len(part) > 1 {
+				content = append(content, part)
+			}
+		}
+	}
+	if len(content) == 0 {
+		content = append(content, map[string]interface{}{"type": "input_text", "text": textFromResponsesContent(raw)})
+	}
+	return content
+}
+
+func responsesContentText(block map[string]interface{}) string {
+	if text := stringField(block, "text"); text != "" {
+		return text
+	}
+	return stringField(block, "content")
+}
+
+// appendResponsesInputText coalesces adjacent text parts without moving text
+// across media inputs. This preserves the original multimodal ordering while
+// keeping the compact representation used by prior requests.
+func appendResponsesInputText(content []interface{}, text string) []interface{} {
+	if len(content) == 0 {
+		return append(content, map[string]interface{}{"type": "input_text", "text": text})
+	}
+	last, ok := content[len(content)-1].(map[string]interface{})
+	if !ok || last["type"] != "input_text" {
+		return append(content, map[string]interface{}{"type": "input_text", "text": text})
+	}
+	previous, _ := last["text"].(string)
+	if previous == "" {
+		last["text"] = text
+	} else {
+		last["text"] = previous + "\n" + text
+	}
+	return content
 }
 
 func joinNonEmptyResponsesText(parts []string) string {

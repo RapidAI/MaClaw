@@ -52,6 +52,60 @@ func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToTigerclaw(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestDoFetchModelsRequestSetsXAIOAuthHeader(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "xAI-Grok", URL: "https://api.x.ai/v1", AuthType: "oauth", Key: "xai-oauth-token"},
+		},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	client := &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("Authorization"); got != "Bearer xai-oauth-token" {
+			t.Fatalf("Authorization = %q, want OAuth bearer token", got)
+		}
+		if got := req.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
+			t.Fatalf("X-XAI-Token-Auth = %q, want xai-grok-cli", got)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":[]}`)), Request: req}, nil
+	})}
+	resp, err := app.doFetchModelsRequest(client, "https://api.x.ai/v1/models", "xai-oauth-token", "openai", "openclaw")
+	if err != nil {
+		t.Fatalf("doFetchModelsRequest() error = %v", err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestMaclawLLMProbeSetsXAIOAuthHeader(t *testing.T) {
+	oldClient := maclawLLMPingClient
+	defer func() { maclawLLMPingClient = oldClient }()
+
+	maclawLLMPingClient = &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("Authorization"); got != "Bearer xai-oauth-token" {
+			t.Fatalf("Authorization = %q, want OAuth bearer token", got)
+		}
+		if got := req.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
+			t.Fatalf("X-XAI-Token-Auth = %q, want xai-grok-cli", got)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+	})}
+
+	online, err := maclawLLMProbe("https://api.x.ai/v1/models", corelib.MaclawLLMConfig{
+		URL: "https://api.x.ai/v1", Key: "xai-oauth-token", Model: "grok-4.5",
+		ProviderName: "xAI-Grok", AuthType: "oauth",
+	})
+	if err != nil || !online {
+		t.Fatalf("maclawLLMProbe() = (%v, %v), want (true, nil)", online, err)
+	}
+}
+
 func TestPreserveManagedAuthSecretsKeepsOAuthKey(t *testing.T) {
 	existing := []corelib.MaclawLLMProvider{
 		{Name: "GitHub Copilot", AuthType: "oauth", Key: "copilot-token", RefreshToken: "gh-token", TokenExpiresAt: 123},
@@ -617,7 +671,7 @@ func TestTestOpenAILLM_UsesReasoningFallbackAndStripsTags(t *testing.T) {
 	defer srv.Close()
 
 	app := &App{}
-	got, err := app.testOpenAILLM(srv.URL, "", "test-model", "test-agent")
+	got, err := app.testOpenAILLM(corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", AgentType: "test-agent"})
 	if err != nil {
 		t.Fatalf("testOpenAILLM returned error: %v", err)
 	}
@@ -634,8 +688,24 @@ func TestProbeVisionOpenAI_UsesReasoningFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if !probeVisionOpenAI(srv.URL, "", "test-model", "abc", "test-agent") {
+	if !probeVisionOpenAI(corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", AgentType: "test-agent"}, "abc") {
 		t.Fatal("probeVisionOpenAI() = false, want true")
+	}
+}
+
+func TestVisionProbeImage_IsValidStablePNG(t *testing.T) {
+	if !validVisionProbeImage(visionProbeRedPNG) {
+		t.Fatal("visionProbeRedPNG must remain a valid, known 64x64 red PNG payload")
+	}
+}
+
+func TestVisionProbePrompt_DoesNotRevealExpectedColour(t *testing.T) {
+	prompt := strings.ToLower(visionProbePrompt())
+	if strings.Contains(prompt, "red") || strings.Contains(prompt, "ff0000") {
+		t.Fatalf("vision probe prompt leaks the expected answer: %q", prompt)
+	}
+	if !strings.Contains(prompt, "no image") {
+		t.Fatalf("vision probe prompt must give a deterministic no-image response: %q", prompt)
 	}
 }
 
@@ -648,7 +718,7 @@ func TestTestAnthropicLLM_StripsThinkAndFunctionTags(t *testing.T) {
 	defer srv.Close()
 
 	app := &App{}
-	got, err := app.testAnthropicLLM(srv.URL, "", "test-model", "test-agent")
+	got, err := app.testAnthropicLLM(corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", AgentType: "test-agent"})
 	if err != nil {
 		t.Fatalf("testAnthropicLLM returned error: %v", err)
 	}
@@ -665,7 +735,7 @@ func TestProbeVisionAnthropic_ReturnsTrueForRedResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if !probeVisionAnthropic(srv.URL, "", "test-model", "abc", "test-agent") {
+	if !probeVisionAnthropic(corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", AgentType: "test-agent"}, "abc") {
 		t.Fatal("probeVisionAnthropic() = false, want true")
 	}
 }
@@ -692,6 +762,176 @@ func TestProbeVisionResponsesAPI_SanitizesQwenStoreAndNormalizesEndpoint(t *test
 	}
 	if _, ok := captured["store"]; ok {
 		t.Fatalf("Qwen Responses vision probe leaked store: %#v", captured)
+	}
+}
+
+func TestProbeVisionResponsesAPI_UsesSharedRequestBuilder(t *testing.T) {
+	var captured map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"ruby red"}]}]}`))
+	}))
+	defer srv.Close()
+
+	if !probeVisionResponsesAPIWithConfig(corelib.MaclawLLMConfig{
+		URL: srv.URL, Key: "oauth-token", Model: "grok-4.5", ProviderName: "xAI-Grok", AuthType: "oauth", WireAPI: "responses",
+	}) {
+		t.Fatal("probeVisionResponsesAPIWithConfig() = false, want true")
+	}
+	if got := captured["store"]; got != false {
+		t.Fatalf("store = %#v, want false", got)
+	}
+	input := captured["input"].([]interface{})
+	content := input[0].(map[string]interface{})["content"].([]interface{})
+	if len(content) != 2 || content[0].(map[string]interface{})["type"] != "input_text" || content[1].(map[string]interface{})["type"] != "input_image" {
+		t.Fatalf("vision content = %#v, want input_text followed by input_image", content)
+	}
+}
+
+func TestProbeVisionResponsesAPI_AcceptsCompatibleResponseText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"text","content":"red"}]}]}`))
+	}))
+	defer srv.Close()
+
+	if !probeVisionResponsesAPIWithConfig(corelib.MaclawLLMConfig{
+		URL: srv.URL, Model: "grok-4.5", WireAPI: "responses",
+	}) {
+		t.Fatal("probeVisionResponsesAPIWithConfig() = false, want true for compatible text content")
+	}
+}
+
+func TestTestMaclawLLMResponsesProbeRetainsProviderAuth(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
+			t.Fatalf("X-XAI-Token-Auth = %q, want xai-grok-cli", got)
+		}
+		if requests == 2 {
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode vision request: %v", err)
+			}
+			input := body["input"].([]interface{})
+			content := input[0].(map[string]interface{})["content"].([]interface{})
+			if len(content) != 2 || content[1].(map[string]interface{})["type"] != "input_image" {
+				t.Fatalf("vision request content = %#v, want input_text plus input_image", content)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"red"}]}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{}
+	got, err := app.TestMaclawLLM(corelib.MaclawLLMConfig{
+		URL: srv.URL, Key: "oauth-token", Model: "grok-4.5", Protocol: "openai",
+		WireAPI: "responses", ProviderName: "xAI-Grok", AuthType: "oauth",
+	})
+	if err != nil {
+		t.Fatalf("TestMaclawLLM returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2 (text test plus vision probe)", requests)
+	}
+	if !got.SupportsVision {
+		t.Fatal("TestMaclawLLM supports_vision = false, want true")
+	}
+}
+
+func TestTestMaclawLLMRejectsUnsignedOAuthProbe(t *testing.T) {
+	app := &App{}
+	_, err := app.TestMaclawLLM(corelib.MaclawLLMConfig{
+		URL: "https://api.x.ai/v1", Model: "grok-4.5", Protocol: "openai",
+		WireAPI: "responses", ProviderName: "xAI-Grok", AuthType: "oauth",
+	})
+	if err == nil || !strings.Contains(err.Error(), "OAuth token is missing") {
+		t.Fatalf("TestMaclawLLM unsigned OAuth error = %v, want missing-token error", err)
+	}
+}
+
+func TestOAuthFlowReplacementKeepsNewestCancellationHandle(t *testing.T) {
+	app := &App{}
+	first, finishFirst, _ := app.beginOAuthFlow(time.Minute)
+	second, finishSecond, claimSecond := app.beginOAuthFlow(time.Minute)
+	defer finishSecond()
+
+	select {
+	case <-first.Done():
+	case <-time.After(time.Second):
+		t.Fatal("starting a new OAuth flow did not cancel the previous flow")
+	}
+	finishFirst()
+	if err := claimSecond(nil); err != nil {
+		t.Fatal("finishing the replaced OAuth flow cleared the active flow")
+	}
+
+	app.CancelXAIOAuth()
+	select {
+	case <-second.Done():
+		t.Fatal("cancelling a claimed OAuth result cancelled its completed flow")
+	default:
+	}
+
+	third, finishThird, claimThird := app.beginOAuthFlow(time.Minute)
+	defer finishThird()
+	app.CancelXAIOAuth()
+	select {
+	case <-third.Done():
+	case <-time.After(time.Second):
+		t.Fatal("cancelling OAuth did not cancel the active flow")
+	}
+	if err := claimThird(nil); err == nil {
+		t.Fatal("cancelled OAuth flow claimed a result")
+	}
+}
+
+func TestOAuthClaimSerializesProviderPersistence(t *testing.T) {
+	app := &App{}
+	_, finishFirst, claimFirst := app.beginOAuthFlow(time.Minute)
+	defer finishFirst()
+
+	commitStarted := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	commitDone := make(chan error, 1)
+	go func() {
+		commitDone <- claimFirst(func() error {
+			close(commitStarted)
+			<-releaseCommit
+			return nil
+		})
+	}()
+	select {
+	case <-commitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("OAuth claim did not start its commit")
+	}
+
+	newFlowStarted := make(chan struct{})
+	go func() {
+		_, finish, _ := app.beginOAuthFlow(time.Minute)
+		defer finish()
+		close(newFlowStarted)
+	}()
+	select {
+	case <-newFlowStarted:
+		t.Fatal("new OAuth flow started before the accepted result committed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseCommit)
+	if err := <-commitDone; err != nil {
+		t.Fatalf("claimFirst commit error = %v", err)
+	}
+	select {
+	case <-newFlowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("new OAuth flow remained blocked after commit")
 	}
 }
 
@@ -744,7 +984,7 @@ func TestTestMaclawLLM_ReturnsSupportsVisionFalseWhenProbeFails(t *testing.T) {
 	}
 }
 
-func TestTestMaclawLLM_ReturnsSupportsVisionTrueForNonRedColour(t *testing.T) {
+func TestTestMaclawLLM_DoesNotTreatWrongColourAsVisionConfirmation(t *testing.T) {
 	// Some models misidentify the tiny red PNG as "yellow" — the probe should
 	// still detect vision support because the model named a colour.
 	hits := 0
@@ -765,8 +1005,8 @@ func TestTestMaclawLLM_ReturnsSupportsVisionTrueForNonRedColour(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestMaclawLLM returned error: %v", err)
 	}
-	if !got.SupportsVision {
-		t.Fatal("TestMaclawLLM supports_vision = false, want true (model replied with a colour)")
+	if got.SupportsVision {
+		t.Fatal("TestMaclawLLM supports_vision = true, want false for wrong probe colour")
 	}
 }
 
@@ -778,9 +1018,14 @@ func TestLooksLikeVisionResponse(t *testing.T) {
 		{"Red", true},
 		{"red", true},
 		{"红色", true},
-		{"Yellow", true},
-		{"blue", true},
-		{"The image is green.", true},
+		{"Yellow", false},
+		{"blue", false},
+		{"The image is green.", false},
+		{"The image is #FF0000.", true},
+		{"RGB(255, 0, 0)", true},
+		{"It appears crimson.", true},
+		{"The colour is ruby red.", true},
+		{"The image looks maroon.", true},
 		{"I don't see any image", false},
 		{"no image", false},
 		{"No image attached", false},
@@ -1975,14 +2220,20 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if xaiGrok.URL != "https://api.x.ai/v1" {
 		t.Errorf("xAI-Grok URL = %q, want %q", xaiGrok.URL, "https://api.x.ai/v1")
 	}
-	if xaiGrok.Model != "grok-build" {
-		t.Errorf("xAI-Grok Model = %q, want %q", xaiGrok.Model, "grok-build")
+	if xaiGrok.Model != "grok-4.5" {
+		t.Errorf("xAI-Grok Model = %q, want %q", xaiGrok.Model, "grok-4.5")
 	}
 	if xaiGrok.Protocol != "openai" {
 		t.Errorf("xAI-Grok Protocol = %q, want %q", xaiGrok.Protocol, "openai")
 	}
-	if xaiGrok.ContextLength != 256000 {
-		t.Errorf("xAI-Grok ContextLength = %d, want %d", xaiGrok.ContextLength, 256000)
+	if xaiGrok.AuthType != "oauth" {
+		t.Errorf("xAI-Grok AuthType = %q, want oauth", xaiGrok.AuthType)
+	}
+	if xaiGrok.WireAPI != "responses" {
+		t.Errorf("xAI-Grok WireAPI = %q, want responses", xaiGrok.WireAPI)
+	}
+	if xaiGrok.ContextLength != 400000 {
+		t.Errorf("xAI-Grok ContextLength = %d, want %d", xaiGrok.ContextLength, 400000)
 	}
 
 	zhipuCoding, ok := findProviderByName(providers, "智谱编程")
@@ -2112,6 +2363,77 @@ func TestGetMaclawLLMProviders_BackfillsVolcengineAgentPlanProvider(t *testing.T
 	}
 	if provider.IsCustom {
 		t.Fatal("火山引擎 Agent Plan IsCustom = true, want false")
+	}
+}
+
+func TestGetMaclawLLMProviders_MigratesXAIGrokAPIKeyConfigToOAuth(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: "xAI-Grok",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "xAI-Grok", URL: "https://legacy.x.ai/v1", Key: "xai-api-key", Model: "legacy-grok"},
+			{Name: "Custom1", IsCustom: true},
+			{Name: "Custom2", IsCustom: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	provider, ok := findProviderByName(data.Providers, "xAI-Grok")
+	if !ok {
+		t.Fatalf("providers missing xAI-Grok: %+v", data.Providers)
+	}
+	if provider.AuthType != "oauth" || provider.Protocol != "openai" || provider.WireAPI != "responses" {
+		t.Fatalf("xAI-Grok auth config = auth %q protocol %q wire %q, want oauth/openai/responses", provider.AuthType, provider.Protocol, provider.WireAPI)
+	}
+	if provider.URL != "https://api.x.ai/v1" {
+		t.Fatalf("xAI-Grok URL = %q, want current endpoint", provider.URL)
+	}
+	if provider.Model != "grok-4.5" {
+		t.Fatalf("xAI-Grok Model = %q, want current default grok-4.5", provider.Model)
+	}
+	if provider.Key != "" || provider.OAuthAccessToken != "" || provider.RefreshToken != "" || provider.TokenExpiresAt != 0 {
+		t.Fatalf("legacy xAI API credentials were retained: %+v", provider)
+	}
+
+	if err := app.SaveMaclawLLMProviders(data.Providers, data.Current); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	persisted, ok := findProviderByName(saved.MaclawLLMProviders, "xAI-Grok")
+	if !ok || persisted.Key != "" || persisted.AuthType != "oauth" {
+		t.Fatalf("persisted xAI migration = %+v", persisted)
+	}
+}
+
+func TestNormalizeXAIProviderMigratesFormerGrokBuildDefault(t *testing.T) {
+	defaults, ok := findProviderByName(defaultMaclawLLMProviders(), "xAI-Grok")
+	if !ok {
+		t.Fatal("default xAI-Grok provider not found")
+	}
+	provider := normalizeXAIProvider(corelib.MaclawLLMProvider{
+		Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-build", ContextLength: 256000,
+		Protocol: "openai", AuthType: "oauth", WireAPI: "responses",
+	}, defaults)
+	if provider.Model != "grok-4.5" {
+		t.Fatalf("legacy grok-build default was not migrated: %q", provider.Model)
+	}
+	if provider.ContextLength != 400000 {
+		t.Fatalf("legacy 256K context window was not migrated: %d", provider.ContextLength)
+	}
+
+	provider.Model = "grok-4.1-fast"
+	provider = normalizeXAIProvider(provider, defaults)
+	if provider.Model != "grok-4.1-fast" {
+		t.Fatalf("explicit OAuth model selection was overwritten: %q", provider.Model)
 	}
 }
 

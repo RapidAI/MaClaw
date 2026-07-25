@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -118,6 +120,36 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 	return provider
 }
 
+// normalizeXAIProvider applies Grok Build's managed-OAuth defaults. Existing
+// xAI API-key configurations are intentionally converted to an unsigned OAuth
+// state so they cannot be mistaken for a valid OAuth session.
+func normalizeXAIProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	legacyAuth := !normalizeMaclawLLMAuthTypeKind(provider.AuthType).IsOAuth()
+	legacyDefaultModel := strings.EqualFold(strings.TrimSpace(provider.Model), "grok-build")
+	provider.URL = defaults.URL
+	provider.AuthType = defaults.AuthType
+	provider.Protocol = defaults.Protocol
+	provider.WireAPI = defaults.WireAPI
+	// Migrate the former built-in grok-build default, plus API-key-era
+	// configurations, to the current OAuth default. Explicit OAuth model
+	// selections remain untouched.
+	if legacyAuth || legacyDefaultModel || strings.TrimSpace(provider.Model) == "" {
+		provider.Model = defaults.Model
+	}
+	// Upgrade the former managed 256K default while preserving an explicit
+	// custom context-window selection.
+	if provider.ContextLength <= 0 || provider.ContextLength == 256000 {
+		provider.ContextLength = defaults.ContextLength
+	}
+	if legacyAuth {
+		provider.Key = ""
+		provider.OAuthAccessToken = ""
+		provider.RefreshToken = ""
+		provider.TokenExpiresAt = 0
+	}
+	return provider
+}
+
 func markHubServiceProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
 	provider.Name = canonicalHubServiceProviderName(provider.Name)
 	provider.IsHubService = provider.Name == hubServiceProviderName
@@ -139,10 +171,10 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5-20250514", AuthType: "oauth", Protocol: "anthropic", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Model: "claude-sonnet-4", AuthType: "oauth", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
-		// xAI's Grok Build source uses grok-build with a 256K context window.
+		// xAI's Grok Build OAuth provider defaults to Grok 4.5 with a 400K context window.
 		// The public xAI endpoint is OpenAI-compatible, so it uses the standard
 		// OpenAI request and model-discovery path.
-		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-build", Protocol: "openai", AuthType: "oauth", ContextLength: 256000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
+		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-4.5", Protocol: "openai", AuthType: "oauth", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0"},
@@ -245,6 +277,11 @@ func (a *App) GetMaclawLLMProviders() struct {
 		if !providers[i].IsCustom {
 			if u, ok := defaultURL[providers[i].Name]; ok {
 				providers[i].URL = u
+			}
+			if providers[i].Name == "xAI-Grok" {
+				if d, ok := defaultProvider[providers[i].Name]; ok {
+					providers[i] = normalizeXAIProvider(providers[i], d)
+				}
 			}
 			if providers[i].Name == volcengineAgentPlanProviderName {
 				if d, ok := defaultProvider[providers[i].Name]; ok {
@@ -680,98 +717,165 @@ func (a *App) SaveMaclawLLMConfig(llm corelib.MaclawLLMConfig) error {
 	return nil
 }
 
+// beginOAuthFlow makes browser OAuth single-flight. Starting a new provider
+// login cancels the prior one, and the generation guard prevents an older flow
+// from clearing the newer flow's cancellation handle or persisting a late token.
+// The returned claim function atomically establishes that a completed flow owns
+// its result before configuration is written. The commit callback runs while the
+// flow lock is held, so a newly started login cannot cause an already accepted
+// result to overwrite that newer provider configuration out of order.
+func (a *App) beginOAuthFlow(timeout time.Duration) (context.Context, func(), func(func() error) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	a.oauthMu.Lock()
+	if a.oauthCancel != nil {
+		a.oauthCancel()
+	}
+	a.oauthGeneration++
+	generation := a.oauthGeneration
+	a.oauthCancel = cancel
+	a.oauthMu.Unlock()
+
+	finish := func() {
+		cancel()
+		a.oauthMu.Lock()
+		if a.oauthGeneration == generation {
+			a.oauthCancel = nil
+		}
+		a.oauthMu.Unlock()
+	}
+	claimResult := func(commit func() error) error {
+		a.oauthMu.Lock()
+		defer a.oauthMu.Unlock()
+		if a.oauthGeneration != generation || a.oauthCancel == nil || ctx.Err() != nil {
+			return fmt.Errorf("OAuth 登录已取消或被新的登录请求替代")
+		}
+		// A successful claim is the linearization point: a later cancel applies
+		// only to a subsequent OAuth flow, never to an already accepted token.
+		a.oauthCancel = nil
+		if commit == nil {
+			return nil
+		}
+		return commit()
+	}
+	return ctx, finish, claimResult
+}
+
+// cancelOAuthFlow cancels the active browser OAuth flow, if any.
+func (a *App) cancelOAuthFlow() {
+	a.oauthMu.Lock()
+	defer a.oauthMu.Unlock()
+	a.oauthGeneration++
+	if a.oauthCancel != nil {
+		a.oauthCancel()
+		a.oauthCancel = nil
+	}
+}
+
 // StartOpenAIOAuth starts the OpenAI OAuth PKCE flow. On success, it updates
 // the OpenAI provider config with the obtained tokens and persists the change.
 // The flow can be cancelled via CancelOpenAIOAuth.
 func (a *App) StartOpenAIOAuth() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-	a.oauthMu.Lock()
-	a.oauthCancel = cancel
-	a.oauthMu.Unlock()
-	defer func() {
-		cancel()
-		a.oauthMu.Lock()
-		a.oauthCancel = nil
-		a.oauthMu.Unlock()
-	}()
+	ctx, finish, claimResult := a.beginOAuthFlow(300 * time.Second)
+	defer finish()
 
 	cfg := oauth.DefaultConfig()
 	result, err := oauth.RunOAuthFlowCtx(ctx, cfg)
 	if err != nil {
 		return "", fmt.Errorf("OAuth 登录失败: %w", err)
 	}
-
-	// Update the OpenAI provider with the obtained tokens and sync config
-	data := a.GetMaclawLLMProviders()
-	defaults := defaultMaclawLLMProviders()
-	var defaultOpenAI *corelib.MaclawLLMProvider
-	for i := range defaults {
-		if defaults[i].Name == "OpenAI" && normalizeMaclawLLMAuthTypeKind(defaults[i].AuthType).IsOAuth() {
-			defaultOpenAI = &defaults[i]
-			break
-		}
-	}
-	for i, p := range data.Providers {
-		if p.Name == "OpenAI" && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
-			data.Providers[i] = oauth.ApplyTokenResult(p, result)
-			// Sync URL, Model, WireAPI to latest defaults so stale config doesn't linger
-			if defaultOpenAI != nil {
-				data.Providers[i].URL = defaultOpenAI.URL
-				data.Providers[i].Model = defaultOpenAI.Model
-				data.Providers[i].WireAPI = defaultOpenAI.WireAPI
+	if err := claimResult(func() error {
+		// Update the OpenAI provider with the obtained tokens and sync config.
+		data := a.GetMaclawLLMProviders()
+		defaults := defaultMaclawLLMProviders()
+		var defaultOpenAI *corelib.MaclawLLMProvider
+		for i := range defaults {
+			if defaults[i].Name == "OpenAI" && normalizeMaclawLLMAuthTypeKind(defaults[i].AuthType).IsOAuth() {
+				defaultOpenAI = &defaults[i]
+				break
 			}
-			if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
-				return "", fmt.Errorf("保存 OAuth 配置失败: %w", err)
-			}
-			// Also save to independent credential store (Pi-aligned)
-			a.saveOAuthResultToStore("OpenAI", result)
-			return "OpenAI OAuth 登录成功", nil
 		}
+		for i, p := range data.Providers {
+			if p.Name == "OpenAI" && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+				data.Providers[i] = oauth.ApplyTokenResult(p, result)
+				// Sync URL, Model, WireAPI to latest defaults so stale config doesn't linger.
+				if defaultOpenAI != nil {
+					data.Providers[i].URL = defaultOpenAI.URL
+					data.Providers[i].Model = defaultOpenAI.Model
+					data.Providers[i].WireAPI = defaultOpenAI.WireAPI
+				}
+				if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
+					return fmt.Errorf("保存 OAuth 配置失败: %w", err)
+				}
+				// Also save to independent credential store (Pi-aligned).
+				a.saveOAuthResultToStore("OpenAI", result)
+				return nil
+			}
+		}
+		return fmt.Errorf("未找到 OpenAI provider")
+	}); err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("未找到 OpenAI provider")
+	return "OpenAI OAuth 登录成功", nil
 }
 
 // StartXAIOAuth starts Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
 // flow. It updates only the managed xAI-Grok provider on success.
 func (a *App) StartXAIOAuth() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-	a.oauthMu.Lock()
-	a.oauthCancel = cancel
-	a.oauthMu.Unlock()
-	defer func() {
-		cancel()
-		a.oauthMu.Lock()
-		a.oauthCancel = nil
-		a.oauthMu.Unlock()
-	}()
+	ctx, finish, claimResult := a.beginOAuthFlow(300 * time.Second)
+	defer finish()
 
 	result, err := oauth.RunXAIOAuthFlowCtx(ctx)
 	if err != nil {
 		return "", fmt.Errorf("xAI OAuth 登录失败: %w", err)
 	}
-
-	data := a.GetMaclawLLMProviders()
-	for i, p := range data.Providers {
-		if p.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
-			continue
+	if err := claimResult(func() error {
+		data := a.GetMaclawLLMProviders()
+		defaults := defaultMaclawLLMProviders()
+		var defaultXAI *corelib.MaclawLLMProvider
+		for i := range defaults {
+			if defaults[i].Name == "xAI-Grok" {
+				defaultXAI = &defaults[i]
+				break
+			}
 		}
-		data.Providers[i] = oauth.ApplyTokenResult(p, result)
-		if err := a.SaveMaclawLLMProviders(data.Providers, "xAI-Grok"); err != nil {
-			return "", fmt.Errorf("保存 xAI OAuth 配置失败: %w", err)
+		for i, p := range data.Providers {
+			if p.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+				continue
+			}
+			data.Providers[i] = oauth.ApplyTokenResult(p, result)
+			if defaultXAI != nil {
+				// OAuth login always returns this managed provider to the current
+				// Grok Build defaults, avoiding stale API-key-era request settings.
+				data.Providers[i].URL = defaultXAI.URL
+				data.Providers[i].Model = defaultXAI.Model
+				data.Providers[i].Protocol = defaultXAI.Protocol
+				data.Providers[i].AuthType = defaultXAI.AuthType
+				data.Providers[i].WireAPI = defaultXAI.WireAPI
+				data.Providers[i].ContextLength = defaultXAI.ContextLength
+			}
+			if err := a.SaveMaclawLLMProviders(data.Providers, "xAI-Grok"); err != nil {
+				return fmt.Errorf("保存 xAI OAuth 配置失败: %w", err)
+			}
+			a.saveOAuthResultToStore("xAI-Grok", result)
+			return nil
 		}
-		a.saveOAuthResultToStore("xAI-Grok", result)
-		return "xAI-Grok OAuth 登录成功", nil
+		return fmt.Errorf("未找到 xAI-Grok provider")
+	}); err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("未找到 xAI-Grok provider")
+	return "xAI-Grok OAuth 登录成功", nil
 }
 
 // CancelOpenAIOAuth cancels an in-progress OAuth flow, unblocking StartOpenAIOAuth.
 func (a *App) CancelOpenAIOAuth() {
-	a.oauthMu.Lock()
-	defer a.oauthMu.Unlock()
-	if a.oauthCancel != nil {
-		a.oauthCancel()
-	}
+	a.cancelOAuthFlow()
+}
+
+// CancelXAIOAuth cancels the in-progress xAI OAuth flow. OAuth flows share a
+// single active callback listener, but exposing a provider-specific method
+// keeps the GUI action and generated Wails API unambiguous.
+func (a *App) CancelXAIOAuth() {
+	a.CancelOpenAIOAuth()
 }
 
 // ImportCodexAuth imports credentials from Codex CLI's ~/.codex/auth.json.
@@ -888,29 +992,32 @@ func (a *App) ensureOAuthToken() error {
 // After a successful text test, it also probes vision support synchronously.
 func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestResult, error) {
 	log.Printf("[LLM] TestMaclawLLM: agent_type=%q user_agent=%q", llm.AgentType, llm.UserAgent())
-	if err := a.ensureOAuthToken(); err != nil {
-		return corelib.MaclawLLMTestResult{}, fmt.Errorf("OAuth token refresh failed: %w", err)
-	}
-
 	url := strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	if url == "" {
 		return corelib.MaclawLLMTestResult{}, fmt.Errorf("LLM URL is not configured")
 	}
 	key := strings.TrimSpace(llm.Key)
+	if normalizeMaclawLLMAuthTypeKind(llm.AuthType).IsOAuth() && key == "" {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("OAuth token is missing; please complete OAuth login")
+	}
 	model := strings.TrimSpace(llm.Model)
 	if model == "" {
 		return corelib.MaclawLLMTestResult{}, fmt.Errorf("model name is not configured")
 	}
 
 	protocol := strings.TrimSpace(llm.Protocol)
+	llm.URL = url
+	llm.Key = key
+	llm.Model = model
+	llm.Protocol = protocol
 	var textResult string
 	var err error
 	if llm.IsResponsesAPI() {
-		textResult, err = a.testResponsesAPILLM(url, key, model, llm.UserAgent(), llm.ProviderName)
+		textResult, err = a.testResponsesAPILLM(llm)
 	} else if protocol == "anthropic" {
-		textResult, err = a.testAnthropicLLM(url, key, model, llm.UserAgent())
+		textResult, err = a.testAnthropicLLM(llm)
 	} else {
-		textResult, err = a.testOpenAILLM(url, key, model, llm.UserAgent())
+		textResult, err = a.testOpenAILLM(llm)
 	}
 	if err != nil {
 		return corelib.MaclawLLMTestResult{}, err
@@ -919,9 +1026,9 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
 	vision := false
 	if llm.IsResponsesAPI() {
-		vision = probeVisionResponsesAPI(llm)
+		vision = probeVisionResponsesAPIWithConfig(llm)
 	} else {
-		vision = probeVisionSupport(url, key, model, protocol, llm.UserAgent())
+		vision = probeVisionSupport(llm)
 	}
 	log.Printf("[LLM] vision probe for %s: supports_vision=%v", model, vision)
 
@@ -932,8 +1039,7 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 }
 
 // testOpenAILLM tests an OpenAI-compatible endpoint.
-func (a *App) testOpenAILLM(url, key, model, userAgent string) (string, error) {
-	cfg := corelib.MaclawLLMConfig{URL: url, Key: key, Model: model, AgentType: userAgent}
+func (a *App) testOpenAILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
 	client := &http.Client{Timeout: 30 * time.Second}
 
@@ -956,8 +1062,8 @@ func (a *App) testOpenAILLM(url, key, model, userAgent string) (string, error) {
 }
 
 // testAnthropicLLM tests an Anthropic Messages API endpoint.
-func (a *App) testAnthropicLLM(url, key, model, userAgent string) (string, error) {
-	cfg := corelib.MaclawLLMConfig{URL: url, Key: key, Model: model, Protocol: "anthropic", AgentType: userAgent}
+func (a *App) testAnthropicLLM(cfg corelib.MaclawLLMConfig) (string, error) {
+	cfg.Protocol = "anthropic"
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
 	client := &http.Client{Timeout: 30 * time.Second}
 
@@ -979,8 +1085,11 @@ func (a *App) testAnthropicLLM(url, key, model, userAgent string) (string, error
 }
 
 // testResponsesAPILLM tests an OpenAI Responses API endpoint.
-func (a *App) testResponsesAPILLM(url, key, model, userAgent, providerName string) (string, error) {
-	cfg := corelib.MaclawLLMConfig{URL: url, Key: key, Model: model, AgentType: userAgent, WireAPI: "responses", ProviderName: providerName}
+func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
+	cfg.URL = strings.TrimRight(strings.TrimSpace(cfg.URL), "/")
+	cfg.Key = strings.TrimSpace(cfg.Key)
+	cfg.Model = strings.TrimSpace(cfg.Model)
+	cfg.WireAPI = "responses"
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
 	client := &http.Client{Timeout: 30 * time.Second}
 
@@ -1002,7 +1111,7 @@ func (a *App) testResponsesAPILLM(url, key, model, userAgent, providerName strin
 	if err != nil {
 		return "", err
 	}
-	log.Printf("[LLM] TestResponsesAPI POST %s model=%s", endpoint, model)
+	log.Printf("[LLM] TestResponsesAPI POST %s model=%s", endpoint, cfg.Model)
 
 	resp, err := client.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
@@ -1013,7 +1122,7 @@ func (a *App) testResponsesAPILLM(url, key, model, userAgent, providerName strin
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		msg := classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, model, cfg.ProviderName)
+		msg := classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName)
 		err := fmt.Errorf("%s", msg)
 		globalLLMScheduler.ObserveResult(trace, err)
 		return "", err
@@ -1030,29 +1139,42 @@ func (a *App) testResponsesAPILLM(url, key, model, userAgent, providerName strin
 	return stripFunctionCalls(stripThinkTags(parsed.Choices[0].Message.Content)), nil
 }
 
-// probeVisionSupport sends a tiny 4x4 red PNG as an image_url message to the
-// LLM and returns true if the model responds successfully (i.e. supports vision).
+// probeVisionSupport sends the red probe PNG with the configured provider
+// identity and authentication mode intact, and returns true if the model
+// responds successfully (i.e. supports vision).
 // This is a best-effort probe — network errors or timeouts return false.
-func probeVisionSupport(baseURL, key, model, protocol, userAgent string) bool {
-	if protocol == "anthropic" {
-		return probeVisionAnthropic(baseURL, key, model, visionProbeRedPNG, userAgent)
+func probeVisionSupport(probeCfg corelib.MaclawLLMConfig) bool {
+	if probeCfg.Protocol == "anthropic" {
+		return probeVisionAnthropic(probeCfg, visionProbeRedPNG)
 	}
-	return probeVisionOpenAI(baseURL, key, model, visionProbeRedPNG, userAgent)
+	return probeVisionOpenAI(probeCfg, visionProbeRedPNG)
 }
 
-// visionProbeRedPNG is a 4x4 solid red (#FF0000) PNG used by all vision probes.
-// We use 4x4 instead of 1x1 because some models (e.g. Xiaomi MiMo-V2.5)
-// misidentify a single-pixel image's colour while correctly recognising a
-// slightly larger one.
-const visionProbeRedPNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFUlEQVR4nGL5z4AATAxEcQABAAD//zRtAQqfxpGAAAAAAElFTkSuQmCC"
+// visionProbeRedPNG is a 64x64 solid red (#FF0000) PNG used by all vision probes.
+// A tiny image can be rejected or described vaguely by otherwise vision-capable
+// models. In particular, this used to cause false negatives for Grok models.
+const visionProbeRedPNG = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAY0lEQVR42u3QMREAAAgAoe9fWnN4MlCApuazBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAgPsBC0OI4dLW/6NFAAAAAElFTkSuQmCC"
 
-func probeVisionOpenAI(baseURL, key, model, imgB64, userAgent string) bool {
-	cfg := corelib.MaclawLLMConfig{URL: baseURL, Key: key, Model: model, AgentType: userAgent}
+const visionProbeRedPNGSHA256 = "4531ed25a470b38525b3a3ffd65c0fbeda0ab4c1527ac79783b197382a44315b"
+
+func validVisionProbeImage(imgB64 string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(imgB64)
+	if err != nil {
+		return false
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(decoded)) == visionProbeRedPNGSHA256
+}
+
+func visionProbePrompt() string {
+	return "What color is this image? Reply with one color word. If you cannot see the image, say exactly: no image"
+}
+
+func probeVisionOpenAI(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
 	messages := []interface{}{
 		map[string]interface{}{
 			"role": "user",
 			"content": []interface{}{
-				map[string]interface{}{"type": "text", "text": "What color is this image? Reply in one word."},
+				map[string]interface{}{"type": "text", "text": visionProbePrompt()},
 				map[string]interface{}{
 					"type": "image_url",
 					"image_url": map[string]interface{}{
@@ -1083,10 +1205,9 @@ func probeVisionOpenAI(baseURL, key, model, imgB64, userAgent string) bool {
 // "saw" the test image.  The probe sends a solid-red image and asks for the colour.
 //
 // Two-layer detection:
-//  1. Positive signal: the reply mentions ANY colour name → the model perceived
-//     the image and attempted to describe it.  Some models misidentify the exact
-//     colour of a tiny image (e.g. "yellow" instead of "red"), but the fact that
-//     they name a colour at all proves vision capability.
+//  1. Positive signal: the reply identifies a colour or a red colour value → the
+//     model perceived the image and attempted to describe it. Some models use a
+//     hex/RGB value or a shade name instead of the word "red".
 //  2. Negative signal: the reply says "no image" / "can't see" / "没有图片" etc.
 //     → the model did NOT receive or process the image data.
 //
@@ -1107,11 +1228,12 @@ func looksLikeVisionResponse(content string) bool {
 		}
 	}
 
-	// Positive signals: model names a colour → it perceived the image.
+	// Positive signals: model names the red probe colour or a close red shade.
+	// Restrict this to red-family answers: accepting arbitrary colour words can
+	// turn a hallucinated answer (for example "blue") into a false positive.
 	colours := []string{
-		"red", "blue", "green", "yellow", "orange", "pink", "purple",
-		"white", "black", "gray", "grey", "brown", "cyan", "magenta",
-		"红", "蓝", "绿", "黄", "橙", "粉", "紫", "白", "黑", "灰", "棕",
+		"red", "scarlet", "crimson", "vermilion", "maroon", "ruby", "burgundy",
+		"红", "赤", "朱",
 	}
 	for _, c := range colours {
 		if strings.Contains(lower, c) {
@@ -1119,16 +1241,27 @@ func looksLikeVisionResponse(content string) bool {
 		}
 	}
 
+	// Some vision models (notably Grok) answer in a technical form such as
+	// "#FF0000" or "RGB(255, 0, 0)" rather than spelling out the colour name.
+	// These are strong positive signals for this known pure-red probe image.
+	for _, value := range []string{
+		"#ff0000", "ff0000", "rgb(255,0,0)", "rgb(255, 0, 0)", "rgb(255, 0, 0,", "255,0,0", "255, 0, 0",
+	} {
+		if strings.Contains(lower, value) {
+			return true
+		}
+	}
+
 	return false
 }
 
-func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
-	cfg := corelib.MaclawLLMConfig{URL: baseURL, Key: key, Model: model, Protocol: "anthropic", AgentType: userAgent}
+func probeVisionAnthropic(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
+	cfg.Protocol = "anthropic"
 	messages := []interface{}{
 		map[string]interface{}{
 			"role": "user",
 			"content": []interface{}{
-				map[string]interface{}{"type": "text", "text": "What color is this image? Reply in one word."},
+				map[string]interface{}{"type": "text", "text": visionProbePrompt()},
 				map[string]interface{}{
 					"type": "image",
 					"source": map[string]interface{}{
@@ -1157,10 +1290,15 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 	return ok
 }
 
-// probeVisionResponsesAPI sends a tiny 4x4 PNG via the Responses API format
+// probeVisionResponsesAPI sends the red probe PNG via the Responses API format
 // and returns true if the model responds with a vision-aware answer.
-func probeVisionResponsesAPI(probeCfg corelib.MaclawLLMConfig) bool {
-	baseURL, key, model, userAgent := probeCfg.URL, probeCfg.Key, probeCfg.Model, probeCfg.UserAgent()
+func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
+	return probeVisionResponsesAPIWithConfig(corelib.MaclawLLMConfig{
+		URL: baseURL, Key: key, Model: model, AgentType: userAgent, WireAPI: "responses",
+	})
+}
+
+func probeVisionResponsesAPIWithConfig(probeCfg corelib.MaclawLLMConfig) bool {
 	client := &http.Client{Timeout: 35 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1175,44 +1313,20 @@ func probeVisionResponsesAPI(probeCfg corelib.MaclawLLMConfig) bool {
 	lease.SetCancel(scheduledCancel)
 	defer scheduledCancel()
 
-	endpoint := strings.TrimRight(baseURL, "/")
-	endpoint = llm.BuildResponsesEndpoint(endpoint)
-	reqBody := map[string]interface{}{
-		"model": model,
-		"store": false,
-		"input": []interface{}{
-			map[string]interface{}{
-				"type": "message",
-				"role": "user",
-				"content": []interface{}{
-					map[string]interface{}{"type": "input_text", "text": "What color is this image? Reply in one word."},
-					map[string]interface{}{"type": "input_image", "image_url": "data:image/png;base64," + visionProbeRedPNG},
-				},
-			},
+	messages := []interface{}{map[string]interface{}{
+		"role": "user",
+		"content": []interface{}{
+			map[string]interface{}{"type": "text", "text": visionProbePrompt()},
+			map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64," + visionProbeRedPNG}},
 		},
-		"stream": false,
-	}
-	if probeCfg.NeedsConservativeOpenAICompatSanitization() {
-		delete(reqBody, "store")
-	}
-	data, _ := json.Marshal(reqBody)
-	req, err := http.NewRequestWithContext(scheduledCtx, http.MethodPost, endpoint, bytes.NewReader(data))
+	}}
+	req, data, _, err := llm.NewResponsesAPIRequest(scheduledCtx, probeCfg, messages, llm.ResponsesAPIRequestOptions{
+		Stream:    false,
+		ExtraBody: map[string]interface{}{"store": false},
+	})
 	if err != nil {
+		log.Printf("[LLM] vision probe ResponsesAPI request error: %v", err)
 		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("originator", "codex_cli_rs")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	llm.ApplyProviderAuthHeaders(req, probeCfg)
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, userAgent)
-	if llm.IsCodexSubscriptionEndpoint(baseURL) {
-		req.Header.Set("OpenAI-Beta", "responses=experimental")
-		if accountID, _ := oauth.ExtractAccountIDFromJWT(key); accountID != "" {
-			req.Header.Set("chatgpt-account-id", accountID)
-		}
 	}
 
 	resp, err := client.Do(req)
@@ -1391,16 +1505,21 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	}
 
 	probeBaseURL := normalizeOpenAIProbeBaseURL(baseURL, ua)
+	probeCfg := llmCfg
+	probeCfg.URL = probeBaseURL
+	probeCfg.Key = key
+	probeCfg.Model = model
+	probeCfg.Protocol = protocol
 	var err2 error
 	for _, endpoint := range openAIModelsEndpointCandidates(probeBaseURL, protocol) {
-		online, probeErr := maclawLLMProbe(endpoint, key, ua)
+		online, probeErr := maclawLLMProbe(endpoint, probeCfg)
 		if probeErr == nil {
 			return MaclawLLMStatus{Online: online, Configured: true}
 		}
 		err2 = probeErr
 	}
 
-	online, err2 := maclawLLMProbe(llm.BuildOpenAIChatCompletionsEndpoint(probeBaseURL), key, ua)
+	online, err2 := maclawLLMProbe(llm.BuildOpenAIChatCompletionsEndpoint(probeBaseURL), probeCfg)
 	if err2 == nil {
 		return MaclawLLMStatus{Online: online, Configured: true}
 	}
@@ -1561,16 +1680,17 @@ func dedupeStrings(values []string) []string {
 // server responds with any 2xx/4xx status (proving it is reachable and the
 // credentials are accepted or at least the server is alive).  Only network
 // errors and 5xx are treated as "offline".
-func maclawLLMProbe(endpoint, key, userAgent string) (bool, error) {
+func maclawLLMProbe(endpoint string, cfg corelib.MaclawLLMConfig) (bool, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("User-Agent", userAgent)
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("User-Agent", cfg.UserAgent())
+	if cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
-	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, userAgent)
+	llm.ApplyProviderAuthHeaders(req, cfg)
+	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	resp, err := maclawLLMPingClient.Do(req)
 	if err != nil {
@@ -2725,6 +2845,11 @@ func preserveManagedAuthSecrets(incoming, existing []corelib.MaclawLLMProvider) 
 		if !ok {
 			continue
 		}
+		// xAI-Grok is OAuth-only. Do not revive an API key from the legacy
+		// configuration when its provider entry has been migrated to OAuth.
+		if p.Name == "xAI-Grok" && !normalizeMaclawLLMAuthTypeKind(old.AuthType).IsOAuth() {
+			continue
+		}
 		if strings.TrimSpace(p.Key) == "" && strings.TrimSpace(old.Key) != "" {
 			incoming[i].Key = old.Key
 		}
@@ -3241,11 +3366,30 @@ func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protoc
 	} else {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	if a.isXAIOAuthModelFetch(endpoint, apiKey) {
+		req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
+	}
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, ua)
 	if strings.EqualFold(ua, corelib.CodeGenClientName) {
 		req.Header.Set(corelib.CodeGenClientNameHeader, corelib.CodeGenClientName)
 	}
 	return client.Do(req)
+}
+
+func (a *App) isXAIOAuthModelFetch(endpoint, apiKey string) bool {
+	if a == nil || apiKey == "" {
+		return false
+	}
+	for _, provider := range a.GetMaclawLLMProviders().Providers {
+		if provider.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(provider.AuthType).IsOAuth() ||
+			!urlsMatchForModelFetch(provider.URL, endpoint) {
+			continue
+		}
+		if resolved := a.resolveProviderKeyFromStore(provider); resolved == apiKey || provider.Key == apiKey {
+			return true
+		}
+	}
+	return false
 }
 
 // truncateCodeGenStr 截断字符串到 maxLen，超出时追加 "..."。
