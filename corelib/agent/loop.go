@@ -219,6 +219,11 @@ type LoopResult struct {
 	// (user turn + assistant/tool messages), excluding the system prompt and
 	// any prior history. Hosts can append this to durable session history.
 	HistoryDelta []ConversationEntry
+	// Reasoning is the concatenation of provider-supplied, display-safe
+	// reasoning summaries across all LLM rounds in this loop. It is separate
+	// from HistoryDelta because a tool-using turn can have several assistant
+	// rounds and only the final round used to reach the host response.
+	Reasoning string
 }
 
 // RunLoop executes the core agent loop: LLM call → tool execution → repeat.
@@ -265,6 +270,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	// Store the same multimodal payload the model saw (string or content blocks).
 	historyDelta := make([]ConversationEntry, 0, 8)
 	historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: userContent})
+	var displayReasoning strings.Builder
 	finish := func(r LoopResult) LoopResult {
 		if r.Usage.Requests == 0 && usage.Requests > 0 {
 			r.Usage = usage
@@ -285,6 +291,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 		if len(r.HistoryDelta) == 0 && len(historyDelta) > 0 {
 			r.HistoryDelta = append([]ConversationEntry(nil), historyDelta...)
+		}
+		if r.Reasoning == "" && displayReasoning.Len() > 0 {
+			r.Reasoning = displayReasoning.String()
 		}
 		return r
 	}
@@ -527,7 +536,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// Retry with exponential backoff for transient errors (503, timeout, network).
 			// SubAgent tasks should be resilient to brief API outages.
 			const maxLLMRetries = 3
-			for retryAttempt := 1; retryAttempt <= maxLLMRetries && shouldRetrySimpleLLMError(err); retryAttempt++ {
+			// A partial streamed response has already been rendered. Retrying it
+			// would duplicate that visible output in the same assistant message.
+			canRetry := resp == nil
+			for retryAttempt := 1; retryAttempt <= maxLLMRetries && canRetry && shouldRetrySimpleLLMError(err); retryAttempt++ {
 				backoff := time.Duration(retryAttempt*2) * time.Second
 				log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", retryAttempt, maxLLMRetries, backoff, err)
 				// A live steer can arrive while the loop is backing off from a
@@ -623,6 +635,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 		choice := resp.Choices[0]
 		reasoningContent := StripRolePrefixHallucination(choice.Message.ReasoningContent)
+		appendLoopDisplayReasoning(&displayReasoning, reasoningContent)
 		content := choice.Message.Content
 		if content == "" && reasoningContent != "" {
 			content = reasoningContent
@@ -1491,9 +1504,36 @@ func truncateRunesPrefix(s string, n int) string {
 	return string(runes[:n]) + "..."
 }
 
+// appendLoopDisplayReasoning preserves every provider-supplied, display-safe
+// reasoning summary from a multi-round tool loop while suppressing the common
+// final-summary repetition. It intentionally does not infer or manufacture
+// reasoning content.
+func appendLoopDisplayReasoning(buf *strings.Builder, reasoning string) {
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning == "" {
+		return
+	}
+	existing := buf.String()
+	if existing == "" {
+		buf.WriteString(reasoning)
+		return
+	}
+	if strings.Contains(existing, reasoning) {
+		return
+	}
+	if strings.HasPrefix(reasoning, existing) {
+		buf.Reset()
+		buf.WriteString(reasoning)
+		return
+	}
+	buf.WriteString("\n\n")
+	buf.WriteString(reasoning)
+}
+
 // doLLMRequestWithToolsStream sends a streaming LLM request, calling onToken
 // for each text delta. Falls back to non-streaming if the streaming request fails.
 func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, httpClient *http.Client, onToken llm.TokenCallback) (*llm.Response, error) {
+	rawOnToken := onToken
 	var rolePrefixFilter *rolePrefixStreamFilter
 	if onToken != nil {
 		rolePrefixFilter = newRolePrefixStreamFilter(onToken)
@@ -1506,17 +1546,37 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 	}
 
 	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
-		resp, err := doResponsesRequestWithTools(ctx, cfg, conversation, tools, httpClient)
-		if err == nil && resp != nil && len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) == 0 {
-			text := resp.Choices[0].Message.Content
-			if text == "" {
-				text = resp.Choices[0].Message.ReasoningContent
-			}
-			if text != "" && onToken != nil {
-				onToken(text)
+		// Responses reasoning summaries need to arrive while the turn is busy so
+		// the UI can keep its thinking panel open. The sentinel distinguishes
+		// display-safe reasoning from ordinary assistant text in the shared host
+		// callback protocol.
+		onReasoning := func(delta string) {
+			if rawOnToken != nil && delta != "" {
+				rawOnToken("\x01" + delta)
 			}
 		}
+		resp, err := llm.DoResponsesAPIRequestStream(ctx, cfg, conversation, tools, httpClient, onToken, onReasoning)
 		flushRolePrefixFilter(err)
+		if err != nil {
+			if ctx.Err() != nil {
+				return resp, err
+			}
+			// Once any delta reached the host, retrying the same request as a
+			// non-stream response would append a second copy to the visible turn
+			// and can repeat a provider-side tool decision. Return the terminal
+			// error instead; the caller's normal retry policy can start a clean
+			// round when appropriate.
+			if resp != nil {
+				// Deliver the small role-prefix buffer before returning a partial
+				// stream error; otherwise a short first token would remain hidden.
+				if rolePrefixFilter != nil {
+					rolePrefixFilter.Flush()
+				}
+				return resp, err
+			}
+			log.Printf("[agent-loop] Responses streaming failed, falling back to non-stream: %v", err)
+			return doResponsesRequestWithTools(ctx, cfg, conversation, tools, httpClient)
+		}
 		return resp, err
 	}
 

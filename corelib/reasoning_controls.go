@@ -45,7 +45,16 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 	if api != ReasoningAPIAnthropic && usesOpenAIStyleReasoning(cfg) {
 		effort := reasoningEffortForMode(mode, cfg.ReasoningEffort)
 		if api == ReasoningAPIResponses {
-			body["reasoning"] = map[string]interface{}{"effort": effort}
+			// Responses streams expose the user-displayable reasoning through
+			// response.reasoning_summary_text.delta only when a summary is
+			// requested. The internal chain of thought is never requested. Do
+			// not ask for a summary in disabled mode: minimal is the lowest
+			// supported effort, but it is not equivalent to showing thinking.
+			reasoning := map[string]interface{}{"effort": effort}
+			if mode == "enabled" {
+				reasoning["summary"] = "auto"
+			}
+			body["reasoning"] = reasoning
 		} else {
 			body["reasoning_effort"] = effort
 		}

@@ -1320,8 +1320,10 @@ export function renderMessage(
                         )}
                         {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, openFileInFolder, t)}
                         {/* Reasoning/thinking content from reasoning models —
-                            expanded while streaming (agent still working), collapsed once streaming ends (final result ready).
-                            key changes when open-state flips so React remounts and the browser respects the new open value. */}
+                            expanded while this turn is still in progress, then collapsed once the final result is ready.
+                            Some Responses providers return a final summary without text-streaming, so use the turn's busy
+                            state rather than the narrower stream state. The key forces the native details element to adopt
+                            the automatic close at completion while keeping user-controlled toggles within each phase. */}
                         {msg.reasoning && (() => {
                             const shouldOpen = isLastAssistant && isStreaming;
                             const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";

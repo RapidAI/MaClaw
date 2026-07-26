@@ -253,7 +253,7 @@ func TestBuildResponsesWSFrameHonorsGlobalThinkingMode(t *testing.T) {
 			name:      "OpenAI enabled",
 			cfg:       corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-5", ThinkingMode: "enabled", ReasoningEffort: "high"},
 			wantKey:   "reasoning",
-			wantValue: map[string]interface{}{"effort": "high"},
+			wantValue: map[string]interface{}{"effort": "high", "summary": "auto"},
 			absentKeys: []string{
 				"thinking", "reasoning_effort", "enable_thinking",
 			},
@@ -279,6 +279,137 @@ func TestBuildResponsesWSFrameHonorsGlobalThinkingMode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResponsesWSStreamForwardsReasoningSummaryToThinkingChannel(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.reasoning_summary_text.delta","delta":"Check inputs. "}`,
+			`{"type":"response.reasoning_summary_text.delta","delta":"Then answer."}`,
+			`{"type":"response.output_text.delta","delta":"Done."}`,
+			`{"type":"response.completed","response":{"status":"completed"}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	var streamed strings.Builder
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesWSLLMRequestStream returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "Check inputs. Then answer."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+	if got := resp.Choices[0].Message.Content; got != "Done." {
+		t.Fatalf("content = %q, want Done.", got)
+	}
+	if got := streamed.String(); !strings.Contains(got, "\x01Check inputs. Then answer.") {
+		t.Fatalf("reasoning summary was not sent to thinking channel: %q", got)
+	}
+}
+
+func TestResponsesWSStreamUsesFinalReasoningItemWhenDeltasAreAbsent(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"Use the final summary."}]}}`,
+			`{"type":"response.output_text.delta","delta":"Done."}`,
+			`{"type":"response.completed","response":{"status":"completed"}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	var streamed strings.Builder
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesWSLLMRequestStream returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "Use the final summary."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+	if got := streamed.String(); !strings.Contains(got, "\x01Use the final summary.") {
+		t.Fatalf("final reasoning summary was not sent to thinking channel: %q", got)
+	}
+}
+
+func TestResponsesWSStreamUsesCompletedResponseReasoningSummaryFallback(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		frame := `{"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"Completed summary."}]}]}}`
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+			t.Fatalf("write frame: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	var streamed strings.Builder
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesWSLLMRequestStream returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "Completed summary."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+	if got := streamed.String(); !strings.Contains(got, "\x01Completed summary.") {
+		t.Fatalf("completed response summary was not streamed: %q", got)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -303,7 +304,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	defer func() {
 		if r := recover(); r != nil {
 			result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
-			log.Printf("[agent-loop] shared panic owner=%q request_id=%q loop=%q panic=%v", userID, requestID, loopID, r)
+			log.Printf("[agent-loop] shared panic owner=%q request_id=%q loop=%q panic=%v\n%s", userID, requestID, loopID, r, debug.Stack())
 		}
 		status, _ := classifyIMAgentResponseOutcome(result)
 		if result != nil {
@@ -488,6 +489,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 
 	resp := &IMAgentResponse{
 		Text:           loopResult.Text,
+		Reasoning:      sharedLoopDisplayReasoning(loopResult),
 		Error:          loopResult.Error,
 		HardExit:       loopResult.HardExit,
 		RequestID:      requestID,
@@ -560,6 +562,26 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	}
 	_ = loopID
 	return resp
+}
+
+// sharedLoopDisplayReasoning returns all provider-supplied display-safe
+// summaries from a shared loop. Multi-step tool work has multiple assistant
+// rounds, so using only the final HistoryDelta entry made the visible record
+// look incomplete.
+func sharedLoopDisplayReasoning(result agent.LoopResult) string {
+	if reasoning := strings.TrimSpace(result.Reasoning); reasoning != "" {
+		return reasoning
+	}
+	for i := len(result.HistoryDelta) - 1; i >= 0; i-- {
+		entry := result.HistoryDelta[i]
+		if entry.Role != "assistant" {
+			continue
+		}
+		if reasoning := strings.TrimSpace(entry.ReasoningContent); reasoning != "" {
+			return reasoning
+		}
+	}
+	return ""
 }
 
 // sharedAgentLoopCallbacks adapts IMMessageHandler to agent.LoopCallbacks.

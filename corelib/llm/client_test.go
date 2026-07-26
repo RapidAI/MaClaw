@@ -4984,11 +4984,15 @@ func TestBuildResponsesAPIRequestData_ThinkingModeOverride(t *testing.T) {
 		t.Fatalf("ark disabled thinking = %#v, want type=disabled", req["thinking"])
 	}
 
-	// OpenAI's own Responses API takes reasoning.effort instead.
+	// OpenAI/xAI Responses takes reasoning.effort. Enabled mode also requests
+	// the provider-authorized display summary that the GUI renders as thinking.
 	oai := corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-5", WireAPI: "responses", ThinkingMode: "enabled"}
 	req = build(oai)
 	if reasoning, _ := req["reasoning"].(map[string]interface{}); reasoning["effort"] != "medium" {
 		t.Fatalf("openai enabled reasoning = %#v, want effort=medium", req["reasoning"])
+	}
+	if reasoning, _ := req["reasoning"].(map[string]interface{}); reasoning["summary"] != "auto" {
+		t.Fatalf("openai enabled reasoning = %#v, want summary=auto", req["reasoning"])
 	}
 	oai.ReasoningEffort = "high"
 	req = build(oai)
@@ -5000,6 +5004,9 @@ func TestBuildResponsesAPIRequestData_ThinkingModeOverride(t *testing.T) {
 	req = build(oai)
 	if reasoning, _ := req["reasoning"].(map[string]interface{}); reasoning["effort"] != "minimal" {
 		t.Fatalf("openai disabled reasoning = %#v, want effort=minimal", req["reasoning"])
+	}
+	if reasoning, _ := req["reasoning"].(map[string]interface{}); reasoning["summary"] != nil {
+		t.Fatalf("openai disabled reasoning must not request a summary: %#v", req["reasoning"])
 	}
 
 	// Auto (empty) leaves provider defaults untouched.

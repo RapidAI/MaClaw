@@ -228,12 +228,14 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			onToken("\x01" + delta)
 		}
 	}
+	reasoningRoleFilterWS := newRolePrefixStreamFilter(thinkReasoningCbWS)
 	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbWS)
 
 	// -------------------------------------------------------------------
 	// 7. Accumulators
 	// -------------------------------------------------------------------
 	var contentBuf strings.Builder
+	var reasoningBuf strings.Builder
 	itemAccums := make(map[int]*responsesItemAccum)
 	var finishReason string
 	var usage *llm.Usage
@@ -307,13 +309,13 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 				if ce, ok := err.(*websocket.CloseError); ok {
 					closeCode = ce.Code
 				}
-				if contentBuf.Len() > 0 || len(itemAccums) > 0 {
+				if contentBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(itemAccums) > 0 {
 					break // return partial content
 				}
 				return nil, fmt.Errorf("WebSocket unexpected close (code=%d): %w", closeCode, err)
 			}
 			// Generic read error
-			if contentBuf.Len() > 0 || len(itemAccums) > 0 {
+			if contentBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(itemAccums) > 0 {
 				break // return partial content
 			}
 			if wsTimedOut.Load() {
@@ -377,6 +379,18 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 				}
 			}
 
+		case responsesEventReasoningSummaryTextDelta, responsesEventReasoningTextDelta, responsesEventReasoningContentDelta, responsesEventReasoningDelta:
+			var rd struct {
+				Delta string `json:"delta"`
+			}
+			if json.Unmarshal(msgData, &rd) != nil {
+				continue
+			}
+			if rd.Delta != "" {
+				reasoningBuf.WriteString(rd.Delta)
+				reasoningRoleFilterWS.Write(rd.Delta)
+			}
+
 		case responsesEventFunctionCallArgumentsDelta:
 			var ad struct {
 				Delta       string `json:"delta"`
@@ -416,11 +430,26 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			}
 
 		case responsesEventOutputItemDone:
-			// No-op: items finalized when building the response below.
+			// Some compatible Responses endpoints send a final reasoning item
+			// but no reasoning delta events. Use its display-safe summary as a
+			// fallback, without duplicating a streamed summary.
+			var done struct {
+				Item responsesAPIReasoningOutputItem `json:"item"`
+			}
+			if json.Unmarshal(msgData, &done) == nil {
+				if emitted := appendResponsesReasoningSummary(&reasoningBuf, done.Item.DisplaySummary()); emitted != "" {
+					reasoningRoleFilterWS.Write(emitted)
+				}
+			}
 
 		case responsesEventCompleted:
 			if eventUsage := llm.ExtractResponsesAPIUsageFromEventPayload(msgData); eventUsage != nil {
 				usage = eventUsage
+			}
+			for _, summary := range responsesCompletedReasoningSummaries(msgData) {
+				if emitted := appendResponsesReasoningSummary(&reasoningBuf, summary); emitted != "" {
+					reasoningRoleFilterWS.Write(emitted)
+				}
 			}
 			goto postLoop
 
@@ -469,7 +498,7 @@ postLoop:
 	// -------------------------------------------------------------------
 	// Post-loop: idle timeout with no content
 	// -------------------------------------------------------------------
-	if wsTimedOut.Load() && contentBuf.Len() == 0 && len(itemAccums) == 0 {
+	if wsTimedOut.Load() && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(itemAccums) == 0 {
 		if metrics != nil {
 			metrics.IdleTimeoutCount++
 		}
@@ -480,6 +509,7 @@ postLoop:
 	// Flush filters and build final response
 	// -------------------------------------------------------------------
 	tf.Flush()
+	reasoningRoleFilterWS.Flush()
 	fcf.Flush()
 	tcf.Flush()
 	repfWS.Flush()
@@ -496,8 +526,9 @@ postLoop:
 		content = stripXMLToolCalls(filtered)
 	}
 	msg := llm.Message{
-		Role:    "assistant",
-		Content: content,
+		Role:             "assistant",
+		Content:          content,
+		ReasoningContent: stripRolePrefixReasoningForDisplay(reasoningBuf.String()),
 	}
 
 	// Build tool calls from function_call accumulators (ordered by index).

@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -187,12 +188,14 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			onToken("\x01" + delta)
 		}
 	}
+	reasoningRoleFilterResp := newRolePrefixStreamFilter(thinkReasoningCbResp)
 	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbResp)
 
 	// -----------------------------------------------------------------------
 	// Accumulators
 	// -----------------------------------------------------------------------
 	var contentBuf strings.Builder
+	var reasoningBuf strings.Builder
 	itemAccums := make(map[int]*responsesItemAccum)
 	var finishReason string
 	var usage *llm.Usage
@@ -201,16 +204,17 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	// SSE idle timeout watchdog (same pattern as OpenAI/Anthropic paths)
 	// -----------------------------------------------------------------------
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Split(scanResponsesSSEEvent)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
 
 	idleTimer := time.NewTimer(guiSSEIdleTimeout)
 	defer idleTimer.Stop()
-	sseTimedOut := false
+	var sseTimedOut atomic.Bool
 	watchdogDone := make(chan struct{})
 	go func() {
 		select {
 		case <-idleTimer.C:
-			sseTimedOut = true
+			sseTimedOut.Store(true)
 			if metrics != nil {
 				metrics.IdleTimeoutAfterToken = !metrics.FirstTokenAt.IsZero()
 			}
@@ -223,35 +227,25 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	defer close(watchdogDone)
 
 	// -----------------------------------------------------------------------
-	// SSE event loop — Responses API uses named events (event: + data: pairs)
+	// SSE event loop — Responses API uses named events (event: + data: pairs).
+	// Scan complete SSE events rather than individual lines: data may legally
+	// span several lines, and some compatible gateways omit event: and put the
+	// type in the JSON payload instead.
 	// -----------------------------------------------------------------------
-	var currentEventType string
 	firstSSEWaitStartedAt := time.Now()
 
 	for scanner.Scan() {
 		idleTimer.Reset(guiSSEIdleTimeout)
-		line := scanner.Text()
-
-		// Track event type from "event:" lines.
-		if strings.HasPrefix(line, "event:") {
-			currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			continue
-		}
-
-		// Process "data:" lines.
-		if !strings.HasPrefix(line, "data:") {
+		evtType, payload, ok := parseResponsesSSEEvent(scanner.Text())
+		if !ok {
 			continue
 		}
 		if metrics != nil && metrics.FirstSSEWaitNanos == 0 {
 			metrics.FirstSSEWaitNanos = time.Since(firstSSEWaitStartedAt).Nanoseconds()
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
 			break
 		}
-
-		evtType := currentEventType
-		currentEventType = "" // reset after consuming
 
 		switch normalizeResponsesEventType(evtType) {
 		case responsesEventOutputItemAdded:
@@ -293,6 +287,18 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 				}
 			}
 
+		case responsesEventReasoningSummaryTextDelta, responsesEventReasoningTextDelta, responsesEventReasoningContentDelta, responsesEventReasoningDelta:
+			var rd struct {
+				Delta string `json:"delta"`
+			}
+			if json.Unmarshal([]byte(payload), &rd) != nil {
+				continue
+			}
+			if rd.Delta != "" {
+				reasoningBuf.WriteString(rd.Delta)
+				reasoningRoleFilterResp.Write(rd.Delta)
+			}
+
 		case responsesEventFunctionCallArgumentsDelta:
 			var ad struct {
 				Delta       string `json:"delta"`
@@ -332,12 +338,26 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			}
 
 		case responsesEventOutputItemDone:
-			// No additional action needed; items are finalized when building
-			// the response below. The accumulator already has all data.
+			// Some compatible Responses endpoints send a final reasoning item
+			// but no reasoning delta events. Use its display-safe summary as a
+			// fallback, without duplicating a streamed summary.
+			var done struct {
+				Item responsesAPIReasoningOutputItem `json:"item"`
+			}
+			if json.Unmarshal([]byte(payload), &done) == nil {
+				if emitted := appendResponsesReasoningSummary(&reasoningBuf, done.Item.DisplaySummary()); emitted != "" {
+					reasoningRoleFilterResp.Write(emitted)
+				}
+			}
 
 		case responsesEventCompleted:
 			if eventUsage := llm.ExtractResponsesAPIUsageFromEventPayload([]byte(payload)); eventUsage != nil {
 				usage = eventUsage
+			}
+			for _, summary := range responsesCompletedReasoningSummaries([]byte(payload)) {
+				if emitted := appendResponsesReasoningSummary(&reasoningBuf, summary); emitted != "" {
+					reasoningRoleFilterResp.Write(emitted)
+				}
 			}
 			log.Printf("[LLM Stream Responses] response.completed received; closing SSE stream without waiting for trailing DONE")
 			goto postLoop
@@ -373,11 +393,11 @@ postLoop:
 	// Post-loop error checks
 	// -----------------------------------------------------------------------
 	if err := scanner.Err(); err != nil {
-		if len(itemAccums) == 0 && contentBuf.Len() == 0 {
+		if len(itemAccums) == 0 && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 {
 			return nil, fmt.Errorf("SSE stream read error: %w", err)
 		}
 	}
-	if sseTimedOut && contentBuf.Len() == 0 && len(itemAccums) == 0 {
+	if sseTimedOut.Load() && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(itemAccums) == 0 {
 		if metrics != nil {
 			metrics.IdleTimeoutCount++
 		}
@@ -388,6 +408,7 @@ postLoop:
 	// Flush filters and build final response
 	// -----------------------------------------------------------------------
 	tf.Flush()
+	reasoningRoleFilterResp.Flush()
 	fcf.Flush()
 	tcf.Flush()
 	repfResp.Flush()
@@ -404,8 +425,9 @@ postLoop:
 		content = stripXMLToolCalls(filtered)
 	}
 	msg := llm.Message{
-		Role:    "assistant",
-		Content: content,
+		Role:             "assistant",
+		Content:          content,
+		ReasoningContent: stripRolePrefixReasoningForDisplay(reasoningBuf.String()),
 	}
 
 	// Build tool calls from function_call accumulators (ordered by index).

@@ -69,6 +69,9 @@ func TestApplyReasoningControlsUsesProviderNativeShape(t *testing.T) {
 					if actual := got.(map[string]interface{})["effort"]; actual != want {
 						t.Fatalf("reasoning.effort = %#v, want %q", actual, want)
 					}
+					if actual := got.(map[string]interface{})["summary"]; actual != "auto" {
+						t.Fatalf("reasoning.summary = %#v, want auto", actual)
+					}
 				} else if got != want {
 					t.Fatalf("%s = %#v, want %q", tt.wantKey, got, want)
 				}
@@ -179,5 +182,21 @@ func TestApplyReasoningControlsDoesNotClassifyGatewayPathAsOfficialEndpoint(t *t
 	}
 	if _, exists := body["reasoning_effort"]; exists {
 		t.Fatalf("gateway path must not be classified as official OpenAI/xAI endpoint: %#v", body)
+	}
+}
+
+func TestApplyReasoningControlsResponsesDoesNotRequestSummaryWhenDisabled(t *testing.T) {
+	body := map[string]interface{}{}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.x.ai/v1", Model: "grok-4.5", ThinkingMode: "disabled"},
+		body,
+		ReasoningAPIResponses,
+	)
+	reasoning, _ := body["reasoning"].(map[string]interface{})
+	if reasoning["effort"] != "minimal" {
+		t.Fatalf("reasoning.effort = %#v, want minimal", reasoning["effort"])
+	}
+	if _, exists := reasoning["summary"]; exists {
+		t.Fatalf("disabled Responses request must not ask for a summary: %#v", body)
 	}
 }

@@ -258,6 +258,29 @@ func TestSharedAgentLoopCallbacks_TransformConversationInjectsLiveSteer(t *testi
 	}
 }
 
+func TestSharedLoopDisplayReasoningUsesAllAssistantSummaries(t *testing.T) {
+	delta := []agent.ConversationEntry{
+		{Role: "user", Content: "weather"},
+		{Role: "assistant", Content: "checking", ReasoningContent: "First summary."},
+		{Role: "tool", Content: "weather result"},
+		{Role: "assistant", Content: "answer", ReasoningContent: "Final display-safe summary."},
+	}
+	result := agent.LoopResult{HistoryDelta: delta, Reasoning: "First summary.\n\nFinal display-safe summary."}
+	if got, want := sharedLoopDisplayReasoning(result), "First summary.\n\nFinal display-safe summary."; got != want {
+		t.Fatalf("sharedLoopDisplayReasoning() = %q, want %q", got, want)
+	}
+}
+
+func TestSharedLoopDisplayReasoningSkipsEmptyAssistantTurns(t *testing.T) {
+	delta := []agent.ConversationEntry{
+		{Role: "assistant", Content: "first", ReasoningContent: "usable summary"},
+		{Role: "assistant", Content: "final", ReasoningContent: "  "},
+	}
+	if got, want := sharedLoopDisplayReasoning(agent.LoopResult{HistoryDelta: delta}), "usable summary"; got != want {
+		t.Fatalf("sharedLoopDisplayReasoning() = %q, want %q", got, want)
+	}
+}
+
 func TestSharedAgentLoopCallbacks_DetectsReplanRevision(t *testing.T) {
 	ctx := NewLoopContext("shared-replan", 3, nil)
 	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, userID: "desktop-user:shared-replan", loopCtx: ctx}

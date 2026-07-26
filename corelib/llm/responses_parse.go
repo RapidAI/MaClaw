@@ -25,6 +25,41 @@ type responsesAPIOutputItem struct {
 	CallID    string                    `json:"call_id,omitempty"`
 	Name      string                    `json:"name,omitempty"`
 	Arguments string                    `json:"arguments,omitempty"`
+	// Summary is the user-displayable reasoning summary returned by Responses
+	// reasoning items. It is intentionally distinct from private chain of thought.
+	Summary []responsesAPIContentPart `json:"summary,omitempty"`
+}
+
+type responsesAPIReasoningOutputItem struct {
+	Type    string                    `json:"type"`
+	Summary []responsesAPIContentPart `json:"summary,omitempty"`
+	Content []responsesAPIContentPart `json:"content,omitempty"`
+}
+
+// DisplaySummary returns the display-safe summary included by a Responses API
+// provider. It never attempts to derive or request private chain-of-thought.
+func (item responsesAPIReasoningOutputItem) DisplaySummary() string {
+	switch strings.ToLower(strings.TrimSpace(item.Type)) {
+	case "reasoning", "analysis", "reasoning_summary":
+	default:
+		return ""
+	}
+	parts := item.Summary
+	if len(parts) == 0 {
+		parts = item.Content
+	}
+	var out strings.Builder
+	for _, part := range parts {
+		switch part.Type {
+		case "summary_text", "reasoning_text", "reasoning_content", "text", "output_text":
+			text := part.Text
+			if text == "" {
+				text = part.Content
+			}
+			out.WriteString(text)
+		}
+	}
+	return out.String()
 }
 
 type responsesAPIContentPart struct {
@@ -98,6 +133,15 @@ func ParseNonStreamResponsesAPIBody(body []byte) (*Response, error) {
 					Arguments: item.Arguments,
 				},
 			})
+		case "reasoning", "analysis", "reasoning_summary":
+			reasoningItem := responsesAPIReasoningOutputItem{
+				Type:    item.Type,
+				Summary: item.Summary,
+				Content: item.Content,
+			}
+			if summary := reasoningItem.DisplaySummary(); summary != "" {
+				msg.ReasoningContent += summary
+			}
 		}
 	}
 
