@@ -2665,6 +2665,46 @@ func TestDoOpenAIRequestStream_SDKPreservesToolCallsAndReasoning(t *testing.T) {
 	}
 }
 
+func TestDoOpenAIRequestStreamWithReasoningStreamsReasoningDeltas(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"choices":[{"delta":{"reasoning_content":"Inspect "}}]}`,
+			`data: {"choices":[{"delta":{"reasoning_content":"the request."}}]}`,
+			`data: {"choices":[{"delta":{"content":"Final answer."},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+			"",
+		}, "\n")))
+	}))
+	defer srv.Close()
+
+	var textDeltas, reasoningDeltas []string
+	resp, err := DoOpenAIRequestStreamWithReasoning(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "deepseek-v4-flash", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		func(delta string) { textDeltas = append(textDeltas, delta) },
+		func(delta string) { reasoningDeltas = append(reasoningDeltas, delta) },
+	)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequestStreamWithReasoning returned error: %v", err)
+	}
+	if got, want := strings.Join(reasoningDeltas, ""), "Inspect the request."; got != want {
+		t.Fatalf("reasoning deltas = %q, want %q", got, want)
+	}
+	if got, want := len(reasoningDeltas), 2; got != want {
+		t.Fatalf("reasoning delta count = %d, want %d", got, want)
+	}
+	if got, want := strings.Join(textDeltas, ""), "Final answer."; got != want {
+		t.Fatalf("text deltas = %q, want %q", got, want)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "Inspect the request."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+}
+
 func TestDoOpenAIRequestStream_SDKDetectsTruncatedToolCall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

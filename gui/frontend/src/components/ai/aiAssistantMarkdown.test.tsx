@@ -1304,6 +1304,26 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByText(/Browser:/)).toBeNull();
     });
 
+    it("expands reasoning while streaming and collapses it after completion", () => {
+        const message = {
+            id: "assistant-streaming-reasoning",
+            role: "assistant" as const,
+            content: "Final answer.",
+            reasoning: "Inspecting the request.",
+            timestamp: Date.now(),
+        };
+        const { rerender, unmount } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+
+        const openDetails = screen.getByText("Thinking process...").closest("details");
+        expect(openDetails?.open).toBe(true);
+        expect(screen.getByText("Inspecting the request.")).toBeTruthy();
+
+        rerender(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
+        const closedDetails = screen.getByText("Thinking process...").closest("details");
+        expect(closedDetails?.open).toBe(false);
+        unmount();
+    });
+
     it("does not render an empty reasoning panel after stripping a Browser-only reasoning echo", () => {
         render(<div>{renderMessage({
             id: "assistant-browser-only-reasoning",

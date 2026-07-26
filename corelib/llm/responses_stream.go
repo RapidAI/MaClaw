@@ -137,7 +137,7 @@ func DoResponsesAPIRequestStream(
 				}
 				item.args.WriteString(args)
 			}
-			items[added.OutputIndex] = item
+			items[added.OutputIndex] = mergeResponsesStreamToolItem(items[added.OutputIndex], item)
 
 		case "response.output_text.delta":
 			var delta struct {
@@ -206,8 +206,7 @@ func DoResponsesAPIRequestStream(
 				if len(done.Arguments) > MaxToolArgumentsBytes {
 					return nil, responsesStreamToolArgumentsTooLarge(item.name, len(done.Arguments))
 				}
-				item.args.Reset()
-				item.args.WriteString(done.Arguments)
+				mergeResponsesStreamToolArguments(item, done.Arguments)
 			}
 
 		case "response.output_item.done":
@@ -226,13 +225,14 @@ func DoResponsesAPIRequestStream(
 						item = &responsesStreamItem{}
 						items[done.OutputIndex] = item
 					}
-					item.itemType, item.callID, item.name = done.Item.Type, done.Item.CallID, done.Item.Name
+					item.itemType = firstResponsesStreamText(item.itemType, done.Item.Type)
+					item.callID = firstResponsesStreamText(item.callID, done.Item.CallID)
+					item.name = firstResponsesStreamText(item.name, done.Item.Name)
 					if done.Item.Arguments != "" {
 						if len(done.Item.Arguments) > MaxToolArgumentsBytes {
 							return nil, responsesStreamToolArgumentsTooLarge(item.name, len(done.Item.Arguments))
 						}
-						item.args.Reset()
-						item.args.WriteString(done.Item.Arguments)
+						mergeResponsesStreamToolArguments(item, done.Item.Arguments)
 					}
 				}
 			}
@@ -393,26 +393,26 @@ func mergeResponsesStreamToolItem(existing, completed *responsesStreamItem) *res
 	if completed == nil {
 		return existing
 	}
-	if existing.itemType == "" {
-		existing.itemType = completed.itemType
-	}
-	if existing.callID == "" {
-		existing.callID = completed.callID
-	}
-	if existing.name == "" {
-		existing.name = completed.name
-	}
-	completedArgs := completed.args.String()
-	if completedArgs == "" {
-		return existing
-	}
-	existingArgs := existing.args.String()
-	switch {
-	case existingArgs == "", strings.HasPrefix(completedArgs, existingArgs):
-		existing.args.Reset()
-		existing.args.WriteString(completedArgs)
-	}
+	existing.itemType = firstResponsesStreamText(existing.itemType, completed.itemType)
+	existing.callID = firstResponsesStreamText(existing.callID, completed.callID)
+	existing.name = firstResponsesStreamText(existing.name, completed.name)
+	mergeResponsesStreamToolArguments(existing, completed.args.String())
 	return existing
+}
+
+// mergeResponsesStreamToolArguments accepts a final provider snapshot only
+// when it extends the accumulated deltas. Compatible endpoints sometimes send
+// a stale or truncated value in *.done / response.completed.
+func mergeResponsesStreamToolArguments(item *responsesStreamItem, candidate string) {
+	if item == nil || candidate == "" {
+		return
+	}
+	current := item.args.String()
+	if current != "" && !strings.HasPrefix(candidate, current) {
+		return
+	}
+	item.args.Reset()
+	item.args.WriteString(candidate)
 }
 
 func responsesCompletedStreamOutput(payload string) []responsesAPIOutputItem {

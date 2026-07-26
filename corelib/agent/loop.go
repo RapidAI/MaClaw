@@ -1539,8 +1539,8 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 		rolePrefixFilter = newRolePrefixStreamFilter(onToken)
 		onToken = rolePrefixFilter.Write
 	}
-	flushRolePrefixFilter := func(err error) {
-		if err == nil && rolePrefixFilter != nil {
+	flushRolePrefixFilter := func() {
+		if rolePrefixFilter != nil {
 			rolePrefixFilter.Flush()
 		}
 	}
@@ -1556,7 +1556,7 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 			}
 		}
 		resp, err := llm.DoResponsesAPIRequestStream(ctx, cfg, conversation, tools, httpClient, onToken, onReasoning)
-		flushRolePrefixFilter(err)
+		flushRolePrefixFilter()
 		if err != nil {
 			if ctx.Err() != nil {
 				return resp, err
@@ -1582,7 +1582,7 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 
 	if cfg.Protocol == "anthropic" {
 		resp, err := llm.DoAnthropicRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
-		flushRolePrefixFilter(err)
+		flushRolePrefixFilter()
 		if err != nil {
 			// A live-steer replan deliberately cancels this operation. Do not
 			// immediately issue a fallback request with the same cancelled context;
@@ -1596,10 +1596,21 @@ func doLLMRequestWithToolsStream(ctx context.Context, cfg corelib.MaclawLLMConfi
 		}
 		return resp, nil
 	}
-	resp, err := llm.DoOpenAIRequestStream(ctx, cfg, conversation, tools, httpClient, onToken)
-	flushRolePrefixFilter(err)
+	// Chat Completions providers (including DeepSeek) expose reasoning via
+	// delta.reasoning_content. Forward it immediately with the same sentinel
+	// used by Responses so hosts can show the thinking panel while busy.
+	onReasoning := func(delta string) {
+		if rawOnToken != nil && delta != "" {
+			rawOnToken("\x01" + delta)
+		}
+	}
+	resp, err := llm.DoOpenAIRequestStreamWithReasoning(ctx, cfg, conversation, tools, httpClient, onToken, onReasoning)
+	flushRolePrefixFilter()
 	if err != nil {
 		if ctx.Err() != nil {
+			return resp, err
+		}
+		if resp != nil {
 			return resp, err
 		}
 		log.Printf("[agent-loop] streaming failed, falling back to non-stream: %v", err)

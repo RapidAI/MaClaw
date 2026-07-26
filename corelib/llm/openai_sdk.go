@@ -116,12 +116,12 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 		}
 		return nil, status, raw, fmt.Errorf("parse openai stream response: expected SSE event stream or JSON body (body_len=%d)", len(raw))
 	}
-	result, err := parseSSEStream(resp.Body, onToken)
+	result, err := parseSSEStreamWithReasoning(resp.Body, onToken, onReasoning)
 	if err != nil {
-		return nil, status, nil, err
-	}
-	if onReasoning != nil && result != nil && len(result.Choices) > 0 && result.Choices[0].Message.ReasoningContent != "" {
-		onReasoning(result.Choices[0].Message.ReasoningContent)
+		// parseSSEStreamWithReasoning retains a safe partial response when the
+		// transport breaks after SSE deltas. Propagate it so callers do not
+		// retry and duplicate visible output or tool calls.
+		return result, status, nil, err
 	}
 	return result, status, nil, nil
 }

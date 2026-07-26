@@ -141,6 +141,12 @@ func DoOpenAIRequestStreamWithReasoning(
 		}
 	}
 	if err != nil {
+		// Streaming can fail after an SSE prefix has already reached the host.
+		// Return that assembled prefix unchanged so callers can avoid a retry
+		// that would duplicate visible reasoning, text, or tool calls.
+		if result != nil {
+			return result, fmt.Errorf("[%s] %w", endpoint, err)
+		}
 		if statusCode == 0 {
 			log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(startedAt).Round(time.Millisecond), err, traceFields)
 			return nil, fmt.Errorf("[%s] %w", endpoint, err)
@@ -252,7 +258,19 @@ func DoAnthropicRequestStream(
 
 // parseSSEStream reads an OpenAI-compatible SSE stream, calling onToken for
 // each text delta, and returns the fully assembled Response.
+//
+// New streaming callers that also need provider reasoning deltas should use
+// parseSSEStreamWithReasoning.  Keep this wrapper for existing internal tests
+// and callers that intentionally only render answer text.
 func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
+	return parseSSEStreamWithReasoning(body, onToken, nil)
+}
+
+// parseSSEStreamWithReasoning reads an OpenAI-compatible SSE stream and
+// forwards text and reasoning_content deltas as they arrive.  Reasoning must
+// not wait for the final [DONE] event: hosts use the live callback to keep the
+// thinking panel expanded while a model such as DeepSeek is still working.
+func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReasoning TokenCallback) (*Response, error) {
 	var contentBuf, reasoningBuf strings.Builder
 	var finishReason string
 	var usage *Usage
@@ -301,6 +319,9 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 		}
 		if delta.ReasoningContent != "" {
 			reasoningBuf.WriteString(delta.ReasoningContent)
+			if onReasoning != nil {
+				onReasoning(delta.ReasoningContent)
+			}
 		}
 
 		if chunk.Choices[0].FinishReason != "" {
@@ -355,8 +376,9 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 			break
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("SSE stream read: %w", err)
+	streamErr := scanner.Err()
+	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 && !legacyFunctionCallSeen {
+		return nil, fmt.Errorf("SSE stream read: %w", streamErr)
 	}
 	contentFilter.Flush()
 
@@ -412,10 +434,16 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
-	return &Response{
+	response := &Response{
 		Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   usage,
-	}, nil
+	}
+	if streamErr != nil {
+		// Preserve a partial response after any visible delta. Retrying it in
+		// the caller would duplicate rendered text/reasoning or tool calls.
+		return response, fmt.Errorf("SSE stream read: %w", streamErr)
+	}
+	return response, nil
 }
 
 // parseAnthropicSSEStream reads an Anthropic SSE stream, calling onToken for
