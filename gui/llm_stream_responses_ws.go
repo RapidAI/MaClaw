@@ -118,6 +118,11 @@ func buildResponsesWSFrame(
 			frame["max_output_tokens"] = limit
 		}
 	}
+	// The WebSocket Responses transport has its own request builder, so it must
+	// apply the same provider-native reasoning mapping as the HTTP Responses
+	// path. Without this, an explicit global setting was silently ignored for
+	// DeepSeek and other compatible providers using responses-ws.
+	corelib.ApplyReasoningControls(cfg, frame, corelib.ReasoningAPIResponses)
 	return json.Marshal(frame)
 }
 

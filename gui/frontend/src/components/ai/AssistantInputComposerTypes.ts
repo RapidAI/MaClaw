@@ -57,6 +57,8 @@ export interface AssistantInputComposerProps {
     lang: string;
     pendingAttachments: AttachmentInfo[];
     permissionMode?: AssistantPermissionMode;
+    /** Hide the generic coding-agent permission selector for constrained chat surfaces. */
+    showPermissionMode?: boolean;
     showWorkspacePermissionOption?: boolean;
     onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
     pendingAttachmentsTestId?: string;

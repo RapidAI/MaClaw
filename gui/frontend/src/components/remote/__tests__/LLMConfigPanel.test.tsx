@@ -145,6 +145,33 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
     });
 
+    it('preserves confirmed vision support when the probe is inconclusive', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'Custom1', url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test', protocol: 'openai', is_custom: true, supports_vision: true },
+            ],
+            current: 'Custom1',
+        });
+        TestMaclawLLMMock.mockResolvedValue({
+            message: 'hello',
+            supports_vision: false,
+            vision_probe_status: 'inconclusive',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.change(await screen.findByPlaceholderText('sk-...'), { target: { value: 'updated-secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1', supports_vision: true })],
+                'Custom1',
+            );
+        });
+        expect(await screen.findByText(/Vision support: not confirmed/)).toBeTruthy();
+    });
+
     it('persists the global thinking mode via the thinking card', async () => {
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
@@ -217,6 +244,36 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
 
         expect(await screen.findByRole('button', { name: '\u706b\u5c71\u5f15\u64ce Agent Plan' })).toBeTruthy();
+    });
+
+    it('rolls back the reasoning selection and reports an error when saving fails', async () => {
+        SetMaclawLLMThinkingModeMock.mockRejectedValueOnce(new Error('offline'));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const onButton = await screen.findByTestId('thinking-mode-enabled');
+        fireEvent.click(onButton);
+
+        await waitFor(() => {
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('enabled');
+            expect(screen.getByRole('alert').textContent).toContain("Couldn't save the reasoning setting");
+        });
+        expect(screen.getByTestId('thinking-mode-auto').getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('prevents duplicate reasoning saves before React applies the disabled state', async () => {
+        let resolveSave: (() => void) | undefined;
+        SetMaclawLLMThinkingModeMock.mockImplementationOnce(() => new Promise<void>(resolve => { resolveSave = resolve; }));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        const onButton = await screen.findByTestId('thinking-mode-enabled');
+        fireEvent.click(onButton);
+        fireEvent.click(onButton);
+        expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledTimes(1);
+
+        act(() => { resolveSave?.(); });
+        await waitFor(() => expect((onButton as HTMLButtonElement).disabled).toBe(false));
     });
 
     it('disables model fetch for Volcengine Agent Plan (preset model, enter manually)', async () => {

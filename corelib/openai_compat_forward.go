@@ -263,7 +263,8 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	normalizeOpenAICompatForwardToolChoice(body)
 	isDeepSeekFlash := IsDeepSeekFlashOpenAICompat(cfg)
 	isGLMCodingPlan := IsGLMCodingPlanOpenAICompat(cfg)
-	if IsDeepSeekThinkingModeModel(cfg) {
+	ApplyReasoningControls(cfg, body, ReasoningAPIChat)
+	if IsAutoThinkingMode(cfg.ThinkingMode) && IsDeepSeekThinkingModeModel(cfg) {
 		// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
 		// returns reasoning_content. Required for deepseek-v4-flash and similar.
 		if _, hasThinking := body["thinking"]; !hasThinking {
@@ -1216,6 +1217,10 @@ func joinOpenAICompatForwardTextBlocks(blocks []interface{}) string {
 }
 
 func forwardAnthropicCompatRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client, responseModel string) ([]byte, int, error) {
+	if body == nil {
+		body = make(map[string]interface{})
+	}
+	ApplyReasoningControls(cfg, body, ReasoningAPIAnthropic)
 	anthropicReq := openaiToAnthropic(body, cfg.UpstreamModel())
 	respBody, statusCode, err := forwardAnthropicMessageWithSDK(ctx, cfg, anthropicReq, client)
 	if err != nil {
@@ -1615,6 +1620,7 @@ func forwardResponsesCompat(ctx context.Context, cfg MaclawLLMConfig, body map[s
 	}
 	sanitizeOpenAICompatForwardBodyForResponses(cfg, fwd)
 	responsesReq := openaiToResponses(fwd, cfg.UpstreamModel())
+	ApplyReasoningControls(cfg, responsesReq, ReasoningAPIResponses)
 	jsonBody, err := json.Marshal(responsesReq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal responses request: %w", err)

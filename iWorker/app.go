@@ -240,20 +240,24 @@ type maclawConfigFile struct {
 	MaclawLLMProtocol        string              `json:"maclaw_llm_protocol"`
 	MaclawLLMContextLength   int                 `json:"maclaw_llm_context_length"`
 	MaclawLLMTimeoutSec      int                 `json:"maclaw_llm_timeout_sec"`
+	MaclawLLMThinkingMode    string              `json:"maclaw_llm_thinking_mode"`
 	MaclawLLMProviders       []maclawLLMProvider `json:"maclaw_llm_providers"`
 	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider"`
 }
 
 type maclawLLMProvider struct {
-	Name           string `json:"name"`
-	URL            string `json:"url"`
-	Key            string `json:"key"`
-	Model          string `json:"model"`
-	Protocol       string `json:"protocol,omitempty"`
-	ContextLength  int    `json:"context_length,omitempty"`
-	TimeoutSec     int    `json:"timeout_sec,omitempty"`
-	SupportsVision bool   `json:"supports_vision"`
-	AgentType      string `json:"agent_type,omitempty"`
+	Name            string `json:"name"`
+	URL             string `json:"url"`
+	Key             string `json:"key"`
+	Model           string `json:"model"`
+	Protocol        string `json:"protocol,omitempty"`
+	ContextLength   int    `json:"context_length,omitempty"`
+	TimeoutSec      int    `json:"timeout_sec,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	SupportsVision  bool   `json:"supports_vision"`
+	AgentType       string `json:"agent_type,omitempty"`
+	WireAPI         string `json:"wire_api,omitempty"`
+	AuthType        string `json:"auth_type,omitempty"`
 }
 
 func NewApp() *App {
@@ -1996,6 +2000,7 @@ func loadMaclawLLMConfig() (corelib.MaclawLLMConfig, error) {
 		Protocol:       strings.TrimSpace(cfgFile.MaclawLLMProtocol),
 		ContextLength:  cfgFile.MaclawLLMContextLength,
 		TimeoutSec:     cfgFile.MaclawLLMTimeoutSec,
+		ThinkingMode:   cfgFile.MaclawLLMThinkingMode,
 		SupportsVision: false,
 	}
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
@@ -2014,14 +2019,19 @@ func currentProviderConfig(cfgFile maclawConfigFile) (corelib.MaclawLLMConfig, b
 			continue
 		}
 		cfg := corelib.MaclawLLMConfig{
-			URL:            strings.TrimRight(strings.TrimSpace(provider.URL), "/"),
-			Key:            strings.TrimSpace(provider.Key),
-			Model:          strings.TrimSpace(provider.Model),
-			Protocol:       strings.TrimSpace(provider.Protocol),
-			ContextLength:  provider.ContextLength,
-			TimeoutSec:     provider.TimeoutSec,
-			SupportsVision: provider.SupportsVision,
-			AgentType:      provider.AgentType,
+			URL:             strings.TrimRight(strings.TrimSpace(provider.URL), "/"),
+			Key:             strings.TrimSpace(provider.Key),
+			Model:           strings.TrimSpace(provider.Model),
+			Protocol:        strings.TrimSpace(provider.Protocol),
+			ContextLength:   provider.ContextLength,
+			TimeoutSec:      provider.TimeoutSec,
+			MaxOutputTokens: provider.MaxOutputTokens,
+			SupportsVision:  provider.SupportsVision,
+			AgentType:       provider.AgentType,
+			WireAPI:         strings.TrimSpace(provider.WireAPI),
+			AuthType:        strings.TrimSpace(provider.AuthType),
+			ProviderName:    strings.TrimSpace(provider.Name),
+			ThinkingMode:    cfgFile.MaclawLLMThinkingMode,
 		}
 		if cfg.URL == "" || cfg.Model == "" {
 			return corelib.MaclawLLMConfig{}, false

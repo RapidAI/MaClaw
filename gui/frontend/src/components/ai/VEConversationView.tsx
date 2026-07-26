@@ -1857,6 +1857,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 setPendingAttachments={setPendingAttachments}
                 showBusySpinner={sending || awaitingReplyVisible || state.streaming}
                 showMemoryUsage={false}
+                showPermissionMode={false}
                 showResizeHandle={true}
                 showVoiceInput={false}
                 startInputResize={startInputResize}

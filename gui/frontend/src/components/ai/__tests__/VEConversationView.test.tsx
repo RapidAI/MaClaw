@@ -129,6 +129,12 @@ describe("VEConversationView", () => {
         vi.useRealTimers();
     });
 
+    it("does not show the generic coding-agent permission selector", () => {
+        renderConversation();
+
+        expect(screen.queryByTestId("ai-permission-mode")).toBeNull();
+    });
+
     it("uses a friendly direct VE name when the tab title is a raw id", () => {
         renderConversation({
             existingSessionId: "test-session-1",

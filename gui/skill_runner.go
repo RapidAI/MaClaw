@@ -662,12 +662,14 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		if corelib.NeedsOpenAIProxyAuto(target.RequiredEnv, extraEnv, probeSteps, target.SkillDir) {
 			llmCfg := r.executor.app.GetMaclawLLMConfig()
 			proxyCfg := corelib.OpenAIProxyConfig{
-				URL:      llmCfg.URL,
-				Key:      llmCfg.Key,
-				Model:    llmCfg.Model,
-				Protocol: llmCfg.Protocol,
-				WireAPI:  llmCfg.WireAPI,
-				AuthType: llmCfg.AuthType,
+				URL:             llmCfg.URL,
+				Key:             llmCfg.Key,
+				Model:           llmCfg.Model,
+				Protocol:        llmCfg.Protocol,
+				WireAPI:         llmCfg.WireAPI,
+				AuthType:        llmCfg.AuthType,
+				ThinkingMode:    llmCfg.ThinkingMode,
+				ReasoningEffort: llmCfg.ReasoningEffort,
 			}
 			if err := corelib.ValidateOpenAIProxyUpstreamConfig(proxyCfg); err != nil {
 				return "", fmt.Errorf("skill %q requires OpenAI-compatible API access, but %s [action: configure_llm]",
@@ -2661,7 +2663,6 @@ func skillRunBlockedDownloadHint(skill *corelib.NLSkillEntry) string {
 	return ""
 }
 
-
 func shouldRetainSkillRunWorkspaceStatus(status SkillRunStatus, workspace string) bool {
 	workspace = strings.TrimSpace(workspace)
 	if workspace == "" {
@@ -2931,12 +2932,14 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			llmCfg := r.executor.app.GetMaclawLLMConfig()
 			providerName := maclawLLMUsageProviderName(r.executor.app, llmCfg)
 			proxyCfg = corelib.OpenAIProxyConfig{
-				URL:      llmCfg.URL,
-				Key:      llmCfg.Key,
-				Model:    llmCfg.Model,
-				Protocol: llmCfg.Protocol,
-				WireAPI:  llmCfg.WireAPI,
-				AuthType: llmCfg.AuthType,
+				URL:             llmCfg.URL,
+				Key:             llmCfg.Key,
+				Model:           llmCfg.Model,
+				Protocol:        llmCfg.Protocol,
+				WireAPI:         llmCfg.WireAPI,
+				AuthType:        llmCfg.AuthType,
+				ThinkingMode:    llmCfg.ThinkingMode,
+				ReasoningEffort: llmCfg.ReasoningEffort,
 				UsageCallback: func(usage corelib.OpenAIProxyUsage) {
 					if providerName == "" {
 						return

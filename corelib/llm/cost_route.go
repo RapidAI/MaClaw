@@ -118,7 +118,7 @@ func costTierRank(t CostTier) int {
 
 // CostRouteDecision is the cost-tier observation (and optional apply result).
 type CostRouteDecision struct {
-	Tier CostTier     `json:"tier"`
+	Tier CostTier      `json:"tier"`
 	Mode CostRouteMode `json:"mode"`
 	// Thinking is the recommended extended-thinking posture (Phase 3).
 	Thinking ThinkingPolicy `json:"thinking,omitempty"`
@@ -177,6 +177,11 @@ func RecommendThinkingPolicy(tier CostTier) ThinkingPolicy {
 // ApplyThinkingPolicy mutates cfg for provider request controls.
 // Safe no-op fields when empty policy.
 func ApplyThinkingPolicy(cfg corelib.MaclawLLMConfig, policy ThinkingPolicy) corelib.MaclawLLMConfig {
+	// The global setting is an explicit user choice. Cost routing is an
+	// optimization heuristic and must never silently override it.
+	if !corelib.IsAutoThinkingMode(cfg.ThinkingMode) {
+		return cfg
+	}
 	switch policy {
 	case ThinkingOff:
 		cfg.ThinkingMode = "disabled"
@@ -239,12 +244,7 @@ func pickCostTier(
 		}
 	}
 	if allowAux && aux.IsConfigured() {
-		return corelib.MaclawLLMConfig{
-			URL:      aux.URL,
-			Key:      aux.Key,
-			Model:    aux.Model,
-			Protocol: aux.Protocol,
-		}, "aux", "aux"
+		return applyAuxiliaryLLM(primary, aux), "aux", "aux"
 	}
 	return primary, "primary", "primary"
 }

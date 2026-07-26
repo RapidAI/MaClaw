@@ -3,6 +3,7 @@ import './UtilitiesPage.css';
 import { EventsOn, BrowserOpenURL } from '../../../wailsjs/runtime';
 import { EVENT_SURVEY_UPDATED } from '../../constants/events';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
+import { useDialog } from '../CustomDialog';
 import {
     buildGroupBreakdown,
     buildPublishChecklist,
@@ -287,6 +288,7 @@ export const UtilitiesPage = ({
     onOpenVirtualRepositoryTask?: (launch: { project_path: CodingTaskLaunch['projectPath']; task_title: CodingTaskLaunch['taskTitle']; agent_mode: NonNullable<CodingTaskLaunch['agentMode']>; remote_host?: CodingTaskLaunch['remoteHost'] }) => void;
 }) => {
     const isZh = !lang || lang.startsWith('zh');
+    const { showConfirm } = useDialog();
     const [view, setView] = useState<View>('home');
     const [meetingStarting, setMeetingStarting] = useState(false);
     const [vscodeStarting, setVscodeStarting] = useState(false);
@@ -590,7 +592,7 @@ export const UtilitiesPage = ({
             setError(isZh ? '请勾选草稿或已关闭的问卷' : 'Select draft or closed surveys');
             return;
         }
-        if (!window.confirm(isZh ? `确认归档 ${ids.length} 个问卷？` : `Archive ${ids.length} survey(s)?`)) return;
+        if (!await showConfirm(isZh ? `确认归档 ${ids.length} 个问卷？` : `Archive ${ids.length} survey(s)?`, isZh ? '归档问卷' : 'Archive surveys', { confirmText: isZh ? '归档' : 'Archive', cancelText: isZh ? '取消' : 'Cancel' })) return;
         setBusy(true);
         setError('');
         try {
@@ -621,7 +623,7 @@ export const UtilitiesPage = ({
             setError(isZh ? '请勾选草稿或已归档的问卷' : 'Select draft or archived surveys');
             return;
         }
-        if (!window.confirm(isZh ? `确认永久删除 ${ids.length} 个问卷？不可恢复。` : `Permanently delete ${ids.length} survey(s)?`)) return;
+        if (!await showConfirm(isZh ? `确认永久删除 ${ids.length} 个问卷？不可恢复。` : `Permanently delete ${ids.length} survey(s)?`, isZh ? '永久删除问卷' : 'Permanently delete surveys', { confirmText: isZh ? '永久删除' : 'Delete', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' })) return;
         setBusy(true);
         setError('');
         try {
@@ -1280,7 +1282,7 @@ export const UtilitiesPage = ({
 
     const deleteSurvey = async () => {
         if (!selected?.id) return;
-        if (!window.confirm(isZh ? '确认删除该问卷？不可恢复。' : 'Delete this survey? This cannot be undone.')) return;
+        if (!await showConfirm(isZh ? '确认删除该问卷？不可恢复。' : 'Delete this survey? This cannot be undone.', isZh ? '删除问卷' : 'Delete survey', { confirmText: isZh ? '删除' : 'Delete', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' })) return;
         setBusy(true);
         setError('');
         try {
@@ -1429,7 +1431,7 @@ export const UtilitiesPage = ({
     const exportXlsx = async (filteredOnly: boolean) => {
         if (!selected?.id) return;
         if (shouldWarnExportPII(selected.settings?.anonymous)) {
-            if (!window.confirm(t.exportPiiWarn)) return;
+            if (!await showConfirm(t.exportPiiWarn, isZh ? '导出提醒' : 'Export reminder', { confirmText: isZh ? '继续导出' : 'Continue', cancelText: isZh ? '取消' : 'Cancel' })) return;
         }
         setBusy(true);
         setExportHint(t.exporting);

@@ -7,6 +7,7 @@ import {
     QueryIMAuditMessages,
 } from "../../../wailsjs/go/main/App";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+import { useDialog } from "../CustomDialog";
 
 interface IMAuditMessage {
     id: number;
@@ -93,6 +94,7 @@ function renderSimpleMarkdown(text: string): React.ReactNode[] {
 }
 
 export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
+    const { showConfirm } = useDialog();
     const [messages, setMessages] = useState<IMAuditMessage[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
@@ -180,7 +182,7 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
     };
 
     const handleCleanup = async () => {
-        if (!confirm(isZh ? "\u786e\u5b9a\u5220\u9664 " + cleanupDays + " \u5929\u524d\u7684\u8bb0\u5f55\uff1f" : "Delete records older than " + cleanupDays + " days?")) return;
+        if (!await showConfirm(isZh ? "确定删除 " + cleanupDays + " 天前的记录？" : "Delete records older than " + cleanupDays + " days?", isZh ? '清理记录' : 'Clean up records', { confirmText: isZh ? '删除' : 'Delete', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' })) return;
         try {
             const n = await DeleteIMAuditMessagesBefore(cleanupDays);
             setMessage(isZh ? "\u5df2\u5220\u9664 " + n + " \u6761\u8bb0\u5f55" : "Deleted " + n + " records");

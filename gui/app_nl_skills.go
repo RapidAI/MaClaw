@@ -1953,12 +1953,14 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			llmCfg := e.app.GetMaclawLLMConfig()
 			providerName := maclawLLMUsageProviderName(e.app, llmCfg)
 			proxyCfg = corelib.OpenAIProxyConfig{
-				URL:      llmCfg.URL,
-				Key:      llmCfg.Key,
-				Model:    llmCfg.Model,
-				Protocol: llmCfg.Protocol,
-				WireAPI:  llmCfg.WireAPI,
-				AuthType: llmCfg.AuthType,
+				URL:             llmCfg.URL,
+				Key:             llmCfg.Key,
+				Model:           llmCfg.Model,
+				Protocol:        llmCfg.Protocol,
+				WireAPI:         llmCfg.WireAPI,
+				AuthType:        llmCfg.AuthType,
+				ThinkingMode:    llmCfg.ThinkingMode,
+				ReasoningEffort: llmCfg.ReasoningEffort,
 				UsageCallback: func(usage corelib.OpenAIProxyUsage) {
 					if providerName == "" {
 						return

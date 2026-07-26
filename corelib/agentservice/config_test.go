@@ -184,6 +184,23 @@ func TestResolveLLMConfigPreservesXAIOAuthMetadata(t *testing.T) {
 	}
 }
 
+func TestResolveLLMConfigAppliesGlobalThinkingMode(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMThinkingMode:    "disabled",
+		MaclawLLMCurrentProvider: "DeepSeek",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Key: "test-key", Model: "deepseek-reasoner",
+		}},
+	}
+	llmCfg, err := ResolveLLMConfig(cfg)
+	if err != nil {
+		t.Fatalf("ResolveLLMConfig() error = %v", err)
+	}
+	if llmCfg.ThinkingMode != "disabled" {
+		t.Fatalf("ThinkingMode = %q, want disabled", llmCfg.ThinkingMode)
+	}
+}
+
 func TestNormalizeLLMFlatConfigFillsSelectedProvider(t *testing.T) {
 	cfg := normalizeLLMFlatConfig(corelib.AppConfig{
 		MaclawLLMCurrentProvider: "hub",

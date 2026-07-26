@@ -33,6 +33,7 @@ function renderLeft(overrides: Partial<Parameters<typeof AssistantInputActionsLe
             inputLocked={false}
             lang="zh-Hans"
             onComposeActionChange={vi.fn()}
+            onPermissionModeChange={vi.fn()}
             onFireSlashCommand={vi.fn()}
             onInsertTemplate={vi.fn()}
             onPlusMenuAction={vi.fn()}
@@ -70,6 +71,18 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect(document.activeElement).toBe(selector);
     });
 
+    it("hides the permission selector when the host surface does not support changing it", () => {
+        renderLeft({ showPermissionMode: false });
+
+        expect(screen.queryByTestId("ai-permission-mode")).toBeNull();
+    });
+
+    it("does not render an inert permission selector without a change handler", () => {
+        renderLeft({ onPermissionModeChange: undefined });
+
+        expect(screen.queryByTestId("ai-permission-mode")).toBeNull();
+    });
+
     it("supports keyboard navigation and restores focus when permission menu closes", () => {
         renderLeft({ permissionMode: "request" });
         const selector = screen.getByTestId("ai-permission-mode");
@@ -89,6 +102,17 @@ describe("AssistantInputActionsLeft plus menu", () => {
         renderLeft({ permissionMode: "full" });
 
         expect((screen.getByTestId("ai-permission-mode") as HTMLElement).style.border).toBe("1px solid rgb(221, 221, 221)");
+    });
+
+    it("renders the permission menu in a viewport-level layer", () => {
+        renderLeft();
+
+        fireEvent.click(screen.getByTestId("ai-permission-mode"));
+        const menu = screen.getByTestId("ai-permission-mode-menu");
+        expect(menu.style.position).toBe("fixed");
+        expect(menu.style.zIndex).toBe("40000");
+        expect(menu.parentElement).toBe(document.body);
+        expect(screen.getByTestId("ai-permission-mode").getAttribute("aria-controls")).toBe(menu.id);
     });
 
     it("places + before the attachment button and lists iconed commands", () => {

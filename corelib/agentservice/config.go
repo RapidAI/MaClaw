@@ -414,6 +414,7 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 			WireAPI:        strings.TrimSpace(provider.WireAPI),
 			ProviderName:   strings.TrimSpace(provider.Name),
 			AuthType:       strings.TrimSpace(provider.AuthType),
+			ThinkingMode:   cfg.MaclawLLMThinkingMode,
 		}, nil
 	}
 
@@ -433,6 +434,7 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 		Protocol:      strings.TrimSpace(cfg.MaclawLLMProtocol),
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
+		ThinkingMode:  cfg.MaclawLLMThinkingMode,
 	}, nil
 }
 

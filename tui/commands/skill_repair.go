@@ -169,6 +169,7 @@ func repairLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
 		ProviderName:  strings.TrimSpace(cfg.MaclawLLMCurrentProvider),
+		ThinkingMode:  cfg.MaclawLLMThinkingMode,
 	}
 	current := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
 	matchedProvider := false

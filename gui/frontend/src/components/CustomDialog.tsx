@@ -5,8 +5,8 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-// Above nested app dialogs (e.g. LLM config overlay uses zIndex 9999).
-const DIALOG_Z_INDEX = 11000;
+// Above application overlays; task creation and guided flows reserve higher layers.
+const DIALOG_Z_INDEX = 120000;
 
 /** Read the current theme from the #App element so the dialog inherits dark-mode variables. */
 function getCurrentTheme(): string | undefined {
@@ -65,13 +65,13 @@ const DialogContext = createContext<DialogContextValue | null>(null);
 export function useDialog(): DialogContextValue {
     const ctx = useContext(DialogContext);
     if (!ctx) {
-        // Defensive fallback: instead of throwing (which would bubble to the
-        // global error handler and potentially destroy the entire React tree),
-        // return a degraded implementation using native browser dialogs.
-        // This can happen during HMR, lazy-chunk reload, or React context loss.
+        // Do not fall back to browser dialogs: they break the application's
+        // visual language and can interrupt a desktop workflow unexpectedly.
+        // A provider is mounted at the app root; this defensive path only
+        // protects HMR/lazy-chunk failures by safely cancelling the action.
         if (!dialogFallbackWarned) {
             dialogFallbackWarned = true;
-            console.warn('[useDialog] DialogContext is null — falling back to native dialogs. This likely means a component using useDialog is rendered outside <DialogProvider>.');
+            console.warn('[useDialog] DialogContext is null — safely cancelling dialog requests. Ensure the component is rendered within <DialogProvider>.');
         }
         return dialogFallback;
     }
@@ -81,9 +81,9 @@ export function useDialog(): DialogContextValue {
 /** Stable reference fallback when DialogContext is unavailable. */
 let dialogFallbackWarned = false;
 const dialogFallback: DialogContextValue = {
-    showAlert: async (message: string, title?: string) => { window.alert(title ? `${title}\n\n${message}` : message); },
-    showConfirm: async (message: string, _title?: string) => window.confirm(message),
-    showPrompt: async (message: string, _title?: string, options?: PromptOptions) => window.prompt(message, options?.defaultValue ?? ''),
+    showAlert: async () => undefined,
+    showConfirm: async () => false,
+    showPrompt: async () => null,
 };
 
 // ── Provider ──
@@ -99,6 +99,8 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     const resolveRef = useRef<((value: DialogResult) => void) | null>(null);
     const backdropMouseDownRef = useRef(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
+    const dialogRef = useRef<HTMLDivElement | null>(null);
+    const previousFocusRef = useRef<HTMLElement | null>(null);
 
     const setPromptInput = useCallback((value: string) => {
         inputValueRef.current = value;
@@ -113,26 +115,37 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         setInputValue('');
     }, []);
 
+    const captureInvokingFocus = useCallback(() => {
+        // A new request replaces the visible dialog. Preserve the original
+        // invoking control so closing the replacement does not restore focus
+        // to a button that belonged to the dialog it just replaced.
+        if (!previousFocusRef.current?.isConnected) {
+            previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }
+    }, []);
+
     const showAlert = useCallback((message: string, title?: string): Promise<void> => {
         return new Promise(resolve => {
             // Resolve any pending dialog to prevent Promise leak when showAlert
             // is called while another dialog is already open (e.g. rapid backend events).
-            resolveRef.current?.(false);
+            resolveRef.current?.(true);
             resolveRef.current = () => resolve();
+            captureInvokingFocus();
             setPromptInput('');
             setState({ open: true, title: title || '', message, mode: 'alert', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), lightScheme: getCurrentLightScheme() });
         });
-    }, [setPromptInput]);
+    }, [captureInvokingFocus, setPromptInput]);
 
     const showConfirm = useCallback((message: string, title?: string, options?: ConfirmOptions): Promise<boolean> => {
         return new Promise(resolve => {
             // Resolve any pending dialog (dismiss as "cancel") to prevent Promise leak.
             resolveRef.current?.(false);
             resolveRef.current = (value) => resolve(Boolean(value));
+            captureInvokingFocus();
             setPromptInput('');
             setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), lightScheme: getCurrentLightScheme(), confirmText: options?.confirmText, cancelText: options?.cancelText, confirmVariant: options?.confirmVariant });
         });
-    }, [setPromptInput]);
+    }, [captureInvokingFocus, setPromptInput]);
 
     const showPrompt = useCallback((message: string, title?: string, options?: PromptOptions): Promise<string | null> => {
         return new Promise(resolve => {
@@ -142,6 +155,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                 if (typeof value === 'string') resolve(value);
                 else resolve(null);
             };
+            captureInvokingFocus();
             const initial = options?.defaultValue ?? '';
             setPromptInput(initial);
             setState({
@@ -158,7 +172,20 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                 placeholder: options?.placeholder,
             });
         });
-    }, [setPromptInput]);
+    }, [captureInvokingFocus, setPromptInput]);
+
+    // Navigation, HMR, and test teardown can unmount the provider while a
+    // caller awaits a dialog result. Resolve it as a safe cancellation rather
+    // than leaving the caller suspended forever.
+    useEffect(() => () => {
+        // Promise wrappers normalize this safe dismissal for confirm/prompt;
+        // alert callers simply resume without a result.
+        resolveRef.current?.(true);
+        resolveRef.current = null;
+        const previousFocus = previousFocusRef.current;
+        previousFocusRef.current = null;
+        if (previousFocus?.isConnected) previousFocus.focus();
+    }, []);
 
     // Listen for Go backend "show-message" events (fire-and-forget info dialogs)
     useEffect(() => {
@@ -169,14 +196,39 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         return unsubscribe;
     }, [showAlert]);
 
-    // Auto-focus prompt input when dialog opens
+    // Move focus into the modal and restore it to the invoking control on close.
     useEffect(() => {
-        if (!state.open || state.mode !== 'prompt') return;
+        if (!state.open) {
+            const previousFocus = previousFocusRef.current;
+            previousFocusRef.current = null;
+            if (previousFocus?.isConnected) previousFocus.focus();
+            return;
+        }
         const id = window.setTimeout(() => {
-            inputRef.current?.focus();
-            inputRef.current?.select();
+            if (state.mode === 'prompt') {
+                inputRef.current?.focus();
+                inputRef.current?.select();
+            } else {
+                dialogRef.current?.querySelector<HTMLButtonElement>('.modal-footer button:last-child')?.focus();
+            }
         }, 0);
         return () => window.clearTimeout(id);
+    }, [state.open, state.mode]);
+
+    // Prevent browser text fields behind the modal from receiving keyboard
+    // input when a custom dialog owns the interaction.
+    useEffect(() => {
+        if (!state.open) return;
+        const handleFocusIn = (event: FocusEvent) => {
+            if (event.target instanceof Node && !dialogRef.current?.contains(event.target)) {
+                const fallback = state.mode === 'prompt'
+                    ? inputRef.current
+                    : dialogRef.current?.querySelector<HTMLButtonElement>('.modal-footer button:last-child');
+                fallback?.focus();
+            }
+        };
+        document.addEventListener('focusin', handleFocusIn, true);
+        return () => document.removeEventListener('focusin', handleFocusIn, true);
     }, [state.open, state.mode]);
 
     // Escape / Enter keys — use inputValueRef so we do not rebind on every keystroke.
@@ -197,19 +249,37 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                 if (e.isComposing || (e as KeyboardEvent & { keyCode?: number }).keyCode === 229) {
                     return;
                 }
+                // A focused button owns Enter. In particular, this keeps a
+                // keyboard user on Cancel from accidentally confirming a
+                // non-destructive dialog through the window-level shortcut.
+                if (e.target instanceof HTMLButtonElement) return;
                 if (state.mode === 'prompt') {
-                    // Allow Enter from input to submit; avoid double-handling button focus cases.
-                    if (e.target instanceof HTMLButtonElement) return;
+                    // Submit from the prompt input without rebinding on every keystroke.
                     e.preventDefault();
                     e.stopImmediatePropagation();
                     close(inputValueRef.current);
                     return;
                 }
                 if (state.confirmVariant === 'danger') {
-                    if (!(e.target instanceof HTMLButtonElement)) e.preventDefault();
+                    e.preventDefault();
                     return;
                 }
                 close(true);
+                return;
+            }
+            if (e.key === 'Tab') {
+                const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+                    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]',
+                );
+                if (!focusable?.length) return;
+                const items = Array.from(focusable);
+                const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+                const nextIndex = e.shiftKey
+                    ? (currentIndex <= 0 ? items.length - 1 : currentIndex - 1)
+                    : (currentIndex === items.length - 1 ? 0 : currentIndex + 1);
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                items[nextIndex].focus();
             }
         };
         // Capture phase so we run before other window keydown handlers (e.g. nested
@@ -238,18 +308,24 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                     onClick={e => { if (e.target === e.currentTarget && backdropMouseDownRef.current) close(dismissResult); backdropMouseDownRef.current = false; }}
                 >
                     <div
-						className="modal-content"
+						className="modal-content custom-dialog"
+						ref={dialogRef}
 						role="dialog"
 						aria-modal="true"
 						aria-labelledby={state.title ? titleId : undefined}
+						aria-label={state.title ? undefined : localizeText(state.lang, 'Dialog', '对话框')}
 						aria-describedby={messageId}
 						onClick={e => e.stopPropagation()}
-						style={{ width: state.mode === 'prompt' ? '420px' : '320px' }}
+						style={{
+							width: state.mode === 'prompt' ? 'min(420px, calc(100vw - 32px))' : 'min(320px, calc(100vw - 32px))',
+							maxHeight: 'calc(100dvh - 32px)',
+							overflowY: 'auto',
+						}}
 					>
                         {state.title && (
                             <div className="modal-header">
                                 <h3 id={titleId} style={{ fontSize: '0.88rem', margin: 0 }}>{state.title}</h3>
-                                <button className="btn-close" aria-label={localizeText(state.lang, 'Close', '关闭')} onClick={() => close(dismissResult)}>×</button>
+                                <button type="button" className="btn-close" aria-label={localizeText(state.lang, 'Close', '关闭')} onClick={() => close(dismissResult)}>×</button>
                             </div>
                         )}
                         <div className="modal-body">
@@ -278,11 +354,12 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                         </div>
                         <div className="modal-footer">
                             {(state.mode === 'confirm' || state.mode === 'prompt') && (
-                                <button className="btn-secondary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={() => close(state.mode === 'prompt' ? null : false)}>
+                                <button type="button" className="btn-secondary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={() => close(state.mode === 'prompt' ? null : false)}>
                                     {state.cancelText || localizeText(state.lang, 'Cancel', '取消')}
                                 </button>
                             )}
                             <button
+                                type="button"
                                 className={state.confirmVariant === 'danger' ? 'btn-secondary btn-danger' : 'btn-primary'}
                                 style={{ fontSize: '0.78rem', padding: '4px 14px' }}
                                 onClick={() => close(state.mode === 'prompt' ? inputValueRef.current : true)}

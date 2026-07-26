@@ -106,35 +106,9 @@ func BuildResponsesAPIRequestData(
 		}
 		reqBody[k] = v
 	}
-	// Thinking / reasoning controls (mirrors the chat-completions behavior in
-	// client.go): explicit user override only; "" leaves provider defaults.
-	if _, hasReasoning := reqBody["reasoning"]; !hasReasoning {
-		if _, hasThinking := reqBody["thinking"]; !hasThinking {
-			switch strings.ToLower(strings.TrimSpace(cfg.ThinkingMode)) {
-			case "enabled", "on", "1", "true":
-				if isOpenAIResponsesEndpoint(cfg.URL) {
-					effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
-					switch effort {
-					case "minimal", "low", "medium", "high":
-					default:
-						effort = "medium"
-					}
-					reqBody["reasoning"] = map[string]interface{}{"effort": effort}
-				} else {
-					// OpenAI-compatible Responses endpoints (e.g. Volcano Ark)
-					// accept the chat-style thinking object.
-					reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
-				}
-			case "disabled", "off", "0", "false", "none":
-				if isOpenAIResponsesEndpoint(cfg.URL) {
-					// Closest portable "off" for OpenAI reasoning models.
-					reqBody["reasoning"] = map[string]interface{}{"effort": "minimal"}
-				} else {
-					reqBody["thinking"] = map[string]interface{}{"type": "disabled"}
-				}
-			}
-		}
-	}
+	// Explicit user choices are translated to each provider's native shape;
+	// auto preserves the endpoint's own default.
+	corelib.ApplyReasoningControls(cfg, reqBody, corelib.ReasoningAPIResponses)
 	// Ensure max_output_tokens is set for Responses API (analogous to ensureMaxOutputTokens for Chat API).
 	// Skip for Codex subscription endpoints (chatgpt.com/backend-api) — they don't support this parameter;
 	// output length is controlled server-side.

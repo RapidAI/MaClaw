@@ -169,7 +169,9 @@ interface UseAIAssistantOptions {
     showConfirm?: ShowConfirm;
 }
 
-const nativeShowConfirm: ShowConfirm = async (message: string) => window.confirm(message);
+// App always supplies DialogProvider's confirm function. Keep hook consumers
+// safe during isolated rendering without reintroducing a browser-native modal.
+const nativeShowConfirm: ShowConfirm = async () => false;
 
 function projectPathFromSessionKey(sessionKey?: string): string {
     return normalizedProjectPathFromSessionKey(sessionKey);

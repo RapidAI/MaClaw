@@ -30,16 +30,16 @@ type ResolvedRef struct {
 
 // ResolvedPreset is ready for Runner / loop.
 type ResolvedPreset struct {
-	Name                string
-	DisplayName         string
-	Enabled             bool
-	References          []ResolvedRef
-	Aggregator          corelib.MaclawLLMConfig
+	Name                 string
+	DisplayName          string
+	Enabled              bool
+	References           []ResolvedRef
+	Aggregator           corelib.MaclawLLMConfig
 	AggregatorUsePrimary bool
-	ReferenceTimeoutSec int
-	FanoutMaxIterations int
-	OnlyBeforeFirstTool bool
-	Raw                 corelib.MoAPresetConfig
+	ReferenceTimeoutSec  int
+	FanoutMaxIterations  int
+	OnlyBeforeFirstTool  bool
+	Raw                  corelib.MoAPresetConfig
 }
 
 // ResolvePreset resolves a named preset. Returns error if invalid.
@@ -173,10 +173,12 @@ func resolveModelRef(in ResolveInput, r corelib.MoAModelRef, role string) (corel
 			return corelib.MaclawLLMConfig{}, false, fmt.Errorf("auxiliary LLM not configured")
 		}
 		base = corelib.MaclawLLMConfig{
-			URL:      in.Aux.URL,
-			Key:      in.Aux.Key,
-			Model:    in.Aux.Model,
-			Protocol: in.Aux.Protocol,
+			URL:             in.Aux.URL,
+			Key:             in.Aux.Key,
+			Model:           in.Aux.Model,
+			Protocol:        in.Aux.Protocol,
+			ThinkingMode:    in.Primary.ThinkingMode,
+			ReasoningEffort: in.Primary.ReasoningEffort,
 		}
 	case r.Provider != "":
 		if in.Lookup == nil {

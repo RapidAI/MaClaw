@@ -471,7 +471,7 @@ func TestLoadSubmitLLMConfigsReturnsCenterAndFallback(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
-	configData := []byte(`{"maclaw_llm_url":"http://127.0.0.1:9000","maclaw_llm_key":"fallback-key","maclaw_llm_model":"fallback-model","maclaw_llm_protocol":"openai","maclaw_llm_timeout_sec":25}`)
+	configData := []byte(`{"maclaw_llm_url":"http://127.0.0.1:9000","maclaw_llm_key":"fallback-key","maclaw_llm_model":"fallback-model","maclaw_llm_protocol":"openai","maclaw_llm_timeout_sec":25,"maclaw_llm_thinking_mode":"disabled"}`)
 	if err := os.WriteFile(configPath, configData, 0o644); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
@@ -488,6 +488,26 @@ func TestLoadSubmitLLMConfigsReturnsCenterAndFallback(t *testing.T) {
 	}
 	if fallbackCfg.URL != "http://127.0.0.1:9000" || fallbackCfg.Model != "fallback-model" {
 		t.Fatalf("fallbackCfg = %+v, want maclaw config", *fallbackCfg)
+	}
+	if fallbackCfg.ThinkingMode != "disabled" {
+		t.Fatalf("fallbackCfg.ThinkingMode = %q, want disabled", fallbackCfg.ThinkingMode)
+	}
+}
+
+func TestCurrentProviderConfigPreservesProviderTransportFields(t *testing.T) {
+	cfg, ok := currentProviderConfig(maclawConfigFile{
+		MaclawLLMCurrentProvider: "DeepSeek",
+		MaclawLLMThinkingMode:    "disabled",
+		MaclawLLMProviders: []maclawLLMProvider{{
+			Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Key: "sk-test", Model: "deepseek-reasoner",
+			Protocol: "openai", WireAPI: "responses", AuthType: "api_key", MaxOutputTokens: 4096,
+		}},
+	})
+	if !ok {
+		t.Fatal("currentProviderConfig() returned false")
+	}
+	if cfg.ProviderName != "DeepSeek" || cfg.WireAPI != "responses" || cfg.AuthType != "api_key" || cfg.MaxOutputTokens != 4096 || cfg.ThinkingMode != "disabled" {
+		t.Fatalf("current provider config lost runtime fields: %+v", cfg)
 	}
 }
 

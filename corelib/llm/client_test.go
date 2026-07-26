@@ -5012,3 +5012,55 @@ func TestBuildResponsesAPIRequestData_ThinkingModeOverride(t *testing.T) {
 		t.Fatalf("auto leaked reasoning key: %#v", req["reasoning"])
 	}
 }
+
+func TestBuildOpenAIChatRequestBody_ThinkingModeUsesProviderNativeControl(t *testing.T) {
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+
+	deepseek := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", ThinkingMode: "disabled"},
+		messages,
+		OpenAIChatRequestOptions{},
+	)
+	if thinking, _ := deepseek["thinking"].(map[string]interface{}); thinking["type"] != "disabled" {
+		t.Fatalf("DeepSeek thinking = %#v, want disabled", deepseek["thinking"])
+	}
+	if _, hasEffort := deepseek["reasoning_effort"]; hasEffort {
+		t.Fatalf("DeepSeek must not receive OpenAI reasoning_effort: %#v", deepseek)
+	}
+
+	grok := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://api.x.ai/v1", Model: "grok-4.5", ThinkingMode: "enabled", ReasoningEffort: "high"},
+		messages,
+		OpenAIChatRequestOptions{},
+	)
+	if got := grok["reasoning_effort"]; got != "high" {
+		t.Fatalf("Grok reasoning_effort = %#v, want high", got)
+	}
+	if _, hasThinking := grok["thinking"]; hasThinking {
+		t.Fatalf("Grok must not receive incompatible thinking object: %#v", grok)
+	}
+
+	qwen := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3", ThinkingMode: "disabled"},
+		messages,
+		OpenAIChatRequestOptions{},
+	)
+	if got := qwen["enable_thinking"]; got != false {
+		t.Fatalf("Qwen enable_thinking = %#v, want false", got)
+	}
+}
+
+func TestBuildAnthropicMessagesRequestBodyBoundsThinkingBudgetToOutputLimit(t *testing.T) {
+	req := BuildAnthropicMessagesRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://api.anthropic.com", Model: "claude-sonnet", ThinkingMode: "enabled"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		AnthropicMessagesRequestOptions{MaxTokens: 8},
+	)
+	thinking, _ := req["thinking"].(map[string]interface{})
+	if thinking["budget_tokens"] != 7 {
+		t.Fatalf("thinking budget = %#v, want 7", thinking["budget_tokens"])
+	}
+	if got := req["max_tokens"]; got != 8 {
+		t.Fatalf("max_tokens = %#v, want configured limit preserved", got)
+	}
+}

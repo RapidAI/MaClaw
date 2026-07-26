@@ -4,6 +4,7 @@ import { LoadConfig, RestartQQBot, SetQQBotLocalMode } from '../../../wailsjs/go
 import { main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+import { useDialog } from '../CustomDialog';
 
 type QQBotSettingsProps = {
     config: main.AppConfig | null;
@@ -27,7 +28,9 @@ export const QQBotSettings = ({
     qqBotLocalMode,
     setQQBotLocalModeState,
     setIMAuditPlatform,
-}: QQBotSettingsProps) => (
+}: QQBotSettingsProps) => {
+    const { showAlert } = useDialog();
+    return (
     <section className="im-settings-card im-settings-channel">
         <p className="im-settings-description">
             {textForLang(lang, 'Configure your own QQ Bot to chat with MaClaw Agent via QQ.', '\u914d\u7f6e\u4f60\u81ea\u5df1\u7684 QQ \u673a\u5668\u4eba\uff0c\u901a\u8fc7 QQ \u4e0e MaClaw Agent \u5bf9\u8bdd\u3002', '\u914d\u7f6e\u4f60\u81ea\u5df1\u7684 QQ \u6a5f\u5668\u4eba\uff0c\u900f\u904e QQ \u8207 MaClaw Agent \u5c0d\u8a71\u3002')}
@@ -74,7 +77,7 @@ export const QQBotSettings = ({
                                 LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                             }).catch((err: any) => {
                                 setQQBotLocalModeState(prev);
-                                alert(err?.message || err || switchFailedLabel(lang));
+                                void showAlert(String(err?.message || err || switchFailedLabel(lang)));
                             });
                         }}
                     >
@@ -135,4 +138,5 @@ export const QQBotSettings = ({
             </p>
         </label>
     </section>
-);
+    );
+};

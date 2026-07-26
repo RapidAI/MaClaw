@@ -30,9 +30,10 @@ func TestInitMobileCoreAgentSetsDataRoot(t *testing.T) {
 
 func TestMobileMergeUserAgentConfigKeepsMCPForcesHubLLM(t *testing.T) {
 	user := corelib.AppConfig{
-		MaclawLLMUrl:   "http://user-provider.example/v1",
-		MaclawLLMKey:   "user-key",
-		MaclawLLMModel: "user-model",
+		MaclawLLMUrl:          "http://user-provider.example/v1",
+		MaclawLLMKey:          "user-key",
+		MaclawLLMModel:        "user-model",
+		MaclawLLMThinkingMode: "disabled",
 		MCPServers: []corelib.MCPServerEntry{
 			{ID: "srv1", Name: "demo", EndpointURL: "http://127.0.0.1:9"},
 		},
@@ -44,5 +45,8 @@ func TestMobileMergeUserAgentConfigKeepsMCPForcesHubLLM(t *testing.T) {
 	}
 	if len(merged.MCPServers) != 1 || merged.MCPServers[0].ID != "srv1" {
 		t.Fatalf("MCP servers not preserved: %#v", merged.MCPServers)
+	}
+	if merged.MaclawLLMThinkingMode != "disabled" {
+		t.Fatalf("thinking mode not preserved: %q", merged.MaclawLLMThinkingMode)
 	}
 }

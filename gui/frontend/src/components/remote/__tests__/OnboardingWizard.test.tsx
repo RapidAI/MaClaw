@@ -969,6 +969,8 @@ describe('OnboardingWizard registration', () => {
                 protocol: 'openai',
                 agent_type: 'openclaw',
                 wire_api: '',
+                provider_name: 'Custom1',
+                auth_type: '',
             });
         });
         await waitFor(() => {
@@ -1184,6 +1186,8 @@ describe('OnboardingWizard registration', () => {
                 protocol: 'openai',
                 agent_type: 'openclaw',
                 wire_api: '',
+                provider_name: 'Custom1',
+                auth_type: '',
             });
         });
 

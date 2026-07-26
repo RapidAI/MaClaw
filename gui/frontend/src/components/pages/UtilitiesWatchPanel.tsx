@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './UtilitiesPage.css';
 import { parseWailsJSON } from './utilitiesParse';
+import { useDialog } from '../CustomDialog';
 
 type WatchJob = {
     id?: string;
@@ -116,6 +117,7 @@ export function UtilitiesWatchPanel({
     onBack: () => void;
     compactHeader?: boolean;
 }) {
+    const { showConfirm } = useDialog();
     const t = useMemo(
         () =>
             isZh
@@ -569,7 +571,7 @@ export function UtilitiesWatchPanel({
             setDraft(null);
             return;
         }
-        if (!window.confirm(isZh ? '确认删除该任务？日志文件会保留。' : 'Delete this job? Logs are kept.')) return;
+        if (!await showConfirm(isZh ? '确认删除该任务？日志文件会保留。' : 'Delete this job? Logs are kept.', isZh ? '删除任务' : 'Delete job', { confirmText: isZh ? '删除' : 'Delete', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' })) return;
         setBusy(true);
         setError('');
         try {

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -555,7 +556,10 @@ func (a *App) MaterializeProviderByName(providerName string) (corelib.MaclawLLMC
 		}
 		authKind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
 		wireAPI := p.WireAPI
-		if wireAPI == "" && authKind.IsOAuth() {
+		// Only the ChatGPT Codex subscription endpoint defaults to Responses.
+		// Anthropic and GitHub Copilot OAuth providers use their configured
+		// protocol's normal request format for their capability probes.
+		if wireAPI == "" && p.IsCodexSubscriptionOAuthProvider() {
 			wireAPI = "responses-ws"
 		}
 		key := p.Key
@@ -592,7 +596,7 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 		if p.Name == data.Current {
 			authKind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
 			wireAPI := p.WireAPI
-			if wireAPI == "" && authKind.IsOAuth() {
+			if wireAPI == "" && p.IsCodexSubscriptionOAuthProvider() {
 				wireAPI = "responses-ws"
 			}
 			// ChatGPT Codex subscription endpoints authenticate with the raw OAuth JWT.
@@ -606,20 +610,11 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 					key = p.OAuthAccessToken
 				}
 			}
-			// Diagnostic log for OAuth token debugging
+			// Keep OAuth diagnostics useful without ever writing credential material
+			// (or token lengths/prefixes) to application logs.
 			if authKind.IsOAuth() {
-				oatLen := len(p.OAuthAccessToken)
-				keyLen := len(p.Key)
-				keyPfx := p.Key
-				if len(keyPfx) > 10 {
-					keyPfx = keyPfx[:10]
-				}
-				oatPfx := p.OAuthAccessToken
-				if len(oatPfx) > 10 {
-					oatPfx = oatPfx[:10]
-				}
-				log.Printf("[LLM] GetMaclawLLMConfig oauth: wire_api=%s key_pfx=%s(%d) oat_pfx=%s(%d) auth=%s",
-					wireAPI, keyPfx, keyLen, oatPfx, oatLen, p.AuthType)
+				log.Printf("[LLM] GetMaclawLLMConfig oauth: wire_api=%s credential_present=%t raw_oauth_present=%t auth=%s",
+					wireAPI, p.Key != "", p.OAuthAccessToken != "", p.AuthType)
 			}
 			return a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
 				URL:             p.URL,
@@ -815,7 +810,7 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 	}); err != nil {
 		return "", err
 	}
-	return "OpenAI OAuth 登录成功", nil
+	return a.oauthLoginSuccessMessage("OpenAI", "OpenAI OAuth 登录成功")
 }
 
 // StartXAIOAuth starts Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
@@ -863,7 +858,48 @@ func (a *App) StartXAIOAuth() (string, error) {
 	}); err != nil {
 		return "", err
 	}
-	return "xAI-Grok OAuth 登录成功", nil
+	return a.oauthLoginSuccessMessage("xAI-Grok", "xAI-Grok OAuth 登录成功")
+}
+
+// oauthLoginSuccessMessage verifies that the newly saved OAuth credentials can
+// actually call the configured model, then records whether image input works.
+// Authentication remains successful even when the best-effort capability check
+// fails: the user can retry it later from the LLM settings panel.
+func (a *App) oauthLoginSuccessMessage(providerName, successMessage string) (string, error) {
+	result, err := a.testAndSaveOAuthProviderCapability(providerName)
+	if err != nil {
+		log.Printf("[OAuth] provider=%s post-login model/vision check failed: %v", providerName, err)
+		return successMessage + "；模型连通性和图片能力检测失败，请在设置中重试", nil
+	}
+
+	if result.SupportsVision {
+		return successMessage + "；模型测试通过，图片理解：支持", nil
+	}
+	if result.VisionProbeStatus == string(visionProbeInconclusive) {
+		return successMessage + "；模型测试通过，图片能力未确认，请在设置中重试", nil
+	}
+	return successMessage + "；模型测试通过，图片理解：不支持", nil
+}
+
+// testAndSaveOAuthProviderCapability runs the normal text and image probe with
+// the provider's persisted OAuth credentials. It deliberately uses a named
+// provider rather than the current selection so switching tabs during login
+// cannot store the result on another provider.
+func (a *App) testAndSaveOAuthProviderCapability(providerName string) (corelib.MaclawLLMTestResult, error) {
+	llmCfg, err := a.MaterializeProviderByName(providerName)
+	if err != nil {
+		return corelib.MaclawLLMTestResult{}, fmt.Errorf("load OAuth provider %q: %w", providerName, err)
+	}
+	result, err := a.TestMaclawLLM(llmCfg)
+	if err != nil {
+		return corelib.MaclawLLMTestResult{}, err
+	}
+	if result.VisionProbeStatus != string(visionProbeInconclusive) {
+		if err := a.saveVisionProbeResultForProvider(providerName, result.SupportsVision); err != nil {
+			return corelib.MaclawLLMTestResult{}, err
+		}
+	}
+	return result, nil
 }
 
 // CancelOpenAIOAuth cancels an in-progress OAuth flow, unblocking StartOpenAIOAuth.
@@ -897,6 +933,7 @@ func (a *App) ImportCodexAuth() (string, error) {
 
 	var apiKey string
 	var source string
+	var rawOAuthToken string
 
 	// Strategy 1: Direct API key
 	if key, _ := auth["OPENAI_API_KEY"].(string); key != "" {
@@ -909,6 +946,7 @@ func (a *App) ImportCodexAuth() (string, error) {
 		if tokens, ok := auth["tokens"].(map[string]interface{}); ok {
 			if accessToken, _ := tokens["access_token"].(string); accessToken != "" {
 				apiKey = accessToken
+				rawOAuthToken = accessToken
 				source = "ChatGPT access_token"
 			}
 		}
@@ -922,10 +960,26 @@ func (a *App) ImportCodexAuth() (string, error) {
 	for i, p := range data.Providers {
 		if p.Name == "OpenAI" && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			data.Providers[i].Key = apiKey
+			data.Providers[i].OAuthAccessToken = rawOAuthToken
 			if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
 				return "", fmt.Errorf("保存配置失败: %w", err)
 			}
-			return fmt.Sprintf("已从 Codex CLI 导入（%s）", source), nil
+			// A credential-store value takes precedence over config when OAuth is
+			// materialized. Update it before probing so an older token cannot make
+			// the just-imported credentials appear to fail capability detection.
+			if a.credentialStore != nil {
+				err := a.credentialStore.Modify("openai", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+					return &oauth.StoredCredential{
+						Type:           "oauth",
+						AccessToken:    apiKey,
+						RawAccessToken: rawOAuthToken,
+					}, nil
+				})
+				if err != nil {
+					return "", fmt.Errorf("保存 Codex 凭据失败: %w", err)
+				}
+			}
+			return a.oauthLoginSuccessMessage("OpenAI", fmt.Sprintf("已从 Codex CLI 导入（%s）", source))
 		}
 	}
 	return "", fmt.Errorf("未找到 OpenAI provider")
@@ -991,6 +1045,11 @@ func (a *App) ensureOAuthToken() error {
 // using the OpenAI-compatible or Anthropic Messages API and returns the response.
 // After a successful text test, it also probes vision support synchronously.
 func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestResult, error) {
+	// The configuration panel passes an ad-hoc provider config here rather than
+	// the materialized runtime config. Apply the global preference before the
+	// probe so this diagnostic path exercises the same wire behavior the agent
+	// will use (notably for DeepSeek-compatible providers).
+	llm = a.withGlobalThinkingMode(llm)
 	log.Printf("[LLM] TestMaclawLLM: agent_type=%q user_agent=%q", llm.AgentType, llm.UserAgent())
 	url := strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	if url == "" {
@@ -1024,17 +1083,19 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	}
 
 	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
-	vision := false
+	visionStatus := visionProbeInconclusive
 	if llm.IsResponsesAPI() {
-		vision = probeVisionResponsesAPIWithConfig(llm)
+		visionStatus = probeVisionResponsesAPIResult(llm)
 	} else {
-		vision = probeVisionSupport(llm)
+		visionStatus = probeVisionSupportResult(llm)
 	}
-	log.Printf("[LLM] vision probe for %s: supports_vision=%v", model, vision)
+	vision := visionStatus == visionProbeSupported
+	log.Printf("[LLM] vision probe for %s: status=%s supports_vision=%v", model, visionStatus, vision)
 
 	return corelib.MaclawLLMTestResult{
-		Message:        textResult,
-		SupportsVision: vision,
+		Message:           textResult,
+		SupportsVision:    vision,
+		VisionProbeStatus: string(visionStatus),
 	}, nil
 }
 
@@ -1139,15 +1200,26 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	return stripFunctionCalls(stripThinkTags(parsed.Choices[0].Message.Content)), nil
 }
 
-// probeVisionSupport sends the red probe PNG with the configured provider
-// identity and authentication mode intact, and returns true if the model
-// responds successfully (i.e. supports vision).
-// This is a best-effort probe — network errors or timeouts return false.
-func probeVisionSupport(probeCfg corelib.MaclawLLMConfig) bool {
+type visionProbeResult string
+
+const (
+	visionProbeSupported    visionProbeResult = "supported"
+	visionProbeUnsupported  visionProbeResult = "unsupported"
+	visionProbeInconclusive visionProbeResult = "inconclusive"
+)
+
+// probeVisionSupportResult sends the red probe PNG with the configured provider
+// identity and authentication mode intact. Transport failures remain inconclusive
+// so a transient error cannot erase a previously confirmed capability.
+func probeVisionSupportResult(probeCfg corelib.MaclawLLMConfig) visionProbeResult {
 	if probeCfg.Protocol == "anthropic" {
-		return probeVisionAnthropic(probeCfg, visionProbeRedPNG)
+		return probeVisionAnthropicResult(probeCfg, visionProbeRedPNG)
 	}
-	return probeVisionOpenAI(probeCfg, visionProbeRedPNG)
+	return probeVisionOpenAIResult(probeCfg, visionProbeRedPNG)
+}
+
+func probeVisionSupport(probeCfg corelib.MaclawLLMConfig) bool {
+	return probeVisionSupportResult(probeCfg) == visionProbeSupported
 }
 
 // visionProbeRedPNG is a 64x64 solid red (#FF0000) PNG used by all vision probes.
@@ -1170,6 +1242,10 @@ func visionProbePrompt() string {
 }
 
 func probeVisionOpenAI(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
+	return probeVisionOpenAIResult(cfg, imgB64) == visionProbeSupported
+}
+
+func probeVisionOpenAIResult(cfg corelib.MaclawLLMConfig, imgB64 string) visionProbeResult {
 	messages := []interface{}{
 		map[string]interface{}{
 			"role": "user",
@@ -1189,16 +1265,16 @@ func probeVisionOpenAI(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
 	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		log.Printf("[LLM] vision probe OpenAI error: %v", err)
-		return false
+		return classifyVisionProbeError(err)
 	}
 	if resp == nil {
-		return false
+		return visionProbeInconclusive
 	}
-	ok := resp.Content != "" && looksLikeVisionResponse(resp.Content)
-	if !ok && resp.Content != "" {
+	result := classifyVisionProbeResponse(resp.Content)
+	if result != visionProbeSupported && resp.Content != "" {
 		log.Printf("[LLM] vision probe OpenAI: model replied %q, looksLikeVision=false", truncateForLog(resp.Content, 120))
 	}
-	return ok
+	return result
 }
 
 // looksLikeVisionResponse checks whether the model's reply indicates it actually
@@ -1213,20 +1289,10 @@ func probeVisionOpenAI(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
 //
 // Result: positive && !negative → true (supports vision).
 func looksLikeVisionResponse(content string) bool {
+	if reportsNoImage(content) {
+		return false
+	}
 	lower := strings.ToLower(content)
-
-	// Negative signals: model explicitly says it cannot see an image.
-	negatives := []string{
-		"no image", "don't see", "can't see", "cannot see",
-		"not see", "no picture", "not provided", "not attached",
-		"没有图片", "看不到", "无法看到", "未提供", "没有提供",
-		"no visual", "not visible",
-	}
-	for _, neg := range negatives {
-		if strings.Contains(lower, neg) {
-			return false
-		}
-	}
 
 	// Positive signals: model names the red probe colour or a close red shade.
 	// Restrict this to red-family answers: accepting arbitrary colour words can
@@ -1255,7 +1321,72 @@ func looksLikeVisionResponse(content string) bool {
 	return false
 }
 
+func reportsNoImage(content string) bool {
+	lower := strings.ToLower(content)
+	negatives := []string{
+		"no image", "don't see", "can't see", "cannot see",
+		"not see", "no picture", "not provided", "not attached",
+		"don't view", "can't view", "cannot view", "text-only model", "text only model",
+		"没有图片", "看不到", "无法看到", "未提供", "没有提供",
+		"no visual", "not visible",
+	}
+	for _, neg := range negatives {
+		if strings.Contains(lower, neg) {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyVisionProbeResponse(content string) visionProbeResult {
+	if looksLikeVisionResponse(content) {
+		return visionProbeSupported
+	}
+	if reportsNoImage(content) {
+		return visionProbeUnsupported
+	}
+	return visionProbeInconclusive
+}
+
+// classifyVisionProbeError distinguishes an explicit upstream image rejection
+// from a retryable transport/protocol failure. Only the former may clear a
+// previously saved SupportsVision value.
+func classifyVisionProbeError(err error) visionProbeResult {
+	var httpErr *llm.HTTPStatusError
+	if !errors.As(err, &httpErr) || httpErr == nil {
+		return visionProbeInconclusive
+	}
+	return classifyVisionProbeHTTPFailure(httpErr.StatusCode, httpErr.Body)
+}
+
+func classifyVisionProbeHTTPFailure(statusCode int, body []byte) visionProbeResult {
+	// Authentication, permission, quota and routing failures can mention images
+	// while still being unrelated to the model's capability. Only request-shape
+	// statuses are safe to interpret as an explicit image-input rejection.
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
+		return visionProbeInconclusive
+	}
+	message := strings.ToLower(string(body))
+	// Require both an image/vision reference and an explicit capability rejection
+	// so ordinary malformed-request errors are still treated as inconclusive.
+	hasImageReference := strings.Contains(message, "image") || strings.Contains(message, "vision") ||
+		strings.Contains(message, "图片") || strings.Contains(message, "图像")
+	hasRejection := strings.Contains(message, "not support") || strings.Contains(message, "unsupported") ||
+		strings.Contains(message, "does not support") || strings.Contains(message, "doesn't support") ||
+		strings.Contains(message, "cannot process") || strings.Contains(message, "not enabled") ||
+		strings.Contains(message, "disabled") || strings.Contains(message, "unavailable") ||
+		strings.Contains(message, "不支持") || strings.Contains(message, "无法处理")
+	if hasImageReference && hasRejection {
+		return visionProbeUnsupported
+	}
+	return visionProbeInconclusive
+}
+
 func probeVisionAnthropic(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
+	return probeVisionAnthropicResult(cfg, imgB64) == visionProbeSupported
+}
+
+func probeVisionAnthropicResult(cfg corelib.MaclawLLMConfig, imgB64 string) visionProbeResult {
 	cfg.Protocol = "anthropic"
 	messages := []interface{}{
 		map[string]interface{}{
@@ -1278,16 +1409,16 @@ func probeVisionAnthropic(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
 	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		log.Printf("[LLM] vision probe Anthropic error: %v", err)
-		return false
+		return classifyVisionProbeError(err)
 	}
 	if resp == nil {
-		return false
+		return visionProbeInconclusive
 	}
-	ok := resp.Content != "" && looksLikeVisionResponse(resp.Content)
-	if !ok && resp.Content != "" {
+	result := classifyVisionProbeResponse(resp.Content)
+	if result != visionProbeSupported && resp.Content != "" {
 		log.Printf("[LLM] vision probe Anthropic: model replied %q, looksLikeVision=false", truncateForLog(resp.Content, 120))
 	}
-	return ok
+	return result
 }
 
 // probeVisionResponsesAPI sends the red probe PNG via the Responses API format
@@ -1299,6 +1430,10 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 }
 
 func probeVisionResponsesAPIWithConfig(probeCfg corelib.MaclawLLMConfig) bool {
+	return probeVisionResponsesAPIResult(probeCfg) == visionProbeSupported
+}
+
+func probeVisionResponsesAPIResult(probeCfg corelib.MaclawLLMConfig) visionProbeResult {
 	client := &http.Client{Timeout: 35 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1306,7 +1441,7 @@ func probeVisionResponsesAPIWithConfig(probeCfg corelib.MaclawLLMConfig) bool {
 	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
 	if acquireErr != nil {
 		log.Printf("[LLM] vision probe ResponsesAPI scheduler error: %v", acquireErr)
-		return false
+		return visionProbeInconclusive
 	}
 	defer lease.Release()
 	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
@@ -1326,49 +1461,66 @@ func probeVisionResponsesAPIWithConfig(probeCfg corelib.MaclawLLMConfig) bool {
 	})
 	if err != nil {
 		log.Printf("[LLM] vision probe ResponsesAPI request error: %v", err)
-		return false
+		return visionProbeInconclusive
 	}
 
 	resp, err := client.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		log.Printf("[LLM] vision probe ResponsesAPI error: %v", err)
-		return false
+		return visionProbeInconclusive
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		log.Printf("[LLM] vision probe ResponsesAPI: HTTP %d request=%s", resp.StatusCode, llm.SummarizeOpenAIChatRequestBody(data))
 		globalLLMScheduler.ObserveResult(trace, fmt.Errorf("HTTP %d", resp.StatusCode))
-		return false
+		return classifyVisionProbeHTTPFailure(resp.StatusCode, body)
 	}
 
 	parsed, err := llm.ParseNonStreamResponsesAPIResponse(resp)
 	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil || len(parsed.Choices) == 0 {
-		return false
+		return visionProbeInconclusive
 	}
 	content := parsed.Choices[0].Message.Content
-	ok := looksLikeVisionResponse(content)
-	if !ok && content != "" {
+	result := classifyVisionProbeResponse(content)
+	if result != visionProbeSupported && content != "" {
 		log.Printf("[LLM] vision probe ResponsesAPI: model replied %q, looksLikeVision=false", truncateForLog(content, 120))
 	}
-	return ok
+	return result
 }
 
-// saveVisionProbeResult persists the vision probe result into the matching
-// provider entry in the config.
-func (a *App) saveVisionProbeResult(supportsVision bool) {
-	data := a.GetMaclawLLMProviders()
-	for i, p := range data.Providers {
-		if p.Name == data.Current {
-			data.Providers[i].SupportsVision = supportsVision
-			if err := a.SaveMaclawLLMProviders(data.Providers, data.Current); err != nil {
-				log.Printf("[LLM] failed to save vision probe result: %v", err)
-			}
-			return
-		}
+// saveVisionProbeResultForProvider persists a vision probe result for the
+// provider that was tested, regardless of which provider is currently selected.
+func (a *App) saveVisionProbeResultForProvider(providerName string, supportsVision bool) error {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return fmt.Errorf("provider name is required")
 	}
+	providerFound := false
+	_, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		for i := range cfg.MaclawLLMProviders {
+			if !strings.EqualFold(strings.TrimSpace(cfg.MaclawLLMProviders[i].Name), providerName) {
+				continue
+			}
+			providerFound = true
+			if cfg.MaclawLLMProviders[i].SupportsVision == supportsVision {
+				return false
+			}
+			cfg.MaclawLLMProviders[i].SupportsVision = supportsVision
+			return true
+		}
+		return false
+	})
+	if err != nil {
+		return fmt.Errorf("save vision probe result: %w", err)
+	}
+	if !providerFound {
+		return fmt.Errorf("provider %q not found", providerName)
+	}
+	return nil
 }
 
 // normalizeThinkingModeSetting normalizes a user-supplied thinking mode to

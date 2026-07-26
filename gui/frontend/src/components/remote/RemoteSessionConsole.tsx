@@ -18,6 +18,7 @@ import {
     stripUserPromptPrefix,
     type StreamStatusKind,
 } from "./remoteStreamMarks";
+import { useDialog } from "../CustomDialog";
 
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
     lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
@@ -446,6 +447,7 @@ export function RemoteSessionConsole(props: Props) {
         onClose,
         readOnly = false,
     } = props;
+    const { showPrompt } = useDialog();
 
     const currentLang = getCurrentLang();
     const [sending, setSending] = useState(false);
@@ -637,7 +639,7 @@ export function RemoteSessionConsole(props: Props) {
         } catch (e) {
             showSendInfo(false, `Esc: ${String(e)}`);
         }
-    }, [session.id, refreshSessionsOnly, showSendInfo]);
+    }, [session.id, refreshSessionsOnly, showSendInfo, showPrompt]);
 
     const handleKill = useCallback(async () => {
         try { await killRemoteSession(session.id); onClose(); } catch { /* already stopped */ }
@@ -733,7 +735,11 @@ export function RemoteSessionConsole(props: Props) {
     }, [handlePaste]);
 
     const handleScreenshot = useCallback(async () => {
-        const title = prompt(localizeText(currentLang, "Enter a window title (leave blank for fullscreen):", "输入窗口标题（留空截全屏）：", "輸入視窗標題（留空截全螢幕）："));
+        const title = await showPrompt(
+            localizeText(currentLang, "Enter a window title (leave blank for fullscreen):", "输入窗口标题（留空截全屏）：", "輸入視窗標題（留空截全螢幕）："),
+            localizeText(currentLang, "Capture screenshot", "截取屏幕截图", "擷取螢幕截圖"),
+            { confirmText: localizeText(currentLang, "Capture", "截图", "截圖"), cancelText: localizeText(currentLang, "Cancel", "取消", "取消") },
+        );
         if (title === null) return; // cancelled
         setImageUploading(true);
         try {

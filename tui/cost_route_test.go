@@ -16,7 +16,7 @@ func TestTUIApp_RouteTurn_CostRouteOnUsesAux(t *testing.T) {
 	t.Setenv(llm.CostRouteEnvKey, "on")
 
 	app := &TUIApp{
-		llmConfig: corelib.MaclawLLMConfig{URL: "http://p", Model: "primary-m", Key: "k"},
+		llmConfig: corelib.MaclawLLMConfig{URL: "http://p", Model: "primary-m", Key: "k", ThinkingMode: "disabled", ReasoningEffort: "minimal"},
 		appConfig: corelib.AppConfig{
 			AuxiliaryLLM: corelib.AuxiliaryLLMConfig{URL: "http://a", Model: "aux-m", Key: "k"},
 		},
@@ -34,6 +34,9 @@ func TestTUIApp_RouteTurn_CostRouteOnUsesAux(t *testing.T) {
 	}
 	if d.CostTier != "c0" {
 		t.Fatalf("tier=%s", d.CostTier)
+	}
+	if cfg.ThinkingMode != "disabled" || cfg.ReasoningEffort != "minimal" {
+		t.Fatalf("global thinking mode was overwritten by cost route: %+v", cfg)
 	}
 }
 

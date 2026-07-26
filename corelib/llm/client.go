@@ -161,22 +161,14 @@ func buildOpenAIChatRequestBody(
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
 	}
 	sanitizeOpenAIChatRequestBodyForSDKCompatibility(reqBody)
-	// Thinking / reasoning controls (cost-route Phase 3 + provider defaults).
-	thinkingMode := strings.ToLower(strings.TrimSpace(cfg.ThinkingMode))
-	switch thinkingMode {
-	case "disabled", "off", "0", "false", "none":
-		reqBody["thinking"] = map[string]interface{}{"type": "disabled"}
-	case "enabled", "on", "1", "true":
+	// Explicit user choices are translated to the selected provider's native
+	// request shape. Auto keeps the historic DeepSeek V4 default below.
+	corelib.ApplyReasoningControls(cfg, reqBody, corelib.ReasoningAPIChat)
+	if corelib.IsAutoThinkingMode(cfg.ThinkingMode) && corelib.IsDeepSeekThinkingModeModel(cfg) {
+		// DeepSeek V4+ thinking mode defaults to enabled, but some deployments
+		// only return reasoning_content when it is stated explicitly.
 		if _, hasThinking := reqBody["thinking"]; !hasThinking {
 			reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
-		}
-	default:
-		if corelib.IsDeepSeekThinkingModeModel(cfg) {
-			// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
-			// returns reasoning_content. Without this, some deployments skip it.
-			if _, hasThinking := reqBody["thinking"]; !hasThinking {
-				reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
-			}
 		}
 	}
 	// Cap reasoning budget when tools present (room for tool-call JSON).
@@ -193,7 +185,7 @@ func buildOpenAIChatRequestBody(
 			}
 		}
 	}
-	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" {
+	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" && corelib.IsAutoThinkingMode(cfg.ThinkingMode) {
 		// Map "none"/"off" to a low-cost provider value when pass-through.
 		switch strings.ToLower(re) {
 		case "none", "off", "0", "false":

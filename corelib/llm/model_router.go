@@ -91,15 +91,25 @@ func (r *ModelRouter) RouteWithAux(task TaskType, primary corelib.MaclawLLMConfi
 
 	// For lightweight tasks, fall back to auxiliary LLM if configured
 	if aux.IsConfigured() && isLightweightTask(task) {
-		return corelib.MaclawLLMConfig{
-			URL:      aux.URL,
-			Key:      aux.Key,
-			Model:    aux.Model,
-			Protocol: aux.Protocol,
-		}
+		return applyAuxiliaryLLM(primary, aux)
 	}
 
 	return primary
+}
+
+// applyAuxiliaryLLM materializes the auxiliary endpoint while retaining the
+// user-selected reasoning controls from the primary configuration. Auxiliary
+// configs intentionally only contain connection details, so rebuilding a
+// config here must not make the global thinking switch disappear.
+func applyAuxiliaryLLM(primary corelib.MaclawLLMConfig, aux corelib.AuxiliaryLLMConfig) corelib.MaclawLLMConfig {
+	return corelib.MaclawLLMConfig{
+		URL:             aux.URL,
+		Key:             aux.Key,
+		Model:           aux.Model,
+		Protocol:        aux.Protocol,
+		ThinkingMode:    primary.ThinkingMode,
+		ReasoningEffort: primary.ReasoningEffort,
+	}
 }
 
 // SetRoutes replaces all routes atomically.

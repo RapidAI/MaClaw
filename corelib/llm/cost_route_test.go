@@ -81,11 +81,14 @@ func TestDecideCostRoute_RecommendOnly(t *testing.T) {
 
 func TestApplyCostTierConfig_OnUsesAuxForC0(t *testing.T) {
 	isolateCostRouteStats(t)
-	primary := corelib.MaclawLLMConfig{URL: "https://p", Key: "pk", Model: "primary-m"}
+	primary := corelib.MaclawLLMConfig{URL: "https://p", Key: "pk", Model: "primary-m", ThinkingMode: "disabled", ReasoningEffort: "minimal"}
 	aux := corelib.AuxiliaryLLMConfig{URL: "https://a", Key: "ak", Model: "aux-m"}
 	cfg, applied, source, detail := ApplyCostTierConfig(nil, primary, aux, CostTierC0, CostRouteOn)
 	if !applied || source != "aux" || cfg.Model != "aux-m" {
 		t.Fatalf("cfg=%+v applied=%v source=%s detail=%s", cfg, applied, source, detail)
+	}
+	if cfg.ThinkingMode != "disabled" || cfg.ReasoningEffort != "minimal" {
+		t.Fatalf("aux config lost reasoning controls: %+v", cfg)
 	}
 	// shadow must not apply
 	cfg2, applied2, _, _ := ApplyCostTierConfig(nil, primary, aux, CostTierC0, CostRouteShadow)
@@ -135,6 +138,13 @@ func TestApplyThinkingPolicy(t *testing.T) {
 	cfg = ApplyThinkingPolicy(corelib.MaclawLLMConfig{Model: "m"}, ThinkingHigh)
 	if cfg.ThinkingMode != "enabled" || cfg.ReasoningEffort != "high" {
 		t.Fatalf("%+v", cfg)
+	}
+}
+
+func TestApplyThinkingPolicy_RespectsExplicitGlobalSetting(t *testing.T) {
+	cfg := ApplyThinkingPolicy(corelib.MaclawLLMConfig{Model: "m", ThinkingMode: "disabled", ReasoningEffort: "minimal"}, ThinkingHigh)
+	if cfg.ThinkingMode != "disabled" || cfg.ReasoningEffort != "minimal" {
+		t.Fatalf("global setting must win over cost-route: %+v", cfg)
 	}
 }
 

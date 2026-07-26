@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { localizeText } from "./aiAssistantI18n";
 import { AssistantInputIcon, type Theme } from "./aiAssistantPanelTheme";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
@@ -15,28 +16,67 @@ interface AssistantPermissionModeMenuProps {
 
 export function AssistantPermissionModeMenu({ lang, mode, onChange, theme, themeMode, showWorkspaceOption = false }: AssistantPermissionModeMenuProps) {
     const [open, setOpen] = useState(false);
+    const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; openUp: boolean; maxHeight: number } | null>(null);
+    const rootRef = useRef<HTMLDivElement | null>(null);
     const menuRef = useRef<HTMLDivElement | null>(null);
     const triggerRef = useRef<HTMLButtonElement | null>(null);
+    const menuId = useId();
     const dark = themeMode === "dark";
+
+    const updateMenuPosition = useCallback(() => {
+        const trigger = triggerRef.current;
+        if (!trigger || typeof window === "undefined") return;
+        const rect = trigger.getBoundingClientRect();
+        const menuWidth = 156;
+        const viewportPadding = 8;
+        const menuGap = 6;
+        const spaceAbove = Math.max(0, rect.top - menuGap - viewportPadding);
+        const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - menuGap - viewportPadding);
+        // Pick the roomier side, then constrain a short viewport rather than
+        // letting a portal menu disappear beyond either viewport edge.
+        const openUp = spaceAbove >= spaceBelow;
+        const availableHeight = openUp ? spaceAbove : spaceBelow;
+        const left = Math.min(
+            Math.max(viewportPadding, rect.right - menuWidth),
+            Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
+        );
+        setMenuPosition({
+            left,
+            top: openUp ? rect.top - menuGap : rect.bottom + menuGap,
+            openUp,
+            maxHeight: Math.min(240, availableHeight),
+        });
+    }, []);
+
+    const setMenuOpen = useCallback((next: boolean) => {
+        if (next) updateMenuPosition();
+        setOpen(next);
+    }, [updateMenuPosition]);
 
     useEffect(() => {
         if (!open) return;
         const handlePointerDown = (event: globalThis.PointerEvent) => {
-            if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+            const target = event.target as Node;
+            if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) setMenuOpen(false);
         };
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
-                setOpen(false);
+                setMenuOpen(false);
                 triggerRef.current?.focus();
             }
         };
+        const handleReposition = () => updateMenuPosition();
         document.addEventListener("pointerdown", handlePointerDown);
         document.addEventListener("keydown", handleKeyDown);
+        window.addEventListener("resize", handleReposition);
+        window.addEventListener("scroll", handleReposition, true);
         return () => {
             document.removeEventListener("pointerdown", handlePointerDown);
             document.removeEventListener("keydown", handleKeyDown);
+            window.removeEventListener("resize", handleReposition);
+            window.removeEventListener("scroll", handleReposition, true);
         };
-    }, [open]);
+    }, [open, setMenuOpen, updateMenuPosition]);
 
     useEffect(() => {
         if (!open) return;
@@ -80,14 +120,14 @@ export function AssistantPermissionModeMenu({ lang, mode, onChange, theme, theme
             : theme.textMuted;
 
     return (
-        <div ref={menuRef} style={{ position: "relative", flexShrink: 0 }}>
-            <button ref={triggerRef} className="ai-permission-mode-trigger" type="button" aria-label={localizeText(lang, "Permission mode", "权限模式", "權限模式")} aria-expanded={open} aria-haspopup="menu" data-testid="ai-permission-mode" onClick={() => setOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }} title={showWorkspaceOption
+        <div ref={rootRef} style={{ position: "relative", flexShrink: 0 }}>
+            <button ref={triggerRef} className="ai-permission-mode-trigger" type="button" aria-label={localizeText(lang, "Permission mode", "权限模式", "權限模式")} aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="menu" data-testid="ai-permission-mode" onClick={() => setMenuOpen(!open)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }} title={showWorkspaceOption
                 ? localizeText(lang, "Permission: Ask / Workspace trust / Full control", "权限：请求授权 / 工作区信任 / 完全控制", "權限：請求授權 / 工作區信任 / 完全控制")
                 : localizeText(lang, "Permission mode", "权限模式", "權限模式")} style={{ height: "24px", display: "inline-flex", alignItems: "center", gap: "4px", padding: "0 5px", border: `1px solid ${theme.fieldBorder}`, borderRadius: 4, background: theme.fieldBg, color: triggerColor, fontSize: "11px", cursor: "pointer" }}>
                 <AssistantInputIcon name={active.icon} size={13} />
                 <span>{active.label}</span>
             </button>
-            {open && <div role="menu" data-testid="ai-permission-mode-menu" style={{ position: "absolute", right: 0, bottom: "calc(100% + 6px)", zIndex: 20, minWidth: "156px", padding: "4px", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, background: theme.bg, boxShadow: "0 4px 8px rgba(15, 23, 42, 0.14)" }}>
+            {open && menuPosition && typeof document !== "undefined" && createPortal(<div ref={menuRef} id={menuId} role="menu" aria-label={localizeText(lang, "权限模式", "权限模式", "權限模式")} data-testid="ai-permission-mode-menu" style={{ position: "fixed", left: menuPosition.left, top: menuPosition.top, transform: menuPosition.openUp ? "translateY(-100%)" : undefined, zIndex: 40000, minWidth: "156px", maxHeight: `${menuPosition.maxHeight}px`, overflowY: "auto", padding: "4px", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, background: theme.bg, boxShadow: "0 4px 8px rgba(15, 23, 42, 0.14)" }}>
                 {options.map((option) => {
                     const dangerous = option.value === "full";
                     const workspace = option.value === "workspace";
@@ -103,9 +143,9 @@ export function AssistantPermissionModeMenu({ lang, mode, onChange, theme, theme
                         : workspace
                             ? (theme.headingColor || theme.btnColor || theme.text)
                             : theme.text;
-                    return <button key={option.value} className="ai-permission-mode-item" type="button" role="menuitemradio" aria-checked={mode === option.value} data-testid={`ai-permission-mode-${option.value}`} title={option.hint} onClick={() => { onChange?.(option.value); setOpen(false); triggerRef.current?.focus(); }} onKeyDown={(event) => { const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') || []); const index = items.indexOf(event.currentTarget); if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); items[(index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus(); } else if (event.key === "Home") { event.preventDefault(); items[0]?.focus(); } else if (event.key === "End") { event.preventDefault(); items.at(-1)?.focus(); } }} style={{ width: "100%", minHeight: "28px", display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "center", gap: "1px", padding: "5px 7px", border: "none", borderRadius: 4, background: selectedBg, color: selectedColor, fontSize: "12px", textAlign: "left", cursor: "pointer" }}><span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><AssistantInputIcon name={option.icon} size={14} /><span>{option.label}</span></span>{showWorkspaceOption && <span style={{ fontSize: 10, opacity: 0.78, paddingLeft: 21, lineHeight: 1.25 }}>{option.hint}</span>}</button>;
+                    return <button key={option.value} className="ai-permission-mode-item" type="button" role="menuitemradio" aria-checked={mode === option.value} data-testid={`ai-permission-mode-${option.value}`} title={option.hint} onClick={() => { onChange?.(option.value); setMenuOpen(false); triggerRef.current?.focus(); }} onKeyDown={(event) => { const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') || []); const index = items.indexOf(event.currentTarget); if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); items[(index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus(); } else if (event.key === "Home") { event.preventDefault(); items[0]?.focus(); } else if (event.key === "End") { event.preventDefault(); items.at(-1)?.focus(); } }} style={{ width: "100%", minHeight: "28px", display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "center", gap: "1px", padding: "5px 7px", border: "none", borderRadius: 4, background: selectedBg, color: selectedColor, fontSize: "12px", textAlign: "left", cursor: "pointer" }}><span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><AssistantInputIcon name={option.icon} size={14} /><span>{option.label}</span></span>{showWorkspaceOption && <span style={{ fontSize: 10, opacity: 0.78, paddingLeft: 21, lineHeight: 1.25 }}>{option.hint}</span>}</button>;
                 })}
-            </div>}
+            </div>, document.body)}
         </div>
     );
 }

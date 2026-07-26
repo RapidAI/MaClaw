@@ -72,6 +72,31 @@ func TestResolvePresetUsePrimaryAndProvider(t *testing.T) {
 	}
 }
 
+func TestResolvePresetUseAuxPreservesGlobalReasoningControls(t *testing.T) {
+	in := ResolveInput{
+		AppMoA: corelib.MoAConfig{
+			DefaultPreset: "review",
+			Presets: map[string]corelib.MoAPresetConfig{
+				"review": {
+					Enabled:         true,
+					Aggregator:      corelib.MoAModelRef{UsePrimary: true},
+					ReferenceModels: []corelib.MoAModelRef{{UseAux: true}},
+				},
+			},
+		},
+		Primary: corelib.MaclawLLMConfig{URL: "http://primary", Key: "pk", Model: "primary", ThinkingMode: "disabled", ReasoningEffort: "minimal"},
+		Aux:     corelib.AuxiliaryLLMConfig{URL: "http://aux", Key: "ak", Model: "aux"},
+	}
+	got, err := ResolvePreset(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := got.References[0].Config
+	if ref.ThinkingMode != "disabled" || ref.ReasoningEffort != "minimal" {
+		t.Fatalf("auxiliary MoA config lost reasoning controls: %+v", ref)
+	}
+}
+
 func errNotFound(name string) error {
 	return &resolveError{name: name}
 }

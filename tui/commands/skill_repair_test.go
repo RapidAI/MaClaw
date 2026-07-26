@@ -49,6 +49,7 @@ func TestMaybeRepairSkillTUIReportsNotStartedWhenLLMUnavailable(t *testing.T) {
 func TestRepairLLMConfigFromAppConfigUsesCurrentProvider(t *testing.T) {
 	cfg := corelib.AppConfig{
 		MaclawLLMCurrentProvider: "configured",
+		MaclawLLMThinkingMode:    "disabled",
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
 			{Name: "empty", URL: "", Key: "", Model: ""},
 			{Name: "configured", URL: "http://127.0.0.1:11434/v1", Key: "sk-test", Model: "qwen", Protocol: "openai", WireAPI: "chat"},
@@ -56,7 +57,7 @@ func TestRepairLLMConfigFromAppConfigUsesCurrentProvider(t *testing.T) {
 	}
 
 	got := repairLLMConfigFromAppConfig(cfg)
-	if got.ProviderName != "configured" || got.URL != "http://127.0.0.1:11434/v1" || got.Key != "sk-test" || got.Model != "qwen" || got.WireAPI != "chat" {
+	if got.ProviderName != "configured" || got.URL != "http://127.0.0.1:11434/v1" || got.Key != "sk-test" || got.Model != "qwen" || got.WireAPI != "chat" || got.ThinkingMode != "disabled" {
 		t.Fatalf("repair config = %#v, want current configured provider", got)
 	}
 }

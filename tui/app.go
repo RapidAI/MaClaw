@@ -398,6 +398,7 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
 		ProviderName:  currentProvider,
+		ThinkingMode:  cfg.MaclawLLMThinkingMode,
 	}
 	// Resolve provider-specific fields from the current provider entry.
 	for _, p := range cfg.MaclawLLMProviders {

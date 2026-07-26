@@ -25,6 +25,10 @@ type OpenAIProxyConfig struct {
 	WireAPI   string // "" or "chat" or "responses" or "responses-ws"
 	AgentType string // optional User-Agent/client identity
 	AuthType  string // optional auth kind from provider config
+	// ThinkingMode and ReasoningEffort are copied from the selected LLM config
+	// so the proxy cannot bypass the user's global reasoning preference.
+	ThinkingMode    string
+	ReasoningEffort string
 	// UsageCallback receives successful request token usage for local accounting.
 	UsageCallback func(OpenAIProxyUsage)
 	// UsageCallbackSync runs UsageCallback on the request path. The default
@@ -960,6 +964,20 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 	if tools := openAICompatForwardSlice(body["tools"]); len(tools) > 0 {
 		anthropicReq["tools"] = convertAnthropicToolsAny(tools)
 	}
+	if thinking := mapFromAny(body["thinking"]); thinking != nil && strings.EqualFold(strings.TrimSpace(fmt.Sprint(thinking["type"])), "enabled") {
+		// Forwarded requests that select the Anthropic protocol need the native
+		// extended-thinking block too. The plain converter has no access to a
+		// provider config, so carry through the already-normalized intent here.
+		budget := 4096
+		if raw, ok := thinking["budget_tokens"].(int); ok && raw > 0 {
+			budget = raw
+		}
+		anthropicReq["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": budget}
+		if maxTokens, ok := anthropicReq["max_tokens"].(int); ok && maxTokens > 1 && budget >= maxTokens {
+			thinkingReq := anthropicReq["thinking"].(map[string]interface{})
+			thinkingReq["budget_tokens"] = maxTokens - 1
+		}
+	}
 
 	return anthropicReq
 }
@@ -1243,6 +1261,7 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int, error) {
 	// 1. Convert request to Anthropic format
 	cfg := p.maclawLLMConfig()
+	ApplyReasoningControls(cfg, body, ReasoningAPIAnthropic)
 	anthropicReq := openaiToAnthropic(body, cfg.UpstreamModel())
 
 	respBody, statusCode, err := forwardAnthropicMessageWithSDK(context.Background(), cfg, anthropicReq, p.client)
@@ -1279,6 +1298,7 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 	fwd := cloneOpenAICompatBody(body)
 	sanitizeOpenAICompatForwardBodyForResponses(cfg, fwd)
 	responsesReq := openaiToResponses(fwd, cfg.UpstreamModel())
+	ApplyReasoningControls(cfg, responsesReq, ReasoningAPIResponses)
 
 	// 2. Marshal to JSON
 	jsonBody, err := json.Marshal(responsesReq)
@@ -1355,6 +1375,7 @@ func ForwardOpenAIResponsesRawRequest(ctx context.Context, cfg MaclawLLMConfig, 
 	if model := strings.TrimSpace(cfg.UpstreamModel()); model != "" {
 		fwd["model"] = model
 	}
+	ApplyReasoningControls(cfg, fwd, ReasoningAPIResponses)
 	jsonBody, err := json.Marshal(fwd)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal responses request: %w", err)
@@ -1854,12 +1875,14 @@ func (p *OpenAIProxy) maclawLLMConfig() MaclawLLMConfig {
 		return MaclawLLMConfig{}
 	}
 	return MaclawLLMConfig{
-		URL:       p.config.URL,
-		Key:       p.config.Key,
-		Model:     p.config.Model,
-		Protocol:  p.config.Protocol,
-		WireAPI:   p.config.WireAPI,
-		AgentType: p.config.AgentType,
+		URL:             p.config.URL,
+		Key:             p.config.Key,
+		Model:           p.config.Model,
+		Protocol:        p.config.Protocol,
+		WireAPI:         p.config.WireAPI,
+		AgentType:       p.config.AgentType,
+		ThinkingMode:    p.config.ThinkingMode,
+		ReasoningEffort: p.config.ReasoningEffort,
 	}
 }
 

@@ -4,6 +4,7 @@ import { LoadConfig, RestartTelegram, SetTelegramLocalMode } from '../../../wail
 import { main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+import { useDialog } from '../CustomDialog';
 
 type TelegramBotSettingsProps = {
     config: main.AppConfig | null;
@@ -27,7 +28,9 @@ export const TelegramBotSettings = ({
     telegramLocalMode,
     setTelegramLocalModeState,
     setIMAuditPlatform,
-}: TelegramBotSettingsProps) => (
+}: TelegramBotSettingsProps) => {
+    const { showAlert } = useDialog();
+    return (
     <section className="im-settings-card im-settings-channel">
         <p className="im-settings-description">
             {textForLang(lang, 'Configure your own Telegram Bot to chat with MaClaw Agent via Telegram.', '\u914d\u7f6e\u4f60\u81ea\u5df1\u7684 Telegram Bot\uff0c\u901a\u8fc7 Telegram \u4e0e MaClaw Agent \u5bf9\u8bdd\u3002', '\u914d\u7f6e\u4f60\u81ea\u5df1\u7684 Telegram Bot\uff0c\u900f\u904e Telegram \u8207 MaClaw Agent \u5c0d\u8a71\u3002')}
@@ -74,7 +77,7 @@ export const TelegramBotSettings = ({
                                 LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                             }).catch((err: any) => {
                                 setTelegramLocalModeState(prev);
-                                alert(err?.message || err || switchFailedLabel(lang));
+                                void showAlert(String(err?.message || err || switchFailedLabel(lang)));
                             });
                         }}
                     >
@@ -144,4 +147,5 @@ export const TelegramBotSettings = ({
             </p>
         </label>
     </section>
-);
+    );
+};

@@ -14,12 +14,14 @@ import {
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { EVENT_COMPUTER_USE_WARMUP, EVENT_COMPUTER_USE_LOGS } from "../../constants/events";
 import { ModelStatusBox } from "./ModelStatusBox";
+import { useDialog } from "../CustomDialog";
 
 // --- Main panel ---
 
 type Props = { lang: string };
 
 export function EmbeddingConfigPanel({ lang }: Props) {
+    const { showConfirm } = useDialog();
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
@@ -649,17 +651,17 @@ export function EmbeddingConfigPanel({ lang }: Props) {
                             `各保留最新 ${cuKeepNewest} 个；最长 ${cuMaxAgeDays || '不限'} 天`,
                             `各保留最新 ${cuKeepNewest} 個；最長 ${cuMaxAgeDays || '不限'} 天`
                         )}
-                        onClick={() => {
+                        onClick={async () => {
                             const ageLabel = cuMaxAgeDays > 0
                                 ? t(`and older than ${cuMaxAgeDays} days`, `以及超过 ${cuMaxAgeDays} 天`, `以及超過 ${cuMaxAgeDays} 天`)
                                 : t('(age unlimited)', '（不限天数）', '（不限天數）');
-                            const ok = window.confirm(
+                            const ok = await showConfirm(
                                 t(
                                     `Delete Computer Use log files beyond the newest ${cuKeepNewest} per kind ${ageLabel}? This cannot be undone.`,
                                     `将删除各类型超出最新 ${cuKeepNewest} 个 ${ageLabel} 的 Computer Use 日志，不可恢复。确定？`,
                                     `將刪除各類型超出最新 ${cuKeepNewest} 個 ${ageLabel} 的 Computer Use 日誌，不可恢復。確定？`
                                 )
-                            );
+                            , t('Clean up logs', '清理日志', '清理日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
                             if (!ok) return;
                             void (async () => {
                                 setCuChecking(true);
@@ -849,16 +851,16 @@ export function EmbeddingConfigPanel({ lang }: Props) {
                                     className="model-config-btn"
                                     style={{ padding: '1px 6px', fontSize: 11, color: 'var(--theme-danger, #c44)' }}
                                     disabled={cuChecking || Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length === 0}
-                                    onClick={() => {
+                                    onClick={async () => {
                                         const paths = Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]);
                                         if (!paths.length) return;
-                                        const ok = window.confirm(
+                                        const ok = await showConfirm(
                                             t(
                                                 `Delete ${paths.length} selected Computer Use log file(s)? This cannot be undone.`,
                                                 `删除选中的 ${paths.length} 个 Computer Use 日志？不可恢复。`,
                                                 `刪除選中的 ${paths.length} 個 Computer Use 日誌？不可恢復。`
                                             )
-                                        );
+                                        , t('Delete selected logs', '删除选中日志', '刪除選取日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
                                         if (!ok) return;
                                         void (async () => {
                                             setCuChecking(true);
@@ -966,15 +968,15 @@ export function EmbeddingConfigPanel({ lang }: Props) {
                                             type="button"
                                             className="model-config-btn"
                                             style={{ padding: '1px 6px', fontSize: 11, color: 'var(--theme-danger, #c44)' }}
-                                            onClick={() => {
+                                            onClick={async () => {
                                                 const name = it.name || path || '';
-                                                const ok = window.confirm(
+                                                const ok = await showConfirm(
                                                     t(
                                                         `Delete ${name}? This cannot be undone.`,
                                                         `删除 ${name}？不可恢复。`,
                                                         `刪除 ${name}？不可恢復。`
                                                     )
-                                                );
+                                                , t('Delete log', '删除日志', '刪除日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
                                                 if (!ok) return;
                                                 void DeleteComputerUseLogArtifact(path).then(async (r: any) => {
                                                     if (r?.ok) {

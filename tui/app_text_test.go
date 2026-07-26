@@ -477,6 +477,18 @@ func TestBuildLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigAppliesGlobalThinkingMode(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMThinkingMode: "disabled",
+		MaclawLLMUrl:          "https://api.deepseek.com/v1",
+		MaclawLLMKey:          "test-key",
+		MaclawLLMModel:        "deepseek-reasoner",
+	}
+	if got := buildLLMConfigFromAppConfig(cfg).ThinkingMode; got != "disabled" {
+		t.Fatalf("ThinkingMode = %q, want disabled", got)
+	}
+}
+
 func TestBuildLLMConfigUsesJWTForLegacyCodexOAuthProvider(t *testing.T) {
 	cfg := corelib.AppConfig{
 		MaclawLLMCurrentProvider: "OpenAI",

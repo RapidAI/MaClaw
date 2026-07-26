@@ -85,6 +85,7 @@ func (app *TUIApp) materializeProvider(name string) (corelib.MaclawLLMConfig, er
 				WireAPI:         p.WireAPI,
 				ProviderName:    p.Name,
 				AuthType:        p.AuthType,
+				ThinkingMode:    app.appConfig.MaclawLLMThinkingMode,
 			}, nil
 		}
 	}

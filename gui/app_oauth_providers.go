@@ -60,7 +60,7 @@ func (a *App) CompleteAnthropicOAuth(code string) (string, error) {
 			}
 			// Save to credential store
 			a.saveOAuthResultToStore("Anthropic", result)
-			return "Anthropic OAuth 登录成功", nil
+			return a.oauthLoginSuccessMessage("Anthropic", "Anthropic OAuth 登录成功")
 		}
 	}
 	return "", fmt.Errorf("未找到 Anthropic provider")
@@ -142,7 +142,7 @@ func (a *App) WaitGitHubCopilotOAuth() (string, error) {
 	data := a.GetMaclawLLMProviders()
 	for i, p := range data.Providers {
 		if p.Name == "GitHub Copilot" && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
-			data.Providers[i].Key = copilotResp.Token  // Short-lived Copilot token for immediate use
+			data.Providers[i].Key = copilotResp.Token        // Short-lived Copilot token for immediate use
 			data.Providers[i].OAuthAccessToken = githubToken // Long-lived GitHub token for refresh
 			data.Providers[i].TokenExpiresAt = copilotResp.ExpiresAt
 			data.Providers[i].RefreshToken = githubToken // GitHub token serves as refresh mechanism
@@ -162,7 +162,7 @@ func (a *App) WaitGitHubCopilotOAuth() (string, error) {
 					}, nil
 				})
 			}
-			return "GitHub Copilot 登录成功", nil
+			return a.oauthLoginSuccessMessage("GitHub Copilot", "GitHub Copilot 登录成功")
 		}
 	}
 	return "", fmt.Errorf("未找到 GitHub Copilot provider")

@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PassthroughCommandsPanel } from "../PassthroughCommandsPanel";
 import { DeletePassthroughCommand, ExportPassthroughCommand, ListPassthroughCommands, RunPassthroughCommand, SavePassthroughCommand, SavePassthroughSettings, SetPassthroughCommandEnabled } from "../../../../wailsjs/go/main/App";
 
+const dialogConfirm = vi.fn<(message: string) => Promise<boolean>>();
+const dialogPrompt = vi.fn<(message: string, defaultValue: string) => Promise<string | null>>();
+
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     DeletePassthroughCommand: vi.fn(),
     ExportPassthroughCommand: vi.fn().mockResolvedValue("/runctl save git-status --cmd \"git -C ${target} status --short\" --params-json '[{\"name\":\"target\",\"type\":\"path\",\"required\":true,\"example\":\"D:\\\\workprj\\\\aicoder\"}]' --confirm"),
@@ -21,9 +24,9 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
 vi.mock("../../CustomDialog", () => ({
     useDialog: () => ({
         showAlert: vi.fn(),
-        showConfirm: (message: string) => Promise.resolve(window.confirm(message)),
+        showConfirm: (message: string) => dialogConfirm(message),
         showPrompt: (message: string, _title?: string, options?: { defaultValue?: string }) =>
-            Promise.resolve(window.prompt(message, options?.defaultValue ?? '')),
+            dialogPrompt(message, options?.defaultValue ?? ''),
     }),
 }));
 
@@ -36,6 +39,8 @@ async function renderPanelWithForm() {
 describe("PassthroughCommandsPanel", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        dialogConfirm.mockResolvedValue(true);
+        dialogPrompt.mockResolvedValue(null);
     });
 
     it("keeps pristine new task form quiet while required actions stay disabled", async () => {
@@ -153,7 +158,7 @@ describe("PassthroughCommandsPanel", () => {
     });
 
     it("shows the simple /exec emergency example when enabled", async () => {
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+        dialogConfirm.mockResolvedValueOnce(true);
         await renderPanelWithForm();
 
         fireEvent.click(await screen.findByText("允许 /exec 一次性系统命令（需 --confirm，不经过 shell）"));
@@ -161,11 +166,10 @@ describe("PassthroughCommandsPanel", () => {
         await waitFor(() => {
             expect(screen.getByText(/\/exec git status --short --confirm/)).toBeTruthy();
         });
-        confirmSpy.mockRestore();
     });
 
     it("requires confirmation before enabling /exec from the monitor panel", async () => {
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+        dialogConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         await renderPanelWithForm();
 
         const toggle = await screen.findByText("允许 /exec 一次性系统命令（需 --confirm，不经过 shell）");
@@ -176,7 +180,6 @@ describe("PassthroughCommandsPanel", () => {
         await waitFor(() => {
             expect(SavePassthroughSettings).toHaveBeenCalledWith(expect.objectContaining({ allow_exec: true }));
         });
-        confirmSpy.mockRestore();
     });
 
     it("shows registry path and remote /exec toggle commands", async () => {
@@ -434,7 +437,7 @@ describe("PassthroughCommandsPanel", () => {
             duration_ms: 12,
             output: "failed-output",
         });
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+        dialogConfirm.mockResolvedValueOnce(true);
         await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "fail-test" } });
@@ -444,7 +447,6 @@ describe("PassthroughCommandsPanel", () => {
         fireEvent.click(screen.getByText("保存并测试"));
 
         expect(await screen.findByText("failed-output")).toBeTruthy();
-        confirmSpy.mockRestore();
     });
 
     it("requires confirmation before test-running a passthrough task", async () => {
@@ -458,7 +460,7 @@ describe("PassthroughCommandsPanel", () => {
             enabled: true,
             params: [],
         }]);
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+        dialogConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         render(<PassthroughCommandsPanel lang="zh-Hans" />);
 
         expect((await screen.findAllByText("git-status")).length).toBeGreaterThan(0);
@@ -469,11 +471,10 @@ describe("PassthroughCommandsPanel", () => {
         await waitFor(() => {
             expect(RunPassthroughCommand).toHaveBeenCalledWith("git-status", {}, true);
         });
-        confirmSpy.mockRestore();
     });
 
     it("does not save when save-and-test confirmation is cancelled", async () => {
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+        dialogConfirm.mockResolvedValueOnce(false);
         await renderPanelWithForm();
 
         fireEvent.change(await screen.findByPlaceholderText("repair-env"), { target: { value: "cancel-test" } });
@@ -484,7 +485,6 @@ describe("PassthroughCommandsPanel", () => {
 
         expect(SavePassthroughCommand).not.toHaveBeenCalled();
         expect(RunPassthroughCommand).not.toHaveBeenCalled();
-        confirmSpy.mockRestore();
     });
 
     it("requires confirmation before enabling a disabled passthrough task from the monitor panel", async () => {
@@ -498,20 +498,19 @@ describe("PassthroughCommandsPanel", () => {
             enabled: false,
             params: [],
         }]);
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+        dialogConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         render(<PassthroughCommandsPanel lang="zh-Hans" />);
 
         expect((await screen.findAllByText("git-status")).length).toBeGreaterThan(0);
         const enableButton = () => screen.getAllByText("启用").find((el) => el.tagName === "BUTTON") as HTMLElement;
         fireEvent.click(enableButton());
         expect(SetPassthroughCommandEnabled).not.toHaveBeenCalled();
-        await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(dialogConfirm).toHaveBeenCalledTimes(1));
 
         fireEvent.click(enableButton());
         await waitFor(() => {
             expect(SetPassthroughCommandEnabled).toHaveBeenCalledWith("git-status", true);
         });
-        confirmSpy.mockRestore();
     });
 
     it("requires confirmation before deleting a passthrough task", async () => {
@@ -525,7 +524,7 @@ describe("PassthroughCommandsPanel", () => {
             enabled: true,
             params: [],
         }]);
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+        dialogConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         render(<PassthroughCommandsPanel lang="zh-Hans" />);
 
         expect((await screen.findAllByText("git-status")).length).toBeGreaterThan(0);
@@ -536,6 +535,5 @@ describe("PassthroughCommandsPanel", () => {
         await waitFor(() => {
             expect(DeletePassthroughCommand).toHaveBeenCalledWith("git-status");
         });
-        confirmSpy.mockRestore();
     });
 });

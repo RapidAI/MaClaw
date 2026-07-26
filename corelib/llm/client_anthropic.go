@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -60,7 +61,32 @@ func BuildAnthropicMessagesRequestBody(
 			reqBody["tools"] = at
 		}
 	}
+	corelib.ApplyReasoningControls(cfg, reqBody, corelib.ReasoningAPIAnthropic)
+	ensureAnthropicThinkingFitsOutputLimit(reqBody)
 	return reqBody
+}
+
+// Anthropic requires an extended-thinking budget to be smaller than the
+// request's maximum output budget. Bound the budget to the configured output
+// limit instead of silently enlarging a user-selected limit: max_tokens is a
+// cost and latency guard, so changing it would violate that configuration.
+func ensureAnthropicThinkingFitsOutputLimit(reqBody map[string]interface{}) {
+	thinking, _ := reqBody["thinking"].(map[string]interface{})
+	if thinking == nil || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(thinking["type"])), "enabled") {
+		return
+	}
+	budget, ok := thinking["budget_tokens"].(int)
+	if !ok || budget < 1024 {
+		return
+	}
+	maxTokens, _ := reqBody["max_tokens"].(int)
+	if maxTokens < 2 {
+		return
+	}
+	maxBudget := maxTokens - 1
+	if budget > maxBudget {
+		thinking["budget_tokens"] = maxBudget
+	}
 }
 
 func BuildAnthropicMessagesRequestData(

@@ -1,6 +1,7 @@
 package corelib
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -2435,5 +2437,127 @@ func TestForwardResponses_URLConstruction(t *testing.T) {
 
 	if gotPath != "/v1/responses" {
 		t.Errorf("got path %q, want /v1/responses", gotPath)
+	}
+}
+
+func TestForwardOpenAIResponsesRawRequestHonorsThinkingMode(t *testing.T) {
+	var got map[string]interface{}
+	client := &http.Client{Transport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp-test","output":[]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	_, status, err := ForwardOpenAIResponsesRawRequest(context.Background(), MaclawLLMConfig{
+		URL: "https://api.deepseek.com/v1", Key: "test-key", Model: "deepseek-reasoner", ThinkingMode: "disabled",
+	}, map[string]interface{}{
+		"model":    "ignored",
+		"input":    "hello",
+		"thinking": map[string]interface{}{"type": "enabled"},
+	}, client)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("ForwardOpenAIResponsesRawRequest() status=%d err=%v", status, err)
+	}
+	thinking, _ := got["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v, want disabled", got["thinking"])
+	}
+}
+
+func TestOpenAIProxyConfigRetainsReasoningControls(t *testing.T) {
+	p := NewOpenAIProxy(OpenAIProxyConfig{ThinkingMode: "enabled", ReasoningEffort: "high"})
+	cfg := p.maclawLLMConfig()
+	if cfg.ThinkingMode != "enabled" || cfg.ReasoningEffort != "high" {
+		t.Fatalf("proxy config lost reasoning controls: %+v", cfg)
+	}
+}
+
+func TestOpenAIProxyForwardResponsesHonorsThinkingMode(t *testing.T) {
+	var got map[string]interface{}
+	p := NewOpenAIProxy(OpenAIProxyConfig{
+		URL: "https://api.deepseek.com/v1", Key: "test-key", Model: "deepseek-reasoner", WireAPI: "responses", ThinkingMode: "disabled",
+	})
+	p.client = &http.Client{Transport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp-test","output":[]}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	_, status, err := p.forwardResponses(map[string]interface{}{
+		"model":    "ignored",
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
+		"thinking": map[string]interface{}{"type": "enabled"},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("forwardResponses() status=%d err=%v", status, err)
+	}
+	thinking, _ := got["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v, want disabled", got["thinking"])
+	}
+}
+
+func TestOpenAIProxyForwardAnthropicHonorsThinkingMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want map[string]interface{}
+	}{
+		{
+			name: "disabled removes caller thinking block",
+			mode: "disabled",
+			want: nil,
+		},
+		{
+			name: "enabled replaces caller thinking block",
+			mode: "enabled",
+			// The converted request defaults to max_tokens=4096, and the
+			// reasoning budget is deliberately kept strictly below that limit.
+			want: map[string]interface{}{"type": "enabled", "budget_tokens": float64(4095)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got map[string]interface{}
+			p := NewOpenAIProxy(OpenAIProxyConfig{
+				URL: "https://api.anthropic.com", Key: "test-key", Model: "claude-test", Protocol: "anthropic", ThinkingMode: tt.mode,
+			})
+			p.client = &http.Client{Transport: openAIProxyRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"id":"msg-test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+					Request:    r,
+				}, nil
+			})}
+
+			_, status, err := p.forwardAnthropic(map[string]interface{}{
+				"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}},
+				"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": 9999},
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("forwardAnthropic() status=%d err=%v", status, err)
+			}
+			thinking, _ := got["thinking"].(map[string]interface{})
+			if !reflect.DeepEqual(thinking, tt.want) {
+				t.Fatalf("thinking = %#v, want %#v", thinking, tt.want)
+			}
+		})
 	}
 }

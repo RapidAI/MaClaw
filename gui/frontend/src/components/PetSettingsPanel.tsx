@@ -20,6 +20,7 @@ import {
     type PetSkinOption,
 } from './petSkins';
 import { motionSoundPresetOptionIds, normalizeMotionSoundPreset, type MotionSoundPreset } from './petMotionSounds';
+import { useDialog } from './CustomDialog';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 
@@ -297,6 +298,7 @@ function clampPetSize(value: number): number {
 }
 
 export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSettingsPanelProps) {
+    const { showAlert, showConfirm } = useDialog();
     const [previewState, setPreviewState] = useState<PetPreviewState>('idle');
     const [saveState, setSaveState] = useState<SaveState>('idle');
     const [packOptions, setPackOptions] = useState<PetSkinOption[]>(petSkinOptions);
@@ -496,7 +498,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         const hubURL = String(config.remote_hub_url || '').trim();
         const url = buildHubPetPackHelpURL(hubURL, lang);
         if (!url) {
-            window.alert(
+            void showAlert(
                 text(
                     lang,
                     '未配置 Hub 地址，无法打开宠物包创建指南。请先连接 Hub，或在浏览器访问 Hub 的 /pet-pack-help。',
@@ -595,13 +597,15 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             setInstallError(text(lang, '官方内置包不能卸载', '官方內建包不能卸載', 'Official bundled packs cannot be uninstalled'));
             return;
         }
-        const ok = window.confirm(
+        const ok = await showConfirm(
             text(
                 lang,
                 `确定卸载宠物包「${opt.label}」(${skin})？`,
                 `確定卸載寵物包「${opt.label}」(${skin})？`,
                 `Uninstall pet pack "${opt.label}" (${skin})?`
-            )
+            ),
+            text(lang, '卸载宠物包', '卸載寵物包', 'Uninstall pet pack'),
+            { confirmText: text(lang, '卸载', '卸載', 'Uninstall'), cancelText: text(lang, '取消', '取消', 'Cancel'), confirmVariant: 'danger' },
         );
         if (!ok) return;
         setInstallError('');
@@ -644,7 +648,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
             installBusyRef.current = false;
             setInstallBusy(false);
         }
-    }, [selectedSkin, packOptions, lang, refreshPackOptions, setConfig]);
+    }, [selectedSkin, packOptions, lang, refreshPackOptions, setConfig, showConfirm]);
 
     const installPetPackFromDialog = useCallback(async () => {
         if (installBusyRef.current) return;

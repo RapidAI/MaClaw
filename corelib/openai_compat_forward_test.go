@@ -2470,3 +2470,53 @@ func TestOpenAICompatForwardTextContentHandlesTypedSDKBlocks(t *testing.T) {
 		t.Fatalf("text content = %q, want %q", got, "alpha\nbeta")
 	}
 }
+func TestSanitizeOpenAICompatForwardBodyHonorsExplicitDeepSeekThinkingOff(t *testing.T) {
+	body := map[string]interface{}{
+		"model": "deepseek-reasoner",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+	}
+	sanitizeOpenAICompatForwardBody(
+		MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", ThinkingMode: "disabled"},
+		body,
+	)
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking after explicit off = %#v, want disabled", body["thinking"])
+	}
+}
+
+func TestForwardOpenAICompatStreamRequestHonorsExplicitDeepSeekThinkingOff(t *testing.T) {
+	var got map[string]interface{}
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: [DONE]\\n\\n")),
+			Request:    req,
+		}, nil
+	})}
+
+	resp, err := ForwardOpenAICompatStreamRequest(context.Background(), MaclawLLMConfig{
+		URL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", ThinkingMode: "disabled",
+	}, map[string]interface{}{
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		"thinking": map[string]interface{}{"type": "enabled"},
+	}, client)
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatStreamRequest() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	thinking, _ := got["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v, want disabled", got["thinking"])
+	}
+	if got["stream"] != true {
+		t.Fatalf("stream = %#v, want true", got["stream"])
+	}
+}

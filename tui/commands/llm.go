@@ -70,6 +70,7 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
 		ProviderName:  cfg.MaclawLLMCurrentProvider,
+		ThinkingMode:  cfg.MaclawLLMThinkingMode,
 	}
 	// Resolve AgentType and SupportsVision from the current provider (not stored as flat fields).
 	for _, p := range cfg.MaclawLLMProviders {

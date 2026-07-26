@@ -40,6 +40,7 @@ import {
     EVENT_COMPUTER_USE_OBSERVE,
 } from "../../constants/events";
 import { localizeText } from "../../i18n";
+import { useDialog } from "../CustomDialog";
 
 const STORAGE_PIN = "maclaw.computer_use.operator.pinned";
 const STORAGE_DOCK = "maclaw.computer_use.operator.docked";
@@ -137,6 +138,7 @@ function writeBool(key: string, value: boolean) {
 }
 
 export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
+    const { showConfirm } = useDialog();
     const t = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
         [lang]
@@ -875,7 +877,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                 <button
                                     type="button"
                                     style={ctrlBtnStyle(false)}
-                                    onClick={() => {
+                                    onClick={async () => {
                                         void OpenComputerUseLastDiagnostics().then((r: any) => {
                                             if (r?.ok) setExportMsg(t(`Opened: ${r.path}`, `已打开: ${r.path}`, `已打開: ${r.path}`));
                                         });
@@ -887,8 +889,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                     type="button"
                                     style={ctrlBtnStyle(false)}
                                     title={t("Prune using saved policy (confirm)", "按已保存策略清理（需确认）", "按已保存策略清理（需確認）")}
-                                    onClick={() => {
-                                        void (async () => {
+                                    onClick={async () => {
                                             let keep = 10;
                                             let age = 0;
                                             try {
@@ -898,13 +899,13 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                             } catch {
                                                 /* defaults */
                                             }
-                                            const ok = window.confirm(
+                                            const ok = await showConfirm(
                                                 t(
                                                     `Delete CU logs beyond newest ${keep} per kind${age > 0 ? ` or older than ${age}d` : ""}?`,
                                                     `删除超出最新 ${keep} 个${age > 0 ? `或超过 ${age} 天` : ""} 的 CU 日志？`,
                                                     `刪除超出最新 ${keep} 個${age > 0 ? `或超過 ${age} 天` : ""} 的 CU 日誌？`
                                                 )
-                                            );
+                                            , t('Clean up logs', '清理日志', '清理日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
                                             if (!ok) return;
                                             const r: any = await PruneComputerUseLogArtifacts(keep, age);
                                             if (r?.ok) {
@@ -924,7 +925,6 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                                 );
                                                 await refreshLastE2E();
                                             }
-                                        })();
                                     }}
                                 >
                                     {t("Prune", "清理", "清理")}

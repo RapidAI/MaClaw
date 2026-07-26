@@ -4,6 +4,7 @@ import { main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 import { WeixinQRLoginPanel } from './WeixinQRLoginPanel';
+import { useDialog } from '../CustomDialog';
 
 type WeixinSettingsProps = {
     config: main.AppConfig | null;
@@ -41,7 +42,9 @@ export const WeixinSettings = ({
     setWeixinQRWaiting,
     weixinQRError,
     setWeixinQRError,
-}: WeixinSettingsProps) => (
+}: WeixinSettingsProps) => {
+    const { showAlert } = useDialog();
+    return (
     <section className="im-settings-card im-settings-channel">
         <p className="im-settings-description">
             {textForLang(lang, 'Scan QR code to log in to WeChat and chat with MaClaw Agent.', '\u626b\u7801\u767b\u5f55\u5fae\u4fe1\uff0c\u901a\u8fc7\u5fae\u4fe1\u4e0e MaClaw Agent \u5bf9\u8bdd\u3002', '\u6383\u78bc\u767b\u9304\u5fae\u4fe1\uff0c\u900f\u904e\u5fae\u4fe1\u8207 MaClaw Agent \u5c0d\u8a71\u3002')}
@@ -82,7 +85,7 @@ export const WeixinSettings = ({
                                 LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                             }).catch((err: any) => {
                                 setWeixinLocalModeState(prev);
-                                alert(err?.message || err || switchFailedLabel(lang));
+                                void showAlert(String(err?.message || err || switchFailedLabel(lang)));
                             });
                         }}
                     >
@@ -107,4 +110,5 @@ export const WeixinSettings = ({
             />
         )}
     </section>
-);
+    );
+};

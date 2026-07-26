@@ -631,9 +631,24 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 setLlmDone(true);
                 onLLMConfigured();
             } else {
-                const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: effectiveAgentType(sp), wire_api: sp.wire_api || "" });
+                const testResult = await TestMaclawLLM({
+                    url: sp.url,
+                    key: sp.key,
+                    model: sp.model,
+                    protocol: sp.protocol || "openai",
+                    agent_type: effectiveAgentType(sp),
+                    wire_api: sp.wire_api || "",
+                    provider_name: sp.name,
+                    auth_type: sp.auth_type || "",
+                });
+                const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
                 const nextProviders = providers.map((provider, index) => index === selectedIdx
-                    ? { ...provider, supports_vision: testResult.supports_vision }
+                    ? {
+                        ...provider,
+                        // Do not replace a confirmed capability with a transient
+                        // probe failure while completing first-run setup.
+                        supports_vision: visionProbeInconclusive ? provider.supports_vision : testResult.supports_vision,
+                    }
                     : { ...provider });
                 await SaveMaclawLLMProviders(nextProviders, sp.name);
 
@@ -648,9 +663,11 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     setProviders(nextProviders);
                 }
 
-                const visionMsg = testResult.supports_vision
-                    ? t("图片理解：支持", "Vision support: enabled")
-                    : t("图片理解：不支持", "Vision support: disabled");
+                const visionMsg = visionProbeInconclusive
+                    ? t("图片理解：未确认，请稍后在设置中重试", "Vision support: not confirmed; retry later in Settings")
+                    : testResult.supports_vision
+                        ? t("图片理解：支持", "Vision support: enabled")
+                        : t("图片理解：不支持", "Vision support: disabled");
                 setLlmResult({ ok: true, msg: `${testResult.message}\n${visionMsg}` });
                 setLlmDone(true);
                 onLLMConfigured();

@@ -53,6 +53,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [maxIter, setMaxIter] = useState(0);
     const [subAgentConc, setSubAgentConc] = useState(2);
     const [thinkingMode, setThinkingMode] = useState("");
+    const [thinkingModeSaving, setThinkingModeSaving] = useState(false);
+    const thinkingModeSavingRef = useRef(false);
+    const [thinkingModeError, setThinkingModeError] = useState<string | null>(null);
     const [hubServiceStatus, setHubServiceStatus] = useState<HubLLMServiceStatus | null>(null);
 
     // Dialog state — track selected provider by index (stable across renames)
@@ -90,12 +93,34 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         }
     }, []);
 
+    const saveThinkingMode = useCallback(async (mode: "" | "enabled" | "disabled") => {
+        if (thinkingModeSavingRef.current || mode === thinkingMode) return;
+        const previous = thinkingMode;
+        thinkingModeSavingRef.current = true;
+        setThinkingMode(mode);
+        setThinkingModeSaving(true);
+        setThinkingModeError(null);
+        try {
+            await SetMaclawLLMThinkingMode(mode);
+        } catch {
+            setThinkingMode(previous);
+            setThinkingModeError(t(
+                "Couldn't save the reasoning setting. Check the connection and try again.",
+                "推理设置未能保存。请检查连接后重试。",
+            ));
+        } finally {
+            thinkingModeSavingRef.current = false;
+            setThinkingModeSaving(false);
+        }
+    }, [t, thinkingMode]);
+
     /** Shared OAuth login handler for both first-login and re-login scenarios. */
     const handleOAuthLogin = useCallback(async () => {
         setOauthBusy(true);
         setDlgTestResult(null);
         try {
             const providerName = (dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined) || "OpenAI";
+            let loginMessage = "";
 
             if (providerName === "Anthropic") {
                 // Anthropic: two-step flow (get auth URL, user pastes code)
@@ -117,7 +142,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     setDlgTestResult({ ok: false, msg: t("Cancelled", "已取消") });
                     return;
                 }
-                await CompleteAnthropicOAuth(code.trim());
+                loginMessage = await CompleteAnthropicOAuth(code.trim());
             } else if (providerName === "GitHub Copilot") {
                 // GitHub Copilot: device code flow
                 const deviceInfo = await StartGitHubCopilotOAuth();
@@ -126,13 +151,13 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     msg: `请打开 ${deviceInfo.verification_uri} 并输入代码: ${deviceInfo.user_code}`,
                 });
                 // Wait for user to complete (blocking call)
-                await WaitGitHubCopilotOAuth();
+                loginMessage = await WaitGitHubCopilotOAuth();
             } else if (providerName === "xAI-Grok") {
                 // xAI: Grok Build's OIDC Authorization Code + PKCE flow.
-                await StartXAIOAuth();
+                loginMessage = await StartXAIOAuth();
             } else {
                 // OpenAI: standard PKCE with local callback
-                await StartOpenAIOAuth();
+                loginMessage = await StartOpenAIOAuth();
             }
 
             const data = await GetMaclawLLMProviders();
@@ -148,7 +173,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 setDlgDirty(false);
                 onStatusChange?.(true, true);
                 onProviderChanged?.();
-                setDlgTestResult({ ok: true, msg: t("OAuth login successful", "OAuth 登录成功") });
+                setDlgTestResult({
+                    ok: true,
+                    msg: loginMessage || t("OAuth login successful", "OAuth 登录成功"),
+                });
                 setTimeout(() => setDlgOpen(false), 1200);
             }
         } catch (e) {
@@ -572,8 +600,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 auth_type: sp.auth_type || "",
             });
             const saveName = sp.name;
+            const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
             const nextProviders = dlgProviders.map((provider, index) => index === dlgSelectedIdx
-                ? { ...provider, supports_vision: testResult.supports_vision }
+                ? {
+                    ...provider,
+                    // Preserve a previously confirmed value when the image
+                    // request itself failed (for example due to a timeout).
+                    supports_vision: visionProbeInconclusive ? provider.supports_vision : testResult.supports_vision,
+                }
                 : { ...provider });
             await SaveMaclawLLMProviders(nextProviders, saveName);
 
@@ -598,7 +632,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             setDlgTested(true);
             setDlgTestResult({
                 ok: true,
-                msg: `${testResult.message}\n${testResult.supports_vision
+                msg: `${testResult.message}\n${visionProbeInconclusive
+                    ? t("Vision support: not confirmed; please retry", "图片理解：未确认，请重试")
+                    : testResult.supports_vision
                     ? t("Vision support: enabled", "图片理解：支持")
                     : t("Vision support: disabled", "图片理解：不支持")}`,
             });
@@ -743,7 +779,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 </div>
             </div>
 
-            {/* Thinking (reasoning) mode — global, applies to all providers */}
+            {/* Thinking (reasoning) mode — global, provider-native request controls */}
             <div className="llm-config-card" style={{
                 marginBottom: 16, padding: "12px 16px", borderRadius: 6,
                 border: `1px solid ${colors.border}`, background: colors.surface,
@@ -752,23 +788,26 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     <label style={{ ...labelStyle, marginBottom: 0 }}>
                         {t("Thinking (Reasoning)", "推理（思考过程）")}
                         <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
-                            {t("Global, applies to all providers", "全局设置，对所有服务商生效")}
+                            {t("Global; translated to each provider's supported control", "全局设置；会按服务商支持的参数转换")}
                         </span>
                     </label>
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} role="group" aria-label={t("Thinking mode", "推理模式")} aria-busy={thinkingModeSaving}>
                     {(["", "enabled", "disabled"] as const).map(mode => {
                         const active = thinkingMode === mode;
                         return (
                             <button key={mode || "auto"}
                                 data-testid={`thinking-mode-${mode || "auto"}`}
-                                onClick={() => { setThinkingMode(mode); SetMaclawLLMThinkingMode(mode).catch(() => {}); }}
+                                type="button"
+                                aria-pressed={active}
+                                disabled={thinkingModeSaving}
+                                onClick={() => { void saveThinkingMode(mode); }}
                                 style={{
-                                    fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
+                                    fontSize: "0.76rem", padding: "5px 16px", cursor: thinkingModeSaving ? "wait" : "pointer",
                                     background: active ? colors.primaryLight : colors.surface,
-                                    color: active ? colors.primaryDark : colors.text,
+                                    color: active ? colors.primaryDark : colors.textSecondary,
                                     border: `1px solid ${active ? colors.primary : colors.border}`,
-                                    borderRadius: 4, transition: "all 0.15s",
+                                    borderRadius: 4, transition: "all 0.15s", opacity: thinkingModeSaving ? 0.7 : 1,
                                 }}>
                                 {mode === "" ? t("Auto", "自动") : mode === "enabled" ? t("On", "开启") : t("Off", "关闭")}
                             </button>
@@ -777,11 +816,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 </div>
                 <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
                     {thinkingMode === "enabled"
-                        ? t("Requests thinking output; the chat panel shows the model's thinking process when the provider supports it.", "请求模型输出思考过程；服务商支持时，助手面板会显示“思考过程”。")
+                        ? t("Enabled on new requests using the provider's native control. The chat panel shows reasoning only when the provider returns it.", "已在后续请求中按服务商原生参数开启；仅当服务商返回推理内容时，助手面板才会显示“思考过程”。")
                         : thinkingMode === "disabled"
-                            ? t("Explicitly disables thinking; the model replies directly without a thinking phase.", "显式关闭思考；模型直接回复，不产出思考过程。")
-                            : t("Auto: decided by provider defaults (DeepSeek thinking models are auto-enabled).", "自动：由服务商默认行为决定（DeepSeek 思考模型会自动开启）。")}
+                            ? t("Disabled on new requests using the provider's native control. Models without a hard off switch use their lowest reasoning level.", "已在后续请求中按服务商原生参数关闭；没有硬关闭能力的模型会使用最低推理强度。")
+                            : t("Auto: uses the model default (DeepSeek thinking models are explicitly enabled when required).", "自动：沿用模型默认行为（需要显式开启的 DeepSeek 思考模型会自动开启）。")}
                 </p>
+                {thinkingModeError && <p role="alert" style={{ fontSize: "0.7rem", color: colors.danger, margin: "6px 0 0", lineHeight: 1.4 }}>{thinkingModeError}</p>}
             </div>
 
             {/* Multi-model council (MoA) presets — aggregator + reference models */}

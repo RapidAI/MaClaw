@@ -2,7 +2,10 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestWindowTitleMatchesMain(t *testing.T) {
 	cases := []struct {

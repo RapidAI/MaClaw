@@ -933,6 +933,7 @@ export namespace main {
 	export class MaclawLLMTestResult {
 	    message: string;
 	    supports_vision: boolean;
+	    vision_probe_status?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new MaclawLLMTestResult(source);
@@ -942,6 +943,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.message = source["message"];
 	        this.supports_vision = source["supports_vision"];
+	        this.vision_probe_status = source["vision_probe_status"];
 	    }
 	}
 

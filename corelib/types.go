@@ -994,8 +994,9 @@ func (c MaclawLLMConfig) EffectiveMaxOutputTokens() int {
 }
 
 type MaclawLLMTestResult struct {
-	Message        string `json:"message"`
-	SupportsVision bool   `json:"supports_vision"`
+	Message           string `json:"message"`
+	SupportsVision    bool   `json:"supports_vision"`
+	VisionProbeStatus string `json:"vision_probe_status,omitempty"`
 }
 
 // WebSearchProvider 描述一个网页搜索 provider 配置。

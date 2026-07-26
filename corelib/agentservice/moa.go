@@ -40,6 +40,7 @@ func materializeProviderByName(cfg corelib.AppConfig, name string) (corelib.Macl
 			WireAPI:         strings.TrimSpace(p.WireAPI),
 			ProviderName:    strings.TrimSpace(p.Name),
 			AuthType:        p.AuthType,
+			ThinkingMode:    cfg.MaclawLLMThinkingMode,
 		}, nil
 	}
 	return corelib.MaclawLLMConfig{}, fmt.Errorf("provider %q not found", name)

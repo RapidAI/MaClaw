@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -740,6 +741,22 @@ func TestProbeVisionAnthropic_ReturnsTrueForRedResponse(t *testing.T) {
 	}
 }
 
+func TestProbeVisionAnthropicClassifiesExplicitImageRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"message":"This model does not support image inputs"}}`))
+	}))
+	defer srv.Close()
+
+	got := probeVisionAnthropicResult(corelib.MaclawLLMConfig{
+		URL: srv.URL, Model: "test-model", Protocol: "anthropic", AgentType: "test-agent",
+	}, visionProbeRedPNG)
+	if got != visionProbeUnsupported {
+		t.Fatalf("probeVisionAnthropicResult() = %q, want unsupported", got)
+	}
+}
+
 func TestProbeVisionResponsesAPI_SanitizesQwenStoreAndNormalizesEndpoint(t *testing.T) {
 	var captured map[string]interface{}
 	var gotPath string
@@ -806,13 +823,13 @@ func TestProbeVisionResponsesAPI_AcceptsCompatibleResponseText(t *testing.T) {
 }
 
 func TestTestMaclawLLMResponsesProbeRetainsProviderAuth(t *testing.T) {
-	requests := 0
+	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		if got := r.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
 			t.Fatalf("X-XAI-Token-Auth = %q, want xai-grok-cli", got)
 		}
-		if requests == 2 {
+		if requests.Load() == 2 {
 			var body map[string]interface{}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode vision request: %v", err)
@@ -836,11 +853,202 @@ func TestTestMaclawLLMResponsesProbeRetainsProviderAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestMaclawLLM returned error: %v", err)
 	}
-	if requests != 2 {
-		t.Fatalf("requests = %d, want 2 (text test plus vision probe)", requests)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want 2 (text test plus vision probe)", got)
 	}
 	if !got.SupportsVision {
 		t.Fatal("TestMaclawLLM supports_vision = false, want true")
+	}
+}
+
+func TestOAuthProviderCapabilityCheckPersistsVisionResult(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer oauth-token" {
+			t.Fatalf("Authorization = %q, want OAuth bearer token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"red"}}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				Name: "OAuth Test", URL: srv.URL, Key: "oauth-token", Model: "test-model",
+				Protocol: "openai", AuthType: "oauth", WireAPI: "chat", IsCustom: true,
+			},
+			{Name: "Other", URL: "https://other.example/v1", Model: "other-model", IsCustom: true},
+		},
+		MaclawLLMCurrentProvider: "Other",
+		MaclawLLMModel:           "other-model",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	result, err := app.testAndSaveOAuthProviderCapability("OAuth Test")
+	if err != nil {
+		t.Fatalf("testAndSaveOAuthProviderCapability() error = %v", err)
+	}
+	if !result.SupportsVision {
+		t.Fatal("SupportsVision = false, want true")
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests = %d, want 2 (text test plus image probe)", got)
+	}
+
+	providers := app.GetMaclawLLMProviders()
+	if providers.Current != "Other" {
+		t.Fatalf("current provider = %q, want Other", providers.Current)
+	}
+	for _, provider := range providers.Providers {
+		if provider.Name == "OAuth Test" {
+			if !provider.SupportsVision {
+				t.Fatal("persisted SupportsVision = false, want true")
+			}
+			if provider.Key != "oauth-token" {
+				t.Fatalf("OAuth Test key = %q, want preserved OAuth token", provider.Key)
+			}
+			return
+		}
+	}
+	t.Fatal("OAuth Test provider missing after capability check")
+}
+
+func TestOAuthProviderCapabilityCheckKeepsExistingVisionOnInconclusiveProbe(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hello"}}]}`))
+			return
+		}
+		// A malformed response represents an inconclusive image request, not a
+		// model-confirmed lack of image input support.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{`))
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: "OAuth Test", URL: srv.URL, Key: "oauth-token", Model: "test-model",
+			Protocol: "openai", AuthType: "oauth", WireAPI: "chat", SupportsVision: true, IsCustom: true,
+		}},
+		MaclawLLMCurrentProvider: "OAuth Test",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	result, err := app.testAndSaveOAuthProviderCapability("OAuth Test")
+	if err != nil {
+		t.Fatalf("testAndSaveOAuthProviderCapability() error = %v", err)
+	}
+	if result.VisionProbeStatus != string(visionProbeInconclusive) {
+		t.Fatalf("VisionProbeStatus = %q, want inconclusive", result.VisionProbeStatus)
+	}
+	if result.SupportsVision {
+		t.Fatal("inconclusive probe must not report SupportsVision=true")
+	}
+	if got := app.GetMaclawLLMProviders().Providers[0].SupportsVision; !got {
+		t.Fatal("inconclusive image probe overwrote a previously confirmed SupportsVision=true")
+	}
+}
+
+func TestSaveVisionProbeResultForProviderDoesNotCreateUnneededWrite(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: "OAuth Test", SupportsVision: true, IsCustom: true,
+		}},
+		MaclawLLMCurrentProvider: "OAuth Test",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.saveVisionProbeResultForProvider("OAuth Test", true); err != nil {
+		t.Fatalf("saveVisionProbeResultForProvider() error = %v", err)
+	}
+	if got := app.GetMaclawLLMProviders().Providers[0].SupportsVision; !got {
+		t.Fatal("SupportsVision = false, want true")
+	}
+}
+
+func TestMaterializeProviderByNameKeepsNonOpenAIOAuthOnConfiguredProtocol(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "Anthropic", URL: "https://api.anthropic.com", Key: "anthropic-token", Model: "claude-test", Protocol: "anthropic", AuthType: "oauth"},
+			{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Key: "copilot-token", Model: "copilot-test", Protocol: "openai", AuthType: "oauth"},
+		},
+		MaclawLLMCurrentProvider: "Anthropic",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	for _, providerName := range []string{"Anthropic", "GitHub Copilot"} {
+		cfg, err := app.MaterializeProviderByName(providerName)
+		if err != nil {
+			t.Fatalf("MaterializeProviderByName(%q) error = %v", providerName, err)
+		}
+		if cfg.WireAPI != "" {
+			t.Fatalf("MaterializeProviderByName(%q).WireAPI = %q, want empty/default transport", providerName, cfg.WireAPI)
+		}
+	}
+
+	openAI := corelib.MaclawLLMProvider{Name: "OpenAI", URL: "https://chatgpt.com/backend-api/codex", AuthType: "oauth"}
+	if !openAI.IsCodexSubscriptionOAuthProvider() {
+		t.Fatal("OpenAI Codex provider must retain its Responses transport default")
+	}
+}
+
+func TestMaterializeProviderByNameUsesImportedCodexAPIKeyWhenNoOAuthJWTExists(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	store := oauth.NewFileCredentialStore(filepath.Join(tmpHome, "credentials.json"))
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: "OpenAI", URL: "https://chatgpt.com/backend-api/codex",
+			Model: "gpt-5", AuthType: "oauth",
+		}},
+		MaclawLLMCurrentProvider: "OpenAI",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := store.Modify("openai", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{Type: "oauth", AccessToken: "sk-imported-key"}, nil
+	}); err != nil {
+		t.Fatalf("credential store Modify() error = %v", err)
+	}
+
+	cfg, err := app.MaterializeProviderByName("OpenAI")
+	if err != nil {
+		t.Fatalf("MaterializeProviderByName() error = %v", err)
+	}
+	if cfg.Key != "sk-imported-key" {
+		t.Fatalf("materialized key = %q, want imported API key", cfg.Key)
 	}
 }
 
@@ -981,6 +1189,59 @@ func TestTestMaclawLLM_ReturnsSupportsVisionFalseWhenProbeFails(t *testing.T) {
 	}
 	if got.SupportsVision {
 		t.Fatal("TestMaclawLLM supports_vision = true, want false")
+	}
+}
+
+func TestClassifyVisionProbeHTTPFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   visionProbeResult
+	}{
+		{
+			name:   "explicit image rejection",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"message":"This model does not support image inputs"}}`,
+			want:   visionProbeUnsupported,
+		},
+		{
+			name:   "vision disabled for model",
+			status: http.StatusUnprocessableEntity,
+			body:   `{"error":{"message":"Vision is not enabled for this model"}}`,
+			want:   visionProbeUnsupported,
+		},
+		{
+			name:   "ordinary malformed request",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"message":"invalid request body"}}`,
+			want:   visionProbeInconclusive,
+		},
+		{
+			name:   "transient server error",
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":{"message":"image service unavailable"}}`,
+			want:   visionProbeInconclusive,
+		},
+		{
+			name:   "image permission failure is not a capability result",
+			status: http.StatusForbidden,
+			body:   `{"error":{"message":"image input is unavailable for this account"}}`,
+			want:   visionProbeInconclusive,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyVisionProbeHTTPFailure(tt.status, []byte(tt.body)); got != tt.want {
+				t.Fatalf("classifyVisionProbeHTTPFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyVisionProbeResponseRecognizesTextOnlyModel(t *testing.T) {
+	if got := classifyVisionProbeResponse("I'm a text-only model and cannot view images."); got != visionProbeUnsupported {
+		t.Fatalf("classifyVisionProbeResponse() = %q, want unsupported", got)
 	}
 }
 
@@ -3761,5 +4022,34 @@ func TestMaclawLLMThinkingMode_GlobalSetting(t *testing.T) {
 	}
 	if got := app.GetMaclawLLMConfig().ThinkingMode; got != "" {
 		t.Fatalf("GetMaclawLLMConfig().ThinkingMode after reset = %q, want auto(empty)", got)
+	}
+}
+
+func TestTestMaclawLLMHonorsGlobalThinkingMode(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SetMaclawLLMThinkingMode("disabled"); err != nil {
+		t.Fatalf("SetMaclawLLMThinkingMode: %v", err)
+	}
+
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	_, err := app.TestMaclawLLM(corelib.MaclawLLMConfig{
+		URL: srv.URL, Key: "test-key", Model: "deepseek-reasoner", Protocol: "openai",
+	})
+	if err != nil {
+		t.Fatalf("TestMaclawLLM: %v", err)
+	}
+	thinking, _ := got["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v, want disabled", got["thinking"])
 	}
 }

@@ -445,6 +445,27 @@ func TestLoadLLMConfigUsesCurrentProviderKeyFallback(t *testing.T) {
 	}
 }
 
+func TestLoadLLMConfigAppliesGlobalThinkingMode(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	if err := NewFileConfigStore(dataDir).SaveConfig(corelib.AppConfig{
+		MaclawLLMThinkingMode: "enabled",
+		MaclawLLMUrl:          "https://api.deepseek.com/v1",
+		MaclawLLMKey:          "test-key",
+		MaclawLLMModel:        "deepseek-reasoner",
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	llm, err := LoadLLMConfig()
+	if err != nil {
+		t.Fatalf("LoadLLMConfig() error = %v", err)
+	}
+	if llm.ThinkingMode != "enabled" {
+		t.Fatalf("ThinkingMode = %q, want enabled", llm.ThinkingMode)
+	}
+}
+
 func TestLoadLLMConfigUsesJWTForLegacyCodexOAuthProvider(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("MACLAW_DATA_DIR", dataDir)

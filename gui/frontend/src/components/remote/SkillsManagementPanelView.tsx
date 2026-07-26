@@ -680,7 +680,7 @@ function skillReviewReasonPreview(skill: NLSkillDefinition, localizeText: Props[
 }
 
 export function SkillsManagementPanel({ localizeText }: Props) {
-    const { showConfirm } = useDialog();
+    const { showConfirm, showPrompt } = useDialog();
     const { showToast } = useToast();
 
     const localizeSkillStatus = (status: string): string => {
@@ -2153,13 +2153,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     };
 
     const handleLearnedRename = async (oldName: string) => {
-        const newName = window.prompt(
+        const newName = await showPrompt(
             localizeText(
                 `Enter a new name for "${oldName}":`,
                 `为「${oldName}」输入新名称：`,
                 `為「${oldName}」輸入新名稱：`,
             ),
-            oldName,
+            undefined,
+            { defaultValue: oldName },
         );
         if (!newName || newName.trim() === "" || newName.trim() === oldName) return;
         setBusy(true);

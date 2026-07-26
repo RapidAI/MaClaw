@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -228,6 +229,56 @@ func TestBuildResponsesWSFrameSanitizesQwenOpenAICompatProvider(t *testing.T) {
 	values := properties["values"].(map[string]interface{})
 	if got := values["items"].(map[string]interface{})["type"]; got != "string" {
 		t.Fatalf("array items type = %#v, want string", got)
+	}
+}
+
+func TestBuildResponsesWSFrameHonorsGlobalThinkingMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        corelib.MaclawLLMConfig
+		wantKey    string
+		wantValue  interface{}
+		absentKeys []string
+	}{
+		{
+			name:      "DeepSeek compatible disabled",
+			cfg:       corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", ThinkingMode: "disabled"},
+			wantKey:   "thinking",
+			wantValue: map[string]interface{}{"type": "disabled"},
+			absentKeys: []string{
+				"reasoning", "reasoning_effort", "enable_thinking",
+			},
+		},
+		{
+			name:      "OpenAI enabled",
+			cfg:       corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-5", ThinkingMode: "enabled", ReasoningEffort: "high"},
+			wantKey:   "reasoning",
+			wantValue: map[string]interface{}{"effort": "high"},
+			absentKeys: []string{
+				"thinking", "reasoning_effort", "enable_thinking",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := buildResponsesWSFrame(tt.cfg, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil)
+			if err != nil {
+				t.Fatalf("buildResponsesWSFrame: %v", err)
+			}
+			var frame map[string]interface{}
+			if err := json.Unmarshal(data, &frame); err != nil {
+				t.Fatalf("json.Unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(frame[tt.wantKey], tt.wantValue) {
+				t.Fatalf("%s = %#v, want %#v", tt.wantKey, frame[tt.wantKey], tt.wantValue)
+			}
+			for _, key := range tt.absentKeys {
+				if _, exists := frame[key]; exists {
+					t.Fatalf("unexpected %s in frame: %#v", key, frame)
+				}
+			}
+		})
 	}
 }
 

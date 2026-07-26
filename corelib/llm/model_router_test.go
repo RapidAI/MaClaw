@@ -86,13 +86,16 @@ func TestRouteWithAux_ExplicitRouteTakesPrecedence(t *testing.T) {
 
 func TestRouteWithAux_FallsBackToAuxForLightweightTasks(t *testing.T) {
 	r := NewModelRouter(map[string]ModelRoute{}) // no explicit routes
-	primary := corelib.MaclawLLMConfig{URL: "https://primary.com", Model: "gpt-4", Key: "pk"}
+	primary := corelib.MaclawLLMConfig{URL: "https://primary.com", Model: "gpt-4", Key: "pk", ThinkingMode: "disabled", ReasoningEffort: "minimal"}
 	aux := corelib.AuxiliaryLLMConfig{URL: "https://aux.com", Key: "ak", Model: "aux-model", Protocol: "openai"}
 
 	for _, task := range []TaskType{TaskIntent, TaskFast, TaskSummary} {
 		got := r.RouteWithAux(task, primary, aux)
 		if got.Model != "aux-model" || got.URL != "https://aux.com" {
 			t.Errorf("task %s should fall back to aux, got model=%s url=%s", task, got.Model, got.URL)
+		}
+		if got.ThinkingMode != "disabled" || got.ReasoningEffort != "minimal" {
+			t.Errorf("task %s lost global reasoning controls: %+v", task, got)
 		}
 	}
 }

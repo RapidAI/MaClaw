@@ -3,6 +3,7 @@ import { ListLansengerGroups, LoadConfig, RestartLansenger, SetLansengerGroupAll
 import { main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { channelModeLabel, followLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+import { useDialog } from '../CustomDialog';
 
 /** Lazy so settings/IM does not eagerly pull the full watch editor + survey CSS. */
 const UtilitiesWatchPanel = lazy(() =>
@@ -15,7 +16,7 @@ const UtilitiesWatchPanel = lazy(() =>
                 isZh: boolean;
                 onBack: () => void;
                 compactHeader?: boolean;
-            }) {
+}) {
                 return (
                     <p className="im-groups-modal__status" role="alert">
                         {isZh ? '加载盯人面板失败，请重试' : 'Failed to load people-watch panel'}
@@ -80,6 +81,7 @@ export const LansengerSettings = ({
     setLansengerLocalModeState,
     setIMAuditPlatform,
 }: LansengerSettingsProps) => {
+    const { showAlert } = useDialog();
     const [groupsOpen, setGroupsOpen] = useState(false);
     const [groupsLoading, setGroupsLoading] = useState(false);
     const [groupsError, setGroupsError] = useState('');
@@ -185,10 +187,10 @@ export const LansengerSettings = ({
                     }
                     return { ...g, ignored: !nextMuted };
                 }));
-                alert(wailsErrorMessage(err, textForLang(lang, 'Failed to update group list', '更新群列表失败', '更新群列表失敗')));
+                void showAlert(wailsErrorMessage(err, textForLang(lang, 'Failed to update group list', '更新群列表失败', '更新群列表失敗')));
             })
             .finally(() => setIgnoreBusyID((cur) => (cur === id ? '' : cur)));
-    }, [isAllowlistPolicy, lang, setConfig]);
+    }, [isAllowlistPolicy, lang, setConfig, showAlert]);
 
     // One Escape handler for whichever sheet is open (watch stacks above groups).
     // Capture phase so nested inputs / other listeners do not swallow Escape first.
@@ -266,7 +268,7 @@ export const LansengerSettings = ({
                             type="button"
                             className="im-settings-button"
                             onClick={() => RestartLansenger().then(setLansengerStatus).catch((err: any) => {
-                                alert(err?.message || err || restartLabel(lang));
+                                void showAlert(String(err?.message || err || restartLabel(lang)));
                             })}
                         >
                             {restartLabel(lang)}
@@ -323,7 +325,7 @@ export const LansengerSettings = ({
                                     LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                                 }).catch((err: any) => {
                                     setLansengerLocalModeState(prev);
-                                    alert(err?.message || err || switchFailedLabel(lang));
+                                    void showAlert(String(err?.message || err || switchFailedLabel(lang)));
                                 });
                             }}
                         >
