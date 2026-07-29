@@ -11,15 +11,15 @@ import (
 // after NormalizeStepForRunner. Used at install time and skill inspect to stop
 // the agent from treating non-runnable Hub skills as download tools.
 type RunnerCompatReport struct {
-	Runner              string   `json:"runner"`
-	Runnable            bool     `json:"runnable"`
-	StepCount           int      `json:"step_count"`
-	SupportedSteps      int      `json:"supported_steps"`
-	UnsupportedActions  []string `json:"unsupported_actions,omitempty"`
-	CraftToolOnly       bool     `json:"craft_tool_only,omitempty"`
-	HasBash             bool     `json:"has_bash,omitempty"`
-	Warnings            []string `json:"warnings,omitempty"`
-	SuggestedAlt        string   `json:"suggested_alt,omitempty"`
+	Runner             string   `json:"runner"`
+	Runnable           bool     `json:"runnable"`
+	StepCount          int      `json:"step_count"`
+	SupportedSteps     int      `json:"supported_steps"`
+	UnsupportedActions []string `json:"unsupported_actions,omitempty"`
+	CraftToolOnly      bool     `json:"craft_tool_only,omitempty"`
+	HasBash            bool     `json:"has_bash,omitempty"`
+	Warnings           []string `json:"warnings,omitempty"`
+	SuggestedAlt       string   `json:"suggested_alt,omitempty"`
 }
 
 // AssessRunnerCompatibility normalizes a copy of the skill steps and checks
@@ -37,6 +37,11 @@ func AssessRunnerCompatibility(entry *corelib.NLSkillEntry, runner string) Runne
 	skillDir := strings.TrimSpace(entry.SkillDir)
 	steps := entry.Steps
 	report.StepCount = len(steps)
+	if IsInstructionOnlySkillType(entry.Type) {
+		report.Runnable = false
+		report.Warnings = append(report.Warnings, "instruction-only app container is not directly executable")
+		return report
+	}
 	if len(steps) == 0 {
 		// Knowledge / instruction-only skills are "runnable" as documentation.
 		if IsKnowledgeSkillType(entry.Type) || isInstructionOnlyEntry(entry) {
@@ -150,7 +155,7 @@ func isInstructionOnlyEntry(entry *corelib.NLSkillEntry) bool {
 		return false
 	}
 	// Mirror lightweight instruction-only detection used by runners.
-	if strings.TrimSpace(entry.Type) == "instruction" || strings.TrimSpace(entry.Type) == "knowledge" {
+	if IsInstructionOnlySkillType(entry.Type) || strings.TrimSpace(entry.Type) == "knowledge" {
 		return true
 	}
 	return false

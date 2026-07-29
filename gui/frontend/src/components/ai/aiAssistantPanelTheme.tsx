@@ -624,6 +624,35 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
         outline: 2px solid rgba(47, 95, 152, 0.48);
         outline-offset: 1px;
     }
+    .ai-attachment-row {
+        contain: layout style;
+        width: 100%;
+    }
+    .ai-attachment-strip {
+        display: grid;
+        width: min(100%, 760px);
+        /* Keep empty tracks so a short list remains compact instead of stretching
+           its last attachment across the entire available strip. */
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 218px), 1fr));
+        align-items: start;
+    }
+    .ai-attachment-remove:hover:not(:disabled) {
+        background: var(--ai-attachment-remove-hover-bg) !important;
+        color: var(--ai-attachment-remove-hover-color) !important;
+    }
+    .ai-attachment-remove:active:not(:disabled) {
+        transform: scale(0.94);
+    }
+    .ai-attachment-remove:focus-visible {
+        outline: 2px solid var(--ai-attachment-focus-color) !important;
+        outline-offset: 1px;
+    }
+    @media (pointer: coarse) {
+        .ai-attachment-remove {
+            width: 36px !important;
+            height: 36px !important;
+        }
+    }
     @media (prefers-reduced-motion: reduce) {
         .ai-update-notice-button { animation: none; }
     }

@@ -5,9 +5,9 @@ import "strings"
 type experienceRoutingDirectionKind string
 
 const (
-	experienceRoutingDirectionUnknown  experienceRoutingDirectionKind = ""
-	experienceRoutingDirectionPrefer   experienceRoutingDirectionKind = "prefer"
-	experienceRoutingDirectionAvoid    experienceRoutingDirectionKind = "avoid"
+	experienceRoutingDirectionUnknown experienceRoutingDirectionKind = ""
+	experienceRoutingDirectionPrefer  experienceRoutingDirectionKind = "prefer"
+	experienceRoutingDirectionAvoid   experienceRoutingDirectionKind = "avoid"
 )
 
 func normalizeExperienceRoutingDirectionKind(value string) experienceRoutingDirectionKind {

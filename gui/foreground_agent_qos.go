@@ -30,9 +30,9 @@ var foregroundAgentWork atomic.Int64
 // foregroundAgentOwners tracks per-owner foreground loop nesting counts and
 // the nanosecond timestamp of the most recent loop completion.
 var foregroundAgentOwners = struct {
-	mu          sync.Mutex
-	counts      map[string]int
-	lastDoneNs  map[string]int64 // per-owner last foreground-done UnixNano
+	mu         sync.Mutex
+	counts     map[string]int
+	lastDoneNs map[string]int64 // per-owner last foreground-done UnixNano
 }{
 	counts:     make(map[string]int),
 	lastDoneNs: make(map[string]int64),

@@ -31,13 +31,13 @@ func TestRecoverCCDeletesOnlyConfigFiles(t *testing.T) {
 	otherFile := filepath.Join(otherDir, "plugin.js")
 
 	for path, content := range map[string]string{
-		claudeJSON:  "config",
+		claudeJSON:   "config",
 		settingsJSON: "settings",
-		hookJSON:    "hook",
-		hookTXT:     "keep",
-		skillFile:   "skill",
-		projectFile: "project",
-		otherFile:   "extension",
+		hookJSON:     "hook",
+		hookTXT:      "keep",
+		skillFile:    "skill",
+		projectFile:  "project",
+		otherFile:    "extension",
 	} {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatalf("WriteFile(%q) error = %v", path, err)

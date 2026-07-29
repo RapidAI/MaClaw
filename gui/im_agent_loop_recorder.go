@@ -119,4 +119,3 @@ func (r agentLoopRecorder) RecordToolResult(id string, content interface{}, tool
 		ToolOutcome: outcome,
 	})
 }
-

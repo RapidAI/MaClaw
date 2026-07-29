@@ -44,8 +44,8 @@ func TestApplyHubWorkflowStatusAttentionUpdatesLocal(t *testing.T) {
 func TestApplyHubWorkflowStatusAttentionCreatesWhenMissing(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if err := app.applyHubWorkflowStatusAttention("hub-new", "n1", "Expense", "blocked", "", map[string]any{
-		"escalation_pending":   true,
-		"escalation_approvers": []string{"ve-a", "ve-c"},
+		"escalation_pending":             true,
+		"escalation_approvers":           []string{"ve-a", "ve-c"},
 		"escalation_exhausted_approvers": []string{"ve-dead"},
 		"escalation_attempts": map[string]any{
 			"ve-a": float64(4),

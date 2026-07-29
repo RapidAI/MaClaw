@@ -286,6 +286,7 @@ type codingConflictFileTriple struct {
 }
 
 const codingConflictPreviewMaxBytes = 24 * 1024
+
 // codingConflictWriteMaxBytes is the max body for manual/base write (4× preview).
 const codingConflictWriteMaxBytes = codingConflictPreviewMaxBytes * 4
 

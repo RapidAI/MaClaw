@@ -17,6 +17,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const sharedPythonRuntimeSchema = "maclaw.python_runtime.v1"
@@ -71,7 +72,10 @@ type sharedPythonRuntimeLock struct {
 	Error      string   `json:"error,omitempty"`
 }
 
-var sharedRuntimeExecCommand = exec.Command
+// Use the shared command factory so setting up a Python runtime stays fully
+// backgrounded on Windows. PDF-to-Word can start several uv/python commands
+// on its first run; exec.Command would allocate a console for each one.
+var sharedRuntimeExecCommand = coretool.Command
 var sharedRuntimeResolveUVExecutable = resolveUVExecutable
 var sharedRuntimeResolveSeedPython = resolveSharedRuntimeSeedPython
 var sharedRuntimeCheckPython = checkPython

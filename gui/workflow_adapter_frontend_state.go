@@ -45,7 +45,7 @@ func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.EngineState, 
 	}
 	return &frontendWorkflowState{
 		EngineState: &cp,
-		Phases:          phases,
+		Phases:      phases,
 	}
 }
 

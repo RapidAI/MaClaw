@@ -97,5 +97,3 @@ func TestPrepareSkillForUpload_NoManifestWhenNotPortable(t *testing.T) {
 		t.Error("manifest should not be generated for non-portable skills")
 	}
 }
-
-

@@ -1,19 +1,19 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"strings"
 )
 
 // ProviderResolveResult 服务商解析结果
 type ProviderResolveResult struct {
 	Provider     corelib.ModelConfig // 最终选中的服务商
-	Fallback     bool        // 是否发生了降级
-	OriginalName string      // 原始目标服务商名称（降级时有值）
-	Reason       string      // 选择原因描述
-	Tried        []string    // 已尝试的服务商名称列表
-	Errors       []string    // 各服务商的失败原因
+	Fallback     bool                // 是否发生了降级
+	OriginalName string              // 原始目标服务商名称（降级时有值）
+	Reason       string              // 选择原因描述
+	Tried        []string            // 已尝试的服务商名称列表
+	Errors       []string            // 各服务商的失败原因
 }
 
 // ProviderResolver 服务商解析器
@@ -120,12 +120,12 @@ func (r *ProviderResolver) resolveAuto(toolCfg corelib.ToolConfig) (ProviderReso
 
 	// All providers unavailable
 	return ProviderResolveResult{
-		Tried:  tried,
-		Errors: errors,
-	}, fmt.Errorf(
-		"所有服务商均不可用。已尝试: %s。失败原因: %s",
-		strings.Join(tried, ", "), strings.Join(errors, "; "),
-	)
+			Tried:  tried,
+			Errors: errors,
+		}, fmt.Errorf(
+			"所有服务商均不可用。已尝试: %s。失败原因: %s",
+			strings.Join(tried, ", "), strings.Join(errors, "; "),
+		)
 }
 
 // allProviderNames returns all provider names from the ToolConfig.

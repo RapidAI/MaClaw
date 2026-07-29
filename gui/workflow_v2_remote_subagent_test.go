@@ -273,7 +273,6 @@ func TestHasPendingTemplateSubAgentExecutionRequiresTemplateExecutionContext(t *
 	}
 }
 
-
 func TestClearPerUserSessionStateClearsTemplateSubAgentPendingState(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := "u"
@@ -318,7 +317,6 @@ func TestSSHConnectFailureMessage(t *testing.T) {
 		t.Fatalf("long reason should be truncated, got %d runes", n)
 	}
 }
-
 
 func TestBuildRemoteCodingPlanStepTextStopsAtCurrentStep(t *testing.T) {
 	tasks := []*v2.TaskItem{

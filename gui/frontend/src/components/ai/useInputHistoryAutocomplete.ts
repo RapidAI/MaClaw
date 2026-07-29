@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { isPlainEnter } from "./assistantInputShortcuts";
 import { matchHistoryPrefix } from "./inputHistoryAutocompleteUtils";
 
 const EMPTY_MATCHES: string[] = [];
@@ -151,15 +152,8 @@ export function useInputHistoryAutocomplete({
             dismissRef.current();
             return true;
         }
-        // Enter completes only when open and unmodified; Shift+Enter = newline,
-        // Ctrl/Meta/Alt+Enter fall through so callers can still send.
-        if (
-            event.key === "Enter"
-            && !event.shiftKey
-            && !event.ctrlKey
-            && !event.metaKey
-            && !event.altKey
-        ) {
+        // Plain Enter completes; modified Enter stays with the textarea.
+        if (isPlainEnter(event)) {
             event.preventDefault();
             acceptRef.current();
             return true;

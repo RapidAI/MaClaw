@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef } from "react";
 import { BufferEntry, AttachmentInfo, getTextPreview } from "./useBufferQueue";
 import { AssistantInputIcon } from "./aiAssistantPanelTheme";
+import { isPlainEnter } from "./assistantInputShortcuts";
 
 // ---------------------------------------------------------------------------
 // Localization helper (same pattern as AIAssistantPanel)
@@ -438,7 +439,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (isPlainEnter(e)) {
                 e.preventDefault();
                 handleSave();
             } else if (e.key === "Escape") {

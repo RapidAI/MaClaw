@@ -79,8 +79,31 @@ func NormalizeGUIInstallHubPackage(pkg map[string]any) (synthesized bool, notes 
 		}
 		governance := anyMap(app["governance"])
 		verification := anyMap(firstAny(governance["dependencyVerification"], governance["dependency_verification"]))
-		for _, dep := range anySlice(firstAny(verification["dependencies"], verification["skills"])) {
+		for _, dep := range append(anySlice(verification["dependencies"]), anySlice(verification["skills"])...) {
 			addDep(dep, appID)
+		}
+		// Some older package exports declared the executable dependency directly
+		// in binding.skill / appSkill (or dependencies.skill) but did not include
+		// it in dependencyVerification. Preserve that declaration as resolved
+		// metadata so the GUI planner can apply its trusted Hub compatibility
+		// mapping instead of treating it as an unavailable local dependency.
+		for _, holder := range []map[string]any{anyMap(app["binding"]), app} {
+			if holder == nil {
+				continue
+			}
+			addDep(holder["skill"], appID)
+			addDep(holder["appSkill"], appID)
+			addDep(holder["app_skill"], appID)
+			dependencies := anyMap(holder["dependencies"])
+			for _, dep := range anySlice(dependencies["skills"]) {
+				addDep(dep, appID)
+			}
+			if singular := anyMap(dependencies["skill"]); singular != nil {
+				addDep(singular, appID)
+			}
+			for _, dep := range anySlice(dependencies["skill"]) {
+				addDep(dep, appID)
+			}
 		}
 	}
 
@@ -97,7 +120,7 @@ func NormalizeGUIInstallHubPackage(pkg map[string]any) (synthesized bool, notes 
 		compat = map[string]any{}
 	}
 	compat["resolved_dependencies_synthesized"] = true
-	compat["resolved_dependencies_source"] = "dependency_verification_or_entry"
+	compat["resolved_dependencies_source"] = "dependency_verification_or_entry_declaration"
 	pkg["compatibility"] = compat
 	notes = append(notes, fmt.Sprintf("synthesized %d resolved_dependencies from legacy package metadata", len(collected)))
 	return true, notes
@@ -228,7 +251,7 @@ func packageDeclaresSkillDependencies(pkg map[string]any) bool {
 		app := anyMap(entry["app"])
 		governance := anyMap(app["governance"])
 		verification := anyMap(firstAny(governance["dependencyVerification"], governance["dependency_verification"]))
-		if len(anySlice(firstAny(verification["dependencies"], verification["skills"]))) > 0 {
+		if len(anySlice(verification["dependencies"])) > 0 || len(anySlice(verification["skills"])) > 0 {
 			return true
 		}
 		// Binding-level skill refs also count as declared dependencies.
@@ -239,8 +262,13 @@ func packageDeclaresSkillDependencies(pkg map[string]any) bool {
 			if skill := anyMap(holder["skill"]); len(skill) > 0 && strings.TrimSpace(firstString(skill["id"], skill["name"])) != "" {
 				return true
 			}
+			for _, key := range []string{"appSkill", "app_skill"} {
+				if skill := anyMap(holder[key]); len(skill) > 0 && strings.TrimSpace(firstString(skill["id"], skill["name"])) != "" {
+					return true
+				}
+			}
 			deps := anyMap(holder["dependencies"])
-			if len(anySlice(firstAny(deps["skills"], deps["skill"]))) > 0 {
+			if len(anySlice(deps["skills"])) > 0 || len(anySlice(deps["skill"])) > 0 || len(anyMap(deps["skill"])) > 0 {
 				return true
 			}
 		}
@@ -295,7 +323,7 @@ func validateDependencyVerification(appID string, governance map[string]any) err
 	if boolValue(firstAny(verification["blocked"], verification["has_blocking_dependency"], verification["hasBlockingDependency"], verification["has_missing_required"], verification["hasMissingRequired"])) {
 		return fmt.Errorf("downloaded maclaw app %q dependency_verification has blocking dependencies", appID)
 	}
-	dependencies := anySlice(firstAny(verification["dependencies"], verification["skills"]))
+	dependencies := append(anySlice(verification["dependencies"]), anySlice(verification["skills"])...)
 	if len(dependencies) == 0 {
 		return fmt.Errorf("downloaded maclaw app %q dependency_verification is missing dependency details", appID)
 	}

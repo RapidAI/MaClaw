@@ -34,7 +34,7 @@ type SidebarPrimaryNavProps = {
     appsLabel: string;
     showAppEntry: boolean;
     showWorkflowEntry: boolean;
-    showUtilitiesEntry?: boolean;
+	showUtilitiesEntry?: boolean;
     switchTool: (tool: string) => void;
     workflowLabel?: string;
     utilitiesLabel?: string;
@@ -186,7 +186,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 className={'sidebar-item left-nav-item ' + (navTab === 'utilities' ? 'active' : '')}
                 onClick={() => switchTool('utilities')}
                 data-testid="sidebar-utilities-nav"
-                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'utilities' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center', display: showUtilitiesEntry ? undefined : 'none' }}
+				style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'utilities' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center', display: showUtilitiesEntry ? undefined : 'none' }}
                 title={utilitiesLabel || '实用工具'}
             >
                 <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'utilities' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}>

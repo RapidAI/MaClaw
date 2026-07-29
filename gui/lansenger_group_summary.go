@@ -19,9 +19,9 @@ import (
 
 // lansengerGroupSummaryService buffers group chat and handles /summary.
 type lansengerGroupSummaryService struct {
-	mu      sync.Mutex
-	app     *App
-	store   *lansengergroupsummary.Store
+	mu    sync.Mutex
+	app   *App
+	store *lansengergroupsummary.Store
 	// inFlight prevents concurrent /summary for the same group.
 	inFlight map[string]struct{}
 	// shared HTTP client for summary LLM calls (connection reuse).

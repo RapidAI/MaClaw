@@ -353,8 +353,8 @@ func TestLocalCodingSubAgentTodoWriteTool(t *testing.T) {
 	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{
-			handler: h,
-			loopCtx: &LoopContext{UserID: userID},
+			handler:    h,
+			loopCtx:    &LoopContext{UserID: userID},
 			onProgress: func(string) {},
 		},
 	}
@@ -394,8 +394,8 @@ func TestRemoteCodingSubAgentTodoWriteTool(t *testing.T) {
 	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
 	cb := &remoteCodingCallbacks{
 		agent: &RemoteCodingSubAgent{
-			handler: h,
-			loopCtx: &LoopContext{UserID: userID},
+			handler:    h,
+			loopCtx:    &LoopContext{UserID: userID},
 			onProgress: func(string) {},
 		},
 	}

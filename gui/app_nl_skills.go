@@ -121,8 +121,13 @@ func (d NLSkillDefinition) PreferredRuntimeSkillRef() string {
 
 // SkillAppManifestEntry is the Wails-facing app extension declared by maclaw.apps.json.
 type SkillAppManifestEntry struct {
-	ID                string                  `json:"id"`
-	SkillID           string                  `json:"skill_id"`
+	ID      string `json:"id"`
+	SkillID string `json:"skill_id"`
+	// Source and HubSkillID describe the installed skill's server-authoritative
+	// provenance. They let the app panel distinguish a SkillMarket mini app
+	// from a user-authored local skill after the process restarts.
+	Source             string                  `json:"source,omitempty"`
+	HubSkillID         string                  `json:"hub_skill_id,omitempty"`
 	Name              string                  `json:"name"`
 	Description       string                  `json:"description,omitempty"`
 	Category          string                  `json:"category,omitempty"`
@@ -1799,6 +1804,12 @@ func (e *SkillExecutor) AsRegisteredTools() []tool.RegisteredTool {
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
+		// A standalone MaClaw App package is installable and discoverable through
+		// the Apps panel, but its container has no direct skill execution surface.
+		// Do not expose it as a generic registered tool for an agent to select.
+		if skill.IsInstructionOnlySkillType(s.Type) {
+			continue
+		}
 		if isShellBrowserAutomationSkillEntry(s) {
 			continue
 		}
@@ -1899,6 +1910,9 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	preparedEntry.Steps = append([]corelib.NLSkillStep(nil), entry.Steps...)
 	preparedEntry.Params = append([]corelib.NLSkillParam(nil), entry.Params...)
 	skill.NormalizeSkillForRunner(&preparedEntry)
+	if skill.IsKnowledgeSkillType(preparedEntry.Type) || skill.IsInstructionOnlySkillType(preparedEntry.Type) {
+		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: fmt.Errorf("%s", skill.FormatNoExecutableStepsMessage(preparedEntry.Name, &preparedEntry, skill.RunnerBackendGUI))}
+	}
 	if isShellBrowserAutomationSkillEntry(preparedEntry) {
 		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: browserAutomationSkillRejectedError(preparedEntry.Name)}
 	}
@@ -3175,7 +3189,8 @@ func (a *App) ListSkillAppManifests() []SkillAppManifestEntry {
 	}
 	out := []SkillAppManifestEntry{}
 	seen := map[string]struct{}{}
-	addApp := func(skillName string, app SkillAppManifestEntry, definitionFile string) {
+	addApp := func(skill corelib.NLSkillEntry, app SkillAppManifestEntry, definitionFile string) {
+		skillName := strings.TrimSpace(skill.Name)
 		app.ID = strings.TrimSpace(app.ID)
 		app.Name = strings.TrimSpace(app.Name)
 		if app.ID == "" || app.Name == "" {
@@ -3185,6 +3200,8 @@ func (a *App) ListSkillAppManifests() []SkillAppManifestEntry {
 			app.SkillID = skillName
 		}
 		app.SkillID = strings.TrimSpace(app.SkillID)
+		app.Source = strings.TrimSpace(skill.Source)
+		app.HubSkillID = strings.TrimSpace(skill.HubSkillID)
 		if app.Category == "" {
 			app.Category = "Skill"
 		}
@@ -3215,7 +3232,7 @@ func (a *App) ListSkillAppManifests() []SkillAppManifestEntry {
 			var manifest skillAppManifestFile
 			if err := json.Unmarshal(data, &manifest); err == nil && strings.TrimSpace(manifest.PrivateMarker) == "v1" {
 				for _, app := range manifest.Apps {
-					addApp(item.Name, app, "maclaw.apps.json")
+						addApp(item, app, "maclaw.apps.json")
 				}
 			}
 		}
@@ -3224,7 +3241,7 @@ func (a *App) ListSkillAppManifests() []SkillAppManifestEntry {
 			if !ok {
 				continue
 			}
-			addApp(item.Name, app, entry)
+				addApp(item, app, entry)
 		}
 	}
 	return out

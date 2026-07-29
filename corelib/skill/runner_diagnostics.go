@@ -81,13 +81,19 @@ func FormatNoExecutableStepsMessage(skillName string, entry *corelib.NLSkillEntr
 	}
 
 	var b strings.Builder
-	if entry != nil && IsKnowledgeSkillType(entry.Type) {
-		fmt.Fprintf(&b, "skill %q is a knowledge skill, so it is not directly executable by the %s runner.", name, runner)
+	if entry != nil && (IsKnowledgeSkillType(entry.Type) || IsInstructionOnlySkillType(entry.Type)) {
+		kind := "knowledge skill"
+		nextAction := "use it as reference material, or add executable steps/command to the skill definition"
+		if IsInstructionOnlySkillType(entry.Type) {
+			kind = "instruction-only app container"
+			nextAction = "open its MaClaw App entry; the package container itself cannot be run as a Skill"
+		}
+		fmt.Fprintf(&b, "skill %q is a %s, so it is not directly executable by the %s runner.", name, kind, runner)
 		appendDescription(&b, entry.Description)
 		if strings.TrimSpace(entry.SkillDir) != "" {
 			fmt.Fprintf(&b, "\nSkill directory: %s", strings.TrimSpace(entry.SkillDir))
 		}
-		fmt.Fprintf(&b, "\nNext action: use it as reference material, or add executable steps/command to the skill definition. [action: inspect_skill]")
+		fmt.Fprintf(&b, "\nNext action: %s. [action: inspect_skill]", nextAction)
 		return b.String()
 	}
 	fmt.Fprintf(&b, "skill %q has no executable steps for the %s runner.", name, runner)

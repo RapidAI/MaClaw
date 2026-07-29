@@ -123,6 +123,25 @@ func TestCapabilityManagedSyncRetryDelayEscalatesFor404(t *testing.T) {
 	}
 }
 
+func TestIsManagedSkillPackageNotFoundError(t *testing.T) {
+	for _, err := range []error{
+		fmt.Errorf(`download skill "missing" failed: request failed (404): {"code":"SKILL_NOT_FOUND","message":"skill package not found"}`),
+		fmt.Errorf("download skill missing failed: skill package not found"),
+	} {
+		if !isManagedSkillPackageNotFoundError(err) {
+			t.Fatalf("expected permanent package-not-found error to be recognized: %v", err)
+		}
+	}
+	for _, err := range []error{
+		fmt.Errorf("download skill failed: unexpected EOF"),
+		fmt.Errorf("download skill failed: request failed (404): gateway route not found"),
+	} {
+		if isManagedSkillPackageNotFoundError(err) {
+			t.Fatalf("unexpected permanent package-not-found classification: %v", err)
+		}
+	}
+}
+
 func TestCapabilityMarketplaceUnsupportedCacheResetsWhenHubURLChanges(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

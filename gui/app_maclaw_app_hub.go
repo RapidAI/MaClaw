@@ -207,6 +207,14 @@ func (a *App) InstallSelectedMaclawAppPackageFromHub(capabilityID string, appIDs
 	if err != nil {
 		return nil, err
 	}
+	// Older published Hub packages can still declare a known public SkillMarket
+	// dependency as source=local. The package signature and the Hub download
+	// path have already been verified above, so upgrade only aliases from the
+	// explicit compatibility registry. Unknown local dependencies deliberately
+	// remain local: they must be restored locally or carried in the package.
+	if upgraded := maclawAppUpgradeTrustedHubLocalDependenciesForSkillMarket(installPackage); upgraded > 0 {
+		log.Printf("[maclaw-app] Hub package %s: upgraded %d known local dependency install target(s) to SkillMarket", capabilityID, upgraded)
+	}
 	packageJSON, err := maclawAppStableJSON(installPackage)
 	if err != nil {
 		return nil, err
@@ -262,6 +270,114 @@ func (a *App) InstallSelectedMaclawAppPackageFromHub(capabilityID string, appIDs
 		"install_plan":     installPlan,
 		"install_record":   installRecord,
 	}, nil
+}
+
+// maclawAppUpgradeTrustedHubLocalDependenciesForSkillMarket repairs legacy Hub
+// package metadata for a deliberately small compatibility set. It is called
+// only after DownloadMaclawAppPackageFromHub has authenticated, signature-
+// verified, and governance-validated the package. It keeps the declared skill
+// identity and version, but normalizes its legacy local source and install
+// metadata to the receiver-side SkillMarket target used by the install planner.
+//
+// A source=local dependency is not generally safe to download. We only upgrade
+// it when its ID/alias and kind match a registry entry explicitly authorized for
+// both local legacy declarations and SkillMarket installation. This lets older
+// published apps recover without making private local dependencies network
+// installable.
+func maclawAppUpgradeTrustedHubLocalDependenciesForSkillMarket(pkg map[string]any) int {
+	// Legacy Hub packages are permitted to omit source. This helper is only
+	// reached from the authenticated, signed, and governance-validated Hub
+	// download path, but still refuses a package that explicitly claims a
+	// different source.
+	source := strings.TrimSpace(maclawAppStringValue(pkg, "source"))
+	if len(pkg) == 0 || (source != "" && !strings.EqualFold(source, "enterprise_hub")) {
+		return 0
+	}
+	upgraded := 0
+	for _, raw := range anySlice(pkg["resolved_dependencies"]) {
+		if maclawAppUpgradeTrustedHubLocalDependencyMapForSkillMarket(anyMap(raw)) {
+			upgraded++
+		}
+	}
+	for _, rawEntry := range anySlice(pkg["apps"]) {
+		entry := anyMap(rawEntry)
+		if entry == nil {
+			continue
+		}
+		for _, rawDep := range anySlice(entry["resolved_dependencies"]) {
+			depMap := anyMap(rawDep)
+			if maclawAppUpgradeTrustedHubLocalDependencyMapForSkillMarket(depMap) {
+				upgraded++
+			}
+		}
+		app := anyMap(entry["app"])
+		for _, holder := range []map[string]any{anyMap(app["binding"]), app} {
+			if holder == nil {
+				continue
+			}
+			if maclawAppUpgradeTrustedHubLocalDependencyMapForSkillMarket(anyMap(holder["skill"])) {
+				upgraded++
+			}
+			for _, key := range []string{"appSkill", "app_skill"} {
+				if maclawAppUpgradeTrustedHubLocalDependencyMapForSkillMarket(anyMap(holder[key])) {
+					upgraded++
+				}
+			}
+			dependencies := anyMap(holder["dependencies"])
+			for _, depMap := range append(maclawAppDependencyMaps(dependencies["skills"]), maclawAppDependencyMaps(dependencies["skill"])...) {
+				if maclawAppUpgradeTrustedHubLocalDependencyMapForSkillMarket(depMap) {
+					upgraded++
+				}
+			}
+		}
+	}
+	return upgraded
+}
+
+func maclawAppUpgradeTrustedHubLocalDependencyMapForSkillMarket(depMap map[string]any) bool {
+	if depMap == nil || !strings.EqualFold(strings.TrimSpace(maclawAppStringValue(depMap, "source")), "local") {
+		return false
+	}
+	dep := maclawAppInstallPlanDependency{
+		ID:      maclawAppStringValue(depMap, "id", "skill_id", "skillId", "name"),
+		Version: maclawAppStringValue(depMap, "version"),
+		Kind:    maclawAppStringValue(depMap, "kind"),
+		Source:  "local",
+		Aliases: maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(depMap["aliases"], depMap["install_aliases"], depMap["installAliases"])),
+	}
+	target, ok := maclawAppTrustedHubLocalDependencySkillMarketTarget(dep)
+	if !ok {
+		return false
+	}
+	depMap["source"] = "skillmarket"
+	depMap["canonical_id"] = target
+	depMap["install_ref_kind"] = "skillmarket"
+	depMap["install_ref_target"] = target
+	if version := strings.TrimSpace(dep.Version); version != "" {
+		depMap["install_ref_version"] = version
+		depMap["install_ref"] = "skillmarket://skills/" + target + "@" + version
+	} else {
+		depMap["install_ref"] = "skillmarket://skills/" + target
+	}
+	return true
+}
+
+func maclawAppTrustedHubLocalDependencySkillMarketTarget(dep maclawAppInstallPlanDependency) (string, bool) {
+	if !strings.EqualFold(strings.TrimSpace(dep.Source), "local") || !maclawAppDependencyKindAllowsImplicitHubTarget(dep.Kind) {
+		return "", false
+	}
+	values := append([]string{dep.ID}, dep.Aliases...)
+	for _, entry := range maclawAppDependencyAliasRegistry {
+		if !maclawAppDependencyAliasRegistryAllows(entry.Sources, "local") || !maclawAppDependencyAliasRegistryAllows(entry.Sources, "skillmarket") || !maclawAppDependencyAliasRegistryAllows(entry.Kinds, dep.Kind) {
+			continue
+		}
+		for _, value := range values {
+			if maclawAppDependencyAliasMatches(value, entry.Target, entry.Aliases, entry.LocalNames) {
+				return entry.Target, true
+			}
+		}
+	}
+	return "", false
 }
 
 // SubmitMaclawAppPackage stores a maclaw.app.pack.v1 submission in the local

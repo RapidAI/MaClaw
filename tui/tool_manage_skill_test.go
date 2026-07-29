@@ -1967,6 +1967,23 @@ func TestManageSkillRunReportsKnowledgeSkillNotExecutable(t *testing.T) {
 	}
 }
 
+func TestManageSkillRunReportsInstructionOnlyContainerNotExecutable(t *testing.T) {
+	app := &TUIApp{appConfig: corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name:   "pdf-app-container",
+		Type:   "instruction",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo must-not-run"},
+		}},
+	}}}}
+
+	got := skillRun(app, map[string]interface{}{"name": "pdf-app-container"})
+	if !strings.Contains(got, "instruction-only app container") || !strings.Contains(got, "not directly executable") {
+		t.Fatalf("skillRun() = %q", got)
+	}
+}
+
 func TestFormatTUISkillSearchResultsKeepsSourceInstallArguments(t *testing.T) {
 	githubRef := `{"repo_full_name":"acme/weather","raw_url":"https://raw.githubusercontent.com/acme/weather/main/SKILL.md"}`
 	got := formatTUISkillSearchResults("weather", []skill.HubSearchResult{

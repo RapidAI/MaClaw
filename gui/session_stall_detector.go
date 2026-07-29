@@ -25,8 +25,8 @@ type sessionStallState struct {
 	cancelCh      chan struct{}
 	exec          ExecutionHandle
 	tool          string
-	lastNudgeText string // for echo filtering
-	paused        bool   // true when session is in thinking state (no output expected)
+	lastNudgeText string    // for echo filtering
+	paused        bool      // true when session is in thinking state (no output expected)
 	pausedAt      time.Time // when pause started — used for MaxPauseTimeout
 }
 

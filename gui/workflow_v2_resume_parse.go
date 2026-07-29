@@ -294,7 +294,7 @@ func sanitizeExtractedText(s string) string {
 // --- Response helpers ---
 
 type resumeParseResponse struct {
-	Error string                       `json:"error,omitempty"`
+	Error string                        `json:"error,omitempty"`
 	Data  map[string]*v2.PrefilledValue `json:"data,omitempty"`
 }
 

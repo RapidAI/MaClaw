@@ -14,7 +14,7 @@ import (
 // after the write (Cursor-like review in chat; full inline diff UI still depends
 // on the VS Code ACP extension).
 type acpWriteSnapshotStore struct {
-	mu   sync.Mutex
+	mu sync.Mutex
 	// key: requestID + "\x00" + absPath
 	before map[string]string
 }

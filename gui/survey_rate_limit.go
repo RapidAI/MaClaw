@@ -7,7 +7,7 @@ import (
 
 // surveyUserRateLimit implements design §9 simple per-user throttle (~2 msg/s).
 type surveyUserRateLimit struct {
-	mu      sync.Mutex
+	mu sync.Mutex
 	// recent holds timestamps of accepted attempts per rate key.
 	recent map[string][]time.Time
 	// maxAccepted is how many attempts may succeed inside window (default 2).

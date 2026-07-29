@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { isPlainEnter } from "./assistantInputShortcuts";
 
 export interface MentionParticipant {
     id: string;
@@ -210,7 +211,9 @@ export function useMentionKeyboard(
                 setSelectedIndex((prev: number) => (prev - 1 + f.length) % Math.max(f.length, 1));
                 return true;
             }
-            if (e.key === "Enter") {
+            // Modified Enter belongs to the textarea (for example Ctrl/Cmd+Enter
+            // inserts a line break). Only plain Enter accepts a mention.
+            if (isPlainEnter(e)) {
                 e.preventDefault();
                 if (f.length > 0 && idx < f.length) {
                     onSelectRef.current(f[idx]);

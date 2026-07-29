@@ -22,21 +22,21 @@ func TestIsWorkflowProjectMutationPath(t *testing.T) {
 		// Component matching: /src/, /cmd/, /internal/, /pkg/, /frontend/, /backend/
 		// found anywhere in the path (safe dirs that won't produce false positives).
 		{`D:\src\main.go`, true},
-		{`C:\app\index.ts`, true},     // "app/" as prefix (relative-style after drive strip)
+		{`C:\app\index.ts`, true}, // "app/" as prefix (relative-style after drive strip)
 		{`D:\cmd\server\main.go`, true},
 		{`D:\frontend\components\Button.tsx`, true},
-		{`D:\workprj\src\main.go`, true},           // /src/ as component
+		{`D:\workprj\src\main.go`, true},                  // /src/ as component
 		{`D:\workprj\myproject\cmd\server\main.go`, true}, // /cmd/ as component
-		{`d:\workprj\internal\handler.go`, true},   // /internal/ as component
-		{`C:\Users\dev\project\frontend\App.tsx`, true}, // /frontend/ as component
-		{`C:\code\backend\api\server.js`, true},    // /backend/ as component
+		{`d:\workprj\internal\handler.go`, true},          // /internal/ as component
+		{`C:\Users\dev\project\frontend\App.tsx`, true},   // /frontend/ as component
+		{`C:\code\backend\api\server.js`, true},           // /backend/ as component
 
 		// "app/" and "web/" only match as prefix (first component), NOT as substring,
 		// because they produce false positives in absolute paths:
 		// - "AppData" contains "app"
 		// - "webapp" contains "web"
 		{`C:\Users\dev\project\app\index.ts`, false}, // "app" not at root → not blocked
-		{`D:\webapp\pages\index.tsx`, false},           // "webapp" != "web/"
+		{`D:\webapp\pages\index.tsx`, false},         // "webapp" != "web/"
 
 		// --- Should NOT block: artifact generation scripts in non-source dirs ---
 		{`D:\专利申请测试1\gen_pptx.js`, false},

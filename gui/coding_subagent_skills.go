@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 const (
@@ -100,8 +101,8 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 		if s.Status != "active" {
 			continue
 		}
-		if s.Type == "knowledge" {
-			continue // knowledge skills are reference docs, not executable
+		if skill.IsKnowledgeSkillType(s.Type) || skill.IsInstructionOnlySkillType(s.Type) {
+			continue // documentation and app containers are not directly executable
 		}
 		doc := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
 		if !codingSubAgentSkillFitsTask(taskDescription, doc) {

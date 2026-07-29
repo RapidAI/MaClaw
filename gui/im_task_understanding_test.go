@@ -70,11 +70,11 @@ func TestParseTaskUnderstandingResponse_EmptySummaryAndInstruction(t *testing.T)
 
 func TestFormatTaskUnderstandingSummary(t *testing.T) {
 	r := &taskUnderstandingResult{
-		TaskType:        "信息搜集",
-		Summary:         "搜集美发师 vibehair 的详细个人资料",
-		Goals:           []string{"查找从业经历", "确认工作单位"},
-		Constraints:     []string{"信息尽可能详细"},
-		ExecutionPlan:   []string{"搜索相关网页", "提取个人信息", "整理成报告"},
+		TaskType:      "信息搜集",
+		Summary:       "搜集美发师 vibehair 的详细个人资料",
+		Goals:         []string{"查找从业经历", "确认工作单位"},
+		Constraints:   []string{"信息尽可能详细"},
+		ExecutionPlan: []string{"搜索相关网页", "提取个人信息", "整理成报告"},
 	}
 	summary := formatTaskUnderstandingSummary(r, "D:\\workprj\\aicoder")
 	if !strings.Contains(summary, "任务类型：信息搜集") {
@@ -235,7 +235,6 @@ func TestApplyConfirmationRevision_ClearsEnhancedFields(t *testing.T) {
 		t.Errorf("ResumeText should include revision: %s", revised.ResumeText)
 	}
 }
-
 
 func TestParseTaskUnderstandingResponse_SimplifiedFormat(t *testing.T) {
 	// Simplified prompt produces minimal JSON without goals/constraints.

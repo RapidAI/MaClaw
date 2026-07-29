@@ -84,5 +84,3 @@ When semantic intent is unavailable or ambiguous, do not open coding tools autom
 		return ""
 	}
 }
-
-

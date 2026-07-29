@@ -170,10 +170,10 @@ func HasFallbackStep(skill *corelib.NLSkillEntry, stepIndex int) bool {
 // the same signature. Two scripts with different logic produce different ones.
 //
 // Normalization steps:
-//   1. Strip comments (# for python/bash, // for JS)
-//   2. Replace string literals with a placeholder
-//   3. Collapse whitespace
-//   4. SHA-256 hash
+//  1. Strip comments (# for python/bash, // for JS)
+//  2. Replace string literals with a placeholder
+//  3. Collapse whitespace
+//  4. SHA-256 hash
 func computeStructuralSignature(script, language string) string {
 	if script == "" {
 		return "empty"

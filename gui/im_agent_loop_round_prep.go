@@ -9,19 +9,19 @@ import (
 )
 
 type agentLoopRoundPrepOptions struct {
-	Context                 *LoopContext
-	UserID                  string
-	UserText                string
-	Iteration               int
-	EffectiveMax            int
-	MinIterations           int
-	ConfigMax               int
-	ChatFinalizeGrace       int
-	Config                  corelib.MaclawLLMConfig
-	Conversation            []interface{}
-	Tools                   []map[string]interface{}
-	ToolsTokenBudget        int
-	BaseTools               []map[string]interface{}
+	Context           *LoopContext
+	UserID            string
+	UserText          string
+	Iteration         int
+	EffectiveMax      int
+	MinIterations     int
+	ConfigMax         int
+	ChatFinalizeGrace int
+	Config            corelib.MaclawLLMConfig
+	Conversation      []interface{}
+	Tools             []map[string]interface{}
+	ToolsTokenBudget  int
+	BaseTools         []map[string]interface{}
 
 	DirectModeToolsFiltered bool
 	EffectiveTokenLimit     int

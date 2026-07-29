@@ -54,7 +54,6 @@ func (a *SkillEvolutionLLMAdapter) IsConfigured() bool {
 // Compile-time interface check.
 var _ cskill.LLMRepairer = (*SkillEvolutionLLMAdapter)(nil)
 
-
 // skillExecutorRegistrar implements skill.SkillRegistrar by adding the entry
 // to the SkillExecutor's managed skill list.
 type skillExecutorRegistrar struct {

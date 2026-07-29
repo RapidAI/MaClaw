@@ -29,7 +29,7 @@ type tuiWorkflowV2State struct {
 	store         v2.WorkflowStore
 	registry      *v2.TemplateRegistry
 	understanding *v2.IntentUnderstandingManager // needed for TUI workflow interception
-	filter        *v2.QuickFilter               // needed for TUI workflow interception
+	filter        *v2.QuickFilter                // needed for TUI workflow interception
 }
 
 // initWorkflowV2TUI creates and wires the V2 workflow engine for the TUI.
@@ -180,7 +180,6 @@ func (c *tuiV2WorkflowChecker) HasActiveUnderstanding(userID string) bool {
 	return c.understanding.HasActiveSession(userID)
 }
 
-
 // mapToolPolicyToFilterPolicy converts native ToolPolicy to ToolFilterPolicy alias.
 func mapToolPolicyToFilterPolicy(policy v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch policy {
@@ -223,7 +222,6 @@ func (app *TUIApp) isWorkflowV2Active() bool {
 	}
 	return wf.machine.GetActive("tui-user") != nil
 }
-
 
 // routeWithV2Router uses the V2 Router to handle messages for active V2 workflows.
 // Returns a non-empty string if the message was handled by V2 (the string is the

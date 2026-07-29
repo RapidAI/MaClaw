@@ -812,7 +812,6 @@ func TestSkillRunnerGetRunStatus_IncludesSummary(t *testing.T) {
 	}
 }
 
-
 func TestMaterializeStdoutToExpectedOutputSkipsEmptyTextJSON(t *testing.T) {
 	// When a skill outputs JSON with "text":"" (e.g. OCR found no text in image),
 	// the runner should NOT write the raw JSON to the .txt file.

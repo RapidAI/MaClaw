@@ -124,7 +124,12 @@ func resolvedDependenciesForEntries(raw any, entries []packageAppEntry) []any {
 	selectedAppIDs := map[string]struct{}{}
 	selectedDependencyIDs := map[string]struct{}{}
 	for _, entry := range entries {
-		selectedAppIDs[strings.ToLower(strings.TrimSpace(entry.ID))] = struct{}{}
+		// Market-facing IDs can carry a market- prefix while the package and
+		// resolved dependency metadata may use the raw app ID (or vice versa).
+		// Keep both forms just as the app selection matcher does.
+		for appID := range selectionIDSet([]string{entry.ID}) {
+			selectedAppIDs[appID] = struct{}{}
+		}
 		for _, depID := range dependencyIDsForEntry(entry) {
 			selectedDependencyIDs[strings.ToLower(strings.TrimSpace(depID))] = struct{}{}
 		}
@@ -137,11 +142,20 @@ func resolvedDependenciesForEntries(raw any, entries []packageAppEntry) []any {
 		}
 		appIDs := stringList(firstAny(m["app_ids"], m["appIDs"]))
 		if len(appIDs) > 0 {
+			matched := false
 			for _, appID := range appIDs {
 				if _, ok := selectedAppIDs[strings.ToLower(strings.TrimSpace(appID))]; ok {
-					filtered = append(filtered, cloneMap(m))
+					matched = true
 					break
 				}
+			}
+			if matched {
+				clone := cloneMap(m)
+				// Do not leave references to unselected apps in a partial install:
+				// app-scoped metadata is also used for downstream plan matching.
+				clone["app_ids"] = filterSelectedAppIDs(appIDs, selectedAppIDs)
+				delete(clone, "appIDs")
+				filtered = append(filtered, clone)
 			}
 			continue
 		}
@@ -156,18 +170,58 @@ func resolvedDependenciesForEntries(raw any, entries []packageAppEntry) []any {
 	return filtered
 }
 
+func filterSelectedAppIDs(appIDs []string, selected map[string]struct{}) []string {
+	filtered := make([]string, 0, len(appIDs))
+	for _, appID := range appIDs {
+		key := strings.ToLower(strings.TrimSpace(appID))
+		if _, ok := selected[key]; ok {
+			filtered = append(filtered, appID)
+		}
+	}
+	return filtered
+}
+
 func dependencyIDsForEntry(entry packageAppEntry) []string {
 	out := []string{}
-	add := func(raw any) {
-		for _, item := range anySlice(anyMap(raw)["skills"]) {
-			if id := firstString(anyMap(item)["id"]); id != "" {
+	addDependency := func(raw any) {
+		if dependency := anyMap(raw); dependency != nil {
+			if id := firstString(dependency["id"], dependency["skill_id"], dependency["skillId"], dependency["name"]); id != "" {
 				out = append(out, id)
 			}
 		}
 	}
+	addSkill := func(holder map[string]any) {
+		if holder == nil {
+			return
+		}
+		addDependency(holder["skill"])
+		addDependency(holder["appSkill"])
+		addDependency(holder["app_skill"])
+	}
+	add := func(raw any) {
+		dependencies := anyMap(raw)
+		if dependencies == nil {
+			return
+		}
+		for _, item := range anySlice(dependencies["skills"]) {
+			addDependency(item)
+		}
+		// Older manifests used dependencies.skill either as a single object or
+		// as an array. Include both so selected installs retain their resolved
+		// dependency metadata before the GUI compatibility repair runs.
+		if singular := anyMap(dependencies["skill"]); singular != nil {
+			addDependency(singular)
+		}
+		for _, item := range anySlice(dependencies["skill"]) {
+			addDependency(item)
+		}
+	}
 	if binding := anyMap(entry.App["binding"]); binding != nil {
+		addSkill(binding)
 		add(binding["dependencies"])
 	}
+	addSkill(entry.App)
+	add(entry.App["dependencies"])
 	if governance := anyMap(entry.App["governance"]); governance != nil {
 		add(governance["dependencies"])
 		add(governance["dependencyVerification"])

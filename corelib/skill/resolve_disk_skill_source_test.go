@@ -9,11 +9,11 @@ func TestResolveDiskSkillSource(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		declared string
-		skillDir string
+		name      string
+		declared  string
+		skillDir  string
 		skillName string
-		want     string
+		want      string
 	}{
 		{name: "explicit learned", declared: "learned", skillDir: "/skills/foo", skillName: "foo", want: "learned"},
 		{name: "explicit crafted case", declared: "CRAFTED", skillDir: "/skills/foo", skillName: "foo", want: "crafted"},

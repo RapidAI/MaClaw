@@ -3213,10 +3213,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
     }, []);
 
-    const removeSelectedFile = useCallback((index: number) => {
+    const removeSelectedFile = useCallback((filePath: string) => {
         const normalizedSessionKey = activeSelectedFilesSessionKeyRef.current;
         const current = selectedFilePathsBySessionRef.current.get(normalizedSessionKey) || [];
-        const next = current.filter((_, i) => i !== index);
+        const next = current.filter(path => path !== filePath);
         if (next.length > 0) {
             selectedFilePathsBySessionRef.current.set(normalizedSessionKey, next);
         } else {

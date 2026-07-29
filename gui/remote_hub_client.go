@@ -1615,9 +1615,9 @@ func (c *RemoteHubClient) openStartMenuTask(message IMUserMessage) error {
 		initialMessage = strings.TrimSpace(message.Text)
 	}
 	c.app.emitEvent("im-startmenu-task-created", map[string]interface{}{
-		"project_path":           task.ProjectPath,
-		"task_title":             task.Name,
-		"initial_message":        initialMessage,
+		"project_path":    task.ProjectPath,
+		"task_title":      task.Name,
+		"initial_message": initialMessage,
 		// The frontend holds remote prompts until SSH reconnect succeeds, then
 		// sends them automatically. Keep this true for parity with local IM
 		// gateways and the user-facing automatic-start message.

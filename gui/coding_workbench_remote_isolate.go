@@ -10,11 +10,11 @@ import (
 // remoteCodingIsolate is a temporary remote project copy for write isolation
 // (SSH analogue of local git worktrees when the remote host is not using them).
 type remoteCodingIsolate struct {
-	SessionID   string
-	SourceDir   string
-	IsolateDir  string
-	StepIndex   int
-	created     bool
+	SessionID  string
+	SourceDir  string
+	IsolateDir string
+	StepIndex  int
+	created    bool
 }
 
 // createRemoteCodingIsolate creates an isolated remote workspace.

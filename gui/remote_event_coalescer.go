@@ -13,12 +13,12 @@ import (
 // adapted for the IM-centric push model where chatty tool-call fragments
 // degrade the user experience.
 type EventCoalescer struct {
-	mu       sync.Mutex
-	window   time.Duration
-	pending  map[string]*pendingEvent // keyed by event_id
-	flushFn  func([]ImportantEvent)
-	timers   map[string]*time.Timer
-	closed   bool
+	mu      sync.Mutex
+	window  time.Duration
+	pending map[string]*pendingEvent // keyed by event_id
+	flushFn func([]ImportantEvent)
+	timers  map[string]*time.Timer
+	closed  bool
 }
 
 type pendingEvent struct {

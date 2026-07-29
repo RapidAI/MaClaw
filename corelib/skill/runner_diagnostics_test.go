@@ -59,6 +59,16 @@ func TestFormatNoExecutableStepsMessageKnowledgeSkill(t *testing.T) {
 	}
 }
 
+func TestFormatNoExecutableStepsMessageInstructionOnlyContainer(t *testing.T) {
+	entry := &corelib.NLSkillEntry{Name: "pdf-app", Type: "instruction", Description: "PDF app container"}
+	got := FormatNoExecutableStepsMessage("", entry, RunnerBackendGUI)
+	for _, want := range []string{"pdf-app", "instruction-only app container", "not directly executable", "open its MaClaw App entry"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("message %q missing %q", got, want)
+		}
+	}
+}
+
 func TestFormatRunnerWarningsCombinesRequirementAndFileWarnings(t *testing.T) {
 	got := FormatRunnerWarnings([]Violation{{
 		Requirement: Requirement{Type: "unknown", Name: "soft-check"},

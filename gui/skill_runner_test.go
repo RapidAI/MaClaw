@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -959,6 +960,21 @@ func TestSkillExecutorRejectsShellBrowserAutomationDirectExecution(t *testing.T)
 	}
 }
 
+func TestSkillExecutorRejectsInstructionOnlyContainerDirectExecution(t *testing.T) {
+	exec := NewSkillExecutor(&App{}, nil, nil)
+	result := exec.executeSkillStepsDetailed(&corelib.NLSkillEntry{
+		Name: "app-container",
+		Type: "instruction",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo must-not-run"},
+		}},
+	}, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "instruction-only app container") {
+		t.Fatalf("executeSkillStepsDetailed error = %v, want instruction container rejection", result.Err)
+	}
+}
+
 func TestSkillExecutorRejectsShellBrowserAutomationHiddenInSkillDirScript(t *testing.T) {
 	skillDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(skillDir, "post.py"), []byte("from playwright.async_api import async_playwright\nasync def main():\n    browser = await p.chromium.connect_over_cdp('http://127.0.0.1:3888')\n"), 0o644); err != nil {
@@ -1071,6 +1087,25 @@ func TestSkillExecutorAsRegisteredToolsFiltersShellBrowserAutomation(t *testing.
 	exec := NewSkillExecutor(app, nil, nil)
 
 	tools := exec.AsRegisteredTools()
+	if len(tools) != 1 || tools[0].Name != "normal" {
+		t.Fatalf("AsRegisteredTools() = %+v, want only normal", tools)
+	}
+}
+
+func TestSkillExecutorAsRegisteredToolsFiltersInstructionOnlyAppContainers(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{
+		{Name: "pdf-translator-app", Status: "active", Type: "instruction", Description: "MaClaw App container"},
+		{Name: "normal", Status: "active", Description: "safe skill"},
+	}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	tools := NewSkillExecutor(app, nil, nil).AsRegisteredTools()
 	if len(tools) != 1 || tools[0].Name != "normal" {
 		t.Fatalf("AsRegisteredTools() = %+v, want only normal", tools)
 	}
@@ -1425,6 +1460,39 @@ func TestSkillRunnerStartRun_RejectsKnowledgeSkillWithoutCraftFallback(t *testin
 	_, err = runner.StartRun("knowledge", nil)
 	if err == nil || !strings.Contains(err.Error(), "knowledge skill") || !strings.Contains(err.Error(), "not directly executable") {
 		t.Fatalf("expected knowledge skill error, got %v", err)
+	}
+}
+
+func TestSkillRunnerStartRun_RejectsInstructionSkillWithoutCraftFallback(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+		Name:   "app-container",
+		Status: "active",
+		Type:   "instruction",
+		// A stale cache or malicious package must not turn an app container into
+		// an executable Skill merely by preserving runtime steps.
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo must-not-run"},
+		}},
+	})
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("app-container", nil)
+	if err == nil || !strings.Contains(err.Error(), "instruction-only app container") || !strings.Contains(err.Error(), "not directly executable") {
+		t.Fatalf("expected instruction skill execution rejection, got %v", err)
 	}
 }
 
@@ -2840,6 +2908,82 @@ func TestSummarizeSkillRunDoesNotMarkStdoutOnlyPathMissing(t *testing.T) {
 	}
 	if status.Summary.LastOutputSnippet == "" {
 		t.Fatalf("stdout-only summary lost output snippet: %#v", status.Summary)
+	}
+}
+
+func TestSkillRunnerGetRunStatusPrefersLiveOutputOverCompletedStep(t *testing.T) {
+	runner := NewSkillRunner(&SkillExecutor{})
+	liveOutput := newSkillRunLiveOutput()
+	liveOutput.Append("Processing page 2/10")
+	runner.runs["run-live-output"] = &skillRun{
+		status: SkillRunStatus{
+			RunID:  "run-live-output",
+			Status: skillRunStatusRunning,
+			Steps: []StepResult{
+				{Index: 0, Action: "bash", Status: skillStepStatusSuccess, Output: "setup complete"},
+				{Index: 1, Action: "bash", Status: skillStepStatusRunning},
+			},
+		},
+		liveOutput: liveOutput,
+	}
+
+	status, err := runner.GetRunStatus("run-live-output")
+	if err != nil {
+		t.Fatalf("GetRunStatus() error = %v", err)
+	}
+	if got := status.Summary.LastOutputSnippet; got != "Processing page 2/10" {
+		t.Fatalf("LastOutputSnippet = %q, want live output", got)
+	}
+	if got := status.Steps[1].StdoutLastLines; len(got) != 1 || got[0] != "Processing page 2/10" {
+		t.Fatalf("running step output = %#v, want live output", got)
+	}
+}
+
+func TestStreamSkillOutputDrainsLongLineWithinBoundedBuffer(t *testing.T) {
+	const limit = 1024
+	longLine := strings.Repeat("x", limit*4)
+	output := newLimitedSkillOutputBuffer(limit)
+	liveOutput := newSkillRunLiveOutput()
+
+	streamSkillOutput(strings.NewReader(longLine), output, liveOutput)
+
+	if output.Len() != limit {
+		t.Fatalf("buffered bytes = %d, want %d", output.Len(), limit)
+	}
+	if !strings.Contains(output.String(), "[output truncated]") {
+		t.Fatalf("output should be marked truncated: %q", output.String())
+	}
+	if liveOutput.Total() == 0 {
+		t.Fatal("long line was not streamed to the live status buffer")
+	}
+	if lines := liveOutput.LastLines(1); len(lines) != 1 || utf8.RuneCountInString(lines[0]) > skillRunLiveOutputMaxLineRunes+len("...") {
+		t.Fatalf("live line should be capped, got %d runes", utf8.RuneCountInString(strings.Join(lines, "")))
+	}
+}
+
+func TestRunBashStepStreamsStdoutAndStderrToLiveStatus(t *testing.T) {
+	command := "printf 'stdout-progress\\n'; printf 'stderr-progress\\n' >&2"
+	params := map[string]interface{}{
+		"working_dir": t.TempDir(),
+		"timeout":     corelib.MinSkillRunnerTimeoutSec,
+	}
+	if runtime.GOOS == "windows" {
+		command = "echo stdout-progress & echo stderr-progress 1>&2"
+		params["preferred_shell"] = "cmd"
+	}
+	liveOutput := newSkillRunLiveOutput()
+	params["_live_output"] = liveOutput
+
+	output, err := runBashStepWithContextFull(context.Background(), command, params, "", &App{}, corelib.MinSkillRunnerTimeoutSec)
+	if err != nil {
+		t.Fatalf("runBashStepWithContextFull() error = %v; output=%s", err, output)
+	}
+	if !strings.Contains(output, "stdout-progress") || !strings.Contains(output, "stderr-progress") {
+		t.Fatalf("combined output = %q, want stdout and stderr", output)
+	}
+	lines := liveOutput.LastLines(10)
+	if !strings.Contains(strings.Join(lines, "\n"), "stdout-progress") || !strings.Contains(strings.Join(lines, "\n"), "stderr-progress") {
+		t.Fatalf("live output = %#v, want stdout and stderr progress", lines)
 	}
 }
 

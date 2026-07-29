@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfigForUI, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, SetMaclawLLMCurrentModel, IsNativeRoundedCorners, IsWebviewTransparent, GetFramelessTopInset, ClampMaximizedWindowToWorkArea, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset, SetBugReportEnabled, SelectBugReportScreenshots, BugReportScreenshotPreviewDataURL, SubmitBugReport, RetryBugReportUpload, HasPendingBugReportUpload, ListMyBugReports } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfigForUI, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, SetMaclawLLMCurrentModel, IsNativeRoundedCorners, GetFramelessTopInset, ClampMaximizedWindowToWorkArea, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset, SetBugReportEnabled, SelectBugReportScreenshots, BugReportScreenshotPreviewDataURL, SubmitBugReport, RetryBugReportUpload, HasPendingBugReportUpload, ListMyBugReports } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -451,7 +451,7 @@ function App() {
     }, []);
     const showAppEntryEnabled = config?.show_app_entry !== false;
     const showWorkflowEntryEnabled = config?.show_workflow_entry !== false;
-    const showUtilitiesEntryEnabled = (config as any)?.show_utilities_entry !== false;
+	const showUtilitiesEntryEnabled = (config as any)?.show_utilities_entry !== false;
     useEffect(() => {
         const openAppsPanel = () => {
             if (showAppEntryEnabled) setNavTabNow('apps');
@@ -494,9 +494,9 @@ function App() {
     useEffect(() => {
         if (!showWorkflowEntryEnabled && navTab === 'workflows') setNavTabNow('ai');
     }, [navTab, setNavTabNow, showWorkflowEntryEnabled]);
-    useEffect(() => {
-        if (!showUtilitiesEntryEnabled && navTab === 'utilities') setNavTabNow('ai');
-    }, [navTab, setNavTabNow, showUtilitiesEntryEnabled]);
+	useEffect(() => {
+		if (!showUtilitiesEntryEnabled && navTab === 'utilities') setNavTabNow('ai');
+	}, [navTab, setNavTabNow, showUtilitiesEntryEnabled]);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
     const [tutorialContent, setTutorialContent] = useState<string>("");
@@ -1059,53 +1059,65 @@ function App() {
         // rounding. navigator.platform is deprecated but available synchronously.
         return /mac/i.test(navigator.platform);
     });
-    // Windows 10: webview background is transparent so CSS border-radius on #App
-    // clips to true transparency (no corner artifacts against the desktop).
-    // When true, html/body/.app-viewport must also be transparent.
-    const [webviewTransparent, setWebviewTransparent] = useState(false);
+    // Windows 10 uses an opaque frameless WebView2 shell to prevent DWM from
+    // clipping the outer pixels at scaled DPI. Do not add CSS window decoration
+    // there either: it can read as a cropped frame. Linux keeps the CSS frame;
+    // macOS / Windows 11 use native window corners instead.
+    const [useCSSWindowCorners] = useState(() => {
+        const platform = navigator.platform || '';
+        return !/win|mac/i.test(platform);
+    });
+    const applyFramelessTopInset = useCallback((topInset: unknown) => {
+        const insetPx = typeof topInset === 'number' && topInset > 0 ? Math.min(Math.round(topInset), 16) : 0;
+        document.documentElement.style.setProperty('--dwm-top-offset', `${insetPx}px`);
+    }, []);
+    const refreshFramelessTopInset = useCallback(() => {
+        void callBackend(() => GetFramelessTopInset())
+            .then(applyFramelessTopInset)
+            .catch(() => applyFramelessTopInset(0));
+    }, [applyFramelessTopInset]);
     // Confirm from backend (authoritative) on mount.
-    // Match 2026-07-16 behavior for shell paint:
-    // - Win10 transparent: force html/body transparent for CSS radius clip
-    // - otherwise clear inline bg and let CSS --theme-page-bg own the color
-    //   (writing scheme pageBg here mismatched #App and showed right/bottom 白边)
+    // Clear boot-time inline colours so the CSS theme token owns the opaque
+    // shell; writing a literal scheme colour here can fringe at fractional DPI.
     useEffect(() => {
         Promise.all([
             callBackend(() => IsNativeRoundedCorners()).catch(() => null),
-            callBackend(() => IsWebviewTransparent()).catch(() => null),
             callBackend(() => GetFramelessTopInset()).catch(() => 0),
-        ]).then(([rounded, transparent, topInset]) => {
+        ]).then(([rounded, topInset]) => {
             if (rounded !== null) setNativeRounded(rounded);
-            if (transparent) {
-                setWebviewTransparent(true);
-                document.documentElement.style.backgroundColor = 'transparent';
-                document.body.style.backgroundColor = 'transparent';
-            } else {
-                document.documentElement.style.backgroundColor = '';
-                document.body.style.backgroundColor = '';
-            }
+            document.documentElement.style.backgroundColor = '';
+            document.body.style.backgroundColor = '';
             // Win10 DWM may reserve an invisible top frame on frameless windows.
             // CSS #App uses padding-top: var(--dwm-top-offset) to compensate.
             // Set on :root only — do not set on .app-viewport (would shadow).
-            const insetPx = typeof topInset === 'number' && topInset > 0 ? Math.min(Math.round(topInset), 16) : 0;
-            document.documentElement.style.setProperty('--dwm-top-offset', `${insetPx}px`);
+            applyFramelessTopInset(topInset);
         });
-    }, []);
-    // When theme mode changes after mount, keep non-transparent shells on CSS tokens
-    // (same as #App) instead of a different scheme hex that can fringe at scale edges.
+    }, [applyFramelessTopInset]);
+    useEffect(() => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const refreshAfterResize = () => {
+            if (timer) clearTimeout(timer);
+            // Moving between monitors can change the window DPI without a
+            // remount. Refresh the native metric after WebView2 settles.
+            timer = setTimeout(refreshFramelessTopInset, 150);
+        };
+        window.addEventListener('resize', refreshAfterResize);
+        return () => {
+            window.removeEventListener('resize', refreshAfterResize);
+            if (timer) clearTimeout(timer);
+        };
+    }, [refreshFramelessTopInset]);
+    // Keep the native window and web content on the same scheme token without
+    // creating a transparent shell at fractional DPI.
     useEffect(() => {
         const shellPageBg = aiThemeMode === 'dark'
             ? getAssistantDarkScheme(aiDarkSchemeId).cssVars.pageBg
             : getAssistantLightScheme(aiLightSchemeId).cssVars.pageBg;
         document.documentElement.style.setProperty('--theme-page-bg', shellPageBg);
         document.body.style.setProperty('--theme-page-bg', shellPageBg);
-        if (webviewTransparent) {
-            document.documentElement.style.backgroundColor = 'transparent';
-            document.body.style.backgroundColor = 'transparent';
-            return;
-        }
         document.documentElement.style.backgroundColor = '';
         document.body.style.backgroundColor = '';
-    }, [aiThemeMode, aiDarkSchemeId, aiLightSchemeId, webviewTransparent]);
+    }, [aiThemeMode, aiDarkSchemeId, aiLightSchemeId]);
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
     
@@ -3996,7 +4008,7 @@ ${instruction}`;
     if (isLoading) {
         logStartupTrace('render-gate-isLoading', { envLogsCount: envLogs.length, isManualCheck });
         return (
-            <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} className="app-loading-shell">
+            <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} className="app-loading-shell">
                 <div className="app-loading-drag-zone" />
                 <h2 className="app-loading-title">{t("envCheckTitle")}</h2>
                 <div className="app-loading-progress" aria-hidden="true">
@@ -4132,12 +4144,11 @@ ${instruction}`;
             data-ai-theme={aiThemeMode}
             data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}
             data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}
-            data-webview-transparent={webviewTransparent ? "true" : undefined}
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >
             <DataMigrationOverlay />
             <div className="app-scale-layer">
-                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
+                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
                 taskManagementPaneWidth={taskManagementPaneWidth}
@@ -4216,7 +4227,7 @@ ${instruction}`;
                 favoriteEmployeeNames={favoriteEmployeeNames}
                 showAppEntry={showAppEntryEnabled}
                 showWorkflowEntry={showWorkflowEntryEnabled}
-                showUtilitiesEntry={showUtilitiesEntryEnabled}
+				showUtilitiesEntry={showUtilitiesEntryEnabled}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
                 availableProviders={availableProvidersForSwitch}
                 onSwitchProvider={handleQuickSwitchProvider}
@@ -4553,7 +4564,7 @@ ${instruction}`;
                 </Suspense>
                 )}
                 </div>}
-                {showUtilitiesEntryEnabled && (navTab === 'utilities' || utilitiesPageVisited) && (
+				{showUtilitiesEntryEnabled && (navTab === 'utilities' || utilitiesPageVisited) && (
                     <div className="main-content elegant-scrollbar app-main-content" data-nav-tab="utilities" hidden={navTab !== 'utilities'}>
                         <Suspense fallback={
                             <div className="app-main-content-loading" role="status" aria-live="polite">

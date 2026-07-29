@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -344,7 +344,7 @@ func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel strin
 			factors = append(factors, fmt.Sprintf("community trust level: %s escalated to %s", maxRisk, escalated))
 			maxRisk = escalated
 		}
-	// agent-created and any other value: standard assessment (no modification)
+		// agent-created and any other value: standard assessment (no modification)
 	}
 
 	// Safe-tool category downgrade: MUST run AFTER trust level escalation.

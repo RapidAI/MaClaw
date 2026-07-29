@@ -29,22 +29,22 @@ import (
 
 // claudeSkillMeta corresponds to the YAML frontmatter of a Claude SKILL.md.
 type claudeSkillMeta struct {
-	Name         string              `yaml:"name"`
-	Description  string              `yaml:"description"`
-	AllowedTools []string            `yaml:"allowed-tools"`
-	Model        string              `yaml:"model"`
-	Author       string              `yaml:"author"`
-	Version      string              `yaml:"version"`
-	License      string              `yaml:"license"`
-	Tools        []claudeToolDef     `yaml:"tools"`
+	Name         string          `yaml:"name"`
+	Description  string          `yaml:"description"`
+	AllowedTools []string        `yaml:"allowed-tools"`
+	Model        string          `yaml:"model"`
+	Author       string          `yaml:"author"`
+	Version      string          `yaml:"version"`
+	License      string          `yaml:"license"`
+	Tools        []claudeToolDef `yaml:"tools"`
 }
 
 // claudeToolDef describes a custom tool defined in Claude SKILL.md frontmatter.
 type claudeToolDef struct {
-	Name        string                       `yaml:"name"`
-	Script      string                       `yaml:"script"`
-	Description string                       `yaml:"description"`
-	Parameters  map[string]claudeToolParam   `yaml:"parameters"`
+	Name        string                     `yaml:"name"`
+	Script      string                     `yaml:"script"`
+	Description string                     `yaml:"description"`
+	Parameters  map[string]claudeToolParam `yaml:"parameters"`
 }
 
 // claudeToolParam describes a parameter of a Claude tool definition.

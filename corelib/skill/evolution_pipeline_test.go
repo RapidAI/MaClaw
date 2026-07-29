@@ -105,13 +105,13 @@ func TestEvolutionPipeline_tryRepair_InvokesHook(t *testing.T) {
 	}
 
 	entry := &corelib.NLSkillEntry{
-		Name:        "broken",
-		Source:      "hub",
-		Status:      "active",
-		UsageCount:  1,
+		Name:         "broken",
+		Source:       "hub",
+		Status:       "active",
+		UsageCount:   1,
 		SuccessCount: 0,
-		LastError:   "[class: command_not_found] missing foo",
-		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "foo"}}},
+		LastError:    "[class: command_not_found] missing foo",
+		Steps:        []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "foo"}}},
 	}
 	// ShouldAttemptRepair: hub source + usage<=2 + repairable class.
 	if !ShouldAttemptRepair(entry) {

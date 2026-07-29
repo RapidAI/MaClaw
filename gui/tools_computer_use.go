@@ -257,8 +257,8 @@ func registerComputerUseTools(registry *ToolRegistry) {
 		Priority:    6,
 		Status:      RegToolAvailable,
 		InputSchema: map[string]interface{}{
-			"ms":      map[string]interface{}{"type": "integer", "description": "Fixed wait milliseconds (default 500)"},
-			"stable":  map[string]interface{}{"type": "boolean", "description": "If true, wait until visual stability (up to timeout_ms)"},
+			"ms":         map[string]interface{}{"type": "integer", "description": "Fixed wait milliseconds (default 500)"},
+			"stable":     map[string]interface{}{"type": "boolean", "description": "If true, wait until visual stability (up to timeout_ms)"},
 			"timeout_ms": map[string]interface{}{"type": "integer", "description": "Max wait for stable mode (default 3000)"},
 		},
 		Source: "builtin:computer_use",
@@ -588,13 +588,13 @@ func summarizeMarksForUI(els []computeruse.MarkedElement, max int) []map[string]
 	for i := 0; i < max; i++ {
 		el := els[i]
 		out = append(out, map[string]interface{}{
-			"ref":     el.Ref,
-			"name":    el.Name,
-			"type":    el.Type,
-			"center":  []int{el.CenterX, el.CenterY},
-			"bbox":    el.BBox,
-			"conf":    el.Confidence,
-			"source":  el.Source,
+			"ref":    el.Ref,
+			"name":   el.Name,
+			"type":   el.Type,
+			"center": []int{el.CenterX, el.CenterY},
+			"bbox":   el.BBox,
+			"conf":   el.Confidence,
+			"source": el.Source,
 		})
 	}
 	return out

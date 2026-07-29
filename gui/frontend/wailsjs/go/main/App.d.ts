@@ -392,8 +392,6 @@ export function IsWindowsTerminalAvailable():Promise<boolean>;
 
 export function IsNativeRoundedCorners():Promise<boolean>;
 
-export function IsWebviewTransparent():Promise<boolean>;
-
 export function GetFramelessTopInset():Promise<number>;
 
 export function ClampMaximizedWindowToWorkArea():Promise<void>;
@@ -425,6 +423,8 @@ export function ListSkills(arg1:string):Promise<Array<main.Skill>>;
 export function ListSkillsWithInstallStatus(arg1:string,arg2:string,arg3:string):Promise<Array<main.Skill>>;
 
 export function LoadConfig():Promise<main.AppConfig>;
+
+export function LoadMaclawAppsPanelState():Promise<string>;
 
 export function LoadConfigForUI():Promise<main.AppConfig>;
 
@@ -1544,6 +1544,8 @@ export function UpdateMaclawAppPackageSubmissionStatus(arg1:string,arg2:any):Pro
 
 export function SaveMaclawAppDefinitionForSkill(arg1:string,arg2:string):Promise<any>;
 
+export function SaveMaclawAppsPanelState(arg1:string):Promise<void>;
+
 export function RecordMaclawAppRunEvidenceForSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<any>;
 export function RecordMaclawAppRunHistory(arg1:any):Promise<any>;
 export function ListMaclawAppRunHistory(arg1:string,arg2:number):Promise<Array<any>>;
@@ -1706,7 +1708,10 @@ export function CreateVirtualRepositoryDirectory(arg1:string,arg2:string):Promis
 export function CheckoutVirtualRepositoryNode(arg1:string,arg2:string):Promise<void>;
 export function GetVirtualRepositoryDirectoryStats(arg1:string,arg2:string):Promise<string>;
 export function InspectVirtualRepository(arg1:string):Promise<string>;
+export function GetVirtualRepositoryChanges(arg1:string):Promise<string>;
 export function TestRemoteVirtualRepositoryConnection(arg1:string):Promise<string>;
+export function RepairRemoteVirtualRepositoryConnection(arg1:string):Promise<string>;
+export function ResetRemoteVirtualRepositoryHostKey(arg1:string):Promise<void>;
 export function CreateRemoteVirtualRepositoryRoot(arg1:string):Promise<void>;
 export function SaveRemoteVirtualRepository(arg1:string):Promise<string>;
 export function OpenRemoteVirtualRepository(arg1:string):Promise<string>;

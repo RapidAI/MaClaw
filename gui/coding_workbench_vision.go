@@ -21,11 +21,11 @@ const (
 // codingRouteCapability describes whether a workbench route pref can resolve
 // to a dedicated ModelRouter (or primary) model — for UI tooltips / status.
 type codingRouteCapability struct {
-	Pref      string `json:"pref"`                // auto | primary | reasoning | vision
-	Available bool   `json:"available"`           // true when this pref is usable
-	Model     string `json:"model,omitempty"`     // resolved model name when known
-	Source    string `json:"source,omitempty"`    // primary | route | fallback
-	Note      string `json:"note,omitempty"`      // human-readable caveat
+	Pref      string `json:"pref"`             // auto | primary | reasoning | vision
+	Available bool   `json:"available"`        // true when this pref is usable
+	Model     string `json:"model,omitempty"`  // resolved model name when known
+	Source    string `json:"source,omitempty"` // primary | route | fallback
+	Note      string `json:"note,omitempty"`   // human-readable caveat
 }
 
 func normalizeCodingRoutePref(pref string) string {

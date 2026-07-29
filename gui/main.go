@@ -99,11 +99,8 @@ func main() {
 		WebviewIsTransparent: false,
 		WindowIsTranslucent:  false,
 	}
-	// Native window background colour.  When the webview is transparent
-	// (Windows), this colour is never visible — the CSS border-radius on
-	// #App clips to transparency.  When the webview is opaque (macOS/Linux),
-	// this colour shows behind the CSS corners for the brief instant before
-	// the frontend renders.
+	// Native window background colour, visible only during the brief interval
+	// before the opaque WebView shell has rendered its theme.
 	// ── Keep in sync with: App.css  --theme-page-bg  (dark)
 	bgColour := &options.RGBA{R: 11, G: 18, B: 32, A: 255} // #0b1220
 	frameless := true
@@ -112,27 +109,17 @@ func main() {
 	// via DWM.  We let the OS handle rounding by keeping
 	// DisableFramelessWindowDecorations = false.
 	//
-	// Windows 10 does NOT have native rounded corners, and DWM reserves an
-	// invisible border area for decorations that offsets the webview content
-	// and clips the custom title bar.  So we disable decorations on Win10
-	// and rely on CSS border-radius instead.
+	// Windows 10 does NOT have native rounded corners, and DWM can reserve an
+	// invisible border area that offsets the webview content. Disable those
+	// frameless decorations there; the frontend uses a square opaque shell.
 	//
 	// On macOS/Linux this method returns false, so decorations are always
 	// disabled (no-op on those platforms anyway).
 	disableFramelessDecorations := !app.IsNativeRoundedCorners()
 
-	// Windows 10: enable transparent webview so the CSS border-radius on
-	// #App clips to true transparency — no corner artifacts regardless of
-	// theme.  html/body background is set to transparent; #App itself has
-	// an opaque background-color, so backdrop-filter inside #App still
-	// works correctly (it blurs #App's opaque content, not the desktop).
-	//
-	// Windows 11: both false — DWM provides native rounded corners;
-	// transparent webview is unnecessary and WindowIsTranslucent triggers
-	// the slow BlurBehind effect on early Win11 builds (22000–22620).
-	//
-	// macOS: both false — WebviewIsTransparent causes NSVisualEffectView /
-	// Liquid Glass crashes on macOS 15+ and 26+.
+	// Keep the WebView2 shell opaque. On Windows 10, transparent frameless
+	// windows can have their outer edge cropped by DWM at scaled DPI; on
+	// Windows 11 transparency is unnecessary because DWM owns the frame.
 	winWebviewTransparent, winWindowTranslucent := app.PlatformTransparencyFlags()
 	webviewUserDataPath := defaultWebviewUserDataPath()
 	clearWebviewAssetCacheIfNeeded(webviewUserDataPath)

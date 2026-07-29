@@ -65,9 +65,9 @@ var (
 	clampScheduleGen atomic.Uint64
 
 	// clampRunMu + lastClampAt throttle concurrent immediate clamps (FE resize + BE schedule).
-	clampRunMu   sync.Mutex
-	lastClampAt  time.Time
-	clampMinGap  = 40 * time.Millisecond
+	clampRunMu  sync.Mutex
+	lastClampAt time.Time
+	clampMinGap = 40 * time.Millisecond
 
 	// enumSearch holds state for the single EnumWindows callback.
 	// Go's syscall.NewCallback pins forever — create it once only.

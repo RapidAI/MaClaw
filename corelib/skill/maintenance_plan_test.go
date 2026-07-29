@@ -132,6 +132,26 @@ func TestBuildSkillMaintenancePlanSkipsDisabledSkills(t *testing.T) {
 	}
 }
 
+func TestBuildSkillMaintenancePlanSkipsInstructionOnlyAppContainers(t *testing.T) {
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	plan := BuildSkillMaintenancePlan([]corelib.NLSkillEntry{
+		{
+			Name:         "paper-translator-app",
+			Type:         "instruction",
+			Source:       "learned",
+			Status:       "active",
+			UsageCount:   4,
+			SuccessCount: 0,
+			FailureCount: 4,
+			CreatedAt:    now.AddDate(0, 0, -120).Format(time.RFC3339),
+		},
+	}, SkillMaintenancePlanOptions{Now: now, StaleAfterDays: 90})
+
+	if len(plan.Actions) != 0 {
+		t.Fatalf("instruction-only app container must not enter maintenance actions: %#v", plan.Actions)
+	}
+}
+
 func TestBuildSkillMaintenancePlanSkipsUnnamedSkills(t *testing.T) {
 	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 	plan := BuildSkillMaintenancePlan([]corelib.NLSkillEntry{{

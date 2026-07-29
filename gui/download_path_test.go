@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -155,12 +155,12 @@ func TestSanitizeDownloadFileName(t *testing.T) {
 
 func TestDownloadFileNameFromURL(t *testing.T) {
 	cases := map[string]string{
-		"https://arxiv.org/pdf/2510.16079.pdf":          "2510.16079.pdf",
-		"https://example.com/a/b/c.pdf?download=1":     "c.pdf",
-		"https://example.com/path%20x.pdf#section":     "path x.pdf", // url.Path unescapes
-		"https://example.com/":                         "download.bin",
-		"https://example.com":                          "download.bin",
-		"https://example.com/a:b|c.pdf":                "a_b_c.pdf",
+		"https://arxiv.org/pdf/2510.16079.pdf":     "2510.16079.pdf",
+		"https://example.com/a/b/c.pdf?download=1": "c.pdf",
+		"https://example.com/path%20x.pdf#section": "path x.pdf", // url.Path unescapes
+		"https://example.com/":                     "download.bin",
+		"https://example.com":                      "download.bin",
+		"https://example.com/a:b|c.pdf":            "a_b_c.pdf",
 	}
 	for in, want := range cases {
 		if got := downloadFileNameFromURL(in); got != want {

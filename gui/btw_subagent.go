@@ -369,12 +369,12 @@ func (c *btwCallbacks) ShouldStop() bool {
 
 // btwToolNames is the allowlist of tools available to /btw queries.
 var btwToolNames = map[string]bool{
-	"web_search":        true,
-	"web_fetch":         true,
-	"read_file":         true,
-	"memory":            true,
-	"agent_status":      true,
-	"current_datetime":  true,
+	"web_search":       true,
+	"web_fetch":        true,
+	"read_file":        true,
+	"memory":           true,
+	"agent_status":     true,
+	"current_datetime": true,
 }
 
 // buildBtwToolDefinitions constructs the minimal tool definitions for /btw.

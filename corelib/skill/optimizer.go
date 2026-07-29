@@ -358,7 +358,6 @@ func parseOptimizationResponse(resp string) (*OptimizationResult, error) {
 	}, nil
 }
 
-
 // WriteBackOptimizedSteps updates the on-disk skill.yaml with the entry's
 // current Steps. This is necessary because loadSkills treats skill.yaml as
 // the source of truth for Steps — if only config.json is updated, a restart

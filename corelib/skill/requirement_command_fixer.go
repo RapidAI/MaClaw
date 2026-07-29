@@ -85,12 +85,12 @@ func (f *CommandFixer) Fix(req Requirement) error {
 
 // commandInstallRecipe describes how to install a system command on each platform.
 type commandInstallRecipe struct {
-	Windows    string // winget/choco command
-	MacOS      string // brew command
-	LinuxApt   string // apt command (Debian/Ubuntu)
-	LinuxDnf   string // dnf command (Fedora/RHEL)
+	Windows     string // winget/choco command
+	MacOS       string // brew command
+	LinuxApt    string // apt command (Debian/Ubuntu)
+	LinuxDnf    string // dnf command (Fedora/RHEL)
 	LinuxPacman string // pacman command (Arch)
-	ManualHint string // human-readable install instruction
+	ManualHint  string // human-readable install instruction
 }
 
 // commandForPlatform returns the appropriate install command for the current OS.
@@ -145,60 +145,60 @@ func (r commandInstallRecipe) commandForPlatform() string {
 // install recipes. Only commonly-needed commands for skill execution are included.
 var knownCommandInstallRecipes = map[string]commandInstallRecipe{
 	"ffmpeg": {
-		Windows:    "winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install ffmpeg",
-		LinuxApt:   "sudo apt-get install -y ffmpeg",
-		LinuxDnf:   "sudo dnf install -y ffmpeg",
+		Windows:     "winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install ffmpeg",
+		LinuxApt:    "sudo apt-get install -y ffmpeg",
+		LinuxDnf:    "sudo dnf install -y ffmpeg",
 		LinuxPacman: "sudo pacman -S --noconfirm ffmpeg",
-		ManualHint: "Install ffmpeg from https://ffmpeg.org/download.html",
+		ManualHint:  "Install ffmpeg from https://ffmpeg.org/download.html",
 	},
 	"pandoc": {
-		Windows:    "winget install --id JohnMacFarlane.Pandoc --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install pandoc",
-		LinuxApt:   "sudo apt-get install -y pandoc",
-		LinuxDnf:   "sudo dnf install -y pandoc",
+		Windows:     "winget install --id JohnMacFarlane.Pandoc --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install pandoc",
+		LinuxApt:    "sudo apt-get install -y pandoc",
+		LinuxDnf:    "sudo dnf install -y pandoc",
 		LinuxPacman: "sudo pacman -S --noconfirm pandoc",
-		ManualHint: "Install pandoc from https://pandoc.org/installing.html",
+		ManualHint:  "Install pandoc from https://pandoc.org/installing.html",
 	},
 	"tesseract": {
-		Windows:    "winget install --id UB-Mannheim.TesseractOCR --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install tesseract",
-		LinuxApt:   "sudo apt-get install -y tesseract-ocr",
-		LinuxDnf:   "sudo dnf install -y tesseract",
+		Windows:     "winget install --id UB-Mannheim.TesseractOCR --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install tesseract",
+		LinuxApt:    "sudo apt-get install -y tesseract-ocr",
+		LinuxDnf:    "sudo dnf install -y tesseract",
 		LinuxPacman: "sudo pacman -S --noconfirm tesseract",
-		ManualHint: "Install tesseract from https://github.com/tesseract-ocr/tesseract",
+		ManualHint:  "Install tesseract from https://github.com/tesseract-ocr/tesseract",
 	},
 	"dot": {
-		Windows:    "winget install --id Graphviz.Graphviz --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install graphviz",
-		LinuxApt:   "sudo apt-get install -y graphviz",
-		LinuxDnf:   "sudo dnf install -y graphviz",
+		Windows:     "winget install --id Graphviz.Graphviz --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install graphviz",
+		LinuxApt:    "sudo apt-get install -y graphviz",
+		LinuxDnf:    "sudo dnf install -y graphviz",
 		LinuxPacman: "sudo pacman -S --noconfirm graphviz",
-		ManualHint: "Install graphviz from https://graphviz.org/download/",
+		ManualHint:  "Install graphviz from https://graphviz.org/download/",
 	},
 	"graphviz": {
-		Windows:    "winget install --id Graphviz.Graphviz --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install graphviz",
-		LinuxApt:   "sudo apt-get install -y graphviz",
-		LinuxDnf:   "sudo dnf install -y graphviz",
+		Windows:     "winget install --id Graphviz.Graphviz --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install graphviz",
+		LinuxApt:    "sudo apt-get install -y graphviz",
+		LinuxDnf:    "sudo dnf install -y graphviz",
 		LinuxPacman: "sudo pacman -S --noconfirm graphviz",
-		ManualHint: "Install graphviz from https://graphviz.org/download/",
+		ManualHint:  "Install graphviz from https://graphviz.org/download/",
 	},
 	"magick": {
-		Windows:    "winget install --id ImageMagick.ImageMagick --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install imagemagick",
-		LinuxApt:   "sudo apt-get install -y imagemagick",
-		LinuxDnf:   "sudo dnf install -y ImageMagick",
+		Windows:     "winget install --id ImageMagick.ImageMagick --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install imagemagick",
+		LinuxApt:    "sudo apt-get install -y imagemagick",
+		LinuxDnf:    "sudo dnf install -y ImageMagick",
 		LinuxPacman: "sudo pacman -S --noconfirm imagemagick",
-		ManualHint: "Install ImageMagick from https://imagemagick.org/script/download.php",
+		ManualHint:  "Install ImageMagick from https://imagemagick.org/script/download.php",
 	},
 	"convert": {
-		Windows:    "winget install --id ImageMagick.ImageMagick --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install imagemagick",
-		LinuxApt:   "sudo apt-get install -y imagemagick",
-		LinuxDnf:   "sudo dnf install -y ImageMagick",
+		Windows:     "winget install --id ImageMagick.ImageMagick --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install imagemagick",
+		LinuxApt:    "sudo apt-get install -y imagemagick",
+		LinuxDnf:    "sudo dnf install -y ImageMagick",
 		LinuxPacman: "sudo pacman -S --noconfirm imagemagick",
-		ManualHint: "Install ImageMagick from https://imagemagick.org/script/download.php",
+		ManualHint:  "Install ImageMagick from https://imagemagick.org/script/download.php",
 	},
 	"wkhtmltopdf": {
 		Windows:    "winget install --id wkhtmltopdf.wkhtmltopdf --accept-source-agreements --accept-package-agreements -e",
@@ -208,36 +208,36 @@ var knownCommandInstallRecipes = map[string]commandInstallRecipe{
 		ManualHint: "Install wkhtmltopdf from https://wkhtmltopdf.org/downloads.html",
 	},
 	"git": {
-		Windows:    "winget install --id Git.Git --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install git",
-		LinuxApt:   "sudo apt-get install -y git",
-		LinuxDnf:   "sudo dnf install -y git",
+		Windows:     "winget install --id Git.Git --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install git",
+		LinuxApt:    "sudo apt-get install -y git",
+		LinuxDnf:    "sudo dnf install -y git",
 		LinuxPacman: "sudo pacman -S --noconfirm git",
-		ManualHint: "Install git from https://git-scm.com/downloads",
+		ManualHint:  "Install git from https://git-scm.com/downloads",
 	},
 	"curl": {
-		Windows:    "winget install --id cURL.cURL --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install curl",
-		LinuxApt:   "sudo apt-get install -y curl",
-		LinuxDnf:   "sudo dnf install -y curl",
+		Windows:     "winget install --id cURL.cURL --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install curl",
+		LinuxApt:    "sudo apt-get install -y curl",
+		LinuxDnf:    "sudo dnf install -y curl",
 		LinuxPacman: "sudo pacman -S --noconfirm curl",
-		ManualHint: "Install curl from https://curl.se/download.html",
+		ManualHint:  "Install curl from https://curl.se/download.html",
 	},
 	"jq": {
-		Windows:    "winget install --id jqlang.jq --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install jq",
-		LinuxApt:   "sudo apt-get install -y jq",
-		LinuxDnf:   "sudo dnf install -y jq",
+		Windows:     "winget install --id jqlang.jq --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install jq",
+		LinuxApt:    "sudo apt-get install -y jq",
+		LinuxDnf:    "sudo dnf install -y jq",
 		LinuxPacman: "sudo pacman -S --noconfirm jq",
-		ManualHint: "Install jq from https://jqlang.github.io/jq/download/",
+		ManualHint:  "Install jq from https://jqlang.github.io/jq/download/",
 	},
 	"7z": {
-		Windows:    "winget install --id 7zip.7zip --accept-source-agreements --accept-package-agreements -e",
-		MacOS:      "brew install p7zip",
-		LinuxApt:   "sudo apt-get install -y p7zip-full",
-		LinuxDnf:   "sudo dnf install -y p7zip",
+		Windows:     "winget install --id 7zip.7zip --accept-source-agreements --accept-package-agreements -e",
+		MacOS:       "brew install p7zip",
+		LinuxApt:    "sudo apt-get install -y p7zip-full",
+		LinuxDnf:    "sudo dnf install -y p7zip",
 		LinuxPacman: "sudo pacman -S --noconfirm p7zip",
-		ManualHint: "Install 7-Zip from https://7-zip.org/",
+		ManualHint:  "Install 7-Zip from https://7-zip.org/",
 	},
 }
 

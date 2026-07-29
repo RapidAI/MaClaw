@@ -51,8 +51,8 @@ func TestRememberAgentViewOpenAssignsMonotonicRevision(t *testing.T) {
 func TestValidateAgentViewSubmitRevisionRejectsStale(t *testing.T) {
 	app := &App{}
 	view := map[string]interface{}{
-		"type": "form",
-		"id":   "tool:run:x",
+		"type":  "form",
+		"id":    "tool:run:x",
 		"title": "X",
 		"meta": map[string]interface{}{
 			"schemaVersion": "v1",

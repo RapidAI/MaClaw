@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSelectRelevantSkillsForTask_NilHandler(t *testing.T) {
@@ -23,6 +25,31 @@ func TestSelectRelevantSkillsForTask_EmptyDescription(t *testing.T) {
 	result := cb.selectRelevantSkillsForTask("")
 	if result != nil {
 		t.Errorf("expected nil with empty description, got %v", result)
+	}
+}
+
+func TestSelectRelevantSkillsForTaskExcludesInstructionOnlyAppContainers(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{
+		{Name: "pdf-translator-app", Status: "active", Type: "instruction", Description: "translate PDF documents", Triggers: []string{"pdf", "translate"}},
+		{Name: "pdf-translator", Status: "active", Description: "translate PDF documents", Triggers: []string{"pdf", "translate"}},
+	}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	callback := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: &IMMessageHandler{app: app}}}
+
+	matched := callback.selectRelevantSkillsForTask("translate a PDF document")
+	for _, item := range matched {
+		if item.Name == "pdf-translator-app" {
+			t.Fatalf("instruction-only app container leaked into coding subagent matches: %#v", matched)
+		}
+	}
+	if len(matched) != 1 || matched[0].Name != "pdf-translator" {
+		t.Fatalf("matched skills = %#v, want only executable pdf-translator", matched)
 	}
 }
 

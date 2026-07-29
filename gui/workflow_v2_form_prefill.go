@@ -402,7 +402,6 @@ func (h *IMMessageHandler) getRecentConversationTextsForPrefill(userID string, m
 	return texts
 }
 
-
 // --- Phase 4: Post-submission memory sedimentation ---
 
 // sedimentableFields is a legacy hardcoded whitelist kept for backward compatibility
@@ -417,7 +416,7 @@ var sedimentableFields = map[string]bool{
 	"discipline": true, "discipline_code": true, "research_field": true,
 	"h_index": true, "total_citations": true, "total_papers": true,
 	"phd_year": true, "degree": true,
-	"organization": true,
+	"organization":       true,
 	"education":          true,
 	"research_direction": true,
 }

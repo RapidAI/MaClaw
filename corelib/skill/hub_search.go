@@ -565,6 +565,16 @@ func entryFromSkillHubDownload(full skillHubDownloadResponse, opts HubDownloadOp
 	if len(steps) == 0 {
 		steps = craftToolStepsFromHubFiles(full.Files, installSkillDir)
 	}
+	// A MaClaw App package is an installable app definition, not an executable
+	// Skill. It deliberately has no runtime steps or SKILL.md: maclaw.app.json
+	// is discovered after extraction by the Apps panel. Keep the ordinary Skill
+	// validation strict, but allow a valid app definition through this shared
+	// materialisation path so SkillMarket app cards do not fail as empty Skills.
+	maclawAppMeta, hasMaclawAppDefinition := maclawAppDefinitionFromHubFiles(full.Files)
+	// Some app packages wrap a normal, executable Skill and include an app
+	// definition alongside its steps. Only a package with no executable
+	// definition of its own is an instruction-only app container.
+	isStandaloneMaclawAppPackage := hasMaclawAppDefinition && len(steps) == 0
 
 	if !opts.SkipExtract && len(full.Files) > 0 {
 		if err := extractHubBundledFiles(installName, full.Files, installSkillDir); err != nil {
@@ -572,7 +582,7 @@ func entryFromSkillHubDownload(full skillHubDownloadResponse, opts HubDownloadOp
 		}
 	}
 
-	if len(steps) == 0 {
+	if len(steps) == 0 && !isStandaloneMaclawAppPackage {
 		return nil, fmt.Errorf("skill %s has no steps, no agent_skill_md, and no SKILL.md in files", firstNonEmptyString(full.Name, skillID))
 	}
 
@@ -598,6 +608,18 @@ func entryFromSkillHubDownload(full skillHubDownloadResponse, opts HubDownloadOp
 		Version:       full.SemVer,
 		TrustLevel:    trustLevel,
 		SkillDir:      installSkillDir,
+	}
+	if isStandaloneMaclawAppPackage {
+		// "instruction" marks this container entry as intentionally
+		// non-executable while keeping it visible to the app-manifest discovery
+		// and installed-skill metadata paths.
+		entry.Type = "instruction"
+		if strings.TrimSpace(entry.Description) == "" {
+			entry.Description = maclawAppMeta.Description
+		}
+		if len(entry.Triggers) == 0 {
+			entry.Triggers = []string{maclawAppMeta.Name}
+		}
 	}
 	if pub, _, ok := ParseSkillID(entry.SkillID); ok {
 		entry.Publisher = pub
@@ -633,6 +655,45 @@ func craftToolStepsFromHubFiles(files map[string]string, skillDir string) []core
 		}}
 	}
 	return nil
+}
+
+type maclawAppDefinitionMetadata struct {
+	Name        string
+	Description string
+}
+
+// maclawAppDefinitionFromHubFiles verifies that a downloaded package contains
+// a structurally valid standalone MaClaw App definition. Validation here is
+// deliberately narrow: extraction still validates every file path and the app
+// loader performs its full contract validation before displaying the app.
+func maclawAppDefinitionFromHubFiles(files map[string]string) (maclawAppDefinitionMetadata, bool) {
+	encoded, ok := files["maclaw.app.json"]
+	if !ok {
+		return maclawAppDefinitionMetadata{}, false
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return maclawAppDefinitionMetadata{}, false
+	}
+	var doc struct {
+		Schema        string `json:"schema"`
+		PrivateMarker string `json:"privateMarker"`
+		App           struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"app"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return maclawAppDefinitionMetadata{}, false
+	}
+	if doc.Schema != "maclaw.app.v1" || doc.PrivateMarker != "x_maclaw_apps" || strings.TrimSpace(doc.App.ID) == "" || strings.TrimSpace(doc.App.Name) == "" {
+		return maclawAppDefinitionMetadata{}, false
+	}
+	return maclawAppDefinitionMetadata{
+		Name:        strings.TrimSpace(doc.App.Name),
+		Description: strings.TrimSpace(doc.App.Description),
+	}, true
 }
 
 // ExtractSkillPackageFiles writes a base64 path→content map under targetDir
@@ -977,10 +1038,10 @@ type skillHubDownloadStep struct {
 
 type skillHubDownloadResponse struct {
 	skillHubItem
-	Triggers     []string                 `json:"triggers"`
-	Steps        []skillHubDownloadStep   `json:"steps,omitempty"`
-	Files        map[string]string        `json:"files,omitempty"`          // path → base64 content
-	AgentSkillMD string                   `json:"agent_skill_md,omitempty"` // SKILL.md content
+	Triggers     []string               `json:"triggers"`
+	Steps        []skillHubDownloadStep `json:"steps,omitempty"`
+	Files        map[string]string      `json:"files,omitempty"`          // path → base64 content
+	AgentSkillMD string                 `json:"agent_skill_md,omitempty"` // SKILL.md content
 }
 
 // ── ClawHub response types ──

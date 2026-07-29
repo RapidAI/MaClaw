@@ -105,6 +105,17 @@ describe('settingsTabConfig', () => {
         expect(out.default_proxy_enabled).toBe(false);
     });
 
+    it('generated AppConfig preserves general entry and survey toggles', async () => {
+        const { main } = await import('../../../wailsjs/go/models');
+        const config = new main.AppConfig({
+            show_utilities_entry: false,
+            survey_enabled: false,
+        });
+
+        expect(config.show_utilities_entry).toBe(false);
+        expect(config.survey_enabled).toBe(false);
+    });
+
     it('configChangeEventHasPayload treats empty detail as signal-only', () => {
         expect(configChangeEventHasPayload(null)).toBe(false);
         expect(configChangeEventHasPayload(undefined)).toBe(false);

@@ -29,10 +29,10 @@ import (
 // Transport: NDJSON JSON-RPC over TCP (127.0.0.1 only).
 
 const (
-	acpHostDefaultBind     = "127.0.0.1"
-	acpHostPreferredPort   = 18789 // default preferred when config port is 0 but we want sticky
-	acpHostTokenBytes      = 24
-	acpHostAgentName       = "maclaw-gui-ai-assistant"
+	acpHostDefaultBind   = "127.0.0.1"
+	acpHostPreferredPort = 18789 // default preferred when config port is 0 but we want sticky
+	acpHostTokenBytes    = 24
+	acpHostAgentName     = "maclaw-gui-ai-assistant"
 )
 
 // acpHostEndpoint is written to <MaclawBaseDir>/acp/endpoint.json for discovery.
@@ -157,7 +157,7 @@ func (a *App) GetACPHostStatus() map[string]any {
 	}
 	a.acpHostMu.Unlock()
 	return map[string]any{
-		"enabled":       enabled,
+		"enabled": enabled,
 		// Process-local host is authoritative; discovery files may lag on first start.
 		"running":       runningLocal || discoveryOK,
 		"address":       addr,
@@ -1013,11 +1013,11 @@ func (a *App) mirrorACPFinal(requestID, sessionKey string, resp *IMAgentResponse
 	_ = a.emitAIAssistantResponse(requestID, resp)
 
 	meta, _ := json.Marshal(map[string]any{
-		"source":       "acp-mode-b",
-		"request_id":   requestID,
-		"session_key":  uiSession,
-		"has_text":     strings.TrimSpace(resp.Text) != "",
-		"has_error":    strings.TrimSpace(resp.Error) != "",
+		"source":      "acp-mode-b",
+		"request_id":  requestID,
+		"session_key": uiSession,
+		"has_text":    strings.TrimSpace(resp.Text) != "",
+		"has_error":   strings.TrimSpace(resp.Error) != "",
 	})
 	a.emitEvent("acp-mode-b-done", string(meta))
 

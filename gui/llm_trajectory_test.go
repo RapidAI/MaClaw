@@ -560,7 +560,7 @@ func TestTrajectoryRecorder_SetCurrentIterationAndCloseUnpaired(t *testing.T) {
 	r.StartSession("s", "p", "m", "openai", "u", "desktop", nil)
 	r.SetCurrentIteration(2) // 0-based 2 → 1-based 3
 	r.RecordEntry(TrajectoryEntry{
-		Role: "assistant",
+		Role:    "assistant",
 		Content: "calling",
 		ToolCalls: []llm.ToolCall{{
 			ID: "c1", Type: "function",

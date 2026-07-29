@@ -33,6 +33,8 @@ function installBackend() {
         GetVirtualRepositoryOperation: vi.fn(),
         CancelVirtualRepositoryOperation: vi.fn(),
         TestRemoteVirtualRepositoryConnection: vi.fn(),
+		RepairRemoteVirtualRepositoryConnection: vi.fn(),
+		ResetRemoteVirtualRepositoryHostKey: vi.fn().mockResolvedValue(undefined),
 		CreateRemoteVirtualRepositoryRoot: vi.fn().mockResolvedValue(undefined),
         SaveRemoteVirtualRepository: vi.fn(),
         OpenRemoteVirtualRepository: vi.fn(),
@@ -166,6 +168,99 @@ describe('Virtual repository utility', () => {
 		act(() => handler({ pending: false, phase: 'retry_wait', message: 'read virtual repository "vrepo-test" for sync: connect SSH', next_retry_at: '2026-07-24T12:00:00Z' }));
 		expect(await screen.findByRole('button', { name: 'Sync now' })).toHaveProperty('disabled', false);
 		expect((await screen.findByRole('status')).textContent).toMatch(/Automatic sync failed|will retry|vrepo-test/i);
+	});
+
+	it('offers remote-connection repair for a recoverable SSH automatic-sync failure', async () => {
+		const backend = (window as any).go.main.App;
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([{
+			version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/srv/vrepo', nodes: [],
+			remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' },
+		}, {
+			version: 1, id: 'vrepo_ssh_other', name: 'vrepo-test', root_path: '/srv/other', nodes: [],
+			remote: { host: 'other.driverdevelop.com', port: 22, user: 'root' },
+		}]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake www.driverdevelop.com:22: ssh: handshake failed: SSH host key is not trusted' }));
+		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
+		expect(await screen.findByRole('dialog', { name: 'Repair remote connection' })).toBeTruthy();
+		expect(screen.getByText('This dialog only verifies and repairs the SSH connection. After it succeeds, close it and click Sync now.')).toBeTruthy();
+		expect(screen.getByLabelText('Server')).toHaveProperty('readOnly', true);
+		expect(screen.getByLabelText('SSH password')).toHaveProperty('readOnly', false);
+		expect((screen.getByLabelText('Server') as HTMLInputElement).value).toBe('www.driverdevelop.com');
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		backend.RepairRemoteVirtualRepositoryConnection.mockResolvedValue(JSON.stringify({ connected: true, host_key_trusted: true, root_exists: true }));
+		fireEvent.change(screen.getByLabelText('SSH password'), { target: { value: 'repaired-secret' } });
+		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		await screen.findByText(/Connected/);
+		expect(backend.RepairRemoteVirtualRepositoryConnection).toHaveBeenCalledWith(expect.stringContaining('"password":"repaired-secret"'));
+		expect(backend.TestRemoteVirtualRepositoryConnection).not.toHaveBeenCalled();
+	});
+
+	it('does not offer remote-root creation from the repair-only flow', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/srv/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.RepairRemoteVirtualRepositoryConnection.mockResolvedValue(JSON.stringify({ connected: true, host_key_trusted: true, root_exists: false, error_code: 'root_not_found' }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake failed' }));
+		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		await waitFor(() => expect(backend.RepairRemoteVirtualRepositoryConnection).toHaveBeenCalled());
+		expect(screen.queryByRole('button', { name: 'Create remote root' })).toBeNull();
+		expect(backend.CreateRemoteVirtualRepositoryRoot).not.toHaveBeenCalled();
+	});
+
+	it('keeps the repair banner until the next sync confirms recovery', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/srv/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.RepairRemoteVirtualRepositoryConnection.mockResolvedValue(JSON.stringify({ connected: true, host_key_trusted: true, root_exists: true }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH host key is not trusted' }));
+		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		await screen.findByText(/Connected/);
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(backend.SaveRemoteVirtualRepository).not.toHaveBeenCalled();
+		expect(screen.getByRole('button', { name: 'Repair remote connection' })).toBeTruthy();
+	});
+
+	it('repairs a remote connection without saving an index-only draft that lacks the remote revision', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/srv/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.RepairRemoteVirtualRepositoryConnection.mockResolvedValue(JSON.stringify({ connected: true, host_key_trusted: true, root_exists: true }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH handshake failed' }));
+		fireEvent.click(await screen.findByRole('button', { name: 'Repair remote connection' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+		await screen.findByText(/Connected/);
+		expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+		expect(backend.SaveRemoteVirtualRepository).not.toHaveBeenCalled();
+	});
+
+	it('clears stale repair state when a manual sync succeeds without a status event', async () => {
+		const backend = (window as any).go.main.App;
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([{
+			version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/srv/vrepo', nodes: [],
+			remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' },
+		}]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		const handler = vi.mocked(EventsOn).mock.calls.find(([event]) => event === 'virtual-repository:background-sync')?.[1] as ((raw: unknown) => void);
+		act(() => handler({ pending: false, phase: 'failed', repair_repository_id: 'vrepo_ssh', message: 'read virtual repository "vrepo-test" for sync: SSH host key is not trusted' }));
+		expect(await screen.findByRole('button', { name: 'Repair remote connection' })).toBeTruthy();
+		fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+		await screen.findByText(/Synced/);
+		expect(screen.queryByRole('button', { name: 'Repair remote connection' })).toBeNull();
 	});
 
 	it('keeps manual sync disabled until the automatic sync state is known', async () => {
@@ -765,6 +860,8 @@ describe('Virtual repository utility', () => {
 		fireEvent.contextMenu(repositoryButton, { clientX: 120, clientY: 120 });
 		const deleteAction = screen.getByRole('menuitem', { name: 'Delete virtual repository' });
 		expect(deleteAction).toBeTruthy();
+		expect(deleteAction.className).toContain('vrepo-repository-menu__delete');
+		expect(within(screen.getByRole('menu')).getByText('Product workspace')).toBeTruthy();
 		await waitFor(() => expect(document.activeElement).toBe(deleteAction));
 		expect(repositoryButton.getAttribute('aria-expanded')).toBe('true');
 		fireEvent.keyDown(deleteAction, { key: 'Escape' });
@@ -1388,6 +1485,31 @@ describe('Virtual repository utility', () => {
         expect(screen.queryByText(/Connected/)).toBeNull();
         expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true);
     });
+
+	it('requires confirmation before removing a changed saved host key and retests it as untrusted', async () => {
+		const backend = (window as any).go.main.App;
+		const existing = { version: 1, id: 'remote_1', name: 'Remote workspace', root_path: '/srv/workspace', remote: { host: 'example.com', port: 22, user: 'deploy' }, nodes: [], updated_at: '2026-07-22T00:00:00Z' };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([existing]));
+		backend.OpenRemoteVirtualRepository.mockResolvedValue(JSON.stringify(existing));
+		backend.TestRemoteVirtualRepositoryConnection
+			.mockResolvedValueOnce(JSON.stringify({ error_code: 'host_key_changed', host_key_algorithm: 'ssh-ed25519', host_key_fingerprint: 'SHA256:changed' }))
+			.mockResolvedValueOnce(JSON.stringify({ error_code: 'host_key_untrusted', host_key_algorithm: 'ssh-ed25519', host_key_fingerprint: 'SHA256:changed' }));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Remote workspace'));
+		fireEvent.click(await screen.findByText('Edit connection'));
+		fireEvent.click(screen.getByText('Test connection'));
+		expect(await screen.findByText(/differs from the saved fingerprint/)).toBeTruthy();
+		fireEvent.click(screen.getByRole('button', { name: 'Remove saved key' }));
+		const confirmation = await screen.findByRole('dialog', { name: 'Remove saved key' });
+		fireEvent.click(within(confirmation).getByRole('button', { name: 'Remove saved key' }));
+		await waitFor(() => expect(backend.ResetRemoteVirtualRepositoryHostKey).toHaveBeenCalledWith('remote_1'));
+		await waitFor(() => expect(backend.TestRemoteVirtualRepositoryConnection).toHaveBeenCalledTimes(2));
+		expect(await screen.findByText('First connection: verify and trust this server fingerprint')).toBeTruthy();
+		expect(screen.getByLabelText('Trust and save host key')).toBeTruthy();
+		const retry = JSON.parse(backend.TestRemoteVirtualRepositoryConnection.mock.calls[1][0]);
+		expect(retry.trust_host_key).toBe(false);
+	});
 
 	it('offers to create a missing remote root only after confirmation', async () => {
 		const backend = (window as any).go.main.App;

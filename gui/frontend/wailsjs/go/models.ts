@@ -615,6 +615,8 @@ export namespace main {
 	    show_ai_trace_entry: boolean;
 	    show_app_entry?: boolean;
 	    show_workflow_entry?: boolean;
+	    show_utilities_entry?: boolean;
+	    survey_enabled?: boolean;
 	    log_detail_enabled: boolean;
 	    security_policy_mode: string;
 	    sandbox_mode: string;
@@ -819,6 +821,8 @@ export namespace main {
 	        this.show_ai_trace_entry = source["show_ai_trace_entry"];
 	        this.show_app_entry = source["show_app_entry"];
 	        this.show_workflow_entry = source["show_workflow_entry"];
+	        this.show_utilities_entry = source["show_utilities_entry"];
+	        this.survey_enabled = source["survey_enabled"];
 	        this.log_detail_enabled = source["log_detail_enabled"];
 	        this.qqbot_enabled = source["qqbot_enabled"];
 	        this.qqbot_app_id = source["qqbot_app_id"];

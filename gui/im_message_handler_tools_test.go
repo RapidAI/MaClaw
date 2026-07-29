@@ -739,6 +739,81 @@ func TestExecuteToolDetailed_RegisteredHandlerInfersOutcome(t *testing.T) {
 	}
 }
 
+func TestManageScheduleCreateRequiresExplicitSchedulingRequest(t *testing.T) {
+	registry := NewToolRegistry()
+	called := false
+	if err := registry.Register(RegisteredTool{
+		Name:        "manage_schedule",
+		Description: "schedule",
+		Status:      RegToolAvailable,
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "created"
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := &IMMessageHandler{registry: registry}
+	args := `{"action":"create","name":"convert-wiki-pdf","task_action":"转换 Markdown 为 PDF","hour":3}`
+
+	result := h.executeToolDetailedWithUserText("manage_schedule", args, "把这个 Markdown 文档转换成 PDF", nil)
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("ordinary conversion result = %+v, want policy rejection", result)
+	}
+	if called {
+		t.Fatal("ordinary document conversion must not reach manage_schedule(create)")
+	}
+
+	result = h.executeToolDetailedWithUserText("manage_schedule", args, "请创建定时任务，每天凌晨 3 点把这个 Markdown 文档转换成 PDF", nil)
+	if result.Outcome != toolOutcomeSucceeded || result.Text != "created" {
+		t.Fatalf("explicit scheduled request result = %+v, want success", result)
+	}
+	if !called {
+		t.Fatal("explicit scheduling request should reach manage_schedule(create)")
+	}
+}
+
+func TestNativePDFGeneratorErrorsAreFailedToolOutcomes(t *testing.T) {
+	for _, text := range []string{
+		"未找到可用的中文字体，无法生成 PDF。请改用 write_file 写入 Markdown 文件后用 send_file 发送。",
+		"PDF 生成失败: renderer unavailable",
+	} {
+		result := registeredToolExecutionResult(text)
+		if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailureHandlerReported {
+			t.Fatalf("native PDF error result = %+v, want failed/handler_reported", result)
+		}
+	}
+}
+
+func TestNativePDFFallbackOnlyAddsExecutionTools(t *testing.T) {
+	tools := []map[string]interface{}{toolDef("generate_pdf", "pdf", nil, nil)}
+	catalog := []map[string]interface{}{
+		toolDef("craft_tool", "execute a one-off script", nil, nil),
+		toolDef("bash", "execute a shell command", nil, nil),
+		toolDef("manage_schedule", "schedule", nil, nil),
+		toolDef("passthrough_task", "register command", nil, nil),
+	}
+	fallback := ensureNativePDFFallbackTools(tools, catalog)
+	for _, name := range []string{"craft_tool", "bash"} {
+		if !toolListContainsName(fallback, name) {
+			t.Fatalf("fallback tools = %v, want %s", agentLoopToolNamesForLog(fallback), name)
+		}
+	}
+	for _, name := range []string{"manage_schedule", "passthrough_task"} {
+		if toolListContainsName(fallback, name) {
+			t.Fatalf("fallback tools must not add %s: %v", name, agentLoopToolNamesForLog(fallback))
+		}
+	}
+}
+
+func TestDetectAvailableToolExecutionPromise(t *testing.T) {
+	tools := []map[string]interface{}{toolDef("bash", "execute", nil, nil)}
+	correction := detectAvailableToolExecutionPromise("让我直接调用 bash 执行转换。", tools)
+	if correction == "" || !strings.Contains(correction, "emitted no tool call") {
+		t.Fatalf("promise correction = %q", correction)
+	}
+}
+
 func TestPinConditionalToolAfterSuccessRequiresSucceededOutcome(t *testing.T) {
 	h := &IMMessageHandler{toolRouter: NewToolRouter(NewToolDefinitionGenerator(nil, nil))}
 

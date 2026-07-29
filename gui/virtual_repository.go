@@ -38,6 +38,7 @@ const (
 	virtualRepositoryFieldMaxLength   = 4096
 	virtualRepositoryNodeMaxCount     = 10000
 	virtualRepositoryStatsMaxEntries  = 1000000
+	virtualRepositoryChangesMaxFiles  = 2000
 )
 
 var (
@@ -182,6 +183,46 @@ type VirtualRepositoryNodeStatus struct {
 	Clean        bool   `json:"clean"`
 	ErrorCode    string `json:"error_code,omitempty"`
 	Error        string `json:"error,omitempty"`
+}
+
+// VirtualRepositoryChanges is a read-only Git review snapshot for one mapped
+// working copy. It deliberately contains only repository metadata, changed
+// paths, commit ancestry, and an optional patch for a user-selected path.
+// Keeping this separate from repository operations makes opening the Changes
+// view incapable of staging, committing, pulling, or otherwise mutating a
+// checkout.
+type VirtualRepositoryChanges struct {
+	NodeID         string                        `json:"node_id"`
+	Branch         string                        `json:"branch,omitempty"`
+	Head           string                        `json:"head,omitempty"`
+	Files          []VirtualRepositoryChangeFile `json:"files"`
+	FilesTruncated bool                          `json:"files_truncated,omitempty"`
+	Commits        []VirtualRepositoryCommit     `json:"commits"`
+	Diff           string                        `json:"diff,omitempty"`
+}
+
+type VirtualRepositoryChangeFile struct {
+	Path           string `json:"path"`
+	OriginalPath   string `json:"original_path,omitempty"`
+	IndexStatus    string `json:"index_status"`
+	WorktreeStatus string `json:"worktree_status"`
+}
+
+type VirtualRepositoryCommit struct {
+	Hash        string   `json:"hash"`
+	ShortHash   string   `json:"short_hash"`
+	Parents     []string `json:"parents"`
+	Author      string   `json:"author"`
+	Date        string   `json:"date"`
+	Subject     string   `json:"subject"`
+	Decorations string   `json:"decorations,omitempty"`
+}
+
+type virtualRepositoryChangesRequest struct {
+	RepositoryID string `json:"repository_id"`
+	RootPath     string `json:"root_path"`
+	NodeID       string `json:"node_id"`
+	FilePath     string `json:"file_path,omitempty"`
 }
 
 type VirtualRepositoryDirectoryStats struct {
@@ -1532,6 +1573,225 @@ func (a *App) InspectVirtualRepository(root string) (string, error) {
 	return string(data), err
 }
 
+// GetVirtualRepositoryChanges returns Git working-tree changes and a compact
+// recent commit graph for one local or remote virtual-repository mapping. It
+// is intentionally read-only and supports Git mappings only: SVN and local
+// directory mappings retain their existing status view.
+func (a *App) GetVirtualRepositoryChanges(inputJSON string) (string, error) {
+	var request virtualRepositoryChangesRequest
+	if err := unmarshalVirtualRepositoryInput(inputJSON, "virtual repository changes", &request); err != nil {
+		return "", err
+	}
+	request.RepositoryID = strings.TrimSpace(request.RepositoryID)
+	request.RootPath = strings.TrimSpace(request.RootPath)
+	request.NodeID = strings.TrimSpace(request.NodeID)
+	// Git permits paths with leading or trailing whitespace. Keep the exact path
+	// returned by porcelain status so selecting such a file still resolves to
+	// the same working-tree entry.
+	if request.NodeID == "" || len(request.NodeID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.NodeID) {
+		return "", errors.New("virtual repository node id is invalid")
+	}
+	if request.FilePath != "" && (len(request.FilePath) > virtualRepositoryFieldMaxLength || containsControlCharacter(request.FilePath)) {
+		return "", errors.New("virtual repository change path is invalid")
+	}
+	if request.RepositoryID != "" {
+		if len(request.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.RepositoryID) {
+			return "", errors.New("virtual repository id is invalid")
+		}
+		return a.getRemoteVirtualRepositoryChanges(request)
+	}
+	if request.RootPath == "" {
+		return "", errors.New("virtual repository root directory is required")
+	}
+	repo, err := readVirtualRepository(request.RootPath)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	changes, err := a.collectLocalVirtualRepositoryChanges(ctx, repo, request.NodeID, request.FilePath)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(changes)
+	return string(data), err
+}
+
+func virtualRepositoryGitNode(repo *VirtualRepository, nodeID string) (VirtualRepositoryNode, error) {
+	for _, node := range repo.Nodes {
+		if node.ID != nodeID {
+			continue
+		}
+		if node.Repository == nil || !node.Repository.Enabled || node.Repository.Kind != "git" {
+			return VirtualRepositoryNode{}, errors.New("changes are available only for checked-out Git mappings")
+		}
+		return node, nil
+	}
+	return VirtualRepositoryNode{}, errors.New("Git virtual repository node was not found")
+}
+
+func (a *App) collectLocalVirtualRepositoryChanges(ctx context.Context, repo *VirtualRepository, nodeID, filePath string) (VirtualRepositoryChanges, error) {
+	node, err := virtualRepositoryGitNode(repo, nodeID)
+	if err != nil {
+		return VirtualRepositoryChanges{}, err
+	}
+	workingCopy, err := resolveVirtualRepositoryPath(repo.RootPath, node.Repository.RelativePath, true)
+	if err != nil {
+		return VirtualRepositoryChanges{}, errors.New("repository has not been checked out")
+	}
+	client := a.searchGitClient(false)
+	if !client.Available {
+		return VirtualRepositoryChanges{}, errors.New(client.Error)
+	}
+	return collectVirtualRepositoryGitChanges(ctx, func(args ...string) (string, error) {
+		return runVCSCommand(ctx, client.Executable, workingCopy, args...)
+	}, func(args ...string) (string, error) {
+		return runVCSCommandRaw(ctx, client.Executable, workingCopy, args...)
+	}, nodeID, "", filePath)
+}
+
+func collectVirtualRepositoryGitChanges(ctx context.Context, run func(args ...string) (string, error), runRaw func(args ...string) (string, error), nodeID, branch, filePath string) (VirtualRepositoryChanges, error) {
+	if _, err := run("rev-parse", "--is-inside-work-tree"); err != nil {
+		return VirtualRepositoryChanges{}, errors.New("mapping is not a Git working tree")
+	}
+	head, err := run("rev-parse", "HEAD")
+	if err != nil {
+		// A newly initialized repository has no HEAD yet. Its working tree is
+		// still reviewable, including untracked files, but `git diff HEAD` is
+		// not. Continue with an empty head and choose the no-index diff path
+		// below when a file is selected.
+		if !isVirtualRepositoryGitUnbornHeadError(err) {
+			return VirtualRepositoryChanges{}, err
+		}
+		head = ""
+	}
+	changes := VirtualRepositoryChanges{NodeID: nodeID, Branch: strings.TrimSpace(branch), Head: strings.TrimSpace(head), Files: []VirtualRepositoryChangeFile{}, Commits: []VirtualRepositoryCommit{}}
+	if changes.Branch == "" {
+		changes.Branch, _ = run("symbolic-ref", "--quiet", "--short", "HEAD")
+		changes.Branch = strings.TrimSpace(changes.Branch)
+	}
+	// --branch makes the first record start with "##", so the shared VCS
+	// runner cannot trim the leading space in an unstaged status record. -z
+	// keeps paths byte-for-byte and avoids Git's human-oriented quote format.
+	porcelain, err := runRaw("status", "--porcelain=v1", "--branch", "-z", "--untracked-files=all")
+	if err != nil {
+		return VirtualRepositoryChanges{}, err
+	}
+	files, filesTruncated, err := parseVirtualRepositoryGitStatus(porcelain)
+	if err != nil {
+		return VirtualRepositoryChanges{}, err
+	}
+	changes.Files = files
+	changes.FilesTruncated = filesTruncated
+	if strings.TrimSpace(head) != "" {
+		graph, err := run("log", "--graph", "--decorate=short", "--date=short", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%s%x1f%D%x1e", "-n", "40")
+		if err != nil {
+			return VirtualRepositoryChanges{}, err
+		}
+		commits, err := parseVirtualRepositoryGitLog(graph)
+		if err != nil {
+			return VirtualRepositoryChanges{}, err
+		}
+		changes.Commits = commits
+	}
+	if filePath != "" {
+		file, found := virtualRepositoryChangeFile(files, filePath)
+		if !found {
+			return VirtualRepositoryChanges{}, errors.New("selected change file was not found")
+		}
+		diffArgs := []string{"diff", "--no-ext-diff", "--no-color", "--binary", "HEAD", "--", filePath}
+		if strings.TrimSpace(head) == "" || (file.IndexStatus == "?" && file.WorktreeStatus == "?") {
+			// Git does not include untracked files in `diff HEAD`. `--no-index`
+			// gives them the same review experience as a newly added file. Git
+			// returns exit code 1 when it finds a diff, so retain non-empty output.
+			diffArgs = []string{"diff", "--no-index", "--no-ext-diff", "--no-color", "--binary", "--", "/dev/null", filePath}
+		}
+		diff, diffErr := run(diffArgs...)
+		if diffErr != nil && diff == "" {
+			return VirtualRepositoryChanges{}, diffErr
+		}
+		changes.Diff = truncateVirtualRepositoryDiagnostic(diff, 256*1024)
+	}
+	return changes, nil
+}
+
+func isVirtualRepositoryGitUnbornHeadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unknown revision") || strings.Contains(message, "needed a single revision") || strings.Contains(message, "ambiguous argument 'head'") || strings.Contains(message, "does not have any commits yet")
+}
+
+func parseVirtualRepositoryGitStatus(output string) ([]VirtualRepositoryChangeFile, bool, error) {
+	files := make([]VirtualRepositoryChangeFile, 0)
+	parts := strings.Split(output, "\x00")
+	for index := 0; index < len(parts); index++ {
+		entry := parts[index]
+		if entry == "" {
+			continue
+		}
+		if strings.HasPrefix(entry, "##") {
+			continue
+		}
+		if len(entry) < 4 || entry[2] != ' ' {
+			return nil, false, errors.New("Git returned an invalid working-tree status")
+		}
+		file := VirtualRepositoryChangeFile{IndexStatus: string(entry[0]), WorktreeStatus: string(entry[1]), Path: entry[3:]}
+		if file.IndexStatus == "R" || file.IndexStatus == "C" || file.WorktreeStatus == "R" || file.WorktreeStatus == "C" {
+			// In -z mode porcelain v1 reverses the human-oriented rename
+			// display: the new path is followed by a NUL, then the old path.
+			index++
+			if index >= len(parts) || parts[index] == "" {
+				return nil, false, errors.New("Git returned an incomplete rename status")
+			}
+			file.OriginalPath = parts[index]
+		}
+		if strings.IndexFunc(file.Path, unicode.IsControl) >= 0 || strings.IndexFunc(file.OriginalPath, unicode.IsControl) >= 0 {
+			return nil, false, errors.New("Git returned a change path containing control characters")
+		}
+		if file.Path == "" || ((file.IndexStatus == "R" || file.IndexStatus == "C" || file.WorktreeStatus == "R" || file.WorktreeStatus == "C") && file.OriginalPath == "") {
+			return nil, false, errors.New("Git returned an incomplete rename status")
+		}
+		if len(files) == virtualRepositoryChangesMaxFiles {
+			return files, true, nil
+		}
+		files = append(files, file)
+	}
+	return files, false, nil
+}
+
+func parseVirtualRepositoryGitLog(output string) ([]VirtualRepositoryCommit, error) {
+	commits := make([]VirtualRepositoryCommit, 0)
+	for _, record := range strings.Split(output, "\x1e") {
+		record = strings.TrimLeft(record, "*|/\\ _-\t\r\n")
+		if record == "" {
+			continue
+		}
+		fields := strings.Split(record, "\x1f")
+		if len(fields) != 7 || len(fields[0]) != 40 || len(fields[1]) == 0 {
+			return nil, errors.New("Git returned an invalid commit graph")
+		}
+		parents := strings.Fields(fields[2])
+		commits = append(commits, VirtualRepositoryCommit{Hash: fields[0], ShortHash: fields[1], Parents: parents, Author: fields[3], Date: fields[4], Subject: fields[5], Decorations: fields[6]})
+	}
+	return commits, nil
+}
+
+func virtualRepositoryChangeFileExists(files []VirtualRepositoryChangeFile, target string) bool {
+	_, found := virtualRepositoryChangeFile(files, target)
+	return found
+}
+
+func virtualRepositoryChangeFile(files []VirtualRepositoryChangeFile, target string) (VirtualRepositoryChangeFile, bool) {
+	for _, file := range files {
+		if file.Path == target || file.OriginalPath == target {
+			return file, true
+		}
+	}
+	return VirtualRepositoryChangeFile{}, false
+}
+
 func (a *App) inspectVirtualRepositoryNode(root string, node VirtualRepositoryNode) VirtualRepositoryNodeStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1699,6 +1959,36 @@ func runVCSCommandEnv(ctx context.Context, executable, dir string, extraEnv []st
 	return runVCSCommandInputEnv(ctx, executable, dir, extraEnv, "", args...)
 }
 
+// runVCSCommandRaw is reserved for trusted Git machine-readable output. It
+// deliberately avoids text trimming, redaction, and truncation markers so a
+// NUL-delimited protocol remains intact.
+func runVCSCommandRaw(ctx context.Context, executable, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, executable, args...)
+	hideVCSCommandWindow(cmd)
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+	stdout := &limitedVCSBuffer{limit: 512 * 1024}
+	stderr := &limitedVCSBuffer{limit: 512 * 1024}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if stdout.truncated {
+		return "", errors.New("Git status output exceeds the review limit")
+	}
+	if err != nil {
+		message := redactVCSOutput(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return "", errors.New(message)
+	}
+	return stdout.RawString(), nil
+}
+
 func runVCSCommandInputEnv(ctx context.Context, executable, dir string, extraEnv []string, stdin string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, executable, args...)
 	hideVCSCommandWindow(cmd)
@@ -1756,6 +2046,10 @@ func (b *limitedVCSBuffer) String() string {
 		value += "\n[output truncated]"
 	}
 	return value
+}
+
+func (b *limitedVCSBuffer) RawString() string {
+	return b.data.String()
 }
 
 func redactVCSOutput(value string) string {

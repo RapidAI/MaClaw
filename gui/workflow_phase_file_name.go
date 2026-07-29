@@ -25,8 +25,8 @@ var knownPhaseFileNames = map[string]string{
 	// product_design workflow
 	"problem_discovery": "01-problem-discovery.md",
 	"solution_design":   "02-solution-design.md",
-	"prd":              "03-prd.md",
-	"prototype":        "04-prototype.md",
+	"prd":               "03-prd.md",
+	"prototype":         "04-prototype.md",
 
 	// innovation workflow
 	"opportunity":    "01-opportunity.md",
@@ -101,19 +101,19 @@ var knownPhaseFileNames = map[string]string{
 	// The four legacy IDs below (paper_outline/literature_basis/results_writing/
 	// paper_polish) are retained for backward compatibility with any previously
 	// persisted docs; they must not collide with the current IDs' file names.
-	"outline_design":       "01-paper-outline.md",   // template phase index 0
-	"methodology":          "02-methodology.md",     // template phase index 1
-	"results_presentation": "03-results.md",         // template phase index 2
-	"discussion_analysis":  "04-discussion.md",      // template phase index 3
+	"outline_design":       "01-paper-outline.md",    // template phase index 0
+	"methodology":          "02-methodology.md",      // template phase index 1
+	"results_presentation": "03-results.md",          // template phase index 2
+	"discussion_analysis":  "04-discussion.md",       // template phase index 3
 	"submission_prep":      "05-submission.md",       // template phase index 4
-	"paper_outline":        "01-paper-outline.md",   // legacy alias of outline_design
+	"paper_outline":        "01-paper-outline.md",    // legacy alias of outline_design
 	"literature_basis":     "02-literature-basis.md", // legacy (no current equivalent)
 	"literature":           "02-literature.md",       // current template phase ID
 	"drafting":             "03-drafting.md",         // current template phase ID
 	"figures":              "04-figures.md",          // current template phase ID
 	"polishing":            "05-polishing.md",        // current template phase ID
 	"results_writing":      "03-results.md",          // legacy alias of results_presentation
-	"paper_polish":         "05-submission.md",        // legacy alias of submission_prep
+	"paper_polish":         "05-submission.md",       // legacy alias of submission_prep
 
 	// project_proposal workflow
 	"project_background":  "01-background.md",
@@ -121,15 +121,15 @@ var knownPhaseFileNames = map[string]string{
 	"project_plan":        "03-plan.md",
 	"resource_budget":     "04-resource-budget.md",
 	"risk_assessment":     "05-risk-assessment.md",
-	"background_analysis": "01-background.md",  // actual template phase ID
-	"background":          "01-background.md",  // current template phase ID
-	"goal_definition":     "02-objectives.md",  // actual template phase ID
-	"objectives":          "02-objectives.md",  // current template phase ID
-	"plan":                "03-plan.md",        // current template phase ID
+	"background_analysis": "01-background.md",      // actual template phase ID
+	"background":          "01-background.md",      // current template phase ID
+	"goal_definition":     "02-objectives.md",      // actual template phase ID
+	"objectives":          "02-objectives.md",      // current template phase ID
+	"plan":                "03-plan.md",            // current template phase ID
 	"resource_assessment": "04-resource-budget.md", // actual template phase ID
-	"budget":              "04-budget.md",       // current template phase ID
+	"budget":              "04-budget.md",          // current template phase ID
 	"risk_contingency":    "05-risk-assessment.md", // actual template phase ID
-	"risk_plan":           "05-risk-plan.md",    // current template phase ID
+	"risk_plan":           "05-risk-plan.md",       // current template phase ID
 
 	// event_planning workflow
 	"event_objectives":    "01-objectives.md",
@@ -137,16 +137,16 @@ var knownPhaseFileNames = map[string]string{
 	"event_logistics":     "03-logistics.md",
 	"event_promotion":     "04-promotion.md",
 	"event_execution":     "05-execution-plan.md",
-	"requirement_confirm": "01-objectives.md",     // actual template phase ID
-	"positioning":         "01-positioning.md",    // current template phase ID
-	"scheme_planning":     "02-concept.md",        // actual template phase ID
-	"creative":            "02-creative.md",       // current template phase ID
-	"process_design":      "03-logistics.md",      // actual template phase ID
-	"execution_plan":      "03-execution-plan.md", // current template phase ID
-	"material_checklist":  "04-promotion.md",      // actual template phase ID
-	"budget_schedule":     "04-budget-schedule.md",// current template phase ID
-	"execution_manual":    "05-execution-plan.md", // actual template phase ID
-	"contingency":         "05-contingency.md",    // current template phase ID
+	"requirement_confirm": "01-objectives.md",      // actual template phase ID
+	"positioning":         "01-positioning.md",     // current template phase ID
+	"scheme_planning":     "02-concept.md",         // actual template phase ID
+	"creative":            "02-creative.md",        // current template phase ID
+	"process_design":      "03-logistics.md",       // actual template phase ID
+	"execution_plan":      "03-execution-plan.md",  // current template phase ID
+	"material_checklist":  "04-promotion.md",       // actual template phase ID
+	"budget_schedule":     "04-budget-schedule.md", // current template phase ID
+	"execution_manual":    "05-execution-plan.md",  // actual template phase ID
+	"contingency":         "05-contingency.md",     // current template phase ID
 
 	// competitive_analysis workflow
 	"market_landscape":    "01-market-landscape.md",
@@ -165,9 +165,9 @@ var knownPhaseFileNames = map[string]string{
 	"audience_goal":       "01-audience-goal.md",
 	"content_outline":     "02-content-outline.md",
 	"style_specification": "03-style-specification.md", // template phase index 2
-	"slide_scripting":     "04-slide-scripting.md",      // template phase index 3
-	"ppt_generation":      "05-ppt-generation.md",       // template phase index 4
-	"visual_design":       "03-visual-design.md",        // legacy (no current equivalent)
+	"slide_scripting":     "04-slide-scripting.md",     // template phase index 3
+	"ppt_generation":      "05-ppt-generation.md",      // template phase index 4
+	"visual_design":       "03-visual-design.md",       // legacy (no current equivalent)
 
 	// ops_maintenance workflow
 	"ops_intake":           "01-ops-intake.md",
@@ -177,20 +177,20 @@ var knownPhaseFileNames = map[string]string{
 	"controlled_execution": "05-controlled-execution.md",
 
 	// maintenance workflow (lightweight coding maintenance)
-	"maint_analysis":      "01-maint-analysis.md",
-	"maint_execution":     "02-maint-execution.md",
-	"maint_verification":  "03-maint-verification.md",
+	"maint_analysis":     "01-maint-analysis.md",
+	"maint_execution":    "02-maint-execution.md",
+	"maint_verification": "03-maint-verification.md",
 
 	// bid_response workflow
 	"bid_parsing":        "01-bid-parsing.md",
 	"tender_analysis":    "01-tender-analysis.md", // current template phase ID
 	"qualification":      "02-qualification.md",
 	"technical_proposal": "03-technical-proposal.md",
-	"technical":          "03-technical.md",        // current template phase ID
+	"technical":          "03-technical.md", // current template phase ID
 	"commercial_quote":   "04-commercial-quote.md",
-	"commercial":         "04-commercial.md",       // current template phase ID
+	"commercial":         "04-commercial.md", // current template phase ID
 	"document_assembly":  "05-document-assembly.md",
-	"assembly":           "05-assembly.md",         // current template phase ID
+	"assembly":           "05-assembly.md", // current template phase ID
 
 	// bid_review workflow (标书检查)
 	"br_standards":   "01-br-standards.md",
@@ -200,15 +200,15 @@ var knownPhaseFileNames = map[string]string{
 
 	// contract_review workflow
 	"contract_parsing": "01-contract-parsing.md",
-	"parsing":          "01-parsing.md",            // current template phase ID
+	"parsing":          "01-parsing.md", // current template phase ID
 	"clause_risk":      "02-clause-risk.md",
-	"risk_analysis":    "02-risk-analysis.md",      // current template phase ID
+	"risk_analysis":    "02-risk-analysis.md", // current template phase ID
 	"compliance_check": "03-compliance-check.md",
-	"compliance":       "03-compliance.md",         // current template phase ID
+	"compliance":       "03-compliance.md", // current template phase ID
 	"revision_suggest": "04-revision-suggestions.md",
-	"suggestions":      "04-suggestions.md",        // current template phase ID
+	"suggestions":      "04-suggestions.md", // current template phase ID
 	"review_opinion":   "05-review-opinion.md",
-	"opinion":          "05-opinion.md",            // current template phase ID
+	"opinion":          "05-opinion.md", // current template phase ID
 
 	// due_diligence workflow
 	"company_profile": "01-company-profile.md",
@@ -219,12 +219,12 @@ var knownPhaseFileNames = map[string]string{
 
 	// compliance_audit workflow
 	"audit_scope":       "01-audit-scope.md",
-	"scope":             "01-scope.md",             // current template phase ID
+	"scope":             "01-scope.md", // current template phase ID
 	"compliance_assess": "02-compliance-assessment.md",
-	"assessment":        "02-assessment.md",        // current template phase ID
+	"assessment":        "02-assessment.md", // current template phase ID
 	"risk_rating":       "03-risk-rating.md",
 	"remediation_plan":  "04-remediation-plan.md",
-	"remediation":       "04-remediation.md",       // current template phase ID
+	"remediation":       "04-remediation.md", // current template phase ID
 	"audit_report":      "05-audit-report.md",
 
 	// patent_analysis workflow
@@ -235,53 +235,53 @@ var knownPhaseFileNames = map[string]string{
 	"analysis_report":   "05-analysis-report.md",
 
 	// changjiang_scholar workflow
-	"scholar_profile":          "01-scholar-profile.md",
-	"research_direction":       "02-research-direction.md",
-	"achievement_summary":      "03-achievements.md",
-	"development_plan":         "04-development-plan.md",
-	"application_doc":          "05-application.md",
+	"scholar_profile":     "01-scholar-profile.md",
+	"research_direction":  "02-research-direction.md",
+	"achievement_summary": "03-achievements.md",
+	"development_plan":    "04-development-plan.md",
+	"application_doc":     "05-application.md",
 
 	// changjiang_scholar_review workflow
-	"review_criteria":         "01-review-criteria.md",
-	"material_review":         "02-material-review.md",
-	"scoring_evaluation":      "03-scoring.md",
-	"comparison_analysis":     "04-comparison.md",
-	"review_conclusion":       "05-conclusion.md",
-	"cj_completeness_check":   "01-review-criteria.md",
+	"review_criteria":           "01-review-criteria.md",
+	"material_review":           "02-material-review.md",
+	"scoring_evaluation":        "03-scoring.md",
+	"comparison_analysis":       "04-comparison.md",
+	"review_conclusion":         "05-conclusion.md",
+	"cj_completeness_check":     "01-review-criteria.md",
 	"cj_achievement_evaluation": "02-material-review.md",
-	"cj_plan_feasibility":     "03-scoring.md",
-	"cj_narrative_quality":    "04-comparison.md",
-	"cj_improvement_report":   "05-conclusion.md",
+	"cj_plan_feasibility":       "03-scoring.md",
+	"cj_narrative_quality":      "04-comparison.md",
+	"cj_improvement_report":     "05-conclusion.md",
 
 	// --- Parametric academic phase IDs (generated by BuildAcademicApplicationTemplate) ---
-	"cj_profile":     "01-scholar-profile.md",
-	"cj_foundation":  "02-academic-achievements.md",
-	"cj_plan":        "03-research-plan.md",
-	"cj_phase4":      "04-talent-cultivation.md",
-	"cj_assembly":    "05-application.md",
-	"dy_profile":     "01-eligibility.md",
-	"dy_foundation":  "02-research-foundation.md",
-	"dy_plan":        "03-research-proposal.md",
-	"dy_phase4":      "04-outcomes-budget.md",
-	"dy_assembly":    "05-final-assembly.md",
-	"ey_profile":     "01-eligibility.md",
-	"ey_foundation":  "02-research-accumulation.md",
-	"ey_plan":        "03-research-proposal.md",
-	"ey_phase4":      "04-outcomes-budget.md",
-	"ey_assembly":    "05-final-assembly.md",
-	"yf_profile":     "01-rationale.md",
-	"yf_plan":        "03-methodology.md",
-	"yf_phase4":      "04-budget.md",
-	"yf_assembly":    "05-final-assembly.md",
-	"gp_profile":     "01-rationale.md",
-	"gp_plan":        "03-methodology.md",
-	"gp_phase4":      "04-budget.md",
-	"gp_assembly":    "05-final-assembly.md",
-	"kp_profile":     "01-strategic-rationale.md",
-	"kp_foundation":  "02-team-foundation.md",
-	"kp_plan":        "03-research-plan.md",
-	"kp_phase4":      "04-budget-management.md",
-	"kp_assembly":    "05-final-assembly.md",
+	"cj_profile":    "01-scholar-profile.md",
+	"cj_foundation": "02-academic-achievements.md",
+	"cj_plan":       "03-research-plan.md",
+	"cj_phase4":     "04-talent-cultivation.md",
+	"cj_assembly":   "05-application.md",
+	"dy_profile":    "01-eligibility.md",
+	"dy_foundation": "02-research-foundation.md",
+	"dy_plan":       "03-research-proposal.md",
+	"dy_phase4":     "04-outcomes-budget.md",
+	"dy_assembly":   "05-final-assembly.md",
+	"ey_profile":    "01-eligibility.md",
+	"ey_foundation": "02-research-accumulation.md",
+	"ey_plan":       "03-research-proposal.md",
+	"ey_phase4":     "04-outcomes-budget.md",
+	"ey_assembly":   "05-final-assembly.md",
+	"yf_profile":    "01-rationale.md",
+	"yf_plan":       "03-methodology.md",
+	"yf_phase4":     "04-budget.md",
+	"yf_assembly":   "05-final-assembly.md",
+	"gp_profile":    "01-rationale.md",
+	"gp_plan":       "03-methodology.md",
+	"gp_phase4":     "04-budget.md",
+	"gp_assembly":   "05-final-assembly.md",
+	"kp_profile":    "01-strategic-rationale.md",
+	"kp_foundation": "02-team-foundation.md",
+	"kp_plan":       "03-research-plan.md",
+	"kp_phase4":     "04-budget-management.md",
+	"kp_assembly":   "05-final-assembly.md",
 }
 
 func workflowPhaseFileName(phaseID string) string {

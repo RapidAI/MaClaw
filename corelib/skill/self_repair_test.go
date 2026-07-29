@@ -150,12 +150,12 @@ func TestApplyRepairRecordsSuccessfulAttemptMetadata(t *testing.T) {
 
 func TestCanForceAttemptRepair_SkipsUsageThreshold(t *testing.T) {
 	entry := &corelib.NLSkillEntry{
-		Name:        "x",
-		Status:      "active",
-		Source:      "manual",
-		UsageCount:  1, // below SelfRepairThreshold
+		Name:         "x",
+		Status:       "active",
+		Source:       "manual",
+		UsageCount:   1, // below SelfRepairThreshold
 		SuccessCount: 1,
-		LastError:   "[class: command_not_found] missing foo",
+		LastError:    "[class: command_not_found] missing foo",
 	}
 	if ShouldAttemptRepair(entry) {
 		t.Fatal("ShouldAttemptRepair should be false with low usage and non-hub source")

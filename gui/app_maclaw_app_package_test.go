@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +47,209 @@ func TestMaclawAppDependencyIsBundled(t *testing.T) {
 	}
 	if maclawAppDependencyIsBundled(other, dep) {
 		t.Fatal("unrelated skill should not match dependency")
+	}
+}
+
+func TestMaclawAppFindBundledSkillForDepRespectsAppScope(t *testing.T) {
+	bundled := maclawAppBundledDependencies{
+		Skills: []maclawAppBundledSkillEntry{{
+			Name:   "shared-name",
+			Files:  map[string]string{"skill.md": "# scoped\n"},
+			AppIDs: []string{"app-a"},
+		}},
+	}
+	depForOtherApp := maclawAppInstallPlanDependency{ID: "shared-name", AppIDs: []string{"app-b"}}
+	if found := maclawAppFindBundledSkillForDep(bundled, depForOtherApp); found != nil {
+		t.Fatalf("bundle scoped to app-a must not match app-b: %#v", found)
+	}
+	depForOwner := maclawAppInstallPlanDependency{ID: "shared-name", AppIDs: []string{"app-a"}}
+	if found := maclawAppFindBundledSkillForDep(bundled, depForOwner); found == nil || found.Name != "shared-name" {
+		t.Fatalf("bundle should match owning app: %#v", found)
+	}
+}
+
+func TestMaclawAppBundledDependenciesFromDocMergesEqualPayloadScopes(t *testing.T) {
+	doc := map[string]any{
+		"apps": []any{
+			map[string]any{"bundled_dependencies": map[string]any{"skills": []any{
+				map[string]any{"stable_id": "hub_skill:shared", "name": "shared", "sha256": "same", "app_ids": []any{"app-a"}, "files": map[string]any{"skill.md": "# shared\n"}},
+			}}},
+			map[string]any{"bundled_dependencies": map[string]any{"skills": []any{
+				map[string]any{"stable_id": "hub_skill:shared", "name": "shared", "sha256": "same", "app_ids": []any{"app-b"}, "files": map[string]any{"skill.md": "# shared\n"}},
+			}}},
+		},
+	}
+
+	bundled := maclawAppBundledDependenciesFromDoc(doc)
+	if len(bundled.Skills) != 1 {
+		t.Fatalf("equal bundled payloads should merge, got %#v", bundled.Skills)
+	}
+	if got := bundled.Skills[0].AppIDs; len(got) != 2 || !containsMaclawAppStringFold(got, "app-a") || !containsMaclawAppStringFold(got, "app-b") {
+		t.Fatalf("merged bundle should retain both app scopes, got %#v", got)
+	}
+}
+
+func TestMaclawAppBundledDependenciesFromDocPrefersScopedReplacement(t *testing.T) {
+	doc := map[string]any{
+		"bundled_dependencies": map[string]any{"skills": []any{
+			map[string]any{"stable_id": "hub_skill:shared", "name": "shared", "sha256": "root-payload", "files": map[string]any{"skill.md": "# root\n"}},
+		}},
+		"apps": []any{map[string]any{"bundled_dependencies": map[string]any{"skills": []any{
+			map[string]any{"stable_id": "hub_skill:shared", "name": "shared", "sha256": "app-a-payload", "app_ids": []any{"app-a"}, "files": map[string]any{"skill.md": "# app-a\n"}},
+		}}}},
+	}
+
+	bundled := maclawAppBundledDependenciesFromDoc(doc)
+	if len(bundled.Skills) != 2 {
+		t.Fatalf("different payloads must both be retained, got %#v", bundled.Skills)
+	}
+	for _, tc := range []struct {
+		appID string
+		want  string
+	}{
+		{appID: "app-a", want: "app-a-payload"},
+		{appID: "app-b", want: "root-payload"},
+	} {
+		found := maclawAppFindBundledSkillForDep(bundled, maclawAppInstallPlanDependency{ID: "shared", AppIDs: []string{tc.appID}})
+		if found == nil || found.SHA256 != tc.want {
+			t.Fatalf("app %s selected %#v, want payload %q", tc.appID, found, tc.want)
+		}
+	}
+}
+
+func TestMaclawAppFindBundledSkillForDepRejectsConflictingMultiAppPayloads(t *testing.T) {
+	bundled := maclawAppBundledDependencies{Skills: []maclawAppBundledSkillEntry{
+		{Name: "shared", SHA256: "app-a", Files: map[string]string{"skill.md": "# a"}, AppIDs: []string{"app-a"}},
+		{Name: "shared", SHA256: "app-b", Files: map[string]string{"skill.md": "# b"}, AppIDs: []string{"app-b"}},
+	}}
+	dep := maclawAppInstallPlanDependency{ID: "shared", AppIDs: []string{"app-a", "app-b"}}
+	if candidate := maclawAppFindBundledSkillForDep(bundled, dep); candidate != nil {
+		t.Fatalf("different per-app payloads must not select an arbitrary bundle: %#v", candidate)
+	}
+
+	bundled.Skills[1] = maclawAppBundledSkillEntry{Name: "shared", SHA256: "app-a", Files: map[string]string{"skill.md": "# a"}, AppIDs: []string{"app-b"}}
+	if candidate := maclawAppFindBundledSkillForDep(bundled, dep); candidate == nil || candidate.SHA256 != "app-a" {
+		t.Fatalf("identical per-app payloads should remain installable: %#v", candidate)
+	}
+}
+
+func TestMaclawAppFindBundledSkillForDepRejectsConflictingSameAppPayloads(t *testing.T) {
+	bundled := maclawAppBundledDependencies{Skills: []maclawAppBundledSkillEntry{
+		{Name: "shared", SHA256: "first", Files: map[string]string{"skill.md": "# first"}, AppIDs: []string{"app-a"}},
+		{Name: "shared", SHA256: "second", Files: map[string]string{"skill.md": "# second"}, AppIDs: []string{"app-a"}},
+		{Name: "shared", SHA256: "legacy", Files: map[string]string{"skill.md": "# legacy"}},
+	}}
+	dep := maclawAppInstallPlanDependency{ID: "shared", AppIDs: []string{"app-a"}}
+	if candidate := maclawAppFindBundledSkillForDep(bundled, dep); candidate != nil {
+		t.Fatalf("conflicting scoped payloads for one app must not depend on bundle order: %#v", candidate)
+	}
+
+	bundled.Skills[1] = maclawAppBundledSkillEntry{Name: "shared", SHA256: "first", Files: map[string]string{"skill.md": "# first"}, AppIDs: []string{"app-a"}}
+	if candidate := maclawAppFindBundledSkillForDep(bundled, dep); candidate == nil || candidate.SHA256 != "first" {
+		t.Fatalf("identical scoped duplicates should remain installable: %#v", candidate)
+	}
+}
+
+func TestMaclawAppFindBundledSkillForDepRejectsSameChecksumDifferentPayloads(t *testing.T) {
+	// sha256 is untrusted package metadata until extraction verifies it. Two
+	// entries with the same claim but different bytes must not collapse into the
+	// first item and become dependent on JSON ordering.
+	bundled := maclawAppBundledDependencies{Skills: []maclawAppBundledSkillEntry{
+		{Name: "shared", SHA256: "claimed-same", Files: map[string]string{"skill.md": "IyBmaXJzdA=="}, AppIDs: []string{"app-a"}},
+		{Name: "shared", SHA256: "claimed-same", Files: map[string]string{"skill.md": "IyBzZWNvbmQ="}, AppIDs: []string{"app-a"}},
+	}}
+	if candidate := maclawAppFindBundledSkillForDep(bundled, maclawAppInstallPlanDependency{ID: "shared", AppIDs: []string{"app-a"}}); candidate != nil {
+		t.Fatalf("same claimed checksum with different files must be ambiguous: %#v", candidate)
+	}
+}
+
+func TestMaclawAppExtractBundledSkillFilesValidatesBeforeWriting(t *testing.T) {
+	destDir := t.TempDir()
+	good := []byte("good")
+	bad := []byte("bad")
+	hasher := sha256.New()
+	for _, item := range []struct {
+		path string
+		data []byte
+	}{{"a.txt", good}, {"b.txt", good}} {
+		_, _ = hasher.Write([]byte(item.path))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write(item.data)
+		_, _ = hasher.Write([]byte{0})
+	}
+	bundle := maclawAppBundledSkillEntry{
+		Name:   "atomic-check",
+		SHA256: hex.EncodeToString(hasher.Sum(nil)),
+		Files: map[string]string{
+			"a.txt": base64.StdEncoding.EncodeToString(good),
+			"b.txt": base64.StdEncoding.EncodeToString(bad),
+		},
+	}
+	if err := maclawAppExtractBundledSkillFiles(bundle, destDir); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch, got %v", err)
+	}
+	if entries, err := os.ReadDir(destDir); err != nil || len(entries) != 0 {
+		t.Fatalf("checksum failure must not write partial files: entries=%#v err=%v", entries, err)
+	}
+}
+
+func TestFindBundledSkillInInstallRecordsOnlyUsesCurrentApp(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	registry := maclawAppInstallRegistry{Schema: "maclaw.app.installs.v1", Installs: []maclawAppInstallRecord{
+		{
+			AppID: "other-app",
+			Package: map[string]any{"bundled_dependencies": map[string]any{"skills": []any{
+				map[string]any{"name": "shared", "files": map[string]any{"skill.md": "# other\n"}},
+			}}},
+		},
+		{
+			AppID: "current-app",
+			Package: map[string]any{"bundled_dependencies": map[string]any{"skills": []any{
+				map[string]any{"name": "shared", "files": map[string]any{"skill.md": "# current\n"}},
+			}}},
+		},
+	}}
+	if err := app.writeMaclawAppInstallRegistry(registry); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+	packageJSON := `{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps","app":{"id":"current-app","name":"Current","kind":"tool_app"}}`
+	dep := maclawAppInstallPlanDependency{ID: "shared", AppIDs: []string{"current-app"}}
+	if candidate := app.findBundledSkillInInstallRecordsForApp(packageJSON, dep); candidate == nil || candidate.Files["skill.md"] != "# current" {
+		if candidate == nil {
+			t.Fatal("current app should use its own persisted bundle, got nil")
+		}
+		t.Fatalf("current app should use only its own persisted bundle, got name=%q skill.md=%q", candidate.Name, candidate.Files["skill.md"])
+	}
+	otherPackage := `{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps","app":{"id":"uninstalled-app","name":"Uninstalled","kind":"tool_app"}}`
+	if candidate := app.findBundledSkillInInstallRecordsForApp(otherPackage, dep); candidate != nil {
+		t.Fatalf("uninstalled app must not borrow another app bundle: %#v", candidate)
+	}
+	// Runtime recovery has no app context. Different app payloads must therefore
+	// remain unresolved instead of being selected according to registry order.
+	if candidate := app.findBundledSkillInInstallRecords(dep); candidate != nil {
+		t.Fatalf("ambiguous runtime bundle recovery must refuse cross-app payloads: %#v", candidate)
+	}
+
+	registry.Installs[1].Package = cloneMapAny(registry.Installs[0].Package)
+	if err := app.writeMaclawAppInstallRegistry(registry); err != nil {
+		t.Fatalf("rewrite registry: %v", err)
+	}
+	if candidate := app.findBundledSkillInInstallRecords(dep); candidate == nil || candidate.Files["skill.md"] != "# other" {
+		t.Fatalf("identical runtime bundle payloads should be recoverable, got %#v", candidate)
+	}
+}
+
+func TestMaclawAppDependencyIsBundledRespectsAppScope(t *testing.T) {
+	bundled := maclawAppBundledDependencies{Skills: []maclawAppBundledSkillEntry{{
+		Name:   "scoped-skill",
+		Files:  map[string]string{"skill.md": "# scoped\n"},
+		AppIDs: []string{"app-a"},
+	}}}
+	if maclawAppDependencyIsBundled(bundled, maclawAppInstallPlanDependency{ID: "scoped-skill", AppIDs: []string{"app-b"}}) {
+		t.Fatal("publish gate must not treat another app's scoped bundle as available")
+	}
+	if !maclawAppDependencyIsBundled(bundled, maclawAppInstallPlanDependency{ID: "scoped-skill", AppIDs: []string{"app-a"}}) {
+		t.Fatal("publish gate should accept the owning app's scoped bundle")
 	}
 }
 

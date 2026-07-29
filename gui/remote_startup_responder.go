@@ -32,7 +32,7 @@ type startupAutoResponder struct {
 
 	// Accumulated text from raw output for pattern matching.
 	// Capped to prevent unbounded growth during the startup window.
-	accum strings.Builder
+	accum    strings.Builder
 	accumLen int
 }
 

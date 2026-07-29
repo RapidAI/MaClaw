@@ -144,10 +144,10 @@ import (
 // nativeCaptureScreenshot captures the screen directly in-process on macOS.
 //
 // Strategy on macOS 26+:
-//   1. Try screencapture CLI first — it's Apple-signed with full TCC privileges,
-//      can see all windows. Does NOT trigger a TCC dialog (tested on macOS 26.5).
-//   2. If screencapture fails, fall back to CGWindowListCreateImage per-display
-//      stitch (limited to own windows on self-signed apps).
+//  1. Try screencapture CLI first — it's Apple-signed with full TCC privileges,
+//     can see all windows. Does NOT trigger a TCC dialog (tested on macOS 26.5).
+//  2. If screencapture fails, fall back to CGWindowListCreateImage per-display
+//     stitch (limited to own windows on self-signed apps).
 //
 // Returns base64-encoded PNG data on success.
 func nativeCaptureScreenshot() (string, error) {

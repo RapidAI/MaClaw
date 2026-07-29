@@ -1491,9 +1491,9 @@ func TestPatchConfigFieldsCodingRoutePref(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	patched, err := app.PatchConfigFields(map[string]interface{}{
-		"coding_route_pref":                 "vision",
-		"coding_route_pref_mirror":          true,
-		"coding_checkpoint_sidecar_max_mb":  64,
+		"coding_route_pref":                "vision",
+		"coding_route_pref_mirror":         true,
+		"coding_checkpoint_sidecar_max_mb": 64,
 	})
 	if err != nil {
 		t.Fatalf("PatchConfigFields: %v", err)
@@ -1618,7 +1618,7 @@ func TestPatchConfigFieldsKnowledgeAutoRecall(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	patched, err := app.PatchConfigFields(map[string]interface{}{
-		"knowledge_auto_recall_enabled":  false,
+		"knowledge_auto_recall_enabled":   false,
 		"knowledge_auto_recall_min_score": 1.5,
 	})
 	if err != nil {
@@ -1632,7 +1632,7 @@ func TestPatchConfigFieldsKnowledgeAutoRecall(t *testing.T) {
 	}
 	// Re-enable with default score (0 clears override).
 	patched, err = app.PatchConfigFields(map[string]interface{}{
-		"knowledge_auto_recall_enabled":  true,
+		"knowledge_auto_recall_enabled":   true,
 		"knowledge_auto_recall_min_score": 0.0,
 	})
 	if err != nil {
@@ -1915,6 +1915,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"use_windows_terminal":       false,
 		"show_ai_trace_entry":        true,
 		"show_app_entry":             true,
+		"survey_enabled":             false,
 		"show_coding_tool_entry":     true,
 		"show_codex":                 false,
 		"screen_dim_timeout_min":     float64(9),
@@ -1942,7 +1943,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchConfigFields() error = %v", err)
 	}
-	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.IsShowAppEntryEnabled() || !patched.ShowCodingToolEntry || patched.ShowCodex {
+	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.IsShowAppEntryEnabled() || patched.SurveyEnabled == nil || *patched.SurveyEnabled || !patched.ShowCodingToolEntry || patched.ShowCodex {
 		t.Fatalf("boolean patch fields not applied: %#v", patched)
 	}
 	if patched.Language != "zh-Hans" || patched.ActiveTool != "codex" || patched.CurrentProject != "p2" || len(patched.Projects) != 2 || len(patched.FavoriteEmployees) != 2 || patched.FavoriteEmployeeNames["ve1"] != "Reviewer" {
@@ -1987,6 +1988,14 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if !patched.LLMPromptCache.Enabled || patched.LLMPromptCache.TTLSeconds != 120 || patched.LLMPromptCache.MemoryMaxEntries == 0 {
 		t.Fatalf("LLM prompt cache field not applied with defaults: %#v", patched.LLMPromptCache)
 	}
+
+	reloaded, err := (&App{testHomeDir: tmpHome}).LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after patch: %v", err)
+	}
+	if reloaded.SurveyEnabled == nil || *reloaded.SurveyEnabled {
+		t.Fatalf("survey_enabled=false did not survive reload: %#v", reloaded.SurveyEnabled)
+	}
 }
 
 func TestPatchConfigFieldsRejectsLoopbackHubCenterURL(t *testing.T) {
@@ -2014,8 +2023,8 @@ func TestPatchConfigFieldsIMOwnerProactiveTargets(t *testing.T) {
 
 	// Settings UI previously could not save these (missing whitelist).
 	patched, err := app.PatchConfigFields(map[string]interface{}{
-		"qqbot_owner_openid":      " openid-abc ",
-		"telegram_owner_chat_id":  "9007199254740993", // beyond JS MAX_SAFE_INTEGER
+		"qqbot_owner_openid":     " openid-abc ",
+		"telegram_owner_chat_id": "9007199254740993", // beyond JS MAX_SAFE_INTEGER
 	})
 	if err != nil {
 		t.Fatalf("PatchConfigFields: %v", err)

@@ -162,8 +162,8 @@ func (p *guiHubCenterPersister) SaveHubCenterURLs(preferred string, discovered [
 		if len(urls) == 0 && savePref != "" {
 			urls = []string{savePref}
 		}
-			// Replaces the former direct cfg.RemoteHubCenterURLs = discovered assignment.
-			cfg.RemoteHubCenterURLs = urls
+		// Replaces the former direct cfg.RemoteHubCenterURLs = discovered assignment.
+		cfg.RemoteHubCenterURLs = urls
 	})
 }
 

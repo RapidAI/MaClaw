@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func setupDownloadTestLog(t *testing.T) {
@@ -782,6 +784,83 @@ func TestParseDDGResultsSkipsAdTrackerLinks(t *testing.T) {
 	}
 	if results[0].URL != "https://go.dev/" {
 		t.Fatalf("ad tracker link was not filtered: %+v", results[0])
+	}
+}
+
+func TestParseDDGResultsParsesLiteMarkup(t *testing.T) {
+	html := `<html><body>` +
+		`<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgo.dev%2F" class="result-link">Go &amp; Programming</a>` +
+		`<td class="result-snippet">Official <b>Go</b> documentation.</td>` +
+		`<a class="result-link" href="https://example.com/second">Second result</a>` +
+		`</body></html>`
+
+	results := parseDDGResults(html, 5)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 Lite results, got %d: %+v", len(results), results)
+	}
+	if results[0].URL != "https://go.dev/" || results[0].Title != "Go & Programming" {
+		t.Fatalf("unexpected first Lite result: %+v", results[0])
+	}
+	if results[0].Snippet != "Official Go documentation." {
+		t.Fatalf("unexpected Lite snippet: %q", results[0].Snippet)
+	}
+	if results[1].Snippet != "" {
+		t.Fatalf("snippet leaked into next Lite result: %q", results[1].Snippet)
+	}
+}
+
+func TestParseDDGResultsDoesNotUseNextLiteResultSnippet(t *testing.T) {
+	html := `<html><body>` +
+		`<a class="result-link" href="https://example.com/first">First result</a>` +
+		`<a class="result-link" href="https://example.com/second">Second result</a>` +
+		`<td class="result-snippet">Second snippet</td>` +
+		`</body></html>`
+
+	results := parseDDGResults(html, 5)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 Lite results, got %d: %+v", len(results), results)
+	}
+	if results[0].Snippet != "" {
+		t.Fatalf("first result borrowed the next result snippet: %q", results[0].Snippet)
+	}
+	if results[1].Snippet != "Second snippet" {
+		t.Fatalf("second Lite snippet mismatch: %q", results[1].Snippet)
+	}
+}
+
+func TestParseDDGResultsAcceptsMixedCaseLiteMarkup(t *testing.T) {
+	html := `<html><body><A HREF="https://go.dev/" CLASS="result-link">Go</A>` +
+		`<SPAN CLASS="result-snippet">Official docs</SPAN></body></html>`
+	results := parseDDGResults(html, 5)
+	if len(results) != 1 || results[0].Snippet != "Official docs" {
+		t.Fatalf("mixed-case Lite markup was not parsed: %+v", results)
+	}
+}
+
+func TestParseDDGResultsDoesNotBorrowNestedLinkHref(t *testing.T) {
+	html := `<html><body>` +
+		`<a class="result-link"><span><a href="https://example.com/nested">Nested</a></span>Broken result</a>` +
+		`<a class="result-link" href="https://go.dev/">Go</a>` +
+		`</body></html>`
+	results := parseDDGResults(html, 5)
+	if len(results) != 1 || results[0].URL != "https://go.dev/" {
+		t.Fatalf("nested href was incorrectly used: %+v", results)
+	}
+}
+
+func TestSearchDuckDuckGoReturnsErrorForUnparseableSuccess(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("q") == "" {
+			t.Fatal("DuckDuckGo search query was not supplied")
+		}
+		_, _ = w.Write([]byte(`<html><body>no search results here</body></html>`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := searchDuckDuckGo(context.Background(), corelib.WebSearchProvider{BaseURL: srv.URL}, "golang", 3)
+	if err == nil || !strings.Contains(err.Error(), "no parseable results") {
+		t.Fatalf("expected a clear parse error, got %v", err)
 	}
 }
 

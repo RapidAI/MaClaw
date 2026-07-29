@@ -1236,5 +1236,3 @@ func statusDetailLocalOrHub(enabled bool, localStatus string, localReady, hubOK 
 	}
 	return "状态:" + st + " · " + needSessionHint + "（或连接 Hub）"
 }
-
-

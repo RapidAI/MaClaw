@@ -46,6 +46,8 @@ type agentLoopToolPathOptions struct {
 	LengthContinuationText     string
 	Choice                     llm.Choice
 	Phase                      *agentLoopPhase
+	Tools                      []map[string]interface{}
+	BaseTools                  []map[string]interface{}
 	Conversation               []interface{}
 	History                    []agent.ConversationEntry
 	VisibleArtifacts           *pendingVisibleArtifacts
@@ -74,6 +76,7 @@ type agentLoopToolPathOptions struct {
 type agentLoopToolPathResult struct {
 	Conversation             []interface{}
 	History                  []agent.ConversationEntry
+	Tools                    []map[string]interface{}
 	MessageContent           string
 	CodingIterCount          int
 	TotalToolCallsInLoop     int
@@ -110,6 +113,7 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 	result := agentLoopToolPathResult{
 		Conversation:         opts.Conversation,
 		History:              opts.History,
+		Tools:                opts.Tools,
 		MessageContent:       opts.MessageContent,
 		CodingIterCount:      opts.CodingIterCount,
 		TotalToolCallsInLoop: totalToolCalls,
@@ -150,6 +154,17 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 	logSlow("execute_tool_calls", stageStartedAt)
 	result.Conversation = toolCallResult.Conversation
 	result.History = toolCallResult.History
+	result.Conversation, result.Tools = h.recoverNativePDFGenerationFailure(
+		opts.Context,
+		opts.UserID,
+		opts.Phase,
+		result.Conversation,
+		result.Tools,
+		opts.BaseTools,
+		toolCallResult.ToolExecResults,
+		opts.RecordSystemMessages,
+	)
+	toolCallResult.Conversation = result.Conversation
 	result.ToolExecElapsed = toolCallResult.ToolExecElapsed
 	result.VoiceData = toolCallResult.PendingArtifacts.VoiceData
 	result.VoiceFileName = toolCallResult.PendingArtifacts.VoiceFileName
@@ -207,6 +222,59 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 	result.PostStreamReturnPrepTime = postToolResult.PostStreamReturnPrepTime
 	result.Response = postToolResult.Response
 	return result
+}
+
+func (h *IMMessageHandler) recoverNativePDFGenerationFailure(
+	ctx *LoopContext,
+	userID string,
+	phase *agentLoopPhase,
+	conversation []interface{},
+	tools []map[string]interface{},
+	baseTools []map[string]interface{},
+	execResults []toolExecutionResult,
+	recordSystemMessages func(int, []interface{}),
+) ([]interface{}, []map[string]interface{}) {
+	if phase == nil || phase.NativePDFFallbackInjected || !hasNativePDFGenerationFailure(execResults) {
+		return conversation, tools
+	}
+	phase.NativePDFFallbackInjected = true
+	catalog := h.truncationFallbackToolCatalog(ctx, userID, phase, baseTools)
+	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
+		catalog = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, catalog, h.getTools())
+	}
+	if ctx != nil {
+		catalog = filterToolsForExecutionProfile(catalog, ctx.Runtime.Execution)
+	}
+	catalog = h.filterToolsForExpertUser(userID, catalog)
+	fallbackTools := ensureNativePDFFallbackTools(tools, catalog)
+	start := len(conversation)
+	conversation = append(conversation, map[string]string{
+		"role": "system",
+		"content": "[system recovery] The native PDF generator is unavailable for this request. " +
+			"Immediately use an actually available fallback tool to complete the one-off conversion: prefer craft_tool; use bash only when it is available and needed. " +
+			"Do not create or run manage_schedule, and do not use passthrough_task: they are not execution fallbacks. Do not claim a tool was run unless you emitted that tool call and received its result.",
+	})
+	if recordSystemMessages != nil {
+		recordSystemMessages(start, conversation)
+	}
+	log.Printf("[agent-loop] native PDF generator failed; exposed safe execution fallbacks (tools=%s)", agentLoopToolNamesForLog(fallbackTools))
+	return conversation, fallbackTools
+}
+
+func hasNativePDFGenerationFailure(results []toolExecutionResult) bool {
+	for _, result := range results {
+		if !result.IsFailure() {
+			continue
+		}
+		switch result.ToolKind {
+		case agentToolKindGeneratePDF, agentToolKindOffice:
+			text := result.Text
+			if strings.Contains(text, "未找到可用的中文字体") || strings.Contains(text, "无法生成 PDF") || strings.Contains(text, "PDF 生成失败:") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type agentLoopToolCallsOptions struct {

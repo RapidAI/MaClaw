@@ -407,6 +407,39 @@ func truncationFallbackToolNames(blocked []string) []string {
 	return names
 }
 
+// ensureNativePDFFallbackTools exposes only real, policy-filtered execution
+// alternatives.  Scheduling and command-registration tools are deliberately
+// absent: neither executes a failed one-off conversion in the current turn.
+func ensureNativePDFFallbackTools(tools []map[string]interface{}, catalog []map[string]interface{}) []map[string]interface{} {
+	want := []string{"craft_tool", "bash"}
+	if len(catalog) == 0 {
+		return tools
+	}
+	present := make(map[string]bool, len(tools))
+	for _, td := range tools {
+		if name := tool.ExtractToolName(td); name != "" {
+			present[name] = true
+		}
+	}
+	byName := make(map[string]map[string]interface{}, len(catalog))
+	for _, td := range catalog {
+		if name := tool.ExtractToolName(td); name != "" {
+			byName[name] = td
+		}
+	}
+	out := tools
+	for _, name := range want {
+		if present[name] {
+			continue
+		}
+		if td := byName[name]; td != nil {
+			out = append(out, td)
+			present[name] = true
+		}
+	}
+	return out
+}
+
 func buildTruncationRetryHint(truncatedList string, tools []map[string]interface{}) string {
 	alternatives := []string{agentLoopInlinePayloadLimitInstruction()}
 	if toolListContainsName(tools, "write_file") {

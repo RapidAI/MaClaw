@@ -462,6 +462,8 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		LengthContinuationText:     opts.RunState.LengthContinuationBuffer.String(),
 		Choice:                     choice,
 		Phase:                      opts.Phase,
+		Tools:                      *opts.Tools,
+		BaseTools:                  opts.BaseTools,
 		Conversation:               *opts.Conversation,
 		History:                    *opts.History,
 		VisibleArtifacts:           opts.VisibleArtifacts,
@@ -489,6 +491,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	logSlowPhase("tool_path", phaseStartedAt)
 	*opts.Conversation = toolPath.Conversation
 	*opts.History = toolPath.History
+	*opts.Tools = toolPath.Tools
 	opts.RunState.ApplyToolPath(toolPath)
 	opts.Telemetry.ApplyToolPath(toolPath)
 	// Tools appeared after a light model turn — escalate next rounds to reasoning.

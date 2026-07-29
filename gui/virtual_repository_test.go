@@ -1049,6 +1049,188 @@ func TestInspectVirtualRepositoryDoesNotTreatBrokenSymlinkAsMissingCheckout(t *t
 	}
 }
 
+func TestCollectVirtualRepositoryGitChangesIncludesFilesCommitsAndDiff(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	work := t.TempDir()
+	runGitForTest(t, "", "init", "--bare", remote)
+	remoteURL := "file:///" + strings.TrimPrefix(filepath.ToSlash(remote), "/")
+	runGitForTest(t, "", "clone", remoteURL, work)
+	runGitForTest(t, work, "config", "user.name", "Test User")
+	runGitForTest(t, work, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(work, "tracked.txt"), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForTest(t, work, "add", "tracked.txt")
+	runGitForTest(t, work, "commit", "-m", "initial commit")
+	if err := os.WriteFile(filepath.Join(work, "tracked.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const untrackedName = "token=reviewable.txt"
+	if err := os.WriteFile(filepath.Join(work, untrackedName), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not available")
+	}
+	changes, err := collectVirtualRepositoryGitChanges(context.Background(), func(args ...string) (string, error) {
+		return runVCSCommand(context.Background(), git, work, args...)
+	}, func(args ...string) (string, error) {
+		return runVCSCommandRaw(context.Background(), git, work, args...)
+	}, "node", "main", "tracked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes.NodeID != "node" || len(changes.Commits) != 1 || changes.Commits[0].Subject != "initial commit" {
+		t.Fatalf("changes commits = %+v", changes)
+	}
+	if len(changes.Files) != 2 || !virtualRepositoryChangeFileExists(changes.Files, untrackedName) {
+		t.Fatalf("changed files = %+v, want tracked file and literal untracked path", changes.Files)
+	}
+	if !strings.Contains(changes.Diff, "-first") || !strings.Contains(changes.Diff, "+second") {
+		t.Fatalf("diff = %q", changes.Diff)
+	}
+	untracked, err := collectVirtualRepositoryGitChanges(context.Background(), func(args ...string) (string, error) {
+		return runVCSCommand(context.Background(), git, work, args...)
+	}, func(args ...string) (string, error) {
+		return runVCSCommandRaw(context.Background(), git, work, args...)
+	}, "node", "main", untrackedName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(untracked.Diff, "+new") {
+		t.Fatalf("untracked diff = %q", untracked.Diff)
+	}
+}
+
+func TestGetVirtualRepositoryChangesPreservesWhitespaceInSelectedPath(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "mapped")
+	runGitForTest(t, "", "init", work)
+	runGitForTest(t, work, "config", "user.name", "Test User")
+	runGitForTest(t, work, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(work, "tracked.txt"), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForTest(t, work, "add", "tracked.txt")
+	runGitForTest(t, work, "commit", "-m", "initial commit")
+	const selectedPath = " leading space.txt"
+	if err := os.WriteFile(filepath.Join(work, selectedPath), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := &VirtualRepository{Version: 1, ID: "repo", Name: "Repo", RootPath: root, Nodes: []VirtualRepositoryNode{{
+		ID: "node", Name: "mapped", Repository: &VirtualRepositoryBinding{Kind: "git", RelativePath: "mapped", RemoteURL: "https://example.com/repo.git", Enabled: true},
+	}}}
+	if err := writeVirtualRepository(repo); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	request, err := json.Marshal(virtualRepositoryChangesRequest{RootPath: root, NodeID: "node", FilePath: selectedPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := app.GetVirtualRepositoryChanges(string(request))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changes VirtualRepositoryChanges
+	if err := json.Unmarshal([]byte(raw), &changes); err != nil {
+		t.Fatal(err)
+	}
+	if !virtualRepositoryChangeFileExists(changes.Files, selectedPath) || !strings.Contains(changes.Diff, "+new") {
+		t.Fatalf("changes did not retain selected whitespace path: %+v", changes)
+	}
+}
+
+func TestCollectVirtualRepositoryGitChangesSupportsUnbornHead(t *testing.T) {
+	work := t.TempDir()
+	runGitForTest(t, "", "init", work)
+	const filePath = "first.txt"
+	if err := os.WriteFile(filepath.Join(work, filePath), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not available")
+	}
+	changes, err := collectVirtualRepositoryGitChanges(context.Background(), func(args ...string) (string, error) {
+		return runVCSCommand(context.Background(), git, work, args...)
+	}, func(args ...string) (string, error) {
+		return runVCSCommandRaw(context.Background(), git, work, args...)
+	}, "node", "", filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes.Head != "" || !virtualRepositoryChangeFileExists(changes.Files, filePath) || !strings.Contains(changes.Diff, "+first") {
+		t.Fatalf("unborn-head changes = %+v", changes)
+	}
+}
+
+func TestIsVirtualRepositoryGitUnbornHeadError(t *testing.T) {
+	for _, message := range []string{"fatal: ambiguous argument 'HEAD': unknown revision", "fatal: Needed a single revision", "fatal: your current branch 'master' does not have any commits yet"} {
+		if !isVirtualRepositoryGitUnbornHeadError(errors.New(message)) {
+			t.Fatalf("%q was not recognized as an unborn HEAD error", message)
+		}
+	}
+	if isVirtualRepositoryGitUnbornHeadError(errors.New("fatal: not a git repository")) {
+		t.Fatal("non-HEAD failure was incorrectly accepted")
+	}
+}
+
+func TestParseVirtualRepositoryGitStatusHandlesRename(t *testing.T) {
+	files, truncated, err := parseVirtualRepositoryGitStatus("R  renamed.txt\x00original.txt\x00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(files) != 1 || files[0].Path != "renamed.txt" || files[0].OriginalPath != "original.txt" {
+		t.Fatalf("files = %+v", files)
+	}
+}
+
+func TestParseVirtualRepositoryGitStatusHandlesConflict(t *testing.T) {
+	files, truncated, err := parseVirtualRepositoryGitStatus("UU conflict.txt\x00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(files) != 1 || files[0].IndexStatus != "U" || files[0].WorktreeStatus != "U" || files[0].Path != "conflict.txt" {
+		t.Fatalf("files = %+v", files)
+	}
+}
+
+func TestParseVirtualRepositoryGitStatusPreservesQuotedAndUnicodeFilenames(t *testing.T) {
+	files, truncated, err := parseVirtualRepositoryGitStatus(" M 报告 \"final\".txt\x00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(files) != 1 || files[0].Path != "报告 \"final\".txt" {
+		t.Fatalf("files = %+v", files)
+	}
+}
+
+func TestParseVirtualRepositoryGitStatusRejectsControlCharacters(t *testing.T) {
+	if _, _, err := parseVirtualRepositoryGitStatus(" M unsafe\nname\x00"); err == nil {
+		t.Fatal("expected control character path to be rejected")
+	}
+}
+
+func TestParseVirtualRepositoryGitStatusTruncatesLargeWorkingTree(t *testing.T) {
+	var status strings.Builder
+	status.WriteString("## main\x00")
+	for i := 0; i < virtualRepositoryChangesMaxFiles+1; i++ {
+		fmt.Fprintf(&status, " M file-%d.txt\x00", i)
+	}
+	files, truncated, err := parseVirtualRepositoryGitStatus(status.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated || len(files) != virtualRepositoryChangesMaxFiles {
+		t.Fatalf("files=%d truncated=%v, want %d true", len(files), truncated, virtualRepositoryChangesMaxFiles)
+	}
+}
+
 func TestPreviewVirtualRepositoryOperationBlocksGitTagWrites(t *testing.T) {
 	root := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -1151,6 +1333,9 @@ func TestRunVCSOutputRedactionAndLimit(t *testing.T) {
 	buffer := &limitedVCSBuffer{limit: 4}
 	if n, err := buffer.Write([]byte("123456")); err != nil || n != 6 || buffer.String() != "1234\n[output truncated]" {
 		t.Fatalf("limited buffer n=%d value=%q err=%v", n, buffer.String(), err)
+	}
+	if buffer.RawString() != "1234" {
+		t.Fatalf("raw limited buffer = %q", buffer.RawString())
 	}
 }
 

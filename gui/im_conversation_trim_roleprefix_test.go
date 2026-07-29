@@ -100,7 +100,6 @@ func TestStripRolePrefixHallucination_MultipleCodeBlocks(t *testing.T) {
 	}
 }
 
-
 func TestStripRolePrefixHallucination_FullwidthColon(t *testing.T) {
 	// Chinese LLMs sometimes use fullwidth colon (：U+FF1A).
 	input := "服务器整体运行健康。\n\nBrowser：伯伯，API 服务器资源状况如下：\n## 系统信息"

@@ -99,6 +99,41 @@ func TestNormalizeGUIInstallHubPackageNoopWhenResolvedPresent(t *testing.T) {
 	}
 }
 
+func TestNormalizeGUIInstallHubPackageSynthesizesBindingSkillDependency(t *testing.T) {
+	pkg := map[string]any{"apps": []any{map[string]any{"app": map[string]any{
+		"id": "binding-app",
+		"binding": map[string]any{
+			"skill": map[string]any{"id": "binding-skill", "source": "local", "kind": "runtime_skill", "version": "1.0.0"},
+		},
+	}}}}
+	if synthesized, notes := NormalizeGUIInstallHubPackage(pkg); !synthesized {
+		t.Fatalf("binding-only dependency should synthesize resolved metadata, notes=%v", notes)
+	}
+	deps := anySlice(pkg["resolved_dependencies"])
+	if len(deps) != 1 || anyMap(deps[0])["id"] != "binding-skill" || anyMap(deps[0])["source"] != "local" || anyMap(deps[0])["app_ids"] == nil {
+		t.Fatalf("expected synthesized binding dependency, got %#v", pkg["resolved_dependencies"])
+	}
+}
+
+func TestNormalizeGUIInstallHubPackageSynthesizesVerificationSkillsWhenDependenciesEmpty(t *testing.T) {
+	pkg := map[string]any{"apps": []any{map[string]any{"app": map[string]any{
+		"id": "skills-app",
+		"governance": map[string]any{
+			"dependencyVerification": map[string]any{
+				"dependencies": []any{},
+				"skills":       []any{map[string]any{"id": "skills-only", "source": "local", "kind": "runtime_skill"}},
+			},
+		},
+	}}}}
+	if synthesized, notes := NormalizeGUIInstallHubPackage(pkg); !synthesized {
+		t.Fatalf("skills fallback should synthesize resolved metadata, notes=%v", notes)
+	}
+	deps := anySlice(pkg["resolved_dependencies"])
+	if len(deps) != 1 || anyMap(deps[0])["id"] != "skills-only" {
+		t.Fatalf("expected synthesized skills fallback dependency, got %#v", pkg["resolved_dependencies"])
+	}
+}
+
 func TestDownloadGUIInstallHubPackageFetchesAndValidatesPackage(t *testing.T) {
 	var gotPath string
 	var gotAuth string

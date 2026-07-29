@@ -294,7 +294,7 @@ func TestExportComputerUseObserveHistoryCSV(t *testing.T) {
 	cuLastObserveMu.Unlock()
 	storeComputerUseLastObserveMetrics(map[string]interface{}{
 		"ok": true, "total_ms": int64(42), "stage": "smoke",
-		"timing_ms": map[string]int64{"screenshot": 10, "a11y": 5, "total": 42},
+		"timing_ms":     map[string]int64{"screenshot": 10, "a11y": 5, "total": 42},
 		"element_count": 2,
 	})
 	a := &App{}
@@ -323,7 +323,7 @@ func TestExportComputerUseObserveHistoryCSV(t *testing.T) {
 func TestGetComputerUseReadinessIncludesLastE2E(t *testing.T) {
 	storeComputerUseLastE2E(map[string]interface{}{
 		"ok": false, "error": "baseline screenshot failed",
-		"at": time.Now().Format(time.RFC3339),
+		"at":               time.Now().Format(time.RFC3339),
 		"diagnostics_path": "/tmp/fake-diag.json",
 	})
 	a := &App{}

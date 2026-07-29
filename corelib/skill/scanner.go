@@ -160,6 +160,9 @@ func externalSkillDirHasDefinition(skillDir string) bool {
 			return true
 		}
 	}
+	if isStandaloneMaclawAppDefinition(skillDir) {
+		return true
+	}
 	entries, err := os.ReadDir(skillDir)
 	if err != nil {
 		return false
@@ -192,13 +195,13 @@ func ScanAllSkillDirs() []corelib.NLSkillEntry {
 
 // SkillYAMLFile is the on-disk YAML format for a skill definition.
 type SkillYAMLFile struct {
-	ID               string               `yaml:"id,omitempty"`      // Global unique skill ID (publisher.skill-name)
-	Name             string               `yaml:"name"`
-	Version          string               `yaml:"version,omitempty"`
-	Description      string               `yaml:"description"`
-	Triggers         []string             `yaml:"triggers"`
-	Steps            []SkillYAMLStep      `yaml:"steps"`
-	Status           string               `yaml:"status"`
+	ID          string          `yaml:"id,omitempty"` // Global unique skill ID (publisher.skill-name)
+	Name        string          `yaml:"name"`
+	Version     string          `yaml:"version,omitempty"`
+	Description string          `yaml:"description"`
+	Triggers    []string        `yaml:"triggers"`
+	Steps       []SkillYAMLStep `yaml:"steps"`
+	Status      string          `yaml:"status"`
 	// Source classifies origin for UI filters (e.g. "learned", "crafted", "file").
 	// Empty means resolve via path/name heuristics, defaulting to "file".
 	Source           string               `yaml:"source,omitempty"`
@@ -1263,6 +1266,13 @@ func skillDefinitionPath(skillDir string) (string, string, error) {
 }
 
 func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, string, error) {
+	// Marketplace app-only packages intentionally contain no skill.yaml,
+	// SKILL.md, or runtime steps. Recognize them during disk scans so a restart
+	// does not make the installed App disappear or degrade it into a runnable
+	// generic skill.
+	if isStandaloneMaclawAppDefinition(skillDir) {
+		return loadStandaloneMaclawAppSkill(skillDir, fallbackName)
+	}
 	defPath, defFormat, defErr := skillDefinitionPath(skillDir)
 	if defErr == nil {
 		data, err := os.ReadFile(defPath)
@@ -1542,6 +1552,74 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 	return loadMarkdownSkillFromDir(skillDir, fallbackName)
 }
 
+func isStandaloneMaclawAppDefinition(skillDir string) bool {
+	// A normal Skill that also exposes a MaClaw App remains executable. Only
+	// treat the directory as an app-only container when it has neither a
+	// structured skill definition nor an instruction document to import.
+	if path, _, err := skillDefinitionPath(skillDir); err == nil && path != "" {
+		return false
+	}
+	if path, err := skillMarkdownPath(skillDir); err == nil && path != "" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(skillDir, "maclaw.app.json"))
+	if err != nil {
+		return false
+	}
+	var doc struct {
+		Schema        string `json:"schema"`
+		PrivateMarker string `json:"privateMarker"`
+		App           struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"app"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	return strings.TrimSpace(doc.Schema) == "maclaw.app.v1" &&
+		strings.TrimSpace(doc.PrivateMarker) == "x_maclaw_apps" &&
+		strings.TrimSpace(doc.App.ID) != "" && strings.TrimSpace(doc.App.Name) != ""
+}
+
+func loadStandaloneMaclawAppSkill(skillDir, fallbackName string) (*corelib.NLSkillEntry, string, error) {
+	path := filepath.Join(skillDir, "maclaw.app.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", err
+	}
+	var doc struct {
+		App struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"app"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, "", err
+	}
+	name := strings.TrimSpace(fallbackName)
+	if name == "" {
+		name = strings.TrimSpace(doc.App.Name)
+	}
+	description := strings.TrimSpace(doc.App.Description)
+	if description == "" {
+		description = strings.TrimSpace(doc.App.Name)
+	}
+	return &corelib.NLSkillEntry{
+		Name:        name,
+		DirName:     fallbackName,
+		Description: description,
+		Triggers:    []string{strings.TrimSpace(doc.App.Name), strings.TrimSpace(doc.App.ID)},
+		Status:      "active",
+		Source:      ResolveDiskSkillSource("", skillDir, name),
+		SkillDir:    skillDir,
+		CreatedAt:   fileModTime(path),
+		Type:        "instruction",
+	}, path, nil
+}
+
 func loadMarkdownSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, string, error) {
 	parsed, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
 		NameFallback: fallbackName,
@@ -1650,6 +1728,21 @@ func isKnowledgeSkillType(raw string) bool {
 
 func IsKnowledgeSkillType(raw string) bool {
 	return isKnowledgeSkillType(raw)
+}
+
+// IsInstructionOnlySkillType reports container/documentation entries which
+// must never be treated as an executable Skill. MaClaw App-only marketplace
+// packages use this type so their app definition can be installed and listed
+// without exposing the container itself to Skill runners.
+func IsInstructionOnlySkillType(raw string) bool {
+	typ := strings.ToLower(strings.TrimSpace(raw))
+	typ = strings.NewReplacer("-", "_", " ", "_").Replace(typ)
+	switch typ {
+	case "instruction", "instruction_only", "instruction_skill":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildYAMLKnowledgeSkillEntry(skillDir, name, fallbackName, status, content, contentPath string, sf SkillYAMLFile) *corelib.NLSkillEntry {

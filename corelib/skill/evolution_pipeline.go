@@ -22,24 +22,24 @@ import (
 // skill execution completes.
 type EvolutionPipeline struct {
 	// Components
-	Promoter        *NudgePromoter
-	Optimizer       *SkillOptimizer
-	Gate            *RepairGate
-	Scheduler       *MaintenanceScheduler
-	Versioner       *Versioner
-	UsageTracker    *tool.UsageTracker
-	SkillLoader     func() []corelib.NLSkillEntry
-	SkillSaver      func([]corelib.NLSkillEntry) error
-	UploadTrigger   func(skillName string, result *SkillExecutionResultCompat) // triggers AutoUploadTrigger.CheckAndTrigger
-	LLM             LLMRepairer
-	EventEmitter    func(event string, data map[string]string) // notifies frontend of evolution actions
+	Promoter      *NudgePromoter
+	Optimizer     *SkillOptimizer
+	Gate          *RepairGate
+	Scheduler     *MaintenanceScheduler
+	Versioner     *Versioner
+	UsageTracker  *tool.UsageTracker
+	SkillLoader   func() []corelib.NLSkillEntry
+	SkillSaver    func([]corelib.NLSkillEntry) error
+	UploadTrigger func(skillName string, result *SkillExecutionResultCompat) // triggers AutoUploadTrigger.CheckAndTrigger
+	LLM           LLMRepairer
+	EventEmitter  func(event string, data map[string]string) // notifies frontend of evolution actions
 
 	// Config
 	PostExecDelay        time.Duration // delay after skill exec before running pipeline (default 5s)
 	EnablePromoter       bool
 	EnableOptimizer      bool
 	EnableRepair         bool          // schedule self-repair for failed skills (default true)
-	RepairCooldown        time.Duration // min interval between LLM repair attempts per skill (default 1h)
+	RepairCooldown       time.Duration // min interval between LLM repair attempts per skill (default 1h)
 	PromoteCheckInterval int           // check nudge promotion every N notifications (default 10)
 
 	// RepairHook is the platform-specific repair applier (LLM + gate + security +
@@ -67,10 +67,10 @@ type EvolutionPipeline struct {
 	DroppedNotifications atomic.Uint64
 
 	// LLM call throttling — prevents repeated expensive calls for the same skill/candidate.
-	optimizeAttempts   map[string]time.Time // skill name → last LLM optimization attempt time
-	repairAttempts     map[string]time.Time // skill name → last self-repair attempt time
-	promoteBlacklist   map[string]time.Time // candidate ContextKey → time blocked (retry after 24h)
-	throttleMu         sync.Mutex
+	optimizeAttempts map[string]time.Time // skill name → last LLM optimization attempt time
+	repairAttempts   map[string]time.Time // skill name → last self-repair attempt time
+	promoteBlacklist map[string]time.Time // candidate ContextKey → time blocked (retry after 24h)
+	throttleMu       sync.Mutex
 }
 
 // SkillExecutionResultCompat is a bridge type to avoid importing gui package.
@@ -81,10 +81,10 @@ type SkillExecutionResultCompat struct {
 }
 
 type evolutionRequest struct {
-	SkillName string
-	Entry     *corelib.NLSkillEntry
+	SkillName  string
+	Entry      *corelib.NLSkillEntry
 	ExecResult *SkillExecutionResultCompat
-	RunArgs   map[string]string
+	RunArgs    map[string]string
 }
 
 // DefaultRepairCooldown is used when RepairCooldown is unset and when AppConfig
@@ -110,7 +110,7 @@ func NewEvolutionPipeline() *EvolutionPipeline {
 		EnablePromoter:       true,
 		EnableOptimizer:      true,
 		EnableRepair:         true,
-		RepairCooldown:        DefaultRepairCooldown,
+		RepairCooldown:       DefaultRepairCooldown,
 		PromoteCheckInterval: 10,
 		pendingBySkill:       make(map[string]evolutionRequest),
 		pendingWake:          make(chan struct{}, 1),
@@ -268,7 +268,7 @@ type EvolutionStatus struct {
 	EnableRepair           bool          `json:"enable_repair"`
 	EnableOptimizer        bool          `json:"enable_optimizer"`
 	EnablePromoter         bool          `json:"enable_promoter"`
-	RepairCooldown          time.Duration `json:"repair_cooldown"`
+	RepairCooldown         time.Duration `json:"repair_cooldown"`
 	HasRepairHook          bool          `json:"has_repair_hook"`
 	HasOptimizer           bool          `json:"has_optimizer"`
 	HasPromoter            bool          `json:"has_promoter"`
@@ -287,7 +287,7 @@ func (p *EvolutionPipeline) Status() EvolutionStatus {
 		EnableRepair:           p.EnableRepair,
 		EnableOptimizer:        p.EnableOptimizer,
 		EnablePromoter:         p.EnablePromoter,
-		RepairCooldown:          p.RepairCooldown,
+		RepairCooldown:         p.RepairCooldown,
 		HasRepairHook:          p.RepairHook != nil,
 		HasOptimizer:           p.Optimizer != nil,
 		HasPromoter:            p.Promoter != nil,

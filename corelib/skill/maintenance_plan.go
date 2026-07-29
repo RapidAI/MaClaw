@@ -115,7 +115,7 @@ func BuildSkillMaintenancePlan(skills []corelib.NLSkillEntry, opts SkillMaintena
 }
 
 func shouldSkipCuratorSkill(s corelib.NLSkillEntry) bool {
-	return skillDisplayName(s) == "" || IsKnowledgeSkillType(s.Type) || maintenanceStatusIs(s.Status, "disabled")
+	return skillDisplayName(s) == "" || IsKnowledgeSkillType(s.Type) || IsInstructionOnlySkillType(s.Type) || maintenanceStatusIs(s.Status, "disabled")
 }
 
 func failedSkillMaintenanceAction(s corelib.NLSkillEntry, minRuns int) (SkillMaintenanceAction, bool) {

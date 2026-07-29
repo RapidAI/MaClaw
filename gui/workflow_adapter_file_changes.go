@@ -1,12 +1,11 @@
 package main
 
-import (
-)
+import ()
 
 // FileChangesPayload is the workflow:file_changes event structure.
 type FileChangesPayload struct {
 	UserID    string           `json:"user_id"`
-	PhaseID   string           `json:"phase_id"`   // always "implementation"
+	PhaseID   string           `json:"phase_id"` // always "implementation"
 	TaskID    string           `json:"task_id"`
 	TaskTitle string           `json:"task_title"` // max 200 chars
 	Files     []FileChangeItem `json:"files"`      // max 200 entries
@@ -24,17 +23,17 @@ type FileChangeItem struct {
 // FileActivityPayload is the workflow:file_activity event structure.
 type FileActivityPayload struct {
 	UserID     string `json:"user_id"`
-	PhaseID    string `json:"phase_id"`    // always "implementation"
+	PhaseID    string `json:"phase_id"` // always "implementation"
 	TaskID     string `json:"task_id"`
 	FilePath   string `json:"file_path"`   // project-relative, forward slashes, max 500 chars
 	ChangeType string `json:"change_type"` // "added" | "modified" | "deleted"
 }
 
 const (
-	maxFileChangesFiles    = 200
-	maxTaskTitleChars      = 200
-	maxFilePathChars       = 500
-	fileChangesPhaseID     = "implementation"
+	maxFileChangesFiles = 200
+	maxTaskTitleChars   = 200
+	maxFilePathChars    = 500
+	fileChangesPhaseID  = "implementation"
 )
 
 // EmitFileChanges emits a workflow:file_changes event after task completion.

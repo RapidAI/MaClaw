@@ -1852,6 +1852,91 @@ func TestInstallMixedSkillSkillMarketPreservesMaclawAppDefinition(t *testing.T) 
 	}
 }
 
+func TestInstallMixedSkillSkillMarketInstallsStandaloneMaclawAppPackage(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	appJSON := `{
+	  "schema": "maclaw.app.v1",
+	  "privateMarker": "x_maclaw_apps",
+	  "app": {
+	    "id": "pdf-translator",
+	    "name": "PDF Translator",
+	    "binding": {"skill": {"skillId": "paper_pdf_translator", "appDefinitionFile": "maclaw.app.json"}}
+	  }
+	}`
+	var market *httptest.Server
+	market = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{market.URL}})
+		case "/api/v1/skills/pdf-translator-app/download":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":            "pdf-translator-app",
+				"name":          "skill-app-paper-pdf-translator",
+				"description":   "Translate PDFs",
+				"product_kind":  "maclaw_app_skill",
+				"is_maclaw_app": true,
+				"files": map[string]string{
+					"maclaw.app.json": base64.StdEncoding.EncodeToString([]byte(appJSON)),
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer market.Close()
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: "http://127.0.0.1:1", RemoteHubCenterURLs: []string{market.URL}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.InstallMixedSkill("skillmarket", "pdf-translator-app", ""); err != nil {
+		t.Fatalf("InstallMixedSkill() error = %v", err)
+	}
+
+	var installed *corelib.NLSkillEntry
+	for _, entry := range app.skillExecutor.loadSkills() {
+		if entry.Name == "skill-app-paper-pdf-translator" {
+			copied := entry
+			installed = &copied
+			break
+		}
+	}
+	if installed == nil {
+		t.Fatal("expected standalone MaClaw App package to be registered")
+	}
+	if installed.Type != "instruction" || len(installed.Steps) != 0 {
+		t.Fatalf("installed entry = %#v, want instruction-only app container", installed)
+	}
+	if _, err := os.Stat(filepath.Join(installed.SkillDir, "maclaw.app.json")); err != nil {
+		t.Fatalf("installed package missing maclaw.app.json: %v", err)
+	}
+	manifests := app.ListSkillAppManifests()
+	if len(manifests) != 1 {
+		t.Fatalf("ListSkillAppManifests() len = %d, want 1: %#v", len(manifests), manifests)
+	}
+	if manifests[0].ID != "pdf-translator" || manifests[0].SkillID != "skill-app-paper-pdf-translator" {
+		t.Fatalf("unexpected app manifest: %#v", manifests[0])
+	}
+}
+
 func TestImportNLSkillZipPathRejectsJSONSkillPackage(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

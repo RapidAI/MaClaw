@@ -31,6 +31,7 @@ type agentLoopPhase struct {
 	EssentialTruncationHints   int
 	TruncationBlockedTools     map[string]bool
 	TruncationBlockedReminders int
+	NativePDFFallbackInjected  bool
 }
 
 func enterRecoverPhase(phase *agentLoopPhase, reason agentRecoverReason, prompt string) {

@@ -73,6 +73,17 @@ func (e *remoteHostKeyUntrustedError) Error() string {
 	return fmt.Sprintf("SSH host key is not trusted (%s %s)", e.Algorithm, e.Fingerprint)
 }
 
+type remoteHostKeyChangedError struct {
+	HostID              string
+	ExpectedFingerprint string
+	ObservedFingerprint string
+	Algorithm           string
+}
+
+func (e *remoteHostKeyChangedError) Error() string {
+	return fmt.Sprintf("SSH host key changed for %s: expected %s, received %s", e.HostID, e.ExpectedFingerprint, e.ObservedFingerprint)
+}
+
 func remoteVirtualRepositoryHostID(remote *VirtualRepositoryRemote) string {
 	port := remote.Port
 	if port == 0 {
@@ -105,6 +116,92 @@ func (a *App) loadVirtualRepositoryKnownHosts() (virtualRepositoryKnownHostFile,
 	return file, nil
 }
 
+// ResetRemoteVirtualRepositoryHostKey removes the pin for one existing remote
+// repository. It deliberately does not contact the server or trust a new key:
+// the caller must test again and explicitly confirm the newly observed key.
+func (a *App) ResetRemoteVirtualRepositoryHostKey(repositoryID string) error {
+	repositoryID = strings.TrimSpace(repositoryID)
+	if repositoryID == "" || len(repositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(repositoryID) {
+		return errors.New("remote virtual repository id is invalid")
+	}
+	items, err := a.loadVirtualRepositoryIndexItems()
+	if err != nil {
+		return err
+	}
+	var remote *VirtualRepositoryRemote
+	for _, item := range items {
+		if item.ID == repositoryID && item.Remote != nil {
+			remote = item.Remote
+			break
+		}
+	}
+	if remote == nil {
+		return errors.New("remote virtual repository was not found")
+	}
+
+	hostID := remoteVirtualRepositoryHostID(remote)
+	virtualRepositoryKnownHostsMu.Lock()
+	defer virtualRepositoryKnownHostsMu.Unlock()
+	knownHosts, err := a.loadVirtualRepositoryKnownHosts()
+	if err != nil {
+		return err
+	}
+	if _, exists := knownHosts.Hosts[hostID]; !exists {
+		return errors.New("saved SSH host key was not found")
+	}
+	delete(knownHosts.Hosts, hostID)
+	return writeJSONFile(a.virtualRepositoryStatePath("virtual-repository-known-hosts.json"), knownHosts)
+}
+
+// validateRemoteVirtualRepositoryRepairTarget ensures a recovery probe can
+// update credentials only for the endpoint already recorded for that remote
+// repository. The repair flow must never become an alternate way to change a
+// repository definition without its manifest revision.
+func (a *App) validateRemoteVirtualRepositoryRepairTarget(input remoteVirtualRepositoryConnectionInput) error {
+	items, err := a.loadVirtualRepositoryIndexItems()
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.ID != input.RepositoryID || item.Remote == nil {
+			continue
+		}
+		if !sameRemoteVirtualRepositoryEndpoint(item.Remote, input.Remote) || strings.TrimSpace(item.RootPath) != strings.TrimSpace(input.RootPath) {
+			return errors.New("remote virtual repository connection does not match the saved repository")
+		}
+		return nil
+	}
+	return errors.New("remote virtual repository was not found")
+}
+
+// RepairRemoteVirtualRepositoryConnection tests the saved remote endpoint and
+// stores a newly supplied password only after the full probe succeeds. It
+// deliberately leaves the remote manifest untouched, so this recovery path
+// cannot fail due to a missing manifest revision from the recent index.
+func (a *App) RepairRemoteVirtualRepositoryConnection(inputJSON string) (string, error) {
+	var input remoteVirtualRepositoryConnectionInput
+	if err := unmarshalVirtualRepositoryInput(inputJSON, "remote virtual repository connection", &input); err != nil {
+		return "", err
+	}
+	if err := a.validateRemoteVirtualRepositoryRepairTarget(input); err != nil {
+		return "", err
+	}
+	statusJSON, err := a.TestRemoteVirtualRepositoryConnection(inputJSON)
+	if err != nil {
+		return "", err
+	}
+	var status RemoteVirtualRepositoryConnectionStatus
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		return "", fmt.Errorf("decode remote virtual repository connection status: %w", err)
+	}
+	if strings.TrimSpace(input.Password) != "" && status.Connected && status.HostKeyTrusted && status.RootExists && status.ErrorCode == "" {
+		if err := keyring.Set(virtualRepositorySSHKeyringService, input.RepositoryID, input.Password); err != nil {
+			return "", fmt.Errorf("save SSH password in system keyring: %w", err)
+		}
+	}
+	return statusJSON, nil
+}
+
 func (a *App) remoteVirtualRepositoryPassword(repositoryID, supplied string) (string, error) {
 	if strings.TrimSpace(supplied) != "" {
 		return supplied, nil
@@ -117,6 +214,16 @@ func (a *App) remoteVirtualRepositoryPassword(repositoryID, supplied string) (st
 		return "", fmt.Errorf("read SSH password from system keyring: %w", err)
 	}
 	return password, nil
+}
+
+func validateRemoteVirtualRepositoryHostKey(hostID, expected, observedFingerprint, algorithm string, trustHostKey bool) error {
+	if expected != "" && expected != observedFingerprint {
+		return &remoteHostKeyChangedError{HostID: hostID, ExpectedFingerprint: expected, ObservedFingerprint: observedFingerprint, Algorithm: algorithm}
+	}
+	if expected == "" && !trustHostKey {
+		return &remoteHostKeyUntrustedError{Algorithm: algorithm, Fingerprint: observedFingerprint}
+	}
+	return nil
 }
 
 func (a *App) dialRemoteVirtualRepository(ctx context.Context, repositoryID string, remote *VirtualRepositoryRemote, suppliedPassword string, trustHostKey bool) (*ssh.Client, string, string, error) {
@@ -138,13 +245,7 @@ func (a *App) dialRemoteVirtualRepository(ctx context.Context, repositoryID stri
 	var observedFingerprint, observedAlgorithm string
 	callback := func(_ string, _ net.Addr, key ssh.PublicKey) error {
 		observedFingerprint, observedAlgorithm = sshHostKeyFingerprint(key), key.Type()
-		if expected != "" && expected != observedFingerprint {
-			return fmt.Errorf("SSH host key changed for %s: expected %s, received %s", hostID, expected, observedFingerprint)
-		}
-		if expected == "" && !trustHostKey {
-			return &remoteHostKeyUntrustedError{Algorithm: observedAlgorithm, Fingerprint: observedFingerprint}
-		}
-		return nil
+		return validateRemoteVirtualRepositoryHostKey(hostID, expected, observedFingerprint, observedAlgorithm, trustHostKey)
 	}
 	port := remote.Port
 	if port == 0 {
@@ -196,6 +297,39 @@ func (a *App) dialRemoteVirtualRepository(ctx context.Context, repositoryID stri
 
 func runRemoteRepositoryCommand(ctx context.Context, client *ssh.Client, command string) (string, error) {
 	return runRemoteRepositoryCommandInput(ctx, client, command, "")
+}
+
+// runRemoteRepositoryCommandRaw preserves machine-readable Git output. It is
+// used only for the NUL-delimited status protocol and never exposes partial
+// output if the review limit is reached.
+func runRemoteRepositoryCommandRaw(ctx context.Context, client *ssh.Client, command string) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+	stdout := &limitedVCSBuffer{limit: 512 * 1024}
+	stderr := &limitedVCSBuffer{limit: 512 * 1024}
+	session.Stdout, session.Stderr = stdout, stderr
+	done := make(chan error, 1)
+	go func() { done <- session.Run(command) }()
+	select {
+	case <-ctx.Done():
+		_ = session.Close()
+		return "", ctx.Err()
+	case err := <-done:
+		if stdout.truncated {
+			return "", errors.New("Git status output exceeds the review limit")
+		}
+		if err != nil {
+			message := redactVCSOutput(stderr.String())
+			if message == "" {
+				message = err.Error()
+			}
+			return "", errors.New(message)
+		}
+		return stdout.RawString(), nil
+	}
 }
 
 func runRemoteRepositoryCommandInput(ctx context.Context, client *ssh.Client, command, stdin string) (string, error) {
@@ -365,9 +499,16 @@ func (a *App) TestRemoteVirtualRepositoryConnection(inputJSON string) (string, e
 	status.HostKeyAlgorithm, status.HostKeyFingerprint = algorithm, fingerprint
 	if err != nil {
 		var untrusted *remoteHostKeyUntrustedError
+		var changed *remoteHostKeyChangedError
 		if errors.As(err, &untrusted) {
 			status.ErrorCode, status.Error = "host_key_untrusted", err.Error()
 			status.HostKeyAlgorithm, status.HostKeyFingerprint = untrusted.Algorithm, untrusted.Fingerprint
+		} else if errors.As(err, &changed) {
+			// A changed pinned key can indicate a server rebuild, but it can also
+			// indicate interception. Never let the ordinary trust checkbox replace
+			// an existing pin; surface the observed fingerprint for safe review.
+			status.ErrorCode, status.Error = "host_key_changed", err.Error()
+			status.HostKeyAlgorithm, status.HostKeyFingerprint = changed.Algorithm, changed.ObservedFingerprint
 		} else {
 			status.ErrorCode, status.Error = "connection_failed", err.Error()
 		}
@@ -934,6 +1075,44 @@ func (a *App) InspectRemoteVirtualRepository(id string) (string, error) {
 		}
 	}
 	log.Printf("[vrepo] inspect_remote repo=%q checked=%d errors=%d duration_ms=%d", repo.ID, len(statuses), errorsFound, time.Since(started).Milliseconds())
+	return string(data), err
+}
+
+func (a *App) getRemoteVirtualRepositoryChanges(request virtualRepositoryChangesRequest) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	repo, client, err := a.remoteVirtualRepositoryByIDContext(ctx, request.RepositoryID)
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+	node, err := virtualRepositoryGitNode(repo, request.NodeID)
+	if err != nil {
+		return "", err
+	}
+	workingCopy := remoteVirtualRepositoryNodePath(repo.RootPath, node.Repository.RelativePath)
+	resolved, err := runRemoteRepositoryCommand(ctx, client, "root=$(realpath "+remoteShellQuote(repo.RootPath)+") || exit 21; target=$(realpath "+remoteShellQuote(workingCopy)+") || exit 22; case \"$target\" in \"$root\"/*) printf '%s' \"$target\";; *) exit 23;; esac")
+	if err != nil {
+		return "", errors.New("repository has not been checked out")
+	}
+	workingDir := remoteShellQuote(strings.TrimSpace(resolved))
+	changes, err := collectVirtualRepositoryGitChanges(ctx, func(args ...string) (string, error) {
+		quoted := make([]string, len(args))
+		for index, arg := range args {
+			quoted[index] = remoteShellQuote(arg)
+		}
+		return runRemoteRepositoryCommand(ctx, client, "git -C "+workingDir+" "+strings.Join(quoted, " "))
+	}, func(args ...string) (string, error) {
+		quoted := make([]string, len(args))
+		for index, arg := range args {
+			quoted[index] = remoteShellQuote(arg)
+		}
+		return runRemoteRepositoryCommandRaw(ctx, client, "git -C "+workingDir+" "+strings.Join(quoted, " "))
+	}, request.NodeID, "", request.FilePath)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(changes)
 	return string(data), err
 }
 

@@ -97,8 +97,8 @@ func (a *App) UninstallPetPack(id string) error {
 		cfg, err := a.LoadConfig()
 		if err == nil && cfg.PetSkin == id {
 			if _, patchErr := a.PatchConfigFields(map[string]interface{}{
-				"pet_skin":                             petpack.DefaultPackID,
-				"pet_variant":                          petpack.VariantClassic,
+				"pet_skin":                              petpack.DefaultPackID,
+				"pet_variant":                           petpack.VariantClassic,
 				"pet_figurative_upgrade_prompt_pending": false,
 			}); patchErr != nil {
 				resetErr = fmt.Errorf("uninstalled %q but failed to reset active skin: %w", id, patchErr)

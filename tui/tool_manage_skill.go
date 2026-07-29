@@ -1096,7 +1096,7 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 			log.Printf("[skill-run-tui] hydrate skill metadata from %q failed: %v", entry.SkillDir, err)
 		}
 	}
-	if skill.IsKnowledgeSkillType(entry.Type) {
+	if skill.IsKnowledgeSkillType(entry.Type) || skill.IsInstructionOnlySkillType(entry.Type) {
 		return tuiSkillRunResult{Output: skill.FormatNoExecutableStepsMessage(name, entry, skill.RunnerBackendTUI)}
 	}
 	skill.NormalizeSkillForRunner(entry)

@@ -97,17 +97,17 @@ type SharedAgentLoopStatus struct {
 	ToolCompressProjects   int64            `json:"tool_compress_projects,omitempty"`
 	ToolCompressByTool     map[string]int64 `json:"tool_compress_by_tool,omitempty"`
 	// Cost tracker (process session / daily) when OpenHuman cost module is live.
-	CostSessionUSD   float64 `json:"cost_session_usd,omitempty"`
-	CostDailyUSD     float64 `json:"cost_daily_usd,omitempty"`
-	CostBudgetUSD    float64 `json:"cost_budget_usd,omitempty"`
-	CostOverBudget   bool    `json:"cost_over_budget,omitempty"`
-	CostSessionLine  string  `json:"cost_session_line,omitempty"`
-	CostDailyLine    string  `json:"cost_daily_line,omitempty"`
+	CostSessionUSD  float64 `json:"cost_session_usd,omitempty"`
+	CostDailyUSD    float64 `json:"cost_daily_usd,omitempty"`
+	CostBudgetUSD   float64 `json:"cost_budget_usd,omitempty"`
+	CostOverBudget  bool    `json:"cost_over_budget,omitempty"`
+	CostSessionLine string  `json:"cost_session_line,omitempty"`
+	CostDailyLine   string  `json:"cost_daily_line,omitempty"`
 	// Fleet daily sum across host-pid slots in ~/.maclaw/stats/llm_cost_daily.json.
-	CostFleetUSD        float64 `json:"cost_fleet_usd,omitempty"`
-	CostFleetCalls      int     `json:"cost_fleet_calls,omitempty"`
-	CostFleetInstances  int     `json:"cost_fleet_instances,omitempty"`
-	CostFleetLine       string  `json:"cost_fleet_line,omitempty"`
+	CostFleetUSD       float64 `json:"cost_fleet_usd,omitempty"`
+	CostFleetCalls     int     `json:"cost_fleet_calls,omitempty"`
+	CostFleetInstances int     `json:"cost_fleet_instances,omitempty"`
+	CostFleetLine      string  `json:"cost_fleet_line,omitempty"`
 	// Cost-route tier stats (~/.maclaw/stats/cost_route.json).
 	CostRouteDecisions int64            `json:"cost_route_decisions,omitempty"`
 	CostRouteApplied   int64            `json:"cost_route_applied,omitempty"`

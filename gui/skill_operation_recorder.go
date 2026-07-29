@@ -319,11 +319,11 @@ func (r *SkillOperationRecorder) suggestDescription(entries []RecordedOp) string
 }
 
 // consolidateRecordedOps reduces a raw recording into a cleaner operation list by:
-// 1. Removing diagnostic/read-only bash commands (ls, dir, cat, type, python --version, pip list)
-// 2. Collapsing multiple write_file ops to the same path into one (keeping the last version)
-// 3. Collapsing multiple edit_file ops to the same file by applying them sequentially into a
-//    single write_file of the final content (if the original file was also written by write_file)
-// 4. Deduplicating pip/npm install commands (keep only the last successful install)
+//  1. Removing diagnostic/read-only bash commands (ls, dir, cat, type, python --version, pip list)
+//  2. Collapsing multiple write_file ops to the same path into one (keeping the last version)
+//  3. Collapsing multiple edit_file ops to the same file by applying them sequentially into a
+//     single write_file of the final content (if the original file was also written by write_file)
+//  4. Deduplicating pip/npm install commands (keep only the last successful install)
 func consolidateRecordedOps(entries []RecordedOp) []RecordedOp {
 	// --- Pass 1: Filter out diagnostic/read-only commands ---
 	var filtered []RecordedOp
@@ -1071,7 +1071,6 @@ func dedup(ss []string) []string {
 	}
 	return out
 }
-
 
 // isRecordableToolForSkill determines which tools should be captured during
 // skill recording. Only tools that can be converted to skill steps are recorded.

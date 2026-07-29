@@ -40,8 +40,8 @@ func TestSemVerCompare(t *testing.T) {
 		{"1.0.1", "1.0.0", 1},
 		{"1.0.0", "1.0.1", -1},
 		{"2.0.0", "1.9.9", 1},
-		{"1.0.0", "1.0.0-beta", 1},      // release > pre-release
-		{"1.0.0-beta", "1.0.0", -1},      // pre-release < release
+		{"1.0.0", "1.0.0-beta", 1},        // release > pre-release
+		{"1.0.0-beta", "1.0.0", -1},       // pre-release < release
 		{"1.0.0-alpha", "1.0.0-beta", -1}, // lexicographic
 		{"1.0.0-beta.2", "1.0.0-beta.1", 1},
 	}

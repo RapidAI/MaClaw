@@ -52,6 +52,30 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRai
 }
 
 describe('SidebarNavRail favorite employees', () => {
+    it('renders and opens the Utilities entry when enabled', () => {
+        const props = renderRail({ utilitiesLabel: 'Utilities' });
+
+        const utilitiesEntry = screen.getByTestId('sidebar-utilities-nav');
+        expect(utilitiesEntry).toBeTruthy();
+        expect(utilitiesEntry.getAttribute('style')).not.toContain('display: none');
+
+        fireEvent.click(utilitiesEntry);
+
+        expect(props.switchTool).toHaveBeenCalledWith('utilities');
+    });
+
+    it('hides the Utilities entry when disabled', () => {
+        renderRail({ showUtilitiesEntry: false, utilitiesLabel: 'Utilities' });
+
+        expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('style')).toContain('display: none');
+    });
+
+    it('marks the Utilities entry active when its page is selected', () => {
+        renderRail({ navTab: 'utilities', utilitiesLabel: 'Utilities' });
+
+        expect(screen.getByTestId('sidebar-utilities-nav').classList.contains('active')).toBe(true);
+    });
+
     it('hides the apps entry by default', () => {
         renderRail();
 

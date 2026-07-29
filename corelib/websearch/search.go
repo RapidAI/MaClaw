@@ -206,11 +206,16 @@ func searchDuckDuckGo(ctx context.Context, provider corelib.WebSearchProvider, q
 	// GET through the anti-bot chain: the DDG HTML endpoints accept GET, and
 	// anomaly challenges (HTTP 202 + challenge page) then escalate instead of
 	// failing flat.
-	html, err := fetchRawHTMLWithChain(ctx, baseURL+sep+"q="+url.QueryEscape(query), nil)
+	searchURL := baseURL + sep + "q=" + url.QueryEscape(query)
+	html, err := fetchRawHTMLWithChain(ctx, searchURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	return parseDDGResults(html, maxResults), nil
+	results := parseDDGResults(html, maxResults)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("DuckDuckGo returned no parseable results")
+	}
+	return results, nil
 }
 
 func fallbackDirectSearch(ctx context.Context, query string, maxResults int, provider corelib.WebSearchProvider, providerErr error, providerResults []SearchResult) ([]SearchResult, error) {
@@ -853,37 +858,41 @@ func searchMojeekDirect(ctx context.Context, query string, maxResults int) ([]Se
 	return parseMojeekResults(html, maxResults), nil
 }
 
-// parseDDGResults extracts search results from DuckDuckGo HTML lite response.
+// parseDDGResults extracts search results from DuckDuckGo's HTML and Lite
+// responses. The two endpoints use different result-link class names.
 func parseDDGResults(html string, maxResults int) []SearchResult {
 	var results []SearchResult
 
-	// DuckDuckGo HTML lite uses <a class="result__a" href="...">title</a>
-	// and <a class="result__snippet" ...>snippet</a>
+	// The HTML endpoint uses result__a / result__snippet, while Lite uses
+	// result-link / result-snippet. Match the anchor opening tag rather than a
+	// specific attribute order so a harmless upstream markup change does not
+	// turn a successful HTTP response into an empty search result.
 	remaining := html
 	for len(results) < maxResults {
-		// Find result link
-		idx := strings.Index(remaining, `class="result__a"`)
+		idx, _ := findDDGElement(remaining, "a", "result__a", "result-link")
 		if idx < 0 {
 			break
 		}
 		remaining = remaining[idx:]
 
-		// Extract href
-		href := extractAttr(remaining, "href")
-		if len(remaining) <= 17 {
+		// Extract href from the matched opening tag only. Looking through the
+		// remainder can accidentally associate a child link with this result.
+		openEnd := strings.IndexByte(remaining, '>')
+		if openEnd < 0 {
 			break
 		}
+		href := extractAttr(remaining[:openEnd+1], "href")
 		if href == "" {
-			remaining = remaining[17:]
+			remaining = advanceDDGElement(remaining)
 			continue
 		}
 		// DuckDuckGo wraps URLs in redirect: //duckduckgo.com/l/?uddg=...
 		href = resolveDDGURL(href)
 		href = normalizeSearchResultURL(href)
 		if isDDGAdURL(href) {
-			// Ad entries share the result__a class but redirect through DDG's
+			// Ad entries share the regular result-link classes but redirect through DDG's
 			// ad tracker; they are not organic results.
-			remaining = remaining[17:]
+			remaining = advanceDDGElement(remaining)
 			continue
 		}
 
@@ -892,13 +901,12 @@ func parseDDGResults(html string, maxResults int) []SearchResult {
 
 		// Find snippet
 		snippet := ""
-		snippetIdx := strings.Index(remaining, `class="result__snippet"`)
-		if snippetIdx > 0 && snippetIdx < 2000 {
-			snippet = extractTagText(remaining[snippetIdx:], "a")
-			if snippet == "" {
-				// Try span-based snippet
-				snippet = extractTagText(remaining[snippetIdx:], "span")
-			}
+		snippetSearch := remaining
+		if nextResult, _ := findDDGElement(remaining[1:], "a", "result__a", "result-link"); nextResult >= 0 {
+			snippetSearch = remaining[:nextResult+1]
+		}
+		if snippetIdx, tag := findDDGElement(snippetSearch, "", "result__snippet", "result-snippet"); snippetIdx >= 0 {
+			snippet = extractTagText(snippetSearch[snippetIdx:], tag)
 		}
 
 		if href != "" && title != "" {
@@ -909,14 +917,62 @@ func parseDDGResults(html string, maxResults int) []SearchResult {
 			})
 		}
 
-		if len(remaining) > 17 {
-			remaining = remaining[17:]
+		if next := advanceDDGElement(remaining); next != "" {
+			remaining = next
 		} else {
 			break
 		}
 	}
 
 	return results
+}
+
+func advanceDDGElement(html string) string {
+	if openEnd := strings.IndexByte(html, '>'); openEnd >= 0 && openEnd+1 < len(html) {
+		return html[openEnd+1:]
+	}
+	return ""
+}
+
+// findDDGElement returns the next opening element matching one of classes.
+// Passing an empty tag matches any element type, which is useful because DDG
+// has used both anchors and table cells for snippets.
+func findDDGElement(html, tag string, classes ...string) (int, string) {
+	lower := strings.ToLower(html)
+	for offset := 0; offset < len(lower); {
+		idx := strings.IndexByte(lower[offset:], '<')
+		if idx < 0 {
+			break
+		}
+		idx += offset
+		openEnd := strings.IndexByte(lower[idx:], '>')
+		if openEnd < 0 {
+			break
+		}
+		openEnd += idx
+		opening := strings.TrimSpace(lower[idx+1 : openEnd])
+		nameEnd := strings.IndexAny(opening, " \t\r\n/")
+		if nameEnd < 0 {
+			nameEnd = len(opening)
+		}
+		name := opening[:nameEnd]
+		if name != "" && (tag == "" || name == tag) && hasDDGClass(extractAttr(html[idx:openEnd+1], "class"), classes...) {
+			return idx, name
+		}
+		offset = openEnd + 1
+	}
+	return -1, ""
+}
+
+func hasDDGClass(class string, candidates ...string) bool {
+	for _, className := range strings.Fields(class) {
+		for _, candidate := range candidates {
+			if strings.EqualFold(className, candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // parseMojeekResults extracts search results from Mojeek's HTML response.

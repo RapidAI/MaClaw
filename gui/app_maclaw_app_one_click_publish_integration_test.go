@@ -138,10 +138,10 @@ func writeHubPackOK(w http.ResponseWriter, appID, hubSubmissionID string) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"schema":          "maclaw.app.hub_submission.v1",
-		"status":          "pending_review",
-		"package_sha256":  "hub-pack-sha",
-		"app_count":       1,
+		"schema":         "maclaw.app.hub_submission.v1",
+		"status":         "pending_review",
+		"package_sha256": "hub-pack-sha",
+		"app_count":      1,
 		"submissions": []map[string]any{{
 			"submission_id": hubSubmissionID,
 			"capability_id": appID,

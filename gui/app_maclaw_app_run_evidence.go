@@ -47,8 +47,8 @@ type maclawAppRunHistoryEntry struct {
 }
 
 type maclawAppRunHistoryStore struct {
-	Schema    string                               `json:"schema"`
-	UpdatedAt string                               `json:"updated_at"`
+	Schema    string                                `json:"schema"`
+	UpdatedAt string                                `json:"updated_at"`
 	ByApp     map[string][]maclawAppRunHistoryEntry `json:"by_app"`
 }
 

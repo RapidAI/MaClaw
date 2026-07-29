@@ -22,10 +22,10 @@ type agentLoopToolCommitOptions struct {
 	Phase                      *agentLoopPhase
 	DriftDetector              *DriftDetector
 	ConsecutiveWriteFileErrors *int
-	InFlightLifecycle    *imInFlightLifecycle
-	Recorder             *TrajectoryRecorder
-	RecordToolResult     func(string, interface{}, string, string)
-	RecordSystemMessages func(int, []interface{})
+	InFlightLifecycle          *imInFlightLifecycle
+	Recorder                   *TrajectoryRecorder
+	RecordToolResult           func(string, interface{}, string, string)
+	RecordSystemMessages       func(int, []interface{})
 	// ParallelGroupIndex is the 0-based index of the current tool_call
 	// within the parallel group. Used to defer drift detection responses
 	// until the entire group has been executed.

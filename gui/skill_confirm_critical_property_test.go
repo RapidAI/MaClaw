@@ -88,9 +88,9 @@ func p7RandSteps(rng *rand.Rand) []corelib.NLSkillStep {
 // This includes the legacy "official" value which maps to "trusted".
 func randomTrustedTrustLevel(rng *rand.Rand) string {
 	levels := []string{
-		security.TrustLevelBuiltin,  // "builtin"
-		security.TrustLevelTrusted,  // "trusted"
-		"official",                  // legacy → normalizes to "trusted"
+		security.TrustLevelBuiltin, // "builtin"
+		security.TrustLevelTrusted, // "trusted"
+		"official",                 // legacy → normalizes to "trusted"
 	}
 	return levels[rng.Intn(len(levels))]
 }

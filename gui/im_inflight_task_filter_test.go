@@ -95,7 +95,7 @@ func TestInFlightMarker_NoToolCalls_NoMarker(t *testing.T) {
 		"谢谢",
 		"/new",
 		"你好",
-		"今天天气怎么样",  // Simple Q&A — LLM answers directly
+		"今天天气怎么样",     // Simple Q&A — LLM answers directly
 		"帮我解释一下什么是递归", // Explanation — LLM answers directly
 	}
 	// None of these would trigger setInFlightMarkerOnce() because the

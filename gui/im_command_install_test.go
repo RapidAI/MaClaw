@@ -23,18 +23,18 @@ func TestClassifyInstallIMCommandRequiresSlash(t *testing.T) {
 
 func TestClassifyInstallIMCommandSlash(t *testing.T) {
 	cases := map[string]imCommandKind{
-		"/skill":                              imCommandSkill,
-		"/skill list":                         imCommandSkill,
-		"/skill search pdf":                   imCommandSkill,
-		"/skill install owner/repo":           imCommandSkill,
-		"/mcp list":                           imCommandMCP,
-		"/mcp install ida-pro-mcp@mrexodia":   imCommandMCP,
-		"/plugin marketplace add a/b":         imCommandPlugin,
-		"/plugin add ida-pro-mcp@mrexodia":    imCommandPlugin,
-		"/plugin installed":                   imCommandPlugin,
-		"/PLUGIN add x@y":                     imCommandPlugin,
-		"maclaw-tui skill list":               imCommandSkill,
-		"maclaw-tui plugin marketplace list":  imCommandPlugin,
+		"/skill":                             imCommandSkill,
+		"/skill list":                        imCommandSkill,
+		"/skill search pdf":                  imCommandSkill,
+		"/skill install owner/repo":          imCommandSkill,
+		"/mcp list":                          imCommandMCP,
+		"/mcp install ida-pro-mcp@mrexodia":  imCommandMCP,
+		"/plugin marketplace add a/b":        imCommandPlugin,
+		"/plugin add ida-pro-mcp@mrexodia":   imCommandPlugin,
+		"/plugin installed":                  imCommandPlugin,
+		"/PLUGIN add x@y":                    imCommandPlugin,
+		"maclaw-tui skill list":              imCommandSkill,
+		"maclaw-tui plugin marketplace list": imCommandPlugin,
 	}
 	for text, want := range cases {
 		got := classifyImmediateIMCommand(text)

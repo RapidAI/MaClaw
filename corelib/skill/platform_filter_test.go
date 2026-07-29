@@ -129,3 +129,56 @@ func TestScanSkillDirIgnoresJSONDefinition(t *testing.T) {
 		t.Fatalf("skill.json should not be scanned as a skill definition: %+v", results)
 	}
 }
+
+func TestScanSkillDirRecognizesStandaloneMaclawAppPackage(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "pdf-translator-app")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "maclaw.app.json"), []byte(`{
+  "schema":"maclaw.app.v1",
+  "privateMarker":"x_maclaw_apps",
+  "app":{"id":"pdf-translator","name":"PDF Translator","description":"Translate PDFs"}
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(maclaw.app.json) error = %v", err)
+	}
+
+	skills := ScanSkillDir(root)
+	if len(skills) != 1 {
+		t.Fatalf("ScanSkillDir() returned %d skills, want 1: %#v", len(skills), skills)
+	}
+	got := skills[0]
+	if got.Name != "pdf-translator-app" || got.Type != "instruction" || len(got.Steps) != 0 {
+		t.Fatalf("scanned app-only package = %#v, want instruction-only container", got)
+	}
+	if got.Description != "Translate PDFs" || len(got.Triggers) != 2 {
+		t.Fatalf("app metadata not projected into scan entry: %#v", got)
+	}
+}
+
+func TestScanSkillDirKeepsExecutableMaclawAppWrapperExecutable(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "pdf-translator")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: pdf-translator\nsteps:\n  - action: bash\n    params:\n      command: echo translate\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "maclaw.app.json"), []byte(`{
+  "schema":"maclaw.app.v1",
+  "privateMarker":"x_maclaw_apps",
+  "app":{"id":"pdf-translator","name":"PDF Translator"}
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(maclaw.app.json) error = %v", err)
+	}
+
+	skills := ScanSkillDir(root)
+	if len(skills) != 1 {
+		t.Fatalf("ScanSkillDir() returned %d skills, want 1: %#v", len(skills), skills)
+	}
+	if skills[0].Type == "instruction" || len(skills[0].Steps) != 1 {
+		t.Fatalf("executable app wrapper was degraded to app-only container: %#v", skills[0])
+	}
+}

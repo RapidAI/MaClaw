@@ -981,6 +981,9 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
+		if cskill.IsInstructionOnlySkillType(s.Type) {
+			continue
+		}
 		if isShellBrowserAutomationSkill(s) {
 			continue
 		}
@@ -1153,7 +1156,7 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 	// Find sibling skills from the same publisher.
 	var siblings []string
 	for _, s := range h.getSkillExecutor().loadSkills() {
-		if s.Publisher == activePublisher && s.Name != activeSkillName && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive && !isShellBrowserAutomationSkillEntry(s) {
+		if s.Publisher == activePublisher && s.Name != activeSkillName && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive && !cskill.IsInstructionOnlySkillType(s.Type) && !isShellBrowserAutomationSkillEntry(s) {
 			siblings = append(siblings, s.Name)
 		}
 	}

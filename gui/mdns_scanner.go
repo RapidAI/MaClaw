@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"encoding/binary"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"log"
 	"net"
 	"strings"
@@ -268,7 +268,7 @@ func parseMDNSResponse(pkt []byte) []MDNSServiceEntry {
 	}
 
 	var srvRecords []srvInfo
-	aRecords := make(map[string]string)    // hostname → IP
+	aRecords := make(map[string]string)              // hostname → IP
 	txtRecords := make(map[string]map[string]string) // instanceName → kv
 
 	for i := 0; i < totalRR && offset < len(pkt); i++ {

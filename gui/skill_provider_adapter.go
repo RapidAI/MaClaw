@@ -1,6 +1,9 @@
 package main
 
-import "github.com/RapidAI/CodeClaw/corelib/tool"
+import (
+	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+)
 
 // skillExecutorProvider adapts SkillExecutor to the tool.SkillProvider interface,
 // enabling skill-aware tool routing (BM25 matching + enrichRunSkillDescription).
@@ -25,6 +28,12 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 			continue
 		}
 		if isShellBrowserAutomationSkill(s) {
+			continue
+		}
+		// MaClaw App-only packages are installable containers, not directly
+		// runnable skills. Keeping them out of this index prevents the agent from
+		// selecting a container that the runner must correctly reject.
+		if skill.IsKnowledgeSkillType(s.Type) || skill.IsInstructionOnlySkillType(s.Type) {
 			continue
 		}
 		out = append(out, tool.SkillSummary{

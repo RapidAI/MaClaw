@@ -807,10 +807,6 @@ export function IsNativeRoundedCorners() {
   return window['go']['main']['App']['IsNativeRoundedCorners']();
 }
 
-export function IsWebviewTransparent() {
-  return window['go']['main']['App']['IsWebviewTransparent']();
-}
-
 export function GetFramelessTopInset() {
   return window['go']['main']['App']['GetFramelessTopInset']();
 }
@@ -865,6 +861,10 @@ export function ListSkillsWithInstallStatus(arg1, arg2, arg3) {
 
 export function LoadConfig() {
   return window['go']['main']['App']['LoadConfig']();
+}
+
+export function LoadMaclawAppsPanelState() {
+  return window['go']['main']['App']['LoadMaclawAppsPanelState']();
 }
 
 export function LoadConfigForUI() {
@@ -3112,6 +3112,10 @@ export function SaveMaclawAppDefinitionForSkill(arg1, arg2) {
   return window['go']['main']['App']['SaveMaclawAppDefinitionForSkill'](arg1, arg2);
 }
 
+export function SaveMaclawAppsPanelState(arg1) {
+  return window['go']['main']['App']['SaveMaclawAppsPanelState'](arg1);
+}
+
 export function RecordMaclawAppRunEvidenceForSkill(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['RecordMaclawAppRunEvidenceForSkill'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
@@ -3505,7 +3509,10 @@ export const CreateVirtualRepositoryDirectory = (arg1, arg2) => window['go']['ma
 export const CheckoutVirtualRepositoryNode = (arg1, arg2) => window['go']['main']['App']['CheckoutVirtualRepositoryNode'](arg1, arg2);
 export const GetVirtualRepositoryDirectoryStats = (arg1, arg2) => window['go']['main']['App']['GetVirtualRepositoryDirectoryStats'](arg1, arg2);
 export const InspectVirtualRepository = (arg1) => window['go']['main']['App']['InspectVirtualRepository'](arg1);
+export const GetVirtualRepositoryChanges = (arg1) => window['go']['main']['App']['GetVirtualRepositoryChanges'](arg1);
 export const TestRemoteVirtualRepositoryConnection = (arg1) => window['go']['main']['App']['TestRemoteVirtualRepositoryConnection'](arg1);
+export const RepairRemoteVirtualRepositoryConnection = (arg1) => window['go']['main']['App']['RepairRemoteVirtualRepositoryConnection'](arg1);
+export const ResetRemoteVirtualRepositoryHostKey = (arg1) => window['go']['main']['App']['ResetRemoteVirtualRepositoryHostKey'](arg1);
 export const CreateRemoteVirtualRepositoryRoot = (arg1) => window['go']['main']['App']['CreateRemoteVirtualRepositoryRoot'](arg1);
 export const SaveRemoteVirtualRepository = (arg1) => window['go']['main']['App']['SaveRemoteVirtualRepository'](arg1);
 export const OpenRemoteVirtualRepository = (arg1) => window['go']['main']['App']['OpenRemoteVirtualRepository'](arg1);

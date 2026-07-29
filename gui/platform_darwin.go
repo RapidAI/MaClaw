@@ -33,16 +33,9 @@ func (a *App) IsNativeRoundedCorners() bool {
 	return true
 }
 
-// PlatformTransparencyFlags returns (WebviewIsTransparent, WindowIsTranslucent).
-// On macOS both are false to avoid NSVisualEffectView / Liquid Glass crashes
-// on macOS 15+ and 26+.
+// PlatformTransparencyFlags stays opaque to avoid macOS visual-effect crashes.
 func (a *App) PlatformTransparencyFlags() (webviewTransparent, windowTranslucent bool) {
 	return false, false
-}
-
-// IsWebviewTransparent returns false on macOS.
-func (a *App) IsWebviewTransparent() bool {
-	return false
 }
 
 // GetFramelessTopInset returns 0 on macOS — no DWM offset issue.

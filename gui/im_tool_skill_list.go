@@ -182,8 +182,6 @@ func (h *IMMessageHandler) toolSkillInfo(args map[string]interface{}) string {
 	return cskill.FormatSkillInspectReport(entry)
 }
 
-
 func isDownloadLikeSkillName(name, desc string) bool {
 	return cskill.LooksLikeGenericDownloadSkill(name, desc)
 }
-

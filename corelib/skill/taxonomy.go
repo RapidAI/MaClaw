@@ -38,9 +38,9 @@ const (
 // Importantly, this checks both current steps AND FallbackStep to determine
 // the skill's intrinsic nature. A solidified skill (craft_tool → bash with
 // FallbackStep) is still classified as craftable, because:
-//   1. It may revert to craft_tool at any time
-//   2. Its documentation context needs are the same as before solidification
-//   3. Oscillating between craftable/executable injection would confuse the LLM
+//  1. It may revert to craft_tool at any time
+//  2. Its documentation context needs are the same as before solidification
+//  3. Oscillating between craftable/executable injection would confuse the LLM
 func ClassifySkill(skill *corelib.NLSkillEntry) SkillTaxonomy {
 	if len(skill.Steps) == 0 {
 		return TaxonomyKnowledge

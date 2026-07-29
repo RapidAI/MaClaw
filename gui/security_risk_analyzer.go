@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/security"
 	"encoding/json"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"os"
 	"regexp"
 	"strings"

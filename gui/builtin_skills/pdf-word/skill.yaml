@@ -11,12 +11,10 @@ requires:
         - pymupdf
         - python-docx
 steps:
-    - action: bash
-      params:
-        command: python -m pip install pymupdf python-docx --quiet 2>&1
-        timeout: 60000
-      continue_on_error: true
-
+    # The runner resolves requires.python before launching steps, installs into
+    # its managed runtime, and reports that preparation through run status.
+    # Do not install with the system `python` here: it duplicates work on every
+    # run and may target a different interpreter than the converter receives.
     - action: bash
       params:
         command: python "{baseDir}/scripts/convert.py" --input "{{input}}" --output "{{output}}"

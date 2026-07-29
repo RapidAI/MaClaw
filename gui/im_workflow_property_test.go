@@ -20,7 +20,7 @@ import (
 
 // classificationLayers tracks which classification layers were invoked.
 type classificationLayers struct {
-	l1KeywordCalled atomic.Bool
+	l1KeywordCalled   atomic.Bool
 	l2EmbeddingCalled atomic.Bool
 	l3TreeCalled      atomic.Bool
 }

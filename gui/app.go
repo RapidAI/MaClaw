@@ -101,9 +101,13 @@ type App struct {
 	// virtualRepositorySyncScheduleMu (same lock as the retry timer).
 	virtualRepositorySyncPhase         string
 	virtualRepositorySyncStatusMessage string
-	virtualRepositorySyncAttempt       int
-	virtualRepositorySyncNextRetryAt   time.Time
-	virtualRepositorySyncTimerBlocksUI bool
+	// virtualRepositorySyncRepairRepositoryID identifies the remote repository
+	// that caused a recoverable automatic-sync failure. It is exposed as
+	// structured status metadata so the UI never has to parse an error string.
+	virtualRepositorySyncRepairRepositoryID string
+	virtualRepositorySyncAttempt            int
+	virtualRepositorySyncNextRetryAt        time.Time
+	virtualRepositorySyncTimerBlocksUI      bool
 
 	// Managers to reduce struct complexity
 	managers                           *AppManagers
@@ -270,54 +274,54 @@ type App struct {
 	// AppConfig). Writers always publish a fresh heap snapshot via
 	// publishConfigLocked; invalidation stores nil.
 	// Disk I/O uses configDiskMu and must not hold configMu.
-	configMu                          sync.Mutex
-	configSnap                        atomic.Pointer[corelib.AppConfig]
+	configMu   sync.Mutex
+	configSnap atomic.Pointer[corelib.AppConfig]
 	// nlSkillsSnap holds the skill table separately so config snaps and token
 	// patches stay small. Always published together with configSnap.
-	nlSkillsSnap                      atomic.Pointer[[]corelib.NLSkillEntry]
+	nlSkillsSnap atomic.Pointer[[]corelib.NLSkillEntry]
 	// configCache / configCacheValid are write-side mirrors kept under configMu
 	// for mutation helpers and for unit tests that seed App{} composites.
 	// Prefer publishedConfig() / publishConfigLocked for all production paths.
-	configCache                       corelib.AppConfig
-	configCacheValid                  bool
-	configDiskMu                      sync.Mutex         // serializes config.json writes
+	configCache      corelib.AppConfig
+	configCacheValid bool
+	configDiskMu     sync.Mutex // serializes config.json writes
 	// pendingDataDirReset is set under configMu when the effective data dir
 	// changes; drainPendingDataDirReset must run only after releasing configMu
 	// so DB/memory teardown never blocks LoadConfig readers.
-	pendingDataDirReset               atomic.Bool
+	pendingDataDirReset atomic.Bool
 	// pendingConfigDiskWrite is set when loadConfigLocked produced an in-memory
 	// config that must be written after releasing configMu (first-run bootstrap,
 	// legacy migration materialize, pet-field migration). Unified drain is
 	// runConfigPostUnlock → drainPendingConfigDiskWrite.
-	pendingConfigDiskWrite            atomic.Bool
-	effectiveBaseDir                  atomic.Value       // stores string
-	tokenUsageMu                      sync.Mutex         // guards AccumulateLLMTokenUsage + pending flush
-	tokenUsagePending                 map[string]*pendingLLMTokenDelta
-	tokenUsageFlushScheduled          bool
-	ssoPolling                        *ssoPollingSession // active embedded SSO polling session
-	ssoPollingMu                      sync.Mutex         // guards ssoPolling
-	interactionInfraOnce              sync.Once          // guards ensureInteractionInfra initialization
-	interactionInfraDone              atomic.Bool
-	hubClientEnsureMu                 sync.Mutex
-	aiAssistantReadyAt                atomic.Int64
-	aiAssistantFirstChatLogged        atomic.Bool
-	docGenerator                      *swarm.SwarmDocGenerator        // cached PDF doc generator
-	workflowEngine                    *workflow.WorkflowEngine        // TEST ONLY: never instantiated in production. Always nil at runtime.
-	workflowV2                        *workflowV2State                // V2 workflow engine (clean state machine)
-	workflowArtifactSaver             *deferredArtifactSaver          // shared artifact saver for OwnerID injection
-	workflowDisabled                  atomic.Bool                     // true when user disables workflow in settings; checked by getWorkflowEngine()
-	steeringStore                     *steering.Store                 // declarative rule injection (corelib/steering)
-	codeEventEmitter                  *CodeEventEmitter               // emits code file events to frontend for code preview panel
-	codingKnowledgeStore              *knowledge.CodingKnowledgeStore // independent coding experience store (coding_knowledge.db)
-	deepCrawlMu                       sync.Mutex                      // guards deepCrawlCancel
-	deepCrawlCancel                   context.CancelFunc              // cancels active deep crawl session
-	deepCrawlCtx                      context.Context                 // active deep crawl context (used to identify ownership)
-	deepCrawlMode                     string                          // active deep crawl owner: crawl or preview
-	floatingAssistant                 *FloatingAssistantManager
-	floatingAssistantMu               sync.Mutex
-	agentViewEmissionSeq              atomic.Int64
-	agentViewOpenMu                   sync.Mutex
-	agentViewOpen                     map[string]agentViewOpenRecord // view_id → open revision/schema
+	pendingConfigDiskWrite     atomic.Bool
+	effectiveBaseDir           atomic.Value // stores string
+	tokenUsageMu               sync.Mutex   // guards AccumulateLLMTokenUsage + pending flush
+	tokenUsagePending          map[string]*pendingLLMTokenDelta
+	tokenUsageFlushScheduled   bool
+	ssoPolling                 *ssoPollingSession // active embedded SSO polling session
+	ssoPollingMu               sync.Mutex         // guards ssoPolling
+	interactionInfraOnce       sync.Once          // guards ensureInteractionInfra initialization
+	interactionInfraDone       atomic.Bool
+	hubClientEnsureMu          sync.Mutex
+	aiAssistantReadyAt         atomic.Int64
+	aiAssistantFirstChatLogged atomic.Bool
+	docGenerator               *swarm.SwarmDocGenerator        // cached PDF doc generator
+	workflowEngine             *workflow.WorkflowEngine        // TEST ONLY: never instantiated in production. Always nil at runtime.
+	workflowV2                 *workflowV2State                // V2 workflow engine (clean state machine)
+	workflowArtifactSaver      *deferredArtifactSaver          // shared artifact saver for OwnerID injection
+	workflowDisabled           atomic.Bool                     // true when user disables workflow in settings; checked by getWorkflowEngine()
+	steeringStore              *steering.Store                 // declarative rule injection (corelib/steering)
+	codeEventEmitter           *CodeEventEmitter               // emits code file events to frontend for code preview panel
+	codingKnowledgeStore       *knowledge.CodingKnowledgeStore // independent coding experience store (coding_knowledge.db)
+	deepCrawlMu                sync.Mutex                      // guards deepCrawlCancel
+	deepCrawlCancel            context.CancelFunc              // cancels active deep crawl session
+	deepCrawlCtx               context.Context                 // active deep crawl context (used to identify ownership)
+	deepCrawlMode              string                          // active deep crawl owner: crawl or preview
+	floatingAssistant          *FloatingAssistantManager
+	floatingAssistantMu        sync.Mutex
+	agentViewEmissionSeq       atomic.Int64
+	agentViewOpenMu            sync.Mutex
+	agentViewOpen              map[string]agentViewOpenRecord // view_id → open revision/schema
 
 	// IM audit store (SQLite-backed IM message audit for review/export).
 	imAuditStore   *IMAuditStore
@@ -4802,6 +4806,7 @@ func sanitizeLegacyCodingToolSelection(data []byte) []byte {
 	}
 	return out
 }
+
 // LoadConfig returns the current app config. All access goes through the
 // unified config transaction protocol in config_txn.go (read snapshot +
 // runConfigPostUnlock). Callers must not take configMu themselves for reads.

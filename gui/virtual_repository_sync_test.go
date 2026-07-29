@@ -456,6 +456,22 @@ func TestVirtualRepositoryBackgroundSyncRetryWaitDoesNotBlockManualSync(t *testi
 	}
 }
 
+func TestVirtualRepositoryBackgroundSyncStatusIdentifiesRepairableRemoteRepository(t *testing.T) {
+	app := &App{}
+	repairErr := &virtualRepositorySyncRemoteRepairError{
+		RepositoryID: "vrepo_remote_1",
+		Cause:        errors.New("read virtual repository \"same-name\" for sync: SSH host key is not trusted"),
+	}
+	app.scheduleVirtualRepositorySyncRetryAfter(time.Hour, 1, repairErr)
+	status := app.virtualRepositoryBackgroundSyncStatusSnapshot()
+	if status.RepairRepositoryID != "vrepo_remote_1" {
+		t.Fatalf("repair repository id = %q, want vrepo_remote_1", status.RepairRepositoryID)
+	}
+	if status.Message != repairErr.Error() {
+		t.Fatalf("status message = %q, want wrapped error preserved", status.Message)
+	}
+}
+
 func TestVirtualRepositoryBackgroundSyncStopsAfterMaxAttempts(t *testing.T) {
 	app := &App{}
 	app.scheduleVirtualRepositorySyncRetryAfter(time.Hour, virtualRepositorySyncMaxAutoAttempts, errors.New("hub returned 503"))

@@ -292,14 +292,14 @@ type maclawAppInstallRegistry struct {
 }
 
 type maclawAppApprovalInstance struct {
-	AppID               string                      `json:"app_id"`
-	AppName             string                      `json:"app_name,omitempty"`
-	BlueprintID         string                      `json:"blueprint_id,omitempty"`
-	DatasetID           string                      `json:"dataset_id,omitempty"`
-	ObjectRole          string                      `json:"object_role,omitempty"`
-	ApprovalObjectRole  string                      `json:"approval_object_role,omitempty"`
-	ApprovalEvent       string                      `json:"approval_event,omitempty"`
-	ApprovalWorkflowID  string                      `json:"approval_workflow_id,omitempty"`
+	AppID              string `json:"app_id"`
+	AppName            string `json:"app_name,omitempty"`
+	BlueprintID        string `json:"blueprint_id,omitempty"`
+	DatasetID          string `json:"dataset_id,omitempty"`
+	ObjectRole         string `json:"object_role,omitempty"`
+	ApprovalObjectRole string `json:"approval_object_role,omitempty"`
+	ApprovalEvent      string `json:"approval_event,omitempty"`
+	ApprovalWorkflowID string `json:"approval_workflow_id,omitempty"`
 	// ApprovalEngine is the authority for node advancement: "hub" or "local".
 	// hub = Hub WorkflowExecutor is source of truth; local = desktop-only projection.
 	ApprovalEngine string `json:"approval_engine,omitempty"`
@@ -396,24 +396,24 @@ type maclawAppApprovalDataSrvSyncInput struct {
 }
 
 type MaclawAppApprovalWorkflowStartInput struct {
-	AppID               string         `json:"app_id"`
-	AppName             string         `json:"app_name,omitempty"`
-	DatasetID           string         `json:"dataset_id,omitempty"`
-	ObjectRole          string         `json:"object_role,omitempty"`
-	BlueprintID         string         `json:"blueprint_id,omitempty"`
-	RecordID            string         `json:"record_id"`
-	ApprovalID          string         `json:"approval_id,omitempty"`
-	InstanceID          string         `json:"instance_id,omitempty"`
-	ContinueFromID      string         `json:"continue_from_instance_id,omitempty"`
-	Title               string         `json:"title,omitempty"`
-	Applicant           string         `json:"applicant,omitempty"`
-	Owner               string         `json:"owner,omitempty"`
-	Approver            string         `json:"approver,omitempty"`
-	CurrentAssignee     string         `json:"current_assignee,omitempty"`
-	CurrentAssigneeType string         `json:"current_assignee_type,omitempty"`
-	ApprovalEvent       string         `json:"approval_event,omitempty"`
-	WorkflowSkillID     string         `json:"workflow_skill_id,omitempty"`
-	WorkflowVersion     string         `json:"workflow_version,omitempty"`
+	AppID               string `json:"app_id"`
+	AppName             string `json:"app_name,omitempty"`
+	DatasetID           string `json:"dataset_id,omitempty"`
+	ObjectRole          string `json:"object_role,omitempty"`
+	BlueprintID         string `json:"blueprint_id,omitempty"`
+	RecordID            string `json:"record_id"`
+	ApprovalID          string `json:"approval_id,omitempty"`
+	InstanceID          string `json:"instance_id,omitempty"`
+	ContinueFromID      string `json:"continue_from_instance_id,omitempty"`
+	Title               string `json:"title,omitempty"`
+	Applicant           string `json:"applicant,omitempty"`
+	Owner               string `json:"owner,omitempty"`
+	Approver            string `json:"approver,omitempty"`
+	CurrentAssignee     string `json:"current_assignee,omitempty"`
+	CurrentAssigneeType string `json:"current_assignee_type,omitempty"`
+	ApprovalEvent       string `json:"approval_event,omitempty"`
+	WorkflowSkillID     string `json:"workflow_skill_id,omitempty"`
+	WorkflowVersion     string `json:"workflow_version,omitempty"`
 	// HubWorkflowID is the published Hub workflow graph id (source of truth for engine=hub).
 	HubWorkflowID string `json:"hub_workflow_id,omitempty"`
 	// HubInstanceID / HubNodeID bind to an existing Hub instance (skip re-trigger when set).

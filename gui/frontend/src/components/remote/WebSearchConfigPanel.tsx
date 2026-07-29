@@ -12,11 +12,22 @@ type SavePhase = "idle" | "testing" | "saving";
 type Props = { lang?: string };
 
 function formatProviderTestError(message: string, provider: WebSearchProvider | null | undefined, t: (en: string, zhHans: string, zhHant?: string) => string) {
-    if (provider?.type === "duckduckgo" && message.includes("human verification challenge")) {
+    if (provider?.type !== "duckduckgo") {
+        return message;
+    }
+    const normalized = message.toLowerCase();
+    if (normalized.includes("human verification challenge")) {
         return t(
             "DuckDuckGo blocked this request with a human verification challenge. The provider is not usable from the current network/IP right now.",
             "DuckDuckGo 返回了人工验证挑战。当前网络/IP 下这个 provider 现在不可用。",
             "DuckDuckGo 回傳了人工驗證挑戰。目前網路/IP 下這個 provider 現在不可用。",
+        );
+    }
+    if (normalized.includes("no parseable results")) {
+        return t(
+            "DuckDuckGo responded, but its result page could not be read. This is usually a temporary page-format or network/IP restriction; please try again later or select another provider.",
+            "DuckDuckGo 已响应，但结果页无法解析。这通常是临时页面格式变化或当前网络/IP 限制；请稍后重试或改用其他搜索引擎。",
+            "DuckDuckGo 已回應，但結果頁無法解析。這通常是暫時頁面格式變化或目前網路/IP 限制；請稍後重試或改用其他搜尋引擎。",
         );
     }
     return message;

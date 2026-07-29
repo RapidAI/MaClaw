@@ -513,6 +513,15 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 			}
 			installed, err := a.ensureHubSkillInstalled(ctx, *item, dep.CapabilityVersionKey)
 			if err != nil {
+				// A managed deployment can outlive its package on the Hub (for
+				// example after an administrator deletes or republishes a skill).
+				// This is not a transient download failure, so do not make every
+				// heartbeat retry it and flood the application log.
+				if isManagedSkillPackageNotFoundError(err) {
+					a.capabilitySyncPermanentSkips.Store(item.ID, time.Now())
+					log.Printf("[capability-market] managed capability %s permanently skipped: skill package %q no longer exists on hub", item.ID, firstCapabilityNonEmpty(item.CapabilityID, item.ID))
+					continue
+				}
 				status.Errors = append(status.Errors, err.Error())
 				continue
 			}
@@ -952,6 +961,19 @@ func skillInstallStatus(installed bool) string {
 		return "installed"
 	}
 	return "missing"
+}
+
+// isManagedSkillPackageNotFoundError identifies the Hub's explicit, permanent
+// package-not-found response. It deliberately does not treat arbitrary 404s as
+// permanent: those can still indicate a mismatched or temporarily unavailable
+// marketplace endpoint and must retain the normal retry/circuit-breaker flow.
+func isManagedSkillPackageNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "skill_not_found") ||
+		strings.Contains(lower, "skill package not found")
 }
 
 func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilitySummary, metadata map[string]any, versionKey string, originSource string) (bool, error) {

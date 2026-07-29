@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -240,6 +241,12 @@ type skillRunLiveOutput struct {
 }
 
 const skillRunLiveOutputMaxLines = 20
+const skillRunLiveOutputMaxLineRunes = 1024
+
+// Retain enough subprocess output for diagnostics without allowing a noisy CLI
+// (for example a dependency installer in verbose mode) to grow the desktop
+// process without bound. Final UI output is already much shorter than this.
+const skillStepOutputBufferLimit = 256 * 1024
 
 func newSkillRunLiveOutput() *skillRunLiveOutput {
 	return &skillRunLiveOutput{lines: make([]string, 0, skillRunLiveOutputMaxLines)}
@@ -247,6 +254,7 @@ func newSkillRunLiveOutput() *skillRunLiveOutput {
 
 // Append adds a line to the ring buffer (goroutine-safe).
 func (lo *skillRunLiveOutput) Append(line string) {
+	line = truncateRunesMarker(line, skillRunLiveOutputMaxLineRunes, "...")
 	lo.mu.Lock()
 	defer lo.mu.Unlock()
 	lo.total++
@@ -296,6 +304,87 @@ func (lo *skillRunLiveOutput) Total() int {
 	lo.mu.Lock()
 	defer lo.mu.Unlock()
 	return lo.total
+}
+
+// limitedSkillOutputBuffer records a bounded prefix of subprocess output while
+// still reporting successful writes. That lets pipe readers keep draining the
+// child even after the diagnostic buffer is full.
+type limitedSkillOutputBuffer struct {
+	data      bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newLimitedSkillOutputBuffer(limit int) *limitedSkillOutputBuffer {
+	return &limitedSkillOutputBuffer{limit: limit}
+}
+
+func (b *limitedSkillOutputBuffer) Write(p []byte) (int, error) {
+	original := len(p)
+	remaining := b.limit - b.data.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			b.truncated = true
+			p = p[:remaining]
+		}
+		_, _ = b.data.Write(p)
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return original, nil
+}
+
+func (b *limitedSkillOutputBuffer) Len() int { return b.data.Len() }
+
+func (b *limitedSkillOutputBuffer) WriteString(value string) (int, error) {
+	return b.Write([]byte(value))
+}
+
+func (b *limitedSkillOutputBuffer) WriteByte(value byte) error {
+	_, err := b.Write([]byte{value})
+	return err
+}
+
+func (b *limitedSkillOutputBuffer) String() string {
+	value := b.data.String()
+	if b.truncated {
+		return value + "\n[output truncated]"
+	}
+	return value
+}
+
+func (b *limitedSkillOutputBuffer) sanitizeUTF8() {
+	raw := b.data.String()
+	if utf8.ValidString(raw) {
+		return
+	}
+	b.data.Reset()
+	b.data.WriteString(strings.ToValidUTF8(raw, ""))
+}
+
+// streamSkillOutput continuously drains one process stream. ReadSlice avoids
+// Scanner's token-size ceiling: a CLI that emits a huge line must not stop
+// being drained and deadlock the child process.
+func streamSkillOutput(reader io.Reader, output *limitedSkillOutputBuffer, liveOut *skillRunLiveOutput) {
+	buffered := bufio.NewReaderSize(reader, 32*1024)
+	for {
+		fragment, err := buffered.ReadSlice('\n')
+		if len(fragment) > 0 {
+			_, _ = output.Write(fragment)
+			if liveOut != nil {
+				if text := strings.TrimSpace(string(fragment)); text != "" {
+					liveOut.Append(text)
+				}
+			}
+		}
+		if err == nil || errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if !errors.Is(err, io.EOF) {
+			log.Printf("[skill-runner] live output read failed: %v", err)
+		}
+		return
+	}
 }
 
 // NewSkillRunner creates a SkillRunner.
@@ -544,7 +633,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 
 	// Preflight: refuse to start skills that still have zero GUI-supported steps
 	// after normalization (prevents install→run loops on broken Hub packages).
-	if compat := cskill.AssessRunnerCompatibility(target, cskill.RunnerBackendGUI); !compat.Runnable && len(target.Steps) > 0 {
+	if compat := cskill.AssessRunnerCompatibility(target, cskill.RunnerBackendGUI); !compat.Runnable && len(target.Steps) > 0 && !cskill.IsInstructionOnlySkillType(target.Type) {
 		hint := skillRunBlockedDownloadHint(target)
 		msg := fmt.Sprintf("skill %q is not runnable on GUI runner: %s", skillName, cskill.FormatRunnerCompatReport(compat))
 		if hint != "" {
@@ -580,7 +669,7 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		return "", browserAutomationSkillRejectedError(skillName)
 	}
 
-	if cskill.IsKnowledgeSkillType(target.Type) {
+	if cskill.IsKnowledgeSkillType(target.Type) || cskill.IsInstructionOnlySkillType(target.Type) {
 		return "", fmt.Errorf("%s", cskill.FormatNoExecutableStepsMessage(skillName, target, cskill.RunnerBackendGUI))
 	}
 
@@ -1006,7 +1095,10 @@ func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 	// This gives the polling frontend real-time visibility into what the skill
 	// is doing without waiting for step completion.
 	if liveOut != nil && cp.Status == skillRunStatusRunning {
-		if snippet := liveOut.Snippet(); snippet != "" && cp.Summary.LastOutputSnippet == "" {
+		// A preceding completed pipeline step can already have populated
+		// LastOutputSnippet. While a later step is running, its live output is
+		// the current status and must take precedence over that stale result.
+		if snippet := liveOut.Snippet(); snippet != "" {
 			cp.Summary.LastOutputSnippet = snippet
 		}
 		if lines := liveOut.LastLines(10); len(lines) > 0 {
@@ -4476,7 +4568,8 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	// Live output streaming: if a liveOutput ring buffer is provided via params,
 	// tee stdout/stderr to both the full buffer and the live tail for real-time
 	// progress visibility during long-running skill steps.
-	var stdout, stderr bytes.Buffer
+	stdout := newLimitedSkillOutputBuffer(skillStepOutputBufferLimit)
+	stderr := newLimitedSkillOutputBuffer(skillStepOutputBufferLimit)
 	var liveOut *skillRunLiveOutput
 	if lo, ok := params["_live_output"].(*skillRunLiveOutput); ok && lo != nil {
 		liveOut = lo
@@ -4490,43 +4583,22 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			log.Printf("[skill-runner] live output pipe failed (stdout_err=%v stderr_err=%v), falling back to buffer mode", pipeErr1, pipeErr2)
 			liveOut = nil
 		} else {
-			var wg sync.WaitGroup
-			wg.Add(2)
-			go func() {
-				defer wg.Done()
-				scanner := bufio.NewScanner(stdoutPipe)
-				scanner.Buffer(make([]byte, 256*1024), 256*1024)
-				for scanner.Scan() {
-					line := scanner.Text()
-					stdout.WriteString(line)
-					stdout.WriteByte('\n')
-					trimmed := strings.TrimSpace(line)
-					if trimmed != "" {
-						liveOut.Append(trimmed)
-					}
-				}
-			}()
-			go func() {
-				defer wg.Done()
-				scanner := bufio.NewScanner(stderrPipe)
-				scanner.Buffer(make([]byte, 256*1024), 256*1024)
-				for scanner.Scan() {
-					line := scanner.Text()
-					stderr.WriteString(line)
-					stderr.WriteByte('\n')
-					trimmed := strings.TrimSpace(line)
-					if trimmed != "" {
-						liveOut.Append(trimmed)
-					}
-				}
-			}()
-
 			startTime := time.Now()
 			runID, _ := params["_skill_run_id"].(string)
 			ownerID, _ := params["_skill_owner_id"].(string)
 			log.Printf("[skill-runner] bash exec: run=%s owner=%q shell=%s workDir=%s timeout=%ds live_output=true", strings.TrimSpace(runID), strings.TrimSpace(ownerID), filepath.Base(shellName), workDir, timeout)
 			err := cmd.Start()
 			if err == nil {
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					streamSkillOutput(stdoutPipe, stdout, liveOut)
+				}()
+				go func() {
+					defer wg.Done()
+					streamSkillOutput(stderrPipe, stderr, liveOut)
+				}()
 				// Monitor stepCtx for timeout/cancellation — kill the process tree
 				// so pipe readers get EOF and wg.Wait() unblocks.
 				done := make(chan struct{})
@@ -4543,18 +4615,24 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 				if stepCtx.Err() != nil && err == nil {
 					err = stepCtx.Err()
 				}
+			} else {
+				// StdoutPipe/StderrPipe allocate parent-side descriptors before
+				// Start. Close them when launching the shell fails so repeated
+				// missing/broken CLI attempts cannot leak handles.
+				_ = stdoutPipe.Close()
+				_ = stderrPipe.Close()
 			}
 			elapsed := time.Since(startTime)
-			sanitizeUTF8Buffer(&stdout)
-			sanitizeUTF8Buffer(&stderr)
+			stdout.sanitizeUTF8()
+			stderr.sanitizeUTF8()
 			isTimeout := stepCtx.Err() == context.DeadlineExceeded
-			return formatBashStepResult(command, shellName, shellArgs, tmpScript, workDir, timeout, elapsed, &stdout, &stderr, err, isTimeout)
+			return formatBashStepResult(command, shellName, shellArgs, tmpScript, workDir, timeout, elapsed, stdout, stderr, err, isTimeout)
 		}
 	}
 
 	// Non-streaming fallback (no live output buffer, or pipe creation failed)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	startTime := time.Now()
 	runID, _ := params["_skill_run_id"].(string)
@@ -4568,15 +4646,15 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 
 	// Sanitize invalid UTF-8 sequences (e.g. GBK remnants from cmd.exe on
 	// Chinese Windows) so garbled replacement characters don't leak to the UI.
-	sanitizeUTF8Buffer(&stdout)
-	sanitizeUTF8Buffer(&stderr)
+	stdout.sanitizeUTF8()
+	stderr.sanitizeUTF8()
 
 	isTimeout := stepCtx.Err() == context.DeadlineExceeded
-	return formatBashStepResult(command, shellName, shellArgs, tmpScript, workDir, timeout, elapsed, &stdout, &stderr, err, isTimeout)
+	return formatBashStepResult(command, shellName, shellArgs, tmpScript, workDir, timeout, elapsed, stdout, stderr, err, isTimeout)
 }
 
 // formatBashStepResult builds the final output string and error for a bash step.
-func formatBashStepResult(command, shellName string, shellArgs []string, tmpScript, workDir string, timeout int, elapsed time.Duration, stdout, stderr *bytes.Buffer, err error, isTimeout bool) (string, error) {
+func formatBashStepResult(command, shellName string, shellArgs []string, tmpScript, workDir string, timeout int, elapsed time.Duration, stdout, stderr *limitedSkillOutputBuffer, err error, isTimeout bool) (string, error) {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("shell: %s\n", filepath.Base(shellName)))
 	b.WriteString(fmt.Sprintf("elapsed: %s\n", elapsed.Round(time.Millisecond)))

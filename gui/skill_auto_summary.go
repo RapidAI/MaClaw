@@ -476,6 +476,7 @@ func deniedSecurityLabels(checker *SecurityPolicyChecker, skillName string, labe
 //   - description longer than 500 bytes is truncated (not rejected)
 //   - steps requiring security labels the user/policy denies are stripped first; only if
 //     zero steps remain is validation failed (background auto-summary cannot pop UI)
+//
 // If the name conflicts with existingNames, a timestamp suffix is appended.
 // Returns the (possibly modified) draft and nil error on success.
 func ValidateSkillDraft(

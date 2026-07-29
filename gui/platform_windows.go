@@ -134,34 +134,16 @@ func isWindows11() bool {
 }
 
 // IsNativeRoundedCorners returns true when the OS provides native rounded
-// corners for frameless windows (Windows 11+).  The frontend reads this to
-// decide whether to apply CSS border-radius on #App.
+// corners for frameless windows (Windows 11+). The frontend reads this to
+// remove custom window decorations when the OS owns the frame.
 func (a *App) IsNativeRoundedCorners() bool {
 	return isWindows11()
 }
 
-// PlatformTransparencyFlags returns (WebviewIsTransparent, WindowIsTranslucent)
-// for the Wails window options.
-//
-// Windows 10: both true — the CSS border-radius on #App clips to true
-// transparency, eliminating corner artifacts regardless of theme.
-//
-// Windows 11: both false — DWM provides native rounded corners; transparent
-// webview is unnecessary and WindowIsTranslucent triggers the slow BlurBehind
-// effect on early Win11 builds (22000–22620).
+// PlatformTransparencyFlags returns the Wails WebView/window transparency
+// options. An opaque shell is required for reliable Win10 frameless rendering.
 func (a *App) PlatformTransparencyFlags() (webviewTransparent, windowTranslucent bool) {
-	if isWindows11() {
-		return false, false
-	}
-	return true, true
-}
-
-// IsWebviewTransparent returns true when the webview background is transparent.
-// The frontend uses this to set html/body background to transparent so the CSS
-// border-radius on #App clips to true transparency (no corner artifacts).
-// On Windows 11 this returns false because DWM handles rounding natively.
-func (a *App) IsWebviewTransparent() bool {
-	return !isWindows11()
+	return false, false
 }
 
 // GetFramelessTopInset returns the number of pixels that DWM's invisible
@@ -170,48 +152,77 @@ func (a *App) IsWebviewTransparent() bool {
 // On some Windows 10 builds (notably Enterprise/LTSC), even with
 // DisableFramelessWindowDecorations = true, DWM still reserves the
 // non-client frame area at the top, offsetting the webview content
-// downward.  The CSS overflow:hidden + border-radius on #App then clips
-// the top of the custom title bar.
+// downward. The frontend reserves that space so the custom title bar stays
+// within the usable client area.
 //
 // The DWM non-client top inset for a captionless window is
 // SM_CYFRAME + SM_CXPADDEDBORDER (typically 7–8 px at 100 % DPI).
 // On unaffected Win10 systems this adds a subtle top gap; on affected
 // ones it compensates for the DWM offset.  On Windows 11 it returns 0.
 //
-// Result is cached: OS metrics do not change at runtime.
+// The value is derived from the current window DPI. It must not be cached:
+// moving a per-monitor-DPI-aware window between displays changes the physical
+// non-client metrics while the frontend still needs a CSS-pixel inset.
 func (a *App) GetFramelessTopInset() int {
-	return framelessTopInsetCached()
+	return framelessTopInsetForWindow(findMainWindowHWND())
 }
 
 var (
-	framelessTopInsetOnce  sync.Once
-	framelessTopInsetValue int
+	framelessInsetUser32            = syscall.NewLazyDLL("user32.dll")
+	procGetDpiForWindowInset        = framelessInsetUser32.NewProc("GetDpiForWindow")
+	procGetSystemMetricsForDpiInset = framelessInsetUser32.NewProc("GetSystemMetricsForDpi")
+	procGetSystemMetricsInset       = framelessInsetUser32.NewProc("GetSystemMetrics")
 )
 
-func framelessTopInsetCached() int {
-	framelessTopInsetOnce.Do(func() {
-		if isWindows11() {
-			framelessTopInsetValue = 0
-			return
+const (
+	smCYFrameInset        = 33 // SM_CYFRAME — sizing border height
+	smCXPaddedBorderInset = 92 // SM_CXPADDEDBORDER — DWM padded border
+	defaultWindowsDPI     = 96
+)
+
+func framelessTopInsetForWindow(hwnd uintptr) int {
+	if isWindows11() {
+		return 0
+	}
+
+	dpi := uint32(defaultWindowsDPI)
+	if hwnd != 0 && procGetDpiForWindowInset.Find() == nil {
+		if currentDPI, _, _ := procGetDpiForWindowInset.Call(hwnd); currentDPI != 0 {
+			dpi = uint32(currentDPI)
 		}
-		user32 := syscall.NewLazyDLL("user32.dll")
-		getSystemMetrics := user32.NewProc("GetSystemMetrics")
-		if getSystemMetrics.Find() != nil {
-			framelessTopInsetValue = 0
-			return
-		}
-		const smCYFrame = 33        // SM_CYFRAME — sizing border height
-		const smCXPaddedBorder = 92 // SM_CXPADDEDBORDER — DWM padded border
-		cyFrame, _, _ := getSystemMetrics.Call(uintptr(smCYFrame))
-		cxPadded, _, _ := getSystemMetrics.Call(uintptr(smCXPaddedBorder))
-		inset := int(cyFrame) + int(cxPadded)
-		if inset < 0 || inset > 16 {
-			framelessTopInsetValue = 0
-			return
-		}
-		framelessTopInsetValue = inset
-	})
-	return framelessTopInsetValue
+	}
+
+	var cyFrame, cxPadded uintptr
+	if procGetSystemMetricsForDpiInset.Find() == nil {
+		cyFrame, _, _ = procGetSystemMetricsForDpiInset.Call(uintptr(smCYFrameInset), uintptr(dpi))
+		cxPadded, _, _ = procGetSystemMetricsForDpiInset.Call(uintptr(smCXPaddedBorderInset), uintptr(dpi))
+	} else if procGetSystemMetricsInset.Find() == nil {
+		// Windows 10 before 1607 has no per-DPI metrics API. The process metrics
+		// are the most accurate fallback available on those builds.
+		cyFrame, _, _ = procGetSystemMetricsInset.Call(uintptr(smCYFrameInset))
+		cxPadded, _, _ = procGetSystemMetricsInset.Call(uintptr(smCXPaddedBorderInset))
+	} else {
+		return 0
+	}
+
+	return normalizeFramelessTopInset(int(cyFrame)+int(cxPadded), int(dpi))
+}
+
+// normalizeFramelessTopInset converts a physical non-client metric to CSS
+// pixels. WebView2 applies the same DPI scale, so passing physical pixels to
+// CSS would over-compensate at 125%/150% scaling.
+func normalizeFramelessTopInset(physicalInset, dpi int) int {
+	if physicalInset <= 0 {
+		return 0
+	}
+	if dpi <= 0 {
+		dpi = defaultWindowsDPI
+	}
+	inset := (physicalInset*defaultWindowsDPI + dpi/2) / dpi
+	if inset < 0 || inset > 16 {
+		return 0
+	}
+	return inset
 }
 
 func (a *App) platformStartup() {

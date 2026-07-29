@@ -57,6 +57,38 @@ type virtualRepositorySyncState struct {
 	LastSyncedAt  time.Time            `json:"last_synced_at,omitempty"`
 	Tombstones    map[string]time.Time `json:"tombstones,omitempty"`
 }
+
+// virtualRepositorySyncRemoteRepairError preserves the repository identity
+// while adding user-readable sync context. The background scheduler later
+// exposes only the ID to the UI; the wrapped cause remains available for logs
+// and retry classification.
+type virtualRepositorySyncRemoteRepairError struct {
+	RepositoryID string
+	Cause        error
+}
+
+func (e *virtualRepositorySyncRemoteRepairError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "remote virtual repository needs connection repair"
+	}
+	return e.Cause.Error()
+}
+
+func (e *virtualRepositorySyncRemoteRepairError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func virtualRepositorySyncRepairRepositoryID(err error) string {
+	var repair *virtualRepositorySyncRemoteRepairError
+	if errors.As(err, &repair) {
+		return strings.TrimSpace(repair.RepositoryID)
+	}
+	return ""
+}
+
 type VirtualRepositorySyncConflict struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
@@ -402,7 +434,10 @@ func (a *App) snapshotVirtualRepositorySyncPackage() (virtualRepositorySyncPacka
 			// transient; uploading a partial snapshot would make its repository
 			// appear deleted on other devices. The automatic retry loop will try
 			// again once the remote endpoint is reachable.
-			return pkg, fmt.Errorf("read virtual repository %q for sync: %w", item.Name, err)
+			return pkg, &virtualRepositorySyncRemoteRepairError{
+				RepositoryID: item.ID,
+				Cause:        fmt.Errorf("read virtual repository %q for sync: %w", item.Name, err),
+			}
 		}
 		portable := *repo
 		location := "local"
@@ -1331,11 +1366,12 @@ const (
 // distinguish an active run from a failed-retry wait (or a permanent failure)
 // instead of showing "syncing" for the entire backoff window.
 type VirtualRepositoryBackgroundSyncStatus struct {
-	Pending     bool   `json:"pending"`
-	Phase       string `json:"phase"`
-	Message     string `json:"message,omitempty"`
-	Attempt     int    `json:"attempt,omitempty"`
-	NextRetryAt string `json:"next_retry_at,omitempty"`
+	Pending            bool   `json:"pending"`
+	Phase              string `json:"phase"`
+	Message            string `json:"message,omitempty"`
+	RepairRepositoryID string `json:"repair_repository_id,omitempty"`
+	Attempt            int    `json:"attempt,omitempty"`
+	NextRetryAt        string `json:"next_retry_at,omitempty"`
 }
 
 // scheduleVirtualRepositorySync coalesces saves made close together. A failed
@@ -1375,8 +1411,10 @@ func (a *App) scheduleVirtualRepositorySyncRetryAfter(delay time.Duration, attem
 		return
 	}
 	message := ""
+	repairRepositoryID := ""
 	if lastErr != nil {
 		message = strings.TrimSpace(lastErr.Error())
+		repairRepositoryID = virtualRepositorySyncRepairRepositoryID(lastErr)
 	}
 	if message == "" {
 		message = "automatic virtual repository synchronization failed"
@@ -1390,14 +1428,14 @@ func (a *App) scheduleVirtualRepositorySyncRetryAfter(delay time.Duration, attem
 	}
 	if attempt >= virtualRepositorySyncMaxAutoAttempts {
 		a.virtualRepositorySyncTimerBlocksUI = false
-		a.setVirtualRepositoryBackgroundSyncPhaseLocked(virtualRepositorySyncPhaseFailed, message, attempt, time.Time{})
+		a.setVirtualRepositoryBackgroundSyncPhaseLocked(virtualRepositorySyncPhaseFailed, message, attempt, time.Time{}, repairRepositoryID)
 		a.virtualRepositorySyncScheduleMu.Unlock()
 		log.Printf("[vrepo-sync] automatic sync failed permanently (attempt %d): %s", attempt, message)
 		return
 	}
 	nextRetry := time.Now().UTC().Add(delay)
 	a.virtualRepositorySyncTimerBlocksUI = false
-	a.setVirtualRepositoryBackgroundSyncPhaseLocked(virtualRepositorySyncPhaseRetryWait, message, attempt, nextRetry)
+	a.setVirtualRepositoryBackgroundSyncPhaseLocked(virtualRepositorySyncPhaseRetryWait, message, attempt, nextRetry, repairRepositoryID)
 	var timer *time.Timer
 	timer = time.AfterFunc(delay, func() {
 		a.runScheduledVirtualRepositorySync(timer, attempt, false)
@@ -1539,7 +1577,7 @@ func (a *App) cancelVirtualRepositorySyncTimerLocked() {
 	a.virtualRepositorySyncTimerBlocksUI = false
 }
 
-func (a *App) setVirtualRepositoryBackgroundSyncPhaseLocked(phase, message string, attempt int, nextRetryAt time.Time) {
+func (a *App) setVirtualRepositoryBackgroundSyncPhaseLocked(phase, message string, attempt int, nextRetryAt time.Time, repairRepositoryID ...string) {
 	if a == nil {
 		return
 	}
@@ -1548,6 +1586,10 @@ func (a *App) setVirtualRepositoryBackgroundSyncPhaseLocked(phase, message strin
 	}
 	a.virtualRepositorySyncPhase = phase
 	a.virtualRepositorySyncStatusMessage = strings.TrimSpace(message)
+	a.virtualRepositorySyncRepairRepositoryID = ""
+	if len(repairRepositoryID) > 0 {
+		a.virtualRepositorySyncRepairRepositoryID = strings.TrimSpace(repairRepositoryID[0])
+	}
 	a.virtualRepositorySyncAttempt = attempt
 	a.virtualRepositorySyncNextRetryAt = nextRetryAt
 }
@@ -1596,10 +1638,11 @@ func (a *App) virtualRepositoryBackgroundSyncStatusSnapshot() VirtualRepositoryB
 		pending = false
 	}
 	status := VirtualRepositoryBackgroundSyncStatus{
-		Pending: pending,
-		Phase:   phase,
-		Message: a.virtualRepositorySyncStatusMessage,
-		Attempt: a.virtualRepositorySyncAttempt,
+		Pending:            pending,
+		Phase:              phase,
+		Message:            a.virtualRepositorySyncStatusMessage,
+		RepairRepositoryID: a.virtualRepositorySyncRepairRepositoryID,
+		Attempt:            a.virtualRepositorySyncAttempt,
 	}
 	if !a.virtualRepositorySyncNextRetryAt.IsZero() {
 		status.NextRetryAt = a.virtualRepositorySyncNextRetryAt.UTC().Format(time.RFC3339)

@@ -28,21 +28,21 @@ import (
 
 // SubAgentRollout manages append-only persistence of coding task execution.
 type SubAgentRollout struct {
-	mu      sync.Mutex
-	file    *os.File
-	taskID  string
-	seqNum  uint64
-	closed  bool
+	mu     sync.Mutex
+	file   *os.File
+	taskID string
+	seqNum uint64
+	closed bool
 }
 
 // RolloutEntry is a single record in the rollout JSONL file.
 type RolloutEntry struct {
 	Seq       uint64 `json:"seq"`
 	Timestamp string `json:"ts"`
-	Type      string `json:"type"`             // "tool_call" | "tool_result" | "status" | "compaction"
-	Tool      string `json:"tool,omitempty"`    // tool name
+	Type      string `json:"type"`                // "tool_call" | "tool_result" | "status" | "compaction"
+	Tool      string `json:"tool,omitempty"`      // tool name
 	ArgsHash  string `json:"args_hash,omitempty"` // SHA256 prefix (not full args)
-	FilePath  string `json:"file,omitempty"`    // write/edit target path
+	FilePath  string `json:"file,omitempty"`      // write/edit target path
 	Succeeded bool   `json:"ok,omitempty"`
 	Summary   string `json:"summary,omitempty"` // truncated result (max 300 runes)
 	Status    string `json:"status,omitempty"`  // "running" | "completed" | "failed"

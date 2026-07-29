@@ -26,7 +26,9 @@ func maclawAppResolvedDependenciesForSelectedEntries(raw any, entries []parsedMa
 	selectedAppIDs := map[string]struct{}{}
 	selectedDependencyIDs := map[string]struct{}{}
 	for _, entry := range entries {
-		selectedAppIDs[strings.ToLower(strings.TrimSpace(entry.ID))] = struct{}{}
+		for appID := range maclawAppSelectionIDSet([]string{entry.ID}) {
+			selectedAppIDs[appID] = struct{}{}
+		}
 		for _, dep := range maclawAppDependenciesForEntry(entry) {
 			if id := strings.ToLower(strings.TrimSpace(dep.ID)); id != "" {
 				selectedDependencyIDs[id] = struct{}{}
@@ -579,6 +581,14 @@ func maclawAppNormalizeDependencySourceForEntry(dep maclawAppInstallPlanDependen
 	case "":
 		return defaultSource
 	case "local":
+		// A standalone app installed from SkillMarket/HubCenter can carry an
+		// older manifest which still marks a public runtime skill as local.  The
+		// enclosing app's market source is the provenance boundary here; only a
+		// dependency explicitly listed in the compatibility registry may cross
+		// it.  All other local dependencies retain their local-only contract.
+		if defaultSource == "skillmarket" && maclawAppKnownLocalDependencyCanUseSkillMarket(dep) {
+			return "skillmarket"
+		}
 		return "local"
 	case "hub", "skillhub":
 		if defaultSource == "enterprise_hub" {
@@ -595,6 +605,30 @@ func maclawAppNormalizeDependencySourceForEntry(dep maclawAppInstallPlanDependen
 	default:
 		return source
 	}
+}
+
+// maclawAppKnownLocalDependencyCanUseSkillMarket deliberately accepts only
+// registry-approved legacy aliases.  It is used for trusted market app
+// manifests after the app package itself has been installed from SkillMarket
+// or HubCenter; arbitrary local dependencies must never become remote ones.
+func maclawAppKnownLocalDependencyCanUseSkillMarket(dep maclawAppInstallPlanDependency) bool {
+	if !maclawAppDependencyKindAllowsImplicitHubTarget(dep.Kind) {
+		return false
+	}
+	values := append([]string{dep.ID}, dep.Aliases...)
+	for _, entry := range maclawAppDependencyAliasRegistry {
+		if !maclawAppDependencyAliasRegistryAllows(entry.Sources, "local") ||
+			!maclawAppDependencyAliasRegistryAllows(entry.Sources, "skillmarket") ||
+			!maclawAppDependencyAliasRegistryAllows(entry.Kinds, dep.Kind) {
+			continue
+		}
+		for _, value := range values {
+			if maclawAppDependencyAliasMatches(value, entry.Target, entry.Aliases, entry.LocalNames) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func maclawAppHubDependencyShouldUseMarketDefault(dep maclawAppInstallPlanDependency) bool {
@@ -640,6 +674,25 @@ func maclawAppDependencyAliases(values map[string]any) []string {
 	aliases = append(aliases, maclawAppStringSliceFromAny(values["install_aliases"])...)
 	aliases = append(aliases, maclawAppStringSliceFromAny(values["installAliases"])...)
 	return appendMaclawAppUniqueStrings(nil, aliases...)
+}
+
+// maclawAppDependencyMaps accepts both the current list form and the legacy
+// singular object form used by some published app manifests for dependencies.
+func maclawAppDependencyMaps(value any) []map[string]any {
+	if single := anyMap(value); single != nil {
+		return []map[string]any{single}
+	}
+	items := anySlice(value)
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if dep := anyMap(item); dep != nil {
+			out = append(out, dep)
+		}
+	}
+	return out
 }
 
 func maclawAppDependencyVerificationReviewIssue(entry parsedMaclawAppEntry, governance map[string]any, appPath string) *maclawAppReviewIssue {
@@ -1859,6 +1912,15 @@ func maclawAppNormalizeInstallRefKind(kind string) string {
 }
 
 func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, installDoc map[string]any) {
+	applyResolvedDependenciesToPlanExceptForAppIDs(deps, installDoc, nil)
+}
+
+// applyResolvedDependenciesToPlanExceptForAppIDs merges resolved metadata for
+// ordinary packages while preserving dependencies that originated from an
+// installed trusted wrapper. The latter are a local authority boundary: their
+// dependency source and locator are read from the wrapper on disk, so metadata
+// supplied by the UI must not be allowed to replace either one.
+func applyResolvedDependenciesToPlanExceptForAppIDs(deps []maclawAppInstallPlanDependency, installDoc map[string]any, protectedAppIDs map[string]bool) {
 	// Collect resolved entries from all available locations.
 	// Use anySlice so both []interface{} (JSON decode) and []map[string]any
 	// (in-memory stamp path before re-encode) are accepted.
@@ -1912,6 +1974,9 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 	}
 	// Apply to plan dependencies.
 	for i := range deps {
+		if maclawAppDependencyBelongsToProtectedApp(deps[i], protectedAppIDs) {
+			continue
+		}
 		entry, ok := maclawAppResolvedDependencyEntryForPlanDep(deps[i], lookup[strings.ToLower(deps[i].ID)])
 		if !ok {
 			continue
@@ -1953,6 +2018,18 @@ func applyResolvedDependenciesToPlan(deps []maclawAppInstallPlanDependency, inst
 	}
 }
 
+func maclawAppDependencyBelongsToProtectedApp(dep maclawAppInstallPlanDependency, protectedAppIDs map[string]bool) bool {
+	if len(protectedAppIDs) == 0 {
+		return false
+	}
+	for _, appID := range dep.AppIDs {
+		if protectedAppIDs[strings.ToLower(strings.TrimSpace(appID))] {
+			return true
+		}
+	}
+	return false
+}
+
 func maclawAppResolvedDependencyEntryForPlanDep(dep maclawAppInstallPlanDependency, entries []maclawAppResolvedDependencyEntry) (maclawAppResolvedDependencyEntry, bool) {
 	var fallback maclawAppResolvedDependencyEntry
 	hasFallback := false
@@ -1972,8 +2049,21 @@ func maclawAppResolvedDependencyEntryForPlanDep(dep maclawAppInstallPlanDependen
 }
 
 func maclawAppApplySourceVersionKeyDependencyRefs(deps []maclawAppInstallPlanDependency) {
+	maclawAppApplySourceVersionKeyDependencyRefsExceptForAppIDs(deps, nil)
+}
+
+// maclawAppApplySourceVersionKeyDependencyRefsExceptForAppIDs derives a remote
+// locator from version metadata for ordinary packages. A trusted market wrapper
+// is different: an unknown dependency declared local must remain local even if
+// its version string resembles a remote source-version key. Otherwise an old
+// or malicious wrapper manifest could bypass the explicit local-dependency
+// boundary through a secondary metadata field.
+func maclawAppApplySourceVersionKeyDependencyRefsExceptForAppIDs(deps []maclawAppInstallPlanDependency, protectedAppIDs map[string]bool) {
 	for i := range deps {
 		dep := &deps[i]
+		if maclawAppDependencyBelongsToProtectedApp(*dep, protectedAppIDs) && strings.EqualFold(strings.TrimSpace(dep.Source), "local") {
+			continue
+		}
 		if strings.TrimSpace(dep.InstallRef) != "" {
 			continue
 		}
@@ -2110,7 +2200,14 @@ func maclawAppBundledDependenciesForApp(bundled maclawAppBundledDependencies, ap
 		if len(skill.AppIDs) > 0 && !containsMaclawAppStringFold(skill.AppIDs, appID) {
 			continue
 		}
-		skill.AppIDs = append([]string(nil), skill.AppIDs...)
+		// The selected entry already supplies the app scope. Keeping an AppIDs
+		// list that also names unselected apps makes a single-app Hub download
+		// appear to carry dependencies for apps the user did not install.
+		if len(skill.AppIDs) > 0 {
+			skill.AppIDs = []string{appID}
+		} else {
+			skill.AppIDs = nil
+		}
 		skill.Files = cloneStringMap(skill.Files)
 		scoped.Skills = append(scoped.Skills, skill)
 	}
@@ -2125,23 +2222,27 @@ func (a *App) maclawAppBundledDependenciesForPlan(deps []maclawAppInstallPlanDep
 	defs := a.ListNLSkills()
 	byName := map[string]NLSkillDefinition{}
 	for _, def := range defs {
-		for _, id := range []string{def.Name, def.DirName, def.HubSkillID} {
-			id = strings.TrimSpace(id)
-			if id == "" {
+		for _, key := range def.SkillIdentityKeys() {
+			key = strings.TrimSpace(key)
+			if key == "" {
 				continue
 			}
-			key := strings.ToLower(id)
 			if _, exists := byName[key]; !exists {
 				byName[key] = def
 			}
 		}
 	}
-	seen := map[string]bool{}
 	for _, dep := range deps {
 		if !dep.Installed {
 			continue
 		}
-		def, ok := byName[strings.ToLower(strings.TrimSpace(firstNonEmpty(dep.InstalledName, dep.CanonicalID, dep.ID)))]
+		var def NLSkillDefinition
+		var ok bool
+		for _, key := range maclawAppInstalledSkillCandidateIDs(dep) {
+			if def, ok = byName[key]; ok {
+				break
+			}
+		}
 		if !ok && strings.TrimSpace(dep.InstalledDir) != "" {
 			for _, candidate := range defs {
 				if skillDirIdentityKey(candidate.SkillDir) == skillDirIdentityKey(dep.InstalledDir) {
@@ -2159,12 +2260,11 @@ func (a *App) maclawAppBundledDependenciesForPlan(deps []maclawAppInstallPlanDep
 			log.Printf("[maclaw-app] skip bundled dependency %q: %v", dep.ID, err)
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(firstNonEmpty(bundled.StableID, bundled.Name)))
-		if key == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		out.Skills = append(out.Skills, bundled)
+		// A single installed skill can satisfy dependencies for multiple apps.
+		// Merge equal payloads so the package keeps every app scope; preserve a
+		// distinct payload for the same stable ID so an app-specific replacement
+		// cannot be silently discarded.
+		maclawAppAppendBundledDependency(&out, bundled)
 	}
 	return out
 }
@@ -2222,11 +2322,10 @@ func (a *App) installBundledMaclawAppDependency(packageJSON string, dep maclawAp
 		return true, nil
 	}
 
-	// Fallback: check bundled_dependencies in persisted install records.
-	// This covers the case where the caller passes a fresh manifest (e.g.,
-	// appToManifest from the frontend) that doesn't include bundled_dependencies,
-	// but the original install package (stored in app_install_records.json) does.
-	if candidate := a.findBundledSkillInInstallRecords(dep); candidate != nil {
+	// Fallback: check the current app's persisted install record only. A generic
+	// dependency ID is not authority to borrow a payload from a different app;
+	// doing so can revive stale or app-specific code during dependency repair.
+	if candidate := a.findBundledSkillInInstallRecordsForApp(packageJSON, dep); candidate != nil {
 		if err := a.installBundledMaclawAppSkill(*candidate); err != nil {
 			return true, err
 		}
@@ -2236,8 +2335,39 @@ func (a *App) installBundledMaclawAppDependency(packageJSON string, dep maclawAp
 	return false, nil
 }
 
-// findBundledSkillInInstallRecords searches all install records for a bundled
-// skill matching the given dependency. Returns nil if not found.
+// installBundledMaclawAppDependencyFirst materialises an embedded dependency
+// before any remote lookup. A valid app bundle is the publisher-selected,
+// version-pinned artifact; using it first avoids turning a stale Hub catalog
+// reference into a startup failure. A corrupt bundle is terminal: silently
+// falling through to a mutable remote version would violate that contract.
+func (a *App) installBundledMaclawAppDependencyFirst(packageJSON string, dep *maclawAppInstallPlanDependency) bool {
+	if dep == nil {
+		return false
+	}
+	installed, err := a.installBundledMaclawAppDependency(packageJSON, *dep)
+	if !installed {
+		return false
+	}
+	if err == nil {
+		dep.Installed = true
+		dep.Action = "installed_from_bundle"
+		dep.Message = "installed bundled dependency skill"
+		return true
+	}
+	dep.InstallErrorCode = "bundled_dependency_failed"
+	dep.InstallErrorStage = "bundled_dependency_install"
+	dep.InstallErrorDetail = err.Error()
+	dep.Health = "missing"
+	dep.Action = "failed"
+	dep.Message = err.Error()
+	return true
+}
+
+// findBundledSkillInInstallRecords searches persisted app records for a
+// bundled skill matching the given dependency. Runtime recovery has no app ID,
+// so it restores only when every matching record carries the same payload;
+// choosing the first of two different app-specific versions would execute the
+// wrong publisher artifact merely because of registry order.
 func (a *App) findBundledSkillInInstallRecords(dep maclawAppInstallPlanDependency) *maclawAppBundledSkillEntry {
 	if a == nil {
 		return nil
@@ -2246,12 +2376,63 @@ func (a *App) findBundledSkillInInstallRecords(dep maclawAppInstallPlanDependenc
 	if err != nil || len(registry.Installs) == 0 {
 		return nil
 	}
+	var candidate *maclawAppBundledSkillEntry
 	for _, record := range registry.Installs {
 		if len(record.Package) == 0 {
 			continue
 		}
+		candidateDep := dep
+		if len(candidateDep.AppIDs) == 0 {
+			candidateDep.AppIDs = []string{record.AppID}
+		}
 		bundled := maclawAppBundledDependenciesFromDoc(record.Package)
-		if candidate := maclawAppFindBundledSkillForDep(bundled, dep); candidate != nil {
+		found := maclawAppFindBundledSkillForDep(bundled, candidateDep)
+		if found == nil {
+			continue
+		}
+		if candidate == nil {
+			copy := *found
+			copy.AppIDs = append([]string(nil), found.AppIDs...)
+			copy.Files = cloneStringMap(found.Files)
+			candidate = &copy
+			continue
+		}
+		if maclawAppBundledSkillPayloadKey(*candidate) != maclawAppBundledSkillPayloadKey(*found) {
+			log.Printf("[skill-app] bundled recovery for %q is ambiguous across installed apps; refusing to choose a payload", dep.ID)
+			return nil
+		}
+	}
+	return candidate
+}
+
+func (a *App) findBundledSkillInInstallRecordsForApp(packageJSON string, dep maclawAppInstallPlanDependency) *maclawAppBundledSkillEntry {
+	if a == nil {
+		return nil
+	}
+	entries, err := parseMaclawAppInstallEntries(packageJSON)
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+	allowedAppIDs := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if id := strings.ToLower(strings.TrimSpace(entry.ID)); id != "" {
+			allowedAppIDs[id] = struct{}{}
+		}
+	}
+	registry, err := a.readMaclawAppInstallRegistry()
+	if err != nil {
+		return nil
+	}
+	for _, record := range registry.Installs {
+		if _, ok := allowedAppIDs[strings.ToLower(strings.TrimSpace(record.AppID))]; !ok || len(record.Package) == 0 {
+			continue
+		}
+		candidateDep := dep
+		if len(candidateDep.AppIDs) == 0 {
+			candidateDep.AppIDs = []string{record.AppID}
+		}
+		bundled := maclawAppBundledDependenciesFromDoc(record.Package)
+		if candidate := maclawAppFindBundledSkillForDep(bundled, candidateDep); candidate != nil {
 			return candidate
 		}
 	}
@@ -2261,12 +2442,150 @@ func (a *App) findBundledSkillInInstallRecords(dep maclawAppInstallPlanDependenc
 // maclawAppFindBundledSkillForDep searches a bundled dependencies set for a
 // skill matching the given dependency.
 func maclawAppFindBundledSkillForDep(bundled maclawAppBundledDependencies, dep maclawAppInstallPlanDependency) *maclawAppBundledSkillEntry {
+	// A merged plan dependency can serve multiple apps. Resolve its bundle for
+	// each app independently before materialising a single local Skill: if the
+	// publisher supplied different payloads for the same runtime identity, one
+	// installation cannot satisfy both safely. Refuse the ambiguous install
+	// rather than depending on package ordering.
+	if len(dep.AppIDs) > 1 {
+		var selected *maclawAppBundledSkillEntry
+		for _, appID := range dep.AppIDs {
+			appDep := dep
+			appDep.AppIDs = []string{appID}
+			candidate := maclawAppFindBundledSkillForDep(bundled, appDep)
+			if candidate == nil {
+				return nil
+			}
+			if selected == nil {
+				selected = candidate
+				continue
+			}
+			if maclawAppBundledSkillPayloadKey(*selected) != maclawAppBundledSkillPayloadKey(*candidate) {
+				log.Printf("[maclaw-app] bundled dependency %q has conflicting payloads across apps; refusing ambiguous install", dep.ID)
+				return nil
+			}
+		}
+		return selected
+	}
+	return maclawAppFindBundledSkillForSingleDependency(bundled, dep)
+}
+
+// maclawAppFindBundledSkillForSingleDependency resolves one app scope without
+// relying on bundle order. Scoped bundles override legacy shared bundles, but
+// two different scoped payloads for the same dependency/app are ambiguous and
+// must not silently select whichever happened to appear first in JSON.
+func maclawAppFindBundledSkillForSingleDependency(bundled maclawAppBundledDependencies, dep maclawAppInstallPlanDependency) *maclawAppBundledSkillEntry {
+	var shared *maclawAppBundledSkillEntry
+	var scoped *maclawAppBundledSkillEntry
 	for i := range bundled.Skills {
-		if maclawAppBundledSkillMatchesDependency(bundled.Skills[i], dep) {
-			return &bundled.Skills[i]
+		skill := &bundled.Skills[i]
+		if !maclawAppBundledSkillCanSatisfyDependency(*skill, dep) {
+			continue
+		}
+		// Prefer the publisher's explicit app scope over an unscoped legacy
+		// fallback. This matters when an old pack has a broad root bundle and a
+		// newer per-entry replacement for the same stable skill ID.
+		if len(skill.AppIDs) > 0 {
+			if scoped == nil {
+				scoped = skill
+				continue
+			}
+			if maclawAppBundledSkillPayloadKey(*scoped) != maclawAppBundledSkillPayloadKey(*skill) {
+				log.Printf("[maclaw-app] bundled dependency %q has conflicting scoped payloads; refusing ambiguous install", dep.ID)
+				return nil
+			}
+			continue
+		}
+		if shared == nil {
+			shared = skill
 		}
 	}
-	return nil
+	if scoped != nil {
+		return scoped
+	}
+	return shared
+}
+
+func maclawAppBundledSkillIdentityKey(skill maclawAppBundledSkillEntry) string {
+	return strings.ToLower(strings.TrimSpace(firstNonEmpty(skill.StableID, skill.HubSkillID, skill.CanonicalID, skill.ID, skill.Name)))
+}
+
+func maclawAppBundledSkillPayloadKey(skill maclawAppBundledSkillEntry) string {
+	identity := maclawAppBundledSkillIdentityKey(skill)
+	checksum := strings.ToLower(strings.TrimSpace(skill.SHA256))
+	// Never rely on a claimed checksum alone while resolving duplicate bundles:
+	// malformed or tampered entries can claim the same sha256 but contain
+	// different files. Include a deterministic payload fingerprint so selection
+	// remains order-independent; installBundledMaclawAppSkill still verifies the
+	// declared checksum against the extracted bytes before installation.
+	paths := make([]string, 0, len(skill.Files))
+	for path := range skill.Files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	hasher := sha256.New()
+	for _, path := range paths {
+		data, err := base64.StdEncoding.DecodeString(skill.Files[path])
+		if err != nil {
+			// Keep invalid encodings distinct too. The install-time extractor will
+			// provide the actionable decoding error if this is the only candidate.
+			data = []byte("invalid-base64:" + skill.Files[path])
+		}
+		_, _ = hasher.Write([]byte(path))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write(data)
+		_, _ = hasher.Write([]byte{0})
+	}
+	return identity + "\x00" + checksum + "\x00" + hex.EncodeToString(hasher.Sum(nil))
+}
+
+func maclawAppMergeBundledSkillAppIDs(existing *maclawAppBundledSkillEntry, incoming maclawAppBundledSkillEntry) bool {
+	if existing == nil || maclawAppBundledSkillPayloadKey(*existing) != maclawAppBundledSkillPayloadKey(incoming) {
+		return false
+	}
+	// An unscoped entry already applies to every app, so it subsumes a scoped
+	// duplicate. Conversely, retain an unscoped incoming entry as broad fallback.
+	if len(existing.AppIDs) == 0 || len(incoming.AppIDs) == 0 {
+		existing.AppIDs = nil
+		return true
+	}
+	for _, appID := range incoming.AppIDs {
+		if !containsMaclawAppStringFold(existing.AppIDs, appID) {
+			existing.AppIDs = append(existing.AppIDs, appID)
+		}
+	}
+	return true
+}
+
+func maclawAppAppendBundledDependency(out *maclawAppBundledDependencies, incoming maclawAppBundledSkillEntry) {
+	if out == nil {
+		return
+	}
+	for i := range out.Skills {
+		if maclawAppMergeBundledSkillAppIDs(&out.Skills[i], incoming) {
+			return
+		}
+	}
+	out.Skills = append(out.Skills, incoming)
+}
+
+func maclawAppBundledSkillCanSatisfyDependency(skill maclawAppBundledSkillEntry, dep maclawAppInstallPlanDependency) bool {
+	return len(skill.Files) > 0 && maclawAppBundledSkillAppliesToDependency(skill, dep) && maclawAppBundledSkillMatchesDependency(skill, dep)
+}
+
+// maclawAppBundledSkillAppliesToDependency prevents a direct pack install from
+// borrowing a dependency that the publisher explicitly scoped to another app.
+// An unscoped bundle remains valid for legacy packages and shared dependencies.
+func maclawAppBundledSkillAppliesToDependency(skill maclawAppBundledSkillEntry, dep maclawAppInstallPlanDependency) bool {
+	if len(skill.AppIDs) == 0 || len(dep.AppIDs) == 0 {
+		return true
+	}
+	for _, appID := range dep.AppIDs {
+		if containsMaclawAppStringFold(skill.AppIDs, appID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDependency) (bool, error) {
@@ -2417,8 +2736,29 @@ func maclawAppBundledDependenciesForPackageJSON(packageJSON string) maclawAppBun
 
 func maclawAppBundledDependenciesFromDoc(doc map[string]any) maclawAppBundledDependencies {
 	out := maclawAppBundledDependencies{Schema: "maclaw.app.bundled_dependencies.v1"}
-	seen := map[string]struct{}{}
 	add := func(raw any) {
+		// Package assembly uses this Go type in memory, while JSON installs use a
+		// map. Accept both so selection/filtering cannot make an otherwise valid
+		// bundled dependency disappear before the package is serialized.
+		switch typed := raw.(type) {
+		case maclawAppBundledDependencies:
+			for _, skill := range typed.Skills {
+				if len(skill.Files) > 0 {
+					maclawAppAppendBundledDependency(&out, skill)
+				}
+			}
+			return
+		case *maclawAppBundledDependencies:
+			if typed == nil {
+				return
+			}
+			for _, skill := range typed.Skills {
+				if len(skill.Files) > 0 {
+					maclawAppAppendBundledDependency(&out, skill)
+				}
+			}
+			return
+		}
 		block := anyMap(raw)
 		if block == nil {
 			return
@@ -2452,15 +2792,7 @@ func maclawAppBundledDependenciesFromDoc(doc map[string]any) maclawAppBundledDep
 				Files:       files,
 				AppIDs:      stringSliceFromAny(itemMap["app_ids"]),
 			}
-			key := strings.ToLower(strings.TrimSpace(firstNonEmpty(entry.StableID, entry.HubSkillID, entry.CanonicalID, entry.ID, entry.Name)))
-			if key == "" {
-				key = fmt.Sprintf("sha256:%s", strings.ToLower(strings.TrimSpace(entry.SHA256)))
-			}
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			out.Skills = append(out.Skills, entry)
+			maclawAppAppendBundledDependency(&out, entry)
 		}
 	}
 	add(doc["bundled_dependencies"])
@@ -2508,9 +2840,6 @@ func (a *App) installBundledMaclawAppSkill(bundle maclawAppBundledSkillEntry) er
 	if len(bundle.Files) == 0 {
 		return fmt.Errorf("bundled skill %q has no files", bundle.Name)
 	}
-	if a.skillNameAlreadyRegistered(bundle.Name) {
-		return fmt.Errorf("skill %q already exists", bundle.Name)
-	}
 	tmpDir, err := os.MkdirTemp("", "maclaw-app-bundled-skill-*")
 	if err != nil {
 		return fmt.Errorf("create bundled skill temp dir: %w", err)
@@ -2531,6 +2860,9 @@ func (a *App) installBundledMaclawAppSkill(bundle maclawAppBundledSkillEntry) er
 	}
 	entry.HubSkillID = firstNonEmpty(entry.HubSkillID, bundle.HubSkillID, bundle.CanonicalID, bundle.ID)
 	entry.HubVersion = firstNonEmpty(entry.HubVersion, bundle.HubVersion, bundle.Version)
+	if a.skillNameAlreadyRegistered(entry.Name) {
+		return fmt.Errorf("skill %q already exists", entry.Name)
+	}
 	if strings.TrimSpace(entry.HubSkillID) != "" {
 		entry.Source = skillEntrySourceHub.String()
 	} else {
@@ -2582,6 +2914,11 @@ func maclawAppExtractBundledSkillFiles(bundle maclawAppBundledSkillEntry, destDi
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
+	// Validate and decode the complete payload before touching destDir. A corrupt
+	// bundle must not leave partially written executable files in the staging
+	// directory, even when this helper is reused outside the normal temp-dir
+	// installation path.
+	decoded := make(map[string][]byte, len(paths))
 	for _, rel := range paths {
 		if !maclawAppBundledSkillFilePathOK(rel) {
 			return fmt.Errorf("bundled skill contains unsafe path %q", rel)
@@ -2594,16 +2931,7 @@ func maclawAppExtractBundledSkillFiles(bundle maclawAppBundledSkillEntry, destDi
 		if total > maxMaclawAppBundledSkillBytes {
 			return fmt.Errorf("bundled skill expands to too much data: %d > %d bytes", total, maxMaclawAppBundledSkillBytes)
 		}
-		target := filepath.Join(destDir, filepath.FromSlash(rel))
-		if !strings.HasPrefix(skillDirIdentityKey(target), skillDirIdentityKey(destDir)+string(os.PathSeparator)) {
-			return fmt.Errorf("bundled skill path escapes destination: %q", rel)
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("create bundled skill directory: %w", err)
-		}
-		if err := os.WriteFile(target, data, 0o644); err != nil {
-			return fmt.Errorf("write bundled skill file %q: %w", rel, err)
-		}
+		decoded[rel] = data
 		hasher.Write([]byte(filepath.ToSlash(rel)))
 		hasher.Write([]byte{0})
 		hasher.Write(data)
@@ -2611,6 +2939,18 @@ func maclawAppExtractBundledSkillFiles(bundle maclawAppBundledSkillEntry, destDi
 	}
 	if expected := strings.TrimSpace(bundle.SHA256); expected != "" && !strings.EqualFold(expected, hex.EncodeToString(hasher.Sum(nil))) {
 		return fmt.Errorf("bundled skill %q checksum mismatch", bundle.Name)
+	}
+	for _, rel := range paths {
+		target := filepath.Join(destDir, filepath.FromSlash(rel))
+		if !strings.HasPrefix(skillDirIdentityKey(target), skillDirIdentityKey(destDir)+string(os.PathSeparator)) {
+			return fmt.Errorf("bundled skill path escapes destination: %q", rel)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create bundled skill directory: %w", err)
+		}
+		if err := os.WriteFile(target, decoded[rel], 0o644); err != nil {
+			return fmt.Errorf("write bundled skill file %q: %w", rel, err)
+		}
 	}
 	return nil
 }

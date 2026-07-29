@@ -53,8 +53,8 @@ Some content here.`,
 			expected: false,
 		},
 		{
-			name: "empty",
-			content: "",
+			name:     "empty",
+			content:  "",
 			expected: false,
 		},
 	}

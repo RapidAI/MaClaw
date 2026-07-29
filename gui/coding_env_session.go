@@ -39,10 +39,10 @@ func withStickyCodingUserLock(userID string, fn func()) {
 // via rearmSticky* and is also persisted under the task workspace (or
 // ~/.maclaw/data/coding_workbench) so reopen after restart can continue.
 type stickyCodingWorkbenchMemory struct {
-	Kind          string   `json:"kind"` // "local" | "remote"
-	ProjectPath   string   `json:"project_path,omitempty"`
-	LastUserText  string   `json:"last_user_text,omitempty"`
-	LastSummary   string   `json:"last_summary,omitempty"`
+	Kind         string `json:"kind"` // "local" | "remote"
+	ProjectPath  string `json:"project_path,omitempty"`
+	LastUserText string `json:"last_user_text,omitempty"`
+	LastSummary  string `json:"last_summary,omitempty"`
 	// SessionPlan is the durable overall goal for multi-turn coding (usually
 	// the first non-empty user request). Kept separate from LastUserText so
 	// follow-ups do not overwrite the original objective.
@@ -92,9 +92,9 @@ type stickyCodingWorkbenchMemory struct {
 	// file content lives in sidecars when present). JSON array of codingWorkbenchCheckpoint.
 	CheckpointHistoryJSON string `json:"checkpoint_history_json,omitempty"`
 	// Session-level token/cost observability (sum of pure-coding turns).
-	SessionInputTokens  int     `json:"session_input_tokens,omitempty"`
-	SessionOutputTokens int     `json:"session_output_tokens,omitempty"`
-	SessionEstCostRMB   float64 `json:"session_est_cost_rmb,omitempty"`
+	SessionInputTokens   int     `json:"session_input_tokens,omitempty"`
+	SessionOutputTokens  int     `json:"session_output_tokens,omitempty"`
+	SessionEstCostRMB    float64 `json:"session_est_cost_rmb,omitempty"`
 	LastTurnInputTokens  int     `json:"last_turn_input_tokens,omitempty"`
 	LastTurnOutputTokens int     `json:"last_turn_output_tokens,omitempty"`
 	LastTurnEstCostRMB   float64 `json:"last_turn_est_cost_rmb,omitempty"`

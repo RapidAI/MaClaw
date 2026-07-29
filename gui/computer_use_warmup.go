@@ -558,18 +558,18 @@ func attachComputerUseSelfCheckArtifacts(a *App, report map[string]interface{}) 
 	}
 	if e2e := a.GetComputerUseLastE2E(); len(e2e) > 0 {
 		report["last_e2e"] = map[string]interface{}{
-			"ok":               e2e["ok"],
-			"interact":         e2e["interact"],
-			"ms":               e2e["ms"],
-			"error":            e2e["error"],
-			"token_found":      e2e["token_found"],
-			"type_ok":          e2e["type_ok"],
-			"at":               e2e["at"],
-			"diagnostics_path": e2e["diagnostics_path"],
-			"history_csv_path": e2e["history_csv_path"],
-			"focus_retry":      e2e["focus_retry"],
-			"soft_fail":        e2e["soft_fail"],
-			"skip_reason":      e2e["skip_reason"],
+			"ok":                e2e["ok"],
+			"interact":          e2e["interact"],
+			"ms":                e2e["ms"],
+			"error":             e2e["error"],
+			"token_found":       e2e["token_found"],
+			"type_ok":           e2e["type_ok"],
+			"at":                e2e["at"],
+			"diagnostics_path":  e2e["diagnostics_path"],
+			"history_csv_path":  e2e["history_csv_path"],
+			"focus_retry":       e2e["focus_retry"],
+			"soft_fail":         e2e["soft_fail"],
+			"skip_reason":       e2e["skip_reason"],
 			"token_unconfirmed": e2e["token_unconfirmed"],
 		}
 		if path, _ := e2e["diagnostics_path"].(string); path != "" {
@@ -1679,16 +1679,16 @@ func (a *App) PruneComputerUseLogArtifacts(keepNewest int, maxAgeDays int) map[s
 		maxAgeDays = cfgAge
 	}
 	out := map[string]interface{}{
-		"ok":              false,
-		"deleted":         []string{},
-		"kept":            0,
-		"error":           "",
-		"deleted_n":       0,
-		"freed_bytes":     int64(0),
-		"keep_newest":     keepNewest,
-		"max_age_days":    maxAgeDays,
-		"remove_errors":   []string{},
-		"remove_error_n":  0,
+		"ok":             false,
+		"deleted":        []string{},
+		"kept":           0,
+		"error":          "",
+		"deleted_n":      0,
+		"freed_bytes":    int64(0),
+		"keep_newest":    keepNewest,
+		"max_age_days":   maxAgeDays,
+		"remove_errors":  []string{},
+		"remove_error_n": 0,
 	}
 	if keepNewest <= 0 {
 		keepNewest = 10
@@ -1978,15 +1978,15 @@ func (a *App) DeleteComputerUseLogArtifact(path string) map[string]interface{} {
 // Cap: 100 paths per call.
 func (a *App) BatchDeleteComputerUseLogArtifacts(paths []string) map[string]interface{} {
 	out := map[string]interface{}{
-		"ok":             false,
-		"deleted":        []string{},
-		"deleted_n":      0,
-		"freed_bytes":    int64(0),
-		"error":          "",
-		"errors":         []string{},
-		"error_n":        0,
-		"requested":      len(paths),
-		"skipped_empty":  0,
+		"ok":            false,
+		"deleted":       []string{},
+		"deleted_n":     0,
+		"freed_bytes":   int64(0),
+		"error":         "",
+		"errors":        []string{},
+		"error_n":       0,
+		"requested":     len(paths),
+		"skipped_empty": 0,
 	}
 	if len(paths) == 0 {
 		out["error"] = "no paths"
@@ -2435,10 +2435,10 @@ func (a *App) OpenComputerUsePermissionSettings(target string) map[string]interf
 		}
 	}
 	out := map[string]interface{}{
-		"ok":      false,
-		"target":  target,
+		"ok":       false,
+		"target":   target,
 		"platform": runtime.GOOS,
-		"error":   "",
+		"error":    "",
 	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {

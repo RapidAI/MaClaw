@@ -319,12 +319,12 @@ type CodingKnowledgeProjectCapacity struct {
 
 // CodingKnowledgeCapacityStatus is the capacity snapshot shown in the settings panel.
 type CodingKnowledgeCapacityStatus struct {
-	TotalCount    int                             `json:"total_count"`
-	MaxTotal      int                             `json:"max_total"`
-	MaxPerProject int                             `json:"max_per_project"`
-	OverTotal     int                             `json:"over_total"`
-	WouldEvict    int                             `json:"would_evict"`
-	WithinLimit   bool                            `json:"within_limit"`
+	TotalCount    int                              `json:"total_count"`
+	MaxTotal      int                              `json:"max_total"`
+	MaxPerProject int                              `json:"max_per_project"`
+	OverTotal     int                              `json:"over_total"`
+	WouldEvict    int                              `json:"would_evict"`
+	WithinLimit   bool                             `json:"within_limit"`
 	ProjectsOver  []CodingKnowledgeProjectCapacity `json:"projects_over,omitempty"`
 }
 

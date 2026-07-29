@@ -1156,11 +1156,8 @@ html, body {
     text-size-adjust: 100%;
     /* Win10 frameless DWM top inset (overridden by App.tsx after GetFramelessTopInset). */
     --dwm-top-offset: 0px;
-    /* Background colour is set by the inline script in index.html (theme
-       colour on all platforms) and refined by the useEffect in App.tsx.
-       On Windows 10: overridden to transparent (webview is transparent,
-       CSS border-radius clips to true transparency).
-       On Windows 11 / macOS / Linux: kept as theme colour. */
+    /* Background colour is set by the inline script in index.html, then
+       released to the current CSS theme token by App.tsx after startup. */
 }
 
 body {
@@ -1198,13 +1195,6 @@ body {
        :root by App.tsx (GetFramelessTopInset) and disable the Win10 top inset. */
 }
 
-/* When the webview is transparent (Windows), the viewport wrapper must also
-   be transparent so the CSS border-radius on #App clips to true
-   transparency.  The data-webview-transparent attribute is set by App.tsx. */
-.app-viewport[data-webview-transparent="true"] {
-    background-color: transparent;
-}
-
 /*
  * UI scale (restored from 2026-07-16 behavior).
  * Use transform:scale — not CSS zoom. Commit b77bef80 switched to zoom and
@@ -1223,9 +1213,9 @@ body {
 /* Windows 10 frameless DWM workaround:
    On some Windows 10 builds (notably Enterprise/LTSC), DWM reserves an
    invisible top border for frameless windows even when
-   DisableFramelessWindowDecorations is true.  This pushes the webview
-   content down while #App's overflow:hidden + border-radius clips at
-   the original boundary, cutting off the top of the custom title bar.
+   DisableFramelessWindowDecorations is true. This can push the webview
+   content down relative to the usable client area, cutting off the top of
+   the custom title bar unless the shell reserves the inset.
    --dwm-top-offset is set by JS (queried from the Go backend's
    GetFramelessTopInset, which returns SM_CYFRAME + SM_CXPADDEDBORDER
    on Win10 and 0 elsewhere). Typically 7-8 px at 100% DPI.
@@ -1259,11 +1249,18 @@ body {
     padding-top: 0;
 }
 
+/* Windows 10 is intentionally opaque: square CSS edges prevent the custom
+   border and shadow from resembling a clipped native frame at scaled DPI.
+   Keep the DWM top inset in place so the custom title bar remains visible. */
+#App[data-css-window-corners="false"] {
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+}
+
 /* Maximized window fills the work area — no rounded corners needed.
-   On Windows 10 (transparent webview), border-radius creates transparent
-   cutouts at the corners when maximized; removing it fixes that.
-   (border:none kept from later fix so maximized never shows a light stroke.)
-   Keep --dwm-top-offset padding unless data-native-rounded (Win11) zeros it. */
+   Remove the border and shadow so no light stroke appears at the work-area
+   edge. Keep --dwm-top-offset unless data-native-rounded (Win11) zeros it. */
 #App[data-maximized="true"] {
     border-radius: 0;
     border: none;
@@ -2129,7 +2126,10 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 100vh;
+    /* #root already tracks the WebView client area. Avoid viewport units here:
+       on maximised Win10 frameless windows they can be larger than the usable
+       client rectangle and paint beneath the taskbar or outer edge. */
+    min-height: 100%;
     box-sizing: border-box;
     padding: 24px;
     background: var(--theme-page-bg, #f3f5f8);
@@ -2146,7 +2146,9 @@ body {
 
 .app-loading-shell {
     position: relative;
-    height: 100vh;
+    /* Keep the startup shell inside the same client-area bounds as #App. */
+    height: 100%;
+    min-height: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -2178,6 +2180,11 @@ body {
 
 /* macOS / Windows 11: native rounded corners from the OS — remove CSS rounding */
 .app-loading-shell[data-native-rounded="true"] {
+    border-radius: 0;
+    border: none;
+}
+
+.app-loading-shell[data-css-window-corners="false"] {
     border-radius: 0;
     border: none;
 }
@@ -10727,14 +10734,14 @@ body {
 .im-audit-panel {
     display: flex;
     flex-direction: column;
-    width: min(780px, 92vw);
-    max-height: 88vh;
+    width: min(980px, calc(100vw - 48px));
+    height: min(820px, calc(100vh - 48px));
+    max-height: calc(100vh - 48px);
     overflow: hidden;
-    border: 1px solid var(--theme-border);
-    border-radius: 12px;
+    border-radius: 10px;
     background: var(--theme-surface);
     color: var(--theme-text-primary);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 8px 8px rgba(15, 23, 42, 0.18);
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
 }
@@ -10751,7 +10758,8 @@ body {
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 14px 20px;
+    min-height: 72px;
+    padding: 16px 24px;
     border-bottom: 1px solid var(--theme-border);
 }
 
@@ -10764,14 +10772,14 @@ body {
 
 .im-audit-title {
     color: var(--theme-text-primary);
-    font-size: 15px;
+    font-size: 18px;
     font-weight: 700;
 }
 
 .im-audit-total {
     flex-shrink: 0;
     color: var(--theme-text-muted);
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .im-audit-close,
@@ -10786,16 +10794,23 @@ body {
 }
 
 .im-audit-close {
-    padding: 2px 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
     color: var(--theme-text-muted);
+    font-size: 19px;
+    line-height: 1;
 }
 
 .im-audit-toolbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    padding: 10px 20px;
+    gap: 10px;
+    padding: 14px 24px;
     border-bottom: 1px solid var(--theme-border);
 }
 
@@ -10809,21 +10824,41 @@ body {
 
 .im-audit-input {
     flex: 1;
-    min-width: 140px;
-    padding: 6px 10px;
+    min-width: 220px;
+    padding: 9px 12px;
     outline: none;
-    font-size: 13px;
+    font-size: 14px;
 }
 
 .im-audit-select {
-    padding: 5px 8px;
-    font-size: 12px;
+    min-width: 170px;
+    padding: 9px 32px 9px 12px;
+    font-size: 14px;
 }
 
 .im-audit-toolbar-button {
     flex-shrink: 0;
-    padding: 5px 12px;
+    min-height: 38px;
+    padding: 8px 14px;
     white-space: nowrap;
+    font-size: 14px;
+}
+
+.im-audit-close:hover,
+.im-audit-toolbar-button:hover:not(:disabled),
+.im-audit-page-button:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: var(--theme-info-bg);
+    color: var(--theme-primary);
+}
+
+.im-audit-close:focus-visible,
+.im-audit-toolbar-button:focus-visible,
+.im-audit-page-button:focus-visible,
+.im-audit-input:focus-visible,
+.im-audit-select:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
 }
 
 .im-audit-toolbar-button:disabled,
@@ -10909,9 +10944,10 @@ body {
     display: flex;
     flex: 1;
     flex-direction: column;
-    gap: 8px;
+    gap: 16px;
     overflow-y: auto;
-    padding: 16px 20px;
+    padding: 20px 24px 28px;
+    overscroll-behavior: contain;
 }
 
 .im-audit-empty {
@@ -10921,10 +10957,23 @@ body {
     text-align: left;
 }
 
+.im-audit-refreshing {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    align-self: center;
+    padding: 4px 9px;
+    border-radius: 5px;
+    background: var(--theme-info-bg);
+    color: var(--theme-text-secondary);
+    font-size: 12px;
+}
+
 .im-audit-item {
     display: flex;
     flex-direction: column;
     max-width: 100%;
+    contain: layout style;
 }
 
 .im-audit-item[data-role='user'] {
@@ -10938,10 +10987,10 @@ body {
 .im-audit-meta {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 3px;
+    gap: 8px;
+    margin-bottom: 5px;
     color: var(--theme-text-muted);
-    font-size: 11px;
+    font-size: 13px;
 }
 
 .im-audit-item[data-role='user'] .im-audit-meta {
@@ -10949,36 +10998,162 @@ body {
 }
 
 .im-audit-bubble {
-    max-width: 75%;
-    padding: 10px 14px;
-    font-size: 13px;
-    line-height: 1.6;
+    max-width: min(82%, 760px);
+    padding: 14px 18px;
+    border-radius: 10px;
+    font-size: 15px;
+    line-height: 1.7;
     text-align: left;
-    white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
 }
 
 .im-audit-item[data-role='user'] .im-audit-bubble {
-    border-radius: 14px 14px 4px 14px;
+    border-radius: 10px 10px 4px 10px;
     background: var(--theme-primary);
     color: var(--theme-on-primary);
 }
 
 .im-audit-item[data-role='assistant'] .im-audit-bubble {
-    border-radius: 14px 14px 14px 4px;
+    border: 1px solid var(--theme-border);
+    border-radius: 10px 10px 10px 4px;
     background: var(--theme-surface-muted);
     color: var(--theme-text-primary);
 }
 
 .im-audit-inline-code {
-    padding: 1px 4px;
+    padding: 2px 5px;
     border-radius: 3px;
     background: rgba(0, 0, 0, 0.06);
-    font-size: 0.9em;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    font-size: 0.88em;
 }
 
 .im-audit-link {
     color: var(--theme-primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.im-audit-bubble > :first-child {
+    margin-top: 0;
+}
+
+.im-audit-bubble > :last-child {
+    margin-bottom: 0;
+}
+
+.im-audit-bubble p,
+.im-audit-bubble ul,
+.im-audit-bubble ol,
+.im-audit-bubble blockquote,
+.im-audit-bubble pre,
+.im-audit-bubble h1,
+.im-audit-bubble h2,
+.im-audit-bubble h3,
+.im-audit-bubble h4 {
+    margin: 0.72em 0;
+}
+
+.im-audit-bubble h1,
+.im-audit-bubble h2,
+.im-audit-bubble h3,
+.im-audit-bubble h4 {
+    color: inherit;
+    line-height: 1.35;
+    text-wrap: balance;
+}
+
+.im-audit-bubble h1 { font-size: 1.32em; }
+.im-audit-bubble h2 { font-size: 1.18em; }
+.im-audit-bubble h3 { font-size: 1.06em; }
+.im-audit-bubble h4 { font-size: 1em; }
+
+.im-audit-bubble ul,
+.im-audit-bubble ol {
+    padding-left: 1.4em;
+}
+
+.im-audit-bubble li + li {
+    margin-top: 0.25em;
+}
+
+.im-audit-bubble blockquote {
+    padding: 0.65em 0.9em;
+    border: 1px solid var(--theme-border);
+    border-radius: 6px;
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+}
+
+.im-audit-bubble pre {
+    overflow-x: auto;
+    padding: 12px 14px;
+    border-radius: 6px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    font-size: 0.88em;
+    line-height: 1.55;
+    white-space: pre;
+}
+
+/* react-markdown applies the code renderer to fenced blocks too. Keep the
+   inner element neutral so an unlabelled code fence doesn't inherit inline
+   code padding or a second background. */
+.im-audit-bubble pre .im-audit-inline-code {
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    font: inherit;
+}
+
+.im-audit-table-scroll {
+    display: block;
+    max-width: 100%;
+    margin: 0.9em 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+}
+
+.im-audit-table-scroll table {
+    width: 100%;
+    min-width: 440px;
+    border-collapse: collapse;
+    table-layout: auto;
+    font-size: 0.92em;
+    line-height: 1.5;
+}
+
+.im-audit-table-scroll th,
+.im-audit-table-scroll td {
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    overflow-wrap: anywhere;
+    text-align: left;
+    vertical-align: top;
+}
+
+.im-audit-table-scroll th {
+    background: var(--theme-surface);
+    font-weight: 700;
+}
+
+.im-audit-table-scroll tr:nth-child(even) td {
+    background: color-mix(in srgb, var(--theme-surface) 64%, transparent);
+}
+
+.im-audit-item[data-role='user'] .im-audit-inline-code,
+.im-audit-item[data-role='user'] .im-audit-bubble pre,
+.im-audit-item[data-role='user'] .im-audit-bubble blockquote,
+.im-audit-item[data-role='user'] .im-audit-table-scroll th,
+.im-audit-item[data-role='user'] .im-audit-table-scroll td {
+    background: color-mix(in srgb, var(--theme-on-primary) 14%, transparent);
+    color: inherit;
+}
+
+.im-audit-item[data-role='user'] .im-audit-link {
+    color: inherit;
 }
 
 .im-audit-pagination {
@@ -10991,12 +11166,39 @@ body {
 }
 
 .im-audit-page-button {
-    padding: 4px 10px;
+    min-height: 32px;
+    padding: 5px 12px;
 }
 
 .im-audit-page-label {
     color: var(--theme-text-secondary);
     font-size: 12px;
+}
+
+@media (max-width: 700px) {
+    .im-audit-panel {
+        width: calc(100vw - 20px);
+        height: calc(100vh - 20px);
+        max-height: calc(100vh - 20px);
+    }
+
+    .im-audit-header,
+    .im-audit-toolbar,
+    .im-audit-list {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+
+    .im-audit-input,
+    .im-audit-select {
+        flex-basis: 100%;
+        width: 100%;
+    }
+
+    .im-audit-bubble {
+        max-width: 94%;
+        font-size: 14px;
+    }
 }
 
 .usage-display,

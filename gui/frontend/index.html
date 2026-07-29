@@ -8,11 +8,9 @@
 </head>
 <body>
 <!-- Sync background colour with the persisted theme BEFORE React mounts.
-     On all platforms, set the theme colour to avoid a flash of white.
-     On Windows 10, the React effect will override this to transparent
-     (for true CSS border-radius clipping) within milliseconds of mount.
-     On Windows 11, DWM handles rounding natively so the theme colour stays.
-     Keep colour values in sync with App.css --theme-page-bg. -->
+     Every native shell stays opaque so there is no white flash or transparent
+     edge while the React application becomes ready. Keep these values in sync
+     with App.css --theme-page-bg. -->
 <script>
   try {
     var d = localStorage.getItem('ai_assistant_theme_mode') === 'dark';

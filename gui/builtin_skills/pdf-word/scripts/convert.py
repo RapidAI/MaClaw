@@ -3,6 +3,7 @@ import argparse
 import os
 import re
 import sys
+import tempfile
 
 
 # XML 1.0 allows: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
@@ -55,8 +56,10 @@ def convert_pdf_to_docx(input_path: str, output_path: str) -> str:
         sys.exit(1)
 
     page_count = len(pdf)
+    print(f"Starting conversion: {page_count} page(s)", flush=True)
 
     for page_num in range(page_count):
+        print(f"Processing page {page_num + 1}/{page_count}", flush=True)
         page = pdf[page_num]
         blocks = page.get_text("dict")["blocks"]
         page_has_images = False
@@ -95,22 +98,31 @@ def convert_pdf_to_docx(input_path: str, output_path: str) -> str:
 
         # Extract and embed page images once (after all blocks processed)
         if page_has_images:
-            try:
-                for img_info in page.get_images(full=True):
+            for img_info in page.get_images(full=True):
+                img_path = None
+                try:
                     xref = img_info[0]
                     base_image = pdf.extract_image(xref)
-                    if base_image and base_image.get("image"):
-                        img_ext = base_image.get("ext", "png")
-                        img_path = os.path.join(
-                            os.path.dirname(output_path) or '.',
-                            f"_img_p{page_num}_{xref}.{img_ext}"
-                        )
-                        with open(img_path, "wb") as f:
-                            f.write(base_image["image"])
-                        doc.add_picture(img_path, width=Inches(5))
-                        os.remove(img_path)
-            except Exception:
-                pass  # Skip images that fail to extract
+                    if not base_image or not base_image.get("image"):
+                        continue
+                    # Use a unique system temp file instead of an output-folder
+                    # name based on page/xref: concurrent conversions can share
+                    # those values and previously raced to overwrite/delete it.
+                    img_ext = re.sub(r"[^A-Za-z0-9]", "", base_image.get("ext", "png")) or "png"
+                    with tempfile.NamedTemporaryFile(prefix="maclaw-pdf-word-", suffix=f".{img_ext}", delete=False) as temp_file:
+                        img_path = temp_file.name
+                        temp_file.write(base_image["image"])
+                    doc.add_picture(img_path, width=Inches(5))
+                except Exception:
+                    # A broken embedded image should not discard extracted text
+                    # or fail the entire document conversion.
+                    pass
+                finally:
+                    if img_path:
+                        try:
+                            os.remove(img_path)
+                        except OSError:
+                            pass
 
         # Add page break between pages (except last)
         if page_num < page_count - 1:
@@ -118,9 +130,9 @@ def convert_pdf_to_docx(input_path: str, output_path: str) -> str:
 
     pdf.close()
     doc.save(output_path)
-    print(f"转换完成: {output_path}")
-    print(f"   页数: {page_count}")
-    print(f"   输出: {os.path.abspath(output_path)}")
+    print(f"Conversion complete: {output_path}", flush=True)
+    print(f"Pages: {page_count}", flush=True)
+    print(f"Output: {os.path.abspath(output_path)}", flush=True)
     return output_path
 
 

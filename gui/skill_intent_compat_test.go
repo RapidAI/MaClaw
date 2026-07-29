@@ -48,10 +48,10 @@ func TestExtractUserIntentCategory(t *testing.T) {
 		// Single-char false positive prevention:
 		// These contain single CJK chars that WERE verbs in the old table
 		// but should NOT match because they're parts of compound words.
-		{"数据分析报告", intentCatUnknown},  // "数据" = data, not "数" = count
+		{"数据分析报告", intentCatUnknown},   // "数据" = data, not "数" = count
 		{"好看的PDF模板", intentCatUnknown}, // "好看" = pretty, not "看" = look
 		{"写真集下载", intentCatUnknown},    // "写真" = photo, not "写" = write
-		{"做法大全", intentCatUnknown},      // "做法" = method, not "做" = make
+		{"做法大全", intentCatUnknown},     // "做法" = method, not "做" = make
 
 		// Unknown
 		{"hello", intentCatUnknown},
@@ -261,13 +261,13 @@ func TestIsIntentSkillPreferenceCompatible(t *testing.T) {
 		text string
 		want bool
 	}{
-		{"统计pdf文件", false},       // query → not compatible
-		{"搜索论文", false},          // query → not compatible
-		{"生成PDF报告", true},        // generate → compatible
-		{"发送文件给我", true},        // send → compatible
-		{"修改这个文件", false},       // modify → not compatible
-		{"hello world", true},       // unknown → compatible (don't block)
-		{"pdf", true},               // unknown → compatible
+		{"统计pdf文件", false},    // query → not compatible
+		{"搜索论文", false},       // query → not compatible
+		{"生成PDF报告", true},     // generate → compatible
+		{"发送文件给我", true},      // send → compatible
+		{"修改这个文件", false},     // modify → not compatible
+		{"hello world", true}, // unknown → compatible (don't block)
+		{"pdf", true},         // unknown → compatible
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {

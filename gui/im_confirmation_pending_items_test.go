@@ -288,10 +288,10 @@ func TestConfirmationFlow_SSHTaskWithMissingCredentials(t *testing.T) {
 	// user clicks confirm. The approved text should tell the LLM to ask for
 	// credentials, not "直接执行不要确认".
 	item := &pendingConfirmation{
-		ID:           "confirm-test",
-		UserID:       "user1",
-		OriginalText: "帮我上去部署一下maclaw的hub 端并运行它。maclaw仓库地址：https://github.com/RapidAI/MaCLaw",
-		ResumeText:   "帮我上去部署一下maclaw的hub 端并运行它。maclaw仓库地址：https://github.com/RapidAI/MaCLaw",
+		ID:                  "confirm-test",
+		UserID:              "user1",
+		OriginalText:        "帮我上去部署一下maclaw的hub 端并运行它。maclaw仓库地址：https://github.com/RapidAI/MaCLaw",
+		ResumeText:          "帮我上去部署一下maclaw的hub 端并运行它。maclaw仓库地址：https://github.com/RapidAI/MaCLaw",
 		EnhancedInstruction: "通过SSH连接至远程服务器，拉取指定GitHub仓库并完成Hub端项目的部署与启动运行",
 		EnhancedSummary: "任务类型：远程操作\n" +
 			"任务理解：通过SSH连接至远程服务器，拉取指定GitHub仓库并完成Hub端项目的部署与启动运行。\n" +

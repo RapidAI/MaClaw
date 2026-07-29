@@ -7,10 +7,10 @@ package main
 // See docs/agent-unification-design.md Phase 1, Section 4.1.2.
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func init() {

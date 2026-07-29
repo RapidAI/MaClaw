@@ -828,6 +828,9 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 	if name == "set_nickname" && strings.TrimSpace(userText) != "" {
 		args["_user_text"] = userText
 	}
+	if reason := manageScheduleCreateBlockReason(name, args, userText); reason != "" {
+		return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	// File delivery: structured only. send_to_im forces IM; send_file needs flag/destination.
 	// Do not keyword-scan userText.
 	switch name {
@@ -919,6 +922,35 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 	}
 
 	return toolExecutionResult{Text: fmt.Sprintf("Unknown tool: %s", name), Outcome: toolOutcomeFailed, FailureKind: toolFailureUnknownTool}
+}
+
+// manageScheduleCreateBlockReason keeps a model from turning ordinary work
+// (for example, a document conversion) into a recurring background task.
+// Scheduling changes state persistently, so require an explicit scheduling cue
+// in the originating user request rather than relying only on the tool call.
+func manageScheduleCreateBlockReason(name string, args map[string]interface{}, userText string) string {
+	if strings.TrimSpace(name) != "manage_schedule" {
+		return ""
+	}
+	action := normalizeManageScheduleAction(stringVal(args, "action"))
+	if action != manageScheduleActionCreate {
+		// Some models reverse action and task_action. toolManageSchedule supports
+		// that legacy form, so the execution gate must recognize it too.
+		action = normalizeManageScheduleAction(stringVal(args, "task_action"))
+	}
+	if action != manageScheduleActionCreate {
+		return ""
+	}
+
+	request := strings.ToLower(strings.TrimSpace(userText))
+	for _, cue := range []string{
+		"定时", "计划任务", "日程", "提醒", "cron", "schedule", "timer",
+	} {
+		if strings.Contains(request, cue) {
+			return ""
+		}
+	}
+	return "创建定时任务需要用户在当前请求中明确提出定时、计划或提醒需求；不要把普通文档转换或一次性工作创建为定时任务。"
 }
 
 func runtimePolicyOwnerIDFromToolArgs(args map[string]interface{}) string {
@@ -1114,6 +1146,20 @@ func inferRegisteredToolOutcome(text string) toolOutcome {
 	}
 	if strings.Contains(trimmed, "\u6267\u884c\u5931\u8d25") || strings.Contains(trimmed, "\u5de5\u5177\u6267\u884c\u5f02\u5e38") || strings.Contains(trimmed, "\u53c2\u6570\u89e3\u6790\u5931\u8d25") {
 		return toolOutcomeFailed
+	}
+	// Registered handlers historically returned plain text, so preserve that
+	// convention while recognizing the stable error strings emitted by the
+	// native PDF generator.  Treating these as success makes the agent loop
+	// believe an artifact exists and prevents its normal recovery path.
+	for _, marker := range []string{
+		"未找到可用的中文字体",
+		"无法生成 PDF",
+		"PDF 生成失败:",
+		"缺少 content 参数",
+	} {
+		if strings.Contains(trimmed, marker) {
+			return toolOutcomeFailed
+		}
 	}
 	return toolOutcomeSucceeded
 }

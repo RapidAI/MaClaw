@@ -216,7 +216,6 @@ func TestMobileLibraryItemFromMeetingRecordingPayloadOmitsZeroRetention(t *testi
 	}
 }
 
-
 func TestDeleteMobileMeetingRecordingAndResultsUsesFullRecordingEndpoint(t *testing.T) {
 	var deleteCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -58,7 +58,7 @@ export interface AIAssistantPanelStateProps extends Partial<AIAssistantPanelHook
 export interface AIAssistantPanelHookActions {
     browseFile: () => Promise<void>;
     clearSelectedFile: () => void;
-    removeSelectedFile: (index: number) => void;
+    removeSelectedFile: (filePath: string) => void;
     sendMessage: (text: string, options?: Record<string, unknown>) => Promise<boolean>;
     sendBtwMessage: (query: string) => Promise<void>;
     sendMessageInBackground: (text: string) => Promise<void>;

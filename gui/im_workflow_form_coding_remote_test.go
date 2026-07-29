@@ -326,10 +326,10 @@ func TestPrefillCodingRemoteEnvFieldsFromSticky(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := "desktop-user:C:/wf"
 	h.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
-		Kind:         "remote",
-		RemoteHost:   "192.168.0.9",
-		RemoteUser:   "ubuntu",
-		RemotePort:   22,
+		Kind:          "remote",
+		RemoteHost:    "192.168.0.9",
+		RemoteUser:    "ubuntu",
+		RemotePort:    22,
 		RemoteWorkDir: "/home/ubuntu/p",
 	})
 	schema := v2.CodingTemplate().Phases[0].InputSchema

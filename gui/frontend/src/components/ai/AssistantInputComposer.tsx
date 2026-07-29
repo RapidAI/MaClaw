@@ -7,6 +7,7 @@ import { InputHistoryAutocomplete } from "./InputHistoryAutocomplete";
 import { useInputHistoryAutocomplete } from "./useInputHistoryAutocomplete";
 import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
+import { isPlainEnter } from "./assistantInputShortcuts";
 
 const EMPTY_TEXTAREA_REF: RefObject<HTMLTextAreaElement | null> = { current: null };
 const EMPTY_SUBMITTED_PROMPTS: string[] = [];
@@ -147,7 +148,9 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                             if (exitHistoryBrowsing()) e.preventDefault();
                             return;
                         }
-                        if (e.key === "Enter" && !e.shiftKey) {
+                        // Plain Enter sends. Modifier combinations keep the textarea's
+                        // native multiline behavior, including Ctrl/Cmd+Enter for a newline.
+                        if (isPlainEnter(e)) {
                             e.preventDefault();
                             handleSend();
                         }
@@ -188,7 +191,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                 <div style={toolbarRightStyle}>
                     {showMemoryUsage && <MemoryUsageRing theme={t} themeMode={themeMode} lang={lang} size={20} />}
                     <span aria-hidden="true" style={{ fontSize: "11px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
-                        {lang?.startsWith("zh") ? "Enter \u53d1\u9001" : "Enter to send"}
+                        {lang?.startsWith("zh") ? "Enter \u53d1\u9001 · Ctrl/⌘+Enter \u6362\u884c" : "Enter to send · Ctrl/⌘+Enter for a new line"}
                     </span>
                     <AssistantInputActionsRight
                         canSend={canSend}

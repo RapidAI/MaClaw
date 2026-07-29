@@ -21,13 +21,13 @@ import (
 
 // progressTracker records the order of operations during message processing.
 type progressTracker struct {
-	mu              sync.Mutex
-	progressCalled  atomic.Bool
-	progressTime    time.Time
-	preflightTime   time.Time
-	entryCtxTime    time.Time
-	progressText    string
-	operationOrder  []string
+	mu             sync.Mutex
+	progressCalled atomic.Bool
+	progressTime   time.Time
+	preflightTime  time.Time
+	entryCtxTime   time.Time
+	progressText   string
+	operationOrder []string
 }
 
 func (p *progressTracker) onProgress(text string) {

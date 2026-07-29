@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -386,6 +387,9 @@ func handleAgentLoopToolAvailabilityHallucination(iteration int, msgContent stri
 	}
 	correction := detectToolAvailabilityHallucination(msgContent, tools)
 	if correction == "" {
+		correction = detectAvailableToolExecutionPromise(msgContent, tools)
+	}
+	if correction == "" {
 		return result
 	}
 	if strings.TrimSpace(correctionOverride) != "" {
@@ -400,6 +404,31 @@ func handleAgentLoopToolAvailabilityHallucination(iteration int, msgContent stri
 	})
 	result.ContinueLoop = true
 	return result
+}
+
+// detectAvailableToolExecutionPromise catches the common no-op pattern where
+// a model narrates that it will invoke a tool but emits no tool call.  It runs
+// only in the no-tool branch and only for tools actually exposed in this round.
+func detectAvailableToolExecutionPromise(text string, actualTools []map[string]interface{}) string {
+	if strings.TrimSpace(text) == "" || len(actualTools) == 0 {
+		return ""
+	}
+	for _, name := range []string{"craft_tool", "bash"} {
+		if !toolListContainsName(actualTools, name) {
+			continue
+		}
+		lower := strings.ToLower(text)
+		promised := strings.Contains(lower, "call "+name) ||
+			strings.Contains(lower, "invoke "+name) ||
+			strings.Contains(lower, "run "+name) ||
+			strings.Contains(text, "调用 "+name) ||
+			strings.Contains(text, "执行 "+name) ||
+			strings.Contains(text, "使用 "+name)
+		if promised {
+			return fmt.Sprintf("[system correction] %s is available now. You said you would run it but emitted no tool call. Invoke it in this turn, or state a concrete blocker. Do not substitute manage_schedule or passthrough_task for one-off execution.", name)
+		}
+	}
+	return ""
 }
 
 func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolRecoverOptions) agentLoopNoToolRecoverResult {

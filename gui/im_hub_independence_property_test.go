@@ -22,13 +22,13 @@ import (
 type hubState int
 
 const (
-	hubStateDisconnected hubState = iota // Hub never connected
-	hubStateConnecting                   // WebSocket dial in progress
-	hubStateConnected                    // Auth successful, fully connected
-	hubStateFailed                       // Connection attempt failed
-	hubStateHelloInProgress              // Connected, Send_Hello executing
-	hubStateHelloComplete                // Connected, Send_Hello done
-	hubStateReconnecting                 // Was connected, now reconnecting
+	hubStateDisconnected    hubState = iota // Hub never connected
+	hubStateConnecting                      // WebSocket dial in progress
+	hubStateConnected                       // Auth successful, fully connected
+	hubStateFailed                          // Connection attempt failed
+	hubStateHelloInProgress                 // Connected, Send_Hello executing
+	hubStateHelloComplete                   // Connected, Send_Hello done
+	hubStateReconnecting                    // Was connected, now reconnecting
 )
 
 func (s hubState) String() string {

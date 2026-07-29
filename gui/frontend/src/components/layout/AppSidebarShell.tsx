@@ -91,7 +91,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     showCodingToolEntry?: boolean;
     showAppEntry?: boolean;
     showWorkflowEntry?: boolean;
-    showUtilitiesEntry?: boolean;
+	showUtilitiesEntry?: boolean;
     utilitiesLabel?: string;
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean; model?: string; models?: string[] }>;
     onSwitchProvider?: (providerName: string) => void;
@@ -189,7 +189,7 @@ export const AppSidebarShell = ({
     showCodingToolEntry = false,
     showAppEntry = false,
     showWorkflowEntry = true,
-    showUtilitiesEntry = true,
+	showUtilitiesEntry = true,
     utilitiesLabel,
     availableProviders = [],
     onSwitchProvider,
@@ -234,7 +234,7 @@ export const AppSidebarShell = ({
                     onRenameFavorite={onRenameFavoriteEmployee || (() => {})}
                     showAppEntry={showAppEntry}
                     showWorkflowEntry={showWorkflowEntry}
-                    showUtilitiesEntry={showUtilitiesEntry}
+					showUtilitiesEntry={showUtilitiesEntry}
                     utilitiesLabel={utilitiesLabel}
                 />        {navTab === 'ai' && (
                     <SidebarAiPane

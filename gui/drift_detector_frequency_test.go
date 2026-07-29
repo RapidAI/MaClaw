@@ -538,8 +538,6 @@ func TestFreqResultsAreProgressing_IgnoresOtherTools(t *testing.T) {
 	}
 }
 
-
-
 func TestFrequencyAnomaly_BashScaffolding_DifferentHash_NotDetected(t *testing.T) {
 	// bash called 4 times with different ResultHash.
 	// Results are progressing → NOT drift.
@@ -555,7 +553,6 @@ func TestFrequencyAnomaly_BashScaffolding_DifferentHash_NotDetected(t *testing.T
 		t.Fatal("bash with different ResultHash should NOT trigger drift")
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests for argument-diversity signal (freqArgsAllUnique + isGeneralPurposeExecutor).

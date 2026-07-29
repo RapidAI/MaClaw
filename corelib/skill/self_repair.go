@@ -37,11 +37,11 @@ type RepairContext struct {
 	// Parameter contract (DeclaredParams vs ActualArgs) so the repair LLM can
 	// distinguish "caller passed wrong/missing param names" from "skill logic bug".
 	// Filled by EnrichRepairParamContract when empty.
-	DeclaredParams      []corelib.NLSkillParam `json:"declared_params,omitempty"`
-	MissingRequired     []string               `json:"missing_required,omitempty"`
-	UnknownArgs         []string               `json:"unknown_args,omitempty"`
-	ResolvedByAlias     map[string]string      `json:"resolved_by_alias,omitempty"` // actual→declared
-	ParamContractNote   string                 `json:"param_contract_note,omitempty"`
+	DeclaredParams    []corelib.NLSkillParam `json:"declared_params,omitempty"`
+	MissingRequired   []string               `json:"missing_required,omitempty"`
+	UnknownArgs       []string               `json:"unknown_args,omitempty"`
+	ResolvedByAlias   map[string]string      `json:"resolved_by_alias,omitempty"` // actual→declared
+	ParamContractNote string                 `json:"param_contract_note,omitempty"`
 }
 
 // NewRepairContext builds a RepairContext with error class from LastError and

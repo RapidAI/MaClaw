@@ -97,7 +97,7 @@ func TestFrontendBackendParityTable(t *testing.T) {
 		{"/plugin marketplace destroy", false},
 		{"skill is important", false},
 		{"maclaw-tui skill list", true},
-		{"maclaw-tui /skill list", true},  // slash after binary
+		{"maclaw-tui /skill list", true}, // slash after binary
 		{"maclaw-tui ／skill list", true}, // fullwidth slash after binary
 		{`C:\bin\maclaw-tui.exe skill list`, true},
 		{`/mcp add --name "my server"`, true},
@@ -215,4 +215,3 @@ func TestInstallCLIRunnersMatchCatalog(t *testing.T) {
 		}
 	}
 }
-

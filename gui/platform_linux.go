@@ -29,16 +29,9 @@ func (a *App) IsNativeRoundedCorners() bool {
 	return false
 }
 
-// PlatformTransparencyFlags returns (WebviewIsTransparent, WindowIsTranslucent).
-// On Linux both are false — compositor transparency support varies widely
-// across DEs and keeping it off is the safe default.
+// PlatformTransparencyFlags stays opaque because compositor support varies.
 func (a *App) PlatformTransparencyFlags() (webviewTransparent, windowTranslucent bool) {
 	return false, false
-}
-
-// IsWebviewTransparent returns false on Linux.
-func (a *App) IsWebviewTransparent() bool {
-	return false
 }
 
 // GetFramelessTopInset returns 0 on Linux — no DWM offset issue.

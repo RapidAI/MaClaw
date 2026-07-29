@@ -4,7 +4,6 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
-
 )
 
 // CodeFileEvent is the payload for code:file_update events.

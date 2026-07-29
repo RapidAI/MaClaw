@@ -13,14 +13,17 @@ type fakeExecForResponder struct {
 	written []byte
 }
 
-func (f *fakeExecForResponder) PID() int                { return 1 }
-func (f *fakeExecForResponder) Write(data []byte) error  { f.written = append(f.written, data...); return nil }
-func (f *fakeExecForResponder) Interrupt() error         { return nil }
-func (f *fakeExecForResponder) Kill() error              { return nil }
-func (f *fakeExecForResponder) Resize(c, r int) error    { return nil }
-func (f *fakeExecForResponder) Close() error             { return nil }
-func (f *fakeExecForResponder) Output() <-chan []byte     { return nil }
-func (f *fakeExecForResponder) Exit() <-chan PTYExit      { return nil }
+func (f *fakeExecForResponder) PID() int { return 1 }
+func (f *fakeExecForResponder) Write(data []byte) error {
+	f.written = append(f.written, data...)
+	return nil
+}
+func (f *fakeExecForResponder) Interrupt() error      { return nil }
+func (f *fakeExecForResponder) Kill() error           { return nil }
+func (f *fakeExecForResponder) Resize(c, r int) error { return nil }
+func (f *fakeExecForResponder) Close() error          { return nil }
+func (f *fakeExecForResponder) Output() <-chan []byte { return nil }
+func (f *fakeExecForResponder) Exit() <-chan PTYExit  { return nil }
 
 func TestStartupResponderThemeSelection(t *testing.T) {
 	app := &App{}

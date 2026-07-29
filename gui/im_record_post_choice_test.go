@@ -323,12 +323,12 @@ func TestMatchRecordPostChoiceFreeText(t *testing.T) {
 
 func TestSuggestMP3ArchivePath(t *testing.T) {
 	cases := map[string]string{
-		`C:\tmp\a.wav`:  `C:\tmp\a.mp3`,
-		`C:\tmp\a.WAV`:  `C:\tmp\a.mp3`,
-		`/tmp/a.wav`:    `/tmp/a.mp3`,
-		`/tmp/a.mp3`:    `/tmp/a.mp3`,
-		`/tmp/meeting`:  `/tmp/meeting.mp3`,
-		``:              ``,
+		`C:\tmp\a.wav`: `C:\tmp\a.mp3`,
+		`C:\tmp\a.WAV`: `C:\tmp\a.mp3`,
+		`/tmp/a.wav`:   `/tmp/a.mp3`,
+		`/tmp/a.mp3`:   `/tmp/a.mp3`,
+		`/tmp/meeting`: `/tmp/meeting.mp3`,
+		``:             ``,
 	}
 	for in, want := range cases {
 		if got := suggestMP3ArchivePath(in); got != want {

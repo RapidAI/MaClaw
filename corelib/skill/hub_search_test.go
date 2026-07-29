@@ -73,6 +73,77 @@ func TestEntryFromSkillHubDownload_RejectsEmptyPayload(t *testing.T) {
 	}
 }
 
+func TestEntryFromSkillHubDownload_AcceptsMaclawAppPackageWithoutSkillSteps(t *testing.T) {
+	tmp := t.TempDir()
+	appDefinition := base64.StdEncoding.EncodeToString([]byte(`{
+		"schema":"maclaw.app.v1",
+		"privateMarker":"x_maclaw_apps",
+		"app":{"id":"pdf-translator","name":"PDF Translator"}
+	}`))
+	entry, err := entryFromSkillHubDownload(skillHubDownloadResponse{
+		skillHubItem: skillHubItem{Name: "skill-app-pdf-translator"},
+		Files:        map[string]string{"maclaw.app.json": appDefinition},
+	}, HubDownloadOptions{HubURL: "https://hub.example", SkillID: "app-1", TargetDir: tmp})
+	if err != nil {
+		t.Fatalf("entryFromSkillHubDownload: %v", err)
+	}
+	if entry.Type != "instruction" {
+		t.Fatalf("type = %q, want instruction", entry.Type)
+	}
+	if len(entry.Steps) != 0 {
+		t.Fatalf("steps = %#v, want no executable steps", entry.Steps)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "maclaw.app.json")); err != nil {
+		t.Fatalf("maclaw.app.json not written: %v", err)
+	}
+}
+
+func TestEntryFromSkillHubDownload_UsesStandaloneAppMetadataWhenSkillFieldsMissing(t *testing.T) {
+	appDefinition := base64.StdEncoding.EncodeToString([]byte(`{
+		"schema":"maclaw.app.v1",
+		"privateMarker":"x_maclaw_apps",
+		"app":{"id":"pdf-translator","name":"PDF Translator","description":"Translate a PDF"}
+	}`))
+	entry, err := entryFromSkillHubDownload(skillHubDownloadResponse{
+		skillHubItem: skillHubItem{Name: "skill-app-pdf-translator"},
+		Files:        map[string]string{"maclaw.app.json": appDefinition},
+	}, HubDownloadOptions{HubURL: "https://hub.example", SkillID: "app-1", SkipExtract: true})
+	if err != nil {
+		t.Fatalf("entryFromSkillHubDownload: %v", err)
+	}
+	if entry.Description != "Translate a PDF" {
+		t.Fatalf("description = %q", entry.Description)
+	}
+	if len(entry.Triggers) != 1 || entry.Triggers[0] != "PDF Translator" {
+		t.Fatalf("triggers = %#v", entry.Triggers)
+	}
+}
+
+func TestEntryFromSkillHubDownload_KeepsExecutableAppWrapperExecutable(t *testing.T) {
+	appDefinition := base64.StdEncoding.EncodeToString([]byte(`{
+		"schema":"maclaw.app.v1",
+		"privateMarker":"x_maclaw_apps",
+		"app":{"id":"invoice-review","name":"Invoice Review"}
+	}`))
+	entry, err := entryFromSkillHubDownload(skillHubDownloadResponse{
+		skillHubItem: skillHubItem{Name: "invoice-review-skill"},
+		Steps: []skillHubDownloadStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo invoice"},
+		}},
+		Files: map[string]string{"maclaw.app.json": appDefinition},
+	}, HubDownloadOptions{HubURL: "https://hub.example", SkillID: "invoice-app", SkipExtract: true})
+	if err != nil {
+		t.Fatalf("entryFromSkillHubDownload: %v", err)
+	}
+	if entry.Type == "instruction" {
+		t.Fatalf("type = %q, executable app wrapper must not become instruction-only", entry.Type)
+	}
+	if len(entry.Steps) != 1 || entry.Steps[0].Action != "bash" {
+		t.Fatalf("steps = %#v, want preserved executable step", entry.Steps)
+	}
+}
+
 func TestParseSkillHubDownloadJSON_WithFiles(t *testing.T) {
 	tmp := t.TempDir()
 	md := base64.StdEncoding.EncodeToString([]byte("# Demo\n\nRun the demo."))

@@ -90,7 +90,10 @@
 .vrepo-page .utilities-link:hover:not(:disabled) { background: transparent; color: var(--theme-primary-strong, var(--vrepo-primary)); text-decoration: underline; text-underline-offset: 3px; }
 .vrepo-page .utilities-error { margin: 0 0 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--vrepo-danger) 46%, var(--vrepo-border)); border-radius: 8px; background: var(--theme-danger-bg, #fbf1f0); color: var(--vrepo-danger); font-size: .8rem; line-height: 1.45; white-space: pre-wrap; }
 .vrepo-local-directory-note { margin: 0; color: var(--vrepo-secondary); font-size: .76rem; line-height: 1.45; }
-.vrepo-sync-status { display: inline-flex; align-items: center; min-height: 30px; margin: 0 0 14px; padding: 0 10px; border: 1px solid var(--vrepo-border-subtle); border-radius: 6px; background: var(--vrepo-muted); color: var(--vrepo-secondary); font-size: .72rem; }
+.vrepo-sync-status { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; margin: 0 0 14px; padding: 6px 8px 6px 10px; border: 1px solid var(--vrepo-border-subtle); border-radius: 6px; background: var(--vrepo-muted); color: var(--vrepo-secondary); font-size: .72rem; line-height: 1.4; }
+.vrepo-sync-status > span { min-width: 0; overflow-wrap: anywhere; }
+.vrepo-sync-status__repair { flex: 0 0 auto; min-height: 28px !important; padding: 0 9px !important; border-color: color-mix(in srgb, var(--vrepo-danger) 46%, var(--vrepo-border)) !important; color: var(--vrepo-danger) !important; font-size: .7rem !important; }
+.vrepo-sync-status__repair:hover:not(:disabled) { border-color: var(--vrepo-danger) !important; background: color-mix(in srgb, var(--vrepo-danger) 9%, var(--vrepo-surface)) !important; color: var(--vrepo-danger) !important; }
 .vrepo-sync-status.is-success { border-color: color-mix(in srgb, var(--vrepo-success) 38%, var(--vrepo-border)); color: var(--vrepo-success); }
 .vrepo-sync-status.is-syncing { color: var(--vrepo-primary); }
 .vrepo-sync-status.is-retry { border-color: color-mix(in srgb, var(--vrepo-primary) 34%, var(--vrepo-border)); color: var(--vrepo-primary); }
@@ -159,8 +162,14 @@
 .vrepo-repository-list__item-meta { color: var(--vrepo-muted-ink); font-size: .65rem; font-weight: 600; }
 .vrepo-repository-list__task { display: block; min-height: 34px !important; margin: 2px 9px 4px; font-size: .68rem !important; text-align: left; }
 .vrepo-repository-list__empty { margin: 16px 8px; color: var(--vrepo-muted-ink); font-size: .73rem; line-height: 1.5; }
-.vrepo-repository-menu { position: fixed; z-index: 60; min-width: 196px; padding: 4px; border: 1px solid var(--vrepo-border); border-radius: 7px; background: var(--vrepo-surface); box-shadow: 0 4px 8px color-mix(in srgb, var(--vrepo-ink) 16%, transparent); }
-.vrepo-repository-menu button { display: flex; width: 100%; justify-content: flex-start; }
+.vrepo-repository-menu { position: fixed; z-index: 60; box-sizing: border-box; width: 232px; padding: 6px; border: 1px solid color-mix(in srgb, var(--vrepo-border) 88%, var(--vrepo-secondary)); border-radius: 8px; background: var(--vrepo-surface); box-shadow: 0 6px 12px color-mix(in srgb, var(--vrepo-ink) 14%, transparent); }
+.vrepo-repository-menu__context { display: grid; gap: 2px; min-width: 0; padding: 5px 7px 8px; border-bottom: 1px solid var(--vrepo-border-subtle); }
+.vrepo-repository-menu__context span { color: var(--vrepo-muted-ink); font-size: .62rem; font-weight: 650; }
+.vrepo-repository-menu__context strong { overflow: hidden; color: var(--vrepo-secondary); font-size: .72rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.vrepo-repository-menu__delete { display: flex; width: 100%; min-height: 34px !important; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 4px; padding: 0 7px !important; border: 1px solid transparent !important; border-radius: 5px !important; background: transparent !important; color: var(--vrepo-secondary) !important; font-size: .74rem !important; font-weight: 600 !important; text-align: left; }
+.vrepo-repository-menu__delete svg { width: 15px; height: 15px; flex: 0 0 15px; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
+.vrepo-repository-menu__delete:hover:not(:disabled), .vrepo-repository-menu__delete:focus-visible { border-color: color-mix(in srgb, var(--vrepo-danger) 34%, var(--vrepo-border)) !important; background: color-mix(in srgb, var(--vrepo-danger) 7%, var(--vrepo-surface)) !important; color: var(--vrepo-danger) !important; outline: none; }
+.vrepo-repository-menu__delete:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--vrepo-primary) 28%, transparent); }
 .vrepo-layout { display: grid; grid-template-columns: minmax(225px, 28%) minmax(0, 1fr); min-height: 0; background: var(--vrepo-surface); }
 .vrepo-tree { min-height: 0; box-shadow: inset -1px 0 0 var(--vrepo-border); background: var(--vrepo-muted); overflow: auto; }
 .vrepo-tree__head { display: flex; position: sticky; z-index: 1; top: 0; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 13px; border-bottom: 1px solid var(--vrepo-border); background: var(--vrepo-muted); }
@@ -218,6 +227,34 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-facts dt { color: var(--vrepo-secondary); }
 .vrepo-facts dd { margin: 0; color: var(--vrepo-ink); overflow-wrap: anywhere; }
 .vrepo-status-output { max-height: 260px; margin: 18px 0 0; overflow: auto; padding: 13px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-page) 86%, #000); color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .73rem; }
+.vrepo-changes { margin-top: 20px; border-top: 1px solid var(--vrepo-border-subtle); padding-top: 18px; }
+.vrepo-changes__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.vrepo-changes__head > div:last-child { display: flex; flex-wrap: wrap; gap: 7px; }
+.vrepo-changes h3, .vrepo-changes h4 { margin: 0; color: var(--vrepo-ink); font-size: .86rem; }
+.vrepo-changes h4 { margin-bottom: 9px; font-size: .72rem; }
+.vrepo-changes__head p, .vrepo-changes__empty { margin: 5px 0 0; color: var(--vrepo-secondary); font-size: .76rem; line-height: 1.45; }
+.vrepo-changes__notice { margin: 0 0 9px; color: var(--vrepo-secondary); font-size: .72rem; line-height: 1.45; }
+.vrepo-changes__summary { display: flex; gap: 8px; margin: 14px 0; color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .7rem; }
+.vrepo-changes__summary span { padding: 4px 6px; border-radius: 4px; background: var(--vrepo-muted); }
+.vrepo-changes__grid { display: grid; grid-template-columns: minmax(220px, .9fr) minmax(260px, 1.1fr); gap: 18px; }
+.vrepo-change-list { max-height: 270px; overflow: auto; border-top: 1px solid var(--vrepo-border-subtle); }
+.vrepo-change-list button { display: flex; width: 100%; min-height: 0; justify-content: space-between; gap: 10px; padding: 8px 4px; border: 0; border-bottom: 1px solid var(--vrepo-border-subtle); border-radius: 0; background: transparent; color: var(--vrepo-ink); text-align: left; }
+.vrepo-change-list button:hover:not(:disabled), .vrepo-change-list button.is-selected { background: var(--vrepo-primary-soft); color: var(--vrepo-primary); }
+.vrepo-change-list span { min-width: 0; }
+.vrepo-change-list strong, .vrepo-change-list em { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vrepo-change-list strong { font-size: .73rem; font-weight: 650; }
+.vrepo-change-list em { margin-top: 2px; color: var(--vrepo-secondary); font-size: .67rem; font-style: normal; }
+.vrepo-change-list small { flex: 0 0 auto; color: var(--vrepo-secondary); font-size: .64rem; }
+.vrepo-change-list small.is-conflict { color: var(--vrepo-danger, #b42318); font-weight: 650; }
+.vrepo-commit-graph { max-height: 270px; overflow: auto; border-left: 1px solid var(--vrepo-border); }
+.vrepo-commit-graph > div { position: relative; display: flex; gap: 9px; min-height: 47px; padding: 0 0 8px 12px; }
+.vrepo-commit-graph__rail { position: absolute; left: -5px; top: 1px; color: var(--vrepo-primary); font-size: .7rem; line-height: 1; }
+.vrepo-commit-graph p { min-width: 0; margin: 0; }
+.vrepo-commit-graph strong, .vrepo-commit-graph small { display: block; }
+.vrepo-commit-graph strong { overflow: hidden; color: var(--vrepo-ink); font-size: .73rem; text-overflow: ellipsis; white-space: nowrap; }
+.vrepo-commit-graph small { margin-top: 4px; color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .64rem; line-height: 1.4; }
+.vrepo-diff { margin-top: 18px; }
+.vrepo-diff pre { max-height: 420px; margin: 0; overflow: auto; padding: 13px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-page) 86%, #000); color: var(--vrepo-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .7rem; line-height: 1.55; white-space: pre; }
 .vrepo-placeholder { display: grid; min-height: 310px; align-content: center; padding: 24px; border: 1px dashed var(--vrepo-border); border-radius: 8px; color: var(--vrepo-secondary); text-align: center; }
 .vrepo-placeholder h2 { margin: 0; color: var(--vrepo-ink); font-size: 1rem; }
 .vrepo-placeholder p { margin: 7px 0 0; color: var(--vrepo-muted-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .76rem; }
@@ -245,6 +282,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-operation textarea { min-height: 82px; resize: vertical; }
 .vrepo-editor input:focus, .vrepo-editor select:focus, .vrepo-operation textarea:focus { border-color: var(--vrepo-primary); outline: none; box-shadow: 0 0 0 2px var(--vrepo-primary-soft); }
 .vrepo-editor label small { color: var(--vrepo-muted-ink); font-size: .7rem; font-weight: 500; line-height: 1.45; }
+.vrepo-repair-hint { max-width: 64ch; margin: 0; padding: 10px 12px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-muted) 52%, var(--vrepo-surface)); color: var(--vrepo-secondary); font-size: .78rem; line-height: 1.5; }
 .vrepo-inline { display: flex; align-items: center; gap: 10px; }
 .vrepo-inline input, .vrepo-inline > label { flex: 1; }
 .vrepo-inline > label:last-child { flex: 0 0 110px; }
@@ -333,6 +371,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
   .vrepo-layout { min-height: 0; }
   .vrepo-tree { max-height: 280px; box-shadow: inset 0 -1px 0 var(--vrepo-border); }
   .vrepo-detail { padding: 20px; }
+  .vrepo-changes__grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {

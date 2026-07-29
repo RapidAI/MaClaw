@@ -30,7 +30,7 @@ type PackageManifest struct {
 	Version       string            `json:"version"`
 	GeneratedAt   string            `json:"generated_at"`
 	PackageSHA256 string            `json:"package_sha256,omitempty"` // SHA256 of the zip file (set by Hub after upload)
-	Files         map[string]string `json:"files"`                   // relative path → SHA256 hex
+	Files         map[string]string `json:"files"`                    // relative path → SHA256 hex
 }
 
 // GeneratePackageManifest creates a manifest by hashing all files in the skill directory.

@@ -16,11 +16,11 @@ import (
 // MaintenanceReviewDrafts is a read-only snapshot of patch/merge drafts that
 // require human review before any file or registry mutation.
 type MaintenanceReviewDrafts struct {
-	GeneratedAt  string                           `json:"generated_at"`
-	PlanSummary  string                           `json:"plan_summary"`
-	PlanActions  int                              `json:"plan_actions"`
-	PatchDrafts  []SkillMaintenancePatchDraft     `json:"patch_drafts"`
-	MergeDrafts  []SkillMaintenanceMergeDraft     `json:"merge_drafts"`
+	GeneratedAt  string                            `json:"generated_at"`
+	PlanSummary  string                            `json:"plan_summary"`
+	PlanActions  int                               `json:"plan_actions"`
+	PatchDrafts  []SkillMaintenancePatchDraft      `json:"patch_drafts"`
+	MergeDrafts  []SkillMaintenanceMergeDraft      `json:"merge_drafts"`
 	QueuedRepair []SkillMaintenanceExecutionAction `json:"queued_repair,omitempty"`
 }
 

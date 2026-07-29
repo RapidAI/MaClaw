@@ -68,7 +68,7 @@ interface AssistantInputStackProps {
     recallHistory: (direction: "up" | "down") => boolean;
     rememberHistoryEdit: (value: string) => void;
     removeEntry: (id: string) => void;
-    removeSelectedFile?: (index: number) => void;
+    removeSelectedFile?: (filePath: string) => void;
     reorderEntry: (fromIndex: number, toIndex: number) => void;
     resizeInput: () => void;
     selectedFilePaths: string[];

@@ -9,7 +9,7 @@ import (
 // reach Hub without probing every short chat message.
 // Hints are best-effort (TTL); missing hints only skip free-text probes.
 type surveySessionHint struct {
-	mu   sync.Mutex
+	mu    sync.Mutex
 	until map[string]time.Time // rate key -> approx expiry
 }
 

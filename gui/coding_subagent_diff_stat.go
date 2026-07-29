@@ -51,9 +51,10 @@ func (s *SubAgentDiffStat) FileReport() string {
 }
 
 // git diff --stat output format:
-//  src/auth/login.go      | 103 +++++++--
-//  src/auth/login_test.go |  45 ++++
-//  2 files changed, 140 insertions(+), 8 deletions(-)
+//
+//	src/auth/login.go      | 103 +++++++--
+//	src/auth/login_test.go |  45 ++++
+//	2 files changed, 140 insertions(+), 8 deletions(-)
 var (
 	// Per-file line: " path | N +++---" or " path | Bin 0 -> 1234 bytes"
 	subAgentDiffStatFileRe = regexp.MustCompile(`^\s*(.+?)\s*\|\s*(\d+)\s*[+\-]*\s*$`)

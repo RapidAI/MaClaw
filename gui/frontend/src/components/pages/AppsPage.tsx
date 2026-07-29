@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { approvalEscalationDataAttr, approvalEscalationExhaustedText, approvalEscalationRetryText } from './approvalEscalationDisplay';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, DecideMaclawAppApprovalInstance, ReconcileMaclawAppApprovalProjections, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, LoadMaclawAppsPanelState, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, SaveMaclawAppsPanelState, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, DecideMaclawAppApprovalInstance, ReconcileMaclawAppApprovalProjections, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import {
     clearWorkspaceLaunchIssue,
@@ -340,6 +340,9 @@ type AppManifestBinding = {
     dependencies?: {
         skills?: AppSkillDependency[];
     };
+    // Kept with a locally installed app so runtime dependency repair can use
+    // the exact skill payload shipped by the publisher before reaching Hub.
+    bundledDependencies?: Record<string, unknown>;
     ui?: AppWorkspaceLayout;
     resultContract?: AppResultContract;
     testProtocol?: AppTestProtocol;
@@ -3060,8 +3063,30 @@ function normalizeAppWorkspaceLayout(raw: unknown, kind: AppKind): AppWorkspaceL
 
 function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
     const deps = app.manifest?.dependencies?.skills || [];
-    const appSkill = app.manifest?.appSkill?.id ? [{ id: app.manifest.appSkill.id, version: app.manifest.appSkill.version, kind: 'app_skill' as const, required: true, source: (app.manifest.appSkill.source || 'local') as AppSkillDependency['source'] }] : [];
-    const boundSkill = app.manifest?.skill?.id ? [{ id: app.manifest.skill.id, kind: 'runtime_skill' as const, required: true, source: 'hub' as const }] : [];
+    const appSkillID = String(app.manifest?.appSkill?.id || '').trim();
+    const boundSkillID = String(app.manifest?.skill?.id || '').trim();
+    const sameSkillBinding = !!appSkillID && appSkillID.toLocaleLowerCase() === boundSkillID.toLocaleLowerCase();
+    // A tool app often uses its own appSkill as its runtime binding.  Treating
+    // that one skill as both a local app_skill and a Hub runtime_skill makes
+    // the merge retain the local source, then reject the correctly verified
+    // Hub dependency as a source mismatch.  Keep the executable binding — it
+    // is the dependency the runtime and publisher actually resolve.
+    const appSkill = sameSkillBinding
+        ? []
+        : appSkillID
+            ? [{ id: appSkillID, version: app.manifest?.appSkill?.version, kind: 'app_skill' as const, required: true, source: (app.manifest?.appSkill?.source || 'local') as AppSkillDependency['source'] }]
+            : [];
+    const boundSkill = boundSkillID ? [{
+        id: boundSkillID,
+        version: sameSkillBinding ? app.manifest?.appSkill?.version : undefined,
+        kind: 'runtime_skill' as const,
+        required: true,
+        // Preserve a local/market binding source when it represents the same
+        // executable Skill; only legacy standalone tool bindings default Hub.
+        source: sameSkillBinding
+            ? (app.manifest?.appSkill?.source || 'hub') as AppSkillDependency['source']
+            : 'hub' as const,
+    }] : [];
     const approvalWorkflowSkills = (app.manifest?.mis?.approvalBindings || []).map((binding) => ({
         id: binding.workflowSkillId,
         version: binding.workflowVersion,
@@ -3225,7 +3250,9 @@ function makeAutomationManifest(): AppManifestBinding {
     };
 }
 
-function readLayoutState(): AppLayoutState {
+// Kept solely to import panel state saved by older builds. New writes go to
+// apps_panel.db in the configured MaClaw data directory.
+function readLegacyLayoutState(): AppLayoutState {
     if (typeof window === 'undefined') return {};
     try {
         const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '{}') as AppLayoutState;
@@ -3243,10 +3270,19 @@ function applyLayoutState(apps: AppEntry[], layout: AppLayoutState): AppEntry[] 
     const disabledSourcesById = layout.disabledSourcesById || {};
     const recentUsedAtById = layout.recentUsedAtById || {};
     const editedApps = (layout.editedApps || []).map((app) => normalizeStoredAppEntry(app)).filter((app): app is AppEntry => !!app);
-    const customApps = (layout.customApps || []).map((app) => normalizeStoredAppEntry(app, true)).filter((app): app is AppEntry => !!app);
+    // Skill apps are reconstructed from their installed definitions. Keeping a
+    // Skill entry here would make an uninstalled app look installed forever.
+    // Market and DataSrv entries remain durable panel choices: unlike Skills,
+    // they are not necessarily rediscoverable during the initial page load.
+    const customApps = (layout.customApps || [])
+        .map((app) => normalizeStoredAppEntry(app, true))
+        .filter((app): app is AppEntry => !!app && app.source !== 'skill');
     const editedById = new Map(editedApps.map((app) => [app.id, app]));
     const baseApps = apps.map((app) => ({ ...app, ...editedById.get(app.id), id: app.id }));
-    const byId = new Map([...baseApps, ...customApps].filter((app) => !hidden.has(app.id)).map((app) => [app.id, {
+    // Installed/discovered definitions are fresher than a panel snapshot. Let
+    // them win on ID collisions while still applying user-owned layout data
+    // (order, pin, recency and disabled status) below.
+    const byId = new Map([...customApps, ...baseApps].filter((app) => !hidden.has(app.id)).map((app) => [app.id, {
         ...app,
         pinned: layout.pinnedIds ? pinned.has(app.id) : app.pinned,
         recentUsedAt: recentUsedAtById[app.id] || app.recentUsedAt,
@@ -3388,21 +3424,24 @@ function isEditedInitialApp(app: AppEntry) {
         JSON.stringify(base.manifest || null) !== JSON.stringify(app.manifest || null);
 }
 
-function persistLayoutState(apps: AppEntry[]) {
-    if (typeof window === 'undefined') return;
+function layoutStateForApps(apps: AppEntry[]): AppLayoutState {
     const visibleIds = new Set(apps.map((app) => app.id));
     const layout: AppLayoutState = {
         orderedIds: apps.map((app) => app.id),
         pinnedIds: apps.filter((app) => app.pinned).slice(0, maxPinnedApps).map((app) => app.id),
         hiddenIds: initialApps.filter((app) => !visibleIds.has(app.id)).map((app) => app.id),
         editedApps: apps.filter(isEditedInitialApp),
-        customApps: apps.filter((app) => !initialApps.some((base) => base.id === app.id)),
+        // Installed Skills are reconstructed from their on-disk definitions.
+        // Do not cache them here, otherwise uninstalling a Skill would leave a
+        // stale tile behind. Local, Market and DataSrv panel choices are not
+        // reliably discoverable at initial load, so retain those definitions.
+        customApps: apps.filter((app) => !initialApps.some((base) => base.id === app.id) && app.source !== 'skill'),
         recentUsedAtById: Object.fromEntries(apps.filter((app) => app.recentUsedAt).map((app) => [app.id, app.recentUsedAt as string])),
         disabledIds: apps.filter((app) => app.disabled).map((app) => app.id),
         disabledReasonsById: Object.fromEntries(apps.filter((app) => app.disabled && app.disabledReason).map((app) => [app.id, app.disabledReason as string])),
         disabledSourcesById: Object.fromEntries(apps.filter((app) => app.disabled && app.disabledSource).map((app) => [app.id, app.disabledSource as 'local' | 'hub_governance'])),
     };
-    window.localStorage.setItem(storageKey, JSON.stringify(layout));
+    return layout;
 }
 
 const emptyDiscovery: DataSrvDiscovery = {
@@ -4709,6 +4748,11 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
     const skillOutputModes = skillBinding?.outputModes || skillBinding?.output_modes || [];
     const resultContract = normalizeAppResultContract(binding?.resultContract || app?.resultContract || governance?.resultContract || governance?.result_contract, kind, skillOutputModes);
     const testEvidence = governance?.testEvidence || governance?.test_evidence;
+    const bundledDependencies = raw?.bundled_dependencies && typeof raw.bundled_dependencies === 'object'
+        ? raw.bundled_dependencies as Record<string, unknown>
+        : raw?.bundledDependencies && typeof raw.bundledDependencies === 'object'
+            ? raw.bundledDependencies as Record<string, unknown>
+            : undefined;
     const appEntryVersion = String(app?.version || raw?.version || entry?.version || '').trim();
     const importedRunEvidence = normalizeImportedRunEvidence(testEvidence ? {
         ...testEvidence,
@@ -4742,6 +4786,7 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
             mis: normalizeAppMIS(binding?.mis || app?.mis),
             appSkill: binding?.appSkill || app?.appSkill || { id: skillID, version: '1.0.0', source: 'local' },
             dependencies: normalizeAppDependencies(binding?.dependencies || app?.dependencies),
+            bundledDependencies,
             ui: normalizeAppWorkspaceLayout(binding?.ui || app?.ui, kind),
             resultContract,
             testProtocol: appTestProtocolWithFingerprint(normalizeAppTestProtocol(binding?.testProtocol || app?.testProtocol || governance?.testProtocol || governance?.test_protocol || testEvidence?.testProtocol || testEvidence?.test_protocol, kind, skillOutputModes, resultContract)),
@@ -4758,6 +4803,10 @@ function skillDefinitionManifestToApp(raw: Record<string, any>, entry: SkillAppM
 }
 
 function skillPanelAppID(skillID: string, appID: string): string {
+    // Standalone legacy SkillMarket packages may persist their panel ID as
+    // both the wrapper Skill ID and the app definition ID. It is already the
+    // canonical panel identity, so do not create an unreachable double prefix.
+    if (skillID === appID && appID.startsWith('skill-app-')) return appID;
     return `skill-app-${skillID}-${appID}`;
 }
 
@@ -5528,7 +5577,17 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
 }
 
 function skillRunProgressMessage(status: SkillRunStatusView | null, fallback: string, runID: string) {
-    const progress = String(status?.session_progress?.progress_summary || status?.session_progress?.current_task || status?.summary?.current_step || '').trim();
+    // A local skill streams stdout/stderr into last_output_snippet while its
+    // current step is still running. Prefer it over the generic action name so
+    // document tools (for example PDF → Word) expose useful progress instead
+    // of leaving the operator with only a spinner.
+    const progress = String(
+        status?.summary?.last_output_snippet
+        || status?.session_progress?.progress_summary
+        || status?.session_progress?.current_task
+        || status?.summary?.current_step
+        || '',
+    ).trim();
     const statusText = String(status?.status || '').trim();
     return [fallback, runID, statusText, progress].filter(Boolean).join(' \u00b7 ');
 }
@@ -8690,7 +8749,8 @@ const locale3 = (lang?: string): 'zh' | 'en' | 'hant' => isZhHant(lang) ? 'hant'
 
 export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPageProps) => {
     const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
-    const [apps, setApps] = useState(() => applyLayoutState(initialApps, readLayoutState()));
+    const [apps, setApps] = useState(() => initialApps);
+    const [appsPanelStateReady, setAppsPanelStateReady] = useState(false);
     const [query, setQuery] = useState('');
     const [category, setCategory] = useState('all');
     const [openTabs, setOpenTabs] = useState<string[]>([]);
@@ -8714,14 +8774,67 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     const [datasrvDiscovery, setDataSrvDiscovery] = useState<DataSrvDiscovery>(emptyDiscovery);
     const [skillDiscovery, setSkillDiscovery] = useState<SkillAppDiscovery>(emptySkillDiscovery);
     const [activeRunRevision, setActiveRunRevision] = useState(0);
+    // Run history lives outside React state. Keep publish checks and their
+    // remote preflight in sync when the runtime records fresh successful
+    // evidence for an app.
+    const [runEvidenceRevision, setRunEvidenceRevision] = useState(0);
     const [workspaceLaunchHint, setWorkspaceLaunchHint] = useState('');
     /** Per-app one-click workspace open failure (tile badge + footer hint). */
     const [workspaceLaunchByAppId, setWorkspaceLaunchByAppId] = useState<Record<string, string>>({});
+    // Wails calls are asynchronous. Keep only the latest snapshot in flight:
+    // stale intermediate edits must never overwrite a newer panel state.
+    const appsPanelStateWriteRef = useRef<{ running: boolean; pending: string | null }>({ running: false, pending: null });
     const notifyActiveRunChanged = useCallback(() => setActiveRunRevision((value) => value + 1), []);
+    const notifyRunEvidenceRecorded = useCallback(() => setRunEvidenceRevision((value) => value + 1), []);
 
     useEffect(() => {
-        persistLayoutState(apps);
-    }, [apps]);
+        let disposed = false;
+        Promise.resolve().then(() => LoadMaclawAppsPanelState())
+            .then((raw) => {
+                if (disposed) return;
+                let saved: AppLayoutState | null = null;
+                try {
+                    const parsed = JSON.parse(String(raw || '')) as AppLayoutState;
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) saved = parsed;
+                } catch { /* first run or invalid saved state */ }
+                // Import legacy browser state only when the SQLite record has
+                // never been created. The persistence effect below writes the
+                // sanitized form to SQLite; later starts no longer read
+                // WebView storage as an app source.
+                const initialLayout = saved || (!String(raw || '').trim() ? readLegacyLayoutState() : {});
+                setApps((current) => applyLayoutState(current, initialLayout));
+                setAppsPanelStateReady(true);
+            })
+            .catch(() => {
+                if (disposed) return;
+                // Keep compatibility if SQLite cannot be opened yet. A later
+                // successful write migrates this legacy state.
+                setApps((current) => applyLayoutState(current, readLegacyLayoutState()));
+                setAppsPanelStateReady(true);
+            });
+        return () => { disposed = true; };
+    }, []);
+
+    useEffect(() => {
+        if (!appsPanelStateReady) return;
+        const stateJSON = JSON.stringify(layoutStateForApps(apps));
+        const writer = appsPanelStateWriteRef.current;
+        writer.pending = stateJSON;
+        if (writer.running) return;
+        writer.running = true;
+        const flush = () => {
+            const next = writer.pending;
+            writer.pending = null;
+            if (next === null) {
+                writer.running = false;
+                return;
+            }
+            void SaveMaclawAppsPanelState(next)
+                .catch(() => undefined)
+                .finally(flush);
+        };
+        flush();
+    }, [apps, appsPanelStateReady]);
 
     useEffect(() => () => {
         // Wails searches are not cancellable from this surface. Invalidate an
@@ -8902,13 +9015,35 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
 		if (skillDiscovery.status !== 'ready' || skillDiscovery.candidates.length === 0) return;
 		const dismissed = readDismissedSkillAppIds();
 		setApps((current) => {
-            let changed = false;
-            let next = current;
-            for (const candidate of skillDiscovery.candidates) {
-                if (next.some((app) => app.id === candidate.id)) continue;
-                if (dismissed.has(candidate.id)) continue;
-                next = [...next, appWithAvailablePin(candidate, next)];
-                changed = true;
+			let changed = false;
+			let next = current;
+			for (const candidate of skillDiscovery.candidates) {
+				const existingIndex = next.findIndex((app) => app.id === candidate.id);
+				if (existingIndex >= 0) {
+					const existing = next[existingIndex];
+					const replacement = {
+						...candidate,
+						// Discovery owns the installed definition. A trusted market source
+						// is part of that definition too, so it survives refresh/restart
+						// without relying on panel-state snapshots.
+						marketCapabilityID: candidate.marketCapabilityID || existing.marketCapabilityID,
+						marketInstallSource: candidate.marketInstallSource || existing.marketInstallSource,
+						marketSourceLabel: candidate.marketSourceLabel || existing.marketSourceLabel,
+						marketReviewEvidence: candidate.marketReviewEvidence || existing.marketReviewEvidence,
+						pinned: existing.pinned,
+						recentUsedAt: existing.recentUsedAt,
+						disabled: existing.disabled,
+						disabledReason: existing.disabledReason,
+						disabledSource: existing.disabledSource,
+					};
+					next = [...next];
+					next[existingIndex] = replacement;
+					changed = true;
+					continue;
+				}
+				if (dismissed.has(candidate.id)) continue;
+				next = [...next, appWithAvailablePin(candidate, next)];
+				changed = true;
             }
 			return changed ? next : current;
 		});
@@ -9188,6 +9323,14 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                     if (app.versionSnapshot && compareAppVersions(appVersionText(app), appVersionText(existing)) > 0) evidencePatch.versionSnapshot = app.versionSnapshot;
                     if (app.installEvidence && !existing.installEvidence) evidencePatch.installEvidence = app.installEvidence;
                     if (app.workflowContract && !existing.workflowContract) evidencePatch.workflowContract = app.workflowContract;
+                    // A discovered app definition usually reports source=skill.
+                    // Do not let that erase the provenance established when the
+                    // enclosing app was installed from a trusted market.
+                    if (hasTrustedMarketProvenance(app) && !hasTrustedMarketProvenance(existing)) {
+                        evidencePatch.marketCapabilityID = app.marketCapabilityID;
+                        evidencePatch.marketInstallSource = app.marketInstallSource;
+                        evidencePatch.marketSourceLabel = app.marketSourceLabel;
+                    }
                     if (Object.keys(evidencePatch).length === 0) return current;
                     const next = [...current];
                     next[existingIndex] = { ...existing, ...evidencePatch };
@@ -9574,6 +9717,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                         onUpdateAppEvidence={updateAppEvidence}
                         onInstallDependencies={installDependenciesFromPublish}
                         onSyncHubAppGovernance={syncHubAppGovernance}
+                        runEvidenceRevision={runEvidenceRevision}
 						publishReturnAppId={publishReturnAppId}
 						onPublishReturnConsumed={consumePublishReturnRequest}
                     />
@@ -9602,6 +9746,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                         onOpenApprovalManager={(appId) => openOperation('approval_status', { appId })}
                         onActiveRunChange={notifyActiveRunChanged}
                         onUpdateAppEvidence={updateAppEvidence}
+                        onRunEvidenceRecorded={notifyRunEvidenceRecorded}
 						publishReturnAppId={publishReturnAppId}
 						onReturnToPublishReview={returnToPublishReview}
                     />
@@ -9611,7 +9756,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     );
 };
 
-const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, publishReturnAppId, onReturnToPublishReview }: {
+const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, onRunEvidenceRecorded, publishReturnAppId, onReturnToPublishReview }: {
     tabs: AppEntry[];
     activeApp?: AppEntry;
     lang?: string;
@@ -9621,6 +9766,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
     onOpenApprovalManager: (appId?: string) => void;
     onActiveRunChange: () => void;
     onUpdateAppEvidence?: (appId: string, patch: Partial<AppEntry>) => void;
+    onRunEvidenceRecorded?: (appId: string) => void;
 	publishReturnAppId?: string;
 	onReturnToPublishReview?: (appId: string) => void;
 }) => {
@@ -9703,7 +9849,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
                             className="apps-runtime-panel"
                             hidden={!isActive}
                         >
-                            <AppPreview app={tabApp} lang={lang} onUse={onUse} onOpenApprovalManager={onOpenApprovalManager} onActiveRunChange={onActiveRunChange} onUpdateAppEvidence={onUpdateAppEvidence} />
+                            <AppPreview app={tabApp} lang={lang} onUse={onUse} onOpenApprovalManager={onOpenApprovalManager} onActiveRunChange={onActiveRunChange} onUpdateAppEvidence={onUpdateAppEvidence} onRunEvidenceRecorded={onRunEvidenceRecorded} />
                         </div>
                     );
                 })}
@@ -10458,7 +10604,7 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
         </section>
     );
 };
-const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void; onActiveRunChange?: () => void; onUpdateAppEvidence?: (appId: string, patch: Partial<AppEntry>) => void }) => {
+const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, onRunEvidenceRecorded }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void; onActiveRunChange?: () => void; onUpdateAppEvidence?: (appId: string, patch: Partial<AppEntry>) => void; onRunEvidenceRecorded?: (appId: string) => void }) => {
     const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [fileName, setFileName] = useState('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -10647,6 +10793,11 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         }
         // Durable backend is authoritative for publish evidence; surface failures.
         void persistDurableAppRunHistory(nextEntry).then((result) => {
+            // Only invalidate a remote preflight after the evidence has reached
+            // the authoritative durable store. This prevents a temporary
+            // localStorage-only write from turning a publish card green when
+            // the durable write has failed.
+            if (result.ok && nextEntry.status === 'done') onRunEvidenceRecorded?.(appID);
             if (!result.ok) {
                 setValidationMessage((current) => {
                     const detail = result.error || (localizeText(lang, 'Failed to persist run evidence', '\u6301\u4e45\u5316\u8fd0\u884c\u8bc1\u636e\u5931\u8d25', '\u6301\u4e45\u5316\u57f7\u884c\u8b49\u64da\u5931\u6557'));
@@ -13104,6 +13255,7 @@ function appToManifest(app: AppEntry, submission?: AppPublishSubmission, governa
         schema: manifest?.schema || 'maclaw.app.v1',
         privateMarker: manifest?.privateMarker || 'x_maclaw_apps',
         installUnit: manifest?.installUnit || 'builtin',
+        bundled_dependencies: manifest?.bundledDependencies,
         app: {
             id: appID,
             name: app.name,
@@ -13286,6 +13438,11 @@ function manifestToAppEntry(raw: any): AppEntry | null {
     const customIconDataUrl = normalizeCustomIconDataUrl(app.customIconDataUrl || app.panel?.customIconDataUrl);
     const governance = app.governance || {};
     const testEvidence = governance.testEvidence || governance.test_evidence;
+    const bundledDependencies = raw?.bundled_dependencies && typeof raw.bundled_dependencies === 'object'
+        ? raw.bundled_dependencies as Record<string, unknown>
+        : raw?.bundledDependencies && typeof raw.bundledDependencies === 'object'
+            ? raw.bundledDependencies as Record<string, unknown>
+            : undefined;
     const runtimeID = id.startsWith('market-') ? id : `market-${id}`;
     const importedRunEvidence = normalizeImportedRunEvidence(testEvidence ? {
         ...testEvidence,
@@ -13322,6 +13479,7 @@ function manifestToAppEntry(raw: any): AppEntry | null {
             mis: normalizeAppMIS(app.binding?.mis),
             appSkill: app.binding?.appSkill,
             dependencies: normalizeAppDependencies(app.binding?.dependencies),
+            bundledDependencies,
             ui: normalizeAppWorkspaceLayout(app.ui || app.binding?.ui, kind),
             resultContract: normalizeAppResultContract(app.binding?.resultContract || app.governance?.resultContract, kind, app.binding?.skill?.outputModes || []),
             testProtocol: appTestProtocolWithFingerprint(normalizeAppTestProtocol(app.binding?.testProtocol || app.governance?.testProtocol || app.governance?.testEvidence?.testProtocol, kind, app.binding?.skill?.outputModes || [], normalizeAppResultContract(app.binding?.resultContract || app.governance?.resultContract, kind, app.binding?.skill?.outputModes || []))),
@@ -13337,6 +13495,16 @@ function manifestToAppEntry(raw: any): AppEntry | null {
     };
 }
 
+function bundledDependenciesForPackApp(bundled: Record<string, unknown> | undefined, appID: string): Record<string, unknown> | undefined {
+    if (!bundled || !Array.isArray(bundled.skills)) return bundled;
+    const scopedSkills = bundled.skills.filter((skill: any) => {
+        if (!skill || typeof skill !== 'object') return false;
+        const appIDs = Array.isArray(skill.app_ids) ? skill.app_ids : Array.isArray(skill.appIDs) ? skill.appIDs : [];
+        return appIDs.length === 0 || appIDs.some((candidate: unknown) => String(candidate || '').trim().toLowerCase() === appID.trim().toLowerCase());
+    });
+    return scopedSkills.length > 0 ? { ...bundled, skills: scopedSkills } : undefined;
+}
+
 function manifestToAppEntries(raw: any): { apps: AppEntry[]; error?: string } {
     if (raw?.schema === 'maclaw.app.pack.v1') {
         if (raw.privateMarker !== 'x_maclaw_apps') return { apps: [], error: 'maclaw.app.pack.v1 privateMarker must be x_maclaw_apps' };
@@ -13346,11 +13514,24 @@ function manifestToAppEntries(raw: any): { apps: AppEntry[]; error?: string } {
             const error = validateAppManifest(raw.apps[index], `maclaw.app.pack.v1 apps[${index}]`);
             if (error) return { apps: [], error };
         }
+        // Newer packages duplicate scoped bundles onto their app entries. Retain a
+        // pack-level bundle as a compatibility fallback for older packages: the
+        // runtime receives one app at a time and otherwise loses the embedded
+        // recovery payload before it can prefer it over a remote install_ref.
+        const packBundledDependencies = raw?.bundled_dependencies && typeof raw.bundled_dependencies === 'object'
+            ? raw.bundled_dependencies as Record<string, unknown>
+            : raw?.bundledDependencies && typeof raw.bundledDependencies === 'object'
+                ? raw.bundledDependencies as Record<string, unknown>
+                : undefined;
         const parsed = raw.apps.map((entry: any) => {
             const app = manifestToAppEntry(entry);
             if (!app) return null;
             const version = String(entry?.app?.version || entry?.version || '').trim();
-            return version ? { ...app, version: normalizeAppVersion(version), versionSnapshot: { app_entry_version: version } } : app;
+            const scopedPackBundle = bundledDependenciesForPackApp(packBundledDependencies, canonicalAppManifestID(app));
+            const withPackBundle = !app.manifest?.bundledDependencies && scopedPackBundle
+                ? { ...app, manifest: { ...app.manifest, bundledDependencies: scopedPackBundle } }
+                : app;
+            return version ? { ...withPackBundle, version: normalizeAppVersion(version), versionSnapshot: { app_entry_version: version } } : withPackBundle;
         }).filter((app: AppEntry | null): app is AppEntry => !!app);
         return parsed.length > 0 ? { apps: parsed } : { apps: [], error: 'maclaw.app.pack.v1 has no valid apps' };
     }
@@ -14457,7 +14638,12 @@ function appInstallIdentityKeys(appId: string) {
     return Array.from(new Set(keys));
 }
 
-const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onOpenMISDataSettings, onOpenManual, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp, onRunApp, onUpdateAppEvidence, onInstallDependencies, onSyncHubAppGovernance, publishReturnAppId, onPublishReturnConsumed }: {
+function hasTrustedMarketProvenance(app: AppEntry): boolean {
+    const source = String(app.marketInstallSource || '').trim();
+    return !!app.marketCapabilityID && (source === 'enterprise_hub' || source === 'skillmarket' || source === 'hubcenter');
+}
+
+const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, pendingEditAppId, onPendingEditConsumed, datasrvDiscovery, skillDiscovery, onOpenMISDataSettings, onOpenManual, onAddDiscoveredApp, onCreateApp, onInstallMarketApp, onEditApp, onRunApp, onUpdateAppEvidence, onInstallDependencies, onSyncHubAppGovernance, runEvidenceRevision, publishReturnAppId, onPublishReturnConsumed }: {
 	apps: AppEntry[];
 	hiddenApps: AppEntry[];
 	lang?: string;
@@ -14485,6 +14671,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
 	onUpdateAppEvidence: (appId: string, patch: Partial<AppEntry>) => void;
 	onInstallDependencies: (appId: string) => void;
 	onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void;
+	runEvidenceRevision: number;
 	publishReturnAppId: string;
 	onPublishReturnConsumed: () => void;
 }) => {
@@ -14604,7 +14791,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                     >
 	                        {tab === 'create' && <CreateAppPane lang={lang} onCreateApp={onCreateApp} />}
 	                        {tab === 'manage' && <ManageAppsPane apps={apps} hiddenApps={hiddenApps} skillDiscovery={skillDiscovery} lang={lang} onTogglePin={onTogglePin} onUpdateApp={onUpdateApp} onDuplicateApp={onDuplicateApp} onMoveApp={onMoveApp} onToggleDisableApp={onToggleDisableApp} onRemoveApp={onRemoveApp} onRestoreApp={onRestoreApp} onAddDiscoveredApp={onAddDiscoveredApp} pendingEditAppId={pendingEditAppId} onPendingEditConsumed={onPendingEditConsumed} onAfterEditSave={openPublishAfterEdit} />}
-	                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onRunApp={(appId) => onRunApp(appId, { returnToPublish: true })} onUpdateAppEvidence={onUpdateAppEvidence} onInstallDependencies={onInstallDependencies} onInstallApprovedHubApp={installApprovedHubApp} onSyncHubAppGovernance={onSyncHubAppGovernance} focusAppId={focusPublishAppId} focusNonce={focusPublishNonce} onFocusAppConsumed={clearFocusPublishAppId} />}
+	                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onRunApp={(appId) => onRunApp(appId, { returnToPublish: true })} onUpdateAppEvidence={onUpdateAppEvidence} onInstallDependencies={onInstallDependencies} onInstallApprovedHubApp={installApprovedHubApp} onSyncHubAppGovernance={onSyncHubAppGovernance} runEvidenceRevision={runEvidenceRevision} focusAppId={focusPublishAppId} focusNonce={focusPublishNonce} onFocusAppConsumed={clearFocusPublishAppId} />}
                     </div>
                 </div>
             </div>
@@ -16356,7 +16543,7 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
     ];
 }
 
-const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onInstallDependencies, onInstallApprovedHubApp, onSyncHubAppGovernance, focusAppId, focusNonce, onFocusAppConsumed }: {
+const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onInstallDependencies, onInstallApprovedHubApp, onSyncHubAppGovernance, runEvidenceRevision, focusAppId, focusNonce, onFocusAppConsumed }: {
     apps: AppEntry[];
     lang?: string;
     onFixApp: (appId: string) => void;
@@ -16367,6 +16554,8 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     onInstallDependencies: (appId: string) => void;
     onInstallApprovedHubApp: (capabilityID: string, name: string) => Promise<ApprovedHubAppInstallResult>;
     onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void;
+    /** Bumped by AppRuntime after a successful run reaches durable storage. */
+    runEvidenceRevision: number;
     /** After an edit save, scroll/highlight this app card once. */
     focusAppId?: string;
     /** Changes on every post-edit open so the same app can re-highlight. */
@@ -16452,7 +16641,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
         // runEvidenceTick rebuilds the checks after durable run evidence has
         // been merged into localStorage (loadAppRunHistory is non-reactive).
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [publishApps, lang, runEvidenceTick],
+        [publishApps, lang, runEvidenceTick, runEvidenceRevision],
     );
     const readyPublishApps = useMemo(
         () => publishApps.filter((app) => (publishChecksById.get(app.id) || []).every((item) => item.ok)),
@@ -16675,6 +16864,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     }, [
         publishApps.map((app) => `${app.id}:${app.version || 0}:${app.importedRunEvidence?.verifiedAt || app.importedRunEvidence?.verified_at || ''}`).join('|'),
         runEvidenceTick,
+        runEvidenceRevision,
         Object.keys(submissions).sort().join('|'),
     ]);
     // Warm preflight for durable queue rows that can still one-click (parallel).

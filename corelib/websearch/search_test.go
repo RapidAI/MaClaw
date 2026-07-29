@@ -97,6 +97,18 @@ func TestTestProvider_DuckDuckGoHTTP202ChallengeFailsClearly(t *testing.T) {
 	}
 }
 
+func TestTestProvider_DuckDuckGoUnparseablePageFailsClearly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><body>unexpected response</body></html>`))
+	}))
+	defer server.Close()
+
+	err := TestProvider(context.Background(), corelib.WebSearchProvider{Type: "duckduckgo", BaseURL: server.URL})
+	if err == nil || !strings.Contains(err.Error(), "no parseable results") {
+		t.Fatalf("TestProvider() error = %v, want unparseable-result error", err)
+	}
+}
+
 func TestSearchWithProvider_Serper(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-API-KEY"); got != "serper-key" {

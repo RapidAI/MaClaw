@@ -61,6 +61,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetSkillRunArtifact: (...args: unknown[]) => getSkillRunArtifactMock(...args),
     ListNLSkills: (...args: unknown[]) => listNLSkillsMock(...args),
     ListSkillAppManifests: (...args: unknown[]) => listSkillAppManifestsMock(...args),
+    LoadMaclawAppsPanelState: async () => window.localStorage.getItem('maclaw:apps-panel:v1') || '',
     LoadConfig: (...args: unknown[]) => loadConfigMock(...args),
     ListMaclawAppInstalls: (...args: unknown[]) => listMaclawAppInstallsMock(...args),
     ListMaclawAppApprovalInstances: (...args: unknown[]) => listMaclawAppApprovalInstancesMock(...args),
@@ -77,6 +78,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     PlanMaclawAppInstall: (...args: unknown[]) => planMaclawAppInstallMock(...args),
     RecordMaclawAppInstall: (...args: unknown[]) => recordMaclawAppInstallMock(...args),
     RecordMaclawAppRunHistory: (entry: unknown) => recordMaclawAppRunHistoryMock(entry),
+    SaveMaclawAppsPanelState: async (state: string) => { window.localStorage.setItem('maclaw:apps-panel:v1', state); },
     ListMaclawAppRunHistory: (appID: string, limit: number) => listMaclawAppRunHistoryMock(appID, limit),
     ClearMaclawAppRunHistory: (appID: string) => clearMaclawAppRunHistoryMock(appID),
     // Prefers runtime health API; default implementation wraps PlanMaclawAppInstall mocks.
@@ -1530,6 +1532,143 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(screen.getAllByText('Invoice Review').length).toBe(1));
         expect(screen.queryByText('Invoice Review Duplicate')).toBeNull();
+    });
+
+    it('does not restore an uninstalled Skill app from stale panel state', async () => {
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: ['skill-app:pdf-translation:pdf-translation'],
+            customApps: [{
+                id: 'skill-app:pdf-translation:pdf-translation',
+                name: 'PDF Translation Tool',
+                description: 'Stale entry from an uninstalled Skill',
+                category: 'Skill',
+                kind: 'tool_app',
+                icon: 'pdf',
+                accent: '#2f5f98',
+                source: 'skill',
+            }],
+        }));
+
+        render(<AppsPage lang="en" />);
+
+        await waitFor(() => expect(listSkillAppManifestsMock).toHaveBeenCalled());
+        await waitFor(() => expect(screen.queryByText('PDF Translation Tool')).toBeNull());
+    });
+
+    it('uses the installed Skill definition over an older panel snapshot', async () => {
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: ['skill-app:invoice-review:invoice-review'],
+            customApps: [{
+                id: 'skill-app:invoice-review:invoice-review',
+                name: 'Old Invoice Review',
+                description: 'Old cached description',
+                category: 'Skill',
+                kind: 'tool_app',
+                icon: 'invoice',
+                accent: '#2f5f98',
+                source: 'local',
+            }],
+        }));
+        listSkillAppManifestsMock.mockResolvedValue([{
+            id: 'invoice-review',
+            skill_id: 'invoice-review',
+            name: 'Installed Invoice Review',
+            description: 'Definition currently installed on disk',
+            category: 'Finance',
+            icon: 'invoice',
+            input_mode: 'file',
+            output_modes: ['pdf'],
+        }]);
+
+        render(<AppsPage lang="en" />);
+
+        await waitFor(() => expect(screen.getAllByText('Installed Invoice Review').length).toBeGreaterThan(0));
+    });
+
+    it('retains SkillMarket provenance when restoring a discovered mini app', async () => {
+        const storedApp = {
+            id: 'skill-app-pdf-translation-pdf-translation',
+            name: 'PDF Translation Tool',
+            description: 'Installed from SkillMarket',
+            category: 'Skill',
+            kind: 'tool_app',
+            icon: 'pdf',
+            accent: '#2f5f98',
+            source: 'skill',
+            marketCapabilityID: 'skill-pdf-translation',
+            marketInstallSource: 'skillmarket',
+            marketSourceLabel: 'HubCenter Skill Market',
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [storedApp.id],
+            customApps: [storedApp],
+        }));
+        listSkillAppManifestsMock.mockResolvedValue([{
+            id: 'pdf-translation',
+            skill_id: 'pdf-translation',
+            name: 'PDF Translation Tool',
+            description: 'Definition currently installed on disk',
+            category: 'Skill',
+            icon: 'pdf',
+            app_definition_file: 'maclaw.app.json',
+            input_mode: 'file',
+            app_definition: {
+                schema: 'maclaw.app.v1',
+                privateMarker: 'x_maclaw_apps',
+                app: {
+                    id: 'pdf-translation',
+                    name: 'PDF Translation Tool',
+                    kind: 'tool_app',
+                    binding: {
+                        skill: { id: 'pdf-translation', appDefinitionFile: 'maclaw.app.json', inputMode: 'file' },
+                        dependencies: {
+                            skills: [{ id: 'paper_pdf_translator', kind: 'runtime_skill', required: true, source: 'local' }],
+                        },
+                    },
+                },
+            },
+        }]);
+        checkMaclawAppRuntimeHealthMock.mockResolvedValue({
+            schema: 'maclaw.app.runtime_health.v1',
+            ok: false,
+            blocked: true,
+            message: 'legacy dependency is missing',
+            app_id: storedApp.id,
+            plan: {
+                schema: 'maclaw.app.install_plan.v1',
+                apps: [],
+                dependencies: [{
+                    id: 'paper_pdf_translator',
+                    kind: 'runtime_skill',
+                    required: true,
+                    source: 'skillmarket',
+                    installed: false,
+                    health: 'missing',
+                    action: 'install',
+                    app_ids: [storedApp.id],
+                }],
+                has_missing_required: true,
+                has_blocking_dependency: false,
+            },
+            has_missing_required: true,
+            has_blocking_dependency: false,
+            has_workflow_contract_issue: false,
+        });
+
+        render(<AppsPage lang="en" />);
+
+        await waitFor(() => expect(screen.getAllByText('PDF Translation Tool').length).toBeGreaterThan(0));
+        fireEvent.click((screen.getAllByText('PDF Translation Tool')[0].closest('.apps-app-tile') as HTMLElement));
+        await waitFor(() => expect(checkMaclawAppRuntimeHealthMock).toHaveBeenCalled());
+        const healthManifest = checkMaclawAppRuntimeHealthMock.mock.calls
+            .map(([packageJSON]) => JSON.parse(String(packageJSON)))
+            .find((candidate) => candidate?.app?.dependencies?.skills?.some((dep: any) => dep?.id === 'paper_pdf_translator'));
+        expect(healthManifest).toBeTruthy();
+        expect(healthManifest.app.dependency_source).toBeUndefined();
+        expect(healthManifest.app.binding.market_install_source).toBeUndefined();
+        expect(healthManifest.app.dependencies.skills).toEqual([
+            expect.objectContaining({ id: 'paper_pdf_translator', source: 'local' }),
+        ]);
     });
 
     it('saves a tool app definition into an existing skill', async () => {
@@ -5156,6 +5295,14 @@ describe('AppsPage', () => {
                     icon: 'receipt',
                     binding: {
                         skill: { id: 'skill-hc-invoice-app', appDefinitionFile: 'maclaw.app.json', inputMode: 'file' },
+                        // Legacy SkillMarket app definitions can retain `local`
+                        // for a public runtime skill. The reconstructed install
+                        // manifest must preserve that declaration while carrying
+                        // trusted market provenance for the backend's allowlisted
+                        // compatibility mapping.
+                        dependencies: {
+                            skills: [{ id: 'paper_pdf_translator', kind: 'runtime_skill', required: true, source: 'local' }],
+                        },
                     },
                 },
             },
@@ -5186,6 +5333,13 @@ describe('AppsPage', () => {
         expect(installSelectedMaclawAppPackageFromHubMock).not.toHaveBeenCalled();
         expect(installMaclawAppPackageFromHubMock).not.toHaveBeenCalled();
         await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalled());
+        const plannedManifest = JSON.parse(String(installMaclawAppDependenciesMock.mock.calls[0][0]));
+        expect(plannedManifest.app.dependency_source).toBeUndefined();
+        expect(plannedManifest.app.market_install_source).toBeUndefined();
+        expect(plannedManifest.app.binding.dependency_source).toBeUndefined();
+        expect(plannedManifest.app.dependencies.skills).toEqual([
+            expect.objectContaining({ id: 'paper_pdf_translator', source: 'local' }),
+        ]);
         await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalled());
         const recordArgs = recordMaclawAppInstallMock.mock.calls[0];
         expect(recordArgs[1]).toBe('skillmarket');

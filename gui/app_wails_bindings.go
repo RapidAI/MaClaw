@@ -473,6 +473,10 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 				return trace, err
 			}
 		}
+		if a.cachedSkillScanner != nil {
+			a.cachedSkillScanner.UpsertSkills([]corelib.NLSkillEntry{*skill})
+		}
+		a.skillExecutor.clearSkillListCache()
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
 		return trace, nil
 

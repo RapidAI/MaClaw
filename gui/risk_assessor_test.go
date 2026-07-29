@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 func TestAssessSkill_EmptySteps(t *testing.T) {

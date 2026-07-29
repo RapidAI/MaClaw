@@ -87,12 +87,70 @@ func maclawAppPackageForSelectedAppIDs(pkg map[string]any, selectedAppIDs []stri
 	if err != nil {
 		return nil, nil, err
 	}
+	maclawAppFilterBundledDependenciesForSelectedEntries(installPackage, filteredEntries)
 	maclawAppRestoreSelectedSubmissionPackageSHAs(installPackage, originalSubmissionPackageSHAs)
 	filteredEntries, err = parseMaclawAppPackageEntriesFromMap(installPackage, true)
 	if err != nil {
 		return nil, nil, err
 	}
 	return installPackage, filteredEntries, nil
+}
+
+// maclawAppFilterBundledDependenciesForSelectedEntries keeps selected Hub
+// installs self-contained. The contract-layer selector intentionally knows
+// nothing about bundled skill payloads, so scope both the pack-level fallback
+// and each retained entry here before handing the package to the installer.
+func maclawAppFilterBundledDependenciesForSelectedEntries(pkg map[string]any, entries []parsedMaclawAppEntry) {
+	if pkg == nil || len(entries) == 0 {
+		return
+	}
+	selected := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		for id := range maclawAppSelectionIDSet([]string{entry.ID}) {
+			selected[id] = struct{}{}
+		}
+	}
+	filter := func(raw any) maclawAppBundledDependencies {
+		bundled := maclawAppBundledDependenciesFromDoc(map[string]any{"bundled_dependencies": raw})
+		out := maclawAppBundledDependencies{Schema: bundled.Schema}
+		for _, skill := range bundled.Skills {
+			if len(skill.AppIDs) == 0 {
+				out.Skills = append(out.Skills, skill)
+				continue
+			}
+			matched := make([]string, 0, len(skill.AppIDs))
+			for _, appID := range skill.AppIDs {
+				if _, ok := selected[strings.ToLower(strings.TrimSpace(appID))]; ok {
+					matched = append(matched, appID)
+				}
+			}
+			if len(matched) > 0 {
+				skill.AppIDs = matched
+				out.Skills = append(out.Skills, skill)
+			}
+		}
+		return out
+	}
+	if raw, ok := pkg["bundled_dependencies"]; ok {
+		if bundled := filter(raw); len(bundled.Skills) > 0 {
+			pkg["bundled_dependencies"] = bundled
+		} else {
+			delete(pkg, "bundled_dependencies")
+		}
+	}
+	for _, raw := range anySlice(pkg["apps"]) {
+		entry := anyMap(raw)
+		if entry == nil {
+			continue
+		}
+		if bundled, ok := entry["bundled_dependencies"]; ok {
+			if filtered := filter(bundled); len(filtered.Skills) > 0 {
+				entry["bundled_dependencies"] = filtered
+			} else {
+				delete(entry, "bundled_dependencies")
+			}
+		}
+	}
 }
 
 func maclawAppRestoreSelectedSubmissionPackageSHAs(pkg map[string]any, packageSHAs map[string]string) {
@@ -1205,11 +1263,7 @@ func maclawAppDependenciesForEntry(entry parsedMaclawAppEntry) []maclawAppInstal
 			}
 		}
 		if depsBlock := anyMap(holder["dependencies"]); depsBlock != nil {
-			for _, item := range anySlice(depsBlock["skills"]) {
-				depMap := anyMap(item)
-				if depMap == nil {
-					continue
-				}
+			for _, depMap := range append(maclawAppDependencyMaps(depsBlock["skills"]), maclawAppDependencyMaps(depsBlock["skill"])...) {
 				required := true
 				if rawRequired, ok := depMap["required"].(bool); ok {
 					required = rawRequired
@@ -2018,10 +2072,7 @@ func maclawAppDependencyHasRemoteInstallRef(dep maclawAppInstallPlanDependency) 
 // a non-empty skill payload matching dep (MiniApp self-contained publish).
 func maclawAppDependencyIsBundled(bundled maclawAppBundledDependencies, dep maclawAppInstallPlanDependency) bool {
 	for _, skill := range bundled.Skills {
-		if len(skill.Files) == 0 {
-			continue
-		}
-		if maclawAppBundledSkillMatchesDependency(skill, dep) {
+		if maclawAppBundledSkillCanSatisfyDependency(skill, dep) {
 			return true
 		}
 	}

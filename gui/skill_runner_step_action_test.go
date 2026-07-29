@@ -20,4 +20,3 @@ func TestDisabledLegacySkillStepsDoNotUseManagedProcessEnv(t *testing.T) {
 		}
 	}
 }
-

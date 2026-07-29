@@ -2616,6 +2616,167 @@ func TestInstallSelectedMaclawAppPackageFromHubReportsDependencyInstallDiagnosti
 	}
 }
 
+func TestInstallSelectedMaclawAppPackageFromHubUpgradesTrustedLegacyLocalDependencyToSkillMarket(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const capabilityID = "cap-pdf-translator"
+	const marketID = "market-paper-pdf-translator"
+	app := &App{testHomeDir: tmpHome, hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	var installedSource, installedID, installedRef string
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		installedSource, installedID, installedRef = source, id, installRef
+		skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "paper_pdf_translator")
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return err
+		}
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NLSkills = append(cfg.NLSkills, corelib.NLSkillEntry{
+			Name:       "paper_pdf_translator",
+			SkillDir:   skillDir,
+			Status:     "active",
+			Source:     source,
+			HubSkillID: "paper_pdf_translator",
+			HubVersion: "1.0.0",
+		})
+		return app.SaveConfig(cfg)
+	}
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/capabilities/maclaw-apps/" + capabilityID + "/package":
+			var pkg map[string]any
+			if err := json.Unmarshal([]byte(maclawAppPackageWithCurrentDefinitionHashes(t, `{
+				"schema":"maclaw.app.pack.v1",
+				"privateMarker":"x_maclaw_apps",
+				"source":"enterprise_hub",
+				"resolved_dependencies":[{"id":"paper_pdf_translator","version":"1.0.0","kind":"runtime_skill","required":true,"source":"local","install_ref":"paper_pdf_translator"}],
+				"apps":[{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps","app":{"id":"pdf-translator","name":"PDF 翻译工具","kind":"tool_app","dependencies":{"skill":{"id":"paper_pdf_translator","version":"1.0.0","kind":"runtime_skill","source":"local"}},"governance":{"workspaceLayout":{"schema":"maclaw.app.ui.v1","entry":"tool_workspace","template":"document_workspace","density":"compact","primaryRegion":"left","outputRegion":"right","regionCount":2,"visibleRegionCount":2,"regionIds":["input","output"],"fingerprint":"layout-pdf-translator","studio":{"editable":true,"savedInManifest":true,"updatedBy":"app_studio"},"regions":[{"id":"input","role":"input","placement":"left"},{"id":"output","role":"output","placement":"right"}]},"resultContract":{"schema":"maclaw.app.result.v1","primary":"document","types":["document","content"]},"dependencyVerification":{"schema":"maclaw.app.install_plan.v1","dependencyCount":1,"requiredCount":1,"installedCount":0,"missingCount":1,"blockedCount":0,"ok":false,"blocked":false,"dependencies":[{"id":"paper_pdf_translator","version":"1.0.0","kind":"runtime_skill","required":true,"source":"local"}]},"testEvidence":{"runId":"run-pdf-translator","verifiedAt":"2026-07-29T00:00:00Z","primaryResult":"document","resultPayload":{"document":"translated.pdf"}}}}}]}
+			`)), &pkg); err != nil {
+				t.Fatalf("decode legacy local dependency fixture: %v", err)
+			}
+			packageSHA := strings.Repeat("e", 64)
+			versionKey := "enterprise_hub:skill:maclaw-app:pdf-translator@pkg"
+			payload := "maclaw-app\n" + packageSHA + "\n" + versionKey + "\n2026-07-29T00:00:00Z\nhub-admin"
+			pkg["package_sha256"] = packageSHA
+			pkg["package_signature"] = map[string]any{
+				"schema": "maclaw.app.package_signature.v1", "algorithm": "ed25519", "payload": payload,
+				"public_key_base64":      base64.StdEncoding.EncodeToString(publicKey),
+				"public_key_fingerprint": downloadedSkillPublicKeyFingerprint(publicKey),
+				"signature_base64":       base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(payload))),
+				"package_sha256":         packageSHA, "version_key": versionKey, "signed_at": "2026-07-29T00:00:00Z", "signed_by": "hub-admin",
+			}
+			markMaclawAppPackageAsPublishedHubDownloadTest(t, pkg, "pdf-translator", capabilityID, versionKey)
+			// source was optional in older published Hub packages. Keep the full
+			// authenticated download path source-less to cover that compatibility
+			// contract rather than exercising the helper in isolation only.
+			delete(pkg, "source")
+			ensureMaclawAppPackageDependencyVerificationForHubDownloadTest(t, pkg)
+			_ = json.NewEncoder(w).Encode(pkg)
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{server.URL}, "ttl_seconds": 60})
+		case "/api/client/quality":
+			_ = json.NewEncoder(w).Encode(map[string]any{"quality_score": 99, "routable": true})
+		case "/api/v1/skillmarket/search":
+			if got := r.URL.Query().Get("q"); got != "paper_pdf_translator" {
+				t.Fatalf("SkillMarket search query = %q, want paper_pdf_translator", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{{ID: marketID, Name: "paper_pdf_translator", InstallRef: marketID, Version: "1.0.0"}}})
+		default:
+			t.Fatalf("unexpected request: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token", RemoteHubCenterURL: server.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	result, err := app.InstallSelectedMaclawAppPackageFromHub(capabilityID, []string{"pdf-translator"})
+	if err != nil {
+		t.Fatalf("InstallSelectedMaclawAppPackageFromHub() error = %v", err)
+	}
+	if installedSource != "skillmarket" || installedID != "paper_pdf_translator" || installedRef != marketID {
+		t.Fatalf("legacy Hub local dependency should install from resolved SkillMarket target, got source=%q id=%q ref=%q", installedSource, installedID, installedRef)
+	}
+	plan, ok := result["install_plan"].(maclawAppInstallPlan)
+	if !ok || plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("legacy dependency install plan should be ready: %#v", result["install_plan"])
+	}
+	dep := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if dep == nil || dep.Source != "skillmarket" || dep.InstallRefTarget != marketID || !dep.Installed || dep.Health != "ready" {
+		t.Fatalf("legacy local dependency should be upgraded and installed: %#v", dep)
+	}
+	installedPackage := anyMap(result["package"])
+	dependencies := anyMap(anyMap(anySlice(installedPackage["apps"])[0])["app"])["dependencies"]
+	if skill := anyMap(dependencies)["skill"]; anyMap(skill) == nil || anyMap(skill)["source"] != "skillmarket" {
+		t.Fatalf("install package should normalize the legacy dependency declaration used by the planner: %#v", installedPackage)
+	}
+}
+
+func TestMaclawAppUpgradeTrustedHubLocalDependenciesForSkillMarketKeepsUnknownLocalDependencyLocal(t *testing.T) {
+	pkg := map[string]any{
+		"source": "enterprise_hub",
+		"resolved_dependencies": []any{map[string]any{
+			"id": "private-local-skill", "kind": "runtime_skill", "source": "local", "install_ref": "private-local-skill",
+		}},
+		"apps": []any{map[string]any{"app": map[string]any{
+			"binding": map[string]any{"skill": map[string]any{"id": "private-local-skill", "kind": "runtime_skill", "source": "local"}},
+		}}},
+	}
+	if got := maclawAppUpgradeTrustedHubLocalDependenciesForSkillMarket(pkg); got != 0 {
+		t.Fatalf("unknown local dependency upgrade count = %d, want 0", got)
+	}
+	dep := anyMap(anySlice(pkg["resolved_dependencies"])[0])
+	if dep["source"] != "local" || dep["install_ref"] != "private-local-skill" {
+		t.Fatalf("unknown local dependency must remain local: %#v", dep)
+	}
+	binding := anyMap(anyMap(anySlice(pkg["apps"])[0])["app"])["binding"]
+	if source := anyMap(anyMap(binding)["skill"])["source"]; source != "local" {
+		t.Fatalf("unknown declared local dependency must remain local, got %#v", source)
+	}
+}
+
+func TestMaclawAppUpgradeTrustedHubLocalDependenciesForSkillMarketAcceptsLegacyPackageWithoutSource(t *testing.T) {
+	pkg := map[string]any{
+		"resolved_dependencies": []any{map[string]any{
+			"id": "paper_pdf_translator", "version": "1.0.0", "kind": "runtime_skill", "source": "local",
+		}},
+	}
+	if got := maclawAppUpgradeTrustedHubLocalDependenciesForSkillMarket(pkg); got != 1 {
+		t.Fatalf("legacy source-less package upgrade count = %d, want 1", got)
+	}
+	dep := anyMap(anySlice(pkg["resolved_dependencies"])[0])
+	if dep["source"] != "skillmarket" || dep["canonical_id"] != "paper_pdf_translator" || dep["install_ref"] != "skillmarket://skills/paper_pdf_translator@1.0.0" {
+		t.Fatalf("legacy source-less package should normalize known dependency: %#v", dep)
+	}
+}
+
+func TestMaclawAppFilterBundledDependenciesForSelectedEntriesAcceptsMarketPrefixedAppID(t *testing.T) {
+	pkg := map[string]any{
+		"bundled_dependencies": map[string]any{"skills": []any{map[string]any{
+			"id": "paper_pdf_translator", "name": "paper_pdf_translator", "app_ids": []any{"market-pdf-translator"},
+			"files": map[string]any{"SKILL.md": "# paper_pdf_translator"},
+		}}},
+	}
+	entries := []parsedMaclawAppEntry{{ID: "pdf-translator"}}
+	maclawAppFilterBundledDependenciesForSelectedEntries(pkg, entries)
+	bundled := maclawAppBundledDependenciesFromDoc(pkg)
+	if len(bundled.Skills) != 1 || bundled.Skills[0].ID != "paper_pdf_translator" {
+		t.Fatalf("market-prefixed bundled dependency should remain selected: %#v", pkg["bundled_dependencies"])
+	}
+}
+
 func TestInstallSelectedMaclawAppPackageFromHubFiltersPackageApps(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

@@ -195,11 +195,11 @@ func isPathWithinDirs(canonicalPath string, allowedDirs []string) bool {
 // ValidateVEFilePath passes (directory containment confirmed), providing the
 // second layer of protection:
 //
-//	1. Path parameter check (empty/missing) → "[error] path 参数不能为空"
-//	2. Directory containment (ValidateVEFilePath) → "[error] 文件不在允许访问的目录中"
-//	3. Sensitive file check (CheckVEPathSensitive) → "[error] 该文件包含敏感信息，无法发送"
-//	4. File size check (> 50 MB) → "[error] 文件过大"
-//	5. Actual file read + send → success or OS error
+//  1. Path parameter check (empty/missing) → "[error] path 参数不能为空"
+//  2. Directory containment (ValidateVEFilePath) → "[error] 文件不在允许访问的目录中"
+//  3. Sensitive file check (CheckVEPathSensitive) → "[error] 该文件包含敏感信息，无法发送"
+//  4. File size check (> 50 MB) → "[error] 文件过大"
+//  5. Actual file read + send → success or OS error
 //
 // The check is case-insensitive: .ENV, .Pem, .KEY are all blocked.
 //
@@ -248,5 +248,3 @@ func pathHasPrefix(filePath, dirPath string) bool {
 	}
 	return strings.HasPrefix(filePath, dirWithSep)
 }
-
-

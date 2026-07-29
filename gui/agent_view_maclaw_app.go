@@ -325,19 +325,19 @@ func (a *App) OpenMaclawAppWorkspaceFromInstall(input MaclawAppOpenWorkspaceInpu
 			}
 			inst := list[0]
 			result := map[string]any{
-				"opened_from":  "install",
-				"lane":         lane,
-				"instance":     inst,
-				"approval_id":  inst.ApprovalID,
+				"opened_from":     "install",
+				"lane":            lane,
+				"instance":        inst,
+				"approval_id":     inst.ApprovalID,
 				"result_feedback": maclawAppApprovalResultFeedback(inst),
 			}
 			return a.emitMaclawAppApprovalAppViewResult(result, appID)
 		}
 		return map[string]any{
-			"opened_from":      "install",
-			"app_view_opened":  false,
-			"reason":           "no_approval_instances",
-			"app_id":           appID,
+			"opened_from":     "install",
+			"app_view_opened": false,
+			"reason":          "no_approval_instances",
+			"app_id":          appID,
 		}, nil
 	}
 	// Default: enterprise_normal_app (and unknown kinds with datasrv bindings).

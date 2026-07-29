@@ -6,7 +6,7 @@ func TestIsValidSkillID(t *testing.T) {
 	valid := []string{
 		"lovstudio.any2pdf",
 		"zhangsan-a1b2.paper-translator",
-		"abc.de",                       // min valid: publisher=3, name=2
+		"abc.de", // min valid: publisher=3, name=2
 		"community.drawio-export",
 		"enterprise-hub.contract-review",
 	}
@@ -19,21 +19,21 @@ func TestIsValidSkillID(t *testing.T) {
 	invalid := []string{
 		"",
 		"a",
-		"ab",                    // too short (no dot)
-		"a.b",                   // publisher too short (1 char) + name too short (1 char)
-		"ab.c",                  // publisher too short (2 chars)
-		"abc.d",                 // name too short (1 char)
-		".any2pdf",              // empty publisher
-		"lovstudio.",            // empty name
-		"lovstudio",             // no dot
-		"Lovstudio.Any2pdf",     // uppercase
-		"lov studio.any2pdf",    // space
-		"lov_studio.any2pdf",    // underscore
-		"lovstudio.any2pdf!",    // special char
-		"-studio.any2pdf",       // starts with hyphen
-		"studio-.any2pdf",       // ends with hyphen
-		"lovstudio.-any2pdf",    // name starts with hyphen
-		"lovstudio.any2pdf-",    // name ends with hyphen
+		"ab",                 // too short (no dot)
+		"a.b",                // publisher too short (1 char) + name too short (1 char)
+		"ab.c",               // publisher too short (2 chars)
+		"abc.d",              // name too short (1 char)
+		".any2pdf",           // empty publisher
+		"lovstudio.",         // empty name
+		"lovstudio",          // no dot
+		"Lovstudio.Any2pdf",  // uppercase
+		"lov studio.any2pdf", // space
+		"lov_studio.any2pdf", // underscore
+		"lovstudio.any2pdf!", // special char
+		"-studio.any2pdf",    // starts with hyphen
+		"studio-.any2pdf",    // ends with hyphen
+		"lovstudio.-any2pdf", // name starts with hyphen
+		"lovstudio.any2pdf-", // name ends with hyphen
 	}
 	for _, id := range invalid {
 		if IsValidSkillID(id) {

@@ -153,11 +153,11 @@ func TestUpdateProgressDoesNotRegressTerminalOrOverwriteFailed(t *testing.T) {
 
 	// Late indexing tick after cancel/finish must not revive job.
 	updateKnowledgeImportJobProgress(nil, id, knowledge.DirectoryImportResult{
-		Status:         knowledge.ImportStatusIndexing,
-		ImportedFiles:  1,
-		FailedFiles:    1,
-		CurrentStep:    "embedding",
-		StepProgress:   50,
+		Status:        knowledge.ImportStatusIndexing,
+		ImportedFiles: 1,
+		FailedFiles:   1,
+		CurrentStep:   "embedding",
+		StepProgress:  50,
 	})
 	v, _ := knowledgeImportJobs.Load(id)
 	job := v.(KnowledgeImportJob)

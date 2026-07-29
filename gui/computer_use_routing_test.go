@@ -178,11 +178,11 @@ func TestShouldActivateComputerUseStickyDegradedClassifierTTL(t *testing.T) {
 
 func TestDecideComputerUseActivation(t *testing.T) {
 	cases := []struct {
-		name        string
-		in          computerUseActivationInput
-		wantActive  bool
-		wantClear   bool
-		wantReason  string
+		name       string
+		in         computerUseActivationInput
+		wantActive bool
+		wantClear  bool
+		wantReason string
 	}{
 		{
 			name:       "explicit wins",

@@ -21,18 +21,18 @@ type agentLoopRunState struct {
 	// ActiveConfig is the LLM config used for the current (and subsequent)
 	// iterations. It may start on a cheap route and escalate to reasoning
 	// after tools appear.
-	ActiveConfig   corelib.MaclawLLMConfig
-	RouteTask         string
-	RouteSource       string
-	RouteModel        string
-	RouteProvider     string
-	RouteReason       string
-	RouteBaseline     string
-	RouteEscalated    bool
-	RouteCostTier        string
-	RouteCostMode        string
-	RouteCostApplied     bool
-	RouteThinkingPolicy  string
+	ActiveConfig        corelib.MaclawLLMConfig
+	RouteTask           string
+	RouteSource         string
+	RouteModel          string
+	RouteProvider       string
+	RouteReason         string
+	RouteBaseline       string
+	RouteEscalated      bool
+	RouteCostTier       string
+	RouteCostMode       string
+	RouteCostApplied    bool
+	RouteThinkingPolicy string
 	// Telemetry is optional; set by the dispatcher so escalations stay observable.
 	Telemetry *agentLoopTelemetry
 }

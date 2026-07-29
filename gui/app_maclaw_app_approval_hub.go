@@ -1035,7 +1035,7 @@ func (a *App) applyHubWorkflowStatusAttention(hubInstanceID, hubNodeID, workflow
 			CurrentNode: hubNodeID, Result: message, HubSyncError: message,
 			CreatedAt: now, UpdatedAt: now,
 			ResultPayload: payload,
-			Events:       []maclawAppApprovalEvent{{At: now, Node: hubNodeID, Actor: "hub", Decision: "attention", Message: message}},
+			Events:        []maclawAppApprovalEvent{{At: now, Node: hubNodeID, Actor: "hub", Decision: "attention", Message: message}},
 		}
 		registry.upsert(normalizeMaclawAppApprovalInstanceFields(inst))
 	}

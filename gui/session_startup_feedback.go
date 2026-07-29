@@ -1,9 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"fmt"
 	"strings"
 	"time"
 )

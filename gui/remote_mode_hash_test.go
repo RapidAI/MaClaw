@@ -6,8 +6,8 @@ import (
 
 func TestLaunchFingerprintDeterministic(t *testing.T) {
 	spec := LaunchSpec{
-		Tool:    "claude",
-		ModelID: "claude-sonnet-4-20250514",
+		Tool:     "claude",
+		ModelID:  "claude-sonnet-4-20250514",
 		YoloMode: true,
 	}
 	fp1 := LaunchFingerprint(spec)

@@ -18,7 +18,7 @@ func TestIsWSLShell_WindowsApps(t *testing.T) {
 	if !isWSLShell(`C:\Program Files\WindowsApps\bash.exe`) {
 		t.Fatal("expected WindowsApps path to be detected as WSL")
 	}
-	// Also test the Microsoft\WindowsApps alias path
+	// Also test the Microsoft\WindowsApps alias path.
 	if !isWSLShell(`C:\Users\testuser\AppData\Local\Microsoft\WindowsApps\bash.exe`) {
 		t.Fatal("expected Microsoft\\WindowsApps path to be detected as WSL")
 	}

@@ -24,13 +24,13 @@ const (
 
 // codingWorkbenchWorktree is one isolated git worktree for a plan step.
 type codingWorkbenchWorktree struct {
-	GitRoot    string
-	Path       string // worktree checkout root
+	GitRoot     string
+	Path        string // worktree checkout root
 	ProjectPath string // effective project path inside worktree (may equal Path)
-	Branch     string
-	StepIndex  int
-	Label      string
-	created    bool
+	Branch      string
+	StepIndex   int
+	Label       string
+	created     bool
 }
 
 var codingWorkbenchWorktreeMu sync.Mutex

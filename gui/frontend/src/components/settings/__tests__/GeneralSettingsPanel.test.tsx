@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { main } from '../../../../wailsjs/go/models';
@@ -10,10 +10,12 @@ const PatchConfigFieldsMock = vi.fn((patch: Partial<main.AppConfig>) => new main
     default_launch_mode: 'local',
     ...patch,
 }));
+const LoadConfigMock = vi.fn(() => new main.AppConfig({ default_launch_mode: 'local' }));
 const SelectWorkingDirMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     PatchConfigFields: (patch: Partial<main.AppConfig>) => PatchConfigFieldsMock(patch),
+    LoadConfig: () => LoadConfigMock(),
     SelectWorkingDir: () => SelectWorkingDirMock(),
 }));
 
@@ -100,6 +102,68 @@ describe('GeneralSettingsPanel', () => {
         fireEvent.click(toggle);
 
         expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_app_entry: false });
+    });
+
+    it('persists disabling the Utilities entry switch', () => {
+        renderPanel({}, 'en');
+
+        fireEvent.click(screen.getByLabelText('Utilities entry'));
+
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_utilities_entry: false });
+    });
+
+    it('keeps the Survey IM intercept switch off after the saved config returns', async () => {
+        renderPanel({}, 'en');
+
+        const toggle = screen.getByLabelText('Survey IM intercept') as HTMLInputElement;
+        fireEvent.click(toggle);
+
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ survey_enabled: false });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect((screen.getByLabelText('Survey IM intercept') as HTMLInputElement).checked).toBe(false);
+    });
+
+    it('ignores an older Survey IM intercept save response after a rapid re-enable', async () => {
+        let resolveFirst: (value: main.AppConfig) => void = () => {};
+        let resolveSecond: (value: main.AppConfig) => void = () => {};
+        PatchConfigFieldsMock
+            .mockImplementationOnce(() => new Promise<main.AppConfig>((resolve) => { resolveFirst = resolve; }) as any)
+            .mockImplementationOnce(() => new Promise<main.AppConfig>((resolve) => { resolveSecond = resolve; }) as any);
+        const { setConfig } = renderPanel({ survey_enabled: true }, 'en');
+        const toggle = screen.getByLabelText('Survey IM intercept') as HTMLInputElement;
+
+        fireEvent.click(toggle);
+        fireEvent.click(toggle);
+        expect(PatchConfigFieldsMock).toHaveBeenNthCalledWith(1, { survey_enabled: false });
+        expect(PatchConfigFieldsMock).toHaveBeenNthCalledWith(2, { survey_enabled: true });
+
+        resolveSecond(new main.AppConfig({ default_launch_mode: 'local', survey_enabled: true }));
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(setConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ survey_enabled: true }));
+
+        resolveFirst(new main.AppConfig({ default_launch_mode: 'local', survey_enabled: false }));
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(setConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ survey_enabled: true }));
+    });
+
+    it('restores the persisted Survey IM intercept value when its latest save fails', async () => {
+        PatchConfigFieldsMock.mockImplementationOnce(() => Promise.reject(new Error('offline')) as any);
+        LoadConfigMock.mockReturnValueOnce(new main.AppConfig({ default_launch_mode: 'local', survey_enabled: true }));
+        const { setConfig } = renderPanel({ survey_enabled: true }, 'en');
+
+        await act(async () => {
+            fireEvent.click(screen.getByLabelText('Survey IM intercept'));
+            await Promise.resolve();
+            await Promise.resolve();
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(LoadConfigMock).toHaveBeenCalledTimes(1);
+        expect(setConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ survey_enabled: true }));
     });
 
     it('persists chat gossip auto-post changes', () => {

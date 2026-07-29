@@ -64,6 +64,74 @@ func TestSelectHubPackageAppsRejectsMissingSelection(t *testing.T) {
 	}
 }
 
+func TestSelectHubPackageAppsKeepsDependencyForLegacySingularAppDependency(t *testing.T) {
+	pkg := multiAppHubPackageForSelectionTest()
+	apps := anySlice(pkg["apps"])
+	keptApp := anyMap(anyMap(apps[1])["app"])
+	keptApp["dependencies"] = map[string]any{
+		"skill": map[string]any{"id": "kept-skill", "kind": "runtime_skill", "required": true},
+	}
+	delete(anyMap(keptApp["binding"]), "dependencies")
+
+	selected, err := SelectHubPackageApps(pkg, []string{"kept-app"})
+	if err != nil {
+		t.Fatalf("SelectHubPackageApps() error = %v", err)
+	}
+	deps := anySlice(selected["resolved_dependencies"])
+	if len(deps) != 1 || anyMap(deps[0])["id"] != "kept-skill" {
+		t.Fatalf("selected legacy singular dependency mismatch: %#v", selected["resolved_dependencies"])
+	}
+}
+
+func TestSelectHubPackageAppsKeepsDependencyForLegacyBindingSkill(t *testing.T) {
+	pkg := multiAppHubPackageForSelectionTest()
+	apps := anySlice(pkg["apps"])
+	keptApp := anyMap(anyMap(apps[1])["app"])
+	keptBinding := anyMap(keptApp["binding"])
+	delete(keptBinding, "dependencies")
+	keptBinding["skill"] = map[string]any{"id": "kept-skill", "kind": "runtime_skill", "required": true}
+
+	selected, err := SelectHubPackageApps(pkg, []string{"kept-app"})
+	if err != nil {
+		t.Fatalf("SelectHubPackageApps() error = %v", err)
+	}
+	deps := anySlice(selected["resolved_dependencies"])
+	if len(deps) != 1 || anyMap(deps[0])["id"] != "kept-skill" {
+		t.Fatalf("selected legacy binding skill dependency mismatch: %#v", selected["resolved_dependencies"])
+	}
+}
+
+func TestSelectHubPackageAppsKeepsDependencyWhenResolvedAppIDUsesMarketPrefix(t *testing.T) {
+	pkg := multiAppHubPackageForSelectionTest()
+	deps := anySlice(pkg["resolved_dependencies"])
+	anyMap(deps[1])["app_ids"] = []any{"market-kept-app"}
+
+	selected, err := SelectHubPackageApps(pkg, []string{"kept-app"})
+	if err != nil {
+		t.Fatalf("SelectHubPackageApps() error = %v", err)
+	}
+	deps = anySlice(selected["resolved_dependencies"])
+	if len(deps) != 1 || anyMap(deps[0])["id"] != "kept-skill" {
+		t.Fatalf("selected dependency with market-prefixed app ID mismatch: %#v", selected["resolved_dependencies"])
+	}
+}
+
+func TestSelectHubPackageAppsScopesSharedResolvedDependencyToSelectedApp(t *testing.T) {
+	pkg := multiAppHubPackageForSelectionTest()
+	deps := anySlice(pkg["resolved_dependencies"])
+	anyMap(deps[1])["app_ids"] = []any{"kept-app", "skipped-app"}
+
+	selected, err := SelectHubPackageApps(pkg, []string{"kept-app"})
+	if err != nil {
+		t.Fatalf("SelectHubPackageApps() error = %v", err)
+	}
+	deps = anySlice(selected["resolved_dependencies"])
+	appIDs := stringList(anyMap(deps[0])["app_ids"])
+	if len(deps) != 1 || len(appIDs) != 1 || appIDs[0] != "kept-app" {
+		t.Fatalf("shared dependency should be scoped to selected app: %#v", selected["resolved_dependencies"])
+	}
+}
+
 func multiAppHubPackageForSelectionTest() map[string]any {
 	signature := map[string]any{"algorithm": "ed25519", "public_key_fingerprint": "sha256:test-key", "package_sha256": "sha-test"}
 	reviewEvidence := map[string]any{

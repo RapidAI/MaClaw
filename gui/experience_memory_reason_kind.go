@@ -5,14 +5,14 @@ import "strings"
 type experienceMemoryReasonKind string
 
 const (
-	experienceMemoryReasonUnknown      experienceMemoryReasonKind = ""
-	experienceMemoryReasonPinned       experienceMemoryReasonKind = "pinned"
-	experienceMemoryReasonInstruction  experienceMemoryReasonKind = "instruction"
-	experienceMemoryReasonSelfIdentity experienceMemoryReasonKind = "self_identity"
-	experienceMemoryReasonHighStrength experienceMemoryReasonKind = "high_strength"
+	experienceMemoryReasonUnknown       experienceMemoryReasonKind = ""
+	experienceMemoryReasonPinned        experienceMemoryReasonKind = "pinned"
+	experienceMemoryReasonInstruction   experienceMemoryReasonKind = "instruction"
+	experienceMemoryReasonSelfIdentity  experienceMemoryReasonKind = "self_identity"
+	experienceMemoryReasonHighStrength  experienceMemoryReasonKind = "high_strength"
 	experienceMemoryReasonA2ADiscussion experienceMemoryReasonKind = "a2a_discussion"
-	experienceMemoryReasonToolUsage    experienceMemoryReasonKind = "tool_usage"
-	experienceMemoryReasonSwarmTrace   experienceMemoryReasonKind = "swarm_trace"
+	experienceMemoryReasonToolUsage     experienceMemoryReasonKind = "tool_usage"
+	experienceMemoryReasonSwarmTrace    experienceMemoryReasonKind = "swarm_trace"
 )
 
 func normalizeExperienceMemoryReasonKind(value string) experienceMemoryReasonKind {

@@ -322,7 +322,7 @@ export interface WelcomeComposerProps {
     ready: boolean;
     recallHistory: (direction: "up" | "down") => boolean;
     rememberHistoryEdit: (value: string) => void;
-    removeSelectedFile?: (index: number) => void;
+    removeSelectedFile?: (filePath: string) => void;
     resizeInput: () => void;
     selectedFilePaths: string[];
     setPendingAttachments: React.Dispatch<React.SetStateAction<AttachmentInfo[]>>;

@@ -45,12 +45,12 @@ var ensureViewerTokenMu sync.Mutex
 // (or test isolation with different mock servers) never returns another
 // environment's status.
 var hubServiceStatusCache struct {
-	mu         sync.RWMutex
-	status     HubLLMServiceStatus
-	fetchedAt  time.Time
-	valid      bool
-	hubURL     string
-	viewerTok  string
+	mu        sync.RWMutex
+	status    HubLLMServiceStatus
+	fetchedAt time.Time
+	valid     bool
+	hubURL    string
+	viewerTok string
 }
 
 // clearHubServiceStatusCache invalidates the process-local Hub LLM status cache.

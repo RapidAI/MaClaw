@@ -125,8 +125,8 @@ func TestRecordEvolutionEvent_WritesDefaultPathOverrideable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a.jsonl")
 	if err := AppendEvolutionAudit(path, EvolutionAuditEvent{
-		Kind: KindFromEventName(EventSkillAutoDiscovered),
-		Skill: "new-one",
+		Kind:   KindFromEventName(EventSkillAutoDiscovered),
+		Skill:  "new-one",
 		Source: "test",
 	}); err != nil {
 		t.Fatal(err)

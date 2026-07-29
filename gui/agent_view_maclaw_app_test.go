@@ -334,7 +334,7 @@ func TestHandleMaclawAppApprovalPanelSubmit(t *testing.T) {
 			"_approval_workspace":   "1",
 			"_approval_instance_id": stored.InstanceID,
 			"_app_id":               "appr-app",
-			"parameters":             map[string]interface{}{"instance_id": stored.InstanceID},
+			"parameters":            map[string]interface{}{"instance_id": stored.InstanceID},
 		},
 	})
 	if resp == nil || resp.Error != "" {

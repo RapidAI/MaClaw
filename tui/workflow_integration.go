@@ -139,7 +139,7 @@ func (s *tuiWorkflowStore) SaveWorkflowState(state *v2.EngineState) error { retu
 func (s *tuiWorkflowStore) LoadWorkflowState(userID string) (*v2.EngineState, error) {
 	return nil, nil
 }
-func (s *tuiWorkflowStore) DeleteWorkflowState(id string) error                     { return nil }
+func (s *tuiWorkflowStore) DeleteWorkflowState(id string) error             { return nil }
 func (s *tuiWorkflowStore) ListActiveWorkflows() ([]*v2.EngineState, error) { return nil, nil }
 func (s *tuiWorkflowStore) SaveUnderstandingSession(session *v2.UnderstandingSession) error {
 	return nil

@@ -26,11 +26,11 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	preCompressThresholdPct      = 50 // trigger pre-compression at 50%
-	aggressiveCompressThresholdPct = 85 // trigger aggressive compression at 85%
-	preCompressKeepMessages      = 20 // messages to keep in pre-compression
-	aggressiveKeepMessages       = 8  // messages to keep in aggressive compression
-	maxSummaryChars              = 5000 // cap summary text length
+	preCompressThresholdPct        = 50   // trigger pre-compression at 50%
+	aggressiveCompressThresholdPct = 85   // trigger aggressive compression at 85%
+	preCompressKeepMessages        = 20   // messages to keep in pre-compression
+	aggressiveKeepMessages         = 8    // messages to keep in aggressive compression
+	maxSummaryChars                = 5000 // cap summary text length
 )
 
 // ---------------------------------------------------------------------------
@@ -90,9 +90,9 @@ func NewContextCompressor(contextLimit, toolsTokens int, summarizer func(string)
 type CompressLevel int
 
 const (
-	CompressNone       CompressLevel = 0
+	CompressNone        CompressLevel = 0
 	CompressPreCompress CompressLevel = 1
-	CompressAggressive CompressLevel = 2
+	CompressAggressive  CompressLevel = 2
 )
 
 // Compress applies the appropriate compression layer to the conversation.
@@ -369,8 +369,8 @@ func (cc *ContextCompressor) buildSummaryPlaceholder(msgs []interface{}, dropped
 					"content": fmt.Sprintf("[会话上下文摘要 | 压缩层级: %d | 已压缩 %d 条消息]\n%s", layer, countGroupMsgs(dropped), summary),
 				},
 				map[string]string{
-					"role":    "assistant",
-					"content": "好的，我已了解之前的对话上下文摘要，将基于此继续工作。",
+					"role":              "assistant",
+					"content":           "好的，我已了解之前的对话上下文摘要，将基于此继续工作。",
 					"reasoning_content": "",
 				},
 			}

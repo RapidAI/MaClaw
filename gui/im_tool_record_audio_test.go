@@ -290,11 +290,11 @@ func TestToolCallIDFromHistoryDeltaByName(t *testing.T) {
 			Role: "assistant",
 			ToolCalls: []interface{}{
 				map[string]interface{}{
-					"id": "call_rec",
+					"id":       "call_rec",
 					"function": map[string]interface{}{"name": "record_audio"},
 				},
 				map[string]interface{}{
-					"id": "call_bash_last",
+					"id":       "call_bash_last",
 					"function": map[string]interface{}{"name": "bash"},
 				},
 			},
@@ -330,8 +330,8 @@ func TestFinalizeSharedLoopRecordAudio_NameFallbackWhenPauseIDEmpty(t *testing.T
 		},
 	}
 	loopResult := agent.LoopResult{
-		Text:         agent.FormatRecordAudioForDisplay(req),
-		RecordAudio:  req,
+		Text:        agent.FormatRecordAudioForDisplay(req),
+		RecordAudio: req,
 		// PauseToolCallID intentionally empty — name-match fallback must work.
 		HistoryDelta: history,
 	}

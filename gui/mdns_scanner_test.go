@@ -113,12 +113,12 @@ func buildTestMDNSResponse() []byte {
 
 	// --- Header ---
 	header := make([]byte, 12)
-	binary.BigEndian.PutUint16(header[0:2], 0)    // ID
+	binary.BigEndian.PutUint16(header[0:2], 0)      // ID
 	binary.BigEndian.PutUint16(header[2:4], 0x8400) // Flags: response, authoritative
-	binary.BigEndian.PutUint16(header[4:6], 0)     // QDCOUNT
-	binary.BigEndian.PutUint16(header[6:8], 2)     // ANCOUNT (SRV + A)
-	binary.BigEndian.PutUint16(header[8:10], 0)    // NSCOUNT
-	binary.BigEndian.PutUint16(header[10:12], 0)   // ARCOUNT
+	binary.BigEndian.PutUint16(header[4:6], 0)      // QDCOUNT
+	binary.BigEndian.PutUint16(header[6:8], 2)      // ANCOUNT (SRV + A)
+	binary.BigEndian.PutUint16(header[8:10], 0)     // NSCOUNT
+	binary.BigEndian.PutUint16(header[10:12], 0)    // ARCOUNT
 	pkt = append(pkt, header...)
 
 	// --- SRV Record ---
@@ -129,7 +129,7 @@ func buildTestMDNSResponse() []byte {
 	srvMeta := make([]byte, 10)
 	binary.BigEndian.PutUint16(srvMeta[0:2], 33)  // TYPE SRV
 	binary.BigEndian.PutUint16(srvMeta[2:4], 1)   // CLASS IN
-	binary.BigEndian.PutUint32(srvMeta[4:8], 120)  // TTL
+	binary.BigEndian.PutUint32(srvMeta[4:8], 120) // TTL
 	// RDLENGTH will be filled after building RDATA.
 	targetName := encodeDNSName("mcp-host.local.")
 	rdLength := 6 + len(targetName) // priority(2) + weight(2) + port(2) + target
@@ -139,7 +139,7 @@ func buildTestMDNSResponse() []byte {
 	srvRdata := make([]byte, 6)
 	binary.BigEndian.PutUint16(srvRdata[0:2], 0)    // priority
 	binary.BigEndian.PutUint16(srvRdata[2:4], 0)    // weight
-	binary.BigEndian.PutUint16(srvRdata[4:6], 9090)  // port
+	binary.BigEndian.PutUint16(srvRdata[4:6], 9090) // port
 	pkt = append(pkt, srvRdata...)
 	pkt = append(pkt, targetName...)
 
@@ -150,8 +150,8 @@ func buildTestMDNSResponse() []byte {
 	aMeta := make([]byte, 10)
 	binary.BigEndian.PutUint16(aMeta[0:2], 1)   // TYPE A
 	binary.BigEndian.PutUint16(aMeta[2:4], 1)   // CLASS IN
-	binary.BigEndian.PutUint32(aMeta[4:8], 120)  // TTL
-	binary.BigEndian.PutUint16(aMeta[8:10], 4)   // RDLENGTH
+	binary.BigEndian.PutUint32(aMeta[4:8], 120) // TTL
+	binary.BigEndian.PutUint16(aMeta[8:10], 4)  // RDLENGTH
 	pkt = append(pkt, aMeta...)
 	pkt = append(pkt, 192, 168, 1, 100) // 192.168.1.100
 

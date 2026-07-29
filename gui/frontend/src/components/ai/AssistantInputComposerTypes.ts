@@ -66,7 +66,7 @@ export interface AssistantInputComposerProps {
     ready: boolean;
     recallHistory: (direction: "up" | "down") => boolean;
     rememberHistoryEdit: (value: string) => void;
-    removeSelectedFile?: (index: number) => void;
+    removeSelectedFile?: (filePath: string) => void;
     resizeInput: () => void;
     selectedFilePaths: string[];
     setPendingAttachments: Dispatch<SetStateAction<AttachmentInfo[]>>;
