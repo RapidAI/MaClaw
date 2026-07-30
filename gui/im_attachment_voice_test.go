@@ -145,3 +145,16 @@ func TestBuildUserContentAcceptsNilProgress(t *testing.T) {
 		t.Fatalf("got %#v", got)
 	}
 }
+
+func TestBuildUserContentWithoutLocalStagingKeepsUnsupportedGroupImageOffDisk(t *testing.T) {
+	content := buildUserContentWithLocalStaging("inspect", []MessageAttachment{{
+		Type:     "image",
+		FileName: "private.png",
+		MimeType: "image/png",
+		Data:     "aGVsbG8=",
+	}}, "openai", false, nil, nil, false)
+	text, ok := content.(string)
+	if !ok || !strings.Contains(text, "不允许将图片保存到本机") || strings.Contains(text, "已保存到") {
+		t.Fatalf("restricted image content = %#v", content)
+	}
+}

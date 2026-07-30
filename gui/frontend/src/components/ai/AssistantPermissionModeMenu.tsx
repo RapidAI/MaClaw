@@ -5,6 +5,8 @@ import { AssistantInputIcon, type Theme } from "./aiAssistantPanelTheme";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 
 interface AssistantPermissionModeMenuProps {
+    /** Whether the retained assistant panel is visible in the app shell. */
+    active?: boolean;
     lang: string;
     mode: AssistantPermissionMode;
     onChange?: (mode: AssistantPermissionMode) => void;
@@ -14,7 +16,7 @@ interface AssistantPermissionModeMenuProps {
     showWorkspaceOption?: boolean;
 }
 
-export function AssistantPermissionModeMenu({ lang, mode, onChange, theme, themeMode, showWorkspaceOption = false }: AssistantPermissionModeMenuProps) {
+export function AssistantPermissionModeMenu({ active: panelActive = true, lang, mode, onChange, theme, themeMode, showWorkspaceOption = false }: AssistantPermissionModeMenuProps) {
     const [open, setOpen] = useState(false);
     const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; openUp: boolean; maxHeight: number } | null>(null);
     const rootRef = useRef<HTMLDivElement | null>(null);
@@ -52,6 +54,10 @@ export function AssistantPermissionModeMenu({ lang, mode, onChange, theme, theme
         if (next) updateMenuPosition();
         setOpen(next);
     }, [updateMenuPosition]);
+
+    useEffect(() => {
+        if (!panelActive) setMenuOpen(false);
+    }, [panelActive, setMenuOpen]);
 
     useEffect(() => {
         if (!open) return;

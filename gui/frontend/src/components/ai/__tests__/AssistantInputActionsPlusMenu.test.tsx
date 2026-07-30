@@ -238,6 +238,42 @@ describe("AssistantInputActionsLeft plus menu", () => {
         fireEvent.keyDown(document, { key: "Tab" });
         expect(screen.queryByTestId("ai-plus-menu")).toBeNull();
     });
+
+    it("closes floating input menus when the retained panel becomes inactive", () => {
+        const { rerender } = renderLeft({ active: true });
+        fireEvent.click(screen.getByTestId("ai-plus-menu-button"));
+        fireEvent.click(screen.getByTestId("ai-permission-mode"));
+        expect(screen.getByTestId("ai-plus-menu")).toBeTruthy();
+        expect(screen.getByTestId("ai-permission-mode-menu")).toBeTruthy();
+
+        rerender(
+            <AssistantInputActionsLeft
+                active={false}
+                browseFile={vi.fn()}
+                composeAction={null}
+                inputLocked={false}
+                lang="zh-Hans"
+                onComposeActionChange={vi.fn()}
+                onPermissionModeChange={vi.fn()}
+                onFireSlashCommand={vi.fn()}
+                onInsertTemplate={vi.fn()}
+                onPlusMenuAction={vi.fn()}
+                ready={true}
+                theme={theme}
+                themeMode="light"
+                voiceInput={voiceInput}
+                showVoiceInput={false}
+                handleVoiceClick={vi.fn()}
+                handleVoicePointerDown={vi.fn()}
+                handleVoicePointerLeave={vi.fn()}
+                finishVoicePointer={vi.fn()}
+                attachButtonTestId="ai-attach-button"
+            />,
+        );
+
+        expect(screen.queryByTestId("ai-plus-menu")).toBeNull();
+        expect(screen.queryByTestId("ai-permission-mode-menu")).toBeNull();
+    });
 });
 
 describe("clampMenuPosition", () => {

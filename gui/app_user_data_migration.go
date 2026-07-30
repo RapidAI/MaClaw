@@ -127,6 +127,7 @@ var userDataMigrationPreserveTargetConfigPaths = []string{
 	// and cannot safely be reused on another machine.
 	"projects", "current_project", "external_skill_dirs", "audio_input_device_id", "audio_output_device_id",
 	"noise_floor_calibrated", "speech_level_calibrated", "local_needle_model_path", "ve_allowed_directories",
+	"lansenger_group_allow_all_directories", "lansenger_group_allowed_directories",
 }
 
 var userDataMigrationRewriteTargetConfigPaths = []string{

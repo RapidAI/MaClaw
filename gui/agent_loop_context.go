@@ -104,6 +104,11 @@ type LoopContext struct {
 	// Each entry is an absolute file path that was successfully written/delivered.
 	WorkflowWrittenFiles []string
 
+	// LansengerGroupPermissions is set only for local Lansenger group messages.
+	// It keeps group-originated knowledge and filesystem access scoped all the
+	// way through tool selection and execution.
+	LansengerGroupPermissions *lansengerGroupPermissionPolicy
+
 	// IsAskUserResponse is true when the current message is a response to a
 	// previous ask_user tool question. In this case the user's text is a
 	// continuation of an existing task, not a new independent request. The

@@ -8,6 +8,8 @@ import type { Theme } from "./aiAssistantPanelTheme";
 export type AssistantPermissionMode = "request" | "workspace" | "full";
 
 export interface AssistantInputComposerProps {
+    /** Whether the retained assistant panel is visible in the app shell. */
+    active?: boolean;
     browseFile: () => void;
     canSend: boolean;
     attachButtonTestId?: string;

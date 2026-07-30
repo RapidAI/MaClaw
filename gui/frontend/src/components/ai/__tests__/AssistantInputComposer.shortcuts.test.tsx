@@ -22,7 +22,10 @@ vi.mock("../MemoryUsageRing", () => ({
     MemoryUsageRing: () => null,
 }));
 
-function renderComposer(handleSend = vi.fn()) {
+function renderComposer(inputValue = "draft", handleSend = vi.fn()) {
+    const updateInputValue = vi.fn();
+    const rememberHistoryEdit = vi.fn();
+    const resizeInput = vi.fn();
     const props: AssistantInputComposerProps = {
         browseFile: vi.fn(),
         canSend: true,
@@ -41,7 +44,7 @@ function renderComposer(handleSend = vi.fn()) {
         inputAreaHeight: null,
         inputLocked: false,
         inputRef: { current: null },
-        inputValue: "draft",
+        inputValue,
         inline: false,
         isBusy: false,
         isSelectionCollapsedAtBoundary: vi.fn(() => false),
@@ -50,8 +53,8 @@ function renderComposer(handleSend = vi.fn()) {
         placeholderText: "Ask AI",
         ready: true,
         recallHistory: vi.fn(() => false),
-        rememberHistoryEdit: vi.fn(),
-        resizeInput: vi.fn(),
+        rememberHistoryEdit,
+        resizeInput,
         selectedFilePaths: [],
         setPendingAttachments: vi.fn(),
         showBusySpinner: false,
@@ -59,26 +62,52 @@ function renderComposer(handleSend = vi.fn()) {
         showVoiceInput: false,
         theme: overlayTheme,
         themeMode: "dark",
-        updateInputValue: vi.fn(),
+        updateInputValue,
         voiceInput: {} as AssistantInputComposerProps["voiceInput"],
     };
 
     render(<AssistantInputComposer {...props} />);
-    return handleSend;
+    return { handleSend, rememberHistoryEdit, resizeInput, updateInputValue };
 }
 
 describe("AssistantInputComposer keyboard shortcuts", () => {
-    it("sends on plain Enter but leaves modified Enter combinations to the textarea", () => {
-        const handleSend = renderComposer();
+    it("sends on plain Enter and never sends on modified Enter combinations", () => {
+        const { handleSend } = renderComposer();
         const input = screen.getByRole("textbox");
 
-        expect(fireEvent.keyDown(input, { key: "Enter", ctrlKey: true })).toBe(true);
-        expect(fireEvent.keyDown(input, { key: "Enter", metaKey: true })).toBe(true);
+        expect(fireEvent.keyDown(input, { key: "Enter", ctrlKey: true })).toBe(false);
+        expect(fireEvent.keyDown(input, { key: "Enter", metaKey: true })).toBe(false);
         expect(fireEvent.keyDown(input, { key: "Enter", shiftKey: true })).toBe(true);
         expect(fireEvent.keyDown(input, { key: "Enter", altKey: true })).toBe(true);
         expect(handleSend).not.toHaveBeenCalled();
 
         expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
         expect(handleSend).toHaveBeenCalledTimes(1);
+    });
+
+    it("inserts a newline at the selection for Ctrl/Cmd+Enter", () => {
+        const { handleSend, rememberHistoryEdit, updateInputValue } = renderComposer("firstlast");
+        const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+        input.setSelectionRange(5, 5);
+
+        expect(fireEvent.keyDown(input, { key: "Enter", ctrlKey: true })).toBe(false);
+        expect(updateInputValue).toHaveBeenLastCalledWith("first\nlast");
+        expect(rememberHistoryEdit).toHaveBeenLastCalledWith("first\nlast");
+        expect(handleSend).not.toHaveBeenCalled();
+
+        input.setSelectionRange(0, 5);
+        expect(fireEvent.keyDown(input, { key: "Enter", metaKey: true })).toBe(false);
+        expect(updateInputValue).toHaveBeenLastCalledWith("\nlast");
+    });
+
+    it("uses the textarea's latest value when React has not rendered it yet", () => {
+        const { updateInputValue } = renderComposer("stale");
+        const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+        input.value = "latest";
+        input.setSelectionRange(3, 3);
+
+        fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+
+        expect(updateInputValue).toHaveBeenLastCalledWith("lat\nest");
     });
 });

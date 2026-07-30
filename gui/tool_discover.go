@@ -104,6 +104,14 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 			ranked = filterDiscoveredToolsForExpert(ranked, mcpMatches, def)
 		}
 	}
+	// Group discovery is subject to the same policy as execution. Otherwise the
+	// result can disclose local capabilities or session-pin a tool that should
+	// never be offered in a group conversation.
+	if ownerID, ok := h.currentRuntimePolicyOwnerState(); ok {
+		if loopCtx := h.runtimeLoopContextForOwner(ownerID); loopCtx != nil && loopCtx.LansengerGroupPermissions != nil {
+			ranked = filterDiscoveredToolsForLansengerGroup(ranked, mcpMatches, *loopCtx.LansengerGroupPermissions)
+		}
+	}
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].score != ranked[j].score {
 			return ranked[i].score > ranked[j].score
@@ -217,6 +225,19 @@ func filterDiscoveredToolsForExpert(ranked []discoveredToolScore, mcpMatches map
 		if allow[item.name] {
 			out = append(out, item)
 		}
+	}
+	return out
+}
+
+func filterDiscoveredToolsForLansengerGroup(ranked []discoveredToolScore, mcpMatches map[string]discoverableMCPTool, policy lansengerGroupPermissionPolicy) []discoveredToolScore {
+	out := make([]discoveredToolScore, 0, len(ranked))
+	for _, item := range ranked {
+		// MCP matches execute through call_mcp_tool, which intentionally has no
+		// group-safe path/source contract.
+		if _, isMCP := mcpMatches[item.name]; isMCP || !policy.allowsTool(item.name) {
+			continue
+		}
+		out = append(out, item)
 	}
 	return out
 }

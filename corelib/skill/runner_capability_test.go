@@ -39,6 +39,14 @@ func TestCheckStepActionSupport_GUIMCPActionSupported(t *testing.T) {
 	}
 }
 
+func TestCheckStepActionSupport_GUIRemoteCodingActionsSupported(t *testing.T) {
+	for _, action := range []string{"ssh_bash", "ssh_list_dir", "ssh_read_file", "todo_write"} {
+		if support := CheckStepActionSupport(RunnerBackendGUI, action); !support.Supported {
+			t.Fatalf("%s should be supported by GUI: %#v", action, support)
+		}
+	}
+}
+
 func TestCheckStepActionSupport_GUIExternalSessionActionsDisabled(t *testing.T) {
 	for _, action := range []string{"create_session", "send_input", "send_and_observe", "control_session"} {
 		support := CheckStepActionSupport(RunnerBackendGUI, action)

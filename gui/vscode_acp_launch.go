@@ -939,6 +939,12 @@ func launchVSCode(codeCLI, folder string) error {
 	}
 	// New window so user sees the result
 	args = append([]string{"-n"}, args...)
+	return launchVSCodeWithArgs(codeCLI, args)
+}
+
+// launchVSCodeWithArgs starts VS Code without blocking the desktop UI.
+// Callers must resolve and validate every path/remote authority before calling.
+func launchVSCodeWithArgs(codeCLI string, args []string) error {
 	cmd := exec.Command(codeCLI, args...)
 	hideACPLaunchWindow(cmd)
 	// Detach so GUI doesn't wait; hide console (code.cmd is a batch launcher).

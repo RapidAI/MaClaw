@@ -199,6 +199,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     TranscribeAudioBase64: vi.fn().mockResolvedValue(""),
     NormalizeVoiceCommand: vi.fn(async (text: string) => ({ is_command: true, corrected_text: text, confidence: 1 })),
     CorrectASRText: vi.fn(async (text: string) => text),
+    IsCodingWorkbenchVSCodeAvailable: vi.fn().mockResolvedValue(false),
 }));
 
 function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }): ChatMessage {
@@ -1343,6 +1344,117 @@ describe('AIAssistantPanel property tests', () => {
             'Refresh news',
             'New conversation',
         ]);
+    });
+
+    it('closes assistant-only overlays while the retained panel is hidden', async () => {
+        const { getByTitle, queryByRole, rerender } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+
+        fireEvent.mouseDown(getByTitle('Knowledge Base'));
+        expect(queryByRole('dialog', { name: 'Knowledge Base' })).toBeTruthy();
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: false }}
+            />
+        );
+
+        await waitFor(() => expect(queryByRole('dialog', { name: 'Knowledge Base' })).toBeNull());
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: true }}
+            />
+        );
+
+        expect(queryByRole('dialog', { name: 'Knowledge Base' })).toBeNull();
+    });
+
+    it('closes the save-task dialog when app navigation hides the retained panel', async () => {
+        const { getByTestId, queryByRole, rerender } = renderPanel({
+            window: { inline: true },
+            state: { messages: [makeMsg({ role: 'user', content: 'Draft proposal' })], sending: false, streaming: false, ready: true, active: true },
+        });
+
+        fireEvent.mouseDown(getByTestId('save-current-task-btn'));
+        await waitFor(() => expect(queryByRole('dialog', { name: 'Save as Task' })).toBeTruthy());
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: false }}
+            />
+        );
+
+        await waitFor(() => expect(queryByRole('dialog', { name: 'Save as Task' })).toBeNull());
+    });
+
+    it('closes task search when app navigation hides the retained panel', async () => {
+        const { getByTitle, getByPlaceholderText, queryByPlaceholderText, rerender } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+
+        fireEvent.mouseDown(getByTitle('Search tasks'));
+        await waitFor(() => expect(getByPlaceholderText('Search tasks...')).toBeTruthy());
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: false }}
+            />
+        );
+
+        await waitFor(() => expect(queryByPlaceholderText('Search tasks...')).toBeNull());
+    });
+
+    it('hides approval prompts off-page without discarding a live backend request', async () => {
+        const { queryByRole, rerender } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+        const approvalHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval')
+            .at(-1)?.[1];
+        expect(approvalHandler).toBeTypeOf('function');
+
+        act(() => approvalHandler({
+            id: 'approval-1',
+            tool: 'shell_command',
+            path: 'D:/other/project',
+            project_path: 'D:/task',
+            directory: 'D:/other',
+            timeout_seconds: 30,
+            kind: 'outside_project_path',
+            auto_allow: false,
+        }));
+        expect(queryByRole('alertdialog')).toBeTruthy();
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: false }}
+            />
+        );
+        expect(queryByRole('alertdialog')).toBeNull();
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: true }}
+            />
+        );
+        expect(queryByRole('alertdialog')).toBeTruthy();
     });
 
     it('opens current tenant card store URL from config', async () => {

@@ -1,0 +1,175 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestCleanCodingWorkbenchBrowserPath(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{"", "", true},
+		{".", "", true},
+		{"src/main.go", "src/main.go", true},
+		{`src\\main.go`, "src/main.go", true},
+		{"../secret", "", false},
+		{"/etc/passwd", "", false},
+		{`C:\\secret.txt`, "", false},
+	}
+	for _, tc := range cases {
+		got, err := cleanCodingWorkbenchBrowserPath(tc.input)
+		if tc.ok && err != nil {
+			t.Fatalf("cleanCodingWorkbenchBrowserPath(%q) error: %v", tc.input, err)
+		}
+		if !tc.ok && err == nil {
+			t.Fatalf("cleanCodingWorkbenchBrowserPath(%q) unexpectedly succeeded with %q", tc.input, got)
+		}
+		if tc.ok && got != tc.want {
+			t.Fatalf("cleanCodingWorkbenchBrowserPath(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestCodingWorkbenchBrowserRemotePathKeepsRemoteWorkDirForRoot(t *testing.T) {
+	root := "/home/sysinfo18"
+	cases := []struct {
+		relative string
+		want     string
+	}{
+		{relative: "", want: root},
+		{relative: ".", want: root},
+		{relative: "src", want: root + "/src"},
+	}
+	for _, tc := range cases {
+		got := codingWorkbenchBrowserRemotePath(root, tc.relative)
+		if got != tc.want {
+			t.Errorf("codingWorkbenchBrowserRemotePath(%q, %q) = %q, want %q", root, tc.relative, got, tc.want)
+		}
+		if !remotePathWithinDir(got, root) {
+			t.Errorf("codingWorkbenchBrowserRemotePath(%q, %q) = %q is outside %q", root, tc.relative, got, root)
+		}
+	}
+}
+
+func TestRemotePathWithinDirAllowsChildrenOfFilesystemRoot(t *testing.T) {
+	if !remotePathWithinDir("/etc/hosts", "/") {
+		t.Fatal("a remote work_dir of / must allow paths under the filesystem root")
+	}
+}
+
+func TestCodingWorkbenchEntryPropertiesUsesPortablePermissionAndFileMetadata(t *testing.T) {
+	properties := codingWorkbenchEntryProperties("src/APP.GO", "/workspace/src/APP.GO", "APP.GO", false, 1536, 123, "0640")
+	if properties.Extension != "go" || !properties.SizeKnown || properties.Size != 1536 {
+		t.Fatalf("file properties = %+v, want extension, size and known size", properties)
+	}
+	if properties.AbsPath != "/workspace/src/APP.GO" || properties.Mode != "0640" {
+		t.Fatalf("file properties = %+v, want full path and portable permissions", properties)
+	}
+
+	directory := codingWorkbenchEntryProperties("src", "/workspace/src", "src", true, 4096, 123, "0755")
+	if directory.SizeKnown || directory.Extension != "" {
+		t.Fatalf("directory properties = %+v, directory sizes and extensions must not be reported", directory)
+	}
+}
+
+func TestReadCodingWorkbenchBrowserTextFileBoundsLargePreview(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.txt")
+	content := strings.Repeat("a", codingWorkbenchBrowserMaxReadBytes+100)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preview, truncated, err := readCodingWorkbenchBrowserTextFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Fatal("expected large file preview to be truncated")
+	}
+	if len([]rune(preview)) != codingWorkbenchBrowserMaxRunes {
+		t.Fatalf("preview rune count = %d, want %d", len([]rune(preview)), codingWorkbenchBrowserMaxRunes)
+	}
+}
+
+func TestReadCodingWorkbenchBrowserTextFileRejectsInvalidUTF8(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "binary.bin")
+	if err := os.WriteFile(path, []byte{0xff, 0xfe, 0x00}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readCodingWorkbenchBrowserTextFile(path); err == nil {
+		t.Fatal("expected invalid UTF-8 preview to be rejected")
+	}
+}
+
+func TestSortCodingWorkbenchDirectoryEntriesPlacesDirectoriesFirst(t *testing.T) {
+	entries := []CodingWorkbenchDirectoryEntry{
+		{Name: "z.txt"},
+		{Name: "beta", IsDir: true},
+		{Name: "Alpha", IsDir: true},
+		{Name: "a.txt"},
+	}
+	sortCodingWorkbenchDirectoryEntries(entries)
+	got := []string{entries[0].Name, entries[1].Name, entries[2].Name, entries[3].Name}
+	want := []string{"Alpha", "beta", "a.txt", "z.txt"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("sorted entries = %v, want %v", got, want)
+	}
+}
+
+func TestCollectCodingWorkbenchDirectoryEntriesBoundsTheFirstPage(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i <= codingWorkbenchBrowserMaxEntries; i++ {
+		name := filepath.Join(dir, fmt.Sprintf("file-%03d.txt", i))
+		if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handle, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	entries, truncated, err := collectCodingWorkbenchDirectoryEntries(handle, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated || len(entries) != codingWorkbenchBrowserMaxEntries {
+		t.Fatalf("truncated=%v entries=%d, want true/%d", truncated, len(entries), codingWorkbenchBrowserMaxEntries)
+	}
+	if entries[0].Name != "file-000.txt" {
+		t.Fatalf("first entry = %+v, want first sorted item in the bounded page", entries[0])
+	}
+}
+
+func TestParseCodingWorkbenchRemoteDirectoryRecordsKeepsJSONBeforeSSHExitMarker(t *testing.T) {
+	raw := strings.Join([]string{
+		"$ python3 -c '<hidden>'",
+		`{"truncated":true}`,
+		`{"name":"src","is_dir":true}`,
+		`{"name":"main.go","is_dir":false}`,
+		"---EXIT_CODE:0---",
+	}, "\n")
+	entries, truncated := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
+	if !truncated || len(entries) != 2 {
+		t.Fatalf("truncated=%v entries=%v, want true and two entries", truncated, entries)
+	}
+	if entries[0].Name != "src" || !entries[0].IsDir || entries[1].Path != "main.go" {
+		t.Fatalf("parsed entries = %+v", entries)
+	}
+}
+
+func TestRemotePreviewOutputIsTruncatedUsesProtocolMarkersOnly(t *testing.T) {
+	if remotePreviewOutputIsTruncated("1\tconst truncated = false;\n") {
+		t.Fatal("ordinary source content must not be treated as a truncated preview")
+	}
+	if !remotePreviewOutputIsTruncated("[remote read_file truncated: showing lines 1-2000; call again with offset=2001]") {
+		t.Fatal("expected remote read marker to report truncation")
+	}
+}

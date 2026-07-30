@@ -42,6 +42,17 @@ describe('isUIScaleAuto', () => {
 });
 
 describe('recommendUIScale', () => {
+    it('keeps Auto at native scale when the host cannot safely transform the root', () => {
+        expect(
+            recommendUIScale({
+                screenWidth: 1366,
+                screenHeight: 768,
+                devicePixelRatio: 1.25,
+                disableAutoTransform: true,
+            }),
+        ).toBe(1);
+    });
+
     it('bumps scale on low-DPI 1080p so dense rem chrome stays readable', () => {
         expect(
             recommendUIScale({ screenWidth: 1920, screenHeight: 1080, devicePixelRatio: 1 }),
@@ -92,6 +103,10 @@ describe('resolveUIScale', () => {
             }),
         ).toBe(1.25);
     });
+
+    it('keeps a manual override when Auto transforms are disabled', () => {
+        expect(resolveUIScale(1.25, { disableAutoTransform: true })).toBe(1.25);
+    });
 });
 
 describe('uiScaleEquals', () => {
@@ -112,6 +127,25 @@ describe('uiScaleToPercent', () => {
 });
 
 describe('applySavedUIZoomFactor', () => {
+    it('keeps Win10 Auto at native scale without changing its Auto state', () => {
+        const setAuto = vi.fn((updater: boolean | ((prev: boolean) => boolean)) => {
+            if (typeof updater === 'function') {
+                expect(updater(true)).toBe(true);
+            }
+        });
+        const setZoom = vi.fn((updater: number | ((prev: number) => number)) => {
+            if (typeof updater === 'function') {
+                expect(updater(1.05)).toBe(1);
+            }
+        });
+
+        const result = applySavedUIZoomFactor(0, setAuto, setZoom, {
+            disableAutoTransform: true,
+        });
+
+        expect(result).toEqual({ auto: true, scale: 1 });
+    });
+
     it('applies Auto recommendation and skips redundant scale updates', () => {
         const setAuto = vi.fn((updater: boolean | ((prev: boolean) => boolean)) => {
             if (typeof updater === 'function') {

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const executeMaclawAppBusinessOperationMock = vi.hoisted(() => vi.fn());
@@ -17,6 +17,7 @@ const installSelectedMaclawAppPackageFromHubMock = vi.hoisted(() => vi.fn());
 const installMixedSkillMock = vi.hoisted(() => vi.fn());
 const recordMaclawAppInstallMock = vi.hoisted(() => vi.fn());
 const planMaclawAppInstallMock = vi.hoisted(() => vi.fn());
+const reviewMaclawAppPackageMock = vi.hoisted(() => vi.fn<(args: unknown[]) => Promise<any>>(async () => ({ review_issues: [] })));
 const checkMaclawAppRuntimeHealthMock = vi.hoisted(() => vi.fn(async (packageJSON: string, appID: string) => {
     const plan = await planMaclawAppInstallMock(packageJSON);
     const blocked = !!(plan?.has_missing_required || plan?.has_blocking_dependency || plan?.has_workflow_contract_issue);
@@ -76,6 +77,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InstallSelectedMaclawAppPackageFromHub: (...args: unknown[]) => installSelectedMaclawAppPackageFromHubMock(...args),
     InstallMixedSkill: (...args: unknown[]) => installMixedSkillMock(...args),
     PlanMaclawAppInstall: (...args: unknown[]) => planMaclawAppInstallMock(...args),
+    ReviewMaclawAppPackage: (...args: unknown[]) => reviewMaclawAppPackageMock(args),
     RecordMaclawAppInstall: (...args: unknown[]) => recordMaclawAppInstallMock(...args),
     RecordMaclawAppRunHistory: (entry: unknown) => recordMaclawAppRunHistoryMock(entry),
     SaveMaclawAppsPanelState: async (state: string) => { window.localStorage.setItem('maclaw:apps-panel:v1', state); },
@@ -185,15 +187,21 @@ function stableStringify(value: any): string {
     if (value && typeof value === 'object') {
         // Mirror AppsPage.stableStringify: undefined-valued keys are skipped so
         // fingerprints survive the JSON round-trip to the backend package.
-        return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+        return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${stableJSONString(key)}:${stableStringify(value[key])}`).join(',')}}`;
     }
-    return JSON.stringify(value);
+    return typeof value === 'string' ? stableJSONString(value) : JSON.stringify(value);
+}
+
+// Mirror AppsPage.stableJSONString: Go escapes U+2028/U+2029, JS does not.
+function stableJSONString(value: string): string {
+    return JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
 function textHash(value: string): string {
     let hash = 2166136261;
-    for (let i = 0; i < value.length; i += 1) {
-        hash ^= value.charCodeAt(i);
+    // Mirror AppsPage.textHash: code points (Go runes), not UTF-16 code units.
+    for (const char of value) {
+        hash ^= char.codePointAt(0) as number;
         hash = Math.imul(hash, 16777619);
     }
     return (hash >>> 0).toString(16).padStart(8, '0');
@@ -204,10 +212,62 @@ function normalizeTestAppVersion(value: unknown) {
     return Number.isFinite(version) && version > 0 ? Math.floor(version) : 1;
 }
 
+function testNormalizeOutputModes(outputModes?: string[]) {
+    const allowed = ['docx', 'xlsx', 'pdf', 'json', 'txt'];
+    const normalized = (Array.isArray(outputModes) ? outputModes : []).map((item) => String(item || '').trim().toLowerCase()).filter((item) => allowed.includes(item));
+    return normalized.length > 0 ? Array.from(new Set(normalized)) : ['docx', 'pdf'];
+}
+
+function testNormalizeSkillAppFields(fields?: any[]) {
+    if (!Array.isArray(fields)) return [];
+    const normalized: any[] = [];
+    for (const field of fields) {
+        const name = String(field?.name || '').trim();
+        if (!name) continue;
+        const type = field.type === 'select' || field.type === 'boolean' ? field.type : 'text';
+        const options = Array.isArray(field.options) ? field.options.map((option: any) => String(option || '').trim()).filter(Boolean) : [];
+        const fallbackDefault = type === 'select' && !field.default && options.length > 0 ? options[0] : field.default;
+        const defaultText = typeof fallbackDefault === 'boolean' ? '' : String(fallbackDefault || '').trim();
+        const selectOptions = type === 'select' && defaultText ? Array.from(new Set([...options, defaultText])) : options;
+        normalized.push({
+            name,
+            label: String(field.label || name),
+            type,
+            required: !!field.required,
+            default: typeof fallbackDefault === 'boolean' ? fallbackDefault : String(fallbackDefault || ''),
+            options: selectOptions,
+        });
+    }
+    return normalized;
+}
+
+// Mirror AppsPage.appSkillRuntimeBinding: packaging fills binding defaults, and
+// the backend hashes the packaged binding.
+function testAppSkillRuntimeBinding(manifest: any): any {
+    if (!manifest) return undefined;
+    const existing = manifest.skill;
+    const skillID = String(existing?.id || manifest.appSkill?.id || '').trim();
+    if (!skillID) return existing;
+    const outputModes = testNormalizeOutputModes(existing?.outputModes || manifest.resultContract?.outputModes);
+    return {
+        ...existing,
+        id: skillID,
+        appDefinitionFile: existing?.appDefinitionFile || 'maclaw.app.json',
+        inputMode: existing?.inputMode || 'form',
+        multipleFiles: existing?.multipleFiles || false,
+        outputModes,
+        fields: testNormalizeSkillAppFields(existing?.fields || []),
+    };
+}
+
 function testAppDefinitionFingerprint(app: any): string {
     const manifest = app.manifest;
     // Mirror AppsPage.appDefinitionFingerprint: entryKind is excluded because the
-    // backend derives the fingerprint from the serialized package (no entryKind).
+    // backend derives the fingerprint from the serialized package (no entryKind),
+    // and ui/skill are normalized the same way appToManifest writes them into
+    // the package.
+    const ui = testAppWorkspaceUIForManifest(manifest?.ui, app.kind);
+    const skill = testAppSkillRuntimeBinding(manifest);
     const runtimeManifest = manifest ? {
         schema: manifest.schema,
         installUnit: manifest.installUnit,
@@ -215,10 +275,10 @@ function testAppDefinitionFingerprint(app: any): string {
         launchMode: manifest.launchMode,
         ...(manifest.datasrv ? { datasrv: manifest.datasrv } : {}),
         ...(manifest.mis ? { mis: manifest.mis } : {}),
-        ...(manifest.skill ? { skill: manifest.skill } : {}),
+        ...(skill ? { skill } : {}),
         ...(manifest.appSkill ? { appSkill: manifest.appSkill } : {}),
         ...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
-        ...(manifest.ui ? { ui: manifest.ui } : {}),
+        ...(ui ? { ui } : {}),
         ...(manifest.resultContract ? { resultContract: manifest.resultContract } : {}),
         ...(manifest.testProtocol ? { testProtocol: manifest.testProtocol } : {}),
         ...(manifest.workflow ? { workflow: manifest.workflow } : {}),
@@ -309,6 +369,142 @@ function testAppTestProtocolFingerprint(app: any) {
             : ['workflow_result', 'approval_instance', 'outputs', 'artifacts'];
     }
     return textHash(stableStringify(normalized));
+}
+
+function testStudioRegionsForLayout(kind: string, template: string, primaryRegion: string, outputRegion: string) {
+    if (kind === 'tool_app') {
+        return [
+            { id: 'file_queue', role: 'input', placement: primaryRegion },
+            { id: 'settings_panel', role: 'parameters', placement: primaryRegion === 'left' ? 'right' : 'left' },
+            { id: 'preview_panel', role: 'preview', placement: 'center' },
+            { id: 'output_panel', role: 'output', placement: outputRegion },
+        ];
+    }
+    if (kind === 'enterprise_approval_app') {
+        return [
+            { id: 'request_form', role: 'input', placement: primaryRegion },
+            { id: 'approval_inbox', role: 'instance_list', placement: template === 'left_nav' ? 'left' : 'center' },
+            { id: 'approval_detail', role: 'detail', placement: 'center' },
+            { id: 'result_panel', role: 'output', placement: outputRegion },
+        ];
+    }
+    return [
+        { id: 'operation_form', role: 'input', placement: primaryRegion },
+        { id: 'record_list', role: 'record_list', placement: template === 'left_nav' ? 'left' : 'center' },
+        { id: 'record_detail', role: 'detail', placement: 'center' },
+        { id: 'output_panel', role: 'output', placement: outputRegion },
+    ];
+}
+
+function testDefaultWorkspaceLayoutForKind(kind: string) {
+    const base = { schema: 'maclaw.app.ui.v1', generated: true };
+    if (kind === 'enterprise_approval_app') {
+        return {
+            ...base,
+            entry: 'approval_workspace',
+            layouts: {
+                approval_workspace: {
+                    type: 'split_view',
+                    toolbar: ['create_request', 'refresh', 'export', 'filter'],
+                    navigation: ['my_requests', 'pending_my_approval', 'handled', 'attention', 'all'],
+                    list: { columns: ['title', 'applicant', 'current_node', 'status', 'updated_at'] },
+                    detail: { sections: ['summary', 'form_data', 'attachments', 'timeline', 'approval_actions', 'result'] },
+                },
+            },
+        };
+    }
+    if (kind === 'enterprise_normal_app') {
+        return {
+            ...base,
+            entry: 'business_workspace',
+            layouts: {
+                business_workspace: {
+                    type: 'split_view',
+                    toolbar: ['new_record', 'query', 'refresh', 'export'],
+                    navigation: ['records', 'recent', 'needs_attention'],
+                    list: { columns: ['title', 'status', 'owner', 'updated_at'] },
+                    detail: { sections: ['form_panel', 'business_record', 'operation_history', 'output_panel'] },
+                },
+            },
+        };
+    }
+    return {
+        ...base,
+        entry: 'tool_workspace',
+        layouts: {
+            tool_workspace: {
+                type: 'tool_workspace',
+                toolbar: ['add_file', 'run', 'cancel', 'open_output'],
+                regions: ['file_queue', 'preview_panel', 'settings_panel', 'output_panel'],
+            },
+        },
+    };
+}
+
+// Mirror AppsPage.appWorkspaceUIForManifest: the definition fingerprint hashes
+// the packaged (normalized) ui, not the raw in-memory layout.
+function testAppWorkspaceUIForManifest(ui: any, kind: string): any {
+    if (!ui) return ui;
+    const normalizedUI = ui?.schema === 'maclaw.app.ui.v1'
+        ? { ...ui }
+        : testAppWorkspaceUIForManifest(testDefaultWorkspaceLayoutForKind(kind), kind);
+    const entry = normalizedUI.entry || (kind === 'enterprise_approval_app' ? 'approval_workspace' : kind === 'enterprise_normal_app' ? 'business_workspace' : 'tool_workspace');
+    const layouts = normalizedUI.layouts || {};
+    const layout = layouts[entry] || {};
+    const fallbackTemplate = kind === 'tool_app' ? 'document_workspace' : 'classic_split';
+    const fallbackOutputRegion = kind === 'tool_app' ? 'right' : 'bottom';
+    const template = ['classic_split', 'left_nav', 'document_workspace', 'dashboard'].includes(String(layout.template)) ? layout.template : fallbackTemplate;
+    const density = ['compact', 'comfortable', 'spacious'].includes(String(layout.density)) ? layout.density : 'comfortable';
+    const primaryRegion = ['left', 'center', 'right'].includes(String(layout.primaryRegion)) ? layout.primaryRegion : 'left';
+    const outputRegion = ['right', 'bottom', 'modal'].includes(String(layout.outputRegion)) ? layout.outputRegion : fallbackOutputRegion;
+    const allowedPlacements = new Set(['left', 'center', 'right', 'bottom', 'modal']);
+    const rawRegions = (Array.isArray(layout.regions) ? layout.regions : []).reduce((regions: any[], item: any) => {
+        const raw = item && typeof item === 'object' ? item : {};
+        const id = String(raw.id || '').trim();
+        const role = String(raw.role || '').trim();
+        const placement = String(raw.placement || '').trim();
+        if (!id || !role || !allowedPlacements.has(placement)) return regions;
+        const region: any = { id, role, placement };
+        if (raw.visible === false) region.visible = false;
+        const order = Number(raw.order);
+        if (Number.isFinite(order) && order > 0) region.order = Math.floor(order);
+        regions.push(region);
+        return regions;
+    }, []);
+    const normalized = rawRegions.length ? rawRegions : testStudioRegionsForLayout(kind, template, primaryRegion, outputRegion);
+    const regions = [...normalized]
+        .sort((a, b) => (a.order || normalized.indexOf(a) + 1) - (b.order || normalized.indexOf(b) + 1))
+        .map((region, index) => ({ ...region, order: region.order || index + 1 }));
+    const fingerprint = textHash(stableStringify({
+        entry,
+        template,
+        density,
+        primaryRegion,
+        outputRegion,
+        regions: regions.map((region: any, index: number) => ({
+            id: region.id,
+            role: region.role,
+            placement: region.placement,
+            visible: region.visible !== false,
+            order: region.order || index + 1,
+        })),
+    }));
+    return {
+        ...normalizedUI,
+        entry,
+        layouts: {
+            ...layouts,
+            [entry]: {
+                ...layout,
+                template,
+                density,
+                primaryRegion,
+                outputRegion,
+                regions,
+                fingerprint,
+            },
+        },
+    };
 }
 
 function normalizeTestAppForFingerprint(app: any) {
@@ -2656,22 +2852,120 @@ describe('AppsPage', () => {
 
         render(<AppsPage lang="zh-Hans" />);
 
+        await waitFor(() => expect(screen.getAllByText(app.name).length).toBeGreaterThan(0));
         fireEvent.click(getStudioButton());
+        await waitFor(() => expect(document.querySelector('[role="tab"]')).not.toBeNull());
         fireEvent.click(getPublishTab());
         fireEvent.click(screen.getByText('去修复'));
 
         await waitFor(() => expect(screen.getByText('执行')).not.toBeNull());
-        expect(screen.getByRole('button', { name: '返回审核/发布' })).not.toBeNull();
+        expect((screen.getByRole('button', { name: '返回审核/发布' }) as HTMLButtonElement).disabled).toBe(true);
         fireEvent.click(screen.getByRole('button', { name: /关闭.*运行证据修复应用/ }));
         expect(screen.queryByRole('button', { name: '返回审核/发布' })).toBeNull();
 
         fireEvent.click(getStudioButton());
         fireEvent.click(getPublishTab());
         fireEvent.click(screen.getByText('去修复'));
-        await waitFor(() => expect(screen.getByRole('button', { name: '返回审核/发布' })).not.toBeNull());
-        fireEvent.click(screen.getByRole('button', { name: '返回审核/发布' }));
+        const returnButton = await screen.findByRole('button', { name: '返回审核/发布' });
+        expect((returnButton as HTMLButtonElement).disabled).toBe(true);
+
+        const fileInput = document.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
+        fireEvent.change(fileInput, { target: { files: [new File(['demo'], 'evidence.pdf', { type: 'application/pdf' })] } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(recordMaclawAppRunHistoryMock).toHaveBeenCalledWith(expect.objectContaining({
+            appID: app.id,
+            runID: 'run-test-1',
+            status: 'done',
+        })));
+        await waitFor(() => expect((returnButton as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(returnButton);
         await waitFor(() => expect(getPublishTab().getAttribute('aria-selected')).toBe('true'));
         expect(screen.getAllByText('运行证据修复应用').length).toBeGreaterThan(0);
+        // Returning to review must immediately consume the just-persisted
+        // evidence, rather than leaving the card on its old missing-evidence
+        // snapshot until the page is reopened.
+        const publishCard = Array.from(document.querySelectorAll('.apps-publish-card'))
+            .find((item) => item.textContent?.includes('运行证据修复应用')) as HTMLElement;
+        await waitFor(() => {
+            const evidenceCheck = within(publishCard).getByText('运行证据').closest('.apps-publish-check');
+            expect(evidenceCheck?.getAttribute('data-ok')).toBe('true');
+        });
+    });
+    it('unlocks return only after the successful run evidence reaches durable storage', async () => {
+        let resolveDurableWrite: ((value: any) => void) | undefined;
+        const durableWrite = new Promise<any>((resolve) => { resolveDurableWrite = resolve; });
+        recordMaclawAppRunHistoryMock.mockImplementationOnce(() => durableWrite);
+        const base = dynamicToolApp('local-app-durable-return', '运行证据落盘应用', '法务', 'contract', ['pdf']);
+        const app = {
+            ...base,
+            manifest: { ...base.manifest, launchMode: 'fixed_skill_ui' },
+            installEvidence: { dependency_verification: testDependencyVerificationForApp(base) },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app] }));
+
+        render(<AppsPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getAllByText(app.name).length).toBeGreaterThan(0));
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('去修复'));
+        const returnButton = await screen.findByRole('button', { name: '返回审核/发布' });
+        const fileInput = document.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
+        fireEvent.change(fileInput, { target: { files: [new File(['demo'], 'evidence.pdf', { type: 'application/pdf' })] } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(recordMaclawAppRunHistoryMock).toHaveBeenCalled());
+        expect((returnButton as HTMLButtonElement).disabled).toBe(true);
+        await screen.findByText('运行完成 · 正在保存运行证据…');
+        resolveDurableWrite?.({ appID: app.id, runID: 'run-test-1', status: 'done' });
+        await waitFor(() => expect((returnButton as HTMLButtonElement).disabled).toBe(false));
+        expect(screen.getByText('运行完成 · 运行证据已保存')).not.toBeNull();
+    });
+    it('keeps return blocked and shows the durable write error', async () => {
+        recordMaclawAppRunHistoryMock.mockRejectedValueOnce(new Error('disk unavailable'));
+        const base = dynamicToolApp('local-app-durable-error', '运行证据失败应用', '法务', 'contract', ['pdf']);
+        const app = {
+            ...base,
+            manifest: { ...base.manifest, launchMode: 'fixed_skill_ui' },
+            installEvidence: { dependency_verification: testDependencyVerificationForApp(base) },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app] }));
+
+        render(<AppsPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getAllByText(app.name).length).toBeGreaterThan(0));
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('去修复'));
+        const returnButton = await screen.findByRole('button', { name: '返回审核/发布' });
+        const fileInput = document.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
+        fireEvent.change(fileInput, { target: { files: [new File(['demo'], 'evidence.pdf', { type: 'application/pdf' })] } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await screen.findByText(/运行证据未写入本机存储.*disk unavailable/);
+        expect((returnButton as HTMLButtonElement).disabled).toBe(true);
+    });
+    it('keeps return blocked when durable storage acknowledges a different run', async () => {
+        recordMaclawAppRunHistoryMock.mockResolvedValueOnce({ appID: 'wrong-app', runID: 'wrong-run', status: 'done' });
+        const base = dynamicToolApp('local-app-durable-mismatch', '运行证据确认应用', '法务', 'contract', ['pdf']);
+        const app = {
+            ...base,
+            manifest: { ...base.manifest, launchMode: 'fixed_skill_ui' },
+            installEvidence: { dependency_verification: testDependencyVerificationForApp(base) },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app] }));
+
+        render(<AppsPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getAllByText(app.name).length).toBeGreaterThan(0));
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('去修复'));
+        const returnButton = await screen.findByRole('button', { name: '返回审核/发布' });
+        const fileInput = document.querySelector('.apps-drop-zone input[type="file"]') as HTMLInputElement;
+        fireEvent.change(fileInput, { target: { files: [new File(['demo'], 'evidence.pdf', { type: 'application/pdf' })] } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await screen.findByText(/运行证据未写入本机存储.*acknowledgement does not match/);
+        expect((returnButton as HTMLButtonElement).disabled).toBe(true);
     });
     it('prefers the run workspace over dependency resolution from 去修复 when both checks fail', async () => {
         // Both 依赖 Skill (missing verification) and 运行证据 (no run) fail.
@@ -3415,15 +3709,26 @@ describe('AppsPage', () => {
             outputs: [{ kind: 'business_record', title: 'Customer', text: '{"id":"customer-1"}', status: 'ready', data: { id: 'customer-1' } }],
             resultCoverage: { ok: true, primary: 'business_status', coveredTypes: ['business_status', 'business_record', 'content'], missingTypes: [] },
         });
+        planMaclawAppInstallMock.mockResolvedValue({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [],
+            dependencies: [{ id: 'declared-business-skill', version: '1.0.0', kind: 'app_skill', required: true, source: 'hub', install_ref: 'cap-hub-wrong-business-skill', installed: true, health: 'ready', action: 'skip', app_ids: ['publish-dependency-verification-app'] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+            has_workflow_contract_issue: false,
+        });
 
         render(<AppsPage lang="en" />);
 
         fireEvent.click(getStudioButton());
         fireEvent.click(screen.getByText('Review / publish'));
-        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Dependency Verification App')) as HTMLElement;
-        expect(card).toBeTruthy();
+        const card = await waitFor(() => {
+            const candidate = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Dependency Verification App')) as HTMLElement | undefined;
+            expect(candidate).toBeTruthy();
+            expect(within(candidate as HTMLElement).getByText(/Dependency verification is missing declared Skill: declared-business-skill/)).not.toBeNull();
+            return candidate as HTMLElement;
+        });
         expect(within(card).getByText('Needs work')).not.toBeNull();
-        expect(within(card).getByText(/Dependency verification is missing declared Skill: declared-business-skill/)).not.toBeNull();
         expect((within(card).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true);
 
         cleanup();
@@ -3450,6 +3755,14 @@ describe('AppsPage', () => {
                 dependencies: [{ id: 'declared-business-skill', version: '1.0.0', kind: 'app_skill', required: true, source: 'hub', install_ref: 'cap-hub-declared-business-skill', installed: true, health: 'ready', action: 'skip', app_ids: ['publish-dependency-verification-app'] }],
             },
         });
+        planMaclawAppInstallMock.mockResolvedValue({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [],
+            dependencies: [{ id: 'declared-business-skill', version: '1.0.0', kind: 'app_skill', required: true, source: 'hub', install_ref: 'cap-hub-declared-business-skill', installed: true, health: 'ready', action: 'skip', app_ids: ['publish-dependency-verification-app'] }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+            has_workflow_contract_issue: false,
+        });
         const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'market-dependency-verified', submitted_at: '2026-06-17T01:00:00.000Z', status: 'submitted', message: 'queued' });
         (window as any).go = { main: { App: { SubmitMaclawAppPackage: submitMaclawAppPackage } } };
 
@@ -3457,9 +3770,12 @@ describe('AppsPage', () => {
 
         fireEvent.click(getStudioButton());
         fireEvent.click(screen.getByText('Review / publish'));
-        const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Dependency Verification App')) as HTMLElement;
-        expect(readyCard).toBeTruthy();
-        expect(within(readyCard).getByText('Ready to submit')).not.toBeNull();
+        const readyCard = await waitFor(() => {
+            const candidate = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Dependency Verification App')) as HTMLElement | undefined;
+            expect(candidate).toBeTruthy();
+            expect(within(candidate as HTMLElement).getByText('Ready to submit')).not.toBeNull();
+            return candidate as HTMLElement;
+        });
         const packagePreviewText = document.querySelector('.apps-manage-manifest')?.textContent || '';
         expect(packagePreviewText).toContain('dependencyVerification');
         expect(packagePreviewText).toContain('cap-hub-declared-business-skill');
@@ -7537,6 +7853,73 @@ describe('AppsPage', () => {
         expect(Array.from(modeSelect.options).map((option) => option.value)).toEqual(['完整', '快']);
     });
 
+    it('hydrates durable evidence recorded under the canonical Skill app identity', async () => {
+        const base = dynamicToolApp('skill-app-paper_pdf_translator-app-pdf', 'PDF Translation Tool', 'Documents', 'paper_pdf_translator', ['pdf']);
+        const app = { ...base, source: 'skill' as const, manifest: { ...base.manifest, launchMode: 'fixed_skill_ui' as const } };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app] }));
+        listSkillAppManifestsMock.mockResolvedValue([{
+            id: 'app-pdf', skill_id: 'paper_pdf_translator', name: app.name, description: app.description, category: app.category,
+            icon: app.icon, input_mode: 'file', output_modes: ['pdf'],
+        }]);
+        listMaclawAppRunHistoryMock.mockImplementation(async (appID) => appID === 'app-pdf' ? [{
+            runID: 'run-canonical-skill-app', appID: 'app-pdf', status: 'done', definitionHash: testAppDefinitionFingerprint(app),
+            testProtocolFingerprint: app.manifest.testProtocol?.fingerprint, workspaceLayoutFingerprint: testWorkspaceLayoutFingerprint(app),
+            outputMode: 'pdf', inputSummary: 'sample.pdf', message: 'translated', artifactName: 'translated.pdf',
+            resultPayload: { artifact: { name: 'translated.pdf' }, text: 'translated' }, outputs: [{ kind: 'artifact', title: 'translated.pdf', status: 'ready' }],
+            resultCoverage: { ok: true, primary: 'artifact', coveredTypes: ['artifact', 'document', 'content'], missingTypes: [] }, at: '2026-07-30T00:00:00.000Z',
+        }] : []);
+
+        render(<AppsPage lang="en" />);
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        const card = await waitFor(() => {
+            const candidate = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('PDF Translation Tool')) as HTMLElement | undefined;
+            expect(candidate).toBeTruthy();
+            return candidate as HTMLElement;
+        });
+        await waitFor(() => expect(listMaclawAppRunHistoryMock).toHaveBeenCalledWith('app-pdf', 8));
+        await waitFor(() => {
+            const cache = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}');
+            expect(cache[app.id]?.[0]?.runID).toBe('run-canonical-skill-app');
+        });
+    });
+
+    it('hydrates durable evidence recorded under the runtime Skill identity', async () => {
+        const base = dynamicToolApp('skill-app-paper_pdf_translator-app-pdf', 'PDF Runtime Evidence Tool', 'Documents', 'pdf', ['pdf']);
+        const app = {
+            ...base,
+            source: 'skill' as const,
+            manifest: {
+                ...base.manifest,
+                launchMode: 'fixed_skill_ui' as const,
+                skill: { ...base.manifest.skill!, id: 'paper_pdf_translator' },
+                appSkill: { id: 'paper_pdf_translator', version: '1.0.0', source: 'local' as const },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({ orderedIds: [app.id], customApps: [app] }));
+        listSkillAppManifestsMock.mockResolvedValue([{
+            id: 'app-pdf', skill_id: 'paper_pdf_translator', name: app.name, description: app.description, category: app.category,
+            icon: app.icon, input_mode: 'file', output_modes: ['pdf'],
+        }]);
+        listMaclawAppRunHistoryMock.mockImplementation(async (appID) => appID === 'paper_pdf_translator' ? [{
+            runID: 'run-runtime-skill-id', appID: 'paper_pdf_translator', status: 'done', definitionHash: testAppDefinitionFingerprint(app),
+            testProtocolFingerprint: app.manifest.testProtocol?.fingerprint, workspaceLayoutFingerprint: testWorkspaceLayoutFingerprint(app),
+            outputMode: 'pdf', inputSummary: 'sample.pdf', message: 'translated', artifactName: 'translated.pdf',
+            resultPayload: { artifact: { name: 'translated.pdf' }, text: 'translated' }, outputs: [{ kind: 'artifact', title: 'translated.pdf', status: 'ready' }],
+            resultCoverage: { ok: true, primary: 'artifact', coveredTypes: ['artifact', 'document', 'content'], missingTypes: [] }, at: '2026-07-30T00:00:00.000Z',
+        }] : []);
+
+        render(<AppsPage lang="en" />);
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+
+        await waitFor(() => expect(listMaclawAppRunHistoryMock).toHaveBeenCalledWith('paper_pdf_translator', 8));
+        await waitFor(() => {
+            const cache = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}');
+            expect(cache[app.id]?.[0]?.runID).toBe('run-runtime-skill-id');
+        });
+    });
+
     it('starts the bound skill when running a tool app', async () => {
         const customIconDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
@@ -8664,6 +9047,8 @@ describe('AppsPage', () => {
     });
 
     it('can cancel a running tool app skill run', async () => {
+        let resolveCancel: (() => void) | undefined;
+        cancelNLSkillRunMock.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveCancel = resolve; }));
         getNLSkillRunStatusMock.mockReturnValue(new Promise(() => undefined));
         render(<AppsPage lang="zh-Hans" />);
 
@@ -8686,10 +9071,40 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('执行'));
 
         const cancelButton = await screen.findByText('取消执行');
+        expect(screen.queryByText('执行')).toBeNull();
+        fireEvent.click(cancelButton);
         fireEvent.click(cancelButton);
 
         await waitFor(() => expect(cancelNLSkillRunMock).toHaveBeenCalledWith('run-test-1'));
-        expect(screen.getAllByText('Skill 已取消').length).toBeGreaterThan(0);
+        expect(cancelNLSkillRunMock).toHaveBeenCalledTimes(1);
+        expect((cancelButton as HTMLButtonElement).disabled).toBe(true);
+        await act(async () => { resolveCancel?.(); });
+        await waitFor(() => expect(screen.getAllByText('Skill 已取消').length).toBeGreaterThan(0));
+    });
+
+    it('keeps the run active when cancellation is rejected', async () => {
+        cancelNLSkillRunMock.mockRejectedValueOnce(new Error('connection lost'));
+        getNLSkillRunStatusMock.mockReturnValue(new Promise(() => undefined));
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getMarketTab());
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: { value: JSON.stringify({ x_maclaw_apps: 'v1', apps: [{ id: 'cancel-failure-tool', skill_id: 'cancel-failure-tools', name: 'Cancel failure tool', description: 'Cancellation failure', category: 'Tools', icon: 'sync', input_mode: 'form', output_modes: ['txt'] }] }) },
+        });
+        fireEvent.click(screen.getByText('Install'));
+        fireEvent.click(screen.getByText('Close'));
+        fireEvent.click(screen.getAllByText('Cancel failure tool')[0]);
+        fireEvent.change(screen.getByPlaceholderText('Enter processing instructions or form parameters.'), { target: { value: 'Continue processing' } });
+        fireEvent.click(screen.getByText('Run'));
+
+        const cancelButton = await screen.findByText('Cancel run');
+        fireEvent.click(cancelButton);
+
+        await waitFor(() => expect(cancelNLSkillRunMock).toHaveBeenCalledWith('run-test-1'));
+        await screen.findByText('Cancellation failed: connection lost');
+        expect(screen.queryByText('Run')).toBeNull();
+        expect(screen.getByText('Cancel run')).not.toBeNull();
     });
 
     it('renders mixed tool apps with file and parameter inputs', () => {
@@ -9401,13 +9816,23 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
         fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
 
-        const manageRows = document.querySelectorAll('.apps-manage-row');
-        const editButton = (manageRows[0] as HTMLElement).querySelector('.apps-manage-actions .apps-tonal-button') as HTMLButtonElement;
+        await waitFor(() => {
+            const firstRow = document.querySelector('.apps-manage-row') as HTMLElement | null;
+            const button = firstRow?.querySelector('.apps-manage-actions .apps-tonal-button') as HTMLButtonElement | null;
+            expect(button).not.toBeNull();
+        });
+        const editButton = document.querySelector('.apps-manage-row .apps-manage-actions .apps-tonal-button') as HTMLButtonElement;
         editButton.focus();
         fireEvent.click(editButton);
 
         const dialog = screen.getByRole('dialog');
-        expect(dialog.querySelector('.apps-manage-edit')).not.toBeNull();
+        const editForm = dialog.querySelector('.apps-manage-edit');
+        const editActions = dialog.querySelector('.apps-manage-edit-dialog__actions');
+        expect(editForm).not.toBeNull();
+        expect(editActions).not.toBeNull();
+        expect(editActions?.parentElement).toBe(dialog.querySelector('.apps-manage-edit-dialog__panel'));
+        expect(editForm?.contains(editActions)).toBe(false);
+        expect(editForm?.classList.contains('apps-manage-edit')).toBe(true);
         expect(document.querySelector('.apps-manage-item > .apps-manage-edit')).toBeNull();
         await waitFor(() => expect(document.activeElement).toBe(dialog.querySelector('.apps-form-row input')));
 

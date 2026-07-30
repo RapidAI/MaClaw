@@ -16,7 +16,7 @@ function formatOneClickPreflightHint(preflight: Record<string, unknown> | null |
 
 function oneClickPreflightNeedsRunEvidence(preflight: Record<string, unknown> | null | undefined): boolean {
     if (!preflight) return false;
-    const isEvidenceGate = (value: unknown) => /testevidence|successful local run evidence/i.test(String(value || ''));
+    const isEvidenceGate = (value: unknown) => /missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(String(value || ''));
     if (Array.isArray(preflight.checks) && preflight.checks.some((raw) => {
         if (!raw || typeof raw !== 'object') return false;
         const row = raw as Record<string, unknown>;
@@ -25,6 +25,29 @@ function oneClickPreflightNeedsRunEvidence(preflight: Record<string, unknown> | 
     return [preflight.blocking, preflight.warnings, preflight.message]
         .flatMap((value) => Array.isArray(value) ? value : [value])
         .some(isEvidenceGate);
+}
+
+function oneClickPreflightNeedsRerun(preflight: Record<string, unknown> | null | undefined): boolean {
+    if (!preflight) return false;
+    const isRerunGate = (value: unknown) => /governance\.testevidence\.(?:definitionhash|testprotocolfingerprint|workspacelayoutfingerprint)|run evidence (?:definition hash|test protocol fingerprint|workspace layout fingerprint).*(?:does not match|missing)|run evidence is not linked to a test protocol fingerprint/i.test(String(value || ''));
+    if (Array.isArray(preflight.checks) && preflight.checks.some((raw) => {
+        if (!raw || typeof raw !== 'object') return false;
+        const row = raw as Record<string, unknown>;
+        return row.ok !== true && String(row.id || '').trim() === 'package_ready' && isRerunGate(row.message);
+    })) return true;
+    return [preflight.blocking, preflight.warnings, preflight.message]
+        .flatMap((value) => Array.isArray(value) ? value : [value])
+        .some(isRerunGate);
+}
+
+function formatOneClickPreflightCheck(id: string, message: string): string {
+    if (id === 'package_ready' && /missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(message)) {
+        return '缺少一次成功运行证据。请点击“去修复”，完整运行应用一次后返回此处发布。';
+    }
+    if (id === 'package_ready' && /governance\.testevidence\.(?:definitionhash|testprotocolfingerprint|workspacelayoutfingerprint)|run evidence (?:definition hash|test protocol fingerprint|workspace layout fingerprint).*(?:does not match|missing)|run evidence is not linked to a test protocol fingerprint/i.test(message)) {
+        return '运行证据与当前应用定义不一致。请点击“去修复”，重新运行当前版本后返回此处发布。';
+    }
+    return message;
 }
 
 function summarizeOneClickPreflightView(
@@ -159,6 +182,33 @@ describe('summarizeOneClickPreflightView', () => {
             ready_for_local: false,
             message: 'missing successful local run evidence',
         })).toBe(true);
+    });
+
+    it('does not mislabel a stale evidence fingerprint as missing run evidence', () => {
+        const preflight = {
+            ready_for_local: false,
+            blocking: ['apps[0].app.governance.testEvidence.definitionHash: expected current definition'],
+            checks: [{
+                id: 'package_ready',
+                ok: false,
+                message: 'apps[0].app.governance.testEvidence.definitionHash: expected current definition',
+            }],
+        };
+        expect(oneClickPreflightNeedsRunEvidence(preflight)).toBe(false);
+        expect(oneClickPreflightNeedsRerun(preflight)).toBe(true);
+    });
+
+    it('offers rerun repair for the exact backend definition mismatch', () => {
+        const raw = 'apps[0].app.governance.testEvidence.definitionHash: run evidence definition hash does not match current app definition';
+        expect(oneClickPreflightNeedsRerun({
+            ready_for_local: false,
+            checks: [{
+                id: 'package_ready',
+                ok: false,
+                message: raw,
+            }],
+        })).toBe(true);
+        expect(formatOneClickPreflightCheck('package_ready', raw)).toContain('重新运行当前版本');
     });
 
     it('treats skill-only gap as warn (may-partial affordance)', () => {

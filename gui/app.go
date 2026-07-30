@@ -6452,6 +6452,32 @@ func parseLansengerGroupIDList(key string, value interface{}) ([]string, error) 
 	}
 }
 
+// parseLansengerGroupPermissionList validates owner-configured group-bot
+// permissions. Values are deduplicated after trimming so a hand-edited config
+// cannot grow unbounded or accidentally grant the same item multiple times.
+func parseLansengerGroupPermissionList(key string, value interface{}, maxItems int) ([]string, error) {
+	values, err := parseLansengerGroupIDList(key, value)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+		if maxItems > 0 && len(result) > maxItems {
+			return nil, fmt.Errorf("%s exceeds the maximum of %d entries", key, maxItems)
+		}
+	}
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
+
 // PatchConfigFields is a frontend-safe atomic config patch endpoint.
 // It only accepts whitelisted small settings so stale frontend snapshots cannot
 // overwrite unrelated config fields while a user toggles general settings.
@@ -7009,6 +7035,24 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerAutoQuoteReply = v
+		case "lansenger_group_knowledge_source_ids":
+			ids, err := parseLansengerGroupPermissionList(key, value, 500)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerGroupKnowledgeSourceIDs = ids
+		case "lansenger_group_allow_all_directories":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerGroupAllowAllDirectories = v
+		case "lansenger_group_allowed_directories":
+			dirs, err := parseLansengerGroupPermissionList(key, value, 100)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerGroupAllowedDirectories = dirs
 		case "lansenger_allowed_group_ids":
 			ids, err := parseLansengerGroupIDList(key, value)
 			if err != nil {

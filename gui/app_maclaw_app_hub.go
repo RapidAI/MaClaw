@@ -387,6 +387,17 @@ func (a *App) SubmitMaclawAppPackage(packageJSON string) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
+	// Preflight and submit must validate the same evidence source. The frontend
+	// package can still contain a sparse/stale snapshot even though the exact
+	// successful run is already durable. Reconcile before planning, governance
+	// validation, fingerprinting, and queue persistence so a green preflight can
+	// never turn into a missing-evidence failure at the click boundary.
+	if a.hydrateMaclawAppPackageRunEvidence(pkg) {
+		packageJSON, err = maclawAppStableJSON(pkg)
+		if err != nil {
+			return nil, err
+		}
+	}
 	plan, err := a.PlanMaclawAppInstall(packageJSON)
 	if err != nil {
 		return nil, err

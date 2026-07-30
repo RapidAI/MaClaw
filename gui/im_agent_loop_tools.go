@@ -86,6 +86,9 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	// Expert session: apply the expert's tool allow-list last so no pipeline
 	// stage above can re-introduce tools outside the whitelist.
 	tools = h.filterToolsForExpertUser(userID, tools)
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+	}
 
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
 	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)

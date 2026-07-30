@@ -588,33 +588,21 @@ func (h *IMMessageHandler) syncCodingWorkflowRemoteTask(userID string, data map[
 			}
 		}
 	}
-	if existing == "" {
-		if matched := h.app.FindRemoteCodingTaskByMeta(host, user, workDir); strings.TrimSpace(matched.ProjectPath) != "" {
-			existing = normalizeProjectSessionPath(matched.ProjectPath)
-			log.Printf("[workflow-remote-task] reusing existing task by meta path=%s", existing)
-		}
-	}
-
-	if existing != "" {
-		if err := h.app.UpdateRemoteCodingTaskMeta(existing, host, user, workDir, port); err != nil {
-			log.Printf("[workflow-remote-task] update meta failed path=%s err=%v — will try create", existing, err)
-		} else {
-			data[workflowFormRemoteTaskPath] = normalizeProjectSessionPath(existing)
-			h.bindCodingWorkflowRemoteTaskSticky(userID, existing, host, user, workDir, port)
-			log.Printf("[workflow-remote-task] updated task path=%s host=%s@%s:%d", existing, user, host, port)
-			return
-		}
-	}
-
-	created := h.app.createRemoteCodingTaskWithTags(taskName, host, user, workDir, port, taskSourceCodingWorkflowTag)
-	if strings.TrimSpace(created.ProjectPath) == "" {
-		log.Printf("[workflow-remote-task] CreateRemoteCodingTask returned empty path name=%s", taskName)
+	// Resolve target ownership and preferred-path updates in the same critical
+	// section as every other remote-task creator. If another task already owns
+	// these coordinates, the workflow must switch to it instead of retargeting
+	// its previous task and producing duplicate tabs for one remote project.
+	remoteCodingTaskMu.Lock()
+	task, reused := h.app.reconcileRemoteCodingTask(existing, taskName, host, user, workDir, port, taskSourceCodingWorkflowTag)
+	remoteCodingTaskMu.Unlock()
+	if strings.TrimSpace(task.ProjectPath) == "" {
+		log.Printf("[workflow-remote-task] reconcile task returned empty path name=%s", taskName)
 		return
 	}
-	taskPath := normalizeProjectSessionPath(created.ProjectPath)
+	taskPath := normalizeProjectSessionPath(task.ProjectPath)
 	data[workflowFormRemoteTaskPath] = taskPath
 	h.bindCodingWorkflowRemoteTaskSticky(userID, taskPath, host, user, workDir, port)
-	log.Printf("[workflow-remote-task] created task path=%s host=%s@%s:%d workdir=%s", taskPath, user, host, port, workDir)
+	log.Printf("[workflow-remote-task] reconciled task path=%s reused=%t host=%s@%s:%d workdir=%s", taskPath, reused, user, host, port, workDir)
 }
 
 // bindCodingWorkflowRemoteTaskSticky links workflow session sticky memory to the

@@ -42,6 +42,8 @@ export interface AIAssistantPanelAppState {
     selectedFilePath?: string;
     onboardingIncomplete?: boolean;
     showTraceEntry?: boolean;
+    /** Whether the assistant is the visible application page. */
+    active?: boolean;
 }
 
 export interface AIAssistantPanelStateProps extends Partial<AIAssistantPanelHookState>, AIAssistantPanelAppState {

@@ -44,6 +44,9 @@ const RestartLansengerMock = vi.fn();
 const SetLansengerLocalModeMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const SetLansengerGroupIgnoredMock = vi.fn();
+const SetLansengerGroupAllowedMock = vi.fn();
+const KnowledgeListSourcesMock = vi.fn();
+const SelectVEAllowedDirectoryMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
@@ -51,6 +54,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetLansengerLocalMode: (...args: unknown[]) => SetLansengerLocalModeMock(...args),
     ListLansengerGroups: (...args: unknown[]) => ListLansengerGroupsMock(...args),
     SetLansengerGroupIgnored: (...args: unknown[]) => SetLansengerGroupIgnoredMock(...args),
+    SetLansengerGroupAllowed: (...args: unknown[]) => SetLansengerGroupAllowedMock(...args),
+    KnowledgeListSources: (...args: unknown[]) => KnowledgeListSourcesMock(...args),
+    SelectVEAllowedDirectory: (...args: unknown[]) => SelectVEAllowedDirectoryMock(...args),
     ListLansengerWatchJobs: (...args: unknown[]) => ListLansengerWatchJobsMock(...args),
     UpsertLansengerWatchJob: (...args: unknown[]) => UpsertLansengerWatchJobMock(...args),
     DeleteLansengerWatchJob: (...args: unknown[]) => DeleteLansengerWatchJobMock(...args),
@@ -106,7 +112,8 @@ function lansengerBaseProps(overrides: Record<string, unknown> = {}) {
 }
 
 function seedWatchMocks() {
-    jobsStore.length = 0;
+	jobsStore.length = 0;
+	KnowledgeListSourcesMock.mockResolvedValue([]);
     ListLansengerGroupsMock.mockResolvedValue({
         total: 1,
         groups: [{ group_id: 'g1', name: '产品群', total_members: 3 }],

@@ -71,19 +71,15 @@ func (s *acpHostSession) onMaclawCreateRemoteCodingTask(raw json.RawMessage) (an
 	if port < 1 || port > 65535 {
 		return nil, acpErr(acpagent.CodeInvalidParams, "ssh_port must be between 1 and 65535")
 	}
-	// Reuse the matching task rather than creating duplicate task records when a
-	// user retries after a cancelled password prompt or a transient bridge error.
-	if existing := s.app.FindRemoteCodingTaskByMeta(host, user, workDir); strings.TrimSpace(existing.ProjectPath) != "" {
-		if err := s.app.UpdateRemoteCodingTaskMeta(existing.ProjectPath, host, user, workDir, port); err != nil {
-			return nil, acpErr(acpagent.CodeInternalError, "failed to update existing remote coding task: "+err.Error())
-		}
-		return s.remoteCodingTaskResult(existing.ProjectPath, existing.Name, true)
-	}
-	task := s.app.CreateRemoteCodingTask(name, host, user, workDir, port)
+	// Atomically find or create the target record. A separate preflight lookup
+	// would race another UI/client request and misreport a duplicate as new.
+	remoteCodingTaskMu.Lock()
+	task, reused := s.app.findOrCreateRemoteCodingTask(name, host, user, workDir, port)
+	remoteCodingTaskMu.Unlock()
 	if strings.TrimSpace(task.ProjectPath) == "" {
 		return nil, acpErr(acpagent.CodeInternalError, "failed to create remote coding task")
 	}
-	return s.remoteCodingTaskResult(task.ProjectPath, task.Name, false)
+	return s.remoteCodingTaskResult(task.ProjectPath, task.Name, reused)
 }
 
 func (s *acpHostSession) remoteCodingTaskResult(projectPath, name string, reused bool) (any, *acpagent.RPCError) {

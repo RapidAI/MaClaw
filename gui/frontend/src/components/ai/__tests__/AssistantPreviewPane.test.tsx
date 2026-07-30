@@ -166,7 +166,6 @@ describe('AssistantPreviewPane', () => {
         expect(screen.getByRole('tab', { name: 'Source' }).getAttribute('tabindex')).toBe('0');
         expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('assistant-preview-tab-code');
         expect(screen.getByTestId('code-preview-header').style.getPropertyValue('--wails-draggable')).toBe('no-drag');
-        expect(screen.getByText('const')).toBeTruthy();
         expect(screen.getByText('answer')).toBeTruthy();
     });
 
@@ -176,6 +175,20 @@ describe('AssistantPreviewPane', () => {
         fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
 
         expect(screen.getByTestId('code-preview-header').style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+        expect(screen.getByTestId('code-preview-workspace-status')).toBeTruthy();
+        expect(screen.getByText('Working directory unavailable')).toBeTruthy();
+    });
+
+    it('keeps Working directory as the default source tab when files are already open', () => {
+        renderPane();
+
+        fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
+
+        const workspaceTab = screen.getByTestId('code-preview-workspace-tab');
+        expect(workspaceTab.getAttribute('aria-selected')).toBe('false');
+        fireEvent.click(workspaceTab);
+        expect(workspaceTab.getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByTestId('code-preview-workspace-status')).toBeTruthy();
     });
 
     it('auto-switches to source when code preview opens after workflow progress', () => {

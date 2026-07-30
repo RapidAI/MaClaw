@@ -37,6 +37,7 @@ import { ProviderModelCombobox } from "./ProviderModelCombobox";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
 import { MoAConfigSection } from "./MoAConfigSection";
+import { LLMConfigToast, type LLMConfigToastData } from "./LLMConfigToast";
 
 interface Props {
     lang?: string;
@@ -49,7 +50,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const { showAlert, showConfirm, showPrompt } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
-    const [loading, setLoading] = useState(false);
+    // An empty list is valid data. Track readiness separately so a slow local
+    // config read is never rendered as if the user selected "None".
+    const [providerListReady, setProviderListReady] = useState(false);
+    const [providerListLoading, setProviderListLoading] = useState(true);
+    const [providerListError, setProviderListError] = useState<string | null>(null);
+    const [providerLoadSlow, setProviderLoadSlow] = useState(false);
     const [maxIter, setMaxIter] = useState(0);
     const [subAgentConc, setSubAgentConc] = useState(2);
     const [thinkingMode, setThinkingMode] = useState("");
@@ -58,40 +64,55 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [thinkingModeError, setThinkingModeError] = useState<string | null>(null);
     const [hubServiceStatus, setHubServiceStatus] = useState<HubLLMServiceStatus | null>(null);
 
-    // Dialog state — track selected provider by index (stable across renames)
     const [dlgOpen, setDlgOpen] = useState(false);
     const [dlgProviders, setDlgProviders] = useState<LLMProvider[]>([]);
-    const [dlgSelectedIdx, setDlgSelectedIdx] = useState<number | null>(null); // null = "None"
-    const [dlgHubSelected, setDlgHubSelected] = useState(false); // true when "MaClaw 官方" is selected in dialog
+    const [dlgSelectedIdx, setDlgSelectedIdx] = useState<number | null>(null);
+    const [dlgHubSelected, setDlgHubSelected] = useState(false);
     const [dlgSaving, setDlgSaving] = useState(false);
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
-    const [dlgToast, setDlgToast] = useState<{ ok: boolean; title: string; detail?: string } | null>(null);
+    const [dlgToast, setDlgToast] = useState<LLMConfigToastData | null>(null);
     const [dlgDirty, setDlgDirty] = useState(false);
-    const [dlgTested, setDlgTested] = useState(false); // true after successful test; allows save-only on subsequent saves
+    const [dlgTested, setDlgTested] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
     const [codegenModels, setCodegenModels] = useState<{id: string; name: string}[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
-    // Generic provider model list (for non-SSO/non-OAuth providers)
     const [providerModels, setProviderModels] = useState<{id: string; name: string}[]>([]);
     const [providerModelsFetching, setProviderModelsFetching] = useState(false);
     const [providerModelsError, setProviderModelsError] = useState<string | null>(null);
     const [providerModelListOpen, setProviderModelListOpen] = useState(false);
-    const [loadError, setLoadError] = useState<string | null>(null);
     const [qrDialogOpen, setQrDialogOpen] = useState(false);
     const loadSeqRef = useRef(0);
+    const hubStatusSeqRef = useRef(0);
     const fetchModelsSeqRef = useRef(0);
 
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
     const loadHubServiceStatus = useCallback(async () => {
+        const statusSeq = ++hubStatusSeqRef.current;
         try {
             const status = await GetHubLLMServiceStatus() as HubLLMServiceStatus;
+            if (statusSeq !== hubStatusSeqRef.current) return;
             setHubServiceStatus(status || null);
         } catch {
+            if (statusSeq !== hubStatusSeqRef.current) return;
             setHubServiceStatus(null);
         }
     }, []);
+
+    const applyProviderList = useCallback((data: unknown) => {
+        const result = data as { providers?: LLMProvider[]; current?: string } | null | undefined;
+        if (!Array.isArray(result?.providers)) {
+            throw new Error("provider list is unavailable");
+        }
+        setProviders(result.providers.map(provider => ({ ...provider })));
+        setCurrentName(result.current || NONE_PROVIDER);
+        setProviderListReady(true);
+        setProviderListLoading(false);
+        setProviderListError(null);
+        setProviderLoadSlow(false);
+        void loadHubServiceStatus();
+    }, [loadHubServiceStatus]);
 
     const saveThinkingMode = useCallback(async (mode: "" | "enabled" | "disabled") => {
         if (thinkingModeSavingRef.current || mode === thinkingMode) return;
@@ -114,7 +135,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         }
     }, [t, thinkingMode]);
 
-    /** Shared OAuth login handler for both first-login and re-login scenarios. */
     const handleOAuthLogin = useCallback(async () => {
         setOauthBusy(true);
         setDlgTestResult(null);
@@ -123,11 +143,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             let loginMessage = "";
 
             if (providerName === "Anthropic") {
-                // Anthropic: two-step flow (get auth URL, user pastes code)
                 const info = await StartAnthropicOAuth();
-                // Open browser for user
                 window.open(info.auth_url, "_blank");
-                // Prompt user for code via custom dialog (avoid native browser prompt)
                 const code = await showPrompt(
                     t(
                         "Please paste the Authorization Code shown in the browser page:",
@@ -144,19 +161,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 }
                 loginMessage = await CompleteAnthropicOAuth(code.trim());
             } else if (providerName === "GitHub Copilot") {
-                // GitHub Copilot: device code flow
                 const deviceInfo = await StartGitHubCopilotOAuth();
                 setDlgTestResult({
                     ok: true,
                     msg: `请打开 ${deviceInfo.verification_uri} 并输入代码: ${deviceInfo.user_code}`,
                 });
-                // Wait for user to complete (blocking call)
                 loginMessage = await WaitGitHubCopilotOAuth();
             } else if (providerName === "xAI-Grok") {
-                // xAI: Grok Build's OIDC Authorization Code + PKCE flow.
                 loginMessage = await StartXAIOAuth();
             } else {
-                // OpenAI: standard PKCE with local callback
                 loginMessage = await StartOpenAIOAuth();
             }
 
@@ -167,7 +180,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
                 setCurrentName(data.current || NONE_PROVIDER);
                 loadHubServiceStatus().catch(() => {});
-                // Re-select the OAuth provider by name to keep dlgSelectedIdx stable
                 const oaIdx = fresh.findIndex((p: LLMProvider) => p.name === providerName);
                 if (oaIdx >= 0) setDlgSelectedIdx(oaIdx);
                 setDlgDirty(false);
@@ -188,12 +200,39 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
-        setLoading(true);
-        setLoadError(null);
+        setProviderListLoading(true);
+        setProviderListError(null);
+        setProviderLoadSlow(false);
         console.info("[LLMConfigPanel] load start");
         try {
-            const [providersResult, iterResult, concResult, thinkingResult] = await Promise.allSettled([
-                withTimeout(GetMaclawLLMProviders(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawLLMProviders"),
+            // Provider configuration is local, authoritative state. Do not
+            // impose a UI deadline on it: on slower computers it can arrive
+            // after the other settings calls and must still populate the UI.
+            // Normalize a bridge-side synchronous throw into the same error
+            // path as an asynchronous rejection. Without this, a failed Wails
+            // bridge initialization could leave the Configure action disabled
+            // forever on the first render.
+            const providerRequest = Promise.resolve().then(() => GetMaclawLLMProviders());
+            void providerRequest.then(data => {
+                if (loadSeq !== loadSeqRef.current) return;
+                try {
+                    applyProviderList(data);
+                    console.info("[LLMConfigPanel] providers loaded");
+                } catch (error) {
+                    setProviderListLoading(false);
+                    setProviderListError(t("Couldn't read LLM providers. Click retry.", "无法读取大模型服务商，可点击重试。"));
+                    setProviderLoadSlow(false);
+                    console.warn("[LLMConfigPanel] provider response invalid", error);
+                }
+            }).catch(error => {
+                if (loadSeq !== loadSeqRef.current) return;
+                setProviderListLoading(false);
+                setProviderListError(t("Couldn't read LLM providers. Click retry.", "无法读取大模型服务商，可点击重试。"));
+                setProviderLoadSlow(false);
+                console.warn("[LLMConfigPanel] providers load failed", error);
+            });
+
+            const [iterResult, concResult, thinkingResult] = await Promise.allSettled([
                 withTimeout(GetMaclawAgentMaxIterations(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawAgentMaxIterations"),
                 withTimeout(GetSubAgentConcurrency(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetSubAgentConcurrency"),
                 withTimeout(GetMaclawLLMThinkingMode(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawLLMThinkingMode"),
@@ -201,24 +240,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             if (loadSeq !== loadSeqRef.current) return;
 
             let failed = false;
-
-            if (providersResult.status === "fulfilled") {
-                const data = providersResult.value;
-                if (data?.providers) {
-                    setProviders(data.providers);
-                    setCurrentName(data.current || NONE_PROVIDER);
-                    loadHubServiceStatus().catch(() => {});
-                } else {
-                    setProviders([]);
-                    setCurrentName(NONE_PROVIDER);
-                }
-                console.info("[LLMConfigPanel] providers loaded");
-            } else {
-                failed = true;
-                setProviders([]);
-                setCurrentName(NONE_PROVIDER);
-                console.warn("[LLMConfigPanel] providers load failed", providersResult.reason);
-            }
 
             if (iterResult.status === "fulfilled") {
                 const iter = iterResult.value;
@@ -249,18 +270,34 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             }
 
             if (failed) {
-                setLoadError(t("Some LLM settings failed to load. Click retry.", "部分大模型配置加载失败，可点击重试。"));
+                console.warn("[LLMConfigPanel] one or more supporting settings failed to load");
             }
         } finally {
             if (loadSeq === loadSeqRef.current) {
-                console.info("[LLMConfigPanel] load finished");
-                setLoading(false);
+                console.info("[LLMConfigPanel] supporting settings load finished");
             }
         }
-    }, [t, loadHubServiceStatus]);
+    }, [applyProviderList, t]);
 
     useEffect(() => { loadProviders(); }, [loadProviders]);
     useEffect(() => { loadHubServiceStatus(); }, [loadHubServiceStatus]);
+
+    // Wails calls cannot be cancelled, so invalidate in-flight responses when
+    // this panel unmounts. This prevents a late local-file read from updating
+    // a remounted or already-disposed settings view.
+    useEffect(() => () => {
+        loadSeqRef.current += 1;
+        hubStatusSeqRef.current += 1;
+        fetchModelsSeqRef.current += 1;
+    }, []);
+
+    // Five seconds is only a feedback threshold. The provider read itself is
+    // intentionally not cancelled: older machines may still complete it.
+    useEffect(() => {
+        if (!providerListLoading) return;
+        const timer = window.setTimeout(() => setProviderLoadSlow(true), LLM_CONFIG_LOAD_TIMEOUT_MS);
+        return () => window.clearTimeout(timer);
+    }, [providerListLoading]);
 
     // Reload providers and hub service status when the Hub LLM service changes
     // (e.g. after a successful redemption in the HubServiceRedeemPanel tab).
@@ -273,7 +310,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         return () => { if (typeof cleanup === 'function') cleanup(); else EventsOff("hub-llm-service-changed"); };
     }, [loadProviders]);
 
-    const isNone = currentName === NONE_PROVIDER;
+    const isNone = providerListReady && currentName === NONE_PROVIDER;
+    const canConfigureProviders = providerListReady;
     const hasHubEntitlement = !!hubServiceStatus?.active || hubCreditGrants(hubServiceStatus).length > 0;
     const hubOfficial = hubOfficialStatus(hubServiceStatus, lang, t);
     const hasHubProviderInDialog = dlgProviders.some(p => p.name === HUB_SERVICE_PROVIDER_NAME);
@@ -301,7 +339,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgDirty(false);
         setDlgTested(false);
         setDlgOpen(true);
-    }, [providers, currentName, hasHubEntitlement]);
+    }, [providers, currentName, hasHubEntitlement, providerListReady]);
 
     const closeDialog = useCallback(async () => {
         if (oauthBusy) return;
@@ -337,10 +375,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         return () => window.clearTimeout(timeout);
     }, [dlgHubSelected, dlgTestResult, t]);
 
-    // Determine auth type of selected provider for conditional effects
     const dlgAuthType = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.auth_type : undefined;
 
-    // Fetch CodeGen models when dialog opens with an SSO provider (CodeGen)
     useEffect(() => {
         if (!dlgOpen || dlgAuthType !== "sso") {
             setCodegenModels([]);
@@ -360,7 +396,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         return () => { cancelled = true; };
     }, [dlgOpen, dlgAuthType]);
 
-    // Clear generic provider models when switching providers or closing dialog
     useEffect(() => {
         setProviderModels([]);
         setProviderModelsError(null);
@@ -369,19 +404,13 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
     const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
     const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
-    // Keep the primary action reachable for an unsigned managed provider so it
-    // can explain the required next step instead of looking permanently inert.
     const dlgNeedsOAuthLogin = !!dlgProvider &&
         (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
         !dlgProvider.key;
 
-    // Handler: fetch models from any provider's /models endpoint
     const handleFetchProviderModels = useCallback(async () => {
         if (!dlgProvider || !dlgProvider.url) return;
         const isManagedAuth = dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso";
-        // OAuth/SSO: tokens are managed internally. Prefer the hydrated key from
-        // GetMaclawLLMProviders; if still empty, let the backend resolve from the
-        // credential store. Never ask the user to paste an API Key for managed auth.
         if (!isManagedAuth && !dlgProvider.key) {
             setProviderModelsError(t("Please fill in API Key first", "请先填写 API Key"));
             return;
@@ -397,7 +426,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setProviderModelListOpen(false);
         try {
             const models = await FetchProviderModels(fetchUrl, fetchKey, fetchProtocol, fetchAgent);
-            // Discard stale results if the user switched provider mid-fetch.
             if (fetchSeq !== fetchModelsSeqRef.current) return;
             setProviderModels(models || []);
             if (!models || models.length === 0) {
@@ -409,7 +437,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         } catch (e) {
             if (fetchSeq !== fetchModelsSeqRef.current) return;
             const msg = String(e);
-            // Map backend empty-credential errors to a clearer OAuth/SSO message.
             if (isManagedAuth && /API Key 为空|API Key is empty|OAuth\/SSO/i.test(msg)) {
                 setProviderModelsError(t(
                     "Please complete OAuth login first (token is managed internally)",
@@ -650,30 +677,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgSaving(false);
     };
 
-    if (loading) return <div className="llm-config-loading">{t("Loading...", "加载中...")}</div>;
-
     return (
         <div className="llm-config-panel">
-            {dlgToast && (
-                <div role={dlgToast.ok ? "status" : "alert"} aria-live="polite" style={{
-                    position: "fixed", top: 42, left: "50%", transform: "translateX(-50%)",
-                    zIndex: 10000, width: "min(92vw, 380px)", padding: "8px 12px",
-                    borderRadius: 6, fontSize: "0.74rem", lineHeight: 1.45,
-                    background: colors.surface,
-                    border: `1px solid ${dlgToast.ok ? colors.success : colors.danger}`,
-                    boxShadow: `0 10px 24px rgba(15,23,42,0.20), inset 0 0 0 1px ${colors.border}`,
-                    color: colors.text,
-                }}>
-                    <div style={{ fontWeight: 700, color: dlgToast.ok ? colors.success : colors.danger }}>
-                        {dlgToast.ok ? "OK" : "ERR"} {dlgToast.title}
-                    </div>
-                    {dlgToast.detail && (
-                        <div style={{ marginTop: 3, color: colors.textSecondary, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                            {dlgToast.detail}
-                        </div>
-                    )}
-                </div>
-            )}
+            <LLMConfigToast toast={dlgToast} />
             <div className="llm-config-panel__intro">
                 <p>
                     {t(
@@ -682,15 +688,17 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     )}
                 </p>
                 <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    <button className="llm-config-qr-action" onClick={() => setQrDialogOpen(true)} style={{
-                        fontSize: "0.76rem", padding: "6px 14px", cursor: "pointer",
+                    <button className="llm-config-qr-action" onClick={() => setQrDialogOpen(true)} disabled={!canConfigureProviders} style={{
+                        fontSize: "0.76rem", padding: "6px 14px", cursor: canConfigureProviders ? "pointer" : "default",
                         background: colors.surface, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4,
+                        opacity: canConfigureProviders ? 1 : 0.65,
                     }}>
                         {t("Mobile QR", "移动端二维码")}
                     </button>
-                    <button className="llm-config-primary-action" onClick={openDialog} style={{
-                        fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
+                    <button className="llm-config-primary-action" onClick={openDialog} disabled={!canConfigureProviders} style={{
+                        fontSize: "0.76rem", padding: "6px 18px", cursor: canConfigureProviders ? "pointer" : "default",
                         background: colors.primaryLight, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4,
+                        opacity: canConfigureProviders ? 1 : 0.65,
                     }}>
                         {t("Configure", "配置")}
                     </button>
@@ -698,7 +706,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             </div>
 
             {/* Current provider summary */}
-            <div className="llm-config-summary" style={{
+            <div className="llm-config-summary" aria-busy={providerListLoading} style={{
                 marginBottom: 16, padding: "10px 16px", borderRadius: 6,
                 border: `1px solid ${colors.border}`, background: colors.surface,
                 display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -707,11 +715,33 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     {t("Provider", "当前服务商")}
                 </span>
                 <span className="llm-config-summary__value" style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubEntitlement ? colors.primaryDark : colors.danger) : colors.text }}>
-                    {isNone
+                    {!providerListReady
+                        ? (providerListLoading
+                            ? (providerLoadSlow
+                                ? t("Still reading saved providers…", "仍在读取已保存的服务商…")
+                                : t("Reading saved providers…", "正在读取已保存的服务商…"))
+                            : t("Provider list unavailable", "服务商列表不可用"))
+                        : isNone
                         ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
                         : currentName}
                 </span>
             </div>
+
+            {providerListError && (
+                <div role="alert" style={{
+                    marginBottom: 16, padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
+                    background: colors.dangerBg, border: `1px solid color-mix(in srgb, ${colors.danger} 30%, transparent)`, color: colors.danger,
+                    display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
+                }}>
+                    <span>{providerListError}</span>
+                    <button type="button" onClick={() => { void loadProviders(); }} style={{
+                        fontSize: "0.72rem", padding: "4px 10px", cursor: "pointer", flexShrink: 0,
+                        background: colors.surface, color: colors.danger, border: `1px solid ${colors.danger}`, borderRadius: 4,
+                    }}>
+                        {t("Retry", "重试")}
+                    </button>
+                </div>
+            )}
 
             {/* Usage display for OAuth providers */}
             {!isNone && providers.find(p => p.name === currentName)?.auth_type === "oauth" && (
@@ -913,16 +943,18 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                         </button>
                                     );
                                 })}
-                                {/* "None" button */}
-                                <button className="llm-config-provider-chip" onClick={() => dlgSelectProvider(null)} style={{
-                                    fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
-                                    background: dlgIsNone ? colors.primaryLight : colors.surface,
-                                    color: dlgIsNone ? colors.primaryDark : colors.text,
-                                    border: `1px solid ${dlgIsNone ? colors.primary : colors.border}`,
-                                    borderRadius: 4, transition: "all 0.15s",
-                                }}>
-                                    {t("None", "暂不配置")}
-                                </button>
+                                {/* Never offer a destructive-looking empty state while the saved list is unresolved. */}
+                                {providerListReady && (
+                                    <button className="llm-config-provider-chip" onClick={() => dlgSelectProvider(null)} style={{
+                                        fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
+                                        background: dlgIsNone ? colors.primaryLight : colors.surface,
+                                        color: dlgIsNone ? colors.primaryDark : colors.text,
+                                        border: `1px solid ${dlgIsNone ? colors.primary : colors.border}`,
+                                        borderRadius: 4, transition: "all 0.15s",
+                                    }}>
+                                        {t("None", "暂不配置")}
+                                    </button>
+                                )}
                             </div>
                         </div>
 
@@ -1105,7 +1137,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     })()}
                                 </div>
 
-                                {/* Custom: editable name */}
                                 {dlgProvider.is_custom && (
                                     <div style={{ marginBottom: 12 }}>
                                         <label style={labelStyle}>{t("Provider Name", "服务商名称")}</label>
@@ -1116,7 +1147,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     </div>
                                 )}
 
-                                {/* URL */}
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
                                         {t("API URL", "API 地址 (URL)")}
@@ -1136,7 +1166,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     )}
                                 </div>
 
-                                {/* Model */}
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
                                         {t("Model Name", "模型名称")}

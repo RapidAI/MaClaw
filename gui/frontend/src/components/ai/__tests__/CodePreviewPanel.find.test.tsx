@@ -160,6 +160,25 @@ describe('findMatchLineIndexes / cycleMatchIndex / parseGoToLineInput', () => {
         expect(onCloseFile).toHaveBeenCalledWith('/src/a.ts');
     });
 
+    it('leaves the working directory when an existing file tab is selected', () => {
+        render(
+            <CodePreviewPanel
+                files={makeFiles()}
+                activeFilePath="/src/main.ts"
+                projectPath="D:/projects/demo"
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={lightCodePreviewTheme}
+                lang="en"
+            />,
+        );
+
+        expect(screen.getByTestId('code-preview-workspace-status')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('file-tab'));
+        expect(screen.queryByTestId('code-preview-workspace-status')).toBeNull();
+        expect(screen.getByTestId('code-preview-plain-view')).toBeTruthy();
+    });
+
     it('resets find match index when switching files (no stale active match)', () => {
         const files = new Map<string, CodeFile>([
             ['/src/a.ts', {

@@ -100,7 +100,10 @@ func CheckStepActionSupport(runner, action string) StepActionSupport {
 func SupportedStepActions(runner string) []string {
 	switch normalizeRunnerBackend(runner) {
 	case RunnerBackendGUI:
-		return []string{"bash", "call_mcp_tool", "craft_tool", "poll"}
+		// SSH-backed steps are intentionally GUI-only.  They are resolved against
+		// the active remote-coding context at execution time; a skill cannot pick
+		// an arbitrary desktop SSH session.
+		return []string{"bash", "call_mcp_tool", "craft_tool", "poll", "ssh_bash", "ssh_list_dir", "ssh_read_file", "todo_write"}
 	case RunnerBackendTUI:
 		return []string{"bash"}
 	default:

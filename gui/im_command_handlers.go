@@ -13,8 +13,18 @@ import (
 )
 
 func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, bool) {
+	return h.handleImmediateIMCommandWithLoop(msg, trimmed, nil, onProgress, onToken)
+}
+
+// handleImmediateIMCommandWithLoop keeps shortcut commands inside the same
+// group boundary as the regular agent loop. A direct command must never gain
+// more authority than the tool menu it bypasses.
+func (h *IMMessageHandler) handleImmediateIMCommandWithLoop(msg IMUserMessage, trimmed string, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, bool) {
 	commandKind := classifyImmediateIMCommand(trimmed)
 	responseLang := h.imCommandResponseLang(msg.Lang)
+	if providedLoopCtx != nil && providedLoopCtx.LansengerGroupPermissions != nil && commandKind != imCommandUnknown {
+		return &IMAgentResponse{Text: localizedLansengerGroupCommandRestrictedMessage(responseLang)}, true
+	}
 	if commandKind == imCommandReset {
 		h.memory.Clear(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)

@@ -84,6 +84,18 @@ func cloneAppConfigForMutation(cfg corelib.AppConfig) corelib.AppConfig {
 	if n := len(cfg.VEAllowedDirectories); n > 0 {
 		out.VEAllowedDirectories = append([]string(nil), cfg.VEAllowedDirectories...)
 	}
+	if n := len(cfg.LansengerAllowedGroupIDs); n > 0 {
+		out.LansengerAllowedGroupIDs = append([]string(nil), cfg.LansengerAllowedGroupIDs...)
+	}
+	if n := len(cfg.LansengerIgnoredGroupIDs); n > 0 {
+		out.LansengerIgnoredGroupIDs = append([]string(nil), cfg.LansengerIgnoredGroupIDs...)
+	}
+	if n := len(cfg.LansengerGroupKnowledgeSourceIDs); n > 0 {
+		out.LansengerGroupKnowledgeSourceIDs = append([]string(nil), cfg.LansengerGroupKnowledgeSourceIDs...)
+	}
+	if n := len(cfg.LansengerGroupAllowedDirectories); n > 0 {
+		out.LansengerGroupAllowedDirectories = append([]string(nil), cfg.LansengerGroupAllowedDirectories...)
+	}
 	if n := len(cfg.SSHHosts); n > 0 {
 		out.SSHHosts = append([]corelib.SSHHostEntry(nil), cfg.SSHHosts...)
 	}

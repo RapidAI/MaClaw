@@ -3,6 +3,7 @@ package memory
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -217,6 +218,28 @@ func TestProjectIndex_ListRecentMatchingFiltersBeforeSorting(t *testing.T) {
 	})
 	if len(matching) != 1 || matching[0].Name != "Newer task" {
 		t.Fatalf("ListRecentMatching = %+v, want newest matching task", matching)
+	}
+}
+
+func TestProjectIndex_ListAllMatchingIncludesHiddenAndArchived(t *testing.T) {
+	pi := NewProjectIndex()
+	now := time.Now()
+	pi.Rebuild([]Entry{
+		{ID: "visible", Title: "Visible", Content: "visible", Category: CategoryTaskArtifact, SourceType: "task_artifact", SourceURL: "C:/tasks/visible/task", Tags: []string{"tangible_output", "task_management", "C:/tasks/visible"}, CreatedAt: now, UpdatedAt: now},
+		{ID: "hidden", Title: "Hidden", Content: "hidden", Category: CategoryTaskArtifact, SourceType: "task_artifact", SourceURL: "C:/tasks/hidden/task", Tags: []string{"tangible_output", "task_management", "C:/tasks/hidden"}, CreatedAt: now, UpdatedAt: now.Add(time.Minute)},
+		{ID: "archived", Title: "Archived", Content: "archived", Category: CategoryTaskArtifact, SourceType: "task_artifact", SourceURL: "C:/tasks/archived/task", Tags: []string{"tangible_output", "task_management", "C:/tasks/archived"}, CreatedAt: now, UpdatedAt: now.Add(2 * time.Minute)},
+	})
+	pi.SetHidden("C:/tasks/hidden", true)
+	pi.SetArchived("C:/tasks/archived", true)
+
+	matching := pi.ListAllMatching(func(rec ProjectRecord) bool {
+		return strings.Contains(rec.ProjectPath, "tasks")
+	})
+	if len(matching) != 3 {
+		t.Fatalf("ListAllMatching returned %d records, want 3: %+v", len(matching), matching)
+	}
+	if matching[0].Name != "Archived" || matching[1].Name != "Hidden" || matching[2].Name != "Visible" {
+		t.Fatalf("ListAllMatching order = %+v", matching)
 	}
 }
 

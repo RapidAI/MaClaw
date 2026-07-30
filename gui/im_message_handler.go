@@ -53,9 +53,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	// /moa one-shot: arm multi-model council and rewrite to plain user text.
-	// Shared parser: corelib/llm/moa.ParseSlash (supports @preset Phase 2).
+	// Group turns must not mutate the per-user MoA session before normal group
+	// command guarding runs. Shared parser: corelib/llm/moa.ParseSlash (supports
+	// @preset Phase 2).
 	if classifyImmediateIMCommand(trimmed) == imCommandMoA {
 		lang := h.imCommandResponseLang(msg.Lang)
+		if providedLoopCtx != nil && providedLoopCtx.LansengerGroupPermissions != nil {
+			return &IMAgentResponse{Text: localizedLansengerGroupCommandRestrictedMessage(lang)}
+		}
 		cmd := moa.ParseSlash(trimmed)
 		switch cmd.Kind {
 		case moa.SlashHelp:
@@ -85,7 +90,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 
-	if resp, handled := h.handleImmediateIMCommand(msg, trimmed, onProgress, onToken); handled {
+	if resp, handled := h.handleImmediateIMCommandWithLoop(msg, trimmed, providedLoopCtx, onProgress, onToken); handled {
 		return resp
 	}
 	if resp, handled := h.tryImmediateCurrentTimeDirect(msg, providedLoopCtx); handled {

@@ -423,6 +423,288 @@ func TestPreflightMaclawAppOneClickPublishReportsConfigAndDeps(t *testing.T) {
 	}
 }
 
+func TestPreflightMaclawAppOneClickPublishHydratesMissingRunEvidence(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := maclawAppReadyToolPackageForHubSyncTest(t, "app-pdf")
+	parsed, _, _, err := parseMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+	parsedEntries, err := parseMaclawAppPackageEntriesFromMap(parsed, false)
+	if err != nil || len(parsedEntries) != 1 {
+		t.Fatalf("parse initial entries: %v %#v", err, parsedEntries)
+	}
+	governance := anyMap(parsedEntries[0].App["governance"])
+	delete(governance, "testEvidence")
+	delete(governance, "test_evidence")
+	protocol := anyMap(governance["test_protocol"])
+	if protocol == nil {
+		protocol = anyMap(governance["testProtocol"])
+	}
+	governance["testProtocol"] = map[string]any{"schema": "maclaw.app.test_protocol.v1", "sampleInput": map[string]any{"sample": true}, "expectedOutput": map[string]any{"content": "ok"}, "riskLevel": "low"}
+	protocol = anyMap(governance["testProtocol"])
+	pkg, err = maclawAppStableJSON(parsed)
+	if err != nil {
+		t.Fatalf("encode package without evidence: %v", err)
+	}
+	entries, err := parseMaclawAppPackageEntriesFromMap(parsed, false)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse entries: %v %#v", err, entries)
+	}
+	definitionHash := maclawAppDefinitionFingerprintForEntry(entries[0])
+	workspaceHash := maclawAppCurrentWorkspaceLayoutFingerprint(entries[0], governance)
+	if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{
+		RunID: "run-durable-1", AppID: "app-pdf", Status: "done",
+		DefinitionHash: definitionHash, TestProtocolFingerprint: maclawAppTestProtocolFingerprint(protocol), WorkspaceLayoutFingerprint: workspaceHash, ResultPayload: map[string]any{"content": "ok"},
+		Outputs:        []any{map[string]any{"kind": "content", "text": "ok", "status": "ready"}},
+		ResultCoverage: map[string]any{"ok": true, "primary": "content", "coveredTypes": []any{"content"}, "missingTypes": []any{}},
+		SkillName:      "paper_pdf_translator", At: "2026-07-30T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("record durable evidence: %v", err)
+	}
+
+	out, err := app.PreflightMaclawAppOneClickPublish(pkg)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	for _, check := range preflightCheckMaps(out["checks"]) {
+		if check["id"] == "package_ready" {
+			if check["ok"] != true {
+				t.Fatalf("durable evidence should satisfy package readiness: %#v", check)
+			}
+			return
+		}
+	}
+	t.Fatalf("package_ready check missing: %#v", out["checks"])
+}
+
+func TestReviewMaclawAppPackageUsesDurableEvidenceAcrossRuntimeAndDefinitionIDs(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := maclawAppReadyToolPackageForHubSyncTest(t, "pdf-word")
+	parsed, _, _, err := parseMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+	entries, err := parseMaclawAppPackageEntriesFromMap(parsed, false)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse entries: %v %#v", err, entries)
+	}
+	governance := anyMap(entries[0].App["governance"])
+	delete(governance, "testEvidence")
+	delete(governance, "test_evidence")
+	protocol := anyMap(governance["testProtocol"])
+	if protocol == nil {
+		protocol = map[string]any{"schema": "maclaw.app.test_protocol.v1", "sampleInput": map[string]any{"sample": true}, "expectedOutput": map[string]any{"content": "ok"}, "riskLevel": "low"}
+		governance["testProtocol"] = protocol
+	}
+	pkg, err = maclawAppStableJSON(parsed)
+	if err != nil {
+		t.Fatalf("encode package: %v", err)
+	}
+	entries, err = parseMaclawAppPackageEntriesFromMap(parsed, false)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse hydrated entry: %v %#v", err, entries)
+	}
+	if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{
+		RunID: "run-pdf-word", AppID: "skill-app-pdf-word-pdf-word", SkillName: "pdf-word", Status: "done",
+		DefinitionHash:             maclawAppDefinitionFingerprintForEntry(entries[0]),
+		TestProtocolFingerprint:    maclawAppTestProtocolFingerprint(protocol),
+		WorkspaceLayoutFingerprint: maclawAppCurrentWorkspaceLayoutFingerprint(entries[0], governance),
+		ResultPayload:              map[string]any{"content": "ok"},
+		Outputs:                    []any{map[string]any{"kind": "content", "text": "ok", "status": "ready"}},
+		ResultCoverage:             map[string]any{"ok": true, "primary": "content", "coveredTypes": []any{"content"}, "missingTypes": []any{}},
+		At:                         "2026-07-30T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("record durable evidence: %v", err)
+	}
+
+	review, err := app.ReviewMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("review package: %v", err)
+	}
+	if review["ok"] != true || review["hydrated"] != true {
+		t.Fatalf("runtime/definition aliases should resolve to durable evidence: %#v", review)
+	}
+	if issues := maclawAppReviewIssuesFromAny(review["review_issues"]); firstBlockingMaclawAppReviewIssue(issues) != nil {
+		t.Fatalf("review has unexpected blocking issue: %#v", issues)
+	}
+}
+
+func TestPreflightMaclawAppOneClickPublishRejectsStaleDurableRunEvidence(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := maclawAppReadyToolPackageForHubSyncTest(t, "app-stale")
+	parsed, _, _, err := parseMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+	entries, err := parseMaclawAppPackageEntriesFromMap(parsed, false)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse entries: %v %#v", err, entries)
+	}
+	governance := anyMap(entries[0].App["governance"])
+	delete(governance, "testEvidence")
+	delete(governance, "test_evidence")
+	pkg, err = maclawAppStableJSON(parsed)
+	if err != nil {
+		t.Fatalf("encode package: %v", err)
+	}
+	if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{
+		RunID: "run-stale", AppID: "app-stale", Status: "done",
+		DefinitionHash: "stale-definition", TestProtocolFingerprint: "stale-protocol",
+		WorkspaceLayoutFingerprint: "stale-layout", At: "2026-07-30T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("record stale evidence: %v", err)
+	}
+	out, err := app.PreflightMaclawAppOneClickPublish(pkg)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	for _, check := range preflightCheckMaps(out["checks"]) {
+		if check["id"] == "package_ready" {
+			if check["ok"] == true {
+				t.Fatalf("stale durable evidence must not satisfy package readiness: %#v", check)
+			}
+			return
+		}
+	}
+	t.Fatalf("package_ready check missing: %#v", out["checks"])
+}
+
+func TestPreflightMaclawAppOneClickPublishReplacesSparsePackageEvidenceWithDurableRun(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := maclawAppReadyToolPackageForHubSyncTest(t, "app-pdf")
+	parsed, _, _, err := parseMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+	entries, err := parseMaclawAppPackageEntriesFromMap(parsed, false)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse entries: %v %#v", err, entries)
+	}
+	governance := anyMap(entries[0].App["governance"])
+	protocol := maclawAppTestProtocolMap(governance, nil)
+	if protocol == nil {
+		protocol = map[string]any{
+			"schema":         "maclaw.app.test_protocol.v1",
+			"sampleInput":    map[string]any{"content": "test"},
+			"expectedOutput": map[string]any{"content": "ok"},
+			"riskLevel":      "low",
+		}
+		governance["testProtocol"] = cloneMapAny(protocol)
+	}
+	// Simulate a Skill definition stamp that is technically non-empty, so the
+	// old hydrator skipped it, but is too sparse/stale for package readiness.
+	governance["testEvidence"] = map[string]any{
+		"runId": "old-run", "definitionHash": "old-definition",
+		"artifactPresent": true, "verifiedAt": "2026-07-01T00:00:00Z",
+	}
+	pkg, err = maclawAppStableJSON(parsed)
+	if err != nil {
+		t.Fatalf("encode package: %v", err)
+	}
+	definitionHash := maclawAppDefinitionFingerprintForEntry(entries[0])
+	workspaceHash := maclawAppCurrentWorkspaceLayoutFingerprint(entries[0], governance)
+	if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{
+		RunID: "run-durable-current", AppID: "app-pdf", Status: "done",
+		DefinitionHash: definitionHash, TestProtocolFingerprint: maclawAppTestProtocolFingerprint(protocol), WorkspaceLayoutFingerprint: workspaceHash,
+		Artifacts:     []any{map[string]any{"name": "translated.pdf", "status": "verified"}},
+		ResultPayload: map[string]any{"content": "ok"}, Outputs: []any{map[string]any{"kind": "content", "text": "ok", "status": "ready"}},
+		ResultCoverage: map[string]any{"ok": true, "primary": "content", "coveredTypes": []any{"content"}, "missingTypes": []any{}},
+		SkillName:      "paper_pdf_translator", At: "2026-07-30T01:00:00Z",
+	}); err != nil {
+		t.Fatalf("record durable evidence: %v", err)
+	}
+
+	out, err := app.PreflightMaclawAppOneClickPublish(pkg)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	for _, check := range preflightCheckMaps(out["checks"]) {
+		if check["id"] == "package_ready" {
+			if check["ok"] != true {
+				t.Fatalf("current durable evidence should replace sparse package evidence: %#v", check)
+			}
+			return
+		}
+	}
+	t.Fatalf("package_ready check missing: %#v", out["checks"])
+}
+
+func TestPreflightMaclawAppOneClickPublishFindsMatchingRunBeyondGlobalHistoryLimit(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pkg := maclawAppReadyToolPackageForHubSyncTest(t, "app-pdf")
+	parsed, _, _, err := parseMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+	entries, err := parseMaclawAppPackageEntriesFromMap(parsed, false)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse entries: %v %#v", err, entries)
+	}
+	governance := anyMap(entries[0].App["governance"])
+	protocol := cloneMapAny(maclawAppTestProtocolMap(governance, maclawAppTestEvidenceMap(governance)))
+	delete(governance, "testEvidence")
+	delete(governance, "test_evidence")
+	governance["testProtocol"] = cloneMapAny(protocol)
+	entries, err = parseMaclawAppPackageEntriesFromMap(parsed, false)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("parse normalized entries: %v %#v", err, entries)
+	}
+	governance = anyMap(entries[0].App["governance"])
+	definitionHash := maclawAppDefinitionFingerprintForEntry(entries[0])
+	workspaceHash := maclawAppCurrentWorkspaceLayoutFingerprint(entries[0], governance)
+	protocolHash := maclawAppTestProtocolFingerprint(protocol)
+	if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{
+		RunID: "run-durable-old-but-current", AppID: "app-pdf", Status: "done",
+		DefinitionHash: definitionHash, TestProtocolFingerprint: protocolHash, WorkspaceLayoutFingerprint: workspaceHash,
+		ResultPayload: map[string]any{"content": "ok"}, Outputs: []any{map[string]any{"kind": "content", "text": "ok", "status": "ready"}},
+		ResultCoverage: map[string]any{"ok": true, "primary": "content", "coveredTypes": []any{"content"}, "missingTypes": []any{}},
+		At:             "2026-07-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("record matching durable evidence: %v", err)
+	}
+	for i := 0; i < 49; i++ {
+		if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{
+			RunID: fmt.Sprintf("run-noise-%03d", i), AppID: "noise-app", Status: "done",
+			DefinitionHash: "noise", At: fmt.Sprintf("2026-07-30T02:%02d:%02dZ", (i/60)%60, i%60),
+		}); err != nil {
+			t.Fatalf("record noise run %d: %v", i, err)
+		}
+	}
+	pkg, err = maclawAppStableJSON(parsed)
+	if err != nil {
+		t.Fatalf("encode package: %v", err)
+	}
+	parsedCheck, _, _, err := parseMaclawAppPackage(pkg)
+	if err != nil {
+		t.Fatalf("parse encoded package: %v", err)
+	}
+	checkEntries, err := parseMaclawAppPackageEntriesFromMap(parsedCheck, false)
+	if err != nil || len(checkEntries) != 1 {
+		t.Fatalf("parse encoded entries: %v %#v", err, checkEntries)
+	}
+	checkGovernance := anyMap(checkEntries[0].App["governance"])
+	checkProtocolHash := maclawAppTestProtocolFingerprint(maclawAppTestProtocolMap(checkGovernance, nil))
+	checkWorkspaceHash := maclawAppCurrentWorkspaceLayoutFingerprint(checkEntries[0], checkGovernance)
+	checkDefinitionHash := maclawAppDefinitionFingerprintForEntry(checkEntries[0])
+	if definitionHash != checkDefinitionHash || protocolHash != checkProtocolHash || workspaceHash != checkWorkspaceHash {
+		t.Fatalf("test fixture fingerprint drift: def=%s/%s protocol=%s/%s workspace=%s/%s", definitionHash, checkDefinitionHash, protocolHash, checkProtocolHash, workspaceHash, checkWorkspaceHash)
+	}
+	out, err := app.PreflightMaclawAppOneClickPublish(pkg)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	for _, check := range preflightCheckMaps(out["checks"]) {
+		if check["id"] == "package_ready" {
+			if check["ok"] != true {
+				t.Fatalf("matching app history must not be evicted by unrelated global history: %#v", check)
+			}
+			return
+		}
+	}
+	t.Fatalf("package_ready check missing: %#v", out["checks"])
+}
+
 func preflightCheckMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:

@@ -229,6 +229,10 @@ type skillRun struct {
 	workspaceDir  string              // isolated per-run copy of the skill directory
 	timeoutSec    int                 // normalized system Skill Runner timeout captured when the run starts
 	liveOutput    *skillRunLiveOutput // real-time subprocess output tail (last N lines)
+	// todos is the per-run checklist used by todo_write steps. It deliberately
+	// lives on the run rather than the shared runner so concurrent skills do not
+	// overwrite each other's progress.
+	todos codingAgentTodoState
 }
 
 // skillRunLiveOutput is a goroutine-safe ring buffer that captures the last N
@@ -4294,6 +4298,9 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 
 	case skillStepActionPoll:
 		return r.executePollStep(ctx, step, skillDir, r.runDefaultTimeoutSecForID(runID))
+
+	case skillStepActionSSHBash, skillStepActionSSHListDir, skillStepActionSSHReadFile, skillStepActionTodoWrite:
+		return r.executeRemoteSkillStep(ctx, runID, step)
 
 	default:
 		return "", fmt.Errorf("unknown action: %s", step.Action)

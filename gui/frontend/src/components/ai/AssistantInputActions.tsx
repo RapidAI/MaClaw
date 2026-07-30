@@ -18,6 +18,8 @@ import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { AssistantPermissionModeMenu } from "./AssistantPermissionModeMenu";
 
 interface AssistantInputActionsProps {
+    /** Whether the retained assistant panel is visible in the app shell. */
+    active?: boolean;
     attachButtonTestId?: string;
     browseFile: () => void;
     canSend: boolean;
@@ -96,6 +98,7 @@ function focusMenuItem(menu: HTMLElement, index: number) {
 }
 
 export function AssistantInputActionsLeft({
+    active = true,
     attachButtonTestId,
     browseFile,
     composeAction = null,
@@ -121,6 +124,7 @@ export function AssistantInputActionsLeft({
 }: Pick<
     AssistantInputActionsProps,
     | "attachButtonTestId"
+    | "active"
     | "browseFile"
     | "composeAction"
     | "inputLocked"
@@ -252,6 +256,12 @@ export function AssistantInputActionsLeft({
             window.removeEventListener("scroll", onReposition, true);
         };
     }, [closePlusMenu, plusMenuOpen, updatePlusMenuPosition]);
+
+    // The menu is fixed-position. Close it before its owning panel becomes
+    // hidden so it cannot float above System/Monitor pages.
+    useEffect(() => {
+        if (!active) closePlusMenu();
+    }, [active, closePlusMenu]);
 
     const handleMenuItem = useCallback((item: PlusMenuItemDef) => {
         if (item.disableWhenBusy && inputLocked) return;
@@ -447,7 +457,7 @@ export function AssistantInputActionsLeft({
                 )}
             </button>}
             {showVoiceInput && voiceInput.error && <span style={{ color: t.errorText, fontSize: "11px", alignSelf: "center", maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={voiceInput.error}>{voiceInput.error}</span>}
-            {showPermissionMode && onPermissionModeChange && <AssistantPermissionModeMenu lang={lang} mode={permissionMode} onChange={onPermissionModeChange} theme={t} themeMode={themeMode} showWorkspaceOption={showWorkspacePermissionOption} />}
+            {showPermissionMode && onPermissionModeChange && <AssistantPermissionModeMenu active={active} lang={lang} mode={permissionMode} onChange={onPermissionModeChange} theme={t} themeMode={themeMode} showWorkspaceOption={showWorkspacePermissionOption} />}
         </>
     );
 }

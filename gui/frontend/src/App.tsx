@@ -581,7 +581,7 @@ function App() {
     const [hubAuthRejectedPrompt, setHubAuthRejectedPrompt] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
-    const [uiZoom, setUiZoom] = useState<number>(() => recommendUIScale());
+    const [uiZoom, setUiZoom] = useState<number>(1);
     const [uiZoomAuto, setUiZoomAuto] = useState<boolean>(true);
     const [chatFontSize, setChatFontSize] = useState<number>(14);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
@@ -618,20 +618,6 @@ function App() {
     const digitalEmployeeStatusRefreshAgainRef = useRef(false);
     const digitalEmployeeStatusGenerationRef = useRef(0);
     const [showFavReplacePicker, setShowFavReplacePicker] = useState<{ ve: VirtualEmployeeEntry } | null>(null);
-
-    // When zoom is Auto, re-evaluate after display DPI / resolution changes
-    // (monitor move, OS scale change, RDP, etc.). Skip no-op setState; debounce resize.
-    useEffect(() => {
-        if (!uiZoomAuto) {
-            return;
-        }
-        const applyRecommended = () => {
-            const next = recommendUIScale();
-            setUiZoom((prev) => (uiScaleEquals(prev, next) ? prev : next));
-        };
-        applyRecommended();
-        return subscribeDisplayScaleChanges(applyRecommended);
-    }, [uiZoomAuto]);
 
     // Load favorite employees from config
     useEffect(() => {
@@ -1067,6 +1053,14 @@ function App() {
         const platform = navigator.platform || '';
         return !/win|mac/i.test(platform);
     });
+    // Win10's frameless WebView2 host already applies display DPI. Applying an
+    // additional fractional CSS transform to the entire root can make the DWM
+    // surface exceed its client rectangle and crop every outer edge. Win11 has
+    // native frameless support, so it retains the normal Auto recommendation.
+    const isWindowsHost = /win/i.test(navigator.platform || '');
+    const disableAutoUIScaleTransform = isWindowsHost && !nativeRounded;
+    const disableAutoUIScaleTransformRef = useRef(disableAutoUIScaleTransform);
+    disableAutoUIScaleTransformRef.current = disableAutoUIScaleTransform;
     const applyFramelessTopInset = useCallback((topInset: unknown) => {
         const insetPx = typeof topInset === 'number' && topInset > 0 ? Math.min(Math.round(topInset), 16) : 0;
         document.documentElement.style.setProperty('--dwm-top-offset', `${insetPx}px`);
@@ -1084,7 +1078,9 @@ function App() {
             callBackend(() => IsNativeRoundedCorners()).catch(() => null),
             callBackend(() => GetFramelessTopInset()).catch(() => 0),
         ]).then(([rounded, topInset]) => {
-            if (rounded !== null) setNativeRounded(rounded);
+            if (rounded !== null) {
+                setNativeRounded(rounded);
+            }
             document.documentElement.style.backgroundColor = '';
             document.body.style.backgroundColor = '';
             // Win10 DWM may reserve an invisible top frame on frameless windows.
@@ -1107,6 +1103,24 @@ function App() {
             if (timer) clearTimeout(timer);
         };
     }, [refreshFramelessTopInset]);
+    // When zoom is Auto, re-evaluate after display DPI / resolution changes
+    // (monitor move, OS scale change, RDP, etc.). Win10 intentionally keeps
+    // Auto at 100% to avoid a fractional root transform; manual UI zoom is
+    // still applied exactly as selected in UI Settings.
+    useEffect(() => {
+        if (!uiZoomAuto) {
+            return;
+        }
+        const applyRecommended = () => {
+            const next = recommendUIScale({ disableAutoTransform: disableAutoUIScaleTransform });
+            setUiZoom((prev) => (uiScaleEquals(prev, next) ? prev : next));
+        };
+        applyRecommended();
+        if (disableAutoUIScaleTransform) {
+            return;
+        }
+        return subscribeDisplayScaleChanges(applyRecommended);
+    }, [disableAutoUIScaleTransform, uiZoomAuto]);
     // Keep the native window and web content on the same scheme token without
     // creating a transparent shell at fractional DPI.
     useEffect(() => {
@@ -1904,9 +1918,13 @@ function App() {
 
             // Apply saved UI zoom factor (0 = Auto / DPI-adaptive)
             callBackend(() => GetUIZoomFactor()).then((z) => {
-                applySavedUIZoomFactor(z, setUiZoomAuto, setUiZoom);
+                applySavedUIZoomFactor(z, setUiZoomAuto, setUiZoom, {
+                    disableAutoTransform: disableAutoUIScaleTransformRef.current,
+                });
             }).catch(() => {
-                applySavedUIZoomFactor(0, setUiZoomAuto, setUiZoom);
+                applySavedUIZoomFactor(0, setUiZoomAuto, setUiZoom, {
+                    disableAutoTransform: disableAutoUIScaleTransformRef.current,
+                });
             });
             callBackend(() => GetChatFontSize()).then((s) => {
                 if (s >= 12) {
@@ -1960,6 +1978,19 @@ function App() {
             setTimeout(() => {
                 callBackend(() => LoadConfigForUI()).then((cfg) => {
                     setConfig(cfg);
+                    // The first config load can race a concurrent write. Keep the
+                    // retry path in sync with the normal startup path so a
+                    // recovered Auto setting does not remain at the bootstrap
+                    // 100% scale on Win11/Linux/macOS.
+                    callBackend(() => GetUIZoomFactor()).then((z) => {
+                        applySavedUIZoomFactor(z, setUiZoomAuto, setUiZoom, {
+                            disableAutoTransform: disableAutoUIScaleTransformRef.current,
+                        });
+                    }).catch(() => {
+                        applySavedUIZoomFactor(0, setUiZoomAuto, setUiZoom, {
+                            disableAutoTransform: disableAutoUIScaleTransformRef.current,
+                        });
+                    });
                     if (cfg && cfg.language) {
                         setLang(cfg.language);
                         void callBackend(() => SetLanguage(cfg.language));
@@ -1988,10 +2019,14 @@ function App() {
             setConfig(cfg);
             // Prefer the payload's zoom field to avoid an extra backend round-trip.
             if (typeof cfg.ui_zoom_factor === 'number') {
-                applySavedUIZoomFactor(cfg.ui_zoom_factor, setUiZoomAuto, setUiZoom);
+                applySavedUIZoomFactor(cfg.ui_zoom_factor, setUiZoomAuto, setUiZoom, {
+                    disableAutoTransform: disableAutoUIScaleTransformRef.current,
+                });
             } else {
                 callBackend(() => GetUIZoomFactor()).then((z) => {
-                    applySavedUIZoomFactor(z, setUiZoomAuto, setUiZoom);
+                    applySavedUIZoomFactor(z, setUiZoomAuto, setUiZoom, {
+                        disableAutoTransform: disableAutoUIScaleTransformRef.current,
+                    });
                 }).catch(() => {});
             }
             if (typeof cfg.chat_font_size === 'number' && cfg.chat_font_size >= 12) {
@@ -2722,13 +2757,9 @@ function App() {
                         remote.port || 22,
                     );
                 } catch (prepareError) {
-                    // Task record was already created; hide it so failed attempts
-                    // don't pile up as orphan tasks in the task list.
-                    try {
-                        await HideTask(created.project_path);
-                    } catch (hideError) {
-                        console.warn("HideTask after prepare failure failed:", hideError);
-                    }
+                    // The task may be a reused remote-project record. Keep it on
+                    // transient SSH failures so the user can reconnect from the
+                    // same task/tab; hiding it here could hide an existing task.
                     throw prepareError;
                 }
                 // Remember password on this device for later SSH reconnect in the control panel.
@@ -4242,7 +4273,11 @@ ${instruction}`;
             <div className="main-container" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
                 {/* AI and non-AI panes use separate Suspense roots so a page chunk load
                     never blanks the shared header/status chrome (fallback={null} used to). */}
-                {navTab === 'ai' && (
+                {/* Keep the assistant mounted while another page is open. Project tabs own
+                    live streams, drafts and restore work; unmounting this tree on a brief
+                    trip to System/Background Tasks re-runs tab restoration and can replace
+                    the active project view with the empty welcome screen. */}
+                <div className="ai-main-panel-host" hidden={navTab !== 'ai'}>
                     <Suspense fallback={
                         <div className="app-main-content-loading" role="status" aria-live="polite">
                             {lang === 'zh-Hans' ? '加载助手…' : lang === 'zh-Hant' ? '載入助手…' : 'Loading assistant…'}
@@ -4290,6 +4325,7 @@ ${instruction}`;
                                 selectedFilePath: aiAssistant.selectedFilePaths?.[0] ?? "",
                                 onboardingIncomplete: !config?.onboarding_done && !showMaclawLLMPopup,
                                 showTraceEntry: !!config?.show_ai_trace_entry,
+                                active: navTab === 'ai',
                             }}
                             actions={{
                                 ...aiAssistant.panelActions,
@@ -4305,7 +4341,7 @@ ${instruction}`;
                     />
                     </div>
                     </Suspense>
-                )}
+                </div>
                 {navTab !== 'ai' && <MainTopHeader
                     navTab={navTab}
                     lang={lang}
@@ -4394,6 +4430,7 @@ ${instruction}`;
                             setUiZoom={setUiZoom}
                             uiZoomAuto={uiZoomAuto}
                             setUiZoomAuto={setUiZoomAuto}
+                            disableAutoUIScaleTransform={disableAutoUIScaleTransform}
                             chatFontSize={chatFontSize}
                             setChatFontSize={setChatFontSize}
                             darkSchemeId={aiDarkSchemeId}

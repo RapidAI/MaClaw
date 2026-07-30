@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -2822,6 +2823,125 @@ func TestSkillRunnerExecuteStepWithContext_UnsupportedActionIsClassified(t *test
 	classified := cskill.ClassifyStepError(0, "", err.Error(), "")
 	if classified.Class != cskill.ErrUnsupportedAction {
 		t.Fatalf("Class = %s, err = %v", classified.Class, err)
+	}
+}
+
+func TestSkillRunnerExecuteStepWithContext_RemoteSkillActionRequiresRemoteContext(t *testing.T) {
+	runner := NewSkillRunner(&SkillExecutor{app: &App{}})
+	runner.runs["run-test"] = &skillRun{status: SkillRunStatus{RunID: "run-test", OwnerID: "desktop-user:project-a"}}
+	_, err := runner.executeStepWithContext(context.Background(), "run-test", corelib.NLSkillStep{
+		Action: "ssh_bash",
+		Params: map[string]interface{}{"command": "pwd"},
+	}, "")
+	if err == nil || !strings.Contains(err.Error(), "remote-coding task") {
+		t.Fatalf("expected missing remote context error, got %v", err)
+	}
+}
+
+func TestSkillRunnerExecuteStepWithContext_RemoteSkillActionHonorsCancelledContext(t *testing.T) {
+	runner := NewSkillRunner(&SkillExecutor{app: &App{}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runner.executeStepWithContext(ctx, "run-test", corelib.NLSkillStep{
+		Action: "ssh_bash",
+		Params: map[string]interface{}{"command": "pwd"},
+	}, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestRemoteSkillResolvePathUsesRemoteWorkDir(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		root string
+		path string
+		want string
+	}{
+		{"default root", "/home/sysinfo18", "", "/home/sysinfo18"},
+		{"relative file", "/home/sysinfo18", "README.md", "/home/sysinfo18/README.md"},
+		{"relative normalized", "/home/sysinfo18", "src/../include/a.h", "/home/sysinfo18/include/a.h"},
+		{"absolute diagnostic path", "/home/sysinfo18", "/usr/include/stdio.h", "/usr/include/stdio.h"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := remoteSkillResolvePath(tt.root, tt.path); got != tt.want {
+				t.Fatalf("remoteSkillResolvePath(%q, %q) = %q, want %q", tt.root, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRemoteSkillCommandInWorkDirPreservesCommandExitStatus(t *testing.T) {
+	command := remoteSkillCommandInWorkDir("/home/sysinfo18", "make test")
+	for _, want := range []string{"cd '/home/sysinfo18'", "sh -lc 'make test'", "__maclaw_cmd_status=$?", "EXIT: %s"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command missing %q: %s", want, command)
+		}
+	}
+}
+
+func TestRemoteSkillCommandInWorkDirContainsExitInSubshell(t *testing.T) {
+	command := remoteSkillCommandInWorkDir("/repo", "exit 17")
+	if !strings.Contains(command, "sh -lc 'exit 17'") {
+		t.Fatalf("user command must be isolated in a subshell: %s", command)
+	}
+	if !strings.Contains(command, "printf '\\nEXIT: %s\\n' \"$__maclaw_cmd_status\"") {
+		t.Fatalf("command must retain terminal exit marker: %s", command)
+	}
+}
+
+func TestRemoteSkillCommandInWorkDirQuotesComplexCommand(t *testing.T) {
+	command := remoteSkillCommandInWorkDir("/repo/O'Reilly", "python -c 'print(1)'")
+	for _, want := range []string{"cd '/repo/O'\\''Reilly'", "sh -lc 'python -c '\\''print(1)'\\'''", "EXIT: %s"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command missing %q: %s", want, command)
+		}
+	}
+}
+
+func TestRemoteSkillListAndReadCommandsUseAuthoritativeExitMarkers(t *testing.T) {
+	listCommand := remoteSkillCommandInWorkDir("/repo", fmt.Sprintf("ls -la -- %s 2>&1", remoteShellQuote("/missing")))
+	readCommand := remoteSkillCommandInWorkDir("/repo", remoteReadFileRangePythonCommand("/missing/file", 1, 20))
+	for _, command := range []string{listCommand, readCommand} {
+		if !strings.Contains(command, "EXIT: %s") {
+			t.Fatalf("remote action command missing authoritative exit marker: %s", command)
+		}
+	}
+}
+
+func TestRemoteSkillBashWaitSecondsAvoidsBackgroundPromotion(t *testing.T) {
+	for _, tt := range []struct {
+		value interface{}
+		want  float64
+	}{
+		{nil, 31},
+		{float64(1), 31},
+		{float64(30), 31},
+		{float64(31), 31},
+		{float64(90), 90},
+	} {
+		if got := remoteSkillBashWaitSeconds(map[string]interface{}{"wait_seconds": tt.value}); got != tt.want {
+			t.Fatalf("remoteSkillBashWaitSeconds(%v) = %v, want %v", tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestRemoteSkillWaitSecondsClampsToTransportBounds(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value interface{}
+		want  float64
+	}{
+		{"default", nil, 20},
+		{"zero", float64(0), 1},
+		{"negative", float64(-1), 1},
+		{"too large", float64(1000), 600},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := remoteSkillWaitSeconds(map[string]interface{}{"wait_seconds": tt.value}, 20); got != tt.want {
+				t.Fatalf("remoteSkillWaitSeconds(%v) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
 	}
 }
 func TestSkillRunnerExecuteStepWithContext_NormalizesSupportedActionSpelling(t *testing.T) {

@@ -386,6 +386,22 @@ export function applySelectFile(
     };
 }
 
+/** Open a file deliberately chosen from the working-directory explorer. */
+export function applyOpenWorkspaceFile(
+    state: CodePreviewUIState,
+    file: CodeFile,
+): CodePreviewUIState {
+    if (!file.filePath || file.content === undefined || file.content === null) return state;
+    const files = new Map(state.files);
+    files.set(file.filePath, file);
+    return {
+        ...state,
+        ...withOpenFileLists(state, files, file.filePath),
+        active: true,
+        userClosed: false,
+    };
+}
+
 /**
  * Pin or unpin a file tab. Pinned tabs sort to the left and stay preferred-visible.
  */
@@ -731,6 +747,10 @@ export function useCodePreviewState(activeTabProjectPath?: string, previewEnable
         setState(prev => applySelectFile(prev, filePath));
     }, []);
 
+    const openWorkspaceFile = useCallback((file: CodeFile) => {
+        setState(prev => applyOpenWorkspaceFile(prev, file));
+    }, []);
+
     const closeFile = useCallback((filePath: string) => {
         setState(prev => applyCloseFile(prev, filePath));
     }, []);
@@ -780,6 +800,7 @@ export function useCodePreviewState(activeTabProjectPath?: string, previewEnable
         reopenPanel,
         activatePassive,
         selectFile,
+        openWorkspaceFile,
         closeFile,
         closeOtherFiles,
         closeFilesToTheRight,

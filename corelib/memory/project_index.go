@@ -364,6 +364,30 @@ func (pi *ProjectIndex) ListRecentMatching(limit int, predicate func(ProjectReco
 	return pi.listRecentMatchingLocked(limit, predicate)
 }
 
+// ListAllMatching returns every output-backed record that matches predicate,
+// including hidden and archived records. It is intended for internal identity
+// lookups where a soft-hidden record must still reserve its stable key.
+func (pi *ProjectIndex) ListAllMatching(predicate func(ProjectRecord) bool) []ProjectRecord {
+	pi.mu.RLock()
+	defer pi.mu.RUnlock()
+
+	matched := make([]ProjectRecord, 0, len(pi.records))
+	for _, rec := range pi.records {
+		if !rec.HasOutput {
+			continue
+		}
+		clone := pi.outputRecordCloneLocked(rec)
+		if predicate != nil && !predicate(clone) {
+			continue
+		}
+		matched = append(matched, clone)
+	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		return matched[i].LastActivity.After(matched[j].LastActivity)
+	})
+	return matched
+}
+
 func (pi *ProjectIndex) listRecentMatchingLocked(limit int, predicate func(ProjectRecord) bool) []ProjectRecord {
 	matched := make([]ProjectRecord, 0, min(limit, len(pi.records)))
 	for _, rec := range pi.records {

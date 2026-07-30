@@ -39,7 +39,7 @@ var (
 
 // appendKnowledgeAutoRecall searches the knowledge base using the user message
 // and injects top results into the system prompt if they exceed the score threshold.
-func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg string, priorUserMessages []string) {
+func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg string, priorUserMessages []string, sourceIDScopes ...[]string) {
 	if msg == "" {
 		return
 	}
@@ -75,10 +75,14 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	// Search hybrids FTS + embedding when the store has an embedder (attached via
 	// openKnowledgeStore / activateEmbedderAsync). PreferEmbedding is left false so
 	// embedding runs automatically when FTS is empty or low-confidence.
-	results, err := store.Search(ctx, knowledge.SearchOptions{
+	searchOpts := knowledge.SearchOptions{
 		Query: query,
 		Limit: agent.KnowledgeAutoRecallSearchLimit,
-	})
+	}
+	if len(sourceIDScopes) > 0 {
+		searchOpts.SourceIDs = append([]string(nil), sourceIDScopes[0]...)
+	}
+	results, err := store.Search(ctx, searchOpts)
 	queryDuration := time.Since(queryStart)
 	hasEmbedder := store.HasEmbedder()
 

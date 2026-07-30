@@ -653,6 +653,9 @@ export namespace main {
 	    lansenger_respond_to_at_all?: boolean;
 	    lansenger_auto_mention_reply?: boolean;
 	    lansenger_auto_quote_reply?: boolean;
+	    lansenger_group_knowledge_source_ids?: string[];
+	    lansenger_group_allow_all_directories?: boolean;
+	    lansenger_group_allowed_directories?: string[];
 	    lansenger_local_mode?: boolean;
 	    thirdparty_gateway_enabled?: boolean;
 	    thirdparty_gateway_token: string;
@@ -849,6 +852,9 @@ export namespace main {
 	        this.lansenger_respond_to_at_all = source["lansenger_respond_to_at_all"];
 	        this.lansenger_auto_mention_reply = source["lansenger_auto_mention_reply"];
 	        this.lansenger_auto_quote_reply = source["lansenger_auto_quote_reply"];
+	        this.lansenger_group_knowledge_source_ids = source["lansenger_group_knowledge_source_ids"];
+	        this.lansenger_group_allow_all_directories = source["lansenger_group_allow_all_directories"];
+	        this.lansenger_group_allowed_directories = source["lansenger_group_allowed_directories"];
 	        this.lansenger_local_mode = source["lansenger_local_mode"];
 	        this.thirdparty_gateway_enabled = source["thirdparty_gateway_enabled"];
 	        this.thirdparty_gateway_token = source["thirdparty_gateway_token"];

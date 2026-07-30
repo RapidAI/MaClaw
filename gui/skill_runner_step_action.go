@@ -15,6 +15,10 @@ const (
 	skillStepActionBash           skillStepActionKind = "bash"
 	skillStepActionCraftTool      skillStepActionKind = "craft_tool"
 	skillStepActionPoll           skillStepActionKind = "poll"
+	skillStepActionSSHBash        skillStepActionKind = "ssh_bash"
+	skillStepActionSSHListDir     skillStepActionKind = "ssh_list_dir"
+	skillStepActionSSHReadFile    skillStepActionKind = "ssh_read_file"
+	skillStepActionTodoWrite      skillStepActionKind = "todo_write"
 )
 
 func classifySkillStepAction(action string) skillStepActionKind {
@@ -37,6 +41,14 @@ func classifySkillStepAction(action string) skillStepActionKind {
 		return skillStepActionCraftTool
 	case skillStepActionPoll:
 		return skillStepActionPoll
+	case skillStepActionSSHBash:
+		return skillStepActionSSHBash
+	case skillStepActionSSHListDir:
+		return skillStepActionSSHListDir
+	case skillStepActionSSHReadFile:
+		return skillStepActionSSHReadFile
+	case skillStepActionTodoWrite:
+		return skillStepActionTodoWrite
 	default:
 		return skillStepActionUnknown
 	}

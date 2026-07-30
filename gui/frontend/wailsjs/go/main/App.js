@@ -483,6 +483,26 @@ export function GetCodingWorkbenchStatus(arg1) {
   return window['go']['main']['App']['GetCodingWorkbenchStatus'](arg1);
 }
 
+export function GetCodingWorkbenchDirectory(arg1, arg2) {
+  return window['go']['main']['App']['GetCodingWorkbenchDirectory'](arg1, arg2);
+}
+
+export function GetCodingWorkbenchFilePreview(arg1, arg2) {
+  return window['go']['main']['App']['GetCodingWorkbenchFilePreview'](arg1, arg2);
+}
+
+export function GetCodingWorkbenchEntryProperties(arg1, arg2) {
+  return window['go']['main']['App']['GetCodingWorkbenchEntryProperties'](arg1, arg2);
+}
+
+export function IsCodingWorkbenchVSCodeAvailable() {
+  return window['go']['main']['App']['IsCodingWorkbenchVSCodeAvailable']();
+}
+
+export function OpenCodingWorkbenchFileInVSCode(arg1, arg2) {
+  return window['go']['main']['App']['OpenCodingWorkbenchFileInVSCode'](arg1, arg2);
+}
+
 export function GetCodingWorkbenchPermission(arg1) {
   return window['go']['main']['App']['GetCodingWorkbenchPermission'](arg1);
 }
@@ -3078,6 +3098,10 @@ export function PublishMaclawAppSubmissionOneClick(arg1) {
 
 export function PreflightMaclawAppOneClickPublish(arg1) {
   return window['go']['main']['App']['PreflightMaclawAppOneClickPublish'](arg1);
+}
+
+export function ReviewMaclawAppPackage(arg1) {
+  return window['go']['main']['App']['ReviewMaclawAppPackage'](arg1);
 }
 
 export function PreflightMaclawAppSubmissionOneClick(arg1) {

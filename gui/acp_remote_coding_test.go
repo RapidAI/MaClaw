@@ -53,6 +53,27 @@ func TestOnMaclawCreateRemoteCodingTaskRejectsNegativePort(t *testing.T) {
 	}
 }
 
+func TestOnMaclawCreateRemoteCodingTaskReportsReuse(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	s := &acpHostSession{app: app}
+	first, rpcErr := s.onMaclawCreateRemoteCodingTask([]byte(`{"name":"first","ssh_host":"10.0.0.8","ssh_user":"ubuntu","work_dir":"/srv/app","ssh_port":22}`))
+	if rpcErr != nil {
+		t.Fatalf("first create: %v", rpcErr)
+	}
+	firstResult, ok := first.(map[string]interface{})
+	if !ok || firstResult["reused"] != false {
+		t.Fatalf("first result = %#v, want reused=false", first)
+	}
+	second, rpcErr := s.onMaclawCreateRemoteCodingTask([]byte(`{"name":"second","ssh_host":"10.0.0.8","ssh_user":"ubuntu","work_dir":"/srv/app/","ssh_port":2200}`))
+	if rpcErr != nil {
+		t.Fatalf("second create: %v", rpcErr)
+	}
+	secondResult, ok := second.(map[string]interface{})
+	if !ok || secondResult["reused"] != true {
+		t.Fatalf("second result = %#v, want reused=true", second)
+	}
+}
+
 func TestOnMaclawPrepareRemoteCodingRequiresPassword(t *testing.T) {
 	app := &App{}
 	s := &acpHostSession{app: app}

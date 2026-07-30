@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { approvalEscalationDataAttr, approvalEscalationExhaustedText, approvalEscalationRetryText } from './approvalEscalationDisplay';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, LoadMaclawAppsPanelState, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, SaveMaclawAppsPanelState, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, DecideMaclawAppApprovalInstance, ReconcileMaclawAppApprovalProjections, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, LoadMaclawAppsPanelState, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, ReviewMaclawAppPackage, SaveMaclawAppsPanelState, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, DecideMaclawAppApprovalInstance, ReconcileMaclawAppApprovalProjections, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import {
     clearWorkspaceLaunchIssue,
@@ -5857,6 +5857,28 @@ function artifactStatusLabel(status: SkillRunStatusView | null, text: typeof lab
     return '';
 }
 
+function appRunHistoryLookupIDs(app: AppEntry): string[] {
+    const ids = [app.id];
+    if (app.source === 'skill') {
+        const skillID = appRunnableSkillID(app);
+        const skillIDs = Array.from(new Set([
+            skillID,
+            String(app.manifest?.skill?.id || '').trim(),
+            String(app.manifest?.appSkill?.id || '').trim(),
+        ].filter(Boolean)));
+        const prefixSkillID = skillIDs.find((id) => app.id.startsWith(`skill-app-${id}-`)) || skillID;
+        const prefixedID = prefixSkillID ? `skill-app-${prefixSkillID}-` : '';
+        const suffixID = prefixedID && app.id.startsWith(prefixedID) ? app.id.slice(prefixedID.length) : '';
+        const definitionID = skillDefinitionAppId(app);
+        const manifestID = canonicalAppManifestID(app);
+        [suffixID, definitionID, manifestID, ...skillIDs, ...skillIDs.map((id) => skillPanelAppID(id, definitionID))].forEach((id) => {
+            const clean = String(id || '').trim();
+            if (clean && !ids.includes(clean)) ids.push(clean);
+        });
+    }
+    return ids;
+}
+
 function loadAppRunHistory(appID: string): AppRunHistoryEntry[] {
     if (typeof window === 'undefined' || !appID) return [];
     try {
@@ -5967,16 +5989,30 @@ async function loadDurableAppRunHistory(appID: string): Promise<AppRunHistoryEnt
     }
 }
 
+async function loadDurableAppRunHistoryForApp(app: AppEntry): Promise<AppRunHistoryEntry[]> {
+    const groups = await Promise.all(appRunHistoryLookupIDs(app).map((appID) => loadDurableAppRunHistory(appID)));
+    return mergeAppRunHistoryEntries(...groups);
+}
+
 async function persistDurableAppRunHistory(entry: AppRunHistoryEntry): Promise<{ ok: boolean; error?: string; skipped?: boolean }> {
     if (!entry?.appID || !entry?.runID) {
         return { ok: false, error: 'appID and runID are required' };
     }
-    // Older GUI binaries / unit mocks may not expose the durable API yet.
+    // Durable storage is a publish invariant. A stale GUI binary without the
+    // bridge must fail closed instead of reporting a localStorage-only success.
     if (typeof RecordMaclawAppRunHistory !== 'function') {
-        return { ok: true, skipped: true };
+        return { ok: false, skipped: true, error: 'durable run-history API is unavailable; restart or update MaClaw' };
     }
     try {
-        await RecordMaclawAppRunHistory(entry);
+        const persisted = await RecordMaclawAppRunHistory(entry) as AppRunHistoryEntry | null | undefined;
+        const persistedRunID = String(persisted?.runID || '').trim();
+        const persistedAppID = String(persisted?.appID || '').trim();
+        const persistedStatus = String(persisted?.status || '').trim().toLowerCase();
+        if (persistedRunID !== String(entry.runID || '').trim()
+            || persistedAppID !== String(entry.appID || '').trim()
+            || persistedStatus !== String(entry.status || '').trim().toLowerCase()) {
+            return { ok: false, error: 'durable run-history acknowledgement does not match the completed run' };
+        }
         return { ok: true };
     } catch (error: any) {
         return { ok: false, error: String(error?.message || error || 'failed to persist run history') };
@@ -6249,8 +6285,11 @@ async function preflightMaclawAppSubmissionOneClick(submissionID: string): Promi
 }
 
 function formatOneClickPreflightCheck(id: string, message: string): string {
-    if (id === 'package_ready' && /testevidence|successful local run evidence/i.test(message)) {
+    if (id === 'package_ready' && /missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(message)) {
         return '缺少一次成功运行证据。请点击“去修复”，完整运行应用一次后返回此处发布。';
+    }
+    if (id === 'package_ready' && isOneClickPreflightRerunMessage(message)) {
+        return '运行证据与当前应用定义不一致。请点击“去修复”，重新运行当前版本后返回此处发布。';
     }
     if (id === 'dependencies' && /not bundled\/published/i.test(message)) {
         return '有必需 Skill 尚未发布或打包，Enterprise Hub 发布可能失败。请先处理依赖。';
@@ -6263,15 +6302,20 @@ function formatOneClickPreflightCheck(id: string, message: string): string {
 
 function normalizeOneClickPreflightMessage(message: string): string {
     const raw = String(message || '').trim();
-    if (/testevidence|successful local run evidence/i.test(raw)) return formatOneClickPreflightCheck('package_ready', raw);
+    if (/missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(raw)) return formatOneClickPreflightCheck('package_ready', raw);
+    if (isOneClickPreflightRerunMessage(raw)) return formatOneClickPreflightCheck('package_ready', raw);
     if (/not bundled\/published/i.test(raw)) return formatOneClickPreflightCheck('dependencies', raw);
     if (/x509:|certificate has expired|certificate is not yet valid|tls: failed to verify certificate/i.test(raw)) return formatOneClickPreflightCheck('enterprise_hub_tls', raw);
     return raw;
 }
 
+function isOneClickPreflightRerunMessage(value: unknown): boolean {
+    return /governance\.testevidence\.(?:definitionhash|testprotocolfingerprint|workspacelayoutfingerprint)|run evidence (?:definition hash|test protocol fingerprint|workspace layout fingerprint).*(?:does not match|missing)|run evidence is not linked to a test protocol fingerprint/i.test(String(value || ''));
+}
+
 function oneClickPreflightNeedsRunEvidence(preflight: Record<string, unknown> | null | undefined): boolean {
     if (!preflight) return false;
-    const isEvidenceGate = (value: unknown) => /testevidence|successful local run evidence/i.test(String(value || ''));
+    const isEvidenceGate = (value: unknown) => /missing successful local run evidence|governance\.testevidence(?:\s|$)/i.test(String(value || ''));
     if (Array.isArray(preflight.checks) && preflight.checks.some((raw) => {
         if (!raw || typeof raw !== 'object') return false;
         const row = raw as Record<string, unknown>;
@@ -6284,6 +6328,18 @@ function oneClickPreflightNeedsRunEvidence(preflight: Record<string, unknown> | 
     return [preflight.blocking, preflight.warnings, preflight.message]
         .flatMap((value) => Array.isArray(value) ? value : [value])
         .some(isEvidenceGate);
+}
+
+function oneClickPreflightNeedsRerun(preflight: Record<string, unknown> | null | undefined): boolean {
+    if (!preflight) return false;
+    if (Array.isArray(preflight.checks) && preflight.checks.some((raw) => {
+        if (!raw || typeof raw !== 'object') return false;
+        const row = raw as Record<string, unknown>;
+        return row.ok !== true && String(row.id || '').trim() === 'package_ready' && isOneClickPreflightRerunMessage(row.message);
+    })) return true;
+    return [preflight.blocking, preflight.warnings, preflight.message]
+        .flatMap((value) => Array.isArray(value) ? value : [value])
+        .some(isOneClickPreflightRerunMessage);
 }
 
 /** Short user-facing line from a preflight report (blocking first, then warnings). */
@@ -6562,10 +6618,10 @@ function OneClickPreflightBar({
                 <em>{view.title}</em>
             </div>
             {view.detail && <p className="apps-publish-preflight__detail">{view.detail}</p>}
-            {view.tone === 'blocked' && oneClickPreflightNeedsRunEvidence(preflight) && onRunEvidenceRepair && (
+            {view.tone === 'blocked' && (oneClickPreflightNeedsRunEvidence(preflight) || oneClickPreflightNeedsRerun(preflight)) && onRunEvidenceRepair && (
                 <div className="apps-publish-preflight__action">
                     <button className="apps-secondary-button" type="button" onClick={onRunEvidenceRepair}>
-                        {localizeText(lang, 'Run app to add evidence', '运行应用并补齐证据', '執行應用程式並補齊證據')}
+                        {localizeText(lang, 'Fix: run app to add evidence', '去修复：运行应用并补齐证据', '去修復：執行應用程式並補齊證據')}
                     </button>
                 </div>
             )}
@@ -7397,18 +7453,47 @@ function backendDependencyInstallRef(dep?: BackendAppInstallDependency): string 
     return String(raw?.install_ref || raw?.installRef || '').trim();
 }
 
+function dependencyIdentityKeys(value: unknown): string[] {
+    const id = dependencyNormalizedText(value);
+    if (!id) return [];
+    const bare = id.replace(/^market-/, '').replace(/^skill-app:/, '');
+    return Array.from(new Set([id, bare, `market-${bare}`, `skill-app:${bare}`]));
+}
+
 function backendDependencyMatchesDeclaredSkill(verified: BackendAppInstallDependency, declared: AppSkillDependency): boolean {
-    if (dependencyNormalizedText(verified.id) !== dependencyNormalizedText(declared.id)) return false;
+    const verifiedIDs = [
+        verified.id,
+        verified.canonical_id,
+        verified.runtime_skill_ref,
+        verified.installed_name,
+        verified.install_ref_target,
+        ...(verified.aliases || []),
+    ].flatMap(dependencyIdentityKeys);
+    const declaredIDs = [
+        declared.id,
+        declared.canonical_id,
+        declared.canonicalID,
+        ...(declared.aliases || []),
+    ].flatMap(dependencyIdentityKeys);
+    if (!declaredIDs.some((id) => verifiedIDs.includes(id))) return false;
     const declaredKind = dependencyNormalizedText(declared.kind);
     const verifiedKind = dependencyNormalizedText(verified.kind);
     const compatibleSkillKind = (declaredKind === 'app_skill' && verifiedKind === 'runtime_skill') || (declaredKind === 'runtime_skill' && verifiedKind === 'app_skill');
     if (declaredKind && verifiedKind && declaredKind !== verifiedKind && !compatibleSkillKind) return false;
-    const declaredSource = dependencyNormalizedText(declared.source);
-    const verifiedSource = dependencyNormalizedText(verified.source);
-    if (declaredSource && verifiedSource && declaredSource !== verifiedSource) return false;
+    // Source describes how a dependency is acquired, not its runtime identity.
+    // A locally bound Skill can legitimately resolve through a bundled or Hub
+    // package, so source differences must not turn a ready authoritative row
+    // into "missing declared Skill".
     const declaredInstallRef = dependencyNormalizedText(appSkillDependencyInstallRef(declared));
     if (!declaredInstallRef) return true;
-    return dependencyNormalizedText(backendDependencyInstallRef(verified)) === declaredInstallRef;
+    const verifiedRefs = [
+        backendDependencyInstallRef(verified),
+        verified.install_ref_target,
+        verified.runtime_skill_ref,
+        verified.canonical_id,
+        verified.id,
+    ].flatMap(dependencyIdentityKeys);
+    return dependencyIdentityKeys(declaredInstallRef).some((id) => verifiedRefs.includes(id));
 }
 
 function appDependencyPublishSummary(app: AppEntry, lang?: string) {
@@ -8756,6 +8841,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     const [openTabs, setOpenTabs] = useState<string[]>([]);
     const [activeTabId, setActiveTabId] = useState('');
 	const [publishReturnAppId, setPublishReturnAppId] = useState('');
+	const [durableRunEvidenceAppIds, setDurableRunEvidenceAppIds] = useState<Set<string>>(() => new Set());
 	const [studioOpen, setStudioOpen] = useState(false);
 	const [studioTab, setStudioTab] = useState<StudioTab>('create');
 	const [studioEditAppId, setStudioEditAppId] = useState('');
@@ -8785,7 +8871,14 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     // stale intermediate edits must never overwrite a newer panel state.
     const appsPanelStateWriteRef = useRef<{ running: boolean; pending: string | null }>({ running: false, pending: null });
     const notifyActiveRunChanged = useCallback(() => setActiveRunRevision((value) => value + 1), []);
-    const notifyRunEvidenceRecorded = useCallback(() => setRunEvidenceRevision((value) => value + 1), []);
+	const notifyRunEvidenceRecorded = useCallback((appId: string) => {
+		setDurableRunEvidenceAppIds((current) => {
+			const next = new Set(current);
+			next.add(appId);
+			return next;
+		});
+		setRunEvidenceRevision((value) => value + 1);
+	}, []);
 
     useEffect(() => {
         let disposed = false;
@@ -9364,6 +9457,13 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
         const app = apps.find((item) => item.id === appId);
         if (!app) return;
 		if (options?.returnToPublish) {
+			// A repair run must produce fresh durable evidence. Never let a
+			// localStorage write or evidence from an earlier run unlock return.
+			setDurableRunEvidenceAppIds((current) => {
+				const next = new Set(current);
+				next.delete(appId);
+				return next;
+			});
 			setPublishReturnAppId(appId);
 		}
         openApp(app);
@@ -9747,6 +9847,8 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                         onActiveRunChange={notifyActiveRunChanged}
                         onUpdateAppEvidence={updateAppEvidence}
                         onRunEvidenceRecorded={notifyRunEvidenceRecorded}
+						runEvidenceRevision={runEvidenceRevision}
+						durableRunEvidenceAppIds={durableRunEvidenceAppIds}
 						publishReturnAppId={publishReturnAppId}
 						onReturnToPublishReview={returnToPublishReview}
                     />
@@ -9756,7 +9858,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     );
 };
 
-const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, onRunEvidenceRecorded, publishReturnAppId, onReturnToPublishReview }: {
+const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenApprovalManager, onActiveRunChange, onUpdateAppEvidence, onRunEvidenceRecorded, runEvidenceRevision, durableRunEvidenceAppIds, publishReturnAppId, onReturnToPublishReview }: {
     tabs: AppEntry[];
     activeApp?: AppEntry;
     lang?: string;
@@ -9766,11 +9868,17 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
     onOpenApprovalManager: (appId?: string) => void;
     onActiveRunChange: () => void;
     onUpdateAppEvidence?: (appId: string, patch: Partial<AppEntry>) => void;
-    onRunEvidenceRecorded?: (appId: string) => void;
+	onRunEvidenceRecorded?: (appId: string) => void;
+	runEvidenceRevision: number;
+	durableRunEvidenceAppIds: Set<string>;
 	publishReturnAppId?: string;
 	onReturnToPublishReview?: (appId: string) => void;
 }) => {
     const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
+	const returnEvidenceReady = useMemo(() => {
+		void runEvidenceRevision;
+		return !!activeApp && durableRunEvidenceAppIds.has(activeApp.id);
+	}, [activeApp, durableRunEvidenceAppIds, runEvidenceRevision]);
     if (tabs.length === 0) {
         return <EmptyRuntime text={text} />;
     }
@@ -9832,7 +9940,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
 			{activeApp && publishReturnAppId === activeApp.id && onReturnToPublishReview && (
 				<div className="apps-runtime-return" role="status" aria-live="polite">
 					<span>{localizeText(lang, 'After the run, return to review the refreshed evidence.', '运行完成后，返回审核查看已更新的证据。', '執行完成後，返回稽核查看已更新的證據。')}</span>
-					<button type="button" className="apps-secondary-button" data-testid="apps-runtime-return-to-publish" onClick={() => onReturnToPublishReview(activeApp.id)}>
+					<button type="button" className="apps-secondary-button" data-testid="apps-runtime-return-to-publish" disabled={!returnEvidenceReady} onClick={() => onReturnToPublishReview(activeApp.id)}>
 						{localizeText(lang, 'Return to review / publish', '返回审核/发布', '返回稽核/釋出')}
 					</button>
 				</div>
@@ -10624,6 +10732,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
 	const [businessResult, setBusinessResult] = useState<BusinessOperationResultView | null>(null);
 	const [runtimeBusinessError, setRuntimeBusinessError] = useState<StructuredBusinessErrorView | null>(null);
 	const [runHistory, setRunHistory] = useState<AppRunHistoryEntry[]>([]);
+	const [runEvidencePersistenceState, setRunEvidencePersistenceState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+	const [cancellingRun, setCancellingRun] = useState(false);
     const [approvalInstances, setApprovalInstances] = useState<ApprovalInstanceView[]>([]);
     const [approvalInstancesLoadState, setApprovalInstancesLoadState] = useState<'idle' | 'loading' | 'error'>('idle');
     const [currentRunContext, setCurrentRunContext] = useState({ inputSummary: '', outputMode: '' });
@@ -10655,7 +10765,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         setRunID(shouldRestoreActiveRun ? activeSession?.runID || '' : '');
         setSkillRunStatus(null);
         setBusinessResult(null);
-        setRuntimeBusinessError(null);
+		setRuntimeBusinessError(null);
+		setRunEvidencePersistenceState('idle');
+		setCancellingRun(false);
         setCurrentRunContext(shouldRestoreActiveRun
             ? { inputSummary: activeSession?.inputSummary || '', outputMode: activeSession?.outputMode || normalizeOutputModes(app?.manifest?.skill?.outputModes)[0] }
             : { inputSummary: '', outputMode: '' });
@@ -10667,7 +10779,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         setRunHistory(appSeedRunHistory(app));
         if (app?.id) {
             const seededAppID = app.id;
-            void loadDurableAppRunHistory(seededAppID).then((durable) => {
+            void loadDurableAppRunHistoryForApp(app).then((durable) => {
                 if (!durable.length) return;
                 setRunHistory((current) => {
                     const merged = mergeAppRunHistoryEntries(durable, current, appSeedRunHistory(app));
@@ -10792,11 +10904,13 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             }
         }
         // Durable backend is authoritative for publish evidence; surface failures.
+		if (nextEntry.status === 'done') setRunEvidencePersistenceState('saving');
         void persistDurableAppRunHistory(nextEntry).then((result) => {
             // Only invalidate a remote preflight after the evidence has reached
             // the authoritative durable store. This prevents a temporary
             // localStorage-only write from turning a publish card green when
             // the durable write has failed.
+			if (nextEntry.status === 'done') setRunEvidencePersistenceState(result.ok ? 'saved' : 'error');
             if (result.ok && nextEntry.status === 'done') onRunEvidenceRecorded?.(appID);
             if (!result.ok) {
                 setValidationMessage((current) => {
@@ -12016,11 +12130,22 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
 			}
 	};
     const cancelRun = async () => {
-        if (!runID) return;
+        if (!runID || cancellingRun) return;
+        setCancellingRun(true);
         try {
             await CancelNLSkillRun(runID);
-        } catch {
-            // Keep the UI responsive; the next poll may still report cancellation.
+        } catch (error: any) {
+            // A rejected cancellation must not discard the active session or stop
+            // polling: the run may still be executing and the user can retry.
+            setValidationMessage(localizeText(
+                lang,
+                `Cancellation failed: ${String(error?.message || error || '')}`,
+                `取消运行失败：${String(error?.message || error || '')}`,
+                `取消執行失敗：${String(error?.message || error || '')}`,
+            ));
+            return;
+        } finally {
+            setCancellingRun(false);
         }
         setValidationMessage(text.skillRunCancelled);
         setRunState('cancelled');
@@ -12072,11 +12197,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
     // Previously validationMessage was only shown for error, so durable/skill evidence
     // write failures were set but never rendered after a successful run.
     const runtimeStatusMessage = runState === 'done'
-        ? (validationMessage
+		? (runEvidencePersistenceState === 'saving'
+			? localizeText(lang, 'Run completed · Saving run evidence…', '运行完成 · 正在保存运行证据…', '執行完成 · 正在儲存執行證據…')
+			: runEvidencePersistenceState === 'saved'
+				? localizeText(lang, 'Run completed · Run evidence saved', '运行完成 · 运行证据已保存', '執行完成 · 執行證據已儲存')
+				: validationMessage
             ? `${text.runCompleted} \u00b7 ${validationMessage}`
-            : text.runCompleted)
+					: text.runCompleted)
         : runState === 'running'
-            ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID)
+            ? validationMessage || skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID)
             : runState === 'error'
                 ? validationMessage
                 : runState === 'cancelled'
@@ -12309,8 +12438,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                 setRuntimeDependencyPlan(null);
                                 approvalRunContextRef.current = null;
                             }}>{text.reset}</button>
-                            {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
-                            {showRunButton && <button className="apps-primary-button" type="button" disabled={runState === 'running'} onClick={() => runApp()}>{runState === 'done' || runState === 'error' || runState === 'cancelled' ? text.runAgain : text.run}</button>}
+                            {runState === 'running' && runID && <button className="apps-secondary-button" type="button" disabled={cancellingRun} onClick={cancelRun}>{text.cancelRun}</button>}
+                            {showRunButton && runState !== 'running' && <button className="apps-primary-button" type="button" onClick={() => runApp()}>{runState === 'done' || runState === 'error' || runState === 'cancelled' ? text.runAgain : text.run}</button>}
                         </div>}
                         {showOutputShell && <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} businessResult={businessResult} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} hidden={!showCompletedOutputRegion} />}
                         {showOutputRegion && (isTool || isBusiness) && (
@@ -13147,15 +13276,24 @@ function stableStringify(value: any): string {
     if (value && typeof value === 'object') {
         // Skip undefined-valued keys so the hash survives the JSON round-trip
         // to the backend package (JSON.stringify drops them too).
-        return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+        return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${stableJSONString(key)}:${stableStringify(value[key])}`).join(',')}}`;
     }
-    return JSON.stringify(value);
+    return typeof value === 'string' ? stableJSONString(value) : JSON.stringify(value);
+}
+
+// Go's encoding/json always escapes U+2028/U+2029 inside strings (even with
+// SetEscapeHTML(false)) while JSON.stringify emits them raw. Align so the
+// frontend hash matches the backend's rune-based hash for those inputs.
+function stableJSONString(value: string): string {
+    return JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
 function textHash(value: string): string {
     let hash = 2166136261;
-    for (let i = 0; i < value.length; i += 1) {
-        hash ^= value.charCodeAt(i);
+    // Iterate code points rather than UTF-16 code units: the backend hashes by
+    // Go runes, so non-BMP characters (e.g. emoji icons) must hash identically.
+    for (const char of value) {
+        hash ^= char.codePointAt(0) as number;
         hash = Math.imul(hash, 16777619);
     }
     return (hash >>> 0).toString(16).padStart(8, '0');
@@ -13165,6 +13303,14 @@ function appDefinitionFingerprint(app: AppEntry): string {
     const manifest = app.manifest;
     // entryKind is intentionally excluded: the backend derives the fingerprint
     // from the serialized package, which carries kind but not entryKind.
+    // ui must go through the same manifest normalization as appToManifest: the
+    // backend re-hashes the packaged (normalized) layout, so hashing the raw
+    // in-memory layout here would never match the packaged definition hash.
+    const ui = appWorkspaceUIForManifest(manifest?.ui, app.kind);
+    // skill must go through the same runtime binding normalization: packaging
+    // fills appDefinitionFile/inputMode/outputModes/fields defaults, and the
+    // backend hashes the packaged binding.
+    const skill = manifest ? appSkillRuntimeBinding(manifest) : undefined;
     const runtimeManifest = manifest ? {
         schema: manifest.schema,
         installUnit: manifest.installUnit,
@@ -13172,10 +13318,10 @@ function appDefinitionFingerprint(app: AppEntry): string {
         launchMode: manifest.launchMode,
         ...(manifest.datasrv ? { datasrv: manifest.datasrv } : {}),
         ...(manifest.mis ? { mis: manifest.mis } : {}),
-        ...(manifest.skill ? { skill: manifest.skill } : {}),
+        ...(skill ? { skill } : {}),
         ...(manifest.appSkill ? { appSkill: manifest.appSkill } : {}),
         ...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
-        ...(manifest.ui ? { ui: manifest.ui } : {}),
+        ...(ui ? { ui } : {}),
         ...(manifest.resultContract ? { resultContract: manifest.resultContract } : {}),
         ...(manifest.testProtocol ? { testProtocol: manifest.testProtocol } : {}),
         ...(manifest.workflow ? { workflow: manifest.workflow } : {}),
@@ -16543,6 +16689,43 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
     ];
 }
 
+function authoritativeReviewCheckLabel(issue: AppReviewIssue, lang?: string): string {
+    const path = String(issue.path || '').toLowerCase();
+    if (/governance\.(?:testevidence|test_evidence)|resultcoverage/.test(path)) return publishRunEvidenceCheckLabel(lang);
+    if (/governance\.(?:testprotocol|test_protocol)/.test(path)) return localizeText(lang, 'Test protocol', '测试协议', '測試協議');
+    if (/governance\.(?:workspacelayout|workspace_layout)/.test(path)) return localizeText(lang, 'Workspace layout', 'Workspace layout', 'Workspace layout');
+    if (/governance\.(?:resultcontract|result_contract)/.test(path)) return localizeText(lang, 'Result contract', '结果契约', '結果契約');
+    if (/governance\.(?:dependencyverification|dependency_verification)|dependencies/.test(path)) return isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh).skillDependencies : labels.en.skillDependencies;
+    if (/binding\.workflow|workflowcontract|workflow_contract/.test(path)) return isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh).workflowContract : labels.en.workflowContract;
+    return '';
+}
+
+// The package review service is the source of truth for evidence validity.
+// Local checks may still describe fields while editing, but cannot overrule a
+// durable-evidence result after runtime and Skill IDs have been normalized by
+// the backend.
+function applyAuthoritativeReviewChecks(checks: PublishCheck[], issues: AppReviewIssue[] | undefined, lang?: string): PublishCheck[] {
+    if (!issues) return checks;
+    const blocking = (issues || []).filter((issue) => ['error', 'critical'].includes(String(issue.severity || 'error').toLowerCase()));
+    return checks.map((check) => {
+        const matching = blocking.find((issue) => authoritativeReviewCheckLabel(issue, lang) === check.label);
+        if (matching) {
+            return {
+                ...check,
+                ok: false,
+                detail: [matching.message, matching.suggestion].filter(Boolean).join(' · '),
+            };
+        }
+        // A returned review has verified the complete run-evidence chain
+        // against durable history. Do not let an older browser cache turn it
+        // red again after the backend accepted it.
+        if (check.label === publishRunEvidenceCheckLabel(lang)) {
+            return { ...check, ok: true, detail: localizeText(lang, 'Verified by the local durable run-evidence review', '已由本机持久化运行证据审核验证', '已由本機持久化執行證據審核驗證') };
+        }
+        return check;
+    });
+}
+
 const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onInstallDependencies, onInstallApprovedHubApp, onSyncHubAppGovernance, runEvidenceRevision, focusAppId, focusNonce, onFocusAppConsumed }: {
     apps: AppEntry[];
     lang?: string;
@@ -16593,12 +16776,23 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     const [queueDetailRecords, setQueueDetailRecords] = useState<Record<string, Record<string, unknown>>>({});
     const [dependencyActions, setDependencyActions] = useState<Record<string, { status: 'working' | 'ok' | 'error'; message?: string }>>({});
     const dependencyResolveInFlightRef = useRef<Set<string>>(new Set());
+    // Dependency verification embedded in downloaded wrappers is historical
+    // metadata. Keep an authoritative, live backend plan separately so an old
+    // "ready" snapshot can never make a publish card look submit-ready.
+    const [authoritativeDependencyPlans, setAuthoritativeDependencyPlans] = useState<Record<string, {
+        loading?: boolean;
+        plan?: BackendAppInstallPlan;
+        error?: string;
+        fingerprint?: string;
+    }>>({});
     /** Remote one-click preflight snapshots keyed by app id. */
     const [remotePreflightByAppId, setRemotePreflightByAppId] = useState<Record<string, {
         loading?: boolean;
         preflight?: Record<string, unknown> | null;
         error?: string;
         updatedAt?: number;
+        /** Content fingerprint of the exact package submitted to the bridge. */
+        packageFingerprint?: string;
     }>>({});
     /** Remote preflight for durable queue rows (submission id). */
     const [remotePreflightBySubmissionId, setRemotePreflightBySubmissionId] = useState<Record<string, {
@@ -16606,21 +16800,31 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
         preflight?: Record<string, unknown> | null;
         updatedAt?: number;
     }>>({});
+    /** Backend package-review result keyed to the exact rendered package. */
+    const [authoritativeReviewByAppId, setAuthoritativeReviewByAppId] = useState<Record<string, {
+        loading?: boolean;
+        issues?: AppReviewIssue[];
+        error?: string;
+        packageFingerprint?: string;
+    }>>({});
     const publishApps = useMemo(() => apps.filter(isAppPublishCandidate), [apps]);
-    // The publish checks read run evidence from localStorage only, while every
-    // workspace run also writes a durable copy (RecordMaclawAppRunHistory).
-    // Hydrate the durable entries back so evidence survives a localStorage
-    // clear without forcing the user to open each app workspace first.
+    // Used to invalidate package snapshots after local sample runs. The
+    // backend package review, not this UI cache, decides evidence validity.
     const [runEvidenceTick, setRunEvidenceTick] = useState(0);
-    useEffect(() => {
+    /* Legacy cache hydration is intentionally disabled. Durable evidence is
+       resolved only by ReviewMaclawAppPackage, which owns alias matching and
+       fingerprint validation together with the submission gate. */
+    /* useEffect(() => {
         if (!publishApps.length) return;
         let disposed = false;
         const hydrate = async () => {
+            const durableGroups = await Promise.all(publishApps.map((app) => loadDurableAppRunHistoryForApp(app)));
+            if (disposed) return;
             let mergedAny = false;
-            for (const app of publishApps) {
-                if (disposed) return;
-                const durable = await loadDurableAppRunHistory(app.id);
-                if (disposed || !durable.length) continue;
+            for (let index = 0; index < publishApps.length; index += 1) {
+                const app = publishApps[index];
+                const durable = durableGroups[index] || [];
+                if (!durable.length) continue;
                 const local = loadAppRunHistory(app.id);
                 const merged = mergeAppRunHistoryEntries(durable, local);
                 // Skip the write (and the resulting check rebuild) when the
@@ -16635,18 +16839,204 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
         };
         void hydrate();
         return () => { disposed = true; };
+    }, [publishApps]); */
+    const dependencyPlanPackages = useMemo(() => {
+        const packages = new Map<string, { packageJSON: string; fingerprint: string }>();
+        for (const app of publishApps) {
+            const packageJSON = JSON.stringify(appToManifest(app));
+            packages.set(app.id, { packageJSON, fingerprint: textHash(packageJSON) });
+        }
+        return packages;
     }, [publishApps]);
+    const dependencyPlanFingerprint = useMemo(
+        () => Array.from(dependencyPlanPackages.entries())
+            .map(([appID, snapshot]) => `${appID}:${snapshot.fingerprint}`)
+            .join('|'),
+        [dependencyPlanPackages],
+    );
+    useEffect(() => {
+        if (typeof PlanMaclawAppInstall !== 'function') return;
+        if (dependencyPlanPackages.size === 0) {
+            setAuthoritativeDependencyPlans({});
+            return;
+        }
+        let cancelled = false;
+        const liveIDs = new Set(dependencyPlanPackages.keys());
+        setAuthoritativeDependencyPlans((current) => {
+            const next: typeof current = {};
+            for (const [appID, snapshot] of dependencyPlanPackages) {
+                const existing = current[appID];
+                next[appID] = existing?.fingerprint === snapshot.fingerprint && existing.plan
+                    ? existing
+                    : { loading: true, fingerprint: snapshot.fingerprint };
+            }
+            return next;
+        });
+        void mapPool(Array.from(dependencyPlanPackages.entries()), 3, async ([appID, snapshot]) => {
+            try {
+                const plan = await PlanMaclawAppInstall(snapshot.packageJSON) as BackendAppInstallPlan | null;
+                if (cancelled || !liveIDs.has(appID)) return;
+                setAuthoritativeDependencyPlans((current) => {
+                    if (current[appID]?.fingerprint !== snapshot.fingerprint) return current;
+                    return { ...current, [appID]: { plan: plan || undefined, fingerprint: snapshot.fingerprint } };
+                });
+            } catch (error) {
+                if (cancelled || !liveIDs.has(appID)) return;
+                setAuthoritativeDependencyPlans((current) => {
+                    if (current[appID]?.fingerprint !== snapshot.fingerprint) return current;
+                    return { ...current, [appID]: { error: error instanceof Error ? error.message : String(error || ''), fingerprint: snapshot.fingerprint } };
+                });
+            }
+        });
+        return () => { cancelled = true; };
+    }, [dependencyPlanFingerprint, dependencyPlanPackages]);
     const publishChecksById = useMemo(
-        () => new Map(publishApps.map((app) => [app.id, buildPublishChecks(app, lang)] as const)),
+        () => new Map(publishApps.map((app) => {
+            const snapshot = dependencyPlanPackages.get(app.id);
+            const authoritative = authoritativeDependencyPlans[app.id];
+            const plan = snapshot && authoritative?.fingerprint === snapshot.fingerprint ? authoritative.plan : undefined;
+            const checks = buildPublishChecks(app, lang).map((check) => {
+                if (check.label !== text.skillDependencies || !snapshot) return check;
+                if (plan) return { ...check, ...appDependencyVerificationPublishCheckForPlan(app, plan, lang) };
+                const isCurrent = authoritative?.fingerprint === snapshot.fingerprint;
+                const detail = isCurrent && authoritative?.error
+                    ? localizeText(
+                        lang,
+                        `Authoritative dependency verification failed: ${authoritative.error}`,
+                        `权威依赖核验失败：${authoritative.error}`,
+                        `權威依賴核驗失敗：${authoritative.error}`,
+                    )
+                    : localizeText(
+                        lang,
+                        'Checking required Skill dependencies with the local runtime…',
+                        '正在通过本机运行时核验必需 Skill 依赖…',
+                        '正在透過本機執行環境核驗必需 Skill 依賴…',
+                    );
+                // Never fall back to dependency evidence embedded in an older
+                // package while the live backend plan is missing or failed.
+                return { ...check, ok: false, detail };
+            });
+            const review = authoritativeReviewByAppId[app.id];
+            const reviewIssues = review && !review.loading && !review.error
+                ? review.issues
+                : undefined;
+            return [app.id, applyAuthoritativeReviewChecks(checks, reviewIssues, lang)] as const;
+        })),
         // runEvidenceTick rebuilds the checks after durable run evidence has
         // been merged into localStorage (loadAppRunHistory is non-reactive).
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [publishApps, lang, runEvidenceTick, runEvidenceRevision],
+        [publishApps, lang, runEvidenceTick, runEvidenceRevision, dependencyPlanPackages, authoritativeDependencyPlans, authoritativeReviewByAppId, text.skillDependencies],
     );
     const readyPublishApps = useMemo(
         () => publishApps.filter((app) => (publishChecksById.get(app.id) || []).every((item) => item.ok)),
         [publishApps, publishChecksById],
     );
+    // A preflight result is only valid for the precise package sent to the
+    // bridge. Run history lives outside React state, so include both evidence
+    // revisions here and carry the resulting fingerprint through the async
+    // request. This prevents an older missing-evidence response from blocking
+    // a newer package after a successful run.
+    const publishPreflightPackages = useMemo(() => {
+        const packages = new Map<string, { packageJSON: string; fingerprint: string }>();
+        for (const app of publishApps) {
+            const dependencySnapshot = dependencyPlanPackages.get(app.id);
+            const authoritative = authoritativeDependencyPlans[app.id];
+            const dependencyPlan = dependencySnapshot && authoritative?.fingerprint === dependencySnapshot.fingerprint
+                ? authoritative.plan
+                : undefined;
+            const packageJSON = JSON.stringify(appsToPackManifest(
+                [app],
+                submissions,
+                dependencyPlan ? { [app.id]: { dependencyVerification: dependencyPlan } } : {},
+            ));
+            packages.set(app.id, { packageJSON, fingerprint: textHash(packageJSON) });
+        }
+        return packages;
+        // latestAppRunEvidence reads localStorage, which is intentionally
+        // refreshed by these two explicit revisions.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [publishApps, submissions, runEvidenceTick, runEvidenceRevision, dependencyPlanPackages, authoritativeDependencyPlans]);
+    const publishPreflightFingerprint = useMemo(
+        () => Array.from(publishPreflightPackages.entries())
+            .map(([appID, snapshot]) => `${appID}:${snapshot.fingerprint}`)
+            .join('|'),
+        [publishPreflightPackages],
+    );
+    // Ask the backend to resolve durable evidence and evaluate the package
+    // before rendering the review state. This deliberately replaces the old
+    // browser-side alias lookup as the publish decision authority.
+    useEffect(() => {
+        if (typeof ReviewMaclawAppPackage !== 'function') return;
+        if (publishPreflightPackages.size === 0) {
+            setAuthoritativeReviewByAppId({});
+            return;
+        }
+        let cancelled = false;
+        const snapshots = Array.from(publishPreflightPackages.entries());
+        setAuthoritativeReviewByAppId((current) => {
+            const next: typeof current = {};
+            for (const [appID, snapshot] of snapshots) {
+                const existing = current[appID];
+                next[appID] = existing?.packageFingerprint === snapshot.fingerprint && existing.issues
+                    ? existing
+                    : { loading: true, packageFingerprint: snapshot.fingerprint };
+            }
+            return next;
+        });
+        void mapPool(snapshots, 3, async ([appID, snapshot]) => {
+            try {
+                const result = await ReviewMaclawAppPackage(snapshot.packageJSON) as Record<string, unknown> | null;
+                if (cancelled) return;
+                const issues = Array.isArray(result?.review_issues) ? result.review_issues as AppReviewIssue[] : [];
+                setAuthoritativeReviewByAppId((current) => current[appID]?.packageFingerprint !== snapshot.fingerprint
+                    ? current
+                    : { ...current, [appID]: { issues, packageFingerprint: snapshot.fingerprint } });
+            } catch (error) {
+                if (cancelled) return;
+                setAuthoritativeReviewByAppId((current) => current[appID]?.packageFingerprint !== snapshot.fingerprint
+                    ? current
+                    : { ...current, [appID]: { error: error instanceof Error ? error.message : String(error || ''), packageFingerprint: snapshot.fingerprint } });
+            }
+        });
+        return () => { cancelled = true; };
+    }, [publishPreflightFingerprint, publishPreflightPackages]);
+    const refreshAppPreflight = useCallback(async (appID: string, packageJSON: string, isCurrent: () => boolean = () => true) => {
+        if (!hasPreflightMaclawAppOneClickBridge()) return;
+        const packageFingerprint = textHash(packageJSON);
+        if (!isCurrent()) return;
+        setRemotePreflightByAppId((current) => ({
+            ...current,
+            // Clear an older response immediately: a blocked preflight for a
+            // different package must not remain actionable while refreshing.
+            [appID]: { loading: true, packageFingerprint },
+        }));
+        try {
+            const preflight = await preflightMaclawAppOneClickPublish(packageJSON);
+            if (!isCurrent()) return;
+            setRemotePreflightByAppId((current) => {
+                if (current[appID]?.packageFingerprint !== packageFingerprint) return current;
+                return {
+                    ...current,
+                    [appID]: { loading: false, preflight, updatedAt: Date.now(), packageFingerprint },
+                };
+            });
+        } catch (error) {
+            if (!isCurrent()) return;
+            setRemotePreflightByAppId((current) => {
+                if (current[appID]?.packageFingerprint !== packageFingerprint) return current;
+                return {
+                    ...current,
+                    [appID]: {
+                        loading: false,
+                        preflight: null,
+                        error: error instanceof Error ? error.message : String(error || ''),
+                        updatedAt: Date.now(),
+                        packageFingerprint,
+                    },
+                };
+            });
+        }
+    }, []);
     const packagePreviewText = useMemo(() => {
         const governanceOverrides: Record<string, AppGovernanceOverrides> = {};
         for (const app of readyPublishApps) {
@@ -16702,6 +17092,13 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                 },
             };
             onUpdateAppEvidence(app.id, evidencePatch);
+            setAuthoritativeDependencyPlans((current) => ({
+                ...current,
+                [app.id]: {
+                    plan: normalized || undefined,
+                    fingerprint: dependencyPlanPackages.get(app.id)?.fingerprint,
+                },
+            }));
             const appWithDeps: AppEntry = { ...app, ...evidencePatch, installEvidence: evidencePatch.installEvidence };
 
             if (publishRunEvidenceReady(appWithDeps, lang)) {
@@ -16817,41 +17214,28 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
         }
         let cancelled = false;
         const appsSnapshot = publishApps.slice();
+        const packageSnapshots = new Map(publishPreflightPackages);
         const liveIDs = new Set(appsSnapshot.map((app) => app.id));
-        const submissionsSnapshot = submissions;
+        // Switch cards to the new package snapshot immediately. The request
+        // itself remains debounced, but a prior package's failure can no
+        // longer leave the button disabled during that short delay.
+        setRemotePreflightByAppId((current) => {
+            const next: typeof current = {};
+            for (const app of appsSnapshot) {
+                const snapshot = packageSnapshots.get(app.id);
+                if (!snapshot) continue;
+                next[app.id] = { loading: true, packageFingerprint: snapshot.fingerprint };
+            }
+            return next;
+        });
         const timer = window.setTimeout(() => {
             void (async () => {
-                setRemotePreflightByAppId((current) => {
-                    const next: typeof current = {};
-                    // Drop stale app keys so removed publish candidates do not linger.
-                    for (const app of appsSnapshot) {
-                        next[app.id] = { ...(current[app.id] || {}), loading: true };
-                    }
-                    return next;
-                });
                 // Cap concurrency so large publish lists do not flood the Go bridge.
                 await mapPool(appsSnapshot, 3, async (app) => {
                     if (cancelled || !liveIDs.has(app.id)) return;
-                    try {
-                        const packageJSON = JSON.stringify(appsToPackManifest([app], submissionsSnapshot));
-                        const pf = await preflightMaclawAppOneClickPublish(packageJSON);
-                        if (cancelled) return;
-                        setRemotePreflightByAppId((current) => ({
-                            ...current,
-                            [app.id]: { loading: false, preflight: pf, updatedAt: Date.now() },
-                        }));
-                    } catch (error) {
-                        if (cancelled) return;
-                        setRemotePreflightByAppId((current) => ({
-                            ...current,
-                            [app.id]: {
-                                loading: false,
-                                preflight: null,
-                                error: error instanceof Error ? error.message : String(error || ''),
-                                updatedAt: Date.now(),
-                            },
-                        }));
-                    }
+                    const snapshot = packageSnapshots.get(app.id);
+                    if (!snapshot) return;
+                    await refreshAppPreflight(app.id, snapshot.packageJSON, () => !cancelled && liveIDs.has(app.id));
                 });
             })();
         }, 400);
@@ -16859,14 +17243,9 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             cancelled = true;
             window.clearTimeout(timer);
         };
-        // Fingerprint ready-state + evidence tick so bar refreshes after runs.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [
-        publishApps.map((app) => `${app.id}:${app.version || 0}:${app.importedRunEvidence?.verifiedAt || app.importedRunEvidence?.verified_at || ''}`).join('|'),
-        runEvidenceTick,
-        runEvidenceRevision,
-        Object.keys(submissions).sort().join('|'),
-    ]);
+        // The content fingerprint covers all app, submission, dependency, and
+        // locally hydrated run-evidence fields used in the package.
+    }, [publishPreflightFingerprint, publishPreflightPackages, refreshAppPreflight]);
     // Warm preflight for durable queue rows that can still one-click (parallel).
     // Intentionally omit message from the fingerprint — one-click stamps rewrite
     // message and would thrash preflight otherwise.
@@ -16970,7 +17349,34 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             delete next[app.id];
             return next;
         });
-        const failedCheck = buildPublishChecks(app, lang).find((check) => !check.ok);
+        const dependencySnapshot = dependencyPlanPackages.get(app.id);
+        const authoritativeDependency = authoritativeDependencyPlans[app.id];
+        if (!dependencySnapshot
+            || authoritativeDependency?.fingerprint !== dependencySnapshot.fingerprint
+            || !authoritativeDependency.plan) {
+            setSubmitErrors((current) => ({
+                ...current,
+                [app.id]: authoritativeDependency?.error
+                    ? localizeText(
+                        lang,
+                        `Authoritative dependency verification failed: ${authoritativeDependency.error}`,
+                        `权威依赖核验失败：${authoritativeDependency.error}`,
+                        `權威依賴核驗失敗：${authoritativeDependency.error}`,
+                    )
+                    : localizeText(
+                        lang,
+                        'Authoritative dependency verification is still running. Please retry shortly.',
+                        '权威依赖核验仍在进行，请稍后重试。',
+                        '權威依賴核驗仍在進行，請稍後重試。',
+                    ),
+            }));
+            setSubmittingAppId('');
+            return;
+        }
+        // Use the same live, backend-authoritative checks rendered by the card.
+        // Rebuilding here would fall back to historical embedded dependency
+        // evidence and could contradict the enabled publish button.
+        const failedCheck = (publishChecksById.get(app.id) || buildPublishChecks(app, lang)).find((check) => !check.ok);
         if (failedCheck) {
             setSubmitErrors((current) => ({
                 ...current,
@@ -16979,14 +17385,16 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             setSubmittingAppId('');
             return;
         }
-        let dependencyPlan: BackendAppInstallPlan | undefined;
+        let dependencyPlan: BackendAppInstallPlan | undefined = authoritativeDependency.plan;
         try {
-            const evidenceDependencyPlan = appInstallEvidenceDependencyVerificationPlan(app);
             const backendDependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
             const appIDs = appDependencyVerificationAppIDs(app);
+            // Revalidate at the click boundary. The card's plan remains the
+            // fallback only when older backends return no app-scoped signals;
+            // historical embedded evidence is never promoted to authority.
             dependencyPlan = appInstallPlanHasAppScopedSignals(backendDependencyPlan, appIDs)
                 ? backendDependencyPlan
-                : evidenceDependencyPlan || backendDependencyPlan;
+                : dependencyPlan || backendDependencyPlan;
             if (workflowContractHasIssueForAppIDs(dependencyPlan, appIDs)) {
                 throw new Error(workflowContractIssueMessageForAppIDs(dependencyPlan, appIDs, text));
             }
@@ -17052,29 +17460,9 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             return next;
         });
         setSubmittingAppId('');
-        // Refresh remote preflight after publish so the card reflects new HubSkillIDs / stamps.
-        setRemotePreflightByAppId((current) => ({
-            ...current,
-            [app.id]: { ...(current[app.id] || {}), loading: true },
-        }));
-        void (async () => {
-            if (!hasPreflightMaclawAppOneClickBridge()) return;
-            try {
-                const packageJSON = JSON.stringify(appsToPackManifest([app], {
-                    [app.id]: normalizeFreshPublishSubmission(submission!),
-                }));
-                const pf = await preflightMaclawAppOneClickPublish(packageJSON);
-                setRemotePreflightByAppId((current) => ({
-                    ...current,
-                    [app.id]: { loading: false, preflight: pf, updatedAt: Date.now() },
-                }));
-            } catch {
-                setRemotePreflightByAppId((current) => ({
-                    ...current,
-                    [app.id]: { loading: false, preflight: current[app.id]?.preflight ?? null, updatedAt: Date.now() },
-                }));
-            }
-        })();
+        // Updating submissions changes publishPreflightPackages; its effect
+        // refreshes the exact package (including the authoritative dependency
+        // plan). Do not start a competing refresh with a weaker package here.
         void refreshSubmissionQueue();
     };
     const withdrawApp = async (appID: string) => {
@@ -17299,6 +17687,10 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                 <div className="apps-publish__list">
                     {publishApps.map((app) => {
                         const checks = publishChecksById.get(app.id) || buildPublishChecks(app, lang);
+                        const dependencySnapshot = dependencyPlanPackages.get(app.id);
+                        const authoritativeDependency = authoritativeDependencyPlans[app.id];
+                        const dependencyPlanLoading = !!dependencySnapshot
+                            && (authoritativeDependency?.fingerprint !== dependencySnapshot.fingerprint || !!authoritativeDependency?.loading);
                         const ready = checks.every((item) => item.ok);
                         const submission = submissions[app.id];
                         const submissionStatus = submission ? publishSubmissionStatusLabel(submission, text) : '';
@@ -17317,8 +17709,17 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                         const hasDependencyReviewIssue = reviewIssuesIncludeDependency(submission?.reviewIssues);
                         const hasDependencyCheckIssue = checks.some((check) => check.label === text.skillDependencies && !check.ok);
                         const dependencyAction = dependencyActions[app.id];
-                        const remotePf = remotePreflightByAppId[app.id];
-                        // Keep last preflight while a refresh is in flight so partial hints do not flicker.
+                        const currentPackageFingerprint = publishPreflightPackages.get(app.id)?.fingerprint;
+                        const remotePreflight = remotePreflightByAppId[app.id];
+                        // Never display or enforce a preflight from a previous
+                        // package snapshot. In particular, a response that
+                        // predates newly persisted run evidence cannot keep
+                        // the publish button disabled.
+                        const remotePf = remotePreflight?.packageFingerprint === currentPackageFingerprint
+                            ? remotePreflight
+                            : undefined;
+                        // Keep the current package's result while its refresh
+                        // is in flight so normal retries do not flicker.
                         const remoteView = summarizeOneClickPreflightView(
                             remotePf?.preflight,
                             text,
@@ -17326,7 +17727,6 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                         );
                         const mayPartialRemote = remoteView.tone === 'warn' && ready;
                         const remoteBlocked = remoteView.tone === 'blocked';
-                        const remoteNeedsRunEvidence = oneClickPreflightNeedsRunEvidence(remotePf?.preflight);
                         return (
                             <article
                                 className={`apps-publish-card${highlightAppId === app.id ? ' is-focus-target' : ''}`}
@@ -17345,7 +17745,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                         <strong>{app.name}</strong>
                                         <span>{app.category} &middot; {appKindLabel(app.kind, lang)}</span>
                                     </div>
-                                    <em>{submission ? submissionStatus : ready ? text.readyToSubmit : text.needsWork}</em>
+                                    <em>{submission ? submissionStatus : remoteBlocked ? text.oneClickRemoteBlocked : ready ? text.readyToSubmit : text.needsWork}</em>
                                 </div>
                                 {submission && (
                                     <div className="apps-publish-submission">
@@ -17401,9 +17801,11 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                     <button
                                         className="apps-primary-button"
                                         type="button"
-                                        disabled={isSubmitting || !ready || remoteBlocked || (!!submission && !canResubmit)}
+                                        disabled={isSubmitting || dependencyPlanLoading || !ready || remoteBlocked || (!!submission && !canResubmit)}
                                         title={
-                                            remoteBlocked
+                                            dependencyPlanLoading
+                                                ? localizeText(lang, 'Checking required Skill dependencies…', '正在核验必需 Skill 依赖…', '正在核驗必需 Skill 依賴…')
+                                                : remoteBlocked
                                                 ? (remoteView.detail || text.oneClickRemoteBlocked)
                                                 : mayPartialRemote
                                                     ? text.oneClickMayPartialTitle
@@ -17413,6 +17815,8 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                     >
                                         {isSubmitting
                                             ? text.oneClickPublishBusy
+                                            : dependencyPlanLoading
+                                                ? localizeText(lang, 'Checking dependencies…', '正在核验依赖…', '正在核驗依賴…')
                                             : remoteBlocked
                                                 ? text.oneClickRemoteBlocked
                                                 : submission && !canResubmit
@@ -17426,7 +17830,7 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
                                             {text.withdrawSubmission}
                                         </button>
                                     )}
-                                    {!ready && !remoteNeedsRunEvidence && (
+                                    {!ready && (
                                         <button className="apps-secondary-button" type="button" onClick={() => fixPublishApp(app)}>
                                             {text.fixReviewIssue}
                                         </button>
@@ -18554,11 +18958,11 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                             <ResultContractDesigner contract={normalizeAppResultContract(editDraft.resultContract, editingApp.kind, editDraft.outputModes)} onChange={(resultContract) => setEditDraft((current) => ({ ...current, resultContract }))} lang={lang} testIdPrefix="edit" />
                             <TestProtocolDesigner protocol={normalizeAppTestProtocol(editDraft.testProtocol, editingApp.kind, editDraft.outputModes, normalizeAppResultContract(editDraft.resultContract, editingApp.kind, editDraft.outputModes))} onChange={(testProtocol) => setEditDraft((current) => ({ ...current, testProtocol }))} lang={lang} testIdPrefix="edit" kind={editingApp.kind} />
                             </div>
-                            <div className="apps-actions apps-manage-edit__actions">
-                                {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
-                                <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>
-                                <button className="apps-primary-button" type="button" disabled={!editDraft.name.trim() || editSaveState === 'saving'} onClick={() => void saveEdit(editingApp)}>{editSaveState === 'saving' ? (localizeText(lang, 'Saving...', '\u4fdd\u5b58\u4e2d...', '\u5132\u5b58\u4e2d...')) : text.save}</button>
-                            </div>
+                        </div>
+                        <div className="apps-actions apps-manage-edit__actions apps-manage-edit-dialog__actions">
+                            {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
+                            <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>
+                            <button className="apps-primary-button" type="button" disabled={!editDraft.name.trim() || editSaveState === 'saving'} onClick={() => void saveEdit(editingApp)}>{editSaveState === 'saving' ? (localizeText(lang, 'Saving...', '\u4fdd\u5b58\u4e2d...', '\u5132\u5b58\u4e2d...')) : text.save}</button>
                         </div>
                     </div>
                 </div>

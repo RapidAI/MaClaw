@@ -5,7 +5,7 @@ import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { localizeText } from "../../i18n";
 import { GroupParticipantPanel } from "./GroupParticipantPanel";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
-import { isPlainEnter } from "./assistantInputShortcuts";
+import { insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
 import { VEGroupChatView, type GroupMessage, type GroupParticipant } from "./VEGroupChat";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, isLocalParticipantId, localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
@@ -618,6 +618,11 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                 }}
                 onKeyDown={(e) => {
                     if (mentionKeyDown(e)) return;
+                    if (isLineBreakShortcut(e)) {
+                        e.preventDefault();
+                        insertTextareaLineBreak(e.currentTarget, setInput);
+                        return;
+                    }
                     if (isPlainEnter(e)) {
                         e.preventDefault();
                         void send();

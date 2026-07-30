@@ -1,6 +1,8 @@
 package lansengerwatch
 
 import (
+	"context"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,6 +71,41 @@ func TestExpandAndPreferCLI(t *testing.T) {
 	reply, used = PreferCLIStdout(rule, CLIResult{Err: errString("fail")})
 	if used || reply != "fallback" {
 		t.Fatalf("fallback: %q %v", reply, used)
+	}
+}
+
+func TestCLICommandForExecutionQuotesGroupText(t *testing.T) {
+	p := CLIParams{Content: `$(whoami); echo "pwned"`, SpeakerID: "u'1"}
+	command := cliCommandForExecution("hook --content={{content}} --speaker={{speaker_id}}", p)
+	if runtime.GOOS == "windows" {
+		if strings.Contains(command, p.Content) || !strings.Contains(command, "!LANXIN_WATCH_CONTENT!") {
+			t.Fatalf("windows command must use delayed environment expansion: %q", command)
+		}
+		return
+	}
+	if strings.Contains(command, p.Content) || !strings.Contains(command, `'$(whoami); echo "pwned"'`) {
+		t.Fatalf("posix command must quote content: %q", command)
+	}
+	if !strings.Contains(command, `'u'"'"'1'`) {
+		t.Fatalf("single quote must remain one shell word: %q", command)
+	}
+}
+
+func TestRunCLIGroupTextIsNotParsedAsShellSyntax(t *testing.T) {
+	p := CLIParams{Content: `group text; echo INJECTED`}
+	command := "printf '%s' {{content}}"
+	if runtime.GOOS == "windows" {
+		command = "echo {{content}}"
+	}
+	result := RunCLI(context.Background(), command, p, 5)
+	if result.Err != nil {
+		t.Fatalf("RunCLI failed: %v (%s)", result.Err, result.Stderr)
+	}
+	if strings.Contains(result.Stdout, "INJECTED") && result.Stdout != p.Content {
+		t.Fatalf("group text was parsed as shell syntax: %q", result.Stdout)
+	}
+	if result.Stdout != p.Content {
+		t.Fatalf("stdout = %q, want exact group text %q", result.Stdout, p.Content)
 	}
 }
 

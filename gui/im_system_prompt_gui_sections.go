@@ -319,7 +319,7 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 // appendGUIEpilogue injects final GUI-only sections:
 // steering (handled by deps), memory, knowledge auto-recall, knowledge skills,
 // skill repairs, bundle context.
-func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext, userID string, history []agent.ConversationEntry) {
+func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext, userID string, history []agent.ConversationEntry, loopCtx *LoopContext) {
 	epilogueStart := time.Now()
 	userID = strings.TrimSpace(userID)
 
@@ -341,11 +341,19 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	}
 	memoryElapsed := time.Since(epilogueStart)
 
-	// Knowledge base auto-recall (multi-turn query when history is available)
+	// Knowledge base auto-recall (multi-turn query when history is available).
+	// A Lansenger group may only receive explicitly authorised sources.
 	knowledgeStart := time.Now()
-	prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
-	h.appendKnowledgeAutoRecall(b, msg, prior)
-	knowledgeElapsed := time.Since(knowledgeStart)
+	knowledgeElapsed := time.Duration(0)
+	if loopCtx == nil || loopCtx.LansengerGroupPermissions == nil {
+		prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
+		h.appendKnowledgeAutoRecall(b, msg, prior)
+		knowledgeElapsed = time.Since(knowledgeStart)
+	} else if loopCtx.LansengerGroupPermissions.allowsKnowledge() {
+		prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
+		h.appendKnowledgeAutoRecall(b, msg, prior, loopCtx.LansengerGroupPermissions.KnowledgeSourceIDs)
+		knowledgeElapsed = time.Since(knowledgeStart)
+	}
 
 	// Knowledge skill section
 	h.appendKnowledgeSkillSection(b, msg)

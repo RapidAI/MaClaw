@@ -322,6 +322,48 @@ func TestFindRemoteCodingTaskByMetaAndDedupeSync(t *testing.T) {
 	}
 }
 
+func TestSyncCodingWorkflowRemoteTaskSwitchesToExistingTarget(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.CreateRemoteCodingTask("workflow original", "10.0.0.6", "dev", "/srv/original", 22)
+	second := app.CreateRemoteCodingTask("existing target", "10.0.0.6", "dev", "/srv/target", 22)
+	if first.ProjectPath == "" || second.ProjectPath == "" {
+		t.Fatal("failed to create remote task fixtures")
+	}
+
+	h := &IMMessageHandler{app: app}
+	data := map[string]interface{}{
+		"_agent_view_variant":       workflowFormExecRemote,
+		"project_name":              "workflow retarget",
+		workflowFormRemoteTaskPath:  first.ProjectPath,
+		workflowFormRemoteHostField: "10.0.0.6",
+		workflowFormRemoteUserField: "dev",
+		workflowFormRemotePortField: 2200,
+		workflowFormRemoteWorkDir:   "/srv/target/",
+	}
+	h.syncCodingWorkflowRemoteTask("desktop-user:C:/workflow", data, nil)
+
+	if got := formDataTrimString(data, workflowFormRemoteTaskPath); got != normalizeProjectSessionPath(second.ProjectPath) {
+		t.Fatalf("workflow remote task path = %q, want existing target %q", got, second.ProjectPath)
+	}
+	firstMeta, err := app.GetRemoteCodingTaskMeta(first.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstMeta.WorkDir != "/srv/original" {
+		t.Fatalf("original task was incorrectly retargeted: %+v", firstMeta)
+	}
+	secondMeta, err := app.GetRemoteCodingTaskMeta(second.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondMeta.Port != 2200 || secondMeta.WorkDir != "/srv/target/" {
+		t.Fatalf("target task metadata = %+v", secondMeta)
+	}
+	if matched := app.FindRemoteCodingTaskByMeta("10.0.0.6", "dev", "/srv/target"); normalizeProjectSessionPath(matched.ProjectPath) != normalizeProjectSessionPath(second.ProjectPath) {
+		t.Fatalf("target lookup = %q, want %q", matched.ProjectPath, second.ProjectPath)
+	}
+}
+
 func TestPrefillCodingRemoteEnvFieldsFromSticky(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := "desktop-user:C:/wf"
@@ -363,5 +405,16 @@ func TestNormalizeRemoteWorkDirKey(t *testing.T) {
 		if got != `C:\x` {
 			t.Fatalf("got %q", got)
 		}
+	}
+}
+
+func TestNormalizeRemoteWorkDirKeyCanonicalizesEquivalentPOSIXPaths(t *testing.T) {
+	for _, workDir := range []string{"/srv/app", "/srv/app/", "/srv//app//", "/srv/app/./", "/srv/other/../app"} {
+		if got := normalizeRemoteWorkDirKey(workDir); got != "/srv/app" {
+			t.Fatalf("normalizeRemoteWorkDirKey(%q) = %q, want /srv/app", workDir, got)
+		}
+	}
+	if got := normalizeRemoteWorkDirKey("/"); got != "/" {
+		t.Fatalf("root remote workdir = %q, want /", got)
 	}
 }

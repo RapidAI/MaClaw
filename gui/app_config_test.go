@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -1478,6 +1479,41 @@ func TestPatchConfigFieldsLansengerGroupChatOptions(t *testing.T) {
 		"lansenger_group_policy": "nope",
 	}); err == nil {
 		t.Fatal("expected invalid policy error")
+	}
+}
+
+func TestPatchConfigFieldsLansengerGroupPermissions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"lansenger_group_knowledge_source_ids":  []any{" source-a ", "source-a", "source-b"},
+		"lansenger_group_allow_all_directories": true,
+		"lansenger_group_allowed_directories":   []any{" C:\\allowed ", "C:\\allowed", "D:\\docs"},
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields: %v", err)
+	}
+	if got, want := patched.LansengerGroupKnowledgeSourceIDs, []string{"source-a", "source-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("knowledge source IDs = %#v, want %#v", got, want)
+	}
+	if !patched.LansengerGroupAllowAllDirectories {
+		t.Fatal("allow all directories should be true")
+	}
+	if got, want := patched.LansengerGroupAllowedDirectories, []string{"C:\\allowed", "D:\\docs"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("allowed directories = %#v, want %#v", got, want)
+	}
+
+	if _, err := app.PatchConfigFields(map[string]interface{}{
+		"lansenger_group_allowed_directories": "not-an-array",
+	}); err == nil {
+		t.Fatal("expected non-array directory list to be rejected")
 	}
 }
 

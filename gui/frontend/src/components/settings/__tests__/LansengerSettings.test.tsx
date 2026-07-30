@@ -1,18 +1,28 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LansengerSettings } from '../LansengerSettings';
 
 const RestartLansengerMock = vi.fn();
 const SetLansengerLocalModeMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const ListLansengerGroupsMock = vi.fn();
+const KnowledgeListSourcesMock = vi.fn();
+const SelectVEAllowedDirectoryMock = vi.fn();
+
+beforeEach(() => {
+    KnowledgeListSourcesMock.mockReset();
+    SelectVEAllowedDirectoryMock.mockReset();
+    KnowledgeListSourcesMock.mockResolvedValue([]);
+});
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
     RestartLansenger: (...args: unknown[]) => RestartLansengerMock(...args),
     SetLansengerLocalMode: (...args: unknown[]) => SetLansengerLocalModeMock(...args),
     ListLansengerGroups: (...args: unknown[]) => ListLansengerGroupsMock(...args),
+    KnowledgeListSources: (...args: unknown[]) => KnowledgeListSourcesMock(...args),
+    SelectVEAllowedDirectory: (...args: unknown[]) => SelectVEAllowedDirectoryMock(...args),
     SetLansengerGroupIgnored: vi.fn().mockResolvedValue(undefined),
     SetLansengerGroupAllowed: vi.fn().mockResolvedValue(undefined),
 }));
@@ -75,6 +85,29 @@ describe('LansengerSettings', () => {
         expect(props.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_group_policy: 'allowlist' });
         fireEvent.click(screen.getByText('\u9700\u8981 @\u63d0\u53ca'));
         expect(props.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_require_mention: false });
+    });
+
+    it('edits the local-only group permission allowlists', async () => {
+        const props = baseProps();
+        KnowledgeListSourcesMock.mockResolvedValue([{ id: 'knowledge-a', title: '知识库 A', kind: 'folder' }]);
+        SelectVEAllowedDirectoryMock.mockResolvedValue('D:\\approved');
+
+        const first = render(<LansengerSettings {...props} />);
+
+        const source = await screen.findByText('知识库 A');
+        fireEvent.click(source);
+        expect(props.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_group_knowledge_source_ids: ['knowledge-a'] });
+
+        fireEvent.click(screen.getByText('允许所有目录'));
+        expect(props.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_group_allow_all_directories: true });
+
+        // A fresh mount models the persisted controlled config after toggling.
+        first.unmount();
+        const directoryProps = baseProps();
+        render(<LansengerSettings {...directoryProps} config={{ ...directoryProps.config, lansenger_group_allowed_directories: [] } as any} />);
+        fireEvent.click(screen.getByRole('button', { name: '添加目录' }));
+        await waitFor(() => expect(SelectVEAllowedDirectoryMock).toHaveBeenCalled());
+        await waitFor(() => expect(directoryProps.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_group_allowed_directories: ['D:\\approved'] }));
     });
 
     it('shows Follow only when Lansenger is connected, after Watch', async () => {

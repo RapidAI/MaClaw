@@ -70,12 +70,7 @@ func AppendStandardCLIFlags(command string, p CLIParams) string {
 	if HasCLIPlaceholders(command) {
 		return ExpandCLICommand(command, p)
 	}
-	// Quote-safe enough for shell: wrap values in double quotes and escape.
-	q := func(s string) string {
-		s = strings.ReplaceAll(s, `\`, `\\`)
-		s = strings.ReplaceAll(s, `"`, `\"`)
-		return `"` + s + `"`
-	}
+	q := shellQuoteCLIValue
 	return fmt.Sprintf(
 		`%s --date %s --content %s --speaker-id %s --group-id %s --keyword %s`,
 		command,
@@ -85,6 +80,58 @@ func AppendStandardCLIFlags(command string, p CLIParams) string {
 		q(p.GroupID),
 		q(p.Keyword),
 	)
+}
+
+// shellQuoteCLIValue returns a POSIX shell word. It is used for the automatic
+// flag form only; template placeholders are handled by cliCommandForExecution
+// so Windows can use delayed environment expansion without reparsing message
+// text as command syntax.
+func shellQuoteCLIValue(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func cliParamReferences() CLIParams {
+	return CLIParams{
+		Date:        "!LANXIN_WATCH_DATE!",
+		Content:     "!LANXIN_WATCH_CONTENT!",
+		SpeakerID:   "!LANXIN_WATCH_SPEAKER_ID!",
+		SpeakerName: "!LANXIN_WATCH_SPEAKER_NAME!",
+		GroupID:     "!LANXIN_WATCH_GROUP_ID!",
+		GroupName:   "!LANXIN_WATCH_GROUP_NAME!",
+		Keyword:     "!LANXIN_WATCH_KEYWORD!",
+		MessageID:   "!LANXIN_WATCH_MESSAGE_ID!",
+	}
+}
+
+// cliCommandForExecution incorporates data received from IM safely. On POSIX
+// every placeholder becomes one single-quoted shell word. On Windows we keep
+// the data in the child environment and expand it once with delayed expansion;
+// cmd does not rescan a delayed-expansion value for &, |, %, or quotes.
+func cliCommandForExecution(commandLine string, p CLIParams) string {
+	commandLine = strings.TrimSpace(commandLine)
+	if runtime.GOOS == "windows" {
+		if HasCLIPlaceholders(commandLine) {
+			return ExpandCLICommand(commandLine, cliParamReferences())
+		}
+		refs := cliParamReferences()
+		return fmt.Sprintf(
+			`%s --date %s --content %s --speaker-id %s --group-id %s --keyword %s`,
+			commandLine, refs.Date, refs.Content, refs.SpeakerID, refs.GroupID, refs.Keyword,
+		)
+	}
+	if HasCLIPlaceholders(commandLine) {
+		return ExpandCLICommand(commandLine, CLIParams{
+			Date:        shellQuoteCLIValue(p.Date),
+			Content:     shellQuoteCLIValue(p.Content),
+			SpeakerID:   shellQuoteCLIValue(p.SpeakerID),
+			SpeakerName: shellQuoteCLIValue(p.SpeakerName),
+			GroupID:     shellQuoteCLIValue(p.GroupID),
+			GroupName:   shellQuoteCLIValue(p.GroupName),
+			Keyword:     shellQuoteCLIValue(p.Keyword),
+			MessageID:   shellQuoteCLIValue(p.MessageID),
+		})
+	}
+	return AppendStandardCLIFlags(commandLine, p)
 }
 
 // CLIResult is the outcome of running a watch CLI command.
@@ -107,7 +154,7 @@ func RunCLI(ctx context.Context, commandLine string, p CLIParams, timeoutSec int
 	if timeoutSec > MaxCLITimeoutSec {
 		timeoutSec = MaxCLITimeoutSec
 	}
-	expanded := AppendStandardCLIFlags(commandLine, p)
+	expanded := cliCommandForExecution(commandLine, p)
 
 	// Respect parent budget (gateway Process timeout) over rule CLITimeoutSec.
 	timeout := time.Duration(timeoutSec) * time.Second
@@ -126,7 +173,8 @@ func RunCLI(ctx context.Context, commandLine string, p CLIParams, timeoutSec int
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(runCtx, "cmd", "/C", expanded)
+		// Delayed expansion is deliberately enabled: see cliCommandForExecution.
+		cmd = exec.CommandContext(runCtx, "cmd", "/D", "/V:ON", "/S", "/C", expanded)
 	} else {
 		cmd = exec.CommandContext(runCtx, "sh", "-c", expanded)
 	}

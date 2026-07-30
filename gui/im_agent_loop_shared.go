@@ -387,7 +387,8 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	if progressOut == nil {
 		progressOut = onProgress
 	}
-	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, progressOut)
+	allowLocalAttachmentStaging := ctx == nil || ctx.LansengerGroupPermissions == nil
+	userContent := buildUserContentWithLocalStaging(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, progressOut, allowLocalAttachmentStaging)
 
 	cb := &sharedAgentLoopCallbacks{
 		handler:      h,
@@ -844,6 +845,11 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	// unstyled bash/skill logs never leak into WeChat/QQ as normal chat bubbles.
 	toolProgress := filteredToolProgressCallback(lang, name, c.onProgress, false)
 	platform := c.effectivePlatform()
+	if c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil {
+		if !c.loopCtx.LansengerGroupPermissions.allowsTool(name) {
+			return "[system rejected] 群聊权限未授权该工具访问本地资源或知识库"
+		}
+	}
 	policyUserID := c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
 	exec := c.handler.executeToolDetailedWithRuntimeContext(
 		execCtx,

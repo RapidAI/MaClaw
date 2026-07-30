@@ -344,6 +344,8 @@ interface AssistantWelcomeViewProps {
     lang: string;
     theme: Theme;
     themeMode: "light" | "dark";
+    /** Whether the assistant page is visible. Hidden retained panels must not own document-level dialogs. */
+    active?: boolean;
     /** Insert filled prompt into the composer (do not send). */
     onPromptSelect: (text: string, meta?: WelcomePromptSubmitMeta) => void;
     /** Insert and immediately send (chat tasks only). */
@@ -356,6 +358,7 @@ export function AssistantWelcomeView({
     lang,
     theme: t,
     themeMode,
+    active = true,
     onPromptSelect,
     onPromptSend,
     pinnedNews,
@@ -386,6 +389,10 @@ export function AssistantWelcomeView({
     const [paramDialog, setParamDialog] = useState<ParamDialogState | null>(null);
     const [recentEntries, setRecentEntries] = useState<WelcomeRecentEntry[]>(() => loadWelcomeRecentEntries());
     const [customTemplates, setCustomTemplates] = useState<WelcomeCustomTemplate[]>(() => loadWelcomeCustomTemplates());
+
+    useEffect(() => {
+        if (!active) setParamDialog(null);
+    }, [active]);
 
     // Initial bridge for templates that existed before this version. Subsequent
     // CRUD paths sync immediately below; this also repairs a missing local file.
@@ -1513,6 +1520,7 @@ export function AssistantWelcomeView({
                 overflow: "visible",
             }}>
                 <AssistantInputComposer
+                    active={active}
                     browseFile={cp.browseFile}
                     canSend={cp.canSend}
                     cancelPending={cp.cancelPending}
@@ -2427,7 +2435,7 @@ export function AssistantWelcomeView({
             </div>
 
             <WelcomePromptParamDialog
-                open={!!paramDialog}
+                open={active && !!paramDialog}
                 onClose={() => setParamDialog(null)}
                 lang={lang}
                 theme={t}

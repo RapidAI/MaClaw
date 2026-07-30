@@ -828,6 +828,35 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 	if name == "set_nickname" && strings.TrimSpace(userText) != "" {
 		args["_user_text"] = userText
 	}
+	var groupPermissions *lansengerGroupPermissionPolicy
+	if loopCtx := h.runtimeLoopContextForOwner(policyUserID); loopCtx != nil {
+		groupPermissions = loopCtx.LansengerGroupPermissions
+	}
+	// The loop context is authoritative. Platform is metadata that may be
+	// rewritten by an adapter, whereas this policy is attached only to a local
+	// Lansenger group turn. Enforce it even when the platform value is absent.
+	if groupPermissions != nil {
+		if !groupPermissions.allowsTool(name) {
+			return toolExecutionResult{Text: "[system rejected] 群聊权限未授权该工具访问本地资源或知识库", Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		}
+		switch name {
+		case "knowledge_search", "knowledge_explain", "knowledge_context_pack", "knowledge_search_facets":
+			if err := groupPermissions.restrictKnowledgeArgs(args); err != nil {
+				return toolExecutionResult{Text: "[system rejected] " + err.Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			}
+		case "read_file", "list_directory", "search_files", "send_file", "send_to_im":
+			if err := groupPermissions.resolveAndValidateFileToolArgs(name, args, func(path string) (string, error) {
+				return h.resolveFileToolPathForOwner(path, policyUserID)
+			}); err != nil {
+				return toolExecutionResult{Text: "[system rejected] " + err.Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			}
+		}
+		if name == "web_fetch" {
+			if savePath, _ := args["save_path"].(string); strings.TrimSpace(savePath) != "" {
+				return toolExecutionResult{Text: "[system rejected] 群聊权限不允许 web_fetch 写入本地文件", Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			}
+		}
+	}
 	if reason := manageScheduleCreateBlockReason(name, args, userText); reason != "" {
 		return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}

@@ -23,6 +23,13 @@ import (
 // are transcribed locally and optionally corrected (asr_voice_correction_enabled).
 // onProgress is optional (agent-loop progress / typing indicator).
 func buildUserContent(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string)) interface{} {
+	return buildUserContentWithLocalStaging(userText, attachments, protocol, supportsVision, app, onProgress, true)
+}
+
+// buildUserContentWithLocalStaging retains the established attachment behavior
+// for normal conversations while allowing a restricted group turn to keep
+// attachments in memory. The caller must opt in explicitly to local staging.
+func buildUserContentWithLocalStaging(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string), allowLocalStaging bool) interface{} {
 	// Always expand GUI file-picker document paths (no-op when already expanded / no marker).
 	userText = agent.ExpandUserSelectedFilePaths(userText)
 	if len(attachments) == 0 {
@@ -40,6 +47,12 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 		if isImageMime(att.MimeType) || attKind.IsImage() {
 			if supportsVision {
 				imageAttachments = append(imageAttachments, *att)
+			} else if !allowLocalStaging {
+				displayName := att.FileName
+				if displayName == "" {
+					displayName = "image"
+				}
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s；当前群聊权限不允许将图片保存到本机，且当前模型不支持图片理解。请在私聊中发送图片。]", displayName))
 			} else {
 				// Vision not supported — save image to local file instead.
 				displayName := att.FileName
@@ -55,6 +68,10 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 				}
 			}
 		} else if attKind.IsVoice() {
+			if !allowLocalStaging {
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[收到语音附件 %s；当前群聊权限不允许保存或转写语音，请在私聊中发送。]", att.FileName))
+				continue
+			}
 			// Voice attachment: decode, convert to WAV, ASR (+ optional correction), then save.
 			decoded, decErr := base64.StdEncoding.DecodeString(att.Data)
 			if decErr != nil {
@@ -83,6 +100,8 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 			} else {
 				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s → 转换失败，原始文件已保存到 %s]", att.FileName, path))
 			}
+		} else if !allowLocalStaging {
+			fileDescriptions = append(fileDescriptions, fmt.Sprintf("[收到附件 %s；当前群聊权限不允许保存到本机，请在私聊中发送。]", att.FileName))
 		} else {
 			// Save non-image files to local disk so the agent can operate on them.
 			// Document auto-extract runs below under a shared turn budget.

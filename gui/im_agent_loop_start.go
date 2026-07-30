@@ -89,7 +89,8 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		systemPrompt += extra
 	}
 
-	conversationStart := h.buildAgentLoopConversationStart(ctx.ID, opts.UserID, opts.UserText, systemPrompt, opts.Platform, opts.Attachments, cfg, opts.History, opts.PriorReplanCount, recorderBundle.Recorder, tools, opts.SendProgress)
+	allowLocalAttachmentStaging := ctx == nil || ctx.LansengerGroupPermissions == nil
+	conversationStart := h.buildAgentLoopConversationStart(ctx.ID, opts.UserID, opts.UserText, systemPrompt, opts.Platform, opts.Attachments, cfg, opts.History, opts.PriorReplanCount, recorderBundle.Recorder, tools, opts.SendProgress, allowLocalAttachmentStaging)
 	if telemetry != nil {
 		telemetry.PreLLMConversationElapsed = conversationStart.Elapsed
 	}

@@ -562,6 +562,153 @@ func TestUpdateRemoteCodingTaskMeta(t *testing.T) {
 	}
 }
 
+func TestCreateRemoteCodingTaskReusesSameRemoteProject(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.CreateRemoteCodingTask("First task", "10.0.0.8", "ubuntu", "/srv/app/", 22)
+	if first.ProjectPath == "" {
+		t.Fatal("first create failed")
+	}
+
+	// A different title and an equivalent trailing-slash variant must still
+	// represent the same remote project.
+	second := app.CreateRemoteCodingTask("Second task", "10.0.0.8", "ubuntu", "/srv/app", 2200)
+	if second.ProjectPath != first.ProjectPath {
+		t.Fatalf("duplicate remote task created: first=%q second=%q", first.ProjectPath, second.ProjectPath)
+	}
+
+	tasks := app.ListTasks(10)
+	remoteCount := 0
+	for _, task := range tasks {
+		if projectRecordHasTagLike(task.Tags, taskRemoteCodingDevTag) {
+			remoteCount++
+		}
+	}
+	if remoteCount != 1 {
+		t.Fatalf("remote task count=%d, want 1; tasks=%#v", remoteCount, tasks)
+	}
+
+	meta, err := app.GetRemoteCodingTaskMeta(first.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Port != 2200 || meta.WorkDir != "/srv/app" {
+		t.Fatalf("reused task metadata = %+v", meta)
+	}
+}
+
+func TestCreateRemoteCodingTaskConcurrentCallsReuseOneProject(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	const callers = 8
+	results := make(chan ProjectSearchResult, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results <- app.CreateRemoteCodingTask(fmt.Sprintf("Concurrent %d", i), "10.0.0.9", "deploy", "/srv/app", 22)
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+
+	projectPath := ""
+	for result := range results {
+		if result.ProjectPath == "" {
+			t.Fatal("concurrent create returned an empty project path")
+		}
+		if projectPath == "" {
+			projectPath = result.ProjectPath
+			continue
+		}
+		if result.ProjectPath != projectPath {
+			t.Fatalf("concurrent duplicate remote task: first=%q result=%q", projectPath, result.ProjectPath)
+		}
+	}
+
+	remoteCount := 0
+	for _, task := range app.ListTasks(20) {
+		if projectRecordHasTagLike(task.Tags, taskRemoteCodingDevTag) {
+			remoteCount++
+		}
+	}
+	if remoteCount != 1 {
+		t.Fatalf("remote task count=%d, want 1", remoteCount)
+	}
+}
+
+func TestUpdateRemoteCodingTaskMetaRejectsExistingRemoteProject(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.CreateRemoteCodingTask("first", "10.0.0.10", "deploy", "/srv/first", 22)
+	second := app.CreateRemoteCodingTask("second", "10.0.0.10", "deploy", "/srv/second", 22)
+	if first.ProjectPath == "" || second.ProjectPath == "" {
+		t.Fatal("failed to create remote task fixtures")
+	}
+
+	if err := app.UpdateRemoteCodingTaskMeta(first.ProjectPath, "10.0.0.10", "deploy", "/srv/second/", 2200); err == nil {
+		t.Fatal("expected duplicate remote project update to be rejected")
+	}
+	meta, err := app.GetRemoteCodingTaskMeta(first.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.WorkDir != "/srv/first" {
+		t.Fatalf("first task was incorrectly retargeted: %+v", meta)
+	}
+}
+
+func TestCreateRemoteCodingTaskReusesHiddenRemoteProject(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.CreateRemoteCodingTask("first", "10.0.0.11", "deploy", "/srv/app", 22)
+	if first.ProjectPath == "" {
+		t.Fatal("first create failed")
+	}
+	app.HideTask(first.ProjectPath)
+
+	second := app.CreateRemoteCodingTask("retry", "10.0.0.11", "deploy", "/srv/app/", 2200)
+	if second.ProjectPath != first.ProjectPath {
+		t.Fatalf("hidden remote task was duplicated: first=%q second=%q", first.ProjectPath, second.ProjectPath)
+	}
+	if got := app.FindRemoteCodingTaskByMeta("10.0.0.11", "deploy", "/srv/app"); got.ProjectPath != first.ProjectPath {
+		t.Fatalf("hidden remote task lookup = %q, want %q", got.ProjectPath, first.ProjectPath)
+	}
+	if visible := app.ListTasks(10); len(visible) != 0 {
+		t.Fatalf("hidden task should remain hidden, got %#v", visible)
+	}
+}
+
+func TestCreateRemoteCodingTaskReusesCanonicalPOSIXWorkDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.CreateRemoteCodingTask("first", "10.0.0.12", "deploy", "/srv/app", 22)
+	if first.ProjectPath == "" {
+		t.Fatal("first create failed")
+	}
+	second := app.CreateRemoteCodingTask("retry", "10.0.0.12", "deploy", "/srv//app/./", 2200)
+	if second.ProjectPath != first.ProjectPath {
+		t.Fatalf("equivalent POSIX workdir was duplicated: first=%q second=%q", first.ProjectPath, second.ProjectPath)
+	}
+	if matched := app.FindRemoteCodingTaskByMeta("10.0.0.12", "deploy", "/srv/other/../app/"); matched.ProjectPath != first.ProjectPath {
+		t.Fatalf("canonical remote workdir lookup = %q, want %q", matched.ProjectPath, first.ProjectPath)
+	}
+}
+
+func TestCreateRemoteCodingTaskKeepsCaseDistinctSSHUsersSeparate(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	lower := app.CreateRemoteCodingTask("lowercase account", "10.0.0.13", "deploy", "/srv/app", 22)
+	upper := app.CreateRemoteCodingTask("uppercase account", "10.0.0.13", "Deploy", "/srv/app", 22)
+	if lower.ProjectPath == "" || upper.ProjectPath == "" {
+		t.Fatal("remote task creation failed")
+	}
+	if lower.ProjectPath == upper.ProjectPath {
+		t.Fatalf("case-distinct SSH users were merged: %q", lower.ProjectPath)
+	}
+	if matched := app.FindRemoteCodingTaskByMeta("10.0.0.13", "deploy", "/srv/app"); matched.ProjectPath != lower.ProjectPath {
+		t.Fatalf("lowercase user lookup = %q, want %q", matched.ProjectPath, lower.ProjectPath)
+	}
+	if matched := app.FindRemoteCodingTaskByMeta("10.0.0.13", "Deploy", "/srv/app"); matched.ProjectPath != upper.ProjectPath {
+		t.Fatalf("uppercase user lookup = %q, want %q", matched.ProjectPath, upper.ProjectPath)
+	}
+}
+
 func TestMergeTagsReplacePrefixed(t *testing.T) {
 	existing := []string{
 		"manual_task", "recent_task", "/task",

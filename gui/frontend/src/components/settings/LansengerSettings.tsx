@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { ListLansengerGroups, LoadConfig, RestartLansenger, SetLansengerGroupAllowed, SetLansengerGroupIgnored, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
+import { KnowledgeListSources, ListLansengerGroups, LoadConfig, RestartLansenger, SelectVEAllowedDirectory, SetLansengerGroupAllowed, SetLansengerGroupIgnored, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { channelModeLabel, followLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
@@ -58,6 +58,8 @@ type LansengerGroupListPayload = {
     groups?: LansengerGroupRow[];
 };
 
+type KnowledgeSourceRow = { id?: string; title?: string; kind?: string; status?: string };
+
 function wailsErrorMessage(err: unknown, fallback: string): string {
     if (err == null) return fallback;
     if (typeof err === 'string') return err || fallback;
@@ -89,6 +91,10 @@ export const LansengerSettings = ({
     const [groupsTotal, setGroupsTotal] = useState(0);
     const [ignoreBusyID, setIgnoreBusyID] = useState('');
     const [watchOpen, setWatchOpen] = useState(false);
+    const [permissionSources, setPermissionSources] = useState<KnowledgeSourceRow[]>([]);
+    const [permissionSourcesLoading, setPermissionSourcesLoading] = useState(false);
+    const [permissionSourcesLoaded, setPermissionSourcesLoaded] = useState(false);
+    const [permissionDirectoryBusy, setPermissionDirectoryBusy] = useState(false);
     const loadGenRef = useRef(0);
     const watchDialogRef = useRef<HTMLDivElement | null>(null);
     const watchCloseBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -147,6 +153,51 @@ export const LansengerSettings = ({
 
     const groupPolicy = String((config as any)?.lansenger_group_policy || 'open').toLowerCase();
     const isAllowlistPolicy = groupPolicy === 'allowlist' || groupPolicy === 'allow' || groupPolicy === 'whitelist';
+    const groupPermissionSourceIDs: string[] = Array.isArray((config as any)?.lansenger_group_knowledge_source_ids) ? (config as any).lansenger_group_knowledge_source_ids : [];
+    const groupPermissionDirectories: string[] = Array.isArray((config as any)?.lansenger_group_allowed_directories) ? (config as any).lansenger_group_allowed_directories : [];
+    const allowAllDirectories = !!(config as any)?.lansenger_group_allow_all_directories;
+
+    const loadPermissionSources = useCallback(() => {
+        if (permissionSourcesLoading || permissionSourcesLoaded) return;
+        setPermissionSourcesLoading(true);
+        KnowledgeListSources({ limit: 5000, include_disabled: false })
+            .then((items: KnowledgeSourceRow[] | null) => setPermissionSources(Array.isArray(items) ? items : []))
+            .catch(() => setPermissionSources([]))
+            .finally(() => {
+                setPermissionSourcesLoaded(true);
+                setPermissionSourcesLoading(false);
+            });
+    }, [permissionSourcesLoaded, permissionSourcesLoading]);
+
+    useEffect(() => {
+        if ((config as any)?.lansenger_enabled) loadPermissionSources();
+    }, [config, loadPermissionSources]);
+
+    const toggleKnowledgeSource = useCallback((id: string, checked: boolean) => {
+        const next = checked
+            ? [...new Set([...groupPermissionSourceIDs, id])]
+            : groupPermissionSourceIDs.filter((item) => item !== id);
+        saveRemoteConfigField({ lansenger_group_knowledge_source_ids: next } as any);
+    }, [groupPermissionSourceIDs, saveRemoteConfigField]);
+
+    const addPermissionDirectory = useCallback(async () => {
+        setPermissionDirectoryBusy(true);
+        try {
+            const selected = await SelectVEAllowedDirectory();
+            const path = String(selected || '').trim();
+            if (!path) return;
+            const exists = groupPermissionDirectories.some((item) => item.toLowerCase().replaceAll('\\', '/') === path.toLowerCase().replaceAll('\\', '/'));
+            if (!exists) await saveRemoteConfigField({ lansenger_group_allowed_directories: [...groupPermissionDirectories, path] } as any);
+        } catch (err) {
+            void showAlert(wailsErrorMessage(err, textForLang(lang, 'Could not select directory', '无法选择目录', '無法選擇目錄')));
+        } finally {
+            setPermissionDirectoryBusy(false);
+        }
+    }, [groupPermissionDirectories, lang, saveRemoteConfigField, showAlert]);
+
+    const removePermissionDirectory = useCallback((path: string) => {
+        saveRemoteConfigField({ lansenger_group_allowed_directories: groupPermissionDirectories.filter((item) => item !== path) } as any);
+    }, [groupPermissionDirectories, saveRemoteConfigField]);
 
     const toggleGroupResponse = useCallback((groupID: string, nextMuted: boolean) => {
         const id = String(groupID || '').trim();
@@ -420,6 +471,52 @@ export const LansengerSettings = ({
                             </span>
                         </label>
                     </div>
+
+                    <section className="im-group-permissions" aria-labelledby="lansenger-group-permissions-title">
+                        <div className="im-group-permissions__header">
+                            <div>
+                                <strong id="lansenger-group-permissions-title">{textForLang(lang, 'Group permissions', '群聊权限', '群聊權限')}</strong>
+                                <p>{textForLang(lang, 'Only these sources and directories are available while the bot replies in a group. Private chats are unaffected.', '机器人在群中回复时仅可使用此处授权的知识库和本地目录；私聊不受影响。', '機器人在群組回覆時僅可使用此處授權的知識庫與本機目錄；私訊不受影響。')}</p>
+                            </div>
+                        </div>
+
+                        <div className="im-group-permissions__section">
+                            <div className="im-group-permissions__label-row">
+                                <span>{textForLang(lang, 'Knowledge base scope', '知识库访问范围', '知識庫存取範圍')}</span>
+                                <button type="button" className="im-settings-button" onClick={() => { setPermissionSourcesLoaded(false); loadPermissionSources(); }} disabled={permissionSourcesLoading}>
+                                    {textForLang(lang, 'Refresh', '刷新', '重新整理')}
+                                </button>
+                            </div>
+                            <p className="im-group-permissions__hint">{textForLang(lang, 'No source selected means the group bot cannot access knowledge.', '未选择任何知识库时，群机器人不能访问知识库。', '未選擇任何知識庫時，群機器人不能存取知識庫。')}</p>
+                            <div className="im-group-permissions__sources">
+                                {permissionSourcesLoading ? <span>{textForLang(lang, 'Loading…', '加载中…', '載入中…')}</span> : permissionSources.length === 0 ? <span>{textForLang(lang, 'No available knowledge sources', '暂无可授权的知识库来源', '暫無可授權的知識庫來源')}</span> : permissionSources.map((source) => {
+                                    const id = String(source.id || '');
+                                    if (!id) return null;
+                                    return <label key={id} className="im-settings-toggle im-group-permissions__source">
+                                        <input type="checkbox" checked={groupPermissionSourceIDs.includes(id)} onChange={(e) => toggleKnowledgeSource(id, e.target.checked)} />
+                                        <span><b>{source.title || id}</b><small>{id}{source.kind ? ` · ${source.kind}` : ''}</small></span>
+                                    </label>;
+                                })}
+                            </div>
+                        </div>
+
+                        <div className="im-group-permissions__section">
+                            <label className="im-settings-toggle">
+                                <input type="checkbox" checked={allowAllDirectories} onChange={(e) => saveRemoteConfigField({ lansenger_group_allow_all_directories: e.target.checked } as any)} />
+                                <span>{textForLang(lang, 'Allow all directories', '允许所有目录', '允許所有目錄')}</span>
+                            </label>
+                            <p className="im-group-permissions__hint">{textForLang(lang, 'Disabled by default. Enable only when the group bot may access every local directory.', '默认不启用。仅当允许群机器人访问全部本地目录时才勾选。', '預設不啟用。僅當允許群機器人存取所有本機目錄時才勾選。')}</p>
+                            {!allowAllDirectories && <>
+                                <div className="im-group-permissions__label-row">
+                                    <span>{textForLang(lang, 'Allowed local directories', '可访问的本地目录', '可存取的本機目錄')}</span>
+                                    <button type="button" className="im-settings-button" onClick={addPermissionDirectory} disabled={permissionDirectoryBusy}>{textForLang(lang, 'Add directory', '添加目录', '新增目錄')}</button>
+                                </div>
+                                {groupPermissionDirectories.length === 0 ? <p className="im-group-permissions__empty">{textForLang(lang, 'No local directories are allowed.', '未授权任何本地目录。', '尚未授權任何本機目錄。')}</p> : <ul className="im-group-permissions__directories">
+                                    {groupPermissionDirectories.map((path) => <li key={path}><code>{path}</code><button type="button" className="im-settings-button" onClick={() => removePermissionDirectory(path)}>{textForLang(lang, 'Remove', '移除', '移除')}</button></li>)}
+                                </ul>}
+                            </>}
+                        </div>
+                    </section>
                 </div>
             )}
 

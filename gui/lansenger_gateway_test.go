@@ -90,6 +90,18 @@ func TestLansengerReplyRoutePreservesGroupRouting(t *testing.T) {
 	}
 }
 
+func TestLansengerGroupMediaUsesTheGroupPermissionBoundary(t *testing.T) {
+	group := lansenger.IncomingMessage{ChatType: "group", GroupID: "g1", MediaType: "file", MediaData: []byte("secret")}
+	if lansengerMayStageNonImageMediaLocally(group) {
+		t.Fatal("group non-image attachment must not be staged before permission enforcement")
+	}
+	private := group
+	private.ChatType = "p2p"
+	if !lansengerMayStageNonImageMediaLocally(private) {
+		t.Fatal("private media must retain the existing local-staging path")
+	}
+}
+
 func TestLansengerReplyRouteHasBoundedCache(t *testing.T) {
 	m := newLansengerGatewayManager(nil)
 	for i := 0; i < maxLansengerReplyRoutes+1; i++ {
@@ -482,6 +494,21 @@ func TestIsLansengerGroupMessage(t *testing.T) {
 	}
 }
 
+func TestLansengerGroupMessagesAreRecognizedIndependentOfChannelMode(t *testing.T) {
+	// onIncomingMessage routes every group message to the local restricted loop
+	// before it considers the single-machine/multi-machine switch. Keep this
+	// primitive deliberately tied to the canonical group detector so unfamiliar
+	// casing cannot accidentally regain the Hub bypass.
+	for _, chatType := range []string{"group", " GROUP ", "Group"} {
+		if !isLansengerGroupMessage(lansenger.IncomingMessage{ChatType: chatType}) {
+			t.Fatalf("group chat type %q must route through the restricted local path", chatType)
+		}
+	}
+	if isLansengerGroupMessage(lansenger.IncomingMessage{ChatType: "p2p"}) {
+		t.Fatal("private messages should retain normal local/Hub routing")
+	}
+}
+
 func TestLansengerLocalStartMenuSessionKeyIsUnambiguous(t *testing.T) {
 	first := lansenger.IncomingMessage{ChatType: "group", GroupID: "a:b", FromUserID: "c"}
 	second := lansenger.IncomingMessage{ChatType: "group", GroupID: "a", FromUserID: "b:c"}
@@ -490,6 +517,28 @@ func TestLansengerLocalStartMenuSessionKeyIsUnambiguous(t *testing.T) {
 	}
 	if got := lansengerLocalStartMenuSessionKey(first); got != lansengerLocalStartMenuSessionKey(first) {
 		t.Fatalf("session key is not stable: %q", got)
+	}
+}
+
+func TestLansengerConversationUserIDIsolatesGroupsAndPrivateChats(t *testing.T) {
+	private := lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "staff-abc"}
+	groupA := lansenger.IncomingMessage{ChatType: "group", GroupID: "group-a", FromUserID: "staff-abc"}
+	groupB := lansenger.IncomingMessage{ChatType: "group", GroupID: "group-b", FromUserID: "staff-abc"}
+	otherMember := lansenger.IncomingMessage{ChatType: "group", GroupID: "group-a", FromUserID: "staff-def"}
+
+	if got := lansengerConversationUserID(private); got != "staff-abc" {
+		t.Fatalf("private conversation ID = %q, want original sender ID", got)
+	}
+	ids := map[string]bool{}
+	for _, msg := range []lansenger.IncomingMessage{groupA, groupB, otherMember} {
+		id := lansengerConversationUserID(msg)
+		if id == "staff-abc" || ids[id] {
+			t.Fatalf("group conversation ID %q is not isolated", id)
+		}
+		ids[id] = true
+	}
+	if got := lansengerConversationUserID(groupA); got != lansengerConversationUserID(groupA) {
+		t.Fatalf("group conversation ID is not stable: %q", got)
 	}
 }
 

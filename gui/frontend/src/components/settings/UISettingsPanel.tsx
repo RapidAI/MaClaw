@@ -21,6 +21,8 @@ type UISettingsPanelProps = {
     /** When true, scale follows DPI/resolution recommendation. */
     uiZoomAuto: boolean;
     setUiZoomAuto: Dispatch<SetStateAction<boolean>>;
+    /** Auto policy supplied by the native shell (Win10 frameless WebView2). */
+    disableAutoUIScaleTransform?: boolean;
     chatFontSize: number;
     setChatFontSize: Dispatch<SetStateAction<number>>;
     darkSchemeId: AssistantDarkSchemeId;
@@ -40,6 +42,7 @@ export const UISettingsPanel = ({
     setUiZoom,
     uiZoomAuto,
     setUiZoomAuto,
+    disableAutoUIScaleTransform = false,
     chatFontSize,
     setChatFontSize,
     darkSchemeId,
@@ -99,7 +102,7 @@ export const UISettingsPanel = ({
 
     const restoreAutoUIZoom = () => {
         clearPersistTimer();
-        const auto = recommendUIScale();
+        const auto = recommendUIScale({ disableAutoTransform: disableAutoUIScaleTransform });
         lastPersistedRef.current = UI_SCALE_AUTO;
         setUiZoomAuto(true);
         setUiZoom(auto);

@@ -339,7 +339,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		if loopCtx != nil {
 			history = loopCtx.History
 		}
-		h.appendGUIEpilogue(b, includeMemoryGuide, msg, eventContext, promptUserID, history)
+		h.appendGUIEpilogue(b, includeMemoryGuide, msg, eventContext, promptUserID, history, loopCtx)
 	}
 
 	// User profile

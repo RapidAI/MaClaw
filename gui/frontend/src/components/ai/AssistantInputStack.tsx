@@ -8,6 +8,8 @@ import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 
 interface AssistantInputStackProps {
+    /** Whether the retained assistant panel is visible in the app shell. */
+    active?: boolean;
     attachButtonTestId?: string;
     browseFile: () => void;
     canSend: boolean;
@@ -92,7 +94,7 @@ interface AssistantInputStackProps {
 
 export function AssistantInputStack(props: AssistantInputStackProps) {
     const {
-        attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composeAction, editingEntryId,
+        active = true, attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composeAction, editingEntryId,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSaveEdit, handleFireEntry, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp,
         handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
@@ -159,6 +161,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
             >
                 {queuePanelTestId && queuePanel ? <div data-testid={queuePanelTestId}>{queuePanel}</div> : queuePanel}
                 <AssistantInputComposer
+                    active={active}
                     attachButtonTestId={attachButtonTestId}
                     browseFile={browseFile}
                     canSend={canSend}

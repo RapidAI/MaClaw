@@ -105,7 +105,6 @@ func (a *App) startRemoteVirtualRepositoryCodingTask(repo *VirtualRepository, pa
 		return VirtualRepositoryCodingTaskLaunch{}, errors.New("create remote coding task failed")
 	}
 	if err := a.prepareRemoteCodingEnvironment(created.ProjectPath, repo.Remote.Host, repo.Remote.User, password, repo.RootPath, repo.Remote.Port, fingerprint); err != nil {
-		a.HideTask(created.ProjectPath)
 		return VirtualRepositoryCodingTaskLaunch{}, fmt.Errorf("prepare remote coding environment: %w", err)
 	}
 	return VirtualRepositoryCodingTaskLaunch{ProjectPath: created.ProjectPath, TaskTitle: title, AgentMode: "remote_coding_dev", RemoteHost: repo.Remote.Host}, nil

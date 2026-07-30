@@ -90,11 +90,13 @@ export function useProjectSearch(lang: string) {
     return { open, query, results, loading, toggle, close, onQueryChange, refresh, formatTime };
 }
 
-export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSwitch, onCreateProjectTab, onCloseProjectTab, onForkCurrentChat, onTaskPrefsChanged }: {
+export function ProjectSearchPanel({ search, lang, theme: t, inline, active = true, onProjectSwitch, onCreateProjectTab, onCloseProjectTab, onForkCurrentChat, onTaskPrefsChanged }: {
     search: ReturnType<typeof useProjectSearch>;
     lang: string;
     theme: Theme;
     inline: boolean;
+    /** Whether the assistant page is currently visible in the app shell. */
+    active?: boolean;
     onProjectSwitch: (displayMsg: string) => Promise<void> | void;
     onCreateProjectTab?: (projectPath: string, taskTitle: string, options?: {
         autoSend?: boolean;
@@ -118,9 +120,22 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
     const [archivedLoading, setArchivedLoading] = useState(false);
     const [sceneDetail, setSceneDetail] = useState<ProjectSceneDetail | null>(null);
     const [sceneLoadingPath, setSceneLoadingPath] = useState<string | null>(null);
+    const activeRef = useRef(active);
+    activeRef.current = active;
     const visibleResults = search.results.filter(item => item.has_output !== false);
 
     useEffect(() => { if (search.open) inputRef.current?.focus(); }, [search.open]);
+    useEffect(() => {
+        if (active) return;
+        search.close();
+        setCtxMenu(null);
+        setRenamingPath(null);
+        setForkNameOpen(false);
+        setArchivedExperience(null);
+        setArchivedLoading(false);
+        setSceneDetail(null);
+        setSceneLoadingPath(null);
+    }, [active, search.close]);
     useEffect(() => {
         if (!search.open && !archivedExperience) return;
         const handler = (event: MouseEvent) => {
@@ -140,12 +155,14 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
         setSceneLoadingPath(item.project_path);
         try {
             const detail = await GetProjectScene(item.project_path);
+            if (!activeRef.current) return;
             setSceneDetail((detail || null) as ProjectSceneDetail | null);
         } catch (error) {
             console.error("[ProjectSearch] GetProjectScene failed:", error);
+            if (!activeRef.current) return;
             setSceneDetail({ project_path: item.project_path, name: item.name, recent_artifacts: item.recent_artifacts || [], source_urls: item.source_urls || [], entry_count: item.entry_count });
         } finally {
-            setSceneLoadingPath(null);
+            if (activeRef.current) setSceneLoadingPath(null);
         }
     }, []);
     const openArchived = useCallback(async (item: ProjectSearchItem) => {
@@ -155,12 +172,14 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
         setArchivedLoading(true);
         try {
             const experience = await GetArchivedExperience(item.project_path);
+            if (!activeRef.current) return;
             setArchivedExperience({ name, content: experience || localizeText(lang, "No experience summary available.", "\u6682\u65e0\u7ecf\u9a8c\u6458\u8981\u3002") });
         } catch (error) {
             console.error("[ProjectSearch] GetArchivedExperience failed:", error);
+            if (!activeRef.current) return;
             setArchivedExperience({ name, content: localizeText(lang, "Failed to load experience summary.", "\u52a0\u8f7d\u7ecf\u9a8c\u6458\u8981\u5931\u8d25\u3002") });
         } finally {
-            setArchivedLoading(false);
+            if (activeRef.current) setArchivedLoading(false);
         }
     }, [lang, search]);
 
@@ -183,7 +202,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
         } catch (error) { console.error("[ProjectSearch] open task failed:", error); }
     }, [renamingPath, openArchived, search, onCreateProjectTab, onProjectSwitch]);
 
-    if (!search.open && !archivedExperience) return null;
+    if (!active || (!search.open && !archivedExperience)) return null;
     if (archivedExperience) return <ProjectSearchArchivedPanel name={archivedExperience.name} content={archivedExperience.content} loading={archivedLoading} lang={lang} theme={t} panelRef={panelRef} onClose={() => setArchivedExperience(null)} />;
 
     return (

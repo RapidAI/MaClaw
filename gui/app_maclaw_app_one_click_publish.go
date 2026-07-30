@@ -35,6 +35,57 @@ var (
 	maclawAppHubTLSCheck          = maclawAppHubTLSPreflight
 )
 
+// ReviewMaclawAppPackage is the single authority for App Studio's local
+// publish review. It resolves a package's evidence from the durable run store
+// before applying the same governance rules enforced at submission time.
+//
+// The browser must not reconstruct this decision from its UI cache: runtime
+// panel IDs and persisted Skill-definition IDs are aliases of the same app,
+// and only the backend has the complete identity and fingerprint rules.
+func (a *App) ReviewMaclawAppPackage(packageJSON string) (map[string]any, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	packageJSON = strings.TrimSpace(packageJSON)
+	if packageJSON == "" {
+		return nil, fmt.Errorf("package payload is empty")
+	}
+	pkg, _, _, err := parseMaclawAppPackage(packageJSON)
+	if err != nil {
+		return map[string]any{
+			"schema":        "maclaw.app.review.v1",
+			"ok":            false,
+			"hydrated":      false,
+			"review_issues": []maclawAppReviewIssue{{Path: "package", Severity: "error", Message: err.Error()}},
+		}, nil
+	}
+
+	hydrated := a.hydrateMaclawAppPackageRunEvidence(pkg)
+	if hydrated {
+		if packageJSON, err = maclawAppStableJSON(pkg); err != nil {
+			return nil, err
+		}
+	}
+	plan, planErr := a.PlanMaclawAppInstall(packageJSON)
+	issues := []maclawAppReviewIssue{}
+	if planErr != nil {
+		issues = append(issues, maclawAppReviewIssue{
+			Path: "package.installPlan", Severity: "error", Message: planErr.Error(),
+			Suggestion: "resolve the package dependency plan before publishing",
+		})
+	} else {
+		issues = maclawAppReadyReviewIssuesForPackage(pkg, plan)
+	}
+	issues = normalizeMaclawAppReviewIssues(issues)
+	return map[string]any{
+		"schema":        "maclaw.app.review.v1",
+		"ok":            firstBlockingMaclawAppReviewIssue(issues) == nil,
+		"hydrated":      hydrated,
+		"package_json":  packageJSON,
+		"review_issues": issues,
+	}, nil
+}
+
 // PreflightMaclawAppOneClickPublish inspects a package JSON without publishing.
 // Returns structured checks for local queue readiness and remote targets so the
 // UI can warn before the user starts a long one-click run.
@@ -49,6 +100,18 @@ func (a *App) PreflightMaclawAppOneClickPublish(packageJSON string) (map[string]
 	pkg, _, _, err := parseMaclawAppPackage(packageJSON)
 	if err != nil {
 		return a.buildMaclawAppOneClickPreflight(packageJSON, nil, err), nil
+	}
+	// The review UI owns the authoritative durable run-history store. Older
+	// frontend snapshots could build a package before that history hydration
+	// completed, producing the contradictory state "10/10 passed" locally but
+	// "missing run evidence" here. Reconcile the package snapshot from the
+	// durable store before running the same package governance checks. Only an
+	// exact definition/protocol/workspace match is accepted, so stale evidence
+	// still fails closed.
+	if a.hydrateMaclawAppPackageRunEvidence(pkg) {
+		if hydratedJSON, marshalErr := maclawAppStableJSON(pkg); marshalErr == nil {
+			packageJSON = hydratedJSON
+		}
 	}
 	return a.buildMaclawAppOneClickPreflight(packageJSON, pkg, nil), nil
 }
@@ -81,6 +144,174 @@ func (a *App) PreflightMaclawAppSubmissionOneClick(submissionID string) (map[str
 	out["channel"] = record.Channel
 	out["status"] = record.Status
 	return out, nil
+}
+
+// hydrateMaclawAppPackageRunEvidence reconciles governance.testEvidence with
+// the authoritative durable run-history store. A package assembled by the UI
+// may still contain a sparse/stale Skill governance stamp or omit evidence due
+// to a local cache race. When a durable run proves this exact definition,
+// protocol and workspace, it is always the stronger source and replaces that
+// package snapshot. Stale durable records still fail closed below.
+func (a *App) hydrateMaclawAppPackageRunEvidence(pkg map[string]any) bool {
+	if a == nil || pkg == nil {
+		return false
+	}
+	entries, err := parseMaclawAppPackageEntriesFromMap(pkg, false)
+	if err != nil || len(entries) == 0 {
+		return false
+	}
+	identitySets := make([]map[string]struct{}, len(entries))
+	allIdentities := map[string]struct{}{}
+	for i, entry := range entries {
+		identitySets[i] = maclawAppRunEvidenceIdentityKeys(entry)
+		for identity := range identitySets[i] {
+			allIdentities[identity] = struct{}{}
+		}
+	}
+	history, err := a.listMaclawAppRunHistoryMatchingIdentities(allIdentities)
+	if err != nil || len(history) == 0 {
+		return false
+	}
+	changed := false
+	for i, entry := range entries {
+		governance := anyMap(entry.App["governance"])
+		if governance == nil {
+			continue
+		}
+		identities := identitySets[i]
+		definitionHashes := maclawAppDefinitionFingerprintCandidatesForEntry(entry)
+		workspaceHash := maclawAppCurrentWorkspaceLayoutFingerprint(entry, governance)
+		protocol := maclawAppTestProtocolMap(governance, nil)
+		protocolHash := maclawAppTestProtocolFingerprint(protocol)
+		for _, run := range history {
+			if !maclawAppRunEvidenceMatchesCurrentDefinition(run, identities, definitionHashes, workspaceHash, protocolHash) {
+				continue
+			}
+			evidence := maclawAppRunHistoryTestEvidence(run)
+			if protocol != nil {
+				evidence["testProtocol"] = cloneMapAny(protocol)
+			}
+			governance["testEvidence"] = evidence
+			delete(governance, "test_evidence")
+			changed = true
+			break
+		}
+	}
+	return changed
+}
+
+// listMaclawAppRunHistoryMatchingIdentities reads the durable store once and
+// returns every run for the requested app/Skill aliases, newest first. It does
+// not use ListAllMaclawAppRunHistory's UI-oriented global limit: a valid run
+// must not disappear merely because other apps produced more than 200 newer
+// history rows.
+func (a *App) listMaclawAppRunHistoryMatchingIdentities(identities map[string]struct{}) ([]maclawAppRunHistoryEntry, error) {
+	if a == nil || len(identities) == 0 {
+		return []maclawAppRunHistoryEntry{}, nil
+	}
+	maclawAppRunHistoryMu.RLock()
+	defer maclawAppRunHistoryMu.RUnlock()
+	store, err := a.readMaclawAppRunHistoryStore()
+	if err != nil {
+		return nil, err
+	}
+	matches := make([]maclawAppRunHistoryEntry, 0, 8)
+	for appID, list := range store.ByApp {
+		_, bucketMatches := identities[strings.ToLower(strings.TrimSpace(appID))]
+		for _, run := range list {
+			if strings.TrimSpace(run.AppID) == "" {
+				run.AppID = appID
+			}
+			if !bucketMatches && !maclawAppRunEvidenceIdentityMatches(run, identities) {
+				continue
+			}
+			matches = append(matches, run)
+		}
+	}
+	sortMaclawAppRunHistoryNewestFirst(matches)
+	return matches, nil
+}
+
+func maclawAppRunEvidenceIdentityKeys(entry parsedMaclawAppEntry) map[string]struct{} {
+	keys := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			keys[value] = struct{}{}
+		}
+	}
+	add(entry.ID)
+	binding := anyMap(entry.App["binding"])
+	skill := anyMap(binding["skill"])
+	appSkill := anyMap(binding["appSkill"])
+	if appSkill == nil {
+		appSkill = anyMap(binding["app_skill"])
+	}
+	for _, value := range []string{
+		maclawAppStringValue(skill, "id"),
+		maclawAppStringValue(appSkill, "id"),
+	} {
+		add(value)
+		if value != "" && entry.ID != "" {
+			add("skill-app-" + value + "-" + entry.ID)
+		}
+	}
+	return keys
+}
+
+func maclawAppRunEvidenceIdentityMatches(run maclawAppRunHistoryEntry, keys map[string]struct{}) bool {
+	for _, value := range []string{run.AppID, run.SkillName} {
+		if _, ok := keys[strings.ToLower(strings.TrimSpace(value))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func maclawAppRunEvidenceSuccessful(run maclawAppRunHistoryEntry) bool {
+	status := strings.ToLower(strings.TrimSpace(run.Status))
+	return status == "done" || status == "success" || status == "completed"
+}
+
+func maclawAppRunEvidenceMatchesCurrentDefinition(run maclawAppRunHistoryEntry, identities, definitionHashes map[string]struct{}, workspaceHash, protocolHash string) bool {
+	if !maclawAppRunEvidenceSuccessful(run) || !maclawAppRunEvidenceIdentityMatches(run, identities) {
+		return false
+	}
+	// Durable evidence is authoritative only when it proves the exact package
+	// definition being preflighted. Missing stamps are not guessed and stale
+	// stamps are never upgraded into current evidence.
+	if _, ok := definitionHashes[strings.TrimSpace(run.DefinitionHash)]; len(definitionHashes) == 0 || !ok {
+		return false
+	}
+	if workspaceHash != "" && strings.TrimSpace(run.WorkspaceLayoutFingerprint) != workspaceHash {
+		return false
+	}
+	if protocolHash != "" && strings.TrimSpace(run.TestProtocolFingerprint) != protocolHash {
+		return false
+	}
+	return true
+}
+
+func maclawAppRunHistoryTestEvidence(run maclawAppRunHistoryEntry) map[string]any {
+	artifacts := append([]any(nil), run.Artifacts...)
+	if len(artifacts) == 0 && (run.ArtifactName != "" || run.ArtifactPath != "" || run.ArtifactURI != "") {
+		artifacts = []any{map[string]any{
+			"id": run.ArtifactID, "uri": run.ArtifactURI, "name": run.ArtifactName,
+			"path": run.ArtifactPath, "download_state": run.ArtifactDownloadState,
+		}}
+	}
+	evidence := compactPayload(map[string]any{
+		"runId": run.RunID, "definitionHash": run.DefinitionHash,
+		"testProtocolFingerprint":    run.TestProtocolFingerprint,
+		"workspaceLayoutFingerprint": run.WorkspaceLayoutFingerprint,
+		"artifactPresent":            len(artifacts) > 0, "artifactCount": len(artifacts),
+		"artifactName": run.ArtifactName, "artifacts": artifacts,
+		"outputCount": len(run.Outputs), "outputs": append([]any(nil), run.Outputs...),
+		"resultPayload": cloneMapAny(run.ResultPayload), "resultCoverage": cloneMapAny(run.ResultCoverage),
+		"dependencyVerification": cloneMapAny(run.DependencyVerification),
+		"approvalInstance":       cloneMapAny(run.ApprovalInstance), "verifiedAt": run.At,
+	})
+	return evidence
 }
 
 // PublishMaclawAppOneClick is the GUI one-click publish:

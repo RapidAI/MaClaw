@@ -119,6 +119,7 @@ export type SettingsActiveContentProps = {
     setUiZoom: Dispatch<SetStateAction<number>>;
     uiZoomAuto: boolean;
     setUiZoomAuto: Dispatch<SetStateAction<boolean>>;
+    disableAutoUIScaleTransform?: boolean;
     chatFontSize: number;
     setChatFontSize: Dispatch<SetStateAction<number>>;
     darkSchemeId: AssistantDarkSchemeId;
@@ -209,6 +210,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         setUiZoom,
         uiZoomAuto,
         setUiZoomAuto,
+        disableAutoUIScaleTransform,
         chatFontSize,
         setChatFontSize,
         darkSchemeId,
@@ -507,6 +509,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     setUiZoom={setUiZoom}
                     uiZoomAuto={uiZoomAuto}
                     setUiZoomAuto={setUiZoomAuto}
+                    disableAutoUIScaleTransform={disableAutoUIScaleTransform}
                     chatFontSize={chatFontSize}
                     setChatFontSize={setChatFontSize}
                     darkSchemeId={darkSchemeId}

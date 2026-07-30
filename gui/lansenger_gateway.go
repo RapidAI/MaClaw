@@ -463,7 +463,17 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 	// cleaned text so hub mode still forces local passthrough handling.
 	if isPassthroughSlashText(stripLansengerBotMentions(msg)) {
 		log.Printf("[lansenger-mgr] routing passthrough command locally: user=%s", msg.FromUserID)
-		m.handleLocalMessage(msg)
+		m.handleLocalMessage(msg, &cfg)
+		return
+	}
+	// Group permissions are configured and enforced by this desktop instance.
+	// Do not hand a group turn to Hub: the Hub-side generic IM pipeline does not
+	// carry this machine's directory and knowledge-source allowlists, so forwarding
+	// would turn a configured local restriction into a bypass in multi-machine
+	// mode. Private messages retain their selected local/Hub routing behavior.
+	if isLansengerGroupMessage(msg) {
+		log.Printf("[lansenger-mgr] routing group message locally for permission enforcement: group=%s user=%s", msg.GroupID, msg.FromUserID)
+		m.handleLocalMessage(msg, &cfg)
 		return
 	}
 
@@ -476,14 +486,14 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 		msg.FromUserID, msg.ChatType, msg.GroupID, isLocal, hubNil, hubConn, len(msg.Text))
 
 	if isLocal {
-		m.handleLocalMessage(msg)
+		m.handleLocalMessage(msg, &cfg)
 		return
 	}
 
 	if hubNil || !hubConn {
 		log.Printf("[lansenger-mgr] Hub unavailable, falling back to local")
 		m.notifyHubUnavailable(msg)
-		m.handleLocalMessage(msg)
+		m.handleLocalMessage(msg, &cfg)
 		return
 	}
 
@@ -492,6 +502,13 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 
 func isLansengerGroupMessage(msg lansenger.IncomingMessage) bool {
 	return lansenger.IsGroupChat(msg.ChatType)
+}
+
+// lansengerMayStageNonImageMediaLocally keeps group attachments outside the
+// shared temp directory until a future, explicitly scoped attachment policy is
+// available. Private chats retain their established attachment workflow.
+func lansengerMayStageNonImageMediaLocally(msg lansenger.IncomingMessage) bool {
+	return !isLansengerGroupMessage(msg)
 }
 
 // agentTextWithGroupContext prepends platform group metadata for LLM turns.
@@ -990,27 +1007,55 @@ func (m *lansengerGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	return h
 }
 
-func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessage) {
+func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessage, loadedConfig ...*corelib.AppConfig) {
 	// Always work from cleaned text so "@Bot /help" matches slash passthrough
 	// the same way as plain "/help".
 	cleanText := stripLansengerBotMentions(msg)
-	// Standalone LANXIN must stay fully local.  Handle the stateful wizard
-	// before generic passthrough consumes /run during an active shortcut flow.
-	menu := m.app.localStartMenuService().handle(lansengerLocalStartMenuSessionKey(msg), cleanText)
-	if menu.Handled {
+	// A start-menu confirmation creates a local coding/general task outside the
+	// group permission boundary. Keep it available in private chats, but never
+	// allow a group member to bootstrap an unrestricted local task this way.
+	if isLansengerGroupMessage(msg) && m.app.localStartMenuService().active(lansengerLocalStartMenuSessionKey(msg)) {
 		m.mu.Lock()
 		gw := m.gateway
 		m.mu.Unlock()
-		reply := menu.Reply
-		if menu.Confirmed {
-			if err := m.app.openLocalStartMenuTask(menu, "lansenger", lansengerReplyTarget(msg), isLansengerGroupMessage(msg)); err != nil {
-				reply = "启动任务失败：" + err.Error()
-			} else {
-				reply = startMenuTaskCreatedReply(menu.AgentMode == "remote_coding_dev")
-			}
+		if gw != nil {
+			_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+				msg, "群聊中不能启动本地任务快捷方式，请在私聊中操作。", m.currentGroupOpts(), true))
 		}
-		if gw != nil && reply != "" {
-			_ = gw.SendText(context.Background(), buildLansengerOutgoingText(msg, reply, m.currentGroupOpts()))
+		return
+	}
+	if !isLansengerGroupMessage(msg) {
+		// Standalone LANXIN must stay fully local. Handle the stateful wizard
+		// before generic passthrough consumes /run during an active shortcut flow.
+		menu := m.app.localStartMenuService().handle(lansengerLocalStartMenuSessionKey(msg), cleanText)
+		if menu.Handled {
+			m.mu.Lock()
+			gw := m.gateway
+			m.mu.Unlock()
+			reply := menu.Reply
+			if menu.Confirmed {
+				if err := m.app.openLocalStartMenuTask(menu, "lansenger", lansengerReplyTarget(msg), false); err != nil {
+					reply = "启动任务失败：" + err.Error()
+				} else {
+					reply = startMenuTaskCreatedReply(menu.AgentMode == "remote_coding_dev")
+				}
+			}
+			if gw != nil && reply != "" {
+				_ = gw.SendText(context.Background(), buildLansengerOutgoingText(msg, reply, m.currentGroupOpts()))
+			}
+			return
+		}
+	}
+	// Passthrough commands can execute registered local programs directly and do
+	// not pass through the agent-loop permission guard. Never expose that escape
+	// hatch to a group, even if the caller has configured a directory allowlist.
+	if isLansengerGroupMessage(msg) && isPassthroughSlashText(cleanText) {
+		m.mu.Lock()
+		gw := m.gateway
+		m.mu.Unlock()
+		if gw != nil {
+			_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+				msg, "群聊中不能执行直通命令，请在私聊中操作。", m.currentGroupOpts(), true))
 		}
 		return
 	}
@@ -1064,6 +1109,13 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 			// If the LLM doesn't support vision, buildUserContent will
 			// save it to a local file and tell the LLM accordingly.
 			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, ""))
+		} else if !lansengerMayStageNonImageMediaLocally(msg) {
+			// A group turn begins with no filesystem grant. Staging an arbitrary
+			// inbound file in the shared local temp directory before the agent-loop
+			// policy runs would violate that boundary (and the file would not be
+			// readable by the restricted tool set anyway). Keep the metadata in the
+			// prompt, but require a private chat for non-image file processing.
+			text = "[收到" + mediaLabel(msg.MediaType) + "附件；群聊权限不会将非图片附件保存到本机，请在私聊中发送或粘贴需要处理的文本。]\n" + text
 		} else {
 			// Non-image media (file, voice, video) → save to local temp
 			// and prepend the path to the text so the agent can read it.
@@ -1115,19 +1167,57 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		})
 	}
 
-	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
-		UserID:      msg.FromUserID,
+	userMessage := IMUserMessage{
+		UserID:      lansengerConversationUserID(msg),
 		Platform:    "lansenger_local",
 		Text:        text,
 		Lang:        appUILang(m.app),
 		Attachments: attachments,
-	}, onProgress)
+	}
+	var loopCtx *LoopContext
+	if isLansengerGroupMessage(msg) {
+		cfg := (*corelib.AppConfig)(nil)
+		if len(loadedConfig) > 0 {
+			cfg = loadedConfig[0]
+		}
+		if cfg == nil {
+			if current, err := m.app.LoadConfig(); err == nil {
+				cfg = &current
+			}
+		}
+		permissions := lansengerGroupPermissionsFromConfig(cfg)
+		loopCtx = NewLoopContext("lansenger-group", handler.getMaclawAgentMaxIterations(), handler.client)
+		loopCtx.Platform = userMessage.Platform
+		loopCtx.UserID = userMessage.UserID
+		loopCtx.Lang = userMessage.Lang
+		loopCtx.LansengerGroupPermissions = &permissions
+	}
+	var resp *IMAgentResponse
+	if loopCtx != nil {
+		resp = handler.HandleIMMessageWithExistingLoop(userMessage, loopCtx, onProgress, nil, nil, nil)
+	} else {
+		resp = handler.HandleIMMessageWithProgress(userMessage, onProgress)
+	}
 
 	if resp == nil || resp.Deferred {
 		return
 	}
 
 	m.sendAgentResponse(gw, msg, resp)
+}
+
+// lansengerConversationUserID keeps each group conversation independent from
+// both the same person's private chat and that person's messages in other
+// groups. Conversation memory, pending confirmations, session-scoped state,
+// and long-running task bookkeeping all key off IMUserMessage.UserID; using
+// FromUserID alone would let a group prompt inherit or expose private context.
+func lansengerConversationUserID(msg lansenger.IncomingMessage) string {
+	if !isLansengerGroupMessage(msg) {
+		return strings.TrimSpace(msg.FromUserID)
+	}
+	groupID := strings.TrimSpace(msg.GroupID)
+	userID := strings.TrimSpace(msg.FromUserID)
+	return fmt.Sprintf("lansenger-group:%d:%s:%d:%s", len(groupID), groupID, len(userID), userID)
 }
 
 func lansengerLocalStartMenuSessionKey(msg lansenger.IncomingMessage) string {

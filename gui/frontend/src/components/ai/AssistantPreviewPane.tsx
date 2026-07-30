@@ -5,6 +5,7 @@ import { contrastingInkOnFill, type Theme } from "./aiAssistantPanelTheme";
 import { AgentTaskPanel } from "./AgentTaskPanel";
 import type { AgentView } from "./agentViewTypes";
 import type { CodePreviewUIState } from "./useCodePreviewState";
+import type { CodeFile } from "./useCodePreviewState";
 import type { WorkflowUIState } from "./useWorkflowState";
 
 interface AssistantPreviewPaneProps {
@@ -21,6 +22,8 @@ interface AssistantPreviewPaneProps {
     dismissAgentView?: (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => void | Promise<void>;
     lang: string;
     selectCodeFile: (filePath: string) => void;
+    projectPath?: string;
+    openWorkspaceFile?: (file: CodeFile) => void;
     submitAgentView?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     showCodePreview: boolean;
     showAgentView: boolean;
@@ -239,6 +242,8 @@ export function AssistantPreviewPane({
     dismissAgentView,
     lang,
     selectCodeFile,
+    projectPath,
+    openWorkspaceFile,
     submitAgentView,
     showCodePreview,
     showAgentView,
@@ -466,6 +471,8 @@ export function AssistantPreviewPane({
                         pinnedPaths={codePreviewState.pinnedPaths}
                         mruOrder={codePreviewState.mruOrder}
                         onSelectFile={selectCodeFile}
+                        projectPath={projectPath}
+                        onOpenWorkspaceFile={openWorkspaceFile}
                         onCloseFile={closeCodeFile}
                         onCloseOtherFiles={closeOtherCodeFiles}
                         onCloseFilesToTheRight={closeCodeFilesToTheRight}

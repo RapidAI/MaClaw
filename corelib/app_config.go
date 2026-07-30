@@ -230,6 +230,17 @@ type AppConfig struct {
 	LansengerAutoMentionReply bool `json:"lansenger_auto_mention_reply,omitempty"`
 	// LansengerAutoQuoteReply: replies attach refMsgId for a native platform quote.
 	LansengerAutoQuoteReply bool `json:"lansenger_auto_quote_reply,omitempty"`
+	// LansengerGroupKnowledgeSourceIDs restricts which local knowledge sources a
+	// bot may read while answering a group message. An empty list means group
+	// messages cannot access the knowledge base (safe default).
+	LansengerGroupKnowledgeSourceIDs []string `json:"lansenger_group_knowledge_source_ids,omitempty"`
+	// LansengerGroupAllowAllDirectories removes the directory allowlist for group
+	// messages. It is deliberately false by default: group bots otherwise have no
+	// local filesystem access until an owner explicitly grants it.
+	LansengerGroupAllowAllDirectories bool `json:"lansenger_group_allow_all_directories,omitempty"`
+	// LansengerGroupAllowedDirectories is the local-directory allowlist used for
+	// group-message file operations when AllowAllDirectories is false.
+	LansengerGroupAllowedDirectories []string `json:"lansenger_group_allowed_directories,omitempty"`
 	// IM 闂?local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
 	QQBotLocalMode     *bool `json:"qqbot_local_mode,omitempty"`     // nil = auto-detect, true = local, false = hub
 	TelegramLocalMode  *bool `json:"telegram_local_mode,omitempty"`  // nil = auto-detect, true = local, false = hub

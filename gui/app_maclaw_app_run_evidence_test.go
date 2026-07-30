@@ -139,6 +139,43 @@ func TestRecordMaclawAppRunHistoryMergesDuplicateRunID(t *testing.T) {
 	}
 }
 
+func TestRecordMaclawAppRunHistoryMergesDuplicateRunIDAcrossAppAliases(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	rich := maclawAppRunHistoryEntry{
+		RunID: "run-alias-1", AppID: "paper_pdf_translator", Status: "done",
+		DefinitionHash: "definition-current", TestProtocolFingerprint: "protocol-current",
+		WorkspaceLayoutFingerprint: "layout-current", ResultPayload: map[string]any{"content": "ok"},
+		At: "2026-07-30T00:00:00Z",
+	}
+	if _, err := app.RecordMaclawAppRunHistory(rich); err != nil {
+		t.Fatalf("record rich alias evidence: %v", err)
+	}
+	sparse := maclawAppRunHistoryEntry{
+		RunID: "run-alias-1", AppID: "skill-app-paper_pdf_translator-app-pdf", Status: "done",
+		DefinitionHash: "definition-current", SkillName: "paper_pdf_translator",
+		GovernanceRecorded: true, Message: maclawAppSkillGovernanceRunMessage,
+		At: "2026-07-30T00:00:01Z",
+	}
+	if _, err := app.RecordMaclawAppRunHistory(sparse); err != nil {
+		t.Fatalf("record sparse panel evidence: %v", err)
+	}
+	oldAlias, err := app.ListMaclawAppRunHistory("paper_pdf_translator", 10)
+	if err != nil {
+		t.Fatalf("list old alias: %v", err)
+	}
+	if len(oldAlias) != 0 {
+		t.Fatalf("same run should move to canonical panel bucket, got %#v", oldAlias)
+	}
+	canonical, err := app.ListMaclawAppRunHistory("skill-app-paper_pdf_translator-app-pdf", 10)
+	if err != nil || len(canonical) != 1 {
+		t.Fatalf("canonical history = %#v err=%v", canonical, err)
+	}
+	got := canonical[0]
+	if got.TestProtocolFingerprint != "protocol-current" || got.WorkspaceLayoutFingerprint != "layout-current" || got.ResultPayload == nil {
+		t.Fatalf("cross-alias merge lost rich evidence: %+v", got)
+	}
+}
+
 func TestClearMaclawAppRunHistory(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{

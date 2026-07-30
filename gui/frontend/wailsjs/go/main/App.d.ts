@@ -235,6 +235,15 @@ export function EnsureCodingWorkbenchArmed(arg1:string):Promise<main.CodingWorkb
 
 export function GetCodingWorkbenchStatus(arg1:string):Promise<main.CodingWorkbenchStatus>;
 
+export function GetCodingWorkbenchDirectory(arg1:string,arg2:string):Promise<any>;
+
+export function GetCodingWorkbenchFilePreview(arg1:string,arg2:string):Promise<any>;
+export function GetCodingWorkbenchEntryProperties(arg1:string,arg2:string):Promise<any>;
+
+export function IsCodingWorkbenchVSCodeAvailable():Promise<boolean>;
+
+export function OpenCodingWorkbenchFileInVSCode(arg1:string,arg2:string):Promise<void>;
+
 export function GetCodingWorkbenchPermission(arg1:string):Promise<string>;
 
 export function SetCodingWorkbenchPermission(arg1:string,arg2:string):Promise<void>;
@@ -1534,6 +1543,7 @@ export function SubmitMaclawAppPackage(arg1:string):Promise<any>;
 export function PublishMaclawAppOneClick(arg1:string):Promise<any>;
 export function PublishMaclawAppSubmissionOneClick(arg1:string):Promise<any>;
 export function PreflightMaclawAppOneClickPublish(arg1:string):Promise<any>;
+export function ReviewMaclawAppPackage(arg1:string):Promise<any>;
 export function PreflightMaclawAppSubmissionOneClick(arg1:string):Promise<any>;
 export function ListMaclawAppPackageSubmissions(arg1:number):Promise<Array<any>>;
 export function GetMaclawAppPackageSubmission(arg1:string):Promise<any>;

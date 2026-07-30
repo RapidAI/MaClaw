@@ -145,6 +145,119 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
     });
 
+    it('keeps configuration unavailable until a slow provider read has completed', async () => {
+        let resolveProviders: ((value: unknown) => void) | undefined;
+        GetMaclawLLMProvidersMock.mockImplementationOnce(() => new Promise(resolve => {
+            resolveProviders = resolve;
+        }));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        // The independent settings calls finish first, as they can on a slow
+        // desktop. The action is disabled until the local config is known, so
+        // a pending read cannot be mistaken for an empty provider list.
+        const configureButton = await screen.findByRole('button', { name: 'Configure' });
+        expect((configureButton as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByText('Reading saved providers…')).toBeTruthy();
+
+        await act(async () => {
+            resolveProviders?.({
+                providers: [{ name: 'Slow provider', url: 'https://api.example.com/v1', key: 'secret', model: 'model-1' }],
+                current: 'Slow provider',
+            });
+        });
+
+        await waitFor(() => expect((configureButton as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(configureButton);
+        expect(await screen.findByRole('button', { name: 'Slow provider' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'None' })).toBeTruthy();
+    });
+
+    it('keeps the settings surface available while the provider read is pending', async () => {
+        GetMaclawLLMProvidersMock.mockImplementationOnce(() => new Promise(() => {}));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText('Agent Max Iterations')).toBeTruthy();
+        expect(screen.getByText('Reading saved providers…')).toBeTruthy();
+        expect((screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole('button', { name: 'Mobile QR' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('keeps waiting after five seconds and explains that the provider read is slow', async () => {
+        vi.useFakeTimers();
+        let resolveProviders: ((value: unknown) => void) | undefined;
+        GetMaclawLLMProvidersMock.mockImplementationOnce(() => new Promise(resolve => {
+            resolveProviders = resolve;
+        }));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+
+        expect(screen.getByText('Still reading saved providers…')).toBeTruthy();
+        expect((screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement).disabled).toBe(true);
+
+        await act(async () => {
+            resolveProviders?.({
+                providers: [{ name: 'Slow provider', url: 'https://api.example.com/v1', key: 'secret', model: 'model-1' }],
+                current: 'Slow provider',
+            });
+            await Promise.resolve();
+        });
+        expect((screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('offers retry when the provider bridge throws synchronously', async () => {
+        GetMaclawLLMProvidersMock.mockImplementationOnce(() => {
+            throw new Error('bridge unavailable');
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        expect(await screen.findByText("Couldn't read LLM providers. Click retry.")).toBeTruthy();
+        const configureButton = screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement;
+        expect(configureButton.disabled).toBe(true);
+        fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+        await waitFor(() => expect(GetMaclawLLMProvidersMock).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect((screen.getByRole('button', { name: 'Configure' }) as HTMLButtonElement).disabled).toBe(false));
+    });
+
+    it('does not let an older Hub status response overwrite a newer one', async () => {
+        let resolveFirstStatus: ((value: unknown) => void) | undefined;
+        GetHubLLMServiceStatusMock
+            .mockImplementationOnce(() => new Promise(resolve => { resolveFirstStatus = resolve; }))
+            .mockResolvedValueOnce({ active: true });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        await waitFor(() => expect(GetHubLLMServiceStatusMock).toHaveBeenCalledTimes(2));
+        await act(async () => {
+            resolveFirstStatus?.({ active: false });
+            await Promise.resolve();
+        });
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        expect(await screen.findByRole('button', { name: 'MaClaw Official' })).toBeTruthy();
+    });
+
+    it('does not apply a provider result after the panel has unmounted', async () => {
+        let resolveProviders: ((value: unknown) => void) | undefined;
+        GetMaclawLLMProvidersMock.mockImplementationOnce(() => new Promise(resolve => {
+            resolveProviders = resolve;
+        }));
+
+        const view = render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        view.unmount();
+        await act(async () => {
+            resolveProviders?.({
+                providers: [{ name: 'Late provider', url: 'https://api.example.com/v1', key: 'secret', model: 'model-1' }],
+                current: 'Late provider',
+            });
+            await Promise.resolve();
+        });
+
+        expect(screen.queryByText('Late provider')).toBeNull();
+    });
+
     it('preserves confirmed vision support when the probe is inconclusive', async () => {
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [

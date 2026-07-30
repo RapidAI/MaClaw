@@ -162,6 +162,31 @@ describe("ProjectSearchPanel", () => {
         expect(OpenFileOrShowInFolder).toHaveBeenCalledWith("D:/refs/decision.md");
     });
 
+    it("clears search UI and ignores late scene results after the assistant page is hidden", async () => {
+        const search = makeSearch([{ id: "p-hidden", name: "Hidden task", project_path: "D:/p/hidden" }]);
+        let resolveScene: (value: unknown) => void = () => {};
+        getProjectSceneMock.mockReturnValue(new Promise(resolve => { resolveScene = resolve; }));
+        const { rerender } = renderPanel(search);
+
+        fireEvent.click(screen.getByTitle("Scene details"));
+        rerender(
+            <ProjectSearchPanel
+                search={search}
+                lang="en"
+                theme={lightTheme}
+                inline={false}
+                active={false}
+                onProjectSwitch={vi.fn()}
+            />,
+        );
+
+        expect(screen.queryByPlaceholderText("Search tasks...")).toBeNull();
+        resolveScene({ project_path: "D:/p/hidden", name: "Should not render" });
+        await Promise.resolve();
+        expect(screen.queryByText("Should not render")).toBeNull();
+        expect(search.close).toHaveBeenCalled();
+    });
+
     it("hides search results without tangible output", () => {
         const search = makeSearch([
             { id: "chat", name: "Chat only", project_path: "D:/p/chat", has_output: false },
@@ -213,16 +238,16 @@ describe("ProjectSearchPanel", () => {
         const search = makeSearch([{ id: "p5", name: "Archivable task", project_path: "D:/p/archive" }]);
         const onCloseProjectTab = vi.fn();
         archiveProjectMock.mockResolvedValue({ archived: true });
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
         renderPanel(search, { onCloseProjectTab });
         fireEvent.contextMenu(screen.getByText("Archivable task"));
         fireEvent.click(screen.getByText("Archive"));
 
-        await waitFor(() => expect(archiveProjectMock).toHaveBeenCalledWith("D:/p/archive"));
-        expect(onCloseProjectTab).toHaveBeenCalledWith("D:/p/archive");
-        expect(search.refresh).toHaveBeenCalled();
-        confirmSpy.mockRestore();
+        // No DialogProvider is intentionally present in this isolated unit test;
+        // the defensive dialog fallback cancels destructive actions.
+        await waitFor(() => expect(archiveProjectMock).not.toHaveBeenCalled());
+        expect(onCloseProjectTab).not.toHaveBeenCalled();
+        expect(search.refresh).not.toHaveBeenCalled();
     });
 
     it("creates a task from current chat with inline naming instead of browser prompt", () => {

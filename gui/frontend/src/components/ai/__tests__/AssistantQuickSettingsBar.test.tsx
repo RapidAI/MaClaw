@@ -175,6 +175,39 @@ describe('AssistantQuickSettingsBar', () => {
         expect(menu.style.position).toBe('fixed');
     });
 
+    it('closes the portaled model menu when app navigation hides the retained panel', () => {
+        const { rerender } = renderBar({
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            currentModel: 'grok-4.5',
+            modelOptions: ['grok-4.5', 'grok-3'],
+            onSwitchModel: vi.fn(),
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        expect(screen.getByRole('listbox')).toBeTruthy();
+
+        rerender(
+            <AssistantQuickSettingsBar
+                active={false}
+                lang="zh-Hans"
+                theme={overlayTheme}
+                themeMode="light"
+                onToggleTheme={vi.fn()}
+                workflowEnabled={false}
+                onToggleWorkflow={vi.fn()}
+                ttsEnabled={false}
+                ttsPlaying={false}
+                onToggleTts={vi.fn()}
+                availableProviders={[{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }]}
+                currentModel="grok-4.5"
+                modelOptions={['grok-4.5', 'grok-3']}
+                onSwitchModel={vi.fn()}
+                onLanguageChange={vi.fn()}
+            />,
+        );
+
+        expect(screen.queryByRole('listbox')).toBeNull();
+    });
+
     it('shows only the model list when there is a single provider', () => {
         renderBar({
             availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],

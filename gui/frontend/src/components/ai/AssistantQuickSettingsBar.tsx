@@ -23,6 +23,8 @@ type Props = {
     lang: string;
     theme: Theme;
     themeMode: "light" | "dark";
+    /** Whether the retained assistant panel is visible in the app shell. */
+    active?: boolean;
     onToggleTheme: () => void;
     workflowEnabled: boolean;
     onToggleWorkflow: () => void;
@@ -55,7 +57,7 @@ function langShortLabel(lang: string): string {
     return "中";
 }
 
-export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, onToggleTheme, workflowEnabled, onToggleWorkflow, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onLanguageChange, statusSlot }: Props) {
+export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, workflowEnabled, onToggleWorkflow, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onLanguageChange, statusSlot }: Props) {
     const tr = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
         [lang]
@@ -183,6 +185,12 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
     useEffect(() => {
         if (!hasModelMenu && menuOpen) setMenuOpen(false);
     }, [hasModelMenu, menuOpen]);
+
+    // The bar remains mounted while a System page is shown. Its model menu is
+    // portaled to document.body, so explicitly dismiss it on navigation.
+    useEffect(() => {
+        if (!active) setMenuOpen(false);
+    }, [active]);
 
     // Outside-click / Escape / listbox focus live in AssistantQuickModelMenuPopover.
 

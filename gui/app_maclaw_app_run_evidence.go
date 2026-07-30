@@ -166,17 +166,28 @@ func (a *App) RecordMaclawAppRunHistory(entry maclawAppRunHistoryEntry) (maclawA
 	if store.ByApp == nil {
 		store.ByApp = map[string][]maclawAppRunHistoryEntry{}
 	}
+	// A run may first be written under the runtime Skill identity and then under
+	// the panel app identity (or vice versa). Merge the same runID across every
+	// identity bucket so the sparse governance stamp cannot leave two divergent
+	// records and the rich runtime fields remain authoritative.
+	for key, list := range store.ByApp {
+		next := make([]maclawAppRunHistoryEntry, 0, len(list))
+		for _, existing := range list {
+			if strings.EqualFold(strings.TrimSpace(existing.RunID), entry.RunID) {
+				entry = mergeMaclawAppRunHistoryEntry(entry, existing)
+				continue
+			}
+			next = append(next, existing)
+		}
+		if len(next) == 0 {
+			delete(store.ByApp, key)
+		} else {
+			store.ByApp[key] = next
+		}
+	}
 	list := store.ByApp[entry.AppID]
 	next := make([]maclawAppRunHistoryEntry, 0, len(list)+1)
-	for _, existing := range list {
-		if strings.EqualFold(strings.TrimSpace(existing.RunID), entry.RunID) {
-			// Same run recorded twice (runtime entry + skill-governance stamp):
-			// merge so the later sparse write cannot erase rich evidence.
-			entry = mergeMaclawAppRunHistoryEntry(entry, existing)
-			continue
-		}
-		next = append(next, existing)
-	}
+	next = append(next, list...)
 	next = append([]maclawAppRunHistoryEntry{entry}, next...)
 	if len(next) > maclawAppRunHistoryPerAppLimit {
 		next = next[:maclawAppRunHistoryPerAppLimit]

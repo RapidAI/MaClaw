@@ -17,6 +17,15 @@ export type DisplayMetrics = {
     devicePixelRatio: number;
 };
 
+/**
+ * Extra policy supplied by the native shell. `disableAutoTransform` does not
+ * change a user's explicit zoom preference; it only prevents Auto from adding
+ * a second CSS transform on hosts where WebView2 already owns DPI scaling.
+ */
+export type UIScaleRecommendationOptions = Partial<DisplayMetrics> & {
+    disableAutoTransform?: boolean;
+};
+
 export const UI_SCALE_MIN = 0.5;
 export const UI_SCALE_MAX = 2.0;
 /** Sentinel written to config for Auto mode. */
@@ -72,10 +81,18 @@ export function isUIScaleAuto(savedFactor: number | null | undefined): boolean {
  *
  * Baseline: ~1920×1080 logical @ 100% → 1.05 (small bump for dense rem UI).
  */
-export function recommendUIScale(metrics?: Partial<DisplayMetrics>): number {
+export function recommendUIScale(options?: UIScaleRecommendationOptions): number {
+    // Windows 10 frameless WebView2 can crop the outer client edge when a
+    // transformed root uses a fractional scale at non-100% display DPI. The
+    // OS/WebView pair already applies its own DPI scaling, so Auto must leave
+    // the root at its native size. Manual zoom remains available as an explicit
+    // user choice.
+    if (options?.disableAutoTransform) {
+        return 1;
+    }
     const m: DisplayMetrics = {
         ...readDisplayMetrics(),
-        ...metrics,
+        ...options,
     };
     const longSide = Math.max(m.screenWidth, m.screenHeight);
     const shortSide = Math.min(m.screenWidth, m.screenHeight);
@@ -121,9 +138,9 @@ export function recommendUIScale(metrics?: Partial<DisplayMetrics>): number {
 }
 
 /** Resolve saved config (0 = Auto) to the effective scale applied to the UI. */
-export function resolveUIScale(savedFactor: number | null | undefined, metrics?: Partial<DisplayMetrics>): number {
+export function resolveUIScale(savedFactor: number | null | undefined, options?: UIScaleRecommendationOptions): number {
     if (isUIScaleAuto(savedFactor)) {
-        return recommendUIScale(metrics);
+        return recommendUIScale(options);
     }
     return clampUIScale(savedFactor as number);
 }
@@ -149,10 +166,10 @@ export function applySavedUIZoomFactor(
     savedFactor: number | null | undefined,
     setUiZoomAuto: (auto: boolean | ((prev: boolean) => boolean)) => void,
     setUiZoom: (updater: number | ((prev: number) => number)) => void,
-    metrics?: Partial<DisplayMetrics>,
+    options?: UIScaleRecommendationOptions,
 ): { auto: boolean; scale: number } {
     const auto = isUIScaleAuto(savedFactor);
-    const scale = resolveUIScale(savedFactor, metrics);
+    const scale = resolveUIScale(savedFactor, options);
     setUiZoomAuto((prev) => (prev === auto ? prev : auto));
     setUiZoom((prev) => (uiScaleEquals(prev, scale) ? prev : scale));
     return { auto, scale };

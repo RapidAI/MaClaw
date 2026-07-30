@@ -122,24 +122,29 @@ func (a *App) PlanMaclawAppInstall(packageJSON string) (maclawAppInstallPlan, er
 // maclawAppInstalledWrapperEntry returns the dependency declaration and
 // normalized marketplace source of an installed wrapper. The package received
 // from the UI does not get to supply either value for a matched wrapper.
-func (a *App) maclawAppInstalledWrapperEntry(entry parsedMaclawAppEntry) (parsedMaclawAppEntry, string) {
+func (a *App) maclawAppInstalledWrapperPackage(entry parsedMaclawAppEntry) (parsedMaclawAppEntry, string, map[string]any) {
 	for _, app := range a.ListSkillAppManifests() {
 		if !maclawAppInstalledWrapperOwnsEntry(app, entry.ID) {
 			continue
 		}
-		var source string
-		switch strings.ToLower(strings.TrimSpace(app.Source)) {
-		case "market", "skillmarket", "hubcenter", "skillhub":
-			source = "skillmarket"
-		default:
+		source := maclawAppInstalledWrapperSource(app)
+		if source == "" {
 			continue
 		}
 		wrapper, err := parseMaclawAppEntryFromMap(cloneMapAny(app.AppDefinition), "installed app wrapper", map[string]struct{}{})
 		if err == nil && strings.EqualFold(strings.TrimSpace(wrapper.ID), strings.TrimSpace(app.ID)) {
-			return wrapper, source
+			// Preserve the complete wrapper document as well as its parsed entry.
+			// The document can carry a publisher-signed bundled dependency that is
+			// needed to repair an app after its runtime skill was removed locally.
+			return wrapper, source, cloneMapAny(app.AppDefinition)
 		}
 	}
-	return entry, ""
+	return entry, "", nil
+}
+
+func (a *App) maclawAppInstalledWrapperEntry(entry parsedMaclawAppEntry) (parsedMaclawAppEntry, string) {
+	wrapper, source, _ := a.maclawAppInstalledWrapperPackage(entry)
+	return wrapper, source
 }
 
 // maclawAppInstalledWrapperOwnsEntry accepts only stable panel IDs derived
@@ -170,6 +175,22 @@ func maclawAppInstalledWrapperOwnsEntry(wrapper SkillAppManifestEntry, entryID s
 	return strings.HasPrefix(strings.ToLower(wrapperAppID), "skill-app-") &&
 		strings.EqualFold(wrapperSkillID, wrapperAppID) &&
 		strings.EqualFold(entryID, wrapperAppID)
+}
+
+// maclawAppInstalledWrapperSource accepts only market provenance persisted by
+// the skill registry. A source label alone is insufficient: local skills can
+// be authored with arbitrary metadata, whereas an installed market wrapper
+// must retain the Hub-issued immutable identifier used to register it.
+func maclawAppInstalledWrapperSource(wrapper SkillAppManifestEntry) string {
+	if strings.TrimSpace(wrapper.HubSkillID) == "" {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(wrapper.Source)) {
+	case "market", "skillmarket", "hubcenter", "skillhub":
+		return "skillmarket"
+	default:
+		return ""
+	}
 }
 
 // InstallMaclawAppDependencies installs missing required Skill dependencies for a
@@ -223,8 +244,16 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 		// state. Do not let the re-serialized UI request attach a different
 		// bundled payload for it: that would replace the wrapper's market
 		// provenance with arbitrary caller-supplied code.
-		if !maclawAppDependencyBelongsToProtectedApp(*dep, trustedWrapperAppIDs) &&
-			a.installBundledMaclawAppDependencyFirst(packageJSON, dep) {
+		if maclawAppDependencyBelongsToProtectedApp(*dep, trustedWrapperAppIDs) {
+			// The UI's re-serialized manifest is not trusted for an installed
+			// market wrapper. Its own persisted document is trusted, though: use
+			// only that document's bundled skill payload before falling back to
+			// the market. Previously this protection skipped every bundled repair,
+			// leaving a recoverable missing runtime dependency permanently blocked.
+			if a.installBundledMaclawAppDependencyFromInstalledWrapper(entries, dep) {
+				continue
+			}
+		} else if a.installBundledMaclawAppDependencyFirst(packageJSON, dep) {
 			continue
 		}
 		// "local" is a declaration that the publisher expects the skill to
@@ -341,6 +370,64 @@ func (a *App) maclawAppInstalledWrapperAppIDs(entries []parsedMaclawAppEntry) ma
 		}
 	}
 	return protected
+}
+
+// installBundledMaclawAppDependencyFromInstalledWrapper repairs a dependency
+// using only the locally persisted package of the market wrapper that owns the
+// app. This keeps the anti-forgery boundary intact while allowing a genuinely
+// self-contained wrapper to recover its own runtime skill.
+func (a *App) installBundledMaclawAppDependencyFromInstalledWrapper(entries []parsedMaclawAppEntry, dep *maclawAppInstallPlanDependency) bool {
+	if a == nil || dep == nil {
+		return false
+	}
+	var selected *maclawAppBundledSkillEntry
+	for _, entry := range entries {
+		if !containsMaclawAppStringFold(dep.AppIDs, entry.ID) {
+			continue
+		}
+		wrapper, source, wrapperDoc := a.maclawAppInstalledWrapperPackage(entry)
+		if source == "" || wrapperDoc == nil {
+			continue
+		}
+		// Bundles in the persisted wrapper are scoped to its app definition ID,
+		// while dep.AppIDs carries the panel ID received from the runtime. Those
+		// values differ for ordinary skill wrappers
+		// (skill-app-<wrapper skill>-<definition id>). Use the authoritative
+		// wrapper ID solely for bundle selection, then retain the panel scope in
+		// the resulting install plan.
+		scopedDep := *dep
+		scopedDep.AppIDs = []string{wrapper.ID}
+		candidate := maclawAppFindBundledSkillForDep(maclawAppBundledDependenciesFromDoc(wrapperDoc), scopedDep)
+		if candidate == nil {
+			continue
+		}
+		if selected != nil && maclawAppBundledSkillPayloadKey(*selected) != maclawAppBundledSkillPayloadKey(*candidate) {
+			dep.InstallErrorCode = "bundled_dependency_ambiguous"
+			dep.InstallErrorStage = "bundled_dependency_scope"
+			dep.InstallErrorDetail = "trusted market wrappers declare conflicting bundled payloads for the same dependency"
+			dep.Health = "missing"
+			dep.Action = "failed"
+			dep.Message = dep.InstallErrorDetail
+			return true
+		}
+		selected = candidate
+	}
+	if selected == nil {
+		return false
+	}
+	if err := a.installBundledMaclawAppSkill(*selected); err != nil {
+		dep.InstallErrorCode = "bundled_dependency_failed"
+		dep.InstallErrorStage = "bundled_dependency_install"
+		dep.InstallErrorDetail = err.Error()
+		dep.Health = "missing"
+		dep.Action = "failed"
+		dep.Message = err.Error()
+		return true
+	}
+	dep.Installed = true
+	dep.Action = "installed_from_bundle"
+	dep.Message = "installed bundled dependency skill"
+	return true
 }
 
 // RecordMaclawAppInstall persists a local install audit record for installed

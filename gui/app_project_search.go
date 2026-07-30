@@ -21,7 +21,10 @@ import (
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
-var recentTaskForkMu sync.Mutex
+var (
+	recentTaskForkMu   sync.Mutex
+	remoteCodingTaskMu sync.Mutex
+)
 
 const (
 	taskManagementTag        = "task_management"
@@ -763,6 +766,18 @@ func upsertRemoteWorkDirContentLine(content, workDir string) string {
 // UpdateRemoteCodingTaskMeta updates non-sensitive SSH metadata tags on a remote
 // coding task. Password is never persisted; use TestRemoteSSHConnection / PrepareRemoteCodingEnvironment.
 func (a *App) UpdateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir string, sshPort int) error {
+	// Coordinate direct metadata edits with create/reuse so a task cannot be
+	// retargeted while another request is resolving the same remote project.
+	remoteCodingTaskMu.Lock()
+	defer remoteCodingTaskMu.Unlock()
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if existing := a.FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir); strings.TrimSpace(existing.ProjectPath) != "" && normalizeProjectSessionPath(existing.ProjectPath) != projectPath {
+		return fmt.Errorf("remote project is already assigned to task: %s", existing.ProjectPath)
+	}
+	return a.updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir, sshPort)
+}
+
+func (a *App) updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir string, sshPort int) error {
 	if a == nil {
 		return fmt.Errorf("app unavailable")
 	}
@@ -963,11 +978,23 @@ func (a *App) TestRemoteSSHConnection(sshHost, sshUser, sshPassword, workDir str
 
 // normalizeRemoteWorkDirKey normalizes remote workdirs for equality checks.
 func normalizeRemoteWorkDirKey(workDir string) string {
-	workDir = strings.TrimSpace(workDir)
+	workDir = sanitizeTaskMetadataTagValue(workDir)
 	if workDir == "" {
 		return ""
 	}
-	// Remote paths are almost always POSIX; still trim both separators.
+	// Remote workdirs are POSIX paths. Normalize redundant separators and dot
+	// segments so /srv/app, /srv//app/, and /srv/app/./ cannot create separate
+	// task records for one remote project. Keep relative paths intact rather
+	// than applying filepath.Clean, which would use the desktop OS semantics.
+	if strings.HasPrefix(workDir, "/") {
+		workDir = path.Clean(workDir)
+		if workDir == "." {
+			return "/"
+		}
+		return workDir
+	}
+	// A legacy Windows-style remote path is normalized conservatively: only
+	// trailing separators are irrelevant to the task identity.
 	workDir = strings.TrimRight(workDir, "/\\")
 	return workDir
 }
@@ -986,27 +1013,46 @@ func (a *App) FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir string) Proje
 		return ProjectSearchResult{}
 	}
 	a.ensureMemoryStore()
-	// Keep this lookup window aligned with the ACP remote-task picker. Otherwise
-	// a previously created remote task can fall outside this search window and a
-	// retry from VS Code would create a duplicate record.
-	tasks := a.ListTasks(1000)
-	for _, task := range tasks {
-		if !projectRecordHasTagLike(task.Tags, taskRemoteCodingDevTag) {
-			continue
-		}
-		th, tu, tw, _ := a.remoteCodingMetaFromTaskTags(task.ProjectPath)
-		if !strings.EqualFold(normalizeSSHHostInput(th), host) {
-			continue
-		}
-		if !strings.EqualFold(sanitizeTaskMetadataTagValue(tu), user) {
-			continue
-		}
-		if normalizeRemoteWorkDirKey(tw) != wantWD {
-			continue
-		}
-		return task
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{}
+	}
+	// Identity lookup deliberately includes hidden/archived records. A user may
+	// remove a task from the sidebar, but that must not allow a retry from the
+	// desktop, ACP, workflow, or virtual-repository entry points to create a
+	// second task/tab for the same remote project.
+	records := pi.ListAllMatching(func(rec memory.ProjectRecord) bool {
+		return projectRecordHasTagLike(rec.Tags, taskRemoteCodingDevTag) &&
+			remoteCodingMetaMatchesTags(rec.Tags, host, user, wantWD)
+	})
+	if len(records) > 0 {
+		return projectRecordToSearchResult(pi, records[0])
 	}
 	return ProjectSearchResult{}
+}
+
+func remoteCodingMetaMatchesTags(tags []string, wantHost, wantUser, wantWorkDir string) bool {
+	var host, user, workDir string
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		switch {
+		case strings.HasPrefix(tag, taskRemoteHostTagPrefix):
+			host = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteHostTagPrefix))
+		case strings.HasPrefix(tag, taskRemoteUserTagPrefix):
+			user = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteUserTagPrefix))
+		case strings.HasPrefix(tag, taskRemoteWorkDirTagPrefix):
+			workDir = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteWorkDirTagPrefix))
+		}
+	}
+	return strings.EqualFold(normalizeSSHHostInput(host), wantHost) &&
+		// SSH usernames are case-sensitive on Unix-like servers. Treating them
+		// case-insensitively can merge distinct accounts with different project
+		// permissions into one task/tab.
+		sanitizeTaskMetadataTagValue(user) == wantUser &&
+		normalizeRemoteWorkDirKey(workDir) == wantWorkDir
 }
 
 // projectRecordHasTagLike reports whether tags contain exact tag (trimmed).
@@ -1028,22 +1074,32 @@ func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, ssh
 	return a.createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir, sshPort)
 }
 
-// createRemoteCodingTaskWithTags is the internal variadic form; extraTags may
-// include origin markers such as source:coding_workflow.
-func (a *App) createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) ProjectSearchResult {
+// findOrCreateRemoteCodingTask returns one task record per SSH target. The
+// caller must hold remoteCodingTaskMu. The boolean reports whether the record
+// was reused, which keeps protocol clients from doing an unlocked preflight
+// lookup just to produce UI feedback.
+func (a *App) findOrCreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) (ProjectSearchResult, bool) {
 	taskName := normalizeRecentTaskName(name)
 	if taskName == "" {
-		return ProjectSearchResult{}
+		return ProjectSearchResult{}, false
 	}
 	host := normalizeSSHHostInput(sshHost)
 	user := sanitizeTaskMetadataTagValue(sshUser)
 	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
 	if host == "" || user == "" || remoteWorkDir == "" {
-		return ProjectSearchResult{}
+		return ProjectSearchResult{}, false
 	}
 	if sshPort <= 0 || sshPort >= 65536 {
 		sshPort = 22
 	}
+
+	if existing := a.FindRemoteCodingTaskByMeta(host, user, remoteWorkDir); strings.TrimSpace(existing.ProjectPath) != "" {
+		if err := a.updateRemoteCodingTaskMeta(existing.ProjectPath, host, user, remoteWorkDir, sshPort); err != nil {
+			log.Printf("[remote-coding-task] refresh existing task metadata failed project=%s: %v", existing.ProjectPath, err)
+		}
+		return existing, true
+	}
+
 	tags := []string{
 		taskManagementTag,
 		taskUserCreatedTag,
@@ -1052,12 +1108,56 @@ func (a *App) createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir str
 	tags = append(tags, buildRemoteCodingMetaTags(host, user, remoteWorkDir, sshPort)...)
 	for _, t := range extraTags {
 		t = strings.TrimSpace(t)
-		if t == "" {
-			continue
+		if t != "" {
+			tags = append(tags, t)
 		}
-		tags = append(tags, t)
 	}
-	return a.createTaskRecordWithWorkingDir(taskName, "", tags, "", false)
+	return a.createTaskRecordWithWorkingDir(taskName, "", tags, "", false), false
+}
+
+// reconcileRemoteCodingTask keeps a workflow's preferred task when it can be
+// safely retargeted, but always favors a task that already owns the requested
+// SSH target. The caller must hold remoteCodingTaskMu.
+func (a *App) reconcileRemoteCodingTask(preferredProjectPath, name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) (ProjectSearchResult, bool) {
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || remoteWorkDir == "" {
+		return ProjectSearchResult{}, false
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+
+	// Check the destination before retargeting the preferred record. Otherwise
+	// changing workflow A to an already-owned target B would leave A and B with
+	// identical remote metadata.
+	if target := a.FindRemoteCodingTaskByMeta(host, user, remoteWorkDir); strings.TrimSpace(target.ProjectPath) != "" {
+		if err := a.updateRemoteCodingTaskMeta(target.ProjectPath, host, user, remoteWorkDir, sshPort); err != nil {
+			log.Printf("[remote-coding-task] refresh target task metadata failed project=%s: %v", target.ProjectPath, err)
+		}
+		return target, true
+	}
+
+	preferredProjectPath = normalizeProjectSessionPath(preferredProjectPath)
+	if preferredProjectPath != "" {
+		if err := a.updateRemoteCodingTaskMeta(preferredProjectPath, host, user, remoteWorkDir, sshPort); err == nil {
+			return ProjectSearchResult{ID: preferredProjectPath, ProjectPath: preferredProjectPath}, false
+		}
+	}
+	return a.findOrCreateRemoteCodingTask(name, host, user, remoteWorkDir, sshPort, extraTags...)
+}
+
+// createRemoteCodingTaskWithTags is the internal variadic form; extraTags may
+// include origin markers such as source:coding_workflow.
+func (a *App) createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) ProjectSearchResult {
+	// Keep lookup + metadata refresh/create as one critical section. This helper
+	// is shared by desktop, workflow, Hub, and virtual-repository entry points,
+	// so guarding only the public Wails method would still leave duplicate paths.
+	remoteCodingTaskMu.Lock()
+	defer remoteCodingTaskMu.Unlock()
+	task, _ := a.findOrCreateRemoteCodingTask(name, sshHost, sshUser, workDir, sshPort, extraTags...)
+	return task
 }
 
 // CreateRecentTaskWithWorkingDir creates a standalone task record with an

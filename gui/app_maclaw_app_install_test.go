@@ -1299,6 +1299,276 @@ func TestInstallMaclawAppDependenciesDerivesProvenanceFromLegacyStableWrapperPan
 	}
 }
 
+func TestInstallMaclawAppDependenciesRestoresBundledDependencyFromInstalledWrapper(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const panelID = "skill-app-paper_pdf_translator-app-pdf"
+	sourceDir := filepath.Join(t.TempDir(), "paper_pdf_translator")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll sourceDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "skill.md"), []byte("# paper_pdf_translator\n"), 0o644); err != nil {
+		t.Fatalf("write bundled skill: %v", err)
+	}
+	dep := maclawAppInstallPlanDependency{
+		ID: "paper_pdf_translator", Version: "1.0.0", Kind: "runtime_skill", Required: true,
+		Source: "skillmarket", CanonicalID: "paper_pdf_translator", InstallRefTarget: "paper_pdf_translator", AppIDs: []string{panelID},
+	}
+	bundled, err := maclawAppBundleInstalledSkill(NLSkillDefinition{
+		Name: "paper_pdf_translator", SkillDir: sourceDir, Source: "skillmarket", HubSkillID: "paper_pdf_translator", HubVersion: "1.0.0",
+	}, dep)
+	if err != nil {
+		t.Fatalf("maclawAppBundleInstalledSkill() error = %v", err)
+	}
+	wrapperDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", panelID)
+	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll wrapperDir: %v", err)
+	}
+	wrapperDoc := map[string]any{
+		"schema": "maclaw.app.v1", "privateMarker": "x_maclaw_apps",
+		"app": map[string]any{
+			"id": panelID, "name": "PDF translator", "kind": "tool_app",
+			"dependencies": map[string]any{"skills": []any{map[string]any{
+				"id": "paper_pdf_translator", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "local",
+			}}},
+		},
+		"bundled_dependencies": maclawAppBundledDependencies{Schema: "maclaw.app.bundled_dependencies.v1", Skills: []maclawAppBundledSkillEntry{bundled}},
+	}
+	wrapperJSON, err := json.Marshal(wrapperDoc)
+	if err != nil {
+		t.Fatalf("Marshal wrapper: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wrapperDir, "maclaw.app.json"), wrapperJSON, 0o644); err != nil {
+		t.Fatalf("write wrapper app definition: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: panelID, SkillDir: wrapperDir, Status: "active", Source: "skillmarket", HubSkillID: "market-pdf-translator"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.cachedSkillScanner = &CachedSkillScanner{}
+	app.cachedSkillScanner.cache.Store(&skillCacheEntry{
+		skills:    []corelib.NLSkillEntry{{Name: panelID, SkillDir: wrapperDir, Status: "active", Source: "skillmarket", HubSkillID: "market-pdf-translator"}},
+		createdAt: time.Now(),
+	})
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		t.Fatalf("remote install must not run when the trusted wrapper embeds %q", id)
+		return nil
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema":"maclaw.app.v1", "privateMarker":"x_maclaw_apps",
+		"app":{"id":"skill-app-paper_pdf_translator-app-pdf","name":"PDF translator","kind":"tool_app","dependencies":{"skills":[{
+			"id":"forged-local-dependency","kind":"runtime_skill","required":true,"source":"local"
+		}]}}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	installed := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if installed == nil || !installed.Installed || installed.Health != "ready" || installed.Action != "installed_from_bundle" || plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("trusted wrapper bundle should restore the missing dependency: %#v", plan)
+	}
+	// The install result is not enough: the next authoritative publish plan must
+	// see the dependency immediately even while the disk scanner is refreshing.
+	replanned, err := app.PlanMaclawAppInstall(`{
+		"schema":"maclaw.app.v1", "privateMarker":"x_maclaw_apps",
+		"app":{"id":"skill-app-paper_pdf_translator-app-pdf","name":"PDF translator","kind":"tool_app","dependencies":{"skills":[{
+			"id":"forged-local-dependency","kind":"runtime_skill","required":true,"source":"local"
+		}]}}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() after restore error = %v", err)
+	}
+	replannedDep := maclawAppPlanDepForTest(replanned, "paper_pdf_translator")
+	if replannedDep == nil || !replannedDep.Installed || replannedDep.Health != "ready" || replanned.HasMissingRequired || replanned.HasBlockingDependency {
+		t.Fatalf("restored dependency must be immediately publish-ready: %#v", replanned)
+	}
+	registered := app.skillExecutor.loadSkills()
+	var restored *corelib.NLSkillEntry
+	for i := range registered {
+		if registered[i].Name == "paper_pdf_translator" {
+			restored = &registered[i]
+			break
+		}
+	}
+	if restored == nil || restored.SkillDir != filepath.Join(tmpHome, ".maclaw", "data", "skills", "paper_pdf_translator") {
+		t.Fatalf("restored runtime skill has wrong durable directory: %#v", restored)
+	}
+	for _, step := range restored.Steps {
+		for _, key := range []string{"command", "working_dir"} {
+			if value, _ := step.Params[key].(string); strings.Contains(value, "maclaw-app-bundled-skill-") {
+				t.Fatalf("restored runtime step still references deleted temp directory: %s=%q", key, value)
+			}
+		}
+	}
+}
+
+func TestInstallMaclawAppDependenciesRestoresWrapperBundleScopedToDefinitionID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const wrapperSkillID = "pdf-translator-wrapper"
+	const wrapperAppID = "market-pdf-translator-app"
+	const panelID = "skill-app-pdf-translator-wrapper-market-pdf-translator-app"
+	sourceDir := filepath.Join(t.TempDir(), "paper_pdf_translator")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll sourceDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "skill.md"), []byte("# paper_pdf_translator\n"), 0o644); err != nil {
+		t.Fatalf("write bundled skill: %v", err)
+	}
+	bundled, err := maclawAppBundleInstalledSkill(NLSkillDefinition{
+		Name: "paper_pdf_translator", SkillDir: sourceDir, Source: "skillmarket", HubSkillID: "paper_pdf_translator", HubVersion: "1.0.0",
+	}, maclawAppInstallPlanDependency{ID: "paper_pdf_translator", AppIDs: []string{wrapperAppID}})
+	if err != nil {
+		t.Fatalf("maclawAppBundleInstalledSkill() error = %v", err)
+	}
+	wrapperDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", wrapperSkillID)
+	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll wrapperDir: %v", err)
+	}
+	wrapperDoc := map[string]any{
+		"schema": "maclaw.app.v1", "privateMarker": "x_maclaw_apps",
+		"app": map[string]any{
+			"id": wrapperAppID, "name": "PDF translator", "kind": "tool_app",
+			"dependencies": map[string]any{"skills": []any{map[string]any{
+				"id": "paper_pdf_translator", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "local",
+			}}},
+		},
+		"bundled_dependencies": maclawAppBundledDependencies{Schema: "maclaw.app.bundled_dependencies.v1", Skills: []maclawAppBundledSkillEntry{bundled}},
+	}
+	wrapperJSON, err := json.Marshal(wrapperDoc)
+	if err != nil {
+		t.Fatalf("Marshal wrapper: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wrapperDir, "maclaw.app.json"), wrapperJSON, 0o644); err != nil {
+		t.Fatalf("write wrapper app definition: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: wrapperSkillID, SkillDir: wrapperDir, Status: "active", Source: "skillmarket", HubSkillID: "market-pdf-translator"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.cachedSkillScanner = &CachedSkillScanner{}
+	app.cachedSkillScanner.cache.Store(&skillCacheEntry{skills: []corelib.NLSkillEntry{{Name: wrapperSkillID, SkillDir: wrapperDir, Status: "active", Source: "skillmarket", HubSkillID: "market-pdf-translator"}}, createdAt: time.Now()})
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		t.Fatalf("remote install must not run when wrapper bundle matches definition ID: %s %s %s", source, id, installRef)
+		return nil
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema":"maclaw.app.v1", "privateMarker":"x_maclaw_apps",
+		"app":{"id":"skill-app-pdf-translator-wrapper-market-pdf-translator-app","name":"PDF translator","kind":"tool_app"}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	installed := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if installed == nil || !installed.Installed || installed.Health != "ready" || installed.Action != "installed_from_bundle" || !containsMaclawAppStringFold(installed.AppIDs, panelID) || plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("definition-scoped trusted wrapper bundle should restore the panel dependency: %#v", plan)
+	}
+}
+
+func TestInstallMaclawAppDependenciesRejectsConflictingTrustedWrapperBundles(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	makeBundle := func(label string, content string, appID string) maclawAppBundledSkillEntry {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), label)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", label, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s bundle: %v", label, err)
+		}
+		bundle, err := maclawAppBundleInstalledSkill(NLSkillDefinition{Name: "paper_pdf_translator", SkillDir: dir, Source: "skillmarket", HubSkillID: "paper_pdf_translator", HubVersion: "1.0.0"}, maclawAppInstallPlanDependency{ID: "paper_pdf_translator", AppIDs: []string{appID}})
+		if err != nil {
+			t.Fatalf("bundle %s: %v", label, err)
+		}
+		return bundle
+	}
+	writeWrapper := func(skillID, appID string, bundle maclawAppBundledSkillEntry) {
+		t.Helper()
+		dir := filepath.Join(tmpHome, ".maclaw", "data", "skills", skillID)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll wrapper %s: %v", skillID, err)
+		}
+		doc := map[string]any{
+			"schema": "maclaw.app.v1", "privateMarker": "x_maclaw_apps",
+			"app": map[string]any{
+				"id": appID, "name": skillID, "kind": "tool_app",
+				"dependencies": map[string]any{"skills": []any{map[string]any{"id": "paper_pdf_translator", "kind": "runtime_skill", "required": true, "source": "local"}}},
+			},
+			"bundled_dependencies": maclawAppBundledDependencies{Schema: "maclaw.app.bundled_dependencies.v1", Skills: []maclawAppBundledSkillEntry{bundle}},
+		}
+		payload, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal wrapper %s: %v", skillID, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "maclaw.app.json"), payload, 0o644); err != nil {
+			t.Fatalf("write wrapper %s: %v", skillID, err)
+		}
+	}
+
+	const (
+		firstSkill  = "market-wrapper-one"
+		firstApp    = "market-app-one"
+		secondSkill = "market-wrapper-two"
+		secondApp   = "market-app-two"
+	)
+	writeWrapper(firstSkill, firstApp, makeBundle("first", "# first payload\n", firstApp))
+	writeWrapper(secondSkill, secondApp, makeBundle("second", "# second payload\n", secondApp))
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{Name: firstSkill, SkillDir: filepath.Join(tmpHome, ".maclaw", "data", "skills", firstSkill), Status: "active", Source: "skillmarket", HubSkillID: "market-one"},
+		{Name: secondSkill, SkillDir: filepath.Join(tmpHome, ".maclaw", "data", "skills", secondSkill), Status: "active", Source: "skillmarket", HubSkillID: "market-two"},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		t.Fatalf("ambiguous trusted bundles must not fall back to remote: %s %s %s", source, id, installRef)
+		return nil
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema":"maclaw.app.pack.v1", "privateMarker":"x_maclaw_apps", "apps":[
+			{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps","app":{"id":"skill-app-market-wrapper-one-market-app-one","name":"One","kind":"tool_app"}},
+			{"schema":"maclaw.app.v1","privateMarker":"x_maclaw_apps","app":{"id":"skill-app-market-wrapper-two-market-app-two","name":"Two","kind":"tool_app"}}
+		]
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if dep == nil || dep.Action != "failed" || dep.InstallErrorCode != "bundled_dependency_ambiguous" || dep.Installed || !plan.HasBlockingDependency {
+		t.Fatalf("conflicting trusted wrapper bundles must fail closed: %#v", plan)
+	}
+}
+
 func TestInstallMaclawAppDependenciesDoesNotAcceptResolvedMetadataForInstalledWrapper(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1537,6 +1807,60 @@ func TestInstallMaclawAppDependenciesDoesNotGrantMarketAuthorityToBareAppIDColli
 	dep := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
 	if dep == nil || dep.Source != "local" || dep.InstallErrorCode != "local_dependency_missing" {
 		t.Fatalf("bare app ID collision must retain the local-only contract: %#v", dep)
+	}
+}
+
+func TestInstallMaclawAppDependenciesDoesNotTrustMarketLabelWithoutHubSkillID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const wrapperSkillID = "locally-forged-market-wrapper"
+	const wrapperAppID = "forged-market-app"
+	wrapperDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", wrapperSkillID)
+	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll wrapperDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wrapperDir, "maclaw.app.json"), []byte(`{
+		"schema":"maclaw.app.v1", "privateMarker":"x_maclaw_apps",
+		"app":{"id":"forged-market-app","name":"Forged market wrapper","kind":"tool_app","dependencies":{"skills":[{
+			"id":"paper_pdf_translator","kind":"runtime_skill","required":true,"source":"local"
+		}]}}
+	}`), 0o644); err != nil {
+		t.Fatalf("write wrapper app definition: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	// A user can write Source into local config; without a HubSkillID it must
+	// not become remote download authority.
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: wrapperSkillID, SkillDir: wrapperDir, Status: "active", Source: "skillmarket"}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	remoteCalls := 0
+	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
+		remoteCalls++
+		return nil
+	}
+
+	plan, err := app.InstallMaclawAppDependencies(`{
+		"schema":"maclaw.app.v1", "privateMarker":"x_maclaw_apps",
+		"app":{"id":"skill-app-locally-forged-market-wrapper-forged-market-app","name":"Forged market wrapper","kind":"tool_app","dependencies":{"skills":[{
+			"id":"paper_pdf_translator","kind":"runtime_skill","required":true,"source":"local"
+		}]}}
+	}`)
+	if err != nil {
+		t.Fatalf("InstallMaclawAppDependencies() error = %v", err)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("market label without HubSkillID must not grant remote authority, got %d calls", remoteCalls)
+	}
+	dep := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if dep == nil || dep.Source != "local" || dep.InstallErrorCode != "local_dependency_missing" || dep.Installed {
+		t.Fatalf("untrusted market label must keep caller dependency local-only: %#v", dep)
 	}
 }
 

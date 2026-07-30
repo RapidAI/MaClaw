@@ -86,6 +86,11 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 	// Re-apply the expert allow-list as well — injection re-routing must not
 	// pull tools outside the expert's whitelist back into the loop.
 	tools = h.filterToolsForExpertUser(userID, tools)
+	// Steering can re-route tools after the initial list was built. Re-apply
+	// the group boundary so an injected request cannot restore local tools.
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+	}
 	tools = stripExecutionContractMetadataForLLM(tools)
 	return tools, estimateToolsTokens(tools)
 }
@@ -195,6 +200,11 @@ func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID 
 		// Re-apply the expert allow-list for the same reason: session-pinned
 		// tools outside the expert whitelist must not re-enter the loop.
 		currentTools = h.filterToolsForExpertUser(userID, currentTools)
+		// discover_tool can pin a conditional tool during a group turn. Keep
+		// group permissions last so discovery cannot create a bypass.
+		if ctx != nil && ctx.LansengerGroupPermissions != nil {
+			currentTools = filterToolsForLansengerGroupPermissions(currentTools, *ctx.LansengerGroupPermissions)
+		}
 		currentTools = stripExecutionContractMetadataForLLM(currentTools)
 		currentBudget = estimateToolsTokens(currentTools)
 

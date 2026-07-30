@@ -1581,6 +1581,50 @@ func maclawAppDefinitionFingerprintPayloadForEntry(entry parsedMaclawAppEntry) m
 	return payload
 }
 
+// maclawAppDefinitionFingerprintCandidatesForEntry returns the canonical
+// backend definition hash plus compatible hashes for package shapes produced
+// by the desktop UI before backend normalization filled defaults into app.ui.
+// Evidence is still bound to the same executable definition; only fields that
+// the parser itself derives are omitted in the compatibility candidates.
+func maclawAppDefinitionFingerprintCandidatesForEntry(entry parsedMaclawAppEntry) map[string]struct{} {
+	candidates := map[string]struct{}{}
+	addPayload := func(payload map[string]any) {
+		if payload == nil {
+			return
+		}
+		encoded, err := maclawAppStableJSON(payload)
+		if err != nil {
+			return
+		}
+		if hash := maclawAppFNV1aTextHash(encoded); hash != "" {
+			candidates[hash] = struct{}{}
+		}
+	}
+	payload := maclawAppDefinitionFingerprintPayloadForEntry(entry)
+	addPayload(payload)
+	manifest := anyMap(payload["manifest"])
+	if manifest == nil {
+		return candidates
+	}
+	entryKind := stringMapValue(entry.Entry, "entryKind")
+	for mask := 1; mask < 4; mask++ {
+		variant := cloneMapAny(payload)
+		variantManifest := cloneMapAny(manifest)
+		if mask&1 != 0 {
+			delete(variantManifest, "ui")
+		}
+		if mask&2 != 0 {
+			if entryKind == "" {
+				continue
+			}
+			delete(variantManifest, "entryKind")
+		}
+		variant["manifest"] = compactPayload(variantManifest)
+		addPayload(variant)
+	}
+	return candidates
+}
+
 func maclawAppWorkspaceLayoutEvidenceReviewIssue(entry parsedMaclawAppEntry, governance map[string]any, appPath string) *maclawAppReviewIssue {
 	if governance == nil || !maclawAppHasPublishableTestEvidence(governance) {
 		return nil

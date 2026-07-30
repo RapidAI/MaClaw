@@ -26,6 +26,7 @@ import type { DiffLine } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
 import type { HighlightToken } from './syntaxHighlight';
 import { MarkdownPreview } from './CodePreviewMarkdown';
+import { CodePreviewWorkspace } from './CodePreviewWorkspace';
 import { relativeLuminance, type Theme } from './aiAssistantPanelTheme';
 import {
     CODE_PREVIEW_FONT_DEFAULT,
@@ -174,6 +175,9 @@ export interface CodePreviewPanelProps {
     pinnedPaths?: string[];
     mruOrder?: string[];
     onSelectFile: (filePath: string) => void;
+    /** The coding task whose local/remote workdir powers the default explorer tab. */
+    projectPath?: string;
+    onOpenWorkspaceFile?: (file: CodeFile) => void;
     /** Close a single file tab (VS Code-style). */
     onCloseFile?: (filePath: string) => void;
     onCloseOtherFiles?: (keepPath: string) => void;
@@ -876,6 +880,8 @@ export function CodePreviewPanel({
     pinnedPaths,
     mruOrder,
     onSelectFile,
+    projectPath,
+    onOpenWorkspaceFile,
     onCloseFile,
     onCloseOtherFiles,
     onCloseFilesToTheRight,
@@ -888,6 +894,10 @@ export function CodePreviewPanel({
     theme,
     lang = 'en',
 }: CodePreviewPanelProps) {
+    // Every source-preview opening starts with the project tree. Source files
+    // remain open beside it, but never replace the confirmation that a local
+    // or remote working directory is available.
+    const [workspaceActive, setWorkspaceActive] = useState(() => Boolean(projectPath));
     const handleHeaderDoubleClick = (event: React.MouseEvent<HTMLElement>) => {
         if (isPreviewHeaderInteractiveTarget(event.target, event.currentTarget)) return;
         onToggleMaximize?.();
@@ -942,6 +952,25 @@ export function CodePreviewPanel({
     }, [wordWrap, fontSize]);
 
     const activeFile = files.get(activeFilePath);
+
+    useEffect(() => {
+        if (projectPath) setWorkspaceActive(true);
+    }, [projectPath]);
+
+    useEffect(() => {
+        if (!activeFilePath || !files.has(activeFilePath)) setWorkspaceActive(true);
+    }, [activeFilePath, files]);
+
+    const openWorkspaceFile = useCallback((file: CodeFile) => {
+        onOpenWorkspaceFile?.(file);
+        if (!onOpenWorkspaceFile) onSelectFile(file.filePath);
+        setWorkspaceActive(false);
+    }, [onOpenWorkspaceFile, onSelectFile]);
+
+    const handleSelectFile = useCallback((filePath: string) => {
+        setWorkspaceActive(false);
+        onSelectFile(filePath);
+    }, [onSelectFile]);
 
     // Compute diff lines when active file has original content
     const diffLines = useMemo<DiffLine[] | null>(() => {
@@ -1206,7 +1235,7 @@ export function CodePreviewPanel({
                 if (files.size > 0) {
                     const order = getMruCycleOrder(files, mruOrder ?? []);
                     const next = cycleFilePath(order, activeFilePath, e.shiftKey ? -1 : 1);
-                    if (next) onSelectFile(next);
+                    if (next) handleSelectFile(next);
                 }
                 return;
             }
@@ -1267,7 +1296,7 @@ export function CodePreviewPanel({
         gotoOpen,
         mruOrder,
         onCloseFile,
-        onSelectFile,
+        handleSelectFile,
         openFind,
         openGoto,
         toggleWordWrap,
@@ -1341,7 +1370,7 @@ export function CodePreviewPanel({
                         style={{
                             display: 'flex',
                             alignItems: 'center',
-                            justifyContent: 'flex-end',
+                        justifyContent: 'space-between',
                             padding: '8px 14px',
                             borderBottom: `1px solid ${theme.border}`,
                             background: theme.tabBg,
@@ -1349,6 +1378,9 @@ export function CodePreviewPanel({
                             '--wails-draggable': 'no-drag',
                         } as any}
                     >
+                        <span style={{ color: theme.tabActiveText, fontSize: 12, fontWeight: 600 }}>
+                            {lang.startsWith('zh') ? '工作目录' : 'Working directory'}
+                        </span>
                         <button
                             onClick={onClose}
                             style={{
@@ -1367,16 +1399,7 @@ export function CodePreviewPanel({
                             X
                         </button>
                     </div>
-                    <div style={{
-                        flex: 1,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: theme.textMuted,
-                        fontSize: 14,
-                    }}>
-                        No code files
-                    </div>
+                    <CodePreviewWorkspace projectPath={projectPath} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
                 </div>
             </div>
         );
@@ -1444,12 +1467,35 @@ export function CodePreviewPanel({
                         '--wails-draggable': 'no-drag',
                     } as any}
                 >
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={workspaceActive}
+                        data-testid="code-preview-workspace-tab"
+                        onClick={() => setWorkspaceActive(true)}
+                        style={{
+                            flexShrink: 0,
+                            height: 36,
+                            padding: '0 10px',
+                            border: 'none',
+                            borderRight: `1px solid ${theme.border}`,
+                            borderBottom: workspaceActive ? `2px solid ${theme.tabActiveText}` : '2px solid transparent',
+                            background: workspaceActive ? theme.tabActiveBg : theme.tabBg,
+                            color: workspaceActive ? theme.tabActiveText : theme.textMuted,
+                            cursor: 'pointer',
+                            font: 'inherit',
+                            fontSize: 12,
+                            fontWeight: 600,
+                        }}
+                    >
+                        {lang.startsWith('zh') ? '工作目录' : 'Working directory'}
+                    </button>
                     <FileTabBar
                         files={files}
                         activeFilePath={activeFilePath}
                         pinnedPaths={pinnedPaths}
                         mruOrder={mruOrder}
-                        onSelectFile={onSelectFile}
+                        onSelectFile={handleSelectFile}
                         onCloseFile={onCloseFile}
                         onCloseOtherFiles={onCloseOtherFiles}
                         onCloseFilesToTheRight={onCloseFilesToTheRight}
@@ -1492,7 +1538,7 @@ export function CodePreviewPanel({
             </div>
 
             {/* Active file path breadcrumb (VS Code-style status under tabs) */}
-            {activeFile && (
+            {!workspaceActive && activeFile && (
                 <div
                     data-testid="code-preview-active-path"
                     title={activeFile.absPath || activeFile.filePath}
@@ -1563,7 +1609,7 @@ export function CodePreviewPanel({
                 </div>
             )}
 
-            {findOpen && (
+            {!workspaceActive && findOpen && (
                 <CodePreviewFindBar
                     query={findQuery}
                     matchCount={matchLineIndexes.length}
@@ -1597,7 +1643,7 @@ export function CodePreviewPanel({
                 />
             )}
 
-            {gotoOpen && (
+            {!workspaceActive && gotoOpen && (
                 <CodePreviewGoToLineBar
                     value={gotoValue}
                     maxLines={Math.max(1, totalLines)}
@@ -1630,7 +1676,9 @@ export function CodePreviewPanel({
                     minHeight: 0,
                 }}
             >
-                {activeFile ? (
+                {workspaceActive ? (
+                    <CodePreviewWorkspace projectPath={projectPath} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
+                ) : activeFile ? (
                     diffLines ? (
                         <DiffView
                             diffLines={diffLines}
@@ -1675,4 +1723,3 @@ export function CodePreviewPanel({
         </div>
     );
 }
-

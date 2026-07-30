@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CSSProperties } from "react";
 import { KnowledgeSettingsPanel } from "../settings/KnowledgeSettingsPanel";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -118,7 +119,7 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
 
     const title = lang === "en" ? "Knowledge Base" : "知识库";
 
-    return (
+    const dialog = (
         <div
             style={overlayStyle}
             role="dialog"
@@ -165,4 +166,9 @@ export function KnowledgeDialog({ open, onClose, lang, theme }: KnowledgeDialogP
             </div>
         </div>
     );
+
+    // The assistant stays mounted while the user views another application page.
+    // Render this fixed overlay at the document root so it cannot be clipped by
+    // the hidden assistant host or inherit its hidden accessibility state.
+    return typeof document === "undefined" ? dialog : createPortal(dialog, document.body);
 }

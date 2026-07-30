@@ -7,7 +7,7 @@ import { InputHistoryAutocomplete } from "./InputHistoryAutocomplete";
 import { useInputHistoryAutocomplete } from "./useInputHistoryAutocomplete";
 import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
-import { isPlainEnter } from "./assistantInputShortcuts";
+import { insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
 
 const EMPTY_TEXTAREA_REF: RefObject<HTMLTextAreaElement | null> = { current: null };
 const EMPTY_SUBMITTED_PROMPTS: string[] = [];
@@ -21,7 +21,7 @@ function asTextareaRef(ref: AssistantInputComposerProps["inputRef"]): RefObject<
 
 export function AssistantInputComposer(props: AssistantInputComposerProps) {
     const {
-        attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composeAction,
+        active = true, attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composeAction,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick,
         handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked,
@@ -49,6 +49,13 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         rememberHistoryEdit(next);
         updateInputValue(next);
         requestAnimationFrame(() => resizeInput());
+    }, [rememberHistoryEdit, resizeInput, updateInputValue]);
+
+    const insertLineBreak = useCallback((textarea: HTMLTextAreaElement) => {
+        insertTextareaLineBreak(textarea, (next) => {
+            rememberHistoryEdit(next);
+            updateInputValue(next);
+        }, resizeInput);
     }, [rememberHistoryEdit, resizeInput, updateInputValue]);
 
     const inputHardDisabled = !ready || cancelPending || hardLockInput;
@@ -148,8 +155,15 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                             if (exitHistoryBrowsing()) e.preventDefault();
                             return;
                         }
+                        // Some embedded WebViews do not insert a newline for Ctrl/Cmd+Enter
+                        // in a controlled textarea, so make the requested shortcut explicit.
+                        if (isLineBreakShortcut(e)) {
+                            e.preventDefault();
+                            insertLineBreak(e.currentTarget);
+                            return;
+                        }
                         // Plain Enter sends. Modifier combinations keep the textarea's
-                        // native multiline behavior, including Ctrl/Cmd+Enter for a newline.
+                        // native multiline behavior, including Shift+Enter for a newline.
                         if (isPlainEnter(e)) {
                             e.preventDefault();
                             handleSend();
@@ -164,6 +178,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
             <div data-testid={toolbarTestId} style={toolbarStyle}>
                 <div style={toolbarLeftStyle} role="group" aria-label={lang?.startsWith("zh") ? "\u8f93\u5165\u64cd\u4f5c" : "Input actions"}>
                     <AssistantInputActionsLeft
+                        active={active}
                         attachButtonTestId={attachButtonTestId}
                         browseFile={browseFile}
                         composeAction={composeAction}

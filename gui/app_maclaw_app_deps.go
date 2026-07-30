@@ -2889,7 +2889,22 @@ func (a *App) installBundledMaclawAppSkill(bundle maclawAppBundledSkillEntry) er
 	if err := copySkillPackageRootAtomically(tmpDir, destDir, primaryDir); err != nil {
 		return err
 	}
-	installedEntry := *entry
+	// Parse the installed copy again so runner-normalized command and working
+	// directory paths point at the durable destination, not the temporary
+	// extraction directory that is removed when this function returns.
+	installedEntryPtr, err := loadImportedSkillEntry(destDir)
+	if err != nil {
+		_ = os.RemoveAll(destDir)
+		return fmt.Errorf("load installed bundled skill: %w", err)
+	}
+	installedEntry := *installedEntryPtr
+	installedEntry.Name = entry.Name
+	installedEntry.Status = firstNonEmpty(entry.Status, installedEntry.Status)
+	installedEntry.Source = entry.Source
+	installedEntry.SkillID = entry.SkillID
+	installedEntry.HubSkillID = entry.HubSkillID
+	installedEntry.HubVersion = entry.HubVersion
+	installedEntry.TrustLevel = entry.TrustLevel
 	installedEntry.SkillDir = destDir
 	if err := writeSkillScanCacheForInstalledEntry(&installedEntry, report); err != nil {
 		_ = os.RemoveAll(destDir)
@@ -2899,6 +2914,11 @@ func (a *App) installBundledMaclawAppSkill(bundle maclawAppBundledSkillEntry) er
 		_ = os.RemoveAll(destDir)
 		return err
 	}
+	// Register persists config and invalidates the scanner, whose Get method is
+	// intentionally allowed to keep serving its stale snapshot while rescanning.
+	// Publish planning runs immediately after this call, so synchronously upsert
+	// the installed definition and clear the executor list cache before returning.
+	a.refreshSkillIndexesAfterMutation(installedEntry.Name, installedEntry)
 	a.emitSkillInstallProgress(installedEntry.Name, "done", "Bundled dependency skill installed successfully.", report)
 	return nil
 }
