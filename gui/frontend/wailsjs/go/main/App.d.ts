@@ -242,7 +242,7 @@ export function GetCodingWorkbenchEntryProperties(arg1:string,arg2:string):Promi
 
 export function IsCodingWorkbenchVSCodeAvailable():Promise<boolean>;
 
-export function OpenCodingWorkbenchFileInVSCode(arg1:string,arg2:string):Promise<void>;
+export function OpenCodingWorkbenchFileInVSCode(arg1:string,arg2:string):Promise<boolean>;
 
 export function GetCodingWorkbenchPermission(arg1:string):Promise<string>;
 

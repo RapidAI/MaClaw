@@ -1156,6 +1156,18 @@
     background: color-mix(in srgb, var(--theme-danger-bg) 42%, var(--theme-surface));
 }
 
+.apps-skill-save-message[data-state='warn'] {
+    border-color: color-mix(in srgb, var(--theme-warning) 24%, var(--theme-border));
+    color: var(--theme-warning);
+    background: color-mix(in srgb, var(--theme-warning-bg) 42%, var(--theme-surface));
+}
+
+.apps-skill-save-message ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    font-weight: 400;
+}
+
 .apps-field-editor {
     display: grid;
     gap: 8px;

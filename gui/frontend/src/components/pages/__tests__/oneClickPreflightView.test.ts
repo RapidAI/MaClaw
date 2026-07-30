@@ -50,6 +50,28 @@ function formatOneClickPreflightCheck(id: string, message: string): string {
     return message;
 }
 
+function oneClickPreflightDependencyIDs(row: Record<string, unknown>): string[] {
+    const ids: string[] = [];
+    const push = (value: unknown) => {
+        const id = String(value || '').trim();
+        if (id && !ids.includes(id)) ids.push(id);
+    };
+    if (Array.isArray(row.missing_ids)) row.missing_ids.forEach(push);
+    if (Array.isArray(row.failures)) {
+        for (const raw of row.failures) {
+            if (raw && typeof raw === 'object') push((raw as Record<string, unknown>).id);
+        }
+    }
+    if (Array.isArray(row.dependencies)) {
+        for (const raw of row.dependencies) {
+            if (!raw || typeof raw !== 'object') continue;
+            const dep = raw as Record<string, unknown>;
+            if (String(dep.status || '').trim() === 'bundle_failed') push(dep.id);
+        }
+    }
+    return ids;
+}
+
 function summarizeOneClickPreflightView(
     preflight: Record<string, unknown> | null | undefined,
     text: {
@@ -93,7 +115,7 @@ function summarizeOneClickPreflightView(
             const row = raw as Record<string, unknown>;
             const id = String(row.id || '').trim();
             if (!id) continue;
-            if (!['package_ready', 'dependencies', 'skill_market_email', 'hub_enrollment', 'enterprise_hub_market', 'skill_market_upload'].includes(id)) {
+            if (!['package_ready', 'dependencies', 'dependency_bundle', 'skill_market_email', 'hub_enrollment', 'enterprise_hub_market', 'skill_market_upload'].includes(id)) {
                 continue;
             }
             lines.push({ id });
@@ -222,5 +244,34 @@ describe('summarizeOneClickPreflightView', () => {
         expect(view.readyLocal).toBe(true);
         expect(view.readySkill).toBe(false);
         expect(view.readyHub).toBe(true);
+    });
+
+    it('surfaces the dependency_bundle error check like other blocking checks', () => {
+        const view = summarizeOneClickPreflightView({
+            ready_for_local: true,
+            ready_for_skill_market: true,
+            ready_for_hub_pack: false,
+            checks: [{
+                id: 'dependency_bundle',
+                ok: false,
+                severity: 'error',
+                error_code: 'dep_bundle_failed',
+                message: '1 required skill(s) installed locally but failed to embed into the package',
+                failures: [{ id: 'ocr-skill', error: 'read failed' }],
+            }],
+        }, text);
+        expect(view.lines.map((l) => l.id)).toEqual(['dependency_bundle']);
+    });
+
+    it('extracts dependency ids from missing_ids, failures, and bundle_failed rows', () => {
+        expect(oneClickPreflightDependencyIDs({
+            missing_ids: ['alpha-skill'],
+            failures: [{ id: 'beta-skill', error: 'boom' }],
+            dependencies: [
+                { id: 'gamma-skill', status: 'bundle_failed', error: 'boom' },
+                { id: 'delta-skill', status: 'bundled' },
+            ],
+        })).toEqual(['alpha-skill', 'beta-skill', 'gamma-skill']);
+        expect(oneClickPreflightDependencyIDs({ id: 'dependencies', ok: true })).toEqual([]);
     });
 });

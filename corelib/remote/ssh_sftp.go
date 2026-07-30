@@ -108,6 +108,77 @@ func SFTPDownload(client *ssh.Client, remotePath, localPath string, onProgress f
 	}, nil
 }
 
+// SFTPDownloadFileLimited downloads exactly one remote file while enforcing a
+// byte limit during the copy. It is intended for UI conveniences such as local
+// editor previews, where a stale remote stat must not allow an unexpectedly
+// large transfer to consume local storage.
+func SFTPDownloadFileLimited(client *ssh.Client, remotePath, localPath string, maxBytes int64) (*SFTPTransferResult, error) {
+	if maxBytes == int64(^uint64(0)>>1) {
+		return nil, fmt.Errorf("download limit is too large")
+	}
+	sftpClient, err := sftp.NewClient(client)
+	if err != nil {
+		return nil, fmt.Errorf("sftp client: %w", err)
+	}
+	defer sftpClient.Close()
+
+	info, err := sftpClient.Stat(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("stat remote %s: %w", remotePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("remote path is not a regular file: %s", remotePath)
+	}
+	if maxBytes >= 0 && info.Size() > maxBytes {
+		return nil, fmt.Errorf("remote file exceeds the %d byte download limit", maxBytes)
+	}
+
+	start := time.Now()
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(localPath), err)
+	}
+	src, err := sftpClient.Open(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("open remote %s: %w", remotePath, err)
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(localPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("create local %s: %w", localPath, err)
+	}
+	dstClosed := false
+	defer func() {
+		if !dstClosed {
+			_ = dst.Close()
+		}
+	}()
+
+	reader := io.Reader(src)
+	if maxBytes >= 0 {
+		// Read one extra byte to distinguish an exact-size file from overflow.
+		reader = io.LimitReader(src, maxBytes+1)
+	}
+	n, err := io.Copy(dst, reader)
+	if err != nil {
+		return nil, fmt.Errorf("download %s: %w", remotePath, err)
+	}
+	if maxBytes >= 0 && n > maxBytes {
+		return nil, fmt.Errorf("remote file exceeds the %d byte download limit", maxBytes)
+	}
+	// Surface buffered filesystem errors before the caller atomically renames
+	// and launches the local copy. A deferred Close alone would discard them.
+	if err := dst.Close(); err != nil {
+		return nil, fmt.Errorf("close local %s: %w", localPath, err)
+	}
+	dstClosed = true
+	elapsed := time.Since(start)
+	bps := int64(0)
+	if elapsed.Seconds() > 0 {
+		bps = int64(float64(n) / elapsed.Seconds())
+	}
+	return &SFTPTransferResult{Files: 1, Bytes: n, Elapsed: elapsed.Round(time.Millisecond).String(), BytesPerSec: bps}, nil
+}
+
 func uploadFile(client *sftp.Client, localPath, remotePath string, onProgress func(int64)) (int64, error) {
 	// 远程路径统一用 /（SFTP 协议要求 POSIX 路径）
 	remotePath = filepath.ToSlash(remotePath)
@@ -284,6 +355,23 @@ func (m *SSHSessionManager) SFTPTransfer(sessionID, direction, localPath, remote
 		return "", err
 	}
 	return result.String(), nil
+}
+
+// SFTPDownloadFileLimited uses a managed session's existing SSH connection to
+// download one regular file while enforcing maxBytes during the transfer.
+func (m *SSHSessionManager) SFTPDownloadFileLimited(sessionID, localPath, remotePath string, maxBytes int64) (*SFTPTransferResult, error) {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("ssh session %s not found", sessionID)
+	}
+	cfg := s.Spec.HostConfig
+	cfg.Defaults()
+	client, err := m.pool.Acquire(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("acquire connection: %w", err)
+	}
+	defer m.pool.Release(cfg)
+	return SFTPDownloadFileLimited(client, remotePath, localPath, maxBytes)
 }
 
 func humanSize(b int64) string {

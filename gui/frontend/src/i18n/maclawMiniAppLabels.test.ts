@@ -72,4 +72,15 @@ describe('maclawMiniAppLabels', () => {
             '「Invoice」安装成功！打开小程序面板即可使用。',
         );
     });
+
+    it('provides dependency source hint and warnings title in all languages', () => {
+        for (const pack of [miniAppLabels.dependencySourceLocalHint, miniAppLabels.dependencyWarningsTitle]) {
+            expect(pack.en.trim()).not.toBe('');
+            expect(pack.zhHans.trim()).not.toBe('');
+            expect(pack.zhHant.trim()).not.toBe('');
+        }
+        expect(miniAppLabels.dependencySourceLocalHint.en).toContain('embedded bundle');
+        expect(miniAppLabels.dependencySourceLocalHint.zhHans).toContain('内嵌包');
+        expect(miniAppLabels.dependencyWarningsTitle.zhHans).toBe('依赖警告');
+    });
 });

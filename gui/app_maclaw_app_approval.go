@@ -2046,6 +2046,9 @@ func maclawAppWorkflowRuntimeContractReviewIssues(entry parsedMaclawAppEntry, in
 		}
 		match, ok := installed[strings.ToLower(workflowID)]
 		if !ok {
+			// Missing workflow Skills are surfaced through the workflow_skill
+			// dependency path (plan/install/publish gates); the runtime contract
+			// review only judges Skills that are actually installed locally.
 			continue
 		}
 		installedStatus, health := maclawAppInstalledSkillStatus(match)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -61,6 +63,12 @@ type codingWorkbenchRemoteDirectoryRecord struct {
 const codingWorkbenchBrowserMaxEntries = 500
 const codingWorkbenchBrowserMaxRunes = 400000
 const codingWorkbenchBrowserMaxReadBytes = codingWorkbenchBrowserMaxRunes * utf8.UTFMax
+
+// A file opened from a remote explorer is copied locally before VS Code starts.
+// Keep that convenience bounded so a forged frontend request cannot turn a
+// context-menu action into an unexpectedly huge desktop download.
+const codingWorkbenchVSCodeRemoteMaxFileBytes int64 = 64 * 1024 * 1024
+const codingWorkbenchVSCodeRemoteSnapshotRetention = 7 * 24 * time.Hour
 
 func cleanCodingWorkbenchBrowserPath(value string) (string, error) {
 	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
@@ -385,65 +393,165 @@ func (a *App) IsCodingWorkbenchVSCodeAvailable() bool {
 }
 
 // OpenCodingWorkbenchFileInVSCode opens a file chosen from the source explorer
-// in the locally installed VS Code. Remote tasks are passed to VS Code's
-// Remote-SSH launcher using the task's existing connection metadata.
-func (a *App) OpenCodingWorkbenchFileInVSCode(projectPath, relativePath string) error {
+// in the locally installed VS Code. For remote tasks the file is first copied
+// through the existing SFTP session into a task-scoped local temporary cache;
+// VS Code Remote-SSH is deliberately not used because it requires a working
+// VS Code Server on the remote host. The return value tells the UI whether the
+// opened file is that local, non-synchronizing copy.
+func (a *App) OpenCodingWorkbenchFileInVSCode(projectPath, relativePath string) (bool, error) {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if a == nil || projectPath == "" {
-		return fmt.Errorf("project path is required")
+		return false, fmt.Errorf("project path is required")
 	}
 	relativePath, err := cleanCodingWorkbenchBrowserPath(relativePath)
 	if err != nil || relativePath == "" {
 		if err == nil {
 			err = fmt.Errorf("file path is required")
 		}
-		return err
+		return false, err
 	}
 	codeCLI, err := findVSCodeCLI()
 	if err != nil {
-		return fmt.Errorf("VS Code is not available: %w", err)
+		return false, fmt.Errorf("VS Code is not available: %w", err)
 	}
 	if a.GetCodingWorkbenchStatus(projectPath).Kind == "remote" {
-		// Resolve and stat through the live SSH session before launching. Besides
-		// giving VS Code the canonical path, this applies the same symlink/root
-		// containment check used by the explorer and rejects a directory supplied
-		// by a forged frontend call.
+		// Resolve and stat through the live SSH session before downloading. This
+		// applies the explorer's same symlink/root containment check and rejects a
+		// directory supplied by a forged frontend call.
 		properties, propertiesErr := a.getRemoteCodingWorkbenchEntryProperties(projectPath, relativePath)
 		if propertiesErr != nil {
-			return propertiesErr
+			return false, propertiesErr
 		}
 		if properties.IsDir {
-			return fmt.Errorf("path is a directory")
+			return false, fmt.Errorf("path is a directory")
 		}
-		meta, metaErr := a.GetRemoteCodingTaskMeta(projectPath)
-		if metaErr != nil {
-			return metaErr
+		localPath, discardSnapshot, downloadErr := a.downloadRemoteCodingWorkbenchFileForVSCode(projectPath, relativePath, properties)
+		if downloadErr != nil {
+			return false, downloadErr
 		}
-		if strings.TrimSpace(meta.WorkDir) == "" || strings.TrimSpace(properties.AbsPath) == "" {
-			return fmt.Errorf("remote work_dir is unavailable")
+		if err := launchVSCodeWithArgs(codeCLI, []string{"-n", localPath}); err != nil {
+			discardSnapshot()
+			return false, err
 		}
-		host, user := strings.TrimSpace(meta.Host), strings.TrimSpace(meta.User)
-		if host == "" || user == "" {
-			return fmt.Errorf("remote host metadata is unavailable")
-		}
-		return launchVSCodeWithArgs(codeCLI, []string{"-n", "--remote", "ssh-remote+" + user + "@" + host, properties.AbsPath})
+		return true, nil
 	}
 	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	absPath, err := codingWorkbenchBrowserLocalPath(root, relativePath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if info.IsDir() {
-		return fmt.Errorf("path is a directory")
+		return false, fmt.Errorf("path is a directory")
 	}
-	return launchVSCodeWithArgs(codeCLI, []string{"-n", absPath})
+	return false, launchVSCodeWithArgs(codeCLI, []string{"-n", absPath})
+}
+
+// downloadRemoteCodingWorkbenchFileForVSCode writes a remote source file to a
+// task-specific temporary snapshot. A temp file plus rename prevents VS Code
+// from ever observing a partially downloaded file. Each launch gets its own
+// snapshot, so refreshing a remote file cannot overwrite unsaved local edits in
+// a VS Code window. The cache is local-only: edits are intentionally not
+// uploaded to the remote task.
+func (a *App) downloadRemoteCodingWorkbenchFileForVSCode(projectPath, relativePath string, properties CodingWorkbenchEntryProperties) (string, func(), error) {
+	if strings.TrimSpace(properties.AbsPath) == "" {
+		return "", nil, fmt.Errorf("remote file path is unavailable")
+	}
+	if properties.SizeKnown && properties.Size > codingWorkbenchVSCodeRemoteMaxFileBytes {
+		return "", nil, fmt.Errorf("remote file is too large to open locally with VS Code (limit %d MB)", codingWorkbenchVSCodeRemoteMaxFileBytes/(1024*1024))
+	}
+	sessionID, _, err := a.acpRemoteSSHSession(projectPath)
+	if err != nil {
+		return "", nil, err
+	}
+	hub := a.ensureHubClient()
+	if hub == nil || hub.ensureIMHandler() == nil {
+		return "", nil, fmt.Errorf("AI assistant not initialized")
+	}
+
+	digest := sha256.Sum256([]byte(projectPath))
+	cacheRoot := filepath.Join(os.TempDir(), "maclaw-vscode", fmt.Sprintf("%x", digest[:]))
+	// Snapshot directories must not grow forever. This cache contains only
+	// generated, local copies and cleanup is deliberately best-effort: a locked
+	// file or a still-open VS Code window is never allowed to block the current
+	// open request.
+	cleanupCodingWorkbenchVSCodeRemoteSnapshots(cacheRoot, time.Now())
+	snapshotsRoot := filepath.Join(cacheRoot, "snapshots")
+	if err := os.MkdirAll(snapshotsRoot, 0o700); err != nil {
+		return "", nil, fmt.Errorf("create local VS Code cache: %w", err)
+	}
+	snapshotRoot, err := os.MkdirTemp(snapshotsRoot, "snapshot-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create local VS Code snapshot: %w", err)
+	}
+	keepSnapshot := false
+	defer func() {
+		if !keepSnapshot {
+			_ = os.RemoveAll(snapshotRoot)
+		}
+	}()
+	localPath := filepath.Join(snapshotRoot, filepath.FromSlash(relativePath))
+	if !isPathInsideRoot(cacheRoot, localPath) {
+		return "", nil, fmt.Errorf("local cache path is invalid")
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		return "", nil, fmt.Errorf("create local VS Code cache: %w", err)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(localPath), "."+filepath.Base(localPath)+".download-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create local VS Code download: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return "", nil, fmt.Errorf("prepare local VS Code download: %w", err)
+	}
+	defer os.Remove(temporaryPath)
+
+	if _, err := hub.ensureIMHandler().ensureSSHManager().SFTPDownloadFileLimited(sessionID, temporaryPath, properties.AbsPath, codingWorkbenchVSCodeRemoteMaxFileBytes); err != nil {
+		return "", nil, fmt.Errorf("download remote file for VS Code: %w", err)
+	}
+	if downloaded, err := os.Stat(temporaryPath); err != nil {
+		return "", nil, fmt.Errorf("verify local VS Code download: %w", err)
+	} else if downloaded.Size() > codingWorkbenchVSCodeRemoteMaxFileBytes {
+		return "", nil, fmt.Errorf("remote file exceeds the %d MB VS Code download limit", codingWorkbenchVSCodeRemoteMaxFileBytes/(1024*1024))
+	} else if properties.SizeKnown && downloaded.Size() != properties.Size {
+		return "", nil, fmt.Errorf("remote file changed while downloading; please try again")
+	}
+	_ = os.Chmod(temporaryPath, 0o600)
+	if err := os.Rename(temporaryPath, localPath); err != nil {
+		return "", nil, fmt.Errorf("finalize local VS Code download: %w", err)
+	}
+	keepSnapshot = true
+	return localPath, func() { _ = os.RemoveAll(snapshotRoot) }, nil
+}
+
+func cleanupCodingWorkbenchVSCodeRemoteSnapshots(cacheRoot string, now time.Time) {
+	snapshotsRoot := filepath.Join(cacheRoot, "snapshots")
+	entries, err := os.ReadDir(snapshotsRoot)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !now.After(info.ModTime().Add(codingWorkbenchVSCodeRemoteSnapshotRetention)) {
+			continue
+		}
+		candidate := filepath.Join(snapshotsRoot, entry.Name())
+		if !isPathInsideRoot(snapshotsRoot, candidate) {
+			continue
+		}
+		_ = os.RemoveAll(candidate)
+	}
 }
 
 func codingWorkbenchEntryProperties(relativePath, absPath, name string, isDir bool, size, modifiedAt int64, mode string) CodingWorkbenchEntryProperties {
@@ -477,8 +585,8 @@ func (a *App) getRemoteCodingWorkbenchEntryProperties(projectPath, relativePath 
 if not ok: raise SystemExit("path outside remote work_dir")
 s=os.stat(target); isdir=stat.S_ISDIR(s.st_mode); name=os.path.basename(target.rstrip(os.sep)) or target; print(json.dumps({"name":name,"abs_path":target,"is_dir":isdir,"size":s.st_size,"size_known":not isdir,"modified_at":int(s.st_mtime),"mode":format(stat.S_IMODE(s.st_mode),"04o")}))`
 	raw := hub.ensureIMHandler().sshExec(map[string]interface{}{
-		"session_id": sessionID,
-		"command": fmt.Sprintf("%s %s %s", remotePythonCommand(script), remoteShellQuote(root), remoteShellQuote(absPath)),
+		"session_id":   sessionID,
+		"command":      fmt.Sprintf("%s %s %s", remotePythonCommand(script), remoteShellQuote(root), remoteShellQuote(absPath)),
 		"wait_seconds": float64(15),
 	})
 	if remoteCodingToolOutcome(raw) != "success" {

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCleanCodingWorkbenchBrowserPath(t *testing.T) {
@@ -171,5 +173,65 @@ func TestRemotePreviewOutputIsTruncatedUsesProtocolMarkersOnly(t *testing.T) {
 	}
 	if !remotePreviewOutputIsTruncated("[remote read_file truncated: showing lines 1-2000; call again with offset=2001]") {
 		t.Fatal("expected remote read marker to report truncation")
+	}
+}
+
+func TestCodingWorkbenchVSCodeRemoteSnapshotPathIsTaskScoped(t *testing.T) {
+	projectPath := "remote-task-01"
+	digest := sha256.Sum256([]byte(projectPath))
+	cacheRoot := filepath.Join(os.TempDir(), "maclaw-vscode", fmt.Sprintf("%x", digest[:]))
+	localPath := filepath.Join(cacheRoot, "snapshots", "20260731T120000.000000000Z", filepath.FromSlash("src/main.go"))
+	if !isPathInsideRoot(cacheRoot, localPath) {
+		t.Fatalf("VS Code snapshot path %q must stay inside task cache root %q", localPath, cacheRoot)
+	}
+	if filepath.Base(localPath) != "main.go" {
+		t.Fatalf("VS Code snapshot path %q must preserve the source filename", localPath)
+	}
+}
+
+func TestCodingWorkbenchVSCodeRemoteDownloadLimit(t *testing.T) {
+	if codingWorkbenchVSCodeRemoteMaxFileBytes < 1024*1024 {
+		t.Fatalf("VS Code remote download limit %d is too small for source files", codingWorkbenchVSCodeRemoteMaxFileBytes)
+	}
+}
+
+func TestCleanupCodingWorkbenchVSCodeRemoteSnapshotsKeepsRecentCopies(t *testing.T) {
+	cacheRoot := t.TempDir()
+	snapshotsRoot := filepath.Join(cacheRoot, "snapshots")
+	oldSnapshot := filepath.Join(snapshotsRoot, "old")
+	recentSnapshot := filepath.Join(snapshotsRoot, "recent")
+	for _, snapshot := range []string{oldSnapshot, recentSnapshot} {
+		if err := os.MkdirAll(snapshot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	oldAt := now.Add(-codingWorkbenchVSCodeRemoteSnapshotRetention - time.Hour)
+	if err := os.Chtimes(oldSnapshot, oldAt, oldAt); err != nil {
+		t.Fatal(err)
+	}
+	cleanupCodingWorkbenchVSCodeRemoteSnapshots(cacheRoot, now)
+	if _, err := os.Stat(oldSnapshot); !os.IsNotExist(err) {
+		t.Fatalf("expired snapshot should be removed, stat error = %v", err)
+	}
+	if _, err := os.Stat(recentSnapshot); err != nil {
+		t.Fatalf("recent snapshot should be retained: %v", err)
+	}
+}
+
+func TestCleanupCodingWorkbenchVSCodeRemoteSnapshotsKeepsFutureDatedCopies(t *testing.T) {
+	cacheRoot := t.TempDir()
+	snapshot := filepath.Join(cacheRoot, "snapshots", "future")
+	if err := os.MkdirAll(snapshot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	future := now.Add(24 * time.Hour)
+	if err := os.Chtimes(snapshot, future, future); err != nil {
+		t.Fatal(err)
+	}
+	cleanupCodingWorkbenchVSCodeRemoteSnapshots(cacheRoot, now)
+	if _, err := os.Stat(snapshot); err != nil {
+		t.Fatalf("future-dated snapshot should not be removed: %v", err)
 	}
 }

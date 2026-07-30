@@ -2642,6 +2642,41 @@ describe('AIAssistantPanel property tests', () => {
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
+    it('retries a failed remote SSH reconnect up to three times with exponential backoff', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote', armed: false, needs_reconnect: true, turn_count: 1,
+            remote_host: '10.0.0.12', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '',
+        });
+        prepareRemoteCodingEnvironmentMock.mockRejectedValue(new Error('network unavailable'));
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-reconnect-retry', taskTitle: 'Reconnect retry', autoSend: false,
+                prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: '10.0.0.12',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'secret' } });
+        fireEvent.click(getByTestId('remote-reconnect-submit'));
+        await act(async () => { await Promise.resolve(); });
+        expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(getByTestId('remote-reconnect-progress').textContent).toContain('retrying (2/3)'));
+        for (const field of ['remote-reconnect-host', 'remote-reconnect-user', 'remote-reconnect-port', 'remote-reconnect-password', 'remote-reconnect-workdir']) {
+            expect((getByTestId(field) as HTMLInputElement).disabled).toBe(true);
+        }
+
+        await waitFor(() => expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledTimes(3), { timeout: 3_000 });
+        await waitFor(() => expect(getByTestId('remote-reconnect-error').textContent).toContain('network unavailable'));
+        expect(() => getByTestId('remote-reconnect-progress')).toThrow();
+        expect((getByTestId('remote-reconnect-submit') as HTMLButtonElement).disabled).toBe(false);
+        expect((getByTestId('remote-reconnect-password') as HTMLInputElement).disabled).toBe(false);
+    });
+
     it('routes legacy supplementary steering by the queue entry owner', async () => {
         localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
             id: 'legacy-owned-steer',

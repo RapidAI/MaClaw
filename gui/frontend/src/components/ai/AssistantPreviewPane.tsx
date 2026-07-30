@@ -23,6 +23,7 @@ interface AssistantPreviewPaneProps {
     lang: string;
     selectCodeFile: (filePath: string) => void;
     projectPath?: string;
+    workspaceRefreshToken?: number;
     openWorkspaceFile?: (file: CodeFile) => void;
     submitAgentView?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     showCodePreview: boolean;
@@ -243,6 +244,7 @@ export function AssistantPreviewPane({
     lang,
     selectCodeFile,
     projectPath,
+    workspaceRefreshToken,
     openWorkspaceFile,
     submitAgentView,
     showCodePreview,
@@ -472,6 +474,7 @@ export function AssistantPreviewPane({
                         mruOrder={codePreviewState.mruOrder}
                         onSelectFile={selectCodeFile}
                         projectPath={projectPath}
+                        workspaceRefreshToken={workspaceRefreshToken}
                         onOpenWorkspaceFile={openWorkspaceFile}
                         onCloseFile={closeCodeFile}
                         onCloseOtherFiles={closeOtherCodeFiles}

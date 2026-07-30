@@ -3288,6 +3288,10 @@ func (a *App) SaveMaclawAppDefinitionForSkill(skillName string, appJSON string) 
 	if err != nil {
 		return nil, err
 	}
+	// Saving stays non-blocking, but surface dependency references that point at
+	// skills which are neither installed locally nor remotely installable, so
+	// the problem shows up at create/edit time instead of at review or run time.
+	dependencyWarnings := a.maclawAppDependencyWarningsForDoc(doc)
 	appDefinitionFile := maclawAppDefinitionFileFromDoc(doc)
 	if appDefinitionFile == "maclaw.apps.json" {
 		data, err := writeMaclawAppsManifestEntry(cleanDir, doc, skillName)
@@ -3305,6 +3309,7 @@ func (a *App) SaveMaclawAppDefinitionForSkill(skillName string, appJSON string) 
 			"app_definition_file":   "maclaw.apps.json",
 			"app_definition_sha256": sha256Hex(data),
 			"skill_yaml_updated":    skillYAMLUpdated,
+			"dependency_warnings":   dependencyWarnings,
 		}, nil
 	}
 	outPath := filepath.Join(cleanDir, "maclaw.app.json")
@@ -3333,7 +3338,64 @@ func (a *App) SaveMaclawAppDefinitionForSkill(skillName string, appJSON string) 
 		"app_definition_file":   "maclaw.app.json",
 		"app_definition_sha256": sha256Hex(data),
 		"skill_yaml_updated":    skillYAMLUpdated,
+		"dependency_warnings":   dependencyWarnings,
 	}, nil
+}
+
+// maclawAppDependencyWarningsForDoc reports skill references inside a saved app
+// definition that resolve to nothing: not installed locally and carrying no
+// remote install coordinate. Warnings are advisory — saving must stay
+// non-blocking — but they let the creator fix the reference before review,
+// submit, or the receiver's install fails on the external skill.
+func (a *App) maclawAppDependencyWarningsForDoc(doc map[string]any) []map[string]any {
+	warnings := []map[string]any{}
+	app, ok := doc["app"].(map[string]any)
+	if !ok || app == nil {
+		return warnings
+	}
+	entry := parsedMaclawAppEntry{
+		App:  app,
+		ID:   strings.TrimSpace(stringMapValue(app, "id")),
+		Name: strings.TrimSpace(stringMapValue(app, "name")),
+		Kind: normalizeMaclawAppKind(stringMapValue(app, "kind")),
+	}
+	deps := maclawAppDependenciesForEntry(entry)
+	if len(deps) == 0 {
+		return warnings
+	}
+	installedKeys := map[string]bool{}
+	for _, def := range a.ListNLSkills() {
+		for _, key := range def.SkillIdentityKeys() {
+			key = strings.ToLower(strings.TrimSpace(key))
+			if key != "" {
+				installedKeys[key] = true
+			}
+		}
+	}
+	for _, dep := range deps {
+		candidates := append([]string{dep.ID, dep.CanonicalID, dep.InstalledName}, dep.Aliases...)
+		installed := false
+		for _, candidate := range candidates {
+			if installedKeys[strings.ToLower(strings.TrimSpace(candidate))] {
+				installed = true
+				break
+			}
+		}
+		if installed {
+			continue
+		}
+		if maclawAppDependencyHasRemoteInstallRef(dep) {
+			continue
+		}
+		warnings = append(warnings, map[string]any{
+			"id":       dep.ID,
+			"kind":     dep.Kind,
+			"required": dep.Required,
+			"reason":   "not_installed_no_remote_ref",
+			"message":  fmt.Sprintf("skill dependency %q is not installed locally and has no remote install reference; install it or set an install source before publishing", dep.ID),
+		})
+	}
+	return warnings
 }
 
 func (a *App) RecordMaclawAppRunEvidenceForSkill(skillName string, appID string, definitionHash string, runID string, artifactPath string, verifiedAt string) (map[string]any, error) {
@@ -3797,7 +3859,7 @@ func normalizeMaclawAppDefinitionForSkill(appJSON string, skillName string) (map
 	if kind == "" {
 		kind = "tool_app"
 	}
-	if kind != "tool_app" && kind != "enterprise_approval_app" && kind != "enterprise_normal_app" {
+	if kind != "tool_app" && kind != "enterprise_approval_app" && kind != "enterprise_normal_app" && kind != "automation_app" {
 		return nil, "", "", fmt.Errorf("maclaw app kind %q cannot be saved into a skill package", kind)
 	}
 	app["kind"] = kind

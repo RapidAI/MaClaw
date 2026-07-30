@@ -148,6 +148,18 @@ export const miniAppLabels = {
         zhHans: `编辑${skillField.zhHans}`,
         zhHant: `編輯${skillField.zhHant}`,
     },
+    /** Hint under the dependency source picker when source is "local". */
+    dependencySourceLocalHint: {
+        en: `With source "local" and no install ref, receivers can only install this dependency from the embedded bundle.`,
+        zhHans: `来源为 local 且没有安装引用时，接收方只能从内嵌包中安装该依赖。`,
+        zhHant: `來源為 local 且沒有安裝引用時，接收方只能從內嵌包中安裝該依賴。`,
+    },
+    /** Title above the dependency warnings shown after saving an app definition. */
+    dependencyWarningsTitle: {
+        en: `Dependency warnings`,
+        zhHans: `依赖警告`,
+        zhHant: `依賴警告`,
+    },
 } as const;
 
 /** Pick a pack by app language (en / zh-Hans / zh-Hant). */

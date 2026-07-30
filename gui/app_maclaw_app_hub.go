@@ -429,6 +429,17 @@ func (a *App) SubmitMaclawAppPackage(packageJSON string) (map[string]any, error)
 	if issue := firstBlockingMaclawAppReviewIssue(reviewIssues); issue != nil {
 		return nil, fmt.Errorf("maclaw app package is not ready for submission: %s: %s", issue.Path, issue.Message)
 	}
+
+	// Apply the same publish gate as Hub sync at local submit time so a
+	// required dependency that is neither bundled nor published fails here
+	// instead of surfacing later as dep_not_published during one-click publish.
+	// Runs after the readiness review so evidence/verification errors keep
+	// their established precedence and messages.
+	planForPublish := plan
+	planForPublish.Dependencies = cloneMaclawAppPlanDependencies(dependencies)
+	if err := a.validateAppDependenciesPublished(planForPublish, pkg); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	submissionID := "local-review-" + firstMaclawAppID(appIDs) + "-" + shortRandomHex()
 	record := maclawAppSubmissionRecord{

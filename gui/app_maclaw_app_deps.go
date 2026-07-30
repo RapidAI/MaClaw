@@ -2214,10 +2214,25 @@ func maclawAppBundledDependenciesForApp(bundled maclawAppBundledDependencies, ap
 	return scoped
 }
 
+// maclawAppDependencyBundleFailure records a required dependency that is
+// installed locally but could not be embedded into the package. Surfaced in
+// preflight instead of the historical silent skip, because a missing bundle
+// pushes the receiver onto the external-skill install path.
+type maclawAppDependencyBundleFailure struct {
+	ID  string
+	Err string
+}
+
 func (a *App) maclawAppBundledDependenciesForPlan(deps []maclawAppInstallPlanDependency) maclawAppBundledDependencies {
+	bundled, _ := a.maclawAppBundleDependenciesForPlanDetailed(deps)
+	return bundled
+}
+
+func (a *App) maclawAppBundleDependenciesForPlanDetailed(deps []maclawAppInstallPlanDependency) (maclawAppBundledDependencies, []maclawAppDependencyBundleFailure) {
 	out := maclawAppBundledDependencies{Schema: "maclaw.app.bundled_dependencies.v1"}
+	var failures []maclawAppDependencyBundleFailure
 	if a == nil || len(deps) == 0 {
-		return out
+		return out, failures
 	}
 	defs := a.ListNLSkills()
 	byName := map[string]NLSkillDefinition{}
@@ -2253,11 +2268,17 @@ func (a *App) maclawAppBundledDependenciesForPlan(deps []maclawAppInstallPlanDep
 			}
 		}
 		if !ok || strings.TrimSpace(def.SkillDir) == "" {
+			if dep.Required {
+				failures = append(failures, maclawAppDependencyBundleFailure{ID: dep.ID, Err: "installed skill definition not matched for bundling"})
+			}
 			continue
 		}
 		bundled, err := maclawAppBundleInstalledSkill(def, dep)
 		if err != nil {
 			log.Printf("[maclaw-app] skip bundled dependency %q: %v", dep.ID, err)
+			if dep.Required {
+				failures = append(failures, maclawAppDependencyBundleFailure{ID: dep.ID, Err: err.Error()})
+			}
 			continue
 		}
 		// A single installed skill can satisfy dependencies for multiple apps.
@@ -2266,7 +2287,7 @@ func (a *App) maclawAppBundledDependenciesForPlan(deps []maclawAppInstallPlanDep
 		// cannot be silently discarded.
 		maclawAppAppendBundledDependency(&out, bundled)
 	}
-	return out
+	return out, failures
 }
 
 func maclawAppBundledSkillSkipDir(name string) bool {

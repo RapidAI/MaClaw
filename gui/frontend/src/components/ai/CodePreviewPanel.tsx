@@ -177,6 +177,8 @@ export interface CodePreviewPanelProps {
     onSelectFile: (filePath: string) => void;
     /** The coding task whose local/remote workdir powers the default explorer tab. */
     projectPath?: string;
+    /** Bumped after remote SSH reconnect so the workspace tree reloads in place. */
+    workspaceRefreshToken?: number;
     onOpenWorkspaceFile?: (file: CodeFile) => void;
     /** Close a single file tab (VS Code-style). */
     onCloseFile?: (filePath: string) => void;
@@ -881,6 +883,7 @@ export function CodePreviewPanel({
     mruOrder,
     onSelectFile,
     projectPath,
+    workspaceRefreshToken,
     onOpenWorkspaceFile,
     onCloseFile,
     onCloseOtherFiles,
@@ -1399,7 +1402,7 @@ export function CodePreviewPanel({
                             X
                         </button>
                     </div>
-                    <CodePreviewWorkspace projectPath={projectPath} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
                 </div>
             </div>
         );
@@ -1677,7 +1680,7 @@ export function CodePreviewPanel({
                 }}
             >
                 {workspaceActive ? (
-                    <CodePreviewWorkspace projectPath={projectPath} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
                 ) : activeFile ? (
                     diffLines ? (
                         <DiffView

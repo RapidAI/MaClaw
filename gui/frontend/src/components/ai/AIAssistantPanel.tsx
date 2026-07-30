@@ -444,6 +444,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }>({ needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" });
     /** Project whose reconnect state has been hydrated from the backend. */
     const [remoteReconnectStatusPath, setRemoteReconnectStatusPath] = useState("");
+    /** Advances after SSH reconnect so the already-mounted source tree reloads. */
+    const [remoteWorkspaceRefreshToken, setRemoteWorkspaceRefreshToken] = useState(0);
     /** Avoid auto-reconnect loops: key = projectPath|user@host:port after one attempt (success or fail). */
     const remoteAutoReconnectKeyRef = useRef("");
     /** In-flight SSH reconnect owner (`projectPath|user@host:port`), so different remote tabs never block each other. */
@@ -1220,6 +1222,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => { if (typeof off === "function") off(); };
     }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
     const handleRemoteCodingReconnect = useCallback(async (opts?: { auto?: boolean }) => {
+        const maxAttempts = 3;
+        const retryDelayMs = [500, 1_000] as const;
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
         // Capture tab identity before awaiting SSH. The user may switch tabs
         // while the connection is in flight; its queued IM prompt must still
@@ -1264,14 +1268,41 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             password: prev.password || password,
         }));
         try {
-            await PrepareRemoteCodingEnvironment(projectPath, host, user, password, workDir, port);
-            const st = await GetCodingWorkbenchStatus(projectPath);
-            const ok = !st?.needs_reconnect && !!st?.armed;
+            let st: any;
+            let lastError: unknown;
+            let ok = false;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    await PrepareRemoteCodingEnvironment(projectPath, host, user, password, workDir, port);
+                    st = await GetCodingWorkbenchStatus(projectPath);
+                    ok = !st?.needs_reconnect && !!st?.armed;
+                    if (ok) break;
+                    lastError = st?.message || "reconnect incomplete";
+                } catch (error) {
+                    lastError = error;
+                }
+                if (attempt < maxAttempts) {
+                    const retryNumber = attempt + 1;
+                    if (activeTabRef.current.id === reconnectTabId
+                        && activeTabRef.current.type === "project"
+                        && activeTabRef.current.projectPath === projectPath) {
+                        setRemoteReconnect(prev => ({
+                            ...prev,
+                            connecting: true,
+                            error: "",
+                            success: localizeText(lang, `Reconnect attempt ${attempt} failed; retrying (${retryNumber}/${maxAttempts})…`, `第 ${attempt} 次重连失败，正在重试（${retryNumber}/${maxAttempts}）…`, `第 ${attempt} 次重新連線失敗，正在重試（${retryNumber}/${maxAttempts}）…`),
+                        }));
+                    }
+                    await new Promise<void>(resolve => window.setTimeout(resolve, retryDelayMs[attempt - 1]));
+                }
+            }
+            if (!ok) throw lastError instanceof Error ? lastError : new Error(String(lastError || "reconnect failed"));
             const reconnectTabIsActive = activeTabRef.current.id === reconnectTabId
                 && activeTabRef.current.type === "project"
                 && activeTabRef.current.projectPath === projectPath;
             if (ok) {
                 saveRemoteSSHPassword(host, user, password, port, workDir);
+                if (reconnectTabIsActive) setRemoteWorkspaceRefreshToken(token => token + 1);
                 // Allow a future auto-reconnect after a later disconnect.
                 remoteAutoReconnectKeyRef.current = "";
                 remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
@@ -5050,6 +5081,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         {localizeText(lang, "Host", "主机", "主機")}
                                         <input
                                             data-testid="remote-reconnect-host"
+                                            disabled={remoteReconnect.connecting}
                                             value={remoteReconnect.host}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, host: e.target.value, error: "" }))}
                                             onBlur={hydrateRemoteReconnectIdentity}
@@ -5060,6 +5092,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         {localizeText(lang, "User", "用户名", "使用者")}
                                         <input
                                             data-testid="remote-reconnect-user"
+                                            disabled={remoteReconnect.connecting}
                                             value={remoteReconnect.user}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, user: e.target.value, error: "" }))}
                                             onBlur={hydrateRemoteReconnectIdentity}
@@ -5071,6 +5104,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         <input
                                             data-testid="remote-reconnect-port"
                                             type="number"
+                                            disabled={remoteReconnect.connecting}
                                             value={remoteReconnect.port || 22}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, port: Number(e.target.value) || 22, error: "" }))}
                                             onBlur={hydrateRemoteReconnectIdentity}
@@ -5082,6 +5116,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         <input
                                             data-testid="remote-reconnect-password"
                                             type="password"
+                                            disabled={remoteReconnect.connecting}
                                             autoComplete="current-password"
                                             value={remoteReconnect.password}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, password: e.target.value }))}
@@ -5095,6 +5130,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                     {localizeText(lang, "Remote work directory", "远程工作目录", "遠端工作目錄")}
                                     <input
                                         data-testid="remote-reconnect-workdir"
+                                        disabled={remoteReconnect.connecting}
                                         value={remoteReconnect.workDir}
                                         onChange={(e) => setRemoteReconnect(prev => ({ ...prev, workDir: e.target.value }))}
                                         style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
@@ -5108,6 +5144,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 )}
                                 {remoteReconnect.error && (
                                     <div data-testid="remote-reconnect-error" style={{ fontSize: 11, color: t.errorText || "#c43d34" }}>{remoteReconnect.error}</div>
+                                )}
+                                {remoteReconnect.connecting && remoteReconnect.success && (
+                                    <div
+                                        data-testid="remote-reconnect-progress"
+                                        role="status"
+                                        aria-live="polite"
+                                        style={{ fontSize: 11, color: formFieldLabelColor(t) }}
+                                    >
+                                        {remoteReconnect.success}
+                                    </div>
                                 )}
                                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
                                     <button
@@ -5868,6 +5914,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         lang={lang}
                         selectCodeFile={selectCodeFile}
                         projectPath={isPureCodingEnvironment ? activeTab.projectPath : undefined}
+                        workspaceRefreshToken={isRemoteCodingDevEnvironment ? remoteWorkspaceRefreshToken : undefined}
                         openWorkspaceFile={openWorkspaceFile}
                         submitAgentView={panelSubmitAgentView}
                         showCodePreview={showCodePreview}

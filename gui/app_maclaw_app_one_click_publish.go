@@ -789,36 +789,70 @@ func (a *App) buildMaclawAppOneClickPreflight(packageJSON string, pkg map[string
 	missingDeps := 0
 	bundledCount := 0
 	publishedCount := 0
+	bundleFailed := 0
+	var bundleFailureRows []map[string]any
+	var missingIDs []string
 	if pkg != nil {
 		bundled := maclawAppBundledDependenciesFromDoc(pkg)
 		installed := map[string]NLSkillDefinition{}
 		if a != nil {
 			installed = a.installedMaclawAppSkillIndex()
 		}
-		for _, dep := range plan.Dependencies {
+		// Mirror the submit path: stamp HubSkillID refs and simulate bundling so
+		// preflight reports what SubmitMaclawAppPackage would actually embed
+		// instead of silently dropping the dependency onto the external install
+		// path.
+		simDeps := cloneMaclawAppPlanDependencies(plan.Dependencies)
+		a.enrichDependenciesWithHubSkillID(simDeps)
+		liveBundled, bundleFailures := a.maclawAppBundleDependenciesForPlanDetailed(simDeps)
+		failureByDep := map[string]string{}
+		for _, f := range bundleFailures {
+			failureByDep[strings.ToLower(strings.TrimSpace(f.ID))] = f.Err
+		}
+		for i, dep := range plan.Dependencies {
 			if !dep.Required {
 				continue
 			}
+			simDep := dep
+			if i < len(simDeps) && strings.EqualFold(simDeps[i].ID, dep.ID) {
+				simDep = simDeps[i]
+			}
 			row := map[string]any{"id": dep.ID, "required": true}
 			switch {
-			case maclawAppDependencyIsBundled(bundled, dep):
+			case maclawAppDependencyIsBundled(bundled, simDep) || maclawAppDependencyIsBundled(liveBundled, simDep):
 				row["status"] = "bundled"
 				bundledCount++
-			case maclawAppDependencyHasRemoteInstallRef(dep):
+			case maclawAppDependencyHasRemoteInstallRef(simDep):
 				row["status"] = "remote_ref"
 				publishedCount++
-			case dep.SkillID != "" && cskill.IsValidSkillID(dep.SkillID):
+			case simDep.SkillID != "" && cskill.IsValidSkillID(simDep.SkillID):
 				row["status"] = "skill_id"
 				publishedCount++
-			case maclawAppDependencyHasPublishedHubSkillID(installed, dep):
+			case maclawAppDependencyHasPublishedHubSkillID(installed, simDep):
 				row["status"] = "hub_skill_id"
 				publishedCount++
 			default:
-				row["status"] = "missing"
-				missingDeps++
+				if bundleErr, failed := failureByDep[strings.ToLower(strings.TrimSpace(dep.ID))]; failed {
+					row["status"] = "bundle_failed"
+					row["error"] = bundleErr
+					bundleFailed++
+					bundleFailureRows = append(bundleFailureRows, map[string]any{"id": dep.ID, "error": bundleErr})
+				} else {
+					row["status"] = "missing"
+					missingDeps++
+					missingIDs = append(missingIDs, dep.ID)
+				}
 			}
 			depRows = append(depRows, row)
 		}
+	}
+	if bundleFailed > 0 {
+		add("dependency_bundle", "error",
+			fmt.Sprintf("%d required skill(s) installed locally but failed to embed into the package — receivers would depend on external skill install", bundleFailed),
+			false, map[string]any{
+				"error_code": "dep_bundle_failed",
+				"failures":   bundleFailureRows,
+			})
 	}
 	if missingDeps > 0 {
 		add("dependencies", "warn",
@@ -826,6 +860,7 @@ func (a *App) buildMaclawAppOneClickPreflight(packageJSON string, pkg map[string
 			false, map[string]any{
 				"error_code":      "dep_not_published",
 				"missing_count":   missingDeps,
+				"missing_ids":     missingIDs,
 				"bundled_count":   bundledCount,
 				"published_count": publishedCount,
 				"dependencies":    depRows,

@@ -6342,6 +6342,37 @@ function oneClickPreflightNeedsRerun(preflight: Record<string, unknown> | null |
         .some(isOneClickPreflightRerunMessage);
 }
 
+/** Dependency IDs called out by a preflight check row (missing or failed to embed). */
+function oneClickPreflightDependencyIDs(row: Record<string, unknown>): string[] {
+    const ids: string[] = [];
+    const push = (value: unknown) => {
+        const id = String(value || '').trim();
+        if (id && !ids.includes(id)) ids.push(id);
+    };
+    if (Array.isArray(row.missing_ids)) row.missing_ids.forEach(push);
+    if (Array.isArray(row.failures)) {
+        for (const raw of row.failures) {
+            if (raw && typeof raw === 'object') push((raw as Record<string, unknown>).id);
+        }
+    }
+    if (Array.isArray(row.dependencies)) {
+        for (const raw of row.dependencies) {
+            if (!raw || typeof raw !== 'object') continue;
+            const dep = raw as Record<string, unknown>;
+            if (String(dep.status || '').trim() === 'bundle_failed') push(dep.id);
+        }
+    }
+    return ids;
+}
+
+/** Check message plus the dependency IDs the backend flagged, when present. */
+function formatOneClickPreflightRowMessage(row: Record<string, unknown>): string {
+    const id = String(row.id || '').trim();
+    const message = formatOneClickPreflightCheck(id, String(row.message || id));
+    const depIDs = oneClickPreflightDependencyIDs(row);
+    return depIDs.length > 0 ? `${message} (${depIDs.join(', ')})` : message;
+}
+
 /** Short user-facing line from a preflight report (blocking first, then warnings). */
 function formatOneClickPreflightHint(preflight: Record<string, unknown> | null | undefined): string {
     if (!preflight) return '';
@@ -6352,7 +6383,7 @@ function formatOneClickPreflightHint(preflight: Record<string, unknown> | null |
         if (row.ok === true) continue;
         const id = String(row.id || '').trim();
         const message = String(row.message || '').trim();
-        if (id && message) return formatOneClickPreflightCheck(id, message);
+        if (id && message) return formatOneClickPreflightRowMessage(row);
     }
     const blocking = Array.isArray(preflight.blocking) ? preflight.blocking.map(String).filter(Boolean) : [];
     if (blocking.length > 0) {
@@ -6524,14 +6555,14 @@ function summarizeOneClickPreflightView(
             const id = String(row.id || '').trim();
             if (!id) continue;
             // Surface only actionable / high-signal checks on the card.
-            if (!['package_ready', 'dependencies', 'skill_market_email', 'hub_enrollment', 'enterprise_hub_market', 'enterprise_hub_tls', 'skill_market_upload'].includes(id)) {
+            if (!['package_ready', 'dependencies', 'dependency_bundle', 'skill_market_email', 'hub_enrollment', 'enterprise_hub_market', 'enterprise_hub_tls', 'skill_market_upload'].includes(id)) {
                 continue;
             }
             lines.push({
                 id,
                 ok: row.ok === true,
                 severity: String(row.severity || (row.ok === true ? 'info' : 'warn')),
-                message: formatOneClickPreflightCheck(id, String(row.message || id)),
+                message: formatOneClickPreflightRowMessage(row),
             });
         }
     }
@@ -15670,6 +15701,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [selectedSkillSource, setSelectedSkillSource] = useState<StudioSkillChoice['source']>('installed');
     const [skillAppSaveState, setSkillAppSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
     const [skillAppSaveMessage, setSkillAppSaveMessage] = useState('');
+    const [skillAppDependencyWarnings, setSkillAppDependencyWarnings] = useState<string[]>([]);
     const [skillMarketUploadState, setSkillMarketUploadState] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
     const [manifestPreviewOpen, setManifestPreviewOpen] = useState(false);
     const [layoutTemplate, setLayoutTemplate] = useState<StudioLayoutTemplate>('document_workspace');
@@ -15983,7 +16015,8 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
             } : app.manifest,
         };
         const manifestText = JSON.stringify(appToManifest(skillBoundApp), null, 2);
-        await SaveMaclawAppDefinitionForSkill(skillID, manifestText);
+        const saveResult = await SaveMaclawAppDefinitionForSkill(skillID, manifestText);
+        setSkillAppDependencyWarnings(saveResultDependencyWarnings(saveResult));
         onCreateApp({
             ...skillBoundApp,
             id: skillPanelAppID(skillID, appID),
@@ -15996,6 +16029,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         if (skillAppSaveState === 'saving') return;
         setSkillAppSaveState('saving');
         setSkillAppSaveMessage('');
+        setSkillAppDependencyWarnings([]);
         try {
             const skillID = await persistSkillAppDefinition();
             if (!skillID) {
@@ -16043,6 +16077,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         }
         setSkillMarketUploadState('uploading');
         setSkillAppSaveMessage('');
+        setSkillAppDependencyWarnings([]);
         try {
             setSkillAppSaveState('saving');
             const savedSkillID = await persistSkillAppDefinition(currentRunEvidence);
@@ -16309,7 +16344,18 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                                     </div>
                                     <div className="apps-form-row">
                                         <label>{localizeText(lang, 'Dependency source', '\u4f9d\u8d56\u6765\u6e90', '\u4f9d\u8cf4\u4f86\u6e90')}</label>
-                                        <div className="apps-skill-source-readonly" data-testid="studio-dependency-source">{dependencySource || 'local'}</div>
+                                        <select
+                                            data-testid="studio-dependency-source"
+                                            value={dependencySource || 'local'}
+                                            onChange={(event) => setDependencySource(event.target.value as AppSkillDependency['source'])}
+                                        >
+                                            <option value="local">local</option>
+                                            <option value="hub">hub</option>
+                                            <option value="skillmarket">skillmarket</option>
+                                        </select>
+                                        {(dependencySource || 'local') === 'local' && (
+                                            <small className="apps-layout-designer__hint">{pickMiniAppLabel(lang, miniAppLabels.dependencySourceLocalHint)}</small>
+                                        )}
                                     </div>
                                     <div className="apps-form-row">
                                         <label>{localizeText(lang, 'Install ref', '\u5b89\u88c5\u5f15\u7528', '\u5b89\u88dd\u5f15\u7528')}</label>
@@ -16374,6 +16420,14 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                 </div>
                 {skillAppSaveMessage && (
                     <div className="apps-skill-save-message" data-state={skillAppSaveState} role={skillAppSaveState === 'error' ? 'alert' : 'status'}>{skillAppSaveMessage}</div>
+                )}
+                {skillAppDependencyWarnings.length > 0 && (
+                    <div className="apps-skill-save-message" data-state="warn" role="status" data-testid="studio-dependency-warnings">
+                        <strong>{pickMiniAppLabel(lang, miniAppLabels.dependencyWarningsTitle)}</strong>
+                        <ul>
+                            {skillAppDependencyWarnings.map((warning) => <li key={warning}>{warning}</li>)}
+                        </ul>
+                    </div>
                 )}
                 <section className="apps-create-preview" aria-label={text.manifestPreview}>
                     <div className="apps-create-preview__head">
@@ -16607,6 +16661,22 @@ async function collectPublishRunEvidenceFromSample(
     } catch (error: any) {
         return { ok: false, message: String(error?.message || error || 'run failed') };
     }
+}
+
+/**
+ * Extract user-facing dependency warning messages from the
+ * SaveMaclawAppDefinitionForSkill result map (`dependency_warnings`).
+ */
+function saveResultDependencyWarnings(result: unknown): string[] {
+    const warnings = result && typeof result === 'object'
+        ? (result as Record<string, unknown>).dependency_warnings
+        : undefined;
+    if (!Array.isArray(warnings)) return [];
+    return warnings.map((raw) => {
+        if (!raw || typeof raw !== 'object') return '';
+        const item = raw as Record<string, unknown>;
+        return String(item.message || item.id || '').trim();
+    }).filter(Boolean);
 }
 
 function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
