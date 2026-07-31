@@ -29,6 +29,11 @@ const (
 	// any matching isolated project tab should be closed.
 	EventProjectTaskClosed = "project-task:closed"
 
+	// EventProjectTaskDeleted is emitted before EventProjectTaskClosed when a
+	// task is permanently removed. Consumers use it to discard local caches
+	// without sending a CloseProjectTabSession write back to the backend.
+	EventProjectTaskDeleted = "project-task:deleted"
+
 	// EventAppUpdateAvailable is emitted when the background update checker
 	// (startup delay + periodic re-check) finds a newer application release.
 	EventAppUpdateAvailable = "app-update-available"

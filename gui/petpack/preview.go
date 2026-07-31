@@ -31,11 +31,8 @@ func (r *Registry) LoadStateFrameBytes(packID, state, variant string) (data []by
 		return nil, "", err
 	}
 	st := string(NormalizeState(state))
-	variant = ResolveVariantForRuntime(variant)
-	// classic intentionally has no figurative frames for UI preview
-	if variant == VariantClassic {
-		return nil, "", fmt.Errorf("classic variant has no raster state frames")
-	}
+	// The retired quality-style selector resolves every legacy variant to the
+	// pack default, so preview always serves the pack's raster frames.
 	candidates := stateFrameCandidateRels(m, st)
 	if len(candidates) == 0 {
 		return nil, "", fmt.Errorf("pack %q has no frame for state %q", packID, st)

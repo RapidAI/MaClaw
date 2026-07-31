@@ -23,6 +23,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -88,7 +89,12 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 		threshold = codingSubAgentFullEnvSkillScoreThreshold
 	}
 
-	// Filter to active, executable skills only.
+	// Filter to active, executable skills that the GUI runner can actually run.
+	// Auto-summary now rejects incompatible drafts before persistence, but users
+	// may already have learned skills created by older builds. Do this at the
+	// selection boundary as well: surfacing a legacy web_search/manage_skill
+	// recipe to the CodingSubAgent only makes it attempt a run that the runner
+	// will reject during preflight.
 	type candidate struct {
 		name         string
 		description  string
@@ -97,12 +103,24 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 	}
 	var candidates []candidate
 	skippedByTaskFit := 0
+	skippedByRunnerCompatibility := 0
 	for _, s := range allSkills {
 		if s.Status != "active" {
 			continue
 		}
 		if skill.IsKnowledgeSkillType(s.Type) || skill.IsInstructionOnlySkillType(s.Type) {
 			continue // documentation and app containers are not directly executable
+		}
+		entry := &corelib.NLSkillEntry{
+			Name:        s.Name,
+			Description: s.Description,
+			Type:        s.Type,
+			Steps:       s.Steps,
+			SkillDir:    s.SkillDir,
+		}
+		if report := skill.AssessRunnerCompatibility(entry, skill.RunnerBackendGUI); !report.Runnable {
+			skippedByRunnerCompatibility++
+			continue
 		}
 		doc := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
 		if !codingSubAgentSkillFitsTask(taskDescription, doc) {
@@ -182,8 +200,8 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 	for i, r := range results {
 		names[i] = fmt.Sprintf("%s(%.2f)", r.Name, r.Score)
 	}
-	log.Printf("[coding-subagent] skill selection: task=%q full_env=%v candidates=%d skipped_task_fit=%d matched=%s",
-		truncateLogText(taskDescription, 60), fullEnv, len(candidates), skippedByTaskFit, strings.Join(names, ", "))
+	log.Printf("[coding-subagent] skill selection: task=%q full_env=%v candidates=%d skipped_task_fit=%d skipped_runner_incompatible=%d matched=%s",
+		truncateLogText(taskDescription, 60), fullEnv, len(candidates), skippedByTaskFit, skippedByRunnerCompatibility, strings.Join(names, ", "))
 
 	return results
 }

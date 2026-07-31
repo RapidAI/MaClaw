@@ -168,6 +168,24 @@ func TestMaclawAppDependencyWarningsForDoc(t *testing.T) {
 		t.Fatalf("remote install ref should suppress the warning, got %#v", warnings)
 	}
 
+	// A stable publisher.skill-name canonical id is a publish-gate-accepted
+	// coordinate and must not warn even when nothing is installed locally.
+	stableIDDoc := map[string]any{
+		"app": map[string]any{
+			"id":   "warn-app",
+			"name": "Warn App",
+			"kind": "tool_app",
+			"binding": map[string]any{
+				"dependencies": map[string]any{
+					"skills": []any{map[string]any{"id": "ghost-skill", "canonical_id": "lovstudio.ghost-skill"}},
+				},
+			},
+		},
+	}
+	if warnings := app.maclawAppDependencyWarningsForDoc(stableIDDoc); len(warnings) != 0 {
+		t.Fatalf("valid publisher.skill-name canonical id should suppress the warning, got %#v", warnings)
+	}
+
 	// A locally installed skill must not warn.
 	tmpHome := t.TempDir()
 	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "local-skill")
@@ -200,5 +218,92 @@ func TestMaclawAppDependencyWarningsForDoc(t *testing.T) {
 	}
 	if warnings := installedApp.maclawAppDependencyWarningsForDoc(localDoc); len(warnings) != 0 {
 		t.Fatalf("installed dependency should not warn, got %#v", warnings)
+	}
+}
+
+// TestPreflightMaclawAppOneClickPublishFlagsBundleFailure ensures preflight
+// surfaces an installed-but-unembeddable required dependency as a blocking
+// dependency_bundle check instead of letting the publish proceed on the
+// external skill install path.
+func TestPreflightMaclawAppOneClickPublishFlagsBundleFailure(t *testing.T) {
+	tmpHome := t.TempDir()
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "bloated-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# bloated-skill\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+	for i := 0; i < maxMaclawAppBundledSkillFiles+5; i++ {
+		name := filepath.Join(skillDir, fmt.Sprintf("asset-%03d.txt", i))
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile asset: %v", err)
+		}
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{Name: "bloated-skill", SkillDir: skillDir, Status: "active", HubVersion: "1.0.0"},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	pkg := `{
+		"schema": "maclaw.app.pack.v1",
+		"privateMarker": "x_maclaw_apps",
+		"apps": [{
+			"schema": "maclaw.app.v1",
+			"privateMarker": "x_maclaw_apps",
+			"app": {
+				"id": "bloated-dep-app",
+				"name": "Bloated Dep App",
+				"kind": "enterprise_normal_app",
+				"binding": {
+					"appSkill": {"id": "bloated-skill", "version": "1.0.0"}
+				},
+				"governance": {
+					"workspaceLayout": {"schema":"maclaw.app.ui.v1", "entry":"business_workspace", "template":"classic_split", "regionCount":4},
+					"resultContract": {"schema":"maclaw.app.result.v1", "primary":"content", "types":["content"]},
+					"dependencyVerification": {"schema":"maclaw.app.install_plan.v1", "dependencyCount":1, "hasMissingRequired":false, "hasBlockingDependency":false, "dependencies":[{"id":"bloated-skill", "kind":"app_skill", "version":"1.0.0", "required":true, "installed":true, "health":"ready", "action":"skip"}]},
+					"testEvidence": {"testProtocol":{"schema":"maclaw.app.test_protocol.v1","fingerprint":"proto-bloated","sampleInput":{"sample":true},"expectedOutput":{"content":"ok"},"requiredRoles":["tester"],"requiredScopes":["app.run"],"riskLevel":"low"}, "testProtocolFingerprint":"proto-bloated", "runId":"run-bloated", "verifiedAt":"2026-06-17T01:00:00Z", "resultPayload":{"content":"ok"}, "outputs":[{"kind":"content", "text":"ok"}], "resultCoverage":{"ok":true, "primary":"content", "coveredTypes":["content"], "missingTypes":[]}}
+				}
+			}
+		}]
+	}`
+
+	pkg = maclawAppPackageWithCurrentDefinitionHashes(t, pkg)
+	out, err := app.PreflightMaclawAppOneClickPublish(pkg)
+	if err != nil {
+		t.Fatalf("PreflightMaclawAppOneClickPublish() error = %v", err)
+	}
+	if ready, _ := out["ready_for_hub_pack"].(bool); ready {
+		t.Fatalf("ready_for_hub_pack should be false when bundling fails: %#v", out["checks"])
+	}
+	var bundleCheck map[string]any
+	for _, item := range anySlice(out["checks"]) {
+		row := anyMap(item)
+		if row == nil {
+			continue
+		}
+		if maclawAppStringValue(row, "id") == "dependency_bundle" {
+			bundleCheck = row
+			break
+		}
+	}
+	if bundleCheck == nil {
+		t.Fatalf("expected dependency_bundle check, got %#v", out["checks"])
+	}
+	if ok, _ := bundleCheck["ok"].(bool); ok {
+		t.Fatalf("dependency_bundle check should not be ok: %#v", bundleCheck)
+	}
+	if severity := maclawAppStringValue(bundleCheck, "severity"); severity != "error" {
+		t.Fatalf("dependency_bundle severity = %q", severity)
+	}
+	failures := anySlice(bundleCheck["failures"])
+	if len(failures) != 1 || maclawAppStringValue(anyMap(failures[0]), "id") != "bloated-skill" {
+		t.Fatalf("expected bloated-skill in dependency_bundle failures: %#v", bundleCheck)
 	}
 }

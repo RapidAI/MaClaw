@@ -6,62 +6,32 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// MigratePetVariant applies K18:
-// - Pre-existing configs (PetVariantMigrated == false) with empty/missing variant
-//   → persist classic + optional upgrade prompt; mark migrated.
-// - Brand-new installs use AppConfigDefaults (PetVariant=default, Migrated=true).
-// - Resolve empty variant always as classic (never pack figurative default).
-// Returns true when the config was mutated and should be written to disk.
+// MigratePetVariant normalizes the retired quality-style fields so old settings
+// render the selected pack with its default native presentation.
 func MigratePetVariant(cfg *corelib.AppConfig) bool {
 	if cfg == nil {
 		return false
 	}
-	if cfg.PetVariantMigrated {
-		// Still normalize unknown variant strings for safety.
-		before := cfg.PetVariant
-		cfg.PetVariant = NormalizeVariantID(cfg.PetVariant)
-		// Empty with migrated=true is invalid; force classic (no figurative silent upgrade).
-		if strings.TrimSpace(before) == "" {
-			cfg.PetVariant = VariantClassic
-		}
-		return cfg.PetVariant != before
-	}
-	// Existing install path: empty → classic, no silent figurative upgrade.
-	v := strings.TrimSpace(cfg.PetVariant)
-	if v == "" {
-		cfg.PetVariant = VariantClassic
-		cfg.PetFigurativeUpgradePromptPending = true
-	} else {
-		cfg.PetVariant = NormalizeVariantID(v)
-	}
+	changed := cfg.PetVariant != VariantDefault ||
+		!cfg.PetVariantMigrated ||
+		cfg.PetFigurativeUpgradePromptPending
+	cfg.PetVariant = VariantDefault
 	cfg.PetVariantMigrated = true
-	return true
+	cfg.PetFigurativeUpgradePromptPending = false
+	return changed
 }
 
-// NormalizeVariantID maps free-form variant to classic|default (or passthrough custom).
+// NormalizeVariantID preserves the legacy field for config compatibility. Pet packs now
+// always render their default native presentation, so every legacy value resolves there.
 func NormalizeVariantID(v string) string {
-	v = strings.TrimSpace(strings.ToLower(v))
-	switch v {
-	case "", VariantClassic, "legacy", "line", "procedural":
-		return VariantClassic
-	case VariantDefault, "figurative", "fig":
-		return VariantDefault
-	default:
-		if v == "" {
-			return VariantClassic
-		}
-		return v
-	}
+	return VariantDefault
 }
 
-// ResolveVariantForRuntime returns the variant used for frame selection.
-// Empty always maps to classic (K18 Resolve rule).
+// ResolveVariantForRuntime returns the sole runtime presentation. The removed
+// quality-style selector used to map "classic" to the built-in procedural pet,
+// which meant a selected custom pack could disappear from the desktop.
 func ResolveVariantForRuntime(stored string) string {
-	stored = strings.TrimSpace(stored)
-	if stored == "" {
-		return VariantClassic
-	}
-	return NormalizeVariantID(stored)
+	return VariantDefault
 }
 
 // SanitizeSkinID applies allowlist rules (design B.4).

@@ -573,6 +573,19 @@ func (pi *ProjectIndex) SetArchived(projectPath string, archived bool) {
 	pi.savePrefs()
 }
 
+// ClearTaskPrefs removes every user preference stored for a task. It is used
+// when a task is permanently deleted, so a later task with the same path does
+// not inherit a previous name, pin, hidden, or archive state.
+func (pi *ProjectIndex) ClearTaskPrefs(projectPath string) {
+	if pi == nil || strings.TrimSpace(projectPath) == "" {
+		return
+	}
+	pi.mu.Lock()
+	delete(pi.prefs, projectPrefKey(projectPath))
+	pi.mu.Unlock()
+	pi.savePrefs()
+}
+
 // IsArchived returns whether a task is archived.
 func (pi *ProjectIndex) IsArchived(projectPath string) bool {
 	pi.mu.RLock()

@@ -116,29 +116,28 @@ motion:
 	}
 }
 
-func TestMigratePetVariantK18(t *testing.T) {
-	// existing install
+func TestMigratePetVariantNormalizesRetiredQualityStyle(t *testing.T) {
+	// Legacy installs are normalized to the selected pack's default presentation.
 	cfg := &corelib.AppConfig{PetSkin: "clawmate", PetVariantMigrated: false, PetVariant: ""}
 	if !MigratePetVariant(cfg) {
 		t.Fatal("legacy empty migration should report mutated")
 	}
-	if cfg.PetVariant != VariantClassic {
-		t.Fatalf("existing empty → classic, got %q", cfg.PetVariant)
+	if cfg.PetVariant != VariantDefault {
+		t.Fatalf("legacy variant = %q, want default", cfg.PetVariant)
 	}
-	if !cfg.PetFigurativeUpgradePromptPending {
-		t.Fatal("expected upgrade prompt pending")
+	if cfg.PetFigurativeUpgradePromptPending {
+		t.Fatal("retired upgrade prompt should be cleared")
 	}
 	if !cfg.PetVariantMigrated {
 		t.Fatal("expected migrated")
 	}
-	// resolve empty always classic
-	if ResolveVariantForRuntime("") != VariantClassic {
+	if ResolveVariantForRuntime("") != VariantDefault {
 		t.Fatal("resolve empty")
 	}
 	// new-install style already migrated default (AppConfigDefaults)
 	cfg2 := &corelib.AppConfig{PetVariant: VariantDefault, PetVariantMigrated: true}
 	if MigratePetVariant(cfg2) {
-		t.Fatal("stable new-install figurative should not force rewrite")
+		t.Fatal("stable default should not force rewrite")
 	}
 	if cfg2.PetVariant != VariantDefault {
 		t.Fatalf("new install should keep default, got %q", cfg2.PetVariant)

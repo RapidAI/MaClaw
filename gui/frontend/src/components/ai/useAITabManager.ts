@@ -191,6 +191,8 @@ export interface UseAITabManagerResult {
     createExpertTab: (expert: ExpertDefinition) => AITab | null;
     /** Close a tab by ID */
     closeTab: (tabId: string) => void;
+    /** Remove a deleted project's tabs without persisting an archived session. */
+    discardDeletedProjectTabs: (projectPath: string) => void;
     /** Clear a VE/group conversation explicitly, resetting cached and visible state. */
     clearTabConversation: (tabId: string) => void;
     /** Save state for the current active tab before switching */
@@ -1132,6 +1134,31 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         evictClosedTabStates(tabStatesRef.current, openTabIds, "expert-", 32);
     }, [updateTabState]);
 
+    const discardDeletedProjectTabs = useCallback((projectPath: string) => {
+        const normalizedPath = normalizeProjectSessionPath(projectPath);
+        if (!normalizedPath) return;
+        const current = tabStateRef.current;
+        const deletedTabIDs = current.tabs
+            .filter(tab => tab.type === "project" && normalizeProjectSessionPath(tab.projectPath) === normalizedPath)
+            .map(tab => tab.id);
+        if (deletedTabIDs.length === 0) return;
+
+        const deletedIDs = new Set(deletedTabIDs);
+        for (const tabID of deletedIDs) {
+            tabStatesRef.current.delete(tabID);
+            dirtyTabIdsRef.current.delete(tabID);
+            pendingProjectTabCloseByIDRef.current.delete(tabID);
+        }
+        const next = {
+            ...current,
+            tabs: current.tabs.filter(tab => !deletedIDs.has(tab.id)),
+            activeTabId: deletedIDs.has(current.activeTabId) ? "local" : current.activeTabId,
+        };
+        updateTabState(() => next);
+        // Closed tabs normally retain a local history cache; deletion must not.
+        persistProjectTabHistories(tabStatesRef.current, next.tabs);
+    }, [updateTabState]);
+
     // Sync open expert tabs with expert definition changes from the utilities page:
     // "maclaw:expert-deleted" closes the tab; "maclaw:expert-updated" patches its
     // title/icon/description in place (no foreground switch).
@@ -1318,6 +1345,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         createProjectTab,
         createExpertTab,
         closeTab,
+        discardDeletedProjectTabs,
         clearTabConversation,
         saveTabState,
         getTabState,

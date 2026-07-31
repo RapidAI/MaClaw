@@ -41,6 +41,7 @@ type SkillMarketHandlers struct {
 	rsaPrivKey     *rsa.PrivateKey
 	pendingDir     string
 	dataDir        string
+	petStoreSync   petStoreSyncRecorder
 }
 
 // SkillMarket upload auth mode constants.
@@ -75,6 +76,7 @@ type SkillMarketConfig struct {
 	RSAPrivKey     *rsa.PrivateKey
 	PendingDir     string
 	DataDir        string
+	PetStoreSync   petStoreSyncRecorder
 }
 
 // NewSkillMarketHandlers 创建 SkillMarket HTTP handlers。
@@ -97,6 +99,7 @@ func NewSkillMarketHandlers(cfg SkillMarketConfig) *SkillMarketHandlers {
 		rsaPrivKey:     cfg.RSAPrivKey,
 		pendingDir:     cfg.PendingDir,
 		dataDir:        cfg.DataDir,
+		petStoreSync:   cfg.PetStoreSync,
 	}
 }
 

@@ -18,6 +18,7 @@ export interface PetSkinOption {
     scope?: string;
     faceOverlay?: boolean;
     canUninstall?: boolean;
+    source?: string;
     hasPreview?: boolean;
     status?: string;
     version?: string;
@@ -137,6 +138,7 @@ export function packInfoToSkinOption(pack: Record<string, unknown>, lang: string
         scope,
         faceOverlay: !!pack.face_overlay,
         canUninstall: !!pack.can_uninstall || scope === 'user',
+        source: String(pack.source || ''),
         hasPreview: !!pack.has_preview,
         status: String(pack.status || ''),
         version: String(pack.version || ''),

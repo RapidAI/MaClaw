@@ -865,6 +865,15 @@ func (a *App) buildMaclawAppOneClickPreflight(packageJSON string, pkg map[string
 				"published_count": publishedCount,
 				"dependencies":    depRows,
 			})
+	} else if bundleFailed > 0 {
+		add("dependencies", "warn",
+			fmt.Sprintf("%d required skill(s) failed to embed into the package — see dependency_bundle check", bundleFailed),
+			false, map[string]any{
+				"error_code":      "dep_bundle_failed",
+				"bundled_count":   bundledCount,
+				"published_count": publishedCount,
+				"dependencies":    depRows,
+			})
 	} else if len(depRows) > 0 {
 		add("dependencies", "info",
 			fmt.Sprintf("all %d required deps resolvable (bundled=%d published=%d)", len(depRows), bundledCount, publishedCount),

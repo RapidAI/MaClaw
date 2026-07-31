@@ -507,4 +507,22 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
             vi.mocked(CreateProjectTabSession).mock.invocationCallOrder[1],
         );
     });
+
+    it("discards a deleted project's transient tab state without closing it again", () => {
+        const { result } = renderHook(() => useAITabManager());
+        const projectPath = "D:/tasks/deleted";
+        let tabId = "";
+
+        act(() => {
+            const tab = result.current.createProjectTab(projectPath, "Deleted task");
+            tabId = tab?.id || "";
+            result.current.saveTabState(tabId, { history: [{ id: "msg-1", role: "user", content: "discard" }] });
+            result.current.discardDeletedProjectTabs(projectPath);
+        });
+
+        expect(tabId).toBeTruthy();
+        expect(result.current.tabState.tabs.some(tab => tab.id === tabId)).toBe(false);
+        expect(result.current.getTabState(tabId)).toBeUndefined();
+        expect(CloseProjectTabSession).not.toHaveBeenCalled();
+    });
 });

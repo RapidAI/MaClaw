@@ -173,12 +173,12 @@ type AppConfig struct {
 	PetAutoRetryOnNoHear bool   `json:"pet_auto_retry_on_no_hear,omitempty"`
 	PetContinuousTimeout int    `json:"pet_continuous_timeout_sec,omitempty"`
 	PetQuietMode         bool   `json:"pet_quiet_mode,omitempty"`
-	// PetVariant selects classic (procedural) vs default/figurative (native frames).
-	// Empty is treated as classic at resolve time (K18); migration persists classic for existing installs.
+	// PetVariant is retained for backward-compatible config decoding. Runtime always
+	// uses the selected pack's default presentation.
 	PetVariant string `json:"pet_variant,omitempty"`
-	// PetVariantMigrated marks that K18 migration has been applied. New installs set true in defaults.
+	// PetVariantMigrated marks normalization of the retired quality-style setting.
 	PetVariantMigrated bool `json:"pet_variant_migrated,omitempty"`
-	// PetFigurativeUpgradePromptPending asks settings to offer switching to figurative.
+	// PetFigurativeUpgradePromptPending is retained only to clear old prompts.
 	PetFigurativeUpgradePromptPending bool `json:"pet_figurative_upgrade_prompt_pending,omitempty"`
 	// PetReducedMotion forces static frames and disables halo/SFX (explicit setting).
 	PetReducedMotion       bool `json:"pet_reduced_motion,omitempty"`

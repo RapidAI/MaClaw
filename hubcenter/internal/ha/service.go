@@ -38,6 +38,8 @@ const (
 	EntityGossipSnapshot      = "gossip_snapshot"
 	EntitySkillHubSnapshot    = "skillhub_snapshot"
 	EntitySkillMarketSnapshot = "skillmarket_snapshot"
+	EntityPetStoreSnapshot    = "pet_store_snapshot"
+	EntityPetStoreMetrics     = "pet_store_metrics"
 	EntityLLMCardType         = "llm_card_type"
 	EntityLLMTenantAuth       = "llm_tenant_authorization"
 	EntityLLMCardOrder        = "llm_card_order"
@@ -89,6 +91,8 @@ type Service struct {
 	gossip                   store.GossipRepository
 	skillStore               *skill.SkillStore
 	skillMarket              *skillmarket.Store
+	petStoreSnapshotApplier  func(context.Context, json.RawMessage) error
+	petStoreMetricsApplier   func(context.Context, json.RawMessage) error
 	cardTypes                cardstore.CardTypeRepository
 	cardOrders               cardstore.PurchaseOrderRepository
 	llmAuthorizations        llmservice.TenantAuthorizationRepository
@@ -299,6 +303,22 @@ func (s *Service) AttachSkillMarket(sm *skillmarket.Store) {
 		return
 	}
 	s.skillMarket = sm
+}
+
+// SetPetStoreSnapshotApplier connects the HTTP-owned Pet Store storage to HA
+// without coupling the HA package to the HTTP API package.
+func (s *Service) SetPetStoreSnapshotApplier(fn func(context.Context, json.RawMessage) error) {
+	if s == nil {
+		return
+	}
+	s.petStoreSnapshotApplier = fn
+}
+
+func (s *Service) SetPetStoreMetricsApplier(fn func(context.Context, json.RawMessage) error) {
+	if s == nil {
+		return
+	}
+	s.petStoreMetricsApplier = fn
 }
 
 func (s *Service) AttachCardTypes(repo cardstore.CardTypeRepository) {
@@ -630,7 +650,7 @@ func adminSyncCategorySpecs() []adminSyncCategorySpec {
 		{Key: "system", Label: "System Settings", EntityTypes: map[string]struct{}{EntitySystemSetting: {}, EntityBlockedEmail: {}, EntityBlockedIP: {}}},
 		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
 		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
-		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}}},
+		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}, EntityPetStoreSnapshot: {}, EntityPetStoreMetrics: {}}},
 		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}, EntityLLMCardOrder: {}, EntityLLMNodeBinding: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
 		{Key: "notifications", Label: "Notifications", EntityTypes: map[string]struct{}{EntityNotification: {}}},
@@ -1531,7 +1551,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityNotification:
 		return true
 	default:
 		return false
@@ -1662,6 +1682,27 @@ func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "key", payload.Key, nil
+	case EntityPetStoreSnapshot:
+		var payload struct {
+			Packs []struct {
+				ID string `json:"id"`
+			} `json:"packs"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		if len(payload.Packs) != 1 {
+			return "packs[0].id", "", nil
+		}
+		return "packs[0].id", payload.Packs[0].ID, nil
+	case EntityPetStoreMetrics:
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "id", payload.ID, nil
 	default:
 		return "", "", nil
 	}
@@ -1755,6 +1796,10 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applySkillHubSnapshotOp(ctx, op)
 	case EntitySkillMarketSnapshot:
 		return s.applySkillMarketSnapshotOp(ctx, op)
+	case EntityPetStoreSnapshot:
+		return s.applyPetStoreSnapshotOp(ctx, op)
+	case EntityPetStoreMetrics:
+		return s.applyPetStoreMetricsOp(ctx, op)
 	case EntityLLMCardType:
 		return s.applyLLMCardTypeOp(ctx, op)
 	case EntityLLMTenantAuth:
@@ -2044,6 +2089,20 @@ func (s *Service) applySkillMarketSnapshotOp(ctx context.Context, op *store.HASy
 		return err
 	}
 	return s.skillMarket.LoadSnapshot(ctx, &snap)
+}
+
+func (s *Service) applyPetStoreSnapshotOp(ctx context.Context, op *store.HASyncOp) error {
+	if s == nil || s.petStoreSnapshotApplier == nil || op.OpType != OpUpsert {
+		return nil
+	}
+	return s.petStoreSnapshotApplier(ctx, json.RawMessage(op.PayloadJSON))
+}
+
+func (s *Service) applyPetStoreMetricsOp(ctx context.Context, op *store.HASyncOp) error {
+	if s == nil || s.petStoreMetricsApplier == nil || op.OpType != OpUpsert {
+		return nil
+	}
+	return s.petStoreMetricsApplier(ctx, json.RawMessage(op.PayloadJSON))
 }
 
 func (s *Service) applyLLMCardTypeOp(ctx context.Context, op *store.HASyncOp) error {
@@ -2501,6 +2560,39 @@ func (s *Service) AppendSkillMarketSnapshot(ctx context.Context, snap *skillmark
 	}
 	if err := s.appendSnapshotUpsertIfChanged(ctx, EntitySkillMarketSnapshot, "skillmarket", snap); err != nil {
 		log.Printf("[hubcenter][ha] append skillmarket snapshot: %v", err)
+	}
+}
+
+// AppendPetStoreSnapshot sends listing metadata, lifetime entitlements, and
+// archive bytes together. Peers therefore never advertise a purchase whose
+// package cannot be downloaded after failover.
+func (s *Service) AppendPetStorePackSnapshot(ctx context.Context, packID string, snap any) {
+	if s == nil || snap == nil {
+		return
+	}
+	packID = strings.TrimSpace(packID)
+	if packID == "" {
+		return
+	}
+	if err := s.appendSnapshotUpsertIfChanged(ctx, EntityPetStoreSnapshot, packID, snap); err != nil {
+		log.Printf("[hubcenter][ha] append pet store pack snapshot: %v", err)
+	}
+}
+
+// AppendPetStoreMetrics replicates high-frequency download counters without
+// transferring an unchanged archive. MAX-based application makes delayed or
+// out-of-order operations safe.
+func (s *Service) AppendPetStoreMetrics(ctx context.Context, packID string, downloads int64) {
+	packID = strings.TrimSpace(packID)
+	if packID == "" || downloads < 0 {
+		return
+	}
+	payload := struct {
+		ID        string `json:"id"`
+		Downloads int64  `json:"downloads"`
+	}{ID: packID, Downloads: downloads}
+	if err := s.AppendUpsert(ctx, EntityPetStoreMetrics, packID, payload, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] append pet store metrics: %v", err)
 	}
 }
 

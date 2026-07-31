@@ -173,7 +173,14 @@ type petFrameCacheKey struct {
 	Bucket  int
 }
 
-const petAnimationFrameBuckets = 72
+// 24 distinct poses preserve a smooth organic loop at the 20fps timer cadence
+// without retaining hundreds of full-size fallback bitmaps per pet state.
+const petAnimationFrameBuckets = 24
+
+// The cache holds at most one short procedural cycle for each runtime state
+// plus native frames. Clearing as a whole creates recurring cold-start stutter,
+// so we evict one matching procedural cycle instead.
+const petFrameCacheLimit = petAnimationFrameBuckets * 12
 
 // windowsFloatingWindow
 
@@ -194,27 +201,49 @@ type windowsFloatingWindow struct {
 	dragMoved    bool
 
 	// Halo animation
-	haloPhase          float64 // 0..2*pi, advances each timer tick
-	petEnabled         bool
-	petMotionEnabled   bool
-	petMotionSound     bool
-	lastPetSoundBucket int
-	petQuietMode       bool
-	petInteractionMode string
-	petSkin            string
-	petVariant         string
-	petSoundPreset     string
-	petReducedMotion   bool
-	petRuntimeState    string
-	petStateDeadline   time.Time
-	packFrameCache     *petpack.FrameCache
-	packPitch          float64
+	haloPhase        float64 // 0..2*pi, advances each timer tick
+	petEnabled       bool
+	petMotionEnabled bool
+	// petMotionSoundRequested preserves the user's setting while quiet mode or
+	// reduced motion temporarily suppresses audible feedback.
+	petMotionSoundRequested bool
+	petMotionSound          bool
+	lastPetSoundBucket      int
+	petQuietMode            bool
+	petInteractionMode      string
+	petSkin                 string
+	petVariant              string
+	petSoundPreset          string
+	petReducedMotion        bool
+	petRuntimeState         string
+	petPreviousState        string
+	petStateChangedAt       time.Time
+	petStateDeadline        time.Time
+	packFrameCache          *petpack.FrameCache
+	packPitch               float64
+	petMotionAmplitude      float64
+	petLastRenderedState    string
+	// Increments for every motion update so an older, slower registry lookup
+	// cannot overwrite a newer setting snapshot.
+	motionConfigRevision uint64
 
 	// Pre-rendered base image (logo + circle clip, without halo)
 	baseImg *image.NRGBA
 
 	// Quantized pet animation frames avoid rerasterizing the supersampled pet every timer tick.
 	petFrameCache map[petFrameCacheKey]*image.NRGBA
+	// Remembers whether a state can be served by a native pack image. This lets
+	// procedural fallback use its animated frame buckets without repeatedly
+	// probing the pack filesystem on every timer tick.
+	petNativeFrameAvailable map[petFrameCacheKey]bool
+	// Keys currently being resolved from a pack. The window has one render
+	// thread today, but keeping this explicit makes state updates safe if a
+	// future platform renderer asks for the same frame concurrently.
+	petNativeFrameLoading map[petFrameCacheKey]bool
+
+	// Set by state/config changes so a static or reduced-motion pet still redraws
+	// once, while its idle timer no longer repaints the same pixels at 20fps.
+	renderDirty bool
 
 	// Pre-computed distance from center for each pixel (avoids sqrt per frame)
 	distMap []float64
@@ -273,9 +302,10 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	petReducedMotion := false
 	petInteractionMode := "balanced"
 	petSkin := "clawmate"
-	petVariant := petpack.VariantClassic
+	petVariant := petpack.VariantDefault
 	petSoundPreset := "classic"
 	packPitch := 1.0
+	petMotionAmplitude := 0.85
 	if w.app != nil {
 		if cfg, err := w.app.LoadConfig(); err == nil {
 			petEnabled = cfg.PetEnabled
@@ -293,6 +323,15 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 			petVariant = petpack.ResolveVariantForRuntime(cfg.PetVariant)
 			if reg := petpack.EnsureGlobal(); reg != nil {
 				if resolved, err := reg.Resolve(petSkin, petVariant); err == nil && resolved != nil {
+					motion := petpack.EffectiveMotionFrom(petpack.EffectiveMotionInput{
+						Pack:            resolved.Motion,
+						InteractionMode: petInteractionMode,
+						QuietMode:       petQuietMode,
+						ReducedMotion:   petReducedMotion,
+						MotionEnabled:   petMotionEnabled,
+						SoundEnabled:    petMotionSound,
+					})
+					petMotionAmplitude = motion.Amplitude
 					packPitch = resolved.Motion.Pitch
 					if packPitch <= 0 {
 						packPitch = 1
@@ -316,6 +355,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.haloPhase = 0
 	w.petEnabled = petEnabled
 	w.petMotionEnabled = petMotionEnabled && !petReducedMotion
+	w.petMotionSoundRequested = petMotionSound
 	w.petMotionSound = petMotionSound && !petReducedMotion && !petQuietMode
 	w.lastPetSoundBucket = 0
 	w.petQuietMode = petQuietMode
@@ -323,12 +363,19 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petInteractionMode = petInteractionMode
 	w.petSkin = petSkin
 	w.petVariant = petVariant
+	w.petMotionAmplitude = petMotionAmplitude
 	w.petSoundPreset = petSoundPreset
 	w.packPitch = packPitch
 	w.petRuntimeState = string(petpack.StateIdle)
+	w.petPreviousState = string(petpack.StateIdle)
+	w.petLastRenderedState = string(petpack.StateIdle)
+	w.petStateChangedAt = time.Now()
 	w.petStateDeadline = time.Time{}
 	w.packFrameCache = petpack.NewFrameCache()
 	w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
+	w.petNativeFrameAvailable = make(map[petFrameCacheKey]bool)
+	w.petNativeFrameLoading = make(map[petFrameCacheKey]bool)
+	w.renderDirty = true
 	w.stopCh = make(chan struct{})
 
 	w.distMap = make([]float64, sz*sz)
@@ -479,13 +526,32 @@ func (w *windowsFloatingWindow) IsCreated() bool {
 
 func (w *windowsFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {
 	w.mu.Lock()
-	w.petMotionSound = soundEnabled && !w.petReducedMotion && !w.petQuietMode
+	previous := w.petMotionSound
+	effectiveSoundEnabled := soundEnabled && !w.petReducedMotion && !w.petQuietMode
+	w.petMotionSoundRequested = soundEnabled
+	w.petMotionSound = effectiveSoundEnabled
 	w.petSoundPreset = preset
+	w.renderDirty = true
+	w.motionConfigRevision++
+	revision := w.motionConfigRevision
+	motionEnabled := w.petMotionEnabled
+	quiet := w.petQuietMode
+	reducedMotion := w.petReducedMotion
+	interactionMode := w.petInteractionMode
+	skin := w.petSkin
 	w.mu.Unlock()
+	if previous != effectiveSoundEnabled {
+		// Sound can affect a pack's effective motion policy, but it never changes
+		// its art. Recompute only amplitude and keep decoded/pre-rendered frames.
+		amplitude := resolvePetMotionAmplitude(skin, interactionMode, quiet, reducedMotion, motionEnabled, effectiveSoundEnabled)
+		w.applyPetMotionAmplitude(revision, amplitude)
+	}
 }
 
 func (w *windowsFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
 	w.mu.Lock()
+	w.motionConfigRevision++
+	revision := w.motionConfigRevision
 	w.petMotionEnabled = motionEnabled && !reducedMotion
 	w.petQuietMode = quiet
 	w.petReducedMotion = reducedMotion
@@ -498,35 +564,89 @@ func (w *windowsFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reduced
 	if variant != "" {
 		w.petVariant = variant
 	}
-	if reducedMotion || quiet {
-		w.petMotionSound = false
-	}
-	// Drop cached frames so skin/variant/state reloads pick new assets.
-	w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
-	w.packFrameCache = petpack.NewFrameCache()
+	w.petMotionSound = w.petMotionSoundRequested && !reducedMotion && !quiet
+	w.renderDirty = true
+	skinForMotion := w.petSkin
+	interactionForMotion := w.petInteractionMode
+	quietForMotion := w.petQuietMode
+	reducedForMotion := w.petReducedMotion
+	motionEnabledForMotion := w.petMotionEnabled
+	soundEnabledForMotion := w.petMotionSound
 	w.mu.Unlock()
+
+	// Registry resolution can touch the filesystem. Keep it outside the window
+	// lock so the 20fps render loop and state updates are never blocked on I/O.
+	amplitude := resolvePetMotionAmplitude(skinForMotion, interactionForMotion, quietForMotion, reducedForMotion, motionEnabledForMotion, soundEnabledForMotion)
+
+	if !w.applyPetMotionAmplitude(revision, amplitude) {
+		return
+	}
+}
+
+func (w *windowsFloatingWindow) applyPetMotionAmplitude(revision uint64, amplitude float64) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if revision != w.motionConfigRevision {
+		return false
+	}
+	w.petMotionAmplitude = amplitude
+	return true
+}
+
+func resolvePetMotionAmplitude(skin, interactionMode string, quiet, reducedMotion, motionEnabled, soundEnabled bool) float64 {
+	if reg := petpack.EnsureGlobal(); reg != nil {
+		if resolved, err := reg.Resolve(skin, petpack.VariantDefault); err == nil && resolved != nil {
+			return petpack.EffectiveMotionFrom(petpack.EffectiveMotionInput{
+				Pack:            resolved.Motion,
+				InteractionMode: interactionMode,
+				QuietMode:       quiet,
+				ReducedMotion:   reducedMotion,
+				MotionEnabled:   motionEnabled,
+				SoundEnabled:    soundEnabled,
+			}).Amplitude
+		}
+	}
+	if reducedMotion || !motionEnabled {
+		return 0
+	}
+	return 0.85
 }
 
 func (w *windowsFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
 	st := string(petpack.NormalizeState(state))
 	w.mu.Lock()
-	w.petRuntimeState = st
+	w.setPetRuntimeStateLocked(st, ttlMs)
+	// Keep cached state frames warm; the renderer crossfades only briefly when
+	// the state changes, then reuses the current frame.
+	w.mu.Unlock()
+}
+
+func (w *windowsFloatingWindow) setPetRuntimeStateLocked(state string, ttlMs int) {
+	if state != w.petRuntimeState {
+		w.petPreviousState = w.petRuntimeState
+		if w.petPreviousState == "" {
+			w.petPreviousState = string(petpack.StateIdle)
+		}
+		w.petStateChangedAt = time.Now()
+	}
+	w.petRuntimeState = state
+	// Repeating the active state should renew its TTL without restarting its
+	// entrance transition or forcing a redundant static redraw.
+	if state != w.petLastRenderedState {
+		w.renderDirty = true
+	}
 	if ttlMs > 0 {
 		w.petStateDeadline = time.Now().Add(time.Duration(ttlMs) * time.Millisecond)
 	} else {
 		w.petStateDeadline = time.Time{}
 	}
-	// Keep petFrameCache: keys already include state, so idle/speak frames stay warm.
-	// Appearance changes still wipe the cache in UpdateAppearance.
-	w.mu.Unlock()
 }
 
 func (w *windowsFloatingWindow) CurrentPetRuntimeState() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if !w.petStateDeadline.IsZero() && time.Now().After(w.petStateDeadline) {
-		w.petRuntimeState = string(petpack.StateIdle)
-		w.petStateDeadline = time.Time{}
+		w.setPetRuntimeStateLocked(string(petpack.StateIdle), 0)
 	}
 	if w.petRuntimeState == "" {
 		return string(petpack.StateIdle)
@@ -600,19 +720,16 @@ func renderFloatingBase(sz int, petEnabled bool, petSkin, petVariant, state stri
 	return renderCircularLogo(sz)
 }
 
-// tryLoadPackFrame returns a scaled native pack frame or nil for procedural fallback.
+// tryLoadPackFrame returns a scaled frame from the selected pack. The legacy
+// variant argument remains for call compatibility, but no longer selects a
+// different rendering path.
 func tryLoadPackFrame(skin, variant, state string, size int, cache *petpack.FrameCache) *image.NRGBA {
 	reg := petpack.EnsureGlobal()
 	if reg == nil {
 		return nil
 	}
-	// Classic variant prefers procedural unless only native is available and caller still tries —
-	// design: classic → procedural fallback. Skip native for classic.
-	if petpack.ResolveVariantForRuntime(variant) == petpack.VariantClassic {
-		return nil
-	}
 	st := petpack.NormalizeState(state)
-	frame, _, err := reg.ResolveAndLoad(skin, variant, st, size, cache)
+	frame, _, err := reg.ResolveAndLoad(skin, petpack.VariantDefault, st, size, cache)
 	if err != nil || frame == nil {
 		return nil
 	}
@@ -1034,9 +1151,7 @@ func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, variant, state, int
 	if skin == "" {
 		skin = "clawmate"
 	}
-	if variant == "" {
-		variant = petpack.VariantClassic
-	}
+	variant = petpack.VariantDefault
 	if state == "" {
 		state = string(petpack.StateIdle)
 	}
@@ -1048,30 +1163,68 @@ func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, variant, state, int
 		phase += 2 * math.Pi
 	}
 	bucket := int(math.Round(phase/(2*math.Pi)*petAnimationFrameBuckets)) % petAnimationFrameBuckets
-	// Pack frames are static per state; ignore fine-grained buckets for cache key stability.
-	bucketKey := bucket
-	if petpack.ResolveVariantForRuntime(variant) != petpack.VariantClassic {
-		bucketKey = 0
-	}
-	key := petFrameCacheKey{Size: sz, Skin: skin, Variant: variant, State: state, Mode: interactionMode, Bucket: bucketKey}
+	// Native pack frames are static per state. Procedural fallbacks keep their
+	// phase bucket so their existing face animation remains alive.
+	baseKey := petFrameCacheKey{Size: sz, Skin: skin, Variant: variant, State: state, Mode: interactionMode}
 
 	w.mu.Lock()
-	if frame := w.petFrameCache[key]; frame != nil {
+	nativeAvailable, nativeKnown := w.petNativeFrameAvailable[baseKey]
+	if nativeKnown && nativeAvailable {
+		if frame := w.petFrameCache[baseKey]; frame != nil {
+			w.mu.Unlock()
+			return frame
+		}
+		// The native bitmap was evicted. Re-resolve it instead of treating the
+		// stale availability bit as a permanent miss.
+		delete(w.petNativeFrameAvailable, baseKey)
+		nativeKnown = false
+	}
+	proceduralKey := baseKey
+	proceduralKey.Bucket = bucket
+	if frame := w.petFrameCache[proceduralKey]; frame != nil {
 		w.mu.Unlock()
 		return frame
 	}
 	packCache := w.packFrameCache
+	if w.petNativeFrameLoading == nil {
+		w.petNativeFrameLoading = make(map[petFrameCacheKey]bool)
+	}
+	nativeLoading := w.petNativeFrameLoading[baseKey]
+	if !nativeKnown && !nativeLoading {
+		w.petNativeFrameLoading[baseKey] = true
+	}
 	w.mu.Unlock()
 
-	// Prefer pack native frames for figurative variants.
-	if frame := tryLoadPackFrame(skin, variant, state, sz, packCache); frame != nil {
+	// Prefer frames from the selected pack. Once a state has no native frame,
+	// remember that result and avoid filesystem work for each procedural bucket.
+	if !nativeKnown && !nativeLoading {
+		frame := tryLoadPackFrame(skin, variant, state, sz, packCache)
 		w.mu.Lock()
-		if w.petFrameCache == nil || len(w.petFrameCache) > petAnimationFrameBuckets*6 {
-			w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
+		if w.petNativeFrameAvailable == nil {
+			w.petNativeFrameAvailable = make(map[petFrameCacheKey]bool)
 		}
-		w.petFrameCache[key] = frame
-		w.mu.Unlock()
-		return frame
+		delete(w.petNativeFrameLoading, baseKey)
+		// A concurrent render may have already resolved this state while I/O was
+		// in flight. Reuse its decision/frame instead of overwriting it.
+		if resolved, known := w.petNativeFrameAvailable[baseKey]; known {
+			cached := w.petFrameCache[baseKey]
+			w.mu.Unlock()
+			if resolved && cached != nil {
+				return cached
+			}
+		} else {
+			w.petNativeFrameAvailable[baseKey] = frame != nil
+			if frame != nil {
+				if w.petFrameCache == nil {
+					w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
+				}
+				w.evictPetFrameCacheCycleLocked(baseKey)
+				w.petFrameCache[baseKey] = frame
+				w.mu.Unlock()
+				return frame
+			}
+			w.mu.Unlock()
+		}
 	}
 
 	bucketPhase := float64(bucket) / float64(petAnimationFrameBuckets) * 2 * math.Pi
@@ -1086,16 +1239,64 @@ func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, variant, state, int
 	frame := renderClawMatePetWithPose(sz, skin, petFacePoseForPhase(bucketPhase, poseMode))
 
 	w.mu.Lock()
-	if w.petFrameCache == nil || len(w.petFrameCache) > petAnimationFrameBuckets*6 {
+	if w.petFrameCache == nil {
 		w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
 	}
-	if cached := w.petFrameCache[key]; cached != nil {
+	if cached := w.petFrameCache[proceduralKey]; cached != nil {
 		w.mu.Unlock()
 		return cached
 	}
-	w.petFrameCache[key] = frame
+	w.evictPetFrameCacheCycleLocked(proceduralKey)
+	w.petFrameCache[proceduralKey] = frame
 	w.mu.Unlock()
 	return frame
+}
+
+func (w *windowsFloatingWindow) evictPetFrameCacheCycleLocked(incoming petFrameCacheKey) {
+	if len(w.petFrameCache) < petFrameCacheLimit {
+		return
+	}
+	// Remove the entire animated cycle for one other state/mode first. This
+	// leaves cached image sequences coherent instead of causing a whole-cache
+	// reset and a visible hitch on the next timer frame.
+	for key := range w.petFrameCache {
+		cycle := key
+		cycle.Bucket = 0
+		incomingCycle := incoming
+		incomingCycle.Bucket = 0
+		if cycle == incomingCycle {
+			continue
+		}
+		if w.petNativeFrameAvailable[cycle] {
+			continue // keep native/static frame assets whenever possible
+		}
+		for candidate := range w.petFrameCache {
+			candidateCycle := candidate
+			candidateCycle.Bucket = 0
+			if candidateCycle == cycle {
+				delete(w.petFrameCache, candidate)
+			}
+		}
+		// A negative native lookup is only useful while its procedural cycle is
+		// resident. Dropping it with the cycle bounds this metadata and lets a
+		// newly installed/updated pack be discovered on the next request.
+		delete(w.petNativeFrameAvailable, cycle)
+		delete(w.petNativeFrameLoading, cycle)
+		return
+	}
+	// A pathological cache full of only native/static entries is still bounded.
+	// Evict the matching availability entry too: otherwise a later cache miss
+	// would be remembered as native but have no way to reload that native frame.
+	for key := range w.petFrameCache {
+		delete(w.petFrameCache, key)
+		staticKey := key
+		staticKey.Bucket = 0
+		if staticKey == key {
+			delete(w.petNativeFrameAvailable, staticKey)
+			delete(w.petNativeFrameLoading, staticKey)
+		}
+		return
+	}
 }
 
 func playPetMotionSound(interactionMode, skin, preset string, packPitch float64) {
@@ -1150,6 +1351,11 @@ func playPetMotionSound(interactionMode, skin, preset string, packPitch float64)
 // and pushes it to the layered window via UpdateLayeredWindow.
 func (w *windowsFloatingWindow) renderFrame() {
 	w.mu.Lock()
+	// Expire runtime state TTL back to idle through the same transition path as
+	// an explicit state update, so the old image is available for crossfade.
+	if !w.petStateDeadline.IsZero() && time.Now().After(w.petStateDeadline) {
+		w.setPetRuntimeStateLocked(string(petpack.StateIdle), 0)
+	}
 	hwnd := w.hwnd
 	base := w.baseImg
 	phase := w.haloPhase
@@ -1170,15 +1376,13 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petInteractionMode := w.petInteractionMode
 	petSkin := w.petSkin
 	petVariant := w.petVariant
+	petPreviousState := w.petPreviousState
+	petStateChangedAt := w.petStateChangedAt
+	petMotionAmplitude := w.petMotionAmplitude
 	petSoundPreset := w.petSoundPreset
 	packPitch := w.packPitch
 	if packPitch <= 0 {
 		packPitch = 1
-	}
-	// Expire runtime state TTL back to idle.
-	if !w.petStateDeadline.IsZero() && time.Now().After(w.petStateDeadline) {
-		w.petRuntimeState = string(petpack.StateIdle)
-		w.petStateDeadline = time.Time{}
 	}
 	petState := w.petRuntimeState
 	if petState == "" {
@@ -1187,6 +1391,18 @@ func (w *windowsFloatingWindow) renderFrame() {
 	if petQuietMode {
 		petState = string(petpack.StateQuiet)
 	}
+	if petState != w.petLastRenderedState {
+		w.renderDirty = true
+	}
+	staticOnly := petReducedMotion || !petMotionEnabled || petQuietMode
+	// When no pet is visible, the frame is just the static fallback/logo; avoid
+	// allocating and uploading an identical layered bitmap every timer tick.
+	if (staticOnly || !petEnabled) && !w.renderDirty {
+		w.mu.Unlock()
+		return
+	}
+	w.renderDirty = false
+	w.petLastRenderedState = petState
 	w.mu.Unlock()
 	if playPetSound && !petReducedMotion {
 		playPetMotionSound(petInteractionMode, petSkin, petSoundPreset, packPitch)
@@ -1198,23 +1414,50 @@ func (w *windowsFloatingWindow) renderFrame() {
 
 	sz := w.currentSize()
 	frame := image.NewNRGBA(image.Rect(0, 0, sz, sz))
-	staticOnly := petReducedMotion || !petMotionEnabled || petQuietMode
 	if petEnabled {
 		petScale := 1.0
+		petXOffset := 0.0
 		petYOffset := 0.0
 		if !staticOnly {
-			petScale = 1.0 + 0.018*math.Sin(phase)
-			petYOffset = math.Sin(phase+math.Pi/5) * float64(sz) * 0.012
+			intensity := 0.65 + 0.35*petMotionAmplitude
+			petScale = 1.0 + 0.022*intensity*math.Sin(phase)
+			petYOffset = math.Sin(phase+math.Pi/5) * float64(sz) * 0.016 * intensity
 			if petInteractionMode == "active" {
-				petScale = 1.0 + 0.026*math.Sin(phase*1.35)
-				petYOffset = math.Sin(phase*1.35+math.Pi/5) * float64(sz) * 0.018
+				petScale = 1.0 + 0.03*intensity*math.Sin(phase*1.35)
+				petYOffset = math.Sin(phase*1.35+math.Pi/5) * float64(sz) * 0.022 * intensity
 			} else if petInteractionMode == "quiet" {
-				petScale = 1.0 + 0.01*math.Sin(phase*0.75)
-				petYOffset = math.Sin(phase*0.75+math.Pi/5) * float64(sz) * 0.006
+				petScale = 1.0 + 0.01*intensity*math.Sin(phase*0.75)
+				petYOffset = math.Sin(phase*0.75+math.Pi/5) * float64(sz) * 0.006 * intensity
+			}
+			switch petpack.NormalizeState(petState) {
+			case petpack.StateListening:
+				petXOffset = math.Sin(phase*1.55) * float64(sz) * 0.008 * intensity
+				petScale += 0.006 * intensity * math.Sin(phase*1.55+math.Pi/4)
+			case petpack.StateThinking:
+				petXOffset = math.Sin(phase*0.95) * float64(sz) * 0.012 * intensity
+				petYOffset += math.Abs(math.Sin(phase*0.95)) * float64(sz) * 0.007 * intensity
+			case petpack.StateSpeaking:
+				petScale += 0.018 * intensity * math.Sin(phase*2.7)
+				petYOffset += math.Abs(math.Sin(phase*2.7)) * float64(sz) * 0.012 * intensity
+			case petpack.StateDone:
+				bounce := math.Max(0, math.Sin(phase*1.8))
+				petScale += 0.016 * intensity * bounce
+				petYOffset -= bounce * float64(sz) * 0.024 * intensity
+			case petpack.StateAlert:
+				petXOffset = math.Sin(phase*4.2) * float64(sz) * 0.016 * intensity
 			}
 		}
 		petFrame := w.cachedPetFrame(sz, petSkin, petVariant, petState, petInteractionMode, phase)
-		renderAnimatedPetFrame(frame, petFrame, petScale, petYOffset)
+		previousPetFrame := (*image.NRGBA)(nil)
+		stateTransition := 1.0
+		if !staticOnly && petPreviousState != "" && petPreviousState != petState && !petStateChangedAt.IsZero() {
+			stateTransition = math.Min(1, time.Since(petStateChangedAt).Seconds()/0.28)
+			if stateTransition < 1 {
+				previousPetFrame = w.cachedPetFrame(sz, petSkin, petVariant, petPreviousState, petInteractionMode, phase)
+			}
+		}
+		stateScale, stateXOffset, stateYOffset := petStateTransitionPose(petState, stateTransition, sz, petMotionAmplitude)
+		renderAnimatedPetFrame(frame, petFrame, previousPetFrame, petScale*stateScale, petXOffset+stateXOffset, petYOffset+stateYOffset, stateTransition)
 	} else {
 		copy(frame.Pix, base.Pix)
 	}
@@ -1249,17 +1492,71 @@ func (w *windowsFloatingWindow) renderFrame() {
 	applyNRGBAToLayeredWindow(hwnd, frame, sz)
 }
 
-func renderAnimatedPetFrame(dst, src *image.NRGBA, scale, offsetY float64) {
+// petStateTransitionPose gives each semantic pack image a short, readable
+// entrance gesture. This works with the existing single image per state, so
+// pet-pack authors do not need to provide sprite sheets or animation metadata.
+func petStateTransitionPose(state string, progress float64, size int, amplitude float64) (scale, offsetX, offsetY float64) {
+	progress = math.Max(0, math.Min(1, progress))
+	amplitude = math.Max(0, math.Min(1, amplitude))
+	if size <= 0 || progress >= 1 || amplitude == 0 {
+		return 1, 0, 0
+	}
+	remaining := 1 - progress
+	travel := float64(size) * (0.035 + 0.025*amplitude)
+	switch petpack.NormalizeState(state) {
+	case petpack.StateListening:
+		return 1 + 0.05*remaining, -travel * remaining, travel * 0.16 * remaining
+	case petpack.StateThinking:
+		return 1 - 0.035*remaining, travel * 0.5 * remaining, travel * 0.28 * remaining
+	case petpack.StateSpeaking:
+		return 1 + 0.07*remaining, 0, travel * 0.38 * remaining
+	case petpack.StateDone:
+		// A quick upward pop and settle makes completion feel intentional.
+		return 1 + 0.09*remaining, 0, -travel * 0.82 * remaining
+	case petpack.StateAlert:
+		return 1 + 0.03*remaining, travel * remaining, 0
+	case petpack.StateQuiet:
+		return 1 - 0.025*remaining, 0, travel * 0.2 * remaining
+	default:
+		return 1, 0, travel * 0.15 * remaining
+	}
+}
+
+func renderAnimatedPetFrame(dst, src, previous *image.NRGBA, scale, offsetX, offsetY, transition float64) {
 	b := dst.Bounds()
 	sz := b.Dx()
 	if sz <= 0 || src == nil {
 		return
 	}
+	if previous != nil && transition < 1 {
+		src = blendPetFrames(previous, src, transition)
+	}
+	renderScaledPetFrame(dst, src, scale, offsetX, offsetY, 1)
+}
+
+func blendPetFrames(previous, current *image.NRGBA, progress float64) *image.NRGBA {
+	if previous == nil || current == nil || !previous.Bounds().Eq(current.Bounds()) {
+		return current
+	}
+	progress = math.Max(0, math.Min(1, progress))
+	out := image.NewNRGBA(current.Bounds())
+	for i := 0; i < len(out.Pix); i++ {
+		out.Pix[i] = byte(math.Round(float64(previous.Pix[i])*(1-progress) + float64(current.Pix[i])*progress))
+	}
+	return out
+}
+
+func renderScaledPetFrame(dst, src *image.NRGBA, scale, offsetX, offsetY, alpha float64) {
+	if src == nil || alpha <= 0 {
+		return
+	}
+	b := dst.Bounds()
+	sz := b.Dx()
 	target := int(math.Round(float64(sz) * scale))
 	if target < 1 {
 		target = 1
 	}
-	x := (sz - target) / 2
+	x := int(math.Round((float64(sz)-float64(target))/2 + offsetX))
 	y := int(math.Round((float64(sz)-float64(target))/2 + offsetY))
 	rect := image.Rect(x, y, x+target, y+target)
 	if rect.Min.X < b.Min.X {
@@ -1274,7 +1571,35 @@ func renderAnimatedPetFrame(dst, src *image.NRGBA, scale, offsetY float64) {
 	if rect.Max.Y > b.Max.Y {
 		rect = rect.Add(image.Pt(0, b.Max.Y-rect.Max.Y))
 	}
-	xdraw.CatmullRom.Scale(dst, rect, src, src.Bounds(), xdraw.Over, nil)
+	if alpha >= 0.999 {
+		xdraw.CatmullRom.Scale(dst, rect, src, src.Bounds(), xdraw.Over, nil)
+		return
+	}
+	tmp := image.NewNRGBA(dst.Bounds())
+	xdraw.CatmullRom.Scale(tmp, rect, src, src.Bounds(), xdraw.Over, nil)
+	alphaOverNRGBA(dst, tmp, alpha)
+}
+
+func alphaOverNRGBA(dst, src *image.NRGBA, alpha float64) {
+	alpha = math.Max(0, math.Min(1, alpha))
+	for i := 0; i < len(dst.Pix) && i < len(src.Pix); i += 4 {
+		sa := float64(src.Pix[i+3]) / 255 * alpha
+		if sa <= 0 {
+			continue
+		}
+		da := float64(dst.Pix[i+3]) / 255
+		outA := sa + da*(1-sa)
+		if outA <= 0 {
+			continue
+		}
+		for channel := 0; channel < 3; channel++ {
+			sc := float64(src.Pix[i+channel]) / 255
+			dc := float64(dst.Pix[i+channel]) / 255
+			out := (sc*sa + dc*da*(1-sa)) / outA
+			dst.Pix[i+channel] = byte(math.Round(out * 255))
+		}
+		dst.Pix[i+3] = byte(math.Round(outA * 255))
+	}
 }
 
 // UpdateLayeredWindow helper

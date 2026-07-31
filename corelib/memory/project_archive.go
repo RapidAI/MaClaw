@@ -45,6 +45,35 @@ func (s *Store) ArchivedExperienceForProject(projectPath string) string {
 	return ""
 }
 
+// DeleteProjectEntries permanently removes memory entries owned by one task.
+// Project ownership is deliberately exact: deleting a task must not remove
+// entries belonging to a nested project that merely shares a path prefix.
+func (s *Store) DeleteProjectEntries(projectPath string) (int, error) {
+	if s == nil || strings.TrimSpace(projectPath) == "" {
+		return 0, nil
+	}
+	target := normalizeMemoryProjectTag(projectPath)
+	if target == "" {
+		return 0, nil
+	}
+	ids := make([]string, 0)
+	for _, entry := range s.AllEntries() {
+		if entryHasExactProjectTag(entry, target) || (entry.Boundary != nil && normalizeMemoryProjectTag(entry.Boundary.ProjectPath) == target) {
+			ids = append(ids, entry.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if err := s.UpdateEntriesAndDeleteIDs(nil, ids); err != nil {
+		return 0, err
+	}
+	// Callers that immediately create a replacement task must not observe the
+	// deleted task through the asynchronously rebuilt project index.
+	s.WaitRebuild()
+	return len(ids), nil
+}
+
 func entryBelongsToProjectPath(entry Entry, normalizedProjectPath string) bool {
 	if normalizedProjectPath == "" {
 		return false

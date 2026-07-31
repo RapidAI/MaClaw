@@ -3095,8 +3095,11 @@ func TestFloatingAppearanceChangedIncludesPetRuntimeSettings(t *testing.T) {
 	motionOff := false
 	withMotionOff := base
 	withMotionOff.PetMotionEnabled = &motionOff
-	if !floatingAppearanceChanged(base, withMotionOff) {
-		t.Fatal("expected motion toggle to refresh floating window")
+	if floatingAppearanceChanged(base, withMotionOff) {
+		t.Fatal("motion toggle should hot-update without recreating the floating window")
+	}
+	if !floatingMotionChanged(base, withMotionOff) {
+		t.Fatal("expected motion toggle to use the live motion update path")
 	}
 
 	soundOff := false
@@ -3126,14 +3129,20 @@ func TestFloatingAppearanceChangedIncludesPetRuntimeSettings(t *testing.T) {
 
 	withQuiet := base
 	withQuiet.PetQuietMode = true
-	if !floatingAppearanceChanged(base, withQuiet) {
-		t.Fatal("expected quiet mode toggle to refresh floating window")
+	if floatingAppearanceChanged(base, withQuiet) {
+		t.Fatal("quiet mode should hot-update without recreating the floating window")
+	}
+	if !floatingMotionChanged(base, withQuiet) {
+		t.Fatal("expected quiet mode toggle to use the live motion update path")
 	}
 
 	withMode := base
 	withMode.PetInteractionMode = "active"
-	if !floatingAppearanceChanged(base, withMode) {
-		t.Fatal("expected interaction mode change to refresh floating window")
+	if floatingAppearanceChanged(base, withMode) {
+		t.Fatal("interaction mode should hot-update without recreating the floating window")
+	}
+	if !floatingMotionChanged(base, withMode) {
+		t.Fatal("expected interaction mode change to use the live motion update path")
 	}
 }
 

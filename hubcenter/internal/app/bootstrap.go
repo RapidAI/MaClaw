@@ -181,7 +181,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	authSvc.SetSessionSigningSecret(cfg.HA.ClusterSecret)
 	authSvc.SetPublicBaseURLProvider(hubService)
 
-	smHandlers := httpapi.NewSkillMarketHandlers(httpapi.SkillMarketConfig{
+	smCfg := httpapi.SkillMarketConfig{
 		Store:          smStore,
 		SkillStore:     skillStore,
 		UserSvc:        userSvc,
@@ -199,7 +199,18 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		RSAPrivKey:     rsaPrivKey,
 		PendingDir:     pendingDir,
 		DataDir:        dataDir,
-	})
+	}
+	if haSvc != nil {
+		// Assign only a live recorder: a typed-nil *ha.Service stored in the
+		// interface would pass the handlers' nil check and then panic on use.
+		smCfg.PetStoreSync = haSvc
+	}
+	smHandlers := httpapi.NewSkillMarketHandlers(smCfg)
+	if haSvc != nil {
+		haSvc.SetPetStoreSnapshotApplier(smHandlers.ApplyPetStoreSnapshot)
+		haSvc.SetPetStoreMetricsApplier(smHandlers.ApplyPetStoreMetrics)
+		app.goBackground(func(ctx context.Context) { smHandlers.SeedPetStoreHASync(ctx) })
+	}
 
 	app.goBackground(processor.Run)
 	app.goBackground(func(ctx context.Context) { httpapi.RunProblemReportArchiver(ctx, smStore) })

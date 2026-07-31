@@ -999,9 +999,9 @@ func normalizeRemoteWorkDirKey(workDir string) string {
 	return workDir
 }
 
-// FindRemoteCodingTaskByMeta returns the most recent remote_coding_dev task whose
-// non-secret SSH tags match host+user+workdir. Port is ignored for matching so
-// reconnects after port changes still merge. Empty result if none.
+// FindRemoteCodingTaskByMeta returns the most recent active remote_coding_dev
+// task whose non-secret SSH tags match host+user+workdir. Port is ignored for
+// matching so reconnects after port changes still merge. Empty result if none.
 func (a *App) FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir string) ProjectSearchResult {
 	if a == nil {
 		return ProjectSearchResult{}
@@ -1020,16 +1020,21 @@ func (a *App) FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir string) Proje
 	if pi == nil {
 		return ProjectSearchResult{}
 	}
-	// Identity lookup deliberately includes hidden/archived records. A user may
-	// remove a task from the sidebar, but that must not allow a retry from the
-	// desktop, ACP, workflow, or virtual-repository entry points to create a
-	// second task/tab for the same remote project.
+	// Hidden and archived records are closed tasks. In particular, older builds
+	// implemented Remove as HideTask, so ignoring those records lets a shortcut
+	// start a fresh task instead of reopening a closed one.
+	// NOTE: the predicate runs under the index read lock, so it must not call
+	// pi.IsHidden/IsArchived (a pending writer would deadlock the nested
+	// RLock). Filter visibility after the locked scan instead.
 	records := pi.ListAllMatching(func(rec memory.ProjectRecord) bool {
 		return projectRecordHasTagLike(rec.Tags, taskRemoteCodingDevTag) &&
 			remoteCodingMetaMatchesTags(rec.Tags, host, user, wantWD)
 	})
-	if len(records) > 0 {
-		return projectRecordToSearchResult(pi, records[0])
+	for _, rec := range records {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		return projectRecordToSearchResult(pi, rec)
 	}
 	return ProjectSearchResult{}
 }
@@ -3147,6 +3152,13 @@ func (a *App) emitProjectTaskClosed(projectPath string) {
 	a.emitEvent(EventProjectTaskClosed, projectPath)
 }
 
+func (a *App) emitProjectTaskDeleted(projectPath string) {
+	if a.ctx == nil {
+		return
+	}
+	a.emitEvent(EventProjectTaskDeleted, projectPath)
+}
+
 func (a *App) cancelProjectTaskLoop(projectPath string) {
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" {
@@ -3498,7 +3510,100 @@ func (a *App) HideTask(projectPath string) {
 	log.Printf("[project_search] HideTask hidden path=%q", projectPath)
 	a.cancelProjectTaskLoop(projectPath)
 	a.emitProjectIndexChanged(projectPath)
+	// The deleted signal must precede the close signal: it tells the frontend
+	// to remove transient tab/history state without recreating an archived
+	// backend session through its ordinary close handler.
+	a.emitProjectTaskDeleted(projectPath)
 	a.emitProjectTaskClosed(projectPath)
+}
+
+// DeleteTask permanently removes a task and all state scoped to it. Unlike
+// HideTask (used for recoverable rollback), this makes a later launch through
+// onboarding or a shortcut a genuinely new task.
+func (a *App) DeleteTask(projectPath string) error {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	log.Printf("[project_search] DeleteTask requested path=%q", projectPath)
+
+	// First stop anything that could write task state back while it is removed.
+	a.cancelProjectTaskLoop(projectPath)
+	ownerID := projectSessionOwnerID(projectPath)
+	var errs []error
+	handler := a.imHandler
+	if handler == nil {
+		if hub := a.hubClient(); hub != nil {
+			handler = hub.currentIMHandler()
+		}
+	}
+	if handler != nil {
+		_, _ = handler.CancelSessionForUser(ownerID)
+		if handler.memory != nil {
+			handler.memory.Clear(ownerID)
+		}
+		handler.clearPerUserSessionState(ownerID)
+		handler.clearCodingWorkflowRemoteCreds(ownerID)
+		// Adapters retain project-scoped document bridge state independently of
+		// the workflow store, so a deleted task must not keep one alive.
+		handler.workflowV2Adapters.Delete(ownerID)
+	}
+	// clearPerUserSessionState only cancels workflows and is unavailable when
+	// the message handler has not been initialized. Delete the durable workflow
+	// state here as well: a removed task must not leave a terminal workflow row
+	// that can surface in a later task list or shortcut launch.
+	if a.workflowEngine != nil {
+		if err := a.workflowEngine.CancelWorkflow(ownerID); err != nil {
+			errs = append(errs, fmt.Errorf("delete task legacy workflow: %w", err))
+		}
+	}
+	if a.workflowV2 != nil && a.workflowV2.machine != nil {
+		if err := a.workflowV2.machine.DeleteState(ownerID); err != nil {
+			errs = append(errs, fmt.Errorf("delete task workflow: %w", err))
+		}
+	}
+	a.sessionEventScopeIDs.Delete(ownerID)
+	a.tabWorkingDirOverrides.Delete(projectPath)
+	a.tabProjectPaths.Range(func(tabID, value any) bool {
+		if path, _ := value.(string); normalizeProjectSessionPath(path) == projectPath {
+			a.tabProjectPaths.Delete(tabID)
+		}
+		return true
+	})
+
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		if _, err := a.memoryStore.DeleteProjectEntries(projectPath); err != nil {
+			errs = append(errs, fmt.Errorf("delete task memory: %w", err))
+		}
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			pi.ClearTaskPrefs(projectPath)
+		}
+	}
+	// Clear tab persistence after task memory. The frontend will close tabs only
+	// after this method emits EventProjectTaskClosed, so no close callback can
+	// recreate an archived session entry during deletion.
+	if _, err := a.ensureProjectTabSessionPersist().DeleteProjectSessions(projectPath); err != nil {
+		errs = append(errs, err)
+	}
+	// Synthetic task directories are app-owned state. Never delete a user
+	// project or a remote working directory.
+	if a.isManagedRecentTaskWorkspacePath(projectPath) {
+		root := normalizeRecentTaskPathKey(filepath.Join(a.GetDataDir(), "tasks"))
+		key := normalizeRecentTaskPathKey(projectPath)
+		if root != "" && strings.HasPrefix(key, root+"/") {
+			if err := os.RemoveAll(projectPath); err != nil {
+				errs = append(errs, fmt.Errorf("delete task workspace: %w", err))
+			}
+		}
+	}
+	a.emitProjectIndexChanged(projectPath)
+	// Match HideTask's ordering: the deleted signal must precede the close
+	// signal so AI panel listeners discard the project's tabs and local caches
+	// instead of persisting an archived session for a permanently removed task.
+	a.emitProjectTaskDeleted(projectPath)
+	a.emitProjectTaskClosed(projectPath)
+	return errors.Join(errs...)
 }
 
 // switchCurrentProjectByPath updates config.CurrentProject to match the

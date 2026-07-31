@@ -23,6 +23,9 @@ export const EVENT_TASKS_CHANGED = "tasks:changed";
 /** Emitted when a task is removed/archived and matching project tabs should close. */
 export const EVENT_PROJECT_TASK_CLOSED = "project-task:closed";
 
+/** Emitted before task-close when the task was permanently deleted. */
+export const EVENT_PROJECT_TASK_DELETED = "project-task:deleted";
+
 /** Emitted when the background update checker (startup delay + periodic re-check) finds a newer application release. */
 export const EVENT_APP_UPDATE_AVAILABLE = "app-update-available";
 

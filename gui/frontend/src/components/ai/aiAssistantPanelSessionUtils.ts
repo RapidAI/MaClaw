@@ -1,6 +1,8 @@
 import type { ChatMessage } from "./useAIAssistant";
 
 const MAX_PROJECT_CONTEXT_MESSAGES_TO_SEND = 12;
+const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
+const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
 
 export function buildProjectTabRecentMessages(history: ChatMessage[] | undefined): Array<{ role: 'user' | 'assistant'; content: string }> {
     if (!Array.isArray(history) || history.length === 0) return [];
@@ -85,6 +87,41 @@ export function normalizeProjectSessionPath(projectPath?: string | null): string
     const joined = parts.join("/");
     if (prefix) return joined ? `${prefix}${joined}` : prefix.replace(/\/$/, "") || "/";
     return joined || ".";
+}
+
+// A task deletion is stronger than closing a tab: no browser-side tab metadata
+// or orphaned history for that project may survive to be restored later.
+export function purgeDeletedProjectTabLocalCache(projectPath?: string | null): void {
+    const normalizedPath = normalizeProjectSessionPath(projectPath);
+    if (!normalizedPath || typeof localStorage === "undefined") return;
+    try {
+        const rawTabs = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
+        if (!rawTabs) return;
+        const tabs = JSON.parse(rawTabs);
+        if (!Array.isArray(tabs)) return;
+
+        const deletedIDs = new Set(
+            tabs
+                .filter(tab => normalizeProjectSessionPath(tab?.projectPath) === normalizedPath)
+                .map(tab => String(tab.id || ""))
+                .filter(Boolean),
+        );
+        if (deletedIDs.size === 0) return;
+
+        const keptTabs = tabs.filter(tab => !deletedIDs.has(String(tab?.id || "")));
+        if (keptTabs.length === 0) localStorage.removeItem(PROJECT_TABS_STORAGE_KEY);
+        else localStorage.setItem(PROJECT_TABS_STORAGE_KEY, JSON.stringify(keptTabs));
+
+        const rawHistories = localStorage.getItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
+        if (!rawHistories) return;
+        const histories = JSON.parse(rawHistories);
+        if (!histories || typeof histories !== "object") return;
+        for (const id of deletedIDs) delete histories[id];
+        if (Object.keys(histories).length === 0) localStorage.removeItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
+        else localStorage.setItem(PROJECT_TAB_HISTORY_STORAGE_KEY, JSON.stringify(histories));
+    } catch {
+        // A malformed or unavailable browser cache must not block task deletion.
+    }
 }
 
 export function normalizeAssistantSessionKey(sessionKey?: string | null): string {

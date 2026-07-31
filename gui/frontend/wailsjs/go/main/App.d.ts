@@ -342,6 +342,8 @@ export function PinTask(arg1:string,arg2:boolean):Promise<void>;
 
 export function HideTask(arg1:string):Promise<void>;
 
+export function DeleteTask(arg1:string):Promise<void>;
+
 export function ArchiveProject(arg1:string):Promise<any>;
 
 export function GetArchivedExperience(arg1:string):Promise<string>;
@@ -1694,6 +1696,15 @@ export function GetPetPackPreviewDataURL(arg1:string):Promise<string>;
 export function GetPetPackStateFrameDataURL(arg1:string,arg2:string,arg3:string):Promise<string>;
 export function OpenPetPacksDir():Promise<void>;
 export function GetPetPacksDir():Promise<string>;
+export function ExportPetPackZip(arg1:string):Promise<string>;
+export function ListPetStorePacks(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<Record<string, any>>;
+export function GetPetStoreAccount():Promise<Record<string, any>>;
+export function GetPetStoreRankings():Promise<Record<string, any>>;
+export function CanPublishPetStorePack(arg1:string):Promise<boolean>;
+export function PurchasePetStorePack(arg1:string):Promise<Record<string, any>>;
+export function InstallPetStorePack(arg1:string):Promise<string>;
+export function WithdrawPetStorePack(arg1:string):Promise<void>;
+export function SubmitPetStorePack(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:string):Promise<Record<string, any>>;
 // Mobile library and meeting recording bindings.
 export function ListMobileLibraryItems(arg1:number):Promise<Array<any>>;
 export function GetMobileLibraryItem(arg1:string):Promise<any>;

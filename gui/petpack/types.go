@@ -13,15 +13,18 @@ import (
 var OfficialPackIDs = []string{"clawmate", "mini-claw", "dev-claw", "focus-claw"}
 
 const (
-	DefaultPackID     = "clawmate"
-	VariantClassic    = "classic"
-	VariantDefault    = "default" // figurative
-	StatusOK          = "ok"
-	StatusInvalid     = "invalid"
-	StatusUnsupported = "unsupported"
-	ScopeBundled      = "bundled"
-	ScopeUser         = "user"
-	RendererNative    = "native-raster"
+	DefaultPackID      = "clawmate"
+	VariantClassic     = "classic"
+	VariantDefault     = "default" // figurative
+	StatusOK           = "ok"
+	StatusInvalid      = "invalid"
+	StatusUnsupported  = "unsupported"
+	ScopeBundled       = "bundled"
+	ScopeUser          = "user"
+	SourceCreated      = "created"
+	SourceImported     = "imported"
+	SourceMarket       = "market"
+	RendererNative     = "native-raster"
 	RendererProcedural = "procedural-fallback"
 )
 
@@ -136,15 +139,18 @@ type PackInfo struct {
 	// CanUninstall is true when a user-scoped install directory exists for this id
 	// (including a user override of an official pack). Bundled-only packs are false.
 	CanUninstall bool `json:"can_uninstall"`
+	// Source distinguishes an author-created folder from an imported or market
+	// installation. Only created packs can be listed by the local user.
+	Source string `json:"source"`
 	// HasPreview hints the client can call GetPetPackPreviewDataURL for a thumb.
 	HasPreview bool `json:"has_preview"`
 }
 
 // ResolvedPack is the runtime selection for a skin + variant.
 type ResolvedPack struct {
-	Manifest   *PetPackManifest
-	VariantID  string
-	Renderer   string
+	Manifest    *PetPackManifest
+	VariantID   string
+	Renderer    string
 	FaceOverlay bool
 	// Native rel paths keyed by state (idle, listening, …)
 	Native map[string]string

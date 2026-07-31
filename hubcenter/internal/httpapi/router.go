@@ -846,6 +846,10 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")
 	registerStaticRoutes(mux, "./web/skillmarket", "/marketplace")
 	registerStaticRoutes(mux, "./web/skillmarket", "/capabilitymarket")
+	// Pet packs are a distinct, buy-once product surface. It deliberately
+	// shares the Skill Market account and Credits wallet, but not its skill
+	// discovery page or package format.
+	registerStaticRoutes(mux, "./web/petstore", "/pet-store")
 	mux.HandleFunc("GET /api/capability-market/customer-account", CapabilityMarketCustomerAccountHandler(systemSettings))
 	mux.HandleFunc("GET /api/capability-market/billing/licenses", CapabilityMarketBillingLicensesHandler(systemSettings, smHandlers))
 	mux.HandleFunc("GET /api/capability-market/mcp", CapabilityMarketMCPListHandler(systemSettings))
@@ -952,6 +956,18 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/skillmarket/{id}/apikeys/upload", smHandlers.UploadAPIKeys)
 		mux.HandleFunc("GET /api/v1/skillmarket/{id}/apikeys/status", smHandlers.GetAPIKeyStatus)
 		mux.HandleFunc("POST /api/v1/skillmarket/{id}/withdraw", smHandlers.WithdrawSkill)
+		// Pet Store — an immutable entitlement is created on acquire; there is no
+		// subscription or time-based access state for pet packs.
+		mux.HandleFunc("GET /api/v1/pet-store/packs", smHandlers.ListPetStorePacks)
+		mux.HandleFunc("GET /api/v1/pet-store/rankings", smHandlers.GetPetStoreRankings)
+		mux.HandleFunc("GET /api/v1/pet-store/account", smHandlers.GetPetStoreAccount)
+		mux.HandleFunc("GET /api/v1/pet-store/packs/mine", smHandlers.ListMyPetStorePacks)
+		mux.HandleFunc("GET /api/v1/pet-store/packs/source/{sourcePackID}/publishability", smHandlers.CanPublishPetStorePack)
+		mux.HandleFunc("POST /api/v1/pet-store/packs", smHandlers.SubmitPetStorePack)
+		mux.HandleFunc("GET /api/v1/pet-store/packs/{id}", smHandlers.GetPetStorePack)
+		mux.HandleFunc("POST /api/v1/pet-store/packs/{id}/purchase", smHandlers.PurchasePetStorePack)
+		mux.HandleFunc("GET /api/v1/pet-store/packs/{id}/download", smHandlers.DownloadPetStorePack)
+		mux.HandleFunc("POST /api/v1/pet-store/packs/{id}/withdraw", smHandlers.WithdrawPetStorePack)
 		mux.HandleFunc("GET /api/v1/account/{email}/tier", smHandlers.GetAccountTier)
 		// Admin refund & purchases
 		mux.HandleFunc("POST /api/v1/admin/refund", RequireAdmin(adminService, smHandlers.AdminRefund))

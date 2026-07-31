@@ -7,8 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -268,6 +271,183 @@ func TestSkillAutoSummary_DraftSkill_BasicExtraction(t *testing.T) {
 	}
 }
 
+func TestSkillAutoSummary_DraftSkill_ExcludesAgentOrchestrationCalls(t *testing.T) {
+	session := &TrajectorySession{
+		SessionID: "exclude-orchestration",
+		Entries: []TrajectoryEntry{
+			{Role: "user", Content: "inspect the remote workspace"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "manage_skill", `{"action":"run","name":"remote-inspector"}`)},
+			{Role: "tool", ToolCallID: "c1", Content: "started"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "ssh_list_dir", `{"path":"/home/project"}`)},
+			{Role: "tool", ToolCallID: "c2", Content: "src"},
+		},
+	}
+
+	draft, err := DraftSkill(session)
+	if err != nil {
+		t.Fatalf("DraftSkill: %v", err)
+	}
+	if len(draft.Steps) != 1 || draft.Steps[0].Action != "ssh_list_dir" {
+		t.Fatalf("steps=%#v, want only ssh_list_dir", draft.Steps)
+	}
+}
+
+func TestSkillAutoSummary_DraftSkill_RejectsOrchestrationOnlyTrajectory(t *testing.T) {
+	session := &TrajectorySession{
+		SessionID: "orchestration-only",
+		Entries: []TrajectoryEntry{
+			{Role: "user", Content: "run a skill"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "manage_skill", `{"action":"run","name":"example"}`)},
+			{Role: "tool", ToolCallID: "c1", Content: "started"},
+		},
+	}
+
+	_, err := DraftSkill(session)
+	if err == nil || !strings.Contains(err.Error(), "no reusable task steps") {
+		t.Fatalf("DraftSkill error=%v, want orchestration-only rejection", err)
+	}
+}
+
+func TestSkillAutoSummary_ValidateRunnerCompatibility(t *testing.T) {
+	valid := makeValidDraft()
+	valid.Steps = []skill.SkillYAMLStep{{Action: "ssh_bash"}}
+	if err := validateAutoSummaryRunnerCompatibility(valid); err != nil {
+		t.Fatalf("ssh_bash should be GUI-compatible: %v", err)
+	}
+
+	invalid := makeValidDraft()
+	invalid.Steps = []skill.SkillYAMLStep{{Action: "manage_skill"}, {Action: "web_search"}}
+	err := validateAutoSummaryRunnerCompatibility(invalid)
+	if err == nil {
+		t.Fatal("expected incompatible draft to fail")
+	}
+	if !strings.Contains(err.Error(), "orchestration action") || !strings.Contains(err.Error(), "unsupported_step_action") {
+		t.Fatalf("compatibility error=%v, want orchestration and unsupported-action reasons", err)
+	}
+}
+
+func TestSkillAutoSummary_ValidationPrecedesRunnerCompatibility(t *testing.T) {
+	draft := makeValidDraft()
+	draft.Steps = []skill.SkillYAMLStep{
+		{Action: "ssh_bash"},
+		{Action: "http_fetch"},
+	}
+	checker := NewSecurityPolicyChecker(SkillSecurityPolicy{
+		NetworkAccess:    SecurityDeny,
+		FileSystemAccess: SecurityAllow,
+		ShellExec:        SecurityAllow,
+		DatabaseAccess:   SecurityAllow,
+	}, nil)
+
+	validated, err := ValidateSkillDraft(draft, checker, nil)
+	if err != nil {
+		t.Fatalf("ValidateSkillDraft: %v", err)
+	}
+	if len(validated.Steps) != 1 || validated.Steps[0].Action != "ssh_bash" {
+		t.Fatalf("validated steps=%#v, want only ssh_bash", validated.Steps)
+	}
+	if err := validateAutoSummaryRunnerCompatibility(validated); err != nil {
+		t.Fatalf("compatibility should check the security-filtered draft: %v", err)
+	}
+}
+
+func TestSkillAutoSummary_RunQualityGate_NilDraft(t *testing.T) {
+	if _, err := RunQualityGate(nil, nil); err == nil || !strings.Contains(err.Error(), "draft is required") {
+		t.Fatalf("RunQualityGate(nil) error=%v, want nil-draft validation", err)
+	}
+}
+
+func TestSkillAutoSummary_RunQualityGate_RefusesToOverwriteDefinition(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("HOME", baseDir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", baseDir)
+	}
+
+	draft := makeValidDraft()
+	draft.Name = "atomic_quality_gate_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	draft.Source = "learned"
+	first, err := RunQualityGate(draft, nil)
+	if err != nil {
+		t.Fatalf("first RunQualityGate: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(first.SkillDir); err != nil {
+			t.Errorf("cleanup generated skill dir: %v", err)
+		}
+	})
+
+	initial, err := os.ReadFile(filepath.Join(first.SkillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatalf("read generated skill: %v", err)
+	}
+	draft.Description = "must not overwrite definition"
+	if _, err := RunQualityGate(draft, nil); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("second RunQualityGate error=%v, want overwrite refusal", err)
+	}
+	data, err := os.ReadFile(filepath.Join(first.SkillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatalf("read preserved skill: %v", err)
+	}
+	if string(data) != string(initial) {
+		t.Fatalf("existing definition changed after refusal: %s", data)
+	}
+	if matches, err := filepath.Glob(filepath.Join(first.SkillDir, ".skill.yaml-*.tmp")); err != nil || len(matches) != 0 {
+		t.Fatalf("atomic write temp files=%v err=%v", matches, err)
+	}
+}
+
+func TestSkillAutoSummary_RunQualityGate_RefusesExistingDirectory(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("HOME", baseDir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", baseDir)
+	}
+
+	draft := makeValidDraft()
+	draft.Name = "reserved_directory_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	skillDir, err := skill.PrimarySkillsDir()
+	if err != nil {
+		t.Fatalf("PrimarySkillsDir: %v", err)
+	}
+	reserved := filepath.Join(skillDir, toKebabCase(draft.Name))
+	if err := os.MkdirAll(reserved, 0o755); err != nil {
+		t.Fatalf("reserve skill dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(reserved) })
+
+	if _, err := RunQualityGate(draft, nil); err == nil || !strings.Contains(err.Error(), "directory already exists") {
+		t.Fatalf("RunQualityGate error=%v, want existing-directory refusal", err)
+	}
+}
+
+func TestSkillAutoSummary_UniqueAutoSummarySkillName(t *testing.T) {
+	existing := map[string]bool{
+		"craft_fetch_weather":   true,
+		"craft-fetch-weather":   true,
+		"craft_fetch_weather_2": true,
+		"craft-fetch-weather-2": true,
+	}
+	if got := uniqueAutoSummarySkillName("craft_fetch_weather", existing); got != "craft_fetch_weather_3" {
+		t.Fatalf("unique name=%q, want craft_fetch_weather_3", got)
+	}
+	if got := uniqueAutoSummarySkillName("craft_new_skill", existing); got != "craft_new_skill" {
+		t.Fatalf("unique unrelated name=%q", got)
+	}
+}
+
+func TestSkillAutoSummary_UniqueAutoSummarySkillName_StaysWithinNameLimit(t *testing.T) {
+	base := strings.Repeat("a", maxAutoSummarySkillNameBytes)
+	existing := map[string]bool{base: true, toKebabCase(base): true}
+	got := uniqueAutoSummarySkillName(base, existing)
+	if len(got) > maxAutoSummarySkillNameBytes {
+		t.Fatalf("unique name length=%d, limit=%d: %q", len(got), maxAutoSummarySkillNameBytes, got)
+	}
+	if !strings.HasSuffix(got, "_2") {
+		t.Fatalf("unique name=%q, want _2 suffix", got)
+	}
+}
+
 func TestSkillAutoSummary_DraftSkill_MergeConsecutive(t *testing.T) {
 	session := &TrajectorySession{
 		SessionID: "merge-test",
@@ -275,9 +455,9 @@ func TestSkillAutoSummary_DraftSkill_MergeConsecutive(t *testing.T) {
 			{Role: "user", Content: "read many files"},
 			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "read_file", `{"path":"a.go"}`)},
 			{Role: "tool", ToolCallID: "c1", Content: "content a"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "read_file", `{"path":"b.go"}`)},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "read_file", `{"path":"a.go"}`)},
 			{Role: "tool", ToolCallID: "c2", Content: "content b"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("c3", "read_file", `{"path":"c.go"}`)},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c3", "read_file", `{"path":"a.go"}`)},
 			{Role: "tool", ToolCallID: "c3", Content: "content c"},
 			{Role: "assistant", ToolCalls: makeToolCallsWithID("c4", "write_file", `{"path":"out.go"}`)},
 			{Role: "tool", ToolCallID: "c4", Content: "ok"},
@@ -287,7 +467,7 @@ func TestSkillAutoSummary_DraftSkill_MergeConsecutive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// 3 consecutive read_file should merge into 1, plus 1 write_file = 2 steps.
+	// 3 identical read_file calls should merge into 1, plus 1 write_file = 2 steps.
 	if len(draft.Steps) != 2 {
 		t.Fatalf("Steps count: got %d, want 2", len(draft.Steps))
 	}
@@ -306,6 +486,35 @@ func TestSkillAutoSummary_DraftSkill_MergeConsecutive(t *testing.T) {
 	}
 }
 
+func TestSkillAutoSummary_DraftSkill_DoesNotMergeDifferentStepParameters(t *testing.T) {
+	session := &TrajectorySession{
+		SessionID: "preserve-distinct-read-paths",
+		Entries: []TrajectoryEntry{
+			{Role: "user", Content: "read both source files"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "ssh_read_file", `{"path":"/project/a.cpp"}`)},
+			{Role: "tool", ToolCallID: "c1", Content: "source a"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "ssh_read_file", `{"path":"/project/b.cpp"}`)},
+			{Role: "tool", ToolCallID: "c2", Content: "source b"},
+		},
+	}
+
+	draft, err := DraftSkill(session)
+	if err != nil {
+		t.Fatalf("DraftSkill: %v", err)
+	}
+	if len(draft.Steps) != 2 {
+		t.Fatalf("steps=%#v, want two distinct reads", draft.Steps)
+	}
+	for i, wantPath := range []string{"/project/a.cpp", "/project/b.cpp"} {
+		if got := draft.Steps[i].Params["path"]; got != wantPath {
+			t.Errorf("step[%d].params.path=%#v, want %q", i, got, wantPath)
+		}
+		if _, repeated := draft.Steps[i].Params["_repeat_count"]; repeated {
+			t.Errorf("step[%d] unexpectedly became a repeated call", i)
+		}
+	}
+}
+
 func TestSkillAutoSummary_DraftSkill_ErrorStepMarking(t *testing.T) {
 	session := &TrajectorySession{
 		SessionID: "error-test",
@@ -313,7 +522,7 @@ func TestSkillAutoSummary_DraftSkill_ErrorStepMarking(t *testing.T) {
 			{Role: "user", Content: "run commands"},
 			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "exec_cmd", `{"cmd":"ls"}`)},
 			{Role: "tool", ToolCallID: "c1", Content: "[error] command failed"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "exec_cmd", `{"cmd":"cat"}`)},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "exec_cmd", `{"cmd":"ls"}`)},
 			{Role: "tool", ToolCallID: "c2", Content: "[stderr] permission denied"},
 			{Role: "assistant", ToolCalls: makeToolCallsWithID("c3", "read_file", `{"path":"ok.go"}`)},
 			{Role: "tool", ToolCallID: "c3", Content: "file content"},
@@ -332,6 +541,43 @@ func TestSkillAutoSummary_DraftSkill_ErrorStepMarking(t *testing.T) {
 	}
 	if draft.Steps[1].OnError != "" {
 		t.Errorf("Step[1].OnError: got %q, want empty", draft.Steps[1].OnError)
+	}
+}
+
+func TestSkillAutoSummary_DraftSkill_ExcludesExplicitlyFailedToolCalls(t *testing.T) {
+	session := &TrajectorySession{
+		SessionID: "exclude-failed-tool-call",
+		Entries: []TrajectoryEntry{
+			{Role: "user", Content: "inspect the remote project"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "ssh_bash", `{"command":"false"}`)},
+			{Role: "tool_result", ToolCallID: "c1", ToolOutcome: "failed", Content: "exit status 1"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "ssh_list_dir", `{"path":"/project"}`)},
+			{Role: "tool_result", ToolCallID: "c2", ToolOutcome: "succeeded", Content: "src"},
+		},
+	}
+
+	draft, err := DraftSkill(session)
+	if err != nil {
+		t.Fatalf("DraftSkill: %v", err)
+	}
+	if len(draft.Steps) != 1 || draft.Steps[0].Action != "ssh_list_dir" {
+		t.Fatalf("steps=%#v, want only the successful ssh_list_dir call", draft.Steps)
+	}
+}
+
+func TestIsAutoSummaryEligibleSession(t *testing.T) {
+	for _, status := range []string{"", "success", "succeeded"} {
+		if !isAutoSummaryEligibleSession(&TrajectorySession{Status: status}) {
+			t.Errorf("status %q should be eligible", status)
+		}
+	}
+	for _, status := range []string{"error", "failed", "cancelled", "hard_exit", "paused"} {
+		if isAutoSummaryEligibleSession(&TrajectorySession{Status: status}) {
+			t.Errorf("status %q must not be eligible", status)
+		}
+	}
+	if isAutoSummaryEligibleSession(nil) {
+		t.Error("nil session must not be eligible")
 	}
 }
 
@@ -832,7 +1078,7 @@ func TestSkillAutoSummary_Pipeline_Idempotency(t *testing.T) {
 
 // --- shouldUpdateSkill tests (P1: Skill auto-iteration) ---
 
-func TestShouldUpdateSkill_FewerSteps(t *testing.T) {
+func TestShouldUpdateSkill_FewerStepsDoesNotProveImprovement(t *testing.T) {
 	newDraft := &skill.SkillYAMLFile{
 		Steps: []skill.SkillYAMLStep{
 			{Action: "read_file"},
@@ -846,8 +1092,8 @@ func TestShouldUpdateSkill_FewerSteps(t *testing.T) {
 			{Action: "exec_cmd"},
 		},
 	}
-	if !shouldUpdateSkill(newDraft, existing) {
-		t.Error("new draft with fewer steps should trigger update")
+	if shouldUpdateSkill(newDraft, existing) {
+		t.Error("a shorter draft with a missing action must not trigger update")
 	}
 }
 
@@ -907,6 +1153,105 @@ func TestShouldUpdateSkill_SameStepsSameErrors(t *testing.T) {
 	}
 	if shouldUpdateSkill(newDraft, existing) {
 		t.Error("same steps and errors should NOT trigger update")
+	}
+}
+
+func TestShouldUpdateSkill_DifferentActionPlanDoesNotReplaceSkill(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{
+			{Action: "ssh_read_file"},
+			{Action: "ssh_bash"},
+		},
+	}
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{
+			{Action: "ssh_read_file"},
+			{Action: "ssh_write_file", OnError: "skip"},
+		},
+	}
+	if shouldUpdateSkill(newDraft, existing) {
+		t.Error("a lower-error draft with a different action plan must not replace the existing skill")
+	}
+}
+
+func TestShouldUpdateSkill_ChangedStepParametersDoNotReplaceSkill(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{{Action: "ssh_bash", Params: map[string]interface{}{"command": "make test"}}},
+	}
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{Action: "ssh_bash", Params: map[string]interface{}{"command": "make build"}, OnError: "skip"}},
+	}
+	if shouldUpdateSkill(newDraft, existing) {
+		t.Error("a changed command must not replace an existing skill merely because it has fewer errors")
+	}
+}
+
+func TestShouldUpdateSkill_EquivalentTimeoutAndErrorDefaultsCanReplace(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{{Action: "ssh_bash", TimeoutSeconds: 30}},
+	}
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{Action: "ssh_bash", Params: map[string]interface{}{"timeout": float64(30)}, OnError: "skip"}},
+	}
+	if !shouldUpdateSkill(newDraft, existing) {
+		t.Error("equivalent timeout and default stop behavior with fewer errors should replace")
+	}
+}
+
+func TestShouldUpdateSkill_EquivalentNestedNumericParamsCanReplace(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{{
+			Action: "ssh_bash",
+			Params: map[string]interface{}{
+				"retries": float64(2),
+				"options": map[string]interface{}{"delay": float64(5)},
+				"ports":   []interface{}{float64(22), float64(443)},
+			},
+		}},
+	}
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action:  "ssh_bash",
+			OnError: "skip",
+			Params: map[string]interface{}{
+				"retries": 2,
+				"options": map[string]interface{}{"delay": 5},
+				"ports":   []interface{}{22, 443},
+			},
+		}},
+	}
+	if !shouldUpdateSkill(newDraft, existing) {
+		t.Error("numerically equivalent nested params with fewer errors should replace")
+	}
+}
+
+func TestShouldUpdateSkill_DifferentNestedNumericParamsDoNotReplace(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{{Action: "ssh_bash", Params: map[string]interface{}{"options": map[string]interface{}{"delay": float64(6)}}}},
+	}
+	existing := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{Action: "ssh_bash", OnError: "skip", Params: map[string]interface{}{"options": map[string]interface{}{"delay": 5}}}},
+	}
+	if shouldUpdateSkill(newDraft, existing) {
+		t.Error("a changed nested numeric parameter must not replace the existing skill")
+	}
+}
+
+func TestSameAutoSummaryValue_NumericSafetyAcrossJSONYAMLRoundTrips(t *testing.T) {
+	if !sameAutoSummaryValue(int64(42), uint64(42)) {
+		t.Error("equivalent signed and unsigned integer values should compare equal")
+	}
+
+	// float64 cannot represent 2^53+1 exactly. Treating it as the adjacent
+	// uint64 would silently accept a changed execution parameter.
+	if sameAutoSummaryValue(float64(1<<53), uint64(1<<53+1)) {
+		t.Error("lossy float/integer comparison must not treat distinct large values as equal")
+	}
+}
+
+func TestShouldUpdateSkill_NilInputs(t *testing.T) {
+	if shouldUpdateSkill(nil, &corelib.NLSkillEntry{}) || shouldUpdateSkill(&skill.SkillYAMLFile{}, nil) {
+		t.Error("nil drafts or existing entries must not trigger an update")
 	}
 }
 

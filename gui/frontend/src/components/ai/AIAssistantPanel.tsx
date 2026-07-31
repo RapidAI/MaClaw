@@ -73,7 +73,7 @@ import { renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
@@ -82,7 +82,7 @@ import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { agentModeFromTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
-import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
+import { EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
@@ -775,7 +775,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             (window as any).go?.main?.App?.ResolveSkillRecording?.("save", name, desc).catch(() => { /* ignore */ });
         }
     }, []);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
     // Publish open project-tab paths so the sidebar can block deleting active tasks.
     useEffect(() => {
         const onChange = props.onOpenProjectTabsChange as ((paths: string[]) => void) | undefined;
@@ -3204,7 +3204,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return null;
     }, [createProjectTabWithContext, getTabState, hasProjectTab, sendProjectMessageAfterPrepare]);
     const closeProjectTabByPath = useCallback((projectPath: string) => {
-        const tab = getTabs().find(t => t.type === "project" && t.projectPath === projectPath);
+        const normalizedPath = normalizeProjectSessionPath(projectPath);
+        const tab = getTabs().find(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === normalizedPath);
         if (tab) {
             console.info("[AIAssistantPanel] closing project tab", { projectPath, tabId: tab.id });
             closeTabWithProjectCleanup(tab.id);
@@ -3221,6 +3222,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             else EventsOff(EVENT_PROJECT_TASK_CLOSED);
         };
     }, [closeProjectTabByPath]);
+    useEffect(() => {
+        const off = EventsOn(EVENT_PROJECT_TASK_DELETED, (projectPath: string) => {
+            if (typeof projectPath === "string" && projectPath.trim()) {
+                purgeDeletedProjectTabLocalCache(projectPath);
+                discardDeletedProjectTabs(projectPath);
+            }
+        });
+        return () => {
+            if (typeof off === "function") off();
+            else EventsOff(EVENT_PROJECT_TASK_DELETED);
+        };
+    }, [discardDeletedProjectTabs]);
     const addParticipantToTab = useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup });
     const addLocalMaclawToTab = useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup });
     const [participantInviteTargetTabId, setParticipantInviteTargetTabId] = useState<string | null>(null);

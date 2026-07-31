@@ -3,16 +3,16 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectSearchPanel } from "../ProjectSearchPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
-import { GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeTask } from "../../../../wailsjs/go/main/App";
+import { DeleteTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeTask } from "../../../../wailsjs/go/main/App";
 
-const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeTaskMock, renameTaskMock, pinTaskMock, hideTaskMock, archiveProjectMock } = vi.hoisted(() => ({
+const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeTaskMock, renameTaskMock, pinTaskMock, deleteTaskMock, archiveProjectMock } = vi.hoisted(() => ({
     getArchivedExperienceMock: vi.fn(),
     getProjectSceneMock: vi.fn(),
     openFileOrShowInFolderMock: vi.fn(),
     resumeTaskMock: vi.fn(),
     renameTaskMock: vi.fn(),
     pinTaskMock: vi.fn(),
-    hideTaskMock: vi.fn(),
+    deleteTaskMock: vi.fn(),
     archiveProjectMock: vi.fn(),
 }));
 
@@ -24,7 +24,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     ResumeTask: resumeTaskMock,
     RenameTask: renameTaskMock,
     PinTask: pinTaskMock,
-    HideTask: hideTaskMock,
+    DeleteTask: deleteTaskMock,
     ArchiveProject: archiveProjectMock,
 }));
 
@@ -223,15 +223,41 @@ describe("ProjectSearchPanel", () => {
     it("closes an open project tab when a task is removed", async () => {
         const search = makeSearch([{ id: "p4", name: "Removable task", project_path: "D:/p/remove" }]);
         const onCloseProjectTab = vi.fn();
-        hideTaskMock.mockResolvedValue(undefined);
+        deleteTaskMock.mockResolvedValue(undefined);
+        localStorage.setItem("ai_assistant_project_tabs", JSON.stringify([
+            { id: "proj-remove", type: "project", projectPath: "d:\\p\\remove\\." },
+            { id: "proj-keep", type: "project", projectPath: "D:/p/keep" },
+        ]));
+        localStorage.setItem("ai_assistant_project_tab_histories", JSON.stringify({
+            "proj-remove": [{ id: "deleted-history" }],
+            "proj-keep": [{ id: "kept-history" }],
+        }));
 
         renderPanel(search, { onCloseProjectTab });
         fireEvent.contextMenu(screen.getByText("Removable task"));
         fireEvent.click(screen.getByText("Remove"));
 
-        await waitFor(() => expect(hideTaskMock).toHaveBeenCalledWith("D:/p/remove"));
+        await waitFor(() => expect(deleteTaskMock).toHaveBeenCalledWith("D:/p/remove"));
         expect(onCloseProjectTab).toHaveBeenCalledWith("D:/p/remove");
         expect(search.refresh).toHaveBeenCalled();
+        expect(localStorage.getItem("ai_assistant_project_tabs") || "").not.toContain("remove");
+        expect(localStorage.getItem("ai_assistant_project_tabs") || "").toContain("D:/p/keep");
+        expect(localStorage.getItem("ai_assistant_project_tab_histories") || "").not.toContain("proj-remove");
+        expect(localStorage.getItem("ai_assistant_project_tab_histories") || "").toContain("proj-keep");
+    });
+
+    it("keeps the task visible when deletion fails", async () => {
+        const search = makeSearch([{ id: "p4-fail", name: "Failed delete", project_path: "D:/p/delete-fail" }]);
+        const onCloseProjectTab = vi.fn();
+        deleteTaskMock.mockRejectedValueOnce(new Error("disk unavailable"));
+
+        renderPanel(search, { onCloseProjectTab });
+        fireEvent.contextMenu(screen.getByText("Failed delete"));
+        fireEvent.click(screen.getByText("Remove"));
+
+        await waitFor(() => expect(deleteTaskMock).toHaveBeenCalledWith("D:/p/delete-fail"));
+        expect(onCloseProjectTab).not.toHaveBeenCalled();
+        expect(search.refresh).not.toHaveBeenCalled();
     });
 
     it("closes an open project tab when a task is archived", async () => {

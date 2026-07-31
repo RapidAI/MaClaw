@@ -229,6 +229,13 @@ export function buildHubPetPackHelpURL(hubURL?: string, lang?: string) {
     return buildHubGuideURL(hubURL, '/pet-pack-help', lang);
 }
 
+/** HubCenter Pet Store — all commercial packs are lifetime purchases. */
+export function buildHubPetStoreURL(hubURL?: string, lang?: string, viewerToken?: string) {
+    const url = buildHubGuideURL(hubURL, '/pet-store', lang);
+    const token = String(viewerToken || '').trim();
+    return token ? `${url}#token=${encodeURIComponent(token)}` : url;
+}
+
 /**
  * Build the URL for the card/credits purchase page.
  *

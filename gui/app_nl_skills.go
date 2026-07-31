@@ -3387,6 +3387,11 @@ func (a *App) maclawAppDependencyWarningsForDoc(doc map[string]any) []map[string
 		if maclawAppDependencyHasRemoteInstallRef(dep) {
 			continue
 		}
+		// A stable publisher.skill-name identifier is accepted by the publish
+		// gate as a receiver-resolvable coordinate, so it must not warn either.
+		if skill.IsValidSkillID(dep.SkillID) || skill.IsValidSkillID(dep.CanonicalID) {
+			continue
+		}
 		warnings = append(warnings, map[string]any{
 			"id":       dep.ID,
 			"kind":     dep.Kind,

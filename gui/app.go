@@ -778,7 +778,10 @@ func (a *App) ensureMemoryStore() {
 		a.compressorMu.Unlock()
 		a.memPipeline = maintenance.Pipeline()
 		a.triggerMemoryPipelineSoon(a.memoryPipelineStartupDelay())
-		a.refreshMemoryEvolutionLLM()
+		// refreshMemoryEvolutionLLM is deferred until after memoryStoreMu is
+		// released, same as configureMemoryCompressor below: it goes through
+		// LoadConfig, which may drain a pending data-dir reset that re-locks
+		// memoryStoreMu (self-deadlock).
 		// Static memory snapshot does not need embeddings — prewarm as soon as
 		// the store is open so first chat message can reuse the cache.
 		a.scheduleWarmFrozenMemorySnapshot()
@@ -822,6 +825,9 @@ func (a *App) ensureMemoryStore() {
 	a.memoryStoreMu.Unlock()
 	if compressorToConfigure != nil {
 		a.configureMemoryCompressor(compressorToConfigure)
+		// Newly opened store: refresh the memory-evolution LLM outside the
+		// store mutex (it loads config, see above).
+		a.refreshMemoryEvolutionLLM()
 	}
 }
 
@@ -6039,6 +6045,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	policyModeChanged := a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode
 	floatingChanged := floatingAppearanceChanged(oldConfig, config)
+	motionChanged := floatingMotionChanged(oldConfig, config)
 	soundChanged := floatingSoundChanged(oldConfig, config)
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {
@@ -6085,10 +6092,17 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 			}
 		}(config)
 	}
-	if !floatingChanged && soundChanged {
+	if !floatingChanged && (soundChanged || motionChanged) {
 		go func(cfg corelib.AppConfig) {
 			if fa := a.existingFloatingAssistant(); fa != nil {
-				fa.UpdateSoundConfig(cfg)
+				// Keep the requested sound preference current before recalculating
+				// quiet/reduced-motion policy for the live window.
+				if soundChanged {
+					fa.UpdateSoundConfig(cfg)
+				}
+				if motionChanged {
+					fa.UpdateMotionConfig(cfg)
+				}
 			}
 		}(config)
 	}
@@ -7809,6 +7823,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	a.workflowDisabled.Store(!cfg.IsWorkflowEnabled())
 	workflowTurnedOff := !cfg.IsWorkflowEnabled() && current.IsWorkflowEnabled()
 	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
+	motionChanged := petChanged && floatingMotionChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
 	// Unified epilogue: publish → unlock → post-unlock drains → persist.
 	// Mark committed before finish so defer does not double-unlock.
@@ -7907,24 +7922,17 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 		}(cfg)
 	}
-	if !floatingChanged && soundChanged {
+	if !floatingChanged && (soundChanged || motionChanged) {
 		go func(cfg corelib.AppConfig) {
 			if fa := a.existingFloatingAssistant(); fa != nil {
-				fa.UpdateSoundConfig(cfg)
-			}
-		}(cfg)
-	}
-	// Reduced-motion / quiet hot-update without full window recreate (K19).
-	if !floatingChanged && petChanged {
-		go func(oldC, newC corelib.AppConfig) {
-			if fa := a.existingFloatingAssistant(); fa != nil {
-				if oldC.PetQuietMode != newC.PetQuietMode ||
-					oldC.PetReducedMotion != newC.PetReducedMotion ||
-					isPetMotionEnabled(oldC) != isPetMotionEnabled(newC) {
-					fa.UpdateMotionConfig(newC)
+				if soundChanged {
+					fa.UpdateSoundConfig(cfg)
+				}
+				if motionChanged {
+					fa.UpdateMotionConfig(cfg)
 				}
 			}
-		}(current, cfg)
+		}(cfg)
 	}
 	if proxyChanged {
 		a.applyAgentProxy()

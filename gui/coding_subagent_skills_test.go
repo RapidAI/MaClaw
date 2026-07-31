@@ -35,7 +35,7 @@ func TestSelectRelevantSkillsForTaskExcludesInstructionOnlyAppContainers(t *test
 	app := &App{testHomeDir: tempHome}
 	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{
 		{Name: "pdf-translator-app", Status: "active", Type: "instruction", Description: "translate PDF documents", Triggers: []string{"pdf", "translate"}},
-		{Name: "pdf-translator", Status: "active", Description: "translate PDF documents", Triggers: []string{"pdf", "translate"}},
+		{Name: "pdf-translator", Status: "active", Description: "translate PDF documents", Triggers: []string{"pdf", "translate"}, Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo translate"}}}},
 	}}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -50,6 +50,43 @@ func TestSelectRelevantSkillsForTaskExcludesInstructionOnlyAppContainers(t *test
 	}
 	if len(matched) != 1 || matched[0].Name != "pdf-translator" {
 		t.Fatalf("matched skills = %#v, want only executable pdf-translator", matched)
+	}
+}
+
+func TestSelectRelevantSkillsForTaskExcludesGUIIncompatibleLegacySkills(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{
+		{
+			Name:        "legacy-web-search",
+			Status:      "active",
+			Description: "search current weather online",
+			Triggers:    []string{"weather", "search"},
+			Steps:       []corelib.NLSkillStep{{Action: "web_search"}},
+		},
+		{
+			Name:        "gui-safe-weather",
+			Status:      "active",
+			Description: "inspect weather data through a GUI-safe command",
+			Triggers:    []string{"weather", "search"},
+			Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo weather"}}},
+		},
+	}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	callback := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: &IMMessageHandler{app: app}}}
+
+	matched := callback.selectRelevantSkillsForTask("search current weather")
+	for _, item := range matched {
+		if item.Name == "legacy-web-search" {
+			t.Fatalf("GUI-incompatible legacy skill leaked into CodingSubAgent matches: %#v", matched)
+		}
+	}
+	if len(matched) != 1 || matched[0].Name != "gui-safe-weather" {
+		t.Fatalf("matched skills = %#v, want only gui-safe-weather", matched)
 	}
 }
 

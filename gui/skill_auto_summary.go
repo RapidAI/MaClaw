@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -82,8 +86,12 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 		return nil, fmt.Errorf("no tool_calls found in session")
 	}
 
-	// Build a map of tool_call_id => tool result content for error detection.
+	// Build result maps before extracting steps. A tool call is evidence for a
+	// reusable recipe only when it completed successfully (or is a legacy entry
+	// with no outcome metadata); failed/cancelled calls are observations for
+	// diagnosis, not instructions to replay.
 	toolResults := buildToolResultMap(session.Entries)
+	toolOutcomes := buildAutoSummaryToolOutcomeMap(session.Entries)
 
 	// Extract raw steps from all assistant entries with ToolCalls.
 	var rawSteps []skill.SkillYAMLStep
@@ -91,12 +99,21 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 		if entry.Role != "assistant" || entry.ToolCalls == nil {
 			continue
 		}
-		steps := extractStepsFromToolCalls(entry.ToolCalls, toolResults)
+		steps := extractStepsFromToolCalls(entry.ToolCalls, toolResults, toolOutcomes)
 		rawSteps = append(rawSteps, steps...)
 	}
 
 	if len(rawSteps) == 0 {
 		return nil, fmt.Errorf("no tool_calls found in session")
+	}
+
+	// A trajectory includes both the task work and the agent framework used to
+	// orchestrate that work.  The latter must never become part of a learned
+	// skill: e.g. recording manage_skill(run, name=X) inside X creates a
+	// recursive definition and cannot run on the GUI skill runner.
+	rawSteps = filterAutoSummaryOrchestrationSteps(rawSteps)
+	if len(rawSteps) == 0 {
+		return nil, fmt.Errorf("no reusable task steps found after excluding agent orchestration calls")
 	}
 
 	// Merge consecutive identical tool calls.
@@ -152,10 +169,26 @@ func buildToolResultMap(entries []TrajectoryEntry) map[string]string {
 	return results
 }
 
+// buildAutoSummaryToolOutcomeMap records explicit terminal outcomes for tool
+// results. Older trajectory files have no outcome, so callers retain their
+// legacy content-based behavior for backward compatibility.
+func buildAutoSummaryToolOutcomeMap(entries []TrajectoryEntry) map[string]string {
+	outcomes := make(map[string]string)
+	for _, entry := range entries {
+		if entry.ToolCallID == "" || !trajectoryEntryIsToolResult(entry) {
+			continue
+		}
+		if outcome := normalizeTrajectoryToolOutcome(entry.ToolOutcome); outcome != "" {
+			outcomes[entry.ToolCallID] = outcome
+		}
+	}
+	return outcomes
+}
+
 // extractStepsFromToolCalls converts a ToolCalls interface{} into SkillYAMLStep
 // slice, checking each tool call's result for errors. Uses the same normalizer
 // as trajectory recording so live []llm.ToolCall payloads are not dropped.
-func extractStepsFromToolCalls(toolCalls interface{}, toolResults map[string]string) []skill.SkillYAMLStep {
+func extractStepsFromToolCalls(toolCalls interface{}, toolResults, toolOutcomes map[string]string) []skill.SkillYAMLStep {
 	extracted := extractTrajectoryToolCalls(toolCalls)
 	if len(extracted) == 0 {
 		return nil
@@ -163,6 +196,9 @@ func extractStepsFromToolCalls(toolCalls interface{}, toolResults map[string]str
 	steps := make([]skill.SkillYAMLStep, 0, len(extracted))
 	for _, tc := range extracted {
 		if tc.Name == "" {
+			continue
+		}
+		if outcome, found := toolOutcomes[tc.ID]; found && outcome != "succeeded" {
 			continue
 		}
 		step := skill.SkillYAMLStep{
@@ -202,8 +238,10 @@ func parseToolArguments(args interface{}) map[string]interface{} {
 	return map[string]interface{}{}
 }
 
-// mergeConsecutiveSteps merges consecutive steps with the same action name
-// into a single step with _repeat_count in params.
+// mergeConsecutiveSteps merges only consecutive calls with the same executable
+// contract into a single step with _repeat_count in params. Calls such as
+// ssh_read_file({path:a}) followed by ssh_read_file({path:b}) are distinct
+// work, not retries: merging them would silently replay only the first path.
 func mergeConsecutiveSteps(steps []skill.SkillYAMLStep) []skill.SkillYAMLStep {
 	if len(steps) == 0 {
 		return steps
@@ -213,7 +251,7 @@ func mergeConsecutiveSteps(steps []skill.SkillYAMLStep) []skill.SkillYAMLStep {
 	for i < len(steps) {
 		current := steps[i]
 		count := 1
-		for i+count < len(steps) && steps[i+count].Action == current.Action {
+		for i+count < len(steps) && sameAutoSummaryMergeableStep(current, steps[i+count]) {
 			// Propagate on_error="skip" if any in the group has it.
 			if steps[i+count].OnError == "skip" {
 				current.OnError = "skip"
@@ -230,6 +268,11 @@ func mergeConsecutiveSteps(steps []skill.SkillYAMLStep) []skill.SkillYAMLStep {
 		i += count
 	}
 	return merged
+}
+
+func sameAutoSummaryMergeableStep(left, right skill.SkillYAMLStep) bool {
+	return skill.NormalizeStepActionName(left.Action) == skill.NormalizeStepActionName(right.Action) &&
+		sameAutoSummaryParams(left.Params, right.Params)
 }
 
 // extractUserDescription returns the Content string from the first role="user"
@@ -286,6 +329,58 @@ func trajectoryUserContentText(content interface{}) string {
 	default:
 		return ""
 	}
+}
+
+// filterAutoSummaryOrchestrationSteps removes control-plane actions that start,
+// install, or route skills rather than perform the user's task.  A learned
+// skill is an executable task recipe, not a recording of how the agent chose
+// that recipe. Keep this list deliberately small and explicit; normal task
+// actions continue through the runner compatibility gate below.
+func filterAutoSummaryOrchestrationSteps(steps []skill.SkillYAMLStep) []skill.SkillYAMLStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	filtered := make([]skill.SkillYAMLStep, 0, len(steps))
+	for _, step := range steps {
+		if isAutoSummaryOrchestrationAction(step.Action) {
+			continue
+		}
+		filtered = append(filtered, step)
+	}
+	return filtered
+}
+
+func isAutoSummaryOrchestrationAction(action string) bool {
+	switch skill.NormalizeStepActionName(action) {
+	case "manage_skill", "run_skill", "search_skill_hub", "install_skill_hub", "search_and_install_skill":
+		return true
+	default:
+		return false
+	}
+}
+
+// validateAutoSummaryRunnerCompatibility stops invalid generated drafts before
+// they can replace a similar learned skill or be registered. Auto summaries are
+// produced by the GUI application, so GUI is the execution contract to verify.
+func validateAutoSummaryRunnerCompatibility(draft *skill.SkillYAMLFile) error {
+	if draft == nil {
+		return &ValidationError{Reasons: []string{"draft must not be nil"}}
+	}
+	var reasons []string
+	for i, step := range draft.Steps {
+		action := skill.NormalizeStepActionName(step.Action)
+		if isAutoSummaryOrchestrationAction(action) {
+			reasons = append(reasons, fmt.Sprintf("step[%d] action %q is an agent orchestration action and cannot appear in a learned skill", i, action))
+			continue
+		}
+		if err := skill.EnsureStepActionSupported(skill.RunnerBackendGUI, action); err != nil {
+			reasons = append(reasons, fmt.Sprintf("step[%d] %v", i, err))
+		}
+	}
+	if len(reasons) > 0 {
+		return &ValidationError{Reasons: reasons}
+	}
+	return nil
 }
 
 // ValidationError holds all validation failure reasons.
@@ -374,6 +469,11 @@ func inferSecurityLabels(steps []skill.SkillYAMLStep) []string {
 
 // maxSkillDescriptionBytes is the hard limit enforced by skill.yaml schema.
 const maxSkillDescriptionBytes = 500
+
+// maxAutoSummarySkillNameBytes mirrors ValidateSkillDraft's persisted name
+// contract. Keep suffixing below this bound so a collision can be resolved
+// rather than turning a valid generated draft into a later validation failure.
+const maxAutoSummarySkillNameBytes = 60
 
 // truncateSkillDescription shortens description to at most maxBytes, cutting on a
 // UTF-8 rune boundary and appending an ellipsis when room allows.
@@ -578,17 +678,36 @@ type QualityGateResult struct {
 // Tags generation failure is non-fatal (logged as warning).
 // Disk write failures are fatal and return an error.
 func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityGateResult, error) {
+	if draft == nil {
+		return nil, fmt.Errorf("quality gate: draft is required")
+	}
 	// 1. Get the base skills directory.
 	baseDir, err := skill.PrimarySkillsDir()
 	if err != nil {
 		return nil, fmt.Errorf("quality gate: get skills dir: %w", err)
 	}
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return nil, fmt.Errorf("quality gate: create skills root: %w", err)
+	}
 
-	// 2. Create a subdirectory named after the skill.
+	// 2. Reserve a new subdirectory named after the skill. A failed or colliding
+	// draft must not leave a directory behind: future auto-summaries use the
+	// directory name as part of their uniqueness contract.
 	skillDir := filepath.Join(baseDir, toKebabCase(draft.Name))
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("quality gate: skill directory already exists at %s", skillDir)
+		}
 		return nil, fmt.Errorf("quality gate: create skill dir: %w", err)
 	}
+	createdSkillDir := true
+	defer func() {
+		if createdSkillDir {
+			if removeErr := os.RemoveAll(skillDir); removeErr != nil {
+				log.Printf("[quality-gate] cleanup incomplete skill dir %s: %v", skillDir, removeErr)
+			}
+		}
+	}()
 
 	// 3. Format the draft and write skill.yaml.
 	data, err := skill.FormatSkillYAMLFile(draft)
@@ -596,7 +715,7 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 		return nil, fmt.Errorf("quality gate: format skill.yaml: %w", err)
 	}
 	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	if err := os.WriteFile(yamlPath, data, 0o644); err != nil {
+	if err := fileutil.AtomicWriteFile(yamlPath, data, 0o644); err != nil {
 		return nil, fmt.Errorf("quality gate: write skill.yaml: %w", err)
 	}
 
@@ -623,6 +742,7 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 
 	// 9. Determine status based on score threshold.
 	status := skillQualityGateStatusForScore(score)
+	createdSkillDir = false
 
 	return &QualityGateResult{
 		Status:   string(status),
@@ -809,6 +929,10 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		return
 	}
 	sid := session.SessionID
+	if !isAutoSummaryEligibleSession(session) {
+		log.Printf("[skill-auto-summary] session=%s skipped due to terminal status=%q", sid, session.Status)
+		return
+	}
 
 	// Idempotency check must check and mark in the same critical section
 	// to prevent two goroutines from both passing the check.
@@ -851,6 +975,27 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	log.Printf("[skill-auto-summary] session=%s stage=DraftSkill result=ok name=%s steps=%d",
 		sid, draft.Name, len(draft.Steps))
 
+	// Validate before similarity matching or disk mutation. Previously a draft
+	// could reach VersionedUpdate before its structure and security policy were
+	// checked, allowing an invalid trajectory to replace a healthy learned skill.
+	draft, err = ValidateSkillDraft(draft, p.checker, nil)
+	if err != nil {
+		log.Printf("[skill-auto-summary] session=%s stage=ValidateSkillDraft error=%v", sid, err)
+		return
+	}
+	log.Printf("[skill-auto-summary] session=%s stage=ValidateSkillDraft result=ok name=%s",
+		sid, draft.Name)
+
+	// Reject incompatible drafts before similarity matching. In particular, this
+	// must happen before VersionedUpdate so an invalid new trajectory can never
+	// overwrite a previously runnable learned skill.
+	if err := validateAutoSummaryRunnerCompatibility(draft); err != nil {
+		log.Printf("[skill-auto-summary] session=%s stage=RunnerCompatibility error=%v", sid, err)
+		return
+	}
+	log.Printf("[skill-auto-summary] session=%s stage=RunnerCompatibility result=ok runner=%s",
+		sid, skill.RunnerBackendGUI)
+
 	// Stage 2.5: FindSimilarSkill checks if an existing skill should be updated.
 	existing, simScore := skill.FindSimilarSkill(draft.Description, 0.6)
 	if existing != nil {
@@ -880,7 +1025,7 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 				}
 				data, fmtErr := skill.FormatSkillDefinitionFile(draft, defFormat)
 				if fmtErr == nil {
-					if writeErr := os.WriteFile(defPath, data, 0o644); writeErr != nil {
+					if writeErr := fileutil.AtomicWriteFile(defPath, data, 0o644); writeErr != nil {
 						log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate write_error=%v", sid, writeErr)
 					} else {
 						log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate result=ok", sid)
@@ -927,7 +1072,16 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		draft.Name = name
 	}
 
-	// Stage 3: ValidateSkillDraft
+	// The heuristic fallback does not receive existing names, and the directory
+	// on disk is normalized to kebab case. Reserve a unique name for every new
+	// learned skill here; VersionedUpdate returned above intentionally retains
+	// the matched skill identity instead.
+	draft.Name = uniqueAutoSummarySkillName(draft.Name, p.autoSummaryExistingSkillNames())
+
+	// Stage 3: ValidateSkillDraft again after optional LLM naming. The first
+	// validation above protects existing skills from a bad draft; this final pass
+	// verifies that an LLM-supplied name still satisfies the same contract before
+	// a new skill reaches the quality gate.
 	draft, err = ValidateSkillDraft(draft, p.checker, nil)
 	if err != nil {
 		log.Printf("[skill-auto-summary] session=%s stage=ValidateSkillDraft error=%v", sid, err)
@@ -978,6 +1132,86 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	}
 }
 
+// isAutoSummaryEligibleSession keeps failed or interrupted trajectories from
+// teaching the system a recipe. Empty status is accepted for older on-disk
+// trajectories that predate outcome recording.
+func isAutoSummaryEligibleSession(session *TrajectorySession) bool {
+	if session == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(session.Status)) {
+	case "", "success", "succeeded":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *SkillAutoSummaryPipeline) autoSummaryExistingSkillNames() map[string]bool {
+	if p == nil || p.skillExec == nil {
+		return nil
+	}
+	skills := p.skillExec.loadSkills()
+	if len(skills) == 0 {
+		return nil
+	}
+	names := make(map[string]bool, len(skills)*2)
+	for _, entry := range skills {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		names[name] = true
+		names[toKebabCase(name)] = true
+	}
+	return names
+}
+
+func uniqueAutoSummarySkillName(name string, existing map[string]bool) string {
+	if len(existing) == 0 {
+		return name
+	}
+	base := strings.TrimSpace(name)
+	if base == "" || (!existing[base] && !existing[toKebabCase(base)]) {
+		return name
+	}
+	for suffix := 2; ; suffix++ {
+		suffixText := "_" + strconv.Itoa(suffix)
+		candidateBase := truncateUTF8Bytes(base, maxAutoSummarySkillNameBytes-len(suffixText))
+		candidateBase = strings.TrimRight(candidateBase, "_-")
+		if candidateBase == "" {
+			// The original name has already passed ValidateSkillDraft, so this is
+			// only reachable for an unusually small future name limit.
+			candidateBase = "skill"
+		}
+		candidate := candidateBase + suffixText
+		if !existing[candidate] && !existing[toKebabCase(candidate)] {
+			return candidate
+		}
+	}
+}
+
+func truncateUTF8Bytes(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	end := 0
+	for _, r := range value {
+		size := utf8.RuneLen(r)
+		if size < 0 {
+			size = 1
+		}
+		if end+size > maxBytes {
+			break
+		}
+		end += size
+	}
+	return value[:end]
+}
+
 // clearActivity clears the skill_summarizing activity from the store.
 func (p *SkillAutoSummaryPipeline) clearActivity() {
 	if p.activity != nil {
@@ -1019,11 +1253,17 @@ func registerAutoSummaryLearnedSkill(exec *SkillExecutor, draft *skill.SkillYAML
 	return exec.UpdateLearnedSource(entry)
 }
 
-// shouldUpdateSkill returns true if the new draft is better than the existing skill.
-// "Better" means fewer steps (more efficient) or fewer error steps.
+// shouldUpdateSkill permits automatic replacement only when the draft preserves
+// the executable action plan and demonstrably removes recorded failures. A
+// shorter trace is not evidence of an improvement: it may have omitted a
+// required validation or deployment action. Structural optimizations that alter
+// the plan should be proposed separately, not silently applied by auto-summary.
 func shouldUpdateSkill(newDraft *skill.SkillYAMLFile, existing *corelib.NLSkillEntry) bool {
+	if newDraft == nil || existing == nil || !sameAutoSummaryActionPlan(newDraft.Steps, existing.Steps) {
+		return false
+	}
+
 	newSteps := len(newDraft.Steps)
-	oldSteps := len(existing.Steps)
 
 	newErrors := 0
 	for _, s := range newDraft.Steps {
@@ -1038,13 +1278,199 @@ func shouldUpdateSkill(newDraft *skill.SkillYAMLFile, existing *corelib.NLSkillE
 		}
 	}
 
-	// New version has fewer steps (more efficient).
-	if newSteps < oldSteps {
-		return true
+	return newSteps == len(existing.Steps) && newErrors < oldErrors
+}
+
+func sameAutoSummaryActionPlan(draftSteps []skill.SkillYAMLStep, existingSteps []corelib.NLSkillStep) bool {
+	if len(draftSteps) == 0 || len(draftSteps) != len(existingSteps) {
+		return false
 	}
-	// New version has fewer error steps.
-	if newErrors < oldErrors {
-		return true
+	for i := range draftSteps {
+		if !sameAutoSummaryStepContract(draftSteps[i], existingSteps[i]) {
+			return false
+		}
 	}
-	return false
+	return true
+}
+
+// sameAutoSummaryStepContract compares every execution-affecting field. An
+// action name alone is insufficient: changing a command, path, repeat count,
+// condition, timeout, poll, or loop can materially change a skill while still
+// appearing to be a lower-error run. OnError is intentionally excluded: it is
+// the observed-failure signal that this function is comparing. Names are
+// display-only and deliberately excluded. Existing fallback steps are not
+// generated by this pipeline, so refuse to auto-replace them rather than
+// discard their recovery behavior.
+func sameAutoSummaryStepContract(draft skill.SkillYAMLStep, existing corelib.NLSkillStep) bool {
+	if skill.NormalizeStepActionName(draft.Action) != skill.NormalizeStepActionName(existing.Action) ||
+		draft.Condition != existing.Condition ||
+		draft.When != existing.When ||
+		draft.Label != existing.Label ||
+		existing.FallbackStep != nil ||
+		!sameAutoSummaryParams(normalizeAutoSummaryParams(draft.Params, draft.TimeoutSeconds), normalizeAutoSummaryParams(existing.Params, 0)) ||
+		!reflect.DeepEqual(normalizeAutoSummaryCapture(draft.Capture), normalizeAutoSummaryCapture(existing.Capture)) ||
+		!sameAutoSummaryPoll(draft.Poll, existing.Poll) ||
+		!sameAutoSummaryLoop(draft.Loop, existing.Loop) {
+		return false
+	}
+	return true
+}
+
+// sameAutoSummaryParams compares JSON/YAML-derived values semantically. A
+// live tool call represents numbers as float64, while a YAML round-trip may
+// preserve them as int or uint; reflect.DeepEqual would reject an otherwise
+// identical execution contract and prevent safe failure-only updates.
+func sameAutoSummaryParams(left, right map[string]interface{}) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return len(left) == 0 && len(right) == 0
+	}
+	if len(left) != len(right) {
+		return false
+	}
+	for key, leftValue := range left {
+		rightValue, ok := right[key]
+		if !ok || !sameAutoSummaryValue(leftValue, rightValue) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameAutoSummaryValue(left, right interface{}) bool {
+	if leftNumber, ok := autoSummaryNumber(left); ok {
+		rightNumber, rightOK := autoSummaryNumber(right)
+		return rightOK && sameAutoSummaryNumber(leftNumber, rightNumber)
+	}
+	switch leftValue := left.(type) {
+	case map[string]interface{}:
+		rightValue, ok := right.(map[string]interface{})
+		return ok && sameAutoSummaryParams(leftValue, rightValue)
+	case []interface{}:
+		rightValue, ok := right.([]interface{})
+		if !ok || len(leftValue) != len(rightValue) {
+			return false
+		}
+		for i := range leftValue {
+			if !sameAutoSummaryValue(leftValue[i], rightValue[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(left, right)
+	}
+}
+
+type autoSummaryNumericValue struct {
+	isFloat  bool
+	isSigned bool
+	float    float64
+	signed   int64
+	unsigned uint64
+}
+
+func sameAutoSummaryNumber(left, right autoSummaryNumericValue) bool {
+	if left.isFloat || right.isFloat {
+		leftFloat, leftOK := left.asExactFloat()
+		rightFloat, rightOK := right.asExactFloat()
+		return leftOK && rightOK && leftFloat == rightFloat
+	}
+	if left.isSigned && left.signed < 0 || right.isSigned && right.signed < 0 {
+		return left.signed == right.signed
+	}
+	return left.asUnsigned() == right.asUnsigned()
+}
+
+func (value autoSummaryNumericValue) asUnsigned() uint64 {
+	if value.isSigned {
+		return uint64(value.signed)
+	}
+	return value.unsigned
+}
+
+func (value autoSummaryNumericValue) asExactFloat() (float64, bool) {
+	if value.isFloat {
+		return value.float, !math.IsNaN(value.float) && !math.IsInf(value.float, 0)
+	}
+	const maxExactlyRepresentableInteger = uint64(1 << 53)
+	if value.isSigned && value.signed < 0 {
+		magnitude := uint64(-(value.signed + 1)) + 1
+		if magnitude > maxExactlyRepresentableInteger {
+			return 0, false
+		}
+		return float64(value.signed), true
+	}
+	unsigned := value.asUnsigned()
+	if unsigned > maxExactlyRepresentableInteger {
+		return 0, false
+	}
+	return float64(unsigned), true
+}
+
+func autoSummaryNumber(value interface{}) (autoSummaryNumericValue, bool) {
+	switch number := value.(type) {
+	case int:
+		return autoSummaryNumericValue{isSigned: true, signed: int64(number)}, true
+	case int8:
+		return autoSummaryNumericValue{isSigned: true, signed: int64(number)}, true
+	case int16:
+		return autoSummaryNumericValue{isSigned: true, signed: int64(number)}, true
+	case int32:
+		return autoSummaryNumericValue{isSigned: true, signed: int64(number)}, true
+	case int64:
+		return autoSummaryNumericValue{isSigned: true, signed: number}, true
+	case uint:
+		return autoSummaryNumericValue{unsigned: uint64(number)}, true
+	case uint8:
+		return autoSummaryNumericValue{unsigned: uint64(number)}, true
+	case uint16:
+		return autoSummaryNumericValue{unsigned: uint64(number)}, true
+	case uint32:
+		return autoSummaryNumericValue{unsigned: uint64(number)}, true
+	case uint64:
+		return autoSummaryNumericValue{unsigned: number}, true
+	case float32:
+		return autoSummaryNumericValue{isFloat: true, float: float64(number)}, true
+	case float64:
+		return autoSummaryNumericValue{isFloat: true, float: number}, true
+	default:
+		return autoSummaryNumericValue{}, false
+	}
+}
+
+func normalizeAutoSummaryParams(params map[string]interface{}, timeoutSeconds int) map[string]interface{} {
+	if len(params) == 0 && timeoutSeconds <= 0 {
+		return nil
+	}
+	normalized := make(map[string]interface{}, len(params)+1)
+	for key, value := range params {
+		normalized[key] = value
+	}
+	if timeoutSeconds > 0 {
+		normalized["timeout"] = float64(timeoutSeconds)
+	}
+	return normalized
+}
+
+func normalizeAutoSummaryCapture(capture map[string]string) map[string]string {
+	if len(capture) == 0 {
+		return nil
+	}
+	return capture
+}
+
+func sameAutoSummaryPoll(draft *skill.SkillYAMLStepPoll, existing *corelib.StepPollConfig) bool {
+	if draft == nil || existing == nil {
+		return draft == nil && existing == nil
+	}
+	return draft.Interval == existing.Interval && draft.MaxAttempts == existing.MaxAttempts &&
+		draft.UntilMatch == existing.UntilMatch && draft.UntilStatus == existing.UntilStatus
+}
+
+func sameAutoSummaryLoop(draft *skill.SkillYAMLStepLoop, existing *corelib.StepLoopConfig) bool {
+	if draft == nil || existing == nil {
+		return draft == nil && existing == nil
+	}
+	return draft.MaxIterations == existing.MaxIterations && draft.UntilStep == existing.UntilStep &&
+		draft.UntilMatch == existing.UntilMatch && draft.OnFailStep == existing.OnFailStep
 }

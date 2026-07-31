@@ -42,11 +42,11 @@ func TestSanitizePetConfigUsesRegistryAllowlist(t *testing.T) {
 	if cfg2.PetSkin != "dev-claw" {
 		t.Fatalf("official wiped: %q", cfg2.PetSkin)
 	}
-	if cfg2.PetVariant != petpack.VariantClassic {
-		t.Fatalf("K18 empty → classic, got %q", cfg2.PetVariant)
+	if cfg2.PetVariant != petpack.VariantDefault {
+		t.Fatalf("legacy variant = %q, want default", cfg2.PetVariant)
 	}
-	if !cfg2.PetFigurativeUpgradePromptPending {
-		t.Fatal("expected upgrade prompt")
+	if cfg2.PetFigurativeUpgradePromptPending {
+		t.Fatal("retired upgrade prompt should be cleared")
 	}
 }
 
@@ -62,17 +62,17 @@ func TestSanitizeNotReadyKeepsWellFormedID(t *testing.T) {
 	}
 }
 
-func TestFloatingAppearanceIncludesVariantAndReducedMotion(t *testing.T) {
-	base := corelib.AppConfig{PetEnabled: true, PetSkin: "clawmate", PetSize: 88, PetVariant: "classic"}
+func TestFloatingAppearanceIncludesReducedMotion(t *testing.T) {
+	base := corelib.AppConfig{PetEnabled: true, PetSkin: "clawmate", PetSize: 88}
 	next := base
-	next.PetVariant = "default"
-	if !floatingAppearanceChanged(base, next) {
-		t.Fatal("variant change should trigger appearance refresh")
+	next.PetReducedMotion = true
+	// Reduced motion is a motion-level change (applied in place), not an
+	// appearance rebuild.
+	if floatingAppearanceChanged(base, next) {
+		t.Fatal("reduced-motion should not trigger an appearance rebuild")
 	}
-	next2 := base
-	next2.PetReducedMotion = true
-	if !floatingAppearanceChanged(base, next2) {
-		t.Fatal("reduced-motion should trigger appearance change detection")
+	if !floatingMotionChanged(base, next) {
+		t.Fatal("reduced-motion should trigger motion change detection")
 	}
 }
 
@@ -107,14 +107,20 @@ func TestSetPetRuntimeStateOnManager(t *testing.T) {
 
 func TestAppSetDesktopPetStateBridge(t *testing.T) {
 	app := &App{}
+	// K11: the bridge never creates the pet window just to apply state.
+	app.SetDesktopPetState("listening", 0)
+	if got := app.GetDesktopPetState(); got != "idle" {
+		t.Fatalf("bridge without window should stay idle, got %q", got)
+	}
+	app.floatingAssistant = NewFloatingAssistantManager(nil)
 	app.SetDesktopPetState("listening", 0)
 	if got := app.GetDesktopPetState(); got != "listening" {
 		t.Fatalf("bridge state = %q", got)
 	}
 }
 
-func TestLoadConfigPersistsK18ClassicMigration(t *testing.T) {
-	// Existing on-disk config with missing pet_variant must persist classic after LoadConfig.
+func TestLoadConfigNormalizesRetiredPetQualityStyle(t *testing.T) {
+	// Existing config with no pet_variant is normalized to the pack default.
 	home := t.TempDir()
 	app := &App{testHomeDir: home}
 	// Write a legacy-style config without pet_variant / migrated flag.
@@ -131,13 +137,13 @@ func TestLoadConfigPersistsK18ClassicMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.PetVariant != petpack.VariantClassic {
-		t.Fatalf("loaded variant = %q, want classic", loaded.PetVariant)
+	if loaded.PetVariant != petpack.VariantDefault {
+		t.Fatalf("loaded variant = %q, want default", loaded.PetVariant)
 	}
 	if !loaded.PetVariantMigrated {
 		t.Fatal("expected migrated flag")
 	}
-	// Disk must also persist classic (criterion 3).
+	// Disk must persist the normalized default.
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
@@ -146,8 +152,8 @@ func TestLoadConfigPersistsK18ClassicMigration(t *testing.T) {
 	if err := json.Unmarshal(raw, &disk); err != nil {
 		t.Fatal(err)
 	}
-	if disk.PetVariant != petpack.VariantClassic {
-		t.Fatalf("disk pet_variant = %q, want classic", disk.PetVariant)
+	if disk.PetVariant != petpack.VariantDefault {
+		t.Fatalf("disk pet_variant = %q, want default", disk.PetVariant)
 	}
 	if !disk.PetVariantMigrated {
 		t.Fatal("disk missing pet_variant_migrated")
@@ -174,9 +180,9 @@ func TestGetPetPackPreviewDataURLOfficial(t *testing.T) {
 	if speak == "" || !strings.HasPrefix(speak, "data:image/") {
 		t.Fatalf("expected speaking frame data URL, got %q", speak)
 	}
-	// classic has no raster state frames
-	if got := app.GetPetPackStateFrameDataURL("clawmate", "idle", "classic"); got != "" {
-		t.Fatalf("classic should return empty, got len=%d", len(got))
+	// Legacy classic value is normalized to the pack frame.
+	if got := app.GetPetPackStateFrameDataURL("clawmate", "idle", "classic"); got == "" {
+		t.Fatal("legacy classic should return the default pack frame")
 	}
 	dir := app.GetPetPacksDir()
 	if strings.TrimSpace(dir) == "" {
@@ -252,7 +258,10 @@ func TestTryLoadPackFrameFigurative(t *testing.T) {
 	if frame == nil {
 		t.Fatalf("figurative pack frame missing; renderer=%s native=%v dir=%q", resolved.Renderer, resolved.Native, resolved.Manifest.Dir)
 	}
-	if petpack.ResolveVariantForRuntime("") != "classic" {
+	if legacyFrame := tryLoadPackFrame("clawmate", "classic", "idle", 64, petpack.NewFrameCache()); legacyFrame == nil {
+		t.Fatal("legacy classic value should still render the selected pack frame")
+	}
+	if petpack.ResolveVariantForRuntime("") != "default" {
 		t.Fatal("empty runtime variant")
 	}
 }

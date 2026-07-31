@@ -106,9 +106,10 @@ func TestLoadStateFrameBytesFigurative(t *testing.T) {
 	if ctype != "image/png" && ctype != "image/webp" {
 		t.Fatalf("ctype %q", ctype)
 	}
-	// classic has no raster frames
-	if _, _, err := reg.LoadStateFrameBytes("clawmate", "idle", VariantClassic); err == nil {
-		t.Fatal("classic should not return raster frames")
+	// The retired quality-style selector resolves classic to the pack default,
+	// so legacy classic requests also serve raster frames.
+	if _, _, err := reg.LoadStateFrameBytes("clawmate", "idle", VariantClassic); err != nil {
+		t.Fatalf("legacy classic should resolve to pack default frames: %v", err)
 	}
 	// missing state falls back to idle (still non-empty for official)
 	data2, _, err := reg.LoadStateFrameBytes("clawmate", "listening", VariantDefault)

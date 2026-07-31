@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -234,6 +235,96 @@ func (p *ProjectTabSessionPersist) DeleteSession(tabID string) error {
 		return fmt.Errorf("delete session %s: %w", tabID, err)
 	}
 	return nil
+}
+
+// DeleteProjectSessions removes every persisted project-tab session for a
+// task, including stale files whose index entry was lost. This is intentionally
+// different from CloseProjectTabSession: a deleted task must not be restorable.
+func (p *ProjectTabSessionPersist) DeleteProjectSessions(projectPath string) (int, error) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if p == nil || projectPath == "" {
+		return 0, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	dir, err := p.sessionsDir()
+	if err != nil {
+		return 0, err
+	}
+	indexPath := filepath.Join(dir, sessionIndexFileName)
+	index := &TabIndex{Tabs: []TabIndexEntry{}}
+	if data, readErr := os.ReadFile(indexPath); readErr == nil {
+		if err := json.Unmarshal(data, index); err != nil {
+			log.Printf("[session-persist] corrupted index while deleting project sessions, rebuilding from files: %v", err)
+			index = &TabIndex{Tabs: []TabIndexEntry{}}
+		}
+	} else if !os.IsNotExist(readErr) {
+		return 0, fmt.Errorf("read session index: %w", readErr)
+	}
+
+	removedIDs := make(map[string]struct{})
+	kept := make([]TabIndexEntry, 0, len(index.Tabs))
+	for _, entry := range index.Tabs {
+		if normalizeProjectSessionPath(entry.ProjectPath) == projectPath {
+			removedIDs[entry.ID] = struct{}{}
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	indexChanged := len(kept) != len(index.Tabs)
+	index.Tabs = kept
+
+	var errs []error
+	removedFiles := make(map[string]struct{})
+	removeFile := func(tabID string) {
+		if strings.TrimSpace(tabID) == "" {
+			return
+		}
+		filePath := filepath.Join(dir, tabID+".json")
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("delete session %s: %w", tabID, err))
+			return
+		}
+		removedFiles[tabID] = struct{}{}
+	}
+	for tabID := range removedIDs {
+		removeFile(tabID)
+	}
+
+	// Session files can outlive the index after an interrupted write. Inspect
+	// them so that deleting a task clears those orphaned conversations too.
+	files, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		errs = append(errs, fmt.Errorf("read sessions dir: %w", readErr))
+	} else {
+		for _, file := range files {
+			if file.IsDir() || file.Name() == sessionIndexFileName || filepath.Ext(file.Name()) != ".json" {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, file.Name()))
+			if err != nil {
+				errs = append(errs, fmt.Errorf("read session %s: %w", file.Name(), err))
+				continue
+			}
+			var session TabSessionData
+			if json.Unmarshal(data, &session) != nil || normalizeProjectSessionPath(session.ProjectPath) != projectPath {
+				continue
+			}
+			if _, alreadyRemoved := removedIDs[session.TabID]; !alreadyRemoved {
+				removeFile(strings.TrimSuffix(file.Name(), ".json"))
+			}
+		}
+	}
+	if indexChanged {
+		data, err := json.MarshalIndent(index, "", "  ")
+		if err != nil {
+			errs = append(errs, fmt.Errorf("marshal session index: %w", err))
+		} else if err := atomicWriteFile(indexPath, data); err != nil {
+			errs = append(errs, fmt.Errorf("save session index: %w", err))
+		}
+	}
+	return len(removedFiles), errors.Join(errs...)
 }
 
 // ---------------------------------------------------------------------------

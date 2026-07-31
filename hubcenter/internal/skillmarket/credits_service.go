@@ -2,7 +2,10 @@ package skillmarket
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -111,6 +114,102 @@ func (s *CreditsService) Credit(ctx context.Context, userID string, amount int64
 func (s *CreditsService) RecordPlatformFee(ctx context.Context, amount int64, skillID, purchaseID, desc string) error {
 	return s.store.CreateTransaction(ctx, &CreditsTransaction{ID: generateID(), UserID: "platform", Type: "platform_fee", Amount: amount, SkillID: skillID, PurchaseID: purchaseID, Description: desc, CreatedAt: time.Now()})
 }
+
+// CompletePetStorePurchase atomically creates the lifetime entitlement and
+// settles the matching Credits movements. Keeping these writes in one SQLite
+// IMMEDIATE transaction prevents a buyer debit without an entitlement (or an
+// entitlement without a completed payment) when a process fails mid-request.
+func (s *CreditsService) CompletePetStorePurchase(ctx context.Context, buyerID, buyerEmail, sellerID, packID, entitlementID, transactionID string, amount int64) error {
+	if s == nil || s.store == nil || buyerID == "" || sellerID == "" || packID == "" || entitlementID == "" || transactionID == "" || amount < 0 {
+		return fmt.Errorf("invalid pet store purchase")
+	}
+	tx, err := s.store.BeginImmediate(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	// The HTTP handler's initial listing read is deliberately outside this
+	// transaction so ordinary browse requests stay cheap. Re-check the listing
+	// under the write transaction, though: an owner may withdraw it between
+	// that read and checkout. Never create a new entitlement for a withdrawn
+	// listing, even if the client was already looking at its card.
+	var currentSellerID string
+	var currentPrice int64
+	if err := tx.QueryRowContext(ctx, `SELECT owner_user_id, price FROM sm_pet_store_packs WHERE id=? AND status='active'`, packID).Scan(&currentSellerID, &currentPrice); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrPetStoreUnavailable
+		}
+		return err
+	}
+	if currentSellerID != sellerID || currentPrice != amount {
+		return ErrPetStoreUnavailable
+	}
+	buyer, err := s.store.GetUserByIDForUpdate(ctx, tx, buyerID)
+	if err != nil {
+		return err
+	}
+	if buyer.Credits < amount {
+		return ErrInsufficientCredits
+	}
+	now := time.Now().Format(timeFmt)
+	if amount > 0 {
+		buyerBalance := buyer.Credits - amount
+		if _, err := tx.ExecContext(ctx, `UPDATE sm_users SET credits=?, updated_at=? WHERE id=?`, buyerBalance, now, buyerID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at) VALUES (?, ?, 'purchase', ?, ?, ?, ?, 'pet pack purchase', ?)`, generateID(), buyerID, -amount, buyerBalance, packID, transactionID, now); err != nil {
+			return err
+		}
+		if sellerID != buyerID {
+			seller, err := s.store.GetUserByIDForUpdate(ctx, tx, sellerID)
+			if err != nil {
+				return err
+			}
+			fee := amount * 30 / 100
+			earning, actual, debt := amount-fee, amount-fee, seller.Debt
+			if actual <= debt {
+				debt -= actual
+				actual = 0
+			} else {
+				actual -= debt
+				debt = 0
+			}
+			settled := seller.SettledCredits + actual
+			balance := settled + seller.PendingSettlement
+			if _, err := tx.ExecContext(ctx, `UPDATE sm_users SET settled_credits=?, debt=?, updated_at=? WHERE id=?`, settled, debt, now, sellerID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at) VALUES (?, ?, 'earning', ?, ?, ?, ?, 'pet pack sold', ?)`, generateID(), sellerID, earning, balance, packID, transactionID, now); err != nil {
+				return err
+			}
+			if fee > 0 {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at) VALUES (?, 'platform', 'platform_fee', ?, 0, ?, ?, 'pet store platform fee', ?)`, generateID(), fee, packID, transactionID, now); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sm_pet_store_purchases (id, pack_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?)`, entitlementID, packID, buyerID, buyerEmail, amount, now); err != nil {
+		// The unique (pack_id, buyer_user_id) constraint is the final idempotency
+		// gate for concurrent processes/nodes. Map it to a stable sentinel so the
+		// HTTP layer returns "owned" instead of treating a repeat click as a 500.
+		if strings.Contains(strings.ToLower(err.Error()), "unique") || errors.Is(err, sql.ErrNoRows) {
+			return ErrPetStoreAlreadyOwned
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sm_pet_store_packs SET purchase_count=purchase_count+1, sales_amount=sales_amount+?, updated_at=? WHERE id=? AND status='active'`, amount, now, packID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.store.emitSync(ctx)
+	return nil
+}
+
+var ErrPetStoreAlreadyOwned = errors.New("pet store pack already owned")
+var ErrPetStoreUnavailable = errors.New("pet store pack is no longer available")
 
 func (s *CreditsService) TopUp(ctx context.Context, userID string, amount int64) error {
 	if amount <= 0 {

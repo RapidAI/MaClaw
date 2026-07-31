@@ -656,7 +656,7 @@ func TestUpdateRemoteCodingTaskMetaRejectsExistingRemoteProject(t *testing.T) {
 	}
 }
 
-func TestCreateRemoteCodingTaskReusesHiddenRemoteProject(t *testing.T) {
+func TestCreateRemoteCodingTaskCreatesFreshTaskAfterHiddenRemoteProject(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	first := app.CreateRemoteCodingTask("first", "10.0.0.11", "deploy", "/srv/app", 22)
 	if first.ProjectPath == "" {
@@ -665,14 +665,75 @@ func TestCreateRemoteCodingTaskReusesHiddenRemoteProject(t *testing.T) {
 	app.HideTask(first.ProjectPath)
 
 	second := app.CreateRemoteCodingTask("retry", "10.0.0.11", "deploy", "/srv/app/", 2200)
-	if second.ProjectPath != first.ProjectPath {
-		t.Fatalf("hidden remote task was duplicated: first=%q second=%q", first.ProjectPath, second.ProjectPath)
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("hidden remote task should be replaced: first=%q second=%q", first.ProjectPath, second.ProjectPath)
 	}
-	if got := app.FindRemoteCodingTaskByMeta("10.0.0.11", "deploy", "/srv/app"); got.ProjectPath != first.ProjectPath {
-		t.Fatalf("hidden remote task lookup = %q, want %q", got.ProjectPath, first.ProjectPath)
+	if got := app.FindRemoteCodingTaskByMeta("10.0.0.11", "deploy", "/srv/app"); got.ProjectPath != second.ProjectPath {
+		t.Fatalf("active remote task lookup = %q, want %q", got.ProjectPath, second.ProjectPath)
 	}
-	if visible := app.ListTasks(10); len(visible) != 0 {
-		t.Fatalf("hidden task should remain hidden, got %#v", visible)
+	if visible := app.ListTasks(10); len(visible) != 1 || visible[0].ProjectPath != second.ProjectPath {
+		t.Fatalf("visible tasks = %#v, want replacement task", visible)
+	}
+}
+
+func TestDeleteTaskClearsRemoteTaskState(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.CreateRemoteCodingTask("first", "10.0.0.14", "deploy", "/srv/app", 22)
+	if first.ProjectPath == "" {
+		t.Fatal("first create failed")
+	}
+	app.RenameTask(first.ProjectPath, "Renamed task")
+	app.PinTask(first.ProjectPath, true)
+	if msg := app.CreateProjectTabSession("delete-remote-task", first.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty message")
+	}
+	// DeleteTask must purge workflow state even before an IM handler has been
+	// initialized (for example, when deletion happens directly from the list).
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+	ownerID := projectSessionOwnerID(first.ProjectPath)
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(ownerID),
+		UserID:      ownerID,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: first.ProjectPath,
+		Status:      workflow.StatusActive,
+	}); err != nil {
+		t.Fatalf("seed workflow state: %v", err)
+	}
+
+	if err := app.DeleteTask(first.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	if state, err := app.workflowV2.store.Load(ownerID); err != nil || state != nil {
+		t.Fatalf("deleted task workflow remains: state=%#v err=%v", state, err)
+	}
+	pi := app.memoryStore.ProjectIndex()
+	if rec := pi.Get(first.ProjectPath); rec != nil {
+		t.Fatalf("deleted task still indexed: %+v", rec)
+	}
+	if pi.IsHidden(first.ProjectPath) || pi.IsArchived(first.ProjectPath) || pi.IsPinned(first.ProjectPath) || pi.CustomName(first.ProjectPath) != "" {
+		t.Fatal("deleted task preferences were retained")
+	}
+	if index, err := app.ensureProjectTabSessionPersist().LoadIndex(); err != nil {
+		t.Fatal(err)
+	} else if len(index.Tabs) != 0 {
+		t.Fatalf("deleted task sessions remain in index: %+v", index.Tabs)
+	}
+	if session, err := app.ensureProjectTabSessionPersist().LoadSession("delete-remote-task"); err != nil {
+		t.Fatal(err)
+	} else if session != nil {
+		t.Fatalf("deleted task session file remains: %+v", session)
+	}
+	if _, err := os.Stat(first.ProjectPath); !os.IsNotExist(err) {
+		t.Fatalf("deleted task workspace still exists, err=%v", err)
+	}
+
+	second := app.CreateRemoteCodingTask("retry", "10.0.0.14", "deploy", "/srv/app/", 2200)
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("deleted task was reused: first=%q second=%q", first.ProjectPath, second.ProjectPath)
+	}
+	if msg := app.CreateProjectTabSession("new-remote-task", second.ProjectPath); msg == "" {
+		t.Fatal("new remote task was treated as closed")
 	}
 }
 

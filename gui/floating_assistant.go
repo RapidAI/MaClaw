@@ -363,9 +363,13 @@ func sanitizePetConfig(config *corelib.AppConfig) {
 func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
 	return oldConfig.PetEnabled != newConfig.PetEnabled ||
 		oldConfig.PetSkin != newConfig.PetSkin ||
-		oldConfig.PetSize != newConfig.PetSize ||
-		oldConfig.PetVariant != newConfig.PetVariant ||
-		isPetMotionEnabled(oldConfig) != isPetMotionEnabled(newConfig) ||
+		oldConfig.PetSize != newConfig.PetSize
+}
+
+// floatingMotionChanged identifies settings that can be applied to an existing
+// native pet window. They affect how the pet moves, not its size or assets.
+func floatingMotionChanged(oldConfig, newConfig corelib.AppConfig) bool {
+	return isPetMotionEnabled(oldConfig) != isPetMotionEnabled(newConfig) ||
 		oldConfig.PetQuietMode != newConfig.PetQuietMode ||
 		oldConfig.PetInteractionMode != newConfig.PetInteractionMode ||
 		oldConfig.PetReducedMotion != newConfig.PetReducedMotion

@@ -707,6 +707,10 @@ export function HideTask(arg1) {
   return window['go']['main']['App']['HideTask'](arg1);
 }
 
+export function DeleteTask(arg1) {
+  return window['go']['main']['App']['DeleteTask'](arg1);
+}
+
 export function ArchiveProject(arg1) {
   return window['go']['main']['App']['ArchiveProject'](arg1);
 }
@@ -3514,6 +3518,33 @@ export const OpenMobileMeetingRecordingAudio = (arg1) => window['go']['main']['A
 export const SaveMobileMeetingRecordingAudio = (arg1) => window['go']['main']['App']['SaveMobileMeetingRecordingAudio'](arg1);
 export function GetPetPacksDir() {
   return window['go']['main']['App']['GetPetPacksDir']();
+}
+export function ExportPetPackZip(arg1) {
+  return window['go']['main']['App']['ExportPetPackZip'](arg1);
+}
+export function ListPetStorePacks(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['ListPetStorePacks'](arg1, arg2, arg3, arg4, arg5);
+}
+export function GetPetStoreAccount() {
+  return window['go']['main']['App']['GetPetStoreAccount']();
+}
+export function GetPetStoreRankings() {
+  return window['go']['main']['App']['GetPetStoreRankings']();
+}
+export function CanPublishPetStorePack(arg1) {
+  return window['go']['main']['App']['CanPublishPetStorePack'](arg1);
+}
+export function PurchasePetStorePack(arg1) {
+  return window['go']['main']['App']['PurchasePetStorePack'](arg1);
+}
+export function InstallPetStorePack(arg1) {
+  return window['go']['main']['App']['InstallPetStorePack'](arg1);
+}
+export function WithdrawPetStorePack(arg1) {
+  return window['go']['main']['App']['WithdrawPetStorePack'](arg1);
+}
+export function SubmitPetStorePack(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['SubmitPetStorePack'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 // Virtual Repository bindings (manually maintained until Wails binding

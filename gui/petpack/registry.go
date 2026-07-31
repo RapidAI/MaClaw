@@ -24,9 +24,9 @@ type Registry struct {
 }
 
 var (
-	globalReg   *Registry
-	globalOnce  sync.Once
-	globalMu    sync.Mutex
+	globalReg  *Registry
+	globalOnce sync.Once
+	globalMu   sync.Mutex
 )
 
 // UserPacksDir returns {MaclawBaseDir}/pet-packs (or env override).
@@ -433,6 +433,10 @@ func packInfoFrom(m *PetPackManifest) PackInfo {
 		previewPath = filepath.Join(m.Dir, filepath.FromSlash(preview))
 	}
 	canUninstall := m.Scope == ScopeUser
+	source := ""
+	if m.Scope == ScopeUser {
+		source = packSourceForDir(m.Dir)
+	}
 	hasPreview := preview != "" || (m.Assets.Native != nil && m.Assets.Native["idle"] != "")
 	return PackInfo{
 		ID: m.ID, Name: m.Name, Version: m.Version, Author: m.Author,
@@ -440,7 +444,7 @@ func packInfoFrom(m *PetPackManifest) PackInfo {
 		Label: m.Label, Description: m.DescriptionI18n, Variants: variants,
 		DefaultSize: m.DefaultSize, FaceOverlay: m.FaceOverlay,
 		PreviewPath: previewPath, Dir: m.Dir,
-		CanUninstall: canUninstall, HasPreview: hasPreview,
+		CanUninstall: canUninstall, Source: source, HasPreview: hasPreview,
 	}
 }
 

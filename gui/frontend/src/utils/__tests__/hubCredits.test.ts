@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL, buildHubPetPackHelpURL, normalizeHubGuideLang, grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from '../hubCredits';
+import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL, buildHubPetPackHelpURL, buildHubPetStoreURL, normalizeHubGuideLang, grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from '../hubCredits';
 
 describe('hubCredits URL builders', () => {
     it('builds card store URL from a trimmed Hub URL', () => {
@@ -62,6 +62,8 @@ describe('hubCredits URL builders', () => {
         expect(buildHubPetPackHelpURL('https://hub.example.com', 'en')).toBe('https://hub.example.com/pet-pack-help?lang=en');
         expect(buildHubPetPackHelpURL('https://hub.example.com', 'zh-Hans')).toBe('https://hub.example.com/pet-pack-help?lang=zh');
         expect(buildHubPetPackHelpURL('')).toBe('');
+        expect(buildHubPetStoreURL(' https://hub.example.com/// ', 'en', 'viewer token')).toBe('https://hub.example.com/pet-store?lang=en#token=viewer%20token');
+        expect(buildHubPetStoreURL('')).toBe('');
         expect(normalizeHubGuideLang('en-US')).toBe('en');
         expect(normalizeHubGuideLang('zh-Hans')).toBe('zh');
         expect(normalizeHubGuideLang('')).toBe('');

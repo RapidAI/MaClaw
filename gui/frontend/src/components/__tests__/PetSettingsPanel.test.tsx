@@ -15,6 +15,10 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetPetPackStateFrameDataURL: vi.fn().mockResolvedValue(''),
     OpenPetPacksDir: vi.fn().mockResolvedValue(undefined),
     GetPetPacksDir: vi.fn().mockResolvedValue('C:\\\\Users\\\\test\\\\.maclaw\\\\pet-packs'),
+    GetPetStoreAccount: vi.fn().mockResolvedValue({ uploads: [] }),
+    CanPublishPetStorePack: vi.fn().mockResolvedValue(true),
+    WithdrawPetStorePack: vi.fn().mockResolvedValue(undefined),
+    ExportPetPackZip: vi.fn().mockResolvedValue('C:/tmp/creator-pet.zip'),
 }));
 
 vi.mock('../../../wailsjs/runtime', () => ({
@@ -57,6 +61,10 @@ describe('PetSettingsPanel localization', () => {
         vi.mocked(AppAPI.InstallPetPackZip).mockResolvedValue('cool-pet');
         vi.mocked(AppAPI.SelectPetPackZip).mockResolvedValue('');
         vi.mocked(AppAPI.UninstallPetPack).mockResolvedValue(undefined);
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({ uploads: [] });
+        vi.mocked(AppAPI.CanPublishPetStorePack).mockResolvedValue(true);
+        vi.mocked(AppAPI.WithdrawPetStorePack).mockResolvedValue(undefined);
+        vi.mocked(AppAPI.ExportPetPackZip).mockResolvedValue('C:/tmp/creator-pet.zip');
     });
 
     afterEach(() => cleanup());
@@ -67,6 +75,7 @@ describe('PetSettingsPanel localization', () => {
         });
 
         expect(screen.getByRole('button', { name: '帮助：宠物包创建指南' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '打开宠物市场' })).toBeTruthy();
         expect(screen.getByRole('button', { name: '创建指南：宠物包说明' })).toBeTruthy();
         expect(screen.getByRole('button', { name: '选择 Zip 安装' })).toBeTruthy();
         expect(screen.getByRole('button', { name: '浏览用户宠物包目录' })).toBeTruthy();
@@ -120,6 +129,7 @@ describe('PetSettingsPanel localization', () => {
 
         expect(screen.getByText('Desktop Pet')).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Help: pet pack creation guide' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Open Pet Store' })).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Guide: pet pack docs' })).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Install Zip' })).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Browse user pet packs folder' })).toBeTruthy();
@@ -163,7 +173,47 @@ describe('PetSettingsPanel localization', () => {
         });
     });
 
-    it('loads figurative state frames when variant is default', async () => {
+    it('opens the Pet Store from the header action', async () => {
+        await act(async () => {
+            renderPetSettings('en');
+        });
+
+        const openMarket = screen.getByRole('button', { name: 'Open Pet Store' });
+        expect(openMarket.nextElementSibling?.classList.contains('pet-switch-row')).toBe(true);
+        expect(openMarket.getAttribute('aria-haspopup')).toBe('dialog');
+        expect(openMarket.getAttribute('aria-expanded')).toBe('false');
+
+        await act(async () => {
+            fireEvent.click(openMarket);
+        });
+
+        await waitFor(() => expect(screen.getByRole('dialog', { name: 'Pet Store' })).toBeTruthy());
+        expect(openMarket.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('keeps focus inside the share setup and restores the invoker on close', async () => {
+        vi.mocked(AppAPI.ListPetPacks).mockResolvedValue([
+            { id: 'custom-pet', name: 'Custom pet', scope: 'user', source: 'local', can_uninstall: true },
+        ]);
+        await act(async () => {
+            renderPetSettings('en', { pet_skin: 'custom-pet' });
+        });
+
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Share…' })).toBeTruthy());
+        const share = screen.getByRole('button', { name: 'Share…' });
+        share.focus();
+        await act(async () => { fireEvent.click(share); });
+
+        const dialog = await screen.findByRole('dialog', { name: 'Share pet pack' });
+        const close = screen.getByRole('button', { name: 'Close' });
+        await waitFor(() => expect(document.activeElement).toBe(close));
+        await act(async () => { fireEvent.keyDown(dialog, { key: 'Escape' }); });
+
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Share pet pack' })).toBeNull());
+        expect(document.activeElement).toBe(share);
+    });
+
+    it('loads state frames from the selected pack', async () => {
         const frameURL = 'data:image/png;base64,abc';
         vi.mocked(AppAPI.GetPetPackStateFrameDataURL).mockResolvedValue(frameURL);
 
@@ -185,16 +235,65 @@ describe('PetSettingsPanel localization', () => {
         });
     });
 
-    it('does not request raster frames for classic variant', async () => {
-        vi.mocked(AppAPI.GetPetPackStateFrameDataURL).mockClear();
+    it('uses pack frames even when a legacy classic value is stored', async () => {
+        const frameURL = 'data:image/png;base64,abc';
+        vi.mocked(AppAPI.GetPetPackStateFrameDataURL).mockResolvedValue(frameURL);
         await act(async () => {
-            renderPetSettings('en', { pet_variant: 'classic' });
+            renderPetSettings('en', { pet_variant: 'classic', pet_skin: 'clawmate' });
         });
-        // Give effects a tick (packs list + stage effect)
-        await act(async () => {
-            await Promise.resolve();
-            await Promise.resolve();
+        await waitFor(() => {
+            expect(AppAPI.GetPetPackStateFrameDataURL).toHaveBeenCalledWith('clawmate', 'idle', 'default');
         });
-        expect(AppAPI.GetPetPackStateFrameDataURL).not.toHaveBeenCalled();
+    });
+
+    it('shows share and uninstall for a locally installed Zip', async () => {
+        vi.mocked(AppAPI.ListPetPacks).mockResolvedValue([{
+            id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', scope: 'user', source: 'created', can_uninstall: true,
+        }]);
+        await act(async () => { renderPetSettings('en', { pet_skin: 'creator-pet' }); });
+        await waitFor(() => expect(screen.getByRole('button', { name: /Creator pet/i })).toBeTruthy());
+        const skin = screen.getByRole('button', { name: /Creator pet/i });
+        await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        expect(screen.getByRole('menuitem', { name: 'Share…' })).toBeTruthy();
+        expect(screen.getByRole('menuitem', { name: 'Uninstall' })).toBeTruthy();
+    });
+
+    it('shows unlist instead of share after the created pack is published', async () => {
+        vi.mocked(AppAPI.ListPetPacks).mockResolvedValue([{
+            id: 'creator-pet', name: 'Creator pet', label: 'Creator pet', scope: 'user', source: 'created', can_uninstall: true,
+        }]);
+        vi.mocked(AppAPI.GetPetStoreAccount).mockResolvedValue({ uploads: [{ id: 'pet_listing', source_pack_id: 'creator-pet', status: 'active' }] });
+        await act(async () => { renderPetSettings('en', { pet_skin: 'creator-pet' }); });
+        await waitFor(() => expect(screen.getByRole('button', { name: /Creator pet/i })).toBeTruthy());
+        await waitFor(() => expect(AppAPI.GetPetStoreAccount).toHaveBeenCalled());
+        const skin = screen.getByRole('button', { name: /Creator pet/i });
+        await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        expect(screen.getByRole('menuitem', { name: 'Unlist' })).toBeTruthy();
+        expect(screen.queryByRole('menuitem', { name: 'Share…' })).toBeNull();
+        expect(screen.getByRole('menuitem', { name: 'Uninstall' })).toBeTruthy();
+    });
+
+    it('shows share for an imported local Zip and only uninstall for a market pack', async () => {
+        vi.mocked(AppAPI.ListPetPacks).mockResolvedValue([{
+            id: 'imported-pet', name: 'Imported pet', label: 'Imported pet', scope: 'user', source: 'imported', can_uninstall: true,
+        }]);
+        await act(async () => { renderPetSettings('en', { pet_skin: 'imported-pet' }); });
+        await waitFor(() => expect(screen.getByRole('button', { name: /Imported pet/i })).toBeTruthy());
+        await act(async () => { fireEvent.contextMenu(screen.getByRole('button', { name: /Imported pet/i }), { clientX: 100, clientY: 120 }); });
+        expect(screen.getByRole('menuitem', { name: 'Share…' })).toBeTruthy();
+        expect(screen.getByRole('menuitem', { name: 'Uninstall' })).toBeTruthy();
+        await act(async () => { fireEvent.keyDown(window, { key: 'Escape' }); });
+
+        vi.mocked(AppAPI.ListPetPacks).mockResolvedValue([{
+            id: 'market-pet', name: 'Market pet', label: 'Market pet', scope: 'user', source: 'market', can_uninstall: true,
+        }]);
+        cleanup();
+        await act(async () => { renderPetSettings('en', { pet_skin: 'market-pet' }); });
+        await waitFor(() => expect(screen.getByRole('button', { name: /Market pet/i })).toBeTruthy());
+        const skin = screen.getByRole('button', { name: /Market pet/i });
+        await act(async () => { fireEvent.contextMenu(skin, { clientX: 100, clientY: 120 }); });
+        expect(screen.queryByRole('menuitem', { name: 'Share…' })).toBeNull();
+        expect(screen.queryByRole('menuitem', { name: 'Unlist' })).toBeNull();
+        expect(screen.getByRole('menuitem', { name: 'Uninstall' })).toBeTruthy();
     });
 });
