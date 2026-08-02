@@ -6,11 +6,13 @@ package browser
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,8 +31,8 @@ type CDPClient struct {
 	closed          chan struct{}
 	closeErr        error
 	stopPing        chan struct{} // signals the keepalive goroutine to stop
-	closeOnce       sync.Once    // ensures closed channel is closed exactly once
-	closeEventsOnce sync.Once    // ensures events channel is closed exactly once
+	closeOnce       sync.Once     // ensures closed channel is closed exactly once
+	closeEventsOnce sync.Once     // ensures events channel is closed exactly once
 }
 
 // CDPEvent is a CDP event pushed by the browser.
@@ -77,8 +79,22 @@ type cdpMessage struct {
 
 // DiscoverTargets queries the /json endpoint to find debuggable page targets.
 func DiscoverTargets(cdpHTTP string) ([]TargetInfo, error) {
+	return DiscoverTargetsContext(context.Background(), cdpHTTP)
+}
+
+// DiscoverTargetsContext is the cancellation-aware form used by bounded
+// operations such as browser search. The legacy wrapper remains for callers
+// that do not own a context.
+func DiscoverTargetsContext(ctx context.Context, cdpHTTP string) ([]TargetInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(cdpHTTP + "/json")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cdpHTTP+"/json", nil)
+	if err != nil {
+		return nil, fmt.Errorf("discover targets: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("discover targets: %w", err)
 	}
@@ -106,6 +122,10 @@ type TargetInfo struct {
 	WebSocketDebugURL string `json:"webSocketDebuggerUrl"`
 }
 
+// cdpEventBufferSize is the CDP event channel capacity. It is a var (not a
+// const) so tests can shrink it to exercise buffer-full delivery paths.
+var cdpEventBufferSize = 256
+
 // ConnectCDP connects to a CDP WebSocket endpoint.
 func ConnectCDP(wsURL string) (*CDPClient, error) {
 	dialer := websocket.Dialer{
@@ -118,7 +138,7 @@ func ConnectCDP(wsURL string) (*CDPClient, error) {
 	c := &CDPClient{
 		conn:     conn,
 		pending:  make(map[int64]chan json.RawMessage),
-		events:   make(chan CDPEvent, 64),
+		events:   make(chan CDPEvent, cdpEventBufferSize),
 		closed:   make(chan struct{}),
 		stopPing: make(chan struct{}),
 	}
@@ -327,6 +347,23 @@ func parseConsoleDomainEvent(method string, params json.RawMessage) *ConsoleDoma
 	return out
 }
 
+// isCriticalCDPEvent reports whether an event drives session lifecycle or
+// navigation tracking and therefore must not be silently dropped when the
+// event buffer is full.
+func isCriticalCDPEvent(method string) bool {
+	if strings.HasPrefix(method, "Target.") {
+		return true
+	}
+	switch method {
+	case "Inspector.detached",
+		"Page.frameNavigated",
+		"Page.frameStartedNavigating",
+		"Page.loadEventFired":
+		return true
+	}
+	return false
+}
+
 func (c *CDPClient) readLoop() {
 	defer func() {
 		// Signal closure. closeOnce guarantees exactly-once semantics even
@@ -374,10 +411,25 @@ func (c *CDPClient) readLoop() {
 			_ = parseTargetDomainEvent(msg.Method, msg.Params)
 			_ = parseNetworkDomainEvent(msg.Method, msg.Params)
 			_ = parseConsoleDomainEvent(msg.Method, msg.Params)
-			select {
-			case c.events <- CDPEvent{Method: msg.Method, Params: msg.Params}:
-			default:
-				// Drop if buffer full.
+			event := CDPEvent{Method: msg.Method, Params: msg.Params}
+			if isCriticalCDPEvent(msg.Method) {
+				// Lifecycle events (target destroyed/detached, navigations)
+				// drive the auto-recovery logic — losing one to a full
+				// buffer leaves IsTargetAlive() stuck on true. Block briefly
+				// instead of dropping outright.
+				select {
+				case c.events <- event:
+				case <-c.closed:
+					return
+				case <-time.After(100 * time.Millisecond):
+					log.Printf("[CDP] dropping critical event %s: event buffer full", msg.Method)
+				}
+			} else {
+				select {
+				case c.events <- event:
+				default:
+					// Drop if buffer full.
+				}
 			}
 		}
 	}

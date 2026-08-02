@@ -177,8 +177,18 @@ func (s *Session) Navigate(url string) (string, error) {
 		return "", err
 	}
 
-	// Wait for load event.
-	s.waitForLoad(NavTimeout)
+	// Wait for load event. Unlike Back(), navigations tolerate a slow
+	// "complete" (SPAs with hanging subresources) before falling back to a
+	// structural-stability wait.
+	readyState := s.waitForLoad(NavTimeout, 5*time.Second)
+	if readyState != "complete" {
+		// SPA pages often reach "interactive" long before first render.
+		// Give the page a short, non-fatal structural-stability window so
+		// follow-up observe/click doesn't hit an empty DOM.
+		if err := s.WaitForStable(3*time.Second, 300*time.Millisecond); err != nil {
+			log.Printf("[browser] navigate %q: readyState=%q, stability wait: %v", url, readyState, err)
+		}
+	}
 
 	return string(result), nil
 }
@@ -477,8 +487,37 @@ func (s *Session) insertMarkdownLocked(markdown string) error {
 
 func (s *Session) insertTextLocked(text string) error {
 	if _, err := s.client.Send("Input.insertText", map[string]interface{}{"text": text}, DefaultCmdTimeout); err == nil {
-		return nil
+		if s.activeElementContainsTextLocked(text) {
+			return nil
+		}
+		// insertText reported success but nothing landed — seen with CJK/IME
+		// text on some contenteditable implementations. Fall through to JS.
+		log.Printf("[browser] Input.insertText did not land (len=%d), trying JS fallback", len(text))
 	}
+	if err := s.insertTextViaJSLocked(text); err == nil {
+		if s.activeElementContainsTextLocked(text) {
+			return nil
+		}
+		// Verification disagrees with the JS success claim. Two cases:
+		//  a) text landed but was normalized (whitespace etc.) — the field
+		//     is non-empty; accept it. Retyping via the per-char path would
+		//     clear the field first and then likely lose IME characters
+		//     anyway, so it cannot improve on the JS result here;
+		//  b) input sanitization swallowed the value (e.g. type=number
+		//     rejecting non-numeric text) — the field is empty; fall
+		//     through to the per-char path (it clears first, so no
+		//     duplication).
+		if !s.activeElementIsEmptyLocked() {
+			log.Printf("[browser] JS text insert unverified but field non-empty (len=%d), accepting JS result", len(text))
+			return nil
+		}
+		log.Printf("[browser] JS text insert left field empty (len=%d), trying per-char fallback", len(text))
+	}
+	// Last resort: per-character key events. Only reliable for ASCII; IME
+	// characters generally produce nothing here, hence the verification
+	// above. Clear first (best-effort) so we never append onto partial
+	// content left by a half-failed CDP insertText.
+	s.clearActiveEditableLocked()
 	for _, ch := range text {
 		if _, err := s.client.Send("Input.dispatchKeyEvent", map[string]interface{}{
 			"type": "keyDown",
@@ -493,7 +532,129 @@ func (s *Session) insertTextLocked(text string) error {
 			return err
 		}
 	}
+	// Key events can also be swallowed (hidden page) or ignored (IME
+	// characters). Nothing verified the result on this path — at least
+	// surface it instead of silently reporting success.
+	if !s.activeElementContainsTextLocked(text) {
+		log.Printf("[browser] per-char key input unverified (len=%d); text may not have landed", len(text))
+	}
 	return nil
+}
+
+// activeElementIsEmptyLocked reports whether the focused editable element
+// has no visible content (empty value / empty trimmed textContent).
+func (s *Session) activeElementIsEmptyLocked() bool {
+	js := `
+		(function() {
+			const el = document.activeElement;
+			if (!el) return "true";
+			const v = (el.tagName === "INPUT" || el.tagName === "TEXTAREA") ? (el.value || "") : (el.textContent || "");
+			return v.trim() === "" ? "true" : "false";
+		})()
+	`
+	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+		"expression":    js,
+		"returnByValue": true,
+	}, 5*time.Second)
+	if err != nil {
+		return true // assume empty on eval failure: safest for the caller's fallback
+	}
+	return extractStringValue(result) == "true"
+}
+
+// clearActiveEditableLocked best-effort clears the focused editable element
+// (native value setter for INPUT/TEXTAREA, select-all + delete for
+// contenteditable). Errors are ignored — callers use it before a last-
+// resort input path.
+func (s *Session) clearActiveEditableLocked() {
+	js := `
+		(function() {
+			const el = document.activeElement;
+			if (!el || el === document.body || el === document.documentElement) {
+				return JSON.stringify({error: "no focused editable element"});
+			}
+			if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+				const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+				const desc = Object.getOwnPropertyDescriptor(proto, "value");
+				if (desc && desc.set) desc.set.call(el, ""); else el.value = "";
+				el.dispatchEvent(new InputEvent("input", {bubbles: true, cancelable: true, inputType: "deleteContentBackward"}));
+				return JSON.stringify({ok: true});
+			}
+			if (!el.isContentEditable) return JSON.stringify({error: "focused element is not editable: " + el.tagName});
+			el.focus();
+			const range = document.createRange();
+			range.selectNodeContents(el);
+			const selection = window.getSelection();
+			selection.removeAllRanges();
+			selection.addRange(range);
+			document.execCommand("delete", false, null);
+			if ((el.textContent || "") !== "") el.textContent = "";
+			return JSON.stringify({ok: true});
+		})()
+	`
+	_ = s.evalCheck(js)
+}
+
+// activeElementContainsTextLocked reports whether the focused element's
+// value/textContent contains the expected text.
+func (s *Session) activeElementContainsTextLocked(expected string) bool {
+	expectedJSON, _ := json.Marshal(expected)
+	js := fmt.Sprintf(`
+		(function() {
+			const el = document.activeElement;
+			if (!el) return "false";
+			const v = (el.tagName === "INPUT" || el.tagName === "TEXTAREA") ? (el.value || "") : (el.textContent || "");
+			return v.indexOf(%s) >= 0 ? "true" : "false";
+		})()
+	`, string(expectedJSON))
+	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+		"expression":    js,
+		"returnByValue": true,
+	}, 5*time.Second)
+	if err != nil {
+		return false
+	}
+	return extractStringValue(result) == "true"
+}
+
+// insertTextViaJSLocked sets text directly on the focused element: native
+// value setter for INPUT/TEXTAREA (so React/Vue see the change), execCommand
+// insertText for contenteditable. Both paths dispatch input events.
+func (s *Session) insertTextViaJSLocked(text string) error {
+	textJSON, _ := json.Marshal(text)
+	js := fmt.Sprintf(`
+		(function() {
+			const el = document.activeElement;
+			if (!el || el === document.body || el === document.documentElement) {
+				return JSON.stringify({error: "no focused editable element"});
+			}
+			const text = %s;
+			if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+				const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+				const desc = Object.getOwnPropertyDescriptor(proto, "value");
+				if (desc && desc.set) desc.set.call(el, text); else el.value = text;
+				el.dispatchEvent(new InputEvent("input", {bubbles: true, cancelable: true, inputType: "insertText", data: text}));
+				return JSON.stringify({ok: true, mode: "js-value"});
+			}
+			if (!el.isContentEditable) return JSON.stringify({error: "focused element is not editable: " + el.tagName});
+			el.focus();
+			// Clear first: this fallback runs when CDP insertText landed
+			// nothing (or partially); inserting at the cursor on top of
+			// partial content would duplicate text.
+			const range = document.createRange();
+			range.selectNodeContents(el);
+			const selection = window.getSelection();
+			selection.removeAllRanges();
+			selection.addRange(range);
+			document.execCommand("delete", false, null);
+			if ((el.textContent || "") !== "") el.textContent = "";
+			if (!document.execCommand("insertText", false, text)) {
+				return JSON.stringify({error: "execCommand insertText rejected"});
+			}
+			return JSON.stringify({ok: true, mode: "js-execcommand"});
+		})()
+	`, string(textJSON))
+	return s.evalCheck(js)
 }
 
 // Screenshot captures a screenshot of the current page, returns base64 PNG.
@@ -634,10 +795,35 @@ func (s *Session) WaitForSelector(selector string, timeoutSec int) error {
 	return fmt.Errorf("wait for selector timed out (%ds): %s", timeoutSec, selector)
 }
 
+// pageVisibilityLocked returns document.visibilityState ("visible",
+// "hidden", ...) or "" when the probe fails.
+func (s *Session) pageVisibilityLocked() string {
+	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+		"expression":    "document.visibilityState",
+		"returnByValue": true,
+	}, 5*time.Second)
+	if err != nil {
+		return ""
+	}
+	return extractStringValue(result)
+}
+
 // Scroll scrolls the page by the given delta (pixels). Positive = down.
 func (s *Session) Scroll(deltaX, deltaY int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.pageVisibilityLocked() == "hidden" {
+		// Chrome swallows input events on hidden pages (background tab /
+		// minimized window) — see clickAtLocked. Try foregrounding first.
+		log.Printf("[browser] scroll: page hidden, bringing to front")
+		_, _ = s.client.Send("Page.bringToFront", nil, DefaultCmdTimeout)
+		if s.pageVisibilityLocked() == "hidden" {
+			log.Printf("[browser] scroll: page still hidden, used JS scroll fallback")
+			js := fmt.Sprintf(`(function() { window.scrollBy(%d, %d); return JSON.stringify({ok: true}); })()`, deltaX, deltaY)
+			return s.evalCheck(js)
+		}
+	}
 
 	_, err := s.client.Send("Input.dispatchMouseEvent", map[string]interface{}{
 		"type":   "mouseWheel",
@@ -722,38 +908,177 @@ func (s *Session) PruneDuplicatePages() int {
 	return closed
 }
 
-func (s *Session) clickAtLocked(selector string) error {
-	// Get element coordinates via JS.
+// clickCoordResult is the JSON payload returned by the click coordinate
+// probe script in clickAtLocked.
+type clickCoordResult struct {
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	Tag      string  `json:"tag"`
+	Error    string  `json:"error"`
+	Occluded bool    `json:"occluded"`
+	JsClick  bool    `json:"jsClick"`
+	Vis      string  `json:"vis"`
+}
+
+// jsClickLocked clicks an element in-page (main document or same-origin
+// iframe) without dispatching mouse events. Used when real input events
+// cannot reach the page (e.g. hidden tab/window).
+func (s *Session) jsClickLocked(selector string) error {
 	js := fmt.Sprintf(`
 		(function() {
-			const el = document.querySelector(%q);
+			function findInFrames(doc, sel) {
+				const el = doc.querySelector(sel);
+				if (el) return el;
+				for (const f of doc.querySelectorAll('iframe')) {
+					let child = null;
+					try { child = f.contentDocument; } catch (e) {}
+					if (!child) continue;
+					const found = findInFrames(child, sel);
+					if (found) return found;
+				}
+				return null;
+			}
+			const el = findInFrames(document, %q);
 			if (!el) return JSON.stringify({error: "element not found: " + %q});
-			el.scrollIntoView({block: "center"});
+			el.click();
+			if (!el.isConnected) return JSON.stringify({error: "element detached before click took effect: " + %q});
+			return JSON.stringify({ok: true});
+		})()
+	`, selector, selector, selector)
+	return s.evalCheck(js)
+}
+
+func (s *Session) clickAtLocked(selector string) error {
+	// Get element coordinates via JS. The script:
+	//  1. searches the main document and same-origin iframes (frame offsets
+	//     are accumulated so coordinates land in the top-frame viewport);
+	//  2. scrolls instantly and waits two animation frames so smooth-scroll
+	//     animations don't leave us with a stale bounding rect;
+	//  3. checks occlusion via elementFromPoint — a covered element falls
+	//     back to a JS el.click() instead of clicking the overlay on top.
+	js := fmt.Sprintf(`
+		(async function() {
+			function findInFrames(doc, sel, chain) {
+				const el = doc.querySelector(sel);
+				if (el) return {el: el, chain: chain};
+				const iframes = doc.querySelectorAll('iframe');
+				for (const f of iframes) {
+					let child = null;
+					try { child = f.contentDocument; } catch (e) {}
+					if (!child) continue;
+					const found = findInFrames(child, sel, chain.concat([f]));
+					if (found) return found;
+				}
+				return null;
+			}
+			const found = findInFrames(document, %q, []);
+			if (!found) return JSON.stringify({error: "element not found: " + %q});
+			const el = found.el;
+			el.scrollIntoView({block: "center", behavior: "instant"});
+			// Wait up to two animation frames for layout/scroll to settle.
+			// Skip entirely on hidden pages: rAF never fires there and
+			// Chrome throttles timers on long-hidden pages (down to once
+			// per minute), which could hang this eval past the CDP
+			// timeout — and a hidden page has no rendering to settle.
+			if (document.visibilityState !== "hidden") {
+				await new Promise(function(resolve) {
+					let done = false;
+					const finish = function() { if (!done) { done = true; resolve(); } };
+					requestAnimationFrame(function() { requestAnimationFrame(finish); });
+					setTimeout(finish, 250);
+				});
+			}
 			const rect = el.getBoundingClientRect();
-			return JSON.stringify({x: rect.x + rect.width/2, y: rect.y + rect.height/2, tag: el.tagName});
+			let x = rect.x + rect.width / 2;
+			let y = rect.y + rect.height / 2;
+			for (const frame of found.chain) {
+				const fr = frame.getBoundingClientRect();
+				x += fr.x;
+				y += fr.y;
+			}
+			let occluded = false;
+			let jsClick = false;
+			const hit = el.ownerDocument.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+			if (hit && hit !== el && !el.contains(hit) && !(hit.contains && hit.contains(el))) {
+				occluded = true;
+			}
+			// For elements inside iframes, also check the TOP document at the
+			// accumulated viewport coordinates: a top-level overlay covering
+			// the whole iframe is invisible to the in-frame check above.
+			if (!occluded && found.chain.length > 0) {
+				const topHit = document.elementFromPoint(x, y);
+				if (topHit) {
+					let inChain = false;
+					for (const frame of found.chain) {
+						if (topHit === frame || (frame.contains && frame.contains(topHit))) { inChain = true; break; }
+					}
+					if (!inChain) occluded = true;
+				}
+			}
+			if (occluded) {
+				// el.click() on a detached element does not throw — it just
+				// fires on a node nobody sees. Only count it as clicked
+				// when the element is still in the document.
+				try { el.click(); jsClick = !!el.isConnected; } catch (e) {}
+			}
+			return JSON.stringify({x: x, y: y, tag: el.tagName, occluded: occluded, jsClick: jsClick, vis: document.visibilityState});
 		})()
 	`, selector, selector)
 
-	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
-		"expression":    js,
-		"returnByValue": true,
-	}, DefaultCmdTimeout)
+	evalCoords := func() (*clickCoordResult, error) {
+		result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+			"expression":    js,
+			"returnByValue": true,
+			"awaitPromise":  true,
+		}, DefaultCmdTimeout)
+		if err != nil {
+			return nil, err
+		}
+		str := extractStringValue(result)
+		var coord clickCoordResult
+		if err := json.Unmarshal([]byte(str), &coord); err != nil {
+			return nil, fmt.Errorf("parse coordinates: %w", err)
+		}
+		if coord.Error != "" {
+			return nil, fmt.Errorf("%s", coord.Error)
+		}
+		return &coord, nil
+	}
+
+	coord, err := evalCoords()
 	if err != nil {
 		return err
 	}
-
-	str := extractStringValue(result)
-	var coord struct {
-		X     float64 `json:"x"`
-		Y     float64 `json:"y"`
-		Tag   string  `json:"tag"`
-		Error string  `json:"error"`
+	if coord.Vis == "hidden" && !coord.Occluded {
+		// Chrome swallows Input.dispatchMouseEvent on hidden pages
+		// (background tab / minimized window): the first click just
+		// activates the window and the events never reach the renderer.
+		// Bring the tab to the front and re-measure once.
+		log.Printf("[browser] click %q: page hidden, bringing to front", selector)
+		if _, err := s.client.Send("Page.bringToFront", nil, DefaultCmdTimeout); err == nil {
+			if retried, rerr := evalCoords(); rerr == nil {
+				coord = retried
+			}
+		}
 	}
-	if err := json.Unmarshal([]byte(str), &coord); err != nil {
-		return fmt.Errorf("parse coordinates: %w", err)
+	if coord.Vis == "hidden" && !coord.Occluded {
+		// Still hidden (e.g. window could not be foregrounded) — real mouse
+		// events would be swallowed, so click in-page instead.
+		log.Printf("[browser] click %q: page still hidden, used JS click fallback", selector)
+		return s.jsClickLocked(selector)
 	}
-	if coord.Error != "" {
-		return fmt.Errorf("%s", coord.Error)
+	if coord.Occluded {
+		if coord.JsClick {
+			// Element was covered by an overlay; a coordinate click would
+			// have hit the overlay, so the in-page el.click() fallback
+			// already did the job.
+			log.Printf("[browser] click %q: element occluded, used JS click fallback", selector)
+			return nil
+		}
+		// Occluded and the JS fallback failed (e.g. element detached
+		// mid-eval) — a coordinate click here would hit the overlay, i.e.
+		// the WRONG element. Fail instead of misclicking.
+		return fmt.Errorf("element occluded and JS click fallback failed: %s", selector)
 	}
 
 	// Dispatch real mouse events.
@@ -840,7 +1165,9 @@ func (s *Session) Back() error {
 	if err != nil {
 		return err
 	}
-	s.waitForLoad(NavTimeout)
+	// Accept "interactive" immediately (tolerance 0) — Back() keeps the old
+	// behaviour; the longer SPA-tolerant wait only pays off on Navigate.
+	s.waitForLoad(NavTimeout, 0)
 	return nil
 }
 
@@ -1037,22 +1364,38 @@ func extractStringValue(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func (s *Session) waitForLoad(timeout time.Duration) {
-	// Simple: poll document.readyState.
+// waitForLoad polls document.readyState until "complete" or the timeout
+// expires. Pages with long-polling/hanging subresources may stay at
+// "interactive" for a long time, so after interactiveTolerance stuck at
+// "interactive" we accept it and return (0 = accept immediately, the old
+// behaviour). It returns the last observed readyState so callers can tell
+// a fully loaded page apart from an interactive-but-still-rendering SPA.
+func (s *Session) waitForLoad(timeout, interactiveTolerance time.Duration) string {
 	deadline := time.Now().Add(timeout)
+	interactiveSince := time.Time{}
+	last := ""
 	for time.Now().Before(deadline) {
 		result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
 			"expression":    "document.readyState",
 			"returnByValue": true,
 		}, 3*time.Second)
 		if err == nil {
-			str := extractStringValue(result)
-			if str == "complete" || str == "interactive" {
-				return
+			last = extractStringValue(result)
+			switch last {
+			case "complete":
+				return last
+			case "interactive":
+				if interactiveSince.IsZero() {
+					interactiveSince = time.Now()
+				}
+				if time.Since(interactiveSince) >= interactiveTolerance {
+					return last
+				}
 			}
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
+	return last
 }
 
 func (s *Session) WaitForStable(timeout, quiet time.Duration) error {

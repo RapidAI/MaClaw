@@ -223,8 +223,19 @@ func downloadViaBrowserAt(ctx context.Context, cdpAddr, rawURL, destPath string,
 
 // browserWebSocketURL resolves the browser-level CDP websocket from /json/version.
 func browserWebSocketURL(cdpHTTP string) (string, error) {
+	return browserWebSocketURLCtx(context.Background(), cdpHTTP)
+}
+
+func browserWebSocketURLCtx(ctx context.Context, cdpHTTP string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(strings.TrimSuffix(cdpHTTP, "/") + "/json/version")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(cdpHTTP, "/")+"/json/version", nil)
+	if err != nil {
+		return "", fmt.Errorf("query /json/version: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("query /json/version: %w", err)
 	}
@@ -248,9 +259,19 @@ func browserWebSocketURL(cdpHTTP string) (string, error) {
 // pageWSURLForTarget polls /json until the page target appears and returns
 // its websocket URL.
 func pageWSURLForTarget(cdpHTTP, targetID string, timeout time.Duration) (string, error) {
-	deadline := time.Now().Add(timeout)
+	return pageWSURLForTargetCtx(context.Background(), cdpHTTP, targetID, timeout)
+}
+
+func pageWSURLForTargetCtx(ctx context.Context, cdpHTTP, targetID string, timeout time.Duration) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var lastErr error
 	for {
-		targets, err := DiscoverTargets(cdpHTTP)
+		targets, err := DiscoverTargetsContext(pollCtx, cdpHTTP)
+		lastErr = err
 		if err == nil {
 			for _, t := range targets {
 				if t.ID == targetID && t.WebSocketDebugURL != "" {
@@ -258,10 +279,18 @@ func pageWSURLForTarget(cdpHTTP, targetID string, timeout time.Duration) (string
 				}
 			}
 		}
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("page target %s not found in /json within %s (last discovery err: %v)", targetID, timeout, err)
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-pollCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return "", fmt.Errorf("page target %s not found in /json within %s (last discovery err: %v): %w", targetID, timeout, lastErr, pollCtx.Err())
+		case <-timer.C:
 		}
-		time.Sleep(200 * time.Millisecond)
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 func TestLiveSearchViaBrowser(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	hits, err := SearchViaBrowser(ctx, "golang programming language", 3)
+	hits, err := SearchViaBrowser(ctx, "bing_cn", "golang programming language", 3)
 	if err != nil {
 		t.Logf("SearchViaBrowser FAILED (browser/network unavailable): %v", err)
 		return

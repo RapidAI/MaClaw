@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ResolveRef resolves a ref from a snapshot or the latest observation.
@@ -55,8 +56,13 @@ func (s *BrowserAgentSession) selectorCandidatesForText(snapshotID, text string)
 		return nil, nil, fmt.Errorf("browser snapshot not found: %s", snapshotID)
 	}
 
-	var exact *BrowserElementRef
-	var contains *BrowserElementRef
+	// Ranked matching: exact > prefix > contains > reverse-contains.
+	// Reverse-contains (user text contains the element name) is a last
+	// resort and requires a reasonably long name (in runes, not bytes) —
+	// otherwise a long user query like "click the Publish button" reverse-
+	// matches an unrelated element whose short aria-label happens to be a
+	// substring of the query.
+	var exact, prefix, contains, reverse *BrowserElementRef
 	for _, item := range snap.Refs {
 		name := normalizeElementText(item.Name)
 		body := normalizeElementText(item.Text)
@@ -65,14 +71,28 @@ func (s *BrowserAgentSession) selectorCandidatesForText(snapshotID, text string)
 			exact = &cp
 			break
 		}
-		if contains == nil && (strings.Contains(name, text) || strings.Contains(body, text) || strings.Contains(text, name) && name != "") {
+		if prefix == nil && (strings.HasPrefix(name, text) || strings.HasPrefix(body, text)) {
+			cp := item
+			prefix = &cp
+		}
+		if contains == nil && (strings.Contains(name, text) || strings.Contains(body, text)) {
 			cp := item
 			contains = &cp
+		}
+		if reverse == nil && utf8.RuneCountInString(name) >= 4 && strings.Contains(text, name) {
+			cp := item
+			reverse = &cp
 		}
 	}
 	resolved := exact
 	if resolved == nil {
+		resolved = prefix
+	}
+	if resolved == nil {
 		resolved = contains
+	}
+	if resolved == nil {
+		resolved = reverse
 	}
 	if resolved == nil {
 		return nil, nil, fmt.Errorf("browser element text not found: %s", text)
