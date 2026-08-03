@@ -7,6 +7,7 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
 	"image"
 	"image/color"
 	"io"
@@ -88,7 +89,12 @@ func hexDigit(value byte) byte {
 
 func deviceGlyphFace() (font.Face, error) {
 	deviceGlyphFontLoader.Do(func() {
-		for _, name := range []string{"msyh.ttc", "simhei.ttf", "simsun.ttc"} {
+		// Windows installations differ: some provide Microsoft YaHei as a
+		// collection (.ttc), while stripped-down/remote images often retain only
+		// a regular TrueType file (.ttf).  ParseCollection rejects a normal TTF;
+		// accepting both forms is essential because returning no atlas silently
+		// turns otherwise valid CJK replies into question marks on the ESP.
+		for _, name := range []string{"msyh.ttc", "msyh.ttf", "simhei.ttf", "simsun.ttc", "simsun.ttf"} {
 			path := filepath.Join(os.Getenv("WINDIR"), "Fonts", name)
 			if path == "Fonts"+string(filepath.Separator)+name {
 				path = filepath.Join(`C:\Windows\Fonts`, name)
@@ -102,14 +108,18 @@ func deviceGlyphFace() (font.Face, error) {
 			if readErr != nil {
 				continue
 			}
-			collection, parseErr := opentype.ParseCollection(bytes)
-			if parseErr != nil {
-				continue
+			if collection, parseErr := opentype.ParseCollection(bytes); parseErr == nil {
+				if loaded, err := collection.Font(0); err == nil {
+					deviceGlyphFontLoader.font = loaded
+					return
+				}
 			}
-			deviceGlyphFontLoader.font, deviceGlyphFontLoader.err = collection.Font(0)
-			return
+			if loaded, parseErr := opentype.Parse(bytes); parseErr == nil {
+				deviceGlyphFontLoader.font = loaded
+				return
+			}
 		}
-		deviceGlyphFontLoader.err = os.ErrNotExist
+		deviceGlyphFontLoader.err = fmt.Errorf("no usable CJK font in %s", filepath.Join(os.Getenv("WINDIR"), "Fonts"))
 	})
 	if deviceGlyphFontLoader.err != nil {
 		return nil, deviceGlyphFontLoader.err
