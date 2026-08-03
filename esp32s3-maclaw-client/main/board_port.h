@@ -24,6 +24,10 @@ void board_port_set_pet_state(const char *state);
 // foreground command owns the screen. The command code clears it only when a
 // later explicit interaction begins, so the answer remains stable.
 void board_port_set_command_display_lock(bool locked);
+// Enables a deliberate panel double tap while the short voice command is in
+// its thinking phase. Raw CST816 contacts closer than 180 ms are still treated
+// as one touch so the controller's duplicate contact cannot cancel a command.
+void board_port_set_command_cancel_enabled(bool enabled);
 // Applies the selected MaClaw GUI pet profile. The ESP uses a compact native
 // renderer for supported skins and falls back gracefully for custom packs.
 void board_port_set_pet_profile(const char *skin, bool motion_enabled);

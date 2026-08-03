@@ -61,12 +61,16 @@
 // Keep one recognizer running in standby. Running Chinese and English models
 // together doubles inference work and makes normal-speed wake-up unreliable.
 #define WAKE_WORD_CN_LABEL "码卡龙"
+// MultiNet7 Chinese commands use space-separated pinyin syllables without
+// tone digits.  Supplying tone digits makes its command validator reject the
+// phrase, which silently disabled standby wake-up altogether.
 #define WAKE_WORD_CN_PHONETIC "ma ka long"
 // The default command threshold favours deliberate, slow commands.  A modest
 // reduction preserves a practical false-wake margin while accepting normal
 // conversational delivery of the short product name.
-#define WAKE_WORD_DETECTION_THRESHOLD 0.45f
+#define WAKE_WORD_DETECTION_THRESHOLD 0.30f
 #define WAKE_WORD_COOLDOWN_US (2LL * 1000 * 1000)
+#define WAKE_WORD_INVALID_SAMPLE_ABS 32500
 
 #define LCD_STRIPE_ROWS 40
 #define TEXT_SCALE      2
@@ -203,6 +207,13 @@ static i2s_chan_handle_t s_audio_rx;
 static i2s_chan_handle_t s_audio_tx;
 static bool s_audio_ready;
 static volatile bool s_command_display_locked;
+static volatile bool s_command_cancel_enabled;
+static volatile uint32_t s_command_gesture_revision;
+// Once a double tap is emitted, discard every residual native/raw touch event
+// until the panel has been continuously released. Otherwise the same physical
+// second tap can later mature into a SHORT event and start a fresh command.
+static volatile bool s_touch_gesture_consumed;
+static int64_t s_touch_gesture_released_at_us;
 static bool s_recording_is_meeting;
 static SemaphoreHandle_t s_audio_mutex;
 static TaskHandle_t s_wake_word_task;
@@ -335,6 +346,9 @@ static esp_err_t audio_init(void) {
         {0x00,0xFF},{0x00,0x32},{0x09,0x30},{0x0A,0x30},
         {0x23,0x2A},{0x22,0x0A},{0x21,0x2A},{0x20,0x0A},
         {0x11,0x60},{0x12,0x00},{0x40,0xC3},{0x41,0x70},{0x42,0x70},
+        // 0x1E clips the EchoEar microphone continuously.  Keep the verified
+        // 0x1A analogue gain so speech remains within the recognizer's usable
+        // PCM range.
         {0x43,0x1A},{0x44,0x1A},{0x45,0x1A},{0x46,0x1A},
         {0x47,0x08},{0x48,0x08},{0x49,0x00},{0x4A,0x00},
         {0x07,0x20},{0x02,0xC1},{0x04,0x01},{0x05,0x00},
@@ -483,6 +497,7 @@ static const uint8_t *glyph(char c) {
     static const uint8_t colon[5] = {0, 0x24, 0, 0, 0};
     static const uint8_t slash[5] = {0x40, 0x30, 0x0C, 0x03, 0};
     static const uint8_t hyphen[5] = {0x08, 0x08, 0x08, 0x08, 0x08};
+    static const uint8_t percent[5] = {0x63, 0x13, 0x08, 0x64, 0x63};
     static const uint8_t table[][5] = {
         {0x7E,0x11,0x11,0x11,0x7E}, {0x7F,0x49,0x49,0x49,0x36}, {0x3E,0x41,0x41,0x41,0x22},
         {0x7F,0x41,0x41,0x22,0x1C}, {0x7F,0x49,0x49,0x49,0x41}, {0x7F,0x09,0x09,0x09,0x01},
@@ -507,6 +522,7 @@ static const uint8_t *glyph(char c) {
     if (c == ':') return colon;
     if (c == '/') return slash;
     if (c == '-') return hyphen;
+    if (c == '%') return percent;
     return question;
 }
 
@@ -1578,16 +1594,22 @@ static void pet_animation_task(void *arg) {
     }
 }
 
-static bool touch_pressed(void) {
+static bool touch_read(bool *pressed, uint8_t *gesture) {
+    if (pressed) *pressed = false;
+    if (gesture) *gesture = 0;
     if (!s_touch) return false;
-    // Finger count is more reliable than the event bits when polling: the
-    // CST816 may keep the last coordinate/event bytes after a release.
-    uint8_t reg = 0x02;
-    uint8_t fingers = 0;
-    if (i2c_master_transmit_receive(s_touch, &reg, 1, &fingers, 1, 50) != ESP_OK) {
+
+    // Read the gesture ID and finger count in one transaction. CST816 reports
+    // double-click as 0x0B; using that hardware result avoids guessing whether
+    // two close contacts are a controller echo or a real user double tap.
+    uint8_t reg = 0x01;
+    uint8_t status[2] = {0};
+    if (i2c_master_transmit_receive(s_touch, &reg, 1, status, sizeof(status), 50) != ESP_OK) {
         return false;
     }
-    return (fingers & 0x0Fu) != 0;
+    if (gesture) *gesture = status[0];
+    if (pressed) *pressed = (status[1] & 0x0Fu) != 0;
+    return true;
 }
 
 static void button_task(void *arg) {
@@ -1598,59 +1620,128 @@ static void button_task(void *arg) {
     // Treat a panel tap as the normal interaction gesture as well, matching
     // the vendor user guide; both inputs feed the same short/double/long logic.
     bool button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
-    bool panel_pressed = touch_pressed();
+    bool panel_pressed = false;
+    touch_read(&panel_pressed, NULL);
     bool pressed = button_pressed || panel_pressed;
     bool gesture_from_touch = panel_pressed;
     int64_t pressed_at_us = pressed ? esp_timer_get_time() : 0;
     int64_t released_at_us = 0;
-    int64_t touch_echo_ignored_at_us = 0;
     bool long_sent = false;
     bool short_pending = false;
+    bool native_double_sent = false;
+    uint32_t command_gesture_revision = s_command_gesture_revision;
     ESP_LOGI(TAG, "interaction monitor ready: boot_gpio=%d idle_level=%d touch=%s irq=%d",
              FUNCTION_BUTTON, gpio_get_level(FUNCTION_BUTTON), s_touch ? "yes" : "no", TOUCH_IRQ);
     while (true) {
         bool now_button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
-        bool now_panel_pressed = touch_pressed();
+        bool now_panel_pressed = false;
+        uint8_t now_touch_gesture = 0;
+        touch_read(&now_panel_pressed, &now_touch_gesture);
         bool now_pressed = now_button_pressed || now_panel_pressed;
         int64_t now_us = esp_timer_get_time();
+        if (command_gesture_revision != s_command_gesture_revision) {
+            // Entering the thinking phase starts a completely fresh gesture
+            // window. In particular, discard the tap that originally started
+            // command recording; otherwise it can be mistaken for the first
+            // half of a later cancel double tap.
+            command_gesture_revision = s_command_gesture_revision;
+            pressed = now_pressed;
+            gesture_from_touch = now_panel_pressed;
+            pressed_at_us = now_pressed ? now_us : 0;
+            released_at_us = 0;
+            long_sent = false;
+            short_pending = false;
+            native_double_sent = false;
+            s_touch_gesture_consumed = false;
+            s_touch_gesture_released_at_us = 0;
+            ESP_LOGI(TAG, "fresh command-cancel gesture window armed");
+            vTaskDelay(pdMS_TO_TICKS(15));
+            continue;
+        }
+        if (s_touch_gesture_consumed) {
+            short_pending = false;
+            native_double_sent = true;
+            if (now_panel_pressed) {
+                s_touch_gesture_released_at_us = 0;
+            } else if (s_touch_gesture_released_at_us == 0) {
+                s_touch_gesture_released_at_us = now_us;
+            } else if (now_us - s_touch_gesture_released_at_us >= 250000) {
+                s_touch_gesture_consumed = false;
+                s_touch_gesture_released_at_us = 0;
+                native_double_sent = false;
+                ESP_LOGD(TAG, "touch gesture drain complete");
+            }
+        }
+        // CST816's native 0x0B is the most reliable double-tap indication.
+        // Accept it in standby as well as during command cancellation. A stale
+        // value is gated by a fresh pressed edge plus native_double_sent, so it
+        // cannot be replayed after the contact has drained.
+        if (now_panel_pressed && now_touch_gesture == 0x0B && !native_double_sent) {
+            short_pending = false;
+            native_double_sent = true;
+            s_touch_gesture_consumed = true;
+            s_touch_gesture_released_at_us = 0;
+            ESP_LOGI(TAG, "button gesture: double (CST816)");
+            if (s_on_button) s_on_button(BOARD_BUTTON_DOUBLE, s_on_press_arg);
+        }
         if (now_pressed != pressed) {
             vTaskDelay(pdMS_TO_TICKS(25));
             now_button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
-            now_panel_pressed = touch_pressed();
+            now_touch_gesture = 0;
+            touch_read(&now_panel_pressed, &now_touch_gesture);
             now_pressed = now_button_pressed || now_panel_pressed;
             if (now_pressed != pressed) {
+                // Use the time after the contact has passed debounce. The old
+                // pre-delay timestamp shortened every touch by about 25 ms,
+                // causing quick but valid taps to be discarded as <30 ms.
+                now_us = esp_timer_get_time();
                 pressed = now_pressed;
                 if (pressed) {
                     pressed_at_us = now_us;
                     long_sent = false;
                     gesture_from_touch = now_panel_pressed;
+                    if (now_touch_gesture != 0x0B) native_double_sent = false;
                     ESP_LOGI(TAG, "button/touch down");
                 } else {
                     uint32_t held_ms = pressed_at_us > 0
                                            ? (uint32_t)((now_us - pressed_at_us) / 1000)
                                            : 0;
                     ESP_LOGI(TAG, "button/touch up: held=%lu ms", (unsigned long)held_ms);
-                    if (!long_sent && held_ms >= 30) {
-                        // CST816 can report a single physical panel tap as two
-                        // contacts close together. Keep the first tap pending
-                        // when that short echo arrives; a later contact within
-                        // the double-tap window is the user's real second tap.
+                    uint32_t minimum_tap_ms =
+                        (gesture_from_touch && s_command_cancel_enabled) ? 15 : 30;
+                    if (!long_sent && held_ms >= minimum_tap_ms) {
                         int64_t since_previous_us = now_us - released_at_us;
-                        if (gesture_from_touch && short_pending &&
-                            since_previous_us <= 260000 &&
-                            touch_echo_ignored_at_us == 0) {
-                            ESP_LOGI(TAG, "duplicate touch contact ignored: gap=%lld ms",
-                                     (long long)(since_previous_us / 1000));
-                            touch_echo_ignored_at_us = now_us;
-                        } else if (short_pending && since_previous_us <= 650000) {
+                        int64_t double_window_us =
+                            (gesture_from_touch && s_command_cancel_enabled) ? 1300000 : 650000;
+                        if (!native_double_sent && short_pending &&
+                            ((!gesture_from_touch && since_previous_us <= double_window_us) ||
+                             (gesture_from_touch && since_previous_us >= 100000 &&
+                              since_previous_us <= double_window_us))) {
                             short_pending = false;
-                            touch_echo_ignored_at_us = 0;
-                            ESP_LOGI(TAG, "button gesture: double");
+                            native_double_sent = true;
+                            if (gesture_from_touch) {
+                                s_touch_gesture_consumed = true;
+                                s_touch_gesture_released_at_us = 0;
+                            }
+                            ESP_LOGI(TAG, "button gesture: double (%s timing gap=%lld ms)",
+                                     gesture_from_touch ? "touch" : "button",
+                                     (long long)(since_previous_us / 1000));
                             if (s_on_button) s_on_button(BOARD_BUTTON_DOUBLE, s_on_press_arg);
-                        } else {
+                        } else if (gesture_from_touch && s_command_cancel_enabled &&
+                                   short_pending && since_previous_us < 100000) {
+                            // CST816 can report a second contact about 100 ms
+                            // after one physical tap. Keep the original release
+                            // timestamp so that echo is neither a cancel nor a
+                            // new first tap in the double-tap window.
+                            ESP_LOGD(TAG, "ignored CST816 duplicate contact: gap=%lld ms",
+                                     (long long)(since_previous_us / 1000));
+                        } else if (!native_double_sent && !s_touch_gesture_consumed) {
+                            // A CST816 touch double is emitted above from its
+                            // native 0x0B gesture. Multiple raw contacts here
+                            // still belong to one tap, so keep only one pending
+                            // short event instead of promoting an echo to double.
                             short_pending = true;
                             released_at_us = now_us;
-                            touch_echo_ignored_at_us = 0;
                         }
                     }
                 }
@@ -1660,11 +1751,12 @@ static void button_task(void *arg) {
             now_us - pressed_at_us >= 3000000) {
             long_sent = true;
             short_pending = false;
-            touch_echo_ignored_at_us = 0;
             ESP_LOGI(TAG, "button gesture: long");
             if (s_on_button) s_on_button(BOARD_BUTTON_LONG, s_on_press_arg);
         }
-        if (!pressed && short_pending && now_us - released_at_us > 650000) {
+        int64_t pending_window_us = s_command_cancel_enabled ? 1300000 : 650000;
+        if (!pressed && short_pending && !s_touch_gesture_consumed &&
+            now_us - released_at_us > pending_window_us) {
             short_pending = false;
             ESP_LOGI(TAG, "button gesture: short");
             if (s_on_button) s_on_button(BOARD_BUTTON_SHORT, s_on_press_arg);
@@ -1806,6 +1898,13 @@ void board_port_set_pet_state(const char *state) {
 void board_port_set_command_display_lock(bool locked) {
     s_command_display_locked = locked;
     if (locked) s_ready_prompt_expires_us = 0;
+}
+
+void board_port_set_command_cancel_enabled(bool enabled) {
+    if (enabled && !s_command_cancel_enabled) {
+        ++s_command_gesture_revision;
+    }
+    s_command_cancel_enabled = enabled;
 }
 
 void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
@@ -2162,7 +2261,12 @@ bool board_port_wake_from_idle(void) {
 
 esp_err_t board_port_audio_stream_start(void) {
     board_port_pause_wake_word(true);
-    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+    // MultiNet may already be inside a 250 ms I2S read when pause is asserted,
+    // and foreground network/UI work can delay its mutex release. Allow a
+    // bounded settling window so a valid double tap does not intermittently
+    // fail before capture has even started.
+    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        ESP_LOGE(TAG, "meeting microphone mutex timeout");
         board_port_pause_wake_word(false);
         return ESP_ERR_TIMEOUT;
     }
@@ -2170,6 +2274,17 @@ esp_err_t board_port_audio_stream_start(void) {
     if (err != ESP_OK) {
         xSemaphoreGive(s_audio_mutex);
         board_port_pause_wake_word(false);
+    } else {
+        // Restore the non-clipping analogue gain used by standby recognition.
+        // Software suppression is deliberately bypassed here.
+        for (uint8_t reg = 0x43; reg <= 0x46; ++reg) {
+            err = es7210_write(reg, 0x1A);
+            if (err != ESP_OK) break;
+        }
+        if (err != ESP_OK) {
+            xSemaphoreGive(s_audio_mutex);
+            board_port_pause_wake_word(false);
+        }
     }
     return err;
 }
@@ -2189,11 +2304,12 @@ esp_err_t board_port_audio_stream_read(int16_t *mono, size_t sample_capacity,
     if (frames > sample_capacity) frames = sample_capacity;
     int32_t chunk_peak = 0;
     for (size_t i = 0; i < frames; ++i) {
-        int32_t left = stereo[i * 2];
-        int32_t right = stereo[i * 2 + 1];
-        int32_t left_abs = left < 0 ? -left : left;
-        int32_t right_abs = right < 0 ? -right : right;
-        int32_t sample = left_abs >= right_abs ? left : right;
+        // The supplied recording proves that the left slot is currently
+        // corrupted: most of its words sit near +/-32768 and the old
+        // per-sample "louder channel" selector therefore chose it almost all
+        // the time, burying speech under full-scale digital noise. Keep the
+        // clean MIC2/right slot for a stable mono meeting recording.
+        int32_t sample = stereo[i * 2 + 1];
         mono[i] = (int16_t)sample;
         int32_t magnitude = sample < 0 ? -sample : sample;
         if (magnitude > chunk_peak) chunk_peak = magnitude;
@@ -2411,6 +2527,7 @@ static void wake_word_task(void *arg) {
     multinet->print_active_speech_commands(model_data);
     bool model_was_paused = false;
     int64_t last_detection_us = 0;
+    int64_t last_audio_diagnostic_us = 0;
     while (true) {
         if (s_wake_word_stop_requested) break;
         if (s_wake_word_paused) {
@@ -2442,12 +2559,42 @@ static void wake_word_task(void *arg) {
             memset(stereo + frames * 2, 0,
                    ((size_t)chunk_samples - frames) * 2 * sizeof(int16_t));
         }
+        int32_t left_peak = 0;
+        int32_t right_peak = 0;
+        uint32_t left_energy = 0;
+        uint32_t right_energy = 0;
+        uint16_t left_invalid = 0;
+        uint16_t right_invalid = 0;
         for (int i = 0; i < chunk_samples; ++i) {
             int32_t left = stereo[i * 2];
             int32_t right = stereo[i * 2 + 1];
             int32_t left_abs = left < 0 ? -left : left;
             int32_t right_abs = right < 0 ? -right : right;
-            mono[i] = (int16_t)(left_abs >= right_abs ? left : right);
+            if (left_abs > left_peak) left_peak = left_abs;
+            if (right_abs > right_peak) right_peak = right_abs;
+            // A full-scale word is a bus artefact, not usable speech.  Do not
+            // let one damaged slot suppress the physical microphone that is
+            // actually closest to the speaker.  For two valid microphones,
+            // averaging provides a stable, phase-neutral mono input.
+            bool left_ok = left_abs < WAKE_WORD_INVALID_SAMPLE_ABS;
+            bool right_ok = right_abs < WAKE_WORD_INVALID_SAMPLE_ABS;
+            if (left_ok) left_energy += (uint32_t)left_abs;
+            else ++left_invalid;
+            if (right_ok) right_energy += (uint32_t)right_abs;
+            else ++right_invalid;
+            if (left_ok && right_ok) mono[i] = (int16_t)((left + right) / 2);
+            else if (left_ok) mono[i] = (int16_t)left;
+            else if (right_ok) mono[i] = (int16_t)right;
+            else mono[i] = 0;
+        }
+
+        int64_t diagnostic_now_us = esp_timer_get_time();
+        if (diagnostic_now_us - last_audio_diagnostic_us >= 1000000) {
+            last_audio_diagnostic_us = diagnostic_now_us;
+            ESP_LOGI(TAG,
+                     "offline wake mic: L peak=%ld mean=%lu bad=%u; R peak=%ld mean=%lu bad=%u; mix=valid",
+                     (long)left_peak, (unsigned long)(left_energy / chunk_samples), left_invalid,
+                     (long)right_peak, (unsigned long)(right_energy / chunk_samples), right_invalid);
         }
 
         esp_mn_state_t state = multinet->detect(model_data, mono);

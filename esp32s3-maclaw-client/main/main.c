@@ -63,6 +63,7 @@
 #define MEETING_MAX_CHUNK_SIZE (8U << 20)
 #define MEETING_IO_BUFFER_SIZE 16384
 #define MEETING_RESPONSE_CAPACITY 2048
+#define MEETING_INTERNAL_TLS_RESERVE (16U * 1024U)
 #define MEETING_BASE_PATH_CAPACITY 96
 #define MEETING_RECORDING_ID_CAPACITY 96
 
@@ -93,6 +94,7 @@ static TaskHandle_t s_gateway_task;
 static TaskHandle_t s_interaction_task;
 static TaskHandle_t s_meeting_task;
 static TaskHandle_t s_meeting_resume_supervisor_task;
+static TaskHandle_t s_wake_restart_task;
 static TaskHandle_t s_meeting_capability_refresh_task;
 static bool s_meeting_task_running;
 static bool s_pairing_recovery_portal;
@@ -100,7 +102,26 @@ static TaskHandle_t s_ambient_task;
 static TaskHandle_t s_gateway_poll_task;
 static TaskHandle_t s_setup_restart_task;
 static volatile bool s_command_display_locked;
+static volatile bool s_command_cancel_requested;
+static volatile bool s_command_cancel_enabled;
+static bool s_command_cancel_ui_shown;
+#define CANCELLED_REPLY_SLOTS 4
+#define COMMAND_REPLY_ID_CAPACITY 96
+static char s_active_command_reply_to[COMMAND_REPLY_ID_CAPACITY];
+static char s_cancelled_command_reply_to[CANCELLED_REPLY_SLOTS][COMMAND_REPLY_ID_CAPACITY];
+static unsigned s_cancelled_command_reply_next;
+static int64_t s_ignore_command_input_until_us;
+static uint32_t s_interaction_generation;
+static uint32_t s_cancel_requested_generation;
+static uint32_t s_cancel_ui_ready_generation;
 static SemaphoreHandle_t s_http_mutex;
+// Protects the foreground client pointer through cancel/cleanup. The general
+// HTTP mutex cannot serve this purpose because it remains owned for the whole
+// request and cancellation must run concurrently with esp_http_client_perform.
+static SemaphoreHandle_t s_foreground_http_client_mutex;
+static esp_http_client_handle_t s_foreground_http_client;
+static SemaphoreHandle_t s_command_cancel_ui_ready;
+static TaskHandle_t s_command_cancel_task;
 static SemaphoreHandle_t s_interaction_lock;
 static SemaphoreHandle_t s_nvs_mutex;
 static portMUX_TYPE s_task_state_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -165,10 +186,13 @@ static bool gateway_auth_failed(const http_response_t *response, esp_err_t err);
 static void save_ambient_weather(void);
 static void load_ambient_weather(void);
 static esp_err_t poll_reply(void);
+static esp_err_t send_text_event(const char *text);
 static bool json_number(cJSON *root, const char *key, int *value);
 static int apply_glyphs_json(cJSON *glyphs);
 static bool start_meeting_task(bool resume_only);
 static esp_err_t gateway_handshake(void);
+static void start_setup_portal(bool keep_station);
+static void schedule_wake_restart(void);
 
 static bool nvs_lock(void) {
     return s_nvs_mutex && xSemaphoreTake(s_nvs_mutex, pdMS_TO_TICKS(3000)) == pdTRUE;
@@ -188,19 +212,240 @@ static void meeting_set_state(meeting_state_t state) {
     s_meeting_state = state;
     taskEXIT_CRITICAL(&s_task_state_lock);
 }
-static void finish_interaction_task(void) {
+static void finish_interaction_task(uint32_t generation) {
+    board_port_set_command_cancel_enabled(false);
     taskENTER_CRITICAL(&s_task_state_lock);
-    s_interaction_task = NULL;
-    s_foreground_http_requested = false;
+    bool owns_interaction = s_interaction_generation == generation &&
+                            s_interaction_task == xTaskGetCurrentTaskHandle();
+    if (owns_interaction) {
+        s_interaction_task = NULL;
+        s_foreground_http_requested = false;
+        s_command_cancel_enabled = false;
+        s_command_cancel_requested = false;
+        s_cancel_requested_generation = 0;
+        s_active_command_reply_to[0] = '\0';
+    }
     taskEXIT_CRITICAL(&s_task_state_lock);
     // This is a binary admission token, not a mutex: the button task starts
     // the interaction task, which completes it on another task context.
     // Releasing a FreeRTOS mutex from that child task asserts and reboots.
-    if (s_interaction_lock) xSemaphoreGive(s_interaction_lock);
+    if (owns_interaction && s_interaction_lock) xSemaphoreGive(s_interaction_lock);
     // The interaction worker now uses ordinary xTaskCreate() with an internal
     // RAM stack, so it must be destroyed by the matching FreeRTOS API.
     // vTaskDeleteWithCaps() asserts when given a normally allocated task.
+    schedule_wake_restart();
     vTaskDelete(NULL);
+}
+
+static bool command_cancel_requested_for(uint32_t generation) {
+    bool requested;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    requested = s_command_cancel_requested &&
+                s_cancel_requested_generation == generation;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return requested;
+}
+
+static void remember_cancelled_command_reply(void) {
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_active_command_reply_to[0]) {
+        bool already_remembered = false;
+        for (unsigned i = 0; i < CANCELLED_REPLY_SLOTS; ++i) {
+            if (!strcmp(s_cancelled_command_reply_to[i], s_active_command_reply_to)) {
+                already_remembered = true;
+                break;
+            }
+        }
+        if (!already_remembered) {
+            strlcpy(s_cancelled_command_reply_to[s_cancelled_command_reply_next],
+                    s_active_command_reply_to, COMMAND_REPLY_ID_CAPACITY);
+            s_cancelled_command_reply_next =
+                (s_cancelled_command_reply_next + 1) % CANCELLED_REPLY_SLOTS;
+        }
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+}
+
+static bool cancelled_command_reply_matches(const char *reply_to) {
+    if (!reply_to || !reply_to[0]) return false;
+    bool matches = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    for (unsigned i = 0; i < CANCELLED_REPLY_SLOTS; ++i) {
+        if (s_cancelled_command_reply_to[i][0] &&
+            !strcmp(s_cancelled_command_reply_to[i], reply_to)) {
+            matches = true;
+            break;
+        }
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return matches;
+}
+
+static bool active_command_reply_matches(const char *reply_to) {
+    if (!reply_to || !reply_to[0]) return false;
+    bool matches;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    matches = s_interaction_task != NULL && s_active_command_reply_to[0] &&
+              !strcmp(s_active_command_reply_to, reply_to);
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return matches;
+}
+
+static TaskHandle_t begin_active_command_reply(void) {
+    // Atomically close the cancellation window and take a stable waiter
+    // snapshot before drawing. A simultaneous double tap then observes either
+    // a cancellable command or a completed one, never a half-transition.
+    TaskHandle_t waiter = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (!s_command_cancel_requested) {
+        s_command_cancel_enabled = false;
+        waiter = s_interaction_task;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    board_port_set_command_cancel_enabled(false);
+    return waiter;
+}
+
+static void show_cancelled_command(uint32_t generation) {
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool cancellation_still_active = s_command_cancel_requested &&
+                                     s_cancel_requested_generation == generation &&
+                                     s_interaction_generation == generation;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!cancellation_still_active) return;
+    remember_cancelled_command_reply();
+    board_port_set_command_cancel_enabled(false);
+    bool should_draw = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    // Let CST816 finish reporting the second contact before a SHORT gesture is
+    // allowed to start another recording. This guard complements the board
+    // driver's raw-event drain and also covers the physical BOOT button.
+    s_ignore_command_input_until_us = esp_timer_get_time() + 1200000;
+    if (!s_command_cancel_ui_shown) {
+        s_command_cancel_ui_shown = true;
+        should_draw = true;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (should_draw) {
+        board_port_show_text("已取消", "本次操作已停止");
+        ESP_LOGI(TAG, "voice command cancelled by double tap");
+    }
+}
+
+static void finish_cancelled_command(uint32_t generation) {
+    // The high-priority cancellation worker owns LCD rendering so the touch
+    // scanner never blocks on a full display transfer. Wait briefly for that
+    // final state before releasing the interaction token; this also prevents a
+    // delayed cancellation frame from overwriting the next command screen.
+    if (s_command_cancel_ui_ready) {
+        TickType_t started = xTaskGetTickCount();
+        while ((xTaskGetTickCount() - started) < pdMS_TO_TICKS(7500)) {
+            if (xSemaphoreTake(s_command_cancel_ui_ready, pdMS_TO_TICKS(50)) == pdTRUE) {
+                taskENTER_CRITICAL(&s_task_state_lock);
+                bool ready_for_this_command = s_cancel_ui_ready_generation == generation;
+                taskEXIT_CRITICAL(&s_task_state_lock);
+                if (ready_for_this_command) break;
+            }
+        }
+    }
+    if (command_cancel_requested_for(generation)) show_cancelled_command(generation);
+    finish_interaction_task(generation);
+}
+
+static void command_cancel_worker(void *arg) {
+    (void)arg;
+    while (true) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        uint32_t cancel_generation = 0;
+        taskENTER_CRITICAL(&s_task_state_lock);
+        cancel_generation = s_cancel_requested_generation;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (!cancel_generation) continue;
+
+        bool cancellation_still_active;
+        taskENTER_CRITICAL(&s_task_state_lock);
+        cancellation_still_active = s_command_cancel_requested &&
+                                    s_cancel_requested_generation == cancel_generation &&
+                                    s_interaction_generation == cancel_generation;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (!cancellation_still_active) continue;
+
+        show_cancelled_command(cancel_generation);
+
+        // Hold the pointer guard for the entire cancel call. The request task
+        // must acquire the same guard before clearing/cleaning the handle, so
+        // this can never race esp_http_client_cleanup() or dereference a stale
+        // client pointer.
+        if (s_foreground_http_client_mutex &&
+            xSemaphoreTake(s_foreground_http_client_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            esp_http_client_handle_t http_client = s_foreground_http_client;
+            if (http_client) {
+                esp_err_t cancel_err = esp_http_client_cancel_request(http_client);
+                if (cancel_err != ESP_OK) {
+                    ESP_LOGW(TAG, "foreground HTTP cancel failed: %s",
+                             esp_err_to_name(cancel_err));
+                }
+            }
+            xSemaphoreGive(s_foreground_http_client_mutex);
+        } else {
+            ESP_LOGW(TAG, "foreground HTTP cancel skipped: client guard timeout");
+        }
+
+        // Local cancellation stops waiting immediately, but the server-side
+        // agent may already be executing after accepting the voice event. Send
+        // the protocol's normal /cancel command before releasing the local
+        // interaction token so it cannot accidentally target a newer command.
+        if (s_gateway_token[0]) {
+            esp_err_t server_cancel_err = send_text_event("/cancel");
+            if (server_cancel_err != ESP_OK) {
+                ESP_LOGW(TAG, "server command cancel failed: %s",
+                         esp_err_to_name(server_cancel_err));
+            } else {
+                ESP_LOGI(TAG, "server command cancel accepted");
+            }
+        }
+
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_cancel_ui_ready_generation = cancel_generation;
+        TaskHandle_t waiter = NULL;
+        if (s_command_cancel_requested &&
+            s_cancel_requested_generation == cancel_generation) {
+            waiter = s_interaction_task;
+        }
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (s_command_cancel_ui_ready) xSemaphoreGive(s_command_cancel_ui_ready);
+        if (waiter) xTaskNotifyGive(waiter);
+    }
+}
+
+static bool request_command_cancel(void) {
+    TaskHandle_t waiter = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    // Cancellation belongs strictly to the thinking phase. Once the poller has
+    // accepted a result it clears this flag before drawing the answer, so a
+    // late double tap cannot replace a completed command with “已取消”.
+    if (s_interaction_task && s_command_cancel_enabled &&
+        !s_command_cancel_requested) {
+        s_command_cancel_requested = true;
+        s_cancel_requested_generation = s_interaction_generation;
+        s_command_cancel_enabled = false;
+        waiter = s_interaction_task;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!waiter) return false;
+    board_port_set_command_cancel_enabled(false);
+    // Keep the touch task responsive: a dedicated internal-RAM worker renders
+    // the final frame and interrupts any in-flight HTTP operation safely.
+    if (s_command_cancel_task) {
+        xTaskNotifyGive(s_command_cancel_task);
+    } else {
+        // Startup treats creation failure as fatal, but retain a cooperative
+        // fallback so a partially initialized device cannot wait for 90 s.
+        xTaskNotifyGive(waiter);
+    }
+    ESP_LOGI(TAG, "voice command cancel requested by double tap");
+    return true;
 }
 
 // A foreground command owns the LCD from the end of capture until a final
@@ -256,9 +501,31 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
                 ? snprintf(url, sizeof(url), "%s", path)
                 : snprintf(url, sizeof(url), "%s%s", s_gateway_url, path);
     if (n < 0 || n >= sizeof(url)) return ESP_ERR_INVALID_SIZE;
-    if (!s_http_mutex || xSemaphoreTake(s_http_mutex, pdMS_TO_TICKS(35000)) != pdTRUE) {
-        ESP_LOGW(TAG, "HTTP request lock timeout: %s %s", method, path);
-        return ESP_ERR_TIMEOUT;
+    bool foreground_request = false;
+    uint32_t foreground_generation = 0;
+    TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_task_state_lock);
+    foreground_request = current_task == s_interaction_task;
+    if (foreground_request) foreground_generation = s_interaction_generation;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+
+    if (!s_http_mutex) return ESP_ERR_INVALID_STATE;
+    TickType_t lock_started = xTaskGetTickCount();
+    bool cancellation_request = current_task == s_command_cancel_task;
+    const TickType_t lock_timeout = pdMS_TO_TICKS(cancellation_request ? 6000 : 35000);
+    while (xSemaphoreTake(s_http_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        if (foreground_request && command_cancel_requested_for(foreground_generation)) {
+            ESP_LOGI(TAG, "foreground HTTP lock wait cancelled: %s %s", method, path);
+            return ESP_ERR_INVALID_STATE;
+        }
+        if ((xTaskGetTickCount() - lock_started) >= lock_timeout) {
+            ESP_LOGW(TAG, "HTTP request lock timeout: %s %s", method, path);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    if (foreground_request && command_cancel_requested_for(foreground_generation)) {
+        xSemaphoreGive(s_http_mutex);
+        return ESP_ERR_INVALID_STATE;
     }
     // Prefer PSRAM for every HTTP body. Request buffers must not consume the
     // small internal heap reserved for the TLS handshake and Wi-Fi stacks.
@@ -274,7 +541,8 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
     out->data[0] = '\0';
     esp_http_client_config_t config = {
         .url = url, .event_handler = on_http_event, .user_data = out,
-        .timeout_ms = 30000, .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = cancellation_request ? 5000 : 30000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         // The public Hub is fronted by nginx and answers with HTTP/1.1
         // keep-alive. Do not wait for the peer to close the TLS socket to
         // decide that a complete JSON response has ended.
@@ -289,6 +557,11 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         xSemaphoreGive(s_http_mutex);
         return ESP_ERR_NO_MEM;
     }
+    if (foreground_request) {
+        xSemaphoreTake(s_foreground_http_client_mutex, portMAX_DELAY);
+        s_foreground_http_client = client;
+        xSemaphoreGive(s_foreground_http_client_mutex);
+    }
     esp_http_client_method_t http_method = HTTP_METHOD_GET;
     if (!strcmp(method, "POST")) http_method = HTTP_METHOD_POST;
     else if (!strcmp(method, "PUT")) http_method = HTTP_METHOD_PUT;
@@ -302,8 +575,18 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         esp_http_client_set_header(client, "Authorization", authorization);
     }
     if (body && body_len > 0) esp_http_client_set_post_field(client, body, body_len);
-    esp_err_t err = esp_http_client_perform(client);
+    esp_err_t err;
+    if (foreground_request && command_cancel_requested_for(foreground_generation)) {
+        err = ESP_ERR_INVALID_STATE;
+    } else {
+        err = esp_http_client_perform(client);
+    }
     out->status = esp_http_client_get_status_code(client);
+    if (foreground_request) {
+        xSemaphoreTake(s_foreground_http_client_mutex, portMAX_DELAY);
+        if (s_foreground_http_client == client) s_foreground_http_client = NULL;
+        xSemaphoreGive(s_foreground_http_client_mutex);
+    }
     esp_http_client_cleanup(client);
     xSemaphoreGive(s_http_mutex);
     if (err != ESP_OK) {
@@ -509,7 +792,17 @@ static void meeting_resume_supervisor_task(void *arg) {
         EventBits_t wifi = s_wifi_events ? xEventGroupGetBits(s_wifi_events) : 0;
         if (!s_setup_portal_active && s_gateway_token[0] && (wifi & WIFI_CONNECTED_BIT) &&
             !s_meeting_task_running && !s_foreground_http_requested) {
-                if (start_meeting_task(true)) {
+            // MultiNet can consume the final internal task-stack block before
+            // this low-priority supervisor gets scheduled. Unload it here so
+            // the resumable worker can be created; meeting_task() restores it
+            // after delivery.
+            esp_err_t wake_stop_err = board_port_stop_wake_word();
+            if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "offline wake stop before resume worker: %s",
+                         esp_err_to_name(wake_stop_err));
+            }
+            log_heap_snapshot("meeting-resume-before-task-create");
+            if (start_meeting_task(true)) {
                 // The worker persists progress at every chunk. Wait until that
                 // pass finishes before deciding whether another retry is needed.
                 while (s_meeting_task_running) vTaskDelay(pdMS_TO_TICKS(500));
@@ -522,6 +815,12 @@ static void meeting_resume_supervisor_task(void *arg) {
                     retry_ms = MEETING_RESUME_RETRY_INITIAL_MS;
                     continue;
                 }
+            } else if (!s_setup_portal_active) {
+                esp_err_t wake_start_err = board_port_start_wake_word(on_wake_word, NULL);
+                if (wake_start_err != ESP_OK && wake_start_err != ESP_ERR_INVALID_STATE) {
+                    ESP_LOGW(TAG, "offline wake restart after resume create failure: %s",
+                             esp_err_to_name(wake_start_err));
+                }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(retry_ms));
@@ -533,14 +832,19 @@ static void meeting_resume_supervisor_task(void *arg) {
     taskENTER_CRITICAL(&s_task_state_lock);
     s_meeting_resume_supervisor_task = NULL;
     taskEXIT_CRITICAL(&s_task_state_lock);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 static bool ensure_meeting_resume_supervisor(void) {
     if (!s_meeting_pending || s_meeting_resume_supervisor_task) return true;
-    BaseType_t created = xTaskCreate(meeting_resume_supervisor_task,
-                                     "maclaw_meeting_resume", 4096, NULL, 1,
-                                     &s_meeting_resume_supervisor_task);
+    // This supervisor only waits and starts a worker. Put its stack in PSRAM
+    // so it cannot consume the last contiguous internal block needed by the
+    // real upload worker. It never writes flash/NVS, so this is safe.
+    BaseType_t created = xTaskCreateWithCaps(meeting_resume_supervisor_task,
+                                             "maclaw_meeting_resume", 2048,
+                                             NULL, 1,
+                                             &s_meeting_resume_supervisor_task,
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (created != pdPASS) {
         s_meeting_resume_supervisor_task = NULL;
         ESP_LOGE(TAG, "cannot start meeting resume supervisor");
@@ -555,11 +859,13 @@ static bool start_gateway_ready_tasks(void) {
         board_port_show_text("设备启动失败", "无法启动网关轮询");
         return false;
     }
-    // Do not load the ESP-SR MultiNet model on this hardware revision. Its
-    // model-partition mapping faults the cache/MMU shortly after a successful
-    // handshake, causing a real CPU reset. Button/touch voice capture remains
-    // available and is the safe command entry path.
-    ESP_LOGW(TAG, "offline wake word disabled: model partition is unstable");
+    // Start the single Chinese MultiNet listener only after the authenticated
+    // handshake has released its TLS allocations. This is what makes “码卡龙”
+    // work from the time/weather standby screen.
+    esp_err_t wake_err = board_port_start_wake_word(on_wake_word, NULL);
+    if (wake_err != ESP_OK && wake_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "offline wake start failed: %s", esp_err_to_name(wake_err));
+    }
     board_port_show_ready_prompt("设备已就绪", "点屏说话 双点会议");
     if (s_meeting_pending) {
         ESP_LOGI(TAG, "pending meeting upload found; scheduling resumable retries");
@@ -606,6 +912,38 @@ static void save_ambient_weather(void) {
     (void)nvs_commit(nvs);
     nvs_close(nvs);
     nvs_unlock();
+}
+
+static void wake_restart_task(void *arg) {
+    (void)arg;
+    // Let the meeting worker delete its internal stack before MultiNet claims
+    // memory again. This task uses a PSRAM stack and does not write flash.
+    vTaskDelay(pdMS_TO_TICKS(250));
+    esp_err_t err = board_port_start_wake_word(on_wake_word, NULL);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "offline wake restart after meeting upload: %s",
+                 esp_err_to_name(err));
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_wake_restart_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    vTaskDeleteWithCaps(NULL);
+}
+
+static void schedule_wake_restart(void) {
+    if (s_setup_portal_active) return;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool already_scheduled = s_wake_restart_task != NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (already_scheduled) return;
+    TaskHandle_t handle = NULL;
+    BaseType_t created = xTaskCreateWithCaps(wake_restart_task, "maclaw_wake_restart",
+                                             2048, NULL, 2, &handle,
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_wake_restart_task = created == pdPASS ? handle : NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (created != pdPASS) ESP_LOGE(TAG, "cannot schedule offline wake restart");
 }
 
 static void load_ambient_weather(void) {
@@ -1143,7 +1481,7 @@ static esp_err_t upload_voice(const uint8_t *wav, size_t wav_len, char *media_id
     return ESP_OK;
 }
 
-static esp_err_t send_voice_event(const char *media_id) {
+static esp_err_t send_voice_event(const char *media_id, char *reply_to, size_t reply_to_cap) {
     cJSON *body = cJSON_CreateObject();
     char event_id[80];
     snprintf(event_id, sizeof(event_id), "voice-%lld", (long long)esp_timer_get_time());
@@ -1178,10 +1516,14 @@ static esp_err_t send_voice_event(const char *media_id) {
     }
     cJSON *json = cJSON_Parse(response.data);
     cJSON *accepted = json ? cJSON_GetObjectItemCaseSensitive(json, "accepted") : NULL;
+    const char *maclaw_message_id = json ? json_string(json, "maclawMessageId") : NULL;
     if (!cJSON_IsTrue(accepted)) {
         cJSON_Delete(json);
         response_release(&response);
         return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (reply_to && reply_to_cap > 0) {
+        strlcpy(reply_to, maclaw_message_id ? maclaw_message_id : "", reply_to_cap);
     }
     cJSON_Delete(json);
     response_release(&response);
@@ -1272,6 +1614,7 @@ static esp_err_t poll_reply(void) {
         const char *audio_data = json_string(item, "file_data");
         const char *audio_mime = json_string(item, "mime_type");
         const char *id = json_string(item, "id");
+        const char *reply_to = json_string(item, "replyTo");
         const char *skin = json_string(item, "pet_skin");
         cJSON *motion = cJSON_GetObjectItemCaseSensitive(item, "pet_motion_enabled");
         cJSON *extra = cJSON_GetObjectItemCaseSensitive(item, "extra");
@@ -1299,20 +1642,37 @@ static esp_err_t poll_reply(void) {
             board_port_show_response("会议处理完成", message);
         }
         if (type && !strcmp(type, "text") && text) {
-            // Keep the final response surface continuous with the thinking
-            // surface.  Do not briefly switch to idle here: the idle renderer
-            // owns the weather/boot-like face and its full repaint reads as a
-            // restart before the green response screen appears.
-            board_port_show_response("码卡龙", text);
-            // Keep the handle protected until the notification is queued.
-            // Otherwise the interaction task can clear/delete itself after a
-            // snapshot is taken and the poller would notify a stale TCB.
-            taskENTER_CRITICAL(&s_task_state_lock);
-            TaskHandle_t waiter = s_interaction_task;
-            if (waiter) xTaskNotifyGive(waiter);
-            taskEXIT_CRITICAL(&s_task_state_lock);
+            if (cancelled_command_reply_matches(reply_to)) {
+                ESP_LOGI(TAG, "ignored late reply for cancelled command: %s", reply_to);
+            } else if (active_command_reply_matches(reply_to)) {
+                // Once a reply is present the thinking phase has ended; a
+                // double tap arriving while this frame is drawn must not turn
+                // an already completed command into a cancellation.
+                TaskHandle_t waiter = begin_active_command_reply();
+                if (!waiter) {
+                    ESP_LOGI(TAG, "reply arrived while cancellation owns command: %s", reply_to);
+                } else {
+                    // Keep the final response surface continuous with the
+                    // thinking surface. Do not briefly switch to idle here.
+                    board_port_show_response("码卡龙", text);
+                    xTaskNotifyGive(waiter);
+                }
+            } else {
+                // The outgoing stream can contain unrelated notifications or
+                // late replies from before this boot. They may still be shown
+                // when the device is idle, but must never complete or replace
+                // an active command unless replyTo identifies that command.
+                if (!command_display_active()) {
+                    board_port_show_response("码卡龙", text);
+                } else {
+                    ESP_LOGI(TAG, "deferred unrelated text during active command: replyTo=%s",
+                             reply_to && reply_to[0] ? reply_to : "<none>");
+                }
+            }
         }
         if (type && (!strcmp(type, "voice") || !strcmp(type, "audio")) && audio_data &&
+            !cancelled_command_reply_matches(reply_to) &&
+            !command_display_active() &&
             (!audio_mime || !strcmp(audio_mime, "audio/wav"))) {
             size_t wav_capacity = 0;
             int decode_status = mbedtls_base64_decode(NULL, 0, &wav_capacity,
@@ -1504,10 +1864,25 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
     if (!s_http_mutex || xSemaphoreTake(s_http_mutex, pdMS_TO_TICKS(35000)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
+    // ESP32-S3 hardware AES needs short-lived DMA-capable internal buffers for
+    // each TLS write. MultiNet leaves the internal heap highly fragmented, so
+    // reserve one contiguous block before opening TLS and release it only once
+    // the connection owns its crypto buffers. This prevents -0x0084 failures.
+    void *tls_internal_reserve = heap_caps_malloc(MEETING_INTERNAL_TLS_RESERVE,
+                                                   MALLOC_CAP_INTERNAL |
+                                                   MALLOC_CAP_DMA |
+                                                   MALLOC_CAP_8BIT);
+    if (!tls_internal_reserve) {
+        ESP_LOGE(TAG, "meeting TLS reserve failed: need=%u", (unsigned)MEETING_INTERNAL_TLS_RESERVE);
+        log_heap_snapshot("meeting-tls-reserve-fail");
+        xSemaphoreGive(s_http_mutex);
+        return ESP_ERR_NO_MEM;
+    }
     http_response_t response = {0};
     response.data = heap_caps_malloc(MEETING_RESPONSE_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!response.data) response.data = malloc(MEETING_RESPONSE_CAPACITY);
     if (!response.data) {
+        heap_caps_free(tls_internal_reserve);
         xSemaphoreGive(s_http_mutex);
         return ESP_ERR_NO_MEM;
     }
@@ -1520,6 +1895,7 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
+        heap_caps_free(tls_internal_reserve);
         response_release(&response);
         xSemaphoreGive(s_http_mutex);
         return ESP_ERR_NO_MEM;
@@ -1533,6 +1909,8 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
     snprintf(authorization, sizeof(authorization), "Bearer %s", s_gateway_token);
     esp_http_client_set_header(client, "Authorization", authorization);
     esp_err_t err = esp_http_client_open(client, (int)length);
+    heap_caps_free(tls_internal_reserve);
+    tls_internal_reserve = NULL;
     size_t remaining = length;
     while (err == ESP_OK && remaining > 0) {
         size_t wanted = remaining < buffer_size ? remaining : buffer_size;
@@ -1806,10 +2184,31 @@ static void meeting_task(void *arg) {
         }
         uint8_t header[44];
         build_meeting_wav_header(header, 0);
-        if (fwrite(header, 1, sizeof(header), file) != sizeof(header) ||
-            save_meeting_recovery(true, "", 0, 0) != ESP_OK ||
-            board_port_audio_stream_start() != ESP_OK) {
+        esp_err_t start_err = ESP_OK;
+        if (fwrite(header, 1, sizeof(header), file) != sizeof(header)) {
+            start_err = ESP_FAIL;
+            ESP_LOGE(TAG, "meeting start: WAV header write failed");
+        }
+        if (start_err == ESP_OK) {
+            start_err = save_meeting_recovery(true, "", 0, 0);
+            if (start_err != ESP_OK) {
+                ESP_LOGE(TAG, "meeting start: recovery metadata failed: %s",
+                         esp_err_to_name(start_err));
+            }
+        }
+        if (start_err == ESP_OK) {
+            start_err = board_port_audio_stream_start();
+            if (start_err != ESP_OK) {
+                ESP_LOGE(TAG, "meeting start: audio stream failed: %s",
+                         esp_err_to_name(start_err));
+            }
+        }
+        if (start_err != ESP_OK) {
             fclose(file);
+            // Startup produced no PCM. Clear the marker and placeholder so a
+            // transient microphone/mutex failure cannot permanently turn every
+            // later double tap into a bogus retained-file recovery attempt.
+            (void)clear_meeting_recovery(true);
             meeting_set_state(MEETING_ERROR);
             pet("alert");
             board_port_show_text("录音失败", "麦克风或存储不可用");
@@ -1885,7 +2284,22 @@ static void meeting_task(void *arg) {
             goto finish;
         }
     }
-    if (upload_pending_meeting(!resume_only) == ESP_OK) {
+    // MultiNet keeps its model, task stack and inference buffers alive even
+    // while microphone capture is merely paused. On this ESP32-S3 that leaves
+    // the internal DMA heap too fragmented for hardware AES during HTTPS PUT
+    // (mbedTLS reports -0x0084). Fully unload it for delivery, then restore the
+    // hands-free listener after the HTTP/NVS work has finished.
+    log_heap_snapshot("meeting-upload-before-wake-stop");
+    esp_err_t wake_stop_err = board_port_stop_wake_word();
+    if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "offline wake stop before meeting upload: %s",
+                 esp_err_to_name(wake_stop_err));
+    }
+    log_heap_snapshot("meeting-upload-after-wake-stop");
+
+    esp_err_t upload_err = upload_pending_meeting(!resume_only);
+
+    if (upload_err == ESP_OK) {
         if (!resume_only) {
             meeting_set_state(MEETING_DONE);
             pet("done");
@@ -1898,6 +2312,11 @@ static void meeting_task(void *arg) {
             ESP_LOGI(TAG, "background meeting resume delivered");
         }
     } else {
+        ESP_LOGE(TAG, "meeting upload pass failed: %s resume=%s id=%s next=%ld phase=%ld",
+                 esp_err_to_name(upload_err), resume_only ? "yes" : "no",
+                 s_meeting_recording_id,
+                 (long)s_meeting_next_chunk, (long)s_meeting_phase);
+        log_heap_snapshot("meeting-upload-fail");
         if (!resume_only) {
             meeting_set_state(MEETING_ERROR);
             pet("alert");
@@ -1922,6 +2341,7 @@ finish:
         board_port_set_command_display_lock(false);
         if (s_interaction_lock) xSemaphoreGive(s_interaction_lock);
     }
+    schedule_wake_restart();
     vTaskDelete(NULL);
 }
 
@@ -1958,7 +2378,16 @@ static bool start_meeting_task(bool resume_only) {
     // begins.  Flash writes disable the cache, so this task must keep its
     // stack in internal RAM; a PSRAM stack causes a cache-disabled assertion
     // and an apparent reboot on a double tap.
-    BaseType_t created = xTaskCreate(meeting_task, "maclaw_meeting", 12288,
+    // At steady state the offline speech model leaves roughly 21 KB internal
+    // heap, whose largest contiguous block is only about 9 KB. A 12 KB stack
+    // therefore cannot be created even though total RAM appears sufficient.
+    // The worker's large audio/network buffers are heap/PSRAM allocations;
+    // 8 KB internal stack is enough for its bounded local frames and keeps NVS
+    // writes safe while flash cache is disabled.
+    // Foreground and resumed uploads both persist progress to NVS. Flash
+    // commits disable the external-memory cache, therefore both modes need an
+    // internal stack. A PSRAM stack here reset the MCU just after chunk PUT.
+    BaseType_t created = xTaskCreate(meeting_task, "maclaw_meeting", 8192,
                                      resume_only ? (void *)1 : NULL, 5, &handle);
     taskENTER_CRITICAL(&s_task_state_lock);
     s_meeting_task = created == pdPASS ? handle : NULL;
@@ -2010,7 +2439,7 @@ static void meeting_capability_refresh_task(void *arg) {
     taskENTER_CRITICAL(&s_task_state_lock);
     s_meeting_capability_refresh_task = NULL;
     taskEXIT_CRITICAL(&s_task_state_lock);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 static bool refresh_meeting_capability(void) {
@@ -2037,7 +2466,16 @@ static bool refresh_meeting_capability(void) {
 }
 
 static void interaction_task(void *arg) {
-    (void)arg;
+    uint32_t interaction_generation = (uint32_t)(uintptr_t)arg;
+    // The wake-phrase path creates this worker from inside MultiNet, while a
+    // panel tap unloads it before task creation. Converge both paths here so
+    // command HTTPS upload always has enough contiguous DMA RAM for TLS AES.
+    esp_err_t wake_stop_err = board_port_stop_wake_word();
+    if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "offline wake stop before voice capture: %s",
+                 esp_err_to_name(wake_stop_err));
+    }
+    log_heap_snapshot("voice-after-wake-stop");
     // Keep capture screen-neutral. Once a spoken command is accepted, the
     // visible path is only thinking -> result (or an explicit error).
     board_port_set_recording_mode(false);
@@ -2045,6 +2483,12 @@ static void interaction_task(void *arg) {
     uint8_t *wav = NULL;
     size_t wav_len = 0;
     esp_err_t err = board_port_capture_wav(&wav, &wav_len);
+    if (command_cancel_requested_for(interaction_generation)) {
+        board_port_set_recording_visual(false, false, 0);
+        free(wav);
+        finish_cancelled_command(interaction_generation);
+        return;
+    }
     if (err != ESP_OK || !wav || wav_len == 0) {
         // Audio is board-specific. Keep the hardware interface useful while
         // the I2S driver is brought up: a button press sends a text probe that
@@ -2072,7 +2516,7 @@ static void interaction_task(void *arg) {
             board_port_show_text("麦克风不可用", "语音驱动未配置");
         }
         free(wav);
-        finish_interaction_task();
+        finish_interaction_task(interaction_generation);
         return;
     }
     if (!s_gateway_token[0]) {
@@ -2090,7 +2534,7 @@ static void interaction_task(void *arg) {
             }
         }
         else { pet("alert"); board_port_show_text("配对失败", "请生成新的配对码"); }
-        finish_interaction_task();
+        finish_interaction_task(interaction_generation);
         return;
     }
     // The server is the interaction runtime: it owns ASR, intent routing,
@@ -2109,27 +2553,46 @@ static void interaction_task(void *arg) {
     s_command_display_locked = true;
     board_port_set_command_display_lock(true);
     board_port_set_recording_visual(false, false, 0);
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_command_cancel_enabled = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    board_port_set_command_cancel_enabled(true);
     // Keep the pet's animated thinking state on screen during upload and the
     // server-side reply wait. Do not switch the shared I2S bus to playback
     // here: on EchoEar it races the just-stopped microphone DMA and resets
     // the CPU. The thinking screen is the immediate acknowledgement.
     err = upload_voice(wav, wav_len, media_id, sizeof(media_id));
     free(wav);
-    if (err != ESP_OK) { pet("alert"); board_port_show_text("上传失败", "请检查网关语音支持"); finish_interaction_task(); return; }
-    err = send_voice_event(media_id);
-    if (err != ESP_OK) { pet("alert"); board_port_show_text("码卡龙错误", "请求失败"); finish_interaction_task(); return; }
+    if (command_cancel_requested_for(interaction_generation)) { finish_cancelled_command(interaction_generation); return; }
+    if (err != ESP_OK) { pet("alert"); board_port_show_text("上传失败", "请检查网关语音支持"); finish_interaction_task(interaction_generation); return; }
+    char reply_to[COMMAND_REPLY_ID_CAPACITY] = {0};
+    err = send_voice_event(media_id, reply_to, sizeof(reply_to));
+    taskENTER_CRITICAL(&s_task_state_lock);
+    strlcpy(s_active_command_reply_to, reply_to, sizeof(s_active_command_reply_to));
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (command_cancel_requested_for(interaction_generation)) { finish_cancelled_command(interaction_generation); return; }
+    if (err != ESP_OK) { pet("alert"); board_port_show_text("码卡龙错误", "请求失败"); finish_interaction_task(interaction_generation); return; }
     if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(90000)) == 0) {
         board_port_show_text("等待超时", "没有收到回复");
     }
+    if (command_cancel_requested_for(interaction_generation)) { finish_cancelled_command(interaction_generation); return; }
     // The poller has already painted the final reply in the speaking state.
     // Returning through done/idle immediately after the notification repaints
     // the ambient face over it, producing the distracting apparent reboot.
     // Leave the response visible until the next user interaction or a later
     // server state update explicitly changes it.
-    finish_interaction_task();
+    finish_interaction_task(interaction_generation);
 }
 
 static bool start_voice_interaction(bool consume_screen_wake) {
+    bool input_guarded;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    input_guarded = esp_timer_get_time() < s_ignore_command_input_until_us;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (input_guarded) {
+        ESP_LOGI(TAG, "voice interaction ignored while cancel gesture drains");
+        return false;
+    }
     if (meeting_is_active()) {
         ESP_LOGW(TAG, "voice interaction ignored: meeting transition/upload active");
         return false;
@@ -2138,8 +2601,32 @@ static bool start_voice_interaction(bool consume_screen_wake) {
         ESP_LOGW(TAG, "voice interaction ignored: interaction already active");
         return false;
     }
+    if (consume_screen_wake) {
+        // MultiNet leaves the largest internal block below this worker's 10 KiB
+        // stack requirement. A physical tap can safely release the model here;
+        // wake-phrase entry instead releases it inside interaction_task().
+        esp_err_t wake_stop_err = board_port_stop_wake_word();
+        if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "offline wake stop before voice task: %s",
+                     esp_err_to_name(wake_stop_err));
+        }
+        log_heap_snapshot("voice-before-task-create");
+    }
     s_foreground_http_requested = true;
     s_command_display_locked = true;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_command_cancel_requested = false;
+    s_command_cancel_enabled = false;
+    s_command_cancel_ui_shown = false;
+    s_cancel_requested_generation = 0;
+    s_cancel_ui_ready_generation = 0;
+    uint32_t interaction_generation = ++s_interaction_generation;
+    if (!interaction_generation) interaction_generation = ++s_interaction_generation;
+    s_active_command_reply_to[0] = '\0';
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_command_cancel_ui_ready) {
+        while (xSemaphoreTake(s_command_cancel_ui_ready, 0) == pdTRUE) {}
+    }
     board_port_set_command_display_lock(true);
     // A command press starts the command flow even when it wakes a sleeping
     // panel. Do not consume it to show the time/weather ready screen.
@@ -2154,7 +2641,8 @@ static bool start_voice_interaction(bool consume_screen_wake) {
     // and HTTP buffers still use PSRAM, so this only reserves a small, stable
     // internal stack for control flow.
     BaseType_t created = xTaskCreate(interaction_task, "maclaw_interaction",
-                                     10240, NULL, 5, &created_handle);
+                                     10240, (void *)(uintptr_t)interaction_generation,
+                                     5, &created_handle);
     taskENTER_CRITICAL(&s_task_state_lock);
     s_interaction_task = created == pdPASS ? created_handle : NULL;
     taskEXIT_CRITICAL(&s_task_state_lock);
@@ -2162,6 +2650,7 @@ static bool start_voice_interaction(bool consume_screen_wake) {
         s_foreground_http_requested = false;
         log_heap_snapshot("interaction-task-create-fail");
         xSemaphoreGive(s_interaction_lock);
+        schedule_wake_restart();
         pet("alert");
         board_port_show_text("操作失败", "无法启动语音任务");
         return false;
@@ -2183,32 +2672,16 @@ static void on_wake_word(void *arg) {
     (void)start_voice_interaction(false);
 }
 
-static void reset_to_setup_portal(void) {
-    nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READWRITE, &nvs) == ESP_OK) {
-        (void)nvs_erase_key(nvs, "wifi_ssid");
-        (void)nvs_erase_key(nvs, "wifi_pass");
-        (void)nvs_erase_key(nvs, "wifi_sec");
-        (void)nvs_erase_key(nvs, "wifi_eap");
-        (void)nvs_erase_key(nvs, "wifi_ident");
-        (void)nvs_erase_key(nvs, "wifi_user");
-        (void)nvs_erase_key(nvs, "wifi_ttls");
-        (void)nvs_erase_key(nvs, "wifi_ca");
-        (void)nvs_erase_key(nvs, "wifi_domain");
-        (void)nvs_erase_key(nvs, "gateway_url");
-        (void)nvs_erase_key(nvs, "pair_code");
-        (void)nvs_erase_key(nvs, "gateway_token");
-        (void)nvs_commit(nvs);
-        nvs_close(nvs);
-    }
-    s_wifi_ssid[0] = '\0';
-    s_wifi_password[0] = '\0';
-    s_pair_code[0] = '\0';
-    s_gateway_token[0] = '\0';
+static void enter_setup_portal(void) {
+    // Reconfiguration is explicitly requested by a long press. Do not erase
+    // the working Wi-Fi or paired token before the replacement form is saved:
+    // an accidental press, power loss, or abandoned phone session must leave
+    // the device recoverable. The full setup form will atomically replace the
+    // saved values and its normal save path will invalidate the old token only
+    // when a new pairing code has actually been committed.
     pet("quiet");
-    board_port_show_text("网络已复位", "正在开启设置热点");
-    vTaskDelay(pdMS_TO_TICKS(800));
-    esp_restart();
+    board_port_show_text("重新配置设备", "正在开启设置热点");
+    start_setup_portal(false);
 }
 
 static void on_user_button(board_port_button_event_t event, void *arg) {
@@ -2249,11 +2722,22 @@ static void on_user_button(board_port_button_event_t event, void *arg) {
             ESP_LOGI(TAG, "long press ignored while setup portal is active");
             return;
         }
-        ESP_LOGW(TAG, "long press: clearing saved Wi-Fi and pairing");
-        reset_to_setup_portal();
+        ESP_LOGW(TAG, "long press: entering configuration portal without erasing saved credentials");
+        enter_setup_portal();
         return;
     }
     if (event == BOARD_BUTTON_DOUBLE) {
+        bool interaction_active;
+        taskENTER_CRITICAL(&s_task_state_lock);
+        interaction_active = s_interaction_task != NULL;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (interaction_active) {
+            // Never reinterpret a double tap made during a voice command as a
+            // meeting-recording request, even if cancellation was already
+            // requested by the controller's native double-click event.
+            (void)request_command_cancel();
+            return;
+        }
         if (s_meeting_pending) {
             bool resume_running;
             taskENTER_CRITICAL(&s_task_state_lock);
@@ -2920,6 +3404,13 @@ void app_main(void) {
     load_meeting_recovery();
     s_http_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_http_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    s_foreground_http_client_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_foreground_http_client_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    s_command_cancel_ui_ready = xSemaphoreCreateBinary();
+    ESP_ERROR_CHECK(s_command_cancel_ui_ready ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(xTaskCreate(command_cancel_worker, "maclaw_cancel", 4096, NULL, 6,
+                                &s_command_cancel_task) == pdPASS
+                        ? ESP_OK : ESP_ERR_NO_MEM);
     s_nvs_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_nvs_mutex ? ESP_OK : ESP_ERR_NO_MEM);
     // A foreground interaction starts in the button callback but finishes in
@@ -2939,15 +3430,18 @@ void app_main(void) {
         start_setup_portal(false);
         return;
     }
-    // A configured device runs as a normal Wi-Fi station. If it cannot join,
-    // retain the submitted values and reopen the normal setup page. Erasing
-    // them here turned a transient association failure (or a typo) into a
-    // reboot loop and forced the user to type every field again.
+    // A configured device runs as a normal Wi-Fi station. Being out of range
+    // is an offline runtime condition, not evidence that provisioning was
+    // lost. Keep both Wi-Fi credentials and the paired gateway token in NVS,
+    // leave the normal pet/status surface visible, and let the Wi-Fi event
+    // handler reconnect automatically when this SSID is reachable again.
+    // Setup is entered only when no SSID was ever saved or after the user's
+    // deliberate long-press reset.
     if (!start_wifi()) {
         pet("alert");
-        ESP_LOGW(TAG, "saved Wi-Fi could not connect; preserving configuration and reopening setup portal");
-        board_port_show_text("网络连接失败", "设置热点已重新开启");
-        start_setup_portal(false);
+        ESP_LOGW(TAG, "saved Wi-Fi is currently unavailable; preserving configuration and retrying in station mode");
+        board_port_show_text("网络暂时不可用", "配置已保留，正在自动重连");
+        start_clock_sync();
         return;
     }
     // Do not allocate the ESP-SR model while the first TLS pairing/handshake
