@@ -99,6 +99,8 @@ type userDataMigrationManifest struct {
 	AssetBytes       int64                         `json:"asset_bytes"`
 	PetPackBytes     int64                         `json:"pet_pack_bytes"`
 	PetPacksIncluded bool                          `json:"pet_packs_included,omitempty"`
+	ExpertBytes      int64                         `json:"expert_bytes"`
+	ExpertsIncluded  bool                          `json:"experts_included,omitempty"`
 	ConfigSchema     string                        `json:"config_schema_version,omitempty"`
 	ConfigSections   int                           `json:"config_section_count,omitempty"`
 	SecretCount      int                           `json:"secret_count,omitempty"`
@@ -709,7 +711,7 @@ func (a *App) validateUserDataMigrationPackageForDryRun(ctx context.Context, zip
 	if manifest.Version != userDataMigrationPackageVersion && manifest.Version != userDataMigrationLegacyVersion {
 		return nil, fmt.Errorf("unsupported migration package version %q", manifest.Version)
 	}
-	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 {
+	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 || manifest.ExpertBytes < 0 {
 		return nil, fmt.Errorf("migration manifest contains invalid counts")
 	}
 	if err := userDataMigrationVerifyFileDigests(payloadDir, manifest.Files); err != nil {
@@ -717,6 +719,11 @@ func (a *App) validateUserDataMigrationPackageForDryRun(ctx context.Context, zip
 	}
 	if err := validateUserDataMigrationManifestFileStats(manifest); err != nil {
 		return nil, err
+	}
+	if manifest.ExpertsIncluded {
+		if err := userDataMigrationValidateExperts(filepath.Join(payloadDir, "experts")); err != nil {
+			return nil, err
+		}
 	}
 	var entries []memory.Entry
 	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "memory_entries.json"), &entries, userDataMigrationMaxMemoryJSON); err != nil {
@@ -770,6 +777,7 @@ func (a *App) validateUserDataMigrationPackageForDryRun(ctx context.Context, zip
 		"knowledge_repair": knowledgeRepair,
 		"assets":           map[string]interface{}{"bytes": manifest.AssetBytes},
 		"pet_packs":        map[string]interface{}{"included": manifest.PetPacksIncluded, "bytes": manifest.PetPackBytes},
+		"experts":          map[string]interface{}{"included": manifest.ExpertsIncluded, "bytes": manifest.ExpertBytes},
 		"config":           map[string]interface{}{"sections": configSections, "secrets": secretCount},
 		"manifest":         manifest,
 	}, nil
@@ -1051,6 +1059,19 @@ func (a *App) buildUserDataMigrationPackage(ctx context.Context, cfg userDataMig
 	} else if !os.IsNotExist(err) {
 		return "", userDataMigrationManifest{}, fmt.Errorf("read pet-packs: %w", err)
 	}
+	expertBytes := int64(0)
+	expertsDir := a.userDataMigrationExpertsDir()
+	if st, err := os.Stat(expertsDir); err == nil {
+		if !st.IsDir() {
+			return "", userDataMigrationManifest{}, fmt.Errorf("experts is not a directory")
+		}
+		expertBytes, err = userDataMigrationCopyDirInto(payloadDir, expertsDir, "experts")
+		if err != nil {
+			return "", userDataMigrationManifest{}, err
+		}
+	} else if !os.IsNotExist(err) {
+		return "", userDataMigrationManifest{}, fmt.Errorf("read experts: %w", err)
+	}
 	manifest := userDataMigrationManifest{
 		Version:          userDataMigrationPackageVersion,
 		CreatedAt:        time.Now().UTC(),
@@ -1065,13 +1086,15 @@ func (a *App) buildUserDataMigrationPackage(ctx context.Context, cfg userDataMig
 		AssetBytes:       assetBytes,
 		PetPackBytes:     petPackBytes,
 		PetPacksIncluded: true,
+		ExpertBytes:      expertBytes,
+		ExpertsIncluded:  true,
 		ConfigSchema:     userDataMigrationConfigSchema,
 		ConfigSections:   len(migrationConfig),
 		SecretCount:      len(secretPaths),
 		ExcludedConfig:   userDataMigrationExcludedConfigPaths(),
-		Meta:             map[string]interface{}{"host": "gui", "contains": []string{"config", "memory", "knowledge", "knowledge_assets", "pet_packs"}},
+		Meta:             map[string]interface{}{"host": "gui", "contains": []string{"config", "memory", "knowledge", "knowledge_assets", "pet_packs", "experts"}},
 	}
-	if manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 {
+	if manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 || manifest.ExpertBytes < 0 {
 		return "", userDataMigrationManifest{}, fmt.Errorf("migration data size is invalid")
 	}
 	files, err := userDataMigrationDigestDir(payloadDir)
@@ -1107,7 +1130,7 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 	if manifest.Version != userDataMigrationPackageVersion && manifest.Version != userDataMigrationLegacyVersion {
 		return nil, fmt.Errorf("unsupported migration package version %q", manifest.Version)
 	}
-	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 {
+	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 || manifest.ExpertBytes < 0 {
 		return nil, fmt.Errorf("migration manifest contains invalid counts")
 	}
 	if err := userDataMigrationVerifyFileDigests(payloadDir, manifest.Files); err != nil {
@@ -1177,15 +1200,34 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 			return nil, userDataMigrationRollbackError(err, rollbackAssets, rollbackMemory, rollbackConfig)
 		}
 	}
+	expertBytes := int64(0)
+	var rollbackExperts func() error
+	var commitExperts func()
+	if manifest.ExpertsIncluded {
+		expertSrc := filepath.Join(payloadDir, "experts")
+		if err := userDataMigrationValidateExperts(expertSrc); err != nil {
+			return nil, userDataMigrationRollbackError(err, rollbackPetPacks, rollbackAssets, rollbackMemory, rollbackConfig)
+		}
+		expertBytes, rollbackExperts, commitExperts, err = a.replaceUserDataMigrationExperts(expertSrc, workDir)
+		if err != nil {
+			return nil, userDataMigrationRollbackError(err, rollbackPetPacks, rollbackAssets, rollbackMemory, rollbackConfig)
+		}
+	}
 	knowledgeResult, err := a.importUserDataMigrationKnowledgeSnapshot(knowledgePath, workDir)
 	if err != nil {
-		return nil, userDataMigrationRollbackError(err, rollbackKnowledge, rollbackPetPacks, rollbackAssets, rollbackMemory, rollbackConfig)
+		return nil, userDataMigrationRollbackError(err, rollbackKnowledge, rollbackExperts, rollbackPetPacks, rollbackAssets, rollbackMemory, rollbackConfig)
 	}
 	if commitAssets != nil {
 		commitAssets()
 	}
 	if commitPetPacks != nil {
 		commitPetPacks()
+	}
+	if commitExperts != nil {
+		commitExperts()
+	}
+	if manifest.ExpertsIncluded {
+		invalidateUserDataMigrationExpertCache()
 	}
 	if userDataMigrationSamePath(petpack.UserPacksDir(), a.userDataMigrationPetPacksDir()) {
 		_ = petpack.EnsureGlobal().Scan()
@@ -1203,6 +1245,10 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 		"pet_packs": map[string]interface{}{
 			"included": manifest.PetPacksIncluded,
 			"bytes":    petPackBytes,
+		},
+		"experts": map[string]interface{}{
+			"included": manifest.ExpertsIncluded,
+			"bytes":    expertBytes,
 		},
 		"config": map[string]interface{}{
 			"sections": configSections,
@@ -1761,6 +1807,52 @@ func (a *App) replaceUserDataMigrationKnowledgeAssets(assetSrc, workDir string) 
 		"knowledge_assets.backup",
 		"knowledge_assets",
 	)
+}
+
+// userDataMigrationExpertsDir resolves the expert store directory from this
+// App's effective data root so source and target migration roots stay isolated.
+func (a *App) userDataMigrationExpertsDir() string {
+	return filepath.Join(a.GetDataDir(), "experts")
+}
+
+func (a *App) replaceUserDataMigrationExperts(source, workDir string) (int64, func() error, func(), error) {
+	return userDataMigrationReplaceDirectory(source, a.userDataMigrationExpertsDir(), workDir, "experts.backup", "experts")
+}
+
+func userDataMigrationValidateExperts(source string) error {
+	path := filepath.Join(source, "experts.json")
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read migration experts store: %w", err)
+	}
+	var data expertStoreFile
+	if err := userDataMigrationReadJSONFileLimited(path, &data, userDataMigrationMaxConfigJSON); err != nil {
+		return fmt.Errorf("read migration experts store: %w", err)
+	}
+	seen := make(map[string]struct{}, len(data.Experts))
+	for _, expert := range data.Experts {
+		id := strings.TrimSpace(expert.ID)
+		if id == "" || !expertIDPattern.MatchString(id) {
+			return fmt.Errorf("migration expert has invalid id %q", expert.ID)
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("migration experts contain duplicate id %q", id)
+		}
+		seen[id] = struct{}{}
+		if strings.TrimSpace(expert.Name) == "" {
+			return fmt.Errorf("migration expert %q has empty name", id)
+		}
+	}
+	return nil
+}
+
+func invalidateUserDataMigrationExpertCache() {
+	expertDefCache.Range(func(key, _ interface{}) bool {
+		expertDefCache.Delete(key)
+		return true
+	})
 }
 
 // userDataMigrationPetPacksDir resolves the pack directory from this App's
@@ -2469,6 +2561,11 @@ func validateUserDataMigrationManifestFileStats(manifest userDataMigrationManife
 	if _, exists := files["pet_packs"]; exists {
 		return fmt.Errorf("migration pet-pack root must be a directory")
 	}
+	// experts follows the same namespace convention as pet packs. It stores the
+	// local expert definitions and Hub reconciliation metadata together.
+	if _, exists := files["experts"]; exists {
+		return fmt.Errorf("migration experts root must be a directory")
+	}
 	var assetBytes int64
 	for name, file := range files {
 		if strings.HasPrefix(name, "knowledge_assets/") {
@@ -2500,6 +2597,23 @@ func validateUserDataMigrationManifestFileStats(manifest userDataMigrationManife
 	// unclaimed pet-pack payload files that would be ignored during restore.
 	if !manifest.PetPacksIncluded && (petPackFileCount != 0 || manifest.PetPackBytes != 0) {
 		return fmt.Errorf("migration package contains pet-pack data without declaring it")
+	}
+	var expertBytes int64
+	expertFileCount := 0
+	for name, file := range files {
+		if strings.HasPrefix(name, "experts/") {
+			if file.Bytes > int64(^uint64(0)>>1)-expertBytes {
+				return fmt.Errorf("migration expert byte count overflow")
+			}
+			expertBytes += file.Bytes
+			expertFileCount++
+		}
+	}
+	if expertBytes != manifest.ExpertBytes {
+		return fmt.Errorf("migration expert byte count mismatch")
+	}
+	if !manifest.ExpertsIncluded && (expertFileCount != 0 || manifest.ExpertBytes != 0) {
+		return fmt.Errorf("migration package contains expert data without declaring it")
 	}
 	return nil
 }

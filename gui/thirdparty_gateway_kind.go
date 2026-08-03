@@ -5,12 +5,12 @@ import "strings"
 type thirdPartyGatewayMessageKind string
 
 const (
-	thirdPartyGatewayMessageUnknown thirdPartyGatewayMessageKind = ""
-	thirdPartyGatewayMessageText    thirdPartyGatewayMessageKind = "text"
-	thirdPartyGatewayMessageImage   thirdPartyGatewayMessageKind = "image"
-	thirdPartyGatewayMessageFile    thirdPartyGatewayMessageKind = "file"
-	thirdPartyGatewayMessageVoice   thirdPartyGatewayMessageKind = "voice"
-	thirdPartyGatewayMessageVideo   thirdPartyGatewayMessageKind = "video"
+	thirdPartyGatewayMessageUnknown       thirdPartyGatewayMessageKind = ""
+	thirdPartyGatewayMessageText          thirdPartyGatewayMessageKind = "text"
+	thirdPartyGatewayMessageImage         thirdPartyGatewayMessageKind = "image"
+	thirdPartyGatewayMessageFile          thirdPartyGatewayMessageKind = "file"
+	thirdPartyGatewayMessageVoice         thirdPartyGatewayMessageKind = "voice"
+	thirdPartyGatewayMessageVideo         thirdPartyGatewayMessageKind = "video"
 	thirdPartyGatewayMessageAmbient       thirdPartyGatewayMessageKind = "ambient"
 	thirdPartyGatewayMessagePetState      thirdPartyGatewayMessageKind = "pet_state"
 	thirdPartyGatewayMessageMeetingResult thirdPartyGatewayMessageKind = "meeting_result"

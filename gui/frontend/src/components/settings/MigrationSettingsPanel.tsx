@@ -417,7 +417,7 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                 <div className="migration-settings-head">
                     <div>
                         <h4>{t('Move Out & In', '\u8fc1\u51fa\u4e0e\u8fc1\u5165', '\u9077\u51fa\u8207\u9077\u5165')}</h4>
-                        <p>{t('Move all system settings, memory, and the local knowledge base from an old machine to a new one through the current Hub tenant.', '通过当前 Hub 租户，将全部系统配置、记忆与本地知识库从旧机器迁移到新机器。', '透過目前 Hub 租戶，將全部系統設定、記憶與本地知識庫從舊機器遷移到新機器。')}</p>
+                        <p>{t('Move system settings, memory, local knowledge, pets, and AI experts from an old machine to a new one through the current Hub tenant.', '通过当前 Hub 租户，将系统配置、记忆、本地知识库、宠物和 AI 专家从旧机器迁移到新机器。', '透過目前 Hub 租戶，將系統設定、記憶、本地知識庫、寵物與 AI 專家從舊機器遷移到新機器。')}</p>
                     </div>
                     <button type="button" className="btn-secondary" onClick={() => void loadState()} disabled={loading || busy}>
                         {loading ? t('Refreshing...', '\u5237\u65b0\u4e2d...', '\u91cd\u65b0\u6574\u7406\u4e2d...') : t('Refresh', '\u5237\u65b0', '\u91cd\u65b0\u6574\u7406')}
@@ -458,7 +458,7 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                 <h4>{t('Move Out', '\u8fc1\u51fa', '\u9077\u51fa')}</h4>
                 <div className="migration-scope-summary">
                     <strong>{t('Included', '迁移内容', '遷移內容')}</strong>
-                    <span>{t('All user-editable system settings, complete LLM provider configuration and API keys, memory, local knowledge base, and attachments.', '全部用户可编辑系统配置、完整 LLM 提供商配置及 API Key、记忆、本地知识库和附件。', '全部使用者可編輯系統設定、完整 LLM 提供商設定及 API Key、記憶、本地知識庫和附件。')}</span>
+                    <span>{t('All user-editable system settings, complete LLM provider configuration and API keys, memory, local knowledge base, attachments, pets, and AI experts.', '全部用户可编辑系统配置、完整 LLM 提供商配置及 API Key、记忆、本地知识库、附件、宠物和 AI 专家。', '全部使用者可編輯系統設定、完整 LLM 提供商設定及 API Key、記憶、本地知識庫、附件、寵物與 AI 專家。')}</span>
                     <small>{t('Hub sign-in sessions, machine identity, machine tokens, logs, caches, and runtime state are not moved.', '不会迁移 Hub 登录会话、机器身份、机器 Token、日志、缓存和运行时状态。', '不會遷移 Hub 登入工作階段、機器身分、機器 Token、日誌、快取和執行階段狀態。')}</small>
                 </div>
                 <div className="migration-alert migration-alert--warning">
@@ -495,8 +495,8 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                         <strong>{t('Preflight', '迁入预检', '遷入預檢')}</strong>
                         <span>{t(
                             `${resultNumber(selectedManifest.config_section_count)} settings, ${resultNumber(selectedManifest.secret_count)} secrets, and ${resultNumber(selectedManifest.memory_entries)} memories will be restored.`,
-                            `将恢复 ${resultNumber(selectedManifest.config_section_count)} 项系统配置、${resultNumber(selectedManifest.secret_count)} 项密钥和 ${resultNumber(selectedManifest.memory_entries)} 条记忆。`,
-                            `將還原 ${resultNumber(selectedManifest.config_section_count)} 項系統設定、${resultNumber(selectedManifest.secret_count)} 項密鑰和 ${resultNumber(selectedManifest.memory_entries)} 條記憶。`,
+                            `将恢复 ${resultNumber(selectedManifest.config_section_count)} 项系统配置、${resultNumber(selectedManifest.secret_count)} 项密钥、${resultNumber(selectedManifest.memory_entries)} 条记忆、宠物和 AI 专家。`,
+                            `將還原 ${resultNumber(selectedManifest.config_section_count)} 項系統設定、${resultNumber(selectedManifest.secret_count)} 項密鑰、${resultNumber(selectedManifest.memory_entries)} 條記憶、寵物與 AI 專家。`,
                         )}</span>
                         <small>{t(
                             `Package format: ${String(selectedManifest.version || '-')} / config schema: ${String(selectedManifest.config_schema_version || '-')}. Current Hub and machine identity will be preserved.`,

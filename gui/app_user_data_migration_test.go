@@ -293,6 +293,66 @@ func TestUserDataMigrationPackageMigratesPetPacks(t *testing.T) {
 	}
 }
 
+func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
+	sourceStore, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode source: %v", err)
+	}
+	t.Cleanup(sourceStore.Stop)
+	source := &App{testHomeDir: t.TempDir(), memoryStore: sourceStore}
+	sourceExperts := expertStoreFile{Experts: []ExpertDefinition{{
+		ID: "expert-source", Name: "Source Expert", SystemPrompt: "source prompt", CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z",
+	}}}
+	if err := userDataMigrationWriteJSONFile(filepath.Join(source.userDataMigrationExpertsDir(), "experts.json"), sourceExperts); err != nil {
+		t.Fatalf("write source experts: %v", err)
+	}
+
+	zipPath, manifest, err := source.buildUserDataMigrationPackage(context.Background(), userDataMigrationClientConfig{
+		TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a",
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("build package: %v", err)
+	}
+	if !manifest.ExpertsIncluded || manifest.ExpertBytes == 0 {
+		t.Fatalf("expert metadata missing: %#v", manifest)
+	}
+	found := false
+	for _, file := range manifest.Files {
+		if file.Path == "experts/experts.json" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expert file missing from package manifest: %#v", manifest.Files)
+	}
+
+	targetStore, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode target: %v", err)
+	}
+	t.Cleanup(targetStore.Stop)
+	target := &App{testHomeDir: t.TempDir(), memoryStore: targetStore}
+	if err := userDataMigrationWriteJSONFile(filepath.Join(target.userDataMigrationExpertsDir(), "experts.json"), expertStoreFile{Experts: []ExpertDefinition{{ID: "expert-target", Name: "Target Expert"}}}); err != nil {
+		t.Fatalf("write target experts: %v", err)
+	}
+	result, err := target.restoreUserDataMigrationPackage(context.Background(), zipPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("restore package: %v", err)
+	}
+	var restored expertStoreFile
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(target.userDataMigrationExpertsDir(), "experts.json"), &restored, userDataMigrationMaxConfigJSON); err != nil {
+		t.Fatalf("read restored experts: %v", err)
+	}
+	if len(restored.Experts) != 1 || restored.Experts[0].ID != "expert-source" || restored.Experts[0].SystemPrompt != "source prompt" {
+		t.Fatalf("restored experts mismatch: %#v", restored)
+	}
+	experts, ok := result["experts"].(map[string]interface{})
+	if !ok || experts["included"] != true || experts["bytes"] != manifest.ExpertBytes {
+		t.Fatalf("expert restore result mismatch: %#v", result)
+	}
+}
+
 func TestUserDataMigrationManifestRejectsUndeclaredPetPackData(t *testing.T) {
 	manifest := userDataMigrationManifest{
 		Version:      userDataMigrationPackageVersion,
