@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -189,6 +190,13 @@ func lansengerGroupKnowledgePriorityPrompt() string {
 
 func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "memory" {
+		// The action is checked again immediately before execution. A group needs
+		// its owner-scoped recall path as the first information source, but other
+		// read-only memory actions include store-wide inspection views and are not
+		// safe to expose in a group.
+		return true
+	}
 	if isLansengerKnowledgeTool(name) {
 		switch name {
 		case "knowledge_search", "knowledge_explain", "knowledge_context_pack", "knowledge_search_facets":
@@ -218,6 +226,40 @@ func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
 	}
 }
 
+func (p lansengerGroupPermissionPolicy) allowsMemoryAction(action string) bool {
+	return normalizeMemoryToolAction(action) == memoryToolActionRecall
+}
+
+// memoryRecallTransportBlockReason rejects recall modes that carry state from
+// another request.  Group memory is intentionally a small, owner-isolated
+// lookup; cursors, scroll sessions, and exhaustive scans are not part of that
+// contract.  Keep this at the execution boundary as well as in the schema so
+// manually constructed tool calls cannot bypass the advertised interface.
+func (p lansengerGroupPermissionPolicy) memoryRecallTransportBlockReason(args map[string]interface{}) string {
+	if strings.TrimSpace(nonEmptyStringFromAny(args["cursor"])) != "" ||
+		lansengerGroupBoolToolArg(args, "session") ||
+		strings.EqualFold(strings.TrimSpace(nonEmptyStringFromAny(args["mode"])), "exhaustive") {
+		return "群聊中的 memory 工具不支持分页、滚动会话或 exhaustive 检索"
+	}
+	return ""
+}
+
+func lansengerGroupBoolToolArg(args map[string]interface{}, key string) bool {
+	value, ok := args[key]
+	if !ok {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(typed))
+		return err == nil && parsed
+	default:
+		return false
+	}
+}
+
 func isLansengerKnowledgeTool(name string) bool {
 	return strings.HasPrefix(strings.TrimSpace(name), "knowledge_")
 }
@@ -232,11 +274,81 @@ func localizedLansengerGroupCommandRestrictedMessage(lang string) string {
 func filterToolsForLansengerGroupPermissions(tools []map[string]interface{}, policy lansengerGroupPermissionPolicy) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, def := range tools {
-		if policy.allowsTool(tool.ExtractToolName(def)) {
-			out = append(out, def)
+		name := tool.ExtractToolName(def)
+		if policy.allowsTool(name) {
+			if name == "memory" {
+				out = append(out, lansengerGroupMemoryRecallToolDefinition(def))
+			} else {
+				out = append(out, def)
+			}
 		}
 	}
 	return out
+}
+
+// lansengerGroupMemoryRecallToolDefinition gives a group turn a narrow view of
+// the shared memory tool. Execution still enforces this restriction, but a
+// recall-only schema prevents the model from attempting write or store-wide
+// inspection actions in the first place. The input definition is copied so a
+// group-specific description never changes the desktop or private-chat schema.
+func lansengerGroupMemoryRecallToolDefinition(def map[string]interface{}) map[string]interface{} {
+	result := copyLansengerGroupToolMap(def)
+	function, ok := def["function"].(map[string]interface{})
+	if !ok {
+		return result
+	}
+	functionCopy := copyLansengerGroupToolMap(function)
+	functionCopy["description"] = "只读群聊记忆检索。action 必须为 recall；仅检索当前蓝信群会话自己的记忆。"
+	parameters, ok := function["parameters"].(map[string]interface{})
+	if !ok {
+		result["function"] = functionCopy
+		return result
+	}
+	parametersCopy := copyLansengerGroupToolMap(parameters)
+	properties := map[string]interface{}{
+		"action": map[string]interface{}{
+			"type":        "string",
+			"enum":        []string{"recall"},
+			"description": "固定为 recall。",
+		},
+		"query":        copyLansengerGroupMemoryProperty(parameters, "query"),
+		"tags":         copyLansengerGroupMemoryProperty(parameters, "tags"),
+		"limit":        copyLansengerGroupMemoryProperty(parameters, "limit"),
+		"project_path": copyLansengerGroupMemoryProperty(parameters, "project_path"),
+	}
+	for name, property := range properties {
+		if property == nil {
+			delete(properties, name)
+		}
+	}
+	parametersCopy["properties"] = properties
+	parametersCopy["required"] = []string{"action"}
+	functionCopy["parameters"] = parametersCopy
+	result["function"] = functionCopy
+	return result
+}
+
+func copyLansengerGroupToolMap(source map[string]interface{}) map[string]interface{} {
+	copy := make(map[string]interface{}, len(source))
+	for key, value := range source {
+		copy[key] = value
+	}
+	return copy
+}
+
+func copyLansengerGroupMemoryProperty(parameters map[string]interface{}, name string) interface{} {
+	properties, ok := parameters["properties"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	property, ok := properties[name]
+	if !ok {
+		return nil
+	}
+	if propertyMap, ok := property.(map[string]interface{}); ok {
+		return copyLansengerGroupToolMap(propertyMap)
+	}
+	return property
 }
 
 func (p lansengerGroupPermissionPolicy) restrictKnowledgeArgs(args map[string]interface{}) error {

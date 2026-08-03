@@ -541,7 +541,7 @@ func TestSkillRecoverReappliesCodingImplementationWorkflowFilter(t *testing.T) {
 		toolDef("write_file", "write file", nil, nil),
 	}
 
-	restored, _, directFiltered := handler.restoreToolsAfterSkillRecover(userID, baseTools, agentLoopPhase{})
+	restored, _, directFiltered := handler.restoreToolsAfterSkillRecover(userID, nil, baseTools, agentLoopPhase{})
 	names := toolNameSetForWorkflowFilterTest(restored)
 	if directFiltered {
 		t.Fatal("workflow filter should not report direct-mode filtering when orchestrator is inactive")

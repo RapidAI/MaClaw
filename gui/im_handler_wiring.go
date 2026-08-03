@@ -593,6 +593,12 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	registerBrowserTools(h.registry, app)
 	// Register current-Hub MaClaw group discussion tools.
 	registerGroupDiscussionTools(h.registry, app, h)
+	// Knowledge retrieval is part of the baseline IM capability set. Local
+	// gateways (including Lansenger group chat) create their own handlers and
+	// may receive a message before the later desktop/Hub registration pass.
+	// Register it here so the group permission policy can expose the explicitly
+	// authorised knowledge_search tool instead of finding no registered tool.
+	registerKnowledgeTools(h.registry, app)
 	h.toolBuilder = NewDynamicToolBuilder(h.registry)
 	// Handlers may be recreated after full embedding activation (for example a
 	// Hub reconnect). In that case the activation callback will not run again,

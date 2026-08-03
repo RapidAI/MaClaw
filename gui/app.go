@@ -1767,8 +1767,6 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		registerComputerUseTools(handler.registry)
 		// Keep group discussion available after late tool registration rebuilds.
 		registerGroupDiscussionTools(handler.registry, a, handler)
-		// Keep local knowledge tools available after late tool registration rebuilds.
-		registerKnowledgeTools(handler.registry, a)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
 		// A rebuilt builder starts without its hybrid retriever. Restore it only
@@ -1780,7 +1778,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			}
 		}
 		// Re-sync the router's registry snapshot so late-registered tools
-		// (computer_*, group discussion, knowledge) get Priority/Tags scoring.
+		// (computer_* and group discussion) get Priority/Tags scoring.
 		handler.SetToolRouter(a.toolRouter)
 		// Wire skill-aware routing to the tool builder.
 		if a.skillExecutor != nil {
@@ -2030,12 +2028,10 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		registerComputerUseTools(handler.registry)
 		// Keep group discussion available after late tool registration rebuilds.
 		registerGroupDiscussionTools(handler.registry, a, handler)
-		// Keep local knowledge tools available after late tool registration rebuilds.
-		registerKnowledgeTools(handler.registry, a)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
 		// Re-sync the router's registry snapshot so late-registered tools
-		// (computer_*, group discussion, knowledge) get Priority/Tags scoring.
+		// (computer_* and group discussion) get Priority/Tags scoring.
 		handler.SetToolRouter(a.toolRouter)
 		// Wire skill-aware routing to the tool builder.
 		if a.skillExecutor != nil {

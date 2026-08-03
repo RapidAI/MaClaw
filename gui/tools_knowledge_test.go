@@ -29,6 +29,18 @@ func TestRegisterKnowledgeTools(t *testing.T) {
 	}
 }
 
+func TestNewIMMessageHandlerRegistersKnowledgeTools(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	handler := NewIMMessageHandler(app, nil)
+
+	for _, name := range []string{"knowledge_search", "knowledge_context_pack"} {
+		registered, ok := handler.registry.Get(name)
+		if !ok || registered == nil || registered.Handler == nil {
+			t.Fatalf("new IM handler must register %s for local IM gateways", name)
+		}
+	}
+}
+
 func TestKnowledgeToolSourceFilterLimit(t *testing.T) {
 	t.Parallel()
 	if got := knowledgeToolSourceFilterLimit(map[string]interface{}{"limit": 900}, 100, 500, 5000); got != 500 {

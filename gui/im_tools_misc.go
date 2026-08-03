@@ -1886,6 +1886,9 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		ProjectPath: projectPath,
 		ContextHint: h.buildMemoryContextHintForUser(ownerID),
 		OwnerID:     ownerID,
+		// The authoritative group flag lives on the loop context. Keep the
+		// owner-pattern fallback for direct handlers and focused unit tests.
+		StrictOwner: h.isLansengerGroupMemoryOwner(ownerID),
 		LoopID:      h.currentLoopIDForUser(ownerID),
 		AfterWrite: func() {
 			if h.app != nil {
@@ -1898,6 +1901,15 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			h.RefreshMemorySnapshot(ownerID)
 		},
 	})
+}
+
+func (h *IMMessageHandler) isLansengerGroupMemoryOwner(ownerID string) bool {
+	if h != nil {
+		if loopCtx := h.runtimeLoopContextForOwner(ownerID); loopCtx != nil && loopCtx.LansengerGroupPermissions != nil {
+			return true
+		}
+	}
+	return isLansengerGroupConversationUserID(ownerID)
 }
 
 // buildMemoryContextHint extracts recent conversation text (last 5 user+assistant

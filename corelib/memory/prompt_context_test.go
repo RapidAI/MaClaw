@@ -94,6 +94,27 @@ func TestStaticMemorySectionForPrompt(t *testing.T) {
 	}
 }
 
+func TestStaticMemorySectionForPromptStrictOwnerExcludesSharedFacts(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{Content: "shared desktop fact", Category: CategoryUserFact, Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveForUser(Entry{Content: "group-only fact", Category: CategoryUserFact, Status: StatusActive}, "group-owner"); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := StaticMemoryPromptOptions{UserFacts: UserFactSummaryPromptOptions{OwnerID: "group-owner", StrictOwner: true}}
+	out := store.StaticMemorySectionForPrompt(opts)
+	if strings.Contains(out, "shared desktop fact") || !strings.Contains(out, "group-only fact") {
+		t.Fatalf("strict owner summary = %q", out)
+	}
+}
+
 func TestMemoryPromptProfiles(t *testing.T) {
 	static := StaticUserMemoryPromptOptions("## User Memory", true, "## Guide")
 	if !static.IncludeRecallHint || !static.IncludeGuide || static.UserFacts.Prefix == "" {

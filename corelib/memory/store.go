@@ -2050,6 +2050,27 @@ type recallFilterOptions struct {
 	excludeWhenNoCategory []Category // categories to exclude when caller passes category=""
 }
 
+// filterEntriesForOwner applies an optional exact-owner boundary after a
+// retrieval strategy returns. Most memory surfaces intentionally retain legacy
+// shared entries (OwnerID=""). Isolated callers set strictOwner to prevent
+// shared desktop data from crossing into their conversation.
+func filterEntriesForOwner(entries []Entry, ownerID string, strictOwner bool) []Entry {
+	if !strictOwner || strings.TrimSpace(ownerID) == "" || len(entries) == 0 {
+		return entries
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if entry.OwnerID != ownerID {
+			continue
+		}
+		if entry.Boundary != nil && entry.Boundary.OwnerID != "" && entry.Boundary.OwnerID != ownerID {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
 // proactiveRecallExcludeCategories is the exclusion list for system prompt
 // proactive recall. user_fact is excluded because it's already injected via
 // the frozen UserFactSummary snapshot. self_identity is excluded because it's

@@ -247,6 +247,16 @@ func (h *IMMessageHandler) recoverNativePDFGenerationFailure(
 	}
 	catalog = h.filterToolsForExpertUser(userID, catalog)
 	fallbackTools := ensureNativePDFFallbackTools(tools, catalog)
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		// PDF recovery adds a fresh subset to the current list. Apply the group
+		// boundary after that merge too, since a future fallback list may evolve
+		// beyond the currently safe craft_tool/bash pair.
+		fallbackTools = h.ensureLansengerGroupMemoryRecallTool(userID, fallbackTools)
+		if ctx.LansengerGroupPermissions.allowsKnowledge() {
+			fallbackTools = h.ensureLansengerGroupKnowledgeSearchTool(userID, fallbackTools)
+		}
+		fallbackTools = filterToolsForLansengerGroupPermissions(fallbackTools, *ctx.LansengerGroupPermissions)
+	}
 	start := len(conversation)
 	conversation = append(conversation, map[string]string{
 		"role": "system",

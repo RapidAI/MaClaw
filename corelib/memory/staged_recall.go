@@ -27,9 +27,9 @@ type StagedRecallPipeline struct{}
 
 // stage timing budgets
 const (
-	stageBM25Budget  = 200 * time.Millisecond
-	stageVecBudget   = 500 * time.Millisecond
-	stageFullBudget  = 1500 * time.Millisecond
+	stageBM25Budget = 200 * time.Millisecond
+	stageVecBudget  = 500 * time.Millisecond
+	stageFullBudget = 1500 * time.Millisecond
 )
 
 // stage labels for StagedRecallResult.StageReached
@@ -77,7 +77,7 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 
 	// === Stage 1: BM25 (guaranteed within 200ms) ===
 	bm25Scores := store.multiQueryBM25(query, aliasExpanded)
-	bm25Entries := p.rankBM25(store, bm25Scores, ownerID, projectPath, expanded.QueryTokens, maxEntries)
+	bm25Entries := p.rankBM25(store, bm25Scores, ownerID, opts.StrictOwner, projectPath, expanded.QueryTokens, maxEntries)
 
 	if deadlineExceeded(ctx, deadline, stageVecBudget) {
 		elapsed := time.Since(start)
@@ -92,7 +92,7 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 
 	// === Stage 2: +Vector (target within 500ms) ===
 	vecScores := store.vecIndex.score(store.queryEmbeddingCached(query))
-	stage2Entries := p.rankBM25Vec(store, bm25Scores, vecScores, ownerID, projectPath, expanded.QueryTokens, maxEntries)
+	stage2Entries := p.rankBM25Vec(store, bm25Scores, vecScores, ownerID, opts.StrictOwner, projectPath, expanded.QueryTokens, maxEntries)
 
 	if deadlineExceeded(ctx, deadline, stageFullBudget) {
 		elapsed := time.Since(start)
@@ -108,7 +108,7 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 	// === Stage 3: +Semantic Graph + Alias expansion + Graph expansion (target within 1500ms) ===
 	// Note: Page Index integration happens in ProactiveContextForPrompt as a
 	// separate additive path (queryPageIndexForPrompt), not inside this pipeline.
-	stage3Entries := p.rankFull(store, bm25Scores, vecScores, expanded, ownerID, projectPath, maxEntries, query)
+	stage3Entries := p.rankFull(store, bm25Scores, vecScores, expanded, ownerID, opts.StrictOwner, projectPath, maxEntries, query)
 
 	elapsed := time.Since(start)
 	log.Printf("[perf] staged_recall stage=%s elapsed=%v", StageFull, elapsed)
@@ -133,7 +133,7 @@ func deadlineExceeded(ctx context.Context, deadline time.Time, nextStageBudget t
 }
 
 // rankBM25 produces a ranked list of entries using only BM25 scores.
-func (p *StagedRecallPipeline) rankBM25(store *Store, bm25Scores map[string]float64, ownerID, projectPath string, queryTokens []string, maxEntries int) []Entry {
+func (p *StagedRecallPipeline) rankBM25(store *Store, bm25Scores map[string]float64, ownerID string, strictOwner bool, projectPath string, queryTokens []string, maxEntries int) []Entry {
 	if !store.TryRLockWithTimeout(5 * time.Second) {
 		log.Printf("[staged_recall] rankBM25: RLock timeout — returning empty")
 		return nil
@@ -148,7 +148,7 @@ func (p *StagedRecallPipeline) rankBM25(store *Store, bm25Scores map[string]floa
 		if !e.IsActive() {
 			continue
 		}
-		if !stagedRecallEntryAllowed(e, ownerID, projectLower) {
+		if !stagedRecallEntryAllowed(e, ownerID, strictOwner, projectLower) {
 			continue
 		}
 		score := bm25Scores[e.ID]
@@ -174,7 +174,7 @@ func (p *StagedRecallPipeline) rankBM25(store *Store, bm25Scores map[string]floa
 }
 
 // rankBM25Vec produces a ranked list fusing BM25 + Vector scores via RRF.
-func (p *StagedRecallPipeline) rankBM25Vec(store *Store, bm25Scores, vecScores map[string]float64, ownerID, projectPath string, queryTokens []string, maxEntries int) []Entry {
+func (p *StagedRecallPipeline) rankBM25Vec(store *Store, bm25Scores, vecScores map[string]float64, ownerID string, strictOwner bool, projectPath string, queryTokens []string, maxEntries int) []Entry {
 	if !store.TryRLockWithTimeout(5 * time.Second) {
 		log.Printf("[staged_recall] rankBM25Vec: RLock timeout — returning empty")
 		return nil
@@ -194,7 +194,7 @@ func (p *StagedRecallPipeline) rankBM25Vec(store *Store, bm25Scores, vecScores m
 		if !e.IsActive() {
 			continue
 		}
-		if !stagedRecallEntryAllowed(e, ownerID, projectLower) {
+		if !stagedRecallEntryAllowed(e, ownerID, strictOwner, projectLower) {
 			continue
 		}
 		b := bm25Scores[e.ID]
@@ -238,7 +238,7 @@ func (p *StagedRecallPipeline) rankBM25Vec(store *Store, bm25Scores, vecScores m
 
 // rankFull produces a ranked list using all available signals:
 // BM25 + Vector + Semantic Graph + Alias expansion.
-func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[string]float64, expanded ExpandResult, ownerID, projectPath string, maxEntries int, query string) []Entry {
+func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[string]float64, expanded ExpandResult, ownerID string, strictOwner bool, projectPath string, maxEntries int, query string) []Entry {
 	if !store.TryRLockWithTimeout(5 * time.Second) {
 		log.Printf("[staged_recall] rankFull: RLock timeout — returning empty")
 		return nil
@@ -275,7 +275,7 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 		if !e.IsActive() {
 			continue
 		}
-		if !stagedRecallEntryAllowed(e, ownerID, projectLower) {
+		if !stagedRecallEntryAllowed(e, ownerID, strictOwner, projectLower) {
 			continue
 		}
 		b := bm25Scores[e.ID]
@@ -357,7 +357,10 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 
 // stagedRecallEntryAllowed checks whether an entry passes OwnerID isolation
 // and project scope filters for staged recall.
-func stagedRecallEntryAllowed(e Entry, ownerID, projectLower string) bool {
+func stagedRecallEntryAllowed(e Entry, ownerID string, strictOwner bool, projectLower string) bool {
+	if strictOwner && len(filterEntriesForOwner([]Entry{e}, ownerID, true)) == 0 {
+		return false
+	}
 	// OwnerID isolation: skip entries owned by a different user.
 	if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
 		return false

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
@@ -50,6 +51,31 @@ func TestRecallProactiveCanIncludeProfile(t *testing.T) {
 	got := store.RecallProactive("kubernetes concise preference", ProactiveRecallOptions{IncludeUserProfile: true, MaxEntries: 5})
 	if len(got) == 0 {
 		t.Fatal("expected profile memory when IncludeUserProfile is true")
+	}
+}
+
+func TestRecallProactiveStrictOwnerExcludesSharedEntries(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{Content: "shared deployment secret", Category: CategoryProjectKnowledge, Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveForUser(Entry{Content: "group deployment runbook", Category: CategoryProjectKnowledge, Status: StatusActive}, "group-owner"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := store.RecallProactive("deployment", ProactiveRecallOptions{OwnerID: "group-owner", StrictOwner: true, MaxEntries: 5})
+	if len(got) == 0 {
+		t.Fatal("expected the group-owned entry")
+	}
+	for _, entry := range got {
+		if entry.OwnerID != "group-owner" || strings.Contains(entry.Content, "shared deployment secret") {
+			t.Fatalf("strict proactive recall leaked entry: %+v", got)
+		}
 	}
 }
 

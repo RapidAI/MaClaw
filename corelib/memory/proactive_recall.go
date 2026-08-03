@@ -11,8 +11,10 @@ import (
 // ProactiveRecallOptions controls prompt-context recall shared by GUI, TUI,
 // and server agents.
 type ProactiveRecallOptions struct {
-	ProjectPath        string
-	OwnerID            string
+	ProjectPath string
+	OwnerID     string
+	// StrictOwner excludes legacy shared entries from an isolated prompt.
+	StrictOwner        bool
 	StrictProject      bool
 	MaxEntries         int
 	EntityLimit        int
@@ -39,7 +41,7 @@ func (s *Store) RecallProactive(query string, opts ProactiveRecallOptions) []Ent
 }
 
 func (s *Store) RecallProactiveWithDecision(decision lifecycle.RetrievalDecision, opts ProactiveRecallOptions) []Entry {
-	return s.entriesForExperienceCandidates(s.RecallProactiveCandidatesWithDecision(decision, opts))
+	return s.entriesForExperienceCandidatesWithOptions(s.RecallProactiveCandidatesWithDecision(decision, opts), opts)
 }
 
 func (s *Store) RecallProactiveCandidatesWithDecision(decision lifecycle.RetrievalDecision, opts ProactiveRecallOptions) []lifecycle.Candidate {
@@ -93,14 +95,14 @@ func (s *Store) recallProactiveCore(query string, opts ProactiveRecallOptions, d
 		entityLimit = 1
 	}
 
-	recalled := s.RecallLightMem(query, "", opts.ProjectPath, opts.OwnerID)
+	recalled := filterEntriesForOwner(s.RecallLightMem(query, "", opts.ProjectPath, opts.OwnerID), opts.OwnerID, opts.StrictOwner)
 	if len(recalled) < maxEntries {
 		recalled = s.supplementProactiveRecallByEntity(query, recalled, opts, maxEntries, entityLimit)
 	}
 
 	filtered := make([]Entry, 0, len(recalled))
 	for _, entry := range recalled {
-		if shouldSkipProactiveRecallEntry(entry, opts) {
+		if shouldSkipProactiveRecallEntry(entry, opts) || !proactiveOwnerAllowed(entry, opts) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -123,7 +125,7 @@ func (s *Store) filterProactiveCandidates(candidates []lifecycle.Candidate, opts
 	filtered := candidates[:0]
 	for _, candidate := range candidates {
 		entry, ok := entries[candidate.Entry.ID]
-		if ok && shouldSkipProactiveRecallEntry(entry, opts) {
+		if ok && (shouldSkipProactiveRecallEntry(entry, opts) || !proactiveOwnerAllowed(entry, opts)) {
 			continue
 		}
 		filtered = append(filtered, candidate)
@@ -143,6 +145,26 @@ func (s *Store) entriesForExperienceCandidates(candidates []lifecycle.Candidate)
 		}
 	}
 	return out
+}
+
+func (s *Store) entriesForExperienceCandidatesWithOptions(candidates []lifecycle.Candidate, opts ProactiveRecallOptions) []Entry {
+	return filterEntriesForOwner(s.entriesForExperienceCandidates(candidates), opts.OwnerID, opts.StrictOwner)
+}
+
+func (s *Store) filterExperienceCandidatesForOptions(candidates []lifecycle.Candidate, opts ProactiveRecallOptions) []lifecycle.Candidate {
+	if !opts.StrictOwner || len(candidates) == 0 {
+		return candidates
+	}
+	entries := s.entriesByID(candidates)
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		entry, ok := entries[candidate.Entry.ID]
+		if !ok || !proactiveOwnerAllowed(entry, opts) {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered
 }
 
 func (s *Store) entriesByID(candidates []lifecycle.Candidate) map[string]Entry {
@@ -191,6 +213,9 @@ func (s *Store) supplementProactiveRecallByEntity(query string, recalled []Entry
 			extra = s.recallDynamicWithEventContext(entity, "", opts.ProjectPath, opts.EventContext, opts.OwnerID)
 		}
 		for _, entry := range extra {
+			if !proactiveOwnerAllowed(entry, opts) {
+				continue
+			}
 			if seen[entry.ID] {
 				continue
 			}
@@ -210,4 +235,8 @@ func shouldSkipProactiveRecallEntry(entry Entry, opts ProactiveRecallOptions) bo
 		return true
 	}
 	return canonical == CategorySessionCheckpoint || canonical == CategoryConversationSummary
+}
+
+func proactiveOwnerAllowed(entry Entry, opts ProactiveRecallOptions) bool {
+	return len(filterEntriesForOwner([]Entry{entry}, opts.OwnerID, opts.StrictOwner)) == 1
 }

@@ -47,7 +47,7 @@ func (h *IMMessageHandler) applyAgentLoopRecoverPrompt(
 		phase.ForceSkillPreference = false
 		phase.SkillMode = skillPreferenceFallbackAllowed
 		phase.RemoteSearchExhausted = true
-		result.Tools, result.ToolsTokenBudget, result.DirectModeToolsFiltered = h.restoreToolsAfterSkillRecover(h.workflowPolicyOwnerID(userID, ctx), baseTools, *phase)
+		result.Tools, result.ToolsTokenBudget, result.DirectModeToolsFiltered = h.restoreToolsAfterSkillRecover(h.workflowPolicyOwnerID(userID, ctx), ctx, baseTools, *phase)
 	}
 	recoverReason := firstNonEmptyTraceText(phase.RecoverReason.String(), "recover")
 	if h.traceService != nil && ctx != nil && ctx.RunID != "" {

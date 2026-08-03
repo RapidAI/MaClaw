@@ -171,7 +171,9 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		return "", nil
 	}
 	var b strings.Builder
-	if opts.IncludeMemoryIndex {
+	// Store-wide indexes are metadata too. Do not disclose their contents to an
+	// isolated owner, where shared legacy entries are intentionally invisible.
+	if opts.IncludeMemoryIndex && !opts.Recall.StrictOwner {
 		if index := s.MemoryIndexForPrompt(opts.Recall.StrictProject, opts.Recall.ProjectPath, opts.MemoryIndexUnit); index != "" {
 			label := opts.MemoryIndexLabel
 			if label == "" {
@@ -184,7 +186,7 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		}
 	}
 
-	if opts.IncludeSceneIndex {
+	if opts.IncludeSceneIndex && !opts.Recall.StrictOwner {
 		sceneLimit := opts.SceneLimit
 		if sceneLimit <= 0 {
 			sceneLimit = 5
@@ -231,7 +233,8 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 			decision := decideProactivePromptRetrieval(query, opts)
 			s.recordRetrievalDecisionEvent(decision, opts.EventContext)
 			candidates := s.RecallProactiveCandidatesWithDecision(decision, opts.Recall)
-			recalled = s.entriesForExperienceCandidates(candidates)
+			candidates = s.filterExperienceCandidatesForOptions(candidates, opts.Recall)
+			recalled = s.entriesForExperienceCandidatesWithOptions(candidates, opts.Recall)
 			recallSection := FormatExperienceCandidatesForPrompt(candidates, opts.RecallEntries)
 			b.WriteString(recallSection)
 			if recallSection != "" {
@@ -240,7 +243,7 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		}
 
 		// --- Page Index: query and integrate with dedicated sub-budget ---
-		if opts.PageIndexEnabled {
+		if opts.PageIndexEnabled && !opts.Recall.StrictOwner {
 			pageEntries := s.queryPageIndexForPrompt(query, opts)
 			// Deduplicate page-indexed entries vs long-term memory entries.
 			pageEntries = deduplicatePageEntries(pageEntries, recalled)
@@ -248,6 +251,7 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 				recalled = append(recalled, pageEntries...)
 			}
 		}
+		recalled = filterEntriesForOwner(recalled, opts.Recall.OwnerID, opts.Recall.StrictOwner)
 
 		// For staged recall path, format the recalled entries now.
 		if opts.PartialResultsEnabled && len(recalled) > 0 {
@@ -265,7 +269,7 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		s.logProactiveRecallIfEnabled(query, opts.Recall, recalled, time.Since(recallStart))
 	}
 
-	if opts.IncludeDerivedFacts {
+	if opts.IncludeDerivedFacts && !opts.Recall.StrictOwner {
 		limit := opts.DerivedFactLimit
 		if limit <= 0 {
 			limit = 5
@@ -287,7 +291,7 @@ func (s *Store) computeAdaptiveBudget(query string, opts ProactivePromptOptions)
 	s.mu.RUnlock()
 
 	// Count matching entries using BM25 scores as a proxy for relevance.
-	matching := s.countMatchingEntries(query, opts.Recall.OwnerID, opts.Recall.ProjectPath)
+	matching := s.countMatchingEntries(query, opts.Recall.OwnerID, opts.Recall.StrictOwner, opts.Recall.ProjectPath)
 
 	calc := AdaptiveBudgetCalculator{}
 	return calc.Calculate(matching, totalActive)
@@ -295,7 +299,7 @@ func (s *Store) computeAdaptiveBudget(query string, opts ProactivePromptOptions)
 
 // countMatchingEntries counts entries with non-zero BM25 score for the query,
 // respecting owner and project filters.
-func (s *Store) countMatchingEntries(query string, ownerID, projectPath string) int {
+func (s *Store) countMatchingEntries(query, ownerID string, strictOwner bool, projectPath string) int {
 	bm25Scores := s.multiQueryBM25(query, nil)
 	projectLower := semanticNormalizeProjectPath(projectPath)
 
@@ -307,7 +311,7 @@ func (s *Store) countMatchingEntries(query string, ownerID, projectPath string) 
 		if !e.IsActive() {
 			continue
 		}
-		if !stagedRecallEntryAllowed(e, ownerID, projectLower) {
+		if !stagedRecallEntryAllowed(e, ownerID, strictOwner, projectLower) {
 			continue
 		}
 		if bm25Scores[e.ID] > 0 {
@@ -386,9 +390,9 @@ func deduplicateByRecency(entries []Entry) []Entry {
 
 	// Build a meaningful-tag set for each entry.
 	type taggedEntry struct {
-		entry        Entry
+		entry          Entry
 		meaningfulTags map[string]bool
-		isSessionExt bool
+		isSessionExt   bool
 	}
 	tagged := make([]taggedEntry, len(entries))
 	for i, e := range entries {

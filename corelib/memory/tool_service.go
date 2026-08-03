@@ -12,6 +12,10 @@ type ToolOptions struct {
 	ProjectPath string
 	ContextHint string
 	OwnerID     string
+	// StrictOwner excludes legacy shared entries (OwnerID="") from recall.
+	// It is for isolated surfaces such as group conversations; the zero value
+	// preserves the desktop and private-chat shared-memory behavior.
+	StrictOwner bool
 	AfterWrite  func()
 
 	// LoopID identifies the current agent loop execution for scroll session
@@ -266,6 +270,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		cursor := toolStringArg(args, "cursor")
 		mode := toolStringArg(args, "mode")
 		session := toolBoolArg(args, "session", false)
+		allowPagination := !opts.StrictOwner
 
 		// Validate mutually exclusive combinations.
 		if mode == "exhaustive" && cursor != "" {
@@ -273,6 +278,9 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		}
 		if session && cursor != "" {
 			return "cannot combine session mode with cursor pagination"
+		}
+		if !allowPagination && (cursor != "" || session || mode == "exhaustive") {
+			return "memory pagination and exhaustive recall are unavailable in this isolated conversation"
 		}
 
 		projectPath := firstNonEmptyMemoryToolString(opts.ProjectPath, toolStringArg(args, "project_path"), toolStringArg(args, "project"))
@@ -289,6 +297,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			if err != nil {
 				return err.Error()
 			}
+			result.Entries = filterEntriesForOwner(result.Entries, opts.OwnerID, opts.StrictOwner)
 			return formatPaginatedResultForTool(store, query, result, debug)
 		}
 
@@ -297,6 +306,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			start := time.Now()
 			exhaustiveResult := store.RecallExhaustive(query, category, projectPath, opts.OwnerID)
 			if exhaustiveResult != nil {
+				exhaustiveResult.Entries = filterEntriesForOwner(exhaustiveResult.Entries, opts.OwnerID, opts.StrictOwner)
 				store.logRecallIfEnabled("tool:exhaustive", query, category, projectPath, []string{opts.OwnerID}, start, exhaustiveResult.Entries)
 			}
 			return formatExhaustiveResultForTool(store, query, exhaustiveResult, debug)
@@ -317,6 +327,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			if err != nil {
 				return err.Error()
 			}
+			result.Entries = filterEntriesForOwner(result.Entries, opts.OwnerID, opts.StrictOwner)
 			return formatScrollResultForTool(store, query, result, debug)
 		}
 
@@ -329,11 +340,17 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		// behavior (preserves trace recording and debug output).
 		modeParam := toolStringArg(args, "mode")
 		limitParam := toolIntArg(args, "limit", 0)
-		if modeParam == "" && limitParam == 0 && !debug && opts.LoopID != "" {
+		if allowPagination && modeParam == "" && limitParam == 0 && !debug && opts.LoopID != "" {
 			if paginator := store.Paginator(); paginator != nil {
 				result, err := paginator.FirstPage(store, query, category, projectPath, opts.OwnerID)
-				if err == nil && result != nil && len(result.Entries) > 0 {
-					return formatPaginatedResultForTool(store, query, result, debug)
+				if err == nil && result != nil {
+					result.Entries = filterEntriesForOwner(result.Entries, opts.OwnerID, opts.StrictOwner)
+					if len(result.Entries) > 0 {
+						return formatPaginatedResultForTool(store, query, result, debug)
+					}
+					if opts.StrictOwner {
+						return "No relevant memories found."
+					}
 				}
 				// If FirstPage returns no results or errors, fall through to
 				// RecallDynamic for backward-compatible behavior.
@@ -345,6 +362,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		if err != nil {
 			return err.Error()
 		}
+		recall.Entries = filterEntriesForOwner(recall.Entries, opts.OwnerID, opts.StrictOwner)
 		return FormatRecallResultForTool(store, query, recall, debug, true)
 
 	case MemoryToolActionSave:

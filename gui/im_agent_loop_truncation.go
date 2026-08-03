@@ -350,6 +350,17 @@ func (h *IMMessageHandler) truncationFallbackToolCatalog(ctx *LoopContext, userI
 	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
 		catalog = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, catalog, h.getTools())
 	}
+	// The fallback catalog can later be used to add tools after a failed call.
+	// Keep the Lansenger group boundary on this source list as well; otherwise a
+	// recovery-only path can reintroduce a local tool that the normal initial
+	// tool selection correctly removed.
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		catalog = h.ensureLansengerGroupMemoryRecallTool(userID, catalog)
+		if ctx.LansengerGroupPermissions.allowsKnowledge() {
+			catalog = h.ensureLansengerGroupKnowledgeSearchTool(userID, catalog)
+		}
+		catalog = filterToolsForLansengerGroupPermissions(catalog, *ctx.LansengerGroupPermissions)
+	}
 	return catalog
 }
 

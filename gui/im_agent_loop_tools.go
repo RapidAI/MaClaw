@@ -88,10 +88,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	tools = h.filterToolsForExpertUser(userID, tools)
 	if ctx != nil && ctx.LansengerGroupPermissions != nil {
 		// Routing may choose only a network tool for a general support question.
-		// An authorised group knowledge base is still mandatory for the first
-		// retrieval step, so restore knowledge_search from the complete catalog
-		// before applying the group allow-list. An expert's explicit allow-list
-		// remains authoritative and is never bypassed here.
+		// Restore the group-safe retrieval primitives from the complete catalog
+		// before applying the allow-list. An expert's explicit allow-list remains
+		// authoritative and is never bypassed here.
+		tools = h.ensureLansengerGroupMemoryRecallTool(userID, tools)
 		if ctx.LansengerGroupPermissions.allowsKnowledge() {
 			tools = h.ensureLansengerGroupKnowledgeSearchTool(userID, tools)
 		}
@@ -118,6 +118,27 @@ func containsAgentLoopToolNamed(tools []map[string]interface{}, name string) boo
 		}
 	}
 	return false
+}
+
+// ensureLansengerGroupMemoryRecallTool keeps the group-scoped memory recall
+// primitive visible even when intent routing narrows a support query to a
+// web-only subset. The later group filter replaces its schema with the
+// recall-only view, and execution independently enforces the same restriction.
+func (h *IMMessageHandler) ensureLansengerGroupMemoryRecallTool(userID string, tools []map[string]interface{}) []map[string]interface{} {
+	if h == nil || containsAgentLoopToolNamed(tools, "memory") || expertDefForUserID(userID) != nil {
+		return tools
+	}
+	for _, def := range h.getTools() {
+		if tool.ExtractToolName(def) == "memory" {
+			return append(tools, def)
+		}
+	}
+	if h.registry != nil {
+		if registered, ok := h.registry.Get("memory"); ok && registered != nil {
+			return append(tools, registeredToolToDef(*registered))
+		}
+	}
+	return tools
 }
 
 // ensureLansengerGroupKnowledgeSearchTool keeps the authorised retrieval

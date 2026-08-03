@@ -17,7 +17,7 @@ func filterDirectModeAllowedTools(tools []map[string]interface{}) []map[string]i
 	return filtered
 }
 
-func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTools []map[string]interface{}, phase agentLoopPhase) ([]map[string]interface{}, int, bool) {
+func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *LoopContext, baseTools []map[string]interface{}, phase agentLoopPhase) ([]map[string]interface{}, int, bool) {
 	tools := baseTools
 	directModeToolsFiltered := false
 
@@ -53,6 +53,17 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, baseTool
 
 	if _, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, nil); applyFilter {
 		tools = h.applyWorkflowToolFilterWithCatalog(userID, tools, h.getTools())
+	}
+	// Recover rebuilds from BaseTools, which intentionally predates the normal
+	// group filter. Re-apply the group boundary here so a failed skill cannot
+	// reveal unsafe local tools, and restore the two group-safe retrieval
+	// primitives in case routing had omitted them.
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = h.ensureLansengerGroupMemoryRecallTool(userID, tools)
+		if ctx.LansengerGroupPermissions.allowsKnowledge() {
+			tools = h.ensureLansengerGroupKnowledgeSearchTool(userID, tools)
+		}
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
 
 	tools = stripExecutionContractMetadataForLLM(tools)

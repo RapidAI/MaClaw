@@ -666,7 +666,7 @@ func (h *IMMessageHandler) bumpSnapshotGeneration(userID string) uint64 {
 
 func (h *IMMessageHandler) buildAndStoreStaticMemorySnapshot(userID string, gen uint64) (text string, built bool) {
 	var staticBuf strings.Builder
-	h.generateStaticMemorySection(&staticBuf, true)
+	h.generateStaticMemorySection(&staticBuf, true, userID)
 	snapshot := staticBuf.String()
 	if snapshot == "" {
 		return "", false
@@ -711,12 +711,19 @@ func (h *IMMessageHandler) cachedStaticMemorySnapshot(userID string) string {
 // generateStaticMemorySection builds the frozen part of the memory section:
 // user_fact summary + memory recall hint + memory guide (first turn only).
 // This content is stable across messages within a session and can be cached.
-func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFirstTurn bool) {
+func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFirstTurn bool, userID string) {
 	if h.memoryStore == nil {
 		return
 	}
+	strictOwner := isLansengerGroupConversationUserID(userID)
+	opts := corememory.StaticUserMemoryPromptOptions("\n"+corememory.PromptSectionUserMemory, isFirstTurn && !strictOwner, corememory.BuildIMMemoryGuidePrompt())
+	opts.UserFacts.OwnerID = userID
+	opts.UserFacts.StrictOwner = strictOwner
+	b.WriteString(h.memoryStore.StaticMemorySectionForPrompt(opts))
+}
 
-	b.WriteString(h.memoryStore.StaticMemorySectionForPrompt(corememory.StaticUserMemoryPromptOptions("\n"+corememory.PromptSectionUserMemory, isFirstTurn, corememory.BuildIMMemoryGuidePrompt())))
+func isLansengerGroupConversationUserID(userID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(userID), "lansenger-group:")
 }
 
 // isProjectTabUserID returns true when the userID was synthesized for a
@@ -767,6 +774,8 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	}
 
 	opts := corememory.IMProactivePromptOptions(projectPath, strictProject)
+	opts.Recall.OwnerID = userID
+	opts.Recall.StrictOwner = isLansengerGroupConversationUserID(userID)
 	opts.EventContext = firstLifecycleEventContext(eventContext)
 	opts.Recall.Provider = h.proactiveExperienceProviderForUser(userID)
 	promptContext, relevant, ok := h.proactiveContextForPromptWithBudget(msg, opts, userID, projectPath, strictProject)

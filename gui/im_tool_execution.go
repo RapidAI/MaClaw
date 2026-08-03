@@ -839,6 +839,15 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 		if !groupPermissions.allowsTool(name) {
 			return toolExecutionResult{Text: "[system rejected] 群聊权限未授权该工具访问本地资源或知识库", Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		}
+		if name == "memory" {
+			action, _ := args["action"].(string)
+			if !groupPermissions.allowsMemoryAction(action) {
+				return toolExecutionResult{Text: "[system rejected] 群聊中的 memory 工具仅支持 action=recall", Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			}
+			if reason := groupPermissions.memoryRecallTransportBlockReason(args); reason != "" {
+				return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			}
+		}
 		if name == "web_search" || name == "web_fetch" {
 			if reason := groupPermissions.webFallbackBlockReason(); reason != "" {
 				return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}

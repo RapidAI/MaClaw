@@ -65,6 +65,10 @@ type UserFactSummaryPromptOptions struct {
 	Header   string
 	Prefix   string
 	Suffix   string
+	// OwnerID and StrictOwner apply the same opt-in exact-owner boundary used by
+	// isolated group prompts. Zero values retain the historical shared summary.
+	OwnerID     string
+	StrictOwner bool
 }
 
 // UserFactSummaryForPrompt builds the shared user profile prompt section used
@@ -77,7 +81,37 @@ func (s *Store) UserFactSummaryForPrompt(opts UserFactSummaryPromptOptions) stri
 	if maxRunes <= 0 {
 		maxRunes = 400
 	}
-	return FormatUserFactSummaryForPrompt(s.UserFactSummary(maxRunes), opts)
+	return FormatUserFactSummaryForPrompt(s.userFactSummaryForPrompt(maxRunes, opts.OwnerID, opts.StrictOwner), opts)
+}
+
+func (s *Store) userFactSummaryForPrompt(maxRunes int, ownerID string, strictOwner bool) string {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return s.UserFactSummary(maxRunes)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	parts := make([]string, 0)
+	for _, entry := range s.entries {
+		if entry.Category != CategoryUserFact {
+			continue
+		}
+		if strictOwner && entry.OwnerID != ownerID {
+			continue
+		}
+		if !strictOwner && entry.OwnerID != "" && entry.OwnerID != ownerID {
+			continue
+		}
+		if entry.Boundary != nil && entry.Boundary.OwnerID != "" && entry.Boundary.OwnerID != ownerID {
+			continue
+		}
+		parts = append(parts, firstNonEmptyString(entry.CompactForm, entry.Content))
+	}
+	summary := strings.Join(parts, " | ")
+	if runes := []rune(summary); maxRunes > 0 && len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "..."
+	}
+	return summary
 }
 
 // FormatUserFactSummaryForPrompt renders an already-computed user_fact summary
