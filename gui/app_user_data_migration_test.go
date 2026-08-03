@@ -302,7 +302,9 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 	source := &App{testHomeDir: t.TempDir(), memoryStore: sourceStore}
 	sourceExperts := expertStoreFile{Experts: []ExpertDefinition{
 		{ID: "expert-source", Name: "Source Expert", SystemPrompt: "source prompt", CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z"},
-		{ID: "builtin-paper-polish", Name: "System Expert", Builtin: true, SystemPrompt: "must not migrate"},
+		// Builtin overrides are persisted with Builtin=false, just like the
+		// normal SaveExpert path. They must remain on their source machine.
+		{ID: "builtin-paper-polish", Name: "Source System Override", SystemPrompt: "must not migrate"},
 	}, PendingHubUploads: map[string]bool{"expert-source": true, "builtin-paper-polish": true}}
 	if err := userDataMigrationWriteJSONFile(filepath.Join(source.userDataMigrationExpertsDir(), "experts.json"), sourceExperts); err != nil {
 		t.Fatalf("write source experts: %v", err)
@@ -326,6 +328,29 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expert file missing from package manifest: %#v", manifest.Files)
+	}
+	archive, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("open migration package: %v", err)
+	}
+	defer archive.Close()
+	for _, file := range archive.File {
+		if file.Name != "experts/experts.json" {
+			continue
+		}
+		reader, err := file.Open()
+		if err != nil {
+			t.Fatalf("open migrated experts: %v", err)
+		}
+		var exported expertStoreFile
+		err = json.NewDecoder(reader).Decode(&exported)
+		_ = reader.Close()
+		if err != nil {
+			t.Fatalf("decode migrated experts: %v", err)
+		}
+		if len(exported.Experts) != 1 || exported.Experts[0].ID != "expert-source" {
+			t.Fatalf("migration must only export custom or installed experts, got %#v", exported.Experts)
+		}
 	}
 
 	targetStore, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
@@ -356,7 +381,9 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 		t.Fatalf("restored expert sync state mismatch: %#v", restored.PendingHubUploads)
 	}
 	experts, ok := result["experts"].(map[string]interface{})
-	if !ok || experts["included"] != true || experts["bytes"] != manifest.ExpertBytes {
+	// The restored store retains the target machine's local system overrides,
+	// so its serialized size can be larger than the filtered source payload.
+	if !ok || experts["included"] != true || experts["bytes"].(int64) <= 0 {
 		t.Fatalf("expert restore result mismatch: %#v", result)
 	}
 }
@@ -364,7 +391,9 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 func TestUserDataMigrationRejectsSystemExpertPayload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "experts")
 	if err := userDataMigrationWriteJSONFile(filepath.Join(path, "experts.json"), expertStoreFile{Experts: []ExpertDefinition{{
-		ID: "builtin-paper-polish", Name: "System Expert", Builtin: true,
+		// A persisted system override has Builtin=false, so validation must use
+		// the ID as well as the flag.
+		ID: "builtin-paper-polish", Name: "System Expert",
 	}}}); err != nil {
 		t.Fatalf("write experts: %v", err)
 	}

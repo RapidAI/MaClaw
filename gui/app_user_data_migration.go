@@ -1916,7 +1916,11 @@ func userDataMigrationExportableExperts(path string) (expertStoreFile, error) {
 		return out, fmt.Errorf("read experts for migration: %w", err)
 	}
 	for _, expert := range source.Experts {
-		if !expert.Builtin {
+		// A builtin override is stored with Builtin=false, so the flag alone
+		// cannot distinguish it from a user-created or installed expert. The
+		// stable builtin ID is authoritative: system experts and their local
+		// overrides stay on the machine where they were configured.
+		if builtinExpertByID(expert.ID) == nil && !expert.Builtin {
 			out.Experts = append(out.Experts, expert)
 		}
 	}
@@ -1976,7 +1980,7 @@ func userDataMigrationValidateExperts(source string) error {
 		if id == "" || !expertIDPattern.MatchString(id) {
 			return fmt.Errorf("migration expert has invalid id %q", expert.ID)
 		}
-		if expert.Builtin {
+		if expert.Builtin || builtinExpertByID(id) != nil {
 			return fmt.Errorf("migration package must not contain system expert %q", id)
 		}
 		if _, exists := seen[id]; exists {
