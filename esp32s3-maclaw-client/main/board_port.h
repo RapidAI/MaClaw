@@ -27,9 +27,8 @@ void board_port_set_pet_profile(const char *skin, bool motion_enabled);
 // with the elapsed duration while recording; passing active=false restores the
 // selected pet screen.
 void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds);
-// Updates the live microphone meter without forcing an LCD refresh from the
-// I2S capture task. level is normalized to 0..1000; the animation task consumes
-// the latest value on its next frame.
+// Updates the normalized microphone level and elapsed time without forcing an LCD refresh from the
+// I2S task. The renderer receives its signed waveform directly from the PCM capture paths.
 void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds);
 void board_port_show_text(const char *title, const char *text);
 // Adds/refreshes compact 24x24 glyphs supplied by the Hub. The RAM cache is

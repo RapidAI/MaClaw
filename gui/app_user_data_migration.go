@@ -1060,8 +1060,8 @@ func (a *App) buildUserDataMigrationPackage(ctx context.Context, cfg userDataMig
 		return "", userDataMigrationManifest{}, fmt.Errorf("read pet-packs: %w", err)
 	}
 	// Built-in experts ship with every app installation and must not be part of
-	// a migration package. Export only persisted user-created, overridden, or
-	// installed definitions and their relevant local sync/install state.
+	// a migration package. Export only user-created or installed definitions and
+	// their relevant local sync/install state; built-in overrides remain local.
 	expertPath := filepath.Join(payloadDir, "experts", "experts.json")
 	experts, err := userDataMigrationExportableExperts(filepath.Join(a.userDataMigrationExpertsDir(), "experts.json"))
 	if err != nil {
@@ -1924,38 +1924,57 @@ func userDataMigrationExportableExperts(path string) (expertStoreFile, error) {
 			out.Experts = append(out.Experts, expert)
 		}
 	}
-	// Built-ins are not persisted by the normal expert store. Keep metadata for
-	// stored records (including a user override of a builtin expert) because it
-	// is part of the user's local customization and synchronization state, but
-	// never carry state entries for an app-provided expert definition.
-	out.DeletedIDs = userDataMigrationFilterSystemExpertTimestamps(source.DeletedIDs)
-	out.PendingHubUploads = userDataMigrationFilterSystemExpertFlags(source.PendingHubUploads)
-	out.PendingHubDeletes = userDataMigrationFilterSystemExpertTimestamps(source.PendingHubDeletes)
-	out.LocalOnlyIDs = userDataMigrationFilterSystemExpertFlags(source.LocalOnlyIDs)
-	out.MarketInstallIDs = userDataMigrationFilterSystemExpertFlags(source.MarketInstallIDs)
+	activeIDs := make(map[string]struct{}, len(out.Experts))
+	for _, expert := range out.Experts {
+		activeIDs[expert.ID] = struct{}{}
+	}
+	// A built-in override and every state record keyed by its ID are local to
+	// this installation. Only state belonging to custom or installed experts
+	// crosses the migration boundary.
+	out.DeletedIDs = userDataMigrationFilterMigratableExpertTimestamps(source.DeletedIDs, source.LocalOnlyIDs)
+	out.PendingHubUploads = userDataMigrationFilterActiveExpertFlags(source.PendingHubUploads, activeIDs)
+	out.PendingHubDeletes = userDataMigrationFilterMigratableExpertTimestamps(source.PendingHubDeletes, source.LocalOnlyIDs)
+	out.LocalOnlyIDs = userDataMigrationFilterActiveExpertFlags(source.LocalOnlyIDs, activeIDs)
+	out.MarketInstallIDs = userDataMigrationFilterActiveExpertFlags(source.MarketInstallIDs, activeIDs)
+	// Validate the filtered result before it is packaged. This fails an export
+	// locally (with a useful error) instead of uploading a package that the
+	// destination can only reject after transfer and decryption.
+	if err := userDataMigrationValidateExpertStore(out); err != nil {
+		return expertStoreFile{}, err
+	}
 	return out, nil
 }
 
-func userDataMigrationFilterSystemExpertTimestamps(source map[string]string) map[string]string {
+// userDataMigrationFilterMigratableExpertTimestamps carries delete state for
+// custom experts, but never for built-ins or device-local installs. A local
+// market uninstall must not delete the same expert on another machine.
+func userDataMigrationFilterMigratableExpertTimestamps(source map[string]string, localOnly map[string]bool) map[string]string {
 	if len(source) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(source))
 	for id, timestamp := range source {
-		if builtinExpertByID(id) == nil {
+		if builtinExpertByID(id) == nil && !localOnly[id] {
 			out[id] = timestamp
 		}
 	}
 	return out
 }
 
-func userDataMigrationFilterSystemExpertFlags(source map[string]bool) map[string]bool {
-	if len(source) == 0 {
+// userDataMigrationFilterActiveExpertFlags excludes stale device-local markers
+// left behind after an uninstall. They are useful on their source machine to
+// suppress an obsolete Hub record, but are not an installed expert and must not
+// change the destination machine's expert visibility.
+func userDataMigrationFilterActiveExpertFlags(source map[string]bool, activeIDs map[string]struct{}) map[string]bool {
+	if len(source) == 0 || len(activeIDs) == 0 {
 		return nil
 	}
 	out := make(map[string]bool, len(source))
 	for id, enabled := range source {
-		if enabled && builtinExpertByID(id) == nil {
+		if !enabled || builtinExpertByID(id) != nil {
+			continue
+		}
+		if _, active := activeIDs[id]; active {
 			out[id] = true
 		}
 	}
@@ -1974,6 +1993,10 @@ func userDataMigrationValidateExperts(source string) error {
 	if err := userDataMigrationReadJSONFileLimited(path, &data, userDataMigrationMaxConfigJSON); err != nil {
 		return fmt.Errorf("read migration experts store: %w", err)
 	}
+	return userDataMigrationValidateExpertStore(data)
+}
+
+func userDataMigrationValidateExpertStore(data expertStoreFile) error {
 	seen := make(map[string]struct{}, len(data.Experts))
 	for _, expert := range data.Experts {
 		id := strings.TrimSpace(expert.ID)
@@ -1990,6 +2013,88 @@ func userDataMigrationValidateExperts(source string) error {
 		if strings.TrimSpace(expert.Name) == "" {
 			return fmt.Errorf("migration expert %q has empty name", id)
 		}
+	}
+	if err := userDataMigrationValidateExpertState(data, seen); err != nil {
+		return err
+	}
+	return nil
+}
+
+// userDataMigrationValidateExpertState keeps built-in expert state local
+// even when a package was created by an older or modified client. Definitions
+// are not the only state that can affect an expert: tombstones, Hub retries,
+// and market-install flags all use the expert ID as their key.
+func userDataMigrationValidateExpertState(data expertStoreFile, expertIDs map[string]struct{}) error {
+	for _, ids := range []map[string]string{data.DeletedIDs, data.PendingHubDeletes} {
+		for id, timestamp := range ids {
+			if err := userDataMigrationValidateExpertStateID(id); err != nil {
+				return err
+			}
+			if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(timestamp)); err != nil {
+				return fmt.Errorf("migration expert state %q has invalid timestamp", id)
+			}
+		}
+	}
+	for id := range data.DeletedIDs {
+		if _, active := expertIDs[id]; active {
+			return fmt.Errorf("migration expert %q is both active and deleted", id)
+		}
+	}
+	for id, deletedAt := range data.PendingHubDeletes {
+		if data.DeletedIDs[id] != deletedAt {
+			return fmt.Errorf("migration pending delete %q has no matching tombstone", id)
+		}
+	}
+	for _, ids := range []map[string]bool{data.PendingHubUploads, data.LocalOnlyIDs, data.MarketInstallIDs} {
+		for id, enabled := range ids {
+			if !enabled {
+				continue
+			}
+			if err := userDataMigrationValidateExpertStateID(id); err != nil {
+				return err
+			}
+		}
+	}
+	for id, pending := range data.PendingHubUploads {
+		if !pending {
+			continue
+		}
+		if _, active := expertIDs[id]; !active {
+			return fmt.Errorf("migration pending upload %q has no active expert", id)
+		}
+		if data.LocalOnlyIDs[id] {
+			return fmt.Errorf("migration local-only expert %q has pending Hub upload", id)
+		}
+	}
+	for id, localOnly := range data.LocalOnlyIDs {
+		if !localOnly {
+			continue
+		}
+		if _, active := expertIDs[id]; !active {
+			return fmt.Errorf("migration local-only expert %q is not installed", id)
+		}
+	}
+	for id, installed := range data.MarketInstallIDs {
+		if !installed {
+			continue
+		}
+		if _, active := expertIDs[id]; !active {
+			return fmt.Errorf("migration market-installed expert %q is not installed", id)
+		}
+		if !data.LocalOnlyIDs[id] {
+			return fmt.Errorf("migration market-installed expert %q is not local-only", id)
+		}
+	}
+	return nil
+}
+
+func userDataMigrationValidateExpertStateID(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" || !expertIDPattern.MatchString(id) {
+		return fmt.Errorf("migration expert state has invalid id %q", id)
+	}
+	if builtinExpertByID(id) != nil {
+		return fmt.Errorf("migration package must not contain system expert state %q", id)
 	}
 	return nil
 }

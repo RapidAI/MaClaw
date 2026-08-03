@@ -302,10 +302,21 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 	source := &App{testHomeDir: t.TempDir(), memoryStore: sourceStore}
 	sourceExperts := expertStoreFile{Experts: []ExpertDefinition{
 		{ID: "expert-source", Name: "Source Expert", SystemPrompt: "source prompt", CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z"},
+		{ID: "pkgexp-market", Name: "Installed Expert", SystemPrompt: "installed prompt", CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z"},
 		// Builtin overrides are persisted with Builtin=false, just like the
 		// normal SaveExpert path. They must remain on their source machine.
 		{ID: "builtin-paper-polish", Name: "Source System Override", SystemPrompt: "must not migrate"},
-	}, PendingHubUploads: map[string]bool{"expert-source": true, "builtin-paper-polish": true}}
+	}, PendingHubUploads: map[string]bool{"expert-source": true, "builtin-paper-polish": true, "expert-uninstalled": true},
+		LocalOnlyIDs:     map[string]bool{"pkgexp-market": true, "builtin-paper-polish": true, "pkgexp-uninstalled": true},
+		MarketInstallIDs: map[string]bool{"pkgexp-market": true, "builtin-paper-polish": true, "pkgexp-uninstalled": true},
+		DeletedIDs: map[string]string{
+			"expert-deleted":     "2026-08-03T00:00:00Z",
+			"pkgexp-uninstalled": "2026-08-03T00:00:00Z",
+		},
+		PendingHubDeletes: map[string]string{
+			"expert-deleted":     "2026-08-03T00:00:00Z",
+			"pkgexp-uninstalled": "2026-08-03T00:00:00Z",
+		}}
 	if err := userDataMigrationWriteJSONFile(filepath.Join(source.userDataMigrationExpertsDir(), "experts.json"), sourceExperts); err != nil {
 		t.Fatalf("write source experts: %v", err)
 	}
@@ -348,8 +359,23 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode migrated experts: %v", err)
 		}
-		if len(exported.Experts) != 1 || exported.Experts[0].ID != "expert-source" {
+		if len(exported.Experts) != 2 || exported.Experts[0].ID != "expert-source" || exported.Experts[1].ID != "pkgexp-market" {
 			t.Fatalf("migration must only export custom or installed experts, got %#v", exported.Experts)
+		}
+		if exported.PendingHubUploads["builtin-paper-polish"] || exported.LocalOnlyIDs["builtin-paper-polish"] || exported.MarketInstallIDs["builtin-paper-polish"] {
+			t.Fatalf("migration must not export system expert state: %#v", exported)
+		}
+		if exported.PendingHubUploads["expert-uninstalled"] || exported.LocalOnlyIDs["pkgexp-uninstalled"] || exported.MarketInstallIDs["pkgexp-uninstalled"] {
+			t.Fatalf("migration must not export uninstalled expert state: %#v", exported)
+		}
+		if exported.DeletedIDs["pkgexp-uninstalled"] != "" || exported.PendingHubDeletes["pkgexp-uninstalled"] != "" {
+			t.Fatalf("migration must not export uninstalled expert delete state: %#v", exported)
+		}
+		if exported.DeletedIDs["expert-deleted"] == "" || exported.PendingHubDeletes["expert-deleted"] == "" {
+			t.Fatalf("migration must retain custom expert delete state: %#v", exported)
+		}
+		if !exported.LocalOnlyIDs["pkgexp-market"] || !exported.MarketInstallIDs["pkgexp-market"] {
+			t.Fatalf("migration must retain installed expert state: %#v", exported)
 		}
 	}
 
@@ -362,7 +388,16 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 	if err := userDataMigrationWriteJSONFile(filepath.Join(target.userDataMigrationExpertsDir(), "experts.json"), expertStoreFile{Experts: []ExpertDefinition{
 		{ID: "expert-target", Name: "Target Expert"},
 		{ID: "builtin-paper-polish", Name: "Customized System Expert", SystemPrompt: "target override"},
-	}}); err != nil {
+	},
+		// These records normally should not exist for a builtin, but keeping them
+		// here verifies that import neither clears nor replaces any state keyed by
+		// a system expert ID.
+		PendingHubUploads: map[string]bool{"builtin-paper-polish": true},
+		LocalOnlyIDs:      map[string]bool{"builtin-paper-polish": true},
+		MarketInstallIDs:  map[string]bool{"builtin-paper-polish": true},
+		DeletedIDs:        map[string]string{"builtin-paper-polish": "2026-08-02T00:00:00Z"},
+		PendingHubDeletes: map[string]string{"builtin-paper-polish": "2026-08-02T00:00:00Z"},
+	}); err != nil {
 		t.Fatalf("write target experts: %v", err)
 	}
 	result, err := target.restoreUserDataMigrationPackage(context.Background(), zipPath, t.TempDir())
@@ -373,12 +408,22 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 	if err := userDataMigrationReadJSONFileLimited(filepath.Join(target.userDataMigrationExpertsDir(), "experts.json"), &restored, userDataMigrationMaxConfigJSON); err != nil {
 		t.Fatalf("read restored experts: %v", err)
 	}
-	if len(restored.Experts) != 2 || restored.Experts[0].ID != "expert-source" || restored.Experts[0].SystemPrompt != "source prompt" ||
-		restored.Experts[1].ID != "builtin-paper-polish" || restored.Experts[1].SystemPrompt != "target override" {
+	if len(restored.Experts) != 3 || restored.Experts[0].ID != "expert-source" || restored.Experts[0].SystemPrompt != "source prompt" ||
+		restored.Experts[1].ID != "pkgexp-market" || restored.Experts[1].SystemPrompt != "installed prompt" ||
+		restored.Experts[2].ID != "builtin-paper-polish" || restored.Experts[2].SystemPrompt != "target override" {
 		t.Fatalf("restored experts mismatch: %#v", restored)
 	}
-	if !restored.PendingHubUploads["expert-source"] || restored.PendingHubUploads["builtin-paper-polish"] {
+	if !restored.PendingHubUploads["expert-source"] || !restored.PendingHubUploads["builtin-paper-polish"] {
 		t.Fatalf("restored expert sync state mismatch: %#v", restored.PendingHubUploads)
+	}
+	if !restored.LocalOnlyIDs["pkgexp-market"] || !restored.MarketInstallIDs["pkgexp-market"] ||
+		!restored.LocalOnlyIDs["builtin-paper-polish"] || !restored.MarketInstallIDs["builtin-paper-polish"] {
+		t.Fatalf("restored expert install state mismatch: %#v", restored)
+	}
+	if restored.DeletedIDs["expert-deleted"] == "" || restored.PendingHubDeletes["expert-deleted"] == "" ||
+		restored.DeletedIDs["pkgexp-uninstalled"] != "" || restored.PendingHubDeletes["pkgexp-uninstalled"] != "" ||
+		restored.DeletedIDs["builtin-paper-polish"] != "2026-08-02T00:00:00Z" || restored.PendingHubDeletes["builtin-paper-polish"] != "2026-08-02T00:00:00Z" {
+		t.Fatalf("restored expert deletion state mismatch: %#v", restored)
 	}
 	experts, ok := result["experts"].(map[string]interface{})
 	// The restored store retains the target machine's local system overrides,
@@ -399,6 +444,112 @@ func TestUserDataMigrationRejectsSystemExpertPayload(t *testing.T) {
 	}
 	if err := userDataMigrationValidateExperts(path); err == nil || !strings.Contains(err.Error(), "system expert") {
 		t.Fatalf("expected system expert rejection, got %v", err)
+	}
+}
+
+func TestUserDataMigrationRejectsSystemExpertState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "experts")
+	if err := userDataMigrationWriteJSONFile(filepath.Join(path, "experts.json"), expertStoreFile{
+		PendingHubUploads: map[string]bool{"builtin-paper-polish": true},
+	}); err != nil {
+		t.Fatalf("write experts: %v", err)
+	}
+	if err := userDataMigrationValidateExperts(path); err == nil || !strings.Contains(err.Error(), "system expert state") {
+		t.Fatalf("expected system expert state rejection, got %v", err)
+	}
+}
+
+func TestUserDataMigrationRejectsInvalidExpertState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "experts")
+	if err := userDataMigrationWriteJSONFile(filepath.Join(path, "experts.json"), expertStoreFile{
+		PendingHubUploads: map[string]bool{"invalid id": true},
+	}); err != nil {
+		t.Fatalf("write experts: %v", err)
+	}
+	if err := userDataMigrationValidateExperts(path); err == nil || !strings.Contains(err.Error(), "invalid id") {
+		t.Fatalf("expected invalid expert state rejection, got %v", err)
+	}
+}
+
+func TestUserDataMigrationRejectsInvalidExpertDefinitionAndInstallState(t *testing.T) {
+	tests := []struct {
+		name  string
+		store expertStoreFile
+		want  string
+	}{
+		{
+			name:  "invalid tombstone timestamp",
+			store: expertStoreFile{DeletedIDs: map[string]string{"expert-custom": "not-a-timestamp"}},
+			want:  "invalid timestamp",
+		},
+		{
+			name: "market expert is not local only",
+			store: expertStoreFile{
+				Experts:          []ExpertDefinition{{ID: "pkgexp-market", Name: "Market", SystemPrompt: "prompt"}},
+				MarketInstallIDs: map[string]bool{"pkgexp-market": true},
+			},
+			want: "not local-only",
+		},
+		{
+			name: "active expert has tombstone",
+			store: expertStoreFile{
+				Experts:    []ExpertDefinition{{ID: "expert-custom", Name: "Custom", SystemPrompt: "prompt"}},
+				DeletedIDs: map[string]string{"expert-custom": "2026-08-03T00:00:00Z"},
+			},
+			want: "both active and deleted",
+		},
+		{
+			name: "pending delete has no tombstone",
+			store: expertStoreFile{
+				PendingHubDeletes: map[string]string{"expert-custom": "2026-08-03T00:00:00Z"},
+			},
+			want: "no matching tombstone",
+		},
+		{
+			name:  "pending upload has no active expert",
+			store: expertStoreFile{PendingHubUploads: map[string]bool{"expert-custom": true}},
+			want:  "no active expert",
+		},
+		{
+			name: "local only expert has pending upload",
+			store: expertStoreFile{
+				Experts:           []ExpertDefinition{{ID: "pkgexp-market", Name: "Market", SystemPrompt: "prompt"}},
+				LocalOnlyIDs:      map[string]bool{"pkgexp-market": true},
+				PendingHubUploads: map[string]bool{"pkgexp-market": true},
+			},
+			want: "has pending Hub upload",
+		},
+		{
+			name:  "uninstalled local only marker",
+			store: expertStoreFile{LocalOnlyIDs: map[string]bool{"pkgexp-uninstalled": true}},
+			want:  "is not installed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "experts")
+			if err := userDataMigrationWriteJSONFile(filepath.Join(path, "experts.json"), tt.store); err != nil {
+				t.Fatalf("write experts: %v", err)
+			}
+			if err := userDataMigrationValidateExperts(path); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q rejection, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestUserDataMigrationExportRejectsInvalidPersistedExpertState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "experts.json")
+	if err := userDataMigrationWriteJSONFile(path, expertStoreFile{
+		Experts:           []ExpertDefinition{{ID: "pkgexp-market", Name: "Market", SystemPrompt: "prompt"}},
+		LocalOnlyIDs:      map[string]bool{"pkgexp-market": true},
+		PendingHubUploads: map[string]bool{"pkgexp-market": true},
+	}); err != nil {
+		t.Fatalf("write experts: %v", err)
+	}
+	_, err := userDataMigrationExportableExperts(path)
+	if err == nil || !strings.Contains(err.Error(), "has pending Hub upload") {
+		t.Fatalf("expected invalid local export state rejection, got %v", err)
 	}
 }
 

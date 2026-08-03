@@ -63,14 +63,10 @@ idf.py build flash monitor
 
 固件通过握手中的 `features.meetingRecorder: true` 报告会议录音能力，并采用 Hub 返回的 `meetingRecording.basePath`、`chunkSize` 和可用处理模式。
 
-- 待机单击：录制一次语音命令并交给 MaClaw Agent。
-- 待机双击：开始会议录音。
-- 会议录制中单击：暂停或继续；暂停期间持续排空麦克风 DMA，但不写入 WAV。
-- 会议录制中长按：结束录音、补写 WAV 头并上传。
-- 待机长按三秒：清除 Wi-Fi 和配对配置，重新进入设置热点。
+- 待机单击：录制一次 6 秒语音命令并交给 MaClaw Agent。
+- 待机双击：立即开始会议录音。
+- 会议录制中单击、双击或长按：停止、补写 WAV 头并保存上传；单击是推荐操作。
+- 待机长按约三秒：清除 Wi-Fi、配对 token 和网关设置，重启进入配置热点。
+- 若有未上传录音，设备联网后自动续传；后台续传会在分块边界让出网络给新的语音命令。
 
-会议音频以 16 kHz、16-bit、单声道 PCM WAV 流式写入 `/storage/meeting.wav`，不会把整场会议放进 RAM。屏幕显示动态波形、音量、已录时长和暂停状态。
-
-上传使用 Hub/mobile 共用的文稿库协议：创建录音对象、按 Hub 宣告的大小分块上传、每块 `X-Chunk-SHA256`、全文件 SHA256、`complete`，最后根据握手可用性选择 `minutes`、`transcript` 或 `keep`。成功后录音可在 mobile/GUI 文稿库查看。
-
-上传进度保存在 NVS；失败时保留 SPIFFS 中的 WAV。设备重启并重新连上 Hub 后会查询服务器端录音状态并从下一个未完成分块继续。只有 Hub 已接受处理请求后才删除本地 WAV 和恢复元数据。
+会议音频以 16 kHz、16-bit、单声道 PCM WAV 流式写入 `/storage/meeting.wav`，不会把整场会议放进 RAM。录音界面显示计时和约 768 ms 的真实 PCM 正负峰值波形；96 个波形列均来自最终写入或上传的同一份音频，不使用随机动画。停止后按 Hub 协商的分块大小续传，Hub 完成转写/纪要后写入 Mobile 文稿库。

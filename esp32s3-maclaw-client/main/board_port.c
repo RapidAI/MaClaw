@@ -1,6 +1,7 @@
 #include "board_port.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -104,11 +105,18 @@ static bool s_recording_active;
 static bool s_recording_paused;
 static volatile uint32_t s_recording_elapsed_seconds;
 static volatile uint16_t s_recording_audio_level;
-#define RECORDING_WAVE_BARS 17
-#define RECORDING_WAVE_BUCKET_US 40000
-static uint16_t s_recording_level_history[RECORDING_WAVE_BARS];
-static uint16_t s_recording_level_bucket_peak;
-static int64_t s_recording_level_bucket_started_us;
+// The recording screen is fed from the same signed PCM samples that are saved
+// or uploaded. Each display column is the real min/max pair from 128 samples
+// (8 ms at 16 kHz), so the 96-column trace covers the most recent 768 ms.
+// Keeping both polarities avoids turning the signal into a synthetic volume
+// meter and preserves short transients such as consonants and hand claps.
+#define RECORDING_WAVE_COLUMNS 96
+#define RECORDING_WAVE_SAMPLES_PER_COLUMN 128
+static int16_t s_recording_wave_min[RECORDING_WAVE_COLUMNS];
+static int16_t s_recording_wave_max[RECORDING_WAVE_COLUMNS];
+static int16_t s_recording_wave_pending_min = INT16_MAX;
+static int16_t s_recording_wave_pending_max = INT16_MIN;
+static uint16_t s_recording_wave_pending_samples;
 static char s_ambient_time[9];
 static char s_ambient_location[24];
 static char s_ambient_date[8];
@@ -1273,21 +1281,45 @@ static void draw_recording_visual(void) {
     snprintf(elapsed, sizeof(elapsed), "%02lu %02lu", (unsigned long)minutes, (unsigned long)seconds);
     draw_centered_text(104, elapsed, fg, bg);
 
-    // Each bar is one real 40 ms microphone peak bucket. New samples enter on
-    // the right and move left, producing a truthful recent amplitude envelope
-    // instead of a synthetic symmetric animation. Copy atomically because the
-    // I2S capture task updates this history while the LCD task renders it.
-    uint16_t history[RECORDING_WAVE_BARS];
+    // Copy the real PCM min/max history atomically. Every vertical segment is
+    // derived from signed microphone samples; no random ripple, mirrored shape
+    // or synthesized motion is added by the renderer.
+    int16_t wave_min[RECORDING_WAVE_COLUMNS];
+    int16_t wave_max[RECORDING_WAVE_COLUMNS];
     taskENTER_CRITICAL(&s_state_lock);
-    memcpy(history, s_recording_level_history, sizeof(history));
+    memcpy(wave_min, s_recording_wave_min, sizeof(wave_min));
+    memcpy(wave_max, s_recording_wave_max, sizeof(wave_max));
     taskEXIT_CRITICAL(&s_state_lock);
-    for (int bar = 0; bar < RECORDING_WAVE_BARS; ++bar) {
-        int height = 4 + (int)history[bar] * 108 / 1000;
-        if (height > 112) height = 112;
-        if (s_recording_paused) height = 4;
-        int x = 32 + bar * 19;
-        int y = 220 - height / 2;
-        fill_rect(x, y, x + 11, y + height, s_recording_paused ? muted : cyan);
+    const int wave_left = 26;
+    const int wave_width = 308;
+    const int wave_center = 220;
+    const int wave_half_height = 58;
+    fill_rect(wave_left, wave_center, wave_left + wave_width, wave_center + 1, muted);
+    for (int column = 0; column < RECORDING_WAVE_COLUMNS; ++column) {
+        int min_sample = s_recording_paused ? 0 : wave_min[column];
+        int max_sample = s_recording_paused ? 0 : wave_max[column];
+        // ES7210 speech commonly peaks around 10k-12k on this board. Map that
+        // useful range to the display and clip only visual outliers.
+        int y_top = wave_center - max_sample * wave_half_height / 12000;
+        int y_bottom = wave_center - min_sample * wave_half_height / 12000;
+        if (y_top < wave_center - wave_half_height) y_top = wave_center - wave_half_height;
+        if (y_top > wave_center + wave_half_height) y_top = wave_center + wave_half_height;
+        if (y_bottom < wave_center - wave_half_height) y_bottom = wave_center - wave_half_height;
+        if (y_bottom > wave_center + wave_half_height) y_bottom = wave_center + wave_half_height;
+        if (y_top > y_bottom) {
+            int swap = y_top;
+            y_top = y_bottom;
+            y_bottom = swap;
+        }
+        if (y_bottom - y_top < 2) {
+            y_top = wave_center - 1;
+            y_bottom = wave_center + 1;
+        }
+        int x = wave_left + column * wave_width / RECORDING_WAVE_COLUMNS;
+        int next_x = wave_left + (column + 1) * wave_width / RECORDING_WAVE_COLUMNS;
+        if (next_x <= x) next_x = x + 1;
+        fill_rect(x, y_top, next_x, y_bottom + 1,
+                  s_recording_paused ? muted : cyan);
     }
     draw_text24(80, 266, s_recording_paused ? "录音已暂停" : "声音实时波形", s_recording_paused ? amber : cyan, bg);
     draw_text24(80, 302, "点屏停止保存", muted, bg);
@@ -1613,9 +1645,11 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
     s_recording_elapsed_seconds = elapsed_seconds;
     if (!active || elapsed_seconds == 0) {
         taskENTER_CRITICAL(&s_state_lock);
-        memset(s_recording_level_history, 0, sizeof(s_recording_level_history));
-        s_recording_level_bucket_peak = 0;
-        s_recording_level_bucket_started_us = 0;
+        memset(s_recording_wave_min, 0, sizeof(s_recording_wave_min));
+        memset(s_recording_wave_max, 0, sizeof(s_recording_wave_max));
+        s_recording_wave_pending_min = INT16_MAX;
+        s_recording_wave_pending_max = INT16_MIN;
+        s_recording_wave_pending_samples = 0;
         taskEXIT_CRITICAL(&s_state_lock);
     }
     if (!active) s_recording_audio_level = 0;
@@ -1627,18 +1661,43 @@ void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     if (level > 1000) level = 1000;
     s_recording_audio_level = level;
     s_recording_elapsed_seconds = elapsed_seconds;
-    int64_t now_us = esp_timer_get_time();
-    taskENTER_CRITICAL(&s_state_lock);
-    if (level > s_recording_level_bucket_peak) s_recording_level_bucket_peak = level;
-    if (s_recording_level_bucket_started_us == 0) {
-        s_recording_level_bucket_started_us = now_us;
-    } else if (now_us - s_recording_level_bucket_started_us >= RECORDING_WAVE_BUCKET_US) {
-        memmove(&s_recording_level_history[0], &s_recording_level_history[1],
-                sizeof(s_recording_level_history) - sizeof(s_recording_level_history[0]));
-        s_recording_level_history[RECORDING_WAVE_BARS - 1] = s_recording_level_bucket_peak;
-        s_recording_level_bucket_peak = 0;
-        s_recording_level_bucket_started_us = now_us;
+}
+
+static void recording_wave_push_pcm(const int16_t *samples, size_t count) {
+    if (!samples || count == 0) return;
+    // Only one capture task owns the pending bucket. Aggregate PCM outside the
+    // critical section so I2S is never held behind hundreds of sample compares.
+    int16_t completed_min[8];
+    int16_t completed_max[8];
+    size_t completed = 0;
+    for (size_t i = 0; i < count; ++i) {
+        int16_t sample = samples[i];
+        if (sample < s_recording_wave_pending_min) s_recording_wave_pending_min = sample;
+        if (sample > s_recording_wave_pending_max) s_recording_wave_pending_max = sample;
+        ++s_recording_wave_pending_samples;
+        if (s_recording_wave_pending_samples >= RECORDING_WAVE_SAMPLES_PER_COLUMN) {
+            if (completed < sizeof(completed_min) / sizeof(completed_min[0])) {
+                completed_min[completed] = s_recording_wave_pending_min;
+                completed_max[completed] = s_recording_wave_pending_max;
+                ++completed;
+            }
+            s_recording_wave_pending_min = INT16_MAX;
+            s_recording_wave_pending_max = INT16_MIN;
+            s_recording_wave_pending_samples = 0;
+        }
     }
+    if (completed == 0) return;
+    if (completed > RECORDING_WAVE_COLUMNS) completed = RECORDING_WAVE_COLUMNS;
+    taskENTER_CRITICAL(&s_state_lock);
+    size_t retained = RECORDING_WAVE_COLUMNS - completed;
+    memmove(&s_recording_wave_min[0], &s_recording_wave_min[completed],
+            retained * sizeof(s_recording_wave_min[0]));
+    memmove(&s_recording_wave_max[0], &s_recording_wave_max[completed],
+            retained * sizeof(s_recording_wave_max[0]));
+    memcpy(&s_recording_wave_min[retained], completed_min,
+           completed * sizeof(completed_min[0]));
+    memcpy(&s_recording_wave_max[retained], completed_max,
+           completed * sizeof(completed_max[0]));
     taskEXIT_CRITICAL(&s_state_lock);
 }
 
@@ -1870,6 +1929,7 @@ esp_err_t board_port_audio_stream_read(int16_t *mono, size_t sample_capacity,
     uint32_t scaled = chunk_peak <= 180 ? 0 : (uint32_t)(chunk_peak - 180) * 1000u / (12000u - 180u);
     if (scaled > 1000) scaled = 1000;
     if (level) *level = (uint16_t)scaled;
+    recording_wave_push_pcm(mono, frames);
     *samples_read = frames;
     return ESP_OK;
 }
@@ -2173,6 +2233,7 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
                              : (uint16_t)((smoothed_level * 7 + raw_level) / 8);
         board_port_set_audio_level(smoothed_level,
                                    (uint32_t)(written_samples / AUDIO_RATE));
+        recording_wave_push_pcm(&mono[written_samples - frames], frames);
     }
     ESP_LOGI(TAG, "captured %u mono samples, peak=%ld", (unsigned)written_samples, (long)peak);
     *out_wav = wav;

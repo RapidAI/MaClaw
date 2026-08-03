@@ -48,6 +48,8 @@
 #define PAIR_CODE_CAPACITY 7
 #define GATEWAY_RETRY_INITIAL_MS 2000
 #define GATEWAY_RETRY_MAX_MS 60000
+#define MEETING_RESUME_RETRY_INITIAL_MS 5000
+#define MEETING_RESUME_RETRY_MAX_MS 300000
 #define SETUP_AP_IP_ADDR "192.168.4.1"
 #define DNS_PORT 53
 #define DNS_PACKET_CAPACITY 512
@@ -90,6 +92,7 @@ static TaskHandle_t s_dns_task;
 static TaskHandle_t s_gateway_task;
 static TaskHandle_t s_interaction_task;
 static TaskHandle_t s_meeting_task;
+static TaskHandle_t s_meeting_resume_supervisor_task;
 static bool s_meeting_task_running;
 static bool s_pairing_recovery_portal;
 static TaskHandle_t s_ambient_task;
@@ -133,6 +136,9 @@ static int32_t s_meeting_next_chunk;
 static int32_t s_meeting_phase;
 static char s_meeting_recording_id[MEETING_RECORDING_ID_CAPACITY];
 static volatile uint32_t s_meeting_elapsed_seconds;
+// Set as soon as a short voice command is requested. Background meeting
+// recovery yields between chunks so the interactive upload gets the HTTP lock.
+static volatile bool s_foreground_http_requested;
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data);
 
@@ -165,6 +171,7 @@ static void meeting_set_state(meeting_state_t state) {
 static void finish_interaction_task(void) {
     taskENTER_CRITICAL(&s_task_state_lock);
     s_interaction_task = NULL;
+    s_foreground_http_requested = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (s_interaction_lock) xSemaphoreGive(s_interaction_lock);
     vTaskDeleteWithCaps(NULL);
@@ -458,6 +465,53 @@ static bool ensure_gateway_poll_task(void) {
     return true;
 }
 
+static void meeting_resume_supervisor_task(void *arg) {
+    (void)arg;
+    uint32_t retry_ms = MEETING_RESUME_RETRY_INITIAL_MS;
+    while (s_meeting_pending) {
+        EventBits_t wifi = s_wifi_events ? xEventGroupGetBits(s_wifi_events) : 0;
+        if (!s_setup_portal_active && s_gateway_token[0] && (wifi & WIFI_CONNECTED_BIT) &&
+            !s_meeting_task_running && !s_foreground_http_requested) {
+                if (start_meeting_task(true)) {
+                // The worker persists progress at every chunk. Wait until that
+                // pass finishes before deciding whether another retry is needed.
+                while (s_meeting_task_running) vTaskDelay(pdMS_TO_TICKS(500));
+                if (!s_meeting_pending) break;
+                // A foreground command may have intentionally preempted this
+                // pass. Resume quickly after it releases HTTP instead of
+                // escalating the outage backoff to several minutes.
+                if (s_foreground_http_requested) {
+                    while (s_foreground_http_requested) vTaskDelay(pdMS_TO_TICKS(250));
+                    retry_ms = MEETING_RESUME_RETRY_INITIAL_MS;
+                    continue;
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(retry_ms));
+        if (retry_ms < MEETING_RESUME_RETRY_MAX_MS) {
+            retry_ms *= 2;
+            if (retry_ms > MEETING_RESUME_RETRY_MAX_MS) retry_ms = MEETING_RESUME_RETRY_MAX_MS;
+        }
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_resume_supervisor_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    vTaskDelete(NULL);
+}
+
+static bool ensure_meeting_resume_supervisor(void) {
+    if (!s_meeting_pending || s_meeting_resume_supervisor_task) return true;
+    BaseType_t created = xTaskCreate(meeting_resume_supervisor_task,
+                                     "maclaw_meeting_resume", 4096, NULL, 1,
+                                     &s_meeting_resume_supervisor_task);
+    if (created != pdPASS) {
+        s_meeting_resume_supervisor_task = NULL;
+        ESP_LOGE(TAG, "cannot start meeting resume supervisor");
+        return false;
+    }
+    return true;
+}
+
 static bool start_gateway_ready_tasks(void) {
     if (!ensure_gateway_poll_task()) {
         pet("alert");
@@ -472,9 +526,9 @@ static bool start_gateway_ready_tasks(void) {
         ESP_LOGW(TAG, "offline wake restart failed: %s", esp_err_to_name(wake_err));
     }
     board_port_show_ready_prompt("设备已就绪", "点屏说话 双点会议");
-    if (s_meeting_pending && !s_meeting_task) {
-        ESP_LOGI(TAG, "pending meeting upload found; starting resume" );
-        (void)start_meeting_task(true);
+    if (s_meeting_pending) {
+        ESP_LOGI(TAG, "pending meeting upload found; scheduling resumable retries");
+        (void)ensure_meeting_resume_supervisor();
     }
     return true;
 }
@@ -1565,6 +1619,13 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
             next_chunk = index + 1;
             err = save_meeting_recovery(true, recording_id, next_chunk, phase);
         }
+        if (!publish_state && err == ESP_OK && s_foreground_http_requested) {
+            // Recovery metadata is already durable at this chunk boundary. End
+            // this pass cleanly and let the foreground command acquire HTTP;
+            // the reconnect/resume path continues from next_chunk later.
+            ESP_LOGI(TAG, "background meeting resume yielded after chunk %d", index);
+            err = ESP_ERR_TIMEOUT;
+        }
     }
     char whole_hash[65];
     if (err == ESP_OK && phase < 1) {
@@ -1849,8 +1910,10 @@ static bool start_voice_interaction(bool consume_screen_wake) {
         ESP_LOGW(TAG, "voice interaction ignored: interaction already active");
         return false;
     }
+    s_foreground_http_requested = true;
     bool woke_display = board_port_wake_from_idle();
     if (woke_display && consume_screen_wake) {
+        s_foreground_http_requested = false;
         xSemaphoreGive(s_interaction_lock);
         board_port_show_ready_prompt("设备已就绪", "请再按一次说话");
         return false;
@@ -1868,6 +1931,7 @@ static bool start_voice_interaction(bool consume_screen_wake) {
     s_interaction_task = created == pdPASS ? created_handle : NULL;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (created != pdPASS) {
+        s_foreground_http_requested = false;
         log_heap_snapshot("interaction-task-create-fail");
         xSemaphoreGive(s_interaction_lock);
         pet("alert");
