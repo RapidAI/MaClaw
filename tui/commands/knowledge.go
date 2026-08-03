@@ -246,7 +246,7 @@ func knowledgeList(dataDir string, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{})
+	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{IncludeDisabled: true})
 	if err != nil {
 		return fmt.Errorf("failed to list sources: %w", err)
 	}
@@ -501,7 +501,7 @@ func knowledgeClear(dataDir string, args []string) error {
 	ctx := context.Background()
 
 	// List all sources to delete them one by one.
-	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{Limit: 5000})
+	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{Limit: 5000, IncludeDisabled: true})
 	if err != nil {
 		return fmt.Errorf("failed to list sources: %w", err)
 	}

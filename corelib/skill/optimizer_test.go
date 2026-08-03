@@ -1,6 +1,8 @@
 package skill
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -128,5 +130,104 @@ func TestApplyOptimization_NotOptimized_NoChange(t *testing.T) {
 	result := &OptimizationResult{Optimized: false}
 	if ApplyOptimization(skill, result, nil) {
 		t.Error("should not modify when Optimized=false")
+	}
+}
+
+// TestWriteBackOptimizedStepsPreservesNameAndCondition covers the field-loss
+// fix: WriteBackOptimizedSteps must round-trip name/condition (alongside
+// label/when/capture) instead of silently dropping them from skill.yaml.
+func TestWriteBackOptimizedStepsPreservesNameAndCondition(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `name: cond-skill
+description: keeps me
+triggers:
+  - run it
+steps:
+  - action: bash
+    params:
+      command: echo old
+`
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:        "cond-skill",
+		Description: "keeps me",
+		SkillDir:    dir,
+		Steps: []corelib.NLSkillStep{
+			{
+				Action:    "bash",
+				Params:    map[string]interface{}{"command": "echo new"},
+				OnError:   "continue",
+				Name:      "first step",
+				Condition: "on_failure",
+				Label:     "step-one",
+				When:      "{{op}} == run",
+				Capture:   map[string]string{"out": "(.*)"},
+			},
+		},
+	}
+	if err := WriteBackOptimizedSteps(entry); err != nil {
+		t.Fatalf("WriteBackOptimizedSteps() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatalf("re-parse written skill.yaml: %v", err)
+	}
+	if len(sf.Steps) != 1 {
+		t.Fatalf("steps = %+v, want 1", sf.Steps)
+	}
+	got := sf.Steps[0]
+	if got.Name != "first step" {
+		t.Errorf("name lost on write-back: %+v", got)
+	}
+	if got.Condition != "on_failure" {
+		t.Errorf("condition lost on write-back: %+v", got)
+	}
+	if got.Label != "step-one" || got.When != "{{op}} == run" || got.Capture["out"] != "(.*)" {
+		t.Errorf("label/when/capture regressed: %+v", got)
+	}
+	// Non-steps sections must survive the write-back.
+	if sf.Description != "keeps me" || len(sf.Triggers) != 1 || sf.Triggers[0] != "run it" {
+		t.Errorf("non-steps fields lost: desc=%q triggers=%v", sf.Description, sf.Triggers)
+	}
+}
+
+// TestLoadSkillStepsFromDirReadsFreshDiskState covers the single-dir parse
+// entry used by the repair-draft TOCTOU check: it must bypass caches and see
+// hand edits immediately.
+func TestLoadSkillStepsFromDirReadsFreshDiskState(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "skill.yaml")
+	write := func(cmd string) {
+		yaml := "name: s\ndescription: d\nsteps:\n  - action: bash\n    params:\n      command: " + cmd + "\n"
+		if err := os.WriteFile(yamlPath, []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("echo one")
+	steps, err := LoadSkillStepsFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadSkillStepsFromDir() error = %v", err)
+	}
+	if len(steps) != 1 || steps[0].Params["command"] != "echo one" {
+		t.Fatalf("steps = %+v", steps)
+	}
+	// A hand edit is visible on the very next call (no cache).
+	write("echo two")
+	steps, err = LoadSkillStepsFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadSkillStepsFromDir() after edit error = %v", err)
+	}
+	if len(steps) != 1 || steps[0].Params["command"] != "echo two" {
+		t.Fatalf("stale steps after edit: %+v", steps)
+	}
+	if _, err := LoadSkillStepsFromDir(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("expected error for dir without skill.yaml")
 	}
 }

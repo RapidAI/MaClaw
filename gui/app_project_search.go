@@ -24,6 +24,9 @@ import (
 var (
 	recentTaskForkMu   sync.Mutex
 	remoteCodingTaskMu sync.Mutex
+	// expertTaskMu makes the expert source tag an idempotency key even when two
+	// launchers request the same expert at the same time.
+	expertTaskMu sync.Mutex
 )
 
 const (
@@ -35,6 +38,9 @@ const (
 	taskLegacyRecentTag      = "recent_task"
 	taskSourceTagPrefix      = "source:"
 	taskSavedConversationTag = "saved_conversation"
+	// taskSourceExpertPrefix marks a durable task-management entry that opens a
+	// named AI expert rather than a generic project conversation.
+	taskSourceExpertPrefix = taskSourceTagPrefix + "expert:"
 	// taskCodingDevTag marks tasks created with the "programming / coding" option.
 	// Used by the GUI to open the task in coding-agent mode.
 	taskCodingDevTag = "coding_dev"
@@ -46,6 +52,9 @@ const (
 	taskRemoteWorkDirTagPrefix = "remote_workdir:"
 	// taskSourceCodingWorkflowTag marks remote/local tasks created from the multi-phase coding workflow form.
 	taskSourceCodingWorkflowTag = taskSourceTagPrefix + "coding_workflow"
+	// taskSourceRemoteOpsDiagnosisTag marks a task that was launched from the
+	// incident-diagnosis entry point. Its first SSH turn is forced read-only.
+	taskSourceRemoteOpsDiagnosisTag = taskSourceTagPrefix + "remote_ops_diagnosis"
 )
 
 // NormalizeCreateTaskMode maps free-form mode strings from the UI/API to a
@@ -535,6 +544,63 @@ func (a *App) CreateTaskWithMode(name, workingDir, mode string) ProjectSearchRes
 	return a.createTaskRecordWithWorkingDir(taskName, "", tags, normalizeRecentTaskWorkingDir(workingDir), false)
 }
 
+// CreateExpertTask creates (or returns) the durable task-management entry for
+// an AI expert. Expert tabs are otherwise lightweight conversations, but an
+// explicit record lets the task sidebar reopen the expert after a restart.
+//
+// expertName is passed by the launcher as a display fallback. The id remains
+// the stable routing key, so renaming an expert never breaks an existing task.
+func (a *App) CreateExpertTask(expertID, expertName string) ProjectSearchResult {
+	expertID = strings.TrimSpace(expertID)
+	if expertID == "" || !expertIDPattern.MatchString(expertID) {
+		return ProjectSearchResult{}
+	}
+
+	// Keep the lookup and creation in one critical section. Expert launch can be
+	// requested by multiple UI entry points, so a lookup-only dedupe leaves a
+	// window where two task folders could be created for one expert.
+	expertTaskMu.Lock()
+	defer expertTaskMu.Unlock()
+
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{}
+	}
+
+	sourceTag := taskSourceExpertPrefix + expertID
+	// An expert has one active resumable task entry. A hidden entry represents a
+	// user-removed task and must not be resurrected; opening the expert again
+	// starts a fresh visible task just like other task launchers do.
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, sourceTag)
+	}) {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		return projectRecordToSearchResult(pi, rec)
+	}
+
+	title := strings.TrimSpace(expertName)
+	if title == "" {
+		if def := loadExpertDefByID(expertID); def != nil {
+			title = strings.TrimSpace(def.Name)
+		}
+	}
+	if title == "" {
+		title = expertID
+	}
+	content := fmt.Sprintf("# %s\n\nAI expert task. Reopen this task to continue working with expert: %s.", recentTaskDisplayTitle(title), expertID)
+	return a.createTaskRecordWithWorkingDir(title, content, []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		sourceTag,
+	}, "", false)
+}
+
 // sanitizeTaskMetadataTagValue strips characters that break multi-line or
 // control-bearing tag values. Colons are kept: remote_* tags are parsed via
 // fixed prefixes (TrimPrefix), so IPv6 hosts and Windows-style paths remain valid.
@@ -777,7 +843,7 @@ func (a *App) UpdateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir 
 	return a.updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir, sshPort)
 }
 
-func (a *App) updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir string, sshPort int) error {
+func (a *App) updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) error {
 	if a == nil {
 		return fmt.Errorf("app unavailable")
 	}
@@ -833,6 +899,17 @@ func (a *App) updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir 
 		updatedTags = append(updatedTags, taskRemoteCodingDevTag)
 		seen[taskRemoteCodingDevTag] = struct{}{}
 	}
+	for _, tag := range extraTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || !shouldKeepTaskTagOnRemoteMetaUpdate(tag) {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		updatedTags = append(updatedTags, tag)
+	}
 	for _, t := range newRemoteTags {
 		if _, ok := seen[t]; ok {
 			continue
@@ -871,6 +948,9 @@ func (a *App) updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir 
 		SourceURL:        sourceURL,
 		SourceType:       "manual",
 		MergeExistingTags: func(existing, desired []string) []string {
+			// Desired tags already contain the preserved task-origin tags plus any
+			// supplied origin marker (for example remote_ops_diagnosis). Keep the
+			// desired set authoritative while only replacing remote meta prefixes.
 			return mergeTagsReplacePrefixed(existing, desired, remoteCodingMetaTagPrefixes)
 		},
 	})
@@ -883,9 +963,10 @@ func (a *App) updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir 
 		log.Printf("[project_search] UpdateRemoteCodingTaskMeta write task.md failed: %v", err)
 	}
 	flushErr := a.memoryStore.Flush()
-	// ProjectIndex.IndexEntry only merge-appends tags; force-replace remote meta
-	// even if flush failed so GetRemoteCodingTaskMeta / sidebar stay coherent.
-	pi.ReplacePrefixedTags(projectPath, remoteCodingMetaTagPrefixes, newRemoteTags)
+	// ProjectIndex.IndexEntry only merge-appends tags, and store updates rebuild it
+	// asynchronously. Apply the complete task tag set now so an immediate reopen
+	// sees both updated SSH metadata and any added diagnosis-origin marker.
+	pi.ReplacePrefixedTags(projectPath, remoteCodingMetaTagPrefixes, updatedTags)
 	a.emitProjectIndexChanged(projectPath)
 	// Best-effort sticky mirror for open sessions — do not cold-init hub for a
 	// metadata edit when no assistant session is loaded. Drop RemoteSessionID
@@ -1079,6 +1160,12 @@ func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, ssh
 	return a.createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir, sshPort)
 }
 
+// CreateRemoteOpsDiagnosisTask creates the same SSH-backed task record as
+// remote coding, while retaining its incident-diagnosis origin for auditing.
+func (a *App) CreateRemoteOpsDiagnosisTask(name, sshHost, sshUser, workDir string, sshPort int) ProjectSearchResult {
+	return a.createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir, sshPort, taskSourceRemoteOpsDiagnosisTag)
+}
+
 // findOrCreateRemoteCodingTask returns one task record per SSH target. The
 // caller must hold remoteCodingTaskMu. The boolean reports whether the record
 // was reused, which keeps protocol clients from doing an unlocked preflight
@@ -1099,7 +1186,7 @@ func (a *App) findOrCreateRemoteCodingTask(name, sshHost, sshUser, workDir strin
 	}
 
 	if existing := a.FindRemoteCodingTaskByMeta(host, user, remoteWorkDir); strings.TrimSpace(existing.ProjectPath) != "" {
-		if err := a.updateRemoteCodingTaskMeta(existing.ProjectPath, host, user, remoteWorkDir, sshPort); err != nil {
+		if err := a.updateRemoteCodingTaskMeta(existing.ProjectPath, host, user, remoteWorkDir, sshPort, extraTags...); err != nil {
 			log.Printf("[remote-coding-task] refresh existing task metadata failed project=%s: %v", existing.ProjectPath, err)
 		}
 		return existing, true
@@ -1138,7 +1225,7 @@ func (a *App) reconcileRemoteCodingTask(preferredProjectPath, name, sshHost, ssh
 	// changing workflow A to an already-owned target B would leave A and B with
 	// identical remote metadata.
 	if target := a.FindRemoteCodingTaskByMeta(host, user, remoteWorkDir); strings.TrimSpace(target.ProjectPath) != "" {
-		if err := a.updateRemoteCodingTaskMeta(target.ProjectPath, host, user, remoteWorkDir, sshPort); err != nil {
+		if err := a.updateRemoteCodingTaskMeta(target.ProjectPath, host, user, remoteWorkDir, sshPort, extraTags...); err != nil {
 			log.Printf("[remote-coding-task] refresh target task metadata failed project=%s: %v", target.ProjectPath, err)
 		}
 		return target, true
@@ -1146,7 +1233,7 @@ func (a *App) reconcileRemoteCodingTask(preferredProjectPath, name, sshHost, ssh
 
 	preferredProjectPath = normalizeProjectSessionPath(preferredProjectPath)
 	if preferredProjectPath != "" {
-		if err := a.updateRemoteCodingTaskMeta(preferredProjectPath, host, user, remoteWorkDir, sshPort); err == nil {
+		if err := a.updateRemoteCodingTaskMeta(preferredProjectPath, host, user, remoteWorkDir, sshPort, extraTags...); err == nil {
 			return ProjectSearchResult{ID: preferredProjectPath, ProjectPath: preferredProjectPath}, false
 		}
 	}
@@ -1225,7 +1312,18 @@ func (a *App) PrepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshP
 	return a.prepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir, sshPort, "")
 }
 
+// PrepareRemoteOpsDiagnosisEnvironment connects and arms a remote incident
+// investigation. The initial prompt is forced to an inquiry so a classifier
+// outage cannot grant write-capable tooling or bootstrap a directory.
+func (a *App) PrepareRemoteOpsDiagnosisEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int) error {
+	return a.prepareRemoteCodingEnvironmentWithRequestKind(projectPath, sshHost, sshUser, sshPassword, workDir, sshPort, "", codingRequestInquiry)
+}
+
 func (a *App) prepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int, hostKeyFingerprint string) error {
+	return a.prepareRemoteCodingEnvironmentWithRequestKind(projectPath, sshHost, sshUser, sshPassword, workDir, sshPort, hostKeyFingerprint, "")
+}
+
+func (a *App) prepareRemoteCodingEnvironmentWithRequestKind(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int, hostKeyFingerprint string, requestKind codingRequestKind) error {
 	if a == nil {
 		return fmt.Errorf("app unavailable")
 	}
@@ -1266,18 +1364,23 @@ func (a *App) prepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshP
 	handler.pendingTemplateCodingProjectPath.Delete(userID)
 	handler.pendingV2SubAgentExecution.Store(userID, true)
 	handler.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
-		SessionID:  sessionID,
-		WorkDir:    remoteWorkDir,
-		ProjectDir: remoteWorkDir,
+		SessionID:           sessionID,
+		WorkDir:             remoteWorkDir,
+		ProjectDir:          remoteWorkDir,
+		RequestKind:         requestKind,
+		Maintenance:         requestKind == codingRequestInquiry,
+		ForceInitialInquiry: requestKind == codingRequestInquiry,
 	})
 	handler.workflowAgentLoopMarker.Store(userID, true)
 	// Same default workspace posture as local pure coding.
 	handler.setStickyCodingSessionPermissionMode(userID, "workspace", "remote", remoteWorkDir)
 	handler.syncStickyCodingFullAccessFromGlobal(userID, "remote", remoteWorkDir, a.isSubAgentFullAccessGranted())
 	handler.bindStickyRemoteCodingContext(userID, remoteCodingTemplateContext{
-		SessionID:  sessionID,
-		WorkDir:    remoteWorkDir,
-		ProjectDir: remoteWorkDir,
+		SessionID:   sessionID,
+		WorkDir:     remoteWorkDir,
+		ProjectDir:  remoteWorkDir,
+		RequestKind: requestKind,
+		Maintenance: requestKind == codingRequestInquiry,
 	}, host, user, sshPort)
 	log.Printf("[remote-coding-env] prepared project=%s session=%s host=%s@%s:%d workdir=%s session_full_access=true", projectPath, sessionID, user, host, sshPort, remoteWorkDir)
 	return nil
@@ -1355,8 +1458,11 @@ type CodingWorkbenchStatus struct {
 	RemoteUser       string `json:"remote_user,omitempty"`
 	RemotePort       int    `json:"remote_port,omitempty"`
 	RemoteWorkDir    string `json:"remote_work_dir,omitempty"`
-	RemoteSessionID  string `json:"remote_session_id,omitempty"`
-	Message          string `json:"message,omitempty"`
+	// RemoteSafety is retained by the task's durable origin tag so reconnects
+	// preserve the incident diagnosis's evidence-only first turn.
+	RemoteSafety    string `json:"remote_safety,omitempty"`
+	RemoteSessionID string `json:"remote_session_id,omitempty"`
+	Message         string `json:"message,omitempty"`
 }
 
 func (a *App) remoteCodingMetaFromTaskTags(projectPath string) (host, user, workDir string, port int) {
@@ -1544,6 +1650,9 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	if a != nil && a.memoryStore != nil {
 		if pi := a.memoryStore.ProjectIndex(); pi != nil {
 			if rec := pi.Get(projectPath); rec != nil {
+				if projectRecordHasTag(*rec, taskSourceRemoteOpsDiagnosisTag) {
+					st.RemoteSafety = "diagnosis"
+				}
 				if projectRecordHasTag(*rec, taskRemoteCodingDevTag) {
 					st.Kind = "remote"
 				} else if projectRecordHasTag(*rec, taskCodingDevTag) {
@@ -1768,11 +1877,19 @@ func (a *App) EnsureCodingWorkbenchArmed(projectPath string) (CodingWorkbenchSta
 			st.Message = "remote work directory missing; reconnect required"
 			return st, nil
 		}
-		handler.rearmStickyRemoteCodingEnvironment(userID, remoteCodingTemplateContext{
-			SessionID:  sessionID,
-			WorkDir:    workDir,
-			ProjectDir: projectDir,
-		})
+		remoteCtx := remoteCodingTemplateContext{
+			SessionID:   sessionID,
+			WorkDir:     workDir,
+			ProjectDir:  projectDir,
+			Maintenance: st.RemoteSafety == "diagnosis",
+		}
+		// A diagnosis task can be restored before its first turn is sent. Preserve
+		// the evidence-only first-turn lock through restart/reopen; once a turn is
+		// recorded, regular explicit follow-ups use normal remote coding routing.
+		if st.RemoteSafety == "diagnosis" && mem.TurnCount == 0 {
+			remoteCtx.ForceInitialInquiry = true
+		}
+		handler.rearmStickyRemoteCodingEnvironment(userID, remoteCtx)
 		// Do not re-seed path trust when the user explicitly chose "请求授权".
 		if !mem.SessionFullAccess && !stickyCodingPermissionIsRequest(mem.SessionPermissionMode) {
 			handler.setStickyCodingSessionPermissionMode(userID, "workspace", "remote", projectDir)
@@ -3795,6 +3912,7 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 
 	// Create new session entry in the index.
 	now := time.Now()
+	agentMode, remoteHost, remoteSafety := a.projectTabIndexCodingMetadata(projectPath)
 	index, err := persist.LoadIndex()
 	if err != nil {
 		log.Printf("[CreateProjectTabSession] LoadIndex failed: %v", err)
@@ -3807,6 +3925,9 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		if entry.ID == tabID {
 			index.Tabs[i].Title = projectName
 			index.Tabs[i].ProjectPath = projectPath
+			index.Tabs[i].AgentMode = agentMode
+			index.Tabs[i].RemoteHost = remoteHost
+			index.Tabs[i].RemoteSafety = remoteSafety
 			index.Tabs[i].LastActiveAt = now.Unix()
 			index.Tabs[i].Archived = false // Un-archive: tab is being re-opened
 			found = true
@@ -3819,6 +3940,9 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 			Type:         "project",
 			Title:        projectName,
 			ProjectPath:  projectPath,
+			AgentMode:    agentMode,
+			RemoteHost:   remoteHost,
+			RemoteSafety: remoteSafety,
 			LastActiveAt: now.Unix(),
 			Archived:     false,
 		})
@@ -3881,10 +4005,14 @@ func (a *App) upsertProjectTabIndexEntry(persist *ProjectTabSessionPersist, tabI
 		index = &TabIndex{Tabs: []TabIndexEntry{}}
 	}
 	projectName := a.projectTabDisplayName(projectPath)
+	agentMode, remoteHost, remoteSafety := a.projectTabIndexCodingMetadata(projectPath)
 	for i, entry := range index.Tabs {
 		if entry.ID == tabID {
 			index.Tabs[i].Title = projectName
 			index.Tabs[i].ProjectPath = projectPath
+			index.Tabs[i].AgentMode = agentMode
+			index.Tabs[i].RemoteHost = remoteHost
+			index.Tabs[i].RemoteSafety = remoteSafety
 			index.Tabs[i].LastActiveAt = now.Unix()
 			index.Tabs[i].Archived = false
 			if err := persist.SaveIndex(index); err != nil {
@@ -3898,12 +4026,46 @@ func (a *App) upsertProjectTabIndexEntry(persist *ProjectTabSessionPersist, tabI
 		Type:         "project",
 		Title:        projectName,
 		ProjectPath:  projectPath,
+		AgentMode:    agentMode,
+		RemoteHost:   remoteHost,
+		RemoteSafety: remoteSafety,
 		LastActiveAt: now.Unix(),
 		Archived:     false,
 	})
 	if err := persist.SaveIndex(index); err != nil {
 		log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
 	}
+}
+
+// projectTabIndexCodingMetadata returns presentation metadata for a persisted
+// tab. The task record remains authoritative; the index only prevents a
+// restored remote diagnosis tab from briefly behaving like ordinary chat while
+// its first status refresh is still in flight.
+func (a *App) projectTabIndexCodingMetadata(projectPath string) (agentMode, remoteHost, remoteSafety string) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return "", "", ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil || a.memoryStore.ProjectIndex() == nil {
+		return "", "", ""
+	}
+	rec := a.memoryStore.ProjectIndex().Get(projectPath)
+	if rec == nil {
+		return "", "", ""
+	}
+	if projectRecordHasTag(*rec, taskRemoteCodingDevTag) {
+		agentMode = taskRemoteCodingDevTag
+		remoteHost, _, _, _ = a.remoteCodingMetaFromTaskTags(projectPath)
+		if projectRecordHasTag(*rec, taskSourceRemoteOpsDiagnosisTag) {
+			remoteSafety = "diagnosis"
+		}
+		return agentMode, remoteHost, remoteSafety
+	}
+	if projectRecordHasTag(*rec, taskCodingDevTag) {
+		return taskCodingDevTag, "", ""
+	}
+	return "", "", ""
 }
 
 // buildProjectTabContextMessage recalls project-related entries from memory
@@ -4546,6 +4708,7 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 		}
 		if entry.ProjectPath != "" {
 			entry.Title = a.projectTabDisplayName(entry.ProjectPath)
+			entry.AgentMode, entry.RemoteHost, entry.RemoteSafety = a.projectTabIndexCodingMetadata(entry.ProjectPath)
 		}
 		if projectIndex != nil && entry.ProjectPath != "" {
 			if projectIndex.IsHidden(entry.ProjectPath) || projectIndex.IsArchived(entry.ProjectPath) {

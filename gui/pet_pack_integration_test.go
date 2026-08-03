@@ -37,9 +37,11 @@ func TestSanitizePetConfigUsesRegistryAllowlist(t *testing.T) {
 	// inject into registry via rescan with dir
 	// simpler: call SanitizeSkinID path by putting pack on disk
 	// Already tested in petpack; here verify official retained
-	cfg2 := corelib.AppConfig{PetSkin: "dev-claw", PetVariant: "", PetVariantMigrated: false}
+	// dev-claw is retired from the official list; clawmate is the remaining
+	// official skin and must survive sanitization against a ready registry.
+	cfg2 := corelib.AppConfig{PetSkin: "clawmate", PetVariant: "", PetVariantMigrated: false}
 	sanitizePetConfig(&cfg2)
-	if cfg2.PetSkin != "dev-claw" {
+	if cfg2.PetSkin != "clawmate" {
 		t.Fatalf("official wiped: %q", cfg2.PetSkin)
 	}
 	if cfg2.PetVariant != petpack.VariantDefault {
@@ -109,12 +111,12 @@ func TestAppSetDesktopPetStateBridge(t *testing.T) {
 	app := &App{}
 	// K11: the bridge never creates the pet window just to apply state.
 	app.SetDesktopPetState("listening", 0)
-	if got := app.GetDesktopPetState(); got != "idle" {
-		t.Fatalf("bridge without window should stay idle, got %q", got)
+	if fa := app.existingFloatingAssistant(); fa != nil {
+		t.Fatal("bridge without window must not create the floating assistant")
 	}
 	app.floatingAssistant = NewFloatingAssistantManager(nil)
 	app.SetDesktopPetState("listening", 0)
-	if got := app.GetDesktopPetState(); got != "listening" {
+	if got := app.floatingAssistant.CurrentPetRuntimeState(); got != "listening" {
 		t.Fatalf("bridge state = %q", got)
 	}
 }

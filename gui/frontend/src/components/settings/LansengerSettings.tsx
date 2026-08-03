@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { KnowledgeListSources, ListLansengerGroups, LoadConfig, RestartLansenger, SelectVEAllowedDirectory, SetLansengerGroupAllowed, SetLansengerGroupIgnored, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { Suspense, lazy, type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { channelModeLabel, followLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 import { useDialog } from '../CustomDialog';
@@ -27,8 +27,8 @@ const UtilitiesWatchPanel = lazy(() =>
 );
 
 type LansengerSettingsProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     saveRemoteConfigField: (patch: Record<string, any>) => any;
     lansengerStatus: string;
@@ -219,7 +219,7 @@ export const LansengerSettings = ({
                 // Normalize through AppConfig so group-policy fields are retained
                 // the same way as PatchConfigFields responses.
                 try {
-                    setConfig(new main.AppConfig(c));
+                    setConfig(new corelib.AppConfig(c));
                 } catch {
                     setConfig(c);
                 }

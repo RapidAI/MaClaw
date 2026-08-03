@@ -362,6 +362,25 @@ func TestRearmStickyRemoteCodingEnvironmentKeepsRecreatedSession(t *testing.T) {
 	}
 }
 
+func TestRearmStickyRemoteCodingEnvironmentPreservesInitialDiagnosisInquiry(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	h.rearmStickyRemoteCodingEnvironment(userID, remoteCodingTemplateContext{
+		SessionID:           "ssh-diagnosis-1",
+		WorkDir:             "/srv/app",
+		ProjectDir:          "/srv/app",
+		ForceInitialInquiry: true,
+	})
+	raw, ok := h.pendingTemplateRemoteCoding.Load(userID)
+	if !ok {
+		t.Fatal("pendingTemplateRemoteCoding missing")
+	}
+	ctx, _ := raw.(remoteCodingTemplateContext)
+	if !ctx.ForceInitialInquiry {
+		t.Fatalf("re-armed diagnosis context lost first-turn inquiry lock: %+v", ctx)
+	}
+}
+
 func TestRecoverStickyRemoteCodingSSHSessionRequiresReconnectMetadata(t *testing.T) {
 	h := &IMMessageHandler{}
 	ctx := remoteCodingTemplateContext{SessionID: "ssh_stale_1", WorkDir: "/home/u/app", ProjectDir: "/home/u/app"}

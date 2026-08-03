@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "moods": ["calm", "curious", "focused", "pleased", "concerned", "tired"],
+  "layers": ["body", "expression", "gaze", "secondary"],
+  "behaviors": {
+    "idle_breathe":{"enter":"idle_breathe_in","loop":"idle_breathe_loop","exit":"idle_breathe_out","weight":5,"min_ms":3600,"max_ms":6200,"cooldown_ms":8000,"moods":["calm"]},
+    "idle_observe_left":{"enter":"idle_observe_left_in","loop":"idle_observe_left_loop","exit":"idle_observe_left_out","weight":3,"min_ms":2800,"max_ms":4900,"cooldown_ms":15000,"moods":["calm","curious"]},
+    "idle_observe_right":{"enter":"idle_observe_right_in","loop":"idle_observe_right_loop","exit":"idle_observe_right_out","weight":3,"min_ms":2800,"max_ms":4900,"cooldown_ms":15000,"moods":["calm","curious"]},
+    "idle_blink":{"enter":"idle_blink_in","loop":"idle_blink_loop","exit":"idle_blink_out","weight":4,"min_ms":1200,"max_ms":1900,"cooldown_ms":7000,"moods":["calm","focused"]},
+    "idle_adjust":{"enter":"idle_adjust_in","loop":"idle_adjust_loop","exit":"idle_adjust_out","weight":2,"min_ms":2600,"max_ms":4300,"cooldown_ms":22000,"moods":["calm"]},
+    "idle_stretch":{"enter":"idle_stretch_in","loop":"idle_stretch_loop","exit":"idle_stretch_out","weight":1,"min_ms":3200,"max_ms":4600,"cooldown_ms":42000,"moods":["tired","calm"]},
+    "idle_rest":{"enter":"idle_rest_in","loop":"idle_rest_loop","exit":"idle_rest_out","weight":1,"min_ms":4600,"max_ms":7200,"cooldown_ms":38000,"moods":["tired"]},
+    "idle_listen_world":{"enter":"idle_listen_world_in","loop":"idle_listen_world_loop","exit":"idle_listen_world_out","weight":2,"min_ms":2500,"max_ms":4200,"cooldown_ms":24000,"moods":["curious"]},
+    "idle_claw_tidy":{"enter":"idle_claw_tidy_in","loop":"idle_claw_tidy_loop","exit":"idle_claw_tidy_out","weight":2,"min_ms":2400,"max_ms":3900,"cooldown_ms":28000,"moods":["calm"]},
+    "idle_return_focus":{"enter":"idle_return_focus_in","loop":"idle_return_focus_loop","exit":"idle_return_focus_out","weight":2,"min_ms":1800,"max_ms":3000,"cooldown_ms":18000,"moods":["focused","curious"]}
+  },
+  "states": {
+    "idle":{"behavior_pool":["idle_breathe","idle_observe_left","idle_observe_right","idle_blink","idle_adjust","idle_stretch","idle_rest","idle_listen_world","idle_claw_tidy","idle_return_focus"],"mood":"calm","expression":"expr_calm","gaze":"gaze_wander","secondary":"secondary_idle"},
+    "listening":{"enter":"listen_in","loop":"listen_loop","exit":"listen_out","mood":"curious","expression":"expr_curious","gaze":"gaze_left","secondary":"secondary_listen"},
+    "thinking":{"enter":"think_in","loop":"think_loop","exit":"think_out","mood":"focused","expression":"expr_focus","gaze":"gaze_up","secondary":"secondary_think"},
+    "speaking":{"enter":"speak_in","loop":"speak_loop","exit":"speak_out","mood":"calm","expression":"expr_speak","gaze":"gaze_center","secondary":"secondary_speak"},
+    "done":{"enter":"done_in","loop":"done_loop","exit":"done_out","mood":"pleased","expression":"expr_pleased","gaze":"gaze_center","secondary":"secondary_done"},
+    "alert":{"enter":"alert_in","loop":"alert_loop","exit":"alert_out","mood":"concerned","expression":"expr_concerned","gaze":"gaze_right","secondary":"secondary_alert"},
+    "quiet":{"enter":"quiet_in","loop":"quiet_loop","exit":"quiet_out","mood":"tired","expression":"expr_tired","gaze":"gaze_center","secondary":"secondary_quiet"}
+  },
+  "events": {
+    "click":{"play":"react_click_greet","interrupt":"soft","mood":"pleased","cooldown_ms":3000},
+    "hover":{"play":"react_hover_peek","interrupt":"soft","mood":"curious","cooldown_ms":4500},
+    "drag_start":{"play":"react_drag_brace","interrupt":"soft","mood":"concerned","cooldown_ms":1000},
+    "drag_end":{"play":"react_drag_release","interrupt":"soft","mood":"calm","cooldown_ms":1000},
+    "task_started":{"play":"react_task_focus","interrupt":"after_loop","mood":"focused","cooldown_ms":4000},
+    "task_done":{"play":"react_task_celebrate","interrupt":"after_loop","mood":"pleased","cooldown_ms":7000},
+    "task_failed":{"play":"react_task_concern","interrupt":"after_loop","mood":"concerned","cooldown_ms":7000},
+    "long_idle":{"play":"react_long_idle_rest","interrupt":"after_loop","mood":"tired","cooldown_ms":20000}
+  },
+  "reactions": {
+    "click_greet":{"event":"click","play":"react_click_greet","interrupt":"soft","mood":"pleased","cooldown_ms":3200,"weight":3},
+    "click_notice":{"event":"click","play":"react_click_notice","interrupt":"soft","mood":"curious","cooldown_ms":2800,"weight":2},
+    "hover_peek":{"event":"hover","play":"react_hover_peek","interrupt":"soft","mood":"curious","cooldown_ms":4000,"weight":3},
+    "hover_blink":{"event":"hover","play":"react_hover_blink","interrupt":"soft","mood":"calm","cooldown_ms":5000,"weight":1},
+    "drag_brace":{"event":"drag_start","play":"react_drag_brace","interrupt":"soft","mood":"concerned","cooldown_ms":1200,"weight":3},
+    "drag_release":{"event":"drag_end","play":"react_drag_release","interrupt":"soft","mood":"calm","cooldown_ms":1200,"weight":3},
+    "task_focus":{"event":"task_started","play":"react_task_focus","interrupt":"after_loop","mood":"focused","cooldown_ms":4500,"weight":3},
+    "task_listen":{"event":"task_started","play":"react_task_listen","interrupt":"after_loop","mood":"curious","cooldown_ms":5000,"weight":1},
+    "task_celebrate":{"event":"task_done","play":"react_task_celebrate","interrupt":"after_loop","mood":"pleased","cooldown_ms":8000,"weight":3},
+    "task_settle":{"event":"task_done","play":"react_task_settle","interrupt":"after_loop","mood":"calm","cooldown_ms":9000,"weight":1},
+    "task_concern":{"event":"task_failed","play":"react_task_concern","interrupt":"after_loop","mood":"concerned","cooldown_ms":8000,"weight":3},
+    "long_idle_rest":{"event":"long_idle","play":"react_long_idle_rest","interrupt":"after_loop","mood":"tired","cooldown_ms":22000,"weight":3}
+  },
+  "rules":{"no_repeat_last":3,"crossfade_ms":180,"max_interrupt_ms":800}
+}

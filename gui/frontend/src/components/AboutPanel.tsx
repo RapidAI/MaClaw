@@ -1,12 +1,11 @@
 import ReactMarkdown from 'react-markdown';
+import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
+import { CreateMobileAuthDesktopQRSession, GetHubUserRanking, GetRemoteRegistrationProfile, PatchConfigFields, ProbeRemoteHub, ReadErrorLog, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../wailsjs/go/main/App';
 import { QRCodeSVG } from 'qrcode.react';
-import type { MouseEvent } from 'react';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { MouseEvent, useCallback, useEffect, useRef, useState } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
-import { ProbeRemoteHub, GetRemoteRegistrationProfile, ReadErrorLog, GetHubUserRanking, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode, CreateMobileAuthDesktopQRSession, PatchConfigFields } from '../../wailsjs/go/main/App';
-import type { main } from '../../wailsjs/go/models';
+import { corelib, main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
 import { MemoryHealthDialog } from './MemoryHealthDialog';
@@ -53,7 +52,7 @@ type AboutPanelProps = {
     appVersion: string;
     buildNumber: string;
     thanksContent: string;
-    config?: Partial<main.AppConfig> | null;
+    config?: Partial<corelib.AppConfig> | null;
     t: (key: string) => string;
     onOpenWebsite: () => void;
     onCheckUpdate: () => void;

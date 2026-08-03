@@ -50,6 +50,38 @@ func TestLocalStartMenuWizardFillsAndConfirms(t *testing.T) {
 	}
 }
 
+func TestLocalStartMenuRetainsRemoteDiagnosisSafety(t *testing.T) {
+	app := NewApp()
+	service := app.localStartMenuService()
+	service.templates = sanitizeLocalStartMenuTemplates([]LocalStartMenuTemplate{{
+		Title:        "Diagnose remote service",
+		Body:         "Inspect [service] startup failure",
+		AgentMode:    "remote_coding_dev",
+		RemoteSafety: "diagnosis",
+		CodingEnv: &localStartMenuCodingEnv{Remote: &localStartMenuRemoteEnv{
+			Host: "ops.example.test", User: "ops", WorkDir: "/srv/service", Port: 22,
+		}},
+	}})
+	service.loaded = true
+
+	key := "lansenger:user"
+	_ = service.handle(key, "/startmenu")
+	_ = service.handle(key, "1")
+	_ = service.handle(key, "service api")
+	_ = service.handle(key, "/run")
+	result := service.handle(key, "/confirm")
+	if !result.Confirmed || result.RemoteSafety != "diagnosis" {
+		t.Fatalf("diagnosis safety was not retained: %#v", result)
+	}
+
+	local := sanitizeLocalStartMenuTemplates([]LocalStartMenuTemplate{{
+		Title: "local", Body: "task", AgentMode: "coding_dev", RemoteSafety: "diagnosis",
+	}})
+	if local[0].RemoteSafety != "" {
+		t.Fatalf("local template retained remote safety: %#v", local[0])
+	}
+}
+
 func TestLocalStartMenuListsSavedCommonTasksOnly(t *testing.T) {
 	app := NewApp()
 	service := app.localStartMenuService()

@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { WelcomePromptParamDialog } from "../WelcomePromptParamDialog";
 import { lightTheme } from "../aiAssistantPanelTheme";
-import { WELCOME_FIELD_VALUES_KEY, welcomePromptKey } from "../welcomeTaskMemory";
+import {
+    WELCOME_CODING_ENV_KEY,
+    WELCOME_FIELD_VALUES_KEY,
+    welcomePromptKey,
+} from "../welcomeTaskMemory";
 
 describe("WelcomePromptParamDialog", () => {
     beforeEach(() => {
@@ -118,6 +122,39 @@ describe("WelcomePromptParamDialog", () => {
             autoCreate: true,
             remote: { host: "10.0.0.8", user: "ubuntu", workDir: "/app", password: "secret" },
         });
+    });
+
+    it("labels remote ops as a read-only SSH diagnosis and forwards its safety posture", () => {
+        const onSubmit = vi.fn();
+        render(
+            <WelcomePromptParamDialog
+                open
+                onClose={() => {}}
+                lang="zh"
+                theme={lightTheme}
+                title="排查服务器磁盘占满"
+                template={"症状：[磁盘告警]"}
+                submitMode="remote_coding_dev"
+                remoteSafety="diagnosis"
+                onSubmit={onSubmit}
+            />,
+        );
+        expect(screen.getByTestId("welcome-prompt-param-submit").textContent).toContain("只读诊断");
+        expect(screen.getByText(/首轮只读：不会改文件、重启服务或创建目录/)).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId("welcome-remote-host"), { target: { value: "10.0.0.8" } });
+        fireEvent.change(screen.getByTestId("welcome-remote-user"), { target: { value: "ubuntu" } });
+        fireEvent.change(screen.getByTestId("welcome-remote-password"), { target: { value: "secret" } });
+        fireEvent.change(screen.getByTestId("welcome-remote-workdir"), { target: { value: "/srv/app" } });
+        fireEvent.change(screen.getByLabelText("症状"), { target: { value: "磁盘 100%" } });
+        fireEvent.click(screen.getByTestId("welcome-prompt-param-submit"));
+
+        expect(onSubmit.mock.calls[0][3]).toMatchObject({
+            autoCreate: true,
+            remoteSafety: "diagnosis",
+            remote: { host: "10.0.0.8", user: "ubuntu", workDir: "/srv/app", password: "secret" },
+        });
+        expect(localStorage.getItem(WELCOME_CODING_ENV_KEY)).toBeNull();
     });
 
     it("applies suggestion chips to the field value", () => {

@@ -286,6 +286,9 @@ func (s *SQLiteStore) RefreshSourceTopicLinksByFilter(ctx context.Context, opts 
 	if opts.Limit > 1000 {
 		opts.Limit = 1000
 	}
+	if opts.Status == "" {
+		opts.IncludeDisabled = true
+	}
 	sources, err := s.ListSources(ctx, opts)
 	if err != nil {
 		return SourceTopicLinkBuildResult{}, err
@@ -363,6 +366,9 @@ func (s *SQLiteStore) SourceGraph(ctx context.Context, opts ListSourcesOptions, 
 	}
 	if edgeLimit > 2000 {
 		edgeLimit = 2000
+	}
+	if opts.Status == "" {
+		opts.IncludeDisabled = true
 	}
 	sources, err := s.ListSources(ctx, opts)
 	if err != nil {

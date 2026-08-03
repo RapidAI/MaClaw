@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +18,10 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
+	_ "modernc.org/sqlite"
 )
 
 type hubCenterHTTPTestServices struct {
@@ -109,6 +112,16 @@ func doJSONRequest(t *testing.T, handler http.Handler, method, target string, bo
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
+}
+
+func TestRouterDoesNotServePetPackHelp(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	rec := httptest.NewRecorder()
+	svc.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/pet-pack-help?lang=zh", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("pet-pack-help status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
 }
 
 func responseErrorCode(t *testing.T, rr *httptest.ResponseRecorder) string {
@@ -1207,6 +1220,43 @@ func TestManagementHandlersRequireAdminToken(t *testing.T) {
 	resp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/admin/hubs", nil, "")
 	if resp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without admin token, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestExpertMarketAdminRoutesRequireAdminToken(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	smStore, err := skillmarket.NewStore(db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := skillmarket.NewUserService(smStore, nil)
+	authSvc := skillmarket.NewAuthService(smStore, nil, "")
+	handlers := NewSkillMarketHandlers(SkillMarketConfig{Store: smStore, UserSvc: users, AuthSvc: authSvc, CreditsSvc: skillmarket.NewCreditsService(smStore), DataDir: t.TempDir()})
+	// Use the complete test service for admin authentication and replace only the
+	// optional Skill Market handler passed into its otherwise production router.
+	svc := newHubCenterHTTPTestServices(t)
+	svc.handler = NewRouter(svc.admins, svc.hubs, svc.entry, nil, nil, svc.store.FailureLogs, nil, nil, handlers, svc.store.System, svc.store.News, nil)
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/admin/expert-market/experts"},
+		{http.MethodGet, "/api/v1/admin/expert-market/experts/example/events"},
+		{http.MethodPost, "/api/v1/admin/expert-market/experts/example/approve"},
+		{http.MethodPost, "/api/v1/admin/expert-market/experts/example/reject"},
+		{http.MethodPost, "/api/v1/admin/expert-market/experts/example/unlist"},
+		{http.MethodDelete, "/api/v1/admin/expert-market/experts/example"},
+		{http.MethodDelete, "/api/v1/admin/expert-market/experts/example/purge"},
+	} {
+		resp := doJSONRequest(t, svc.handler, route.method, route.path, nil, "")
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s: expected 401, got %d body=%s", route.method, route.path, resp.Code, resp.Body.String())
+		}
+	}
+	retired := doJSONRequest(t, svc.handler, http.MethodPost, "/api/v1/admin/expert-market/experts/example/list", nil, "")
+	if retired.Code != http.StatusNotFound {
+		t.Fatalf("retired list route: expected 404, got %d body=%s", retired.Code, retired.Body.String())
 	}
 }
 

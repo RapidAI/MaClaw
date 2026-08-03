@@ -87,6 +87,14 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	// stage above can re-introduce tools outside the whitelist.
 	tools = h.filterToolsForExpertUser(userID, tools)
 	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		// Routing may choose only a network tool for a general support question.
+		// An authorised group knowledge base is still mandatory for the first
+		// retrieval step, so restore knowledge_search from the complete catalog
+		// before applying the group allow-list. An expert's explicit allow-list
+		// remains authoritative and is never bypassed here.
+		if ctx.LansengerGroupPermissions.allowsKnowledge() {
+			tools = h.ensureLansengerGroupKnowledgeSearchTool(userID, tools)
+		}
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
 
@@ -101,6 +109,35 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		BrowserBeforeWF:  browserBeforeWF,
 		BrowserPinned:    browserSessionPinned,
 	}
+}
+
+func containsAgentLoopToolNamed(tools []map[string]interface{}, name string) bool {
+	for _, def := range tools {
+		if tool.ExtractToolName(def) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureLansengerGroupKnowledgeSearchTool keeps the authorised retrieval
+// primitive visible even when routing or later tool augmentation narrowed the
+// list to a web-only subset. A configured expert allow-list still wins.
+func (h *IMMessageHandler) ensureLansengerGroupKnowledgeSearchTool(userID string, tools []map[string]interface{}) []map[string]interface{} {
+	if h == nil || containsAgentLoopToolNamed(tools, "knowledge_search") || expertDefForUserID(userID) != nil {
+		return tools
+	}
+	for _, def := range h.getTools() {
+		if tool.ExtractToolName(def) == "knowledge_search" {
+			return append(tools, def)
+		}
+	}
+	if h != nil && h.registry != nil {
+		if registered, ok := h.registry.Get("knowledge_search"); ok && registered != nil {
+			return append(tools, registeredToolToDef(*registered))
+		}
+	}
+	return tools
 }
 
 func (h *IMMessageHandler) workflowToolFilterOwnerAndDecision(userID string, ctx *LoopContext) (string, bool) {

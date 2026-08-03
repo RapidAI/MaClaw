@@ -4114,6 +4114,9 @@ func TestSkillRunnerTryAutoUploadUsesQualityGateAfterSingleSuccess(t *testing.T)
 	cfg.RemoteViewerToken = "test-token"
 	cfg.RemoteHubCenterURL = server.URL
 	cfg.RemoteHubCenterURLs = []string{server.URL}
+	// Lower the auto-upload success threshold so the single recorded success
+	// qualifies; this test focuses on the quality gate and hash dedupe.
+	cfg.SkillAutoUploadMinSuccesses = 1
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:         "quality-upload-skill",
 		SkillDir:     dir,
@@ -4126,17 +4129,15 @@ func TestSkillRunnerTryAutoUploadUsesQualityGateAfterSingleSuccess(t *testing.T)
 	}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillMarketClient = NewSkillMarketClient(app)
-	app.autoUploadTrigger = NewAutoUploadTrigger(app.skillMarketClient, func() string { return "user@example.com" })
 	app.skillLifecycle = NewSkillLifecycleManager(app)
 	runner := NewSkillRunner(app.skillExecutor)
-	runner.uploadTrigger = app.autoUploadTrigger
 
-	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-upload-skill", SkillDir: dir}, &skillRun{status: SkillRunStatus{
+	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-upload-skill", SkillDir: dir}, &corelib.NLSkillEntry{Name: "quality-upload-skill", SuccessCount: 1}, &skillRun{status: SkillRunStatus{
 		Skill:  "quality-upload-skill",
 		Status: "success",
 		Steps:  []StepResult{{Status: "success"}},
 	}})
-	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-upload-skill", SkillDir: dir}, &skillRun{status: SkillRunStatus{
+	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-upload-skill", SkillDir: dir}, &corelib.NLSkillEntry{Name: "quality-upload-skill", SuccessCount: 1}, &skillRun{status: SkillRunStatus{
 		Skill:  "quality-upload-skill",
 		Status: "success",
 		Steps:  []StepResult{{Status: "success"}},
@@ -4154,7 +4155,7 @@ func TestSkillRunnerTryAutoUploadUsesQualityGateAfterSingleSuccess(t *testing.T)
 	}
 }
 
-func TestSkillRunnerTryAutoUploadBlocksWhenQualityGateFails(t *testing.T) {
+func TestSkillRunnerTryAutoUploadSkipsBelowSuccessThreshold(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -4172,22 +4173,21 @@ func TestSkillRunnerTryAutoUploadBlocksWhenQualityGateFails(t *testing.T) {
 	}
 	cfg.RemoteEmail = "user@example.com"
 	cfg.NLSkills = []corelib.NLSkillEntry{{
-		Name:     "quality-blocked-skill",
-		SkillDir: dir,
-		Source:   "file",
-		Status:   "active",
+		Name:         "quality-blocked-skill",
+		SkillDir:     dir,
+		Source:       "file",
+		Status:       "active",
+		SuccessCount: 1, // below the default skill_auto_upload_min_successes (3)
 	}}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillMarketClient = NewSkillMarketClient(app)
-	app.autoUploadTrigger = NewAutoUploadTrigger(app.skillMarketClient, func() string { return "user@example.com" })
 	app.skillLifecycle = NewSkillLifecycleManager(app)
 	runner := NewSkillRunner(app.skillExecutor)
-	runner.uploadTrigger = app.autoUploadTrigger
 
-	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-blocked-skill", SkillDir: dir}, &skillRun{status: SkillRunStatus{
+	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "quality-blocked-skill", SkillDir: dir}, &corelib.NLSkillEntry{Name: "quality-blocked-skill", SuccessCount: 1}, &skillRun{status: SkillRunStatus{
 		Skill:  "quality-blocked-skill",
 		Status: "success",
 		Steps:  []StepResult{{Status: "success"}},
@@ -4197,11 +4197,92 @@ func TestSkillRunnerTryAutoUploadBlocksWhenQualityGateFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListUploadQueue() error = %v", err)
 	}
-	if len(items) != 1 || items[0].Status != skillUploadStatusBlocked || items[0].QualityScore >= 70 {
-		t.Fatalf("upload queue = %+v", items)
+	if len(items) != 0 {
+		t.Fatalf("upload queue = %+v, want empty (below success threshold)", items)
 	}
-	if !strings.Contains(items[0].LastError, "successful verification run") {
-		t.Fatalf("LastError = %q, want verification quality reason", items[0].LastError)
+}
+
+func TestSkillRunnerTryAutoUploadSkipsWhenAutoUploadDisabled(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	dir := filepath.Join(tempHome, "skills", "disabled-upload-skill")
+	writeLifecycleTestSkill(t, dir, "disabled-upload-skill")
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "user@example.com"
+	// Master switch off: even a skill well above the success threshold must
+	// not be auto-uploaded.
+	cfg.SetSkillAutoUploadEnabled(false)
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:         "disabled-upload-skill",
+		SkillDir:     dir,
+		Source:       "file",
+		Status:       "active",
+		SuccessCount: 5,
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillMarketClient = NewSkillMarketClient(app)
+	app.skillLifecycle = NewSkillLifecycleManager(app)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "disabled-upload-skill", SkillDir: dir}, &corelib.NLSkillEntry{Name: "disabled-upload-skill", SuccessCount: 5}, &skillRun{status: SkillRunStatus{
+		Skill:  "disabled-upload-skill",
+		Status: "success",
+		Steps:  []StepResult{{Status: "success"}},
+	}})
+
+	items, err := app.skillLifecycle.ListUploadQueue()
+	if err != nil {
+		t.Fatalf("ListUploadQueue() error = %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("upload queue = %+v, want empty (skill_auto_upload_enabled=false)", items)
+	}
+}
+
+func TestSkillRunnerTryAutoUploadReportsOutcomeWithoutSkillDir(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillLifecycle = NewSkillLifecycleManager(app)
+	runner := NewSkillRunner(app.skillExecutor)
+	reporter := newSkillOutcomeReporter(app)
+	runner.outcomeReporter = reporter
+
+	// Config-only hub skill (no SkillDir): outcome reporting must still run
+	// (it feeds the global quality signal), but no upload may be enqueued.
+	runner.tryAutoUpload(&corelib.NLSkillEntry{Name: "hub-skill", HubSkillID: "hub-123"}, nil, &skillRun{status: SkillRunStatus{
+		Skill:  "hub-skill",
+		RunID:  "run-no-dir",
+		Status: "success",
+		Steps:  []StepResult{{Status: "success"}},
+	}})
+
+	reporter.mu.Lock()
+	_, reported := reporter.reportedRunIDs["run-no-dir"]
+	reporter.mu.Unlock()
+	if !reported {
+		t.Fatal("outcome should be reported even when the skill has no SkillDir")
+	}
+	items, err := app.skillLifecycle.ListUploadQueue()
+	if err != nil {
+		t.Fatalf("ListUploadQueue() error = %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("upload queue = %+v, want empty (skill has no SkillDir)", items)
 	}
 }
 

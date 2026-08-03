@@ -4,7 +4,12 @@ import {
     WELCOME_PROMPT_ICON_NAMES,
     welcomeCatalogErrors,
 } from "../welcomeScenarioCatalogGuards";
-import { SCENARIO_TABS, WELCOME_SCENARIO_PROMPTS_PER_TAB } from "../welcomeScenarioTasks";
+import {
+    getWelcomeOpsPrompt,
+    getWelcomeOpsPrompts,
+    SCENARIO_TABS,
+    WELCOME_SCENARIO_PROMPTS_PER_TAB,
+} from "../welcomeScenarioTasks";
 import { resolveWelcomeQuickHints, WELCOME_QUICK_HINTS } from "../welcomeQuickHints";
 
 describe("welcome scenario catalog", () => {
@@ -40,6 +45,25 @@ describe("welcome scenario catalog", () => {
         const resolved = resolveWelcomeQuickHints();
         expect(resolved.length).toBe(WELCOME_QUICK_HINTS.length);
         expect(resolved.length).toBeGreaterThan(0);
+    });
+
+    it("keeps local ops chat-based and makes every remote ops task an SSH diagnosis", () => {
+        const local = getWelcomeOpsPrompts("local");
+        const remote = getWelcomeOpsPrompts("remote");
+        expect(local).toHaveLength(WELCOME_SCENARIO_PROMPTS_PER_TAB);
+        expect(remote).toHaveLength(WELCOME_SCENARIO_PROMPTS_PER_TAB);
+        expect(local.every((prompt) => !prompt.agentMode)).toBe(true);
+        expect(remote.every((prompt) => (
+            prompt.agentMode === "remote_coding_dev" && prompt.remoteSafety === "diagnosis"
+        ))).toBe(true);
+
+        // Quick hints, recent tasks, and clipboard suggestions each pass a
+        // single catalog prompt through this same adapter.
+        expect(getWelcomeOpsPrompt(local[0], "remote")).toMatchObject({
+            textEn: local[0].textEn,
+            agentMode: "remote_coding_dev",
+            remoteSafety: "diagnosis",
+        });
     });
 
     it("detects a broken fixture via the pure auditor", () => {

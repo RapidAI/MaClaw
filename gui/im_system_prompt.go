@@ -88,6 +88,9 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	if capabilityGapContext != "" {
 		systemPrompt += "\n\n" + capabilityGapContext
 	}
+	if clientContext := buildClientCapabilityPrompt(msg.ClientCapabilities); clientContext != "" {
+		systemPrompt += "\n\n" + clientContext
+	}
 
 	// During V2 workflow agent loops, skip the desktop/IM workflow doc delivery
 	// overrides. The phase prompt already contains precise output instructions
@@ -144,7 +147,15 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) strin
 	b.WriteString("If the user request turns out to require code, files, project context, multi-step planning, or missing parameters, say briefly that the full agent path is needed instead of improvising.\n")
 	b.WriteString(fmt.Sprintf("Current local time: %s\n", now.Format("2006-01-02 15:04:05 -0700")))
 	b.WriteString(fmt.Sprintf("Execution profile: layer=%s task=%s confidence=%.2f reason=%s\n", profile.Layer, profile.TaskType, profile.Confidence, profile.Reason))
+	if clientContext := buildClientCapabilityPrompt(msg.ClientCapabilities); clientContext != "" {
+		b.WriteString(clientContext)
+		b.WriteByte('\n')
+	}
 	return b.String()
+}
+
+func buildClientCapabilityPrompt(capabilities *agent.ClientCapabilities) string {
+	return agent.BuildClientCapabilityPrompt(capabilities)
 }
 
 func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMessage ...string) string {

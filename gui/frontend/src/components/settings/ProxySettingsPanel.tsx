@@ -1,11 +1,11 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, SetStateAction } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { ProxyScopeSettings } from './ProxyScopeSettings';
 
 type ProxySettingsPanelProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     isWindows: boolean;
     lang: string;
     t: (key: string) => string;
@@ -13,7 +13,7 @@ type ProxySettingsPanelProps = {
 
 const textForLang = localizeText;
 
-const buildConfig = (config: main.AppConfig | null, patch: Record<string, any>) => new main.AppConfig({ ...(config || {}), ...patch });
+const buildConfig = (config: corelib.AppConfig | null, patch: Record<string, any>) => new corelib.AppConfig({ ...(config || {}), ...patch });
 
 export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: ProxySettingsPanelProps) => {
     const updateConfig = (patch: Record<string, any>) => setConfig(buildConfig(config, patch));

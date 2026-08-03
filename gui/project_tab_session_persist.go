@@ -42,10 +42,15 @@ const (
 
 // TabIndexEntry represents a single tab entry in the _index.json file.
 type TabIndexEntry struct {
-	ID           string `json:"id"`
-	Type         string `json:"type"`
-	Title        string `json:"title"`
-	ProjectPath  string `json:"projectPath,omitempty"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Title       string `json:"title"`
+	ProjectPath string `json:"projectPath,omitempty"`
+	// AgentMode and RemoteSafety let restored tabs render the right coding
+	// environment before the first status refresh completes.
+	AgentMode    string `json:"agentMode,omitempty"`
+	RemoteHost   string `json:"remoteHost,omitempty"`
+	RemoteSafety string `json:"remoteSafety,omitempty"`
 	LastActiveAt int64  `json:"lastActiveAt"`
 	Archived     bool   `json:"archived"`
 }

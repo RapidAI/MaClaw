@@ -761,8 +761,9 @@ func (a *App) exportKnowledgePackageFile(req knowledge.ExportOptions) (knowledge
 	defer store.Close()
 
 	opts := knowledge.ListSourcesOptions{
-		SourceIDs: compactKnowledgeSourceIDStrings(req.SourceIDs),
-		Limit:     5000,
+		SourceIDs:       compactKnowledgeSourceIDStrings(req.SourceIDs),
+		Limit:           5000,
+		IncludeDisabled: true,
 	}
 	sources, err := store.ListSources(a.knowledgeContext(), opts)
 	if err != nil {
@@ -879,8 +880,9 @@ func (a *App) KnowledgeShareToHub(req KnowledgeHubShareRequest) (KnowledgeHubSha
 	defer store.Close()
 
 	opts := knowledge.ListSourcesOptions{
-		SourceIDs: compactKnowledgeSourceIDStrings(req.SourceIDs),
-		Limit:     5000,
+		SourceIDs:       compactKnowledgeSourceIDStrings(req.SourceIDs),
+		Limit:           5000,
+		IncludeDisabled: true,
 	}
 	if !req.IncludeDisabled {
 		opts.Status = "active"
@@ -1549,7 +1551,7 @@ func (a *App) KnowledgeSyncUpload(req KnowledgeSyncRequest) (KnowledgeSyncResult
 		return KnowledgeSyncResult{}, err
 	}
 	defer store.Close()
-	sources, err := store.ListSources(a.knowledgeContext(), knowledge.ListSourcesOptions{Limit: 5000})
+	sources, err := store.ListSources(a.knowledgeContext(), knowledge.ListSourcesOptions{Limit: 5000, IncludeDisabled: true})
 	if err != nil {
 		return KnowledgeSyncResult{}, err
 	}

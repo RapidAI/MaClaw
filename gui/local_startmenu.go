@@ -28,10 +28,11 @@ const localStartMenuMaxTaskRunes = 12_000
 var localStartMenuFieldPattern = regexp.MustCompile(`\[([^\[\]]+)\]`)
 
 type LocalStartMenuTemplate struct {
-	Title     string                   `json:"title"`
-	Body      string                   `json:"body"`
-	AgentMode string                   `json:"agentMode,omitempty"`
-	CodingEnv *localStartMenuCodingEnv `json:"codingEnv,omitempty"`
+	Title        string                   `json:"title"`
+	Body         string                   `json:"body"`
+	AgentMode    string                   `json:"agentMode,omitempty"`
+	RemoteSafety string                   `json:"remoteSafety,omitempty"`
+	CodingEnv    *localStartMenuCodingEnv `json:"codingEnv,omitempty"`
 }
 
 type localStartMenuCodingEnv struct {
@@ -65,11 +66,11 @@ type localStartMenuState struct {
 	UpdatedAt time.Time
 }
 type localStartMenuResult struct {
-	Handled                        bool
-	Reply                          string
-	Confirmed                      bool
-	TaskText, TaskTitle, AgentMode string
-	Env                            *localStartMenuCodingEnv
+	Handled                                      bool
+	Reply                                        string
+	Confirmed                                    bool
+	TaskText, TaskTitle, AgentMode, RemoteSafety string
+	Env                                          *localStartMenuCodingEnv
 }
 
 type localStartMenuService struct {
@@ -127,6 +128,9 @@ func sanitizeLocalStartMenuTemplates(in []LocalStartMenuTemplate) []LocalStartMe
 		}
 		if t.AgentMode != "coding_dev" && t.AgentMode != "remote_coding_dev" {
 			t.AgentMode = ""
+		}
+		if t.AgentMode != "remote_coding_dev" || t.RemoteSafety != "diagnosis" {
+			t.RemoteSafety = ""
 		}
 		if t.CodingEnv != nil {
 			t.CodingEnv.WorkingDir = strings.TrimSpace(t.CodingEnv.WorkingDir)
@@ -259,7 +263,7 @@ func (s *localStartMenuService) handle(key, text string) localStartMenuResult {
 		}
 		tpl := st.Templates[st.Selected]
 		delete(s.states, key)
-		return localStartMenuResult{Handled: true, Confirmed: true, TaskText: task, TaskTitle: tpl.Title, AgentMode: tpl.AgentMode, Env: tpl.CodingEnv}
+		return localStartMenuResult{Handled: true, Confirmed: true, TaskText: task, TaskTitle: tpl.Title, AgentMode: tpl.AgentMode, RemoteSafety: tpl.RemoteSafety, Env: tpl.CodingEnv}
 	}
 	// Do not silently reinterpret another slash command as a parameter value.
 	// In particular, `/run <name>` and `/exec ...` are passthrough commands;
@@ -483,7 +487,11 @@ func (a *App) openLocalStartMenuTask(result localStartMenuResult, platform, targ
 			return fmt.Errorf("远程开发环境信息不完整")
 		}
 		r := result.Env.Remote
-		task = a.CreateRemoteCodingTask(title, r.Host, r.User, r.WorkDir, r.Port)
+		if result.RemoteSafety == "diagnosis" {
+			task = a.CreateRemoteOpsDiagnosisTask(title, r.Host, r.User, r.WorkDir, r.Port)
+		} else {
+			task = a.CreateRemoteCodingTask(title, r.Host, r.User, r.WorkDir, r.Port)
+		}
 	} else if mode == "coding_dev" {
 		wd := ""
 		if result.Env != nil {
@@ -507,6 +515,6 @@ func (a *App) openLocalStartMenuTask(result localStartMenuResult, platform, targ
 	}
 	// Remote prompts stay in frontend tab state until SSH reconnect succeeds;
 	// local tasks still dispatch immediately.
-	a.emitEvent("im-startmenu-task-created", map[string]interface{}{"project_path": task.ProjectPath, "task_title": task.Name, "initial_message": result.TaskText, "auto_send": true, "prepare_mode": "new-agent", "agent_mode": mode, "remote_host": host, "remote_needs_reconnect": remote, "im_platform": platform, "im_target_uid": target, "im_is_group": isGroup})
+	a.emitEvent("im-startmenu-task-created", map[string]interface{}{"project_path": task.ProjectPath, "task_title": task.Name, "initial_message": result.TaskText, "auto_send": true, "prepare_mode": "new-agent", "agent_mode": mode, "remote_safety": result.RemoteSafety, "remote_host": host, "remote_needs_reconnect": remote, "im_platform": platform, "im_target_uid": target, "im_is_group": isGroup})
 	return nil
 }

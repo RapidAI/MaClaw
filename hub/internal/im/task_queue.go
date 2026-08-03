@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,16 +23,17 @@ var taskIDCounter atomic.Uint64
 
 // IMTask represents a single queued message that needs device routing.
 type IMTask struct {
-	ID           uint64
-	TenantID     string
-	UserID       string
-	PlatformName string
-	PlatformUID  string
-	ReplyTarget  string
-	MessageID    string // platform inbound id for reply decoration correlation
-	MessageType  string
-	Text         string
-	Attachments  []MessageAttachment
+	ID                 uint64
+	TenantID           string
+	UserID             string
+	PlatformName       string
+	PlatformUID        string
+	ReplyTarget        string
+	MessageID          string // platform inbound id for reply decoration correlation
+	MessageType        string
+	Text               string
+	Attachments        []MessageAttachment
+	ClientCapabilities *agent.ClientCapabilities
 	// StartMenu describes a confirmed /startmenu launch. The desktop client uses
 	// it to create a task record and open a dedicated AI assistant tab before
 	// executing the prompt.

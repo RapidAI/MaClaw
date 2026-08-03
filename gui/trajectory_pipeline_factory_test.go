@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -38,15 +37,6 @@ func TestBuildTrajectoryRecorderFactoryWiresSkillAutoSummaryPipeline(t *testing.
 	}
 	if pipeline.checker == nil {
 		t.Fatal("expected skill auto-summary pipeline to have a security checker")
-	}
-	if pipeline.trigger == nil {
-		t.Fatal("expected skill auto-summary pipeline to have an upload trigger")
-	}
-}
-
-func TestRunAutoUploadSkipsWhenDependenciesMissing(t *testing.T) {
-	if err := RunAutoUpload(context.Background(), "missing-deps-skill", "", 1, nil, nil, nil); err != nil {
-		t.Fatalf("RunAutoUpload() error = %v", err)
 	}
 }
 

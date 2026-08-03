@@ -1,9 +1,9 @@
-import { main } from "../../../wailsjs/go/models";
+import { corelib } from "../../../wailsjs/go/models";
 import type { RemoteSuggestedAction, RemoteToolMetadataView, RemoteToolName } from "./types";
 import { colors, radius, remoteCardStyle, remoteLabelStyle, remoteMetaLabelStyle, remoteMutedCardStyle, remoteSectionTitleStyle } from "./styles";
 
 type Props = {
-    config: main.AppConfig | null;
+    config: corelib.AppConfig | null;
     remoteBusy: string;
     selectedRemoteTool: RemoteToolName;
     visibleRemoteTools: RemoteToolMetadataView[];
@@ -13,7 +13,7 @@ type Props = {
     selectedRemoteToolBadges: string[];
     remoteSuggestedAction: RemoteSuggestedAction | null;
     getRemoteToolLabel: (tool: string) => string;
-    saveRemoteConfigField: (patch: Partial<main.AppConfig>) => void;
+    saveRemoteConfigField: (patch: Partial<corelib.AppConfig>) => void;
     setSelectedRemoteTool: (tool: RemoteToolName) => void;
     activateRemoteWithEmail: () => void;
     startRemoteSession: () => void;

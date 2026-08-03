@@ -55,6 +55,9 @@ type ScopeApprovalRequest struct {
 	Kind        string // optional request kind; empty means project scope approval
 	Message     string // optional user-facing reason
 	AutoAllow   bool   // legacy metadata; current approval timeouts always deny
+	// Maintenance preserves the user-facing operations intent when the shared
+	// remote-coding engine asks for an approval.
+	Maintenance bool
 }
 
 // ScopeApprovalCallback is the function type for requesting user approval.
@@ -482,6 +485,7 @@ func emitScopeApprovalEvent(app *App, approvalID string, req ScopeApprovalReques
 		"kind":            req.Kind,
 		"message":         req.Message,
 		"auto_allow":      req.AutoAllow,
+		"maintenance":     req.Maintenance,
 		"timeout_seconds": int(scopeApprovalTimeout / time.Second),
 	})
 }

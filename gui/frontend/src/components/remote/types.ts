@@ -1,4 +1,4 @@
-import { main } from "../../../wailsjs/go/models";
+import { corelib } from "../../../wailsjs/go/models";
 
 export const REMOTE_TOOL_NAMES = ["claude", "codex", "opencode", "codebuddy", "iflow", "kilo"] as const;
 
@@ -209,7 +209,7 @@ export interface RemoteConnectionStatus {
     hub_url?: string;
 }
 
-export type RemoteSettingsConfig = main.AppConfig | null;
+export type RemoteSettingsConfig = corelib.AppConfig | null;
 
 /**
  * Canonical set of session statuses that indicate the session is no longer

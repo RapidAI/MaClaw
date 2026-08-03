@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestLansengerGroupShortcutCommandsAreBlocked(t *testing.T) {
@@ -202,6 +206,206 @@ func TestLansengerGroupPermissionPolicyBlocksInjectedAndDiscoveredTools(t *testi
 	discovered := filterDiscoveredToolsForLansengerGroup(ranked, map[string]discoverableMCPTool{"remote_search": {}}, policy)
 	if len(discovered) != 1 || discovered[0].name != "current_datetime" {
 		t.Fatalf("group discovery = %#v, want only current_datetime", discovered)
+	}
+}
+
+func TestLansengerGroupKnowledgePriorityBlocksWebBeforeKnowledgeLookup(t *testing.T) {
+	policy := lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("web search must be blocked until authorised knowledge is searched")
+	}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{
+		Text:    `{"ok":true,"count":0,"results":[]}`,
+		Outcome: toolOutcomeSucceeded,
+	})
+	if reason := policy.webFallbackBlockReason(); reason != "" {
+		t.Fatalf("web fallback after an empty knowledge search = %q, want allowed", reason)
+	}
+}
+
+func TestLansengerGroupKnowledgePriorityBlocksWebWhenKnowledgeExists(t *testing.T) {
+	policy := lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{
+		Text:    `{"ok":true,"count":1,"results":[{}]}`,
+		Outcome: toolOutcomeSucceeded,
+	})
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("web search must remain blocked when authorised knowledge was found")
+	}
+
+	policy = lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	policy.markKnowledgeAutoRecallEvidence()
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("web search must remain blocked when authorised auto-recall supplied evidence")
+	}
+}
+
+func TestLansengerGroupKnowledgePriorityDoesNotConstrainGroupsWithoutKnowledge(t *testing.T) {
+	if reason := (&lansengerGroupPermissionPolicy{}).webFallbackBlockReason(); reason != "" {
+		t.Fatalf("group without knowledge permission unexpectedly blocked web fallback: %q", reason)
+	}
+}
+
+func TestLansengerGroupKnowledgePermissionDropsBlankSourceIDs(t *testing.T) {
+	policy := lansengerGroupPermissionsFromConfig(&corelib.AppConfig{
+		LansengerGroupKnowledgeSourceIDs: []string{" ", " approved ", "approved", ""},
+	})
+	if got, want := policy.KnowledgeSourceIDs, []string{"approved"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("normalised source IDs = %#v, want %#v", got, want)
+	}
+	if !policy.allowsKnowledge() {
+		t.Fatal("non-blank authorised source must enable knowledge access")
+	}
+
+	blankOnly := lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"", "  "}}
+	if blankOnly.allowsKnowledge() {
+		t.Fatal("blank source IDs must not enable knowledge access")
+	}
+	args := map[string]interface{}{}
+	if err := blankOnly.restrictKnowledgeArgs(args); err == nil {
+		t.Fatal("blank source IDs must not produce an unscoped knowledge query")
+	}
+}
+
+func TestLansengerGroupKnowledgeSearchScopesAndUnlocksWebFallback(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name: "knowledge_search",
+		HandlerCtx: func(_ context.Context, args map[string]interface{}, _ coretool.ProgressCallback) string {
+			got := knowledgeIDsForLansengerPermissionTest(args["source_ids"])
+			if len(got) != 1 || got[0] != "approved" {
+				t.Fatalf("knowledge source_ids = %#v, want [approved]", got)
+			}
+			return `{"ok":true,"count":0,"results":[]}`
+		},
+	}); err != nil {
+		t.Fatalf("register knowledge_search: %v", err)
+	}
+	if err := registry.Register(RegisteredTool{
+		Name:    "web_search",
+		Handler: func(map[string]interface{}) string { return "web fallback" },
+	}); err != nil {
+		t.Fatalf("register web_search: %v", err)
+	}
+
+	h := &IMMessageHandler{registry: registry}
+	ownerID := "lansenger:group:priority"
+	ctx := NewLoopContext("lansenger-group", 2, nil)
+	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	h.setSessionLoopCtx(ownerID, ctx)
+
+	blocked := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "web_search", `{"query":"jump failed"}`, "", nil)
+	if blocked.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("web before knowledge = %+v, want policy rejection", blocked)
+	}
+
+	searched := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "knowledge_search", `{"query":"jump failed"}`, "", nil)
+	if searched.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("knowledge search = %+v, want success", searched)
+	}
+
+	fallback := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "web_search", `{"query":"jump failed"}`, "", nil)
+	if fallback.Text != "web fallback" || fallback.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("web after empty knowledge search = %+v, want fallback success", fallback)
+	}
+}
+
+func TestLansengerGroupKnowledgePriorityTreatsMalformedKnowledgeResultAsNoFallback(t *testing.T) {
+	policy := lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{Text: "not JSON", Outcome: toolOutcomeSucceeded})
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("malformed knowledge result must not unlock web fallback")
+	}
+
+	policy = lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{Text: `{"ok":true}`, Outcome: toolOutcomeSucceeded})
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("knowledge result without an explicit count must not unlock web fallback")
+	}
+
+	policy = lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{Text: `{"ok":false,"count":0}`, Outcome: toolOutcomeSucceeded})
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("knowledge tool error result must not unlock web fallback")
+	}
+
+	policy = lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{Text: `{"ok":true,"count":0}`, Outcome: toolOutcomeSucceeded})
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("knowledge result without results must not unlock web fallback")
+	}
+
+	policy = lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{Text: `{"ok":true,"count":0,"results":[{}]}`, Outcome: toolOutcomeSucceeded})
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("non-empty results must not be accepted as an empty knowledge search")
+	}
+
+	policy = lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{Text: `{"ok":true,"count":1,"results":[]}`, Outcome: toolOutcomeSucceeded})
+	if reason := policy.webFallbackBlockReason(); reason == "" {
+		t.Fatal("count/results mismatch must not be accepted as knowledge evidence")
+	}
+}
+
+func TestLansengerGroupKnowledgePermissionDisablesDirectExecution(t *testing.T) {
+	ctx := NewLoopContext("lansenger-group", 1, nil)
+	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	ctx.Runtime.Execution = ExecutionProfile{Layer: "direct"}
+	if resp, handled := (&IMMessageHandler{}).tryDirectExecutionProfile(IMUserMessage{}, ctx, nil); resp != nil || handled {
+		t.Fatal("group knowledge policy must not take the direct-execution path")
+	}
+}
+
+func TestLansengerGroupKnowledgePermissionKeepsKnowledgeSearchInToolList(t *testing.T) {
+	registry := NewToolRegistry()
+	for _, name := range []string{"knowledge_search", "web_fetch"} {
+		if err := registry.Register(RegisteredTool{Name: name, Category: ToolCategoryBuiltin, Status: RegToolAvailable, Handler: func(map[string]interface{}) string { return "ok" }}); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	h := &IMMessageHandler{registry: registry}
+	ctx := NewLoopContext("lansenger-group", 1, nil)
+	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+
+	toolSet := h.prepareAgentLoopTools("lansenger:group:tools", "网页跳转失败", ctx, agentLoopPhase{})
+	if !containsLansengerPermissionTestTool(toolSet.Tools, "knowledge_search") {
+		t.Fatalf("authorised group tool list must include knowledge_search: %#v", toolSet.Tools)
+	}
+}
+
+func TestLansengerGroupKnowledgePriorityPolicySurvivesValueCopies(t *testing.T) {
+	policy := lansengerGroupPermissionsFromConfig(&corelib.AppConfig{LansengerGroupKnowledgeSourceIDs: []string{"approved"}})
+	policyCopy := policy
+	policyCopy.recordKnowledgeSearchResult(toolExecutionResult{Text: `{"ok":true,"count":0,"results":[]}`, Outcome: toolOutcomeSucceeded})
+	if reason := policy.webFallbackBlockReason(); reason != "" {
+		t.Fatalf("copied policy state did not unlock the original fallback: %q", reason)
+	}
+}
+
+func TestLansengerGroupKnowledgePriorityRequiresLookupOnlyUntilResolved(t *testing.T) {
+	policy := lansengerGroupPermissionsFromConfig(&corelib.AppConfig{LansengerGroupKnowledgeSourceIDs: []string{"approved"}})
+	if !policy.requiresKnowledgeLookup() {
+		t.Fatal("fresh authorised group should require knowledge lookup")
+	}
+	policy.recordKnowledgeSearchResult(toolExecutionResult{Text: `{"ok":true,"count":0,"results":[]}`, Outcome: toolOutcomeSucceeded})
+	if policy.requiresKnowledgeLookup() {
+		t.Fatal("empty knowledge result should resolve the lookup requirement")
+	}
+}
+
+func TestLansengerGroupKnowledgeSearchSurvivesInjectionToolRefresh(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "knowledge_search", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+		t.Fatalf("register knowledge_search: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+	ctx := NewLoopContext("lansenger-group", 1, nil)
+	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+
+	tools, _ := h.finalizeInjectionAugmentedTools(ctx, "lansenger:group:refresh", nil)
+	if !containsLansengerPermissionTestTool(tools, "knowledge_search") {
+		t.Fatalf("injection refresh removed knowledge_search: %#v", tools)
 	}
 }
 

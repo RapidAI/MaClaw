@@ -57,6 +57,46 @@ func TestParsePlainTextNodesSplitsLongParagraphGroups(t *testing.T) {
 	}
 }
 
+func TestParsePlainTextNodesAnnotatesMultilingualMetadata(t *testing.T) {
+	source := Source{ID: "ksrc_multi", Kind: SourceKindText, Title: "多语言", RelativePath: "multi.txt"}
+	nodes := parsePlainTextNodes(source, "日本語の文書です。한국어 문서입니다。", "text")
+	nodes = annotateMultilingualNodes(nodes)
+	if len(nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(nodes))
+	}
+	if got := nodes[0].Metadata["script"]; got != "Jpan" {
+		t.Fatalf("script = %q, want Jpan because kana identifies Japanese", got)
+	}
+	if got := nodes[0].Metadata["language"]; got != "ja" {
+		t.Fatalf("language = %q, want ja", got)
+	}
+	if nodes[0].Metadata["chunker_version"] != chunkerVersion {
+		t.Fatalf("chunker version = %q", nodes[0].Metadata["chunker_version"])
+	}
+}
+
+func TestAnnotateMultilingualNodesSplitsLongTextByTokenBudget(t *testing.T) {
+	source := Source{ID: "ksrc_budget", Kind: SourceKindText, Title: "Long", RelativePath: "long.txt"}
+	// CJK is estimated at roughly one token per two runes, so this crosses the
+	// 700-token bound while avoiding parser-specific paragraph splitting.
+	text := strings.Repeat("知识库检索需要保留语义边界。", 130)
+	nodes := annotateMultilingualNodes([]DocumentNode{{ID: "parent", SourceID: source.ID, Type: "document", Title: source.Title, Text: text}})
+	if len(nodes) < 3 {
+		t.Fatalf("nodes = %d, want token-bounded chunks", len(nodes))
+	}
+	if nodes[0].ID != "parent" || nodes[0].Text != "" || nodes[0].Metadata["chunk_parent"] != "true" {
+		t.Fatalf("expected retained structural parent, got %#v", nodes[0])
+	}
+	for i, node := range nodes[1:] {
+		if node.TokenCount > targetTextNodeTokens+chunkOverlapTokens {
+			t.Fatalf("node %d tokens = %d, want bounded", i, node.TokenCount)
+		}
+		if node.ParentID != "parent" || node.Metadata["chunk_count"] == "" {
+			t.Fatalf("node %d missing parent provenance: %#v", i, node)
+		}
+	}
+}
+
 func TestSheetToNodesSplitsLargeSheetsWithRowRanges(t *testing.T) {
 	source := Source{ID: "ksrc_xlsx", Kind: SourceKindXLSX, Title: "Workbook", RelativePath: "book.xlsx"}
 	rows := make([][]excelread.CellValue, 0, 4)

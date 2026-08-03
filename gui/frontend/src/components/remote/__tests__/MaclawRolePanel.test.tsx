@@ -1,13 +1,12 @@
 /** @vitest-environment jsdom */
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-import { main } from '../../../../wailsjs/go/models';
+import { corelib, main } from '../../../../wailsjs/go/models';
 import { MaclawRolePanel } from '../MaclawRolePanel';
 
 function renderPanel(lang: string) {
 	const saveRemoteConfigField = vi.fn();
-    const config = new main.AppConfig({
+    const config = new corelib.AppConfig({
         maclaw_role_name: 'MaClaw',
         maclaw_role_description: '你的全能数智伴侣MaClaw',
     });

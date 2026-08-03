@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
-import { IconFolder, IconFolderOpen } from "./WorkbenchIcons";
+import { IconEdit, IconFolder, IconFolderOpen } from "./WorkbenchIcons";
 
 export interface ProjectDirBarProps {
     /** Current active tab ID. Empty string = local tab. */
@@ -18,12 +18,16 @@ interface DirState {
 /**
  * Displays the current working directory for the active tab.
  * - Click path → opens directory in system file explorer
- * - Click ▾ → opens directory picker to switch
+ * - Click the "Change" button → opens the directory picker
  * - Shows "(默认)" badge when using system default directory
  */
 export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
+    const [selectingDirectory, setSelectingDirectory] = useState(false);
     const mountedRef = useRef(true);
+    // State updates are asynchronous, so use a ref as the immediate guard
+    // against a rapid double-click opening two native directory pickers.
+    const directorySelectionInFlightRef = useRef(false);
 
     useEffect(() => {
         mountedRef.current = true;
@@ -50,6 +54,9 @@ export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
     }, [dirState?.path]);
 
     const handleSwitchDir = useCallback(async () => {
+        if (directorySelectionInFlightRef.current) return;
+        directorySelectionInFlightRef.current = true;
+        setSelectingDirectory(true);
         try {
             // Use the existing backend directory picker dialog.
             const selected = await SelectWorkingDir();
@@ -58,6 +65,9 @@ export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
             setDirState({ path: selected, isDefault: false });
         } catch (e) {
             console.error("[ProjectDirBar] switch dir failed:", e);
+        } finally {
+            directorySelectionInFlightRef.current = false;
+            if (mountedRef.current) setSelectingDirectory(false);
         }
     }, [tabId]);
 
@@ -100,10 +110,15 @@ export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
             <span style={{ opacity: 0.75, flexShrink: 0, display: "inline-flex", color: t.textMuted }}>
                 {isDefault ? <IconFolder size={14} /> : <IconFolderOpen size={14} />}
             </span>
-            <span
+            <button
+                type="button"
                 title={dirState.path}
+                aria-label={lang === "en" ? "Open current working directory" : "打开当前工作目录"}
                 onClick={handleOpenDir}
                 style={{
+                    border: "none",
+                    background: "transparent",
+                    padding: 0,
                     cursor: "pointer",
                     color: isDefault ? t.textMuted : t.linkColor,
                     textDecoration: isDefault ? "none" : "underline",
@@ -113,10 +128,13 @@ export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
                     textOverflow: "ellipsis",
                     flex: 1,
                     minWidth: 0,
+                    textAlign: "left",
                 }}
+                onFocus={e => { e.currentTarget.style.outline = `2px solid ${t.linkColor}`; e.currentTarget.style.outlineOffset = "2px"; }}
+                onBlur={e => { e.currentTarget.style.outline = "none"; }}
             >
                 {displayPath}
-            </span>
+            </button>
             {badgeText && (
                 <span style={{
                     fontSize: 10,
@@ -131,21 +149,40 @@ export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
             <button
                 type="button"
                 onClick={handleSwitchDir}
-                title={lang === "en" ? "Switch project directory" : "切换项目目录"}
+                title={lang === "en" ? "Choose a different working directory" : "选择其他工作目录"}
+                aria-label={lang === "en" ? "Choose a different working directory" : "选择其他工作目录"}
+                disabled={selectingDirectory}
                 style={{
-                    border: "none",
-                    background: "transparent",
-                    color: t.textMuted,
-                    cursor: "pointer",
-                    padding: "0 4px",
-                    fontSize: 12,
-                    opacity: 0.7,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    minHeight: 26,
+                    padding: "3px 8px",
+                    border: `1px solid ${t.titleBarBorder}`,
+                    borderRadius: 6,
+                    background: t.fieldBg,
+                    color: t.linkColor,
+                    cursor: selectingDirectory ? "progress" : "pointer",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    lineHeight: 1,
                     flexShrink: 0,
+                    transition: "background 150ms ease, border-color 150ms ease",
+                    opacity: selectingDirectory ? 0.65 : 1,
                 }}
-                onMouseEnter={e => { (e.target as HTMLElement).style.opacity = "1"; }}
-                onMouseLeave={e => { (e.target as HTMLElement).style.opacity = "0.7"; }}
+                onMouseEnter={e => {
+                    e.currentTarget.style.background = t.titleBarBg;
+                    e.currentTarget.style.borderColor = t.linkColor;
+                }}
+                onMouseLeave={e => {
+                    e.currentTarget.style.background = t.fieldBg;
+                    e.currentTarget.style.borderColor = t.titleBarBorder;
+                }}
+                onFocus={e => { e.currentTarget.style.outline = `2px solid ${t.linkColor}`; e.currentTarget.style.outlineOffset = "2px"; }}
+                onBlur={e => { e.currentTarget.style.outline = "none"; }}
             >
-                ▾
+                <IconEdit size={13} />
+                <span>{selectingDirectory ? (lang === "en" ? "Choosing…" : "选择中…") : (lang === "en" ? "Change" : "切换目录")}</span>
             </button>
         </div>
     );

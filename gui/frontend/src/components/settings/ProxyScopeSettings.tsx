@@ -1,7 +1,7 @@
-import { main } from '../../../wailsjs/go/models';
+import { corelib } from '../../../wailsjs/go/models';
 
 type ProxyScopeSettingsProps = {
-    config: main.AppConfig | null;
+    config: corelib.AppConfig | null;
     isWindows: boolean;
     t: (key: string) => string;
     updateConfig: (patch: Record<string, any>) => void;

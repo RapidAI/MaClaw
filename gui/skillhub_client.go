@@ -429,6 +429,9 @@ func (c *SkillHubClient) Publish(ctx context.Context, full hubSkillFull) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "MaClaw/1.0")
+	if authHeader := c.publishAuthHeader(); authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -534,6 +537,25 @@ func (c *SkillHubClient) getBytesFromExplicitHubURLWithAuth(ctx context.Context,
 		return "", []string{base}, nil, fmt.Errorf("read hub bytes %s%s failed: %w", base, path, err)
 	}
 	return base, []string{base}, data, nil
+}
+
+// publishAuthHeader returns the skillmarket session token used to authenticate
+// skill publishes, mirroring SkillMarketClient.skillMarketAuthHeader.
+func (c *SkillHubClient) publishAuthHeader() string {
+	if c == nil || c.app == nil {
+		return ""
+	}
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	if token := strings.TrimSpace(cfg.SkillMarketSessionToken); token != "" {
+		return "Bearer " + token
+	}
+	if token := strings.TrimSpace(cfg.RemoteViewerToken); token != "" {
+		return "Bearer " + token
+	}
+	return ""
 }
 
 func (c *SkillHubClient) enterpriseHubAuthHeaderForBase(base string) string {

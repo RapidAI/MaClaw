@@ -53,11 +53,11 @@ describe("MCPMarketplacePanel", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         vi.mocked(GetHubRecommendedCapabilities).mockResolvedValue([]);
-        vi.mocked(GetHubCapability).mockResolvedValue({});
+        vi.mocked(GetHubCapability).mockResolvedValue({} as any);
         vi.mocked(ListHubCapabilities).mockResolvedValue([]);
-        vi.mocked(SyncHubManagedCapabilities).mockResolvedValue({ managed_installed: 0, updated: 0, needs_user_config: [] });
-        vi.mocked(InstallHubCapability).mockResolvedValue({ managed_installed: 1, updated: 0, needs_user_config: ["jira-mcp"] });
-        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "create_purchase_request", request_id: "req_1" });
+        vi.mocked(SyncHubManagedCapabilities).mockResolvedValue({ managed_checked: 0, managed_installed: 0, updated: 0, inventory_reported: 0, recommended_count: 0, needs_user_config: [] });
+        vi.mocked(InstallHubCapability).mockResolvedValue({ managed_checked: 0, managed_installed: 1, updated: 0, inventory_reported: 0, recommended_count: 0, needs_user_config: ["jira-mcp"] });
+        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "create_purchase_request", request_id: "req_1" } as any);
         vi.mocked(LoadConfig).mockResolvedValue({ capability_market_policy: { enterprise_only_install: true, enterprise_only_search: false } } as any);
     });
 
@@ -80,7 +80,7 @@ describe("MCPMarketplacePanel", () => {
 
     it("searches enterprise Hub MCP capabilities", async () => {
         vi.mocked(ListHubCapabilities).mockResolvedValueOnce([]).mockResolvedValueOnce([
-            { id: "jira-mcp", capability_type: "mcp", display_name: "Jira MCP", source: "hub", current_version_key: "1.0.0" },
+            { id: "jira-mcp", capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hub", status: "", global_key: "", current_version_key: "1.0.0" },
         ]);
 
         render(<MCPMarketplacePanel translate={t} onChanged={vi.fn()} />);
@@ -96,7 +96,7 @@ describe("MCPMarketplacePanel", () => {
     it("passes install status back so parent can open secret configuration", async () => {
         const onChanged = vi.fn();
         vi.mocked(ListHubCapabilities).mockResolvedValue([
-            { id: "jira-mcp", capability_type: "mcp", display_name: "Jira MCP", source: "hub" },
+            { id: "jira-mcp", capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hub", status: "", global_key: "" },
         ]);
 
         render(<MCPMarketplacePanel translate={t} onChanged={onChanged} />);
@@ -112,10 +112,10 @@ describe("MCPMarketplacePanel", () => {
     it("installs imported free external MCP after Hub creates enterprise capability", async () => {
         const onChanged = vi.fn();
         vi.mocked(ListHubCapabilities).mockResolvedValue([
-            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", metadata_json: JSON.stringify({ pricing: { mode: "free" } }) },
+            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", status: "", global_key: "", metadata_json: JSON.stringify({ pricing: { mode: "free" } }) },
         ]);
-        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "create_import_request", request_id: "req_free", capability: { id: "ent-jira-mcp" } });
-        vi.mocked(InstallHubCapability).mockResolvedValue({ managed_installed: 1, updated: 0, needs_user_config: [] });
+        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "create_import_request", request_id: "req_free", capability: { id: "ent-jira-mcp" } } as any);
+        vi.mocked(InstallHubCapability).mockResolvedValue({ managed_checked: 0, managed_installed: 1, updated: 0, inventory_reported: 0, recommended_count: 0, needs_user_config: [] });
 
         render(<MCPMarketplacePanel translate={t} onChanged={onChanged} />);
 
@@ -131,10 +131,10 @@ describe("MCPMarketplacePanel", () => {
     it("installs direct free HubCenter MCP when Hub returns imported capability", async () => {
         const onChanged = vi.fn();
         vi.mocked(ListHubCapabilities).mockResolvedValue([
-            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", metadata_json: JSON.stringify({ pricing: { mode: "free" } }) },
+            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", status: "", global_key: "", metadata_json: JSON.stringify({ pricing: { mode: "free" } }) },
         ]);
-        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "install_external_direct", capability: { id: "ent-jira-mcp" } });
-        vi.mocked(InstallHubCapability).mockResolvedValue({ managed_installed: 1, updated: 0, needs_user_config: ["ent-jira-mcp"] });
+        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "install_external_direct", capability: { id: "ent-jira-mcp" } } as any);
+        vi.mocked(InstallHubCapability).mockResolvedValue({ managed_checked: 0, managed_installed: 1, updated: 0, inventory_reported: 0, recommended_count: 0, needs_user_config: ["ent-jira-mcp"] });
 
         render(<MCPMarketplacePanel translate={t} onChanged={onChanged} />);
 
@@ -150,9 +150,9 @@ describe("MCPMarketplacePanel", () => {
     it("does not claim direct external install succeeded without an imported Hub capability", async () => {
         const onChanged = vi.fn();
         vi.mocked(ListHubCapabilities).mockResolvedValue([
-            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", metadata_json: JSON.stringify({ pricing: { mode: "free" } }) },
+            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", status: "", global_key: "", metadata_json: JSON.stringify({ pricing: { mode: "free" } }) },
         ]);
-        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "install_external_direct", reason: "missing_import" });
+        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "install_external_direct", reason: "missing_import" } as any);
 
         render(<MCPMarketplacePanel translate={t} onChanged={onChanged} />);
 
@@ -167,7 +167,7 @@ describe("MCPMarketplacePanel", () => {
     it("submits Hub purchase intent for external paid HubCenter MCP results", async () => {
         const onChanged = vi.fn();
         vi.mocked(ListHubCapabilities).mockResolvedValue([
-            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", current_version_key: "1.2.0", metadata_json: JSON.stringify({ pricing: { mode: "paid", credits: 10 }, license: { seats: 5 } }) },
+            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", status: "", global_key: "", current_version_key: "1.2.0", metadata_json: JSON.stringify({ pricing: { mode: "paid", credits: 10 }, license: { seats: 5 } }) },
         ]);
 
         render(<MCPMarketplacePanel translate={t} onChanged={onChanged} />);
@@ -183,7 +183,7 @@ describe("MCPMarketplacePanel", () => {
     });
     it("marks installed MCP capabilities without offering install again", async () => {
         vi.mocked(ListHubCapabilities).mockResolvedValue([
-            { id: "hub-cap-1", capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hub", global_key: "enterprise_hub:mcp:acme:jira-mcp" },
+            { id: "hub-cap-1", capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hub", status: "", global_key: "enterprise_hub:mcp:acme:jira-mcp" },
         ]);
 
         render(<MCPMarketplacePanel translate={t} onChanged={vi.fn()} installedCapabilities={["enterprise_hub:mcp:acme:jira-mcp"]} />);

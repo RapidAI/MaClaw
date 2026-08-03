@@ -187,6 +187,8 @@ import (
 	"log"
 	"sync"
 	"unsafe"
+
+	"github.com/RapidAI/CodeClaw/gui/petpack"
 )
 
 //go:embed build/appicon.png
@@ -279,17 +281,29 @@ func (w *linuxFloatingWindow) IsCreated() bool {
 	return w.created
 }
 
+// Pet sound, motion, and runtime-state updates are stubs on Linux: this
+// platform's desktop pet does not support sound, animation, or runtime states
+// yet, and the settings UI already hides those options per platform.
 func (w *linuxFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {
-	// Linux floating window does not manage sound state in-memory;
-	// sound is handled by the WebView-based React component.
 }
 
 func (w *linuxFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
 }
+
+func (w *linuxFloatingWindow) InvalidatePetPackAssets() {}
 
 func (w *linuxFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
 }
 
 func (w *linuxFloatingWindow) CurrentPetRuntimeState() string {
 	return "idle"
+}
+
+// PetPackRuntimeLevel reports the stub reality: this platform renders only a
+// static image regardless of the pack's declared renderer level.
+func (w *linuxFloatingWindow) PetPackRuntimeLevel(declared string) (string, string) {
+	if declared == petpack.RendererNative {
+		return declared, ""
+	}
+	return petpack.RendererNative, "当前平台暂不支持宠物动画，仅显示静态图像"
 }

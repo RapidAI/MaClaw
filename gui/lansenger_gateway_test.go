@@ -445,6 +445,30 @@ func TestBuildLansengerOutgoingSystemNoticeSkipsGroupQuote(t *testing.T) {
 	}
 }
 
+func TestBuildLansengerOutgoingPrivateReplyDoesNotAutoMention(t *testing.T) {
+	msg := lansenger.IncomingMessage{
+		ChatType:   "p2p",
+		FromUserID: "staff-1",
+		MessageID:  "mid-1",
+		Text:       "私聊问题",
+	}
+	opts := lansenger.GroupChatOptions{
+		AutoMentionReply: true,
+		AutoQuoteReply:   true,
+	}
+
+	out := buildLansengerOutgoingText(msg, "私聊回复", opts)
+	if out.Reminder != nil {
+		t.Fatalf("private reply must not carry an @ reminder, got %#v", out.Reminder)
+	}
+	if out.IsGroup {
+		t.Fatal("private reply must not be marked as a group message")
+	}
+	if out.ToUserID != "staff-1" || out.Text != "私聊回复" || out.RefMsgID != "mid-1" {
+		t.Fatalf("private outgoing reply = %#v", out)
+	}
+}
+
 func TestLansengerGroupNeverPublishesIMDetail(t *testing.T) {
 	for _, chatType := range []string{"group", "GROUP", " group "} {
 		if shouldSendLansengerIMDetail(chatType) {

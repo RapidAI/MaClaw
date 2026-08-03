@@ -1,10 +1,10 @@
-﻿schema_version: 1
+schema_version: 3
 id: clawmate
 name: ClawMate
-version: 1.1.0
+version: 3.0.0
 author: MaClaw Official
 license: proprietary
-description: "Workbench companion with clear silhouette and face"
+description: "A calm, figurative mechanical crab companion for focused work"
 tier: figurative
 min_maclaw_version: "0.0.0"
 label:
@@ -12,13 +12,13 @@ label:
   zh-Hans: 爪伴
   zh-Hant: 爪伴
 description_i18n:
-  en: "Workbench companion with clear silhouette and face"
-  zh-Hans: "Workbench companion with clear silhouette and face"
+  en: "A calm, figurative mechanical crab companion for focused work"
+  zh-Hans: "安静、具像的小型机械螃蟹工作助手"
 preview: preview.png
 default_size: 88
 tone: balanced
 tags: ["official", "default"]
-renderer: native-raster
+renderer: native-character
 face_overlay: false
 assets:
   preview: preview.png
@@ -30,10 +30,18 @@ assets:
     done: native/done.png
     alert: native/alert.png
     quiet: native/quiet.png
+  rig:
+    definition: rig/clawmate.pet-rig.json
+    textures: [rig/shell.png, rig/legs.png, rig/left-claw.png, rig/right-claw.png, rig/eyes.png]
+  character:
+    definition: character/clawmate.performer.json
+fallback:
+  renderer: native-skeleton
+  idle: native/idle.png
 variants:
   - id: default
     tier: figurative
-    renderer: native-raster
+    renderer: native-character
     face_overlay: false
     assets:
       native:
@@ -44,6 +52,11 @@ variants:
         done: native/done.png
         alert: native/alert.png
         quiet: native/quiet.png
+      rig:
+        definition: rig/clawmate.pet-rig.json
+        textures: [rig/shell.png, rig/legs.png, rig/left-claw.png, rig/right-claw.png, rig/eyes.png]
+      character:
+        definition: character/clawmate.performer.json
   - id: classic
     tier: classic
     renderer: procedural-fallback
@@ -59,3 +72,4 @@ motion:
 capabilities:
   supports_done_state: true
   supports_alert_state: true
+  pet_performance_v3: true

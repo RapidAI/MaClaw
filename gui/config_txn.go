@@ -216,6 +216,19 @@ func (a *App) mutateConfigMaybe(patchFn func(cfg *corelib.AppConfig) bool, opts 
 // loadConfigSnapshot is the unified read API used by LoadConfig.
 // Hot path is lock-free (atomic snap). Always runs post-unlock drains so
 // deferred writer work is never stranded.
+//
+// NOTE: the hot path returns the slim snap without NLSkills, while the cold
+// paths below reattach them via publishedConfig/attachPublishedSkills. This
+// inconsistency is the root cause of a family of bugs (any caller doing
+// LoadConfig -> mutate -> SaveConfig drops the skill table; see the failing
+// TestNLSkillsSplitFromConfigSnap expectation). Attaching skills here fixes
+// those, but flips provenance/upgrade decisions in the maclaw app install
+// flow (TestInstallMaclawAppDependencies{UpgradesKnownLegacyLocalDependencyForMarketApp,
+// DerivesSkillMarketProvenanceFromInstalledWrapper,DerivesProvenanceFromLegacyStableWrapperPanelID,
+// DoesNotAcceptResolvedMetadataForInstalledWrapper,DoesNotAcceptBundleForInstalledWrapper}
+// and TestRecordExperienceDraftReviewReturnsSkillDraftExecutionPreview),
+// whose logic was tuned to the slim hot path. Resolving the semantic conflict
+// (attach-everywhere vs slim-by-design) needs the install-flow owner's call.
 func (a *App) loadConfigSnapshot() (corelib.AppConfig, error) {
 	if p := a.PeekConfig(); p != nil {
 		// Apply log gates from the snap without copying the whole AppConfig first.

@@ -85,6 +85,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"pet_continuous_timeout_sec",
 		"pet_quiet_mode",
 		"pet_reduced_motion",
+		"pet_ambient_city",
 		"pet_figurative_upgrade_prompt_pending",
 		"asr_enabled",
 		"tts_enabled",

@@ -1,29 +1,28 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
-import { useRef, useId } from 'react';
 import { LoadConfig, SetDefaultLaunchMode } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, MutableRefObject, SetStateAction, useId, useRef } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { getAllToolOptions } from '../../config/toolCatalog';
 import { CodingKnowledgeSection } from './CodingKnowledgeSection';
 import { cfgVal, saveConfigPatch } from './programmingToolsConfig';
 
 type ProgrammingToolsSettingsPanelProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
 };
 
 const textForLang = localizeText;
 
 const saveLaunchMode = (
-    config: main.AppConfig | null,
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>,
+    config: corelib.AppConfig | null,
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>,
     mode: 'local' | 'remote',
     versionRef: MutableRefObject<number>,
 ) => {
     if (!config) return;
     const myVersion = ++versionRef.current;
-    const next = new main.AppConfig({
+    const next = new corelib.AppConfig({
         ...config,
         default_launch_mode: mode,
         remote_enabled: mode === 'remote',

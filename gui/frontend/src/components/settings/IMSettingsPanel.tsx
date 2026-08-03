@@ -1,5 +1,5 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, SetStateAction } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { IMAuditPanel } from '../remote/IMAuditPanel';
 import { ThirdPartyAccessSettings } from './ThirdPartyAccessSettings';
 import { QQBotSettings } from './QQBotSettings';
@@ -10,8 +10,8 @@ import { IMSubTabs, type IMSubTab } from './IMSubTabs';
 import { IMProgressHintSettings } from './IMProgressHintSettings';
 
 type IMSettingsPanelProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     imSubTab: IMSubTab;
     setImSubTab: Dispatch<SetStateAction<IMSubTab>>;

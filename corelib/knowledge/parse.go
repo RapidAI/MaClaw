@@ -26,31 +26,33 @@ const targetTextNodeRunes = 6000
 const targetSheetNodeRunes = 8000
 
 func ParseDocumentNodes(source Source, filePath, kind string) ([]DocumentNode, error) {
+	var nodes []DocumentNode
+	var err error
 	switch kind {
 	case SourceKindMarkdown:
 		data, err := os.ReadFile(filePath)
 		if err != nil {
 			return nil, err
 		}
-		return parseMarkdownNodes(source, string(data)), nil
+		nodes = parseMarkdownNodes(source, normalizeKnowledgeText(string(data)))
 	case SourceKindText:
 		data, err := os.ReadFile(filePath)
 		if err != nil {
 			return nil, err
 		}
-		return parsePlainTextNodes(source, string(data), "text"), nil
+		nodes = parsePlainTextNodes(source, normalizeKnowledgeText(string(data)), "text")
 	case SourceKindDOCX:
-		return parseDOCXNodes(source, filePath)
+		nodes, err = parseDOCXNodes(source, filePath)
 	case SourceKindPDF:
-		return parsePDFNodes(source, filePath)
+		nodes, err = parsePDFNodes(source, filePath)
 	case SourceKindPPTX:
-		return parsePPTXNodes(source, filePath)
+		nodes, err = parsePPTXNodes(source, filePath)
 	case SourceKindXLSX, SourceKindCSV:
-		return parseSpreadsheetNodes(source, filePath, kind)
+		nodes, err = parseSpreadsheetNodes(source, filePath, kind)
 	case SourceKindDOC:
-		return parseDOCFallbackNodes(source, filePath)
+		nodes, err = parseDOCFallbackNodes(source, filePath)
 	case SourceKindXLS:
-		return parseXLSTextFallback(source, filePath)
+		nodes, err = parseXLSTextFallback(source, filePath)
 	case SourceKindImage:
 		// Standalone images have no text nodes from parsing.
 		// Image processing (asset save + description) is handled by
@@ -59,6 +61,10 @@ func ParseDocumentNodes(source Source, filePath, kind string) ([]DocumentNode, e
 	default:
 		return nil, fmt.Errorf("%w: %s", errUnsupportedParser, kind)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return annotateMultilingualNodeMetadata(nodes), nil
 }
 
 func IsUnsupportedParserError(err error) bool {

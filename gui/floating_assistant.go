@@ -410,6 +410,18 @@ func (m *FloatingAssistantManager) UpdateMotionConfig(config corelib.AppConfig) 
 	}
 }
 
+// InvalidatePetPackAssets refreshes a live desktop pet after pack management
+// changes. This is separate from motion config because a market upgrade may
+// keep the same skin and variant selected.
+func (m *FloatingAssistantManager) InvalidatePetPackAssets() {
+	m.mu.Lock()
+	win := m.window
+	m.mu.Unlock()
+	if win != nil {
+		win.InvalidatePetPackAssets()
+	}
+}
+
 // SetPetRuntimeState bridges FE/runtime pet states to the native window (K11).
 // ttlMs <= 0 keeps the state until the next update; >0 auto-returns to idle.
 func (m *FloatingAssistantManager) SetPetRuntimeState(state string, ttlMs int) {
@@ -432,6 +444,18 @@ func (m *FloatingAssistantManager) CurrentPetRuntimeState() string {
 		return string(petpack.StateIdle)
 	}
 	return win.CurrentPetRuntimeState()
+}
+
+// PetPackRuntimeLevel delegates the effective renderer-level report to the
+// live platform window. Without a window the declared level is assumed.
+func (m *FloatingAssistantManager) PetPackRuntimeLevel(declared string) (string, string) {
+	m.mu.Lock()
+	win := m.window
+	m.mu.Unlock()
+	if win == nil {
+		return declared, ""
+	}
+	return win.PetPackRuntimeLevel(declared)
 }
 
 func floatingWindowSizeForCurrentConfig(app *App) int {

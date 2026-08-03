@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { main } from '../../../../wailsjs/go/models';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { corelib, main } from '../../../../wailsjs/go/models';
 
 const runtimeHandlers = new Map<string, (payload?: unknown) => void>();
 const startRemoteSessionMock = vi.fn();
@@ -72,7 +72,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 import { useRemotePanel } from '../useRemotePanel';
 
 function buildConfig(overrides: Record<string, unknown> = {}) {
-    return new main.AppConfig({
+    return new corelib.AppConfig({
         active_tool: 'claude',
         remote_enabled: true,
         remote_hub_url: 'https://hub.example.com',

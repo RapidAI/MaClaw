@@ -106,10 +106,11 @@ type coreAgentCallbacks struct {
 	// history is pre-turn conversation for multi-turn knowledge auto-recall.
 	history []agent.ConversationEntry
 	// MoA (request-level preset / allow_auto).
-	moaRequestPreset string // raw request preset name (may be empty)
-	moaPreset        *moa.ResolvedPreset
-	moaSource        string // request | auto
-	moaActive        bool
+	moaRequestPreset   string // raw request preset name (may be empty)
+	moaPreset          *moa.ResolvedPreset
+	moaSource          string // request | auto
+	moaActive          bool
+	clientCapabilities *agent.ClientCapabilities
 
 	// Host-injected scheduled-task tool (MaClawSrv scheduler).
 	scheduleHandler func(args map[string]interface{}) string
@@ -203,6 +204,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 			strings.TrimSpace(req.MoAPreset),
 			moaPresetFromMetadata(req.Message.Metadata, req.Session.Metadata),
 		),
+		clientCapabilities: req.ClientCapabilities,
 	}
 	// Explicit moa_preset must resolve or fail closed (K17: no silent single-model).
 	if name := strings.TrimSpace(cb.moaRequestPreset); name != "" {
@@ -510,6 +512,9 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	}
 
 	bundle := agent.BuildPromptBundle(deps, userText, isFirstTurn)
+	if clientContext := agent.BuildClientCapabilityPrompt(c.clientCapabilities); clientContext != "" {
+		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + clientContext)
+	}
 
 	// Record prompt bundle observability for cache-hit analysis.
 	c.promptStats = bundle.TokenStats()

@@ -18,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
@@ -39,7 +40,8 @@ const (
 )
 
 type srvThirdPartyGatewayManager struct {
-	svc *agentservice.Service
+	svc      *agentservice.Service
+	aiModels *srvAIModelManager
 
 	mu               sync.Mutex
 	clients          map[string]*srvThirdPartyClientState
@@ -53,12 +55,13 @@ type srvThirdPartyRuntimeInstance struct {
 }
 
 type srvThirdPartyClientState struct {
-	Next      int64
-	Messages  []srvThirdPartyOutgoingMessage
-	Acked     map[string]string
-	Seen      map[string]string
-	SeenOrder []string
-	Notify    chan struct{}
+	Next               int64
+	Messages           []srvThirdPartyOutgoingMessage
+	Acked              map[string]string
+	Seen               map[string]string
+	SeenOrder          []string
+	Notify             chan struct{}
+	ClientCapabilities agent.ClientCapabilities
 }
 
 type srvThirdPartyMediaObject struct {
@@ -98,8 +101,12 @@ type srvThirdPartyToolResultRequest = coreim.ThirdPartyToolResultRequest
 
 type srvThirdPartyOutgoingMessage = coreim.ThirdPartyOutgoingMessage
 
-func newSrvThirdPartyGatewayManager(svc *agentservice.Service) *srvThirdPartyGatewayManager {
-	return &srvThirdPartyGatewayManager{svc: svc, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}}
+func newSrvThirdPartyGatewayManager(svc *agentservice.Service, aiModels ...*srvAIModelManager) *srvThirdPartyGatewayManager {
+	var asrManager *srvAIModelManager
+	if len(aiModels) > 0 {
+		asrManager = aiModels[0]
+	}
+	return &srvThirdPartyGatewayManager{svc: svc, aiModels: asrManager, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}}
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayHealth(w http.ResponseWriter, r *http.Request) {
@@ -128,8 +135,8 @@ func (s *HTTPServer) handleThirdPartyGatewayHandshake(w http.ResponseWriter, r *
 		return
 	}
 	clientID := req.ClientID
-	s.thirdPartyIM.ensureClient(thirdPartyClientKey(tp.Principal, clientID))
-	writeJSON(w, http.StatusOK, coreim.NewThirdPartyGatewayHandshakeResponse(coreim.ThirdPartyGatewayConfig{
+	s.thirdPartyIM.setClientCapabilities(thirdPartyClientKey(tp.Principal, clientID), req.ClientCapabilities)
+	response := coreim.NewThirdPartyGatewayHandshakeResponse(coreim.ThirdPartyGatewayConfig{
 		RequestID:      newThirdPartyGatewayRequestID(),
 		ChannelID:      "thirdparty:" + clientID,
 		ServerTime:     time.Now().UnixMilli(),
@@ -139,7 +146,9 @@ func (s *HTTPServer) handleThirdPartyGatewayHandshake(w http.ResponseWriter, r *
 		MaxTimeoutSec:  srvThirdPartyMaxTimeoutSec,
 		MaxBatchSize:   srvThirdPartyMaxBatchSize,
 		MaxPollLimit:   srvThirdPartyMaxLimit,
-	}))
+	})
+	response.CapabilitiesAccepted = req.ClientCapabilities
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayMediaUploadURL(w http.ResponseWriter, r *http.Request) {
@@ -458,17 +467,24 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 			"attachment_count": strconv.Itoa(len(req.Message.Attachments)),
 		},
 	})
+	voiceTranscript, voiceOK := m.transcribeThirdPartyVoice(ctx, p, req)
 	content, attachments := m.thirdPartyAgentInput(p, req)
+	if voiceOK {
+		content = voiceTranscript
+		metadata["asr_transcript"] = voiceTranscript
+		metadata["asr_source"] = "maclawsrv"
+	}
 	sendInput := agentservice.SendMessageInput{
-		AgentID:          srvThirdPartySessionAgent,
-		Title:            "Third-party " + req.ClientID,
-		Content:          content,
-		InputType:        "text/plain",
-		Attachments:      attachments,
-		Metadata:         metadata,
-		SessionMetadata:  metadata,
-		ClientSessionKey: "thirdparty:" + req.ClientID + ":" + req.ConversationID,
-		ClientMessageID:  req.EventID,
+		AgentID:            srvThirdPartySessionAgent,
+		Title:              "Third-party " + req.ClientID,
+		Content:            content,
+		InputType:          "text/plain",
+		Attachments:        attachments,
+		Metadata:           metadata,
+		SessionMetadata:    metadata,
+		ClientSessionKey:   "thirdparty:" + req.ClientID + ":" + req.ConversationID,
+		ClientMessageID:    req.EventID,
+		ClientCapabilities: m.clientCapabilities(thirdPartyClientKey(p, req.ClientID)),
 	}
 	_, _, assistant, err := m.svc.SendMessage(ctx, p, instanceID, sendInput)
 	if errors.Is(err, agentservice.ErrInstanceNotFound) {
@@ -497,6 +513,41 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 		})
 	}
 	_ = parent
+}
+
+// transcribeThirdPartyVoice turns a gateway voice attachment into the text
+// command that the normal MaClaw agent/tool pipeline executes. The device is
+// intentionally only an audio/display surface: ASR and every privileged action
+// remain server-side.
+func (m *srvThirdPartyGatewayManager) transcribeThirdPartyVoice(ctx context.Context, p agentservice.Principal, req srvThirdPartyIncomingRequest) (string, bool) {
+	if m == nil || m.aiModels == nil || (req.Message.Type != "voice" && req.Message.Type != "audio") {
+		return "", false
+	}
+	cfg, err := m.svc.GetUserConfig(ctx, p)
+	if err != nil || cfg == nil {
+		return "", false
+	}
+	for _, ref := range req.Message.Attachments {
+		if ref.Type != "voice" && ref.Type != "audio" {
+			continue
+		}
+		data, ok := m.thirdPartyAttachmentBytes(p, ref)
+		if !ok || len(data) == 0 {
+			continue
+		}
+		wav, err := audioconv.ToWAV(data, firstNonEmptyThirdParty(ref.MimeType, ref.ContentType, ref.FileName))
+		if err != nil {
+			continue
+		}
+		text, err := m.aiModels.transcribeWAV(ctx, cfg.AppConfig, wav)
+		if err != nil {
+			_ = m.aiModels.startDownload(srvAIModelASR, cfg.AppConfig, false)
+			return "", false
+		}
+		text = strings.TrimSpace(text)
+		return text, text != ""
+	}
+	return "", false
 }
 
 func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Principal, req srvThirdPartyIncomingRequest) (string, []agent.MessageAttachment) {
@@ -693,6 +744,21 @@ func (m *srvThirdPartyGatewayManager) ensureClient(clientKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureClientLocked(clientKey)
+}
+
+func (m *srvThirdPartyGatewayManager) setClientCapabilities(clientKey string, capabilities *agent.ClientCapabilities) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensureClientLocked(clientKey)
+	state.ClientCapabilities = agent.NormalizeClientCapabilities(capabilities)
+}
+
+func (m *srvThirdPartyGatewayManager) clientCapabilities(clientKey string) *agent.ClientCapabilities {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensureClientLocked(clientKey)
+	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+	return &capabilities
 }
 
 func (m *srvThirdPartyGatewayManager) ensureClientLocked(clientKey string) *srvThirdPartyClientState {
@@ -949,6 +1015,11 @@ func (m *srvThirdPartyGatewayManager) enqueue(p agentservice.Principal, req srvT
 	clientKey := thirdPartyClientKey(p, req.ClientID)
 	m.mu.Lock()
 	state := m.ensureClientLocked(clientKey)
+	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+	if !adaptThirdPartyOutgoingMessage(&msg, capabilities) {
+		m.mu.Unlock()
+		return
+	}
 	state.Next++
 	msg.Cursor = strconv.FormatInt(state.Next, 10)
 	state.Messages = append(state.Messages, msg)
@@ -972,6 +1043,46 @@ func (m *srvThirdPartyGatewayManager) enqueue(p agentservice.Principal, req srvT
 	m.mu.Unlock()
 }
 
+func adaptThirdPartyOutgoingMessage(msg *srvThirdPartyOutgoingMessage, capabilities agent.ClientCapabilities) bool {
+	if msg == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(msg.Type)) {
+	case "image":
+		return capabilities.SupportsOutputMIME("image", outgoingSrvThirdPartyMIME(*msg))
+	case "file":
+		return capabilities.SupportsOutputMIME("file", outgoingSrvThirdPartyMIME(*msg)) && capabilities.SupportsOutputBytes("file", msg.SizeBytes)
+	case "voice", "audio":
+		return capabilities.SupportsOutput("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback && capabilities.SupportsOutputMIME("audio", outgoingSrvThirdPartyMIME(*msg))
+	default:
+		if !capabilities.SupportsOutput("text") {
+			return false
+		}
+		msg.Type = "text"
+		if capabilities.Output.Text != nil && capabilities.Output.Text.MaxChars > 0 {
+			msg.Text = truncateThirdPartyRunes(msg.Text, capabilities.Output.Text.MaxChars)
+		}
+		return strings.TrimSpace(msg.Text) != ""
+	}
+}
+
+func outgoingSrvThirdPartyMIME(msg srvThirdPartyOutgoingMessage) string {
+	if strings.TrimSpace(msg.MimeType) != "" {
+		return msg.MimeType
+	}
+	return msg.ContentType
+}
+
+func truncateThirdPartyRunes(text string, max int) string {
+	if max <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max])
+}
 func (m *srvThirdPartyGatewayManager) messagesAfter(clientKey string, cursor int64, limit int) ([]srvThirdPartyOutgoingMessage, int64, bool, <-chan struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

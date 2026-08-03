@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -147,6 +148,50 @@ func TestSearchStructuredQueryOnlyUsesFTSWithoutUnfilteredRows(t *testing.T) {
 	}
 	if !hasResultTypeWithRow(results, "table_row", 3) {
 		t.Fatalf("expected matching table row, got %#v", results)
+	}
+}
+
+func TestSearchStructuredNoSpaceScriptLikeFallback(t *testing.T) {
+	store := newStoreWithStructuredCSV(t)
+	defer store.Close()
+	if _, err := store.db.Exec(`DELETE FROM kb_rows_fts`); err != nil {
+		t.Fatalf("clear structured FTS: %v", err)
+	}
+	results, err := store.SearchStructured(t.Context(), StructuredSearchOptions{Query: "张三", Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchStructured CJK LIKE fallback: %v", err)
+	}
+	if !hasResultTypeWithRow(results, "table_row", 2) {
+		t.Fatalf("expected CJK row from LIKE fallback, got %#v", results)
+	}
+}
+
+func TestStructuredRowLikeMatchScoreUsesLiteralTerms(t *testing.T) {
+	score, args := structuredRowLikeMatchScore([]string{"张", "_"})
+	if strings.Count(score, "CASE WHEN") != 2 {
+		t.Fatalf("match score = %q", score)
+	}
+	if len(args) != 4 || args[0] != "%张%" || args[2] != "%\\_%" {
+		t.Fatalf("match score args = %#v", args)
+	}
+}
+
+func TestSearchStructuredRowFiltersUseNoSpaceScriptLikeFallback(t *testing.T) {
+	store := newStoreWithStructuredCSV(t)
+	defer store.Close()
+	if _, err := store.db.Exec(`DELETE FROM kb_rows_fts`); err != nil {
+		t.Fatalf("clear structured FTS: %v", err)
+	}
+	results, err := store.SearchStructured(t.Context(), StructuredSearchOptions{
+		Query:        "张三",
+		ColumnEquals: map[string]string{"部门": "法务"},
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("SearchStructured CJK fallback with row filter: %v", err)
+	}
+	if len(results) != 1 || results[0].ResultType != "table_row" || results[0].RowIndex != 2 {
+		t.Fatalf("expected filtered CJK row from LIKE fallback, got %#v", results)
 	}
 }
 

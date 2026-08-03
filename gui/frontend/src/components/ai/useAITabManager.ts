@@ -52,6 +52,7 @@ export interface CreateProjectTabOptions {
     /** When set, stamp the project tab as a coding-development agent session. */
     agentMode?: "coding_dev" | "remote_coding_dev";
     remoteHost?: string;
+    remoteSafety?: "diagnosis";
     /** Remote pure-coding: SSH session expired / not yet connected. */
     remoteNeedsReconnect?: boolean;
 }
@@ -66,6 +67,9 @@ interface BackendTabIndexEntry {
     type: string;
     title: string;
     projectPath?: string;
+    agentMode?: string;
+    remoteHost?: string;
+    remoteSafety?: string;
     lastActiveAt?: number;
     archived?: boolean;
 }
@@ -318,6 +322,7 @@ function persistProjectTabs(tabs: AITab[]) {
                 projectPath: t.projectPath,
                 agentMode: t.agentMode,
                 remoteHost: t.remoteHost,
+                remoteSafety: t.remoteSafety,
             });
         if (serialized.length === 0) {
             localStorage.removeItem(PROJECT_TABS_STORAGE_KEY);
@@ -338,7 +343,7 @@ function loadPersistedProjectTabs(): AITab[] {
     try {
         const raw = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
         if (!raw) return [];
-        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; agentMode?: string; remoteHost?: string; expertId?: string; expertIcon?: string; expertDescription?: string }>;
+        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string }>;
         if (!Array.isArray(parsed)) return [];
         return parsed
             .filter(t => t.id && (t.projectPath || (t.type === "expert" && t.expertId)))
@@ -360,6 +365,9 @@ function loadPersistedProjectTabs(): AITab[] {
                     ? "remote_coding_dev" as const
                     : (t.agentMode === "coding_dev" ? "coding_dev" as const : undefined);
                 const remoteHost = String(t.remoteHost || "").trim() || undefined;
+                const remoteSafety = agentMode === "remote_coding_dev" && t.remoteSafety === "diagnosis"
+                    ? "diagnosis" as const
+                    : undefined;
                 return {
                     id: t.id,
                     type: "project" as AITabType,
@@ -367,6 +375,7 @@ function loadPersistedProjectTabs(): AITab[] {
                     projectPath,
                     agentMode,
                     remoteHost,
+                    remoteSafety,
                     closable: true,
                 };
             })
@@ -539,20 +548,33 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 );
                 const backendTitlesByPath = new Map<string, string>();
                 const backendTitlesById = new Map<string, string>();
+				const backendEntriesByPath = new Map<string, BackendTabIndexEntry>();
+				const backendEntriesById = new Map<string, BackendTabIndexEntry>();
                 for (const entry of entries) {
                     if (!entry || entry.archived || !entry.projectPath) continue;
                     const normalizedPath = normalizeProjectSessionPath(entry.projectPath);
                     const title = sanitizeProjectTabTitle(entry.title || normalizedPath, normalizedPath);
                     backendTitlesByPath.set(normalizedPath, title);
                     if (entry.id) backendTitlesById.set(entry.id, title);
+					backendEntriesByPath.set(normalizedPath, entry);
+					if (entry.id) backendEntriesById.set(entry.id, entry);
                 }
                 let titleChanged = false;
                 const updatedReconciledTabs = reconciledTabs.map(tab => {
                     if (tab.type !== "project" || !tab.projectPath) return tab;
-                    const backendTitle = backendTitlesByPath.get(normalizeProjectSessionPath(tab.projectPath)) || backendTitlesById.get(tab.id) || "";
-                    if (!backendTitle || backendTitle === tab.title) return tab;
+                    const normalizedPath = normalizeProjectSessionPath(tab.projectPath);
+                    const backendTitle = backendTitlesByPath.get(normalizedPath) || backendTitlesById.get(tab.id) || "";
+                    const backendEntry = backendEntriesByPath.get(normalizedPath) || backendEntriesById.get(tab.id);
+                    const agentMode = backendEntry?.agentMode === "remote_coding_dev"
+                        ? "remote_coding_dev" as const
+                        : (backendEntry?.agentMode === "coding_dev" ? "coding_dev" as const : tab.agentMode);
+                    const remoteHost = String(backendEntry?.remoteHost || "").trim() || tab.remoteHost;
+                    const remoteSafety = agentMode === "remote_coding_dev" && backendEntry?.remoteSafety === "diagnosis"
+                        ? "diagnosis" as const
+                        : tab.remoteSafety;
+                    if (backendTitle === tab.title && agentMode === tab.agentMode && remoteHost === tab.remoteHost && remoteSafety === tab.remoteSafety) return tab;
                     titleChanged = true;
-                    return { ...tab, title: backendTitle };
+                    return { ...tab, title: backendTitle || tab.title, agentMode, remoteHost, remoteSafety };
                 });
 
                 const newTabs: AITab[] = [];
@@ -563,12 +585,22 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                     if (entry.archived) continue; // Don't restore archived tabs
                     // Skip if already present (by ID or projectPath)
                     if (existingIds.has(entry.id) || existingPaths.has(normalizedPath)) continue;
+                    const agentMode = entry.agentMode === "remote_coding_dev"
+                        ? "remote_coding_dev" as const
+                        : (entry.agentMode === "coding_dev" ? "coding_dev" as const : undefined);
+                    const remoteHost = String(entry.remoteHost || "").trim() || undefined;
+                    const remoteSafety = agentMode === "remote_coding_dev" && entry.remoteSafety === "diagnosis"
+                        ? "diagnosis" as const
+                        : undefined;
 
                     newTabs.push({
                         id: entry.id,
                         type: "project" as AITabType,
                         title: sanitizeProjectTabTitle(entry.title || normalizedPath, normalizedPath),
                         projectPath: normalizedPath,
+                        agentMode,
+                        remoteHost,
+                        remoteSafety,
                         closable: true,
                     });
                 }
@@ -949,12 +981,14 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         if (existing) {
             const nextAgentMode = options?.agentMode ?? existing.agentMode;
             const nextRemoteHost = options?.remoteHost ?? existing.remoteHost;
+            const nextRemoteSafety = options?.remoteSafety ?? existing.remoteSafety;
             const nextNeedsReconnect = options?.remoteNeedsReconnect ?? existing.remoteNeedsReconnect;
             const modeChanged = nextAgentMode !== existing.agentMode;
             const hostChanged = nextRemoteHost !== existing.remoteHost;
+            const safetyChanged = nextRemoteSafety !== existing.remoteSafety;
             const reconnectChanged = nextNeedsReconnect !== existing.remoteNeedsReconnect;
-            if (modeChanged || hostChanged || reconnectChanged) {
-                const patched = { ...existing, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteNeedsReconnect: nextNeedsReconnect };
+            if (modeChanged || hostChanged || safetyChanged || reconnectChanged) {
+                const patched = { ...existing, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect };
                 updateTabState(() => ({
                     ...prev,
                     activeTabId: existing.id,
@@ -984,6 +1018,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             projectPath,
             agentMode: options?.agentMode,
             remoteHost: options?.remoteHost,
+            remoteSafety: options?.remoteSafety,
             remoteNeedsReconnect: options?.remoteNeedsReconnect,
             closable: true,
         };

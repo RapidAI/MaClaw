@@ -1,19 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useDialog } from "../CustomDialog";
-import {
-    DeletePassthroughCommand,
-    ExportPassthroughCommand,
-    GetPassthroughSettings,
-    ListPassthroughAudit,
-    ListPassthroughCommands,
-    PassthroughRegistryPath,
-    PreviewPassthroughCommand,
-    PreviewPassthroughDraftCommand,
-    RunPassthroughCommand,
-    SavePassthroughCommand,
-    SavePassthroughSettings,
-    SetPassthroughCommandEnabled,
-} from "../../../wailsjs/go/main/App";
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useDialog } from '../CustomDialog';
+import { DeletePassthroughCommand, ExportPassthroughCommand, GetPassthroughSettings, ListPassthroughAudit, ListPassthroughCommands, PassthroughRegistryPath, PreviewPassthroughCommand, PreviewPassthroughDraftCommand, RunPassthroughCommand, SavePassthroughCommand, SavePassthroughSettings, SetPassthroughCommandEnabled } from '../../../wailsjs/go/main/App';
+import { main } from '../../../wailsjs/go/models';
 import {
     colors,
     radius,
@@ -420,7 +408,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
         }
         try {
 			const next = commandFromForm(form, commandLine, params, testValues);
-            const saved = await SavePassthroughCommand(next);
+            const saved = await SavePassthroughCommand(next as main.PassthroughCommand);
             const savedCmd = saved as PassthroughCommand;
             setForm(savedCmd);
             setCommandLine(commandLineFromCommand(savedCmd));
@@ -482,7 +470,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
         }
         try {
             const values = valuesForPreview(draft.params || [], testValues);
-            const args = await PreviewPassthroughDraftCommand(draft, values);
+            const args = await PreviewPassthroughDraftCommand(draft as main.PassthroughCommand, values);
             setMessage((args || []).map(quoteArg).join(" "));
         } catch (err) {
             setMessage(String(err));

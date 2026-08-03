@@ -1,14 +1,14 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { Dispatch, SetStateAction } from 'react';
 import { LoadConfig, RestartWeixin, SetWeixinLocalMode, StopWeixin } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 import { WeixinQRLoginPanel } from './WeixinQRLoginPanel';
 import { useDialog } from '../CustomDialog';
 
 type WeixinSettingsProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     weixinStatus: string;
     setWeixinStatus: Dispatch<SetStateAction<string>>;

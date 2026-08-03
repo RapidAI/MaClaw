@@ -735,6 +735,8 @@ func (s *HTTPServer) handleKnowledgeExport(w http.ResponseWriter, r *http.Reques
 	}
 	if !req.IncludeDisabled {
 		opts.Status = "active"
+	} else {
+		opts.IncludeDisabled = true
 	}
 	sources, err := s.knowledgeMgr.Store().ListSources(ctx, opts)
 	if err != nil {
@@ -1915,7 +1917,7 @@ func (s *HTTPServer) listReadableKnowledgeSources(ctx context.Context, p agentse
 		scopes = access.ResolveForUser(ctx, p.TenantID, p.UserID)
 	}
 	for _, scope := range scopes {
-		opts := knowledge.ListSourcesOptions{OwnerID: scope.OwnerID, TenantID: scope.TenantID, Limit: maxReadableKnowledgeSourcesPerScope}
+		opts := knowledge.ListSourcesOptions{OwnerID: scope.OwnerID, TenantID: scope.TenantID, Limit: maxReadableKnowledgeSourcesPerScope, IncludeDisabled: true}
 		if scope.TenantID != tenantID || scope.OwnerID != userID {
 			opts.Status = "active"
 		}
@@ -1962,6 +1964,9 @@ func (s *HTTPServer) handleKnowledgeStats(w http.ResponseWriter, r *http.Request
 		return
 	}
 	stats := knowledgeStatsFromSources(sources)
+	if store := s.knowledgeMgr.Store(); store != nil {
+		stats.VectorIndex = store.VectorIndexStats()
+	}
 
 	// Augment stats with embedding/vector search status for observability.
 	s.knowledgeMgr.mu.RLock()
@@ -2125,7 +2130,7 @@ func (s *HTTPServer) publicKnowledgeLibraryViews(ctx context.Context, libraries 
 	views := make([]publicKnowledgeLibraryView, 0, len(libraries))
 	store := s.knowledgeMgr.Store()
 	for _, library := range libraries {
-		sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID, Limit: maxReadableKnowledgeSourcesPerScope})
+		sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID, Limit: maxReadableKnowledgeSourcesPerScope, IncludeDisabled: true})
 		if err != nil {
 			return nil, err
 		}
@@ -2156,7 +2161,7 @@ func (s *HTTPServer) handleAdminPublicKnowledgeSources(w http.ResponseWriter, r 
 	if !ok {
 		return
 	}
-	sources, err := s.knowledgeMgr.Store().ListSources(r.Context(), knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID, Limit: maxReadableKnowledgeSourcesPerScope})
+	sources, err := s.knowledgeMgr.Store().ListSources(r.Context(), knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID, Limit: maxReadableKnowledgeSourcesPerScope, IncludeDisabled: true})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
@@ -2422,7 +2427,7 @@ func (s *HTTPServer) handleAdminKnowledgeListSources(w http.ResponseWriter, r *h
 	defer cancel()
 
 	// Admin: no tenant/owner filter
-	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{})
+	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{IncludeDisabled: true})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("list sources failed: %v", err))})
 		return

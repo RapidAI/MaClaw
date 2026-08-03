@@ -1,6 +1,6 @@
-import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import { SetChatFontSize, SetUIZoomFactor } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { type Dispatch, type SetStateAction, useEffect, useRef } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import {
     clampUIScale,
@@ -13,7 +13,7 @@ import { assistantDarkSchemes, type AssistantDarkSchemeId } from '../ai/assistan
 import { assistantLightSchemes, type AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 
 type UISettingsPanelProps = {
-    config: main.AppConfig | null;
+    config: corelib.AppConfig | null;
     lang: string;
     t: (key: string) => string;
     uiZoom: number;

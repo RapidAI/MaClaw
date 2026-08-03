@@ -90,12 +90,95 @@ describe('useAITabManager', () => {
         expect(createVETab).toHaveBeenCalledWith('machine-ve', 'Machine VE', undefined, 'online', 'data:image/jpeg;base64,/9j/', '');
     });
 
+    it('registers a pending expert before opening its tab', async () => {
+        let completeRegistration: (() => void) | undefined;
+        const onEnsureExpertTask = vi.fn(() => new Promise<void>((resolve) => { completeRegistration = resolve; }));
+        const createExpertTab = vi.fn().mockReturnValue({ id: 'expert:paper', type: 'expert', expertId: 'expert-paper' });
+
+        renderHook(() => usePendingAssistantTabOpen({
+            createVETab: vi.fn(),
+            createGroupTab: vi.fn(),
+            createProjectTab: vi.fn(),
+            createExpertTab,
+            pendingExpertOpen: { expert: { id: 'expert-paper', name: 'Paper reviewer' } as any },
+            onEnsureExpertTask,
+        }));
+
+        await waitFor(() => expect(onEnsureExpertTask).toHaveBeenCalledTimes(1));
+        expect(createExpertTab).not.toHaveBeenCalled();
+        act(() => completeRegistration?.());
+        await waitFor(() => expect(createExpertTab).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-paper' })));
+    });
+
+    it('does not open an expert when its task registration fails', async () => {
+        const createExpertTab = vi.fn();
+        renderHook(() => usePendingAssistantTabOpen({
+            createVETab: vi.fn(),
+            createGroupTab: vi.fn(),
+            createProjectTab: vi.fn(),
+            createExpertTab,
+            pendingExpertOpen: { expert: { id: 'expert-paper', name: 'Paper reviewer' } as any },
+            onEnsureExpertTask: vi.fn().mockRejectedValue(new Error('task store unavailable')),
+        }));
+
+        await waitFor(() => expect(createExpertTab).not.toHaveBeenCalled());
+    });
+
+    it('opens only the latest expert when registrations resolve out of order', async () => {
+        const pendingResolvers = new Map<string, () => void>();
+        const onEnsureExpertTask = vi.fn((expert: { id: string }) => new Promise<void>((resolve) => {
+            pendingResolvers.set(expert.id, resolve);
+        }));
+        const createExpertTab = vi.fn().mockImplementation((expert: { id: string }) => ({
+            id: `expert:${expert.id}`,
+            type: 'expert',
+            expertId: expert.id,
+        }));
+        const { rerender } = renderHook(
+            ({ pendingExpertOpen }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                pendingExpertOpen,
+                onEnsureExpertTask,
+            }),
+            { initialProps: { pendingExpertOpen: { expert: { id: 'expert-a', name: 'Expert A' } as any } } },
+        );
+
+        await waitFor(() => expect(onEnsureExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-a' })));
+        rerender({ pendingExpertOpen: { expert: { id: 'expert-b', name: 'Expert B' } as any } });
+        await waitFor(() => expect(onEnsureExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-b' })));
+
+        act(() => pendingResolvers.get('expert-b')?.());
+        await waitFor(() => expect(createExpertTab).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-b' })));
+        act(() => pendingResolvers.get('expert-a')?.());
+        await waitFor(() => expect(createExpertTab).toHaveBeenCalledTimes(1));
+    });
+
     describe('initial state', () => {
         it('starts with only the local tab active', () => {
             const { result } = renderHook(() => useAITabManager());
             expect(result.current.tabState.tabs).toHaveLength(1);
             expect(result.current.activeTab.id).toBe("local");
             expect(result.current.tabLimitError).toBeNull();
+        });
+
+        it('restores diagnosis safety for persisted remote project tabs', () => {
+            localStorage.setItem('ai_assistant_project_tabs', JSON.stringify([{
+                id: 'proj-incident',
+                type: 'project',
+                title: 'Diagnose service',
+                projectPath: 'D:/tasks/incident',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'ops.example.test',
+                remoteSafety: 'diagnosis',
+            }]));
+
+            const { result } = renderHook(() => useAITabManager());
+            expect(result.current.getTabs().find(tab => tab.id === 'proj-incident')).toMatchObject({
+                remoteSafety: 'diagnosis',
+            });
         });
     });
 

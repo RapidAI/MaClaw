@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
-import { main } from "../../../wailsjs/go/models";
+import { useCallback, useEffect, useState } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 
 type Props = {
-    config: main.AppConfig | null;
-    saveRemoteConfigField: (patch: Partial<main.AppConfig>) => void;
+    config: corelib.AppConfig | null;
+    saveRemoteConfigField: (patch: Partial<corelib.AppConfig>) => void;
     lang: string;
 };
 

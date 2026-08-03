@@ -129,7 +129,13 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	// session-pinned tools that aren't already in the list.
 	tools, toolsTokenBudget = h.augmentToolsFromSessionPins(ctx, opts.UserID, tools, toolsTokenBudget)
 	forceLightFinalizeWithoutTools := shouldForceLightFinalizeWithoutTools(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace)
-	if forceLightFinalizeWithoutTools {
+	// An authorised group must retain knowledge_search until it has either
+	// produced evidence or established a no-result fallback. Otherwise the
+	// light-profile finalization step can make the mandatory first lookup
+	// impossible and lead to a fabricated answer.
+	keepGroupKnowledgeLookup := ctx != nil && ctx.LansengerGroupPermissions != nil &&
+		ctx.LansengerGroupPermissions.requiresKnowledgeLookup()
+	if forceLightFinalizeWithoutTools && !keepGroupKnowledgeLookup {
 		tools = nil
 		toolsTokenBudget = 0
 		log.Printf("[exec-profile] light finalize without tools request_id=%q loop=%q iteration=%d effectiveMax=%d grace=%d",
@@ -177,7 +183,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	if len(tools) != toolsBeforeOrchestrator {
 		toolsTokenBudget = estimateToolsTokens(tools)
 	}
-	if forceLightFinalizeWithoutTools {
+	if forceLightFinalizeWithoutTools && !keepGroupKnowledgeLookup {
 		tools = nil
 		toolsTokenBudget = 0
 	}

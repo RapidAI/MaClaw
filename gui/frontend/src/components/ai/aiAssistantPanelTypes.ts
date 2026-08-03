@@ -4,6 +4,7 @@ export type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./
 import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
 import type { PendingHistoryDiscussionOpen, PendingProjectTabOpen, PendingExpertOpen } from "./usePendingAssistantTabOpen";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
+import type { ExpertDefinition } from "./expertTypes";
 import type { AssistantUpdatePayload } from "./AssistantUpdateNotice";
 import type { AssistantDarkSchemeId } from "./assistantDarkSchemes";
 import type { AssistantLightSchemeId } from "./assistantLightSchemes";
@@ -117,6 +118,7 @@ export interface AIAssistantPanelProps {
     onPendingProjectTabOpenHandled?: () => void;
     pendingExpertOpen?: PendingExpertOpen | null;
     onPendingExpertOpenHandled?: () => void;
+    onEnsureExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
     appUpdateAvailable?: AssistantUpdatePayload | null;
     onOpenAppUpdate?: () => void;
     onDismissAppUpdate?: (latestVersion: string) => void;
@@ -134,6 +136,8 @@ export interface AIAssistantPanelProps {
      * removing tasks that still have an open tab.
      */
     onOpenProjectTabsChange?: (projectPaths: string[]) => void;
+    /** Notifies the shell about open expert tabs so their durable task rows cannot be removed mid-session. */
+    onOpenExpertTabsChange?: (expertIDs: string[]) => void;
 }
 
 export type AIAssistantPanelCompatProps = AIAssistantPanelProps & AIAssistantPanelStateProps & AIAssistantPanelActionProps & AIAssistantPanelWindowProps;

@@ -2,763 +2,281 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="MaClaw Pet Pack creation guide — structure, build steps, zip install. Switchable ZH/EN (one language at a time).">
-  <title>MaClaw 宠物包创建指南</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="MaClaw Pet Performance Pack 3.0 specification for AI agents">
+  <title>MaClaw 宠物角色表演包规范 3.0</title>
   <style>
-    :root {
-      --bg: #f6f8fb;
-      --panel: #fff;
-      --panel-subtle: #f8fbff;
-      --ink: #172033;
-      --muted: #5f6f86;
-      --line: #d9e2ee;
-      --primary: #6366f1;
-      --primary-strong: #4f46e5;
-      --primary-soft: #eef2ff;
-      --green: #147d58;
-      --green-soft: #eaf7f1;
-      --amber: #9a6700;
-      --amber-soft: #fff8ed;
-      --shadow: 0 12px 32px rgba(23, 34, 54, .07);
-    }
-    * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
-    body {
-      margin: 0;
-      background: linear-gradient(180deg, #fbfcfe 0%, var(--bg) 100%);
-      color: var(--ink);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-      line-height: 1.65;
-    }
-    .skip-link {
-      position: fixed; top: 12px; left: 12px; z-index: 20;
-      transform: translateY(-140%); min-height: 38px; padding: 7px 12px;
-      border-radius: 8px; background: var(--ink); color: #fff; font-weight: 850;
-      text-decoration: none; transition: transform 160ms ease;
-    }
-    .skip-link:focus-visible { transform: translateY(0); }
-    .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
-    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
-    .brand { display: flex; align-items: center; gap: 12px; color: var(--ink); text-decoration: none; }
-    .mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: var(--primary); color: #fff; font-weight: 900; }
-    .brand strong { display: block; font-size: 16px; }
-    .brand span:last-child { display: block; color: var(--muted); font-size: 13px; }
-    .lang { display: flex; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
-    .lang button {
-      min-height: 32px; padding: 0 14px; border: 0; border-radius: 7px;
-      background: transparent; color: var(--muted); font-weight: 800; cursor: pointer;
-    }
-    .lang button[aria-pressed="true"] { background: var(--primary); color: #fff; }
-    :focus-visible { outline: 3px solid rgba(99, 102, 241, .34); outline-offset: 2px; }
-
-    /* One language at a time: inactive panel is fully removed from layout */
-    .lang-panel { display: block; }
-    .lang-panel.is-hidden,
-    .lang-panel[hidden] {
-      display: none !important;
-    }
-
-    .hero {
-      display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: center;
-      padding: 32px 36px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow);
-    }
-    .kicker { margin: 0 0 10px; color: var(--primary); font-size: 13px; font-weight: 850; }
-    h1 { margin: 0; font-size: 30px; line-height: 1.2; }
-    h2 { margin: 0 0 12px; font-size: 22px; }
-    h3 { margin: 18px 0 8px; font-size: 16px; }
-    h4 { margin: 14px 0 6px; font-size: 14px; color: var(--ink); }
-    p { margin: 0 0 12px; color: var(--muted); }
-    ul, ol { margin: 0 0 12px; padding-left: 20px; color: var(--muted); }
-    li + li { margin-top: 6px; }
-    code { padding: 2px 5px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; color: var(--primary-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; }
-    pre {
-      margin: 0 0 14px; padding: 14px 16px; overflow: auto; border: 1px solid var(--line);
-      border-radius: 10px; background: #0f172a; color: #e2e8f0; font-size: 12.5px; line-height: 1.55;
-    }
-    pre code { padding: 0; border: 0; background: transparent; color: inherit; font-size: inherit; }
-    .lead { max-width: 780px; margin-top: 14px; color: var(--muted); font-size: 16px; }
-    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
-    .button-link {
-      display: inline-flex; align-items: center; justify-content: center; min-height: 40px;
-      padding: 9px 13px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
-      color: var(--ink); font-weight: 850; text-decoration: none;
-    }
-    .button-link.primary { border-color: var(--primary); background: var(--primary); color: #fff; }
-    .quick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
-    .quick a {
-      min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px;
-      background: var(--panel-subtle); color: var(--ink); font-weight: 850; text-decoration: none;
-    }
-    .grid { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 22px; margin-top: 24px; }
-    .toc { position: sticky; top: 18px; align-self: start; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); max-height: calc(100vh - 36px); overflow: auto; }
-    .toc a { display: block; padding: 7px 10px; border-radius: 8px; color: var(--muted); font-weight: 760; text-decoration: none; font-size: 13.5px; }
-    .toc a:hover { background: var(--primary-soft); color: var(--primary); }
-    .content { display: grid; gap: 16px; }
-    .section {
-      scroll-margin-top: 18px; padding: 24px; border: 1px solid var(--line); border-radius: 12px;
-      background: var(--panel); box-shadow: 0 6px 18px rgba(23, 34, 54, .045);
-    }
-    .section:target { border-color: #c7d2fe; box-shadow: 0 0 0 3px rgba(99, 102, 241, .08), 0 6px 18px rgba(23, 34, 54, .045); }
-    .callout { padding: 14px 16px; border: 1px solid #cbe9db; border-radius: 10px; background: var(--green-soft); color: #285f49; font-weight: 760; margin-bottom: 12px; }
-    .warning { border-color: #ead2a6; background: var(--amber-soft); color: var(--amber); }
-    .table-wrap { overflow: auto; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 10px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-    th { background: var(--panel-subtle); color: var(--ink); font-weight: 800; white-space: nowrap; }
-    td { color: var(--muted); }
-    .steps { counter-reset: step; list-style: none; padding: 0; margin: 0 0 14px; }
-    .steps > li {
-      position: relative; padding: 14px 14px 14px 52px; margin-bottom: 10px;
-      border: 1px solid var(--line); border-radius: 10px; background: var(--panel-subtle);
-    }
-    .steps > li::before {
-      counter-increment: step; content: counter(step);
-      position: absolute; left: 12px; top: 14px;
-      display: grid; place-items: center; width: 28px; height: 28px;
-      border-radius: 999px; background: var(--primary-soft); color: var(--primary-strong); font-weight: 900; font-size: 13px;
-    }
-    .steps > li strong { display: block; color: var(--ink); margin-bottom: 4px; }
-    .hero-visual svg { display: block; width: 100%; height: auto; }
-    .noscript-note {
-      margin: 0 0 16px; padding: 12px 14px; border: 1px solid #ead2a6; border-radius: 10px;
-      background: var(--amber-soft); color: var(--amber); font-weight: 700; font-size: 14px;
-    }
-    @media (max-width: 900px) {
-      .hero { grid-template-columns: 1fr; }
-      .grid { grid-template-columns: 1fr; }
-      .toc { position: static; max-height: none; }
-      .quick { grid-template-columns: 1fr 1fr; }
-      h1 { font-size: 26px; }
-      .topbar { flex-direction: column; align-items: flex-start; }
-    }
-    @media (max-width: 560px) { .quick { grid-template-columns: 1fr; } }
-    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    :root{color-scheme:light;--ink:#172033;--muted:#4e5a70;--line:#d7dde7;--page:#f5f7fa;--surface:#fff;--accent:#315b91;--soft:#eef3fb;--code:#172033;--warn:#654b16;--warn-bg:#fff7df}*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:16px/1.65 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}main{width:min(980px,calc(100% - 32px));margin:36px auto 64px;padding:34px;background:var(--surface);border:1px solid var(--line);border-radius:12px}header{display:flex;justify-content:space-between;gap:20px;padding-bottom:22px;border-bottom:1px solid var(--line)}h1{margin:0;font-size:1.8rem;line-height:1.25;letter-spacing:-.02em;text-wrap:balance}h2{margin:38px 0 12px;font-size:1.2rem;line-height:1.35;text-wrap:balance}h3{margin:26px 0 8px;font-size:1rem}p{max-width:78ch;margin:10px 0}.lede{color:var(--muted);margin-top:8px}.language{display:flex;gap:4px;align-self:start;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--page)}button{border:0;border-radius:5px;background:transparent;color:var(--muted);padding:5px 8px;font:inherit;font-size:.82rem;cursor:pointer}button[aria-pressed=true]{background:var(--surface);color:var(--accent);font-weight:650;box-shadow:0 1px 2px rgb(23 32 51 / 10%)}button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.notice,.warning{margin:18px 0;padding:13px 15px;border:1px solid #cbd8ec;border-radius:8px;background:var(--soft);color:#243c66}.warning{border-color:#ead99d;background:var(--warn-bg);color:var(--warn)}pre{overflow:auto;margin:12px 0;padding:16px;border-radius:8px;background:var(--code);color:#edf3ff;font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}code{padding:.08em .28em;border-radius:4px;background:#edf1f6;color:#263c60;font:.9em ui-monospace,SFMono-Regular,Consolas,monospace}pre code{padding:0;background:transparent;color:inherit}ul,ol{padding-left:1.3rem}li+li{margin-top:6px}table{width:100%;border-collapse:collapse;font-size:.93rem}th,td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}th{color:var(--muted);font-weight:650}.checklist{padding:0;list-style:none}.checklist li{position:relative;padding-left:22px}.checklist li::before{content:"✓";position:absolute;left:0;color:var(--accent);font-weight:700}[hidden]{display:none!important}@media(max-width:620px){main{width:calc(100% - 20px);margin:10px auto 36px;padding:22px 18px}header{gap:12px}h1{font-size:1.5rem}table{font-size:.83rem}th,td{padding:8px 6px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
   </style>
 </head>
 <body>
-  <a class="skip-link" href="#zh-overview" data-skip-link>跳到正文</a>
-  <main class="shell">
-    <header class="topbar">
-      <a class="brand" href="/pet-pack-help">
-        <span class="mark">P</span>
-        <span>
-          <strong>MaClaw Pet Pack</strong>
-          <span data-brand-sub>创建指南 · 切换语言只显示一种</span>
-        </span>
-      </a>
-      <div class="lang" role="group" aria-label="Language / 语言">
-        <button type="button" id="btn-lang-zh" data-set-lang="zh" aria-pressed="true">中文</button>
-        <button type="button" id="btn-lang-en" data-set-lang="en" aria-pressed="false">EN</button>
-      </div>
-    </header>
+  <main>
+    <header><div><h1 data-zh>MaClaw 宠物角色表演包规范 3.0</h1><h1 data-en hidden>MaClaw Pet Performance Pack Specification 3.0</h1><p class="lede" data-zh>面向 AI Agent 的、可校验的声明式桌面角色表演格式。</p><p class="lede" data-en hidden>A declarative, verifiable desktop character-performance format for AI agents.</p></div><div class="language" role="group" aria-label="Language"><button type="button" data-language="zh" aria-pressed="true">中文</button><button type="button" data-language="en" aria-pressed="false">EN</button></div></header>
 
-    <noscript>
-      <p class="noscript-note">请启用 JavaScript 以切换中英文。默认显示中文正文；英文正文在页面下方（无脚本时可见）。</p>
-    </noscript>
+    <section data-zh>
+      <p class="warning"><strong>兼容性规则。</strong><code>native-character</code> 与 <code>schema_version: 3</code> 已由桌面端和宠物市场校验支持。Agent 必须先检查目标客户端能力：声明 <code>pet-performance-v3</code> 时生成 3.0；未声明时生成 2.0 兼容包。</p>
+      <p class="notice">3.0 的目标不是让图片“晃一下”，而是让角色持续地注意、思考、回应和恢复平静。包中只允许本地图片、YAML 与 JSON；禁止 JavaScript、WASM、可执行文件、网络 URL、着色器、回调或动态脚本。</p>
 
-    <!-- ========== ZH only when active ========== -->
-    <div id="panel-zh" class="lang-panel" data-lang-panel="zh" role="region" aria-label="中文">
-      <section class="hero">
-        <div>
-          <p class="kicker">桌面宠物 · 自制扩展</p>
-          <h1>宠物包（Pet Pack）创建指南</h1>
-          <p class="lead">用<strong>声明式资源包</strong>做出自己的桌面宠物：一个 YAML 清单 + 若干 PNG/WebP 状态图，打成 zip 即可安装。不需要写 JS，也不用改 MaClaw 源码。</p>
-          <div class="hero-actions">
-            <a class="button-link primary" href="#zh-build">从零构建</a>
-            <a class="button-link" href="#zh-layout">目录结构</a>
-            <a class="button-link" href="#zh-checklist">验收清单</a>
-          </div>
-          <nav class="quick" aria-label="快速导航">
-            <a href="#zh-overview">是什么</a>
-            <a href="#zh-layout">结构</a>
-            <a href="#zh-build">构建步骤</a>
-            <a href="#zh-zip">打包安装</a>
-          </nav>
-        </div>
-        <div class="hero-visual" aria-hidden="true">
-          <svg viewBox="0 0 300 220" role="img">
-            <rect x="6" y="6" width="288" height="208" rx="14" fill="#eef2ff" stroke="#c7d2fe"/>
-            <circle cx="150" cy="92" r="44" fill="#fff" stroke="#a5b4fc" stroke-width="3"/>
-            <circle cx="134" cy="86" r="5" fill="#312e81"/>
-            <circle cx="166" cy="86" r="5" fill="#312e81"/>
-            <path d="M138 108c8 7 16 7 24 0" stroke="#312e81" stroke-width="3" fill="none" stroke-linecap="round"/>
-            <rect x="110" y="148" width="80" height="32" rx="9" fill="#6366f1"/>
-            <text x="150" y="169" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" font-family="system-ui">your-pet</text>
-          </svg>
-        </div>
-      </section>
+      <h2>给 AI Agent 的硬性工作流</h2>
+      <ol><li>读取客户端能力。支持 <code>pet-performance-v3</code> 才输出 3.0，否则输出 2.0。</li><li>先给出角色圣经（身份、性格、情绪、动作清单），再生成文件树。</li><li>生成 manifest、角色表演定义、骨骼定义、所有声明过的 PNG/WebP；不得引用未声明文件。</li><li>校验状态机、clip、贴图白名单、时长、资源预算与 ZIP 根目录。</li><li>压缩目录<strong>内的内容</strong>为 ZIP；ZIP 内只能有一个 <code>pet-pack.yaml</code>。</li></ol>
+      <pre><code>任务：生成一个 MaClaw Pet Performance Pack 3.0。
+角色：具体、温和、易识别；可以是动物、物品、人物或其他具象主题。
+表演：不是单一循环。每个主要状态具备 enter / loop / exit；身体、表情、视线和次级运动可并行混合。
+闲置：至少 10 个 idle 行为，带权重、最短停留、最长停留和冷却；不可连续重复最近 3 个行为。
+事件：至少覆盖 click、hover、task_started、task_done、task_failed、long_idle、drag_start、drag_end；thinking 和 speaking 是运行状态，不是事件。
+安全：仅本地 PNG/WebP、YAML、JSON；无 JS/WASM/URL/代码执行。
+降级：完整表演 → native-skeleton → native/idle.png。
+输出顺序：角色圣经、文件树、所有文件精确内容、验证结果、ZIP 根目录内容。</code></pre>
 
-      <div class="grid">
-        <nav class="toc" aria-label="目录">
-          <a href="#zh-overview">1. Pet Pack 是什么</a>
-          <a href="#zh-layout">2. 完整目录结构</a>
-          <a href="#zh-id">3. id 与命名规则</a>
-          <a href="#zh-manifest">4. pet-pack.yaml 详解</a>
-          <a href="#zh-frames">5. 状态帧怎么画</a>
-          <a href="#zh-variants">6. classic / default</a>
-          <a href="#zh-build">7. 从零构建步骤</a>
-          <a href="#zh-zip">8. 打包与安装</a>
-          <a href="#zh-security">9. 安全限制</a>
-          <a href="#zh-example">10. 最小可用示例</a>
-          <a href="#zh-checklist">11. 验收清单</a>
-          <a href="#zh-faq">12. 常见问题</a>
-        </nav>
-        <div class="content">
+      <h2>格式与兼容性</h2>
+      <table><thead><tr><th>格式</th><th>用途</th><th>客户端要求</th></tr></thead><tbody><tr><td><code>native-raster</code></td><td>静态形象</td><td>现有运行时</td></tr><tr><td><code>native-skeleton</code></td><td>基础连续骨骼动作</td><td>现有 2.0 运行时</td></tr><tr><td><code>native-character</code></td><td>状态机、表情、动作片段和事件表演</td><td><code>pet-performance-v3</code></td></tr></tbody></table>
+      <p>3.0 仍使用受限的骨骼与贴图资源。<code>character.definition</code> 描述“何时演什么”，<code>rig.definition</code> 描述“如何渲染”；两者都不是可执行代码。</p>
 
-          <section id="zh-overview" class="section">
-            <h2>1. Pet Pack 是什么</h2>
-            <p>Pet Pack 是放在用户目录下的<strong>纯资源包</strong>，用来替换/扩展桌面宠物外观：</p>
-            <ul>
-              <li><strong>能做：</strong>自定义形象、多状态表情（待机/聆听/思考/说话等）、设置页文案与推荐动效参数。</li>
-              <li><strong>不能做：</strong>不能执行代码、不能注册工具/技能、不能放 JS/HTML/可执行文件。</li>
-              <li><strong>和 Skill/MCP 插件的区别：</strong>插件是能力；Pet Pack 只是皮相（展示数据）。</li>
-            </ul>
-            <div class="callout">安装后位置：<code>{MaclawBaseDir}/pet-packs/&lt;id&gt;/</code>（Windows 常见为用户目录下 <code>.maclaw/pet-packs/</code>）。</div>
-          </section>
-
-          <section id="zh-layout" class="section">
-            <h2>2. 完整目录结构（必须严格遵守）</h2>
-            <p>推荐在磁盘上先建文件夹，最后再 zip。结构如下：</p>
-<pre><code>cool-pet/                      ← 文件夹名建议与 id 一致
-├── pet-pack.yaml              ← 【必需】清单，UTF-8 编码
-├── preview.png                ← 【推荐】设置页缩略图 256×256
-├── README.md                  ← 可选，给人看的说明（会随包安装）
-└── native/                    ← 【必需】Windows 桌宠用的状态帧
-    ├── idle.png               ← 【必需】待机（figurative 最低要求）
-    ├── listening.png          ← 强烈推荐：聆听/ASR
-    ├── thinking.png           ← 强烈推荐：思考/Agent
-    ├── speaking.png           ← 强烈推荐：说话/TTS
-    ├── done.png               ← 可选：任务完成
-    ├── alert.png              ← 可选：警告/需确认
-    └── quiet.png              ← 可选：勿扰/安静</code></pre>
-            <h3>文件角色说明</h3>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>路径</th><th>是否必须</th><th>作用</th></tr></thead>
-                <tbody>
-                  <tr><td><code>pet-pack.yaml</code></td><td>必须</td><td>包身份、状态图映射、变体、动效参数</td></tr>
-                  <tr><td><code>native/idle.png</code></td><td>具象必须</td><td>默认外观；其它状态缺图时回落 idle</td></tr>
-                  <tr><td><code>native/listening|thinking|speaking.png</code></td><td>推荐</td><td>对应语音/思考/播报状态更生动</td></tr>
-                  <tr><td><code>preview.png</code></td><td>推荐</td><td>设置页卡片预览（也可用 idle 代替）</td></tr>
-                  <tr><td><code>native/done|alert|quiet.png</code></td><td>可选</td><td>完成、告警、勿扰等扩展态</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="callout warning">zip 里<strong>不要</strong>混入 <code>.js</code>、<code>.exe</code>、<code>.html</code> 等文件，安装会直接拒绝。</div>
-          </section>
-
-          <section id="zh-id" class="section">
-            <h2>3. id 与命名规则</h2>
-            <ul>
-              <li>清单字段 <code>id</code> 必须匹配：<code>^[a-z][a-z0-9-]{1,63}$</code></li>
-              <li>只能：小写字母开头，后接小写字母 / 数字 / 连字符 <code>-</code>。</li>
-              <li>合法：<code>cool-pet</code>、<code>my-fox</code>、<code>office-bot-01</code></li>
-              <li>非法：<code>CoolPet</code>（大写）、<code>1fox</code>（数字开头）、<code>my_pet</code>（下划线）、中文 id</li>
-              <li>安装后目录名即 <code>id</code>；若与官方 id 冲突（如 <code>clawmate</code>），用户包会覆盖展示但卸载用户副本后仍回官方 bundled。</li>
-            </ul>
-          </section>
-
-          <section id="zh-manifest" class="section">
-            <h2>4. pet-pack.yaml 字段详解</h2>
-            <p>文件必须是 <strong>YAML</strong>，建议 UTF-8 无 BOM。核心字段：</p>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
-                <tbody>
-                  <tr><td><code>schema_version</code></td><td>int</td><td>固定写 <code>1</code></td></tr>
-                  <tr><td><code>id</code></td><td>string</td><td>包唯一 id（见上）</td></tr>
-                  <tr><td><code>name</code></td><td>string</td><td>显示名（英文或通用名）</td></tr>
-                  <tr><td><code>version</code></td><td>string</td><td>建议 semver，如 <code>1.0.0</code></td></tr>
-                  <tr><td><code>author</code></td><td>string</td><td>作者</td></tr>
-                  <tr><td><code>tier</code></td><td>string</td><td><code>figurative</code>（具象）/ <code>classic</code></td></tr>
-                  <tr><td><code>renderer</code></td><td>string</td><td><code>native-raster</code>=用图片；<code>procedural-fallback</code>=过程式几何</td></tr>
-                  <tr><td><code>preview</code> / <code>assets.preview</code></td><td>路径</td><td>相对包根的预览图，如 <code>preview.png</code></td></tr>
-                  <tr><td><code>assets.native</code></td><td>map</td><td>状态名 → 相对路径（见下）</td></tr>
-                  <tr><td><code>variants</code></td><td>list</td><td>至少建议有 <code>default</code> 与 <code>classic</code></td></tr>
-                  <tr><td><code>motion</code></td><td>object</td><td>节奏与音高推荐（不覆盖用户音效预设）</td></tr>
-                  <tr><td><code>label</code></td><td>map</td><td>多语言名：<code>en</code> / <code>zh-Hans</code> / <code>zh-Hant</code></td></tr>
-                  <tr><td><code>description_i18n</code></td><td>map</td><td>多语言简介</td></tr>
-                  <tr><td><code>default_size</code></td><td>int</td><td>建议 88（56–120）</td></tr>
-                  <tr><td><code>tone</code></td><td>string</td><td><code>balanced</code> / <code>compact</code> / <code>developer</code> / <code>focus</code></td></tr>
-                  <tr><td><code>face_overlay</code></td><td>bool</td><td>设置页是否叠 CSS 假脸（原生窗忽略）；具象图建议 <code>false</code></td></tr>
-                </tbody>
-              </table>
-            </div>
-            <h3>assets.native 状态键</h3>
-            <p>键名必须是小写英文，与运行时状态一致：</p>
-            <ul>
-              <li><code>idle</code> — 待机（必需）</li>
-              <li><code>listening</code> — 聆听</li>
-              <li><code>thinking</code> — 思考 / 处理中</li>
-              <li><code>speaking</code> — 播报 / 说话</li>
-              <li><code>done</code> — 完成（可选）</li>
-              <li><code>alert</code> — 告警（可选）</li>
-              <li><code>quiet</code> — 勿扰（可选）</li>
-            </ul>
-            <h3>motion 字段</h3>
-<pre><code>motion:
-  idle_ms: 4000          # 待机动画周期感（参考）
-  listening_ms: 1200
-  thinking_ms: 1800
-  speaking_ms: 950
-  amplitude: 0.85        # 0~1，动作幅度
-  sound_profile: classic # 仅推荐：classic|bubble|chime|synth|soft
-  pitch: 1.0             # 音高倍率；用户所选音效预设始终优先</code></pre>
-            <div class="callout">音效：设置里用户选的「动作音效」预设永远优先；包只提供 <code>pitch</code> 和推荐 profile，不会强行改用户选择。</div>
-          </section>
-
-          <section id="zh-frames" class="section">
-            <h2>5. 状态帧怎么画 / 导出</h2>
-            <h3>画布与格式</h3>
-            <ul>
-              <li>推荐画布 <strong>256×256</strong> 像素（也可用 512，安装体积会更大）</li>
-              <li>色彩 sRGB；<strong>透明背景</strong>（不要白底方块）</li>
-              <li>格式：<strong>PNG</strong> 或 <strong>WebP</strong>（扩展名必须是 <code>.png</code> / <code>.webp</code>）</li>
-              <li>单帧建议：PNG ≤ 80KB，WebP ≤ 40KB；整包未压缩尽量 ≤ 2MB</li>
-            </ul>
-            <h3>构图建议（小尺寸可读）</h3>
-            <ul>
-              <li>主体居中，四周留透明边距（约 8–12%），避免贴边被裁切</li>
-              <li>眼睛、嘴巴在 64–88px 显示时仍要能辨认（对比度够）</li>
-              <li>各状态主要靠表情/姿态区分，不要只靠文字</li>
-              <li>配色可参考官方：强调色 indigo <code>#6366F1</code>、深灰眼、浅壳</li>
-            </ul>
-            <h3>各状态画什么</h3>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>状态</th><th>建议画面</th></tr></thead>
-                <tbody>
-                  <tr><td>idle</td><td>中性表情、轻微“活着”感</td></tr>
-                  <tr><td>listening</td><td>眼睛更亮/身体前倾/天线或耳朵竖起</td></tr>
-                  <tr><td>thinking</td><td>眼睛半眯、看向一侧、可加思考气泡点</td></tr>
-                  <tr><td>speaking</td><td>嘴巴张开、面颊微红</td></tr>
-                  <tr><td>done</td><td>微笑、递出卡片/勾选感</td></tr>
-                  <tr><td>alert</td><td>严肃、强调色警告环</td></tr>
-                  <tr><td>quiet</td><td>闭眼或更小存在感</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <h3>工具建议</h3>
-            <ul>
-              <li>Figma / Photopea / Aseprite / Photoshop：导出 PNG 透明</li>
-              <li>可用 AI 出图，再统一裁切到 256 透明底</li>
-              <li>没有美术时：用纯色圆形身体 + 两点眼睛也能当 MVP 测试安装流程</li>
-            </ul>
-          </section>
-
-          <section id="zh-variants" class="section">
-            <h2>6. 变体 classic / default</h2>
-            <ul>
-              <li><strong>default（具象）</strong>：使用 <code>native/*</code> 图片，这是自制包的主目标。</li>
-              <li><strong>classic（经典）</strong>：忽略图片，用客户端内置过程式几何绘制（兼容回落）。</li>
-            </ul>
-            <p>清单里建议两个变体都写上：用户可在设置里「画质风格」切换。你的图主要服务于 <code>default</code>。</p>
-          </section>
-
-          <section id="zh-build" class="section">
-            <h2>7. 从零构建（推荐流程）</h2>
-            <ol class="steps">
-              <li>
-                <strong>定 id 与角色</strong>
-                想好包 id（如 <code>office-fox</code>）和人设（办公狐狸、极简机器人…）。
-              </li>
-              <li>
-                <strong>建文件夹</strong>
-                创建 <code>office-fox/</code> 与子目录 <code>native/</code>。
-              </li>
-              <li>
-                <strong>画 4 张核心状态图</strong>
-                至少 <code>idle / listening / thinking / speaking</code>，256×256 透明 PNG。文件名与 yaml 中路径一致。
-              </li>
-              <li>
-                <strong>写 pet-pack.yaml</strong>
-                复制下方「最小可用示例」，改 id、name、label、路径；确认 <code>assets.native</code> 与文件真实存在。
-              </li>
-              <li>
-                <strong>自检文件名</strong>
-                Windows 上注意扩展名是 <code>.png</code> 不是 <code>.PNG.png</code>；路径用正斜杠 <code>native/idle.png</code>。
-              </li>
-              <li>
-                <strong>打包 zip</strong>
-                见下一节。推荐 zip 内是 <code>office-fox/pet-pack.yaml</code> 这种带一层目录的结构。
-              </li>
-              <li>
-                <strong>在 MaClaw 安装</strong>
-                设置 → 桌面宠物 →「选择 Zip 安装」→ 切到「具象」→ 启用桌面宠物查看效果。
-              </li>
-              <li>
-                <strong>按验收清单微调</strong>
-                小尺寸五官、缺状态回落、勿扰模式等。
-              </li>
-            </ol>
-          </section>
-
-          <section id="zh-zip" class="section">
-            <h2>8. 打包与安装</h2>
-            <h3>正确的 zip 结构（两种都行）</h3>
-<pre><code># 方式 A（推荐）：带一层目录
-cool-pet.zip
-└── cool-pet/
-    ├── pet-pack.yaml
-    ├── preview.png
-    └── native/...
-
-# 方式 B：清单在 zip 根
-cool-pet.zip
-├── pet-pack.yaml
-├── preview.png
-└── native/...</code></pre>
-            <h3>Windows 打包示例</h3>
-            <ol>
-              <li>在资源管理器中进入 <code>cool-pet</code> 的<strong>上一级</strong>。</li>
-              <li>右键文件夹 <code>cool-pet</code> → 发送到 → 压缩(zipped)文件夹。</li>
-              <li>不要把整个「桌面」或含无关文件的父目录打进去。</li>
-            </ol>
-            <h3>PowerShell</h3>
-<pre><code>Compress-Archive -Path .\cool-pet\* -DestinationPath .\cool-pet.zip -Force
-# 若希望 zip 内带 cool-pet/ 目录：
-Compress-Archive -Path .\cool-pet -DestinationPath .\cool-pet.zip -Force</code></pre>
-            <h3>客户端安装</h3>
-            <ol>
-              <li>打开 MaClaw → 设置 → <strong>桌面宠物</strong></li>
-              <li>点「选择 Zip 安装」</li>
-              <li>安装成功后形象列表出现新 id；画质选「具象」</li>
-              <li>打开「启用桌面宠物」看桌面分层窗效果</li>
-            </ol>
-          </section>
-
-          <section id="zh-security" class="section">
-            <h2>9. 安全限制（安装器会强制）</h2>
-            <ul>
-              <li>最多 <strong>64</strong> 个文件；单文件 ≤ <strong>512 KiB</strong>；未压缩合计 ≤ <strong>2 MiB</strong></li>
-              <li>压缩比过高（zip bomb）会拒绝</li>
-              <li>路径禁止 <code>..</code> 逃逸；禁止绝对路径</li>
-              <li>允许扩展名：<code>.webp .png .yaml .yml .json .txt .md</code>（SVG 会扫描危险内容，自制建议只用 PNG/WebP）</li>
-              <li>禁止：<code>.js .mjs .cjs .wasm .exe .dll .html .bat .cmd .ps1</code> 等</li>
-            </ul>
-          </section>
-
-          <section id="zh-example" class="section">
-            <h2>10. 最小可用示例（可复制）</h2>
-            <p>建目录 <code>cool-pet/</code>，放入四张图后使用：</p>
-<pre><code>schema_version: 1
-id: cool-pet
-name: Cool Pet
+      <h2>3.0 目录与 manifest</h2>
+      <pre><code>my-desk-lamp/
+  pet-pack.yaml
+  preview.png
+  native/idle.png
+  rig/character.rig.json
+  character/performer.json
+  rig/lamp-body.png
+  rig/eyes.png
+  rig/shade.png</code></pre>
+      <pre><code>schema_version: 3
+id: my-desk-lamp
+name: My Desk Lamp
 version: 1.0.0
-author: Your Name
-tier: figurative
-renderer: native-raster
-face_overlay: false
+renderer: native-character
 preview: preview.png
 default_size: 88
-tone: balanced
-label:
-  en: Cool Pet
-  zh-Hans: 酷酷爪
-  zh-Hant: 酷酷爪
-description_i18n:
-  en: A friendly workbench companion you made yourself.
-  zh-Hans: 你自己做的友好工作台伙伴。
-  zh-Hant: 你自己做的友好工作台夥伴。
-assets:
-  preview: preview.png
-  native:
-    idle: native/idle.png
-    listening: native/listening.png
-    thinking: native/thinking.png
-    speaking: native/speaking.png
-variants:
-  - id: default
-    tier: figurative
-    renderer: native-raster
-    face_overlay: false
-    assets:
-      native:
-        idle: native/idle.png
-        listening: native/listening.png
-        thinking: native/thinking.png
-        speaking: native/speaking.png
-  - id: classic
-    tier: classic
-    renderer: procedural-fallback
-    face_overlay: true
-motion:
-  idle_ms: 4000
-  listening_ms: 1200
-  thinking_ms: 1800
-  speaking_ms: 950
-  amplitude: 0.85
-  sound_profile: classic
-  pitch: 1.0
 capabilities:
-  supports_done_state: false
-  supports_alert_state: false</code></pre>
-            <p>若暂时只有一张图：四份状态都指向 <code>native/idle.png</code> 也能先装上，再慢慢补表情。</p>
-          </section>
+  pet_performance_v3: true
+assets:
+  native:
+    idle: native/idle.png
+  rig:
+    definition: rig/character.rig.json
+    textures: [rig/lamp-body.png, rig/eyes.png, rig/shade.png]
+  character:
+    definition: character/performer.json
+fallback:
+  renderer: native-skeleton
+  idle: native/idle.png</code></pre>
+      <p><code>id</code> 必须匹配 <code>^[a-z][a-z0-9-]{1,63}$</code>。3.0 必须声明静态 <code>native/idle.png</code>；它用于减少动态效果、加载失败、能力不支持或渲染异常。</p>
 
-          <section id="zh-checklist" class="section">
-            <h2>11. 验收清单（装上前勾一遍）</h2>
-            <ul>
-              <li>□ <code>id</code> 符合正则，与文件夹名一致</li>
-              <li>□ 存在 <code>pet-pack.yaml</code>，UTF-8，缩进正确（空格，不是 Tab）</li>
-              <li>□ 至少有 <code>native/idle.png</code> 且 yaml 路径能对上</li>
-              <li>□ 没有 JS/可执行文件</li>
-              <li>□ zip 体积合理；解压后目录结构正确</li>
-              <li>□ 设置页能看到名字（label）</li>
-              <li>□ 画质「具象」下桌宠不是过程式默认爪（说明帧加载成功）</li>
-              <li>□ 触发聆听/思考时若有对应帧会切换（需客户端状态桥）</li>
-            </ul>
-          </section>
+      <h2>角色表演定义：performer.json</h2>
+      <p>定义由六个受限部分组成：<code>moods</code>（情绪）、<code>behaviors</code>（行为片段）、<code>states</code>（任务状态）、<code>events</code>（固定事件入口）、<code>reactions</code>（同一事件的加权动作变体）、<code>layers</code>（并行表演层）。字段名为稳定 ID，使用小写字母、数字、<code>_</code>、<code>-</code>，最长 64 字符。</p>
+      <pre><code>{
+  "version": 1,
+  "moods": ["calm", "curious", "focused", "pleased", "concerned", "tired"],
+  "layers": ["body", "expression", "gaze", "secondary"],
+  "behaviors": {
+    "idle_observe": {"enter":"idle_observe_in","loop":"idle_observe_loop","exit":"idle_observe_out","weight":4,"min_ms":5000,"max_ms":9000,"cooldown_ms":18000,"moods":["calm","curious"]},
+    "idle_stretch": {"enter":"idle_stretch_in","loop":"idle_stretch_loop","exit":"idle_stretch_out","weight":1,"min_ms":2600,"max_ms":4000,"cooldown_ms":45000,"moods":["calm","tired"]}
+  },
+  "states": {
+    "idle": {"behavior_pool":["idle_observe","idle_stretch"],"expression":"expr_soft","gaze":"gaze_wander","secondary":"secondary_idle"},
+    "thinking": {"enter":"thinking_in","loop":"thinking_loop","exit":"thinking_out","mood":"focused","expression":"expr_focus","gaze":"gaze_task","secondary":"secondary_think"},
+    "speaking": {"enter":"speaking_in","loop":"speaking_loop","exit":"speaking_out","expression":"expr_talk","gaze":"gaze_user","secondary":"secondary_speak"}
+  },
+  "events": {
+    "click": {"play":"react_greet","interrupt":"soft","cooldown_ms":3000},
+    "task_done": {"play":"react_celebrate","interrupt":"after_loop","mood":"pleased","cooldown_ms":8000},
+    "task_failed": {"play":"react_reassure","interrupt":"after_loop","mood":"concerned","cooldown_ms":8000}
+  },
+  "reactions": {
+    "click_greet": {"event":"click","play":"react_greet","interrupt":"soft","mood":"pleased","cooldown_ms":3000,"weight":2},
+    "click_notice": {"event":"click","play":"react_notice","interrupt":"soft","mood":"curious","cooldown_ms":3000,"weight":1}
+  },
+  "rules": {"no_repeat_last":3,"crossfade_ms":180,"max_interrupt_ms":800}
+}</code></pre>
 
-          <section id="zh-faq" class="section">
-            <h2>12. 常见问题</h2>
-            <h3>安装失败 forbidden extension</h3>
-            <p>删掉 zip 里非允许扩展名文件后重打。</p>
-            <h3>安装成功但还是抽象几何爪</h3>
-            <p>设置画质风格为「具象」；确认 <code>renderer: native-raster</code> 且 idle 图可解码。</p>
-            <h3>yaml 改了不生效</h3>
-            <p>重新 zip 安装会覆盖同 id 用户目录；或关掉再开设置刷新列表。</p>
-            <h3>可以放 GIF/MP4 吗？</h3>
-            <p>当前 MVP 仅静态 PNG/WebP 帧，不支持动画视频。</p>
-            <h3>如何卸载</h3>
-            <p>在设置 → 桌面宠物中选中<strong>用户</strong>包，点「卸载当前用户包」。官方 bundled 形象不能卸。也可手动删除 <code>{MaclawBaseDir}/pet-packs/&lt;id&gt;/</code>。</p>
-          </section>
-        </div>
-      </div>
-    </div>
+      <h3>行为与状态规则</h3>
+      <ul><li><code>enter</code>、<code>loop</code>、<code>exit</code> 均引用 rig 中存在的 clip。一次性反应可只用 <code>play</code>。</li><li><code>weight</code> 为正整数；<code>min_ms ≤ max_ms</code>；冷却未结束的行为不得入选。</li><li>每个引用的 rig clip 都必须有 <code>duration_ms</code>，且该值在 1–60000 范围内；关键帧 <code>at_ms</code> 必须严格递增。</li><li><code>no_repeat_last: 3</code> 表示导演不得选择最近三个已播放的闲置行为；idle 行为池必须有比该值更多的不同条目。若 idle 未声明 <code>mood</code>，其稳定情绪为 <code>calm</code>；行为池至少要有一个 calm 或不限情绪的候选。</li><li>普通状态切换和 <code>after_loop</code> 会先播放当前动作的 <code>exit</code>，再以 <code>crossfade_ms</code> 进入目标 <code>enter</code>；<code>soft</code> 可立即、可中断地切入反应。<code>after_loop</code> 优先等到自然循环边界，但若超过 <code>max_interrupt_ms</code>（80–2000ms）仍未到达，则开始当前动作的 <code>exit</code>，不得无限排队。</li><li>同一时间每个 layer 至多一个 clip；<code>body</code> 是基础层，<code>expression</code>、<code>gaze</code>、<code>secondary</code> 可与之混合。</li></ul>
 
-    <!-- ========== EN only when active ========== -->
-    <div id="panel-en" class="lang-panel is-hidden" data-lang-panel="en" hidden role="region" aria-label="English">
-      <section class="hero">
-        <div>
-          <p class="kicker">Desktop pet · DIY extension</p>
-          <h1>Pet Pack Creation Guide</h1>
-          <p class="lead">Ship your own desktop pet as a <strong>declarative resource pack</strong>: one YAML manifest + PNG/WebP state frames, zipped for install. No JavaScript, no MaClaw source changes.</p>
-          <div class="hero-actions">
-            <a class="button-link primary" href="#en-build">Build from scratch</a>
-            <a class="button-link" href="#en-layout">Directory layout</a>
-            <a class="button-link" href="#en-checklist">Checklist</a>
-          </div>
-          <nav class="quick" aria-label="Quick nav">
-            <a href="#en-overview">What</a>
-            <a href="#en-layout">Structure</a>
-            <a href="#en-build">Steps</a>
-            <a href="#en-zip">Zip &amp; install</a>
-          </nav>
-        </div>
-        <div class="hero-visual" aria-hidden="true">
-          <svg viewBox="0 0 300 220" role="img">
-            <rect x="6" y="6" width="288" height="208" rx="14" fill="#eef2ff" stroke="#c7d2fe"/>
-            <circle cx="150" cy="92" r="44" fill="#fff" stroke="#a5b4fc" stroke-width="3"/>
-            <circle cx="134" cy="86" r="5" fill="#312e81"/>
-            <circle cx="166" cy="86" r="5" fill="#312e81"/>
-            <path d="M138 108c8 7 16 7 24 0" stroke="#312e81" stroke-width="3" fill="none" stroke-linecap="round"/>
-            <rect x="110" y="148" width="80" height="32" rx="9" fill="#6366f1"/>
-            <text x="150" y="169" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" font-family="system-ui">your-pet</text>
-          </svg>
-        </div>
-      </section>
+      <h2>允许的事件、状态与注视目标</h2>
+      <table><thead><tr><th>类别</th><th>允许值</th><th>说明</th></tr></thead><tbody><tr><td>运行状态</td><td><code>idle</code>、<code>listening</code>、<code>thinking</code>、<code>speaking</code>、<code>done</code>、<code>alert</code>、<code>quiet</code></td><td>与现有语义状态保持一致</td></tr><tr><td>事件</td><td><code>click</code>、<code>hover</code>、<code>drag_start</code>、<code>drag_end</code>、<code>task_started</code>、<code>task_done</code>、<code>task_failed</code>、<code>long_idle</code></td><td>运行时只发这些事件；未知事件忽略</td></tr><tr><td>注视</td><td><code>gaze_user</code>、<code>gaze_task</code>、<code>gaze_wander</code>、<code>gaze_none</code></td><td>只接收本地抽象目标，不读取、截图、存储或上传屏幕内容</td></tr></tbody></table>
 
-      <div class="grid">
-        <nav class="toc" aria-label="Contents">
-          <a href="#en-overview">1. What is a Pet Pack</a>
-          <a href="#en-layout">2. Full directory layout</a>
-          <a href="#en-id">3. id rules</a>
-          <a href="#en-manifest">4. pet-pack.yaml</a>
-          <a href="#en-frames">5. State frames</a>
-          <a href="#en-variants">6. classic / default</a>
-          <a href="#en-build">7. Build steps</a>
-          <a href="#en-zip">8. Zip &amp; install</a>
-          <a href="#en-security">9. Security limits</a>
-          <a href="#en-example">10. Minimal example</a>
-          <a href="#en-checklist">11. Checklist</a>
-          <a href="#en-faq">12. FAQ</a>
-        </nav>
-        <div class="content">
+      <h2>骨骼、表情与次级运动</h2>
+      <p>3.0 的 <code>rig</code> 延续 2.0 的本地 bone/slot JSON：骨骼层负责重心、姿态和物件；<code>expression</code> layer 负责眼、眉、嘴或等价部件；<code>secondary</code> layer 负责耳朵、尾巴、挂件、衣角或灯绳等延迟跟随。Agent 应让至少三个层并行，而不是把所有关键帧塞进同一个 <code>idle</code> clip。</p>
+      <ul><li>每个主要状态至少包含 <code>enter / loop / exit</code>，其中 <code>idle</code> 使用行为池。</li><li>至少 10 个 idle 行为、12 个短反应、6 种表情、4 个注视动作；角色可以是动物、物品、人物或其他具象主题。</li><li>说话时只让 <code>expression</code> 与轻量身体节奏变化，不要求也不允许读取音频内容；运行时仅提供归一化语音活动强度。</li><li>拖拽时只允许受限的 <code>drag_start</code>/<code>drag_end</code> 反应；不得持久化鼠标轨迹。</li></ul>
 
-          <section id="en-overview" class="section">
-            <h2>1. What is a Pet Pack</h2>
-            <p>A Pet Pack is a <strong>data-only</strong> package under the user pet-packs directory that changes how the desktop pet looks:</p>
-            <ul>
-              <li><strong>Can:</strong> custom character art, multi-state expressions, settings labels, motion/pitch hints.</li>
-              <li><strong>Cannot:</strong> run code, register tools/skills, include JS/HTML/executables.</li>
-              <li><strong>vs Skill/MCP plugins:</strong> plugins are capabilities; Pet Packs are skins only.</li>
-            </ul>
-            <div class="callout">Install location: <code>{MaclawBaseDir}/pet-packs/&lt;id&gt;/</code> (often <code>.maclaw/pet-packs/</code> under the user profile on Windows).</div>
-          </section>
+      <h2>自然动作质量约束（必须遵守）</h2>
+      <p>“丰富”不等于把同一个部位摆得更快。每个动作都必须有<strong>意图、准备、执行、停顿与余势</strong>，并且至少让两个部位以不同节奏配合。生成简单往复平移、同步缩放或无意义抖动的包不合格。</p>
+      <table><thead><tr><th>动作语法</th><th>Agent 必须生成</th><th>禁止</th></tr></thead><tbody><tr><td>准备与执行</td><td>动作开始前 100–300ms 的反向预备；动作结束后 120–500ms 的跟随与安定</td><td>从静止瞬间跳到大姿态，或动作结束立即归零</td></tr><tr><td>重心与不对称</td><td>身体先移动，头/视线稍后响应；左右、上下和角度不完全镜像</td><td>所有骨骼在同一关键帧、相同幅度、相同方向移动</td></tr><tr><td>闲置节奏</td><td>呼吸、眨眼、注视、微调姿势、短观察、伸展、休息等 10 个以上候选行为；行为之间 0.6–2.5 秒自然停留</td><td>单一 1–2 秒循环，或每轮完全相同的眨眼/摆动</td></tr><tr><td>表情</td><td>眼、眉、嘴或等价结构独立于身体；情绪变化先改变视线或表情，再带动身体</td><td>用整体缩放/旋转代替表情</td></tr><tr><td>次级运动</td><td>耳朵、尾巴、配件、衣角、线缆等在主动作后 80–280ms 延迟，并用较小幅度收束</td><td>与身体完全同步，或持续高频摆动</td></tr><tr><td>循环接缝</td><td>loop 首尾姿态和速度连续；每个长循环内部至少有一个非等间隔变化</td><td>循环边界跳帧、匀速钟摆或恒定频率抖动</td></tr></tbody></table>
+      <p>建议时序：微表情 80–220ms；注视转移 180–450ms；姿态调整 350–900ms；短反应 600–1800ms；闲置行为 2.5–10 秒。幅度优先保持克制：桌面角色应像正在做事，而不是在持续表演。</p>
+      <p>最低动作库：10 个闲置候选、12 个事件反应、6 种表情、4 个注视动作。闲置候选至少包含：呼吸、自然眨眼、观察、重心调整、短暂走神、伸展、整理姿态、休息、恢复注意、环境回应。不得连续重复最近 3 个闲置行为。</p>
 
-          <section id="en-layout" class="section">
-            <h2>2. Full directory layout (follow exactly)</h2>
-<pre><code>cool-pet/                      ← folder name should match id
-├── pet-pack.yaml              ← REQUIRED manifest (UTF-8)
-├── preview.png                ← recommended 256×256 settings thumb
-├── README.md                  ← optional human notes
-└── native/                    ← REQUIRED state frames for Windows pet
-    ├── idle.png               ← REQUIRED for figurative packs
-    ├── listening.png          ← recommended
-    ├── thinking.png           ← recommended
-    ├── speaking.png           ← recommended
-    ├── done.png               ← optional
-    ├── alert.png              ← optional
-    └── quiet.png              ← optional</code></pre>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Path</th><th>Required?</th><th>Role</th></tr></thead>
-                <tbody>
-                  <tr><td><code>pet-pack.yaml</code></td><td>Yes</td><td>Identity, asset map, variants, motion</td></tr>
-                  <tr><td><code>native/idle.png</code></td><td>Yes (figurative)</td><td>Default look; fallback for missing states</td></tr>
-                  <tr><td><code>native/listening|thinking|speaking.png</code></td><td>Strongly recommended</td><td>ASR / agent / TTS feedback</td></tr>
-                  <tr><td><code>preview.png</code></td><td>Recommended</td><td>Settings card thumbnail</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="callout warning">Do <strong>not</strong> put <code>.js</code>, <code>.exe</code>, <code>.html</code>, etc. in the zip — install will reject them.</div>
-          </section>
+      <h2>分件形象制作（桌面角色实战规范）</h2>
+      <p class="notice">3.0 的表演靠骨骼驱动。若只有一张半身头像，只能做“整图抖动”，观感差。制作可动角色时，应优先采用<strong>分件纸娃娃</strong>，并保证<strong>全身站立/坐姿</strong>，不要半身头像。</p>
+      <p>按角色类型选择分件布局（不要用同一套自动横切伺候短发 chibi 与长发角色）：</p>
+      <table><thead><tr><th>布局</th><th>适用</th><th>层结构（z 从下到上）</th><th>表情如何切换</th></tr></thead><tbody>
+        <tr><td><strong>A. body + head_*</strong></td><td>短发、帽子、动物、物体、颈线简单</td><td>body → head_* </td><td>整头贴图 alpha 切换</td></tr>
+        <tr><td><strong>B. body + hair + face_*</strong>（推荐长发）</td><td>长发、披肩发、真人风 chibi</td><td>body → hair（固定）→ face_* </td><td><strong>只换脸椭圆</strong>；发型与领口几何固定</td></tr>
+      </tbody></table>
+      <p class="warning">长发角色优先用布局 B。整头七态各自裁剪时，侧发/颈桩长短不一是「聆听/思考/提醒露颈桩」的主因；固定 hair 后接缝不再随表情乱跳。</p>
 
-          <section id="en-id" class="section">
-            <h2>3. id rules</h2>
-            <ul>
-              <li>Must match <code>^[a-z][a-z0-9-]{1,63}$</code></li>
-              <li>Lowercase letter first; then lowercase letters, digits, hyphens only</li>
-              <li>Good: <code>cool-pet</code>, <code>my-fox</code>, <code>office-bot-01</code></li>
-              <li>Bad: <code>CoolPet</code>, <code>1fox</code>, <code>my_pet</code>, non-ASCII ids</li>
-            </ul>
-          </section>
+      <h3>推荐资源树 A：body + head_*</h3>
+      <pre><code>my-character/
+  pet-pack.yaml
+  preview.png
+  native/{idle,listening,thinking,speaking,done,alert,quiet}.png
+  rig/my-character.rig.json
+  rig/body.png                 # 无脸；齐衣领
+  rig/head_idle.png            # 完整头+短下巴；耳贴头
+  rig/head_listen.png
+  rig/head_think.png
+  rig/head_speak.png
+  rig/head_done.png
+  rig/head_alert.png
+  rig/head_quiet.png
+  rig/tail.png                 # 可选 secondary
+  character/performer.json</code></pre>
 
-          <section id="en-manifest" class="section">
-            <h2>4. pet-pack.yaml field reference</h2>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Field</th><th>Notes</th></tr></thead>
-                <tbody>
-                  <tr><td><code>schema_version</code></td><td>Always <code>1</code></td></tr>
-                  <tr><td><code>id</code></td><td>Unique pack id (see rules)</td></tr>
-                  <tr><td><code>name</code> / <code>version</code></td><td>Display name + semver</td></tr>
-                  <tr><td><code>renderer</code></td><td><code>native-raster</code> (images) or <code>procedural-fallback</code></td></tr>
-                  <tr><td><code>assets.native</code></td><td>Map of state → relative path</td></tr>
-                  <tr><td><code>variants</code></td><td>Prefer both <code>default</code> and <code>classic</code></td></tr>
-                  <tr><td><code>motion</code></td><td>Timing/amplitude/pitch hints; user sound preset wins</td></tr>
-                  <tr><td><code>label</code> / <code>description_i18n</code></td><td><code>en</code>, <code>zh-Hans</code>, <code>zh-Hant</code></td></tr>
-                  <tr><td><code>face_overlay</code></td><td>Settings CSS fake face only; use <code>false</code> for full art</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <h3>Native state keys</h3>
-            <p><code>idle</code>, <code>listening</code>, <code>thinking</code>, <code>speaking</code>, optional <code>done</code>, <code>alert</code>, <code>quiet</code>.</p>
-            <h3>motion example</h3>
-<pre><code>motion:
-  idle_ms: 4000
-  listening_ms: 1200
-  thinking_ms: 1800
-  speaking_ms: 950
-  amplitude: 0.85
-  sound_profile: classic   # recommendation only
-  pitch: 1.0               # scale Beep pitch; user preset still wins</code></pre>
-          </section>
+      <h3>推荐资源树 B：body + hair + face_*（长发）</h3>
+      <pre><code>my-character/
+  pet-pack.yaml
+  preview.png
+  native/{idle,listening,thinking,speaking,done,alert,quiet}.png
+  rig/my-character.rig.json
+  rig/body.png                 # 无脸；齐衣领
+  rig/hair.png                 # 固定发型；脸部区域透明挖空
+  rig/face_idle.png            # 仅脸椭圆（含耳/短下巴）
+  rig/face_listen.png
+  rig/face_think.png
+  rig/face_speak.png
+  rig/face_done.png
+  rig/face_alert.png
+  rig/face_quiet.png
+  rig/collar_overlay.png       # 可选：专绘领口压缝
+  character/performer.json</code></pre>
+      <p>骨骼建议：<code>root → body → head → { hair, f_idle…f_quiet }</code>。表情 alpha 写在 <code>f_idle</code>… 骨骼轨上（或 <code>slot_f_*</code>）。示例包结构与可安装 zip 见工程 <code>demo-hair-face/</code>（重建：<code>python _refs/build_demo_hair_face.py</code>）。</p>
+      <p>可选工作目录（不要打进 ZIP）：<code>_src/</code>、<code>native_src/</code>。安装包只含声明资源。</p>
 
-          <section id="en-frames" class="section">
-            <h2>5. Drawing / exporting frames</h2>
-            <ul>
-              <li>Canvas <strong>256×256</strong> (or 512), sRGB, <strong>transparent</strong> background</li>
-              <li>PNG or WebP only; keep frames small (PNG ≤ 80KB, WebP ≤ 40KB recommended)</li>
-              <li>Center the character; leave transparent padding; keep face readable at 64–88px</li>
-              <li>Differentiate states by expression/pose, not text</li>
-            </ul>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>State</th><th>Art hint</th></tr></thead>
-                <tbody>
-                  <tr><td>idle</td><td>Neutral, alive</td></tr>
-                  <tr><td>listening</td><td>Alert eyes, lean in</td></tr>
-                  <tr><td>thinking</td><td>Half-closed eyes, looking aside</td></tr>
-                  <tr><td>speaking</td><td>Open mouth, cheeks</td></tr>
-                  <tr><td>done</td><td>Smile / checkmark energy</td></tr>
-                  <tr><td>alert</td><td>Serious warning ring</td></tr>
-                  <tr><td>quiet</td><td>Closed eyes, low presence</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <p>Tools: Figma, Photopea, Aseprite, Photoshop, or AI image tools then crop to 256 transparent PNG. Solid color body + two eyes is enough to test install first.</p>
-          </section>
+      <h3>制作流程：先接缝，后表情</h3>
+      <ol>
+        <li>定 <strong>idle 金样全身</strong>（接缝一次做到位）。</li>
+        <li>拆出 body（齐领口、无脸）与 head/hair（统一下巴 Y、统一枢轴）。</li>
+        <li><strong>锁外轮廓</strong>：布局 A 锁七态 head 的下巴线与脸高；布局 B 的 hair 永不随表情改。</li>
+        <li>只在<strong>脸部安全框</strong>内改五官（眼/眉/嘴）；禁止为某一表情整体缩放/平移头层。</li>
+        <li>合成七态 <code>native/*.png</code> 与 <code>preview.png</code>（设置页优先 live rig 预览，失败才回退 native）。</li>
+        <li>填完整 <code>variants.default.assets.native</code> 七态；打 zip 前跑自检清单。</li>
+      </ol>
 
-          <section id="en-variants" class="section">
-            <h2>6. classic / default</h2>
-            <ul>
-              <li><strong>default (figurative):</strong> uses <code>native/*</code> images — your main target.</li>
-              <li><strong>classic:</strong> procedural geometry fallback (ignores your frames).</li>
-            </ul>
-            <p>Ship both variants in YAML so users can switch Visual Tier in Settings.</p>
-          </section>
+      <h3>必须遵守的分件规则</h3>
+      <table><thead><tr><th>规则</th><th>正确做法</th><th>错误结果</th></tr></thead><tbody>
+        <tr><td>全身</td><td>头到脚/坐姿完整入画，四周留透明边距</td><td>半身头像、胸像、白底证件照填充整画布</td></tr>
+        <tr><td>身体贴图</td><td>只有躯干/四肢/服装；顶部齐<strong>衣领</strong>；<strong>不得残留脸、眼、嘴</strong></td><td>身体上仍有五官 → 双脸、头移开露脸</td></tr>
+        <tr><td>头 / 脸贴图</td><td>A：完整头+短下巴；B：face 仅椭圆；耳贴在头/脸上</td><td>耳朵飞离、头带红衣条、多下巴</td></tr>
+        <tr><td>发型层（B）</td><td><code>hair.png</code> 固定；脸洞挖干净；侧发可盖肩领</td><td>发层残留五官盖住表情；或发洞过小露双层脸</td></tr>
+        <tr><td>共用颈枢轴</td><td>贴图 center-on-bone；head 相对 body 略上移让下巴扣进领口 8–16px</td><td>身首异处、白缝、头浮空</td></tr>
+        <tr><td>表情切换</td><td>alpha 严格 0/1；轨道写在骨骼名（<code>h_*</code>/<code>f_*</code>）或 slot 名均可</td><td>半透明叠脸、多头重影</td></tr>
+        <tr><td>专绘优先</td><td>优先专绘 body/hair/face；自动横切全身图仅兜底</td><td>横切穿嘴、腰断、横刀口黑线</td></tr>
+      </tbody></table>
 
-          <section id="en-build" class="section">
-            <h2>7. Build from scratch</h2>
-            <ol class="steps">
-              <li><strong>Pick an id &amp; character</strong> e.g. <code>office-fox</code>.</li>
-              <li><strong>Create folders</strong> <code>office-fox/</code> and <code>office-fox/native/</code>.</li>
-              <li><strong>Draw 4 core frames</strong> idle/listening/thinking/speaking as 256 transparent PNGs.</li>
-              <li><strong>Write pet-pack.yaml</strong> from the minimal example; paths must match files.</li>
-              <li><strong>Self-check</strong> extensions and forward slashes <code>native/idle.png</code>.</li>
-              <li><strong>Zip</strong> (prefer one root folder inside the archive).</li>
-              <li><strong>Install in MaClaw</strong> Settings → Desktop Pet → Choose Zip → Visual Tier Figurative → Enable pet.</li>
-              <li><strong>Polish</strong> using the checklist.</li>
-            </ol>
-          </section>
+      <h3>自动横切与接缝的已知陷阱（务必避免）</h3>
+      <ul>
+        <li><strong>横切过低</strong>：刀口落在嘴/下颌 → 头无下巴、说话/完成嘴被切掉。</li>
+        <li><strong>身体仍带脸</strong>：未硬清 neck 以上 → 双脸（边牧类“两个头”）。</li>
+        <li><strong>整幅头水平横切</strong>：侧发被切成黑横线/肩领刀口；应只剪<strong>中间颈根肤色</strong>。</li>
+        <li><strong>颈桩外露（脖子插头）</strong>：头底长肉色三角 + 未埋领；聆听/思考/提醒尤甚。</li>
+        <li><strong>双下巴</strong>：用“接缝好的状态”轮廓硬套所有表情，下层又叠了表情自己的下巴。</li>
+        <li><strong>待机大轮廓 + 内嵌小脸</strong>：锁 silhouette 时只换五官窗口过小，出现双层脸。</li>
+        <li><strong>头层吃进衣服 / 光头残块</strong>：头底带领口，或 body 顶留巨大空头壳。</li>
+        <li><strong>仅 idle 正常</strong>：其它状态头尺寸/中心不一致，或 default 变体 native 表只有 idle。</li>
+      </ul>
 
-          <section id="en-zip" class="section">
-            <h2>8. Zip &amp; install</h2>
-<pre><code># Preferred: folder at zip root
-cool-pet.zip
-└── cool-pet/
-    ├── pet-pack.yaml
-    ├── preview.png
-    └── native/...
+      <h3>脖子接缝（最高频失败点）</h3>
+      <p class="warning"><strong>接口必须藏在衣服里。</strong> 用户最常投诉：脖子像插头、横黑线切断肩领、待机正常其它状态全坏。</p>
+      <table><thead><tr><th>规则</th><th>正确</th><th>禁止</th></tr></thead><tbody>
+        <tr><td>身体顶</td><td>齐<strong>衣领/服装上沿</strong>；领口镂空填实；无光头残壳、无长颈柱</td><td>body 仍带整张脸或肉色颈柱</td></tr>
+        <tr><td>头底 / 脸底</td><td>短下巴；只剪中间颈根；侧发保留</td><td>整幅水平横切长发</td></tr>
+        <tr><td>叠放</td><td>body →（hair）→ head/face；下巴埋进领口 8–16px</td><td>头高悬、领口透黑</td></tr>
+        <tr><td>七态一致</td><td>统一脸高、下巴 Y、head 骨偏移；布局 B 的 hair 完全固定</td><td>每态各自缩放/平移头</td></tr>
+        <tr><td>引擎兜底</td><td>启用 Join v1 衣领回盖；难搞领子可加 <code>collar_overlay</code></td><td>指望引擎掩盖 body 带脸</td></tr>
+      </tbody></table>
+      <ul>
+        <li><strong>说话态</strong>必须有可辨<strong>张嘴</strong>；禁止七态复制同一张 idle。</li>
+        <li><strong>思考态</strong>头内容须水平居中，否则脖子歪到一侧。</li>
+        <li>设置页优先 live rig（Join 衣领回盖可见），失败回退 <code>native/&lt;state&gt;.png</code>；七态静态帧仍须各自接缝正确。</li>
+      </ul>
 
-# Also OK: manifest at zip root
-cool-pet.zip
-├── pet-pack.yaml
-└── native/...</code></pre>
-            <h3>Windows</h3>
-            <p>Right-click the <code>cool-pet</code> folder → Send to → Compressed (zipped) folder. Or PowerShell:</p>
-<pre><code>Compress-Archive -Path .\cool-pet -DestinationPath .\cool-pet.zip -Force</code></pre>
-            <h3>In MaClaw</h3>
-            <ol>
-              <li>Settings → <strong>Desktop Pet</strong></li>
-              <li><strong>Choose Zip to Install</strong></li>
-              <li>Select the pack; set Visual Tier to <strong>Figurative</strong></li>
-              <li>Enable Desktop Pet and verify the layered window</li>
-            </ol>
-          </section>
+      <h3>引擎接缝辅助（Join v1，桌面端）</h3>
+      <p>下列包运行时<strong>自动</strong>启用接缝辅助：≥2 个 <code>head_*</code>/<code>h_*</code>，或 <code>hair</code> + ≥2 个 <code>face_*</code>/<code>f_*</code>。ClawMate 式多肢包默认不启用。可选在 <code>*.rig.json</code> 顶层声明 <code>join</code>：</p>
+      <pre><code>{
+  "version": 1,
+  "join": {
+    "auto": true,
+    "collar_cover": true,
+    "collar_cover_frac": 0.18,
+    "collar_overlay": "rig/collar_overlay.png",
+    "head_neck_fade_px": 10,
+    "head_neck_fade_center": 0.42,
+    "chin_inset_px": 12,
+    "state_head_offset": { "listening": { "y": 2 }, "alert": { "y": 1 } }
+  }
+}</code></pre>
+      <table><thead><tr><th>字段</th><th>作用</th><th>默认（分件包）</th></tr></thead><tbody>
+        <tr><td><code>collar_cover</code></td><td>头/脸画完后<strong>再画一层身体上部/衣领</strong>，盖住颈桩</td><td>true</td></tr>
+        <tr><td><code>collar_cover_frac</code></td><td>回盖身体内容高度比例（0.05–0.40）</td><td>0.18</td></tr>
+        <tr><td><code>collar_overlay</code></td><td>可选独立领口贴图（须列入 <code>textures</code>）</td><td>无</td></tr>
+        <tr><td><code>head_neck_fade_px</code></td><td>head/face <strong>中心底部</strong>软化（侧发保留；hair 层不 fade）</td><td>10（face 层更轻）</td></tr>
+        <tr><td><code>state_head_offset</code></td><td>按运行态微调 head 骨 y（±32 设计像素）</td><td>无</td></tr>
+      </tbody></table>
+      <ul>
+        <li><strong>表情 alpha</strong>：可写在骨骼名（<code>h_idle</code>/<code>f_idle</code>）或 slot 名（<code>slot_h_idle</code>/<code>slot_f_idle</code>）；两者均生效。<code>alpha&lt;0.02</code> 不绘制。</li>
+        <li>引擎兜底不能替代干净分件：body 仍不得带脸；长发优先 hair+face。</li>
+        <li>完整说明：仓库 <code>docs/maclaw-pet-engine-join-v1.md</code>。</li>
+        <li>制作规范全文：宠物工程 <code>PRODUCTION-STANDARDS.md</code>。</li>
+        <li>接缝自动验收：<code>python _refs/validate_pack_seam.py [pack-id…]</code>（error 非 0 勿发布）。</li>
+        <li>发布钩子：<code>python _refs/pack_release.py [pack-id…]</code>（先验收再打 zip）。</li>
+        <li>分件包应在 <code>*.rig.json</code> 声明 <code>join</code>（可用 <code>python _refs/inject_join_all.py</code> 批量写入默认值）。</li>
+      </ul>
 
-          <section id="en-security" class="section">
-            <h2>9. Security limits (enforced)</h2>
-            <ul>
-              <li>≤ 64 files; ≤ 512 KiB per file; ≤ 2 MiB total uncompressed</li>
-              <li>Zip-bomb ratio rejected; no <code>..</code> path escape</li>
-              <li>Allowed: <code>.webp .png .yaml .yml .json .txt .md</code> (prefer raster for third-party)</li>
-              <li>Denied: <code>.js .exe .html .dll .bat .ps1</code> …</li>
-            </ul>
-          </section>
+      <h3>抠图与源图保护</h3>
+      <ul>
+        <li>黑底卡通图：用<strong>从画布四角洪水填充</strong>抠纯黑背景；黑描边旁 1–2px 的纯黑须保护，否则描边被掏空后头发与脸断开。</li>
+        <li><strong>禁止</strong>全局“近黑=透明”：黑发、黑西装、黑墨镜会整片消失（蜡笔小新/于谦/Matrix 常见）。</li>
+        <li><strong>禁止</strong>全局“近白=透明”：金发、白裙、白袜、白领会误删（特朗普/斯嘉丽/玛格特常见）。</li>
+        <li>白底照片：可抠近白，但人物应改为全身 chibi 再分件；不要直接把半身证件照当桌宠。</li>
+        <li><strong>永远不要覆盖唯一原图</strong>。先复制到 <code>native_src/</code> 或 <code>_src/</code>，在副本上处理；失败可回滚。</li>
+        <li>连通域清理要谨慎：黑描边可能把白裙与上衣断开；误删最大块外的裙子/腿会毁掉全身。黑描边被掏空后，<code>largest_component</code> 可能只留下脸、丢掉整顶头发。</li>
+        <li>黑发被洗白/发灰时，须在头发区域把浅灰/近白像素强制回深色，不可只靠透明度修复。</li>
+      </ul>
 
-          <section id="en-example" class="section">
-            <h2>10. Minimal copy-paste example</h2>
-<pre><code>schema_version: 1
-id: cool-pet
-name: Cool Pet
-version: 1.0.0
-author: Your Name
-tier: figurative
-renderer: native-raster
-face_overlay: false
+      <h3>分件合成自检（发布前必看预览）</h3>
+      <ol class="checklist">
+        <li>合成预览是<strong>连续全身</strong>，颈/肩无白缝、无横刀口、无漂浮头、无“脖子插头”外露。</li>
+        <li><strong>七态都检查</strong>：idle / listening / thinking / speaking / done / alert / quiet；不能只看待机。</li>
+        <li>说话态张嘴明显；思考态头居中、脸不缩、无双层脸轮廓、无双下巴。</li>
+        <li>布局 B：切换七态时<strong>发型外轮廓不变</strong>，仅五官变化。</li>
+        <li>旋转/点头时：身体上不出现第二张脸；头移开后肩窝干净（无五官残留）。</li>
+        <li>耳朵、眼镜、帽子与头/脸一体；无漂浮附件；黑发/金发完整。</li>
+        <li><code>preview.png</code> 与七态 <code>native/*.png</code> 接缝正确；default 变体 native 表列齐七态。</li>
+        <li>56 / 88 / 120 px 缩放后仍可辨认角色。</li>
+        <li><code>assets.rig.textures</code> 列出 body/hair/全部 head 或 face；若有 <code>collar_overlay</code> 也须列出。</li>
+      </ol>
+
+      <h2>Manifest 字段与安装陷阱</h2>
+      <ul>
+        <li><code>schema_version</code> 必须是<strong>整数</strong> <code>3</code>（YAML 写成 <code>schema_version: 3</code>）。若写成 <code>5.0.1</code> 等字符串，安装会报 <code>cannot unmarshal ... into int</code>。</li>
+        <li><code>version</code>（包版本号）可以是 <code>1.0.0</code> / <code>5.0.1</code> 这类字符串语义版本。</li>
+        <li>更新版本时禁止用宽泛正则替换所有 <code>version:</code>——会误伤 <code>schema_version</code>。</li>
+        <li><code>id</code> 匹配 <code>^[a-z][a-z0-9-]{1,63}$</code>；与目录名、ZIP 内容一致。</li>
+        <li><code>assets.rig.textures</code> 必须列出每一个 slot 用到的贴图路径；body、hair、全部 head/face、可选 collar_overlay 都要列出。</li>
+        <li><strong>必须声明完整七态</strong> <code>native/*</code>（idle/listening/thinking/speaking/done/alert/quiet）。</li>
+        <li><strong>致命</strong>：若存在 <code>variants</code> 且 <code>id: default</code> 的 native 表<strong>只有 idle</strong>，设置页预览会按 default 变体解析，点“说话/聆听”仍回退 idle——表现为“换状态没变化”。default 与顶层 assets.native 都必须列齐七态。</li>
+        <li>可选 <code>variants</code>：<code>default</code>（native-character）+ <code>raster</code>（仅静态 native）便于降级。</li>
+      </ul>
+      <pre><code>schema_version: 3          # 整数，不是 "3.0" 字符串字段乱用
+id: my-character
+name: My Character
+version: 1.0.0             # 包版本，可用 x.y.z
+renderer: native-character
 preview: preview.png
 default_size: 88
-tone: balanced
-label:
-  en: Cool Pet
-  zh-Hans: 酷酷爪
-description_i18n:
-  en: A friendly workbench companion you made yourself.
-  zh-Hans: 你自己做的友好工作台伙伴。
+capabilities:
+  pet_performance_v3: true
 assets:
   preview: preview.png
   native:
@@ -766,160 +284,168 @@ assets:
     listening: native/listening.png
     thinking: native/thinking.png
     speaking: native/speaking.png
-variants:
-  - id: default
-    tier: figurative
-    renderer: native-raster
-    face_overlay: false
-    assets:
-      native:
-        idle: native/idle.png
-        listening: native/listening.png
-        thinking: native/thinking.png
-        speaking: native/speaking.png
-  - id: classic
-    tier: classic
-    renderer: procedural-fallback
-    face_overlay: true
-motion:
-  idle_ms: 4000
-  listening_ms: 1200
-  thinking_ms: 1800
-  speaking_ms: 950
-  amplitude: 0.85
-  sound_profile: classic
-  pitch: 1.0</code></pre>
-            <p>Only one image for now? Point all four states to <code>native/idle.png</code>, install, then iterate art.</p>
-          </section>
+    done: native/done.png
+    alert: native/alert.png
+    quiet: native/quiet.png
+  rig:
+    definition: rig/my-character.rig.json
+    textures:
+      - rig/body.png
+      - rig/head_idle.png
+      - rig/head_listen.png
+      - rig/head_think.png
+      - rig/head_speak.png
+      - rig/head_done.png
+      - rig/head_alert.png
+      - rig/head_quiet.png
+  character:
+    definition: character/performer.json
+fallback:
+  renderer: native-skeleton
+  idle: native/idle.png</code></pre>
 
-          <section id="en-checklist" class="section">
-            <h2>11. Pre-install checklist</h2>
-            <ul>
-              <li>□ id matches regex and folder name</li>
-              <li>□ pet-pack.yaml is UTF-8 YAML with spaces (not tabs)</li>
-              <li>□ native/idle.png exists and paths match</li>
-              <li>□ no executable/JS files</li>
-              <li>□ zip structure correct when unzipped</li>
-              <li>□ label shows in Settings</li>
-              <li>□ Figurative tier shows your art (not procedural geometry)</li>
-            </ul>
-          </section>
+      <h2>骨骼布局建议（分件）</h2>
+      <ul>
+        <li><code>root</code> 放在画布中下部（约 y=0.56×256）。</li>
+        <li><code>body</code> 挂在 root；贴图中心=颈窝。</li>
+        <li><code>head</code> 挂在 body，相对偏移约 <code>y: -8 … -20</code>（使下巴扣进肩窝；以合成预览微调）。</li>
+        <li>布局 A：子骨 <code>h_idle</code>… 挂 head，expression 切 alpha。</li>
+        <li>布局 B：子骨 <code>hair</code> + <code>f_idle</code>… 挂 head；z 序 body → hair → face；expression 只切 <code>f_*</code> alpha。</li>
+        <li>可选 <code>tail</code> 挂 body 后侧，secondary 层驱动。</li>
+        <li>clip：身体先动、头延迟 80–280ms；表情只改 head/face 贴图 alpha，不把表情 baked 进身体或 hair。</li>
+      </ul>
 
-          <section id="en-faq" class="section">
-            <h2>12. FAQ</h2>
-            <h3>Install fails with forbidden extension</h3>
-            <p>Remove disallowed files and re-zip.</p>
-            <h3>Installed but still abstract geometry</h3>
-            <p>Set Visual Tier to Figurative; ensure <code>native-raster</code> and a valid idle image.</p>
-            <h3>GIF / MP4?</h3>
-            <p>Not supported in MVP — static PNG/WebP frames only.</p>
-            <h3>Uninstall</h3>
-            <p>In Settings → Desktop Pet, select a <strong>User</strong> pack and click <strong>Uninstall selected user pack</strong>. Official bundled skins cannot be removed. Or delete <code>{MaclawBaseDir}/pet-packs/&lt;id&gt;/</code> manually.</p>
-          </section>
-        </div>
-      </div>
-    </div>
+      <h2>资源、安全与降级</h2>
+      <ul><li>沿用 2.0 的安全预算：最多 24 根骨骼、32 个 slot、32 张贴图；每条轨道最多 240 个关键帧，整套 rig 最多 1,200 个关键帧。</li><li>每张贴图及静态回退帧最多 512 KiB、1024×1024；贴图总计最多 4,194,304 像素。</li><li>压缩包文件最大 3 MiB；解压后的资源总量最大 2 MiB（用于防止压缩炸弹）；最多 64 个文件，单文件最多 512 KiB，路径最长 180 字符。</li><li>仅允许 PNG、WebP、YAML、JSON、TXT、MD、SVG。禁止绝对路径、<code>..</code>、盘符、重复路径以及所有代码文件。</li><li>ZIP 建议只含运行所需文件；大体积源图目录（<code>_src</code>/<code>native_src</code>）可留在工程内但不打进安装包。</li><li>降级顺序固定：<code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>。任何异常都不得阻塞桌面主界面。</li></ul>
+
+      <h2>Agent 发布前自检</h2>
+      <ol class="checklist"><li>目标客户端声明 <code>pet-performance-v3</code>；否则已输出 2.0 兼容包。</li><li>manifest 只有一个；<code>schema_version</code> 为整数 3；ID、ZIP 根目录与安装目录一致。</li><li>每个 behavior/state/event 所引用的 clip 均存在；所有时间、权重、冷却、interrupt 枚举均有效。</li><li>idle 行为不少于 10 个，且 <code>no_repeat_last</code> 不小于 3；每个主要状态有自然进出场。</li><li>所有 slot 贴图都在 <code>assets.rig.textures</code> 白名单（含 hair/face/collar_overlay）；每张 PNG/WebP 都可解码。</li><li>分件接缝：七态均无横缝、无漂浮头、无双脸、无双下巴、无脖子插头；身体无五官残留；长发包七态发型外轮廓固定。</li><li>七态表情头/脸为独立全尺寸；说话态张嘴可辨；default 变体 native 表列齐七态。</li><li>存在有效 <code>native/idle.png</code>，在 56px、88px、120px 下仍可识别角色；黑发/金发完整。</li><li>没有 JS、WASM、远程 URL、可执行内容、未知事件或越权的屏幕/音频数据访问。</li></ol>
+    </section>
+
+    <section data-en hidden>
+      <p class="warning"><strong>Compatibility rule.</strong> <code>native-character</code> and <code>schema_version: 3</code> are supported by the desktop registry and Pet Store validator. Emit 3.0 only for a target that declares <code>pet-performance-v3</code>; otherwise emit a 2.0-compatible pack.</p>
+      <p class="notice">The goal is not a picture that merely wiggles. It is a character that notices, thinks, responds, and settles. Packs contain only local images, YAML, and JSON; JavaScript, WASM, executables, URLs, shaders, callbacks, and dynamic scripts are forbidden.</p>
+      <h2>Mandatory AI-agent workflow</h2><ol><li>Read target capabilities. Emit 3.0 only with <code>pet-performance-v3</code>; otherwise emit 2.0.</li><li>Create a character bible, then the file tree.</li><li>Generate every declared manifest, performer, rig, and PNG/WebP asset.</li><li>Validate the state machine, clips, texture allowlist, timings, budgets, and ZIP root.</li><li>Zip directory contents, with exactly one <code>pet-pack.yaml</code>.</li></ol>
+      <pre><code>Task: generate a MaClaw Pet Performance Pack 3.0.
+Character: specific, gentle, recognizable; an animal, object, person, or other figurative theme.
+Performance: enter / loop / exit for primary states; body, expression, gaze, and secondary motion mix in parallel.
+Idle: at least ten weighted, cooled-down behaviors; do not repeat any of the last three.
+Events: click, hover, task_started, task_done, task_failed, long_idle, drag_start, drag_end. Thinking and speaking are runtime states, not events.
+Safety: local PNG/WebP, YAML, JSON only. No JS/WASM/URLs/executable code.
+Fallback: full performance → native-skeleton → native/idle.png.</code></pre>
+      <h2>3.0 format</h2><p><code>native-character</code> is a declarative performance state machine over the existing local bone/slot renderer. <code>character.definition</code> says when to perform; <code>rig.definition</code> says how to render. Neither is executable code. Capability negotiation is declared as <code>capabilities.pet_performance_v3: true</code>. Settings preview prefers live rig; native map remains the fallback—list all seven states there, not only idle.</p><pre><code>schema_version: 3
+id: my-desk-lamp
+name: My Desk Lamp
+version: 1.0.0
+renderer: native-character
+capabilities: { pet_performance_v3: true }
+assets:
+  native:
+    idle: native/idle.png
+    listening: native/listening.png
+    thinking: native/thinking.png
+    speaking: native/speaking.png
+    done: native/done.png
+    alert: native/alert.png
+    quiet: native/quiet.png
+  rig:
+    definition: rig/character.rig.json
+    textures: [rig/body.png, rig/head_idle.png, rig/head_speak.png]
+  character: { definition: character/performer.json }
+fallback: { renderer: native-skeleton, idle: native/idle.png }</code></pre>
+      <h2>performer.json contract</h2><p><code>version: 1</code> defines <code>moods</code>, <code>layers</code>, <code>behaviors</code>, <code>states</code>, <code>events</code>, <code>reactions</code>, and <code>rules</code>. Behavior records reference rig clips through <code>enter</code>, <code>loop</code>, and <code>exit</code>, then provide positive <code>weight</code>, <code>min_ms</code>, <code>max_ms</code>, <code>cooldown_ms</code>, and optional moods. State records select a behavior pool or entry/loop/exit clips, plus expression and gaze clips. Events can use <code>play</code>, <code>interrupt</code> (<code>soft</code> or <code>after_loop</code>), mood, and cooldown. <code>reactions</code> must contain at least 12 weighted variants; each names one of the same eight allowed events and a local rig clip, so richer responses never enlarge the host event surface. Rules require <code>no_repeat_last: 3..10</code>, <code>crossfade_ms: 80..500</code>, and <code>max_interrupt_ms: 80..2000</code>; the idle pool must contain more distinct behaviors than <code>no_repeat_last</code>.</p>
+      <p>Use exactly these runtime states: <code>idle</code>, <code>listening</code>, <code>thinking</code>, <code>speaking</code>, <code>done</code>, <code>alert</code>, and <code>quiet</code>. Each state may declare <code>expression</code>, <code>gaze</code>, and <code>secondary</code> clips; the pack must expose at least six distinct expressions and four distinct gaze clips. Allowed events are <code>click</code>, <code>hover</code>, <code>drag_start</code>, <code>drag_end</code>, <code>task_started</code>, <code>task_done</code>, <code>task_failed</code>, and <code>long_idle</code>. Gaze accepts only local abstract targets: <code>gaze_user</code>, <code>gaze_task</code>, <code>gaze_wander</code>, <code>gaze_none</code>; it never reads, stores, screenshots, or uploads screen content.</p>
+      <h2>Natural-motion quality floor</h2><p>Rich motion is not faster wiggling. Every action must have intent, anticipation, execution, a hold, and follow-through, with at least two parts moving on different timing. Pure back-and-forth translation, synchronized scaling, and purposeless jitter are invalid.</p><ul><li>Use a 100–300ms opposing anticipation before a significant action, then 120–500ms follow-through and settling after it.</li><li>Move the body first and head/gaze later; avoid mirrored or perfectly synchronous limb motion.</li><li>Use at least 10 idle candidates, 12 short reactions, 6 expressions, 4 gaze actions, and enter/loop/exit for every primary state. Do not repeat the last 3 idle behaviors; declare more distinct idle behaviors than <code>no_repeat_last</code>.</li><li>An <code>after_loop</code> event waits for a natural boundary when possible. <code>max_interrupt_ms</code> is a hard 80–2000ms upper bound: at that deadline the runtime starts the current action's authored <code>exit</code>, so a response cannot remain queued indefinitely.</li><li>Include breath, natural blink, observation, weight shift, brief distraction, stretch, pose adjustment, rest, return-to-attention, and environment response among idle candidates.</li><li>Secondary parts follow primary motion by 80–280ms with smaller settling amplitude. Loops must have continuous position and velocity at their seam and at least one unevenly timed change.</li><li>Suggested timing: micro-expression 80–220ms, gaze shift 180–450ms, pose change 350–900ms, reaction 600–1800ms, idle behavior 2.5–10 seconds.</li></ul>
+
+      <h2>Multi-part character art (production lessons)</h2>
+      <p class="notice">3.0 performance is bone-driven. Prefer a <strong>paper-doll split</strong> and always author a <strong>full-body</strong> figure—never a half-body headshot as the only asset.</p>
+      <p>Pick a layout by character type (do not force one auto-slice pipeline on short-hair chibis and long-hair stars):</p>
+      <table><thead><tr><th>Layout</th><th>Best for</th><th>Draw order (bottom → top)</th><th>Expression switch</th></tr></thead><tbody>
+        <tr><td><strong>A. body + head_*</strong></td><td>Short hair, hats, animals, simple necklines</td><td>body → head_*</td><td>Whole-head alpha swap</td></tr>
+        <tr><td><strong>B. body + hair + face_*</strong></td><td>Long hair, shawl hair, realistic-style chibi</td><td>body → hair (fixed) → face_*</td><td><strong>Face oval only</strong>; hair/collar geometry fixed</td></tr>
+      </tbody></table>
+      <p class="warning">Prefer layout B for long hair. Per-state whole-head crops with unequal side hair / neck plugs are the main cause of “listening/thinking/alert show a neck plug”.</p>
+
+      <h3>Tree A — body + head_*</h3>
+      <pre><code>my-character/
+  pet-pack.yaml
+  preview.png
+  native/{idle,listening,thinking,speaking,done,alert,quiet}.png
+  rig/my-character.rig.json
+  rig/body.png
+  rig/head_idle.png … head_quiet.png
+  rig/tail.png                 # optional
+  character/performer.json</code></pre>
+
+      <h3>Tree B — body + hair + face_* (long hair)</h3>
+      <pre><code>my-character/
+  pet-pack.yaml
+  preview.png
+  native/{idle,listening,thinking,speaking,done,alert,quiet}.png
+  rig/my-character.rig.json
+  rig/body.png                 # collar-flush, no face
+  rig/hair.png                 # fixed silhouette; transparent face hole
+  rig/face_idle.png … face_quiet.png
+  rig/collar_overlay.png       # optional
+  character/performer.json</code></pre>
+      <p>Bones: <code>root → body → head → { hair, f_idle…f_quiet }</code>. Expression alpha on <code>f_*</code> bone tracks (or <code>slot_f_*</code>). Example pack: <code>demo-hair-face/</code>.</p>
+      <p>Keep working sources outside the install ZIP when large: <code>_src/</code>, <code>native_src/</code>. Never overwrite the only original art.</p>
+
+      <h3>Workflow: seam first, expression second</h3>
+      <ol>
+        <li>Lock an <strong>idle full-body gold composite</strong>.</li>
+        <li>Split body (collar-flush) and head/hair (shared chin Y + pivot).</li>
+        <li><strong>Lock outer silhouette</strong>: layout A locks chin line across seven heads; layout B never mutates hair per state.</li>
+        <li>Edit only the <strong>face safe box</strong> (eyes/brows/mouth); no whole-head scale/shift per expression.</li>
+        <li>Bake all seven <code>native/*.png</code> + <code>preview.png</code> (settings prefers live rig; native is fallback).</li>
+        <li>List all seven states on <code>variants.default.assets.native</code>; run the checklist before ZIP.</li>
+      </ol>
+
+      <h3>Hard rules</h3>
+      <ul>
+        <li><strong>Full body</strong>: head-to-feet (or full sitting pose) with transparent margin. No ID-photo bust filling the canvas.</li>
+        <li><strong>Body texture</strong>: torso/limbs/clothes only; <strong>no residual face</strong>; crop flush to the collar—no bald head shell.</li>
+        <li><strong>Head / face</strong>: A = full head + short chin; B = face oval only; ears attached.</li>
+        <li><strong>Hair layer (B)</strong>: fixed; clean face hole; side locks may cover shoulders.</li>
+        <li><strong>Hide the neck joint under clothes</strong>: body → (hair) → head/face; tuck chin 8–16px into the collar. No visible “neck plug”.</li>
+        <li><strong>Shared neck pivot</strong>: center-on-bone; same head offset; same face height / chin Y (layout A).</li>
+        <li><strong>Expression alpha</strong>: 0 or 1 only; tracks on bone name (<code>h_*</code>/<code>f_*</code>) or slot name both work. Settings preview prefers live rig, then native.</li>
+        <li><strong>Speaking</strong> must show a clear open mouth; never copy idle for all seven heads.</li>
+      </ul>
+
+      <h3>Engine join aids (Join v1)</h3>
+      <p>Auto-enabled for ≥2 <code>head_*</code>/<code>h_*</code> slots, or <code>hair</code> + ≥2 <code>face_*</code>/<code>f_*</code>. Optional <code>join</code> on the rig JSON: <code>collar_cover</code>, <code>collar_overlay</code>, <code>head_neck_fade_px</code>, <code>state_head_offset</code>. See <code>docs/maclaw-pet-engine-join-v1.md</code>. Production checklist: <code>PRODUCTION-STANDARDS.md</code>. Automated seam QA: <code>python _refs/validate_pack_seam.py</code>. Engine aids do not forgive a face left on the body texture.</p>
+
+      <h3>Auto-slice / keying failure modes</h3>
+      <ul>
+        <li>Cut too low through the mouth → head without chin / speaking mouth destroyed.</li>
+        <li>Body still contains face → double face (e.g. dual-head animal packs).</li>
+        <li>Full-width hard cut on the head → black bar across shoulders; side hair sheared off.</li>
+        <li>Long flesh neck stump + shallow tuck → “neck plug” on listening/thinking/alert.</li>
+        <li>Locking a long-chin silhouette onto every expression → double chin.</li>
+        <li>Idle outer contour + tiny inner face → double face outline.</li>
+        <li>Global near-black keying → black hair/suit/sunglasses deleted (Shin-chan, Matrix, Yu Qian).</li>
+        <li>Global near-white keying → blonde hair, white skirts, collars deleted (Trump, Scarlett, Margot).</li>
+        <li>Default variant native map lists only <code>idle</code> → settings state buttons all show idle.</li>
+      </ul>
+      <h3>Manifest field traps</h3>
+      <ul>
+        <li><code>schema_version</code> must be the <strong>integer</strong> <code>3</code>. Writing <code>5.0.1</code> into <code>schema_version</code> fails install with <code>cannot unmarshal ... into int</code>.</li>
+        <li>Package <code>version</code> may be a semver string like <code>1.0.0</code> / <code>5.0.1</code>.</li>
+        <li>Do not bulk-replace every <code>version:</code> substring—that corrupts <code>schema_version</code>.</li>
+        <li>List every body/hair/head/face texture in <code>assets.rig.textures</code> (including <code>collar_overlay</code> if used).</li>
+        <li><strong>Declare all seven</strong> <code>native/*</code> states on both top-level assets and <code>variants.default</code> (settings preview resolves via default variant).</li>
+      </ul>
+      <h3>Bone layout tip</h3>
+      <p><code>root</code> near lower-center (~y = 0.56×256); <code>body</code> at neck pivot; <code>head</code> child with a small upward offset so the chin covers the shoulder cup; layout B adds <code>hair</code> + <code>f_*</code> under <code>head</code>. Body leads, head lags 80–280ms.</p>
+
+      <h2>Budgets, safety, fallback</h2>
+      <ul><li>Keep 2.0 budgets: 24 bones, 32 slots/textures, 240 keyframes per track, 1,200 keyframes total; images are 512 KiB and 1024×1024 each; total texture pixels ≤ 4,194,304.</li><li>ZIP file maximum: 3 MiB. Unpacked resource total: 2 MiB (to prevent compression bombs). Maximum 64 files; single file ≤ 512 KiB; path ≤ 180 characters; no unsafe or duplicate paths.</li><li>Local PNG/WebP, YAML, JSON, TXT, MD, SVG only. No JS/WASM/URL/executables.</li><li>Fallback is fixed: <code>native-character</code> → <code>native-skeleton</code> → <code>native/idle.png</code>.</li></ul>
+      <h2>Agent self-check</h2><ol class="checklist"><li>Target supports <code>pet-performance-v3</code>, or a 2.0 fallback was emitted.</li><li><code>schema_version</code> is integer 3; every referenced clip and allowlisted image exists and decodes.</li><li>Timing, weights, cooldowns, state/event names, and interrupt modes are valid.</li><li>Idle has ten or more varied behaviors and <code>no_repeat_last</code> is at least three.</li><li>Multi-part join QA for <strong>all seven states</strong>: no horizontal crack, no floating head, no double face, no double chin, no exposed neck plug; body has no leftover face; long-hair packs keep hair silhouette fixed across states.</li><li>Expression heads/faces are full-size; speaking mouth is open; default variant lists all seven native frames; textures list is complete (incl. hair/face/collar_overlay if used).</li><li>The static idle remains recognizable at 56px, 88px, and 120px; black/blonde hair intact.</li><li>No code, remote URL, executable content, or unauthorized data access is present.</li></ol>
+    </section>
   </main>
-
   <script>
-    (function () {
-      var titles = {
-        zh: 'MaClaw 宠物包创建指南',
-        en: 'MaClaw Pet Pack Creation Guide'
-      };
-      var brandSub = {
-        zh: '创建指南 · 切换语言只显示一种',
-        en: 'Guide · one language at a time'
-      };
-      var panelZh = document.getElementById('panel-zh');
-      var panelEn = document.getElementById('panel-en');
-      var btnZh = document.getElementById('btn-lang-zh');
-      var btnEn = document.getElementById('btn-lang-en');
-      var skipLink = document.querySelector('[data-skip-link]');
-      var brandSubEl = document.querySelector('[data-brand-sub]');
-
-      function preferredLangFromHash() {
-        if (window.location.hash.indexOf('#en-') === 0) return 'en';
-        if (window.location.hash.indexOf('#zh-') === 0) return 'zh';
-        return '';
-      }
-      function storedLang() {
-        try { return localStorage.getItem('maclaw_pet_pack_help_lang') || ''; }
-        catch (e) { return ''; }
-      }
-      function rememberLang(lang) {
-        try { localStorage.setItem('maclaw_pet_pack_help_lang', lang); }
-        catch (e) { /* private mode */ }
-      }
-      function pairedHashForLang(lang) {
-        var current = (window.location.hash || '').replace(/^#/, '');
-        if (!current) return '';
-        var pair = current.replace(/^(zh|en)-/, lang + '-');
-        return document.getElementById(pair) ? pair : '';
-      }
-      function scrollCurrentHashIntoView() {
-        var id = (window.location.hash || '').replace(/^#/, '');
-        if (!id) return;
-        var target = document.getElementById(id);
-        if (target) {
-          window.requestAnimationFrame(function () {
-            target.scrollIntoView({ block: 'start' });
-          });
-        }
-      }
-
-      /** Show exactly one language panel. */
-      function setLang(lang, options) {
-        options = options || {};
-        var normalized = lang === 'en' ? 'en' : 'zh';
-        var showZh = normalized === 'zh';
-
-        document.documentElement.lang = showZh ? 'zh-CN' : 'en';
-        document.title = titles[normalized];
-        if (brandSubEl) brandSubEl.textContent = brandSub[normalized];
-
-        if (skipLink) {
-          skipLink.setAttribute('href', showZh ? '#zh-overview' : '#en-overview');
-          skipLink.textContent = showZh ? '跳到正文' : 'Skip to content';
-        }
-
-        // Dual hide: attribute + class (robust against CSS resets)
-        if (panelZh) {
-          panelZh.hidden = !showZh;
-          panelZh.classList.toggle('is-hidden', !showZh);
-          panelZh.setAttribute('aria-hidden', showZh ? 'false' : 'true');
-        }
-        if (panelEn) {
-          panelEn.hidden = showZh;
-          panelEn.classList.toggle('is-hidden', showZh);
-          panelEn.setAttribute('aria-hidden', showZh ? 'true' : 'false');
-        }
-
-        if (btnZh) btnZh.setAttribute('aria-pressed', showZh ? 'true' : 'false');
-        if (btnEn) btnEn.setAttribute('aria-pressed', showZh ? 'false' : 'true');
-
-        rememberLang(normalized);
-
-        if (options.syncHash) {
-          var nextHash = pairedHashForLang(normalized);
-          if (nextHash) window.location.hash = nextHash;
-        }
-      }
-
-      if (btnZh) btnZh.addEventListener('click', function () { setLang('zh', { syncHash: true }); });
-      if (btnEn) btnEn.addEventListener('click', function () { setLang('en', { syncHash: true }); });
-
-      var q = new URLSearchParams(window.location.search).get('lang') || '';
-      var initial = preferredLangFromHash() || q || storedLang() || navigator.language || 'zh';
-      setLang(String(initial).toLowerCase().indexOf('en') === 0 ? 'en' : 'zh');
-      scrollCurrentHashIntoView();
-
-      window.addEventListener('hashchange', function () {
-        var hashLang = preferredLangFromHash();
-        if (hashLang) setLang(hashLang);
-        scrollCurrentHashIntoView();
-      });
-    })();
+    (()=>{const params=new URLSearchParams(location.search),buttons=document.querySelectorAll('[data-language]'),setLanguage=language=>{const lang=language==='en'?'en':'zh';document.documentElement.lang=lang==='en'?'en':'zh-CN';document.title=lang==='en'?'MaClaw Pet Performance Pack Specification 3.0':'MaClaw 宠物角色表演包规范 3.0';document.querySelectorAll('[data-zh]').forEach(el=>el.hidden=lang!=='zh');document.querySelectorAll('[data-en]').forEach(el=>el.hidden=lang!=='en');buttons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.language===lang)));const next=new URL(location.href);next.searchParams.set('lang',lang);history.replaceState(null,'',next)};buttons.forEach(button=>button.addEventListener('click',()=>setLanguage(button.dataset.language)));setLanguage(params.get('lang'))})();
   </script>
 </body>
 </html>

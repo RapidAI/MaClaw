@@ -483,7 +483,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	mux.HandleFunc("/anthropic/v1/models/", s.handleAnthropicModel)
 	mux.HandleFunc("/health", s.handleHealth)
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: codeGenProxyAccessLog(mux)}
 	s.mu.Lock()
 	s.listener = listener
 	s.srv = server
@@ -502,6 +502,52 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		return err
 	}
 	return nil
+}
+
+type codeGenProxyStatusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *codeGenProxyStatusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *codeGenProxyStatusWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *codeGenProxyStatusWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// codeGenProxyAccessLog logs every inbound request before and after routing.
+// It is intentionally metadata-only: URL path, method, status, duration, and
+// request size are sufficient to show whether a client reaches this proxy,
+// without persisting prompts, headers, tools, or credentials.
+func codeGenProxyAccessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		log.Printf("[codegenproxy] inbound request method=%s path=%q remote=%q content_length=%d",
+			r.Method, r.URL.Path, r.RemoteAddr, r.ContentLength)
+		wrapped := &codeGenProxyStatusWriter{ResponseWriter: w}
+		next.ServeHTTP(wrapped, r)
+		status := wrapped.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		log.Printf("[codegenproxy] inbound response method=%s path=%q status=%d duration_ms=%d",
+			r.Method, r.URL.Path, status, time.Since(started).Milliseconds())
+	})
 }
 
 // Stop gracefully shuts down the server.
@@ -1114,6 +1160,37 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer upResp.Body.Close()
+	// DeepSeek V4 Flash may surface an overlong/incompatible tool history as a
+	// 502 through a compatibility gateway. Responses requests used to send that
+	// response straight to the streaming adapter, bypassing the compact retry
+	// already used by chat and Anthropic routes. Retry once with a tool-less,
+	// compact history before we begin writing an SSE response.
+	if upResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
+		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, normalizedModel, chatBody, upResp.StatusCode); ok {
+			log.Printf("[codegenproxy] openai responses compact retry id=%s model=%q original_status=%d original_response=%s retry_summary=%s",
+				reqID, normalizedModel, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(compactBody))
+			retryResp, retryErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, compactBody, accept, stream)
+			if retryErr != nil {
+				log.Printf("[codegenproxy] openai responses compact retry failed id=%s model=%q err=%v", reqID, normalizedModel, retryErr)
+			} else {
+				upResp = retryResp
+				defer upResp.Body.Close()
+				chatBody = compactBody
+				if upResp.StatusCode == http.StatusOK {
+					log.Printf("[codegenproxy] openai responses compact retry succeeded id=%s model=%q status=%d content_type=%q",
+						reqID, normalizedModel, upResp.StatusCode, upResp.Header.Get("Content-Type"))
+				} else {
+					respBody, _ = io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
+					log.Printf("[codegenproxy] openai responses compact retry error id=%s model=%q status=%d content_type=%q response=%s",
+						reqID, normalizedModel, upResp.StatusCode, upResp.Header.Get("Content-Type"), truncateForLog(respBody, 2048))
+					upResp.Body = io.NopCloser(bytes.NewReader(respBody))
+				}
+			}
+		} else {
+			upResp.Body = io.NopCloser(bytes.NewReader(respBody))
+		}
+	}
 	if stream {
 		s.handleOpenAIResponsesStream(w, upResp, normalizedModel, reqID, cacheKey, promptCache)
 		return
@@ -1166,6 +1243,8 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleOpenAIResponsesStream(w http.ResponseWriter, upResp *http.Response, model, reqID, cacheKey string, promptCache *llmpool.Cache) {
 	if upResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
+		log.Printf("[codegenproxy] openai responses stream upstream error id=%s model=%q status=%d content_type=%q response=%s",
+			reqID, model, upResp.StatusCode, upResp.Header.Get("Content-Type"), truncateForLog(respBody, 4096))
 		if isStreamOptionsRejection(upResp.StatusCode, respBody) {
 			s.disableStreamOptions()
 			log.Printf("[codegenproxy] openai responses stream stream_options rejected id=%s model=%q — disabling", reqID, model)
@@ -3023,11 +3102,13 @@ func summarizeOpenAIRequest(body []byte) string {
 	}
 	schemaStats := summarizeToolSchemaStats(payload)
 	systemBytes, systemClaudeMarkers := summarizeSystemMessages(payload["messages"])
-	return fmt.Sprintf("body_bytes=%d max_tokens=%s messages=%d roles=%s system_bytes=%d system_claude_markers=%d tools=%d functions=%d stream=%t tool_choice=%s function_call=%s tool_schema=%s",
+	assistantDiagnostics := summarizeAssistantMessageDiagnostics(payload["messages"])
+	return fmt.Sprintf("body_bytes=%d max_tokens=%s messages=%d roles=%s assistant_message_diagnostic=%s system_bytes=%d system_claude_markers=%d tools=%d functions=%d stream=%t tool_choice=%s function_call=%s tool_schema=%s",
 		len(body),
 		logScalar(payload["max_tokens"]),
 		logArrayLen(payload["messages"]),
 		summarizeMessageRoles(payload["messages"]),
+		assistantDiagnostics,
 		systemBytes,
 		systemClaudeMarkers,
 		logArrayLen(payload["tools"]),
@@ -3036,6 +3117,35 @@ func summarizeOpenAIRequest(body []byte) string {
 		logScalar(payload["tool_choice"]),
 		logScalar(payload["function_call"]),
 		schemaStats)
+}
+
+// summarizeAssistantMessageDiagnostics returns only structural counts. It is
+// safe for the persistent TigerProxy log: no prompt content, tool-call
+// arguments, request headers, or credentials are included.
+func summarizeAssistantMessageDiagnostics(value interface{}) string {
+	var total, missingContent, nullContent, invalidToolCalls, repairNeeded int
+	for _, raw := range codeGenProxySliceFromAny(value) {
+		message := codeGenProxyMapFromAny(raw)
+		if message == nil || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(message["role"])), "assistant") {
+			continue
+		}
+		total++
+		content, contentSet := message["content"]
+		if !contentSet {
+			missingContent++
+		} else if content == nil {
+			nullContent++
+		}
+		validToolCalls := codeGenProxyValidAssistantToolCalls(message["tool_calls"])
+		if rawToolCalls, toolCallsSet := message["tool_calls"]; toolCallsSet {
+			invalidToolCalls += len(codeGenProxySliceFromAny(rawToolCalls)) - len(validToolCalls)
+		}
+		if !codeGenProxyAssistantHasContent(message) && len(validToolCalls) == 0 {
+			repairNeeded++
+		}
+	}
+	return fmt.Sprintf("total=%d missing_content=%d null_content=%d invalid_tool_calls=%d repair_needed=%d",
+		total, missingContent, nullContent, invalidToolCalls, repairNeeded)
 }
 
 func summarizeToolSchemaStats(payload map[string]interface{}) string {
@@ -3211,7 +3321,7 @@ func prepareQwenFlashChatOnlyRetryBody(_ string, body []byte, status int) ([]byt
 }
 
 func prepareCodeGenCompactChatRetryBody(upURL, model string, body []byte, status int) ([]byte, bool) {
-	if status != http.StatusBadRequest {
+	if status != http.StatusBadRequest && status != http.StatusBadGateway {
 		return nil, false
 	}
 	var payload map[string]interface{}
@@ -3222,8 +3332,14 @@ func prepareCodeGenCompactChatRetryBody(upURL, model string, body []byte, status
 	if len(messages) == 0 {
 		return nil, false
 	}
+	// The configured URL may be a local gateway in tests or in a self-hosted
+	// deployment. Compacting is nevertheless a CodeGen-proxy recovery action,
+	// so use the canonical CodeGen identity rather than the concrete endpoint.
 	cfg := corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: model, ProviderName: "CodeGen"}
 	compactMessages := llmcompat.CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
+	if len(compactMessages) == 0 {
+		compactMessages = compactCodeGenProxyHistoryForRetry(messages)
+	}
 	if len(compactMessages) == 0 {
 		return nil, false
 	}
@@ -3248,6 +3364,44 @@ func prepareCodeGenCompactChatRetryBody(upURL, model string, body []byte, status
 		return nil, false
 	}
 	return out, true
+}
+
+func compactCodeGenProxyHistoryForRetry(messages []interface{}) []interface{} {
+	runtimeContext := ""
+	latestUser := ""
+	for _, raw := range messages {
+		message := codeGenProxyMapFromAny(raw)
+		if message == nil {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(fmt.Sprint(message["role"])))
+		content := strings.TrimSpace(fmt.Sprint(message["content"]))
+		if role == "system" && runtimeContext == "" && content != "" && content != "<nil>" {
+			runtimeContext = content
+		}
+		if role == "user" && content != "" && content != "<nil>" {
+			latestUser = content
+		}
+	}
+	if latestUser == "" {
+		return nil
+	}
+	if len(runtimeContext) > 8*1024 {
+		runtimeContext = runtimeContext[:8*1024]
+	}
+	parts := []string{
+		"[Compatibility retry]",
+		"The prior tool-call history was omitted after the upstream rejected it.",
+		"Complete the user's latest request directly. Do not mention this retry.",
+	}
+	if runtimeContext != "" {
+		parts = append(parts, "", "[Relevant runtime context]", runtimeContext)
+	}
+	parts = append(parts, "", "[User request]", latestUser)
+	return []interface{}{
+		map[string]interface{}{"role": "system", "content": "You are a helpful coding assistant. Follow the user's instructions and report outcomes clearly."},
+		map[string]interface{}{"role": "user", "content": strings.Join(parts, "\n")},
+	}
 }
 
 func sanitizeChatOnlyMessages(payload map[string]interface{}) {

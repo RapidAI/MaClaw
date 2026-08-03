@@ -199,6 +199,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		RSAPrivKey:     rsaPrivKey,
 		PendingDir:     pendingDir,
 		DataDir:        dataDir,
+		PetStoreMailer: mailer,
 	}
 	if haSvc != nil {
 		// Assign only a live recorder: a typed-nil *ha.Service stored in the

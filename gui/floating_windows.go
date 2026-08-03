@@ -199,6 +199,7 @@ type windowsFloatingWindow struct {
 	windowStartX int
 	windowStartY int
 	dragMoved    bool
+	lastHoverAt  time.Time
 
 	// Halo animation
 	haloPhase        float64 // 0..2*pi, advances each timer tick
@@ -218,11 +219,24 @@ type windowsFloatingWindow struct {
 	petRuntimeState         string
 	petPreviousState        string
 	petStateChangedAt       time.Time
+	petAnimationStartedAt   time.Time
 	petStateDeadline        time.Time
 	packFrameCache          *petpack.FrameCache
+	// rigRenderers hold immutable decoded skeleton assets. A failed renderer is
+	// remembered per selection so a malformed third-party pack cannot trigger
+	// disk/JSON work on every 20fps tick; native frames remain the fallback.
+	rigRenderers            map[string]*petpack.RigRenderer
+	rigRendererFailed       map[string]bool
+	characterRenderers      map[string]*petpack.CharacterRenderer
+	characterRendererFailed map[string]bool
 	packPitch               float64
 	petMotionAmplitude      float64
 	petLastRenderedState    string
+	// petLastInteractionAt records the last user interaction (click/drag/hover)
+	// or runtime state change. petLongIdleFired latches the long_idle character
+	// event so it fires once per idle period and rearms on new activity.
+	petLastInteractionAt time.Time
+	petLongIdleFired     bool
 	// Increments for every motion update so an older, slower registry lookup
 	// cannot overwrite a newer setting snapshot.
 	motionConfigRevision uint64
@@ -370,8 +384,15 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petPreviousState = string(petpack.StateIdle)
 	w.petLastRenderedState = string(petpack.StateIdle)
 	w.petStateChangedAt = time.Now()
+	w.petAnimationStartedAt = w.petStateChangedAt
 	w.petStateDeadline = time.Time{}
+	w.petLastInteractionAt = w.petStateChangedAt
+	w.petLongIdleFired = false
 	w.packFrameCache = petpack.NewFrameCache()
+	w.rigRenderers = make(map[string]*petpack.RigRenderer)
+	w.rigRendererFailed = make(map[string]bool)
+	w.characterRenderers = make(map[string]*petpack.CharacterRenderer)
+	w.characterRendererFailed = make(map[string]bool)
 	w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
 	w.petNativeFrameAvailable = make(map[petFrameCacheKey]bool)
 	w.petNativeFrameLoading = make(map[petFrameCacheKey]bool)
@@ -425,7 +446,9 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 		// Render initial frame.
 		w.renderFrame()
 
-		// Start halo animation timer (50ms = 20fps).
+		// The skeleton compositor draws five textured layers in software. Twenty
+		// FPS is visually continuous at this compact desktop size while avoiding
+		// needless CPU/GDI work from a 60 FPS timer.
 		procSetTimer.Call(hwnd, timerIdHalo, 50, 0)
 
 		errCh <- nil
@@ -559,6 +582,12 @@ func (w *windowsFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reduced
 		w.petInteractionMode = interactionMode
 	}
 	if skin != "" {
+		if skin != w.petSkin || (variant != "" && variant != w.petVariant) {
+			w.rigRenderers = make(map[string]*petpack.RigRenderer)
+			w.rigRendererFailed = make(map[string]bool)
+			w.characterRenderers = make(map[string]*petpack.CharacterRenderer)
+			w.characterRendererFailed = make(map[string]bool)
+		}
 		w.petSkin = skin
 	}
 	if variant != "" {
@@ -581,6 +610,26 @@ func (w *windowsFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reduced
 	if !w.applyPetMotionAmplitude(revision, amplitude) {
 		return
 	}
+}
+
+func (w *windowsFloatingWindow) InvalidatePetPackAssets() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// A pack can be replaced at the same id while it remains selected. Clear
+	// both successful and failed skeleton entries, plus scaled static frames,
+	// so the next render resolves the newly scanned registry contents.
+	w.rigRenderers = make(map[string]*petpack.RigRenderer)
+	w.rigRendererFailed = make(map[string]bool)
+	w.characterRenderers = make(map[string]*petpack.CharacterRenderer)
+	w.characterRendererFailed = make(map[string]bool)
+	w.packFrameCache = petpack.NewFrameCache()
+	w.petNativeFrameAvailable = make(map[petFrameCacheKey]bool)
+	w.petNativeFrameLoading = make(map[petFrameCacheKey]bool)
+	// Native frames are also cached as scaled bitmaps in petFrameCache under
+	// the bucket-less base key. Leaving them behind would keep serving the old
+	// pack's artwork whenever the animation phase lands on bucket zero.
+	w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
+	w.renderDirty = true
 }
 
 func (w *windowsFloatingWindow) applyPetMotionAmplitude(revision uint64, amplitude float64) bool {
@@ -615,10 +664,75 @@ func resolvePetMotionAmplitude(skin, interactionMode string, quiet, reducedMotio
 func (w *windowsFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
 	st := string(petpack.NormalizeState(state))
 	w.mu.Lock()
+	previous := w.petRuntimeState
 	w.setPetRuntimeStateLocked(st, ttlMs)
+	// A state push counts as activity: it rearms the long-idle event latch.
+	w.notePetInteractionLocked()
 	// Keep cached state frames warm; the renderer crossfades only briefly when
 	// the state changes, then reuses the current frame.
 	w.mu.Unlock()
+	if previous != st {
+		switch st {
+		case string(petpack.StateThinking):
+			w.triggerCharacterEvent("task_started")
+		case string(petpack.StateDone):
+			w.triggerCharacterEvent("task_done")
+		case string(petpack.StateAlert):
+			w.triggerCharacterEvent("task_failed")
+		}
+	}
+}
+
+// petLongIdleThreshold is the idle dwell after which the long_idle character
+// event fires once, until the next interaction or state change rearms it.
+const petLongIdleThreshold = 5 * time.Minute
+
+// notePetInteraction records activity that resets the long-idle clock and
+// rearms the long_idle event latch.
+func (w *windowsFloatingWindow) notePetInteraction() {
+	w.mu.Lock()
+	w.notePetInteractionLocked()
+	w.mu.Unlock()
+}
+
+func (w *windowsFloatingWindow) notePetInteractionLocked() {
+	w.petLastInteractionAt = time.Now()
+	w.petLongIdleFired = false
+}
+
+// triggerCharacterEvent forwards only a fixed, local interaction vocabulary
+// to a loaded v3 renderer. It neither creates new host inputs nor exposes
+// screen, audio, network, or scripting capabilities to a pack.
+func (w *windowsFloatingWindow) triggerCharacterEvent(event string) {
+	if w == nil || !petpack.IsAllowedPerformerEvent(event) {
+		return
+	}
+	w.mu.Lock()
+	skin := w.petSkin
+	variant := petpack.ResolveVariantForRuntime(w.petVariant)
+	state := w.petRuntimeState
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	if state == "" {
+		state = string(petpack.StateIdle)
+	}
+	renderer := w.characterRenderers[skin+"\x00"+variant]
+	w.mu.Unlock()
+	if renderer == nil {
+		// State changes can arrive before the first paint creates the v3
+		// renderer. Initialize it against the current semantic state so the
+		// accompanying event (for example task_started) is not silently lost.
+		_ = w.renderCharacterPackFrame(w.currentSize(), skin, variant, state)
+		w.mu.Lock()
+		renderer = w.characterRenderers[skin+"\x00"+variant]
+		w.mu.Unlock()
+	}
+	if renderer != nil && renderer.TriggerEvent(event, time.Now().UnixMilli()) {
+		w.mu.Lock()
+		w.renderDirty = true
+		w.mu.Unlock()
+	}
 }
 
 func (w *windowsFloatingWindow) setPetRuntimeStateLocked(state string, ttlMs int) {
@@ -652,6 +766,50 @@ func (w *windowsFloatingWindow) CurrentPetRuntimeState() string {
 		return string(petpack.StateIdle)
 	}
 	return w.petRuntimeState
+}
+
+// PetPackRuntimeLevel reports the renderer level this window is actually
+// using for the selected pack. Quiet/reduced-motion/disabled motion force the
+// static raster path; a renderer that failed to load degrades a character or
+// skeleton pack to its static raster frames. A level not yet attempted by the
+// render loop is assumed to work at its declared level — the first paint will
+// degrade it if loading fails.
+func (w *windowsFloatingWindow) PetPackRuntimeLevel(declared string) (string, string) {
+	w.mu.Lock()
+	quiet := w.petQuietMode
+	reduced := w.petReducedMotion
+	motionEnabled := w.petMotionEnabled
+	key := w.petSkin + "\x00" + petpack.ResolveVariantForRuntime(w.petVariant)
+	characterFailed := w.characterRendererFailed[key]
+	rigFailed := w.rigRendererFailed[key]
+	w.mu.Unlock()
+
+	staticReason := ""
+	switch {
+	case quiet:
+		staticReason = "安静模式已启用，动画已暂停"
+	case reduced:
+		staticReason = "系统“减少动态效果”已开启，动画已停用"
+	case !motionEnabled:
+		staticReason = "宠物动画已关闭"
+	}
+	if staticReason != "" {
+		if declared == petpack.RendererNative {
+			return declared, ""
+		}
+		return petpack.RendererNative, staticReason
+	}
+	switch declared {
+	case petpack.RendererCharacter:
+		if characterFailed {
+			return petpack.RendererNative, "角色动画加载失败，已回退到静态图像"
+		}
+	case petpack.RendererSkeleton:
+		if rigFailed {
+			return petpack.RendererNative, "骨骼动画加载失败，已回退到静态图像"
+		}
+	}
+	return declared, ""
 }
 
 // Message loop
@@ -1158,6 +1316,26 @@ func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, variant, state, int
 	if interactionMode == "" {
 		interactionMode = "balanced"
 	}
+	if frame := w.renderCharacterPackFrame(sz, skin, variant, state); frame != nil {
+		return frame
+	}
+	if frame := w.renderSkeletonPackFrame(sz, skin, variant, state); frame != nil {
+		return frame
+	}
+	// ClawMate is the single official 3.0 sample. Its vector-like native
+	// fallback is intentionally rendered from the same articulated crab pose,
+	// rather than reverting to the former abstract mascot raster.
+	if skin == petpack.DefaultPackID {
+		bucketPhase := math.Mod(phase, 2*math.Pi)
+		poseMode := interactionMode
+		switch petpack.NormalizeState(state) {
+		case petpack.StateListening:
+			poseMode = "active"
+		case petpack.StateQuiet:
+			poseMode = "quiet"
+		}
+		return renderClawMatePetWithPose(sz, skin, petFacePoseForPhase(bucketPhase, poseMode))
+	}
 	phase = math.Mod(phase, 2*math.Pi)
 	if phase < 0 {
 		phase += 2 * math.Pi
@@ -1250,6 +1428,144 @@ func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, variant, state, int
 	w.petFrameCache[proceduralKey] = frame
 	w.mu.Unlock()
 	return frame
+}
+
+// hasActiveCharacterRenderer reports whether the selected pack is currently
+// supplying a native-character frame. It intentionally checks the loaded
+// renderer rather than resolving the registry again on the 20fps render path.
+func (w *windowsFloatingWindow) hasActiveCharacterRenderer(skin, variant string) bool {
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	variant = petpack.ResolveVariantForRuntime(variant)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.characterRenderers[skin+"\x00"+variant] != nil
+}
+
+// renderCharacterPackFrame is the v3 path. The performer has already been
+// validated during registry scanning and is loaded once per selected pack.
+// Any issue falls through to the v2 skeleton and static fallback paths.
+func (w *windowsFloatingWindow) renderCharacterPackFrame(sz int, skin, variant, state string) *image.NRGBA {
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	variant = petpack.ResolveVariantForRuntime(variant)
+	key := skin + "\x00" + variant
+	w.mu.Lock()
+	renderer, failed := w.characterRenderers[key], w.characterRendererFailed[key]
+	w.mu.Unlock()
+	if failed {
+		return nil
+	}
+	if renderer == nil {
+		reg := petpack.EnsureGlobal()
+		if reg == nil {
+			return nil
+		}
+		resolved, err := reg.Resolve(skin, variant)
+		if err != nil || resolved == nil || resolved.Renderer != petpack.RendererCharacter {
+			return nil
+		}
+		renderer, err = petpack.NewCharacterRenderer(resolved)
+		w.mu.Lock()
+		// The maps are normally allocated in Create, but a window that only
+		// receives state pushes (never shown) must not panic on a nil map.
+		if w.characterRenderers == nil {
+			w.characterRenderers = make(map[string]*petpack.CharacterRenderer)
+		}
+		if w.characterRendererFailed == nil {
+			w.characterRendererFailed = make(map[string]bool)
+		}
+		if err != nil || renderer == nil {
+			w.characterRendererFailed[key] = true
+			w.mu.Unlock()
+			return nil
+		}
+		if existing := w.characterRenderers[key]; existing != nil {
+			renderer = existing
+		} else {
+			w.characterRenderers[key] = renderer
+		}
+		w.mu.Unlock()
+	}
+	return renderer.RenderState(petpack.NormalizeState(state), time.Now().UnixMilli(), sz)
+}
+
+// cachedStaticPetFrame is the accessibility path: reduced motion and quiet
+// mode use the pack's declared static state image, never an arbitrary frame
+// sampled from a continuously running skeleton clip.
+func (w *windowsFloatingWindow) cachedStaticPetFrame(sz int, skin, variant, state string) *image.NRGBA {
+	// InvalidatePetPackAssets swaps the cache pointer from another goroutine;
+	// take it under the lock like cachedPetFrame does.
+	w.mu.Lock()
+	packCache := w.packFrameCache
+	w.mu.Unlock()
+	if frame := tryLoadPackFrame(skin, variant, state, sz, packCache); frame != nil {
+		return frame
+	}
+	return renderClawMatePet(sz, skin)
+}
+
+// renderSkeletonPackFrame is the v2 primary path. It deliberately resolves
+// and validates once per pack/variant, then renders only numeric transforms
+// from the already-decoded local assets. Any error falls through to existing
+// native raster and procedural paths.
+func (w *windowsFloatingWindow) renderSkeletonPackFrame(sz int, skin, variant, state string) *image.NRGBA {
+	if skin == "" {
+		skin = petpack.DefaultPackID
+	}
+	variant = petpack.ResolveVariantForRuntime(variant)
+	key := skin + "\x00" + variant
+	w.mu.Lock()
+	renderer := w.rigRenderers[key]
+	failed := w.rigRendererFailed[key]
+	w.mu.Unlock()
+	if failed {
+		return nil
+	}
+	if renderer == nil {
+		reg := petpack.EnsureGlobal()
+		if reg == nil {
+			return nil
+		}
+		resolved, err := reg.Resolve(skin, variant)
+		if err != nil || resolved == nil || resolved.Renderer != petpack.RendererSkeleton {
+			return nil
+		}
+		renderer, err = petpack.NewRigRenderer(resolved)
+		w.mu.Lock()
+		// Same nil-map guard as the character path for never-created windows.
+		if w.rigRenderers == nil {
+			w.rigRenderers = make(map[string]*petpack.RigRenderer)
+		}
+		if w.rigRendererFailed == nil {
+			w.rigRendererFailed = make(map[string]bool)
+		}
+		if err != nil || renderer == nil {
+			w.rigRendererFailed[key] = true
+			w.mu.Unlock()
+			return nil
+		}
+		if existing := w.rigRenderers[key]; existing != nil {
+			renderer = existing
+		} else {
+			w.rigRenderers[key] = renderer
+		}
+		w.mu.Unlock()
+	}
+	w.mu.Lock()
+	started, changed := w.petAnimationStartedAt, w.petStateChangedAt
+	w.mu.Unlock()
+	clock := started
+	if !renderer.IsLooping(petpack.NormalizeState(state)) {
+		clock = changed
+	}
+	elapsed := int(time.Since(clock).Milliseconds())
+	if clock.IsZero() {
+		elapsed = int(time.Now().UnixMilli() % 60000)
+	}
+	return renderer.Render(petpack.NormalizeState(state), elapsed, sz)
 }
 
 func (w *windowsFloatingWindow) evictPetFrameCacheCycleLocked(incoming petFrameCacheKey) {
@@ -1395,8 +1711,17 @@ func (w *windowsFloatingWindow) renderFrame() {
 		w.renderDirty = true
 	}
 	staticOnly := petReducedMotion || !petMotionEnabled || petQuietMode
+	// Fire the long_idle character event once per idle period. The static
+	// accessibility paths (quiet / reduced-motion / motion off) never fire it;
+	// any interaction or state change rearms the latch via notePetInteraction.
+	longIdleDue := false
+	if petEnabled && !staticOnly && !w.petLongIdleFired && !w.petLastInteractionAt.IsZero() && time.Since(w.petLastInteractionAt) >= petLongIdleThreshold {
+		w.petLongIdleFired = true
+		longIdleDue = true
+	}
 	// When no pet is visible, the frame is just the static fallback/logo; avoid
 	// allocating and uploading an identical layered bitmap every timer tick.
+	// (longIdleDue implies petEnabled && !staticOnly, so it cannot be set here.)
 	if (staticOnly || !petEnabled) && !w.renderDirty {
 		w.mu.Unlock()
 		return
@@ -1404,6 +1729,9 @@ func (w *windowsFloatingWindow) renderFrame() {
 	w.renderDirty = false
 	w.petLastRenderedState = petState
 	w.mu.Unlock()
+	if longIdleDue {
+		w.triggerCharacterEvent("long_idle")
+	}
 	if playPetSound && !petReducedMotion {
 		playPetMotionSound(petInteractionMode, petSkin, petSoundPreset, packPitch)
 	}
@@ -1447,16 +1775,31 @@ func (w *windowsFloatingWindow) renderFrame() {
 				petXOffset = math.Sin(phase*4.2) * float64(sz) * 0.016 * intensity
 			}
 		}
-		petFrame := w.cachedPetFrame(sz, petSkin, petVariant, petState, petInteractionMode, phase)
+		var petFrame *image.NRGBA
+		nativeCharacter := false
+		if staticOnly {
+			petFrame = w.cachedStaticPetFrame(sz, petSkin, petVariant, petState)
+		} else {
+			petFrame = w.cachedPetFrame(sz, petSkin, petVariant, petState, petInteractionMode, phase)
+			nativeCharacter = w.hasActiveCharacterRenderer(petSkin, petVariant)
+		}
 		previousPetFrame := (*image.NRGBA)(nil)
 		stateTransition := 1.0
-		if !staticOnly && petPreviousState != "" && petPreviousState != petState && !petStateChangedAt.IsZero() {
+		if nativeCharacter {
+			// The v3 renderer owns authored bone motion and its internal crossfade.
+			// Applying legacy sine-wave and a second state blend would turn the
+			// performance back into the mechanical wobble this version replaces.
+			petScale, petXOffset, petYOffset = 1, 0, 0
+		} else if !staticOnly && petPreviousState != "" && petPreviousState != petState && !petStateChangedAt.IsZero() {
 			stateTransition = math.Min(1, time.Since(petStateChangedAt).Seconds()/0.28)
 			if stateTransition < 1 {
 				previousPetFrame = w.cachedPetFrame(sz, petSkin, petVariant, petPreviousState, petInteractionMode, phase)
 			}
 		}
-		stateScale, stateXOffset, stateYOffset := petStateTransitionPose(petState, stateTransition, sz, petMotionAmplitude)
+		stateScale, stateXOffset, stateYOffset := 1.0, 0.0, 0.0
+		if !nativeCharacter {
+			stateScale, stateXOffset, stateYOffset = petStateTransitionPose(petState, stateTransition, sz, petMotionAmplitude)
+		}
 		renderAnimatedPetFrame(frame, petFrame, previousPetFrame, petScale*stateScale, petXOffset+stateXOffset, petYOffset+stateYOffset, stateTransition)
 	} else {
 		copy(frame.Pix, base.Pix)
@@ -1675,7 +2018,8 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	case wmTimer:
 		if w != nil && wParam == timerIdHalo {
 			w.mu.Lock()
-			w.haloPhase += 0.15 // ~2s full cycle at 20fps
+			// 2π / 40: keep the intended two-second ambient cycle at 20 FPS.
+			w.haloPhase += 2 * math.Pi / 40
 			if w.haloPhase > 2*math.Pi {
 				w.haloPhase -= 2 * math.Pi
 			}
@@ -1695,11 +2039,23 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		w.dragStartX = pt.X
 		w.dragStartY = pt.Y
 		procSetCapture.Call(hwnd)
+		w.notePetInteraction()
 		return 0
 
 	case wmMousemove:
-		if w == nil || !w.dragging {
+		if w == nil {
 			break
+		}
+		if !w.dragging {
+			// Acknowledge a visitor once, not once per moved pixel. This timestamp
+			// is owned by the message loop and carries no cursor coordinates.
+			now := time.Now()
+			if w.lastHoverAt.IsZero() || now.Sub(w.lastHoverAt) >= 5*time.Second {
+				w.lastHoverAt = now
+				w.notePetInteraction()
+				w.triggerCharacterEvent("hover")
+			}
+			return 0
 		}
 		var pt point
 		procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
@@ -1708,6 +2064,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if !w.dragMoved {
 			if abs32(dx) > 5 || abs32(dy) > 5 {
 				w.dragMoved = true
+				w.triggerCharacterEvent("drag_start")
 			} else {
 				return 0
 			}
@@ -1727,13 +2084,16 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			break
 		}
 		w.dragging = false
+		w.notePetInteraction()
 		if !w.dragMoved {
+			w.triggerCharacterEvent("click")
 			go func() {
 				if w.app != nil {
-					w.app.OnFloatingButtonClicked()
+					w.app.onFloatingButtonClicked()
 				}
 			}()
 		} else {
+			w.triggerCharacterEvent("drag_end")
 			var pt point
 			procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 			finalX := w.windowStartX + int(pt.X-w.dragStartX)
@@ -1800,7 +2160,7 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		case menuIdSettings:
 			go func() {
 				if w.app != nil {
-					w.app.OpenPetSettingsFromMenu()
+					w.app.openPetSettingsFromMenu()
 				}
 			}()
 		case menuIdHide:

@@ -64,6 +64,17 @@ func (r *Registry) InstallZip(zipPath string) (string, error) {
 
 // InstallZipBytes installs from raw zip bytes (tests).
 func (r *Registry) InstallZipBytes(data []byte) (string, error) {
+	return r.installZipBytes(data, "")
+}
+
+// InstallMarketZipBytes installs a Pet Store archive without allowing it to
+// overwrite a local creator/imported pack that happens to have the same
+// manifest ID. A market re-install may replace an earlier market install.
+func (r *Registry) InstallMarketZipBytes(data []byte) (string, error) {
+	return r.installZipBytes(data, SourceMarket)
+}
+
+func (r *Registry) installZipBytes(data []byte, installSource string) (string, error) {
 	if r == nil {
 		return "", fmt.Errorf("nil registry")
 	}
@@ -97,6 +108,13 @@ func (r *Registry) InstallZipBytes(data []byte) (string, error) {
 		prefix = dir + "/"
 	}
 	dest := filepath.Join(r.userRoot, m.ID)
+	if installSource == SourceMarket {
+		if existing, err := os.Lstat(dest); err == nil && existing != nil && packSourceForDir(dest) != SourceMarket {
+			return "", fmt.Errorf("a local pet pack with id %q already exists; uninstall or rename it before installing the market pack", m.ID)
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("check existing pet pack: %w", err)
+		}
+	}
 	// Atomic-ish: write to temp, swap previous dir aside, then promote tmp.
 	// Never delete the live pack until the new tree is fully written.
 	tmp := dest + ".tmp-install"
@@ -127,6 +145,12 @@ func (r *Registry) InstallZipBytes(data []byte) (string, error) {
 	if written == 0 {
 		_ = os.RemoveAll(tmp)
 		return "", fmt.Errorf("zip produced no pack files after root strip")
+	}
+	if installSource == SourceMarket {
+		if err := os.WriteFile(filepath.Join(tmp, packSourceMarkerName), []byte(SourceMarket+"\n"), 0o600); err != nil {
+			_ = os.RemoveAll(tmp)
+			return "", fmt.Errorf("mark market pet pack: %w", err)
+		}
 	}
 	// Move existing install out of the way (restore on failure).
 	if st, err := os.Lstat(dest); err == nil && st != nil {
@@ -261,6 +285,9 @@ func validateAndExtractZip(data []byte) (map[string][]byte, error) {
 		clean := filepath.ToSlash(filepath.Clean(name))
 		if strings.HasPrefix(clean, "../") || clean == ".." {
 			return nil, fmt.Errorf("zip-slip rejected: %s", name)
+		}
+		if _, exists := out[clean]; exists {
+			return nil, fmt.Errorf("duplicate archive path: %s", clean)
 		}
 		ext := strings.ToLower(filepath.Ext(clean))
 		if deniedExt[ext] {

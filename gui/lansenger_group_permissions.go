@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -16,21 +18,173 @@ type lansengerGroupPermissionPolicy struct {
 	KnowledgeSourceIDs  []string
 	AllowAllDirectories bool
 	AllowedDirectories  []string
+
+	// knowledgePriority is intentionally a pointer so copies made while
+	// filtering tool definitions share the same per-turn state and never copy a
+	// mutex. It is initialized lazily to preserve zero-value test policies.
+	knowledgePriority *lansengerGroupKnowledgePriorityState
 }
+
+type lansengerGroupKnowledgePriorityState struct {
+	mu                       sync.Mutex
+	knowledgeSearchAttempted bool
+	knowledgeSearchNoResult  bool
+	knowledgeEvidenceFound   bool
+}
+
+var lansengerGroupKnowledgePriorityInitMu sync.Mutex
 
 func lansengerGroupPermissionsFromConfig(cfg *corelib.AppConfig) lansengerGroupPermissionPolicy {
 	if cfg == nil {
 		return lansengerGroupPermissionPolicy{}
 	}
 	return lansengerGroupPermissionPolicy{
-		KnowledgeSourceIDs:  append([]string(nil), cfg.LansengerGroupKnowledgeSourceIDs...),
+		KnowledgeSourceIDs:  normalizedLansengerKnowledgeSourceIDs(cfg.LansengerGroupKnowledgeSourceIDs),
 		AllowAllDirectories: cfg.LansengerGroupAllowAllDirectories,
 		AllowedDirectories:  append([]string(nil), cfg.LansengerGroupAllowedDirectories...),
+		knowledgePriority:   &lansengerGroupKnowledgePriorityState{},
 	}
 }
 
 func (p lansengerGroupPermissionPolicy) allowsKnowledge() bool {
-	return len(p.KnowledgeSourceIDs) > 0
+	return len(normalizedLansengerKnowledgeSourceIDs(p.KnowledgeSourceIDs)) > 0
+}
+
+// normalizedLansengerKnowledgeSourceIDs is deliberately shared by the config
+// boundary and execution boundary. An empty source_ids filter means "all
+// sources" to the knowledge store, so blank configured IDs must never survive
+// long enough to become an unscoped group lookup.
+func normalizedLansengerKnowledgeSourceIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func (p *lansengerGroupPermissionPolicy) knowledgePriorityState() *lansengerGroupKnowledgePriorityState {
+	if p == nil {
+		return nil
+	}
+	lansengerGroupKnowledgePriorityInitMu.Lock()
+	defer lansengerGroupKnowledgePriorityInitMu.Unlock()
+	if p.knowledgePriority == nil {
+		p.knowledgePriority = &lansengerGroupKnowledgePriorityState{}
+	}
+	return p.knowledgePriority
+}
+
+// markKnowledgeAutoRecallEvidence records that the prompt already contains a
+// relevant result from the authorised knowledge sources. In that case web
+// research is not a fallback for this turn.
+func (p *lansengerGroupPermissionPolicy) markKnowledgeAutoRecallEvidence() {
+	if p == nil {
+		return
+	}
+	state := p.knowledgePriorityState()
+	state.mu.Lock()
+	state.knowledgeEvidenceFound = true
+	state.mu.Unlock()
+}
+
+// webFallbackBlockReason enforces the group-turn order: memory (prompt
+// context), authorised knowledge, then the network only when that knowledge
+// lookup had no result. It deliberately has no effect for groups that were not
+// granted any knowledge sources.
+func (p *lansengerGroupPermissionPolicy) webFallbackBlockReason() string {
+	if p == nil || !p.allowsKnowledge() {
+		return ""
+	}
+	state := p.knowledgePriorityState()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.knowledgeEvidenceFound {
+		return "已在已授权知识库中找到相关内容，请基于该内容回复；只有知识库无足够信息时才可使用网络搜索"
+	}
+	if !state.knowledgeSearchAttempted {
+		return "群聊必须先检索已授权知识库。请先调用 knowledge_search；仅在知识库没有相关结果时才可使用网络搜索"
+	}
+	if !state.knowledgeSearchNoResult {
+		return "已授权知识库检索未返回可用的无结果结论，请修正或重试 knowledge_search；不能直接改用网络搜索"
+	}
+	return ""
+}
+
+func (p *lansengerGroupPermissionPolicy) requiresKnowledgeLookup() bool {
+	if p == nil || !p.allowsKnowledge() {
+		return false
+	}
+	state := p.knowledgePriorityState()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return !state.knowledgeEvidenceFound && !state.knowledgeSearchNoResult
+}
+
+// recordKnowledgeSearchResult advances the per-turn fallback state after the
+// scoped knowledge_search handler returns. The built-in handler returns an
+// explicit successful JSON object with count and results, so a malformed or
+// incomplete tool response cannot be misread as permission to use the network.
+func (p *lansengerGroupPermissionPolicy) recordKnowledgeSearchResult(result toolExecutionResult) {
+	if p == nil || !p.allowsKnowledge() {
+		return
+	}
+	state := p.knowledgePriorityState()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.knowledgeSearchAttempted = true
+	if result.Outcome != toolOutcomeSucceeded {
+		return
+	}
+	var payload struct {
+		OK      *bool            `json:"ok"`
+		Count   *int             `json:"count"`
+		Results *json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result.Text)), &payload); err == nil &&
+		payload.OK != nil && *payload.OK && payload.Count != nil && payload.Results != nil {
+		results, valid := lansengerKnowledgeSearchResults(*payload.Results, *payload.Count)
+		if !valid {
+			return
+		}
+		if *payload.Count > 0 && len(results) > 0 {
+			state.knowledgeEvidenceFound = true
+		} else if *payload.Count == 0 && len(results) == 0 {
+			state.knowledgeSearchNoResult = true
+		}
+	}
+}
+
+// lansengerKnowledgeSearchResults validates the built-in search response's
+// count/results invariant before it can alter network permission. This keeps a
+// truncated or custom-tool response from fabricating a no-result fallback or
+// suppressing a required retry.
+func lansengerKnowledgeSearchResults(raw json.RawMessage, count int) ([]json.RawMessage, bool) {
+	if count < 0 {
+		return nil, false
+	}
+	var results []json.RawMessage
+	if err := json.Unmarshal(raw, &results); err != nil || len(results) != count {
+		return nil, false
+	}
+	return results, true
+}
+
+func lansengerGroupKnowledgePriorityPrompt() string {
+	return `
+## 群聊信息来源优先级
+- 本轮必须按以下顺序作答：已有记忆与会话上下文 → 已授权的本地知识库 → 网络。
+- 当已授权知识库可用时，先使用当前提示中已召回的知识；若仍不足，必须先调用 knowledge_search 检索已授权范围。
+- 知识库检索有相关结果时，基于其内容回复，不得改用 web_search 或 web_fetch 补充、替代或臆测。
+- 仅当已授权知识库检索没有相关结果时，网络才是兜底来源。`
 }
 
 func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
@@ -86,7 +240,8 @@ func filterToolsForLansengerGroupPermissions(tools []map[string]interface{}, pol
 }
 
 func (p lansengerGroupPermissionPolicy) restrictKnowledgeArgs(args map[string]interface{}) error {
-	if !p.allowsKnowledge() {
+	allowedIDs := normalizedLansengerKnowledgeSourceIDs(p.KnowledgeSourceIDs)
+	if len(allowedIDs) == 0 {
 		return fmt.Errorf("群聊权限未授权访问知识库")
 	}
 	requested, specified, err := knowledgeSourceIDsFromArgs(args)
@@ -97,12 +252,12 @@ func (p lansengerGroupPermissionPolicy) restrictKnowledgeArgs(args map[string]in
 		if specified {
 			return fmt.Errorf("知识库来源必须是非空字符串数组")
 		}
-		args["source_ids"] = append([]string(nil), p.KnowledgeSourceIDs...)
+		args["source_ids"] = append([]string(nil), allowedIDs...)
 		return nil
 	}
-	allowed := make(map[string]struct{}, len(p.KnowledgeSourceIDs))
-	for _, id := range p.KnowledgeSourceIDs {
-		allowed[strings.TrimSpace(id)] = struct{}{}
+	allowed := make(map[string]struct{}, len(allowedIDs))
+	for _, id := range allowedIDs {
+		allowed[id] = struct{}{}
 	}
 	filtered := make([]string, 0, len(requested))
 	for _, id := range requested {

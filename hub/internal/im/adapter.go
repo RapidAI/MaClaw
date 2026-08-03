@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // IMPlugin defines the standard interface for IM platform plugins.
@@ -52,6 +54,13 @@ type VoiceSender interface {
 	SendVoice(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string) error
 }
 
+// TargetCapabilityResolver is implemented by gateways whose individual
+// clients have different output hardware. It augments (and narrows) the
+// platform-wide CapabilityDeclaration for one reply target.
+type TargetCapabilityResolver interface {
+	ClientCapabilitiesForTarget(ctx context.Context, target UserTarget) (agent.ClientCapabilities, bool)
+}
+
 // CapabilityDeclaration declares the message types supported by an IM platform.
 type CapabilityDeclaration struct {
 	SupportsRichCard    bool // Supports rich text cards
@@ -84,15 +93,16 @@ type IncomingMessage struct {
 	// ReplyTarget is an optional conversation identifier used after identity
 	// resolution. Remote group gateways keep PlatformUID as the human sender
 	// while sending the final reply back to the group conversation.
-	ReplyTarget   string              `json:"reply_target,omitempty"`
-	UnifiedUserID string              `json:"unified_user_id"`       // Unified internal user ID (populated by IM Adapter)
-	MessageID     string              `json:"message_id,omitempty"`  // Platform message ID for dedup (optional)
-	MessageType   string              `json:"message_type"`          // "text", "image", "file", "audio", "interactive"
-	Text          string              `json:"text"`                  // Text content
-	Lang          string              `json:"lang,omitempty"`        // User language ("zh", "en"); empty defaults to "zh"
-	Attachments   []MessageAttachment `json:"attachments,omitempty"` // File/image attachments
-	RawPayload    json.RawMessage     `json:"raw_payload"`           // Raw platform message for plugin-specific handling
-	Timestamp     time.Time           `json:"timestamp"`
+	ReplyTarget        string                    `json:"reply_target,omitempty"`
+	UnifiedUserID      string                    `json:"unified_user_id"`               // Unified internal user ID (populated by IM Adapter)
+	MessageID          string                    `json:"message_id,omitempty"`          // Platform message ID for dedup (optional)
+	MessageType        string                    `json:"message_type"`                  // "text", "image", "file", "audio", "interactive"
+	Text               string                    `json:"text"`                          // Text content
+	Lang               string                    `json:"lang,omitempty"`                // User language ("zh", "en"); empty defaults to "zh"
+	Attachments        []MessageAttachment       `json:"attachments,omitempty"`         // File/image attachments
+	ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"` // Concrete client I/O capabilities
+	RawPayload         json.RawMessage           `json:"raw_payload"`                   // Raw platform message for plugin-specific handling
+	Timestamp          time.Time                 `json:"timestamp"`
 }
 
 // OutgoingMessage represents a standardized outbound message, converted from GenericResponse.

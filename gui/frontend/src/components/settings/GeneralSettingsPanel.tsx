@@ -1,14 +1,14 @@
-import { useMemo, useRef, useState, type ChangeEvent, type Dispatch, type SetStateAction } from 'react';
 import { LoadConfig, PatchConfigFields, SelectWorkingDir } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { type ChangeEvent, type Dispatch, type SetStateAction, useMemo, useRef, useState } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { EVENT_MACLAW_CONFIG_CHANGED } from '../../constants/events';
 import { miniAppEntryLabel } from '../../i18n/maclawMiniAppLabels';
 import { GeneralSettingsOptionGrid } from './GeneralSettingsOptionGrid';
 
 type GeneralSettingsPanelProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     t: (key: string) => string;
     onLanguageChange: (event: ChangeEvent<HTMLSelectElement>) => void;
@@ -30,9 +30,9 @@ const persistConfigPatch = (patch: Record<string, any>, context: string) => {
 export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageChange }: GeneralSettingsPanelProps) => {
     const [pendingPatch, setPendingPatch] = useState<Record<string, any>>({});
     const effectiveConfig = useMemo(() => (
-        config ? new main.AppConfig({ ...config, ...pendingPatch }) : config
+        config ? new corelib.AppConfig({ ...config, ...pendingPatch }) : config
     ), [config, pendingPatch]);
-    const configRef = useRef<main.AppConfig | null>(effectiveConfig);
+    const configRef = useRef<corelib.AppConfig | null>(effectiveConfig);
     const pendingPatchRef = useRef<Record<string, any>>(pendingPatch);
     const patchRequestVersionsRef = useRef<Record<string, number>>({});
     configRef.current = effectiveConfig;
@@ -69,7 +69,7 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
         // its response was lost, this keeps the actual saved value; otherwise it
         // cleanly rolls back the optimistic UI state.
         void Promise.resolve(LoadConfig()).then((saved) => {
-            const restored = new main.AppConfig({ ...new main.AppConfig(saved), ...pendingPatchRef.current });
+            const restored = new corelib.AppConfig({ ...new corelib.AppConfig(saved), ...pendingPatchRef.current });
             configRef.current = restored;
             setConfig(restored);
             window.dispatchEvent(new CustomEvent(EVENT_MACLAW_CONFIG_CHANGED, { detail: restored }));
@@ -95,7 +95,7 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
 
             // A user can click the same switch again before its first save returns.
             // Only the newest response for each field is allowed to confirm UI state.
-            const savedConfig = new main.AppConfig(saved);
+            const savedConfig = new corelib.AppConfig(saved);
             const acceptedPatch: Record<string, any> = {};
             const acceptedOriginalPatch: Record<string, any> = {};
             Object.entries(patch).forEach(([key, value]) => {
@@ -107,7 +107,7 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
 
             // Preserve newer optimistic edits to unrelated fields when an older,
             // full-config response arrives from the backend.
-            const confirmed = new main.AppConfig({ ...current, ...acceptedPatch });
+            const confirmed = new corelib.AppConfig({ ...current, ...acceptedPatch });
             configRef.current = confirmed;
             setConfig(confirmed);
             clearConfirmedPatch(acceptedOriginalPatch);
@@ -122,7 +122,7 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
     const saveConfigPatch = (patch: Record<string, any>, persist = true) => {
         const current = configRef.current;
         if (!current) return null;
-        const next = new main.AppConfig({ ...current, ...patch });
+        const next = new corelib.AppConfig({ ...current, ...patch });
         configRef.current = next;
         const nextPending = { ...pendingPatchRef.current, ...patch };
         pendingPatchRef.current = nextPending;

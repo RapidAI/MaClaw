@@ -7,9 +7,9 @@
  *
  * Requirements: 4.1, 4.2, 4.3
  */
-import { useCallback, useEffect, useRef } from "react";
-import { LoadProjectContext } from "../../../wailsjs/go/main/App";
-import type { main } from "../../../wailsjs/go/models";
+import { useCallback, useEffect, useRef } from 'react';
+import { LoadProjectContext } from '../../../wailsjs/go/main/App';
+import { main } from '../../../wailsjs/go/models';
 
 /** Timeout in milliseconds for the LoadProjectContext call */
 const LOAD_CONTEXT_TIMEOUT_MS = 2000;

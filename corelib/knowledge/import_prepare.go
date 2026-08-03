@@ -62,6 +62,11 @@ func prepareNodesForInsert(nodes []DocumentNode) []lightPreparedNode {
 	if len(nodes) == 0 {
 		return nil
 	}
+	// Preserve the caller's backing slice: downstream card generation depends
+	// on these generated IDs. Annotation only edits fields in-place and never
+	// expands this low-level insertion path.
+	annotated := annotateMultilingualNodeMetadata(nodes)
+	copy(nodes, annotated)
 	bm25.PrewarmDict()
 	out := make([]lightPreparedNode, len(nodes))
 	parallelFor(len(nodes), func(i int) {
@@ -244,7 +249,9 @@ func (s *SQLiteStore) distillAndSaveCardsFast(ctx context.Context, tx *sql.Tx, s
 		return source, nil
 	}
 
-	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
+	embeddingModelID := ""
+	if emb, _ := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
+		embeddingModelID = embeddingModelIdentifier(emb)
 		texts := make([]string, len(cards))
 		for i, card := range cards {
 			texts[i] = cardEmbeddingText(card)
@@ -262,7 +269,7 @@ func (s *SQLiteStore) distillAndSaveCardsFast(ctx context.Context, tx *sql.Tx, s
 		return source, err
 	}
 	defer stmts.Close()
-	if err := insertPreparedCardsFacts(ctx, stmts, prepCards, prepFacts); err != nil {
+	if err := insertPreparedCardsFacts(ctx, tx, stmts, prepCards, prepFacts, embeddingModelID); err != nil {
 		return source, err
 	}
 	source.Status = StatusDistilled
@@ -272,7 +279,7 @@ func (s *SQLiteStore) distillAndSaveCardsFast(ctx context.Context, tx *sql.Tx, s
 
 // insertPreparedCardsFacts writes precomputed cards and facts (shared by multi-file
 // and single-file fast paths).
-func insertPreparedCardsFacts(ctx context.Context, stmts *lightImportStmts, cards []lightPreparedCard, facts []lightPreparedFact) error {
+func insertPreparedCardsFacts(ctx context.Context, tx *sql.Tx, stmts *lightImportStmts, cards []lightPreparedCard, facts []lightPreparedFact, modelID string) error {
 	for _, pc := range cards {
 		card := pc.card
 		var embBlob interface{}
@@ -288,6 +295,9 @@ func insertPreparedCardsFacts(ctx context.Context, stmts *lightImportStmts, card
 			return err
 		}
 		if _, err := stmts.cardFTSIns.ExecContext(ctx, card.ID, pc.ftsTitle, pc.ftsClaim, pc.ftsSummary); err != nil {
+			return err
+		}
+		if err := upsertEmbeddingMetadataTx(ctx, tx, embeddingEntityCard, card.ID, modelID, len(card.Embedding)); err != nil {
 			return err
 		}
 	}

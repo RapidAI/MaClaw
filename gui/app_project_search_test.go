@@ -596,6 +596,45 @@ func TestCreateRemoteCodingTaskReusesSameRemoteProject(t *testing.T) {
 	}
 }
 
+func TestCreateRemoteOpsDiagnosisTaskMarksReusedRemoteTask(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	standard := app.CreateRemoteCodingTask("Remote task", "10.0.0.15", "deploy", "/srv/app", 22)
+	if standard.ProjectPath == "" {
+		t.Fatal("standard remote task creation failed")
+	}
+	diagnosis := app.CreateRemoteOpsDiagnosisTask("Diagnose incident", "10.0.0.15", "deploy", "/srv/app", 22)
+	if diagnosis.ProjectPath != standard.ProjectPath {
+		t.Fatalf("diagnosis task did not reuse target: got %q want %q", diagnosis.ProjectPath, standard.ProjectPath)
+	}
+	pi := app.memoryStore.ProjectIndex()
+	rec := pi.Get(standard.ProjectPath)
+	if rec == nil || !projectRecordHasTag(*rec, taskSourceRemoteOpsDiagnosisTag) {
+		t.Fatalf("reused remote task is missing diagnosis tag: index=%#v entries=%#v", rec, app.memoryStore.List(memory.CategoryTaskArtifact, ""))
+	}
+	if status := app.GetCodingWorkbenchStatus(standard.ProjectPath); status.RemoteSafety != "diagnosis" {
+		t.Fatalf("status remote safety = %q, want diagnosis", status.RemoteSafety)
+	}
+}
+
+func TestLoadProjectTabIndexRestoresRemoteDiagnosisMetadata(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	task := app.CreateRemoteOpsDiagnosisTask("Diagnose incident", "ops.example.test", "deploy", "/srv/app", 2222)
+	if task.ProjectPath == "" {
+		t.Fatal("diagnosis task creation failed")
+	}
+	if msg := app.CreateProjectTabSession("proj-remote-incident", task.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty message")
+	}
+
+	got := app.LoadProjectTabIndex()
+	if len(got) != 1 {
+		t.Fatalf("LoadProjectTabIndex = %+v, want one entry", got)
+	}
+	if got[0].AgentMode != taskRemoteCodingDevTag || got[0].RemoteHost != "ops.example.test" || got[0].RemoteSafety != "diagnosis" {
+		t.Fatalf("restored coding metadata = %+v, want remote diagnosis metadata", got[0])
+	}
+}
+
 func TestCreateRemoteCodingTaskConcurrentCallsReuseOneProject(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	const callers = 8
@@ -915,6 +954,112 @@ func TestCreateTaskWithModeTagsCodingDev(t *testing.T) {
 	}
 	if !foundCoding {
 		t.Fatal("ListTasks missing coding task")
+	}
+}
+
+func TestCreateExpertTaskIsListedAndDeduplicated(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	first := app.CreateExpertTask("expert-paper", "Paper reviewer")
+	if first.ProjectPath == "" {
+		t.Fatal("CreateExpertTask returned empty project path")
+	}
+	if !projectRecordHasTagLike(first.Tags, taskManagementTag) || !projectRecordHasTagLike(first.Tags, taskSourceExpertPrefix+"expert-paper") {
+		t.Fatalf("CreateExpertTask tags = %#v, want task-management expert source", first.Tags)
+	}
+
+	second := app.CreateExpertTask("expert-paper", "Renamed expert")
+	if second.ProjectPath != first.ProjectPath {
+		t.Fatalf("second expert task path = %q, want %q", second.ProjectPath, first.ProjectPath)
+	}
+
+	listed := app.ListTasks(50)
+	found := 0
+	for _, item := range listed {
+		if item.ProjectPath != first.ProjectPath {
+			continue
+		}
+		found++
+		if !projectRecordHasTagLike(item.Tags, taskSourceExpertPrefix+"expert-paper") {
+			t.Fatalf("ListTasks expert tags = %#v, want source tag", item.Tags)
+		}
+	}
+	if found != 1 {
+		t.Fatalf("ListTasks found expert task %d times, want 1", found)
+	}
+}
+
+func TestCreateExpertTaskRejectsInvalidExpertID(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	if created := app.CreateExpertTask("invalid expert id", "Expert"); created.ProjectPath != "" {
+		t.Fatalf("CreateExpertTask invalid id = %#v, want zero result", created)
+	}
+}
+
+func TestCreateExpertTaskCreatesFreshTaskAfterHiddenExpert(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.CreateExpertTask("expert-paper", "Paper reviewer")
+	if first.ProjectPath == "" {
+		t.Fatal("first expert task creation failed")
+	}
+	app.HideTask(first.ProjectPath)
+
+	second := app.CreateExpertTask("expert-paper", "Paper reviewer")
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("hidden expert task should be replaced: first=%q second=%q", first.ProjectPath, second.ProjectPath)
+	}
+	// Task creation intentionally flushes asynchronously. Wait for the derived
+	// index to settle before asserting list visibility, as callers receive the
+	// returned task record immediately and the UI inserts it optimistically.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, visible := range app.ListTasks(10) {
+			if visible.ProjectPath == second.ProjectPath {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("ListTasks did not surface replacement expert task %q", second.ProjectPath)
+}
+
+func TestCreateExpertTaskConcurrentCallsAreDeduplicated(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	const callers = 8
+	results := make(chan ProjectSearchResult, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- app.CreateExpertTask("expert-concurrent", "Concurrent expert")
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var projectPath string
+	for result := range results {
+		if result.ProjectPath == "" {
+			t.Fatal("CreateExpertTask returned an empty project path")
+		}
+		if projectPath == "" {
+			projectPath = result.ProjectPath
+			continue
+		}
+		if result.ProjectPath != projectPath {
+			t.Fatalf("concurrent expert task path = %q, want %q", result.ProjectPath, projectPath)
+		}
+	}
+
+	found := 0
+	for _, item := range app.ListTasks(50) {
+		if item.ProjectPath == projectPath {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("ListTasks found concurrent expert task %d times, want 1", found)
 	}
 }
 

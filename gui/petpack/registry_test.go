@@ -43,6 +43,52 @@ func TestRegistryBundledScanAndFrameResolve(t *testing.T) {
 	}
 }
 
+func TestPackInfoPreservesManifestDescription(t *testing.T) {
+	info := packInfoFrom(&PetPackManifest{
+		ID:              "creator-pet",
+		Name:            "Creator pet",
+		Description:     "The original package description.",
+		DescriptionI18n: map[string]string{"en": "Localized display description."},
+	})
+	if info.DescriptionText != "The original package description." {
+		t.Fatalf("DescriptionText = %q, want manifest description", info.DescriptionText)
+	}
+	if got := info.Description["en"]; got != "Localized display description." {
+		t.Fatalf("Description i18n = %q, want localized display description", got)
+	}
+}
+
+func TestClawMateBundledV3PerformanceRigIsReady(t *testing.T) {
+	reg := NewRegistry(t.TempDir(), BundledFS())
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	manifest, ok := reg.Get(DefaultPackID)
+	if !ok || manifest == nil {
+		t.Fatal("missing bundled clawmate")
+	}
+	if manifest.SchemaVersion != 3 || manifest.Renderer != RendererCharacter || !manifest.Capabilities.PetPerformanceV3 {
+		t.Fatalf("ClawMate must be a v3 performance pack, got schema=%d renderer=%q caps=%+v", manifest.SchemaVersion, manifest.Renderer, manifest.Capabilities)
+	}
+	if manifest.Status != StatusOK {
+		t.Fatalf("ClawMate v3 pack invalid: %s", manifest.Error)
+	}
+	resolved, err := reg.Resolve(DefaultPackID, VariantDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := NewCharacterRenderer(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame := renderer.RenderState(StateThinking, 450, 88); frame == nil || frame.Bounds().Dx() != 88 {
+		t.Fatal("expected rendered ClawMate performance frame")
+	}
+	if !renderer.TriggerEvent("task_done", 5000) {
+		t.Fatal("expected ClawMate task_done reaction")
+	}
+}
+
 func TestSanitizeSkinAllowlistAndNotReady(t *testing.T) {
 	// not ready: well-formed third-party kept
 	if got := SanitizeSkinID("my-custom-pet", false, nil); got != "my-custom-pet" {
@@ -58,6 +104,61 @@ func TestSanitizeSkinAllowlistAndNotReady(t *testing.T) {
 	}
 	if got := SanitizeSkinID("unknown-skin", true, allow); got != DefaultPackID {
 		t.Fatalf("unknown should → clawmate, got %q", got)
+	}
+}
+
+func TestRetiredBundledSkinIsNotTreatedAsOfficial(t *testing.T) {
+	if IsOfficialPackID("mini-claw") {
+		t.Fatal("retired bundled skin must not retain official fallback privileges")
+	}
+	if got := SanitizeSkinID("mini-claw", true, OfficialAllowlist()); got != DefaultPackID {
+		t.Fatalf("retired skin = %q, want %q", got, DefaultPackID)
+	}
+}
+
+func TestRegistryRejectsInvalidStaticIdleFallback(t *testing.T) {
+	user := t.TempDir()
+	packDir := filepath.Join(user, "broken-idle")
+	if err := os.MkdirAll(filepath.Join(packDir, "native"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "native", "idle.png"), []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte("schema_version: 1\nid: broken-idle\nname: Broken\nrenderer: native-raster\nassets:\n  native:\n    idle: native/idle.png\n")
+	if err := os.WriteFile(filepath.Join(packDir, "pet-pack.yaml"), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(user, nil)
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	pack, ok := reg.Get("broken-idle")
+	if !ok || pack == nil || pack.Status != StatusInvalid {
+		t.Fatalf("pack status = %+v, want invalid", pack)
+	}
+}
+
+func TestRegistryRejectsInvalidNonDefaultSkeletonVariant(t *testing.T) {
+	user := t.TempDir()
+	packDir := filepath.Join(user, "mixed-rig")
+	if err := os.MkdirAll(filepath.Join(packDir, "native"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "native", "idle.png"), minimalPNG(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte("schema_version: 2\nid: mixed-rig\nrenderer: native-raster\nassets:\n  native:\n    idle: native/idle.png\nvariants:\n  - id: experimental\n    renderer: native-skeleton\n    assets:\n      rig:\n        definition: rig/missing.json\n        textures: [rig/missing.png]\n")
+	if err := os.WriteFile(filepath.Join(packDir, "pet-pack.yaml"), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(user, nil)
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	pack, ok := reg.Get("mixed-rig")
+	if !ok || pack == nil || pack.Status != StatusInvalid {
+		t.Fatalf("pack status = %+v, want invalid", pack)
 	}
 }
 
@@ -176,10 +277,10 @@ assets:
 		t.Fatal(err)
 	}
 	list := reg.List()
-	if len(list) < 5 {
+	if len(list) < 2 {
 		t.Fatalf("expected official+custom, got %d", len(list))
 	}
-	// First four should be official catalog order when present.
+	// The single maintained official pack stays first.
 	for i, id := range OfficialPackIDs {
 		if list[i].ID != id {
 			t.Fatalf("list[%d]=%q, want official %q", i, list[i].ID, id)

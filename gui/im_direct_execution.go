@@ -13,6 +13,12 @@ func (h *IMMessageHandler) tryDirectExecutionProfile(msg IMUserMessage, loopCtx 
 	if loopCtx == nil || !loopCtx.Runtime.Execution.IsDirect() {
 		return nil, false
 	}
+	// Group turns with authorised knowledge must reach the normal agent loop so
+	// its knowledge-first policy can inspect memory/recall before any direct
+	// routing is allowed to invoke a network tool.
+	if loopCtx.LansengerGroupPermissions != nil && loopCtx.LansengerGroupPermissions.allowsKnowledge() {
+		return nil, false
+	}
 	startedAt := time.Now()
 	requestID := strings.TrimSpace(loopCtx.Runtime.RequestID)
 	profile := loopCtx.Runtime.Execution

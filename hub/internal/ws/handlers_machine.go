@@ -289,6 +289,14 @@ type IMGatewayPlugin interface {
 	HandleGatewayMessage(machineID string, payload json.RawMessage)
 }
 
+// DeviceGateway is the public HTTP endpoint used by low-power hardware
+// clients.  It remains owned by Hub while the paired GUI stays behind NAT on
+// its existing outbound WebSocket connection.
+type DeviceGateway interface {
+	RegisterPairing(machineID, tenantID, userID, code string) error
+	ServeHTTP(http.ResponseWriter, *http.Request)
+}
+
 // DeviceProfileUpdaterFunc is called when a machine sends device.profile_update.
 type DeviceProfileUpdaterFunc func(tenantID, userID string, profile json.RawMessage)
 
@@ -321,6 +329,7 @@ type Gateway struct {
 	// IMGatewayPlugins maps platform name -> gateway plugin for client-side
 	// IM gateways (QQ Bot, Telegram). Set via RegisterIMGatewayPlugin.
 	IMGatewayPlugins map[string]IMGatewayPlugin
+	DeviceGateway    DeviceGateway
 
 	// DeviceProfileUpdater is called when a machine sends device.profile_update.
 	// Set via SetDeviceProfileUpdater after construction.
@@ -378,6 +387,10 @@ func (g *Gateway) RegisterIMGatewayPlugin(plugin IMGatewayPlugin) {
 		g.IMGatewayPlugins = make(map[string]IMGatewayPlugin)
 	}
 	g.IMGatewayPlugins[plugin.Name()] = plugin
+}
+
+func (g *Gateway) SetDeviceGateway(deviceGateway DeviceGateway) {
+	g.DeviceGateway = deviceGateway
 }
 
 // SetDeviceProfileUpdater wires the device profile update handler.
@@ -573,6 +586,14 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "im.gateway_message":
 			if err := g.handleIMGatewayMessage(ctx, msg); err != nil {
+				return
+			}
+		case "im.device_gateway_pairing":
+			if err := g.handleDeviceGatewayPairing(ctx, msg); err != nil {
+				return
+			}
+		case "im.device_gateway_reply":
+			if err := g.handleDeviceGatewayReply(ctx, msg); err != nil {
 				return
 			}
 		case "machine.nickname_update":
@@ -1540,6 +1561,85 @@ func (g *Gateway) handleIMGatewayMessage(ctx *ConnContext, msg Envelope) error {
 		}()
 		plugin.HandleGatewayMessage(machineID, data)
 	}()
+	return nil
+}
+
+func (g *Gateway) handleDeviceGatewayPairing(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	if g.DeviceGateway == nil {
+		return writeWSError(ctx.Conn, "UNAVAILABLE", "device gateway is not enabled")
+	}
+	var payload struct {
+		PairCode string `json:"pairCode"`
+		// Code is accepted from old GUI releases while pairCode is the
+		// canonical WebSocket field.
+		Code          string         `json:"code"`
+		PetSkin       string         `json:"petSkin"`
+		MotionEnabled bool           `json:"motionEnabled"`
+		PetAsset      map[string]any `json:"petAsset"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "invalid pairing payload")
+	}
+	pairCode := strings.TrimSpace(payload.PairCode)
+	if pairCode == "" {
+		pairCode = strings.TrimSpace(payload.Code)
+	}
+	if profiler, ok := g.DeviceGateway.(interface {
+		RegisterPairingWithPetProfileAsset(string, string, string, string, string, bool, map[string]any) error
+	}); ok {
+		if err := profiler.RegisterPairingWithPetProfileAsset(ctx.MachineID, ctx.TenantID, ctx.UserID, pairCode, payload.PetSkin, payload.MotionEnabled, payload.PetAsset); err != nil {
+			return writeWSError(ctx.Conn, "INVALID_MESSAGE", err.Error())
+		}
+	} else if err := g.DeviceGateway.RegisterPairing(ctx.MachineID, ctx.TenantID, ctx.UserID, pairCode); err != nil {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", err.Error())
+	}
+	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" || g.DeviceGateway == nil {
+		return nil
+	}
+	var payload struct {
+		ClientID       string         `json:"clientId"`
+		ConversationID string         `json:"conversationId"`
+		Reply          map[string]any `json:"reply"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil || strings.TrimSpace(payload.ClientID) == "" {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "invalid device gateway reply")
+	}
+	if ambient, ok := payload.Reply["ambient"].(map[string]any); ok {
+		if updater, ok := g.DeviceGateway.(interface {
+			UpdateMachineAmbient(string, map[string]any)
+		}); ok {
+			updater.UpdateMachineAmbient(ctx.MachineID, ambient)
+		}
+		if payload.ClientID == "*" {
+			return nil
+		}
+	}
+	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "pet_profile") {
+		if profiler, ok := g.DeviceGateway.(interface {
+			UpdateMachinePetProfileAsset(string, string, bool, map[string]any)
+		}); ok {
+			petSkin, _ := payload.Reply["pet_skin"].(string)
+			motionEnabled, _ := payload.Reply["pet_motion_enabled"].(bool)
+			asset, _ := payload.Reply["pet_asset"].(map[string]any)
+			profiler.UpdateMachinePetProfileAsset(ctx.MachineID, petSkin, motionEnabled, asset)
+		}
+		return nil
+	}
+	if relay, ok := g.DeviceGateway.(interface {
+		EnqueueReply(string, string, map[string]any)
+	}); ok {
+		if replyType, ok := payload.Reply["reply_type"].(string); ok && strings.TrimSpace(replyType) != "" {
+			payload.Reply["type"] = replyType
+		}
+		relay.EnqueueReply(payload.ClientID, payload.ConversationID, payload.Reply)
+	}
 	return nil
 }
 

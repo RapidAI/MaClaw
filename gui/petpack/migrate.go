@@ -59,17 +59,18 @@ func SanitizeSkinID(skin string, registryReady bool, allowlist map[string]bool) 
 	return DefaultPackID
 }
 
-// IsOfficialPackID reports whether id is one of the four bundled skins.
+// IsOfficialPackID reports whether id is a currently maintained official skin.
 func IsOfficialPackID(id string) bool {
-	switch strings.TrimSpace(id) {
-	case "clawmate", "mini-claw", "dev-claw", "focus-claw":
-		return true
-	default:
-		return false
+	id = strings.TrimSpace(id)
+	for _, officialID := range OfficialPackIDs {
+		if id == officialID {
+			return true
+		}
 	}
+	return false
 }
 
-// OfficialAllowlist returns a map of the four official pack ids.
+// OfficialAllowlist returns a map of the currently maintained official pack ids.
 func OfficialAllowlist() map[string]bool {
 	m := make(map[string]bool, len(OfficialPackIDs))
 	for _, id := range OfficialPackIDs {

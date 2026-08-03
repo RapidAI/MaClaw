@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -751,92 +750,6 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 	}, nil
 }
 
-// RunAutoUpload executes the auto-upload flow for a newly created skill.
-// It records the execution, packages the skill into a zip, checks upload
-// conditions, and submits to SkillMarket if appropriate.
-// HubCenter not configured => skip upload with warning log, return nil.
-// Upload failure => log error, return error (caller preserves local skill).
-func RunAutoUpload(
-	ctx context.Context,
-	skillName string,
-	skillDir string,
-	score int,
-	trigger *AutoUploadTrigger,
-	skillExec *SkillExecutor,
-	client *SkillMarketClient,
-) error {
-	if trigger == nil || skillExec == nil {
-		log.Printf("[auto-upload] dependencies missing, skipping upload for skill %s", skillName)
-		return nil
-	}
-
-	if score < 1 {
-		log.Printf("[auto-upload] quality score too low, skipping upload for skill %s", skillName)
-		return nil
-	}
-
-	localHash := ""
-	if strings.TrimSpace(skillDir) != "" {
-		if !skillDefinitionExists(skillDir) {
-			return runLegacyLearnedSkillAutoUpload(ctx, skillName, skillDir, score, trigger, skillExec, client)
-		}
-		_, report, err := prepareSkillDirForMarket(skillDir, true)
-		if err != nil {
-			return fmt.Errorf("auto-upload: portability preparation failed: %w", err)
-		}
-		entry, loadErr := loadMarketPackageSkillEntry(skillDir, nil)
-		if loadErr == nil {
-			quality := evaluateSkillQuality(entry, report, false)
-			writeSkillQualityStatus(skillDir, entry, quality, "generated_upload", false)
-			if !quality.MarketReady {
-				return fmt.Errorf("auto-upload blocked by quality gate: score=%d reasons=%s", quality.Score, strings.Join(quality.Reasons, "; "))
-			}
-		}
-		localHash = skillDirHash(skillDir)
-	}
-
-	// 1. Record the verified generated skill. RunAutoUpload is used after the
-	// quality gate, so it uploads immediately when SkillMarket is reachable while
-	// still recording the hash to avoid future duplicate uploads.
-	trigger.RecordExecution(skillName, score, localHash)
-
-	// 2. Hand off to the lifecycle queue. The queue keeps the "timely upload"
-	// promise without losing good skills when HubCenter, email config, or the
-	// network is temporarily unavailable.
-	if client == nil || client.app == nil {
-		log.Printf("[auto-upload] HubCenter client not initialized, queued upload unavailable for skill %s", skillName)
-		return nil
-	}
-	ensureLifecycleUploadEmail(client.app, trigger)
-	client.app.ensureSkillLifecycleManager()
-	if client.app.skillLifecycle == nil {
-		log.Printf("[auto-upload] lifecycle manager not initialized, skipping upload for skill %s", skillName)
-		return nil
-	}
-	if _, err := client.app.skillLifecycle.EnqueueUpload(ctx, skillName, skillDir, "generated_upload", false, true); err != nil {
-		return fmt.Errorf("auto-upload: enqueue skill: %w", err)
-	}
-	log.Printf("[auto-upload] skill %s queued for SkillMarket upload", skillName)
-	return nil
-}
-
-func ensureLifecycleUploadEmail(app *App, trigger *AutoUploadTrigger) {
-	if app == nil || trigger == nil || trigger.emailFn == nil {
-		return
-	}
-	email := strings.TrimSpace(trigger.emailFn())
-	if email == "" {
-		return
-	}
-	cfg, err := app.LoadConfig()
-	if err != nil || strings.TrimSpace(cfg.RemoteEmail) != "" {
-		return
-	}
-	if _, err := app.PatchConfigFields(map[string]interface{}{"remote_email": email}); err != nil {
-		log.Printf("[auto-upload] persist upload email failed: %v", err)
-	}
-}
-
 func skillDefinitionExists(skillDir string) bool {
 	if strings.TrimSpace(skillDir) == "" {
 		return false
@@ -847,43 +760,12 @@ func skillDefinitionExists(skillDir string) bool {
 	return findSkillMarkdownDocPath(skillDir) != ""
 }
 
-func runLegacyLearnedSkillAutoUpload(ctx context.Context, skillName, skillDir string, score int, trigger *AutoUploadTrigger, skillExec *SkillExecutor, client *SkillMarketClient) error {
-	// Legacy learned skills may not have a file-backed skill.yaml/SKILL.md yet.
-	// Record usage history, but let the lifecycle quality gate decide whether the
-	// registered skill is market-ready instead of requiring three prior runs here.
-	trigger.RecordExecution(skillName, score, skillDirHash(skillDir))
-
-	var app *App
-	if client != nil && client.app != nil {
-		app = client.app
-	} else if skillExec != nil {
-		app = skillExec.app
-	}
-	if app == nil {
-		log.Printf("[auto-upload] app not initialized, queued upload unavailable for learned skill %s", skillName)
-		return nil
-	}
-	ensureLifecycleUploadEmail(app, trigger)
-	app.ensureSkillLifecycleManager()
-	if app.skillLifecycle == nil {
-		log.Printf("[auto-upload] lifecycle manager not initialized, skipping learned skill upload for %s", skillName)
-		return nil
-	}
-	if _, err := app.skillLifecycle.EnqueueUpload(ctx, skillName, "", "generated_upload", false, true); err != nil {
-		return fmt.Errorf("auto-upload: enqueue learned skill: %w", err)
-	}
-	log.Printf("[auto-upload] learned skill %s queued for SkillMarket upload", skillName)
-	return nil
-}
-
 // SkillAutoSummaryPipeline orchestrates the end-to-end skill auto-summary
-// flow: complexity analysis => draft => validate => quality gate => auto upload.
+// flow: complexity analysis => draft => validate => quality gate => register.
 type SkillAutoSummaryPipeline struct {
 	tagGen    *TagGenerator
 	checker   *SecurityPolicyChecker
-	trigger   *AutoUploadTrigger
 	skillExec *SkillExecutor
-	client    *SkillMarketClient
 	activity  *AgentActivityStore
 
 	// namingLLM, when set and configured, generates a semantic skill name
@@ -898,17 +780,13 @@ type SkillAutoSummaryPipeline struct {
 func NewSkillAutoSummaryPipeline(
 	tagGen *TagGenerator,
 	checker *SecurityPolicyChecker,
-	trigger *AutoUploadTrigger,
 	skillExec *SkillExecutor,
-	client *SkillMarketClient,
 	activity *AgentActivityStore,
 ) *SkillAutoSummaryPipeline {
 	return &SkillAutoSummaryPipeline{
 		tagGen:    tagGen,
 		checker:   checker,
-		trigger:   trigger,
 		skillExec: skillExec,
-		client:    client,
 		activity:  activity,
 		processed: make(map[string]bool),
 	}
@@ -1110,25 +988,13 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		}
 	}
 
-	// Stage 5: RunAutoUpload (only if approved)
+	// Stage 5: Registration only — generation never uploads. The skill is
+	// auto-uploaded only after it reaches skill_auto_upload_min_successes
+	// successful real runs, via the run path (SkillRunner.tryAutoUpload).
 	if normalizeSkillQualityGateStatus(gateResult.Status) == skillQualityGateStatusApproved {
-		err := RunAutoUpload(
-			context.Background(),
-			draft.Name,
-			gateResult.SkillDir,
-			gateResult.Score,
-			p.trigger,
-			p.skillExec,
-			p.client,
-		)
-		if err != nil {
-			log.Printf("[skill-auto-summary] session=%s stage=RunAutoUpload error=%v", sid, err)
-			// Upload failure => log error, return error (caller preserves local skill).
-		} else {
-			log.Printf("[skill-auto-summary] session=%s stage=RunAutoUpload result=ok", sid)
-		}
+		log.Printf("[skill-auto-summary] session=%s stage=Register result=ok name=%s (auto upload deferred until the success-run threshold is met)", sid, draft.Name)
 	} else {
-		log.Printf("[skill-auto-summary] session=%s stage=RunAutoUpload skipped (status=%s)", sid, gateResult.Status)
+		log.Printf("[skill-auto-summary] session=%s stage=Register skipped (status=%s)", sid, gateResult.Status)
 	}
 }
 

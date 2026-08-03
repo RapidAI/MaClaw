@@ -272,6 +272,8 @@ func (c *RemoteHubClient) Connect() error {
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
 	go c.app.PullUnreadNotifications()
+	go c.app.refreshDeviceAmbientWeatherOnce()
+	go c.syncDeviceGatewayPetProfile()
 
 	log.Printf("[onboarding] RemoteHubClient.Connect total=%s", time.Since(start))
 
@@ -652,6 +654,8 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
 	go c.app.PullUnreadNotifications()
+	go c.app.refreshDeviceAmbientWeatherOnce()
+	go c.syncDeviceGatewayPetProfile()
 
 	log.Printf("[asyncHubConnect] ConnectAuthOnly total=%s", time.Since(start))
 
@@ -2087,6 +2091,95 @@ func (c *RemoteHubClient) SendIMGatewayMessage(platform imGatewayPlatformKind, d
 		}
 	}
 	return err
+}
+
+func (c *RemoteHubClient) SendDeviceGatewayPairing(pairCode string) error {
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return fmt.Errorf("Hub not connected")
+	}
+	profile := c.app.devicePetProfileForConfig(cfg)
+	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_pairing", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"pairCode": pairCode, "petSkin": profile["skin"], "motionEnabled": profile["motionEnabled"], "petAsset": profile["asset"]}})
+}
+
+func (c *RemoteHubClient) SendDeviceGatewayReply(clientID, conversationID string, reply GatewayReplyPayload) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return fmt.Errorf("Hub not connected")
+	}
+	// Pet profile synchronization has its own settings event and reconnect path.
+	// Rendering and attaching RGB565 frames to every assistant reply wasted CPU
+	// and added roughly 90 KiB to otherwise small text messages.
+	payload := map[string]any{"reply_type": reply.ReplyType.String(), "text": reply.Text, "caption": reply.Caption, "image_data": reply.ImageData, "file_data": reply.FileData, "file_name": reply.FileName, "mime_type": reply.MimeType, "extra": reply.Extra}
+	if glyphs := deviceGlyphsForText(reply.Text, reply.Caption); len(glyphs) > 0 {
+		payload["glyphs"] = glyphs
+	}
+	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": clientID, "conversationId": conversationID, "reply": payload}})
+}
+
+// SendDeviceGatewayPetProfile pushes a settings-only profile change. Pet
+// selection is independent of an assistant reply, so waiting for the next
+// conversation made an idle ESP keep showing the previously selected pack.
+func (c *RemoteHubClient) SendDeviceGatewayPetProfile(cfg corelib.AppConfig) error {
+	profile := c.app.devicePetProfileForConfig(cfg)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return fmt.Errorf("Hub not connected")
+	}
+	reply := map[string]any{
+		"reply_type":         "pet_profile",
+		"pet_skin":           profile["skin"],
+		"pet_motion_enabled": profile["motionEnabled"],
+		"pet_asset":          profile["asset"],
+	}
+	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
+}
+
+// syncDeviceGatewayPetProfile makes reconnects self-healing. A pet can be
+// changed while the GUI is offline; without this catch-up push the Hub and ESP
+// would retain the old skin until another setting change or gateway reply.
+func (c *RemoteHubClient) syncDeviceGatewayPetProfile() {
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		log.Printf("[device-pet] load profile for reconnect sync failed: %v", err)
+		return
+	}
+	if err := c.SendDeviceGatewayPetProfile(cfg); err != nil {
+		log.Printf("[device-pet] reconnect profile sync failed: %v", err)
+	}
+}
+
+// SendDeviceGatewayAmbient publishes a GUI-resolved weather snapshot to all
+// hardware surfaces paired with this GUI. Weather lookup remains a GUI concern;
+// Hub is only the authenticated relay.
+func (c *RemoteHubClient) SendDeviceGatewayAmbient(summary string, temperatureC int, location string, expiresAt time.Time) error {
+	if expiresAt.IsZero() {
+		expiresAt = time.Now().Add(2 * time.Hour)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return fmt.Errorf("Hub not connected")
+	}
+	ambient := map[string]any{
+		"weather": map[string]any{
+			"summary": strings.TrimSpace(summary), "temperatureC": temperatureC,
+			"location": strings.TrimSpace(location),
+		},
+		"expiresAt": expiresAt.UnixMilli(),
+	}
+	if glyphs := deviceGlyphsForText(summary, location); len(glyphs) > 0 {
+		ambient["glyphs"] = glyphs
+	}
+	reply := map[string]any{"reply_type": "ambient", "ambient": ambient}
+	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
 }
 
 func (c *RemoteHubClient) storeHubError(payload json.RawMessage) {

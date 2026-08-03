@@ -2282,7 +2282,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 			metadata["moa_preset"] = preset
 		}
 	}
-	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, OnToken: in.OnToken})
+	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, ClientCapabilities: in.ClientCapabilities, OnToken: in.OnToken})
 	if err != nil {
 		return sess, run, msg, err
 	}
@@ -2430,16 +2430,17 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	execCtx, cancelExec := context.WithCancel(ctx)
 	s.registerRunCancel(run.ID, cancelExec)
 	res, execErr := s.executor.Execute(execCtx, ExecuteRequest{
-		Principal:  p,
-		Tenant:     tenant,
-		User:       user,
-		Instance:   inst,
-		Session:    sess,
-		Message:    execMsg,
-		History:    history,
-		DataDir:    inst.DataDir,
-		Config:     cfg.AppConfig,
-		ToolPolicy: toolPolicyFromMetadata(userMsg.Metadata, sess.Metadata),
+		Principal:          p,
+		Tenant:             tenant,
+		User:               user,
+		Instance:           inst,
+		Session:            sess,
+		Message:            execMsg,
+		History:            history,
+		DataDir:            inst.DataDir,
+		Config:             cfg.AppConfig,
+		ClientCapabilities: in.ClientCapabilities,
+		ToolPolicy:         toolPolicyFromMetadata(userMsg.Metadata, sess.Metadata),
 		MutationScope: mutationScopeFromMetadata(
 			userMsg.Metadata,
 			sess.Metadata,
@@ -4597,6 +4598,7 @@ func mergeSharedClientAppConfig(userCfg, shared corelib.AppConfig) corelib.AppCo
 	out.SubAgentConcurrency = shared.SubAgentConcurrency
 	out.WebSearchProviders = shared.WebSearchProviders
 	out.WebSearchCurrentProvider = shared.WebSearchCurrentProvider
+	out.WebSearchStrategy = shared.WebSearchStrategy
 	out.DefaultProxyEnabled = shared.DefaultProxyEnabled
 	out.DefaultProxyProtocol = shared.DefaultProxyProtocol
 	out.DefaultProxyHost = shared.DefaultProxyHost
@@ -4666,6 +4668,7 @@ func SharedClientAppConfigOnly(cfg corelib.AppConfig) corelib.AppConfig {
 		SubAgentConcurrency:          cfg.SubAgentConcurrency,
 		WebSearchProviders:           cfg.WebSearchProviders,
 		WebSearchCurrentProvider:     cfg.WebSearchCurrentProvider,
+		WebSearchStrategy:            cfg.WebSearchStrategy,
 		DefaultProxyEnabled:          cfg.DefaultProxyEnabled,
 		DefaultProxyProtocol:         cfg.DefaultProxyProtocol,
 		DefaultProxyHost:             cfg.DefaultProxyHost,

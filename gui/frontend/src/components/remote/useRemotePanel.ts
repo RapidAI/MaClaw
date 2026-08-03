@@ -1,32 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import {
-    ActivateRemote,
-    CheckToolsStatus,
-    ClearRemoteActivation,
-    GetLastRemoteSmokeReport,
-    GetRemoteActivationStatus,
-    GetRemoteConnectionStatus,
-    GetRemotePTYProbe,
-    GetRemoteToolLaunchProbe,
-    GetRemoteToolReadiness,
-    InstallToolOnDemand,
-    ListRemoteSessions,
-    ListRemoteToolMetadata,
-    ListValidProviders,
-    LoadConfig,
-    PatchConfigFields,
-    ProbeRemoteHub,
-    ReconnectRemoteHub,
-    RunRemoteToolSmoke,
-    SendRemoteSessionInput,
-    InterruptRemoteSession as InterruptRemoteSessionAPI,
-    KillRemoteSession as KillRemoteSessionAPI,
-    StartRemoteHandoffSession,
-    StartRemoteSession,
-    VerifyRemoteActivation,
-} from "../../../wailsjs/go/main/App";
-import { main } from "../../../wailsjs/go/models";
+import { EventsOff, EventsOn } from '../../../wailsjs/runtime';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivateRemote, CheckToolsStatus, ClearRemoteActivation, GetLastRemoteSmokeReport, GetRemoteActivationStatus, GetRemoteConnectionStatus, GetRemotePTYProbe, GetRemoteToolLaunchProbe, GetRemoteToolReadiness, InstallToolOnDemand, InterruptRemoteSession as InterruptRemoteSessionAPI, KillRemoteSession as KillRemoteSessionAPI, ListRemoteSessions, ListRemoteToolMetadata, ListValidProviders, LoadConfig, PatchConfigFields, ProbeRemoteHub, ReconnectRemoteHub, RunRemoteToolSmoke, SendRemoteSessionInput, StartRemoteHandoffSession, StartRemoteSession, VerifyRemoteActivation } from '../../../wailsjs/go/main/App';
+import { corelib, main } from '../../../wailsjs/go/models';
 import {
     buildRemoteToolMetaByName,
     buildVisibleRemoteTools,
@@ -130,8 +105,8 @@ const normalizeRemoteToolName = (tool?: string | null): RemoteToolName => {
 };
 
 type UseRemotePanelParams = {
-    config: main.AppConfig | null;
-    setConfig: (config: main.AppConfig) => void;
+    config: corelib.AppConfig | null;
+    setConfig: (config: corelib.AppConfig) => void;
     getPendingDefaultLaunchMode?: () => 'local' | 'remote' | null;
     setToolStatuses: (statuses: any[]) => void;
     getSelectedProjectForRemote: () => string;
@@ -238,22 +213,22 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     const getUseProxy = (): boolean => !!config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.use_proxy;
     const toolConfig = useMemo(() => {
         if (!config) return null;
-        return (config as any)[selectedRemoteTool] as main.ToolConfig | undefined;
+        return (config as any)[selectedRemoteTool] as corelib.ToolConfig | undefined;
     }, [config, selectedRemoteTool]);
     const currentProvider = (toolConfig?.current_model || "").trim();
     const getProviderForTool = useCallback((tool: RemoteToolName) => {
         if (!config) return "";
-        return (((config as any)[tool] as main.ToolConfig | undefined)?.current_model || "").trim();
+        return (((config as any)[tool] as corelib.ToolConfig | undefined)?.current_model || "").trim();
     }, [config]);
     const selectedProvider = selectedProviderState;
     const setSelectedProvider = useCallback((provider: string) => {
         const normalizedProvider = provider.trim();
         setSelectedProviderState(normalizedProvider);
         if (!config || !selectedRemoteTool) return;
-        const currentToolConfig = (config as any)[selectedRemoteTool] as main.ToolConfig | undefined;
+        const currentToolConfig = (config as any)[selectedRemoteTool] as corelib.ToolConfig | undefined;
         if (!currentToolConfig || currentToolConfig.current_model === normalizedProvider) return;
         const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
-        const newConfig = new main.AppConfig({
+        const newConfig = new corelib.AppConfig({
             ...config,
             ...(pendingLaunchMode
                 ? {
@@ -273,7 +248,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             patch.default_launch_mode = pendingLaunchMode;
         }
         void PatchConfigFields(patch).then((saved) => {
-            const confirmed = new main.AppConfig(saved);
+            const confirmed = new corelib.AppConfig(saved);
             setConfig(confirmed);
             window.dispatchEvent(new CustomEvent("maclaw-config-changed", { detail: confirmed }));
         }).catch((err) => {
@@ -318,7 +293,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
                 const freshConfig = await LoadConfig();
                 const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
                 setConfig(pendingLaunchMode
-                    ? new main.AppConfig({ ...freshConfig, default_launch_mode: pendingLaunchMode })
+                    ? new corelib.AppConfig({ ...freshConfig, default_launch_mode: pendingLaunchMode })
                     : freshConfig);
             } catch {
                 // Config reload failure is non-critical; continue with
@@ -604,18 +579,18 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
     };
 
-const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
+const saveRemoteConfigField = async (patch: Partial<corelib.AppConfig>) => {
         const patchKeys = Object.keys(patch as Record<string, unknown>);
         if (patchKeys.length > 0 && patchKeys.every((key) => atomicPatchFields.has(key))) {
             const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
             const patchWithLaunchMode = pendingLaunchMode && !patchKeys.includes('default_launch_mode')
                 ? { ...patch, default_launch_mode: pendingLaunchMode }
                 : patch;
-            const next = new main.AppConfig({ ...(config || {}), ...patchWithLaunchMode });
+            const next = new corelib.AppConfig({ ...(config || {}), ...patchWithLaunchMode });
             setConfig(next);
             try {
                 const saved = await PatchConfigFields(patchWithLaunchMode as Record<string, any>);
-                const confirmed = new main.AppConfig(saved);
+                const confirmed = new corelib.AppConfig(saved);
                 setConfig(confirmed);
                 window.dispatchEvent(new CustomEvent("maclaw-config-changed", { detail: confirmed }));
             } catch (err) {

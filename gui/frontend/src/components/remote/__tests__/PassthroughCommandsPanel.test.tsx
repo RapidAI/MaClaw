@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { PassthroughCommandsPanel } from "../PassthroughCommandsPanel";
-import { DeletePassthroughCommand, ExportPassthroughCommand, ListPassthroughCommands, RunPassthroughCommand, SavePassthroughCommand, SavePassthroughSettings, SetPassthroughCommandEnabled } from "../../../../wailsjs/go/main/App";
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PassthroughCommandsPanel } from '../PassthroughCommandsPanel';
+import { DeletePassthroughCommand, ExportPassthroughCommand, ListPassthroughCommands, RunPassthroughCommand, SavePassthroughCommand, SavePassthroughSettings, SetPassthroughCommandEnabled } from '../../../../wailsjs/go/main/App';
+import { main } from '../../../../wailsjs/go/models';
 
 const dialogConfirm = vi.fn<(message: string) => Promise<boolean>>();
 const dialogPrompt = vi.fn<(message: string, defaultValue: string) => Promise<string | null>>();
@@ -141,7 +142,7 @@ describe("PassthroughCommandsPanel", () => {
             confirm_required: true,
             enabled: true,
             params: [],
-        }]);
+        }] as unknown as main.PassthroughCommand[]);
         await renderPanelWithForm();
 
         expect((await screen.findAllByText("quoted-args")).length).toBeGreaterThan(0);
@@ -203,7 +204,7 @@ describe("PassthroughCommandsPanel", () => {
             confirm_required: true,
             enabled: true,
             params: [{ name: "target", type: "path", required: true, example: "D:\\workprj\\aicoder" }],
-        }]);
+        }] as unknown as main.PassthroughCommand[]);
         Object.defineProperty(navigator, "clipboard", {
             value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard unavailable")) },
             configurable: true,
@@ -414,7 +415,7 @@ describe("PassthroughCommandsPanel", () => {
             confirm_required: true,
             enabled: true,
             params: [{ name: "target", type: "path", required: true, example: "D:\\workprj\\aicoder" }],
-        }]);
+        }] as unknown as main.PassthroughCommand[]);
         render(<PassthroughCommandsPanel lang="zh-Hans" />);
 
         expect((await screen.findAllByText("git-status")).length).toBeGreaterThan(0);
@@ -436,6 +437,8 @@ describe("PassthroughCommandsPanel", () => {
             exit_code: 7,
             duration_ms: 12,
             output: "failed-output",
+            started_at: "2025-01-01T00:00:00Z",
+            finished_at: "2025-01-01T00:00:01Z",
         });
         dialogConfirm.mockResolvedValueOnce(true);
         await renderPanelWithForm();
@@ -459,7 +462,7 @@ describe("PassthroughCommandsPanel", () => {
             confirm_required: true,
             enabled: true,
             params: [],
-        }]);
+        }] as unknown as main.PassthroughCommand[]);
         dialogConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         render(<PassthroughCommandsPanel lang="zh-Hans" />);
 
@@ -497,7 +500,7 @@ describe("PassthroughCommandsPanel", () => {
             confirm_required: true,
             enabled: false,
             params: [],
-        }]);
+        }] as unknown as main.PassthroughCommand[]);
         dialogConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         render(<PassthroughCommandsPanel lang="zh-Hans" />);
 
@@ -523,7 +526,7 @@ describe("PassthroughCommandsPanel", () => {
             confirm_required: true,
             enabled: true,
             params: [],
-        }]);
+        }] as unknown as main.PassthroughCommand[]);
         dialogConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         render(<PassthroughCommandsPanel lang="zh-Hans" />);
 

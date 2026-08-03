@@ -1,41 +1,9 @@
-import { useState, useCallback, useEffect, useRef, useMemo, useId, Fragment } from "react";
-import { createPortal } from "react-dom";
-import { colors, radius } from "./styles";
-import { QRCodeSVG } from "qrcode.react";
-import {
-    GetMaclawLLMProviders,
-    SaveMaclawLLMProviders,
-    TestMaclawLLM,
-    ActivateRemote,
-    ActivateRemoteEmail,
-    ActivateRemoteSMS,
-    GetRemoteRegistrationAuth,
-    ResolveRemoteRegistrationTarget,
-    ResolveRemoteRegistrationTargetWithInvitation,
-    ProbeRemoteHub,
-    SendRemoteRegistrationSMS,
-    SendRemoteRegistrationEmail,
-    StartOpenAIOAuth,
-    CancelOpenAIOAuth,
-    StartXAIOAuth,
-    CancelXAIOAuth,
-    StartCodeGenSSO,
-    StartCodeGenSSOEmbedded,
-    WaitCodeGenSSOResult,
-    CancelCodeGenSSOPolling,
-    FetchCodeGenModels,
-    SaveCodeGenModelChoice,
-    GetWeixinStatus,
-    StartWeixinQRLogin,
-    PollWeixinQRStatus,
-    GetRemoteConnectionStatus,
-    GetHubLLMServiceStatus,
-    RedeemHubLLMService,
-    UserDataMigrationInstances,
-    UserDataMigrationStatus,
-    StartUserDataMigrationImport,
-    GetUserDataMigrationJob,
-} from "../../../wailsjs/go/main/App";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { colors, radius } from './styles';
+import { QRCodeSVG } from 'qrcode.react';
+import { ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelOpenAIOAuth, CancelXAIOAuth, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartXAIOAuth, TestMaclawLLM, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
+import { corelib } from '../../../wailsjs/go/models';
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
 import { HubRegisterButtonContent } from "./HubConnectionStatus";
@@ -626,7 +594,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         try {
             // SSO providers: save directly (token already validated via SSO flow)
             if (sp.auth_type === "sso") {
-                await SaveMaclawLLMProviders(providers, sp.name);
+                await SaveMaclawLLMProviders(providers as corelib.MaclawLLMProvider[], sp.name);
                 setLlmResult({ ok: true, msg: t("已保存", "Saved") });
                 setLlmDone(true);
                 onLLMConfigured();
@@ -640,7 +608,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     wire_api: sp.wire_api || "",
                     provider_name: sp.name,
                     auth_type: sp.auth_type || "",
-                });
+                } as corelib.MaclawLLMConfig); // Go marks supports_vision required; the probe result (not this flag) decides the persisted value.
                 const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
                 const nextProviders = providers.map((provider, index) => index === selectedIdx
                     ? {
@@ -650,7 +618,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         supports_vision: visionProbeInconclusive ? provider.supports_vision : testResult.supports_vision,
                     }
                     : { ...provider });
-                await SaveMaclawLLMProviders(nextProviders, sp.name);
+                await SaveMaclawLLMProviders(nextProviders as corelib.MaclawLLMProvider[], sp.name);
 
                 try {
                     const freshData = await GetMaclawLLMProviders();
@@ -1215,7 +1183,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 }
             }
             setHubConnecting(true);
-            const isReboundPhoneUser = registrationUsesPhone && (smsPurpose === "verify_bound_phone" || result?.rebound_existing_user || result?.ReboundExistingUser);
+            const isReboundPhoneUser = registrationUsesPhone && (smsPurpose === "verify_bound_phone" || result?.rebound_existing_user);
             const successMessage = isReboundPhoneUser
                 ? t("Device binding complete. Phone verified. Connecting to Hub in the background - you can continue.", "Device binding complete. Phone verified. Connecting to Hub in the background - you can continue.")
                 : t("注册成功，正在后台连接 Hub，可直接继续下一步", "Registration successful. Connecting to Hub in the background - you can continue.", "註冊成功，正在後台連線 Hub，可直接繼續下一步");

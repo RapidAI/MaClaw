@@ -45,13 +45,34 @@ func resolveStaticDir(staticDir string) string {
 		return filepath.Clean(staticDir)
 	}
 
-	baseDirs := []string{"."}
+	// The packaged server keeps web/ next to the executable. In local development
+	// and package tests, the process may instead start below hubcenter/. Search
+	// the current directory and its parents before falling back to executable
+	// locations so public static routes remain available in both layouts.
+	baseDirs := staticDirWorkingBases()
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		exeDir := filepath.Dir(exe)
 		baseDirs = append(baseDirs, exeDir, filepath.Join(exeDir, ".."), filepath.Join(exeDir, "..", ".."))
 	}
 
 	return resolveStaticDirFromBases(staticDir, baseDirs)
+}
+
+func staticDirWorkingBases() []string {
+	bases := []string{"."}
+	workingDir, err := os.Getwd()
+	if err != nil || workingDir == "" {
+		return bases
+	}
+	for dir := filepath.Clean(workingDir); ; {
+		bases = append(bases, dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return bases
 }
 
 func resolveStaticDirFromBases(staticDir string, baseDirs []string) string {
@@ -82,7 +103,9 @@ func resolveStaticDirFromBases(staticDir string, baseDirs []string) string {
 	return filepath.Clean(staticDir)
 }
 
-// registerAdminStaticRoutes serves admin files with revalidation so operator JS updates take effect promptly.
+// registerAdminStaticRoutes serves the admin app with revalidation. The HTML
+// contains cache-busting versions for each asset so a fresh page cannot pair
+// with an outdated script after deployment.
 func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
 	if routePrefix == "" {
 		routePrefix = "/admin"

@@ -154,13 +154,12 @@ type StepResult struct {
 
 // SkillRunner provides asynchronous, platform-aware skill execution.
 type SkillRunner struct {
-	executor      *SkillExecutor
-	mu            sync.RWMutex
-	runs          map[string]*skillRun
-	counter       int
-	uploadTrigger *AutoUploadTrigger
-	packageFn     func(skillName string) (string, error) // packageSkillForMarket
-	activeRuns    atomic.Int64
+	executor   *SkillExecutor
+	mu         sync.RWMutex
+	runs       map[string]*skillRun
+	counter    int
+	packageFn  func(skillName string) (string, error) // packageSkillForMarket
+	activeRuns atomic.Int64
 
 	// evolutionPipeline is the async background self-evolution engine.
 	// Receives notifications after each skill execution; handles optimization,
@@ -1020,7 +1019,10 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		run.status.Error = err.Error()
 		r.mu.Unlock()
 		r.finalizeRunOutcome(run, skillRunStatusFailed, execStart)
-		r.updateUsageStats(entry, execErr)
+		statsEntry := r.updateUsageStats(entry, execErr)
+		// Pipeline-type skills must also feed the evolution pipeline on failure;
+		// otherwise the self-repair/draft chain never sees their executions.
+		r.notifyEvolutionPipeline(entry, statsEntry, execErr, run)
 		return
 	}
 
@@ -1067,12 +1069,21 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	r.mu.Unlock()
 	finishStatus = finalStatus.String()
 	r.finalizeRunOutcome(run, finalStatus, execStart)
+	var statsEntry *corelib.NLSkillEntry
 	if finalStatus != skillRunStatusCancelled {
-		r.updateUsageStats(entry, execErr)
+		statsEntry = r.updateUsageStats(entry, execErr)
 	}
 
 	// Pipeline skills also participate in the outcome reporting + auto-upload loop.
-	r.tryAutoUpload(entry, run)
+	// A cancelled run has no updated stats (statsEntry == nil) and its run status
+	// is not success, so tryAutoUpload's upfront status/threshold checks skip it
+	// before any upload is considered.
+	r.tryAutoUpload(entry, statsEntry, run)
+	// Notify the evolution pipeline for non-cancelled runs (aligned with the
+	// stats behavior above: cancelled runs never update stats nor evolve).
+	if finalStatus != skillRunStatusCancelled {
+		r.notifyEvolutionPipeline(entry, statsEntry, execErr, run)
+	}
 }
 
 func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
@@ -3470,48 +3481,66 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	statsEntry := r.updateUsageStats(skill, execErr)
 	r.recordSkillUsageExperience(skill, execErr, run.runArgs)
 
-	// 自动上传触发
-	r.tryAutoUpload(originalSkill, run)
+	// 自动上传触发（只听 skill_auto_upload_enabled 开关 + 成功次数门槛，
+	// 与下方 skill_evolution_enabled 自进化开关相互独立）
+	r.tryAutoUpload(originalSkill, statsEntry, run)
 
 	// Notify evolution pipeline (async, non-blocking).
-	// Skip when env kill switch or config skill_evolution_enabled=false.
-	if r.evolutionPipeline != nil && !cskill.EvolutionEnvDisabled() {
-		cfgEnabled := true
-		if r.executor != nil && r.executor.app != nil {
-			if cfg, err := r.executor.app.LoadConfig(); err == nil {
-				cfgEnabled = cfg.IsSkillEvolutionEnabled()
-			}
-		}
-		if !cfgEnabled {
-			return
-		}
-		var runArgsStr map[string]string
-		if run.runArgs != nil {
-			runArgsStr = make(map[string]string, len(run.runArgs))
-			for k, v := range run.runArgs {
-				switch val := v.(type) {
-				case string:
-					runArgsStr[k] = val
-				case nil:
-					// skip
-				default:
-					// Best-effort for non-string values (e.g. nested maps).
-					// RepairGate primarily needs the top-level string params
-					// (input, output, message) for replay.
-					runArgsStr[k] = fmt.Sprintf("%v", val)
-				}
-			}
-		}
-		// Prefer stats-persisted entry (UsageCount/LastError) over runtime pointer.
-		evoEntry := skill
-		if statsEntry != nil {
-			evoEntry = statsEntry
-		}
-		r.evolutionPipeline.NotifySkillExecution(skill.Name, evoEntry, &cskill.SkillExecutionResultCompat{
-			Success:       execErr == nil,
-			OutputQuality: r.skillRunOutputQuality(run, execErr),
-		}, runArgsStr)
+	r.notifyEvolutionPipeline(skill, statsEntry, execErr, run)
+}
+
+// skillEvolutionEnabled reports whether automatic skill evolution is allowed:
+// both the env kill switch and config skill_evolution_enabled must permit it.
+// Defaults to enabled when the config cannot be loaded.
+func (r *SkillRunner) skillEvolutionEnabled() bool {
+	if r == nil || cskill.EvolutionEnvDisabled() {
+		return false
 	}
+	if r.executor != nil && r.executor.app != nil {
+		if cfg, err := r.executor.app.LoadConfig(); err == nil {
+			return cfg.IsSkillEvolutionEnabled()
+		}
+	}
+	return true
+}
+
+// notifyEvolutionPipeline forwards a finished run to the evolution pipeline
+// (async, non-blocking). Skipped when the env kill switch or config
+// skill_evolution_enabled=false disables evolution. Shared by executeAsync
+// and executePipelineAsync so pipeline-type skills also feed self-evolution.
+func (r *SkillRunner) notifyEvolutionPipeline(skill *corelib.NLSkillEntry, statsEntry *corelib.NLSkillEntry, execErr error, run *skillRun) {
+	if r == nil || skill == nil || r.evolutionPipeline == nil {
+		return
+	}
+	if !r.skillEvolutionEnabled() {
+		return
+	}
+	var runArgsStr map[string]string
+	if run != nil && run.runArgs != nil {
+		runArgsStr = make(map[string]string, len(run.runArgs))
+		for k, v := range run.runArgs {
+			switch val := v.(type) {
+			case string:
+				runArgsStr[k] = val
+			case nil:
+				// skip
+			default:
+				// Best-effort for non-string values (e.g. nested maps).
+				// RepairGate primarily needs the top-level string params
+				// (input, output, message) for replay.
+				runArgsStr[k] = fmt.Sprintf("%v", val)
+			}
+		}
+	}
+	// Prefer stats-persisted entry (UsageCount/LastError) over runtime pointer.
+	evoEntry := skill
+	if statsEntry != nil {
+		evoEntry = statsEntry
+	}
+	r.evolutionPipeline.NotifySkillExecution(skill.Name, evoEntry, &cskill.SkillExecutionResultCompat{
+		Success:       execErr == nil,
+		OutputQuality: r.skillRunOutputQuality(run, execErr),
+	}, runArgsStr)
 }
 
 // skillRunOutputQuality maps a finished run to the evolution quality band.
@@ -3618,7 +3647,12 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	// Prefer EvolutionPipeline unified scheduling when wired (throttled +
 	// coalesced with optimize/promote). Fall back to a local goroutine when
 	// the pipeline is unavailable or repair is disabled there.
-	if updatedEntry != nil && execErr != nil {
+	//
+	// Skip the whole block when evolution is switched off (env kill switch or
+	// config skill_evolution_enabled=false): without the pipeline nobody would
+	// consume the pending marker, so setting it would just leak a stale
+	// "repairing" flag until the 5-minute stale cleanup kicks in.
+	if updatedEntry != nil && execErr != nil && r.skillEvolutionEnabled() {
 		if r.canStartRepairSkill(updatedEntry) {
 			r.markSelfRepairPending(updatedEntry.Name)
 			if !r.evolutionOwnsRepair() {
@@ -4126,11 +4160,11 @@ func installSkillStepProcessEnvForRun(runID, ownerID, action string, extraEnv ma
 
 // tryAutoUpload attempts to upload to SkillMarket after a skill run finishes.
 // Also reports execution outcome to HubCenter for global quality signals.
-func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) {
+// statsEntry is the usage-stat entry returned by updateUsageStats (already
+// including this run); nil means the skill has no persisted stats, which fails
+// the success-run threshold below.
+func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, statsEntry *corelib.NLSkillEntry, run *skillRun) {
 	if r == nil || r.executor == nil || r.executor.app == nil || skill == nil {
-		return
-	}
-	if skill.SkillDir == "" {
 		return
 	}
 
@@ -4171,20 +4205,34 @@ func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) 
 
 	// Report execution outcome to HubCenter (async, throttled, idempotent).
 	// This closes the feedback loop: local execution quality → global AvgRating.
-	// Independent of uploadTrigger — always report when possible.
 	if r.outcomeReporter != nil {
 		r.outcomeReporter.ReportOutcome(skill, runID, score)
 	}
 
-	// Auto-upload logic requires uploadTrigger.
-	if r.uploadTrigger == nil {
+	if status != skillRunStatusSuccess || hasErr || score < 1 {
 		return
 	}
 
-	localHash := skillDirHash(skill.SkillDir)
-	r.uploadTrigger.RecordExecution(skill.Name, score, localHash)
+	// Upload requires a packageable skill directory; the outcome report above
+	// does not, so config-only skills still feed the global quality signal.
+	if strings.TrimSpace(skill.SkillDir) == "" {
+		return
+	}
 
-	if status != skillRunStatusSuccess || hasErr || score < 1 {
+	// 自动上传开关与成功次数门槛：只有成功运行满 skill_auto_upload_min_successes
+	// 次的 skill 才允许自动上传。该开关独立于 skill_evolution_enabled。
+	// statsEntry 来自 updateUsageStats，SuccessCount 已含本次成功。
+	cfg, cfgErr := r.executor.app.LoadConfig()
+	if cfgErr != nil || !cfg.IsSkillAutoUploadEnabled() {
+		return
+	}
+	minSuccesses := cfg.EffectiveSkillAutoUploadMinSuccesses()
+	if !skillMeetsAutoUploadThreshold(statsEntry, minSuccesses) {
+		successCount := 0
+		if statsEntry != nil {
+			successCount = statsEntry.SuccessCount
+		}
+		log.Printf("[auto-upload] skill %s below auto-upload threshold (success_count=%d min=%d), skipping", skill.Name, successCount, minSuccesses)
 		return
 	}
 
@@ -4197,6 +4245,12 @@ func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) 
 		log.Printf("[auto-upload] enqueue failed for %s: %v", skill.Name, err)
 		return
 	}
+}
+
+// skillMeetsAutoUploadThreshold reports whether a skill has accumulated enough
+// successful runs to qualify for automatic SkillMarket upload.
+func skillMeetsAutoUploadThreshold(entry *corelib.NLSkillEntry, minSuccesses int) bool {
+	return entry != nil && entry.SuccessCount >= minSuccesses
 }
 
 // skillDirHash computes a compact hash for skill directory changes.

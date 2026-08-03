@@ -66,6 +66,33 @@ describe("renderContentWithCodeBlocks", () => {
         expect(code?.textContent).toBe("\u00A0");
     });
 
+    it("keeps an unfinished Mermaid fence as source until streaming closes it", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("```mermaid\ngraph TD\nA --> B", lightTheme)}</div>,
+        );
+
+        expect(container.querySelector("pre")?.textContent).toContain("A --> B");
+        expect(screen.queryByTestId("assistant-mermaid-loading")).toBeNull();
+        expect(screen.queryByTestId("assistant-mermaid-diagram")).toBeNull();
+    });
+
+    it("recognizes a closed tilde-fenced Mermaid block", () => {
+        render(
+            <div>{renderContentWithCodeBlocks("~~~mermaid\ngraph TD\nA --> B\n~~~", lightTheme)}</div>,
+        );
+
+        expect(screen.getByTestId("assistant-mermaid-loading")).toBeTruthy();
+    });
+
+    it("does not close a four-backtick Mermaid block at a triple backtick inside its source", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("````mermaid\ngraph TD\n```\nA --> B", lightTheme)}</div>,
+        );
+
+        expect(container.querySelector("pre")?.textContent).toContain("A --> B");
+        expect(screen.queryByTestId("assistant-mermaid-loading")).toBeNull();
+    });
+
     it("keeps long code blocks constrained to the message width with local horizontal scrolling", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("```text\nThisIsAVeryLongUnbrokenCodeLineThatShouldScrollInsideTheCodeBlockInsteadOfStretchingTheAssistantPanel\n```", lightTheme)}</div>

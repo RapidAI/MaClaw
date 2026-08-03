@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -285,6 +286,7 @@ func (a *Adapter) InitTaskDispatcher(capacity int) {
 	executor := func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
 		// Re-stash attachments so routeToSingleMachine can pick them up.
 		a.messageRouter.StashMessageTypeForTenant(task.TenantID, task.UserID, task.MessageType)
+		a.messageRouter.StashClientCapabilitiesForTenant(task.TenantID, task.UserID, task.ClientCapabilities)
 		if len(task.Attachments) > 0 {
 			a.messageRouter.StashAttachmentsForTenant(task.TenantID, task.UserID, task.Attachments)
 		}
@@ -942,6 +944,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		// Forward as a regular message — the device's handleIMMessageWithLoop
 		// will process it via its workflow engine.
 		a.messageRouter.StashMessageTypeForTenant(tenantID, unifiedID, msg.MessageType)
+		a.messageRouter.StashClientCapabilitiesForTenant(tenantID, unifiedID, msg.ClientCapabilities)
 		a.messageRouter.StashAttachmentsForTenant(tenantID, unifiedID, msg.Attachments)
 		resp, err := a.messageRouter.RouteToAgent(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text)
 		if err != nil {
@@ -1032,16 +1035,17 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		// Queue acks intentionally omit ReplyMeta so they do not consume the
 		// client's first-chunk decoration slot for the real agent answer.
 		task := &IMTask{
-			TenantID:     tenantID,
-			UserID:       unifiedID,
-			PlatformName: msg.PlatformName,
-			PlatformUID:  msg.PlatformUID,
-			ReplyTarget:  msg.ReplyTarget,
-			MessageID:    msg.MessageID,
-			MessageType:  msg.MessageType,
-			Text:         text,
-			Attachments:  msg.Attachments,
-			StartMenu:    startMenuTask,
+			TenantID:           tenantID,
+			UserID:             unifiedID,
+			PlatformName:       msg.PlatformName,
+			PlatformUID:        msg.PlatformUID,
+			ReplyTarget:        msg.ReplyTarget,
+			MessageID:          msg.MessageID,
+			MessageType:        msg.MessageType,
+			Text:               text,
+			Attachments:        msg.Attachments,
+			ClientCapabilities: msg.ClientCapabilities,
+			StartMenu:          startMenuTask,
 		}
 		queueResp := a.taskDispatcher.Enqueue(task)
 		// Only send the queue ack if the task is actually queued behind
@@ -1064,6 +1068,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// Stash message metadata so routeToSingleMachine can include it in the
 	// WebSocket payload without changing the routing API signatures.
 	a.messageRouter.StashMessageTypeForTenant(tenantID, unifiedID, msg.MessageType)
+	a.messageRouter.StashClientCapabilitiesForTenant(tenantID, unifiedID, msg.ClientCapabilities)
 	a.messageRouter.StashAttachmentsForTenant(tenantID, unifiedID, msg.Attachments)
 	// Pair decorations with this inbound for the eventual agent reply.
 	ctx = WithReplyMeta(ctx, msg.PlatformUID, msg.MessageID)
@@ -1160,6 +1165,9 @@ func (a *Adapter) DeliverResponse(ctx context.Context, platformName, userID, pla
 //   - If plugin supports rich cards → SendCard with OutgoingMessage
 //   - Otherwise → SendText with FallbackText
 func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target UserTarget, resp *GenericResponse) {
+	if resp == nil {
+		return
+	}
 	// Outbound interception: check file/image permissions for IM channels
 	intercepted := false
 	if a.outboundInterceptor != nil {
@@ -1170,6 +1178,11 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		}
 	}
 
+	resp, targetCaps, deliverable := adaptResponseForTarget(ctx, plugin, target, resp)
+	if !deliverable {
+		log.Printf("[IM Adapter] target %s cannot consume any available response modality", target.PlatformUID)
+		return
+	}
 	voiceDelivered := false
 	defer func() {
 		if !voiceDelivered {
@@ -1200,9 +1213,16 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		}
 	}
 
-	caps := plugin.Capabilities()
+	// Auditors may replace the response, so enforce the concrete client's
+	// capability fence again on the final material to be delivered.
+	resp, caps, deliverable := adaptResponseForTarget(ctx, plugin, target, resp)
+	if !deliverable {
+		voiceDelivered = true
+		return
+	}
+	_ = targetCaps // retained from the early pass used to protect audit inputs
 	if shouldSendVoiceAsPrimary(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
-		if a.sendVoiceResponse(ctx, plugin, target, resp) {
+		if a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps) {
 			voiceDelivered = true
 			log.Printf("[IM Adapter] sent voice as primary response for %s; text suppressed", plugin.Name())
 			return
@@ -1320,10 +1340,13 @@ func shouldSendVoiceAsPrimary(platform string) bool {
 }
 
 func (a *Adapter) sendVoiceResponse(ctx context.Context, plugin IMPlugin, target UserTarget, resp *GenericResponse) bool {
+	return a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, effectiveCapabilitiesForTarget(ctx, plugin, target))
+}
+
+func (a *Adapter) sendVoiceResponseWithCapabilities(ctx context.Context, plugin IMPlugin, target UserTarget, resp *GenericResponse, caps CapabilityDeclaration) bool {
 	if resp == nil || resp.VoiceData == "" || resp.VoiceFileName == "" {
 		return false
 	}
-	caps := plugin.Capabilities()
 	if caps.SupportsVoice {
 		if voicePlugin, ok := plugin.(VoiceSender); ok {
 			if err := voicePlugin.SendVoice(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
@@ -1350,14 +1373,17 @@ func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, ta
 	if resp == nil {
 		return
 	}
+	var deliverable bool
+	resp, caps, deliverable := adaptResponseForTarget(ctx, plugin, target, resp)
+	if !deliverable {
+		return
+	}
 	if shouldSendVoiceAsPrimary(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
-		if a.sendVoiceResponse(ctx, plugin, target, resp) {
+		if a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps) {
 			return
 		}
 	}
-	defer a.sendVoiceResponse(ctx, plugin, target, resp)
-
-	caps := plugin.Capabilities()
+	defer a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
 
 	out := resp.ToOutgoingMessage()
 
@@ -1383,18 +1409,130 @@ func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, ta
 
 // truncateAtLine truncates text to maxLen at a line boundary and appends "…".
 func truncateAtLine(text string, maxLen int) string {
-	if len(text) <= maxLen {
+	if maxLen <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxLen {
 		return text
 	}
 	// Reserve space for the ellipsis suffix.
-	cutoff := maxLen - len("…")
+	cutoff := maxLen - 1
 	if cutoff < 0 {
 		cutoff = 0
 	}
-	// Find the last newline before cutoff.
-	idx := strings.LastIndex(text[:cutoff], "\n")
-	if idx < 0 {
+	idx := cutoff
+	for idx > 0 && runes[idx-1] != '\n' {
+		idx--
+	}
+	if idx == 0 {
 		idx = cutoff
 	}
-	return text[:idx] + "\n…"
+	return strings.TrimRight(string(runes[:idx]), "\n") + "…"
+}
+
+func effectiveCapabilitiesForTarget(ctx context.Context, plugin IMPlugin, target UserTarget) CapabilityDeclaration {
+	caps := plugin.Capabilities()
+	resolver, ok := plugin.(TargetCapabilityResolver)
+	if !ok {
+		return caps
+	}
+	client, ok := resolver.ClientCapabilitiesForTarget(ctx, target)
+	if !ok {
+		return caps
+	}
+	client = agent.NormalizeClientCapabilities(&client)
+	caps.SupportsRichCard = false
+	caps.SupportsButton = false
+	caps.SupportsMessageEdit = false
+	caps.SupportsImage = caps.SupportsImage && client.SupportsOutput("image")
+	caps.SupportsFile = caps.SupportsFile && client.SupportsOutput("file")
+	caps.SupportsVoice = caps.SupportsVoice && client.SupportsOutput("audio") && client.Output.Audio != nil && client.Output.Audio.Playback
+	if client.Output.Text != nil {
+		caps.SupportsMarkdown = caps.SupportsMarkdown && client.Output.Text.Markdown
+		if client.Output.Text.MaxChars > 0 && (caps.MaxTextLength == 0 || client.Output.Text.MaxChars < caps.MaxTextLength) {
+			caps.MaxTextLength = client.Output.Text.MaxChars
+		}
+	} else {
+		caps.MaxTextLength = 0
+	}
+	return caps
+}
+
+func adaptResponseForTarget(ctx context.Context, plugin IMPlugin, target UserTarget, original *GenericResponse) (*GenericResponse, CapabilityDeclaration, bool) {
+	caps := effectiveCapabilitiesForTarget(ctx, plugin, target)
+	resolver, targetSpecific := plugin.(TargetCapabilityResolver)
+	if !targetSpecific {
+		return original, caps, true
+	}
+	client, ok := resolver.ClientCapabilitiesForTarget(ctx, target)
+	if !ok {
+		return original, caps, true
+	}
+	client = agent.NormalizeClientCapabilities(&client)
+	resp := *original
+	textPresent := resp.ToFallbackText() != ""
+	textSupported := client.SupportsOutput("text")
+	imagePresent := resp.ImageKey != "" && caps.SupportsImage
+	filePresent := resp.FileData != "" && resp.FileName != "" && caps.SupportsFile
+	voicePresent := resp.VoiceData != "" && resp.VoiceFileName != "" && caps.SupportsVoice
+	if !textSupported {
+		clearResponseText(&resp)
+		textPresent = false
+	}
+	if !imagePresent {
+		resp.ImageKey, resp.ImageCaption = "", ""
+	}
+	if !filePresent {
+		resp.FileData, resp.FileName, resp.FileMimeType = "", "", ""
+	}
+	if !voicePresent {
+		resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
+	}
+	present := make([]string, 0, 4)
+	if textPresent {
+		present = append(present, "text")
+	}
+	if imagePresent {
+		present = append(present, "image")
+	}
+	if filePresent {
+		present = append(present, "file")
+	}
+	if voicePresent {
+		present = append(present, "audio")
+	}
+	if len(present) == 0 {
+		return &resp, caps, false
+	}
+	if len(present) > 1 && !client.SupportsOutputCombination(present...) {
+		chosen := agent.SelectClientOutputCombination(client, present...)
+		if !containsModality(chosen, "text") {
+			clearResponseText(&resp)
+		}
+		if !containsModality(chosen, "image") {
+			resp.ImageKey, resp.ImageCaption = "", ""
+		}
+		if !containsModality(chosen, "file") {
+			resp.FileData, resp.FileName, resp.FileMimeType = "", "", ""
+		}
+		if !containsModality(chosen, "audio") {
+			resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
+		}
+	}
+	return &resp, caps, true
+}
+
+func clearResponseText(resp *GenericResponse) {
+	resp.Title, resp.Body, resp.FallbackText = "", "", ""
+	resp.Fields, resp.Actions = nil, nil
+}
+
+func containsModality(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }

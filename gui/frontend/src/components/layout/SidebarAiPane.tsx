@@ -61,7 +61,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
     setRenameValue: (value: string) => void;
-    resumeTask: (projectPath: string) => Promise<void> | void;
+    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<void> | void;
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onTaskSwitchBlocked?: () => void;
@@ -76,9 +76,10 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
-    hideTask: (projectPath: string) => Promise<unknown>;
+    hideTask: (projectPath: string, tags?: string[]) => Promise<unknown>;
     /** Open project-tab paths; tasks with open tabs cannot be removed from the list menu. */
     openProjectTabPaths?: string[];
+    openExpertTabIDs?: string[];
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -160,6 +161,7 @@ export const SidebarAiPane = ({
     pinTask,
     hideTask,
     openProjectTabPaths,
+    openExpertTabIDs,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -239,7 +241,7 @@ export const SidebarAiPane = ({
                             flexDirection: 'column',
                         }}
                     >
-                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} openProjectTabPaths={openProjectTabPaths} />
+                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} openProjectTabPaths={openProjectTabPaths} openExpertTabIDs={openExpertTabIDs} />
                     </div>
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}

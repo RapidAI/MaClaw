@@ -1,6 +1,6 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { type Dispatch, type SetStateAction, useEffect, useState } from 'react';
 import { InstallSkill } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { InstallSkillList } from './InstallSkillList';
 import { InstallLocationSelector } from './InstallLocationSelector';
@@ -10,8 +10,8 @@ import { InstallSkillProgress, type SkillInstallProgress } from './InstallSkillP
 // Title and skills link styling use var(--theme-success) and var(--theme-primary) in App.css.
 
 type InstallSkillModalProps = {
-    config: main.AppConfig;
-    skills: main.Skill[];
+    config: corelib.AppConfig;
+    skills: corelib.Skill[];
     activeTool: string;
     installLocation: 'user' | 'project';
     setInstallLocation: Dispatch<SetStateAction<'user' | 'project'>>;

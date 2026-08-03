@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/gui/petpack"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -24,32 +27,105 @@ import (
 // SkillMarket session is never placed in the WebView or in a URL; it only
 // travels as an Authorization header from this trusted process to HubCenter.
 func (a *App) petStoreRequest(method, path string, body io.Reader, contentType string) ([]byte, error) {
+	return a.marketRequest(method, path, body, contentType, 4<<20, 4<<20, "Pet Store")
+}
+
+// marketRequest proxies marketplace calls through the native app while keeping
+// the request and response ceilings aligned with each market's API contract.
+func (a *App) marketRequest(method, path string, body io.Reader, contentType string, maxRequestBytes, maxResponseBytes int64, marketName string) ([]byte, error) {
 	if a == nil {
 		return nil, errString("app unavailable")
 	}
+	if maxRequestBytes < 1 || maxResponseBytes < 1 {
+		return nil, errString("invalid marketplace request limits")
+	}
+	// A retry after session refresh needs a fresh request body. Pet Store bodies
+	// are bounded by the service's 3 MiB archive limit plus multipart overhead;
+	// keep the same 4 MiB boundary used for response reads.
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = io.ReadAll(io.LimitReader(body, maxRequestBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("read %s request: %w", marketName, err)
+		}
+		if int64(len(payload)) > maxRequestBytes {
+			return nil, fmt.Errorf("%s request is too large", marketName)
+		}
+	}
+	// A market session may be absent after migration or cleared on another
+	// device. When Hub enrollment is available, obtain one before failing the
+	// first request rather than requiring the user to discover a separate login.
+	cfg, configErr := a.LoadConfig()
+	if configErr != nil {
+		return nil, configErr
+	}
+	// The Pet Store API is served only by HubCenter. RemoteHubURL hosts no
+	// /api/v1/pet-store/* routes, so there is deliberately no hub fallback:
+	// fail fast with a clear message instead of a stream of 404s.
+	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" {
+		return nil, errPetStoreHubCenterMissing
+	}
+	staleToken := strings.TrimSpace(cfg.SkillMarketSessionToken)
+	if staleToken == "" {
+		if refreshErr := a.refreshPetStoreSession(""); refreshErr != nil {
+			return nil, fmt.Errorf("please sign in to HubCenter before using the Pet Store (%v)", refreshErr)
+		}
+	}
+	data, status, err := a.marketRequestOnce(method, path, payload, contentType, maxResponseBytes, marketName)
+	if err == nil || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
+		return data, err
+	}
+	// Hub enrollment credentials can issue a new marketplace session without
+	// exposing either credential to the WebView. This matches skill publishing:
+	// an expired cached session must not make the Pet Store unusable.
+	if refreshErr := a.refreshPetStoreSession(staleToken); refreshErr != nil {
+		return nil, fmt.Errorf("%w; sign in again or reconnect this device to HubCenter (%v)", err, refreshErr)
+	}
+	data, _, retryErr := a.marketRequestOnce(method, path, payload, contentType, maxResponseBytes, marketName)
+	if retryErr != nil {
+		return nil, fmt.Errorf("%w (after refreshing HubCenter session)", retryErr)
+	}
+	return data, nil
+}
+
+// petStoreRequestOnce makes exactly one authenticated request. Its status is
+// returned separately so petStoreRequest can refresh only on 401/403.
+func (a *App) petStoreRequestOnce(method, path string, payload []byte, contentType string) ([]byte, int, error) {
+	return a.marketRequestOnce(method, path, payload, contentType, 4<<20, "Pet Store")
+}
+
+func (a *App) marketRequestOnce(method, path string, payload []byte, contentType string, maxResponseBytes int64, marketName string) ([]byte, int, error) {
+	if a == nil {
+		return nil, 0, errString("app unavailable")
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	baseURL, token := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/"), strings.TrimSpace(cfg.SkillMarketSessionToken)
-	if baseURL == "" || token == "" {
-		return nil, errString("please sign in to HubCenter before using the Pet Store")
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/")
+	if baseURL == "" {
+		return nil, 0, errPetStoreHubCenterMissing
+	}
+	token := strings.TrimSpace(cfg.SkillMarketSessionToken)
+	if token == "" {
+		return nil, 0, errString("please sign in to HubCenter before using the Pet Store")
 	}
 	base, err := url.Parse(baseURL)
 	if err != nil || base.Scheme == "" || base.Host == "" || base.User != nil || (base.Scheme != "https" && base.Scheme != "http") {
-		return nil, errString("HubCenter URL must be an absolute HTTP(S) URL")
+		return nil, 0, errString("HubCenter URL must be an absolute HTTP(S) URL")
 	}
 	requestPath, err := url.Parse(path)
 	if err != nil || requestPath.IsAbs() || requestPath.Host != "" || !strings.HasPrefix(requestPath.Path, "/") {
-		return nil, errString("invalid Pet Store request path")
+		return nil, 0, errString("invalid Pet Store request path")
 	}
 	target := base.ResolveReference(requestPath)
 	if !strings.EqualFold(target.Scheme, base.Scheme) || !strings.EqualFold(target.Host, base.Host) {
-		return nil, errString("Pet Store request must stay on the configured HubCenter")
+		return nil, 0, errString("Pet Store request must stay on the configured HubCenter")
 	}
-	req, err := http.NewRequest(method, target.String(), body)
+	req, err := http.NewRequest(method, target.String(), bytes.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	if contentType != "" {
@@ -65,12 +141,15 @@ func (a *App) petStoreRequest(method, path string, body io.Reader, contentType s
 		},
 	}).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if readErr != nil {
-		return nil, fmt.Errorf("read Pet Store response: %w", readErr)
+		return nil, resp.StatusCode, fmt.Errorf("read %s response: %w", marketName, readErr)
+	}
+	if int64(len(data)) > maxResponseBytes {
+		return nil, resp.StatusCode, fmt.Errorf("%s response is too large", marketName)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		message := strings.TrimSpace(string(data))
@@ -88,14 +167,73 @@ func (a *App) petStoreRequest(method, path string, body io.Reader, contentType s
 		if message == "" {
 			message = resp.Status
 		}
-		return nil, fmt.Errorf("Pet Store request failed: %s", message)
+		return nil, resp.StatusCode, fmt.Errorf("Pet Store request failed: %s", message)
 	}
-	return data, nil
+	return data, resp.StatusCode, nil
+}
+
+// refreshPetStoreSession exchanges the existing Hub enrollment credentials for
+// a fresh SkillMarket session and persists only that session token. The
+// enrollment viewer token remains native-only and is never returned to React.
+func (a *App) refreshPetStoreSession(staleToken string) error {
+	if a == nil {
+		return errString("app unavailable")
+	}
+	a.petStoreSessionRefreshMu.Lock()
+	defer a.petStoreSessionRefreshMu.Unlock()
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	// A concurrent request may have refreshed the token while this one was
+	// waiting for the mutex. Reuse it instead of issuing another session.
+	currentToken := strings.TrimSpace(cfg.SkillMarketSessionToken)
+	// A caller with no cached token can be queued behind another bootstrap
+	// request. Once that request has persisted the fresh session, reuse it
+	// instead of issuing an identical machine-login for every parallel market
+	// request (listings, rankings, and account data commonly start together).
+	if (staleToken == "" && currentToken != "") || (staleToken != "" && currentToken != staleToken) {
+		return nil
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/")
+	if baseURL == "" {
+		// No hub fallback: the machine-login endpoint is HubCenter-only, and
+		// petStoreRequest already fails fast on this configuration. Returning
+		// the same error keeps refresh behavior consistent (no retry loop).
+		return errPetStoreHubCenterMissing
+	}
+	account := strings.TrimSpace(cfg.RemoteUserID)
+	if account == "" {
+		account = strings.TrimSpace(cfg.RemoteEmail)
+	}
+	machineID := strings.TrimSpace(cfg.RemoteMachineID)
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if account == "" || machineID == "" || viewerToken == "" {
+		return errString("Hub enrollment credentials are incomplete")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	result, err := remote.NewSkillMarketAuthClient().MachineLogin(ctx, baseURL, account, machineID, viewerToken)
+	if err != nil {
+		return fmt.Errorf("HubCenter machine login: %w", err)
+	}
+	if result == nil || strings.TrimSpace(result.SessionToken) == "" {
+		return errString("HubCenter machine login returned no session")
+	}
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SkillMarketSessionToken = strings.TrimSpace(result.SessionToken)
+	})
 }
 
 // ListPetStorePacks returns one page of listings in the signed-in user's
 // HubCenter market, without exposing the session credential to the WebView.
 func (a *App) ListPetStorePacks(query, sort, order string, page, pageSize int) (map[string]interface{}, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 20 {
+		pageSize = 20
+	}
 	values := make(url.Values)
 	values.Set("q", strings.TrimSpace(query))
 	values.Set("sort", strings.TrimSpace(sort))
@@ -124,11 +262,92 @@ func (a *App) GetPetStoreAccount() (map[string]interface{}, error) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, err
 	}
+	// The market drawer needs a human-recognisable contact, never the internal
+	// account key. A machine-login session from an older HubCenter can carry the
+	// raw user ID in its email field, so prefer a valid server email and recover
+	// from the local enrollment contact when necessary. Keep the user object
+	// deliberately minimal: the UI has no need for an internal ID.
+	var cfg corelib.AppConfig
+	if loaded, loadErr := a.LoadConfig(); loadErr == nil {
+		cfg = loaded
+	}
+	serverUser, _ := result["user"].(map[string]interface{})
+	serverEmail, _ := serverUser["email"].(string)
+	serverPhone := firstPetStoreContactValue(serverUser, "phone_number", "phone", "mobile")
+	user := map[string]interface{}{}
+	if email := petStoreContactEmail(serverEmail); email != "" {
+		user["email"] = email
+	} else if email := petStoreContactEmail(cfg.RemoteEmail); email != "" {
+		user["email"] = email
+	} else if phone := petStoreContactPhone(serverPhone); phone != "" {
+		user["phone_number"] = phone
+	} else if phone := petStoreContactPhone(cfg.RemoteMobile); phone != "" {
+		user["phone_number"] = phone
+	}
+	result["user"] = user
 	return result, nil
+}
+
+func firstPetStoreContactValue(values map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func petStoreContactEmail(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.Count(value, "@") != 1 || strings.ContainsAny(value, " \t\r\n") {
+		return ""
+	}
+	parts := strings.Split(value, "@")
+	// Keep this aligned with the frontend account-contact guard. The account
+	// endpoint should not emit an address that the UI will immediately reject.
+	if parts[0] == "" || parts[1] == "" || !strings.Contains(parts[1], ".") {
+		return ""
+	}
+	return value
+}
+
+func petStoreContactPhone(value string) string {
+	value = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(value), "phone:"))
+	digits := 0
+	for _, char := range value {
+		if char >= '0' && char <= '9' {
+			digits++
+			continue
+		}
+		if !strings.ContainsRune("+()- ", char) {
+			return ""
+		}
+	}
+	if digits < 8 || digits > 15 {
+		return ""
+	}
+	return value
 }
 
 func (a *App) GetPetStoreRankings() (map[string]interface{}, error) {
 	data, err := a.petStoreRequest(http.MethodGet, "/api/v1/pet-store/rankings", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetPetStoreCreatorReport returns the signed-in creator's paid sales and
+// free-download metrics for one UTC day, month, or year.
+func (a *App) GetPetStoreCreatorReport(period, date string) (map[string]interface{}, error) {
+	values := make(url.Values)
+	values.Set("period", strings.TrimSpace(period))
+	values.Set("date", strings.TrimSpace(date))
+	data, err := a.petStoreRequest(http.MethodGet, "/api/v1/pet-store/creator-report?"+values.Encode(), nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +378,19 @@ func (a *App) CanPublishPetStorePack(sourcePackID string) (bool, error) {
 		return false, err
 	}
 	return result.CanPublish, nil
+}
+
+// IsPetStorePackInstalled reports whether the current local registry contains
+// the exact manifest ID associated with a market listing. The React market uses
+// this as presentation state only; InstallPetStorePack remains authoritative
+// and still protects against a local-ID collision.
+func (a *App) IsPetStorePackInstalled(sourcePackID string) bool {
+	sourcePackID = strings.TrimSpace(sourcePackID)
+	if !petpack.IsValidPackID(sourcePackID) {
+		return false
+	}
+	reg := petpack.EnsureGlobal()
+	return reg != nil && reg.IsPackMarketInstalled(sourcePackID)
 }
 
 func (a *App) PurchasePetStorePack(id string) (map[string]interface{}, error) {
@@ -204,15 +436,19 @@ func (a *App) InstallPetStorePack(id string) (string, error) {
 	if reg == nil {
 		return "", errPetRegistryUnavailable
 	}
-	installedID, err := reg.InstallZipBytes(data)
+	// Marketplace content must never silently replace a locally authored or
+	// imported pack with the same manifest ID. The dedicated install path also
+	// writes the provenance marker before the package becomes visible, avoiding
+	// a brief shareable state if the process exits between install and marking.
+	installedID, err := reg.InstallMarketZipBytes(data)
 	if err != nil {
 		return "", err
 	}
-	if err := reg.SetPackSource(installedID, petpack.SourceMarket); err != nil {
-		return "", fmt.Errorf("mark pet pack source: %w", err)
-	}
 	if a.ctx != nil {
 		a.emitEvent("pet:packs-changed", map[string]any{"id": installedID, "action": "install"})
+	}
+	if fa := a.existingFloatingAssistant(); fa != nil {
+		fa.InvalidatePetPackAssets()
 	}
 	return installedID, nil
 }
@@ -273,6 +509,14 @@ func (a *App) SubmitPetStorePack(zipPath, name, description, version string, pri
 	data, err := a.petStoreRequest(http.MethodPost, "/api/v1/pet-store/packs", &body, mw.FormDataContentType())
 	if err != nil {
 		return nil, err
+	}
+	// ExportPetPackZip creates its archives in this private staging directory.
+	// Once HubCenter accepted the listing, the draft is no longer needed. Keep
+	// externally supplied zip paths untouched for callers outside this flow.
+	if draftsDir, dirErr := filepath.Abs(filepath.Join(a.GetDataDir(), "pet-store-drafts")); dirErr == nil {
+		if archivePath, pathErr := filepath.Abs(clean); pathErr == nil && filepath.Dir(archivePath) == draftsDir {
+			_ = os.Remove(archivePath)
+		}
 	}
 	var result map[string]interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
@@ -350,6 +594,9 @@ func (a *App) InstallPetPackZip(zipPath string) (string, error) {
 	if a != nil && a.ctx != nil {
 		a.emitEvent("pet:packs-changed", map[string]any{"id": id, "action": "install"})
 	}
+	if fa := a.existingFloatingAssistant(); fa != nil {
+		fa.InvalidatePetPackAssets()
+	}
 	return id, nil
 }
 
@@ -366,7 +613,8 @@ func (a *App) UninstallPetPack(id string) error {
 	if err := reg.Uninstall(id); err != nil {
 		return err
 	}
-	// If active skin was this pack (user or override), fall back to clawmate classic.
+	// If active skin was this pack (user or override), return to the default
+	// official ClawMate presentation.
 	// Surface patch failures: pack is already gone; caller should still refresh UI.
 	var resetErr error
 	if a != nil {
@@ -374,7 +622,7 @@ func (a *App) UninstallPetPack(id string) error {
 		if err == nil && cfg.PetSkin == id {
 			if _, patchErr := a.PatchConfigFields(map[string]interface{}{
 				"pet_skin":                              petpack.DefaultPackID,
-				"pet_variant":                           petpack.VariantClassic,
+				"pet_variant":                           petpack.VariantDefault,
 				"pet_figurative_upgrade_prompt_pending": false,
 			}); patchErr != nil {
 				resetErr = fmt.Errorf("uninstalled %q but failed to reset active skin: %w", id, patchErr)
@@ -383,6 +631,11 @@ func (a *App) UninstallPetPack(id string) error {
 	}
 	if a != nil && a.ctx != nil {
 		a.emitEvent("pet:packs-changed", map[string]any{"id": id, "action": "uninstall"})
+	}
+	if a != nil {
+		if fa := a.existingFloatingAssistant(); fa != nil {
+			fa.InvalidatePetPackAssets()
+		}
 	}
 	return resetErr
 }
@@ -430,17 +683,23 @@ func (a *App) GetPetPacksDir() string {
 	return petpack.UserPacksDir()
 }
 
-// ExportPetPackZip saves a locally installed custom pet pack as a portable zip
-// ready for the Pet Store upload form. Official bundled packs are intentionally
-// excluded; HubCenter verifies whether this stable pack ID is already owned by
-// another marketplace creator before accepting the upload.
+// ExportPetPackZip creates an app-managed staging archive for the embedded Pet
+// Store publishing flow. It deliberately does not open a Save dialog: sharing
+// is an in-app action, and requiring a second, unrelated export step meant a
+// cancelled/hidden native dialog silently stopped the publish flow before the
+// market form was ever shown.
+//
+// The archive is kept under the application data directory, never in the
+// source pack itself. Official bundled packs are intentionally excluded;
+// HubCenter verifies whether this stable pack ID is already owned by another
+// marketplace creator before accepting the upload.
 func (a *App) ExportPetPackZip(id string) (string, error) {
 	id = strings.TrimSpace(id)
 	if !petpack.IsValidPackID(id) {
 		return "", errString("invalid pet pack id")
 	}
-	if a == nil || a.ctx == nil {
-		return "", errString("app context unavailable")
+	if a == nil {
+		return "", errString("app unavailable")
 	}
 	reg := petpack.EnsureGlobal()
 	if reg == nil {
@@ -454,20 +713,11 @@ func (a *App) ExportPetPackZip(id string) (string, error) {
 	if reg.IsPackMarketInstalled(id) {
 		return "", errString("Pet Store downloads cannot be shared again")
 	}
-	dest, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "Export Pet Pack for MaClaw Pet Store",
-		DefaultFilename: id + ".zip",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Pet Pack Zip (*.zip)", Pattern: "*.zip"},
-			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
-		},
-	})
-	if err != nil || strings.TrimSpace(dest) == "" {
-		return "", err
+	draftsDir := filepath.Join(a.GetDataDir(), "pet-store-drafts")
+	if err := os.MkdirAll(draftsDir, 0o700); err != nil {
+		return "", fmt.Errorf("create pet store draft directory: %w", err)
 	}
-	if !strings.EqualFold(filepath.Ext(dest), ".zip") {
-		dest += ".zip"
-	}
+	dest := filepath.Join(draftsDir, id+"-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".zip")
 	if err := writePetPackZip(pack.Dir, dest); err != nil {
 		return "", err
 	}
@@ -567,7 +817,9 @@ func encodePetAssetDataURL(load func(*petpack.Registry) ([]byte, string, error))
 	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
-// SetDesktopPetState is the Wails-exported bridge for FE pet:state → native window (K11).
+// SetDesktopPetState is the Wails-exported binding that applies the assistant's
+// pet state to the native window (K11). It is the only pet-state channel; the
+// former FE 'pet:state' event relay was removed.
 // Uses the existing floating manager only — does not create the pet window just to apply state.
 func (a *App) SetDesktopPetState(state string, ttlMs int) {
 	if a == nil {
@@ -580,16 +832,65 @@ func (a *App) SetDesktopPetState(state string, ttlMs int) {
 	fa.SetPetRuntimeState(state, ttlMs)
 }
 
-// GetDesktopPetState returns the native pet runtime state (tests / diagnostics).
-func (a *App) GetDesktopPetState() string {
-	if a == nil {
-		return string(petpack.StateIdle)
+// PetPackRuntimeInfo describes the selected pack's declared renderer level
+// versus the level actually in effect on this machine, for the settings
+// page's "animation capability / degradation reason" display.
+type PetPackRuntimeInfo struct {
+	// PackID is the currently selected pet pack.
+	PackID string `json:"pack_id"`
+	// Variant is the runtime-resolved variant id.
+	Variant string `json:"variant"`
+	// DeclaredRenderer is the level declared by the pack manifest for this
+	// variant: native-character / native-skeleton / native-raster.
+	DeclaredRenderer string `json:"declared_renderer"`
+	// EffectiveRenderer is the level the runtime is actually using. It can be
+	// lower than DeclaredRenderer when accessibility settings force the static
+	// path, when a renderer fails to load, or on stub platforms.
+	EffectiveRenderer string `json:"effective_renderer"`
+	// DegradationReason explains why EffectiveRenderer < DeclaredRenderer.
+	// Empty string means no degradation.
+	DegradationReason string `json:"degradation_reason"`
+}
+
+// GetPetPackRuntimeInfo returns the selected pack's declared and effective
+// renderer levels plus the degradation reason, for the settings page.
+func (a *App) GetPetPackRuntimeInfo() PetPackRuntimeInfo {
+	info := PetPackRuntimeInfo{
+		PackID:  petpack.DefaultPackID,
+		Variant: petpack.VariantDefault,
 	}
-	fa := a.existingFloatingAssistant()
-	if fa == nil {
-		return string(petpack.StateIdle)
+	if a != nil {
+		if cfg, err := a.LoadConfig(); err == nil {
+			if skin := petpack.SanitizeSkinID(cfg.PetSkin, false, nil); skin != "" {
+				info.PackID = skin
+			}
+			info.Variant = petpack.ResolveVariantForRuntime(cfg.PetVariant)
+		}
 	}
-	return fa.CurrentPetRuntimeState()
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		info.DegradationReason = "宠物包注册表不可用"
+		return info
+	}
+	resolved, err := reg.Resolve(info.PackID, info.Variant)
+	if err != nil || resolved == nil {
+		info.DegradationReason = "宠物包解析失败，无法确定动画能力"
+		return info
+	}
+	if resolved.VariantID != "" {
+		info.Variant = resolved.VariantID
+	}
+	info.DeclaredRenderer = resolved.Renderer
+	info.EffectiveRenderer = resolved.Renderer
+	// A live pet window reports the level it is actually running at (renderer
+	// load failures, quiet/reduced-motion). Without a window the declared
+	// level is the best available answer.
+	if a != nil {
+		if fa := a.existingFloatingAssistant(); fa != nil {
+			info.EffectiveRenderer, info.DegradationReason = fa.PetPackRuntimeLevel(resolved.Renderer)
+		}
+	}
+	return info
 }
 
 // EnsurePetPackRegistryScanned forces registry init before config sanitize paths that need allowlist.
@@ -598,6 +899,11 @@ func EnsurePetPackRegistryScanned() {
 }
 
 var errPetRegistryUnavailable = errString("pet pack registry unavailable")
+
+// errPetStoreHubCenterMissing is the single message every Pet Store binding
+// returns when no HubCenter is configured. The hub serves no pet-store
+// routes, so falling back to RemoteHubURL only produced guaranteed 404s.
+var errPetStoreHubCenterMissing = errString("未配置 HubCenter，宠物市场不可用")
 
 type errString string
 

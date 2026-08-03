@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -100,6 +101,50 @@ func TestUserDataMigrationKnowledgeAssetsRollbackRestoresExisting(t *testing.T) 
 	}
 }
 
+func TestUserDataMigrationReplaceDirectoryRejectsNestedBackup(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "pet-packs")
+	if _, _, _, err := userDataMigrationReplaceDirectory(t.TempDir(), destination, filepath.Join(destination, "work"), "backup", "pet_packs"); err == nil || !strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("expected unsafe nested backup rejection, got %v", err)
+	}
+}
+
+func TestUserDataMigrationReplaceDirectoryRejectsOverlappingSource(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "pet-packs")
+	workDir := filepath.Join(root, "work")
+	for _, source := range []string{destination, filepath.Join(destination, "payload"), root} {
+		if _, _, _, err := userDataMigrationReplaceDirectory(source, destination, workDir, "backup", "pet_packs"); err == nil || !strings.Contains(err.Error(), "unsafe") {
+			t.Fatalf("source %q: expected unsafe overlap rejection, got %v", source, err)
+		}
+	}
+}
+
+func TestUserDataMigrationDigestDirSortsFiles(t *testing.T) {
+	root := t.TempDir()
+	for name := range map[string]struct{}{"z.txt": {}, "nested/a.txt": {}, "a.txt": {}} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %q: %v", name, err)
+		}
+		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+			t.Fatalf("write %q: %v", name, err)
+		}
+	}
+	digests, err := userDataMigrationDigestDir(root)
+	if err != nil {
+		t.Fatalf("digest directory: %v", err)
+	}
+	got := make([]string, 0, len(digests))
+	for _, digest := range digests {
+		got = append(got, digest.Path)
+	}
+	want := []string{"a.txt", "nested/a.txt", "z.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("digest order = %v, want %v", got, want)
+	}
+}
+
 func TestUserDataMigrationBuildRejectsInvalidKnowledgeAssetsPath(t *testing.T) {
 	store, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
 	if err != nil {
@@ -177,6 +222,111 @@ func TestUserDataMigrationPackageKeepsAssetManifestFiles(t *testing.T) {
 	}
 	if string(restored) != "asset manifest" {
 		t.Fatalf("restored asset manifest mismatch: %q", restored)
+	}
+}
+
+func TestUserDataMigrationPackageMigratesPetPacks(t *testing.T) {
+	sourceStore, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode source: %v", err)
+	}
+	t.Cleanup(sourceStore.Stop)
+	source := &App{testHomeDir: t.TempDir(), memoryStore: sourceStore}
+	packPath := filepath.Join(source.userDataMigrationPetPacksDir(), "custom-pet", "pet-pack.yaml")
+	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
+		t.Fatalf("mkdir pet-pack path: %v", err)
+	}
+	if err := os.WriteFile(packPath, []byte("id: custom-pet\nname: Custom Pet\n"), 0o600); err != nil {
+		t.Fatalf("write pet-pack: %v", err)
+	}
+
+	zipPath, manifest, err := source.buildUserDataMigrationPackage(context.Background(), userDataMigrationClientConfig{
+		TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a",
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("build package: %v", err)
+	}
+	if !manifest.PetPacksIncluded || manifest.PetPackBytes == 0 {
+		t.Fatalf("pet-pack metadata missing: %#v", manifest)
+	}
+	found := false
+	for _, file := range manifest.Files {
+		if file.Path == "pet_packs/custom-pet/pet-pack.yaml" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("pet-pack file missing from package manifest: %#v", manifest.Files)
+	}
+
+	targetStore, err := corememory.NewStoreWithMode(t.TempDir(), corememory.StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode target: %v", err)
+	}
+	t.Cleanup(targetStore.Stop)
+	target := &App{testHomeDir: t.TempDir(), memoryStore: targetStore}
+	oldPackPath := filepath.Join(target.userDataMigrationPetPacksDir(), "old-pet", "pet-pack.yaml")
+	if err := os.MkdirAll(filepath.Dir(oldPackPath), 0o755); err != nil {
+		t.Fatalf("mkdir target pet-pack path: %v", err)
+	}
+	if err := os.WriteFile(oldPackPath, []byte("old"), 0o600); err != nil {
+		t.Fatalf("write target pet-pack: %v", err)
+	}
+	result, err := target.restoreUserDataMigrationPackage(context.Background(), zipPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("restore package: %v", err)
+	}
+	if _, err := os.Stat(oldPackPath); !os.IsNotExist(err) {
+		t.Fatalf("old pet-pack should be replaced, err=%v", err)
+	}
+	restored, err := os.ReadFile(filepath.Join(target.userDataMigrationPetPacksDir(), "custom-pet", "pet-pack.yaml"))
+	if err != nil {
+		t.Fatalf("read restored pet-pack: %v", err)
+	}
+	if string(restored) != "id: custom-pet\nname: Custom Pet\n" {
+		t.Fatalf("restored pet-pack mismatch: %q", restored)
+	}
+	petPacks, ok := result["pet_packs"].(map[string]interface{})
+	if !ok || petPacks["included"] != true || petPacks["bytes"] != manifest.PetPackBytes {
+		t.Fatalf("pet-pack restore result mismatch: %#v", result)
+	}
+}
+
+func TestUserDataMigrationManifestRejectsUndeclaredPetPackData(t *testing.T) {
+	manifest := userDataMigrationManifest{
+		Version:      userDataMigrationPackageVersion,
+		AssetBytes:   0,
+		PetPackBytes: 3,
+		Files: []userDataMigrationFileDigest{
+			{Path: "memory_entries.json"},
+			{Path: "knowledge_snapshot.jsonl"},
+			{Path: "config/app_config.json"},
+			{Path: "config/migration_policy.json"},
+			{Path: "config/secret_inventory.json"},
+			{Path: "pet_packs/custom-pet/pet-pack.yaml", Bytes: 3},
+		},
+	}
+	if err := validateUserDataMigrationManifestFileStats(manifest); err == nil || !strings.Contains(err.Error(), "without declaring") {
+		t.Fatalf("expected undeclared pet-pack payload rejection, got %v", err)
+	}
+}
+
+func TestUserDataMigrationManifestRejectsPetPackRootFile(t *testing.T) {
+	manifest := userDataMigrationManifest{
+		Version:          userDataMigrationPackageVersion,
+		PetPacksIncluded: true,
+		Files: []userDataMigrationFileDigest{
+			{Path: "memory_entries.json"},
+			{Path: "knowledge_snapshot.jsonl"},
+			{Path: "config/app_config.json"},
+			{Path: "config/migration_policy.json"},
+			{Path: "config/secret_inventory.json"},
+			{Path: "pet_packs"},
+		},
+	}
+	if err := validateUserDataMigrationManifestFileStats(manifest); err == nil || !strings.Contains(err.Error(), "root must be a directory") {
+		t.Fatalf("expected pet-pack root file rejection, got %v", err)
 	}
 }
 

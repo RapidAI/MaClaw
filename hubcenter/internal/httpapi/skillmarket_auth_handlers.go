@@ -336,11 +336,12 @@ func decodeSkillMarketJSON(w http.ResponseWriter, r *http.Request, dst any, limi
 }
 
 func extractSessionToken(r *http.Request) string {
-	// Check Authorization header first
+	// Bearer header only. The ?session_token= query fallback was removed
+	// because no client uses it anymore (web and desktop both send the
+	// Authorization header) and query strings end up in access logs.
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
-	// Fallback to query param
-	return r.URL.Query().Get("session_token")
+	return ""
 }

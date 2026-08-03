@@ -23,13 +23,18 @@ func (a *App) existingFloatingAssistant() *FloatingAssistantManager {
 	return a.floatingAssistant
 }
 
-func (a *App) OnFloatingButtonClicked() {
+// onFloatingButtonClicked is the native-window entry point for a pet click.
+// It is intentionally unexported: the retired WebView floating button was the
+// only Wails caller, and the native window path calls it directly.
+func (a *App) onFloatingButtonClicked() {
 	if fa := a.ensureFloatingAssistant(); fa != nil {
 		fa.OnFloatingButtonClicked()
 	}
 }
 
-func (a *App) OnFloatingButtonDragged(x, y int) {
+// onFloatingButtonDragged is kept for parity with the click path. The native
+// drag flow currently reports positions through UpdatePosition instead.
+func (a *App) onFloatingButtonDragged(x, y int) {
 	if fa := a.existingFloatingAssistant(); fa != nil {
 		fa.OnFloatingButtonDragged(x, y)
 	}
@@ -47,7 +52,10 @@ func (a *App) DisablePetFromMenu() {
 	}
 }
 
-func (a *App) OpenPetSettingsFromMenu() {
+// openPetSettingsFromMenu opens the pet settings from the native context menu.
+// Unexported for the same reason as onFloatingButtonClicked: the WebView
+// floating button that used the Wails binding no longer exists.
+func (a *App) openPetSettingsFromMenu() {
 	if a == nil || a.ctx == nil {
 		return
 	}

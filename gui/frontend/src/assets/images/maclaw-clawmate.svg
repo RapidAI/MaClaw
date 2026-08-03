@@ -1,41 +1,18 @@
 <svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg">
   <style>
-    .pet-eye, .pet-eye-line { transform-box: fill-box; transform-origin: center; animation: pet-eye-blink 4.6s ease-in-out infinite; }
-    .pet-mouth { transform-box: fill-box; transform-origin: center; animation: pet-mouth-live 2.4s ease-in-out infinite; }
-    .pet-antenna { transform-box: fill-box; transform-origin: 50% 100%; animation: pet-antenna-live 3.8s ease-in-out infinite; }
-    @keyframes pet-eye-blink { 0%, 88%, 100% { transform: scaleY(1); } 92%, 95% { transform: scaleY(.18); } }
-    @keyframes pet-mouth-live { 0%, 100% { transform: scaleY(.86) translateY(0); } 45% { transform: scaleY(1.18) translateY(1px); } }
-    @keyframes pet-antenna-live { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(2.5deg); } }
+    .crab-body{transform-origin:120px 126px;animation:crab-breathe 3.4s ease-in-out infinite}.crab-claw-l{transform-origin:62px 150px;animation:crab-claw-l 3.4s ease-in-out infinite}.crab-claw-r{transform-origin:178px 150px;animation:crab-claw-r 3.4s ease-in-out infinite}.crab-eye{transform-origin:center;animation:crab-blink 4.8s ease-in-out infinite}@keyframes crab-breathe{0%,100%{transform:translateY(2px)}50%{transform:translateY(-3px)}}@keyframes crab-claw-l{0%,100%{transform:rotate(-3deg)}50%{transform:rotate(6deg)}}@keyframes crab-claw-r{0%,100%{transform:rotate(3deg)}50%{transform:rotate(-6deg)}}@keyframes crab-blink{0%,89%,100%{transform:scaleY(1)}93%,96%{transform:scaleY(.14)}}
   </style>
-  <rect width="240" height="240" rx="40" fill="#F7F8FA"/>
-  <path d="M58 171c-11-6-24-5-31 4-5 7-3 16 4 20 10 6 25-3 34-15" fill="#EEF2F7" stroke="#CBD5E1" stroke-width="4" stroke-linecap="round"/>
-  <circle cx="120" cy="112" r="58" fill="#FFFFFF" stroke="#D8DEE8" stroke-width="4"/>
-  <path d="M90 79c11-7 49-7 60 0" stroke="#E5EAF2" stroke-width="5" stroke-linecap="round"/>
-  <path d="M74 118c-12 8-20 22-20 38 0 12 5 24 14 32" stroke="#6F7D5C" stroke-width="10" stroke-linecap="round"/>
-  <path d="M166 118c12 8 20 22 20 38 0 12-5 24-14 32" stroke="#6F7D5C" stroke-width="10" stroke-linecap="round"/>
-  <path d="M82 72 66 46c-2-4 2-8 6-6l30 16" fill="#FFFFFF" stroke="#D8DEE8" stroke-width="4" stroke-linejoin="round"/>
-  <path d="m158 72 16-26c2-4-2-8-6-6l-30 16" fill="#FFFFFF" stroke="#D8DEE8" stroke-width="4" stroke-linejoin="round"/>
-  <path d="M82 57 75 48l14 7" stroke="#CBD5E1" stroke-width="3" stroke-linecap="round"/>
-  <path d="m158 57 7-9-14 7" stroke="#CBD5E1" stroke-width="3" stroke-linecap="round"/>
-  <circle class="pet-eye" cx="98" cy="106" r="9" fill="#2D3748"/>
-  <circle class="pet-eye" cx="142" cy="106" r="9" fill="#2D3748"/>
-  <circle class="pet-eye" cx="101" cy="102" r="3" fill="#FFFFFF"/>
-  <circle class="pet-eye" cx="145" cy="102" r="3" fill="#FFFFFF"/>
-  <path class="pet-mouth" d="M106 132c8 7 20 7 28 0" stroke="#2D3748" stroke-width="5" stroke-linecap="round"/>
-  <path d="M120 132v10" stroke="#2D3748" stroke-width="4" stroke-linecap="round"/>
-  <path d="M88 150c16 14 48 14 64 0" stroke="#6366F1" stroke-width="6" stroke-linecap="round" opacity=".9"/>
-  <rect x="96" y="158" width="48" height="28" rx="10" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="4"/>
-  <path d="M108 172h24" stroke="#6366F1" stroke-width="4" stroke-linecap="round"/>
-  <circle cx="137" cy="172" r="3" fill="#6F7D5C"/>
-  <path d="M48 184c13 16 37 23 63 24h18c26-1 50-8 63-24" stroke="#2D3748" stroke-width="8" stroke-linecap="round"/>
-  <path d="M80 188c-9 1-16 6-19 14" stroke="#6366F1" stroke-width="7" stroke-linecap="round"/>
-  <path d="M160 188c9 1 16 6 19 14" stroke="#6366F1" stroke-width="7" stroke-linecap="round"/>
-  <path d="M72 202h26" stroke="#2D3748" stroke-width="8" stroke-linecap="round"/>
-  <path d="M142 202h26" stroke="#2D3748" stroke-width="8" stroke-linecap="round"/>
-  <circle cx="84" cy="199" r="3" fill="#FFFFFF" opacity=".9"/>
-  <circle cx="154" cy="199" r="3" fill="#FFFFFF" opacity=".9"/>
-  <path class="pet-antenna" d="M102 44h36" stroke="#6366F1" stroke-width="8" stroke-linecap="round"/>
-  <path class="pet-antenna" d="M120 32v20" stroke="#6366F1" stroke-width="8" stroke-linecap="round"/>
-  <path d="M52 76c-10 3-18 10-22 20" stroke="#F59E0B" stroke-width="6" stroke-linecap="round"/>
-  <path d="M188 76c10 3 18 10 22 20" stroke="#F59E0B" stroke-width="6" stroke-linecap="round"/>
+  <rect width="240" height="240" rx="32" fill="#F4F7FA"/>
+  <ellipse cx="120" cy="207" rx="84" ry="13" fill="#17212D" opacity=".14"/>
+  <g class="crab-body">
+    <g stroke="#1E2D3A" stroke-linecap="round" stroke-linejoin="round"><path d="M82 160 46 183 29 202" stroke-width="13"/><path d="M91 177 56 203 42 218" stroke-width="12"/><path d="M105 188 76 216" stroke-width="11"/><path d="M158 160 194 183 211 202" stroke-width="13"/><path d="M149 177 184 203 198 218" stroke-width="12"/><path d="M135 188 164 216" stroke-width="11"/></g>
+    <g stroke="#60798B" stroke-linecap="round" stroke-linejoin="round"><path d="M82 160 46 183 29 202" stroke-width="7"/><path d="M91 177 56 203 42 218" stroke-width="6"/><path d="M105 188 76 216" stroke-width="5"/><path d="M158 160 194 183 211 202" stroke-width="7"/><path d="M149 177 184 203 198 218" stroke-width="6"/><path d="M135 188 164 216" stroke-width="5"/></g>
+    <g class="crab-claw-l"><path d="m82 145-40-12-19-27-12 12 24 37-19 25 14 11 29-26 31 5" fill="#475C6B" stroke="#1E2D3A" stroke-width="7" stroke-linejoin="round"/><path d="m38 142 28 8" stroke="#9AB2C0" stroke-width="5" stroke-linecap="round"/></g>
+    <g class="crab-claw-r"><path d="m158 145 40-12 19-27 12 12-24 37 19 25-14 11-29-26-31 5" fill="#475C6B" stroke="#1E2D3A" stroke-width="7" stroke-linejoin="round"/><path d="m202 142-28 8" stroke="#9AB2C0" stroke-width="5" stroke-linecap="round"/></g>
+    <ellipse cx="120" cy="143" rx="83" ry="64" fill="#475C6B" stroke="#1E2D3A" stroke-width="7"/><ellipse cx="120" cy="112" rx="65" ry="31" fill="#8EA5B2"/><path d="M120 82v112M70 156c18 20 82 25 100 0" stroke="#293D4B" stroke-width="6" stroke-linecap="round"/>
+    <rect x="96" y="152" width="48" height="28" rx="11" fill="#263946" stroke="#A5BBC7" stroke-width="3"/><circle cx="120" cy="166" r="9" fill="#4A9BD2"/><circle cx="117" cy="163" r="3" fill="#DFF4FF"/>
+    <g stroke="#1E2D3A" stroke-width="9" stroke-linecap="round"><path d="M104 141 80 91"/><path d="M136 141 160 91"/></g>
+    <g class="crab-eye"><circle cx="78" cy="76" r="25" fill="#243744"/><circle cx="78" cy="76" r="20" fill="#DEF0F7"/><ellipse cx="78" cy="81" rx="9" ry="12" fill="#3379A8"/><circle cx="78" cy="84" r="5" fill="#17212D"/><circle cx="74" cy="76" r="3" fill="white"/></g>
+    <g class="crab-eye"><circle cx="162" cy="76" r="25" fill="#243744"/><circle cx="162" cy="76" r="20" fill="#DEF0F7"/><ellipse cx="162" cy="81" rx="9" ry="12" fill="#3379A8"/><circle cx="162" cy="84" r="5" fill="#17212D"/><circle cx="158" cy="76" r="3" fill="white"/></g>
+  </g>
 </svg>

@@ -11,11 +11,28 @@ package main
 
 import (
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"os"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 )
+
+// getWebSearchStrategy resolves the search strategy for both desktop and
+// standalone/TUI handlers. Standalone hosts may inject a live strategy
+// callback; an absent or invalid callback degrades to the safe mainland
+// defaults instead of dereferencing the desktop App.
+func (h *IMMessageHandler) getWebSearchStrategy() corelib.WebSearchStrategy {
+	if h != nil && h.standaloneConfig != nil && h.standaloneConfig.WebSearchStrategyFunc != nil {
+		if strategy, err := websearch.NormalizeWebSearchStrategy(h.standaloneConfig.WebSearchStrategyFunc()); err == nil {
+			return strategy
+		}
+	}
+	if h != nil && h.app != nil {
+		return h.app.effectiveWebSearchStrategy()
+	}
+	return websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+}
 
 // --- Steering Store ---
 

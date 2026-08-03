@@ -1,6 +1,7 @@
 package petpack
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -157,6 +158,11 @@ func (r *Registry) scanUnlocked() error {
 			}
 			m.Scope = ScopeBundled
 			m.Dir = filepath.ToSlash(filepath.Dir(path))
+			// Historical bundled skins are kept in the source tree only as legacy
+			// assets. They are not exposed as official 2.0 choices.
+			if m.ID != DefaultPackID {
+				return nil
+			}
 			m.Status = StatusOK
 			// Validate native presence for figurative default
 			if err := r.annotateStatus(m, r.bundled, m.Dir); err != nil {
@@ -263,25 +269,26 @@ func (r *Registry) scanUnlocked() error {
 }
 
 func (r *Registry) annotateStatus(m *PetPackManifest, fsys fs.FS, root string) error {
-	// classic-only packs OK without frames
-	if m.Renderer == RendererProcedural {
-		return nil
-	}
-	// figurative needs at least idle
-	idleRel := ""
-	if m.Assets.Native != nil {
-		idleRel = m.Assets.Native["idle"]
-	}
-	// check default variant assets
-	for _, v := range m.Variants {
-		if v.ID == VariantDefault || v.ID == "" {
-			if v.Assets.Native != nil && v.Assets.Native["idle"] != "" {
-				idleRel = v.Assets.Native["idle"]
-			}
-			if v.Renderer == RendererProcedural {
-				return nil
-			}
+	// Validate every declared skeleton presentation, not just the active one.
+	// This matches Pet Store publication and prevents an invalid custom variant
+	// from sitting unnoticed until a later client version exposes it.
+	for _, rigAssets := range SkeletonRigAssets(m) {
+		if err := validateRigAssets(fsys, root, rigAssets); err != nil {
+			return err
 		}
+	}
+	for _, presentation := range CharacterPresentations(m) {
+		if err := validateCharacterDefinitionAssets(fsys, root, presentation.Character, presentation.Rig); err != nil {
+			return err
+		}
+	}
+	// Figurative packs need a decodable static idle frame. Its fallback is used
+	// by unsupported platforms, renderer failures, and reduced-motion mode, so
+	// merely checking that a path exists would defer a broken-pack error until
+	// the user enables it.
+	renderer, idleRel := DefaultPresentation(m)
+	if renderer == RendererProcedural {
+		return nil
 	}
 	if idleRel == "" {
 		// procedural fallback still allowed for official
@@ -290,18 +297,123 @@ func (r *Registry) annotateStatus(m *PetPackManifest, fsys fs.FS, root string) e
 		}
 		return fmt.Errorf("missing native idle frame")
 	}
+	idleRel = safeRel(idleRel)
+	if idleRel == "" {
+		return fmt.Errorf("native idle asset has unsafe path")
+	}
 	path := filepath.ToSlash(filepath.Join(root, idleRel))
 	if root == "." {
 		path = filepath.ToSlash(idleRel)
 	}
-	if _, err := fs.Stat(fsys, path); err != nil {
-		// try relative without root
-		if _, err2 := fs.Stat(fsys, filepath.ToSlash(idleRel)); err2 != nil {
-			if IsOfficialPackID(m.ID) {
-				return nil
-			}
-			return fmt.Errorf("idle asset not found: %s", idleRel)
+	err := ValidateStaticFrame(fsys, path)
+	if err != nil && root != "." {
+		// Some embedded FS layouts already expose the pack directory as root.
+		err = ValidateStaticFrame(fsys, filepath.ToSlash(idleRel))
+	}
+	if err != nil {
+		return fmt.Errorf("invalid idle asset %s: %w", idleRel, err)
+	}
+	return nil
+}
+
+// CharacterPresentation describes one native-character asset pair. It keeps
+// each performer bound to its own rig even when a manifest has variants.
+type CharacterPresentation struct {
+	Character *PetPackCharacterAssets
+	Rig       *PetPackRigAssets
+}
+
+// CharacterPresentations returns every v3 performer/rig pair selectable from
+// a manifest or variant. It is shared by desktop scanning and Pet Store review.
+func CharacterPresentations(m *PetPackManifest) []CharacterPresentation {
+	if m == nil {
+		return nil
+	}
+	out := make([]CharacterPresentation, 0, 1+len(m.Variants))
+	if m.Renderer == RendererCharacter {
+		out = append(out, CharacterPresentation{Character: m.Assets.Character, Rig: m.Assets.Rig})
+	}
+	for i := range m.Variants {
+		renderer := m.Variants[i].Renderer
+		if renderer == "" {
+			renderer = m.Renderer
 		}
+		if renderer == RendererCharacter {
+			out = append(out, CharacterPresentation{Character: m.Variants[i].Assets.Character, Rig: m.Variants[i].Assets.Rig})
+		}
+	}
+	return out
+}
+
+func validateCharacterDefinitionAssets(fsys fs.FS, root string, assets *PetPackCharacterAssets, rigAssets *PetPackRigAssets) error {
+	if assets == nil {
+		return fmt.Errorf("native-character missing character assets")
+	}
+	definition := safeRel(assets.Definition)
+	if definition == "" || !strings.HasSuffix(strings.ToLower(definition), ".json") {
+		return fmt.Errorf("native-character has unsafe character definition")
+	}
+	path := filepath.ToSlash(filepath.Join(root, definition))
+	if root == "." {
+		path = definition
+	}
+	raw, err := fs.ReadFile(fsys, path)
+	if err != nil && root != "." {
+		raw, err = fs.ReadFile(fsys, definition)
+	}
+	if err != nil {
+		return fmt.Errorf("character definition not found: %s", definition)
+	}
+	// The performer references clips in the current presentation rig. The rig
+	// itself is already validated above; read it once for cross-reference.
+	if rigAssets == nil {
+		return fmt.Errorf("native-character missing rig assets")
+	}
+	rigPath := safeRel(rigAssets.Definition)
+	rigRaw, err := fs.ReadFile(fsys, filepath.ToSlash(filepath.Join(root, rigPath)))
+	if err != nil && root != "." {
+		rigRaw, err = fs.ReadFile(fsys, rigPath)
+	}
+	if err != nil {
+		return fmt.Errorf("native-character rig definition not found")
+	}
+	if _, err := ValidateCharacterDefinition(raw, rigRaw, rigAssets); err != nil {
+		return fmt.Errorf("invalid character definition: %w", err)
+	}
+	return nil
+}
+
+func validateRigAssets(fsys fs.FS, root string, rigAssets *PetPackRigAssets) error {
+	if rigAssets == nil {
+		return fmt.Errorf("native-skeleton missing rig assets")
+	}
+	definition := safeRel(rigAssets.Definition)
+	if definition == "" {
+		return fmt.Errorf("native-skeleton has unsafe rig definition")
+	}
+	path := filepath.ToSlash(filepath.Join(root, definition))
+	if root == "." {
+		path = definition
+	}
+	raw, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return fmt.Errorf("rig definition not found: %s", definition)
+	}
+	var rig Rig
+	if err := json.Unmarshal(raw, &rig); err != nil {
+		return fmt.Errorf("invalid rig definition: %w", err)
+	}
+	if err := ValidateRig(&rig, rigAssets); err != nil {
+		return err
+	}
+	textureFS := fsys
+	if root != "." && root != "" {
+		if sub, err := fs.Sub(fsys, filepath.ToSlash(root)); err == nil {
+			textureFS = sub
+		}
+	}
+	if _, err := ReadRigTextureData(textureFS, rigAssets); err != nil {
+		return err
 	}
 	return nil
 }
@@ -441,10 +553,11 @@ func packInfoFrom(m *PetPackManifest) PackInfo {
 	return PackInfo{
 		ID: m.ID, Name: m.Name, Version: m.Version, Author: m.Author,
 		Scope: m.Scope, Status: m.Status, Error: m.Error, Tier: m.Tier, Tone: m.Tone,
-		Label: m.Label, Description: m.DescriptionI18n, Variants: variants,
+		Label: m.Label, DescriptionText: m.Description, Description: m.DescriptionI18n, Variants: variants,
 		DefaultSize: m.DefaultSize, FaceOverlay: m.FaceOverlay,
 		PreviewPath: previewPath, Dir: m.Dir,
 		CanUninstall: canUninstall, Source: source, HasPreview: hasPreview,
+		Renderer: m.Renderer,
 	}
 }
 
@@ -474,6 +587,8 @@ func (r *Registry) Resolve(packID, variant string) (*ResolvedPack, error) {
 		FaceOverlay: m.FaceOverlay,
 		Native:      map[string]string{},
 		Motion:      m.Motion,
+		Rig:         m.Assets.Rig,
+		Character:   m.Assets.Character,
 	}
 
 	// Apply top-level assets
@@ -483,22 +598,12 @@ func (r *Registry) Resolve(packID, variant string) (*ResolvedPack, error) {
 		}
 	}
 
-	// Find matching variant
+	// ResolveVariantForRuntime normalizes every stored choice to the pack's
+	// default presentation. Keep its selection in one helper shared with
+	// preview and static-fallback validation.
 	var matched *PetPackVariant
-	for i := range m.Variants {
-		if m.Variants[i].ID == variant {
-			matched = &m.Variants[i]
-			break
-		}
-	}
-	if matched == nil && variant == VariantDefault {
-		// try first figurative
-		for i := range m.Variants {
-			if m.Variants[i].Tier == "figurative" || m.Variants[i].ID == VariantDefault {
-				matched = &m.Variants[i]
-				break
-			}
-		}
+	if variant == VariantDefault {
+		matched = defaultPresentationVariant(m)
 	}
 	if matched != nil {
 		if matched.Renderer != "" {
@@ -512,6 +617,12 @@ func (r *Registry) Resolve(packID, variant string) (*ResolvedPack, error) {
 			for k, v := range matched.Assets.Native {
 				res.Native[k] = v
 			}
+		}
+		if matched.Assets.Rig != nil {
+			res.Rig = matched.Assets.Rig
+		}
+		if matched.Assets.Character != nil {
+			res.Character = matched.Assets.Character
 		}
 		if variant == VariantClassic || matched.Renderer == RendererProcedural {
 			res.Renderer = RendererProcedural

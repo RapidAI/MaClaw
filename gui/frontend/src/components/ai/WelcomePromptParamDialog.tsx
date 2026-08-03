@@ -54,6 +54,8 @@ export type WelcomeCodingSubmitEnv = {
         password: string;
         workDir: string;
     };
+    /** Start the remote task with an evidence-only diagnosis turn. */
+    remoteSafety?: "diagnosis";
     /** Prefer creating the task immediately without a second dialog. */
     autoCreate?: boolean;
 };
@@ -87,6 +89,8 @@ export interface WelcomePromptParamDialogProps {
      * - coding_*: create coding task (env collected here when possible)
      */
     submitMode?: WelcomePromptParamSubmitMode;
+    /** Optional safer posture for an incident-diagnosis remote task. */
+    remoteSafety?: "diagnosis";
     /**
      * Called after user confirms.
      * action is always "insert" for coding modes; chat supports "send".
@@ -182,6 +186,7 @@ export function WelcomePromptParamDialog({
     clipboardPrefill,
     clipboardPrefillLabel,
     submitMode = "chat",
+    remoteSafety,
     onSubmit,
     onSaveTemplate,
     initialCodingEnv,
@@ -190,6 +195,7 @@ export function WelcomePromptParamDialog({
     const isZh = !lang?.startsWith("en");
     const isCoding = submitMode === "coding_dev" || submitMode === "remote_coding_dev";
     const isRemote = submitMode === "remote_coding_dev";
+    const isRemoteDiagnosis = isRemote && remoteSafety === "diagnosis";
     const fields = useMemo(() => extractWelcomeTemplateFields(template), [template]);
     const [values, setValues] = useState<Record<string, string>>(() =>
         buildInitialValues(fields, taskKey, clipboardPrefill, clipboardPrefillLabel),
@@ -411,10 +417,16 @@ export function WelcomePromptParamDialog({
                 codingEnv = {
                     autoCreate: true,
                     remote: { host, port, user, password, workDir },
+                    remoteSafety,
                 };
-                saveWelcomeCodingEnv({
-                    remote: { host, port, user, workDir, password },
-                });
+                // An incident-server password must not become an implicit
+                // local default merely because the user ran one diagnosis.
+                // They may still deliberately save a reusable template.
+                if (!isRemoteDiagnosis) {
+                    saveWelcomeCodingEnv({
+                        remote: { host, port, user, workDir, password },
+                    });
+                }
             } else {
                 const dir = workingDir.trim();
                 codingEnv = {
@@ -444,6 +456,7 @@ export function WelcomePromptParamDialog({
         taskKey,
         isCoding,
         isRemote,
+        isRemoteDiagnosis,
         isZh,
         remoteHost,
         remoteUser,
@@ -453,6 +466,7 @@ export function WelcomePromptParamDialog({
         workingDir,
         onSubmit,
         submitMode,
+        remoteSafety,
     ]);
 
     const handleFormSubmit = useCallback((event?: FormEvent) => {
@@ -490,16 +504,22 @@ export function WelcomePromptParamDialog({
 
     const insertLabel = isCoding
         ? (isRemote
-            ? (isZh ? "创建并开始远程任务" : "Create remote task")
+            ? (isRemoteDiagnosis
+                ? (isZh ? "连接并开始只读诊断" : "Connect and diagnose")
+                : (isZh ? "创建并开始远程任务" : "Create remote task"))
             : (isZh ? "创建并开始本地任务" : "Create local task"))
         : (isZh ? "填入输入框" : "Insert into input");
 
     const sendLabel = isZh ? "直接发送" : "Send now";
 
     const helper = isCoding
-        ? (isZh
-            ? "填写任务参数与运行环境后可直接创建，无需二次弹窗。参数会记住。"
-            : "Fill task params and the runtime environment, then create in one step. Values are remembered.")
+        ? (isRemoteDiagnosis
+            ? (isZh
+                ? "将通过 SSH 收集日志与状态作为证据。首轮只读：不会改文件、重启服务或创建目录；修复需在后续明确提出。"
+                : "SSH will collect logs and status as evidence. The first turn is read-only: no file changes, service restarts, or directory creation. Request a fix explicitly later.")
+            : (isZh
+                ? "填写任务参数与运行环境后可直接创建，无需二次弹窗。参数会记住。"
+                : "Fill task params and the runtime environment, then create in one step. Values are remembered."))
         : (isZh
             ? "填写关键信息后确认。可留空的项，助手会在对话中追问。已自动记住上次填写。"
             : "Fill in the key details, then confirm. Blanks are fine — the assistant can follow up. Last values are remembered.");
@@ -812,7 +832,9 @@ export function WelcomePromptParamDialog({
                                     fontFamily: "system-ui, -apple-system, sans-serif",
                                 }}>
                                     {isRemote
-                                        ? (isZh ? "远程环境（SSH）" : "Remote environment (SSH)")
+                                        ? (isRemoteDiagnosis
+                                            ? (isZh ? "故障诊断服务器（SSH，只读首轮）" : "Incident server (SSH, read-only first turn)")
+                                            : (isZh ? "远程环境（SSH）" : "Remote environment (SSH)"))
                                         : (isZh ? "本地工作目录" : "Local working directory")}
                                 </div>
                                 {isRemote ? (

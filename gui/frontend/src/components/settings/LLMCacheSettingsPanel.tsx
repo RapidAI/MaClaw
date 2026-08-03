@@ -1,13 +1,13 @@
-import { useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { type Dispatch, type ReactNode, type SetStateAction, useState } from 'react';
 import { PatchConfigFields } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { EVENT_MACLAW_CONFIG_CHANGED } from '../../constants/events';
 import { ModelRoutesSettingsSection } from './ModelRoutesSettingsSection';
 
 type LLMCacheSettingsPanelProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     showToastMessage?: (message: string, duration?: number) => void;
 };
@@ -73,7 +73,7 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
     const cache = normalizeCache((config as any)?.llm_prompt_cache);
     const updateCache = (patch: Record<string, any>) => {
         const nextCache = normalizeSwitchPatch(cache, patch);
-        setConfig((previous) => new main.AppConfig({ ...(previous || config || {}), llm_prompt_cache: nextCache }));
+        setConfig((previous) => new corelib.AppConfig({ ...(previous || config || {}), llm_prompt_cache: nextCache }));
     };
     const numberValue = (key: string, divisor = 1) => Math.round((cache as any)[key] / divisor);
     const updateNumber = (key: string, raw: string, multiplier = 1) => {
@@ -87,7 +87,7 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
         setSaveError('');
         try {
             const saved = await PatchConfigFields({ llm_prompt_cache: normalizeSwitchPatch(cache, {}) });
-            setConfig(new main.AppConfig(saved));
+            setConfig(new corelib.AppConfig(saved));
             // Keep other surfaces (e.g. the quick-settings bar) in sync with this change.
             window.dispatchEvent(new CustomEvent(EVENT_MACLAW_CONFIG_CHANGED, { detail: saved }));
             showToastMessage?.(textForLang(lang, 'Saved successfully', '\u4fdd\u5b58\u6210\u529f', '\u5132\u5b58\u6210\u529f'));

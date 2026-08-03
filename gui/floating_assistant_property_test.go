@@ -486,6 +486,8 @@ func (m *mockFloatingWindowForProps) UpdateSoundConfig(soundEnabled bool, preset
 func (m *mockFloatingWindowForProps) UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string) {
 }
 
+func (m *mockFloatingWindowForProps) InvalidatePetPackAssets() {}
+
 func (m *mockFloatingWindowForProps) SetPetRuntimeState(state string, ttlMs int) {}
 
 func (m *mockFloatingWindowForProps) CurrentPetRuntimeState() string { return "idle" }

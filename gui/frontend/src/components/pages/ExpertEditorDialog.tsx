@@ -712,11 +712,11 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
 
                 <div className="expert-editor__field">
                     <label className="expert-editor__label" htmlFor="expert-desc-input">{t.descLabel}</label>
-                    <input
+                    <textarea
                         id="expert-desc-input"
                         data-testid="expert-desc-input"
-                        className="expert-editor__input"
-                        type="text"
+                        className="expert-editor__textarea expert-editor__textarea--description"
+                        rows={3}
                         value={description}
                         onChange={(e) => setDescription(e.target.value)}
                     />

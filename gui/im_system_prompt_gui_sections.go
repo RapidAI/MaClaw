@@ -351,8 +351,11 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 		knowledgeElapsed = time.Since(knowledgeStart)
 	} else if loopCtx.LansengerGroupPermissions.allowsKnowledge() {
 		prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
-		h.appendKnowledgeAutoRecall(b, msg, prior, loopCtx.LansengerGroupPermissions.KnowledgeSourceIDs)
+		if h.appendKnowledgeAutoRecall(b, msg, prior, loopCtx.LansengerGroupPermissions.KnowledgeSourceIDs) {
+			loopCtx.LansengerGroupPermissions.markKnowledgeAutoRecallEvidence()
+		}
 		knowledgeElapsed = time.Since(knowledgeStart)
+		b.WriteString(lansengerGroupKnowledgePriorityPrompt())
 	}
 
 	// Knowledge skill section

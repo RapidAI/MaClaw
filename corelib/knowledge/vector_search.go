@@ -3,7 +3,9 @@ package knowledge
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
@@ -12,6 +14,10 @@ import (
 
 type nodeEmbeddingRow struct {
 	id, title, text string
+}
+
+type tableRowEmbeddingRow struct {
+	id, primaryKey, text string
 }
 
 // cardEmbeddingText returns the text to embed for a card.
@@ -35,14 +41,20 @@ func cardEmbeddingText(card Card) string {
 // Searches both distilled cards AND original document nodes to ensure
 // information lost during distillation is still discoverable.
 func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
-	emb := s.currentEmbedder()
+	emb, generation := s.currentEmbedderSnapshot()
 	if emb == nil || embedding.IsNoop(emb) {
 		return nil, nil
 	}
 	queryVec, err := emb.Embed(opts.Query)
-	if err != nil || len(queryVec) == 0 {
+	if err != nil || !validEmbeddingVector(queryVec, emb.Dim()) {
 		return nil, nil
 	}
+	// A model can switch while a remote Embed call is in flight. Do not search
+	// its newly selected space with a vector produced by the previous model.
+	if !s.isEmbedderGenerationCurrent(generation) {
+		return nil, nil
+	}
+	modelID := embeddingModelIdentifier(emb)
 
 	limit := opts.Limit
 	if limit <= 0 {
@@ -50,11 +62,16 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 	}
 
 	// --- Card embedding search ---
-	const maxEmbeddingCandidates = 500
+	// SQLite has no native vector index. Until an ANN backend is enabled, score
+	// every ACL-filtered vector instead of pre-truncating by importance; ranking
+	// before cosine evaluation silently loses relevant low-importance content.
 	where := []string{"c.embedding IS NOT NULL", "LENGTH(c.embedding) > 0"}
 	args := make([]interface{}, 0)
 	where, args = appendSearchFilters(where, args, "s", opts)
-	args = append(args, maxEmbeddingCandidates)
+	if modelID != "" {
+		where = append(where, `EXISTS (SELECT 1 FROM knowledge_embedding_metadata em WHERE em.entity_type = 'card' AND em.entity_id = c.id AND em.model_id = ? AND em.dimension = ?)`)
+		args = append(args, modelID, len(queryVec))
+	}
 
 	sqlQuery := `SELECT c.id, COALESCE(c.node_id, ''), c.title, c.claim, c.summary, c.embedding,
 		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
@@ -62,9 +79,7 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 		FROM knowledge_cards c
 		JOIN knowledge_sources s ON s.id = c.source_id
 		WHERE ` + strings.Join(where, " AND ") + `
-		AND NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)
-		ORDER BY c.importance DESC
-		LIMIT ?`
+		AND NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)`
 
 	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
@@ -74,9 +89,11 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 
 	type candidate struct {
 		result SearchResult
+		vector []float32
 		sim    float64
 	}
 	var candidates []candidate
+	var vectorCandidates []vectorANNVector
 
 	for rows.Next() {
 		var result SearchResult
@@ -92,12 +109,7 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 		}
 
 		cardVec := bytesToFloat32Slice(embBlob)
-		if len(cardVec) == 0 || len(cardVec) != len(queryVec) {
-			continue
-		}
-
-		sim := cosineSimilarity(queryVec, cardVec)
-		if sim < 0.3 { // minimum similarity threshold
+		if !validEmbeddingVector(cardVec, len(queryVec)) {
 			continue
 		}
 
@@ -110,17 +122,30 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 		result.Snippet = result.Claim
 		// Score: cosine similarity scaled to be comparable with FTS scores
 		// cosine sim 0.3-1.0 → score 1.0-4.0
-		result.Score = 1.0 + (sim-0.3)*4.3
-		result.Citation = formatResultCitation(result)
-
-		candidates = append(candidates, candidate{result: result, sim: sim})
+		candidates = append(candidates, candidate{result: result, vector: cardVec})
+		vectorCandidates = append(vectorCandidates, vectorANNVector{key: "card:" + result.CardID, vector: cardVec})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if len(candidates) > 0 {
+		candidateIndexes := s.vectorANNCandidates("card:"+modelID, generation, vectorCandidates, queryVec, limit*4)
+		accelerated := make([]candidate, 0, len(candidateIndexes))
+		for _, index := range candidateIndexes {
+			candidate := candidates[index]
+			candidate.sim = cosineSimilarity(queryVec, candidate.vector)
+			if candidate.sim < 0.3 { // minimum similarity threshold
+				continue
+			}
+			candidate.result.Score = 1.0 + (candidate.sim-0.3)*4.3
+			candidate.result.Citation = formatResultCitation(candidate.result)
+			accelerated = append(accelerated, candidate)
+		}
+		candidates = accelerated
+	}
 
 	// --- Node embedding search (original document full text) ---
-	nodeResults, nodeErr := s.searchNodesByEmbedding(ctx, queryVec, opts)
+	nodeResults, nodeErr := s.searchNodesByEmbedding(ctx, queryVec, modelID, generation, opts)
 	if nodeErr == nil && len(nodeResults) > 0 {
 		for _, nr := range nodeResults {
 			// Reverse the score→sim mapping: score = 1.0 + (sim-0.25)*4.0
@@ -129,14 +154,14 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 		}
 	}
 
-	// Sort by similarity descending
-	for i := 0; i < len(candidates)-1; i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].sim > candidates[i].sim {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
+	// Sort by similarity descending; stable tiebreakers keep pagination and
+	// evaluations deterministic.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].sim == candidates[j].sim {
+			return embeddingResultKey(candidates[i].result) < embeddingResultKey(candidates[j].result)
 		}
-	}
+		return candidates[i].sim > candidates[j].sim
+	})
 
 	results := make([]SearchResult, 0, limit)
 	for i, c := range candidates {
@@ -145,7 +170,48 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 		}
 		results = append(results, c.result)
 	}
+	// Candidate loading and cosine ranking can outlive the query Embed call.
+	// Suppress an otherwise internally-consistent but stale result set when the
+	// configured model changed while SQLite was being scanned.
+	if !s.isEmbedderGenerationCurrent(generation) {
+		return nil, nil
+	}
 	return results, nil
+}
+
+func embeddingResultKey(r SearchResult) string {
+	// A fact carries its parent CardID and a table row can also carry derived
+	// card/fact fields. Use the explicit result type before looking at optional
+	// provenance IDs, otherwise hybrid RRF treats distinct facts from one card as
+	// the same card and silently drops evidence.
+	switch r.ResultType {
+	case "table_row":
+		if r.RowID != "" {
+			return "row:" + r.RowID
+		}
+	case "fact":
+		if r.FactID != "" {
+			return "fact:" + r.FactID
+		}
+	case "card":
+		if r.CardID != "" {
+			return "card:" + r.CardID
+		}
+	case "node":
+		if r.NodeID != "" {
+			return "node:" + r.NodeID
+		}
+	}
+	if r.RowID != "" {
+		return "row:" + r.RowID
+	}
+	if r.FactID != "" {
+		return "fact:" + r.FactID
+	}
+	if r.CardID != "" {
+		return "card:" + r.CardID
+	}
+	return "node:" + r.NodeID
 }
 
 // float32SliceToBytes converts a float32 slice to a byte slice for SQLite BLOB storage.
@@ -174,7 +240,7 @@ func bytesToFloat32Slice(b []byte) []float32 {
 
 // cosineSimilarity computes the cosine similarity between two vectors.
 func cosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
+	if !validEmbeddingVector(a, 0) || !validEmbeddingVector(b, len(a)) {
 		return 0
 	}
 	var dot, normA, normB float64
@@ -191,6 +257,41 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dot / denom
 }
 
+// validEmbeddingVector rejects malformed model output and legacy corrupt blobs
+// before they reach cosine or LSH. A zero/NaN/Inf vector has no meaningful
+// direction; accepting it makes ordering non-deterministic and can poison an
+// otherwise valid model space.
+func validEmbeddingVector(vector []float32, dimension int) bool {
+	if len(vector) == 0 || (dimension > 0 && len(vector) != dimension) {
+		return false
+	}
+	var norm float64
+	for _, value := range vector {
+		asFloat := float64(value)
+		if math.IsNaN(asFloat) || math.IsInf(asFloat, 0) {
+			return false
+		}
+		norm += asFloat * asFloat
+	}
+	return norm > 0
+}
+
+// validateEmbeddingBatchOutput keeps every persistence path aligned with the
+// embedder contract. A short batch used to silently leave records stale, while
+// a long batch could index past the pending table-row slice. Failing the batch
+// lets a later retry repair all of its records without partial ambiguity.
+func validateEmbeddingBatchOutput(entity string, vectors [][]float32, expected, dimension int) error {
+	if len(vectors) != expected {
+		return fmt.Errorf("%s embedder returned %d vectors for %d inputs", entity, len(vectors), expected)
+	}
+	for i, vector := range vectors {
+		if !validEmbeddingVector(vector, dimension) {
+			return fmt.Errorf("%s embedder returned invalid vector at batch index %d", entity, i)
+		}
+	}
+	return nil
+}
+
 // rrfFuse merges FTS results and embedding results using Reciprocal Rank Fusion.
 // k=60 is the standard RRF constant.
 func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
@@ -201,20 +302,12 @@ func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
 		score  float64
 	}
 
-	// Build score map by card/fact/node ID
+	// Build a score map by the concrete result entity. Provenance fields (for
+	// example Fact.CardID) must not collapse different result types.
 	scoreMap := make(map[string]*scored)
-	keyOf := func(r SearchResult) string {
-		if r.CardID != "" {
-			return "card:" + r.CardID
-		}
-		if r.FactID != "" {
-			return "fact:" + r.FactID
-		}
-		return "node:" + r.NodeID
-	}
 
 	for rank, r := range ftsResults {
-		key := keyOf(r)
+		key := embeddingResultKey(r)
 		if s, ok := scoreMap[key]; ok {
 			s.score += 1.0 / (k + float64(rank+1))
 		} else {
@@ -222,7 +315,7 @@ func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
 		}
 	}
 	for rank, r := range embResults {
-		key := keyOf(r)
+		key := embeddingResultKey(r)
 		if s, ok := scoreMap[key]; ok {
 			s.score += 1.0 / (k + float64(rank+1))
 			// If embedding result has higher individual score, use its score for display
@@ -234,18 +327,19 @@ func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
 		}
 	}
 
-	// Sort by RRF score
+	// Sort by RRF score. A map iteration order must never leak into retrieval
+	// output: tied scores are common for short result lists and pagination needs
+	// deterministic ordering.
 	all := make([]scored, 0, len(scoreMap))
 	for _, s := range scoreMap {
 		all = append(all, *s)
 	}
-	for i := 0; i < len(all)-1; i++ {
-		for j := i + 1; j < len(all); j++ {
-			if all[j].score > all[i].score {
-				all[i], all[j] = all[j], all[i]
-			}
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].score == all[j].score {
+			return embeddingResultKey(all[i].result) < embeddingResultKey(all[j].result)
 		}
-	}
+		return all[i].score > all[j].score
+	})
 
 	results := make([]SearchResult, 0, limit)
 	for i, s := range all {
@@ -264,7 +358,22 @@ func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
 
 // backfillCardEmbeddings generates embeddings for cards that don't have one yet.
 func (s *SQLiteStore) backfillCardEmbeddings(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, claim, summary FROM knowledge_cards WHERE embedding IS NULL OR LENGTH(embedding) = 0`)
+	emb, generation := s.currentEmbedderSnapshot()
+	return s.backfillCardEmbeddingsForGeneration(ctx, emb, generation)
+}
+
+func (s *SQLiteStore) backfillCardEmbeddingsForGeneration(ctx context.Context, emb embedding.Embedder, generation uint64) error {
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil
+	}
+	if !s.isEmbedderGenerationCurrent(generation) {
+		return nil
+	}
+	modelID := embeddingModelIdentifier(emb)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.title, c.claim, c.summary FROM knowledge_cards c
+		WHERE c.embedding IS NULL OR LENGTH(c.embedding) = 0
+		OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
+			WHERE em.entity_type = 'card' AND em.entity_id = c.id AND em.model_id = ? AND em.dimension = ?)`, modelID, emb.Dim())
 	if err != nil {
 		return err
 	}
@@ -293,12 +402,11 @@ func (s *SQLiteStore) backfillCardEmbeddings(ctx context.Context) error {
 	for i, c := range cards {
 		texts[i] = cardEmbeddingText(Card{Title: c.title, Claim: c.claim, Summary: c.summary})
 	}
-	emb := s.currentEmbedder()
-	if emb == nil || embedding.IsNoop(emb) {
-		return nil
-	}
 	vectors, err := emb.EmbedBatch(texts)
 	if err != nil {
+		return err
+	}
+	if err := validateEmbeddingBatchOutput("card", vectors, len(cards), emb.Dim()); err != nil {
 		return err
 	}
 
@@ -307,13 +415,182 @@ func (s *SQLiteStore) backfillCardEmbeddings(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if i >= len(vectors) || len(vectors[i]) == 0 {
-			continue
+		if !s.isEmbedderGenerationCurrent(generation) {
+			return nil
 		}
-		_, _ = s.db.ExecContext(ctx, `UPDATE knowledge_cards SET embedding = ? WHERE id = ?`,
-			float32SliceToBytes(vectors[i]), c.id)
+		updated, err := s.persistEmbeddingIfCurrent(ctx, embeddingEntityCard, c.id, embeddingModelIdentifier(emb), vectors[i], generation, `UPDATE knowledge_cards SET embedding = ?
+			WHERE id = ? AND COALESCE(title, '') = ? AND COALESCE(claim, '') = ? AND COALESCE(summary, '') = ?`,
+			float32SliceToBytes(vectors[i]), c.id, c.title, c.claim, c.summary)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			continue // card was deleted or rewritten while EmbedBatch was running
+		}
 	}
 	return nil
+}
+
+// BackfillTableRowEmbeddings embeds normalized spreadsheet row text. Structured
+// rows have a separate lifecycle from document nodes, so their metadata is
+// recorded under table_row and never shares a card/node vector space.
+func (s *SQLiteStore) BackfillTableRowEmbeddings(ctx context.Context) error {
+	emb, generation := s.currentEmbedderSnapshot()
+	return s.backfillTableRowEmbeddingsForGeneration(ctx, emb, generation)
+}
+
+func (s *SQLiteStore) backfillTableRowEmbeddingsForGeneration(ctx context.Context, emb embedding.Embedder, generation uint64) error {
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil
+	}
+	if !s.isEmbedderGenerationCurrent(generation) {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id, COALESCE(r.primary_key_text, ''), COALESCE(r.row_text, '')
+		FROM kb_rows r
+		WHERE r.embedding IS NULL OR LENGTH(r.embedding) = 0
+		OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
+			WHERE em.entity_type = 'table_row' AND em.entity_id = r.id AND em.model_id = ? AND em.dimension = ?)`, embeddingModelIdentifier(emb), emb.Dim())
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var pending []tableRowEmbeddingRow
+	for rows.Next() {
+		var row tableRowEmbeddingRow
+		if err := rows.Scan(&row.id, &row.primaryKey, &row.text); err != nil {
+			return err
+		}
+		if strings.TrimSpace(row.text) != "" || strings.TrimSpace(row.primaryKey) != "" {
+			pending = append(pending, row)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return s.embedAndStoreTableRowEmbeddings(ctx, pending, emb, generation)
+}
+
+func (s *SQLiteStore) embedAndStoreTableRowEmbeddings(ctx context.Context, pending []tableRowEmbeddingRow, emb embedding.Embedder, generation uint64) error {
+	if len(pending) == 0 {
+		return nil
+	}
+	const batchSize = 64
+	for start := 0; start < len(pending); start += batchSize {
+		if !s.isEmbedderGenerationCurrent(generation) {
+			return nil
+		}
+		end := start + batchSize
+		if end > len(pending) {
+			end = len(pending)
+		}
+		texts := make([]string, end-start)
+		for i, row := range pending[start:end] {
+			texts[i] = tableRowEmbeddingText(row.primaryKey, row.text)
+		}
+		vectors, err := emb.EmbedBatch(texts)
+		if err != nil {
+			return err
+		}
+		if err := validateEmbeddingBatchOutput("table-row", vectors, len(texts), emb.Dim()); err != nil {
+			return err
+		}
+		for i, vector := range vectors {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if !s.isEmbedderGenerationCurrent(generation) {
+				return nil
+			}
+			row := pending[start+i]
+			updated, err := s.persistEmbeddingIfCurrent(ctx, embeddingEntityRow, row.id, embeddingModelIdentifier(emb), vector, generation, `UPDATE kb_rows SET embedding = ?
+				WHERE id = ? AND COALESCE(primary_key_text, '') = ? AND COALESCE(row_text, '') = ?`, float32SliceToBytes(vector), row.id, row.primaryKey, row.text)
+			if err != nil {
+				return err
+			}
+			if !updated {
+				continue // row was deleted or rewritten while EmbedBatch was running
+			}
+		}
+	}
+	s.invalidateVectorANN()
+	return nil
+}
+
+func tableRowEmbeddingText(primaryKey, rowText string) string {
+	primaryKey = strings.TrimSpace(primaryKey)
+	rowText = strings.TrimSpace(rowText)
+	if primaryKey == "" {
+		return rowText
+	}
+	if rowText == "" {
+		return primaryKey
+	}
+	return primaryKey + "\n" + rowText
+}
+
+// BackfillTableRowEmbeddingsForSources generates missing embeddings only for
+// rows belonging to newly imported spreadsheet sources.
+func (s *SQLiteStore) BackfillTableRowEmbeddingsForSources(ctx context.Context, sourceIDs []string) error {
+	emb, generation := s.currentEmbedderSnapshot()
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil
+	}
+	if !s.isEmbedderGenerationCurrent(generation) {
+		return nil
+	}
+	ids := uniqueNonEmptyIDs(sourceIDs)
+	if len(ids) == 0 {
+		return nil
+	}
+	var pending []tableRowEmbeddingRow
+	// Keep each IN list well below SQLite's variable limit. Large directory
+	// imports otherwise fail before any of their spreadsheet rows are indexed.
+	const sourceBatchSize = 400
+	for start := 0; start < len(ids); start += sourceBatchSize {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !s.isEmbedderGenerationCurrent(generation) {
+			return nil
+		}
+		end := start + sourceBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(batch)), ",")
+		args := make([]interface{}, 0, len(batch)+2)
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		args = append(args, embeddingModelIdentifier(emb), emb.Dim())
+		rows, err := s.db.QueryContext(ctx, `SELECT r.id, COALESCE(r.primary_key_text, ''), COALESCE(r.row_text, '')
+			FROM kb_rows r
+			WHERE r.source_id IN (`+placeholders+`)
+			AND (r.embedding IS NULL OR LENGTH(r.embedding) = 0
+				OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
+					WHERE em.entity_type = 'table_row' AND em.entity_id = r.id AND em.model_id = ? AND em.dimension = ?))`, args...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var row tableRowEmbeddingRow
+			if err := rows.Scan(&row.id, &row.primaryKey, &row.text); err != nil {
+				rows.Close()
+				return err
+			}
+			if tableRowEmbeddingText(row.primaryKey, row.text) != "" {
+				pending = append(pending, row)
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return s.embedAndStoreTableRowEmbeddings(ctx, pending, emb, generation)
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +617,15 @@ func (s *SQLiteStore) EnsureNodeEmbeddingColumn() error {
 // have one yet. Uses the full node text for embedding, providing semantic
 // coverage of the original document content.
 func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
-	if emb := s.currentEmbedder(); emb == nil || embedding.IsNoop(emb) {
+	emb, generation := s.currentEmbedderSnapshot()
+	return s.backfillNodeEmbeddingsForGeneration(ctx, emb, generation)
+}
+
+func (s *SQLiteStore) backfillNodeEmbeddingsForGeneration(ctx context.Context, emb embedding.Embedder, generation uint64) error {
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil
+	}
+	if !s.isEmbedderGenerationCurrent(generation) {
 		return nil
 	}
 	// Ensure column exists first
@@ -348,7 +633,10 @@ func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
 		return err
 	}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes WHERE embedding IS NULL OR LENGTH(embedding) = 0`)
+	rows, err := s.db.QueryContext(ctx, `SELECT n.id, n.title, n.text FROM document_nodes n
+		WHERE n.embedding IS NULL OR LENGTH(n.embedding) = 0
+		OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
+			WHERE em.entity_type = 'node' AND em.entity_id = n.id AND em.model_id = ? AND em.dimension = ?)`, embeddingModelIdentifier(emb), emb.Dim())
 	if err != nil {
 		// Column may not exist yet on older DBs — not fatal
 		if strings.Contains(err.Error(), "no such column") {
@@ -369,33 +657,46 @@ func (s *SQLiteStore) BackfillNodeEmbeddings(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	return s.embedAndStoreNodeEmbeddings(ctx, nodes)
+	return s.embedAndStoreNodeEmbeddingsForGeneration(ctx, nodes, emb, generation, nil)
 }
 
 // BackfillNodeEmbeddingsForSources generates missing document node embeddings
 // for newly saved/imported sources. It keeps vector recall current without
 // waiting for a full index rebuild or startup backfill.
 func (s *SQLiteStore) BackfillNodeEmbeddingsForSources(ctx context.Context, sourceIDs []string) error {
-	nodes, err := s.queryMissingNodeEmbeddings(ctx, sourceIDs)
+	emb, generation := s.currentEmbedderSnapshot()
+	return s.backfillNodeEmbeddingsForSourcesWithGeneration(ctx, sourceIDs, emb, generation, nil)
+}
+
+func (s *SQLiteStore) backfillNodeEmbeddingsForSourcesWithGeneration(ctx context.Context, sourceIDs []string, emb embedding.Embedder, generation uint64, onProgress EmbeddingProgressFunc) error {
+	if emb == nil || embedding.IsNoop(emb) || !s.isEmbedderGenerationCurrent(generation) {
+		return nil
+	}
+	nodes, err := s.queryMissingNodeEmbeddingsForGeneration(ctx, sourceIDs, emb, generation)
 	if err != nil || len(nodes) == 0 {
 		return err
 	}
-	return s.embedAndStoreNodeEmbeddings(ctx, nodes)
+	return s.embedAndStoreNodeEmbeddingsForGeneration(ctx, nodes, emb, generation, onProgress)
 }
 
 // BackfillNodeEmbeddingsForSourcesWithProgress is like BackfillNodeEmbeddingsForSources but reports progress.
 func (s *SQLiteStore) BackfillNodeEmbeddingsForSourcesWithProgress(ctx context.Context, sourceIDs []string, onProgress EmbeddingProgressFunc) error {
-	nodes, err := s.queryMissingNodeEmbeddings(ctx, sourceIDs)
-	if err != nil || len(nodes) == 0 {
-		return err
-	}
-	return s.embedAndStoreNodeEmbeddingsWithProgress(ctx, nodes, onProgress)
+	emb, generation := s.currentEmbedderSnapshot()
+	return s.backfillNodeEmbeddingsForSourcesWithGeneration(ctx, sourceIDs, emb, generation, onProgress)
 }
 
 // queryMissingNodeEmbeddings loads document nodes that need embedding for the given source IDs.
 // Returns nil, nil when embedder is unavailable or no nodes need embedding.
 func (s *SQLiteStore) queryMissingNodeEmbeddings(ctx context.Context, sourceIDs []string) ([]nodeEmbeddingRow, error) {
-	if emb := s.currentEmbedder(); emb == nil || embedding.IsNoop(emb) {
+	emb, generation := s.currentEmbedderSnapshot()
+	return s.queryMissingNodeEmbeddingsForGeneration(ctx, sourceIDs, emb, generation)
+}
+
+func (s *SQLiteStore) queryMissingNodeEmbeddingsForGeneration(ctx context.Context, sourceIDs []string, emb embedding.Embedder, generation uint64) ([]nodeEmbeddingRow, error) {
+	if emb == nil || embedding.IsNoop(emb) {
+		return nil, nil
+	}
+	if !s.isEmbedderGenerationCurrent(generation) {
 		return nil, nil
 	}
 	if len(sourceIDs) == 0 {
@@ -427,6 +728,9 @@ func (s *SQLiteStore) queryMissingNodeEmbeddings(ctx context.Context, sourceIDs 
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if !s.isEmbedderGenerationCurrent(generation) {
+			return nil, nil
+		}
 		end := start + idBatch
 		if end > len(ids) {
 			end = len(ids)
@@ -438,7 +742,12 @@ func (s *SQLiteStore) queryMissingNodeEmbeddings(ctx context.Context, sourceIDs 
 			placeholders[i] = "?"
 			args = append(args, id)
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes WHERE source_id IN (`+strings.Join(placeholders, ",")+`) AND (embedding IS NULL OR LENGTH(embedding) = 0)`, args...)
+		args = append(args, embeddingModelIdentifier(emb), emb.Dim())
+		rows, err := s.db.QueryContext(ctx, `SELECT n.id, n.title, n.text FROM document_nodes n
+			WHERE n.source_id IN (`+strings.Join(placeholders, ",")+`)
+			AND (n.embedding IS NULL OR LENGTH(n.embedding) = 0
+				OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
+					WHERE em.entity_type = 'node' AND em.entity_id = n.id AND em.model_id = ? AND em.dimension = ?))`, args...)
 		if err != nil {
 			if strings.Contains(err.Error(), "no such column") {
 				return nil, nil
@@ -463,18 +772,26 @@ func (s *SQLiteStore) queryMissingNodeEmbeddings(ctx context.Context, sourceIDs 
 }
 
 func (s *SQLiteStore) embedAndStoreNodeEmbeddings(ctx context.Context, nodes []nodeEmbeddingRow) error {
-	return s.embedAndStoreNodeEmbeddingsWithProgress(ctx, nodes, nil)
+	emb, generation := s.currentEmbedderSnapshot()
+	return s.embedAndStoreNodeEmbeddingsForGeneration(ctx, nodes, emb, generation, nil)
 }
 
 // EmbeddingProgressFunc reports progress during embedding generation.
 type EmbeddingProgressFunc func(processed, total int)
 
 func (s *SQLiteStore) embedAndStoreNodeEmbeddingsWithProgress(ctx context.Context, nodes []nodeEmbeddingRow, onProgress EmbeddingProgressFunc) error {
+	emb, generation := s.currentEmbedderSnapshot()
+	return s.embedAndStoreNodeEmbeddingsForGeneration(ctx, nodes, emb, generation, onProgress)
+}
+
+func (s *SQLiteStore) embedAndStoreNodeEmbeddingsForGeneration(ctx context.Context, nodes []nodeEmbeddingRow, emb embedding.Embedder, generation uint64, onProgress EmbeddingProgressFunc) error {
 	if len(nodes) == 0 {
 		return nil
 	}
-	emb := s.currentEmbedder()
 	if emb == nil || embedding.IsNoop(emb) {
+		return nil
+	}
+	if !s.isEmbedderGenerationCurrent(generation) {
 		return nil
 	}
 	// Parallel text prep (truncate/join) before model calls.
@@ -486,40 +803,12 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddingsWithProgress(ctx context.Contex
 	// Process in batches to allow progress reporting and avoid huge single calls.
 	const batchSize = 64
 	totalNodes := len(nodes)
-	stmt, err := s.db.PrepareContext(ctx, `UPDATE document_nodes SET embedding = ? WHERE id = ?`)
-	if err != nil {
-		// Fallback without prepared statement.
-		for batchStart := 0; batchStart < totalNodes; batchStart += batchSize {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			batchEnd := batchStart + batchSize
-			if batchEnd > totalNodes {
-				batchEnd = totalNodes
-			}
-			vectors, embErr := emb.EmbedBatch(texts[batchStart:batchEnd])
-			if embErr != nil {
-				return embErr
-			}
-			for i, vec := range vectors {
-				nodeIdx := batchStart + i
-				if nodeIdx >= totalNodes || len(vec) == 0 {
-					continue
-				}
-				_, _ = s.db.ExecContext(ctx, `UPDATE document_nodes SET embedding = ? WHERE id = ?`,
-					float32SliceToBytes(vec), nodes[nodeIdx].id)
-			}
-			if onProgress != nil {
-				onProgress(batchEnd, totalNodes)
-			}
-		}
-		return nil
-	}
-	defer stmt.Close()
-
 	for batchStart := 0; batchStart < totalNodes; batchStart += batchSize {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if !s.isEmbedderGenerationCurrent(generation) {
+			return nil
 		}
 		batchEnd := batchStart + batchSize
 		if batchEnd > totalNodes {
@@ -529,12 +818,26 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddingsWithProgress(ctx context.Contex
 		if embErr != nil {
 			return embErr
 		}
+		if err := validateEmbeddingBatchOutput("node", vectors, batchEnd-batchStart, emb.Dim()); err != nil {
+			return err
+		}
 		for i, vec := range vectors {
-			nodeIdx := batchStart + i
-			if nodeIdx >= totalNodes || len(vec) == 0 {
-				continue
+			if !s.isEmbedderGenerationCurrent(generation) {
+				return nil
 			}
-			_, _ = stmt.ExecContext(ctx, float32SliceToBytes(vec), nodes[nodeIdx].id)
+			nodeIdx := batchStart + i
+			if nodeIdx >= totalNodes {
+				return fmt.Errorf("node embedding batch index %d exceeds %d nodes", nodeIdx, totalNodes)
+			}
+			updated, err := s.persistEmbeddingIfCurrent(ctx, embeddingEntityNode, nodes[nodeIdx].id, embeddingModelIdentifier(emb), vec, generation, `UPDATE document_nodes SET embedding = ?
+				WHERE id = ? AND COALESCE(title, '') = ? AND COALESCE(text, '') = ?`,
+				float32SliceToBytes(vec), nodes[nodeIdx].id, nodes[nodeIdx].title, nodes[nodeIdx].text)
+			if err != nil {
+				return err
+			}
+			if !updated {
+				continue // node was deleted or rewritten while EmbedBatch was running
+			}
 		}
 		if onProgress != nil {
 			onProgress(batchEnd, totalNodes)
@@ -561,8 +864,8 @@ func extractQueryTermsForSnippet(query string) []string {
 	if query == "" {
 		return nil
 	}
-	if containsCJKRunes(query) {
-		tokens := bm25.Tokenize(query)
+	if containsNoSpaceScriptRunes(query) {
+		tokens := append(bm25.Tokenize(query), scriptNGrams(query, 2)...)
 		var terms []string
 		for _, t := range tokens {
 			t = strings.TrimSpace(t)
@@ -588,8 +891,8 @@ func extractQueryTermsForSnippet(query string) []string {
 // searchNodesByEmbedding performs vector similarity search on document_nodes.
 // This is the root-cause fix for distillation loss: it searches the ORIGINAL
 // document text embeddings, not the distilled card claims.
-func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []float32, opts SearchOptions) ([]SearchResult, error) {
-	if len(queryVec) == 0 {
+func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []float32, modelID string, generation uint64, opts SearchOptions) ([]SearchResult, error) {
+	if !validEmbeddingVector(queryVec, 0) {
 		return nil, nil
 	}
 
@@ -598,20 +901,20 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 		limit = 5
 	}
 
-	const maxCandidates = 200
 	where := []string{"n.embedding IS NOT NULL", "LENGTH(n.embedding) > 0"}
 	args := make([]interface{}, 0)
 	where, args = appendSearchFilters(where, args, "s", opts)
-	args = append(args, maxCandidates)
+	if modelID != "" {
+		where = append(where, `EXISTS (SELECT 1 FROM knowledge_embedding_metadata em WHERE em.entity_type = 'node' AND em.entity_id = n.id AND em.model_id = ? AND em.dimension = ?)`)
+		args = append(args, modelID, len(queryVec))
+	}
 
 	sqlQuery := `SELECT n.id, n.title, n.type, n.text, n.page, n.embedding,
 		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
 		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
 		FROM document_nodes n
 		JOIN knowledge_sources s ON s.id = n.source_id
-		WHERE ` + strings.Join(where, " AND ") + `
-		ORDER BY n.page ASC
-		LIMIT ?`
+		WHERE ` + strings.Join(where, " AND ")
 
 	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
@@ -625,9 +928,11 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 
 	type candidate struct {
 		result SearchResult
+		vector []float32
 		sim    float64
 	}
 	var candidates []candidate
+	var vectorCandidates []vectorANNVector
 
 	for rows.Next() {
 		var result SearchResult
@@ -644,12 +949,7 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 		}
 
 		nodeVec := bytesToFloat32Slice(embBlob)
-		if len(nodeVec) == 0 || len(nodeVec) != len(queryVec) {
-			continue
-		}
-
-		sim := cosineSimilarity(queryVec, nodeVec)
-		if sim < 0.25 { // lower threshold for nodes (more content → noisier embedding)
+		if !validEmbeddingVector(nodeVec, len(queryVec)) {
 			continue
 		}
 
@@ -663,23 +963,34 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 		// semantically relevant (cosine sim > 0.25). Full text ensures the LLM
 		// has complete evidence for count/list questions.
 		result.Snippet = nodeText
-		result.Score = 1.0 + (sim-0.25)*4.0
-		result.Citation = formatResultCitation(result)
-
-		candidates = append(candidates, candidate{result: result, sim: sim})
+		candidates = append(candidates, candidate{result: result, vector: nodeVec})
+		vectorCandidates = append(vectorCandidates, vectorANNVector{key: "node:" + result.NodeID, vector: nodeVec})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
-	// Sort by similarity descending
-	for i := 0; i < len(candidates)-1; i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].sim > candidates[i].sim {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
+	if len(candidates) > 0 {
+		candidateIndexes := s.vectorANNCandidates("node:"+modelID, generation, vectorCandidates, queryVec, limit*4)
+		accelerated := make([]candidate, 0, len(candidateIndexes))
+		for _, index := range candidateIndexes {
+			candidate := candidates[index]
+			candidate.sim = cosineSimilarity(queryVec, candidate.vector)
+			if candidate.sim < 0.25 { // lower threshold for nodes (more content → noisier embedding)
+				continue
 			}
+			candidate.result.Score = 1.0 + (candidate.sim-0.25)*4.0
+			candidate.result.Citation = formatResultCitation(candidate.result)
+			accelerated = append(accelerated, candidate)
 		}
+		candidates = accelerated
 	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].sim == candidates[j].sim {
+			return candidates[i].result.NodeID < candidates[j].result.NodeID
+		}
+		return candidates[i].sim > candidates[j].sim
+	})
 
 	results := make([]SearchResult, 0, limit)
 	for i, c := range candidates {

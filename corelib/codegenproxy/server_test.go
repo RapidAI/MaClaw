@@ -1987,6 +1987,29 @@ func TestCodeGenOpenAICompatibilityNormalizesToolCallLinkage(t *testing.T) {
 	}
 }
 
+func TestCodeGenOpenAICompatibilityAddsContentToEmptyAssistantMessage(t *testing.T) {
+	payload := map[string]interface{}{
+		"model": "deepseek-v4-flash",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "continue"},
+			map[string]interface{}{"role": "assistant", "tool_calls": []interface{}{}},
+		},
+	}
+
+	notes := applyCodeGenOpenAIMapCompatibility(payload, "deepseek-v4-flash")
+	if !containsPrefix(notes, "codegen_sanitize_messages:") {
+		t.Fatalf("notes missing message sanitize entry: %#v", notes)
+	}
+	messages := payload["messages"].([]interface{})
+	assistant := messages[1].(map[string]interface{})
+	if assistant["role"] != "assistant" || assistant["content"] != "" {
+		t.Fatalf("assistant = %#v, want explicit empty content", assistant)
+	}
+	if _, hasToolCalls := assistant["tool_calls"]; hasToolCalls {
+		t.Fatalf("empty tool_calls leaked: %#v", assistant)
+	}
+}
+
 func TestCodeGenOpenAIMapCompatibilityHandlesTypedSlices(t *testing.T) {
 	type msg struct {
 		Role    string `json:"role"`
@@ -3421,6 +3444,62 @@ func TestOpenAIResponsesStreamInvalidChunkEmitsError(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesStreamRetriesBadGatewayWithCompactHistory(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit := upstreamHits.Add(1)
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if hit == 1 {
+			if logArrayLen(payload["messages"]) < 3 || logArrayLen(payload["tools"]) == 0 {
+				t.Fatalf("initial request was not full tool history: %#v", payload)
+			}
+			http.Error(w, `{"error":{"message":"Invalid assistant message: content or tool_calls must be set"}}`, http.StatusBadGateway)
+			return
+		}
+		if logArrayLen(payload["tools"]) != 0 || logArrayLen(payload["functions"]) != 0 {
+			t.Fatalf("compact retry leaked tools: %#v", payload)
+		}
+		if logArrayLen(payload["messages"]) >= 3 {
+			t.Fatalf("compact retry did not reduce history: %#v", payload["messages"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	requestBody := `{"model":"vendor/deepseek-v4-flash","stream":true,"input":[
+		{"role":"system","content":"runtime context"},
+		{"role":"user","content":"first task"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"result"},
+		{"role":"user","content":"latest task"}
+	],"tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}]}`
+	req, _ := http.NewRequest(http.MethodPost, "http://"+srv.Addr().String()+"/v1/responses", strings.NewReader(requestBody))
+	req.Header.Set("Authorization", "Bearer local-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "recovered") {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if upstreamHits.Load() != 2 {
+		t.Fatalf("upstream hits=%d, want 2", upstreamHits.Load())
+	}
+}
+
 func TestOpenAIResponsesToolCallPromptCacheMissThenHit(t *testing.T) {
 	var upstreamHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3727,6 +3806,69 @@ func TestOpenAISDKUpstreamClientPreservesAPIErrorStatusAndBody(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "bad request from upstream") {
 		t.Fatalf("body = %s, want upstream error body", body)
+	}
+}
+
+func TestOpenAIUpstreamClientsRepairInvalidAssistantHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		client OpenAIUpstreamClient
+		stream bool
+	}{
+		{name: "raw", client: NewHTTPOpenAIUpstreamClient(nil)},
+		{name: "sdk", client: NewOpenAISDKUpstreamClient(nil)},
+		{name: "sdk stream fallback", client: NewOpenAISDKUpstreamClient(nil), stream: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode upstream request: %v", err)
+				}
+				messages := body["messages"].([]any)
+				assistant := messages[1].(map[string]any)
+				if got, ok := assistant["content"]; !ok || got != "" {
+					t.Fatalf("assistant content = %#v, want explicit empty string: %#v", got, assistant)
+				}
+				if _, ok := assistant["tool_calls"]; ok {
+					t.Fatalf("invalid tool_calls leaked upstream: %#v", assistant)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer upstream.Close()
+
+			_, err := tc.client.DoChatCompletions(
+				context.Background(), upstream.URL+"/chat/completions", "fallback-key", "test-client",
+				[]byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"continue"},{"role":"assistant","content":null,"tool_calls":[{}]}]}`),
+				"application/json", tc.stream,
+			)
+			if err != nil {
+				t.Fatalf("DoChatCompletions() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestSummarizeAssistantMessageDiagnosticsDoesNotExposeContent(t *testing.T) {
+	summary := summarizeAssistantMessageDiagnostics([]any{
+		map[string]any{"role": "user", "content": "not counted"},
+		map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{}}},
+		map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"function": map[string]any{"name": "safe"}}}},
+	})
+	for _, want := range []string{
+		"total=2",
+		"missing_content=1",
+		"null_content=1",
+		"invalid_tool_calls=1",
+		"repair_needed=1",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary = %q, want %q", summary, want)
+		}
+	}
+	if strings.Contains(summary, "not counted") || strings.Contains(summary, "safe") {
+		t.Fatalf("summary leaks input data: %q", summary)
 	}
 }
 

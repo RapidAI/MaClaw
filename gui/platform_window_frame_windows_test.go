@@ -194,6 +194,33 @@ func TestMotionUpdateKeepsPetFrameCaches(t *testing.T) {
 	}
 }
 
+func TestInvalidatePetPackAssetsClearsScaledFrameCache(t *testing.T) {
+	key := petFrameCacheKey{State: "idle"}
+	w := &windowsFloatingWindow{
+		petSkin:                 "missing-pack",
+		petInteractionMode:      "balanced",
+		petFrameCache:           map[petFrameCacheKey]*image.NRGBA{key: image.NewNRGBA(image.Rect(0, 0, 1, 1))},
+		petNativeFrameAvailable: map[petFrameCacheKey]bool{key: true},
+		petNativeFrameLoading:   map[petFrameCacheKey]bool{key: true},
+		packFrameCache:          petpack.NewFrameCache(),
+		rigRenderers:            map[string]*petpack.RigRenderer{"missing-pack\x00default": {}},
+		rigRendererFailed:       map[string]bool{"missing-pack\x00default": true},
+	}
+	w.InvalidatePetPackAssets()
+	if len(w.petFrameCache) != 0 {
+		t.Fatal("pack invalidation must drop scaled frames from the replaced pack")
+	}
+	if len(w.petNativeFrameAvailable) != 0 || len(w.petNativeFrameLoading) != 0 {
+		t.Fatal("pack invalidation must drop native frame availability state")
+	}
+	if len(w.rigRenderers) != 0 || len(w.rigRendererFailed) != 0 {
+		t.Fatal("pack invalidation must drop decoded and failed skeleton renderers")
+	}
+	if !w.renderDirty {
+		t.Fatal("pack invalidation must request a redraw")
+	}
+}
+
 func TestProceduralPetFramesKeepAnimationBuckets(t *testing.T) {
 	w := &windowsFloatingWindow{
 		petFrameCache:           make(map[petFrameCacheKey]*image.NRGBA),

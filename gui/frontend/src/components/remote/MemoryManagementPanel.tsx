@@ -259,7 +259,9 @@ interface MemoryStatusData {
     newest_entry?: string;
     categories: Array<{
         category: string;
-        label: string;
+        // Go's MemoryStatusCatRow has no label field; the UI derives one
+        // from the category, so this stays optional.
+        label?: string;
         count: number;
         percent: number;
     }>;

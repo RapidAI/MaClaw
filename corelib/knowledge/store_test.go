@@ -894,6 +894,85 @@ func TestSQLiteStoreImportFiles(t *testing.T) {
 	}
 }
 
+func TestListSourcesIncludeDisabledOption(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "keep.md"), []byte("# Keep\n\nactive source body."))
+	mustWrite(t, filepath.Join(root, "drop.md"), []byte("# Drop\n\ndisabled source body."))
+
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	res, err := store.ImportDirectory(ctx, DirectoryImportRequest{
+		RootPath:     root,
+		ProjectPath:  "D:/project-disabled-filter",
+		SaveScope:    SaveScopeProject,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("ImportDirectory: %v", err)
+	}
+	if res.ImportedFiles != 2 {
+		t.Fatalf("imported = %d, want 2", res.ImportedFiles)
+	}
+
+	all, err := store.ListSources(ctx, ListSourcesOptions{ProjectPath: "D:/project-disabled-filter", IncludeDisabled: true})
+	if err != nil {
+		t.Fatalf("ListSources include_disabled: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("include_disabled sources = %d, want 2", len(all))
+	}
+	disableResult := store.DisableSources(ctx, []string{all[0].ID})
+	if disableResult.Updated != 1 || disableResult.Failed != 0 {
+		t.Fatalf("unexpected disable result: %#v", disableResult)
+	}
+
+	defaultSources, err := store.ListSources(ctx, ListSourcesOptions{ProjectPath: "D:/project-disabled-filter"})
+	if err != nil {
+		t.Fatalf("ListSources default: %v", err)
+	}
+	if len(defaultSources) != 1 || defaultSources[0].ID == all[0].ID {
+		t.Fatalf("default ListSources should exclude disabled sources: %#v", defaultSources)
+	}
+
+	withDisabled, err := store.ListSources(ctx, ListSourcesOptions{ProjectPath: "D:/project-disabled-filter", IncludeDisabled: true})
+	if err != nil {
+		t.Fatalf("ListSources include_disabled after disable: %v", err)
+	}
+	if len(withDisabled) != 2 {
+		t.Fatalf("include_disabled sources = %d, want 2", len(withDisabled))
+	}
+
+	disabledOnly, err := store.ListSources(ctx, ListSourcesOptions{ProjectPath: "D:/project-disabled-filter", Status: StatusDisabled})
+	if err != nil {
+		t.Fatalf("ListSources status=disabled: %v", err)
+	}
+	if len(disabledOnly) != 1 || disabledOnly[0].ID != all[0].ID {
+		t.Fatalf("status=disabled should return only disabled sources: %#v", disabledOnly)
+	}
+
+	activeOnly, err := store.ListSources(ctx, ListSourcesOptions{ProjectPath: "D:/project-disabled-filter", Status: "active"})
+	if err != nil {
+		t.Fatalf("ListSources status=active: %v", err)
+	}
+	if len(activeOnly) != 1 || activeOnly[0].ID == all[0].ID {
+		t.Fatalf("status=active should exclude disabled sources: %#v", activeOnly)
+	}
+
+	unfiltered, err := store.ListSources(ctx, ListSourcesOptions{ProjectPath: "D:/project-disabled-filter", Status: "all"})
+	if err != nil {
+		t.Fatalf("ListSources status=all: %v", err)
+	}
+	if len(unfiltered) != 2 {
+		t.Fatalf("status=all should return every status including disabled: %#v", unfiltered)
+	}
+}
+
 func TestSearchEmbeddingFallbackWhenFTSEmpty(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

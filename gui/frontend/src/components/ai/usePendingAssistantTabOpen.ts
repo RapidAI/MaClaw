@@ -90,6 +90,8 @@ interface PendingAssistantTabOpenOptions {
     onPendingProjectTabOpenHandled?: () => void;
     pendingExpertOpen?: PendingExpertOpen | null;
     onPendingExpertOpenHandled?: () => void;
+    /** Persist the expert in task management before its tab is opened. */
+    onEnsureExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
 }
 
 export function usePendingAssistantTabOpen({
@@ -112,6 +114,7 @@ export function usePendingAssistantTabOpen({
     onPendingProjectTabOpenHandled,
     pendingExpertOpen,
     onPendingExpertOpenHandled,
+    onEnsureExpertTask,
 }: PendingAssistantTabOpenOptions) {
     const openHistoryDiscussion = useCallback((discussion: PendingHistoryDiscussionOpen) => {
         const discussionId = String(discussion?.id || "").trim();
@@ -224,7 +227,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data and clear pending state synchronously.
         // The guard above prevents re-entry when pending becomes null.
-        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteNeedsReconnect, imPlatform, imTargetUID, imIsGroup } = pendingProjectTabOpen;
+        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, imPlatform, imTargetUID, imIsGroup } = pendingProjectTabOpen;
         onProjectTabHandledRef.current?.();
 
         // Check if the tab already exists in the tab list BEFORE creating it.
@@ -235,7 +238,7 @@ export function usePendingAssistantTabOpen({
         // protection against duplicate autoSend.
         const tabExistedInList = hasProjectTabRef.current?.(projectPath) ?? false;
 
-        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, agentMode, remoteHost, remoteNeedsReconnect });
+        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect });
         if (!tab) return;
         const initialState = getTabStateRef.current?.(tab.id);
         const hasExistingConversation = initialState?.history &&
@@ -316,6 +319,10 @@ export function usePendingAssistantTabOpen({
     getTabListForExpertRef.current = getTabList;
     const onExpertHandledRef = useRef(onPendingExpertOpenHandled);
     onExpertHandledRef.current = onPendingExpertOpenHandled;
+    const ensureExpertTaskRef = useRef(onEnsureExpertTask);
+    ensureExpertTaskRef.current = onEnsureExpertTask;
+    /** Reject a stale async registration when a newer expert launch wins. */
+    const expertOpenRequestRef = useRef(0);
     const expertLangRef = useRef(lang);
     expertLangRef.current = lang;
 
@@ -325,35 +332,50 @@ export function usePendingAssistantTabOpen({
         onExpertHandledRef.current?.();
         const expertId = String(expert?.id || "").trim();
         if (!expertId) return;
-        const create = createExpertTabRef.current;
-        if (!create) return;
+        const requestID = ++expertOpenRequestRef.current;
 
-        // Check existence BEFORE creating so the welcome seed only happens on
-        // first creation (dedupe-activation must not re-seed).
-        const tabId = expertTabId(expertId);
-        const existedBefore = (getTabListForExpertRef.current?.() || [])
-            .some(t => t.id === tabId || (t.type === "expert" && t.expertId === expertId));
+        const openExpertTab = () => {
+            if (requestID !== expertOpenRequestRef.current) return;
+            const create = createExpertTabRef.current;
+            if (!create) return;
 
-        const tab = create(expert);
-        if (!tab || existedBefore) return;
+            // Check existence BEFORE creating so the welcome seed only happens on
+            // first creation (dedupe-activation must not re-seed).
+            const tabId = expertTabId(expertId);
+            const existedBefore = (getTabListForExpertRef.current?.() || [])
+                .some(t => t.id === tabId || (t.type === "expert" && t.expertId === expertId));
 
-        const existing = getTabStateRef.current?.(tab.id);
-        const hasConversation = Array.isArray(existing?.history)
-            && existing.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
-        if (hasConversation) return;
+            const tab = create(expert);
+            if (!tab || existedBefore) return;
 
-        const sessionKey = expertSessionKey(expertId) || undefined;
-        saveTabStateForExpertRef.current?.(tab.id, {
-            history: [{
-                id: `expert-welcome-${expertId}`,
-                role: "assistant",
-                content: expertWelcomeMessageText(expert, expertLangRef.current),
-                sessionKey,
-                timestamp: Date.now(),
-            }],
-            scrollTop: 0,
-            inputText: "",
-            lastActiveAt: Date.now(),
+            const existing = getTabStateRef.current?.(tab.id);
+            const hasConversation = Array.isArray(existing?.history)
+                && existing.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
+            if (hasConversation) return;
+
+            const sessionKey = expertSessionKey(expertId) || undefined;
+            saveTabStateForExpertRef.current?.(tab.id, {
+                history: [{
+                    id: `expert-welcome-${expertId}`,
+                    role: "assistant",
+                    content: expertWelcomeMessageText(expert, expertLangRef.current),
+                    sessionKey,
+                    timestamp: Date.now(),
+                }],
+                scrollTop: 0,
+                inputText: "",
+                lastActiveAt: Date.now(),
+            });
+        };
+        const ensureTask = ensureExpertTaskRef.current;
+        if (!ensureTask) {
+            openExpertTab();
+            return;
+        }
+        void Promise.resolve(ensureTask(expert)).then(openExpertTab).catch((error) => {
+            // Task management is the durable entry point for experts. Do not
+            // open a tab that cannot be reached again from the sidebar.
+            console.error("[task_management] create expert task failed:", error);
         });
     }, [pendingExpertOpen]);
     // ↑ ONLY pendingExpertOpen in deps. All callbacks accessed via refs.

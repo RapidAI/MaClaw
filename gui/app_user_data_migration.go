@@ -33,6 +33,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/gui/petpack"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -85,23 +86,25 @@ type userDataMigrationClientConfig struct {
 }
 
 type userDataMigrationManifest struct {
-	Version        string                        `json:"version"`
-	CreatedAt      time.Time                     `json:"created_at"`
-	TenantID       string                        `json:"tenant_id,omitempty"`
-	TenantName     string                        `json:"tenant_name,omitempty"`
-	UserID         string                        `json:"user_id,omitempty"`
-	Email          string                        `json:"email,omitempty"`
-	MachineID      string                        `json:"machine_id,omitempty"`
-	MachineName    string                        `json:"machine_name,omitempty"`
-	MemoryEntries  int                           `json:"memory_entries"`
-	KnowledgeBytes int64                         `json:"knowledge_bytes"`
-	AssetBytes     int64                         `json:"asset_bytes"`
-	ConfigSchema   string                        `json:"config_schema_version,omitempty"`
-	ConfigSections int                           `json:"config_section_count,omitempty"`
-	SecretCount    int                           `json:"secret_count,omitempty"`
-	ExcludedConfig []string                      `json:"excluded_config_paths,omitempty"`
-	Files          []userDataMigrationFileDigest `json:"files"`
-	Meta           map[string]interface{}        `json:"meta,omitempty"`
+	Version          string                        `json:"version"`
+	CreatedAt        time.Time                     `json:"created_at"`
+	TenantID         string                        `json:"tenant_id,omitempty"`
+	TenantName       string                        `json:"tenant_name,omitempty"`
+	UserID           string                        `json:"user_id,omitempty"`
+	Email            string                        `json:"email,omitempty"`
+	MachineID        string                        `json:"machine_id,omitempty"`
+	MachineName      string                        `json:"machine_name,omitempty"`
+	MemoryEntries    int                           `json:"memory_entries"`
+	KnowledgeBytes   int64                         `json:"knowledge_bytes"`
+	AssetBytes       int64                         `json:"asset_bytes"`
+	PetPackBytes     int64                         `json:"pet_pack_bytes"`
+	PetPacksIncluded bool                          `json:"pet_packs_included,omitempty"`
+	ConfigSchema     string                        `json:"config_schema_version,omitempty"`
+	ConfigSections   int                           `json:"config_section_count,omitempty"`
+	SecretCount      int                           `json:"secret_count,omitempty"`
+	ExcludedConfig   []string                      `json:"excluded_config_paths,omitempty"`
+	Files            []userDataMigrationFileDigest `json:"files"`
+	Meta             map[string]interface{}        `json:"meta,omitempty"`
 }
 
 type userDataMigrationConfigPolicy struct {
@@ -706,7 +709,7 @@ func (a *App) validateUserDataMigrationPackageForDryRun(ctx context.Context, zip
 	if manifest.Version != userDataMigrationPackageVersion && manifest.Version != userDataMigrationLegacyVersion {
 		return nil, fmt.Errorf("unsupported migration package version %q", manifest.Version)
 	}
-	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 {
+	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 {
 		return nil, fmt.Errorf("migration manifest contains invalid counts")
 	}
 	if err := userDataMigrationVerifyFileDigests(payloadDir, manifest.Files); err != nil {
@@ -766,6 +769,7 @@ func (a *App) validateUserDataMigrationPackageForDryRun(ctx context.Context, zip
 		"knowledge":        map[string]interface{}{"validated": true, "bytes": manifest.KnowledgeBytes},
 		"knowledge_repair": knowledgeRepair,
 		"assets":           map[string]interface{}{"bytes": manifest.AssetBytes},
+		"pet_packs":        map[string]interface{}{"included": manifest.PetPacksIncluded, "bytes": manifest.PetPackBytes},
 		"config":           map[string]interface{}{"sections": configSections, "secrets": secretCount},
 		"manifest":         manifest,
 	}, nil
@@ -1034,25 +1038,40 @@ func (a *App) buildUserDataMigrationPackage(ctx context.Context, cfg userDataMig
 	} else if !os.IsNotExist(err) {
 		return "", userDataMigrationManifest{}, fmt.Errorf("read knowledge_assets: %w", err)
 	}
-	manifest := userDataMigrationManifest{
-		Version:        userDataMigrationPackageVersion,
-		CreatedAt:      time.Now().UTC(),
-		TenantID:       cfg.TenantID,
-		TenantName:     cfg.TenantName,
-		UserID:         cfg.UserID,
-		Email:          cfg.Email,
-		MachineID:      cfg.MachineID,
-		MachineName:    cfg.MachineName,
-		MemoryEntries:  len(entries),
-		KnowledgeBytes: knowledgeResult.Bytes,
-		AssetBytes:     assetBytes,
-		ConfigSchema:   userDataMigrationConfigSchema,
-		ConfigSections: len(migrationConfig),
-		SecretCount:    len(secretPaths),
-		ExcludedConfig: userDataMigrationExcludedConfigPaths(),
-		Meta:           map[string]interface{}{"host": "gui", "contains": []string{"config", "memory", "knowledge", "knowledge_assets"}},
+	petPackBytes := int64(0)
+	petPacksDir := a.userDataMigrationPetPacksDir()
+	if st, err := os.Stat(petPacksDir); err == nil {
+		if !st.IsDir() {
+			return "", userDataMigrationManifest{}, fmt.Errorf("pet-packs is not a directory")
+		}
+		petPackBytes, err = userDataMigrationCopyDirInto(payloadDir, petPacksDir, "pet_packs")
+		if err != nil {
+			return "", userDataMigrationManifest{}, err
+		}
+	} else if !os.IsNotExist(err) {
+		return "", userDataMigrationManifest{}, fmt.Errorf("read pet-packs: %w", err)
 	}
-	if manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 {
+	manifest := userDataMigrationManifest{
+		Version:          userDataMigrationPackageVersion,
+		CreatedAt:        time.Now().UTC(),
+		TenantID:         cfg.TenantID,
+		TenantName:       cfg.TenantName,
+		UserID:           cfg.UserID,
+		Email:            cfg.Email,
+		MachineID:        cfg.MachineID,
+		MachineName:      cfg.MachineName,
+		MemoryEntries:    len(entries),
+		KnowledgeBytes:   knowledgeResult.Bytes,
+		AssetBytes:       assetBytes,
+		PetPackBytes:     petPackBytes,
+		PetPacksIncluded: true,
+		ConfigSchema:     userDataMigrationConfigSchema,
+		ConfigSections:   len(migrationConfig),
+		SecretCount:      len(secretPaths),
+		ExcludedConfig:   userDataMigrationExcludedConfigPaths(),
+		Meta:             map[string]interface{}{"host": "gui", "contains": []string{"config", "memory", "knowledge", "knowledge_assets", "pet_packs"}},
+	}
+	if manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 {
 		return "", userDataMigrationManifest{}, fmt.Errorf("migration data size is invalid")
 	}
 	files, err := userDataMigrationDigestDir(payloadDir)
@@ -1088,7 +1107,7 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 	if manifest.Version != userDataMigrationPackageVersion && manifest.Version != userDataMigrationLegacyVersion {
 		return nil, fmt.Errorf("unsupported migration package version %q", manifest.Version)
 	}
-	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 {
+	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 {
 		return nil, fmt.Errorf("migration manifest contains invalid counts")
 	}
 	if err := userDataMigrationVerifyFileDigests(payloadDir, manifest.Files); err != nil {
@@ -1148,12 +1167,28 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 	if err != nil {
 		return nil, userDataMigrationRollbackError(err, rollbackMemory, rollbackConfig)
 	}
+	petPackBytes := int64(0)
+	var rollbackPetPacks func() error
+	var commitPetPacks func()
+	if manifest.PetPacksIncluded {
+		petPackSrc := filepath.Join(payloadDir, "pet_packs")
+		petPackBytes, rollbackPetPacks, commitPetPacks, err = a.replaceUserDataMigrationPetPacks(petPackSrc, workDir)
+		if err != nil {
+			return nil, userDataMigrationRollbackError(err, rollbackAssets, rollbackMemory, rollbackConfig)
+		}
+	}
 	knowledgeResult, err := a.importUserDataMigrationKnowledgeSnapshot(knowledgePath, workDir)
 	if err != nil {
-		return nil, userDataMigrationRollbackError(err, rollbackKnowledge, rollbackAssets, rollbackMemory, rollbackConfig)
+		return nil, userDataMigrationRollbackError(err, rollbackKnowledge, rollbackPetPacks, rollbackAssets, rollbackMemory, rollbackConfig)
 	}
 	if commitAssets != nil {
 		commitAssets()
+	}
+	if commitPetPacks != nil {
+		commitPetPacks()
+	}
+	if userDataMigrationSamePath(petpack.UserPacksDir(), a.userDataMigrationPetPacksDir()) {
+		_ = petpack.EnsureGlobal().Scan()
 	}
 	_ = ctx
 	return map[string]interface{}{
@@ -1164,6 +1199,10 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 		"knowledge_repair": knowledgeRepair,
 		"assets": map[string]interface{}{
 			"bytes": assetBytes,
+		},
+		"pet_packs": map[string]interface{}{
+			"included": manifest.PetPacksIncluded,
+			"bytes":    petPackBytes,
 		},
 		"config": map[string]interface{}{
 			"sections": configSections,
@@ -1715,20 +1754,73 @@ func userDataMigrationKnowledgeImportError(result knowledge.SnapshotImportResult
 }
 
 func (a *App) replaceUserDataMigrationKnowledgeAssets(assetSrc, workDir string) (int64, func() error, func(), error) {
-	dataDir := a.GetDataDir()
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	return userDataMigrationReplaceDirectory(
+		assetSrc,
+		filepath.Join(a.GetDataDir(), "knowledge_assets"),
+		workDir,
+		"knowledge_assets.backup",
+		"knowledge_assets",
+	)
+}
+
+// userDataMigrationPetPacksDir resolves the pack directory from this App's
+// effective data root. This keeps a migration independent from the process
+// global pack registry, which may point at a different data root in tests.
+func (a *App) userDataMigrationPetPacksDir() string {
+	if env := strings.TrimSpace(os.Getenv("MACLAW_PET_PACKS_DIR")); env != "" {
+		return filepath.Clean(env)
+	}
+	return filepath.Join(a.getMaclawBaseDir(), "pet-packs")
+}
+
+func userDataMigrationSamePath(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func (a *App) replaceUserDataMigrationPetPacks(source, workDir string) (int64, func() error, func(), error) {
+	return userDataMigrationReplaceDirectory(source, a.userDataMigrationPetPacksDir(), workDir, "pet_packs.backup", "pet_packs")
+}
+
+func userDataMigrationReplaceDirectory(source, destination, workDir, backupName, packageName string) (int64, func() error, func(), error) {
+	resolvedSource, err := filepath.Abs(source)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("resolve %s source: %w", packageName, err)
+	}
+	destination, err = filepath.Abs(destination)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("resolve %s destination: %w", packageName, err)
+	}
+	workDir, err = filepath.Abs(workDir)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("resolve migration work directory: %w", err)
+	}
+	backupDir, err := userDataMigrationSafeJoin(workDir, backupName)
+	if err != nil {
 		return 0, nil, nil, err
 	}
-	assetDest := filepath.Join(dataDir, "knowledge_assets")
-	backupDir := filepath.Join(workDir, "knowledge_assets.backup")
-	hadDest := false
-	if _, err := os.Stat(assetDest); err == nil {
-		hadDest = true
+	if userDataMigrationSamePath(destination, backupDir) || userDataMigrationPathContains(destination, backupDir) || userDataMigrationPathContains(backupDir, destination) {
+		return 0, nil, nil, fmt.Errorf("unsafe %s backup location", packageName)
+	}
+	if userDataMigrationSamePath(resolvedSource, destination) || userDataMigrationPathContains(resolvedSource, destination) || userDataMigrationPathContains(destination, resolvedSource) ||
+		userDataMigrationSamePath(resolvedSource, backupDir) || userDataMigrationPathContains(resolvedSource, backupDir) || userDataMigrationPathContains(backupDir, resolvedSource) {
+		return 0, nil, nil, fmt.Errorf("unsafe %s source location", packageName)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return 0, nil, nil, err
+	}
+	hadDestination := false
+	if _, err := os.Stat(destination); err == nil {
+		hadDestination = true
 		if err := os.RemoveAll(backupDir); err != nil {
 			return 0, nil, nil, err
 		}
-		if err := os.Rename(assetDest, backupDir); err != nil {
-			return 0, nil, nil, fmt.Errorf("backup existing knowledge assets: %w", err)
+		if err := os.Rename(destination, backupDir); err != nil {
+			return 0, nil, nil, fmt.Errorf("backup existing %s: %w", packageName, err)
 		}
 	} else if !os.IsNotExist(err) {
 		return 0, nil, nil, err
@@ -1738,11 +1830,11 @@ func (a *App) replaceUserDataMigrationKnowledgeAssets(assetSrc, workDir string) 
 	rollback := func() error {
 		rolledBack = true
 		var failures []string
-		if err := os.RemoveAll(assetDest); err != nil {
+		if err := os.RemoveAll(destination); err != nil {
 			failures = append(failures, err.Error())
 		}
-		if hadDest {
-			if err := os.Rename(backupDir, assetDest); err != nil {
+		if hadDestination {
+			if err := os.Rename(backupDir, destination); err != nil {
 				failures = append(failures, err.Error())
 			}
 		}
@@ -1752,25 +1844,34 @@ func (a *App) replaceUserDataMigrationKnowledgeAssets(assetSrc, workDir string) 
 		return nil
 	}
 	commit := func() {
-		if !rolledBack && hadDest {
+		if !rolledBack && hadDestination {
 			_ = os.RemoveAll(backupDir)
 		}
 	}
 
-	assetBytes := int64(0)
-	if st, err := os.Stat(assetSrc); err == nil {
+	if st, err := os.Stat(resolvedSource); err == nil {
 		if !st.IsDir() {
-			return 0, rollback, commit, userDataMigrationRollbackError(fmt.Errorf("knowledge_assets in migration package is not a directory"), rollback)
+			return 0, rollback, commit, userDataMigrationRollbackError(fmt.Errorf("%s in migration package is not a directory", packageName), rollback)
 		}
-		n, err := userDataMigrationCopyDirInto(dataDir, assetSrc, "knowledge_assets")
+		bytes, err := userDataMigrationCopyDirInto(filepath.Dir(destination), resolvedSource, filepath.Base(destination))
 		if err != nil {
 			return 0, rollback, commit, userDataMigrationRollbackError(err, rollback)
 		}
-		assetBytes = n
+		return bytes, rollback, commit, nil
 	} else if !os.IsNotExist(err) {
 		return 0, rollback, commit, userDataMigrationRollbackError(err, rollback)
 	}
-	return assetBytes, rollback, commit, nil
+	return 0, rollback, commit, nil
+}
+
+func userDataMigrationPathContains(parent, child string) bool {
+	parent = filepath.Clean(parent)
+	child = filepath.Clean(child)
+	if runtime.GOOS == "windows" {
+		parent = strings.ToLower(parent)
+		child = strings.ToLower(child)
+	}
+	return strings.HasPrefix(child, parent+string(os.PathSeparator))
 }
 
 func userDataMigrationRollbackError(primary error, rollbacks ...func() error) error {
@@ -2287,6 +2388,9 @@ func userDataMigrationDigestDir(root string) ([]userDataMigrationFileDigest, err
 		out = append(out, userDataMigrationFileDigest{Path: filepath.ToSlash(rel), Bytes: size, SHA256: sha})
 		return nil
 	})
+	if err == nil {
+		sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	}
 	return out, err
 }
 
@@ -2359,6 +2463,12 @@ func validateUserDataMigrationManifestFileStats(manifest userDataMigrationManife
 	if files["knowledge_snapshot.jsonl"].Bytes != manifest.KnowledgeBytes {
 		return fmt.Errorf("migration knowledge byte count mismatch")
 	}
+	// pet_packs is a namespace directory, never a payload file. Rejecting a
+	// file at its root lets dry-run fail before restore attempts to replace the
+	// user's installed pack tree with an invalid path.
+	if _, exists := files["pet_packs"]; exists {
+		return fmt.Errorf("migration pet-pack root must be a directory")
+	}
 	var assetBytes int64
 	for name, file := range files {
 		if strings.HasPrefix(name, "knowledge_assets/") {
@@ -2370,6 +2480,26 @@ func validateUserDataMigrationManifestFileStats(manifest userDataMigrationManife
 	}
 	if assetBytes != manifest.AssetBytes {
 		return fmt.Errorf("migration asset byte count mismatch")
+	}
+	var petPackBytes int64
+	petPackFileCount := 0
+	for name, file := range files {
+		if strings.HasPrefix(name, "pet_packs/") {
+			if file.Bytes > int64(^uint64(0)>>1)-petPackBytes {
+				return fmt.Errorf("migration pet-pack byte count overflow")
+			}
+			petPackBytes += file.Bytes
+			petPackFileCount++
+		}
+	}
+	if petPackBytes != manifest.PetPackBytes {
+		return fmt.Errorf("migration pet-pack byte count mismatch")
+	}
+	// Packages created before pet packs joined the migration scope do not have
+	// PetPacksIncluded set. Keep them compatible, but do not silently accept
+	// unclaimed pet-pack payload files that would be ignored during restore.
+	if !manifest.PetPacksIncluded && (petPackFileCount != 0 || manifest.PetPackBytes != 0) {
+		return fmt.Errorf("migration package contains pet-pack data without declaring it")
 	}
 	return nil
 }

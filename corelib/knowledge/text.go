@@ -73,7 +73,7 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 }
 
 func buildTextSourceAndNodes(req TextSaveRequest, existing Source) (Source, []DocumentNode, error) {
-	text := strings.TrimSpace(req.Text)
+	text := normalizeKnowledgeText(req.Text)
 	if text == "" {
 		return Source{}, nil, fmt.Errorf("text is required")
 	}
@@ -112,7 +112,7 @@ func buildTextSourceAndNodes(req TextSaveRequest, existing Source) (Source, []Do
 	if !existing.CreatedAt.IsZero() {
 		source.CreatedAt = existing.CreatedAt
 	}
-	nodes := parsePlainTextNodes(source, text, kind)
+	nodes := annotateMultilingualNodes(parsePlainTextNodes(source, text, kind))
 	for i := range nodes {
 		if nodes[i].Title == "" {
 			nodes[i].Title = title

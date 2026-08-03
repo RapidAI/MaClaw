@@ -123,8 +123,8 @@ describe("VirtualEmployeeSettingsPanel", () => {
 
     const submit = screen.getByTestId("ve-submit-btn");
     const approval = await screen.findByTestId("ve-approval-section");
-    const workflow = screen.getByTestId("ve-approval-workflow-design-section");
-    const save = screen.getByTestId("ve-approval-save-btn");
+    const workflow = await screen.findByTestId("ve-approval-workflow-design-section");
+    const save = await screen.findByTestId("ve-approval-save-btn");
 
     expect(Boolean(submit.compareDocumentPosition(approval) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
     expect(Boolean(approval.compareDocumentPosition(workflow) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);

@@ -25,6 +25,9 @@ func cloneAppConfigForMutation(cfg corelib.AppConfig) corelib.AppConfig {
 	if n := len(cfg.WebSearchProviders); n > 0 {
 		out.WebSearchProviders = append([]corelib.WebSearchProvider(nil), cfg.WebSearchProviders...)
 	}
+	if n := len(cfg.WebSearchStrategy.Engines); n > 0 {
+		out.WebSearchStrategy.Engines = append([]corelib.WebSearchEngineConfig(nil), cfg.WebSearchStrategy.Engines...)
+	}
 	if n := len(cfg.MCPServers); n > 0 {
 		out.MCPServers = append([]corelib.MCPServerEntry(nil), cfg.MCPServers...)
 	}

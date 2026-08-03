@@ -673,25 +673,31 @@ func countCodingWorkbenchStepOutcomes(steps []codingWorkbenchStepStatus) (passed
 
 // formatRemoteCodingPlanStatusText builds the short status banner for a remote
 // multi-step pure-coding turn. Pure helper so unit tests do not need IM handler state.
-func formatRemoteCodingPlanStatusText(planned bool, resultStatus string, totalSteps, passed, failed, skipped int) string {
+func formatRemoteCodingPlanStatusText(planned bool, resultStatus string, totalSteps, passed, failed, skipped int, maintenance ...bool) string {
+	remoteTaskLabel := func(coding, maintenanceLabel string) string {
+		if len(maintenance) > 0 && maintenance[0] {
+			return maintenanceLabel
+		}
+		return coding
+	}
 	if !planned {
 		if resultStatus != "success" {
-			return "远程编程未完成"
+			return remoteTaskLabel("远程编程未完成", "远程维护未完成")
 		}
-		return "远程编程完成"
+		return remoteTaskLabel("远程编程完成", "远程维护完成")
 	}
 	if totalSteps < 0 {
 		totalSteps = 0
 	}
 	switch {
 	case resultStatus == "success" && totalSteps > 0 && passed >= totalSteps && failed == 0 && skipped == 0:
-		return fmt.Sprintf("远程编程完成（已按 %d 步计划执行）", totalSteps)
+		return fmt.Sprintf(remoteTaskLabel("远程编程完成（已按 %d 步计划执行）", "远程维护完成（已按 %d 步计划执行）"), totalSteps)
 	case passed > 0 && resultStatus == "success" && failed == 0 && skipped == 0:
-		return fmt.Sprintf("远程编程部分完成（%d/%d 步通过）", passed, totalSteps)
+		return fmt.Sprintf(remoteTaskLabel("远程编程部分完成（%d/%d 步通过）", "远程维护部分完成（%d/%d 步通过）"), passed, totalSteps)
 	case passed > 0 || failed > 0 || skipped > 0:
-		return fmt.Sprintf("远程编程未完成（通过 %d/%d，失败 %d，跳过 %d）", passed, totalSteps, failed, skipped)
+		return fmt.Sprintf(remoteTaskLabel("远程编程未完成（通过 %d/%d，失败 %d，跳过 %d）", "远程维护未完成（通过 %d/%d，失败 %d，跳过 %d）"), passed, totalSteps, failed, skipped)
 	default:
-		return "远程编程未完成"
+		return remoteTaskLabel("远程编程未完成", "远程维护未完成")
 	}
 }
 

@@ -1,7 +1,4 @@
 import clawMateSrc from '../assets/images/maclaw-clawmate.svg';
-import devClawSrc from '../assets/images/maclaw-dev-claw.svg';
-import focusClawSrc from '../assets/images/maclaw-focus-claw.svg';
-import miniClawSrc from '../assets/images/maclaw-mini-claw.svg';
 
 /** Built-in official ids remain known for typing; runtime packs may add more. */
 export type PetSkinId = string;
@@ -12,6 +9,8 @@ export interface PetSkinOption {
     alt: string;
     tone: string;
     desc: string;
+    /** Original `description` from pet-pack.yaml, retained for publishing. */
+    manifestDescription?: string;
     previewLine: string;
     image: string;
     variants?: string[];
@@ -22,6 +21,7 @@ export interface PetSkinOption {
     hasPreview?: boolean;
     status?: string;
     version?: string;
+    renderer?: string;
 }
 
 export const defaultPetSkinId: PetSkinId = 'clawmate';
@@ -29,51 +29,18 @@ export const defaultPetSize = 88;
 
 const builtinImages: Record<string, string> = {
     'clawmate': clawMateSrc,
-    'mini-claw': miniClawSrc,
-    'dev-claw': devClawSrc,
-    'focus-claw': focusClawSrc,
 };
 
 export const petSkinOptions: PetSkinOption[] = [
     {
         id: 'clawmate',
         label: 'ClawMate',
-        alt: 'MaClaw ClawMate workbench companion',
+        alt: 'MaClaw ClawMate mechanical crab companion',
         tone: 'Balanced',
-        desc: 'Workbench companion with ears, paws, and a signal tag',
-        previewLine: 'A concrete helper that keeps tasks visible without feeling toy-like.',
+        desc: 'A calm mechanical crab companion with expressive eyes and compact claws',
+        previewLine: 'The official animated reference; add your own character through a pet pack.',
         image: clawMateSrc,
-        variants: ['classic', 'default'],
-    },
-    {
-        id: 'mini-claw',
-        label: 'Mini Claw',
-        alt: 'MaClaw Mini Claw pocket companion',
-        tone: 'Compact',
-        desc: 'Pocket-sized helper with a compact shell and tiny boots',
-        previewLine: 'Small, fast, and easy to keep near the edge.',
-        image: miniClawSrc,
-        variants: ['classic', 'default'],
-    },
-    {
-        id: 'dev-claw',
-        label: 'Dev Claw',
-        alt: 'MaClaw Dev Claw coding companion',
-        tone: 'Developer',
-        desc: 'Coding companion with visor, terminal chest, and tool marks',
-        previewLine: 'More technical, direct, and ready for coding turns.',
-        image: devClawSrc,
-        variants: ['classic', 'default'],
-    },
-    {
-        id: 'focus-claw',
-        label: 'Focus Claw',
-        alt: 'MaClaw Focus Claw quiet companion',
-        tone: 'Focus',
-        desc: 'Quiet companion with soft eyes and low-motion presence',
-        previewLine: 'Calmer motion for long focus sessions.',
-        image: focusClawSrc,
-        variants: ['classic', 'default'],
+        variants: ['default'],
     },
 ];
 
@@ -90,7 +57,7 @@ export function getPetSkinOption(id: unknown, catalog: PetSkinOption[] = petSkin
             desc: id,
             previewLine: id,
             image: builtinImages[id] || clawMateSrc,
-            variants: ['classic', 'default'],
+            variants: ['default'],
         };
     }
     return catalog.find((option) => option.id === defaultPetSkinId) || catalog[0];
@@ -124,7 +91,7 @@ export function packInfoToSkinOption(pack: Record<string, unknown>, lang: string
         (lang.startsWith('zh') ? descMap['zh-Hans'] || descMap['zh-Hant'] : descMap.en) ||
         plainDesc ||
         String(pack.name || id);
-    const variants = Array.isArray(pack.variants) ? (pack.variants as string[]) : ['classic', 'default'];
+    const variants = Array.isArray(pack.variants) ? (pack.variants as string[]) : ['default'];
     const scope = String(pack.scope || '');
     return {
         id,
@@ -132,6 +99,7 @@ export function packInfoToSkinOption(pack: Record<string, unknown>, lang: string
         alt: label,
         tone: String(pack.tone || 'balanced'),
         desc,
+        manifestDescription: plainDesc || desc,
         previewLine: desc,
         image: builtinImages[id] || clawMateSrc,
         variants,
@@ -142,6 +110,7 @@ export function packInfoToSkinOption(pack: Record<string, unknown>, lang: string
         hasPreview: !!pack.has_preview,
         status: String(pack.status || ''),
         version: String(pack.version || ''),
+        renderer: String(pack.renderer || ''),
     };
 }
 

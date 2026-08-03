@@ -1,11 +1,11 @@
-import type { Dispatch, SetStateAction } from 'react';
 import { PatchConfigFields, SetEnvCheckInterval } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, SetStateAction } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 
 type GeneralAdvancedSettingsPanelProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     t: (key: string) => string;
     hasWindowsTerminal: boolean;
@@ -16,15 +16,15 @@ type GeneralAdvancedSettingsPanelProps = {
 const textForLang = localizeText;
 
 const saveConfigPatch = (
-    config: main.AppConfig | null,
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>,
+    config: corelib.AppConfig | null,
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>,
     patch: Record<string, any>,
 ) => {
     if (!config) return;
-    const next = new main.AppConfig({ ...config, ...patch });
+    const next = new corelib.AppConfig({ ...config, ...patch });
     setConfig(next);
     PatchConfigFields(patch).then((saved) => {
-        setConfig(new main.AppConfig(saved));
+        setConfig(new corelib.AppConfig(saved));
     }).catch((err) => {
         console.error('Failed to patch advanced settings:', err);
         setConfig(config);

@@ -360,7 +360,8 @@ var antiBotBodyMarkers = []string{
 	"just a moment", "cf-chl", "challenge-platform", "cf_clearance",
 	"attention required! | cloudflare", "verify you are human",
 	"anomaly-modal", "bots use duckduckgo", // DuckDuckGo anomaly challenge
-	"g-recaptcha", "h-captcha", "cf-turnstile", "captcha-box", "challenge-form",
+	"g-recaptcha", "h-captcha", `class="cf-turnstile"`, `class='cf-turnstile'`,
+	"captcha-box", "challenge-form",
 	"百度安全验证", "wappass.baidu.com/static/captcha", // Baidu security check
 }
 

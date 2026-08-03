@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -790,6 +791,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	}
 	// Skill Catalog API
 	var searchRemover skillSearchRemover
+	var skillAuthSvc *skillmarket.AuthService
 	var problemReports *ProblemReportHandlers
 	if smHandlers != nil {
 		problemReports = NewProblemReportHandlers(smHandlers.store, smHandlers.authSvc, smHandlers.dataDir)
@@ -802,8 +804,9 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 			problemReports.SetHAPublicOriginProvider(haSvc.PublicURL)
 		}
 		searchRemover = smHandlers.SearchService()
+		skillAuthSvc = smHandlers.authSvc
 	}
-	skillHandlers := NewSkillHandlers(skillStore, searchRemover)
+	skillHandlers := NewSkillHandlers(skillStore, searchRemover, skillAuthSvc)
 	mux.HandleFunc("GET /api/v1/skills/search", skillHandlers.SearchSkills)
 	mux.HandleFunc("GET /api/v1/skills/{id}", skillHandlers.GetSkill)
 	mux.HandleFunc("GET /api/v1/skills/{id}/download", skillHandlers.DownloadSkill)
@@ -961,6 +964,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/pet-store/packs", smHandlers.ListPetStorePacks)
 		mux.HandleFunc("GET /api/v1/pet-store/rankings", smHandlers.GetPetStoreRankings)
 		mux.HandleFunc("GET /api/v1/pet-store/account", smHandlers.GetPetStoreAccount)
+		mux.HandleFunc("GET /api/v1/pet-store/creator-report", smHandlers.GetPetStoreCreatorReport)
 		mux.HandleFunc("GET /api/v1/pet-store/packs/mine", smHandlers.ListMyPetStorePacks)
 		mux.HandleFunc("GET /api/v1/pet-store/packs/source/{sourcePackID}/publishability", smHandlers.CanPublishPetStorePack)
 		mux.HandleFunc("POST /api/v1/pet-store/packs", smHandlers.SubmitPetStorePack)
@@ -968,6 +972,32 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/pet-store/packs/{id}/purchase", smHandlers.PurchasePetStorePack)
 		mux.HandleFunc("GET /api/v1/pet-store/packs/{id}/download", smHandlers.DownloadPetStorePack)
 		mux.HandleFunc("POST /api/v1/pet-store/packs/{id}/withdraw", smHandlers.WithdrawPetStorePack)
+		// Pet Store moderation is intentionally independent from the skill review
+		// queue: pet packs publish immediately, while administrators can inspect,
+		// pause, resume, or delete an already listed package afterwards.
+		mux.HandleFunc("GET /api/v1/admin/pet-store/packs", RequireAdmin(adminService, smHandlers.AdminListPetStorePacks))
+		mux.HandleFunc("GET /api/v1/admin/pet-store/packs/{id}/preview", RequireAdmin(adminService, smHandlers.AdminPreviewPetStorePack))
+		mux.HandleFunc("POST /api/v1/admin/pet-store/packs/{id}/pause", RequireAdmin(adminService, smHandlers.AdminPausePetStorePack))
+		mux.HandleFunc("POST /api/v1/admin/pet-store/packs/{id}/resume", RequireAdmin(adminService, smHandlers.AdminResumePetStorePack))
+		mux.HandleFunc("DELETE /api/v1/admin/pet-store/packs/{id}", RequireAdmin(adminService, smHandlers.AdminDeletePetStorePack))
+		mux.HandleFunc("DELETE /api/v1/admin/pet-store/packs/{id}/purge", RequireAdmin(adminService, smHandlers.AdminPurgePetStorePack))
+		// AI Expert Market. MaClaw GUI owns the consumer dialog; HubCenter owns
+		// review, listing lifecycle, Credits settlement, and moderation.
+		mux.HandleFunc("GET /api/v1/expert-market/experts", smHandlers.ListExpertMarketListings)
+		mux.HandleFunc("GET /api/v1/expert-market/account", smHandlers.GetExpertMarketAccount)
+		mux.HandleFunc("POST /api/v1/expert-market/experts", smHandlers.SubmitExpertMarketListing)
+		mux.HandleFunc("GET /api/v1/expert-market/experts/{id}", smHandlers.GetExpertMarketListing)
+		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/purchase", smHandlers.PurchaseExpertMarketListing)
+		mux.HandleFunc("GET /api/v1/expert-market/experts/{id}/download", smHandlers.DownloadExpertMarketListing)
+		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/installations", smHandlers.ReportExpertMarketInstallation)
+		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/withdraw", smHandlers.WithdrawExpertMarketListing)
+		mux.HandleFunc("GET /api/v1/admin/expert-market/experts", RequireAdmin(adminService, smHandlers.AdminListExpertMarketListings))
+		mux.HandleFunc("GET /api/v1/admin/expert-market/experts/{id}/events", RequireAdmin(adminService, smHandlers.AdminListExpertMarketEvents))
+		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/approve", RequireAdmin(adminService, smHandlers.AdminApproveExpertMarketListing))
+		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/reject", RequireAdmin(adminService, smHandlers.AdminRejectExpertMarketListing))
+		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/unlist", RequireAdmin(adminService, smHandlers.AdminUnlistExpertMarketListing))
+		mux.HandleFunc("DELETE /api/v1/admin/expert-market/experts/{id}", RequireAdmin(adminService, smHandlers.AdminDeleteExpertMarketListing))
+		mux.HandleFunc("DELETE /api/v1/admin/expert-market/experts/{id}/purge", RequireAdmin(adminService, smHandlers.AdminPurgeExpertMarketListing))
 		mux.HandleFunc("GET /api/v1/account/{email}/tier", smHandlers.GetAccountTier)
 		// Admin refund & purchases
 		mux.HandleFunc("POST /api/v1/admin/refund", RequireAdmin(adminService, smHandlers.AdminRefund))

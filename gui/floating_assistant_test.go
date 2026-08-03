@@ -9,16 +9,17 @@ import (
 
 // mockFloatingWindow is a mock implementation of floatingWindow for testing.
 type mockFloatingWindow struct {
-	created      bool
-	shown        bool
-	destroyed    bool
-	x, y         int
-	createErr    error
-	runtimeState string
-	motionUpdates int
-	soundEnabled  bool
-	soundPreset   string
-	mu           sync.Mutex
+	created            bool
+	shown              bool
+	destroyed          bool
+	x, y               int
+	createErr          error
+	runtimeState       string
+	motionUpdates      int
+	assetInvalidations int
+	soundEnabled       bool
+	soundPreset        string
+	mu                 sync.Mutex
 }
 
 func (m *mockFloatingWindow) Create(x, y, w, h int) error {
@@ -76,6 +77,12 @@ func (m *mockFloatingWindow) UpdateMotionConfig(motionEnabled, quiet, reducedMot
 	m.motionUpdates++
 }
 
+func (m *mockFloatingWindow) InvalidatePetPackAssets() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.assetInvalidations++
+}
+
 func (m *mockFloatingWindow) SetPetRuntimeState(state string, ttlMs int) {
 	m.runtimeState = state
 }
@@ -85,6 +92,10 @@ func (m *mockFloatingWindow) CurrentPetRuntimeState() string {
 		return "idle"
 	}
 	return m.runtimeState
+}
+
+func (m *mockFloatingWindow) PetPackRuntimeLevel(declared string) (string, string) {
+	return declared, ""
 }
 
 func TestFloatingAppearanceIgnoresRetiredPetVariant(t *testing.T) {
@@ -107,6 +118,17 @@ func TestUpdateSoundConfigUpdatesWindowWithoutMotionRefresh(t *testing.T) {
 	}
 	if win.motionUpdates != 0 {
 		t.Fatalf("manager sound-only update should not request motion refresh, got %d", win.motionUpdates)
+	}
+}
+
+func TestInvalidatePetPackAssetsRefreshesLiveWindow(t *testing.T) {
+	win := &mockFloatingWindow{}
+	manager := &FloatingAssistantManager{window: win}
+	manager.InvalidatePetPackAssets()
+	win.mu.Lock()
+	defer win.mu.Unlock()
+	if win.assetInvalidations != 1 {
+		t.Fatalf("asset invalidations = %d, want 1", win.assetInvalidations)
 	}
 }
 

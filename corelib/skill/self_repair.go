@@ -201,23 +201,63 @@ func IsRepairableError(errorClass string) bool {
 //
 // Path 2 (statistical): Enough usage data to judge — success rate below 50%.
 func ShouldAttemptRepair(skill *corelib.NLSkillEntry) bool {
-	if !canAttemptRepairBase(skill) {
-		return false
+	ok, _ := ExplainRepairGate(skill)
+	return ok
+}
+
+// ExplainRepairGate reports whether an automated repair attempt should run,
+// and when not, the first blocking reason. Reasons (check order):
+//
+//	no_skill / no_last_error / status_not_active / file_backed /
+//	max_attempts / error_class_not_repairable / usage_threshold /
+//	success_rate_ok
+//
+// ShouldAttemptRepair is a thin wrapper around it; the reason string powers
+// pipeline skip logging and the file-backed human-review draft flow.
+func ExplainRepairGate(skill *corelib.NLSkillEntry) (ok bool, reason string) {
+	return explainRepairGate(skill, false)
+}
+
+// explainRepairGate implements ExplainRepairGate; ignoreFileBacked skips the
+// file-backed gate so the human-reviewed draft flow can verify that all
+// other gates pass.
+func explainRepairGate(skill *corelib.NLSkillEntry, ignoreFileBacked bool) (bool, string) {
+	if skill == nil {
+		return false, "no_skill"
+	}
+	if skill.LastError == "" {
+		return false, "no_last_error"
+	}
+	if !isRepairEligibleStatus(skill.Status) {
+		return false, "status_not_active"
+	}
+	if !ignoreFileBacked && IsFileBackedSkill(*skill) {
+		return false, "file_backed"
+	}
+	if skill.RepairAttemptCount >= SelfRepairMaxAttempts {
+		return false, "max_attempts"
+	}
+	errorClass := ExtractErrorClass(skill.LastError)
+	if !IsRepairableError(errorClass) {
+		return false, "error_class_not_repairable"
 	}
 
 	// Path 1: Newly installed hub/github skill — first failure is a strong
 	// signal (environment incompatibility). Repair immediately if the error
 	// class is repairable.
 	if skill.UsageCount <= 2 && isHubSource(skill.Source) {
-		return true
+		return true, ""
 	}
 
 	// Path 2: Statistical — enough data to judge.
 	if skill.UsageCount < SelfRepairThreshold {
-		return false
+		return false, "usage_threshold"
 	}
 	successRate := float64(skill.SuccessCount) / float64(skill.UsageCount)
-	return successRate < 0.5
+	if successRate >= 0.5 {
+		return false, "success_rate_ok"
+	}
+	return true, ""
 }
 
 // CanForceAttemptRepair reports whether a manual/agent-triggered repair is
@@ -345,6 +385,22 @@ func AttemptRepairWithContext(llm LLMRepairer, skill *corelib.NLSkillEntry, ctx 
 		if step.OnError != "" {
 			fmt.Fprintf(&stepsDesc, " on_error=%s", step.OnError)
 		}
+		if step.Name != "" {
+			fmt.Fprintf(&stepsDesc, " name=%s", step.Name)
+		}
+		if step.Condition != "" {
+			fmt.Fprintf(&stepsDesc, " condition=%s", step.Condition)
+		}
+		if step.When != "" {
+			fmt.Fprintf(&stepsDesc, " when=%s", step.When)
+		}
+		if step.Label != "" {
+			fmt.Fprintf(&stepsDesc, " label=%s", step.Label)
+		}
+		if len(step.Capture) > 0 {
+			captureJSON, _ := json.Marshal(step.Capture)
+			fmt.Fprintf(&stepsDesc, " capture=%s", string(captureJSON))
+		}
 		stepsDesc.WriteString("\n")
 	}
 
@@ -370,7 +426,9 @@ Rules:
     the whole skill just because the caller used a wrong key (e.g. file vs input).
   * If params match the schema, fix the failing command/template/environment instead.
 - Return ONLY a JSON object with fields: repaired (bool), new_steps (array), explanation (string), should_disable (bool)
-- Each step in new_steps has: action (string), params (object), on_error (string, optional)`
+- Each step in new_steps has: action (string), params (object), on_error (string, optional),
+  and optionally name / condition / when / label / capture (object) — preserve these from the
+  original step unless they are the cause of the failure`
 
 	var contextSection string
 	if ctx != nil {
@@ -471,26 +529,56 @@ func SanitizeRepairResult(skill *corelib.NLSkillEntry, result *RepairResult) err
 	if skill != nil {
 		skillDir = skill.SkillDir
 	}
-	out := make([]SkillYAMLStep, 0, len(result.NewSteps))
-	for i, s := range result.NewSteps {
-		step := NormalizeStepForRunner(corelib.NLSkillStep{
-			Action:  s.Action,
-			Params:  s.Params,
-			OnError: s.OnError,
-		}, skillDir)
-		if err := EnsureStepActionSupported(RunnerBackendGUI, step.Action); err != nil {
-			return fmt.Errorf("step %d action %q unsupported after normalize: %w", i, step.Action, err)
-		}
-		if strings.TrimSpace(step.Action) == "" {
-			return fmt.Errorf("step %d has empty action after normalize", i)
-		}
+	normalized := make([]corelib.NLSkillStep, 0, len(result.NewSteps))
+	for _, s := range result.NewSteps {
+		// Carry the flat optional fields through normalization (NormalizeStepForRunner
+		// only rewrites Action/Params/OnError) so a repair rewrite does not
+		// silently strip them — that is the same hazard class the poll/loop
+		// gates exist for.
+		normalized = append(normalized, NormalizeStepForRunner(corelib.NLSkillStep{
+			Action:    s.Action,
+			Params:    s.Params,
+			OnError:   s.OnError,
+			Name:      s.Name,
+			Condition: s.Condition,
+			When:      s.When,
+			Label:     s.Label,
+			Capture:   s.Capture,
+		}, skillDir))
+	}
+	if err := ValidateRepairSteps(normalized); err != nil {
+		return err
+	}
+	out := make([]SkillYAMLStep, 0, len(normalized))
+	for _, step := range normalized {
 		out = append(out, SkillYAMLStep{
-			Action:  step.Action,
-			Params:  step.Params,
-			OnError: step.OnError,
+			Action:    step.Action,
+			Params:    step.Params,
+			OnError:   step.OnError,
+			Name:      step.Name,
+			Condition: step.Condition,
+			When:      step.When,
+			Label:     step.Label,
+			Capture:   step.Capture,
 		})
 	}
 	result.NewSteps = out
+	return nil
+}
+
+// ValidateRepairSteps enforces the GUI runner action whitelist on an already
+// normalized step list: every step must have a non-empty action supported by
+// RunnerBackendGUI. Used by SanitizeRepairResult after normalization and by
+// the GUI repair-draft apply path as a hard gate on human-reviewed drafts.
+func ValidateRepairSteps(steps []corelib.NLSkillStep) error {
+	for i, step := range steps {
+		if strings.TrimSpace(step.Action) == "" {
+			return fmt.Errorf("step %d has empty action", i)
+		}
+		if err := EnsureStepActionSupported(RunnerBackendGUI, step.Action); err != nil {
+			return fmt.Errorf("step %d action %q unsupported: %w", i, step.Action, err)
+		}
+	}
 	return nil
 }
 
@@ -521,14 +609,7 @@ func ApplyRepair(skill *corelib.NLSkillEntry, result *RepairResult) bool {
 	}
 
 	// Convert RepairResult steps to NLSkillStep.
-	newSteps := make([]corelib.NLSkillStep, len(result.NewSteps))
-	for i, s := range result.NewSteps {
-		newSteps[i] = corelib.NLSkillStep{
-			Action:  s.Action,
-			Params:  s.Params,
-			OnError: s.OnError,
-		}
-	}
+	newSteps := convertRepairResultSteps(result.NewSteps)
 
 	skill.Steps = newSteps
 	NormalizeSkillForRunner(skill)
@@ -538,6 +619,29 @@ func ApplyRepair(skill *corelib.NLSkillEntry, result *RepairResult) bool {
 	log.Printf("[skill-repair] repaired skill %s with %d new steps (attempt %d)",
 		skill.Name, len(newSteps), skill.RepairAttemptCount)
 	return true
+}
+
+// convertRepairResultSteps converts LLM-produced repair steps to
+// NLSkillStep, preserving the flat optional fields (name/condition/when/
+// label/capture) so a repair rewrite does not silently strip them.
+// poll/loop are intentionally NOT carried: WriteBackOptimizedSteps cannot
+// round-trip them, and such skills/drafts are refused by the
+// StepsHavePollLoop gates before this point.
+func convertRepairResultSteps(steps []SkillYAMLStep) []corelib.NLSkillStep {
+	newSteps := make([]corelib.NLSkillStep, len(steps))
+	for i, s := range steps {
+		newSteps[i] = corelib.NLSkillStep{
+			Action:    s.Action,
+			Params:    s.Params,
+			OnError:   s.OnError,
+			Name:      s.Name,
+			Condition: s.Condition,
+			When:      s.When,
+			Label:     s.Label,
+			Capture:   s.Capture,
+		}
+	}
+	return newSteps
 }
 
 func recordRepairAttempt(skill *corelib.NLSkillEntry, errorClass, explanation string) {

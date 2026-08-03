@@ -1,10 +1,10 @@
-import { useRef, type Dispatch, type SetStateAction } from 'react';
-import { SelectProjectDir, PatchConfigFields } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { PatchConfigFields, SelectProjectDir } from '../../../wailsjs/go/main/App';
+import { type Dispatch, type SetStateAction, useRef } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 
 type ProjectManagerItemProps = {
-    config: main.AppConfig;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     t: (key: string) => string;
     project: any;
     selectedProjectForLaunch: string;
@@ -28,7 +28,7 @@ export const ProjectManagerItem = ({
         const newName = e.target.value;
         dirtyRef.current = true;
         const newList = config.projects.map((p: any) => p.id === project.id ? { ...p, name: newName } : p);
-        setConfig(new main.AppConfig({ ...config, projects: newList }));
+        setConfig(new corelib.AppConfig({ ...config, projects: newList }));
     };
 
     const commitName = () => {
@@ -73,7 +73,7 @@ export const ProjectManagerItem = ({
                 SelectProjectDir().then(dir => {
                     if (dir) {
                         const newList = config.projects.map((p: any) => p.id === project.id ? { ...p, path: dir } : p);
-                        const newConfig = new main.AppConfig({ ...config, projects: newList });
+                        const newConfig = new corelib.AppConfig({ ...config, projects: newList });
                         setConfig(newConfig);
                         PatchConfigFields({ projects: newList }).catch((err) => console.error('Failed to save project path:', err));
                     }
@@ -85,7 +85,7 @@ export const ProjectManagerItem = ({
                 onClick={() => {
                     if (config.projects.length > 1) {
                         const newList = config.projects.filter((p: any) => p.id !== project.id);
-                        const newConfig = new main.AppConfig({ ...config, projects: newList });
+                        const newConfig = new corelib.AppConfig({ ...config, projects: newList });
                         if (config.current_project === project.id) newConfig.current_project = newList[0].id;
                         if (selectedProjectForLaunch === project.id) setSelectedProjectForLaunch(newConfig.current_project);
                         setConfig(newConfig);

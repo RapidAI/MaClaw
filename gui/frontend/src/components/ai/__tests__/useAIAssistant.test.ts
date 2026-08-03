@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import * as fc from 'fast-check';
-import { main } from '../../../../wailsjs/go/models';
+import { corelib, main } from '../../../../wailsjs/go/models';
 
 let mockSendResponse: any = { text: 'ok', error: '', fields: null, actions: null, request_id: 'req-default' };
 let mockSendError: Error | null = null;
@@ -115,7 +115,7 @@ function resetAppMocks() {
     (GetAIAssistantTrace as any).mockReset();
     (GetAIAssistantTrace as any).mockImplementation(async () => ({ summary: 'trace ok', event_count: 2, evidence_count: 1, events: [], evidence: [] }));
     (LoadConfig as any).mockReset();
-    (LoadConfig as any).mockImplementation(async () => new main.AppConfig({ show_ai_trace_entry: false, trial_reflect_enabled: false }));
+    (LoadConfig as any).mockImplementation(async () => new corelib.AppConfig({ show_ai_trace_entry: false, trial_reflect_enabled: false }));
     (CancelAIAssistantSession as any).mockReset();
     (CancelAIAssistantSession as any).mockImplementation(async () => {});
     (CancelAIAssistantSessionForSession as any).mockReset();
@@ -271,7 +271,7 @@ describe('useAIAssistant property tests', () => {
     });
 
     it('preserves llm_token_usage when AppConfig is reconstructed on the frontend', () => {
-        const cfg = new main.AppConfig({
+        const cfg = new corelib.AppConfig({
             show_ai_trace_entry: false,
             trial_reflect_enabled: false,
             llm_token_usage: {
@@ -279,7 +279,7 @@ describe('useAIAssistant property tests', () => {
             },
         });
 
-        const reconstructed = new main.AppConfig({
+        const reconstructed = new corelib.AppConfig({
             ...cfg,
             trial_reflect_enabled: true,
         });
@@ -291,7 +291,7 @@ describe('useAIAssistant property tests', () => {
 
     it('loads trial-reflect mode from config on mount', async () => {
         (GetTrialReflectEnabled as any).mockResolvedValueOnce(true);
-        (LoadConfig as any).mockResolvedValueOnce(new main.AppConfig({ show_ai_trace_entry: false, trial_reflect_enabled: true }));
+        (LoadConfig as any).mockResolvedValueOnce(new corelib.AppConfig({ show_ai_trace_entry: false, trial_reflect_enabled: true }));
 
         const { result } = renderAssistantHook();
 
@@ -309,7 +309,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         act(() => {
-            emitRuntimeEvent('config-changed', new main.AppConfig({ trial_reflect_enabled: true, show_ai_trace_entry: false }));
+            emitRuntimeEvent('config-changed', new corelib.AppConfig({ trial_reflect_enabled: true, show_ai_trace_entry: false }));
         });
 
         await waitFor(() => {
@@ -2012,7 +2012,7 @@ describe('useAIAssistant property tests', () => {
     it('uses configured foreground response timeout from config', async () => {
         vi.useFakeTimers();
         try {
-            (LoadConfig as any).mockResolvedValueOnce(new main.AppConfig({
+            (LoadConfig as any).mockResolvedValueOnce(new corelib.AppConfig({
                 show_ai_trace_entry: false,
                 trial_reflect_enabled: false,
                 agent_response_timeout_sec: 600,
@@ -2062,7 +2062,7 @@ describe('useAIAssistant property tests', () => {
             await act(async () => {
                 await Promise.resolve();
                 window.dispatchEvent(new CustomEvent('maclaw-config-changed', {
-                    detail: new main.AppConfig({ agent_response_timeout_sec: 600 }),
+                    detail: new corelib.AppConfig({ agent_response_timeout_sec: 600 }),
                 }));
                 await Promise.resolve();
             });
@@ -3778,7 +3778,7 @@ describe('useAIAssistant property tests', () => {
             expect(result.current.messages).toEqual([]);
         });
         act(() => {
-            emitRuntimeEvent('config-changed', new main.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
+            emitRuntimeEvent('config-changed', new corelib.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
         });
 
         await act(async () => {
@@ -3853,7 +3853,7 @@ describe('useAIAssistant property tests', () => {
             expect(result.current.messages).toEqual([]);
         });
         act(() => {
-            emitRuntimeEvent('config-changed', new main.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
+            emitRuntimeEvent('config-changed', new corelib.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
         });
 
         await act(async () => {
@@ -3892,7 +3892,7 @@ describe('useAIAssistant property tests', () => {
             expect(result.current.messages).toEqual([]);
         });
         act(() => {
-            emitRuntimeEvent('config-changed', new main.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
+            emitRuntimeEvent('config-changed', new corelib.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
         });
 
         await act(async () => {

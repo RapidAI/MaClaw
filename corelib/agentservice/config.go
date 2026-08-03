@@ -251,6 +251,13 @@ func SanitizeAppConfig(cfg corelib.AppConfig) corelib.AppConfig {
 		}
 		cfg.WebSearchProviders = providers
 	}
+	if len(cfg.WebSearchStrategy.Engines) > 0 {
+		engines := append([]corelib.WebSearchEngineConfig(nil), cfg.WebSearchStrategy.Engines...)
+		for i := range engines {
+			engines[i].APIKey = maskSecret(engines[i].APIKey)
+		}
+		cfg.WebSearchStrategy.Engines = engines
+	}
 	if len(cfg.MCPServers) > 0 {
 		servers := make([]corelib.MCPServerEntry, len(cfg.MCPServers))
 		copy(servers, cfg.MCPServers)
@@ -336,6 +343,11 @@ func appConfigContainsMaskedSecrets(cfg corelib.AppConfig) bool {
 	}
 	for _, provider := range cfg.WebSearchProviders {
 		if maskedSecretPlaceholder(provider.Key) {
+			return true
+		}
+	}
+	for _, engine := range cfg.WebSearchStrategy.Engines {
+		if maskedSecretPlaceholder(engine.APIKey) {
 			return true
 		}
 	}
@@ -712,6 +724,7 @@ func mergeSecretPreserving(current, next corelib.AppConfig) corelib.AppConfig {
 	preserveSecretString(&next.MaclawLLMKey, current.MaclawLLMKey)
 	preserveMaclawLLMProviderSecrets(current.MaclawLLMProviders, next.MaclawLLMProviders)
 	preserveWebSearchProviderSecrets(current.WebSearchProviders, next.WebSearchProviders)
+	preserveWebSearchEngineSecrets(current.WebSearchStrategy.Engines, next.WebSearchStrategy.Engines)
 	preserveMCPServerSecrets(current.MCPServers, next.MCPServers)
 	preserveLocalMCPServerSecrets(current.LocalMCPServers, next.LocalMCPServers)
 	preserveMaskedSecretString(&next.QQBotAppSecret, current.QQBotAppSecret)
@@ -723,6 +736,18 @@ func mergeSecretPreserving(current, next corelib.AppConfig) corelib.AppConfig {
 	preserveModelRouteSecrets(current.ModelRoutes, next.ModelRoutes)
 	preserveExtraToolConfigSecrets(current.ExtraToolConfigs, next.ExtraToolConfigs)
 	return next
+}
+
+func preserveWebSearchEngineSecrets(current, next []corelib.WebSearchEngineConfig) {
+	byID := make(map[string]string, len(current))
+	for _, engine := range current {
+		byID[strings.ToLower(strings.TrimSpace(engine.ID))] = engine.APIKey
+	}
+	for i := range next {
+		if secretPlaceholderOrEmpty(next[i].APIKey) {
+			next[i].APIKey = byID[strings.ToLower(strings.TrimSpace(next[i].ID))]
+		}
+	}
 }
 
 func preserveSecretString(next *string, current string) {

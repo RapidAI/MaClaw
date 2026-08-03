@@ -106,6 +106,8 @@ export type CodingWorkbenchControlPanelProps = {
     theme: Theme;
     chrome: CodingBannerChrome;
     remote: boolean;
+    /** The user-facing intent can differ from the remote execution engine. */
+    intent?: "remote_maintenance";
     remoteHost?: string;
     preparing?: boolean;
     prepareMode?: string;
@@ -180,6 +182,7 @@ export function CodingWorkbenchControlPanel({
     theme: t,
     chrome,
     remote,
+    intent,
     remoteHost,
     preparing,
     prepareMode,
@@ -236,21 +239,29 @@ export function CodingWorkbenchControlPanel({
     }, [expanded]);
 
     const label = useMemo(() => (
-        remote
+        intent === "remote_maintenance"
+            ? (remoteHost
+                ? localizeText(lang, `Remote maintenance · ${remoteHost}`, `远程维护 · ${remoteHost}`, `遠端維護 · ${remoteHost}`)
+                : localizeText(lang, "Remote maintenance", "远程维护", "遠端維護"))
+            : remote
             ? (remoteHost
                 ? localizeText(lang, `Remote · ${remoteHost}`, `远程 · ${remoteHost}`, `遠端 · ${remoteHost}`)
                 : localizeText(lang, "Remote coding", "远程编程", "遠端程式"))
             : localizeText(lang, "Coding", "编程", "程式")
-    ), [lang, remote, remoteHost]);
+    ), [intent, lang, remote, remoteHost]);
 
     // Keep test-friendly long names available via title + sr-only text.
     const longTitle = useMemo(() => (
-        remote
+        intent === "remote_maintenance"
+            ? (remoteHost
+                ? localizeText(lang, `Remote maintenance task · ${remoteHost}`, `远程维护任务 · ${remoteHost}`, `遠端維護任務 · ${remoteHost}`)
+                : localizeText(lang, "Remote maintenance task", "远程维护任务", "遠端維護任務"))
+            : remote
             ? (remoteHost
                 ? localizeText(lang, `Remote coding environment · ${remoteHost}`, `远程编程环境 · ${remoteHost}`, `遠端程式開發環境 · ${remoteHost}`)
                 : localizeText(lang, "Remote coding environment", "远程编程环境", "遠端程式開發環境"))
             : localizeText(lang, "Full coding environment", "全功能编程环境", "全功能程式開發環境")
-    ), [lang, remote, remoteHost]);
+    ), [intent, lang, remote, remoteHost]);
 
     // Prefer step progress on the chip; pending/conflict badges carry those states.
     const status = useMemo(
@@ -309,7 +320,7 @@ export function CodingWorkbenchControlPanel({
         alignItems: "center",
         gap: 6,
         maxWidth: "min(320px, calc(100vw - 24px))",
-        height: 30,
+        minHeight: 36,
         padding: "0 10px 0 6px",
         borderRadius: 999,
         border: `1px solid ${expanded ? chrome.accent : chrome.border}`,
@@ -396,7 +407,7 @@ export function CodingWorkbenchControlPanel({
                         </svg>
                     )}
                 </span>
-                <span style={{ fontWeight: 700, color: chrome.accentStrong, whiteSpace: "nowrap" }}>{label}</span>
+                <span style={{ fontWeight: 700, color: chrome.accentStrong, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
                 {showStatusText && (
                     <span
                         aria-live="polite"

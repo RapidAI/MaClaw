@@ -91,6 +91,20 @@
 - **排除** `disk quota` / filesystem quota（避免与磁盘配额混淆）
 - `rate_limit`：短语优先（含 `rate_limit_exceeded`），不再强依赖 429
 
+## 已修：skill 生成即上传市场 → 成功运行阈值门禁（2026-07）
+
+旧行为：生成管线 quality gate 用模拟成功执行打分 → 必 approved → `EnqueueUpload("generated_upload", proof=false, now=true)` 立即上传，零散 skill 涌入市场；旧的 3 次运行阈值（`AutoUploadTrigger.ShouldUpload`）已是死代码。
+
+新行为：
+
+- 生成只注册、不上传；唯一自动上传时机是运行成功后 `SkillRunner.tryAutoUpload`：`skill_auto_upload_enabled`（默认 true）且 `SuccessCount >= skill_auto_upload_min_successes`（默认 3，含本次，取自 `updateUsageStats` 落账副本）才 `EnqueueUpload`（质量门 + 内容 hash 去重 `findUploadedQueueItem`）
+- 两个新配置均可经 `PatchConfigFields` 写入；`min_successes ≤0` 回退默认；自进化路径（`EvolutionPipeline.UploadTrigger`）同受总开关控制
+- 存量兼容：上传 worker 启动时 `PurgeLegacyGeneratedUploads` 清除旧版 `generated_upload` pending/failed 队列条目（blocked/uploaded 保留；达标 skill 下次成功运行重新入队）
+- write-only 的 `AutoUploadTrigger` 子系统（tracker/ShouldUpload/RecordExecution/MarkUploadedHash 及 manager 接口层 accessor）整体移除
+- 服务端（hubcenter）：`POST /api/v1/skills` 直发口加 session token 鉴权（此前匿名可发）；上传者自报 `trusted/builtin/official` 一律降级 `community`（此前强制 trusted），HA 集群同步的污染面关闭
+
+已知未决：`LoadConfig` 热路径不返回 NLSkills（`config_txn.go loadConfigSnapshot` 有根因注释），热路径补挂会改变 maclaw app install 的 provenance 判定，待 install 模块负责人定向。
+
 ## 后续改进计划（未做）
 
 | 优先级 | 项 | 说明 |

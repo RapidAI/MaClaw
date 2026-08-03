@@ -60,10 +60,6 @@ func (a *App) GetGossipClient() *GossipClient {
 	return a.gossipClient
 }
 
-func (a *App) GetAutoUploadTrigger() *AutoUploadTrigger {
-	return a.autoUploadTrigger
-}
-
 func (a *App) GetGossipAutoPublish() *AutoPublishTrigger {
 	return a.gossipAutoPublish
 }

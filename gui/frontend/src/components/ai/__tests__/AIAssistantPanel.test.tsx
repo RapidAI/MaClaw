@@ -8,9 +8,10 @@ import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistan
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, setCodingWorkbenchSessionPlanMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
+    openProjectDirectoryMock: vi.fn().mockResolvedValue(undefined),
     loadProjectContextMock: vi.fn().mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] }),
     loadProjectConversationHistoryMock: vi.fn().mockResolvedValue([]),
     createProjectTabSessionMock: vi.fn().mockResolvedValue(undefined),
@@ -28,7 +29,11 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock
     patchConfigFieldsMock: vi.fn().mockResolvedValue({}),
     getCodingWorkbenchStatusMock: vi.fn().mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' }),
     prepareRemoteCodingEnvironmentMock: vi.fn().mockResolvedValue(undefined),
+    prepareRemoteOpsDiagnosisEnvironmentMock: vi.fn().mockResolvedValue(undefined),
     setCodingWorkbenchSessionPlanMock: vi.fn().mockResolvedValue(undefined),
+    getTabWorkingDirMock: vi.fn().mockResolvedValue({ path: '' }),
+    setTabWorkingDirMock: vi.fn().mockResolvedValue(undefined),
+    selectWorkingDirMock: vi.fn().mockResolvedValue(''),
     runtimeEventsOnMock: vi.fn(),
     runtimeEventsOffMock: vi.fn(),
 }));
@@ -172,7 +177,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InitiateVEConversation: initiateVEConversationMock,
     AddVEToGroup: addVEToGroupMock,
     RefreshWorkflowV2StateForTab: vi.fn().mockResolvedValue({}),
-    GetTabWorkingDir: vi.fn().mockResolvedValue({ path: '' }),
+    GetTabWorkingDir: getTabWorkingDirMock,
+    SetTabWorkingDir: setTabWorkingDirMock,
+    SelectWorkingDir: selectWorkingDirMock,
+    OpenProjectDirectory: openProjectDirectoryMock,
     GetTTSEnabled: vi.fn().mockResolvedValue(false),
     SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
     SpeakText: vi.fn().mockResolvedValue(undefined),
@@ -190,6 +198,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListCodingWorkbenchCheckpoints: vi.fn().mockResolvedValue([]),
     ListCodingWorkbenchConflicts: vi.fn().mockResolvedValue([]),
     PrepareRemoteCodingEnvironment: prepareRemoteCodingEnvironmentMock,
+    PrepareRemoteOpsDiagnosisEnvironment: prepareRemoteOpsDiagnosisEnvironmentMock,
     SetCodingWorkbenchSessionPlan: setCodingWorkbenchSessionPlanMock,
     SetCodingWorkbenchPlanMode: vi.fn().mockResolvedValue(undefined),
     SetCodingWorkbenchWorktreeMode: vi.fn().mockResolvedValue(undefined),
@@ -303,12 +312,26 @@ describe('AIAssistantPanel property tests', () => {
         openFileOrShowInFolderMock.mockResolvedValue(undefined);
         showItemInFolderMock.mockReset();
         showItemInFolderMock.mockResolvedValue(undefined);
+        openProjectDirectoryMock.mockReset();
+        openProjectDirectoryMock.mockResolvedValue(undefined);
         loadProjectContextMock.mockReset();
         loadProjectContextMock.mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] });
         loadProjectConversationHistoryMock.mockReset();
         loadProjectConversationHistoryMock.mockResolvedValue([]);
         createProjectTabSessionMock.mockReset();
         createProjectTabSessionMock.mockResolvedValue(undefined);
+        prepareRemoteCodingEnvironmentMock.mockReset();
+        prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+        prepareRemoteOpsDiagnosisEnvironmentMock.mockReset();
+        prepareRemoteOpsDiagnosisEnvironmentMock.mockResolvedValue(undefined);
+        getCodingWorkbenchStatusMock.mockReset();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+        getTabWorkingDirMock.mockReset();
+        getTabWorkingDirMock.mockResolvedValue({ path: '' });
+        setTabWorkingDirMock.mockReset();
+        setTabWorkingDirMock.mockResolvedValue(undefined);
+        selectWorkingDirMock.mockReset();
+        selectWorkingDirMock.mockResolvedValue('');
         saveCurrentChatAsTaskMock.mockReset();
         saveCurrentChatAsTaskMock.mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' });
         suggestCurrentTaskNameMock.mockReset();
@@ -1457,6 +1480,58 @@ describe('AIAssistantPanel property tests', () => {
         expect(queryByRole('alertdialog')).toBeTruthy();
     });
 
+    it('uses the maintenance intent in remote high-risk approval prompts', async () => {
+        const { getByRole } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+        const approvalHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval')
+            .at(-1)?.[1];
+        expect(approvalHandler).toBeTypeOf('function');
+
+        act(() => approvalHandler({
+            id: 'maintenance-approval-1',
+            tool: 'ssh_bash',
+            path: 'systemctl restart app',
+            project_path: '/srv/app',
+            directory: '/srv/app',
+            timeout_seconds: 30,
+            kind: 'remote_high_risk_bash',
+            maintenance: true,
+            auto_allow: false,
+        }));
+
+        expect(getByRole('alertdialog').textContent || '').toMatch(/Remote maintenance|远程维护/i);
+        expect(getByRole('alertdialog').textContent || '').not.toMatch(/Remote CodingSubAgent|远程编码 SubAgent/i);
+    });
+
+    it('uses the maintenance intent in remote scope approval prompts', async () => {
+        const { getByRole } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+        const approvalHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval')
+            .at(-1)?.[1];
+        expect(approvalHandler).toBeTypeOf('function');
+
+        act(() => approvalHandler({
+            id: 'maintenance-scope-approval-1',
+            tool: 'ssh_read_file',
+            path: '/etc/app/config',
+            project_path: '/srv/app',
+            directory: '/etc/app',
+            timeout_seconds: 30,
+            kind: 'remote_path_access',
+            maintenance: true,
+            auto_allow: false,
+        }));
+
+        expect(getByRole('alertdialog').textContent || '').toMatch(/Remote Maintenance Approval|远程维护确认/i);
+        expect(getByRole('alertdialog').textContent || '').toMatch(/Remote maintenance|远程维护/i);
+    });
+
     it('opens current tenant card store URL from config', async () => {
         const openURL = vi.fn();
 
@@ -2448,6 +2523,76 @@ describe('AIAssistantPanel property tests', () => {
             expect(desc).toMatch(/skill|mcp/i);
             expect(desc).toMatch(/multi-turn|多轮|多輪|续写|續寫/i);
         }, { timeout: 3000 });
+    });
+
+    it('uses maintenance copy while a remote diagnosis environment is preparing', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockImplementationOnce(() => new Promise<void>(resolve => { resolveSession = resolve; }));
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-maintenance-preparing',
+                taskTitle: 'Remote maintenance task',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.8',
+                remoteSafety: 'diagnosis',
+            },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toMatch(/Preparing remote maintenance|正在准备远程维护/i));
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toMatch(/Preparing remote maintenance|正在准备远程维护/i);
+        await act(async () => resolveSession());
+    });
+
+    it('uses the diagnosis-only SSH preparation path when reconnecting an incident task', async () => {
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => rearmed
+            ? { kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, remote_safety: 'diagnosis' }
+            : {
+                kind: 'remote', armed: false, needs_reconnect: true, turn_count: 0,
+                remote_host: '10.1.1.2', remote_user: 'ops', remote_port: 22,
+                remote_work_dir: '/srv/service', remote_safety: 'diagnosis',
+            });
+        prepareRemoteOpsDiagnosisEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-diagnosis-reconnect', taskTitle: 'Diagnose service', autoSend: false,
+                prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: '10.1.1.2', remoteSafety: 'diagnosis',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'secret' } });
+        fireEvent.click(getByTestId('remote-reconnect-submit'));
+        await waitFor(() => expect(prepareRemoteOpsDiagnosisEnvironmentMock).toHaveBeenCalledWith(
+            'D:/tasks/remote-diagnosis-reconnect', '10.1.1.2', 'ops', 'secret', '/srv/service', 22,
+        ));
+        expect(prepareRemoteCodingEnvironmentMock).not.toHaveBeenCalled();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('shows remote maintenance intent for diagnosis tasks while retaining the remote execution engine', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-maintenance-label', taskTitle: 'Diagnose service', autoSend: false,
+                prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: 'ops.example.test', remoteSafety: 'diagnosis',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-env-banner')).toBeTruthy());
+        const chip = getByTestId('remote-coding-env-banner');
+        expect(chip.textContent || '').toMatch(/Remote maintenance|远程维护/i);
+        await waitFor(() => expect(getByTestId('remote-coding-workbench-empty').textContent || '').toMatch(/Remote maintenance ready|远程维护已就绪/i));
     });
 
     it('shows remote SSH reconnect form when coding workbench needs reconnect', async () => {
@@ -5428,12 +5573,48 @@ describe('expert tabs', () => {
         window.localStorage.clear();
         cancelSessionForSessionMock.mockReset();
         cancelSessionForSessionMock.mockResolvedValue('');
+        getTabWorkingDirMock.mockReset();
+        getTabWorkingDirMock.mockResolvedValue({ path: '' });
+        setTabWorkingDirMock.mockReset();
+        setTabWorkingDirMock.mockResolvedValue(undefined);
+        selectWorkingDirMock.mockReset();
+        selectWorkingDirMock.mockResolvedValue('');
+        openProjectDirectoryMock.mockReset();
+        openProjectDirectoryMock.mockResolvedValue(undefined);
     });
 
     it('opens an expert tab from pendingExpertOpen and seeds a local welcome message', async () => {
         renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
         await screen.findByTestId('ai-tab-expert-exp-1');
         await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+    });
+
+    it('shows the shared current-working-directory selector in an expert tab', async () => {
+        getTabWorkingDirMock.mockResolvedValueOnce({ path: 'D:/workspace/default', is_default: false });
+        selectWorkingDirMock.mockResolvedValueOnce('D:/workspace/literature');
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await screen.findByTestId('project-dir-bar');
+        fireEvent.click(screen.getByRole('button', { name: 'Open current working directory' }));
+        expect(openProjectDirectoryMock).toHaveBeenCalledWith('D:/workspace/default');
+        fireEvent.click(screen.getByRole('button', { name: 'Choose a different working directory' }));
+        await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('', 'D:/workspace/literature'));
+    });
+
+    it('opens only one directory picker when the expert selector is clicked rapidly', async () => {
+        let resolveDirectory!: (path: string) => void;
+        getTabWorkingDirMock.mockResolvedValueOnce({ path: 'D:/workspace/default', is_default: false });
+        selectWorkingDirMock.mockImplementationOnce(() => new Promise<string>(resolve => { resolveDirectory = resolve; }));
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        const changeButton = await screen.findByRole('button', { name: 'Choose a different working directory' });
+
+        fireEvent.click(changeButton);
+        fireEvent.click(changeButton);
+        expect(selectWorkingDirMock).toHaveBeenCalledTimes(1);
+
+        resolveDirectory('D:/workspace/literature');
+        await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('', 'D:/workspace/literature'));
     });
 
     it('routes expert tab sends with expert_id and no project path', async () => {

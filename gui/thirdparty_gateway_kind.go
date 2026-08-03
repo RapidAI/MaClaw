@@ -11,6 +11,9 @@ const (
 	thirdPartyGatewayMessageFile    thirdPartyGatewayMessageKind = "file"
 	thirdPartyGatewayMessageVoice   thirdPartyGatewayMessageKind = "voice"
 	thirdPartyGatewayMessageVideo   thirdPartyGatewayMessageKind = "video"
+	thirdPartyGatewayMessageAmbient       thirdPartyGatewayMessageKind = "ambient"
+	thirdPartyGatewayMessagePetState      thirdPartyGatewayMessageKind = "pet_state"
+	thirdPartyGatewayMessageMeetingResult thirdPartyGatewayMessageKind = "meeting_result"
 )
 
 func normalizeThirdPartyGatewayMessageKind(kind string) thirdPartyGatewayMessageKind {
@@ -25,6 +28,12 @@ func normalizeThirdPartyGatewayMessageKind(kind string) thirdPartyGatewayMessage
 		return thirdPartyGatewayMessageVoice
 	case thirdPartyGatewayMessageVideo:
 		return thirdPartyGatewayMessageVideo
+	case thirdPartyGatewayMessageAmbient:
+		return thirdPartyGatewayMessageAmbient
+	case thirdPartyGatewayMessagePetState:
+		return thirdPartyGatewayMessagePetState
+	case thirdPartyGatewayMessageMeetingResult:
+		return thirdPartyGatewayMessageMeetingResult
 	default:
 		return thirdPartyGatewayMessageUnknown
 	}

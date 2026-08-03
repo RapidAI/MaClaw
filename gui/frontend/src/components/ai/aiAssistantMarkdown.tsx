@@ -29,6 +29,7 @@ import {
     RecordingSessionCard,
     type RecordingCompleteResult,
 } from "./RecordingSessionCard";
+import { AssistantMermaidDiagram, isMermaidCodeFence } from "./AssistantMermaidDiagram";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 export type { RecordingCompleteResult } from "./RecordingSessionCard";
@@ -640,13 +641,29 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
     const structureLines = normalized.includes("#") ? attachBareHeadingMarkers(rawLines) : rawLines;
     const lines = prepareChatBodyLines(structureLines);
     let inCodeBlock = false;
+    let codeFenceMarker = "";
     let codeBlockLines: string[] = [];
     let codeBlockLang = "";
     let tableLines: string[] = [];
     let lineIdx = 0;
 
-    const flushCodeBlock = () => {
+    const flushCodeBlock = (allowMermaidRender = true) => {
         if (inCodeBlock || codeBlockLines.length > 0) {
+            // A streaming response may expose an unfinished Mermaid fence for
+            // several frames. Keep it as source until the closing fence arrives
+            // instead of repeatedly invoking Mermaid on partial syntax.
+            if (allowMermaidRender && isMermaidCodeFence(codeBlockLang)) {
+                elements.push(
+                    <AssistantMermaidDiagram
+                        key={`mermaid-${elements.length}`}
+                        code={codeBlockLines.join("\n")}
+                        theme={t}
+                    />,
+                );
+                codeBlockLines = [];
+                codeBlockLang = "";
+                return;
+            }
             elements.push(
                 <pre key={`code-${elements.length}`} style={{
                     background: t.codeBlockBg,
@@ -671,6 +688,7 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
         }
         codeBlockLines = [];
         codeBlockLang = "";
+        codeFenceMarker = "";
     };
 
     const flushTable = () => {
@@ -697,14 +715,23 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
         if (!inCodeBlock && /^\|+$/.test(line.trim())) {
             continue;
         }
-        if (/^```/.test(line.trimStart())) {
+        const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
+        if (fenceMatch) {
             flushTable();
             if (inCodeBlock) {
-                flushCodeBlock();
-                inCodeBlock = false;
+                const marker = fenceMatch[1];
+                // A closing fence must use the same character and be at least
+                // as long as its opener. Otherwise it belongs to the code body.
+                if (marker[0] === codeFenceMarker[0] && marker.length >= codeFenceMarker.length && !fenceMatch[2].trim()) {
+                    flushCodeBlock();
+                    inCodeBlock = false;
+                } else {
+                    codeBlockLines.push(line);
+                }
             } else {
                 inCodeBlock = true;
-                codeBlockLang = line.trimStart().slice(3).trim();
+                codeFenceMarker = fenceMatch[1];
+                codeBlockLang = fenceMatch[2].trim();
             }
         } else if (inCodeBlock) {
             codeBlockLines.push(line);
@@ -719,7 +746,7 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
         }
         lineIdx++;
     }
-    if (inCodeBlock) flushCodeBlock();
+    if (inCodeBlock) flushCodeBlock(false);
     flushTable();
     return elements;
 }

@@ -1,17 +1,17 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useState } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { main } from "../../../../wailsjs/go/models";
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
+import { corelib, main } from '../../../../wailsjs/go/models';
 import { PatchConfigFields } from "../../../../wailsjs/go/main/App";
 import { LLMCacheSettingsPanel } from "../LLMCacheSettingsPanel";
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
-  PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official", ...patch } as any)),
+  PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => new corelib.AppConfig({ maclaw_llm_current_provider: "MaClaw Official", ...patch } as any)),
 }));
 
 beforeEach(() => {
-  (PatchConfigFields as any).mockResolvedValue(new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official" } as any));
+  (PatchConfigFields as any).mockResolvedValue(new corelib.AppConfig({ maclaw_llm_current_provider: "MaClaw Official" } as any));
 });
 
 afterEach(() => {
@@ -24,7 +24,7 @@ describe("LLMCacheSettingsPanel", () => {
     const showToastMessage = vi.fn();
     render(
       <LLMCacheSettingsPanel
-        config={new main.AppConfig({ llm_prompt_cache: { enabled: true, cache_dir: "D:/maclaw/cache" } } as any)}
+        config={new corelib.AppConfig({ llm_prompt_cache: { enabled: true, cache_dir: "D:/maclaw/cache" } } as any)}
         setConfig={vi.fn()}
         lang="zh-Hans"
         showToastMessage={showToastMessage}
@@ -39,7 +39,7 @@ describe("LLMCacheSettingsPanel", () => {
 
   it("saves only cache settings as a config patch", async () => {
     const Harness = () => {
-      const [cfg, setCfg] = useState<main.AppConfig | null>(new main.AppConfig({ maclaw_llm_current_provider: "stale", llm_prompt_cache: { enabled: true } } as any));
+      const [cfg, setCfg] = useState<corelib.AppConfig | null>(new corelib.AppConfig({ maclaw_llm_current_provider: "stale", llm_prompt_cache: { enabled: true } } as any));
       return <LLMCacheSettingsPanel config={cfg} setConfig={setCfg} lang="en" />;
     };
     render(
@@ -57,7 +57,7 @@ describe("LLMCacheSettingsPanel", () => {
   it("keeps cache enabled when optional sub-switches are omitted", async () => {
     render(
       <LLMCacheSettingsPanel
-        config={new main.AppConfig({ llm_prompt_cache: { enabled: true } } as any)}
+        config={new corelib.AppConfig({ llm_prompt_cache: { enabled: true } } as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -76,10 +76,10 @@ describe("LLMCacheSettingsPanel", () => {
   it("updates config from patch response", async () => {
     const showToastMessage = vi.fn();
     const setConfig = vi.fn();
-    (PatchConfigFields as any).mockResolvedValueOnce(new main.AppConfig({ maclaw_llm_current_provider: "MaClaw Official", llm_prompt_cache: { enabled: true } } as any));
+    (PatchConfigFields as any).mockResolvedValueOnce(new corelib.AppConfig({ maclaw_llm_current_provider: "MaClaw Official", llm_prompt_cache: { enabled: true } } as any));
     render(
       <LLMCacheSettingsPanel
-        config={new main.AppConfig({ llm_prompt_cache: { enabled: true } } as any)}
+        config={new corelib.AppConfig({ llm_prompt_cache: { enabled: true } } as any)}
         setConfig={setConfig}
         lang="en"
         showToastMessage={showToastMessage}
@@ -95,7 +95,7 @@ describe("LLMCacheSettingsPanel", () => {
 
   it("turning the master switch on restores default cache scopes when all scopes were off", async () => {
     const Harness = () => {
-      const [cfg, setCfg] = useState<main.AppConfig | null>(new main.AppConfig({ llm_prompt_cache: { enabled: false, openai_enabled: false, anthropic_enabled: false, stream_synthesis_enabled: false } } as any));
+      const [cfg, setCfg] = useState<corelib.AppConfig | null>(new corelib.AppConfig({ llm_prompt_cache: { enabled: false, openai_enabled: false, anthropic_enabled: false, stream_synthesis_enabled: false } } as any));
       return <LLMCacheSettingsPanel config={cfg} setConfig={setCfg} lang="en" />;
     };
     render(<Harness />);
@@ -114,7 +114,7 @@ describe("LLMCacheSettingsPanel", () => {
   it("renders cache directory as a full-width text input", () => {
     render(
       <LLMCacheSettingsPanel
-        config={new main.AppConfig({ llm_prompt_cache: { enabled: true, cache_dir: "D:/very/long/maclaw/cache/path" } } as any)}
+        config={new corelib.AppConfig({ llm_prompt_cache: { enabled: true, cache_dir: "D:/very/long/maclaw/cache/path" } } as any)}
         setConfig={vi.fn()}
         lang="en"
       />

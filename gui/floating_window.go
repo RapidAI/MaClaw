@@ -42,9 +42,18 @@ type floatingWindow interface {
 	// without full window recreation when possible.
 	UpdateMotionConfig(motionEnabled, quiet, reducedMotion bool, interactionMode, skin, variant string)
 
+	// InvalidatePetPackAssets drops decoded pet resources after a pack is
+	// installed, upgraded, or removed without requiring a settings change.
+	InvalidatePetPackAssets()
+
 	// SetPetRuntimeState applies a semantic pet state (listening/thinking/…) with optional TTL.
 	SetPetRuntimeState(state string, ttlMs int)
 
 	// CurrentPetRuntimeState returns the active runtime state id.
 	CurrentPetRuntimeState() string
+
+	// PetPackRuntimeLevel reports the renderer level the window is actually
+	// using for the currently selected pack, given the pack's declared level.
+	// The returned reason is empty when there is no degradation.
+	PetPackRuntimeLevel(declared string) (effective, reason string)
 }

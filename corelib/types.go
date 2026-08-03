@@ -454,6 +454,9 @@ type SkillRepairRecord struct {
 	ErrorClass  string `json:"error_class,omitempty"`
 	Explanation string `json:"explanation"`
 	Success     bool   `json:"success"`
+	// Via identifies the repair channel, e.g. "reviewed_draft" for a
+	// human-approved repair draft; empty means the automatic pipeline.
+	Via string `json:"via,omitempty"`
 }
 
 // SkillReference describes an on-demand reference document in a skill's
@@ -1005,6 +1008,49 @@ type WebSearchProvider struct {
 	Type    string `json:"type"`
 	Key     string `json:"key,omitempty"`
 	BaseURL string `json:"base_url,omitempty"`
+}
+
+const (
+	WebSearchStrategyVersion = 1
+
+	WebSearchPresetMainland      = "mainland"
+	WebSearchPresetInternational = "international"
+	WebSearchPresetCustom        = "custom"
+
+	WebSearchModePriority  = "priority"
+	WebSearchModeSmart     = "smart"
+	WebSearchModeAggregate = "aggregate"
+
+	WebSearchTransportAPI      = "api"
+	WebSearchTransportHTTPHTML = "http_html"
+	WebSearchTransportBrowser  = "browser"
+)
+
+// WebSearchStrategy controls which engines web_search tries and in what order.
+// Engine order is represented explicitly by Priority so GUI drag-and-drop and
+// non-GUI clients share the exact same behavior.
+type WebSearchStrategy struct {
+	Version                   int                     `json:"version"`
+	Preset                    string                  `json:"preset"`
+	Mode                      string                  `json:"mode"`
+	Engines                   []WebSearchEngineConfig `json:"engines"`
+	BrowserFallbackEnabled    bool                    `json:"browser_fallback_enabled"`
+	BrowserFallbackEngineID   string                  `json:"browser_fallback_engine_id"`
+	BrowserHumanAssistEnabled bool                    `json:"browser_human_assist_enabled,omitempty"`
+	HedgingDelayMS            int                     `json:"hedging_delay_ms,omitempty"`
+	MinResultsBeforeHedge     int                     `json:"min_results_before_hedge,omitempty"`
+}
+
+// WebSearchEngineConfig is one built-in engine in a search strategy. APIKey
+// remains compatible with the existing provider secret storage during the v1
+// migration; UI-facing views must mask it.
+type WebSearchEngineConfig struct {
+	ID        string `json:"id"`
+	Enabled   bool   `json:"enabled"`
+	Priority  int    `json:"priority"`
+	Transport string `json:"transport"`
+	APIKey    string `json:"api_key,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
 }
 
 // UserAgent returns the User-Agent header value for LLM API requests.

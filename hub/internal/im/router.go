@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
@@ -155,7 +156,8 @@ type MessageRouter struct {
 
 	// pendingMessageTypes temporarily holds the structural input modality for
 	// the current message being routed. Key: userID.
-	pendingMessageTypes map[string]string
+	pendingMessageTypes       map[string]string
+	pendingClientCapabilities map[string]*agent.ClientCapabilities
 
 	// discussions tracks active /discuss sessions per user. Protected by mu.
 	discussions map[string]*DiscussionState
@@ -167,16 +169,17 @@ type MessageRouter struct {
 // NewMessageRouter creates a MessageRouter with the given device finder.
 func NewMessageRouter(devices DeviceFinder) *MessageRouter {
 	r := &MessageRouter{
-		devices:             devices,
-		pendingReqs:         make(map[string]*PendingIMRequest),
-		selectedMachine:     make(map[string]string),
-		pendingAttachments:  make(map[string][]MessageAttachment),
-		pendingMessageTypes: make(map[string]string),
-		discussions:         make(map[string]*DiscussionState),
-		llmSem:              NewLLMSemaphore(DefaultMaxConcurrent),
-		llmSemGUI:           NewLLMSemaphore(DefaultMaxConcurrentGUI),
-		llmSemIM:            NewLLMSemaphore(DefaultMaxConcurrentIM),
-		stopCh:              make(chan struct{}),
+		devices:                   devices,
+		pendingReqs:               make(map[string]*PendingIMRequest),
+		selectedMachine:           make(map[string]string),
+		pendingAttachments:        make(map[string][]MessageAttachment),
+		pendingMessageTypes:       make(map[string]string),
+		pendingClientCapabilities: make(map[string]*agent.ClientCapabilities),
+		discussions:               make(map[string]*DiscussionState),
+		llmSem:                    NewLLMSemaphore(DefaultMaxConcurrent),
+		llmSemGUI:                 NewLLMSemaphore(DefaultMaxConcurrentGUI),
+		llmSemIM:                  NewLLMSemaphore(DefaultMaxConcurrentIM),
+		stopCh:                    make(chan struct{}),
 	}
 	go r.cleanupLoop()
 	return r
@@ -231,6 +234,27 @@ func (r *MessageRouter) currentMessageType(ctx context.Context, userID string) s
 		return "text"
 	}
 	return messageType
+}
+
+func (r *MessageRouter) StashClientCapabilitiesForTenant(tenantID, userID string, capabilities *agent.ClientCapabilities) {
+	key := tenantUserRuntimeKey(tenantID, userID)
+	r.mu.Lock()
+	if capabilities == nil {
+		delete(r.pendingClientCapabilities, key)
+	} else {
+		normalized := agent.NormalizeClientCapabilities(capabilities)
+		r.pendingClientCapabilities[key] = &normalized
+	}
+	r.mu.Unlock()
+}
+
+func (r *MessageRouter) popClientCapabilities(ctx context.Context, userID string) *agent.ClientCapabilities {
+	key := routerRuntimeKey(ctx, userID)
+	r.mu.Lock()
+	capabilities := r.pendingClientCapabilities[key]
+	delete(r.pendingClientCapabilities, key)
+	r.mu.Unlock()
+	return capabilities
 }
 
 // LLMSemaphore returns the shared LLM concurrency semaphore so that
@@ -610,6 +634,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 	} else {
 		attachments = r.popAttachments(ctx, userID)
 	}
+	clientCapabilities := r.popClientCapabilities(ctx, userID)
 	wsMsg := map[string]interface{}{
 		"type":       "im.user_message",
 		"request_id": requestID,
@@ -624,6 +649,9 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 	}
 	if len(attachments) > 0 {
 		wsMsg["payload"].(map[string]interface{})["attachments"] = attachments
+	}
+	if clientCapabilities != nil {
+		wsMsg["payload"].(map[string]interface{})["client_capabilities"] = clientCapabilities
 	}
 	if launch := startMenuTaskFromContext(ctx); launch != nil {
 		wsMsg["payload"].(map[string]interface{})["start_menu"] = startMenuTaskPayload(launch)

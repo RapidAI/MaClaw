@@ -95,7 +95,7 @@ func TestLoadStateFrameBytesFigurative(t *testing.T) {
 	if err := reg.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	// speaking frame for official clawmate
+	// speaking frame for official clawmate (live character/skeleton when possible)
 	data, ctype, err := reg.LoadStateFrameBytes("clawmate", "speaking", VariantDefault)
 	if err != nil {
 		t.Fatal(err)
@@ -103,8 +103,13 @@ func TestLoadStateFrameBytesFigurative(t *testing.T) {
 	if len(data) == 0 {
 		t.Fatal("empty speaking frame")
 	}
+	// Live rig path always encodes PNG; raster fallback may be webp.
 	if ctype != "image/png" && ctype != "image/webp" {
 		t.Fatalf("ctype %q", ctype)
+	}
+	// Live path should prefer PNG encode from rig for clawmate character packs.
+	if ctype != "image/png" {
+		t.Fatalf("expected live PNG preview for clawmate, got %q", ctype)
 	}
 	// The retired quality-style selector resolves classic to the pack default,
 	// so legacy classic requests also serve raster frames.

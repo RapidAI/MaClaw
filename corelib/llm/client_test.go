@@ -1570,8 +1570,8 @@ func TestOpenAI_RequestBody_StripsTypedTrailingOrphanedToolCalls(t *testing.T) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
 	}
-	if _, ok := req.Messages[1]["tool_calls"]; ok {
-		t.Fatalf("typed trailing orphaned tool_calls leaked: %#v", req.Messages[1])
+	if len(req.Messages) != 2 || req.Messages[1]["role"] != "assistant" || req.Messages[1]["content"] != "" {
+		t.Fatalf("orphaned assistant message should have explicit empty content: %#v", req.Messages)
 	}
 }
 
@@ -1621,6 +1621,121 @@ func TestOpenAI_RequestBody_StripsEmptyToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAI_RequestBody_AddsEmptyContentToAssistantWithoutContentOrToolCalls(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "continue"},
+			// This mirrors a malformed historical tool turn after its invalid
+			// tool_calls were discarded by the compatibility sanitizer.
+			map[string]interface{}{"role": "assistant", "tool_calls": []interface{}{}},
+			map[string]interface{}{"role": "user", "content": "finish the task"},
+		},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages = %#v, want the assistant turn retained with empty content", req.Messages)
+	}
+	assistant := req.Messages[1]
+	if assistant["role"] != "assistant" || assistant["content"] != "" {
+		t.Fatalf("assistant message = %#v, want explicit empty content", assistant)
+	}
+	if _, hasToolCalls := assistant["tool_calls"]; hasToolCalls {
+		t.Fatalf("empty tool_calls leaked: %#v", assistant)
+	}
+}
+
+func TestOpenAI_RequestBody_PreservesExplicitNullAssistantContent(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "continue"},
+			map[string]interface{}{"role": "assistant", "content": nil},
+		},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %#v, want explicit-null assistant retained", req.Messages)
+	}
+	if content, ok := req.Messages[1]["content"]; !ok || content != "" {
+		t.Fatalf("assistant content = %#v, want sanitized empty string", content)
+	}
+}
+
+func TestOpenAI_RequestBody_PreservesExplicitEmptyAssistantContent(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "continue"},
+			map[string]interface{}{"role": "assistant", "content": ""},
+		},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if len(req.Messages) != 2 || req.Messages[1]["content"] != "" {
+		t.Fatalf("explicit empty assistant content was not preserved: %#v", req.Messages)
+	}
+}
+
+func TestOpenAI_RequestBody_AddsContentWhenOnlyLegacyFunctionCallIsPresent(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		[]interface{}{
+			map[string]interface{}{"role": "user", "content": "continue"},
+			map[string]interface{}{
+				"role": "assistant",
+				"function_call": map[string]interface{}{
+					"name":      "legacy_search",
+					"arguments": `{}`,
+				},
+			},
+		},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	assistant := req.Messages[1]
+	if assistant["content"] != "" {
+		t.Fatalf("assistant content = %#v, want explicit empty string", assistant["content"])
+	}
+	if _, hasLegacyCall := assistant["function_call"]; !hasLegacyCall {
+		t.Fatalf("legacy function call should still be preserved: %#v", assistant)
+	}
+}
+
 func TestOpenAI_RequestBody_StripsTrailingOrphanedToolCalls(t *testing.T) {
 	_, body, err := BuildOpenAIChatRequestData(
 		corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b"},
@@ -1650,8 +1765,8 @@ func TestOpenAI_RequestBody_StripsTrailingOrphanedToolCalls(t *testing.T) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
 	}
-	if _, ok := req.Messages[1]["tool_calls"]; ok {
-		t.Fatalf("trailing orphaned tool_calls leaked: %#v", req.Messages[1])
+	if len(req.Messages) != 2 || req.Messages[1]["role"] != "assistant" || req.Messages[1]["content"] != "" {
+		t.Fatalf("orphaned assistant message should have explicit empty content: %#v", req.Messages)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func urlValues(pairs ...string) url.Values {
@@ -161,6 +163,29 @@ func TestNormalizeThirdPartyHandshakeRejectsUnsupportedProtocolVersion(t *testin
 	req := ThirdPartyHandshakeRequest{ClientID: "client-a", ProtocolVersion: "2"}
 	if err := NormalizeThirdPartyHandshakeRequest(&req); err == nil || !strings.Contains(err.Error(), "protocolVersion") {
 		t.Fatalf("expected protocolVersion error, got %v", err)
+	}
+}
+
+func TestNormalizeThirdPartyHandshakeAcceptsLegacyAndStructuredClientCapabilities(t *testing.T) {
+	legacy := ThirdPartyHandshakeRequest{ClientID: "client-a", ProtocolVersion: ThirdPartyProtocolLegacyVersion}
+	if err := NormalizeThirdPartyHandshakeRequest(&legacy); err != nil {
+		t.Fatalf("legacy protocol rejected: %v", err)
+	}
+	req := ThirdPartyHandshakeRequest{ClientID: "client-a", ProtocolVersion: ThirdPartyProtocolVersion, Capabilities: map[string]any{
+		"output": map[string]any{
+			"modalities": []any{"text", "image", "bad"},
+			"text":       map[string]any{"maxChars": float64(240), "locale": "zh-CN"},
+		},
+	}}
+	if err := NormalizeThirdPartyHandshakeRequest(&req); err != nil {
+		t.Fatal(err)
+	}
+	if req.ClientCapabilities == nil || !req.ClientCapabilities.SupportsOutput("text") || !req.ClientCapabilities.SupportsOutput("image") || req.ClientCapabilities.Output.Text.MaxChars != 240 {
+		t.Fatalf("normalized capabilities=%#v", req.ClientCapabilities)
+	}
+	response := NewThirdPartyGatewayHandshakeResponse(ThirdPartyGatewayConfig{ClientCapabilities: &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{Modalities: []string{"text"}}}})
+	if response.CapabilitiesAccepted == nil || !response.CapabilitiesAccepted.SupportsOutput("text") {
+		t.Fatalf("accepted capabilities=%#v", response.CapabilitiesAccepted)
 	}
 }
 

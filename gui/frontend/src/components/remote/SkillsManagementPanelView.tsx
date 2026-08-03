@@ -1,89 +1,19 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from "react";
-import { useDialog } from "../CustomDialog";
-import { useToast } from "../Toast";
-import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import {
-    EVENT_SKILL_USAGE_UPDATED,
-    EVENT_SKILL_REPAIRED,
-    EVENT_SKILL_OPTIMIZED,
-    EVENT_SKILL_AUTO_DISCOVERED,
-    EVENT_SKILL_EXECUTION_FAILED,
-    EVENT_SKILL_INDEX_REFRESHED,
-    EVENT_CONFIG_CHANGED,
-    EVENT_CONFIG_UPDATED,
-    EVENT_MACLAW_CONFIG_CHANGED,
-} from "../../constants/events";
-import { SkillInstallProgressPanel } from "./SkillInstallProgressPanel";
-import { MaclawAppMarketPreview } from "./MaclawAppMarketPreview";
-import { SkillProductBadge, isMaclawAppSearchResult } from "./SkillProductBadge";
-import { SkillSourceBadge } from "./SkillSourceBadge";
-import { formatInstalledOpenPanelMessage, localizeMiniAppPack, miniAppLabels } from "../../i18n/maclawMiniAppLabels";
-import { StatusGlyph } from "../ai/WorkbenchIcons";
-import {
-    executionClassBadgeStyle,
-    statusDotStyle,
-    uploadBtnStyle,
-    trustBadgeStyle,
-    trustLevelLabel,
-    shouldShowTrustBadge,
-    formatDownloads,
-    formatDate,
-    renderStars,
-    displayHubVersion,
-} from "./skillsManagementUtils";
-import {
-    colors,
-    remoteCardStyle,
-    remoteCodeBlockStyle,
-    remoteEmptyStateStyle,
-    remoteErrorStateStyle,
-    remoteInfoPanelStyle,
-    remoteLoadingStateStyle,
-    remoteStatusBadgeStyle,
-    remoteTableCellStyle,
-    remoteTableContainerStyle,
-    remoteTableHeaderCellStyle,
-    remoteTagStyle,
-} from "./styles";
-import {
-    ListNLSkills,
-    CreateNLSkill,
-    UpdateNLSkill,
-    SetNLSkillStatus,
-    BatchSetNLSkillStatus,
-    DeleteNLSkill,
-    RenameNLSkill,
-    ImportNLSkillZip,
-    SearchMixedSkills,
-    InstallMixedSkill,
-    CheckHubSkillUpdates,
-    UpdateHubSkill,
-    ExportLearnedSkillsZip,
-    ImportLearnedSkillsZip,
-    UploadNLSkillToMarket,
-    DiagnoseSkillFiles,
-    ListExternalSkillDirsDetailed,
-    AddExternalSkillDir,
-    RemoveExternalSkillDir,
-    SelectProjectDir,
-    OpenSystemUrl,
-    GetHubRecommendations,
-    GetExperienceAuditHealth,
-    ListExperienceAudit,
-    ResolveCriticalConfirm,
-    LoadConfig,
-    PatchConfigFields,
-    GetSkillEvolutionStatus,
-    TriggerSkillSelfRepair,
-    TriggerSkillOptimize,
-    ListSkillEvolutionAudit,
-    ExportTextFile,
-    ListSkillMaintenanceDrafts,
-    ApplySkillMaintenanceAction,
-    OpenFileOrShowInFolder,
-    ListSkillYAMLBackups,
-    RestoreSkillYAMLBackup,
-} from "../../../wailsjs/go/main/App";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDialog } from '../CustomDialog';
+import { useToast } from '../Toast';
+import { EventsOn } from '../../../wailsjs/runtime';
+import { EVENT_CONFIG_CHANGED, EVENT_CONFIG_UPDATED, EVENT_MACLAW_CONFIG_CHANGED, EVENT_SKILL_AUTO_DISCOVERED, EVENT_SKILL_EXECUTION_FAILED, EVENT_SKILL_INDEX_REFRESHED, EVENT_SKILL_OPTIMIZED, EVENT_SKILL_REPAIRED, EVENT_SKILL_USAGE_UPDATED } from '../../constants/events';
+import { SkillInstallProgressPanel } from './SkillInstallProgressPanel';
+import { SkillRepairDraftsPanel } from './SkillRepairDraftsPanel';
+import { MaclawAppMarketPreview } from './MaclawAppMarketPreview';
+import { SkillProductBadge, isMaclawAppSearchResult } from './SkillProductBadge';
+import { SkillSourceBadge } from './SkillSourceBadge';
+import { formatInstalledOpenPanelMessage, localizeMiniAppPack, miniAppLabels } from '../../i18n/maclawMiniAppLabels';
+import { StatusGlyph } from '../ai/WorkbenchIcons';
+import { displayHubVersion, executionClassBadgeStyle, formatDate, formatDownloads, renderStars, shouldShowTrustBadge, statusDotStyle, trustBadgeStyle, trustLevelLabel, uploadBtnStyle } from './skillsManagementUtils';
+import { colors, remoteCardStyle, remoteCodeBlockStyle, remoteEmptyStateStyle, remoteErrorStateStyle, remoteInfoPanelStyle, remoteLoadingStateStyle, remoteStatusBadgeStyle, remoteTableCellStyle, remoteTableContainerStyle, remoteTableHeaderCellStyle, remoteTagStyle } from './styles';
+import { AddExternalSkillDir, ApplySkillMaintenanceAction, BatchSetNLSkillStatus, CheckHubSkillUpdates, CreateNLSkill, DeleteNLSkill, DiagnoseSkillFiles, ExportLearnedSkillsZip, ExportTextFile, GetExperienceAuditHealth, GetHubRecommendations, GetSkillEvolutionStatus, ImportLearnedSkillsZip, ImportNLSkillZip, InstallMixedSkill, ListExperienceAudit, ListExternalSkillDirsDetailed, ListNLSkills, ListSkillEvolutionAudit, ListSkillMaintenanceDrafts, ListSkillYAMLBackups, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, RemoveExternalSkillDir, RenameNLSkill, ResolveCriticalConfirm, RestoreSkillYAMLBackup, SearchMixedSkills, SelectProjectDir, SetNLSkillStatus, TriggerSkillOptimize, TriggerSkillSelfRepair, UpdateHubSkill, UpdateNLSkill, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { corelib } from '../../../wailsjs/go/models';
 
 function localizeSkillInstallRiskLevel(level: string, localizeText: (en: string, zhHans: string, zhHant: string) => string): string {
     const normalized = level.trim().toLowerCase();
@@ -183,6 +113,10 @@ interface EvolutionAuditRow {
     skill?: string;
     explanation?: string;
     source?: string;
+    /** Optional outcome marker; kind=repair_draft + status="rejected" means the
+     *  draft was rejected rather than left pending review. */
+    status?: string;
+    via?: string;
 }
 
 interface MaintenancePatchDraft {
@@ -218,7 +152,7 @@ function csvEscapeCell(value: unknown): string {
 }
 
 function evolutionAuditToCSV(rows: EvolutionAuditRow[]): string {
-    const header = ["timestamp", "kind", "skill", "source", "explanation"];
+    const header = ["timestamp", "kind", "skill", "source", "status", "via", "explanation"];
     const lines = [header.join(",")];
     for (const row of rows) {
         lines.push([
@@ -226,6 +160,8 @@ function evolutionAuditToCSV(rows: EvolutionAuditRow[]): string {
             csvEscapeCell(row.kind),
             csvEscapeCell(row.skill),
             csvEscapeCell(row.source),
+            csvEscapeCell(row.status),
+            csvEscapeCell(row.via),
             csvEscapeCell(row.explanation),
         ].join(","));
     }
@@ -288,6 +224,7 @@ function filterEvolutionAuditRows(
         "optimized",
         "discovered",
         "queue_full",
+        "repair_draft",
     ]);
     return rows.filter((row) => {
         const kind = String(row.kind || "other").trim().toLowerCase() || "other";
@@ -1407,20 +1344,45 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         };
         const parseSkillPayload = (payload?: unknown) => {
             if (!payload || typeof payload !== "object") {
-                return { skillName: "", explanation: "" };
+                return { skillName: "", explanation: "", via: "" };
             }
             const data = payload as Record<string, unknown>;
             return {
                 skillName: typeof data.skill === "string" ? data.skill : "",
                 explanation: typeof data.explanation === "string" ? data.explanation : "",
+                via: typeof data.via === "string" ? data.via : "",
             };
         };
         const onRepaired = (payload?: unknown) => {
             refresh();
             void loadEvolutionAudit();
-            const { skillName, explanation } = parseSkillPayload(payload);
+            const { skillName, explanation, via } = parseSkillPayload(payload);
             const name = skillName || localizeText("a skill", "某技能", "某技能");
             pushEvolutionActivity("repaired", skillName || name, explanation);
+            if (via === "reviewed_draft") {
+                showToast(
+                    localizeText(
+                        `Repair draft applied to “${name}”`,
+                        `修复草稿已应用到「${name}」`,
+                        `修復草稿已套用到「${name}」`,
+                    ),
+                    "success",
+                    4500,
+                );
+                return;
+            }
+            if (via === "reviewed_draft_disable") {
+                showToast(
+                    localizeText(
+                        `Disabled “${name}” as the reviewed draft suggested`,
+                        `已按评审建议禁用「${name}」`,
+                        `已按評審建議停用「${name}」`,
+                    ),
+                    "success",
+                    4500,
+                );
+                return;
+            }
             showToast(
                 explanation
                     ? localizeText(
@@ -1496,16 +1458,8 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             EventsOn(EVENT_SKILL_AUTO_DISCOVERED, onDiscovered),
         ];
         return () => {
-            for (const name of [
-                EVENT_SKILL_USAGE_UPDATED,
-                EVENT_SKILL_INDEX_REFRESHED,
-                EVENT_SKILL_EXECUTION_FAILED,
-                EVENT_SKILL_REPAIRED,
-                EVENT_SKILL_OPTIMIZED,
-                EVENT_SKILL_AUTO_DISCOVERED,
-            ]) {
-                EventsOff(name);
-            }
+            // Prefer EventsOn unsubscribe callbacks only — EventsOff(name) would
+            // drop App-level listeners for the same event names on unmount.
             for (const u of unsubs) {
                 if (typeof u === "function") {
                     try {
@@ -2063,9 +2017,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         try {
             const def = { ...formData, steps: yamlToSteps(stepsYaml) };
             if (editingSkill) {
-                await UpdateNLSkill(def);
+                await UpdateNLSkill(def as unknown as corelib.NLSkillEntry);
             } else {
-                await CreateNLSkill(def);
+                await CreateNLSkill(def as unknown as corelib.NLSkillEntry);
             }
             closeForm();
             await loadData();
@@ -3694,6 +3648,22 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         )}
                     </div>
 
+                    {/* Pending human-reviewed repair drafts for file-backed skills (.evolution-drafts) */}
+                    <SkillRepairDraftsPanel
+                        localizeText={localizeText}
+                        busy={busy}
+                        setBusy={setBusy}
+                        evolutionFocusSkill={evolutionFocusSkill}
+                        onFocusSkill={(skill) => {
+                            setEvolutionFocusSkill(skill || null);
+                            evolutionAuditPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                        }}
+                        onDraftsChanged={() => {
+                            void loadEvolutionAudit();
+                            void loadData();
+                        }}
+                    />
+
                     {/* Patch / merge review drafts (from maintenance dry-run) */}
                     <div ref={evolutionDraftsPanelRef} style={{ ...remoteInfoPanelStyle, marginBottom: "12px", padding: "10px 12px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
@@ -4499,6 +4469,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             {([
                                 { id: "all", en: "All", zh: "全部", zhHant: "全部" },
                                 { id: "repaired", en: "Repaired", zh: "已修复", zhHant: "已修復" },
+                                { id: "repair_draft", en: "Repair drafts", zh: "修复草稿", zhHant: "修復草稿" },
                                 { id: "failed", en: "Failed", zh: "失败", zhHant: "失敗" },
                                 { id: "yaml_restore", en: "YAML restore", zh: "YAML 恢复", zhHant: "YAML 還原" },
                                 { id: "maintenance_apply", en: "Maintenance", zh: "维护应用", zhHant: "維護套用" },
@@ -4587,6 +4558,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             <div style={{ display: "flex", flexDirection: "column", gap: "4px", maxHeight: 320, overflowY: "auto" }}>
                                 {visibleEvolutionAudit.map((row, i) => {
                                     const kind = String(row.kind || "other");
+                                    const repairDraftRejected = kind === "repair_draft" && String(row.status || "") === "rejected";
                                     const kindLabel = (() => {
                                         switch (kind) {
                                             case "repaired": return localizeText("repaired", "已修复", "已修復");
@@ -4597,14 +4569,21 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             case "yaml_restore": return localizeText("yaml restore", "YAML 恢复", "YAML 還原");
                                             case "maintenance_apply": return localizeText("maintenance apply", "维护应用", "維護套用");
                                             case "mark_needs_review": return localizeText("needs review", "标记待审", "標記待審");
+                                            case "repair_draft": return repairDraftRejected
+                                                ? localizeText("repair draft rejected", "修复草稿已拒绝", "修復草稿已拒絕")
+                                                : localizeText("repair draft", "修复草稿待审", "修復草稿待審");
                                             default: return kind;
                                         }
                                     })();
                                     const tone = kind === "failed" || kind === "queue_full" || kind === "mark_needs_review"
                                         ? colors.danger
-                                        : kind === "optimized" || kind === "yaml_restore"
+                                        : repairDraftRejected
                                             ? colors.textSecondary
-                                            : colors.success;
+                                            : kind === "repair_draft"
+                                                ? colors.primary
+                                                : kind === "optimized" || kind === "yaml_restore"
+                                                    ? colors.textSecondary
+                                                    : colors.success;
                                     let when = row.timestamp || "";
                                     try {
                                         if (row.timestamp) when = new Date(row.timestamp).toLocaleString();

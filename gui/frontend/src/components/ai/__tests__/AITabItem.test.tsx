@@ -25,6 +25,23 @@ describe("AITabItem", () => {
         expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("AI 助手");
     });
 
+    it("labels remote diagnosis tabs as maintenance for assistive technology", () => {
+        const tab = {
+            id: "remote-maintenance-tab",
+            type: "project" as const,
+            title: "Diagnose service",
+            projectPath: "D:/tasks/incident",
+            agentMode: "remote_coding_dev" as const,
+            remoteSafety: "diagnosis" as const,
+            closable: true,
+        };
+
+        render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onClose={vi.fn()} lang="en" />);
+
+        expect(screen.getByTestId("ai-tab-remote-maintenance-tab").getAttribute("aria-label")).toContain("Remote maintenance");
+        expect(screen.getByTestId("ai-tab-remote-maintenance-tab").getAttribute("aria-label")).not.toContain("Remote coding environment");
+    });
+
     it("renders a digital employee avatar when the tab has one", () => {
         const tab = {
             id: "ve-avatar-tab",

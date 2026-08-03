@@ -89,6 +89,9 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 	// Steering can re-route tools after the initial list was built. Re-apply
 	// the group boundary so an injected request cannot restore local tools.
 	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		if ctx.LansengerGroupPermissions.allowsKnowledge() {
+			tools = h.ensureLansengerGroupKnowledgeSearchTool(userID, tools)
+		}
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
 	tools = stripExecutionContractMetadataForLLM(tools)
@@ -203,6 +206,9 @@ func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID 
 		// discover_tool can pin a conditional tool during a group turn. Keep
 		// group permissions last so discovery cannot create a bypass.
 		if ctx != nil && ctx.LansengerGroupPermissions != nil {
+			if ctx.LansengerGroupPermissions.allowsKnowledge() {
+				currentTools = h.ensureLansengerGroupKnowledgeSearchTool(userID, currentTools)
+			}
 			currentTools = filterToolsForLansengerGroupPermissions(currentTools, *ctx.LansengerGroupPermissions)
 		}
 		currentTools = stripExecutionContractMetadataForLLM(currentTools)

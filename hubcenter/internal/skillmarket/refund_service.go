@@ -2,7 +2,11 @@ package skillmarket
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
@@ -23,6 +27,11 @@ func (s *RefundService) ProcessRefund(ctx context.Context, purchaseRecordID, adm
 	var createdAt string
 	err := s.store.readDB.QueryRowContext(ctx, `SELECT id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records WHERE id = ?`, purchaseRecordID).Scan(&pr.ID, &pr.HubID, &pr.TenantID, &pr.BuyerEmail, &pr.BuyerID, &pr.SkillID, &pr.PurchasedVersion, &pr.PurchaseType, &pr.AmountPaid, &pr.PlatformFee, &pr.SellerEarning, &pr.SellerID, &pr.KeyStatus, &pr.APIKeyID, &pr.Status, &createdAt)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Pet store entitlements live in their own ledger; an admin refund
+			// must reach them through the same endpoint.
+			return s.processPetStoreRefund(ctx, purchaseRecordID, reason)
+		}
 		return fmt.Errorf("purchase record not found: %w", err)
 	}
 	if pr.Status == "refunded" {
@@ -68,8 +77,15 @@ func (s *RefundService) ProcessRefund(ctx context.Context, purchaseRecordID, adm
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at) VALUES (?, ?, 'refund', ?, ?, ?, ?, ?, ?)`, sellerTxID, pr.SellerID, -pr.SellerEarning, sellerBalance, pr.SkillID, pr.ID, "退款扣回 "+reason, now); err != nil {
 		return fmt.Errorf("record seller refund tx: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sm_purchase_records SET status = 'refunded' WHERE id = ?`, pr.ID); err != nil {
+	// Re-check the purchase state inside the write transaction. Two
+	// concurrent refund requests can both pass the readDB status check above;
+	// without this guard the second transaction would repay the buyer twice.
+	markResult, err := tx.ExecContext(ctx, `UPDATE sm_purchase_records SET status = 'refunded' WHERE id = ? AND status <> 'refunded'`, pr.ID)
+	if err != nil {
 		return fmt.Errorf("mark purchase refunded: %w", err)
+	}
+	if changed, _ := markResult.RowsAffected(); changed == 0 {
+		return ErrAlreadyRefunded
 	}
 	if pr.APIKeyID != "" && pr.KeyStatus == "assigned" {
 		if _, err := tx.ExecContext(ctx, `UPDATE sm_api_keys SET status = 'refunded' WHERE id = ?`, pr.APIKeyID); err != nil {
@@ -92,6 +108,88 @@ func (s *RefundService) ProcessRefund(ctx context.Context, purchaseRecordID, adm
 	return nil
 }
 
+// processPetStoreRefund mirrors the skill refund flow for pet store
+// entitlements, which are recorded in sm_pet_store_purchases rather than
+// sm_purchase_records. The buyer is repaid in full and the seller loses the
+// earning (settled balance first, debt for any shortfall); the platform fee is
+// absorbed by the platform exactly as in the skill refund path.
+func (s *RefundService) processPetStoreRefund(ctx context.Context, purchaseID, reason string) error {
+	var buyerID, buyerEmail, packID, packName, sellerID, status string
+	var amountPaid int64
+	err := s.store.readDB.QueryRowContext(ctx, `SELECT b.buyer_user_id, b.buyer_email, b.amount_paid, b.status, b.pack_id, p.name, p.owner_user_id
+		FROM sm_pet_store_purchases b JOIN sm_pet_store_packs p ON p.id=b.pack_id WHERE b.id = ?`, purchaseID).
+		Scan(&buyerID, &buyerEmail, &amountPaid, &status, &packID, &packName, &sellerID)
+	if err != nil {
+		if isMissingPetStoreTable(err) {
+			return fmt.Errorf("purchase record not found: %s", purchaseID)
+		}
+		return fmt.Errorf("purchase record not found: %w", err)
+	}
+	if status == "refunded" {
+		return ErrAlreadyRefunded
+	}
+	sellerEarning := amountPaid - amountPaid*PetStorePlatformFeePct/100
+	now := fmtTime(time.Now())
+	tx, err := s.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE sm_users SET credits = credits + ?, updated_at = ? WHERE id = ?`, amountPaid, now, buyerID); err != nil {
+		return fmt.Errorf("refund buyer: %w", err)
+	}
+	var sellerSettled int64
+	if err := tx.QueryRowContext(ctx, `SELECT settled_credits FROM sm_users WHERE id = ?`, sellerID).Scan(&sellerSettled); err != nil {
+		return fmt.Errorf("query seller balance: %w", err)
+	}
+	if sellerSettled >= sellerEarning {
+		if _, err := tx.ExecContext(ctx, `UPDATE sm_users SET settled_credits = settled_credits - ?, updated_at = ? WHERE id = ?`, sellerEarning, now, sellerID); err != nil {
+			return fmt.Errorf("deduct seller settled: %w", err)
+		}
+	} else {
+		shortfall := sellerEarning - sellerSettled
+		if _, err := tx.ExecContext(ctx, `UPDATE sm_users SET settled_credits = 0, debt = debt + ?, updated_at = ? WHERE id = ?`, shortfall, now, sellerID); err != nil {
+			return fmt.Errorf("deduct seller with debt: %w", err)
+		}
+	}
+	var buyerBalance int64
+	if err := tx.QueryRowContext(ctx, `SELECT credits FROM sm_users WHERE id = ?`, buyerID).Scan(&buyerBalance); err != nil {
+		return fmt.Errorf("query buyer balance: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at) VALUES (?, ?, 'refund', ?, ?, ?, ?, ?, ?)`, generateID(), buyerID, amountPaid, buyerBalance, packID, purchaseID, "宠物包退款 "+reason, now); err != nil {
+		return fmt.Errorf("record buyer refund tx: %w", err)
+	}
+	var sellerBalance int64
+	if err := tx.QueryRowContext(ctx, `SELECT settled_credits FROM sm_users WHERE id = ?`, sellerID).Scan(&sellerBalance); err != nil {
+		return fmt.Errorf("query seller post-refund balance: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at) VALUES (?, ?, 'refund', ?, ?, ?, ?, ?, ?)`, generateID(), sellerID, -sellerEarning, sellerBalance, packID, purchaseID, "宠物包退款扣回 "+reason, now); err != nil {
+		return fmt.Errorf("record seller refund tx: %w", err)
+	}
+	// Re-check the entitlement state inside the write transaction. Two
+	// concurrent refund requests can both pass the readDB status check above;
+	// without this guard the second transaction would repay the buyer twice.
+	markResult, err := tx.ExecContext(ctx, `UPDATE sm_pet_store_purchases SET status = 'refunded' WHERE id = ? AND status <> 'refunded'`, purchaseID)
+	if err != nil {
+		return fmt.Errorf("mark pet store purchase refunded: %w", err)
+	}
+	if changed, _ := markResult.RowsAffected(); changed == 0 {
+		return ErrAlreadyRefunded
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.store.emitSync(ctx)
+	_ = s.mailer.Send(ctx, []string{buyerEmail}, "Pet Store 退款通知", fmt.Sprintf("您购买的宠物包「%s」（ID: %s）已退款，%d Credits 已退还到您的账户。原因：%s", packName, packID, amountPaid, reason))
+	return nil
+}
+
+// isMissingPetStoreTable reports whether err indicates that the lazily
+// created pet store schema has not been installed on this database yet.
+func isMissingPetStoreTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
 func (s *RefundService) ListPurchases(ctx context.Context, buyerEmail, skillID string, offset, limit int) ([]PurchaseRecord, int, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -110,8 +208,10 @@ func (s *RefundService) ListPurchases(ctx context.Context, buyerEmail, skillID s
 	countArgs := make([]any, len(args))
 	copy(countArgs, args)
 	_ = s.store.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_purchase_records WHERE `+where, countArgs...).Scan(&total)
-	args = append(args, limit, offset)
-	rows, err := s.store.readDB.QueryContext(ctx, `SELECT id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records WHERE `+where+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, args...)
+	queryArgs := make([]any, len(args))
+	copy(queryArgs, args)
+	queryArgs = append(queryArgs, limit, offset)
+	rows, err := s.store.readDB.QueryContext(ctx, `SELECT id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records WHERE `+where+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -126,5 +226,62 @@ func (s *RefundService) ListPurchases(ctx context.Context, buyerEmail, skillID s
 		r.CreatedAt = parseTime(ca)
 		records = append(records, r)
 	}
-	return records, total, nil
+	// Pet store entitlements live in their own ledger. Surface them in the same
+	// admin listing so moderation can find and refund them; their pack ID takes
+	// the skill_id slot and purchase_type marks them as pet_pack.
+	petRecords, petTotal, err := s.listPetStorePurchases(ctx, buyerEmail, skillID)
+	if err != nil {
+		return nil, 0, err
+	}
+	records = append(records, petRecords...)
+	sort.Slice(records, func(i, j int) bool { return records[i].CreatedAt.After(records[j].CreatedAt) })
+	return records, total + petTotal, nil
+}
+
+// listPetStorePurchases maps pet store entitlements onto PurchaseRecord. The
+// platform fee and seller earning are not stored per purchase, so they are
+// derived with the same PetStorePlatformFeePct used at checkout.
+func (s *RefundService) listPetStorePurchases(ctx context.Context, buyerEmail, packID string) ([]PurchaseRecord, int, error) {
+	where := "1=1"
+	var args []any
+	if buyerEmail != "" {
+		where += " AND b.buyer_email = ?"
+		args = append(args, buyerEmail)
+	}
+	if packID != "" {
+		where += " AND b.pack_id = ?"
+		args = append(args, packID)
+	}
+	var total int
+	countArgs := make([]any, len(args))
+	copy(countArgs, args)
+	if err := s.store.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_pet_store_purchases b WHERE `+where, countArgs...).Scan(&total); err != nil {
+		if isMissingPetStoreTable(err) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	rows, err := s.store.readDB.QueryContext(ctx, `SELECT b.id, b.buyer_email, b.buyer_user_id, b.pack_id, b.amount_paid, b.status, b.created_at, p.owner_user_id
+		FROM sm_pet_store_purchases b JOIN sm_pet_store_packs p ON p.id=b.pack_id WHERE `+where+` ORDER BY b.created_at DESC LIMIT 200`, args...)
+	if err != nil {
+		if isMissingPetStoreTable(err) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var records []PurchaseRecord
+	for rows.Next() {
+		var r PurchaseRecord
+		var ca string
+		if err := rows.Scan(&r.ID, &r.BuyerEmail, &r.BuyerID, &r.SkillID, &r.AmountPaid, &r.Status, &ca, &r.SellerID); err != nil {
+			return nil, 0, err
+		}
+		r.PurchaseType = "pet_pack"
+		r.PlatformFee = r.AmountPaid * PetStorePlatformFeePct / 100
+		r.SellerEarning = r.AmountPaid - r.PlatformFee
+		r.CreatedAt = parseTime(ca)
+		records = append(records, r)
+	}
+	return records, total, rows.Err()
 }

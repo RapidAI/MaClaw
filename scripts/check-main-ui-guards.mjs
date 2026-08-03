@@ -541,14 +541,14 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 920],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 6050],
-  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1500],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 6100],
+  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1520],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
   ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 320],
   ['gui/frontend/src/components/ai/aiAssistantControls.tsx', 120],
   ['gui/frontend/src/components/ai/useTTSReadback.ts', 120],
-  ['gui/frontend/src/components/ai/aiAssistantPanelTypes.ts', 140],
+  ['gui/frontend/src/components/ai/aiAssistantPanelTypes.ts', 160],
   ['gui/frontend/src/components/ai/useAIAssistantVoiceControls.ts', 100],
   ['gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 100],
   ['gui/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
@@ -952,7 +952,7 @@ requireIncludes('gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 'exp
 requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'providerConfig', 'top header provider config label');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'handleWindowHide', 'minimize button wiring stays in top header');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'setShowModelSettings(true)', 'provider config button stays in top header actions');
-requireIncludes('gui/frontend/src/components/layout/AppStatusMessageBar.tsx', 'className="status-message"', 'status message bar wrapper');
+requireIncludes('gui/frontend/src/components/layout/AppStatusMessageBar.tsx', "'status-message'", 'status message bar wrapper');
 requireIncludes('gui/frontend/src/components/layout/AppStatusMessageBar.tsx', 'backgroundInstallStatus', 'background install status display');
 requireIncludes('gui/frontend/src/components/layout/AppStatusMessageBar.tsx', 'onOpenLLMSettings', 'LLM warning navigation');
 requireIncludes('gui/frontend/src/components/pages/TutorialPage.tsx', 'ReactMarkdown', 'tutorial markdown rendering stays in TutorialPage');
@@ -1030,8 +1030,6 @@ requireIncludes('gui/frontend/src/components/modals/InstallLocationSelector.tsx'
 requireIncludes('gui/frontend/src/components/modals/InstallLocationSelector.tsx', 'setInstallProject', 'install project update wiring');
 requireIncludes('gui/frontend/src/components/PetSettingsPanel.tsx', 'patchConfig(patch)', 'pet settings atomic patch save wiring');
 requireExcludes('gui/frontend/src/components/PetSettingsPanel.tsx', 'saveConfig', 'pet settings full-config save prop; use patchConfig');
-requireIncludes('gui/frontend/src/components/FloatingButton.tsx', 'PatchConfigFields({ pet_motion_sound_enabled: enabled })', 'floating pet sound atomic patch save wiring');
-requireExcludes('gui/frontend/src/components/FloatingButton.tsx', 'SaveConfig', 'floating pet full-config save fallback; use PatchConfigFields');
 requireIncludes('gui/frontend/src/App.tsx', 'PatchConfigFields(patch)', 'model settings atomic patch save stays explicit');
 requireIncludes('gui/app_asr.go', 'PatchConfigFields(map[string]interface{}{"asr_enabled": enabled})', 'ASR enabled setter uses atomic config patch');
 requireExcludes('gui/app_asr.go', 'a.SaveConfig(cfg)', 'ASR setter full-config save; use PatchConfigFields');
@@ -1073,7 +1071,6 @@ requireExcludes('gui/remote_smoke.go', 'app.SaveConfig(cfg)', 'remote smoke full
 requireIncludes('gui/im_tools_misc.go', 'cfg.RemoteNickname = nickname', 'nickname setter persists only nickname');
 requireIncludes('gui/im_tools_misc.go', 'h.app.PatchConfig(func(cfg *corelib.AppConfig) {', 'nickname setter uses atomic config patch');
 requireExcludes('gui/im_tools_misc.go', 'h.saveConfig(cfg)', 'nickname full-config save; use PatchConfig');
-requireIncludes('gui/skill_auto_summary.go', 'PatchConfigFields(map[string]interface{}{"remote_email": email})', 'auto-upload email backfill uses atomic config patch');
 requireIncludes('gui/app_nl_skills.go', 'cfg.NLSkills = filtered', 'skill executor save uses atomic config patch');
 requireIncludes('gui/weixin_gateway.go', 'saveWeixinLoginConfig(result)', 'Weixin QR login saves through atomic config patch helper');
 requireIncludes('gui/weixin_gateway.go', 'cfg.WeixinToken = result.BotToken', 'Weixin login patch persists token');

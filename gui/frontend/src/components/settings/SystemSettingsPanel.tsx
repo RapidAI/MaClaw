@@ -1,5 +1,5 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, SetStateAction } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { SystemDiagnosticsTable } from './SystemDiagnosticsTable';
 import { DataDirectorySection } from './DataDirectorySection';
@@ -19,8 +19,8 @@ type AudioDevicesState = {
 };
 
 type SystemSettingsPanelProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     audioDevices: AudioDevicesState;
     saveRemoteConfigField: (patch: Record<string, any>) => void;

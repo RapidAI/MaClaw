@@ -2,6 +2,10 @@ package skill
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -180,21 +184,21 @@ func TestEvolutionPipeline_LoopProcessesCoalescedBatch(t *testing.T) {
 	// Wait for delay + process.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if p.PendingSkillCount() == 0 && p.requestCount >= 1 {
-			processed.Store(int32(p.requestCount))
+		if p.PendingSkillCount() == 0 && p.requestCount.Load() >= 1 {
+			processed.Store(int32(p.requestCount.Load()))
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	if processed.Load() < 1 {
-		t.Fatalf("expected at least 1 processed request, requestCount=%d pending=%d", p.requestCount, p.PendingSkillCount())
+		t.Fatalf("expected at least 1 processed request, requestCount=%d pending=%d", p.requestCount.Load(), p.PendingSkillCount())
 	}
 	// Coalesce means one process for two notifies of same skill (after delay drain).
-	if p.requestCount != 1 {
+	if p.requestCount.Load() != 1 {
 		// If wake happened twice somehow, still ok if coalesced before first take —
 		// but typically 1. Allow 1–2 for race of second notify after first take.
-		if p.requestCount > 2 {
-			t.Fatalf("requestCount = %d, want 1 or 2", p.requestCount)
+		if p.requestCount.Load() > 2 {
+			t.Fatalf("requestCount = %d, want 1 or 2", p.requestCount.Load())
 		}
 	}
 }
@@ -392,4 +396,381 @@ func TestTriggerOptimize_ThrottleBypassedByForce(t *testing.T) {
 	if !resForce.Attempted {
 		t.Fatalf("force should attempt LLM, got %+v", resForce)
 	}
+}
+
+func TestEvolutionPipeline_tryRepair_CancelledCtxSkipsCooldown(t *testing.T) {
+	p := NewEvolutionPipeline()
+	p.EnableOptimizer = false
+	p.EnablePromoter = false
+	var calls atomic.Int32
+	p.RepairHook = func(entry *corelib.NLSkillEntry, runArgs map[string]string) {
+		calls.Add(1)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name: "broken", Source: "hub", Status: "active",
+		UsageCount: 1, LastError: "[class: command_not_found] x",
+	}
+	req := evolutionRequest{
+		SkillName:  "broken",
+		Entry:      entry,
+		ExecResult: &SkillExecutionResultCompat{Success: false},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p.tryRepair(ctx, req)
+
+	if calls.Load() != 0 {
+		t.Fatalf("hook called %d times with cancelled ctx", calls.Load())
+	}
+	p.throttleMu.Lock()
+	_, recorded := p.repairAttempts["broken"]
+	p.throttleMu.Unlock()
+	if recorded {
+		t.Fatal("cancelled attempt must not consume repair cooldown")
+	}
+
+	// 冷却未被消耗：立即重试应直接发起修复。
+	p.tryRepair(context.Background(), req)
+	if calls.Load() != 1 {
+		t.Fatalf("retry after cancelled attempt should run hook once, got %d", calls.Load())
+	}
+}
+
+func TestRunOptimize_NotPersistedSkipsEventAndUpload(t *testing.T) {
+	newPipeline := func(t *testing.T, withSaver bool) (*EvolutionPipeline, *atomic.Int32, *atomic.Int32, *atomic.Int32) {
+		tracker, err := tool.NewUsageTracker("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := NewEvolutionPipeline()
+		p.UsageTracker = tracker
+		p.Optimizer = NewSkillOptimizer(&mockLLMRepairer{
+			response: `{"optimized": true, "explanation": "tighter command", "new_steps": [{"action":"bash","params":{"command":"echo better"},"on_error":"stop"}]}`,
+		}, nil, nil)
+		// SkillLoader 列表里找不到该技能。
+		p.SkillLoader = func() []corelib.NLSkillEntry { return nil }
+		var saved, events, uploads atomic.Int32
+		if withSaver {
+			p.SkillSaver = func(skills []corelib.NLSkillEntry) error {
+				saved.Add(1)
+				return nil
+			}
+		}
+		p.EventEmitter = func(event string, payload map[string]string) { events.Add(1) }
+		p.UploadTrigger = func(skillName string, result *SkillExecutionResultCompat) { uploads.Add(1) }
+		return p, &saved, &events, &uploads
+	}
+	entry := func() *corelib.NLSkillEntry {
+		return &corelib.NLSkillEntry{
+			Name: "ghost", Source: "learned", Status: "active",
+			UsageCount: 10, SuccessCount: 5,
+			Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo hi"}}},
+		}
+	}
+
+	t.Run("skill not found in storage", func(t *testing.T) {
+		p, saved, events, uploads := newPipeline(t, true)
+		res := p.TriggerOptimize(context.Background(), entry(), true)
+		if !res.Attempted || res.Optimized {
+			t.Fatalf("result = %+v, want attempted but not optimized", res)
+		}
+		if !strings.Contains(res.Explanation, "not persisted") {
+			t.Fatalf("Explanation = %q", res.Explanation)
+		}
+		if saved.Load() != 0 || events.Load() != 0 || uploads.Load() != 0 {
+			t.Fatalf("saved=%d events=%d uploads=%d, want all 0", saved.Load(), events.Load(), uploads.Load())
+		}
+	})
+
+	t.Run("SkillSaver nil", func(t *testing.T) {
+		p, _, events, uploads := newPipeline(t, false)
+		res := p.TriggerOptimize(context.Background(), entry(), true)
+		if !res.Attempted || res.Optimized {
+			t.Fatalf("result = %+v, want attempted but not optimized", res)
+		}
+		if !strings.Contains(res.Explanation, "not persisted") {
+			t.Fatalf("Explanation = %q", res.Explanation)
+		}
+		if events.Load() != 0 || uploads.Load() != 0 {
+			t.Fatalf("events=%d uploads=%d, want all 0", events.Load(), uploads.Load())
+		}
+	})
+}
+
+func TestMergeEvolvedEntry_PreservesLiveStats(t *testing.T) {
+	dst := &corelib.NLSkillEntry{
+		Name: "s", Description: "old", Status: "active",
+		UsageCount: 10, SuccessCount: 8, FailureCount: 2,
+		LastError: "latest error", LastUsedAt: "2026-01-02T00:00:00Z",
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "old"}}},
+	}
+	src := &corelib.NLSkillEntry{
+		Name: "s", Description: "improved", Status: "needs_review",
+		UsageCount: 1, SuccessCount: 0, FailureCount: 1,
+		LastError: "stale error", LastUsedAt: "2025-01-01T00:00:00Z",
+		Steps:              []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "new"}}},
+		RepairAttemptCount: 2, LastRepairAt: "2026-01-01T00:00:00Z",
+		RepairHistory:     []corelib.SkillRepairRecord{{Explanation: "fix"}},
+		OptimizationCount: 3, LastOptimizedAt: "2026-01-03T00:00:00Z",
+	}
+	mergeEvolvedEntry(dst, src)
+
+	// 进化修改的字段从 src 拷贝。
+	if dst.Description != "improved" || dst.Status != "needs_review" {
+		t.Fatalf("desc/status not merged: %q %q", dst.Description, dst.Status)
+	}
+	if len(dst.Steps) != 1 || dst.Steps[0].Params["command"] != "new" {
+		t.Fatalf("steps not merged: %#v", dst.Steps)
+	}
+	if dst.RepairAttemptCount != 2 || dst.LastRepairAt == "" || len(dst.RepairHistory) != 1 {
+		t.Fatalf("repair metadata not merged: %#v", dst)
+	}
+	if dst.OptimizationCount != 3 || dst.LastOptimizedAt == "" {
+		t.Fatalf("optimization metadata not merged: %#v", dst)
+	}
+	// dst 的实时计数字段必须保留。
+	if dst.UsageCount != 10 || dst.SuccessCount != 8 || dst.FailureCount != 2 {
+		t.Fatalf("usage stats clobbered: %#v", dst)
+	}
+	if dst.LastError != "latest error" || dst.LastUsedAt != "2026-01-02T00:00:00Z" {
+		t.Fatalf("last error/used clobbered: %#v", dst)
+	}
+}
+
+func TestEvolutionPipeline_tryFileBackedRepairDraft(t *testing.T) {
+	skillDir := t.TempDir()
+	// draft 流要求技能目录里有 skill.yaml/skill.yml（SKILL.md-only 技能在
+	// LLM 调用前就被跳过）。
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: file-skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name: "file-skill", Source: "file", SkillDir: skillDir, Status: "active",
+		UsageCount: 5, SuccessCount: 0, FailureCount: 5,
+		LastError: "[class: command_not_found] missing foo",
+		Steps:     []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "foo"}}},
+	}
+	if ok, reason := ExplainRepairGate(entry); ok || reason != "file_backed" {
+		t.Fatalf("fixture gate = (%v, %q), want (false, file_backed)", ok, reason)
+	}
+
+	var llmCalls atomic.Int32
+	p := NewEvolutionPipeline()
+	p.RepairCooldown = time.Millisecond
+	p.LLM = &stubRepairLLM{
+		respond: `{"repaired":true,"explanation":"use echo","new_steps":[{"action":"bash","params":{"command":"echo fixed"}}],"should_disable":false}`,
+		onCall:  func([]map[string]string) { llmCalls.Add(1) },
+	}
+	var emitted map[string]string
+	p.EventEmitter = func(event string, payload map[string]string) {
+		if event == EventSkillRepairDraftReady {
+			emitted = payload
+		}
+	}
+	req := evolutionRequest{
+		SkillName:  "file-skill",
+		Entry:      entry,
+		ExecResult: &SkillExecutionResultCompat{Success: false},
+	}
+
+	p.tryRepair(context.Background(), req)
+
+	// entry 不被修改：draft 流不落地任何变更。
+	if entry.RepairAttemptCount != 0 || len(entry.RepairHistory) != 0 {
+		t.Fatalf("entry repair metadata mutated: %#v", entry)
+	}
+	if len(entry.Steps) != 1 || entry.Steps[0].Params["command"] != "foo" {
+		t.Fatalf("entry steps mutated: %#v", entry.Steps)
+	}
+
+	// draft 文件已写盘且内容完整。
+	draftsDir := filepath.Join(skillDir, RepairDraftsDirName)
+	files, err := os.ReadDir(draftsDir)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("draft files = %v, err = %v, want exactly 1", files, err)
+	}
+	data, err := os.ReadFile(filepath.Join(draftsDir, files[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var draft RepairDraft
+	if err := json.Unmarshal(data, &draft); err != nil {
+		t.Fatal(err)
+	}
+	if draft.Skill != "file-skill" || draft.Explanation != "use echo" || draft.CreatedAt == "" {
+		t.Fatalf("draft = %#v", draft)
+	}
+	if draft.LastError != entry.LastError {
+		t.Fatalf("draft.LastError = %q", draft.LastError)
+	}
+	if len(draft.OldSteps) != 1 || draft.OldSteps[0].Params["command"] != "foo" {
+		t.Fatalf("draft.OldSteps = %#v", draft.OldSteps)
+	}
+	if len(draft.NewSteps) != 1 || draft.NewSteps[0].Params["command"] != "echo fixed" {
+		t.Fatalf("draft.NewSteps = %#v", draft.NewSteps)
+	}
+
+	// 事件携带 skill + draft 文件名。
+	if emitted == nil || emitted["skill"] != "file-skill" || emitted["draft"] != files[0].Name() {
+		t.Fatalf("event payload = %#v, draft file = %s", emitted, files[0].Name())
+	}
+	if llmCalls.Load() != 1 {
+		t.Fatalf("llm calls = %d, want 1", llmCalls.Load())
+	}
+
+	// 已有未评审 draft 时不再调 LLM、不重复生成（越过冷却后再试）。
+	time.Sleep(5 * time.Millisecond)
+	p.tryRepair(context.Background(), req)
+	if llmCalls.Load() != 1 {
+		t.Fatalf("pending draft should skip LLM, calls = %d", llmCalls.Load())
+	}
+	files, err = os.ReadDir(draftsDir)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("draft files after retry = %v, err = %v, want exactly 1", files, err)
+	}
+}
+
+func TestMergeEvolvedEntry_MergesRepairMarkers(t *testing.T) {
+	newPair := func(srcErr string) (*corelib.NLSkillEntry, *corelib.NLSkillEntry) {
+		dst := &corelib.NLSkillEntry{Name: "s", LastError: "live error"}
+		src := &corelib.NLSkillEntry{Name: "s", LastError: srcErr}
+		return dst, src
+	}
+
+	// 修复产物标记必须拷贝，否则落盘的仍是修复前旧错误、技能会被重复修复。
+	for _, marker := range []string{"auto-repaired: rewrote command", "auto-disabled: unfixable"} {
+		dst, src := newPair(marker)
+		mergeEvolvedEntry(dst, src)
+		if dst.LastError != marker {
+			t.Fatalf("marker %q not merged, LastError = %q", marker, dst.LastError)
+		}
+	}
+
+	// 普通实时错误统计仍保留 dst 的值。
+	dst, src := newPair("stale pre-repair error")
+	mergeEvolvedEntry(dst, src)
+	if dst.LastError != "live error" {
+		t.Fatalf("live LastError clobbered: %q", dst.LastError)
+	}
+}
+
+// errorRepairLLM 总是让 LLM 调用失败，用于验证"LLM 已调用但失败"也消耗冷却。
+type errorRepairLLM struct{ configured bool }
+
+func (e *errorRepairLLM) IsConfigured() bool { return e.configured }
+func (e *errorRepairLLM) ChatCall([]map[string]string) (string, error) {
+	return "", fmt.Errorf("simulated LLM outage")
+}
+
+func repairCooldownRecorded(p *EvolutionPipeline, skill string) bool {
+	p.throttleMu.Lock()
+	defer p.throttleMu.Unlock()
+	_, ok := p.repairAttempts[skill]
+	return ok
+}
+
+func repairEligibleCoreEntry() *corelib.NLSkillEntry {
+	return &corelib.NLSkillEntry{
+		Name: "broken", Source: "hub", Status: "active",
+		UsageCount: 1, SuccessCount: 0,
+		LastError: "[class: command_not_found] missing foo",
+		Steps:     []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "foo"}}},
+	}
+}
+
+// TestEvolutionPipeline_tryRepair_LLMErrorConsumesCooldown covers the core
+// (non-hook, non-file-backed) path: an LLM call that was actually made but
+// failed must consume the cooldown, otherwise a persistently failing skill
+// would burn one LLM call on every failed execution.
+func TestEvolutionPipeline_tryRepair_LLMErrorConsumesCooldown(t *testing.T) {
+	req := evolutionRequest{
+		SkillName:  "broken",
+		Entry:      repairEligibleCoreEntry(),
+		ExecResult: &SkillExecutionResultCompat{Success: false},
+	}
+
+	p := NewEvolutionPipeline()
+	p.LLM = &errorRepairLLM{configured: true}
+	p.tryRepair(context.Background(), req)
+	if !repairCooldownRecorded(p, "broken") {
+		t.Fatal("failed LLM call must consume the repair cooldown")
+	}
+
+	// LLM 未配置：没有真实调用成本，不写时间戳。
+	p2 := NewEvolutionPipeline()
+	p2.LLM = &errorRepairLLM{configured: false}
+	p2.tryRepair(context.Background(), req)
+	if repairCooldownRecorded(p2, "broken") {
+		t.Fatal("unconfigured LLM must not consume the repair cooldown")
+	}
+
+	p3 := NewEvolutionPipeline() // LLM nil
+	p3.tryRepair(context.Background(), req)
+	if repairCooldownRecorded(p3, "broken") {
+		t.Fatal("nil LLM must not consume the repair cooldown")
+	}
+}
+
+// TestEvolutionPipeline_tryFileBackedRepairDraft_CooldownSemantics covers the
+// draft path: LLM failure consumes the cooldown; a draft that cannot be
+// written to disk does not (nothing was produced, immediate retry is OK).
+func TestEvolutionPipeline_tryFileBackedRepairDraft_CooldownSemantics(t *testing.T) {
+	newFileBackedReq := func(skillDir string) evolutionRequest {
+		// draft 流要求技能目录里有 skill.yaml/skill.yml（SKILL.md-only 技能
+		// 在 LLM 调用前就被跳过）。
+		if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: file-skill\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return evolutionRequest{
+			SkillName: "file-skill",
+			Entry: &corelib.NLSkillEntry{
+				Name: "file-skill", Source: "file", SkillDir: skillDir, Status: "active",
+				UsageCount: 5, SuccessCount: 0, FailureCount: 5,
+				LastError: "[class: command_not_found] missing foo",
+				Steps:     []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "foo"}}},
+			},
+			ExecResult: &SkillExecutionResultCompat{Success: false},
+		}
+	}
+
+	t.Run("LLM error consumes cooldown", func(t *testing.T) {
+		p := NewEvolutionPipeline()
+		p.LLM = &errorRepairLLM{configured: true}
+		p.tryRepair(context.Background(), newFileBackedReq(t.TempDir()))
+		if !repairCooldownRecorded(p, "file-skill") {
+			t.Fatal("failed LLM call must consume the repair cooldown on the draft path")
+		}
+	})
+
+	t.Run("draft write failure keeps cooldown", func(t *testing.T) {
+		skillDir := t.TempDir()
+		// 把 .evolution-drafts 预先建成普通文件，让 WriteRepairDraft 的
+		// MkdirAll 失败，模拟写盘失败。
+		if err := os.WriteFile(filepath.Join(skillDir, RepairDraftsDirName), []byte("block"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var emitted atomic.Int32
+		p := NewEvolutionPipeline()
+		p.LLM = &stubRepairLLM{
+			respond: `{"repaired":true,"explanation":"use echo","new_steps":[{"action":"bash","params":{"command":"echo fixed"}}],"should_disable":false}`,
+		}
+		p.EventEmitter = func(event string, payload map[string]string) { emitted.Add(1) }
+		p.tryRepair(context.Background(), newFileBackedReq(skillDir))
+		if emitted.Load() != 0 {
+			t.Fatal("no event expected when draft write fails")
+		}
+		if repairCooldownRecorded(p, "file-skill") {
+			t.Fatal("failed draft write must not consume the repair cooldown")
+		}
+	})
+
+	t.Run("unconfigured LLM keeps cooldown", func(t *testing.T) {
+		p := NewEvolutionPipeline()
+		p.LLM = &errorRepairLLM{configured: false}
+		p.tryRepair(context.Background(), newFileBackedReq(t.TempDir()))
+		if repairCooldownRecorded(p, "file-skill") {
+			t.Fatal("unconfigured LLM must not consume the repair cooldown on the draft path")
+		}
+	})
 }

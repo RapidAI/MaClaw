@@ -238,39 +238,10 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 			"knowledge_save_url":     app.toolKnowledgeSaveURL,
 		},
 		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
-			// Use the first configured web search provider, or DuckDuckGo fallback.
-			var provider corelib.WebSearchProvider
-			if len(app.appConfig.WebSearchProviders) > 0 {
-				for _, p := range app.appConfig.WebSearchProviders {
-					if p.Name == app.appConfig.WebSearchCurrentProvider {
-						provider = p
-						break
-					}
-				}
-				if provider.Name == "" {
-					provider = app.appConfig.WebSearchProviders[0]
-				}
-			}
-			if provider.Type == "" {
-				provider.Type = "duckduckgo"
-			}
-			return agent.ToolWebSearchCtx(ctx, provider, args)
+			return agent.ToolWebSearchWithStrategyCtx(ctx, tuiWebSearchStrategy(app.appConfig), args)
 		},
 		WebFetchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
-			// Use the same provider as web_search for enhanced fetch (e.g. TinyFish).
-			var provider corelib.WebSearchProvider
-			if len(app.appConfig.WebSearchProviders) > 0 {
-				for _, p := range app.appConfig.WebSearchProviders {
-					if p.Name == app.appConfig.WebSearchCurrentProvider {
-						provider = p
-						break
-					}
-				}
-				if provider.Name == "" {
-					provider = app.appConfig.WebSearchProviders[0]
-				}
-			}
-			return agent.ToolWebFetchWithProviderCtx(ctx, args, provider)
+			return agent.ToolWebFetchWithProviderCtx(ctx, args, tuiWebFetchProvider(app.appConfig))
 		},
 	})
 

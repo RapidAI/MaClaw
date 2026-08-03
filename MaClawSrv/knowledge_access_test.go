@@ -558,6 +558,50 @@ func TestMultiKnowledgeStoreDoesNotIncludeDisabledSharedScopes(t *testing.T) {
 	}
 }
 
+func TestMultiKnowledgeStoreListSourcesDoesNotIncludeDisabledSharedScopes(t *testing.T) {
+	ctx := context.Background()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	own, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "disabled list marker", Title: "own disabled", TenantID: "tenant-a", OwnerID: "user-a"})
+	if err != nil {
+		t.Fatalf("SaveText own: %v", err)
+	}
+	team, err := store.SaveText(ctx, knowledge.TextSaveRequest{Text: "disabled list marker", Title: "team disabled", TenantID: "tenant-a", OwnerID: "user-b"})
+	if err != nil {
+		t.Fatalf("SaveText team: %v", err)
+	}
+	if _, err := store.DisableSource(ctx, own.ID); err != nil {
+		t.Fatalf("DisableSource own: %v", err)
+	}
+	if _, err := store.DisableSource(ctx, team.ID); err != nil {
+		t.Fatalf("DisableSource team: %v", err)
+	}
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	if err := access.SetUser(ctx, "tenant-a", "user-a", &knowledgeAccessConfig{Enabled: true, ReadScopes: []knowledgeScope{{TenantID: "tenant-a", OwnerID: "user-b"}}}); err != nil {
+		t.Fatalf("SetUser: %v", err)
+	}
+	multi := newMultiKnowledgeStore(store, access)
+
+	sources, err := multi.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: "tenant-a", OwnerID: "user-a", IncludeDisabled: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources: %v", err)
+	}
+	ownerSeen := map[string]bool{}
+	for _, source := range sources {
+		ownerSeen[source.OwnerID] = true
+	}
+	if !ownerSeen["user-a"] {
+		t.Fatalf("expected own disabled source to be listed with IncludeDisabled, got %#v", sources)
+	}
+	if ownerSeen["user-b"] {
+		t.Fatalf("disabled shared scope should not be listed even when requester includes disabled: %#v", sources)
+	}
+}
+
 func TestKnowledgeAccessCrossTenantRequiresAdminEnable(t *testing.T) {
 	ctx := context.Background()
 	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
@@ -721,6 +765,29 @@ func TestKnowledgeResultKeysDistinguishStructuredRows(t *testing.T) {
 	}
 	if knowledgeContextCitationKey(rowA) == knowledgeContextCitationKey(rowB) {
 		t.Fatalf("structured context citation keys should distinguish table rows")
+	}
+}
+
+func TestSortKnowledgeSearchResultsOrdersEqualScoresDeterministically(t *testing.T) {
+	for attempt := 0; attempt < 20; attempt++ {
+		results := []knowledge.SearchResult{
+			{ResultType: "table_row", RowID: "row-b", Source: knowledge.Source{ID: "source-b"}, Score: 2},
+			{ResultType: "table_row", RowID: "row-a", Source: knowledge.Source{ID: "source-a"}, Score: 2},
+		}
+		sortKnowledgeSearchResults(results)
+		if results[0].RowID != "row-a" || results[1].RowID != "row-b" {
+			t.Fatalf("attempt %d equal-score ordering = %#v", attempt, results)
+		}
+	}
+}
+
+func TestMergeKnowledgeSearchResultsKeepsHighestDuplicateScore(t *testing.T) {
+	base := knowledge.SearchResult{ResultType: "table_row", RowID: "row-1", Source: knowledge.Source{ID: "source-1"}, Score: 1}
+	stronger := base
+	stronger.Score = 3
+	merged, seen := mergeKnowledgeSearchResults(nil, make(map[string]int), []knowledge.SearchResult{base, stronger})
+	if len(merged) != 1 || merged[0].Score != 3 || seen[knowledgeResultKey(base)] != 0 {
+		t.Fatalf("merged duplicate result = %#v, seen=%#v", merged, seen)
 	}
 }
 

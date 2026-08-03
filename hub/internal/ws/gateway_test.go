@@ -1186,3 +1186,54 @@ func TestHandleIMGatewayMessageInjectsConnectionTenant(t *testing.T) {
 		t.Fatal("timed out waiting for forwarded gateway message")
 	}
 }
+
+type deviceGatewayReplyCapture struct {
+	replies        []map[string]any
+	profileUpdates int
+	petSkin        string
+}
+
+func (g *deviceGatewayReplyCapture) RegisterPairing(string, string, string, string) error { return nil }
+func (g *deviceGatewayReplyCapture) ServeHTTP(http.ResponseWriter, *http.Request)         {}
+func (g *deviceGatewayReplyCapture) EnqueueReply(_, _ string, reply map[string]any) {
+	g.replies = append(g.replies, reply)
+}
+func (g *deviceGatewayReplyCapture) UpdateMachinePetProfileAsset(_ string, skin string, _ bool, _ map[string]any) {
+	g.profileUpdates++
+	g.petSkin = skin
+}
+
+func TestHandleDeviceGatewayReplyDoesNotResetPetProfile(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{}
+	gateway := &Gateway{DeviceGateway: capture}
+	ctx := &ConnContext{Role: "machine", MachineID: "gui-a"}
+	payload, _ := json.Marshal(map[string]any{
+		"clientId": "pet-a", "conversationId": "default",
+		"reply": map[string]any{"reply_type": "text", "text": "hello"},
+	})
+	if err := gateway.handleDeviceGatewayReply(ctx, Envelope{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if capture.profileUpdates != 0 {
+		t.Fatalf("ordinary reply unexpectedly updated pet profile %d times", capture.profileUpdates)
+	}
+	if len(capture.replies) != 1 || capture.replies[0]["text"] != "hello" {
+		t.Fatalf("ordinary reply was not relayed: %#v", capture.replies)
+	}
+}
+
+func TestHandleDeviceGatewayPetProfileUpdateIsExplicit(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{}
+	gateway := &Gateway{DeviceGateway: capture}
+	ctx := &ConnContext{Role: "machine", MachineID: "gui-a"}
+	payload, _ := json.Marshal(map[string]any{
+		"clientId": "*", "conversationId": "system",
+		"reply": map[string]any{"reply_type": "pet_profile", "pet_skin": "mini-claw", "pet_motion_enabled": true},
+	})
+	if err := gateway.handleDeviceGatewayReply(ctx, Envelope{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if capture.profileUpdates != 1 || capture.petSkin != "mini-claw" || len(capture.replies) != 0 {
+		t.Fatalf("explicit profile update=%d skin=%q replies=%#v", capture.profileUpdates, capture.petSkin, capture.replies)
+	}
+}

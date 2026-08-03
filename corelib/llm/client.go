@@ -111,6 +111,7 @@ func buildOpenAIChatRequestBody(
 	messages = sanitizeEmptyToolCalls(messages)
 	messages = sanitizeInvalidToolCallArguments(messages)
 	messages = sanitizeOrphanedToolCalls(messages, cfg.NeedsConservativeOpenAICompatSanitization() || corelib.IsGLMCodingPlanOpenAICompat(cfg))
+	messages = ensureAssistantMessagesHaveContentOrToolCalls(messages)
 	messages = ensureOpenAIChatMessagesNotEmpty(messages)
 	if corelib.IsGLMCodingPlanOpenAICompat(cfg) {
 		messages = normalizeGLMCodingPlanEmptyUserContent(messages)
@@ -1632,7 +1633,8 @@ func SanitizeConservativeOpenAICompatMessages(messages []interface{}) []interfac
 	messages = sanitizeOpenAIChatMessagesForSDKCompatibility(messages, false)
 	messages = sanitizeEmptyToolCalls(messages)
 	messages = sanitizeInvalidToolCallArguments(messages)
-	return sanitizeOrphanedToolCalls(messages, true)
+	messages = sanitizeOrphanedToolCalls(messages, true)
+	return ensureAssistantMessagesHaveContentOrToolCalls(messages)
 }
 
 func SanitizeOpenAICompatRequestMessages(messages []interface{}, stripTrailing bool) []interface{} {
@@ -1640,7 +1642,48 @@ func SanitizeOpenAICompatRequestMessages(messages []interface{}, stripTrailing b
 	messages = sanitizeOpenAIChatMessagesForSDKCompatibility(messages, false)
 	messages = sanitizeEmptyToolCalls(messages)
 	messages = sanitizeInvalidToolCallArguments(messages)
-	return sanitizeOrphanedToolCalls(messages, stripTrailing)
+	messages = sanitizeOrphanedToolCalls(messages, stripTrailing)
+	return ensureAssistantMessagesHaveContentOrToolCalls(messages)
+}
+
+// ensureAssistantMessagesHaveContentOrToolCalls makes each assistant history
+// entry valid for OpenAI-compatible APIs. Compatibility cleanup can strip
+// malformed or orphaned calls and leave a message with neither content nor
+// tool_calls; DeepSeek V4 Flash rejects that shape. An explicit empty content
+// string preserves the conversation turn without implying a tool call.
+func ensureAssistantMessagesHaveContentOrToolCalls(messages []interface{}) []interface{} {
+	if len(messages) == 0 {
+		return messages
+	}
+	result := make([]interface{}, 0, len(messages))
+	for _, message := range messages {
+		mm, ok := toMapInterface(message)
+		if !ok || strings.TrimSpace(stringValue(mm["role"])) != "assistant" {
+			result = append(result, message)
+			continue
+		}
+		if hasOpenAICompatibleAssistantToolCalls(mm) || hasOpenAICompatibleAssistantContent(mm) {
+			result = append(result, message)
+			continue
+		}
+		patched := make(map[string]interface{}, len(mm)+1)
+		for key, value := range mm {
+			patched[key] = value
+		}
+		patched["content"] = ""
+		log.Printf("[LLM sanitize] adding empty content to assistant message")
+		result = append(result, patched)
+	}
+	return result
+}
+
+func hasOpenAICompatibleAssistantToolCalls(message map[string]interface{}) bool {
+	return len(sanitizeOpenAIToolCallsForSDK(message["tool_calls"])) > 0
+}
+
+func hasOpenAICompatibleAssistantContent(message map[string]interface{}) bool {
+	_, hasContent := message["content"]
+	return hasContent
 }
 
 func sanitizeEmptyToolCalls(messages []interface{}) []interface{} {

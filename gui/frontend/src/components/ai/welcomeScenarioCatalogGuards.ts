@@ -118,6 +118,10 @@ export function auditWelcomeScenarioCatalog(tabs: ScenarioTab[]): WelcomeCatalog
                 issues.push({ level: "error", ...id, message: "en missing Output:" });
             }
 
+            // The canonical ops catalog represents local maintenance. The UI
+            // derives remote variants with getWelcomeOpsPrompts(), keeping the
+            // eight-card catalog stable while ensuring every remote variant
+            // uses the SSH diagnosis flow.
             if (tab.id !== "dev" && p.agentMode) {
                 issues.push({
                     level: "error",

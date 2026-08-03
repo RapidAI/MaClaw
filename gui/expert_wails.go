@@ -8,6 +8,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -23,11 +24,13 @@ import (
 // cannot stall expert card rendering.
 const expertHubListTimeout = 4 * time.Second
 
+var expertHubSyncMutex sync.Mutex
+
 // ListExperts returns the effective expert list JSON: builtin experts first
 // (user override copies flagged builtin=true), then user experts. When Hub is
 // reachable the remote list is merged in under a single store lock (LWW +
-// tombstones + atomic writeback) and locally-newer items are pushed back
-// best-effort. Offline is fine — local list only.
+// tombstones + atomic writeback) and pending local custom experts are pushed
+// back best-effort. Offline is fine — local list only.
 func (a *App) ListExperts() (string, error) {
 	if _, _, err := defaultExpertStore.List(); err != nil {
 		return "", err
@@ -47,7 +50,7 @@ func (a *App) ListExperts() (string, error) {
 					invalidateExpertDefCache(id)
 				}
 			}
-			a.pushBackLocalNewerExperts(client, hubList)
+			a.syncPendingExpertsToHub(client, hubList)
 		}
 	}
 	local, _, err := defaultExpertStore.List()
@@ -61,18 +64,93 @@ func (a *App) ListExperts() (string, error) {
 	return string(out), nil
 }
 
-// pushBackLocalNewerExperts best-effort re-pushes local experts that won LWW
-// against their Hub copies (i.e. an earlier SaveExpert push failed). Only ids
-// the Hub already knows about are considered — a Hub-side deletion on another
-// device must not be resurrected by this path. Fire-and-forget.
-func (a *App) pushBackLocalNewerExperts(client *expertHubClient, hubItems []ExpertDefinition) {
-	if client == nil || len(hubItems) == 0 {
+// syncPendingExpertsToHub performs one bounded background reconciliation pass.
+// The mutex coalesces concurrent ListExperts calls so repeated page refreshes
+// cannot fan out duplicate upload/delete requests for the same local change.
+func (a *App) syncPendingExpertsToHub(client *expertHubClient, hubItems []ExpertDefinition) {
+	if client == nil {
 		return
 	}
-	local, _, err := defaultExpertStore.List()
-	if err != nil || len(local) == 0 {
+	go func() {
+		expertHubSyncMutex.Lock()
+		defer expertHubSyncMutex.Unlock()
+		a.syncPendingExpertsToHubLocked(client, hubItems)
+	}()
+}
+
+func (a *App) syncPendingExpertsToHubLocked(client *expertHubClient, hubItems []ExpertDefinition) {
+	local, tombstones, pendingUploads, pendingDeletes, err := defaultExpertStore.ListForHubSync()
+	if err != nil {
 		return
 	}
+	a.retryPendingHubDeletes(client, pendingDeletes)
+	stale := expertsPendingHubSync(local, tombstones, pendingUploads, hubItems)
+	if len(stale) == 0 {
+		return
+	}
+	for _, def := range stale {
+		if !defaultExpertStore.PendingHubUploadIsCurrent(def.ID, def.UpdatedAt) {
+			continue
+		}
+		raw, merr := json.Marshal(def)
+		if merr != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		result, perr := client.Upsert(ctx, raw)
+		if perr != nil {
+			log.Printf("[experts] hub push-back %q failed: %v", def.ID, perr)
+		} else if !result.applied() {
+			log.Printf("[experts] hub push-back %q was superseded; retaining retry marker", def.ID)
+		} else if err := defaultExpertStore.ClearPendingHubUploadIfCurrent(def.ID, def.UpdatedAt); err != nil {
+			log.Printf("[experts] clear pending Hub upload %q failed: %v", def.ID, err)
+		}
+		cancel()
+	}
+}
+
+// retryPendingHubDeletes completes deletions that were made while Hub was
+// unreachable. A remote 404 is already the desired state, so it clears the
+// local retry marker too.
+func (a *App) retryPendingHubDeletes(client *expertHubClient, pendingDeletes map[string]string) {
+	if client == nil || len(pendingDeletes) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(pendingDeletes))
+	for id, deletedAt := range pendingDeletes {
+		if deletedAt != "" && builtinExpertByID(id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	for _, id := range ids {
+		deletedAt := pendingDeletes[id]
+		if !defaultExpertStore.PendingHubDeleteIsCurrent(id, deletedAt) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := client.Delete(ctx, id)
+		cancel()
+		if err != nil && !expertHubNotFound(err) {
+			log.Printf("[experts] hub delete retry %q failed: %v", id, err)
+			continue
+		}
+		if err := defaultExpertStore.ClearPendingHubDeleteIfCurrent(id, deletedAt); err != nil {
+			log.Printf("[experts] clear pending Hub delete %q failed: %v", id, err)
+		}
+	}
+}
+
+func expertHubNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), " 404")
+}
+
+// expertsPendingHubSync selects local custom experts that need eventual Hub
+// upload. Keeping this decision independent from I/O makes the retry behavior
+// easy to verify and ensures imports receive the same treatment as edits.
+func expertsPendingHubSync(local []ExpertDefinition, tombstones map[string]string, pendingUploads map[string]bool, hubItems []ExpertDefinition) []ExpertDefinition {
 	hubByID := make(map[string]ExpertDefinition, len(hubItems))
 	for _, h := range hubItems {
 		hubByID[h.ID] = h
@@ -82,30 +160,21 @@ func (a *App) pushBackLocalNewerExperts(client *expertHubClient, hubItems []Expe
 		if builtinExpertByID(l.ID) != nil {
 			continue // builtins never sync
 		}
+		if _, deleted := tombstones[l.ID]; deleted {
+			continue // never resurrect a locally deleted expert
+		}
 		h, ok := hubByID[l.ID]
 		if !ok {
-			continue // hub never saw this id; not a push-retry case
+			if pendingUploads[l.ID] {
+				stale = append(stale, l) // new/imported expert whose initial push failed
+			}
+			continue
 		}
 		if expertUpdatedAtAfter(l.UpdatedAt, h.UpdatedAt) {
 			stale = append(stale, l)
 		}
 	}
-	if len(stale) == 0 {
-		return
-	}
-	go func() {
-		for _, def := range stale {
-			raw, merr := json.Marshal(def)
-			if merr != nil {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if _, perr := client.Upsert(ctx, raw); perr != nil {
-				log.Printf("[experts] hub push-back %q failed: %v", def.ID, perr)
-			}
-			cancel()
-		}
-	}()
+	return stale
 }
 
 // expertIDPattern constrains expert ids (user-supplied and generated alike):
@@ -118,7 +187,7 @@ var expertIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 //     under the same id (Builtin=false on disk); the override wins over the
 //     in-binary definition.
 //   - Non-builtin experts are pushed to Hub best-effort (failure only logs;
-//     a later ListExperts push-back retries while the local copy stays newer).
+//     a later ListExperts retry also uploads a Hub-absent local copy).
 //
 // Returns the saved definition JSON (with id/timestamps filled in).
 func (a *App) SaveExpert(expertJSON string) (string, error) {
@@ -159,16 +228,29 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 		return "", err
 	}
 	invalidateExpertDefCache(def.ID)
+	localOnly, localOnlyErr := defaultExpertStore.IsLocalOnly(def.ID)
+	if localOnlyErr != nil {
+		log.Printf("[experts] inspect local-only state %q failed: %v", def.ID, localOnlyErr)
+	}
 
 	// Best-effort Hub sync. Builtin experts (and their override copies) stay
-	// local-only: every device ships the same builtins.
-	if !isBuiltinID {
+	// local-only: every device ships the same builtins. Expert Market installs
+	// are also device-local, including after a user edits one in the editor.
+	if !isBuiltinID && !localOnly {
+		if err := defaultExpertStore.MarkPendingHubUpload(def.ID); err != nil {
+			log.Printf("[experts] mark pending Hub upload %q failed: %v", def.ID, err)
+		}
 		if client, cerr := a.newExpertHubClient(); cerr == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if raw, merr := json.Marshal(def); merr == nil {
-				if _, perr := client.Upsert(ctx, raw); perr != nil {
+				result, perr := client.Upsert(ctx, raw)
+				if perr != nil {
 					log.Printf("[experts] hub upsert %q failed (kept locally): %v", def.ID, perr)
+				} else if !result.applied() {
+					log.Printf("[experts] hub upsert %q was superseded; retaining retry marker", def.ID)
+				} else if err := defaultExpertStore.ClearPendingHubUploadIfCurrent(def.ID, def.UpdatedAt); err != nil {
+					log.Printf("[experts] clear pending Hub upload %q failed: %v", def.ID, err)
 				}
 			}
 		}
@@ -194,11 +276,17 @@ func (a *App) DeleteExpert(id string) error {
 		return err
 	}
 	invalidateExpertDefCache(id)
+	deletedAt, markErr := defaultExpertStore.MarkPendingHubDelete(id)
+	if markErr != nil {
+		log.Printf("[experts] mark pending Hub delete %q failed: %v", id, markErr)
+	}
 	if client, cerr := a.newExpertHubClient(); cerr == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if derr := client.Delete(ctx, id); derr != nil {
+		if derr := client.Delete(ctx, id); derr != nil && !expertHubNotFound(derr) {
 			log.Printf("[experts] hub delete %q failed (tombstone recorded): %v", id, derr)
+		} else if err := defaultExpertStore.ClearPendingHubDeleteIfCurrent(id, deletedAt); err != nil {
+			log.Printf("[experts] clear pending Hub delete %q failed: %v", id, err)
 		}
 	}
 	return nil

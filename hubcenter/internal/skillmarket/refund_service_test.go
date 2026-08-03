@@ -2,6 +2,11 @@ package skillmarket
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -171,5 +176,85 @@ func TestRefund_PurchaseRecordMarkedRefunded(t *testing.T) {
 	}
 	if pr.Status != "refunded" {
 		t.Errorf("purchase status: got %s, want refunded", pr.Status)
+	}
+}
+
+// TestRefund_ConcurrentDoubleRefundIsRepelled guards the in-transaction status
+// re-check in ProcessRefund: concurrent refund requests for the same purchase
+// record must not repay the buyer more than once. A file-backed database is
+// required because concurrent pooled connections to ":memory:" would be
+// independent databases.
+func TestRefund_ConcurrentDoubleRefundIsRepelled(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "refund-race.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	// Mirror the production write pool (MaxWriteOpenConns: 1): refund
+	// transactions serialize on a single connection instead of losing lock
+	// races, so a missing in-transaction re-check would repay the buyer twice.
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := NewStore(db, db)
+	if err != nil {
+		t.Fatalf("new skillmarket store: %v", err)
+	}
+	creditsSvc := NewCreditsService(store)
+	refundSvc := NewRefundService(store, creditsSvc, &mockMailer{})
+	ctx := context.Background()
+
+	buyer := createTestUser(t, store, "race-buyer@test.com", 0)
+	seller := createTestUser(t, store, "race-seller@test.com", 0)
+	price := int64(100)
+	platformFee := price * 30 / 100
+	sellerEarning := price - platformFee
+	purchaseID := generateID()
+	rec := &PurchaseRecord{
+		ID: purchaseID, BuyerEmail: buyer.Email, BuyerID: buyer.ID,
+		SkillID: "skill-race", PurchasedVersion: 1, PurchaseType: "purchase",
+		AmountPaid: price, PlatformFee: platformFee, SellerEarning: sellerEarning,
+		SellerID: seller.ID, Status: "active", CreatedAt: time.Now(),
+	}
+	if err := store.CreatePurchase(ctx, rec); err != nil {
+		t.Fatalf("seed purchase: %v", err)
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = refundSvc.ProcessRefund(ctx, purchaseID, "admin@test.com", "race")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	succeeded := 0
+	for _, err := range errs {
+		if err == nil {
+			succeeded++
+			continue
+		}
+		// Production serializes write transactions on a single connection, which
+		// surfaces ErrAlreadyRefunded; a multi-connection pool may instead lose a
+		// lock race. Both refuse the duplicate without repaying the buyer.
+		if errors.Is(err, ErrAlreadyRefunded) || strings.Contains(strings.ToLower(err.Error()), "locked") {
+			continue
+		}
+		t.Fatalf("unexpected concurrent refund error: %v", err)
+	}
+	if succeeded != 1 {
+		t.Fatalf("concurrent refunds succeeded=%d, want exactly 1", succeeded)
+	}
+	buyerAfter, err := creditsSvc.GetBalance(ctx, buyer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if buyerAfter != price {
+		t.Errorf("buyer credited %d, want exactly %d (double refund repelled)", buyerAfter, price)
 	}
 }

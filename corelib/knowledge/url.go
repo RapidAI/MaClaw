@@ -418,6 +418,9 @@ func (s *SQLiteStore) PreviewSourcesRefresh(ctx context.Context, ids []string) S
 
 func (s *SQLiteStore) PreviewSourcesRefreshByFilter(ctx context.Context, opts ListSourcesOptions) (SourceChangePreviewResult, error) {
 	opts.Limit = sourceFilterLimit(opts, 100, 500, 5000)
+	if opts.Status == "" {
+		opts.IncludeDisabled = true
+	}
 	sources, err := s.ListSources(ctx, opts)
 	if err != nil {
 		return SourceChangePreviewResult{}, err
@@ -496,6 +499,9 @@ func (s *SQLiteStore) RefreshSources(ctx context.Context, ids []string) SourceRe
 
 func (s *SQLiteStore) RefreshSourcesByFilter(ctx context.Context, opts ListSourcesOptions) (SourceRefreshResult, error) {
 	opts.Limit = sourceFilterLimit(opts, 100, 500, 5000)
+	if opts.Status == "" {
+		opts.IncludeDisabled = true
+	}
 	sources, err := s.ListSources(ctx, opts)
 	if err != nil {
 		return SourceRefreshResult{}, err
@@ -810,7 +816,7 @@ func buildURLSourceAndNodes(ctx context.Context, req URLSaveRequest, existing So
 	if err != nil {
 		return Source{}, nil, fmt.Errorf("final URL rejected: %w", err)
 	}
-	text := strings.TrimSpace(result.Content)
+	text := normalizeKnowledgeText(result.Content)
 	if text == "" {
 		return Source{}, nil, fmt.Errorf("no readable text extracted from URL")
 	}
@@ -857,7 +863,7 @@ func buildURLSourceAndNodes(ctx context.Context, req URLSaveRequest, existing So
 		},
 		TokenCount: estimateTokens(text),
 	}
-	return source, []DocumentNode{node}, nil
+	return source, annotateMultilingualNodes([]DocumentNode{node}), nil
 }
 
 // needsJSRendering checks if a fetch result indicates the page requires JavaScript

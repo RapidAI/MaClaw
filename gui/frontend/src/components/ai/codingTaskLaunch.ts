@@ -15,6 +15,8 @@ export interface CodingTaskLaunch {
     prepareMode?: "restore-context" | "new-agent";
     agentMode?: CodingTaskAgentMode;
     remoteHost?: string;
+    /** Evidence-only first SSH turn for a remote incident diagnosis. */
+    remoteSafety?: "diagnosis";
     /** True only when SSH must be re-established before task intents may run. */
     remoteNeedsReconnect?: boolean;
     imPlatform?: string;
@@ -39,6 +41,9 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         prepareMode: input?.prepareMode === "restore-context" ? "restore-context" : "new-agent",
         agentMode,
         remoteHost,
+        remoteSafety: agentMode === "remote_coding_dev" && input?.remoteSafety === "diagnosis"
+            ? "diagnosis"
+            : undefined,
         // A local task must never inherit a stale reconnect flag.
         remoteNeedsReconnect: agentMode === "remote_coding_dev" ? input?.remoteNeedsReconnect === true : undefined,
         imPlatform: String(input?.imPlatform || "").trim() || undefined,

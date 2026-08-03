@@ -432,7 +432,7 @@ describe('KnowledgeSettingsPanel component', () => {
                 kind: 'file',
                 relative_path: 'recovered.md',
                 status: 'active',
-            }]);
+            }] as any);
         render(<KnowledgeSettingsPanel lang="en" />);
 
         fireEvent.click(screen.getByRole('tab', { name: 'Export' }));
@@ -452,7 +452,7 @@ describe('KnowledgeSettingsPanel component', () => {
             status: 'completed',
             total_files: 2,
             imported_files: 2,
-        }]);
+        }] as any);
         vi.mocked(KnowledgeListSources).mockResolvedValueOnce([
             {
                 id: 'ksrc_file',
@@ -470,7 +470,7 @@ describe('KnowledgeSettingsPanel component', () => {
                 status: 'active',
                 node_count: 2,
             },
-        ]);
+        ] as any);
         vi.mocked(SelectKnowledgeSnapshotExportPath).mockResolvedValueOnce('D:\\tmp\\knowledge.jsonl');
         render(<KnowledgeSettingsPanel lang="en" />);
 
@@ -525,7 +525,7 @@ describe('KnowledgeSettingsPanel component', () => {
             relative_path: 'docs/a.md',
             status: 'active',
             node_count: 1,
-        }]);
+        }] as any);
         vi.mocked(SelectKnowledgeSnapshotExportPath).mockImplementation(async () => 'D:\\tmp\\kb.jsonl');
         vi.mocked(KnowledgeExportSnapshotWithOptions).mockImplementation(async () => ({
             output_path: 'D:\\tmp\\kb.jsonl',
@@ -535,7 +535,7 @@ describe('KnowledgeSettingsPanel component', () => {
             facts: 0,
             bytes: 2048,
             redact_sensitive: true,
-        }));
+        } as any));
         const { OpenFileOrShowInFolder } = await import('../../../../wailsjs/go/main/App');
         vi.mocked(OpenFileOrShowInFolder).mockImplementation(async () => undefined);
         render(<KnowledgeSettingsPanel lang="en" />);
@@ -558,13 +558,13 @@ describe('KnowledgeSettingsPanel component', () => {
                 kind: 'file',
                 relative_path: 'old.md',
                 status: 'active',
-            }])
+            }] as any)
             .mockResolvedValueOnce([{
                 id: 'ksrc_new',
                 kind: 'file',
                 relative_path: 'new.md',
                 status: 'active',
-            }]);
+            }] as any);
         render(<KnowledgeSettingsPanel lang="en" />);
 
         fireEvent.click(screen.getByRole('tab', { name: 'Export' }));
@@ -594,7 +594,7 @@ describe('KnowledgeSettingsPanel component', () => {
                 status: 'disabled',
                 node_count: 1,
             },
-        ]);
+        ] as any);
         render(<KnowledgeSettingsPanel lang="en" />);
 
         fireEvent.click(screen.getByRole('tab', { name: 'Export' }));

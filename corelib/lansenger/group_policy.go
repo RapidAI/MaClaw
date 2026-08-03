@@ -119,8 +119,8 @@ func GroupMessageMentionsBot(msg IncomingMessage, appID string) bool {
 	return false
 }
 
-// BuildReplyDecorations returns Reminder / RefMsgID for an outbound reply based
-// on group-chat options and the inbound message that is being answered.
+// BuildReplyDecorations returns Reminder / RefMsgID decorations for an outbound
+// reply based on the inbound message that is being answered.
 //
 // systemNotice should be true for status/fallback messages (hub unavailable,
 // LLM not configured, etc.) so we never @mention or native-quote those.
@@ -129,11 +129,13 @@ func BuildReplyDecorations(msg IncomingMessage, opts GroupChatOptions) (reminder
 }
 
 // BuildReplyDecorationsEx is BuildReplyDecorations with an explicit system-notice flag.
+// AutoMentionReply is intentionally limited to group messages: private chats
+// already target the recipient directly and must remain free of @mentions.
 func BuildReplyDecorationsEx(msg IncomingMessage, opts GroupChatOptions, systemNotice bool) (reminder *OutgoingReminder, refMsgID string) {
 	if systemNotice {
 		return nil, ""
 	}
-	if opts.AutoMentionReply {
+	if IsGroupChat(msg.ChatType) && opts.AutoMentionReply {
 		if sender := strings.TrimSpace(msg.FromUserID); sender != "" {
 			reminder = &OutgoingReminder{UserIDs: []string{sender}}
 		}

@@ -30,6 +30,42 @@ func (f taskClassifierFunc) Classify(systemPrompt, userMessage string, timeoutSe
 	return f(systemPrompt, userMessage, timeoutSec)
 }
 
+func TestStandaloneWebSearchUsesInjectedStrategyWithoutApp(t *testing.T) {
+	strategy := corelib.WebSearchStrategy{
+		Version: corelib.WebSearchStrategyVersion,
+		Preset:  corelib.WebSearchPresetCustom,
+		Mode:    corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{{
+			ID: "bing_cn", Enabled: false, Priority: 1,
+		}},
+		BrowserFallbackEnabled:  false,
+		BrowserFallbackEngineID: "bing_cn",
+		MinResultsBeforeHedge:   3,
+	}
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		WebSearchStrategyFunc: func() corelib.WebSearchStrategy { return strategy },
+	})
+	defer h.memory.Stop()
+
+	got := h.toolWebSearch(map[string]interface{}{"query": "standalone regression"})
+	if !strings.Contains(got, "no enabled web search engines") {
+		t.Fatalf("toolWebSearch() = %q, want deterministic disabled-engine error", got)
+	}
+}
+
+func TestStandaloneWebSearchStrategyDefaultsToMainland(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	defer h.memory.Stop()
+
+	strategy := h.getWebSearchStrategy()
+	if strategy.Preset != corelib.WebSearchPresetMainland {
+		t.Fatalf("preset = %q, want %q", strategy.Preset, corelib.WebSearchPresetMainland)
+	}
+	if len(strategy.Engines) == 0 || strategy.Engines[0].ID != "bing_cn" {
+		t.Fatalf("first engine = %#v, want bing_cn", strategy.Engines)
+	}
+}
+
 func TestNewIMMessageHandlerStandalone_MinimalConfig(t *testing.T) {
 	// Minimal config — only LLM config is truly required for the agent to function.
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{

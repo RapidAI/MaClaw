@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -15,36 +16,40 @@ import (
 // text to be properly searchable via FTS5's default unicode61 tokenizer, which
 // splits on whitespace.
 //
-// For text that is purely ASCII/Latin, the original text is returned unchanged
-// (FTS5's unicode61 tokenizer handles it correctly).
+// Text in no-space scripts is indexed both with script-appropriate tokens and
+// overlapping character n-grams. The latter is a deterministic fallback for
+// Japanese, Korean, Thai, and mixed-script text when no morphology dictionary
+// is installed locally.
 func segmentTextForFTS(text string) string {
-	text = strings.TrimSpace(text)
+	text = normalizeKnowledgeLexicalText(text)
 	if text == "" {
 		return ""
 	}
-	if !containsCJKRunes(text) {
+	if !containsNoSpaceScriptRunes(text) {
 		return text
 	}
 	tokens := bm25.Tokenize(text)
+	tokens = append(tokens, scriptNGrams(text, 2)...)
 	if len(tokens) == 0 {
 		return text
 	}
-	return strings.Join(tokens, " ")
+	return strings.Join(uniqueFTSTerms(tokens), " ")
 }
 
 // buildFTSQuerySegmented builds an FTS5 MATCH expression from a query string.
 // For CJK text, it uses gse tokenization to split into meaningful terms.
 // For non-CJK text, it uses the original whitespace-based splitting.
 func buildFTSQuerySegmented(query string) string {
-	query = strings.TrimSpace(query)
+	query = normalizeKnowledgeLexicalText(query)
 	if query == "" {
 		return ""
 	}
-	if !containsCJKRunes(query) {
+	if !containsNoSpaceScriptRunes(query) {
 		return buildFTSQuery(query)
 	}
-	// Use gse tokenization for CJK queries
+	// Use gse tokens plus n-grams for CJK/Japanese/Korean/Thai queries.
 	tokens := bm25.Tokenize(query)
+	tokens = append(tokens, scriptNGrams(query, 2)...)
 	if len(tokens) == 0 {
 		return buildFTSQuery(query)
 	}
@@ -74,6 +79,32 @@ func buildFTSQuerySegmented(query string) string {
 	return strings.Join(parts, " OR ")
 }
 
+// normalizeKnowledgeLexicalText applies search-only folding. Source text stays
+// untouched so citations retain their original language and spelling.
+func normalizeKnowledgeLexicalText(text string) string {
+	text = normalizeKnowledgeText(text)
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		if isArabicRune(r) {
+			switch r {
+			case '\u0622', '\u0623', '\u0625': // alef variants
+				r = '\u0627'
+			case '\u0649': // alef maqsura
+				r = '\u064a'
+			case '\u0629': // teh marbuta
+				r = '\u0647'
+			}
+		}
+		// Arabic harakat and other combining marks are optional in queries.
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // hasCJKRune returns true if the string contains at least one CJK character.
 // Alias for containsCJKRunes for internal use.
 func hasCJKRune(s string) bool {
@@ -89,6 +120,55 @@ func containsCJKRunes(s string) bool {
 		}
 	}
 	return false
+}
+
+func containsNoSpaceScriptRunes(s string) bool {
+	for _, r := range s {
+		if isNoSpaceScriptRune(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func scriptNGrams(text string, n int) []string {
+	if n < 1 {
+		return nil
+	}
+	runes := make([]rune, 0, len(text))
+	for _, r := range text {
+		if isNoSpaceScriptRune(r) {
+			runes = append(runes, r)
+		}
+	}
+	if len(runes) == 0 {
+		return nil
+	}
+	if len(runes) < n {
+		return []string{string(runes)}
+	}
+	grams := make([]string, 0, len(runes)-n+1)
+	for i := 0; i+n <= len(runes); i++ {
+		grams = append(grams, string(runes[i:i+n]))
+	}
+	return grams
+}
+
+func uniqueFTSTerms(terms []string) []string {
+	seen := make(map[string]struct{}, len(terms))
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		out = append(out, term)
+	}
+	return out
 }
 
 func isCJK(r rune) bool {
@@ -134,6 +214,9 @@ func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
 		// Original document text gets its own embedding for vector search.
 		if err := s.BackfillNodeEmbeddings(ctx); err != nil {
 			fmt.Printf("[knowledge] node embedding backfill failed: %v\n", err)
+		}
+		if err := s.BackfillTableRowEmbeddings(ctx); err != nil {
+			fmt.Printf("[knowledge] table row embedding backfill failed: %v\n", err)
 		}
 	}
 	return nil

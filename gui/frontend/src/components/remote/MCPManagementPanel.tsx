@@ -1,33 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
-import { colors, radius } from "./styles";
-import { MCPMarketplacePanel } from "./MCPMarketplacePanel";
-import { parseRelaxedJson } from "./MCPJsonImportParser";
-import { MCPSecretRequirementsNotice } from "./MCPSecretRequirementsNotice";
-import { MCPSecretConfigurationEditor } from "./MCPSecretConfigurationEditor";
-import { MCPRemoteServerRow } from "./MCPRemoteServerRow";
-import type { HubMCPSecretRequirement } from "./MCPSecretRequirementsNotice";
-import {
-    ListMCPServers,
-    RegisterMCPServer,
-    UpdateMCPServer,
-    UnregisterMCPServer,
-    GetMCPServerTools,
-    CheckMCPServerHealth,
-    ProbeMCPServers,
-    ListLocalMCPServers,
-    RegisterLocalMCPServer,
-    UpdateLocalMCPServer,
-    UnregisterLocalMCPServer,
-    SyncLocalMCPServers,
-    SetLocalMCPAutoStart,
-    GetLocalMCPServerStatuses,
-    GetHubMCPSecretRequirements,
-    GetHubMCPHubSecrets,
-    GetHubMCPSecretBindings,
-    SaveHubMCPHubSecret,
-    SaveHubMCPSecretBinding,
-} from "../../../wailsjs/go/main/App";
+import { CSSProperties, MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { colors, radius } from './styles';
+import { MCPMarketplacePanel } from './MCPMarketplacePanel';
+import { parseRelaxedJson } from './MCPJsonImportParser';
+import { HubMCPSecretRequirement, MCPSecretRequirementsNotice } from './MCPSecretRequirementsNotice';
+import { MCPSecretConfigurationEditor } from './MCPSecretConfigurationEditor';
+import { MCPRemoteServerRow } from './MCPRemoteServerRow';
+import { CheckMCPServerHealth, GetHubMCPHubSecrets, GetHubMCPSecretBindings, GetHubMCPSecretRequirements, GetLocalMCPServerStatuses, GetMCPServerTools, ListLocalMCPServers, ListMCPServers, ProbeMCPServers, RegisterLocalMCPServer, RegisterMCPServer, SaveHubMCPHubSecret, SaveHubMCPSecretBinding, SetLocalMCPAutoStart, SyncLocalMCPServers, UnregisterLocalMCPServer, UnregisterMCPServer, UpdateLocalMCPServer, UpdateMCPServer } from '../../../wailsjs/go/main/App';
+import { corelib } from '../../../wailsjs/go/models';
 interface MCPToolView {
     name: string;
     description: string;
@@ -209,7 +188,9 @@ function LocalMCPPanel({ translate }: Props) {
         setError("");
         try {
             const list = await ListLocalMCPServers();
-            setServers(Array.isArray(list) ? list : []);
+            // Go emits args/env/disabled with omitempty; normalize absent
+            // fields so the local view model invariants hold.
+            setServers(Array.isArray(list) ? list.map((s) => ({ ...s, args: s.args ?? [], env: s.env ?? {}, disabled: s.disabled ?? false, source: s.source as LocalMCPServer["source"] })) : []);
         } catch (err) {
             setError(String(err));
         } finally {
@@ -267,9 +248,9 @@ function LocalMCPPanel({ translate }: Props) {
         setFormError("");
         try {
             if (editingServer) {
-                await UpdateLocalMCPServer(entry);
+                await UpdateLocalMCPServer(entry as unknown as corelib.LocalMCPServerEntry);
             } else {
-                await RegisterLocalMCPServer(entry);
+                await RegisterLocalMCPServer(entry as unknown as corelib.LocalMCPServerEntry);
             }
             closeForm();
             await reloadAndSync();
@@ -294,7 +275,7 @@ function LocalMCPPanel({ translate }: Props) {
     const handleToggleDisabled = async (server: LocalMCPServer) => {
         setBusy(true);
         try {
-            await UpdateLocalMCPServer({ ...server, disabled: !server.disabled });
+            await UpdateLocalMCPServer({ ...server, disabled: !server.disabled } as unknown as corelib.LocalMCPServerEntry);
             await reloadAndSync();
         } catch (err) {
             setError(String(err));
@@ -341,7 +322,7 @@ function LocalMCPPanel({ translate }: Props) {
                     disabled: cfg.disabled === true,
                     auto_start: cfg.auto_start === true,
                 };
-                await RegisterLocalMCPServer(entry);
+                await RegisterLocalMCPServer(entry as unknown as corelib.LocalMCPServerEntry);
             }
             setShowJsonImport(false);
             setJsonText("");
@@ -654,7 +635,9 @@ function RemoteMCPPanel({ translate }: Props) {
     }, []);
     const loadServerList = useCallback(async (): Promise<MCPServerView[]> => {
         const list = await ListMCPServers();
-        const normalized = Array.isArray(list) ? list : [];
+        // Go emits auth_type/health_status/source as plain strings; the local
+        // view model narrows them to known unions.
+        const normalized = (Array.isArray(list) ? list : []) as unknown as MCPServerView[];
         setServers(normalized);
         void refreshSecretStatuses(normalized);
         return normalized;
@@ -678,7 +661,7 @@ function RemoteMCPPanel({ translate }: Props) {
             let list: MCPServerView[] = [];
             try {
                 const raw = await ListMCPServers();
-                list = Array.isArray(raw) ? raw : [];
+                list = (Array.isArray(raw) ? raw : []) as unknown as MCPServerView[];
             } catch (err) {
                 if (!cancelled) setError(String(err));
                 return;
@@ -712,7 +695,7 @@ function RemoteMCPPanel({ translate }: Props) {
             try {
                 const updated = await ListMCPServers();
                 if (!cancelled) {
-                    const normalized = Array.isArray(updated) ? updated : [];
+                    const normalized = (Array.isArray(updated) ? updated : []) as unknown as MCPServerView[];
                     setServers(normalized);
                     void refreshSecretStatuses(normalized);
                 }
@@ -874,7 +857,7 @@ function RemoteMCPPanel({ translate }: Props) {
         const cleanedData = applyLocalMarketplaceSecretsToServer({ ...formData, headers: Object.keys(headers).length > 0 ? headers : undefined });
         try {
             if (editingServer) {
-                await UpdateMCPServer(cleanedData);
+                await UpdateMCPServer(cleanedData as unknown as corelib.MCPServerEntry);
                 await saveMarketplaceSecrets(cleanedData.id);
             } else {
                 // Auto-generate id from name for new registrations
@@ -884,7 +867,7 @@ function RemoteMCPPanel({ translate }: Props) {
                     const suffix = Date.now().toString(36);
                     payload.id = slug ? `${slug}-${suffix}` : `mcp-${suffix}`;
                 }
-                await RegisterMCPServer(payload);
+                await RegisterMCPServer(payload as unknown as corelib.MCPServerEntry);
             }
             closeForm();
             await loadData();
@@ -1018,7 +1001,7 @@ function RemoteMCPPanel({ translate }: Props) {
                     auth_secret: authSecret,
                     ...(Object.keys(customHeaders).length > 0 ? { headers: customHeaders } : {}),
                 };
-                await RegisterMCPServer(payload);
+                await RegisterMCPServer(payload as unknown as corelib.MCPServerEntry);
             }
             setShowJsonImport(false);
             setJsonText("");

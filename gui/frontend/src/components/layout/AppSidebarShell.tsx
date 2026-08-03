@@ -44,7 +44,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
     setRenameValue: (value: string) => void;
-    resumeTask: (projectPath: string) => Promise<void> | void;
+    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<void> | void;
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onTaskSwitchBlocked?: () => void;
@@ -59,9 +59,10 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
-    hideTask: (projectPath: string) => Promise<unknown>;
+    hideTask: (projectPath: string, tags?: string[]) => Promise<unknown>;
     /** Open project-tab paths; tasks with open tabs cannot be removed from the list menu. */
     openProjectTabPaths?: string[];
+    openExpertTabIDs?: string[];
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -155,6 +156,7 @@ export const AppSidebarShell = ({
     pinTask,
     hideTask,
     openProjectTabPaths,
+    openExpertTabIDs,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -271,6 +273,7 @@ export const AppSidebarShell = ({
                         pinTask={pinTask}
                         hideTask={hideTask}
                         openProjectTabPaths={openProjectTabPaths}
+                        openExpertTabIDs={openExpertTabIDs}
                         sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                         sidebarHubCredits={sidebarHubCredits}
                         formatSidebarTokens={formatSidebarTokens}

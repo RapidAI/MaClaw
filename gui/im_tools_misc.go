@@ -2944,21 +2944,14 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 		maxResults = int(n)
 	}
 
-	searchCfg := h.app.GetWebSearchProviders()
-	provider := corelib.WebSearchProvider{Type: searchCfg.Current}
-	for _, p := range searchCfg.Providers {
-		if strings.EqualFold(strings.TrimSpace(p.Type), strings.TrimSpace(searchCfg.Current)) {
-			provider = p
-			break
-		}
-	}
-
 	ctx, cancel := h.imToolContext()
 	defer cancel()
-	results, err := websearch.SearchWithProviderCtx(ctx, query, maxResults, provider)
+	strategy := h.getWebSearchStrategy()
+	response, err := websearch.SearchWithStrategyCtx(ctx, query, maxResults, strategy)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %s", err.Error())
 	}
+	results := response.Results
 	if len(results) == 0 {
 		return "未找到相关结果"
 	}
@@ -3056,14 +3049,17 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	// FetchWithProvider handles TinyFish routing, offset/maxChars windowing, and fallback.
 	var fetchProvider corelib.WebSearchProvider
 	if opts.SavePath == "" && h != nil && h.app != nil {
-		searchCfg := h.app.GetWebSearchProviders()
-		if searchCfg.Current == "tinyfish" {
-			for _, p := range searchCfg.Providers {
-				if p.Type == "tinyfish" && p.Key != "" {
-					fetchProvider = p
-					break
-				}
+		strategy := h.app.effectiveWebSearchStrategy()
+		for _, engine := range strategy.Engines {
+			if !engine.Enabled {
+				continue
 			}
+			// Provider-aware fetch follows the highest-priority enabled search
+			// engine. TinyFish contributes enhanced extraction only when selected.
+			if engine.ID == "tinyfish" && engine.APIKey != "" {
+				fetchProvider = corelib.WebSearchProvider{Type: "tinyfish", Key: engine.APIKey, BaseURL: engine.BaseURL}
+			}
+			break
 		}
 	}
 

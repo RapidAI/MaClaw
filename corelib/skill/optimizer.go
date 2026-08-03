@@ -394,7 +394,10 @@ func WriteBackOptimizedSteps(entry *corelib.NLSkillEntry) error {
 		return fmt.Errorf("parse %s: %w", yamlPath, err)
 	}
 
-	// Convert current Steps to YAML-compatible format.
+	// Convert current Steps to YAML-compatible format. poll/loop are NOT
+	// written back: a repair/optimization draft only rewrites the flat step
+	// fields, and round-tripping the nested poll/loop configs is out of scope
+	// (steps carrying them are not eligible for automatic repair anyway).
 	yamlSteps := make([]map[string]interface{}, len(entry.Steps))
 	for i, step := range entry.Steps {
 		s := map[string]interface{}{
@@ -405,6 +408,12 @@ func WriteBackOptimizedSteps(entry *corelib.NLSkillEntry) error {
 		}
 		if step.OnError != "" {
 			s["on_error"] = step.OnError
+		}
+		if step.Name != "" {
+			s["name"] = step.Name
+		}
+		if step.Condition != "" {
+			s["condition"] = step.Condition
 		}
 		if step.Label != "" {
 			s["label"] = step.Label

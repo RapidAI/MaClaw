@@ -407,6 +407,9 @@ function FileTabContextMenu({
     // Match CodePreviewPanel default (`lang = 'en'`) — undefined is English, not Chinese.
     const isZh = (lang ?? 'en').startsWith('zh');
     const isZhHant = lang === 'zh-Hant';
+    const text = (en: string, zhHans: string, zhHant: string = zhHans) => (
+        isZhHant ? zhHant : isZh ? zhHans : en
+    );
     const hasAbsPath = Boolean(menu.absPath);
     const hasCloseActions = Boolean(onCloseFile || onCloseOtherFiles || onCloseFilesToTheRight || onCloseAllFiles);
 
@@ -540,10 +543,10 @@ function FileTabContextMenu({
             {hasAbsPath && (
                 <>
                     <button type="button" style={itemStyle} onClick={handleRevealInExplorer} {...hoverHandlers(true)}>
-                        Reveal in Explorer
+                        {text('Reveal in Explorer', '在资源管理器中显示', '在檔案總管中顯示')}
                     </button>
                     <button type="button" style={itemStyle} onClick={handleOpenExternal} {...hoverHandlers(true)}>
-                        Open with default app
+                        {text('Open with default app', '使用默认应用打开', '使用預設應用程式開啟')}
                     </button>
                 </>
             )}
@@ -558,7 +561,7 @@ function FileTabContextMenu({
                 onClick={handleCopyPath}
                 {...hoverHandlers(true)}
             >
-                {isZhHant ? '複製路徑' : isZh ? '复制路径' : 'Copy Path'}
+                {text('Copy Path', '复制路径', '複製路徑')}
             </button>
             <button
                 type="button"
@@ -567,7 +570,7 @@ function FileTabContextMenu({
                 onClick={handleCopyRelativePath}
                 {...hoverHandlers(true)}
             >
-                {isZhHant ? '複製相對路徑' : isZh ? '复制相对路径' : 'Copy Relative Path'}
+                {text('Copy Relative Path', '复制相对路径', '複製相對路徑')}
             </button>
             <button
                 type="button"
@@ -576,7 +579,7 @@ function FileTabContextMenu({
                 onClick={handleCopyFileName}
                 {...hoverHandlers(true)}
             >
-                {isZhHant ? '複製檔名' : isZh ? '复制文件名' : 'Copy File Name'}
+                {text('Copy File Name', '复制文件名', '複製檔名')}
             </button>
             {onTogglePinFile && (
                 <button
@@ -591,8 +594,8 @@ function FileTabContextMenu({
                     {...hoverHandlers(true)}
                 >
                     {menu.isPinned
-                        ? (isZhHant ? '取消固定' : isZh ? '取消固定' : 'Unpin')
-                        : (isZhHant ? '固定' : isZh ? '固定' : 'Pin')}
+                        ? text('Unpin', '取消固定')
+                        : text('Pin', '固定')}
                 </button>
             )}
             {hasCloseActions && (
@@ -609,7 +612,7 @@ function FileTabContextMenu({
                             onClick={handleCloseTab}
                             {...hoverHandlers(true)}
                         >
-                            {isZhHant ? '關閉' : isZh ? '关闭' : 'Close'}
+                            {text('Close', '关闭', '關閉')}
                         </button>
                     )}
                     {onCloseOtherFiles && (
@@ -621,7 +624,7 @@ function FileTabContextMenu({
                             onClick={menu.canCloseOthers ? handleCloseOthers : undefined}
                             {...hoverHandlers(menu.canCloseOthers)}
                         >
-                            {isZhHant ? '關閉其他' : isZh ? '关闭其他' : 'Close Others'}
+                            {text('Close Others', '关闭其他', '關閉其他')}
                         </button>
                     )}
                     {onCloseFilesToTheRight && (
@@ -633,7 +636,7 @@ function FileTabContextMenu({
                             onClick={menu.canCloseToRight ? handleCloseToRight : undefined}
                             {...hoverHandlers(menu.canCloseToRight)}
                         >
-                            {isZhHant ? '關閉右側' : isZh ? '关闭右侧' : 'Close to the Right'}
+                            {text('Close to the Right', '关闭右侧', '關閉右側')}
                         </button>
                     )}
                     {onCloseAllFiles && (
@@ -645,7 +648,7 @@ function FileTabContextMenu({
                             onClick={menu.canCloseAll ? handleCloseAll : undefined}
                             {...hoverHandlers(menu.canCloseAll)}
                         >
-                            {isZhHant ? '全部關閉' : isZh ? '全部关闭' : 'Close All'}
+                            {text('Close All', '全部关闭', '全部關閉')}
                         </button>
                     )}
                 </>

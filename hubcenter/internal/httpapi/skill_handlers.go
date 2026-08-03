@@ -11,6 +11,7 @@ import (
 
 	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 )
 
 const (
@@ -23,6 +24,7 @@ const (
 type SkillHandlers struct {
 	store     *skill.SkillStore
 	searchSvc skillSearchRemover
+	authSvc   *skillmarket.AuthService
 }
 
 // skillSearchRemover is the subset of SearchService needed by SkillHandlers.
@@ -31,8 +33,8 @@ type skillSearchRemover interface {
 	ReIndexSkill(ctx context.Context, id string) error
 }
 
-func NewSkillHandlers(store *skill.SkillStore, searchSvc skillSearchRemover) *SkillHandlers {
-	return &SkillHandlers{store: store, searchSvc: searchSvc}
+func NewSkillHandlers(store *skill.SkillStore, searchSvc skillSearchRemover, authSvc *skillmarket.AuthService) *SkillHandlers {
+	return &SkillHandlers{store: store, searchSvc: searchSvc, authSvc: authSvc}
 }
 
 func skillError(w http.ResponseWriter, status int, msg string) {
@@ -158,6 +160,19 @@ func (h *SkillHandlers) PopularSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SkillHandlers) PublishSkill(w http.ResponseWriter, r *http.Request) {
+	if h.authSvc == nil {
+		skillError(w, http.StatusServiceUnavailable, "skill publish auth service not configured")
+		return
+	}
+	token := extractSessionToken(r)
+	if token == "" {
+		skillError(w, http.StatusUnauthorized, "session token required")
+		return
+	}
+	if _, err := h.authSvc.ValidateSession(r.Context(), token); err != nil {
+		skillError(w, http.StatusUnauthorized, "session expired or invalid")
+		return
+	}
 	var s skill.HubSkillFull
 	if !decodeSkillJSON(w, r, &s, maxSkillPublishJSONBytes) {
 		return
@@ -166,7 +181,13 @@ func (h *SkillHandlers) PublishSkill(w http.ResponseWriter, r *http.Request) {
 		skillError(w, http.StatusBadRequest, "id and name are required")
 		return
 	}
-	s.TrustLevel = "trusted"
+	// Uploader self-reported elevated trust levels are never honored: only
+	// admins may grant builtin/official/trusted (via the admin endpoints).
+	switch s.TrustLevel {
+	case "community", "agent-created":
+	default:
+		s.TrustLevel = "community"
+	}
 	if err := h.store.Publish(s); err != nil {
 		skillError(w, http.StatusInternalServerError, err.Error())
 		return

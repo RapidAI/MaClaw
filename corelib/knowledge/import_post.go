@@ -91,19 +91,24 @@ func (s *SQLiteStore) scheduleImportPostWork(sourceIDs []string, onPhase importP
 			return
 		}
 		phaseProgress("embedding", 0)
-		nodes, _ := store.queryMissingNodeEmbeddings(ctx, ids)
+		// Spreadsheet rows are independently searchable evidence. Index just the
+		// new sources here, after commit, so imports become semantically available
+		// without a later full-table backfill.
+		if err := store.BackfillTableRowEmbeddingsForSources(ctx, ids); err != nil && ctx.Err() == nil {
+			log.Printf("[knowledge-import] table-row embedding failed: %v", err)
+		}
 		if ctx.Err() != nil {
 			return
 		}
-		if len(nodes) > 0 {
-			_ = store.embedAndStoreNodeEmbeddingsWithProgress(ctx, nodes, func(processed, total int) {
-				if total <= 0 {
-					return
-				}
-				phaseProgress("embedding", (processed*100)/total)
-			})
-		} else {
-			_ = store.BackfillNodeEmbeddingsForSources(ctx, ids)
+		if err := store.BackfillNodeEmbeddingsForSourcesWithProgress(ctx, ids, func(processed, total int) {
+			if total <= 0 {
+				return
+			}
+			phaseProgress("embedding", (processed*100)/total)
+		}); err != nil && ctx.Err() == nil {
+			log.Printf("[knowledge-import] node embedding failed: %v", err)
+		}
+		if ctx.Err() == nil {
 			phaseProgress("embedding", 100)
 		}
 	}
@@ -112,9 +117,7 @@ func (s *SQLiteStore) scheduleImportPostWork(sourceIDs []string, onPhase importP
 	if strings.TrimSpace(s.dbPath) != "" {
 		path := s.dbPath
 		emb := s.currentEmbedder()
-		s.bgWG.Add(1)
-		go func() {
-			defer s.bgWG.Done()
+		if !s.startBackground(func() {
 			bg, err := openSecondarySQLiteStore(path)
 			if err != nil {
 				log.Printf("[knowledge-import] background store open failed: %v", err)
@@ -123,14 +126,26 @@ func (s *SQLiteStore) scheduleImportPostWork(sourceIDs []string, onPhase importP
 				return
 			}
 			if emb != nil && !embedding.IsNoop(emb) {
-				bg.SetEmbedder(emb)
+				// Do not call SetEmbedder on this short-lived store: that starts a
+				// full-database asynchronous refresh which can race its connection
+				// closing. The post-work path below explicitly backfills only the
+				// just-imported sources.
+				bg.embedderMu.Lock()
+				bg.embedder = emb
+				bg.embedderGeneration++
+				bg.embedderMu.Unlock()
 			}
 			run(bg)
 			if bg.db != nil {
 				_ = bg.db.Close()
 				bg.db = nil
 			}
-		}()
+		}) {
+			// Close won the race with scheduling. Do not leave import state waiting
+			// for a callback that can no longer run.
+			s.clearBackgroundCancel(cancelGen)
+			finish()
+		}
 		return
 	}
 

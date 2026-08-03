@@ -85,7 +85,9 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
     const readOnlyLabel = tab.readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
     const displayTitle = getAITabDisplayTitle(tab, lang);
     const codingEnvLabel = tab.type === "project" && tab.agentMode === "remote_coding_dev"
-        ? textForTabLang(lang, "Remote coding environment", "远程编程环境", "遠端程式開發環境")
+        ? (tab.remoteSafety === "diagnosis"
+            ? textForTabLang(lang, "Remote maintenance", "远程维护", "遠端維護")
+            : textForTabLang(lang, "Remote coding environment", "远程编程环境", "遠端程式開發環境"))
         : (tab.type === "project" && tab.agentMode === "coding_dev"
             ? textForTabLang(lang, "Coding environment", "编程环境", "程式開發環境")
             : "");

@@ -40,6 +40,9 @@ var ManageSkillActions = []ManageSkillAction{
 	{"set_evolution_enabled", "开关自动自进化（enabled=true/false 必填；写入 skill_evolution_enabled 配置；true 时同时清除 session 禁用；不影响手动 trigger_repair/trigger_optimize；环境变量 MACLAW_DISABLE_SKILL_EVOLUTION 仍优先强制关闭）"},
 	{"trigger_repair", "立即对指定 Skill 尝试 LLM 自修复（name 必填；force=true 时跳过成功率门槛但仍受安全与次数限制；wait=true 时同步等待结果）"},
 	{"trigger_optimize", "立即对指定 Skill 尝试 LLM 优化（name 必填；force=true 时跳过自动优化门槛与 24h 节流；默认同步执行）"},
+	{"list_repair_drafts", "列出 file-backed Skill 待人审的修复草稿（可选 name 过滤；只读；草稿位于 <skill_dir>/.evolution-drafts/）"},
+	{"apply_repair_draft", "应用指定的待审修复草稿（name + draft 文件名必填；写回 skill.yaml 与配置后删除草稿）"},
+	{"reject_repair_draft", "拒绝并删除指定的待审修复草稿（name + draft 文件名必填；不修改 Skill）"},
 }
 
 // ManageSkillActionNames returns the ordered list of action name strings.

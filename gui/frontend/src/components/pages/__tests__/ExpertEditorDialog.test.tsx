@@ -74,7 +74,9 @@ describe('ExpertEditorDialog', () => {
         await waitFor(() => expect(spies.GenerateExpertProfile).toHaveBeenCalledWith('论文翻译'));
         await waitFor(() => expect((screen.getByTestId('expert-name-input') as HTMLInputElement).value).toBe('翻译专家'));
         expect((screen.getByTestId('expert-icon-input') as HTMLInputElement).value).toBe('🌐');
-        expect((screen.getByTestId('expert-desc-input') as HTMLInputElement).value).toBe('中英互译');
+        expect((screen.getByTestId('expert-desc-input') as HTMLTextAreaElement).value).toBe('中英互译');
+        expect(screen.getByTestId('expert-desc-input').tagName).toBe('TEXTAREA');
+        expect(screen.getByTestId('expert-desc-input').getAttribute('rows')).toBe('3');
         expect((screen.getByTestId('expert-prompt-input') as HTMLTextAreaElement).value).toBe('你是翻译专家');
 
         // Suggestions show as summary chips (friendly labels); whitelist is NOT auto-applied.
@@ -113,17 +115,31 @@ describe('ExpertEditorDialog', () => {
         render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={onSaved} />);
 
         fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '新专家' } });
-        fireEvent.change(screen.getByTestId('expert-desc-input'), { target: { value: '描述' } });
+        fireEvent.change(screen.getByTestId('expert-desc-input'), { target: { value: '描述\n第二行' } });
         fireEvent.click(screen.getByTestId('expert-save-button'));
 
         await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
         expect(payload.id).toBeUndefined();
         expect(payload.name).toBe('新专家');
+        expect(payload.description).toBe('描述\n第二行');
         expect(payload.tools).toEqual([]);
         expect(payload.skills).toEqual([]);
         await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
         expect(onSaved.mock.calls[0][0].id).toBe('new-id-1');
+    });
+
+    it('keeps meaningful line breaks while trimming only surrounding description whitespace', async () => {
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '研究助手' } });
+        fireEvent.change(screen.getByTestId('expert-desc-input'), { target: { value: '  归纳资料\n输出重点  \n' } });
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
+        expect(payload.description).toBe('归纳资料\n输出重点');
     });
 
     it('requires a name before saving', async () => {

@@ -1,0 +1,36 @@
+menu "MaClaw ESP32-S3 thin client"
+
+config MACLAW_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+
+config MACLAW_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default ""
+
+config MACLAW_SERVER_URL
+    string "MaClaw Hub base URL"
+    default "https://hub.mypapers.top"
+    help
+        Public Hub URL reachable by the ESP32-S3. Do not include /api/v1.
+
+config MACLAW_GATEWAY_TOKEN
+    string "Third-party gateway bearer token"
+    default ""
+    help
+        Optional factory/bootstrap token. Normal deployment pairs by voice and
+        stores the returned credential in NVS, so no token is typed on device.
+
+config MACLAW_CLIENT_ID
+    string "Stable physical device ID"
+    default "esp32s3-pet-001"
+    help
+        Use an immutable ID per device (for example the chip MAC suffix).
+
+config MACLAW_CONVERSATION_ID
+    string "Default conversation ID"
+    default "default"
+    help
+        Kept stable to preserve the MaClawSrv third-party conversation session.
+
+endmenu

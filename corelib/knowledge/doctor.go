@@ -519,7 +519,7 @@ func doctorSourceGraphFragmentRefs(graph SourceGraphResult, isolatesOnly bool) (
 }
 
 func doctorFindingFilter(code string, sourceIDs []string) *ListSourcesOptions {
-	filter := ListSourcesOptions{Limit: 5000}
+	filter := ListSourcesOptions{Limit: 5000, IncludeDisabled: true}
 	switch code {
 	case "failed_sources":
 		filter.Status = StatusFailed

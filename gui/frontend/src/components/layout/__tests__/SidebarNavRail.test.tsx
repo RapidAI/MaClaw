@@ -17,12 +17,24 @@ import { GetHubUserRanking } from '../../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../../wailsjs/runtime';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 
+// Go's HubUserRanking always carries the numeric fields + period; error is
+// the only optional field. Build error responses with the full shape.
+const rankingError = (error: string) => ({
+    total_tokens: 0,
+    duration_seconds: 0,
+    token_rank: 0,
+    duration_rank: 0,
+    total_users: 0,
+    period: '',
+    error,
+});
+
 beforeEach(() => {
     vi.mocked(BrowserOpenURL).mockClear();
     vi.mocked(EventsOn).mockClear();
     vi.mocked(EventsOn).mockReturnValue(() => {});
     vi.mocked(GetHubUserRanking).mockReset();
-    vi.mocked(GetHubUserRanking).mockResolvedValue({ error: 'hub not configured' });
+    vi.mocked(GetHubUserRanking).mockResolvedValue(rankingError('hub not configured'));
 });
 
 afterEach(() => {
@@ -167,7 +179,7 @@ describe('SidebarNavRail favorite employees', () => {
     it('retries startup ranking fetch with exponential backoff until it gets valid data', async () => {
         vi.useFakeTimers();
         vi.mocked(GetHubUserRanking)
-            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce(rankingError('ranking pending'))
             .mockResolvedValueOnce({
                 total_tokens: 120,
                 duration_seconds: 0,
@@ -206,7 +218,7 @@ describe('SidebarNavRail favorite employees', () => {
     it('stops the startup retry chain when another refresh gets valid data first', async () => {
         vi.useFakeTimers();
         vi.mocked(GetHubUserRanking)
-            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce(rankingError('ranking pending'))
             .mockResolvedValueOnce({
                 total_tokens: 120,
                 duration_seconds: 0,
@@ -244,11 +256,11 @@ describe('SidebarNavRail favorite employees', () => {
 
     it('continues startup retries when a stale startup response was superseded by a failed refresh', async () => {
         vi.useFakeTimers();
-        let resolveStartup: (value: unknown) => void = () => {};
-        const startupResponse = new Promise((resolve) => { resolveStartup = resolve; });
+        let resolveStartup: (value: ReturnType<typeof rankingError>) => void = () => {};
+        const startupResponse = new Promise<ReturnType<typeof rankingError>>((resolve) => { resolveStartup = resolve; });
         vi.mocked(GetHubUserRanking)
             .mockReturnValueOnce(startupResponse)
-            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce(rankingError('ranking pending'))
             .mockResolvedValueOnce({
                 total_tokens: 120,
                 duration_seconds: 0,
@@ -275,7 +287,7 @@ describe('SidebarNavRail favorite employees', () => {
         expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
 
         await act(async () => {
-            resolveStartup({ error: 'ranking pending' });
+            resolveStartup(rankingError('ranking pending'));
             await Promise.resolve();
         });
 
@@ -291,10 +303,10 @@ describe('SidebarNavRail favorite employees', () => {
     it('falls back to the 30 minute periodic refresh after startup retries are exhausted', async () => {
         vi.useFakeTimers();
         vi.mocked(GetHubUserRanking)
-            .mockResolvedValueOnce({ error: 'ranking pending' })
-            .mockResolvedValueOnce({ error: 'ranking pending' })
-            .mockResolvedValueOnce({ error: 'ranking pending' })
-            .mockResolvedValueOnce({ error: 'ranking pending' })
+            .mockResolvedValueOnce(rankingError('ranking pending'))
+            .mockResolvedValueOnce(rankingError('ranking pending'))
+            .mockResolvedValueOnce(rankingError('ranking pending'))
+            .mockResolvedValueOnce(rankingError('ranking pending'))
             .mockResolvedValueOnce({
                 total_tokens: 120,
                 duration_seconds: 0,

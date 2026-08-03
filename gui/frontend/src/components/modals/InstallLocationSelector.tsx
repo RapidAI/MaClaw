@@ -1,12 +1,12 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, SetStateAction } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 
 // Styling for selector surface uses var(--theme-surface) in App.css.
 
 type InstallLocation = 'user' | 'project';
 
 type InstallLocationSelectorProps = {
-    config: main.AppConfig;
+    config: corelib.AppConfig;
     installLocation: InstallLocation;
     setInstallLocation: Dispatch<SetStateAction<InstallLocation>>;
     installProject: string;

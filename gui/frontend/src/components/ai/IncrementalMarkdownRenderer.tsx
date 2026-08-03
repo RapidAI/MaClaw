@@ -39,7 +39,10 @@ function findBestSplitPointForward(
     scanFrom: number,
     maxPos: number,
 ): number {
-    let fenceOpen = false;
+    // Frozen segments only ever end at a split point outside a fence, so the
+    // scan can start closed and remain linear in newly appended content.
+    // Keep the opener so an embedded shorter fence cannot close a longer one.
+    let fenceMarker = "";
     let bestSplit = -1;
     let i = scanFrom;
 
@@ -48,12 +51,22 @@ function findBestSplitPointForward(
         if (nlIdx === -1 || nlIdx >= maxPos) break;
 
         const line = content.slice(i, nlIdx);
-        if (/^```/.test(line.trimStart())) {
-            fenceOpen = !fenceOpen;
+        const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
+        if (fenceMatch) {
+            const marker = fenceMatch[1];
+            if (!fenceMarker) {
+                fenceMarker = marker;
+            } else if (
+                marker[0] === fenceMarker[0]
+                && marker.length >= fenceMarker.length
+                && !fenceMatch[2].trim()
+            ) {
+                fenceMarker = "";
+            }
         }
 
         // 检查是否是 \n\n（当前行结束后紧跟空行）
-        if (!fenceOpen && nlIdx + 1 < content.length && content[nlIdx + 1] === '\n') {
+        if (!fenceMarker && nlIdx + 1 < content.length && content[nlIdx + 1] === '\n') {
             // 分割点在 \n\n 结束之后
             bestSplit = nlIdx + 2;
         }
@@ -78,6 +91,10 @@ export interface IncrementalRenderState {
     frozen: FrozenSegment | null;
     /** 上一次渲染的完整 content 长度（检测截断/替换） */
     lastContentLen: number;
+    /** Exact prior text, used only to catch same-length in-place replacements. */
+    lastContent: string;
+    /** Theme used to create frozen React nodes. */
+    lastTheme: Theme | null;
     /** 上一次冻结检查的 content 长度 */
     lastFreezeCheckLen: number;
     /** 上一帧的尾部 content（用于判断是否需要重新渲染尾部） */
@@ -90,6 +107,8 @@ export function createIncrementalRenderState(): IncrementalRenderState {
     return {
         frozen: null,
         lastContentLen: 0,
+        lastContent: '',
+        lastTheme: null,
         lastFreezeCheckLen: 0,
         lastTailContent: '',
         lastOutput: null,
@@ -119,11 +138,17 @@ export function renderContentIncremental(
     if (!content) return [];
 
     // ── 缓存失效检测 ──
-    if (content.length < state.lastContentLen) {
+    if (
+        state.lastTheme !== t ||
+        content.length < state.lastContentLen ||
+        (content.length === state.lastContentLen && content !== state.lastContent)
+    ) {
         // Content 被截断或替换——完全重置
         resetState(state);
     }
     state.lastContentLen = content.length;
+    state.lastContent = content;
+    state.lastTheme = t;
 
     // 验证冻结段有效性
     if (state.frozen && state.frozen.contentUpTo > content.length) {

@@ -22,6 +22,7 @@ func init() {
 			UsageTracker:          cfg.UsageTracker,
 			LLMConfigFunc:         cfg.LLMConfigFunc,
 			MaxIterationsFunc:     cfg.MaxIterationsFunc,
+			WebSearchStrategyFunc: cfg.WebSearchStrategyFunc,
 			IsProMode:             cfg.IsProMode,
 			ConversationStorePath: cfg.ConversationStorePath,
 			ConfirmationStorePath: cfg.ConfirmationStorePath,

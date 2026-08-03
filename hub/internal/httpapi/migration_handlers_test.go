@@ -132,6 +132,110 @@ func TestMigrationPublicManifestRejectsSecretBearingFields(t *testing.T) {
 	}
 }
 
+func TestMigrationPublicManifestAcceptsPetPackMetadata(t *testing.T) {
+	for _, manifest := range []json.RawMessage{
+		json.RawMessage(`{"version":"v1"}`),
+		json.RawMessage(`{"version":"maclaw-gui-user-data-migration/v2","pet_packs_included":true}`),
+		json.RawMessage(`{"version":"maclaw-gui-user-data-migration/v2","pet_pack_bytes":42,"pet_packs_included":true,"files":[{"path":"pet_packs/example/manifest.json","bytes":42,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`),
+	} {
+		if err := validateMigrationPublicManifest(manifest); err != nil {
+			t.Fatalf("valid migration manifest rejected: %s: %v", manifest, err)
+		}
+	}
+
+	negativeSize := json.RawMessage(`{"version":"maclaw-gui-user-data-migration/v2","pet_pack_bytes":-1,"pet_packs_included":true}`)
+	if err := validateMigrationPublicManifest(negativeSize); err == nil {
+		t.Fatal("negative pet_pack_bytes accepted")
+	}
+
+	undeclaredBytes := json.RawMessage(`{"version":"maclaw-gui-user-data-migration/v2","pet_pack_bytes":42}`)
+	if err := validateMigrationPublicManifest(undeclaredBytes); err == nil {
+		t.Fatal("pet_pack_bytes accepted without pet_packs_included")
+	}
+
+	for _, manifest := range []json.RawMessage{
+		json.RawMessage(`{"version":"v2","pet_packs_included":true,"files":[{"path":"pet_packs","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`),
+		json.RawMessage(`{"version":"v2","pet_packs_included":true,"pet_pack_bytes":41,"files":[{"path":"pet_packs/example/manifest.json","bytes":42,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`),
+		json.RawMessage(`{"version":"v2","files":[{"path":"pet_packs/example/manifest.json","bytes":42,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`),
+	} {
+		if err := validateMigrationPublicManifest(manifest); err == nil {
+			t.Fatalf("invalid pet-pack manifest accepted: %s", manifest)
+		}
+	}
+}
+
+func TestMigrationCreateExportAcceptsPetPackMetadata(t *testing.T) {
+	ctx := context.Background()
+	st, db, cleanup := newMigrationAPITestStore(t)
+	defer cleanup()
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	user := &store.User{ID: "user-pet-pack", TenantID: "tenant-pet-pack", Email: "pet-pack@example.com", Status: "active", EnrollmentStatus: "approved", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedMigrationAPIMachine(t, st, user.TenantID, user.ID, "machine-pet-pack", "token-pet-pack", "Pet Pack Mac")
+	api := NewMigrationAPI(db, t.TempDir(), identity, identity.MachinesRepo(), st.System)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, nil)
+
+	payload := bytes.Repeat([]byte("x"), int(migrationMinUploadChunkSize))
+	hash := migrationSHA256Hex(payload)
+	resp := migrationAPIRequest(t, mux, http.MethodPost, "/api/v1/migration/exports", "machine-pet-pack", "token-pet-pack", map[string]any{
+		"compressed_size": int64(len(payload)), "encrypted_size": int64(len(payload)),
+		"encrypted_sha256": hash, "plain_sha256": hash,
+		"chunk_size": migrationMinUploadChunkSize, "chunk_count": 1,
+		"manifest": map[string]any{
+			"version": "maclaw-gui-user-data-migration/v2", "tenant_id": user.TenantID,
+			"user_id": user.ID, "machine_id": "machine-pet-pack",
+			"pet_pack_bytes": 42, "pet_packs_included": true,
+			"files": []map[string]any{{
+				"path": "pet_packs/custom-pet/pet-pack.yaml", "bytes": 42,
+				"sha256": strings.Repeat("a", 64),
+			}},
+		},
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("pet-pack create export status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	current := migrationAPIRequest(t, mux, http.MethodGet, "/api/v1/migration/exports/current", "machine-pet-pack", "token-pet-pack", nil)
+	if current.Code != http.StatusOK {
+		t.Fatalf("pet-pack metadata missing from current export: status=%d body=%s", current.Code, current.Body.String())
+	}
+	var currentPayload struct {
+		Export struct {
+			Manifest migrationPublicManifest `json:"manifest"`
+		} `json:"export"`
+	}
+	if err := json.Unmarshal(current.Body.Bytes(), &currentPayload); err != nil {
+		t.Fatalf("decode current export: %v body=%s", err, current.Body.String())
+	}
+	if currentPayload.Export.Manifest.PetPackBytes != 42 || !currentPayload.Export.Manifest.PetPacksIncluded {
+		t.Fatalf("pet-pack metadata missing from current export: %#v", currentPayload.Export.Manifest)
+	}
+	instances := migrationAPIRequest(t, mux, http.MethodGet, "/api/v1/migration/instances", "machine-pet-pack", "token-pet-pack", nil)
+	if instances.Code != http.StatusOK {
+		t.Fatalf("pet-pack metadata missing from migration instances: status=%d body=%s", instances.Code, instances.Body.String())
+	}
+	var instancesPayload struct {
+		Instances []struct {
+			MachineID      string                  `json:"machine_id"`
+			ExportManifest migrationPublicManifest `json:"export_manifest"`
+		} `json:"instances"`
+	}
+	if err := json.Unmarshal(instances.Body.Bytes(), &instancesPayload); err != nil {
+		t.Fatalf("decode migration instances: %v body=%s", err, instances.Body.String())
+	}
+	for _, instance := range instancesPayload.Instances {
+		if instance.MachineID == "machine-pet-pack" {
+			if instance.ExportManifest.PetPackBytes != 42 || !instance.ExportManifest.PetPacksIncluded {
+				t.Fatalf("pet-pack metadata missing from migration instance: %#v", instance.ExportManifest)
+			}
+			return
+		}
+	}
+	t.Fatal("source machine missing from migration instances")
+}
+
 func TestMigrationCreateExportRejectsAmbiguousOrUnknownEnvelopeFields(t *testing.T) {
 	st, db, cleanup := newMigrationAPITestStore(t)
 	defer cleanup()

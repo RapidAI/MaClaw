@@ -6,7 +6,7 @@ import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_PROJECT_TASK_CLOSED, type OpenCrea
 import { localizeText } from '../../i18n';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
-import { agentModeFromTaskTags, CODING_TASK_COMMAND_MAX_LEN, isPureCodingTaskTags, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, type PureCodingAgentMode } from '../ai/codingTaskMode';
+import { agentModeFromTaskTags, CODING_TASK_COMMAND_MAX_LEN, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { normalizeProjectSessionPath } from '../ai/aiAssistantPanelSessionUtils';
 import { extractErrorMessage } from '../ai/participantAddError';
 import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
@@ -43,6 +43,19 @@ export type TaskContextMenu = {
     isRemoteCoding?: boolean;
     tags?: string[];
 } | null;
+
+const EXPERT_TASK_SOURCE_PREFIX = 'source:expert:';
+
+/** Return the expert identity carried by a durable task-management row. */
+export function expertIDFromTaskTags(tags?: string[] | null): string {
+    for (const rawTag of tags || []) {
+        const tag = String(rawTag || '').trim();
+        if (!tag.startsWith(EXPERT_TASK_SOURCE_PREFIX)) continue;
+        const expertID = tag.slice(EXPERT_TASK_SOURCE_PREFIX.length).trim();
+        if (expertID) return expertID;
+    }
+    return '';
+}
 
 type TaskIconKind = 'pin' | 'reference' | 'coding' | 'remote_coding' | 'task';
 
@@ -93,10 +106,15 @@ const isPureCodingTask = (proj: TaskManagementItem): boolean => isPureCodingTask
 const isRemoteCodingTask = (proj: TaskManagementItem): boolean =>
     agentModeFromTaskTags(proj.tags) === 'remote_coding_dev';
 
-const taskIconLabel = (kind: TaskIconKind, lang: string) => {
+const isRemoteMaintenanceTask = (proj: TaskManagementItem): boolean =>
+    isRemoteCodingTask(proj) && isRemoteMaintenanceTaskTags(proj.tags);
+
+const taskIconLabel = (kind: TaskIconKind, lang: string, maintenance = false) => {
     if (kind === 'pin') return textForLang(lang, 'Pinned task', '\u7f6e\u9876\u4efb\u52a1', '\u7f6e\u9802\u4efb\u52d9');
     if (kind === 'reference') return textForLang(lang, 'Referenced task', '\u5f15\u7528\u4efb\u52a1', '\u5f15\u7528\u4efb\u52d9');
-    if (kind === 'remote_coding') return textForLang(lang, 'Remote pure coding environment', '\u8fdc\u7a0b\u7eaf\u7f16\u7a0b\u73af\u5883', '\u9060\u7aef\u7d14\u7a0b\u5f0f\u74b0\u5883');
+    if (kind === 'remote_coding') return maintenance
+        ? textForLang(lang, 'Remote maintenance', '\u8fdc\u7a0b\u7ef4\u62a4', '\u9060\u7aef\u7dad\u8b77')
+        : textForLang(lang, 'Remote pure coding environment', '\u8fdc\u7a0b\u7eaf\u7f16\u7a0b\u73af\u5883', '\u9060\u7aef\u7d14\u7a0b\u5f0f\u74b0\u5883');
     if (kind === 'coding') return textForLang(lang, 'Local pure coding environment', '\u672c\u5730\u7eaf\u7f16\u7a0b\u73af\u5883', '\u672c\u6a5f\u7d14\u7a0b\u5f0f\u74b0\u5883');
     return textForLang(lang, 'Task', '\u4efb\u52a1', '\u4efb\u52d9');
 };
@@ -104,7 +122,9 @@ const taskIconLabel = (kind: TaskIconKind, lang: string) => {
 const pureCodingBadgeLabel = (proj: TaskManagementItem, lang: string) => {
     if (isRemoteCodingTask(proj)) {
         const host = remoteHostFromTaskTags(proj.tags);
-        const base = textForLang(lang, 'Remote coding', '\u8fdc\u7a0b\u7f16\u7a0b', '\u9060\u7aef\u7a0b\u5f0f');
+        const base = isRemoteMaintenanceTask(proj)
+            ? textForLang(lang, 'Remote maintenance', '\u8fdc\u7a0b\u7ef4\u62a4', '\u9060\u7aef\u7dad\u8b77')
+            : textForLang(lang, 'Remote coding', '\u8fdc\u7a0b\u7f16\u7a0b', '\u9060\u7aef\u7a0b\u5f0f');
         return host ? `${base} · ${host}` : base;
     }
     if (agentModeFromTaskTags(proj.tags) === 'coding_dev') {
@@ -164,8 +184,8 @@ export function taskActivityLabel(value: string | undefined, lang: string, now =
     return dateText ? textForLang(lang, `Updated ${dateText}`, `${dateText} 更新`, `${dateText} 更新`) : '';
 }
 
-const TaskTypeIcon = ({ kind, lang }: { kind: TaskIconKind; lang: string }) => {
-    const label = taskIconLabel(kind, lang);
+const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind; lang: string; maintenance?: boolean }) => {
+    const label = taskIconLabel(kind, lang, maintenance);
 
     return (
         <span
@@ -257,7 +277,7 @@ type SidebarTaskManagementProps = {
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
     setRenameValue: (value: string) => void;
-    resumeTask: (projectPath: string) => Promise<void> | void;
+    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<void> | void;
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onTaskSwitchBlocked?: () => void;
@@ -269,19 +289,21 @@ type SidebarTaskManagementProps = {
         name: string,
         workingDir?: string,
         mode?: 'coding_dev' | 'remote_coding_dev',
-        remote?: { host: string; port: number; user: string; password: string; workDir: string },
+        remote?: { host: string; port: number; user: string; password: string; workDir: string; safety?: 'diagnosis' },
     ) => Promise<void> | void;
     refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
-    hideTask: (projectPath: string) => Promise<unknown>;
+    hideTask: (projectPath: string, tags?: string[]) => Promise<unknown>;
     /**
      * Project paths that currently have an open assistant tab.
      * Open tabs cannot be removed from the task list context menu.
      */
     openProjectTabPaths?: string[];
+    /** Expert IDs currently open in the assistant; their durable rows cannot be removed. */
+    openExpertTabIDs?: string[];
 };
 
 /** True when projectPath matches an open project tab (path-normalized). Exported for tests. */
@@ -311,19 +333,22 @@ function buildTaskContextMenuItems(opts: {
     lang: string;
     menu: NonNullable<TaskContextMenu>;
     openProjectTabPaths?: string[];
+    openExpertTabIDs?: string[];
     setRenamingTaskPath: (path: string | null) => void;
     setRenameValue: (value: string) => void;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
-    hideTask: (projectPath: string) => Promise<unknown>;
+    hideTask: (projectPath: string, tags?: string[]) => Promise<unknown>;
     refreshTasks: () => void;
     openEditRemoteDialog: (projectPath: string, name: string, tags?: string[]) => void | Promise<void>;
 }): TaskContextMenuItem[] {
     const {
-        lang, menu, openProjectTabPaths, setRenamingTaskPath, setRenameValue,
+        lang, menu, openProjectTabPaths, openExpertTabIDs, setRenamingTaskPath, setRenameValue,
         setTaskContextMenu, pinTask, hideTask, refreshTasks, openEditRemoteDialog,
     } = opts;
-    const tabOpen = isProjectTabOpen(menu.projectPath, openProjectTabPaths);
+    const expertID = expertIDFromTaskTags(menu.tags);
+    const tabOpen = isProjectTabOpen(menu.projectPath, openProjectTabPaths)
+        || (!!expertID && (openExpertTabIDs || []).includes(expertID));
     const removeBlockedHint = textForLang(
         lang,
         'Close the task tab before removing it from the list.',
@@ -368,10 +393,18 @@ function buildTaskContextMenuItems(opts: {
         title: tabOpen ? removeBlockedHint : undefined,
         action: async () => {
             // Re-check at click time in case a tab opened while the menu was visible.
-            if (isProjectTabOpen(menu.projectPath, openProjectTabPaths)) {
+            const expertStillOpen = !!expertID && (openExpertTabIDs || []).includes(expertID);
+            if (isProjectTabOpen(menu.projectPath, openProjectTabPaths) || expertStillOpen) {
                 return;
             }
-            await hideTask(menu.projectPath);
+            // Keep the existing one-argument call for ordinary tasks so legacy
+            // callers/mocks retain their contract; expert rows need tags for
+            // the guarded hide path to identify their open tab.
+            if (expertID) {
+                await hideTask(menu.projectPath, menu.tags);
+            } else {
+                await hideTask(menu.projectPath);
+            }
             emitProjectTaskClosed(menu.projectPath);
             refreshTasks();
             setTaskContextMenu(null);
@@ -426,6 +459,7 @@ export const SidebarTaskManagement = ({
     pinTask,
     hideTask,
     openProjectTabPaths,
+    openExpertTabIDs,
 }: SidebarTaskManagementProps) => {
     const [creatingTask, setCreatingTask] = useState(false);
     const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
@@ -439,6 +473,8 @@ export const SidebarTaskManagement = ({
     const [remoteUser, setRemoteUser] = useState('');
     const [remotePassword, setRemotePassword] = useState('');
     const [remoteWorkDir, setRemoteWorkDir] = useState('');
+    /** Preserve the welcome incident posture if SSH setup needs a manual retry. */
+    const [remoteSafety, setRemoteSafety] = useState<OpenCreateCodingTaskDetail['remoteSafety']>();
     const [createError, setCreateError] = useState('');
     const [selectingWorkingDir, setSelectingWorkingDir] = useState(false);
     const [sceneDetailPath, setSceneDetailPath] = useState<string | null>(null);
@@ -596,6 +632,7 @@ export const SidebarTaskManagement = ({
         name?: string;
         workingDir?: string;
         remote?: OpenCreateCodingTaskDetail['remote'];
+        remoteSafety?: OpenCreateCodingTaskDetail['remoteSafety'];
     }, opts?: { force?: boolean }) => {
         // The in-flight create guard applies to the manual "+" path. Event-driven
         // fallbacks pass force so a request is never dropped silently; dialog
@@ -616,6 +653,7 @@ export const SidebarTaskManagement = ({
             : '';
         setNewTaskName(name);
         setNewTaskMode(mode);
+        setRemoteSafety(mode === 'remote_coding_dev' ? prefill?.remoteSafety : undefined);
         applyEnvDefaultsForMode(mode, true);
         // Welcome param dialog may already collect env — prefer those over defaults.
         if (mode === 'coding_dev' && typeof prefill?.workingDir === 'string' && prefill.workingDir.trim()) {
@@ -651,6 +689,7 @@ export const SidebarTaskManagement = ({
             const name = typeof detail.name === 'string' ? detail.name : '';
             const workingDir = typeof detail.workingDir === 'string' ? detail.workingDir : undefined;
             const remote = detail.remote;
+            const remoteSafety = detail.remoteSafety;
 
             if (detail.autoCreate) {
                 const taskName = normalizeTaskCommandInput(name);
@@ -674,6 +713,7 @@ export const SidebarTaskManagement = ({
                                     user: remote.user.trim(),
                                     password: remote.password,
                                     workDir: remote.workDir.trim(),
+                                    safety: remoteSafety,
                                 });
                             } else {
                                 const dir = (workingDir || '').trim();
@@ -697,6 +737,7 @@ export const SidebarTaskManagement = ({
                                     name: taskName,
                                     workingDir,
                                     remote,
+                                    remoteSafety,
                                 });
                                 const msg = extractErrorMessage(err);
                                 if (msg) setCreateError(msg);
@@ -724,6 +765,7 @@ export const SidebarTaskManagement = ({
                     name,
                     workingDir,
                     remote,
+                    remoteSafety,
                 },
                 { force: true },
             );
@@ -744,6 +786,7 @@ export const SidebarTaskManagement = ({
         setRemoteUser('');
         setRemotePassword('');
         setRemoteWorkDir('');
+        setRemoteSafety(undefined);
         setCreateError('');
     };
 
@@ -900,6 +943,7 @@ export const SidebarTaskManagement = ({
                     user: remoteUser.trim(),
                     password: remotePassword,
                     workDir: remoteWorkDir.trim(),
+                    safety: remoteSafety,
                 });
             } else if (newTaskMode === 'coding_dev') {
                 if (workingDir) await createTask(taskName, workingDir, 'coding_dev');
@@ -919,6 +963,7 @@ export const SidebarTaskManagement = ({
                 setRemoteUser('');
                 setRemotePassword('');
                 setRemoteWorkDir('');
+                setRemoteSafety(undefined);
                 setCreateError('');
             }
         } catch (error) {
@@ -972,7 +1017,8 @@ export const SidebarTaskManagement = ({
         }
     };
 
-    const handleTaskDoubleClick = async (projectPath: string) => {
+    const handleTaskDoubleClick = async (task: TaskManagementItem) => {
+        const projectPath = task.project_path;
         if (renamingTaskPath) return;
         if (openingTaskPath === projectPath) return;
         if (!assistantReady) {
@@ -981,7 +1027,10 @@ export const SidebarTaskManagement = ({
         }
         setOpeningTaskPath(projectPath);
         try {
-            await resumeTask(projectPath);
+            // Pass the rendered row too. It is the authoritative identity at the
+            // moment of interaction, avoiding a stale parent list cache from
+            // misrouting an expert row as a generic project task.
+            await resumeTask(projectPath, task);
         } finally {
             setOpeningTaskPath(current => current === projectPath ? null : current);
         }
@@ -1036,13 +1085,14 @@ export const SidebarTaskManagement = ({
             </div>
         ) : visibleTasks.map(proj => {
             const taskIconKind = taskIconKindForProject(proj);
+            const remoteMaintenance = isRemoteMaintenanceTask(proj);
             const codingBadge = pureCodingBadgeLabel(proj, lang);
             const pureCoding = isPureCodingTask(proj);
             const workflowStatus = workflowStatusForTask(proj.active_workflow, lang);
             const activityLabel = taskActivityLabel(proj.last_activity, lang);
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'}>
-                <div onDoubleClick={() => { void handleTaskDoubleClick(proj.project_path); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${workflowStatus ? '\n' + [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · ') : ''}${codingBadge ? '\n' + codingBadge : ''}${activityLabel ? '\n' + activityLabel : ''}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                    <TaskTypeIcon kind={taskIconKind} lang={lang} />
+                <div onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${workflowStatus ? '\n' + [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · ') : ''}${codingBadge ? '\n' + codingBadge : ''}${activityLabel ? '\n' + activityLabel : ''}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                    <TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />
                     <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
                         {(workflowStatus || codingBadge || proj.pinned) && (
                             <span style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '3px' }}>
@@ -1052,7 +1102,7 @@ export const SidebarTaskManagement = ({
                                 {codingBadge && (
                                     <span
                                         data-testid={isRemoteCodingTask(proj) ? 'task-remote-coding-badge' : 'task-coding-badge'}
-                                        title={taskIconLabel(taskIconKind, lang)}
+                                        title={taskIconLabel(taskIconKind, lang, remoteMaintenance)}
                                         style={{
                                             display: 'inline-flex',
                                             maxWidth: '100%',
@@ -1234,6 +1284,7 @@ export const SidebarTaskManagement = ({
                                         onClick={() => {
                                             if (newTaskMode === opt.id) return;
                                             setNewTaskMode(opt.id);
+                                            if (opt.id !== 'remote_coding_dev') setRemoteSafety(undefined);
                                             setCreateError('');
                                             // Switching mode mid-dialog: fill blanks from last coding/remote task.
                                             applyEnvDefaultsForMode(opt.id, false);
@@ -1286,6 +1337,7 @@ export const SidebarTaskManagement = ({
                     lang,
                     menu: taskContextMenu,
                     openProjectTabPaths,
+                    openExpertTabIDs,
                     setRenamingTaskPath,
                     setRenameValue,
                     setTaskContextMenu,

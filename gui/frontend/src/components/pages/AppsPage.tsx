@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { approvalEscalationDataAttr, approvalEscalationExhaustedText, approvalEscalationRetryText } from './approvalEscalationDisplay';
-import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, LoadMaclawAppsPanelState, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, ReviewMaclawAppPackage, SaveMaclawAppsPanelState, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, DecideMaclawAppApprovalInstance, ReconcileMaclawAppApprovalProjections, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DecideMaclawAppApprovalInstance, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallMixedSkill, InstallSelectedMaclawAppPackageFromHub, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, LoadMaclawAppsPanelState, OpenFileOrShowInFolder, OpenMaclawAppApprovalWorkspace, OpenMaclawAppBusinessWorkspace, OpenMaclawAppWorkspaceFromInstall, OpenSkillRunArtifact, PlanMaclawAppInstall, ReconcileMaclawAppApprovalProjections, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunEvidenceForSkill, RecordMaclawAppRunHistory, RevealSkillRunArtifact, ReviewMaclawAppPackage, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SaveMaclawAppsPanelState, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
+import { main } from '../../../wailsjs/go/models';
 import {
     clearWorkspaceLaunchIssue,
     formatWorkspaceLaunchError,
@@ -3065,12 +3065,13 @@ function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
     const deps = app.manifest?.dependencies?.skills || [];
     const appSkillID = String(app.manifest?.appSkill?.id || '').trim();
     const boundSkillID = String(app.manifest?.skill?.id || '').trim();
-    const sameSkillBinding = !!appSkillID && appSkillID.toLocaleLowerCase() === boundSkillID.toLocaleLowerCase();
     // A tool app often uses its own appSkill as its runtime binding.  Treating
     // that one skill as both a local app_skill and a Hub runtime_skill makes
     // the merge retain the local source, then reject the correctly verified
     // Hub dependency as a source mismatch.  Keep the executable binding — it
-    // is the dependency the runtime and publisher actually resolve.
+    // is the dependency the runtime and publisher actually resolve.  Enterprise
+    // apps keep their explicit appSkill metadata (kind app_skill) instead.
+    const sameSkillBinding = app.kind === 'tool_app' && !!appSkillID && appSkillID.toLocaleLowerCase() === boundSkillID.toLocaleLowerCase();
     const appSkill = sameSkillBinding
         ? []
         : appSkillID
@@ -6944,6 +6945,16 @@ function appRunDependencyVerificationEvidence(app: AppEntry, plan: BackendAppIns
         dependencies,
     };
 }
+function stableDependencyVerificationTimestamp(app: AppEntry, plan: BackendAppInstallPlan): string {
+    const record = plan as Record<string, unknown>;
+    const storedEvidence = latestAvailableAppRunEvidence(app)?.dependencyVerification as Record<string, unknown> | undefined;
+    const installEvidence = app.installEvidence?.dependency_verification as Record<string, unknown> | undefined;
+    return appEvidenceString(record?.verifiedAt, record?.verified_at)
+        || appEvidenceString(storedEvidence?.verifiedAt, storedEvidence?.verified_at)
+        || appEvidenceString(installEvidence?.verifiedAt, installEvidence?.verified_at)
+        || appEvidenceString(latestAvailableAppRunEvidence(app)?.at)
+        || '';
+}
 function normalizeRiskLevel(value: unknown): string {
     const risk = String(value || '').trim();
     return ['low', 'medium', 'high', 'critical'].includes(risk) ? risk : '';
@@ -8405,7 +8416,13 @@ function appGovernanceForManifest(app: AppEntry, submission?: AppPublishSubmissi
     const artifactName = primaryArtifact?.name || (primaryArtifact?.path ? primaryArtifact.path.split(/[\\/]/).pop() : undefined);
     const dependencies = appDependencyEvidence(app);
     const dependencyVerificationPlan = overrides.dependencyVerification || appInstallEvidenceDependencyVerificationPlan(app);
-    const dependencyVerificationEvidence = dependencyVerificationPlan ? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan) : undefined;
+    // Package fingerprints must be stable across renders. Deriving verifiedAt
+    // from the plan/stored evidence keeps the same logical package at the same
+    // hash; a Date.now() fallback here re-fingerprints every render and loops
+    // the authoritative review/preflight effects forever.
+    const dependencyVerificationEvidence = dependencyVerificationPlan
+        ? appRunDependencyVerificationEvidence(app, dependencyVerificationPlan, stableDependencyVerificationTimestamp(app, dependencyVerificationPlan))
+        : undefined;
     return {
         status: submission?.status || (evidence ? 'local_tested' : 'draft'),
         riskLevel: submission?.riskLevel || (isEnterpriseAppKind(app.kind) ? 'medium' : 'low'),
@@ -8865,7 +8882,10 @@ const locale3 = (lang?: string): 'zh' | 'en' | 'hant' => isZhHant(lang) ? 'hant'
 
 export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPageProps) => {
     const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
-    const [apps, setApps] = useState(() => initialApps);
+    // Hydrate synchronously from the legacy WebView snapshot so the panel
+    // renders persisted apps immediately; the SQLite load below reconciles
+    // afterwards (and is the authoritative source once it exists).
+    const [apps, setApps] = useState(() => applyLayoutState(initialApps, readLegacyLayoutState()));
     const [appsPanelStateReady, setAppsPanelStateReady] = useState(false);
     const [query, setQuery] = useState('');
     const [category, setCategory] = useState('all');
@@ -8911,6 +8931,25 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
 		setRunEvidenceRevision((value) => value + 1);
 	}, []);
 
+    {
+        const g = (globalThis as any).__fxInst || ((globalThis as any).__fxInst = { n: 0 });
+        g.n += 1;
+    }
+    // Tracks any apps-state change after mount. The asynchronous SQLite load
+    // below must never clobber an edit made while it was in flight (the
+    // initial state already reflects the legacy snapshot); checking a ref in
+    // the continuation is safe, unlike guarding inside the state updater,
+    // which React may re-invoke with a stale base state.
+    const appsEditedSinceMountRef = useRef(false);
+    const appsMountSkipRef = useRef(true);
+    useEffect(() => {
+        if (appsMountSkipRef.current) {
+            appsMountSkipRef.current = false;
+            return;
+        }
+        appsEditedSinceMountRef.current = true;
+    }, [apps]);
+
     useEffect(() => {
         let disposed = false;
         Promise.resolve().then(() => LoadMaclawAppsPanelState())
@@ -8926,17 +8965,17 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                 // sanitized form to SQLite; later starts no longer read
                 // WebView storage as an app source.
                 const initialLayout = saved || (!String(raw || '').trim() ? readLegacyLayoutState() : {});
-                setApps((current) => applyLayoutState(current, initialLayout));
+                if (!appsEditedSinceMountRef.current) setApps((current) => applyLayoutState(current, initialLayout));
                 setAppsPanelStateReady(true);
             })
             .catch(() => {
                 if (disposed) return;
                 // Keep compatibility if SQLite cannot be opened yet. A later
                 // successful write migrates this legacy state.
-                setApps((current) => applyLayoutState(current, readLegacyLayoutState()));
+                if (!appsEditedSinceMountRef.current) setApps((current) => applyLayoutState(current, readLegacyLayoutState()));
                 setAppsPanelStateReady(true);
             });
-        return () => { disposed = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -10509,7 +10548,7 @@ async function syncApprovalInstanceToDataSrvWithEvents(app: AppEntry, instance: 
 	if (!syncPayload) return instance;
 	let syncResult: unknown;
 	try {
-		syncResult = await SyncMaclawAppApprovalInstanceToDataSrv(syncPayload);
+		syncResult = await SyncMaclawAppApprovalInstanceToDataSrv(syncPayload as unknown as main.maclawAppApprovalDataSrvSyncInput);
 	} catch (error: any) {
 		syncResult = {
 			synced: false,
@@ -10523,7 +10562,7 @@ async function syncApprovalInstanceToDataSrvWithEvents(app: AppEntry, instance: 
 		events: [...(instance.events || []), syncEvent],
 	};
 	try {
-		return await RecordMaclawAppApprovalInstance(nextInstance) as BackendApprovalInstance || nextInstance;
+		return await RecordMaclawAppApprovalInstance(nextInstance as unknown as main.maclawAppApprovalInstance) as BackendApprovalInstance || nextInstance;
 	} catch {
 		return nextInstance;
 	}
@@ -11028,7 +11067,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         }
         let savedInstance = payload;
         try {
-            savedInstance = await RecordMaclawAppApprovalInstance(payload) as BackendApprovalInstance || payload;
+            savedInstance = await RecordMaclawAppApprovalInstance(payload as unknown as main.maclawAppApprovalInstance) as BackendApprovalInstance || payload;
             const savedView = backendApprovalInstanceToView(savedInstance, lang);
             if (savedView) {
                 setApprovalInstances((current) => mergeApprovalInstanceViews(current, [savedView]).slice(0, 50));
@@ -11095,7 +11134,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             setApprovalInstances((current) => [view, ...current.filter((item) => item.id !== view.id)].slice(0, 50));
         }
         try {
-            const saved = await RecordMaclawAppApprovalInstance(nextInstance) as BackendApprovalInstance;
+            const saved = await RecordMaclawAppApprovalInstance(nextInstance as unknown as main.maclawAppApprovalInstance) as BackendApprovalInstance;
             if (approvalRunContextRef.current?.lastProgressKey === progressKey) {
                 approvalRunContextRef.current = { instance: saved || nextInstance, lastProgressKey: progressKey };
             }
@@ -11163,7 +11202,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             setApprovalInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)].slice(0, 50));
         }
         try {
-            const saved = await RecordMaclawAppApprovalInstance(payload) as BackendApprovalInstance;
+            const saved = await RecordMaclawAppApprovalInstance(payload as unknown as main.maclawAppApprovalInstance) as BackendApprovalInstance;
             const savedInstance = saved || payload;
             const view = backendApprovalInstanceToView(savedInstance, lang);
             if (view) {
@@ -12135,7 +12174,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             setApprovalInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)].slice(0, 50));
         }
         try {
-            const saved = await RecordMaclawAppApprovalInstance(payload) as BackendApprovalInstance;
+            const saved = await RecordMaclawAppApprovalInstance(payload as unknown as main.maclawAppApprovalInstance) as BackendApprovalInstance;
             const savedInstance = saved || payload;
             const view = backendApprovalInstanceToView(savedInstance, lang);
             if (view) {
@@ -12231,7 +12270,11 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
 		? (runEvidencePersistenceState === 'saving'
 			? localizeText(lang, 'Run completed · Saving run evidence…', '运行完成 · 正在保存运行证据…', '執行完成 · 正在儲存執行證據…')
 			: runEvidencePersistenceState === 'saved'
-				? localizeText(lang, 'Run completed · Run evidence saved', '运行完成 · 运行证据已保存', '執行完成 · 執行證據已儲存')
+				// A successful durable write must not hide a failed Skill governance
+				// write: keep the warning suffix visible.
+				? (validationMessage
+					? `${localizeText(lang, 'Run completed · Run evidence saved', '运行完成 · 运行证据已保存', '執行完成 · 執行證據已儲存')} · ${validationMessage}`
+					: localizeText(lang, 'Run completed · Run evidence saved', '运行完成 · 运行证据已保存', '執行完成 · 執行證據已儲存'))
 				: validationMessage
             ? `${text.runCompleted} \u00b7 ${validationMessage}`
 					: text.runCompleted)
@@ -12733,7 +12776,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         const fallback = backendApprovalInstanceToView(payload, lang);
         if (fallback) setInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)]);
         try {
-            const saved = await RecordMaclawAppApprovalInstance(payload) as BackendApprovalInstance;
+            const saved = await RecordMaclawAppApprovalInstance(payload as unknown as main.maclawAppApprovalInstance) as BackendApprovalInstance;
             const savedInstance = saved || payload;
 			const view = backendApprovalInstanceToView(savedInstance, lang);
 			if (view) setInstances((current) => [view, ...current.filter((item) => item.id !== view.id)]);
@@ -16924,23 +16967,32 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             .join('|'),
         [dependencyPlanPackages],
     );
+    // The packages Map gets a new identity whenever any upstream state shifts,
+    // even when the content fingerprints are unchanged. Key the effect to the
+    // content fingerprint only and read the live Map from a ref, otherwise the
+    // loading-state writes below retrigger the effect on every render forever.
+    const dependencyPlanPackagesRef = useRef(dependencyPlanPackages);
+    dependencyPlanPackagesRef.current = dependencyPlanPackages;
     useEffect(() => {
         if (typeof PlanMaclawAppInstall !== 'function') return;
+        const dependencyPlanPackages = dependencyPlanPackagesRef.current;
         if (dependencyPlanPackages.size === 0) {
-            setAuthoritativeDependencyPlans({});
+            setAuthoritativeDependencyPlans((current) => Object.keys(current).length === 0 ? current : {});
             return;
         }
         let cancelled = false;
         const liveIDs = new Set(dependencyPlanPackages.keys());
         setAuthoritativeDependencyPlans((current) => {
             const next: typeof current = {};
+            let changed = Object.keys(current).length !== dependencyPlanPackages.size;
             for (const [appID, snapshot] of dependencyPlanPackages) {
                 const existing = current[appID];
                 next[appID] = existing?.fingerprint === snapshot.fingerprint && existing.plan
                     ? existing
                     : { loading: true, fingerprint: snapshot.fingerprint };
+                if (next[appID] !== existing) changed = true;
             }
-            return next;
+            return changed ? next : current;
         });
         void mapPool(Array.from(dependencyPlanPackages.entries()), 3, async ([appID, snapshot]) => {
             try {
@@ -16959,7 +17011,8 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             }
         });
         return () => { cancelled = true; };
-    }, [dependencyPlanFingerprint, dependencyPlanPackages]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [dependencyPlanFingerprint]);
     const publishChecksById = useMemo(
         () => new Map(publishApps.map((app) => {
             const snapshot = dependencyPlanPackages.get(app.id);
@@ -17035,23 +17088,31 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     // Ask the backend to resolve durable evidence and evaluate the package
     // before rendering the review state. This deliberately replaces the old
     // browser-side alias lookup as the publish decision authority.
+    // Keyed to the content fingerprint only (same identity-churn hazard as the
+    // dependency-plan effect above): the Map identity shifts on unrelated
+    // renders, and each rerun re-enters the loading state forever.
+    const publishPreflightPackagesRef = useRef(publishPreflightPackages);
+    publishPreflightPackagesRef.current = publishPreflightPackages;
     useEffect(() => {
         if (typeof ReviewMaclawAppPackage !== 'function') return;
+        const publishPreflightPackages = publishPreflightPackagesRef.current;
         if (publishPreflightPackages.size === 0) {
-            setAuthoritativeReviewByAppId({});
+            setAuthoritativeReviewByAppId((current) => Object.keys(current).length === 0 ? current : {});
             return;
         }
         let cancelled = false;
         const snapshots = Array.from(publishPreflightPackages.entries());
         setAuthoritativeReviewByAppId((current) => {
             const next: typeof current = {};
+            let changed = Object.keys(current).length !== snapshots.length;
             for (const [appID, snapshot] of snapshots) {
                 const existing = current[appID];
                 next[appID] = existing?.packageFingerprint === snapshot.fingerprint && existing.issues
                     ? existing
                     : { loading: true, packageFingerprint: snapshot.fingerprint };
+                if (next[appID] !== existing) changed = true;
             }
-            return next;
+            return changed ? next : current;
         });
         void mapPool(snapshots, 3, async ([appID, snapshot]) => {
             try {
@@ -17069,7 +17130,8 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
             }
         });
         return () => { cancelled = true; };
-    }, [publishPreflightFingerprint, publishPreflightPackages]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [publishPreflightFingerprint]);
     const refreshAppPreflight = useCallback(async (appID: string, packageJSON: string, isCurrent: () => boolean = () => true) => {
         if (!hasPreflightMaclawAppOneClickBridge()) return;
         const packageFingerprint = textHash(packageJSON);
@@ -17278,8 +17340,9 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
     // Keep remote preflight bars warm for publish cards (debounced, parallel).
     useEffect(() => {
         if (!hasPreflightMaclawAppOneClickBridge()) return;
+        const publishPreflightPackages = publishPreflightPackagesRef.current;
         if (publishApps.length === 0) {
-            setRemotePreflightByAppId({});
+            setRemotePreflightByAppId((current) => Object.keys(current).length === 0 ? current : {});
             return;
         }
         let cancelled = false;
@@ -17291,12 +17354,17 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
         // longer leave the button disabled during that short delay.
         setRemotePreflightByAppId((current) => {
             const next: typeof current = {};
+            let changed = Object.keys(current).length !== appsSnapshot.length;
             for (const app of appsSnapshot) {
                 const snapshot = packageSnapshots.get(app.id);
                 if (!snapshot) continue;
-                next[app.id] = { loading: true, packageFingerprint: snapshot.fingerprint };
+                const existing = current[app.id];
+                next[app.id] = existing?.packageFingerprint === snapshot.fingerprint
+                    ? existing
+                    : { loading: true, packageFingerprint: snapshot.fingerprint };
+                if (next[app.id] !== existing) changed = true;
             }
-            return next;
+            return changed ? next : current;
         });
         const timer = window.setTimeout(() => {
             void (async () => {
@@ -17315,7 +17383,8 @@ const PublishPane = ({ apps, lang, onFixApp, onRunApp, onUpdateAppEvidence, onIn
         };
         // The content fingerprint covers all app, submission, dependency, and
         // locally hydrated run-evidence fields used in the package.
-    }, [publishPreflightFingerprint, publishPreflightPackages, refreshAppPreflight]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [publishPreflightFingerprint, refreshAppPreflight]);
     // Warm preflight for durable queue rows that can still one-click (parallel).
     // Intentionally omit message from the fingerprint — one-click stamps rewrite
     // message and would thrash preflight otherwise.

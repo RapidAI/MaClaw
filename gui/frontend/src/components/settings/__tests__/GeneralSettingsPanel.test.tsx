@@ -1,20 +1,19 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-import { main } from '../../../../wailsjs/go/models';
+import { corelib, main } from '../../../../wailsjs/go/models';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 import { GeneralSettingsPanel } from '../GeneralSettingsPanel';
 
-const PatchConfigFieldsMock = vi.fn((patch: Partial<main.AppConfig>) => new main.AppConfig({
+const PatchConfigFieldsMock = vi.fn((patch: Partial<corelib.AppConfig>) => new corelib.AppConfig({
     default_launch_mode: 'local',
     ...patch,
 }));
-const LoadConfigMock = vi.fn(() => new main.AppConfig({ default_launch_mode: 'local' }));
+const LoadConfigMock = vi.fn(() => new corelib.AppConfig({ default_launch_mode: 'local' }));
 const SelectWorkingDirMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
-    PatchConfigFields: (patch: Partial<main.AppConfig>) => PatchConfigFieldsMock(patch),
+    PatchConfigFields: (patch: Partial<corelib.AppConfig>) => PatchConfigFieldsMock(patch),
     LoadConfig: () => LoadConfigMock(),
     SelectWorkingDir: () => SelectWorkingDirMock(),
 }));
@@ -23,8 +22,8 @@ afterEach(() => {
     vi.clearAllMocks();
 });
 
-function renderPanel(configPatch: Partial<main.AppConfig> = {}, lang = 'en') {
-    const config = new main.AppConfig({
+function renderPanel(configPatch: Partial<corelib.AppConfig> = {}, lang = 'en') {
+    const config = new corelib.AppConfig({
         default_launch_mode: 'local',
         ...configPatch,
     });
@@ -43,7 +42,7 @@ function renderPanel(configPatch: Partial<main.AppConfig> = {}, lang = 'en') {
     return { config, setConfig, rerender: view.rerender };
 }
 
-function panel(config: main.AppConfig, setConfig = vi.fn(), lang = 'en') {
+function panel(config: corelib.AppConfig, setConfig = vi.fn(), lang = 'en') {
     return <GeneralSettingsPanel config={config} setConfig={setConfig} lang={lang} t={(key) => key} onLanguageChange={vi.fn()} />;
 }
 
@@ -125,11 +124,11 @@ describe('GeneralSettingsPanel', () => {
     });
 
     it('ignores an older Survey IM intercept save response after a rapid re-enable', async () => {
-        let resolveFirst: (value: main.AppConfig) => void = () => {};
-        let resolveSecond: (value: main.AppConfig) => void = () => {};
+        let resolveFirst: (value: corelib.AppConfig) => void = () => {};
+        let resolveSecond: (value: corelib.AppConfig) => void = () => {};
         PatchConfigFieldsMock
-            .mockImplementationOnce(() => new Promise<main.AppConfig>((resolve) => { resolveFirst = resolve; }) as any)
-            .mockImplementationOnce(() => new Promise<main.AppConfig>((resolve) => { resolveSecond = resolve; }) as any);
+            .mockImplementationOnce(() => new Promise<corelib.AppConfig>((resolve) => { resolveFirst = resolve; }) as any)
+            .mockImplementationOnce(() => new Promise<corelib.AppConfig>((resolve) => { resolveSecond = resolve; }) as any);
         const { setConfig } = renderPanel({ survey_enabled: true }, 'en');
         const toggle = screen.getByLabelText('Survey IM intercept') as HTMLInputElement;
 
@@ -138,12 +137,12 @@ describe('GeneralSettingsPanel', () => {
         expect(PatchConfigFieldsMock).toHaveBeenNthCalledWith(1, { survey_enabled: false });
         expect(PatchConfigFieldsMock).toHaveBeenNthCalledWith(2, { survey_enabled: true });
 
-        resolveSecond(new main.AppConfig({ default_launch_mode: 'local', survey_enabled: true }));
+        resolveSecond(new corelib.AppConfig({ default_launch_mode: 'local', survey_enabled: true }));
         await Promise.resolve();
         await Promise.resolve();
         expect(setConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ survey_enabled: true }));
 
-        resolveFirst(new main.AppConfig({ default_launch_mode: 'local', survey_enabled: false }));
+        resolveFirst(new corelib.AppConfig({ default_launch_mode: 'local', survey_enabled: false }));
         await Promise.resolve();
         await Promise.resolve();
         expect(setConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ survey_enabled: true }));
@@ -151,7 +150,7 @@ describe('GeneralSettingsPanel', () => {
 
     it('restores the persisted Survey IM intercept value when its latest save fails', async () => {
         PatchConfigFieldsMock.mockImplementationOnce(() => Promise.reject(new Error('offline')) as any);
-        LoadConfigMock.mockReturnValueOnce(new main.AppConfig({ default_launch_mode: 'local', survey_enabled: true }));
+        LoadConfigMock.mockReturnValueOnce(new corelib.AppConfig({ default_launch_mode: 'local', survey_enabled: true }));
         const { setConfig } = renderPanel({ survey_enabled: true }, 'en');
 
         await act(async () => {
@@ -177,7 +176,7 @@ describe('GeneralSettingsPanel', () => {
 
     it('keeps chat gossip auto-post checked during stale config refreshes', () => {
         PatchConfigFieldsMock.mockReturnValueOnce(new Promise(() => {}) as any);
-        const staleConfig = new main.AppConfig({ default_launch_mode: 'local', gossip_auto_publish: false });
+        const staleConfig = new corelib.AppConfig({ default_launch_mode: 'local', gossip_auto_publish: false });
         const setConfig = vi.fn();
         const { rerender } = render(panel(staleConfig, setConfig));
 
@@ -187,7 +186,7 @@ describe('GeneralSettingsPanel', () => {
         fireEvent.click(toggle);
         expect(toggle.checked).toBe(true);
 
-        const optimisticConfig = setConfig.mock.calls[0][0] as main.AppConfig;
+        const optimisticConfig = setConfig.mock.calls[0][0] as corelib.AppConfig;
         rerender(panel(optimisticConfig, setConfig));
         expect((screen.getByLabelText('Auto-post Chat Gossip') as HTMLInputElement).checked).toBe(true);
 

@@ -1,12 +1,12 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { Dispatch, SetStateAction } from 'react';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
-import { LoadConfig, RestartThirdPartyGateway, SetThirdPartyGatewayLocalMode, StopThirdPartyGateway } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { CreateThirdPartyDevicePairing, LoadConfig, RestartThirdPartyGateway, SetThirdPartyGatewayLocalMode, StopThirdPartyGateway } from '../../../wailsjs/go/main/App';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { channelModeLabel, textForLang, watchLabel } from './imSettingsShared';
 
 type ThirdPartyAccessSettingsProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     saveRemoteConfigField: (patch: Record<string, any>) => any;
     showToastMessage: (message: string) => void;
@@ -117,6 +117,16 @@ export const ThirdPartyAccessSettings = ({
         </div>
         <div className="im-settings-endpoint-row">
             <code>{`http://${(config as any)?.thirdparty_gateway_host || '127.0.0.1'}:${(config as any)?.thirdparty_gateway_port || 18777}/api/im-gateway/v1`}</code>
+            <button type="button" className="im-settings-button" disabled={!(config as any)?.thirdparty_gateway_enabled} onClick={async () => {
+                try {
+                    const result: any = await CreateThirdPartyDevicePairing();
+                    showToastMessage(lang === 'en'
+                        ? `Pairing code: ${result?.pairCode}; ESP gateway: ${result?.gatewayURL} (valid for 30 minutes)`
+                        : `硬件配对码：${result?.pairCode}；ESP 网关地址：${result?.gatewayURL}（30 分钟内有效）`);
+                } catch (err: any) { showToastMessage(err?.message || String(err)); }
+            }}>
+                {lang === 'en' ? 'Pair device' : '\u786c\u4ef6\u914d\u5bf9'}
+            </button>
             <button type="button" className="im-settings-button im-settings-button--primary" onClick={() => {
                 const base = String((config as any)?.remote_hub_url || '').replace(/\/+$/, '');
                 BrowserOpenURL(base ? base + '/connector' : '/connector');

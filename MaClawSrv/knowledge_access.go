@@ -336,7 +336,7 @@ func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchO
 	requestOwnerID := strings.TrimSpace(opts.OwnerID)
 	scopes := s.resolveScopes(ctx, requestTenantID, requestOwnerID)
 	merged := make([]knowledge.SearchResult, 0, limit)
-	seen := make(map[string]struct{})
+	seen := make(map[string]int)
 	for _, scope := range scopes {
 		queryOpts := opts
 		queryOpts.TenantID = scope.TenantID
@@ -349,16 +349,9 @@ func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchO
 		if err != nil {
 			return nil, err
 		}
-		for _, result := range results {
-			key := knowledgeResultKey(result)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			merged = append(merged, result)
-		}
+		merged, seen = mergeKnowledgeSearchResults(merged, seen, results)
 	}
-	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Score > merged[j].Score })
+	sortKnowledgeSearchResults(merged)
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
@@ -380,7 +373,7 @@ func (s *multiKnowledgeStore) SearchStructured(ctx context.Context, opts knowled
 	requestOwnerID := strings.TrimSpace(opts.OwnerID)
 	scopes := s.resolveScopes(ctx, requestTenantID, requestOwnerID)
 	merged := make([]knowledge.SearchResult, 0, limit)
-	seen := make(map[string]struct{})
+	seen := make(map[string]int)
 	for _, scope := range scopes {
 		queryOpts := opts
 		queryOpts.TenantID = scope.TenantID
@@ -393,16 +386,9 @@ func (s *multiKnowledgeStore) SearchStructured(ctx context.Context, opts knowled
 		if err != nil {
 			return nil, err
 		}
-		for _, result := range results {
-			key := knowledgeResultKey(result)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			merged = append(merged, result)
-		}
+		merged, seen = mergeKnowledgeSearchResults(merged, seen, results)
 	}
-	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Score > merged[j].Score })
+	sortKnowledgeSearchResults(merged)
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
@@ -582,6 +568,9 @@ func (s *multiKnowledgeStore) ListSources(ctx context.Context, opts knowledge.Li
 		queryOpts := opts
 		queryOpts.TenantID = scope.TenantID
 		queryOpts.OwnerID = scope.OwnerID
+		if scope.TenantID != opts.TenantID || scope.OwnerID != opts.OwnerID {
+			queryOpts.IncludeDisabled = false
+		}
 		sources, err := s.store.ListSources(ctx, queryOpts)
 		if err != nil {
 			return nil, err
@@ -611,6 +600,9 @@ func (s *multiKnowledgeStore) ListSourceLabels(ctx context.Context, opts knowled
 		queryOpts := opts
 		queryOpts.TenantID = scope.TenantID
 		queryOpts.OwnerID = scope.OwnerID
+		if scope.TenantID != opts.TenantID || scope.OwnerID != opts.OwnerID {
+			queryOpts.IncludeDisabled = false
+		}
 		labels, err := s.store.ListSourceLabels(ctx, queryOpts)
 		if err != nil {
 			return nil, err
@@ -680,6 +672,37 @@ func (s *multiKnowledgeStore) CreateImportItem(ctx context.Context, item knowled
 
 func knowledgeResultKey(r knowledge.SearchResult) string {
 	return strings.Join([]string{r.Source.ID, r.ResultType, r.NodeID, r.CardID, r.FactID, r.TableID, r.RowID, r.SheetName, r.RowRange, r.ColRange, r.Citation}, "\x00")
+}
+
+// mergeKnowledgeSearchResults keeps the strongest score if an equivalent
+// entity is encountered twice. This is defensive for overlapping authorized
+// scopes and duplicate route results: first-seen deduplication makes ranking
+// depend on scope traversal order.
+func mergeKnowledgeSearchResults(merged []knowledge.SearchResult, seen map[string]int, incoming []knowledge.SearchResult) ([]knowledge.SearchResult, map[string]int) {
+	for _, result := range incoming {
+		key := knowledgeResultKey(result)
+		if index, ok := seen[key]; ok {
+			if result.Score > merged[index].Score {
+				merged[index] = result
+			}
+			continue
+		}
+		seen[key] = len(merged)
+		merged = append(merged, result)
+	}
+	return merged, seen
+}
+
+// sortKnowledgeSearchResults gives merged authorized scopes a deterministic
+// ordering. Stable sorting by score alone inherits scope resolution order for
+// ties, which can vary as access rules change even when the result set does not.
+func sortKnowledgeSearchResults(results []knowledge.SearchResult) {
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		return knowledgeResultKey(results[i]) < knowledgeResultKey(results[j])
+	})
 }
 
 func knowledgeContextCitationKey(r knowledge.SearchResult) string {

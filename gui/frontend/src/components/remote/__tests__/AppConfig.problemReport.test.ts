@@ -1,10 +1,9 @@
-import { describe, expect, it } from "vitest";
-
-import { main } from "../../../../wailsjs/go/models";
+import { describe, expect, it } from 'vitest';
+import { corelib, main } from '../../../../wailsjs/go/models';
 
 describe("Wails AppConfig problem-report fields", () => {
     it("retains a restored diagnostic collection session", () => {
-        const config = new main.AppConfig({
+        const config = new corelib.AppConfig({
             bug_report_enabled: true,
             bug_report_previous_trajectory: false,
             bug_report_previous_log_detail: true,
@@ -18,13 +17,13 @@ describe("Wails AppConfig problem-report fields", () => {
     });
 
     it("does not let an empty source override restored fields", () => {
-        const restored = new main.AppConfig({
+        const restored = new corelib.AppConfig({
             bug_report_enabled: true,
             bug_report_previous_trajectory: true,
             bug_report_previous_log_detail: false,
         });
 
-        const updated = new main.AppConfig({ ...restored });
+        const updated = new corelib.AppConfig({ ...restored });
 
         expect(updated.bug_report_enabled).toBe(true);
         expect(updated.bug_report_previous_trajectory).toBe(true);

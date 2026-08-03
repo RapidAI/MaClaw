@@ -174,22 +174,22 @@ describe("MCPManagementPanel marketplace integration", () => {
         vi.mocked(ListLocalMCPServers).mockResolvedValue([]);
         vi.mocked(GetLocalMCPServerStatuses).mockResolvedValue([]);
         vi.mocked(GetHubRecommendedCapabilities).mockResolvedValue([]);
-        vi.mocked(GetHubCapability).mockResolvedValue({});
+        vi.mocked(GetHubCapability).mockResolvedValue({} as any);
         vi.mocked(ListHubCapabilities).mockResolvedValue([
-            { id: "jira-mcp", capability_type: "mcp", display_name: "Jira MCP", source: "hub", current_version_key: "1.0.0" },
+            { id: "jira-mcp", capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hub", status: "", global_key: "", current_version_key: "1.0.0" },
         ]);
         vi.mocked(InstallHubCapability).mockImplementation(async () => {
             servers = [jiraServer];
-            return { managed_installed: 1, updated: 0, needs_user_config: ["jira-mcp"] };
+            return { managed_checked: 0, managed_installed: 1, updated: 0, inventory_reported: 0, recommended_count: 0, needs_user_config: ["jira-mcp"] };
         });
-        vi.mocked(SyncHubManagedCapabilities).mockResolvedValue({ managed_installed: 0, updated: 0, needs_user_config: [] });
+        vi.mocked(SyncHubManagedCapabilities).mockResolvedValue({ managed_checked: 0, managed_installed: 0, updated: 0, inventory_reported: 0, recommended_count: 0, needs_user_config: [] });
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "api_token", label: "API token", required: true, storage_policy: "local" },
+            { name: "api_token", label: "API token", required: true, storage_policy: "local", scope: "user" },
         ]);
         vi.mocked(GetHubMCPHubSecrets).mockResolvedValue([]);
         vi.mocked(GetHubMCPSecretBindings).mockResolvedValue([]);
         vi.mocked(UpdateMCPServer).mockResolvedValue(undefined);
-        vi.mocked(SaveHubMCPHubSecret).mockResolvedValue(undefined);
+        vi.mocked(SaveHubMCPHubSecret).mockResolvedValue(undefined as any);
         vi.mocked(SaveHubMCPSecretBinding).mockResolvedValue(undefined);
         vi.mocked(RegisterMCPServer).mockResolvedValue(undefined);
         vi.mocked(UnregisterMCPServer).mockResolvedValue(undefined);
@@ -228,7 +228,7 @@ describe("MCPManagementPanel marketplace integration", () => {
     });
     it("saves a Hub-hosted secret for marketplace MCPs", async () => {
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "api_key", label: "API key", required: true, storage_policy: "hub" },
+            { name: "api_key", label: "API key", required: true, storage_policy: "hub", scope: "user" },
         ]);
 
         await renderMarketplacePanel();
@@ -288,7 +288,7 @@ describe("MCPManagementPanel marketplace integration", () => {
     });
     it("allows the native local auth secret for hub-or-local requirements", async () => {
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "api_token", label: "API token", required: true, storage_policy: "hub_or_local" },
+            { name: "api_token", label: "API token", required: true, storage_policy: "hub_or_local", scope: "user" },
         ]);
 
         await renderMarketplacePanel();
@@ -327,7 +327,7 @@ describe("MCPManagementPanel marketplace integration", () => {
     it("marks installed marketplace MCP secrets as ready when local binding is configured", async () => {
         servers = [{ ...jiraServer, auth_secret: "existing-token" }];
         vi.mocked(GetHubMCPSecretBindings).mockResolvedValue([
-            { requirement_name: "api_token", storage: "local", local_secret_ref: "mcp:jira-server:api_token", status: "configured" },
+            { mcp_server_id: "jira-server", requirement_name: "api_token", storage: "local", local_secret_ref: "mcp:jira-server:api_token", status: "configured" },
         ]);
 
         render(<MCPManagementPanel translate={t} />);
@@ -338,10 +338,10 @@ describe("MCPManagementPanel marketplace integration", () => {
     it("allows saving a marketplace MCP that already has a Hub-hosted secret", async () => {
         servers = [jiraServer];
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "api_key", label: "API key", required: true, storage_policy: "hub" },
+            { name: "api_key", label: "API key", required: true, storage_policy: "hub", scope: "user" },
         ]);
         vi.mocked(GetHubMCPHubSecrets).mockResolvedValue([
-            { requirement_name: "api_key", secret_digest: "digest", metadata: { capability_id: "jira-mcp" } },
+            { id: "hs-1", user_id: "u-1", mcp_server_id: "jira-server", requirement_name: "api_key", secret_digest: "digest", metadata_json: JSON.stringify({ capability_id: "jira-mcp" }), updated_at: "2025-01-01T00:00:00Z" },
         ]);
 
         render(<MCPManagementPanel translate={t} />);
@@ -359,7 +359,7 @@ describe("MCPManagementPanel marketplace integration", () => {
     it("does not create a needs_config binding for untouched optional local secrets", async () => {
         servers = [jiraServer];
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "optional_token", label: "Optional token", required: false, storage_policy: "local" },
+            { name: "optional_token", label: "Optional token", required: false, storage_policy: "local", scope: "user" },
         ]);
 
         render(<MCPManagementPanel translate={t} />);
@@ -377,7 +377,7 @@ describe("MCPManagementPanel marketplace integration", () => {
     it("saves an optional local marketplace secret when the user provides one", async () => {
         servers = [jiraServer];
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "api_key", label: "API key", required: false, storage_policy: "local" },
+            { name: "api_key", label: "API key", required: false, storage_policy: "local", scope: "user" },
         ]);
 
         render(<MCPManagementPanel translate={t} />);
@@ -404,10 +404,10 @@ describe("MCPManagementPanel marketplace integration", () => {
     it("does not treat a stale local binding as configured when policy is Hub-only", async () => {
         servers = [{ ...jiraServer, auth_secret: "old-local-token" }];
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "api_key", label: "API key", required: true, storage_policy: "hub" },
+            { name: "api_key", label: "API key", required: true, storage_policy: "hub", scope: "user" },
         ]);
         vi.mocked(GetHubMCPSecretBindings).mockResolvedValue([
-            { requirement_name: "api_key", storage: "local", local_secret_ref: "mcp:jira-server:api_key", status: "configured" },
+            { mcp_server_id: "jira-server", requirement_name: "api_key", storage: "local", local_secret_ref: "mcp:jira-server:api_key", status: "configured" },
         ]);
 
         render(<MCPManagementPanel translate={t} />);
@@ -418,10 +418,10 @@ describe("MCPManagementPanel marketplace integration", () => {
     it("does not treat a stale Hub binding as configured without a stored Hub secret", async () => {
         servers = [jiraServer];
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "api_key", label: "API key", required: true, storage_policy: "hub" },
+            { name: "api_key", label: "API key", required: true, storage_policy: "hub", scope: "user" },
         ]);
         vi.mocked(GetHubMCPSecretBindings).mockResolvedValue([
-            { requirement_name: "api_key", storage: "hub", hub_secret_ref: "hub://mcp-secrets/jira-server/api_key", status: "configured" },
+            { mcp_server_id: "jira-server", requirement_name: "api_key", storage: "hub", hub_secret_ref: "hub://mcp-secrets/jira-server/api_key", status: "configured" },
         ]);
         vi.mocked(GetHubMCPHubSecrets).mockResolvedValue([]);
 
@@ -432,10 +432,10 @@ describe("MCPManagementPanel marketplace integration", () => {
     it("does not treat a stale Hub secret as configured when policy is local-only", async () => {
         servers = [jiraServer];
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
-            { name: "api_token", label: "API token", required: true, storage_policy: "local" },
+            { name: "api_token", label: "API token", required: true, storage_policy: "local", scope: "user" },
         ]);
         vi.mocked(GetHubMCPHubSecrets).mockResolvedValue([
-            { requirement_name: "api_token", metadata: { capability_id: "jira-mcp" } },
+            { id: "hs-2", user_id: "u-1", mcp_server_id: "jira-server", requirement_name: "api_token", secret_digest: "", metadata_json: JSON.stringify({ capability_id: "jira-mcp" }), updated_at: "2025-01-01T00:00:00Z" },
         ]);
 
         render(<MCPManagementPanel translate={t} />);

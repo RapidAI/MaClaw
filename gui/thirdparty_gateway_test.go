@@ -7,8 +7,55 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
+
+func TestThirdPartyGatewayEnqueueEnforcesClientCapabilities(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("text-device", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text"}, Text: &agent.ClientTextCapabilities{MaxChars: 5},
+	}})
+	m.enqueue("text-device", thirdPartyOutgoingMessage{Type: "image", Data: "png"})
+	m.enqueue("text-device", thirdPartyOutgoingMessage{Type: "text", Text: "123456789"})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["text-device"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 1 || messages[0].Type != "text" || messages[0].Text != "12345" {
+		t.Fatalf("adapted messages=%#v", messages)
+	}
+}
+func TestThirdPartyGatewayHandshakeCapabilitiesReachLocalAgentContract(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text"}, Text: &agent.ClientTextCapabilities{MaxChars: 240, Locale: "zh-CN"},
+	}})
+	capabilities := m.clientCapabilities("pet")
+	prompt := agent.BuildClientCapabilityPrompt(&capabilities)
+	if !strings.Contains(prompt, "Output modalities: text") || !strings.Contains(prompt, "max 240 Unicode characters") {
+		t.Fatalf("capability prompt=%q", prompt)
+	}
+}
+
+func TestThirdPartyGatewayEnqueueRejectsUnsupportedMediaEncodingAndOversizedFile(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("media-device", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"image", "audio", "file"},
+		Image:      &agent.ClientImageCapabilities{MimeTypes: []string{"image/png"}},
+		Audio:      &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/wav"}, Playback: true},
+		File:       &agent.ClientFileCapabilities{MimeTypes: []string{"application/pdf"}, MaxBytes: 8},
+	}})
+	m.enqueue("media-device", thirdPartyOutgoingMessage{ID: "jpg", Type: "image", MimeType: "image/jpeg", Data: "x"})
+	m.enqueue("media-device", thirdPartyOutgoingMessage{ID: "mp3", Type: "audio", MimeType: "audio/mpeg", Data: "x"})
+	m.enqueue("media-device", thirdPartyOutgoingMessage{ID: "big", Type: "file", MimeType: "application/pdf", SizeBytes: 9, Data: "x"})
+	m.enqueue("media-device", thirdPartyOutgoingMessage{ID: "png", Type: "image", MimeType: "image/png", Data: "x"})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["media-device"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 1 || messages[0].ID != "png" {
+		t.Fatalf("media capability filtering=%#v", messages)
+	}
+}
 
 func TestDecodeThirdPartyMediaSupportsBase64(t *testing.T) {
 	raw := []byte("image-bytes")

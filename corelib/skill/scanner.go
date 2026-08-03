@@ -326,16 +326,20 @@ type SkillYAMLStepPoll struct {
 }
 
 // SkillYAMLStep is a single step in a YAML skill definition.
+// The json tags let LLM-produced repair results (parsed as JSON) populate the
+// same fields the yaml loader uses — without them, keys like "on_error" were
+// silently dropped on unmarshal. timeout/continue_on_error/poll/loop stay
+// yaml-only: the repair flow neither honors nor round-trips them.
 type SkillYAMLStep struct {
-	Action         string                 `yaml:"action"`
-	Params         map[string]interface{} `yaml:"params"`
-	OnError        string                 `yaml:"on_error"`
-	Name           string                 `yaml:"name,omitempty"`
-	Condition      string                 `yaml:"condition,omitempty"`
-	When           string                 `yaml:"when,omitempty"`    // conditional expression for dynamic routing
-	Label          string                 `yaml:"label,omitempty"`   // step selector label for api_workflow mode
-	Capture        map[string]string      `yaml:"capture,omitempty"` // output capture: varName to regex pattern
-	TimeoutSeconds int                    `yaml:"timeout,omitempty"` // per-step timeout in seconds (0 = use default)
+	Action         string                 `yaml:"action" json:"action"`
+	Params         map[string]interface{} `yaml:"params" json:"params,omitempty"`
+	OnError        string                 `yaml:"on_error" json:"on_error,omitempty"`
+	Name           string                 `yaml:"name,omitempty" json:"name,omitempty"`
+	Condition      string                 `yaml:"condition,omitempty" json:"condition,omitempty"`
+	When           string                 `yaml:"when,omitempty" json:"when,omitempty"` // conditional expression for dynamic routing
+	Label          string                 `yaml:"label,omitempty" json:"label,omitempty"` // step selector label for api_workflow mode
+	Capture        map[string]string      `yaml:"capture,omitempty" json:"capture,omitempty"` // output capture: varName to regex pattern
+	TimeoutSeconds int                    `yaml:"timeout,omitempty"`                          // per-step timeout in seconds (0 = use default)
 	ContinueOnErr  bool                   `yaml:"continue_on_error"`
 	Poll           *SkillYAMLStepPoll     `yaml:"poll,omitempty"` // poll config for async steps
 	Loop           *SkillYAMLStepLoop     `yaml:"loop,omitempty"` // iterative loop config (Pattern 3)
@@ -2073,6 +2077,39 @@ func convertSkillYAMLSteps(yamlSteps []SkillYAMLStep) []corelib.NLSkillStep {
 		steps = append(steps, step)
 	}
 	return steps
+}
+
+// LoadSkillStepsFromDir re-reads the on-disk skill.yaml / skill.yml inside
+// skillDir and returns its steps converted exactly like the scanner does.
+// It bypasses every cache (SkillExecutor skillCache, CachedSkillScanner), so
+// callers doing optimistic-concurrency checks (repair draft apply) see the
+// current on-disk state even when the user hand-edited the file seconds ago.
+func LoadSkillStepsFromDir(skillDir string) ([]corelib.NLSkillStep, error) {
+	steps, _, err := LoadSkillMetaFromDir(skillDir)
+	return steps, err
+}
+
+// LoadSkillMetaFromDir is LoadSkillStepsFromDir plus the on-disk description.
+// Repair-draft apply uses the fresh description so WriteBackOptimizedSteps
+// does not overwrite a hand-edited yaml description with a cached stale one.
+func LoadSkillMetaFromDir(skillDir string) ([]corelib.NLSkillStep, string, error) {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return nil, "", fmt.Errorf("skill dir is empty")
+	}
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		p := filepath.Join(skillDir, name)
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		sf, err := ParseSkillYAMLFile(data)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse %s: %w", p, err)
+		}
+		return convertSkillYAMLSteps(sf.Steps), sf.Description, nil
+	}
+	return nil, "", fmt.Errorf("no skill.yaml/skill.yml in %s", skillDir)
 }
 
 func convertSkillYAMLOperations(yamlOps []SkillYAMLOperation) []corelib.NLSkillOperation {

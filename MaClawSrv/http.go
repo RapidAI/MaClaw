@@ -64,19 +64,21 @@ type adminRiskEvent struct {
 }
 
 type HTTPServer struct {
-	svc            *agentservice.Service
-	adminSecret    string
-	mux            *http.ServeMux
-	authLimiter    *authLimiter
-	launchTokens   *launchTokenStore
-	weixinQRTokens *weixinQRTokenStore
-	weixinRuntime  *srvWeixinGatewayManager
-	imRuntime      *srvIMGatewayManager
-	thirdPartyIM   *srvThirdPartyGatewayManager
-	jobs           *asyncJobManager
-	knowledgeMgr   *knowledgeStoreManager
-	skillSourceSvc *cskill.SourceControlService
-	aiModels       *srvAIModelManager
+	svc             *agentservice.Service
+	adminSecret     string
+	mux             *http.ServeMux
+	authLimiter     *authLimiter
+	launchTokens    *launchTokenStore
+	weixinQRTokens  *weixinQRTokenStore
+	weixinRuntime   *srvWeixinGatewayManager
+	imRuntime       *srvIMGatewayManager
+	thirdPartyIM    *srvThirdPartyGatewayManager
+	devicePairings  *srvDevicePairingStore
+	devicePairLimit *authLimiter
+	jobs            *asyncJobManager
+	knowledgeMgr    *knowledgeStoreManager
+	skillSourceSvc  *cskill.SourceControlService
+	aiModels        *srvAIModelManager
 }
 
 type weixinQRTokenRecord struct {
@@ -154,7 +156,7 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
 	wireSkillSourceFilter(svc, sourceSvc)
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot())}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot())}
 	s.aiModels.setDownloadConfigProvider(func() corelib.AppConfig {
 		return s.defaultConfigForAIModels(context.Background())
 	})
@@ -166,7 +168,7 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	svc.AssistantMessageMetadataHook = s.decorateAssistantMessageMetadata
 	s.weixinRuntime = newSrvWeixinGatewayManager(svc, s.aiModels)
 	s.imRuntime = newSrvIMGatewayManager(svc, s.aiModels)
-	s.thirdPartyIM = newSrvThirdPartyGatewayManager(svc)
+	s.thirdPartyIM = newSrvThirdPartyGatewayManager(svc, s.aiModels)
 	s.startConfiguredAIModelDownloads(context.Background())
 	s.startConfiguredWeixinRuntimes(context.Background())
 	s.startConfiguredIMRuntimes(context.Background())
@@ -729,6 +731,9 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/im/weixin/restart", s.withPrincipal(s.handleRestartWeixinRuntime))
 	s.mux.HandleFunc("GET /api/v1/im/status", s.withPrincipal(s.handleGetIMRuntimeStatuses))
 	s.mux.HandleFunc("GET /api/im-gateway/v1/health", s.handleThirdPartyGatewayHealth)
+	s.mux.HandleFunc("POST /api/v1/device-pairings", s.withPrincipal(s.handleCreateDevicePairing))
+	s.mux.HandleFunc("POST /api/device-gateway/v1/pair", s.handleDeviceGatewayPair)
+	s.mux.HandleFunc("POST /api/device-gateway/v1/pair/voice", s.handleDeviceGatewayVoicePair)
 	s.mux.HandleFunc("POST /api/im-gateway/v1/handshake", s.handleThirdPartyGatewayHandshake)
 	s.mux.HandleFunc("POST /api/im-gateway/v1/incoming", s.handleThirdPartyGatewayIncoming)
 	s.mux.HandleFunc("GET /api/im-gateway/v1/outgoing", s.handleThirdPartyGatewayOutgoing)

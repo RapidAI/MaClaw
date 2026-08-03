@@ -19,6 +19,27 @@ func ToolWebSearch(provider corelib.WebSearchProvider, args map[string]interface
 	return ToolWebSearchCtx(context.Background(), provider, args)
 }
 
+// ToolWebSearchWithStrategy performs a web search using the configured engine
+// order, including free-engine failover and the optional browser fallback.
+func ToolWebSearchWithStrategy(strategy corelib.WebSearchStrategy, args map[string]interface{}) string {
+	return ToolWebSearchWithStrategyCtx(context.Background(), strategy, args)
+}
+
+func ToolWebSearchWithStrategyCtx(ctx context.Context, strategy corelib.WebSearchStrategy, args map[string]interface{}) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	query := StringArg(args, "query")
+	if query == "" {
+		return "缺少 query 参数"
+	}
+	response, err := websearch.SearchWithStrategyCtx(ctx, query, webSearchMaxResults(args), strategy)
+	if err != nil {
+		return fmt.Sprintf("搜索失败: %v", err)
+	}
+	return formatWebSearchResults(response.Results)
+}
+
 func ToolWebSearchCtx(ctx context.Context, provider corelib.WebSearchProvider, args map[string]interface{}) string {
 	if ctx == nil {
 		ctx = context.Background()
@@ -27,6 +48,16 @@ func ToolWebSearchCtx(ctx context.Context, provider corelib.WebSearchProvider, a
 	if query == "" {
 		return "缺少 query 参数"
 	}
+	maxResults := webSearchMaxResults(args)
+
+	results, err := websearch.SearchWithProviderCtx(ctx, query, maxResults, provider)
+	if err != nil {
+		return fmt.Sprintf("搜索失败: %v", err)
+	}
+	return formatWebSearchResults(results)
+}
+
+func webSearchMaxResults(args map[string]interface{}) int {
 	maxResults := 8
 	if n, ok := args["max_results"].(float64); ok && n > 0 {
 		maxResults = int(n)
@@ -34,15 +65,13 @@ func ToolWebSearchCtx(ctx context.Context, provider corelib.WebSearchProvider, a
 			maxResults = 20
 		}
 	}
+	return maxResults
+}
 
-	results, err := websearch.SearchWithProviderCtx(ctx, query, maxResults, provider)
-	if err != nil {
-		return fmt.Sprintf("搜索失败: %v", err)
-	}
+func formatWebSearchResults(results []websearch.SearchResult) string {
 	if len(results) == 0 {
 		return "未找到相关结果。"
 	}
-
 	var b strings.Builder
 	fmt.Fprintf(&b, "找到 %d 条结果:\n\n", len(results))
 	for i, r := range results {

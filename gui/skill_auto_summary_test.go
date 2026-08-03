@@ -1255,7 +1255,7 @@ func TestShouldUpdateSkill_NilInputs(t *testing.T) {
 	}
 }
 
-func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
+func TestSkillLifecycleEnqueueUpload_FailsOverToBackupHubCenter(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -1287,13 +1287,13 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 	defer backup.Close()
 
 	app := &App{testHomeDir: tempHome}
-	skillExec := NewSkillExecutor(app, nil, nil)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	cfg.RemoteHubCenterURL = "http://127.0.0.1:1"
 	cfg.RemoteHubCenterURLs = []string{backup.URL}
+	cfg.RemoteEmail = "user@example.com"
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "auto-upload-skill",
 		Description: "Uploads a learned skill through the lifecycle quality gate.",
@@ -1306,15 +1306,11 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	client := NewSkillMarketClient(app)
-	trigger := NewAutoUploadTrigger(client, func() string { return "user@example.com" })
-
-	skillDir := filepath.Join(tempHome, "auto-upload-skill")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	if err := RunAutoUpload(context.Background(), "auto-upload-skill", skillDir, 1, trigger, skillExec, client); err != nil {
-		t.Fatalf("RunAutoUpload() error = %v", err)
+	// Skill generation no longer uploads; uploads go through the lifecycle
+	// queue once the skill meets the success-run threshold.
+	app.ensureSkillLifecycleManager()
+	if _, err := app.skillLifecycle.EnqueueUpload(context.Background(), "auto-upload-skill", "", "auto_upload", false, true); err != nil {
+		t.Fatalf("EnqueueUpload() error = %v", err)
 	}
 
 	items, err := app.skillLifecycle.ListUploadQueue()
@@ -1346,54 +1342,6 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 	}
 	if !containsString(saved.RemoteHubCenterURLs, backup.URL) {
 		t.Fatalf("RemoteHubCenterURLs = %#v, want backup %q", saved.RemoteHubCenterURLs, backup.URL)
-	}
-}
-
-func TestRunAutoUpload_SkipsWhenNoHubCenterReachable(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
-	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
-
-	originalDefaultCenter := defaultRemoteHubCenterURL
-	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
-	defaultRemoteHubCenterURL = ""
-	remote.DefaultRemoteHubCenterURLs = nil
-	defer func() {
-		defaultRemoteHubCenterURL = originalDefaultCenter
-		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
-	}()
-
-	app := &App{testHomeDir: tempHome}
-	skillExec := NewSkillExecutor(app, nil, nil)
-	cfg, err := app.LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	cfg.RemoteHubCenterURL = "http://127.0.0.1:1"
-	cfg.NLSkills = []corelib.NLSkillEntry{{
-		Name:        "skip-upload-skill",
-		Description: "demo",
-		Source:      "learned",
-		Status:      "active",
-		Steps:       []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{"instructions": "hello"}}},
-	}}
-	if err := app.SaveConfig(cfg); err != nil {
-		t.Fatalf("SaveConfig() error = %v", err)
-	}
-
-	client := NewSkillMarketClient(app)
-	trigger := NewAutoUploadTrigger(client, func() string { return "user@example.com" })
-
-	skillDir := filepath.Join(tempHome, "skip-upload-skill")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	if err := RunAutoUpload(context.Background(), "skip-upload-skill", skillDir, 1, trigger, skillExec, client); err != nil {
-		t.Fatalf("RunAutoUpload() error = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(skillDir, "upload_status.json")); !os.IsNotExist(err) {
-		t.Fatalf("upload_status.json should not exist, stat err = %v", err)
 	}
 }
 

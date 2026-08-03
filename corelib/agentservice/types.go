@@ -945,25 +945,27 @@ type UpdateSessionInput struct {
 }
 
 type PostMessageInput struct {
-	Content     string                    `json:"content"`
-	InputType   string                    `json:"input_type,omitempty"`
-	Attachments []agent.MessageAttachment `json:"attachments,omitempty"`
-	Metadata    map[string]string         `json:"metadata,omitempty"`
+	Content            string                    `json:"content"`
+	InputType          string                    `json:"input_type,omitempty"`
+	Attachments        []agent.MessageAttachment `json:"attachments,omitempty"`
+	Metadata           map[string]string         `json:"metadata,omitempty"`
+	ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
 }
 
 type SendMessageInput struct {
-	SessionID        string                    `json:"session_id,omitempty"`
-	AgentID          string                    `json:"agent_id,omitempty"`
-	Title            string                    `json:"title,omitempty"`
-	Content          string                    `json:"content"`
-	InputType        string                    `json:"input_type,omitempty"`
-	Attachments      []agent.MessageAttachment `json:"attachments,omitempty"`
-	Metadata         map[string]string         `json:"metadata,omitempty"`
-	SessionMetadata  map[string]string         `json:"session_metadata,omitempty"`
-	ClientSessionKey string                    `json:"client_session_key,omitempty"`
-	ClientMessageID  string                    `json:"client_message_id,omitempty"`
+	SessionID          string                    `json:"session_id,omitempty"`
+	AgentID            string                    `json:"agent_id,omitempty"`
+	Title              string                    `json:"title,omitempty"`
+	Content            string                    `json:"content"`
+	InputType          string                    `json:"input_type,omitempty"`
+	Attachments        []agent.MessageAttachment `json:"attachments,omitempty"`
+	Metadata           map[string]string         `json:"metadata,omitempty"`
+	SessionMetadata    map[string]string         `json:"session_metadata,omitempty"`
+	ClientSessionKey   string                    `json:"client_session_key,omitempty"`
+	ClientMessageID    string                    `json:"client_message_id,omitempty"`
+	ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"`
 	// MoAPreset optionally selects a multi-model council preset for this message
 	// (also accepted as metadata["moa_preset"]).
 	MoAPreset string `json:"moa_preset,omitempty"`
@@ -990,15 +992,16 @@ type AgentCapabilities struct {
 }
 
 type ExecuteRequest struct {
-	Principal Principal
-	Tenant    Tenant
-	User      User
-	Instance  Instance
-	Session   Session
-	Message   Message
-	History   []Message
-	DataDir   string
-	Config    corelib.AppConfig
+	Principal          Principal
+	Tenant             Tenant
+	User               User
+	Instance           Instance
+	Session            Session
+	Message            Message
+	History            []Message
+	DataDir            string
+	Config             corelib.AppConfig
+	ClientCapabilities *agent.ClientCapabilities
 
 	// ToolPolicy optionally constrains tool exposure and execution for this
 	// request. Empty means unrestricted beyond the executor's normal

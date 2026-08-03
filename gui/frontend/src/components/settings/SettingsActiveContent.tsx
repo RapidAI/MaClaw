@@ -1,6 +1,6 @@
-import { Suspense, useEffect, useRef, useState, type ChangeEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { Suspense, type ChangeEvent, type Dispatch, type ReactNode, type SetStateAction, useEffect, useRef, useState } from 'react';
 import { GetSettingsTabConfig } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { corelib, main } from '../../../wailsjs/go/models';
 import {
     appConfigFromMergedPlain,
     configChangeEventHasPayload,
@@ -60,8 +60,8 @@ export type SettingsActiveContentProps = {
     lang: string;
     t: (key: string) => string;
     localizeText: (en: string, zhHans: string, zhHant: string) => string;
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     onLanguageChange: (event: ChangeEvent<HTMLSelectElement>) => void;
     hasWindowsTerminal: boolean;
     envCheckInterval: number;
@@ -132,8 +132,8 @@ function wrapPanel(className: string, children: ReactNode) {
     return <div className={className}>{children}</div>;
 }
 
-function appConfigFromMerged(merged: Record<string, any>): main.AppConfig {
-    return appConfigFromMergedPlain(merged, (src) => new main.AppConfig(src)) as main.AppConfig;
+function appConfigFromMerged(merged: Record<string, any>): corelib.AppConfig {
+    return appConfigFromMergedPlain(merged, (src) => new corelib.AppConfig(src)) as corelib.AppConfig;
 }
 
 /**
@@ -278,7 +278,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                 if (!partial || typeof partial !== 'object' || Object.keys(partial).length === 0) {
                     // Cold start with empty DTO: still unblock the panel shell.
                     if (!configRef.current) {
-                        setConfig((prev) => prev ?? new main.AppConfig({ projects: [] }));
+                        setConfig((prev) => prev ?? new corelib.AppConfig({ projects: [] }));
                     }
                     return;
                 }
@@ -287,7 +287,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                 setConfig((prev) => {
                     const merged = mergeSettingsTabConfigSafe(prev as any, partial, snapshot);
                     if (configKeysUnchanged(prev as any, merged, Object.keys(partial))) {
-                        return prev as main.AppConfig;
+                        return prev as corelib.AppConfig;
                     }
                     return appConfigFromMerged(merged);
                 });
@@ -297,7 +297,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                 console.error(`GetSettingsTabConfig(${activeTab}) failed:`, err);
                 // Avoid permanent "Loading settings…" when global config never arrived.
                 if (!configRef.current) {
-                    setConfig((prev) => prev ?? new main.AppConfig({ projects: [] }));
+                    setConfig((prev) => prev ?? new corelib.AppConfig({ projects: [] }));
                 }
             });
         return () => {

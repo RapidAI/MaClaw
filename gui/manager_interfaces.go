@@ -115,8 +115,6 @@ type NetworkManagerInterface interface {
 	SetSkillHubClient(client interface{})
 
 	// Upload services
-	GetAutoUploadTrigger() interface{}
-	SetAutoUploadTrigger(trigger interface{})
 	GetGossipAutoPublish() interface{}
 	SetGossipAutoPublish(publish interface{})
 }
@@ -255,7 +253,6 @@ type MockNetworkManager struct {
 	projectScanner    interface{}
 	gossipClient      interface{}
 	skillHubClient    interface{}
-	autoUploadTrigger interface{}
 	gossipAutoPublish interface{}
 }
 
@@ -272,8 +269,6 @@ func (m *MockNetworkManager) GetGossipClient() interface{}             { return 
 func (m *MockNetworkManager) SetGossipClient(client interface{})       { m.gossipClient = client }
 func (m *MockNetworkManager) GetSkillHubClient() interface{}           { return m.skillHubClient }
 func (m *MockNetworkManager) SetSkillHubClient(client interface{})     { m.skillHubClient = client }
-func (m *MockNetworkManager) GetAutoUploadTrigger() interface{}        { return m.autoUploadTrigger }
-func (m *MockNetworkManager) SetAutoUploadTrigger(trigger interface{}) { m.autoUploadTrigger = trigger }
 func (m *MockNetworkManager) GetGossipAutoPublish() interface{}        { return m.gossipAutoPublish }
 func (m *MockNetworkManager) SetGossipAutoPublish(publish interface{}) { m.gossipAutoPublish = publish }
 

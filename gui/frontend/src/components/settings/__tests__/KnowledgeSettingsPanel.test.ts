@@ -158,14 +158,14 @@ describe('knowledgeSourceListPayload', () => {
             coverage: 'all',
             domain: '',
             labels: '',
-        })).toEqual({ limit: 100 });
+        })).toEqual({ limit: 100, include_disabled: true });
     });
 
     it('normalizes source list limits in payloads', () => {
-        expect(knowledgeSourceListPayload(null, { limit: 12.8 })).toEqual({ limit: 12 });
-        expect(knowledgeSourceListPayload(null, { limit: 0 })).toEqual({ limit: 100 });
-        expect(knowledgeSourceListPayload(null, { limit: -5 })).toEqual({ limit: 100 });
-        expect(knowledgeSourceListPayload(null, { limit: 500000 })).toEqual({ limit: 5000 });
+        expect(knowledgeSourceListPayload(null, { limit: 12.8 })).toEqual({ limit: 12, include_disabled: true });
+        expect(knowledgeSourceListPayload(null, { limit: 0 })).toEqual({ limit: 100, include_disabled: true });
+        expect(knowledgeSourceListPayload(null, { limit: -5 })).toEqual({ limit: 100, include_disabled: true });
+        expect(knowledgeSourceListPayload(null, { limit: 500000 })).toEqual({ limit: 5000, include_disabled: true });
     });
 
     it('normalizes kind and status tokens in source list payloads', () => {

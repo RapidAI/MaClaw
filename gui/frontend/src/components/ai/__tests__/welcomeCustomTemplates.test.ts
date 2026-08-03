@@ -82,6 +82,35 @@ describe("welcome custom templates", () => {
         expect(prompt.icon).toBe("spark");
     });
 
+    it("preserves remote diagnosis safety through save, prompt conversion, and portable export", () => {
+        const { saved } = saveWelcomeCustomTemplate({
+            title: "Diagnose service startup",
+            body: "Inspect the remote service failure before proposing changes.",
+            agentMode: "remote_coding_dev",
+            remoteSafety: "diagnosis",
+            codingEnv: {
+                remote: {
+                    host: "ops.example.test",
+                    port: 22,
+                    user: "ops",
+                    workDir: "/srv/service",
+                    password: "temporary-secret",
+                },
+            },
+        });
+        expect(saved?.remoteSafety).toBe("diagnosis");
+        expect(loadWelcomeCustomTemplates()[0]?.remoteSafety).toBe("diagnosis");
+        expect(customTemplateToWelcomePrompt(saved!).remoteSafety).toBe("diagnosis");
+
+        const exported = buildWelcomeTemplatesExport(loadWelcomeCustomTemplates());
+        expect(exported.templates[0]).toMatchObject({ remoteSafety: "diagnosis" });
+        expect(exported.templates[0]?.codingEnv?.remote?.password).toBeUndefined();
+
+        localStorage.clear();
+        expect(importWelcomeCustomTemplates(JSON.stringify(exported), "replace").added).toBe(1);
+        expect(loadWelcomeCustomTemplates()[0]?.remoteSafety).toBe("diagnosis");
+    });
+
     it("persists codingEnv including password on the local template", () => {
         const codingEnv = {
             remote: {

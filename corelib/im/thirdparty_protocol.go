@@ -13,35 +13,39 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 const (
-	ThirdPartyProtocolVersion = "1"
-	ThirdPartyMaxTextChars    = 20000
-	ThirdPartyMaxURLChars     = 4096
-	ThirdPartyMaxMediaCaption = 2000
-	ThirdPartyMaxAttachments  = 10
-	ThirdPartyMaxIDChars      = 128
-	ThirdPartyMaxDirectBytes  = 256 * 1024
-	ThirdPartyMaxTools        = 64
-	ThirdPartyMaxToolSteps    = 32
-	ThirdPartyMaxToolJSON     = 64 * 1024
-	ThirdPartyMaxBodyBytes    = 16 * 1024 * 1024
-	ThirdPartyMaxMediaBytes   = 50 * 1024 * 1024
-	ThirdPartyMaxAckIDs       = 100
-	ThirdPartyPollTimeoutSec  = 30
-	ThirdPartyMaxTimeoutSec   = 60
-	ThirdPartyMaxBatchSize    = 20
-	ThirdPartyMaxPollLimit    = 100
-	ThirdPartyGatewayMode     = "maclaw"
+	ThirdPartyProtocolVersion       = "1.1"
+	ThirdPartyProtocolLegacyVersion = "1"
+	ThirdPartyMaxTextChars          = 20000
+	ThirdPartyMaxURLChars           = 4096
+	ThirdPartyMaxMediaCaption       = 2000
+	ThirdPartyMaxAttachments        = 10
+	ThirdPartyMaxIDChars            = 128
+	ThirdPartyMaxDirectBytes        = 256 * 1024
+	ThirdPartyMaxTools              = 64
+	ThirdPartyMaxToolSteps          = 32
+	ThirdPartyMaxToolJSON           = 64 * 1024
+	ThirdPartyMaxBodyBytes          = 16 * 1024 * 1024
+	ThirdPartyMaxMediaBytes         = 50 * 1024 * 1024
+	ThirdPartyMaxAckIDs             = 100
+	ThirdPartyPollTimeoutSec        = 30
+	ThirdPartyMaxTimeoutSec         = 60
+	ThirdPartyMaxBatchSize          = 20
+	ThirdPartyMaxPollLimit          = 100
+	ThirdPartyGatewayMode           = "maclaw"
 )
 
 type ThirdPartyHandshakeRequest struct {
-	ClientID        string                     `json:"clientId"`
-	ClientName      string                     `json:"clientName,omitempty"`
-	ProtocolVersion string                     `json:"protocolVersion,omitempty"`
-	Capabilities    map[string]any             `json:"capabilities,omitempty"`
-	Tools           []ThirdPartyToolDefinition `json:"tools,omitempty"`
+	ClientID           string                     `json:"clientId"`
+	ClientName         string                     `json:"clientName,omitempty"`
+	ProtocolVersion    string                     `json:"protocolVersion,omitempty"`
+	Capabilities       map[string]any             `json:"capabilities,omitempty"` // legacy transport feature map
+	ClientCapabilities *agent.ClientCapabilities  `json:"clientCapabilities,omitempty"`
+	Tools              []ThirdPartyToolDefinition `json:"tools,omitempty"`
 }
 
 type ThirdPartyIncomingRequest struct {
@@ -244,32 +248,34 @@ type ThirdPartyNormalizeOptions struct {
 }
 
 type ThirdPartyGatewayConfig struct {
-	Mode           string
-	ChannelID      string
-	RequestID      string
-	ServerTime     int64
-	MaxBodyBytes   int
-	MaxMediaBytes  int
-	PollTimeoutSec int
-	MaxTimeoutSec  int
-	MaxBatchSize   int
-	MaxPollLimit   int
+	Mode               string
+	ChannelID          string
+	RequestID          string
+	ServerTime         int64
+	MaxBodyBytes       int
+	MaxMediaBytes      int
+	PollTimeoutSec     int
+	MaxTimeoutSec      int
+	MaxBatchSize       int
+	MaxPollLimit       int
+	ClientCapabilities *agent.ClientCapabilities
 }
 
 type ThirdPartyGatewayHandshakeResponse struct {
-	OK              bool              `json:"ok"`
-	RequestID       string            `json:"requestId,omitempty"`
-	ChannelID       string            `json:"channelId,omitempty"`
-	ProtocolVersion string            `json:"protocolVersion"`
-	ServerTime      int64             `json:"serverTime,omitempty"`
-	Mode            string            `json:"mode,omitempty"`
-	Capabilities    []string          `json:"capabilities"`
-	Poll            map[string]int    `json:"poll"`
-	Limits          map[string]int    `json:"limits"`
-	Delivery        map[string]string `json:"delivery"`
-	PollTimeoutSec  int               `json:"pollTimeoutSec"`
-	MaxBatchSize    int               `json:"maxBatchSize"`
-	Features        map[string]bool   `json:"features"`
+	OK                   bool                      `json:"ok"`
+	RequestID            string                    `json:"requestId,omitempty"`
+	ChannelID            string                    `json:"channelId,omitempty"`
+	ProtocolVersion      string                    `json:"protocolVersion"`
+	ServerTime           int64                     `json:"serverTime,omitempty"`
+	Mode                 string                    `json:"mode,omitempty"`
+	Capabilities         []string                  `json:"capabilities"`
+	Poll                 map[string]int            `json:"poll"`
+	Limits               map[string]int            `json:"limits"`
+	Delivery             map[string]string         `json:"delivery"`
+	PollTimeoutSec       int                       `json:"pollTimeoutSec"`
+	MaxBatchSize         int                       `json:"maxBatchSize"`
+	Features             map[string]bool           `json:"features"`
+	CapabilitiesAccepted *agent.ClientCapabilities `json:"capabilitiesAccepted,omitempty"`
 }
 
 type ThirdPartyGatewayHealthResponse struct {
@@ -486,19 +492,20 @@ func NormalizeThirdPartyPollRequest(req *ThirdPartyPollRequest, cfg ThirdPartyGa
 func NewThirdPartyGatewayHandshakeResponse(cfg ThirdPartyGatewayConfig) ThirdPartyGatewayHandshakeResponse {
 	cfg = cfg.WithDefaults()
 	return ThirdPartyGatewayHandshakeResponse{
-		OK:              true,
-		RequestID:       strings.TrimSpace(cfg.RequestID),
-		ChannelID:       strings.TrimSpace(cfg.ChannelID),
-		ProtocolVersion: ThirdPartyProtocolVersion,
-		ServerTime:      cfg.ServerTime,
-		Mode:            strings.TrimSpace(cfg.Mode),
-		Capabilities:    ThirdPartyCapabilities(),
-		Poll:            ThirdPartyGatewayPollSettings(cfg.PollTimeoutSec, cfg.MaxTimeoutSec, cfg.MaxBatchSize, cfg.MaxPollLimit),
-		Limits:          ThirdPartyGatewayLimits(cfg.MaxBodyBytes, cfg.MaxMediaBytes),
-		Delivery:        ThirdPartyGatewayDelivery(),
-		PollTimeoutSec:  cfg.PollTimeoutSec,
-		MaxBatchSize:    cfg.MaxBatchSize,
-		Features:        ThirdPartyGatewayFeatures(),
+		OK:                   true,
+		RequestID:            strings.TrimSpace(cfg.RequestID),
+		ChannelID:            strings.TrimSpace(cfg.ChannelID),
+		ProtocolVersion:      ThirdPartyProtocolVersion,
+		ServerTime:           cfg.ServerTime,
+		Mode:                 strings.TrimSpace(cfg.Mode),
+		Capabilities:         ThirdPartyCapabilities(),
+		Poll:                 ThirdPartyGatewayPollSettings(cfg.PollTimeoutSec, cfg.MaxTimeoutSec, cfg.MaxBatchSize, cfg.MaxPollLimit),
+		Limits:               ThirdPartyGatewayLimits(cfg.MaxBodyBytes, cfg.MaxMediaBytes),
+		Delivery:             ThirdPartyGatewayDelivery(),
+		PollTimeoutSec:       cfg.PollTimeoutSec,
+		MaxBatchSize:         cfg.MaxBatchSize,
+		Features:             ThirdPartyGatewayFeatures(),
+		CapabilitiesAccepted: normalizeThirdPartyClientCapabilities(cfg.ClientCapabilities),
 	}
 }
 
@@ -628,8 +635,8 @@ func NormalizeThirdPartyHandshakeRequest(req *ThirdPartyHandshakeRequest) error 
 	req.ClientID = NormalizeThirdPartyID(req.ClientID)
 	req.ClientName = strings.TrimSpace(req.ClientName)
 	req.ProtocolVersion = strings.TrimSpace(req.ProtocolVersion)
-	if req.ProtocolVersion != "" && req.ProtocolVersion != ThirdPartyProtocolVersion {
-		return fmt.Errorf("protocolVersion must be %s", ThirdPartyProtocolVersion)
+	if req.ProtocolVersion != "" && req.ProtocolVersion != ThirdPartyProtocolVersion && req.ProtocolVersion != ThirdPartyProtocolLegacyVersion {
+		return fmt.Errorf("protocolVersion must be %s or %s", ThirdPartyProtocolLegacyVersion, ThirdPartyProtocolVersion)
 	}
 	if req.ClientID == "" {
 		return errors.New("clientId is required")
@@ -645,7 +652,35 @@ func NormalizeThirdPartyHandshakeRequest(req *ThirdPartyHandshakeRequest) error 
 			return err
 		}
 	}
+	if req.ClientCapabilities != nil {
+		normalized := agent.NormalizeClientCapabilities(req.ClientCapabilities)
+		req.ClientCapabilities = &normalized
+	} else if looksLikeStructuredClientCapabilities(req.Capabilities) {
+		raw, _ := json.Marshal(req.Capabilities)
+		var capabilities agent.ClientCapabilities
+		if json.Unmarshal(raw, &capabilities) == nil {
+			normalized := agent.NormalizeClientCapabilities(&capabilities)
+			req.ClientCapabilities = &normalized
+		}
+	}
 	return nil
+}
+
+func normalizeThirdPartyClientCapabilities(capabilities *agent.ClientCapabilities) *agent.ClientCapabilities {
+	if capabilities == nil {
+		return nil
+	}
+	normalized := agent.NormalizeClientCapabilities(capabilities)
+	return &normalized
+}
+
+func looksLikeStructuredClientCapabilities(capabilities map[string]any) bool {
+	if capabilities == nil {
+		return false
+	}
+	_, hasInput := capabilities["input"]
+	_, hasOutput := capabilities["output"]
+	return hasInput || hasOutput
 }
 
 func NormalizeThirdPartyMediaPrepareRequest(req *ThirdPartyMediaPrepareRequest, maxMediaBytes int64) error {

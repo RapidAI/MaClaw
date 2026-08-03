@@ -19,6 +19,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
 }));
 
 import { BuildExperienceBlockedSkillDraft, ConfirmPreviewedSkillDraftReview, RecordBlockedSkillDraftReview } from '../../../../wailsjs/go/main/App';
+import type { main } from '../../../../wailsjs/go/models';
 import { ExperienceLearningPanel } from '../MemoryExperienceLearningPanel';
 
 const t = (en: string) => en;
@@ -185,17 +186,21 @@ describe('ExperienceLearningPanel blocked skill draft affordances', () => {
                     label: 'Close blocked draft',
                     intent: 'close_blocked_skill_draft',
                     tool_call: { tool: 'experience_learning', args: { action: 'record_blocked_skill_draft_review', resolution: 'close' } },
+                    non_executing_boundary: 'read-only blocked skill draft review',
                 },
                 {
                     id: 'reopen',
                     label: 'Reopen with replacement draft',
                     intent: 'reopen_blocked_skill_draft',
-                    required_inputs: [{ name: 'replacement_draft_id', required: true, placeholder: 'skill_draft:...' }],
+                    required_inputs: [{ name: 'replacement_draft_id', label: 'Replacement draft ID', type: 'text', required: true, placeholder: 'skill_draft:...' }],
                     tool_call: { tool: 'experience_learning', args: { action: 'record_blocked_skill_draft_review', resolution: 'reopen' } },
+                    non_executing_boundary: 'read-only blocked skill draft review',
                 },
             ],
-        });
+        } as any);
         vi.mocked(RecordBlockedSkillDraftReview).mockResolvedValueOnce({
+            trace_id: 'trace-blocked-review',
+            memory_id: 'mem-blocked-review',
             kind: 'skill_draft_review',
             status: 'completed',
             recommended_tool_call: { tool: 'manage_skill', args: { action: 'execute_maintenance_plan', dry_run: true } },

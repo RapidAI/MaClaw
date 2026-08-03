@@ -285,6 +285,23 @@ func TestLooksLikeAntiBot(t *testing.T) {
 	}
 }
 
+func TestBodyContainsAntiBotMarkerDoesNotMatchTurnstileCSSCatalog(t *testing.T) {
+	// Bing's ordinary result page includes "cf-turnstile-wrapper" in a large
+	// CSS class catalog even when no verification widget is active. A bare
+	// substring match made every otherwise-valid Bing response look blocked.
+	body := []byte(`<html><body><li class="b_algo"><h2><a href="https://example.com">Result</a></h2></li><script>var classes=["cf-turnstile-wrapper"];</script></body></html>`)
+	if bodyContainsAntiBotMarker(body) {
+		t.Fatal("ordinary Bing result page was misclassified as an anti-bot challenge")
+	}
+}
+
+func TestBodyContainsAntiBotMarkerMatchesActiveTurnstileWidget(t *testing.T) {
+	body := []byte(`<html><body><div class="cf-turnstile" data-sitekey="public-key"></div></body></html>`)
+	if !bodyContainsAntiBotMarker(body) {
+		t.Fatal("active Turnstile widget was not classified as an anti-bot challenge")
+	}
+}
+
 func TestDownloadInterruptedStreamRetried(t *testing.T) {
 	setupDownloadTestLog(t)
 	var calls int32
@@ -743,34 +760,6 @@ func TestFetchRawHTMLReturnsUnextractedBody(t *testing.T) {
 	}
 }
 
-func TestSearchMojeekEscalatesOnCaptchaPage(t *testing.T) {
-	setupDownloadTestLog(t)
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
-		if r.Header.Get("sec-ch-ua") == "" {
-			// Mojeek-style 200 captcha page (no CF status markers at all).
-			w.Header().Set("Content-Type", "text/html")
-			_, _ = w.Write([]byte(`<html><head><title>Captcha</title></head><body><div class="captcha-box">verify</div></body></html>`))
-			return
-		}
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><a class="title" href="https://example.com/go">Go Result</a></body></html>`))
-	}))
-	t.Cleanup(srv.Close)
-
-	orig := defaultMojeekSearchURL
-	defaultMojeekSearchURL = srv.URL
-	t.Cleanup(func() { defaultMojeekSearchURL = orig })
-
-	if _, err := searchMojeekDirect(context.Background(), "golang", 3); err != nil {
-		t.Fatalf("searchMojeekDirect: %v", err)
-	}
-	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Fatalf("expected captcha page to trigger L1 escalation, got %d requests", got)
-	}
-}
-
 func TestParseDDGResultsSkipsAdTrackerLinks(t *testing.T) {
 	html := `<html><body>` +
 		`<a class="result__a" href="https://duckduckgo.com/y.js?ad_domain=codecademy.com&u3=https%3A%2F%2Fwww.codecademy.com">Codecademy Ad</a>` +
@@ -931,7 +920,7 @@ func TestFallbackChainUsesBrowserSearchHook(t *testing.T) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(srv.Close)
-	for _, p := range []*string{&defaultBingSearchURL, &defaultBaiduSearchURL, &defaultLegacySearchURL, &defaultMojeekSearchURL} {
+	for _, p := range []*string{&defaultBingSearchURL, &defaultBaiduSearchURL, &defaultLegacySearchURL} {
 		orig := *p
 		*p = srv.URL
 		t.Cleanup(func() { *p = orig })
@@ -940,7 +929,7 @@ func TestFallbackChainUsesBrowserSearchHook(t *testing.T) {
 	lastGoodEndpointName = ""
 	lastGoodEndpointMu.Unlock()
 
-	SetBrowserSearchProvider(func(ctx context.Context, query string, maxResults int) ([]BrowserSearchHit, error) {
+	SetBrowserSearchProvider(func(ctx context.Context, engineID, query string, maxResults int, _ bool) ([]BrowserSearchHit, error) {
 		return []BrowserSearchHit{{Title: "Browser Hit", URL: "https://go.dev/", Snippet: "via browser"}}, nil
 	})
 	t.Cleanup(func() { SetBrowserSearchProvider(nil) })

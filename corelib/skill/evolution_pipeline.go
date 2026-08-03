@@ -3,6 +3,8 @@ package skill
 import (
 	"context"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,7 +32,7 @@ type EvolutionPipeline struct {
 	UsageTracker  *tool.UsageTracker
 	SkillLoader   func() []corelib.NLSkillEntry
 	SkillSaver    func([]corelib.NLSkillEntry) error
-	UploadTrigger func(skillName string, result *SkillExecutionResultCompat) // triggers AutoUploadTrigger.CheckAndTrigger
+	UploadTrigger func(skillName string, result *SkillExecutionResultCompat) // enqueues upload via SkillLifecycleManager (subject to skill_auto_upload_enabled)
 	LLM           LLMRepairer
 	EventEmitter  func(event string, data map[string]string) // notifies frontend of evolution actions
 
@@ -55,9 +57,9 @@ type EvolutionPipeline struct {
 	pendingMu      sync.Mutex
 	pendingWake    chan struct{} // buffer 1 — wake the loop without blocking Notify
 	stopCh         chan struct{}
-	once           sync.Once // protects stopCh close
-	startOnce      sync.Once // protects Start from being called twice
-	requestCount   int       // counts processed requests for throttling
+	once           sync.Once    // protects stopCh close
+	startOnce      sync.Once    // protects Start from being called twice
+	requestCount   atomic.Int64 // counts processed requests for throttling
 
 	// CoalescedNotifications counts NotifySkillExecution calls that replaced a
 	// still-pending request for the same skill (not lost — superseded).
@@ -283,7 +285,7 @@ func (p *EvolutionPipeline) Status() EvolutionStatus {
 		PendingSkills:          p.PendingSkillCount(),
 		CoalescedNotifications: p.CoalescedNotifications.Load(),
 		DroppedNotifications:   p.DroppedNotifications.Load(),
-		ProcessedRequests:      p.requestCount,
+		ProcessedRequests:      int(p.requestCount.Load()),
 		EnableRepair:           p.EnableRepair,
 		EnableOptimizer:        p.EnableOptimizer,
 		EnablePromoter:         p.EnablePromoter,
@@ -306,7 +308,7 @@ func (p *EvolutionPipeline) processRequest(req evolutionRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	p.requestCount++
+	p.requestCount.Add(1)
 
 	// 0. Surface failed executions for frontend/audit.
 	failed := req.ExecResult != nil && !req.ExecResult.Success
@@ -333,7 +335,7 @@ func (p *EvolutionPipeline) processRequest(req evolutionRequest) {
 	if interval <= 0 {
 		interval = 10
 	}
-	if p.EnablePromoter && p.Promoter != nil && p.UsageTracker != nil && p.requestCount%interval == 0 {
+	if p.EnablePromoter && p.Promoter != nil && p.UsageTracker != nil && p.requestCount.Load()%int64(interval) == 0 {
 		p.tryPromoteNudges(ctx)
 	}
 }
@@ -343,8 +345,14 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 	if req.Entry == nil {
 		return
 	}
-	if !ShouldAttemptRepair(req.Entry) {
-		return
+	ok, reason := ExplainRepairGate(req.Entry)
+	fileBackedOnly := false
+	if !ok {
+		if reason != "file_backed" {
+			log.Printf("[evolution-pipeline] repair skipped skill=%s reason=%s", req.SkillName, reason)
+			return
+		}
+		fileBackedOnly = true
 	}
 	// Prefer freshest entry from SkillLoader (usage stats may have advanced).
 	entry := req.Entry
@@ -358,11 +366,24 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 				break
 			}
 		}
-		if !ShouldAttemptRepair(entry) {
-			return
+		ok, reason = ExplainRepairGate(entry)
+		if !ok {
+			if reason != "file_backed" {
+				log.Printf("[evolution-pipeline] repair skipped skill=%s reason=%s", req.SkillName, reason)
+				return
+			}
+			fileBackedOnly = true
+		} else {
+			fileBackedOnly = false
 		}
 	}
 
+	// 节流检查在这里，但冷却时间戳只在真正发起修复动作前才写（见下方各分支），
+	// 避免被 ctx 取消/LLM 未配置的尝试白白消耗冷却；LLM 已调用但失败/gate 拒绝
+	// 的尝试消耗了真实 LLM 调用，必须写时间戳防止每次失败都白调一次。
+	// RepairHook 分支在调 hook 前写时间戳：hook 内部可能因 canStartRepairSkill
+	// 复检而 bail（未发 LLM 调用），但即便如此也要节流，否则该技能的每次失败
+	// 都会重复触发 hook。
 	cooldown := p.RepairCooldown
 	if cooldown <= 0 {
 		cooldown = DefaultRepairCooldown
@@ -373,10 +394,15 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 		log.Printf("[evolution-pipeline] repair throttled skill=%s remaining=%s", req.SkillName, (cooldown - time.Since(last)).Round(time.Second))
 		return
 	}
-	p.repairAttempts[req.SkillName] = time.Now()
 	p.throttleMu.Unlock()
 
 	if ctx.Err() != nil {
+		return
+	}
+
+	// file-backed 技能不后台改盘，走人审 patch draft 流（P0-4）。
+	if fileBackedOnly {
+		p.tryFileBackedRepairDraft(ctx, req, entry)
 		return
 	}
 
@@ -384,6 +410,7 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 		req.SkillName, entry.UsageCount, entry.SuccessCount)
 
 	if p.RepairHook != nil {
+		p.markRepairAttempt(req.SkillName)
 		p.RepairHook(entry, req.RunArgs)
 		return
 	}
@@ -396,6 +423,8 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 	repairCtx := NewRepairContext(entry, req.RunArgs)
 	result, err := AttemptRepairWithContext(p.LLM, entry, repairCtx)
 	if err != nil {
+		// LLM 调用已真实发生（失败也算成本），消耗冷却防止每次失败都重调。
+		p.markRepairAttempt(req.SkillName)
 		log.Printf("[evolution-pipeline] repair LLM failed skill=%s: %v", req.SkillName, err)
 		return
 	}
@@ -411,10 +440,13 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 		if len(historicalArgs) > 0 {
 			gateResult, gateErr := p.Gate.Verify(ctx, entry, nlSteps, historicalArgs)
 			if gateErr != nil {
+				// gate 运行在 LLM 调用之后，错误也意味着本次 LLM 调用已白花。
+				p.markRepairAttempt(req.SkillName)
 				log.Printf("[evolution-pipeline] repair gate error skill=%s: %v", req.SkillName, gateErr)
 				return
 			}
 			if gateResult == nil || !gateResult.Passed {
+				p.markRepairAttempt(req.SkillName)
 				reason := "nil"
 				if gateResult != nil {
 					reason = gateResult.Reason
@@ -424,12 +456,14 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 			}
 		}
 	}
+	// LLM 修复成功且 gate 通过、真正落 ApplyRepair 之前才写冷却时间戳。
+	p.markRepairAttempt(req.SkillName)
 	if !ApplyRepair(entry, result) {
 		if result != nil && result.ShouldDisable && p.SkillSaver != nil && p.SkillLoader != nil {
 			skills := p.SkillLoader()
 			for i := range skills {
 				if skills[i].Name == req.SkillName {
-					skills[i] = *entry
+					mergeEvolvedEntry(&skills[i], entry)
 					_ = p.SkillSaver(skills)
 					break
 				}
@@ -441,7 +475,7 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 		skills := p.SkillLoader()
 		for i := range skills {
 			if skills[i].Name == req.SkillName {
-				skills[i] = *entry
+				mergeEvolvedEntry(&skills[i], entry)
 				if err := p.SkillSaver(skills); err != nil {
 					log.Printf("[evolution-pipeline] save repaired skill=%s failed: %v", req.SkillName, err)
 					return
@@ -466,6 +500,190 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 		})
 	}
 	log.Printf("[evolution-pipeline] repair applied skill=%s", req.SkillName)
+}
+
+// tryFileBackedRepairDraft 为 file-backed 技能生成人审 patch draft（P0-4
+// 方案 A）：复用 LLM 修复 + gate 验证，通过后把 draft 写到
+// <skill_dir>/.evolution-drafts/<utc时间戳>.json 并发 EventSkillRepairDraftReady。
+// 本路径绝不修改 entry、不调 SkillSaver、不写回 skill.yaml —— 应用/拒绝由
+// GUI 人审时完成。
+func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req evolutionRequest, entry *corelib.NLSkillEntry) {
+	// 除 file-backed 外其他门槛仍需全部通过（max_attempts / error class / 用量统计）。
+	if ok, reason := explainRepairGate(entry, true); !ok {
+		log.Printf("[evolution-pipeline] repair draft skipped skill=%s reason=%s", req.SkillName, reason)
+		return
+	}
+
+	// 已有未评审 draft 时不重复生成。
+	draftsDir := filepath.Join(entry.SkillDir, RepairDraftsDirName)
+	if HasPendingRepairDraft(draftsDir) {
+		log.Printf("[evolution-pipeline] repair draft skipped skill=%s reason=draft_pending", req.SkillName)
+		return
+	}
+
+	// SKILL.md-only 技能没有机器可写的 steps 文件，apply 必然失败——在 LLM
+	// 调用前跳过（不烧 LLM，也不写冷却时间戳：反正永远不会成功）。
+	if !hasSkillYAMLFile(entry.SkillDir) {
+		log.Printf("[evolution-pipeline] repair draft skipped skill=%s reason=no_skill_yaml", req.SkillName)
+		return
+	}
+
+	// 含 poll/loop 步骤的技能：WriteBackOptimizedSteps 不回写 poll/loop，
+	// apply 会静默剥离这些配置——跳过生成，不烧 LLM。
+	if StepsHavePollLoop(entry.Steps) {
+		log.Printf("[evolution-pipeline] repair draft skipped skill=%s reason=poll_loop_unsupported", req.SkillName)
+		return
+	}
+
+	if p.LLM == nil || !p.LLM.IsConfigured() {
+		log.Printf("[evolution-pipeline] repair draft skipped skill=%s: LLM not configured", req.SkillName)
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+
+	repairCtx := NewRepairContext(entry, req.RunArgs)
+	result, err := AttemptRepairWithContext(p.LLM, entry, repairCtx)
+	if err != nil {
+		// LLM 调用已真实发生（失败也算成本），消耗冷却防止每次失败都重调。
+		p.markRepairAttempt(req.SkillName)
+		log.Printf("[evolution-pipeline] repair draft LLM failed skill=%s: %v", req.SkillName, err)
+		return
+	}
+	if result != nil && result.ShouldDisable {
+		// LLM 认为不可修复应禁用：生成"禁用建议" draft（NewSteps/OldSteps 为
+		// 空，Explanation 说明禁用理由），由人审决定是否禁用。写盘+发事件流
+		// 程与普通 draft 复用。
+		draft := RepairDraft{
+			Skill:       req.SkillName,
+			Explanation: result.Explanation,
+			LastError:   entry.LastError,
+			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+			Disable:     true,
+		}
+		p.writeRepairDraftAndNotify(req.SkillName, entry.SkillDir, draft)
+		return
+	}
+	if result == nil || !result.Repaired || len(result.NewSteps) == 0 {
+		// LLM 已调用但认为不可修复/被 sanitize 拒绝：同样消耗冷却。
+		// （AttemptRepairWithContext 内部不经 LLM 的 not-repairable 早退
+		// 不可达——上方 gate 已用同一 IsRepairableError 过滤过。）
+		p.markRepairAttempt(req.SkillName)
+		explanation := ""
+		if result != nil {
+			explanation = result.Explanation
+		}
+		log.Printf("[evolution-pipeline] repair draft not applicable skill=%s: %s", req.SkillName, explanation)
+		return
+	}
+
+	nlSteps := convertRepairResultSteps(result.NewSteps)
+	if p.Gate != nil {
+		var historicalArgs []map[string]string
+		if p.UsageTracker != nil {
+			historicalArgs = p.UsageTracker.RecentRunArgs("skill:"+req.SkillName, 3)
+		}
+		if len(historicalArgs) > 0 {
+			gateResult, gateErr := p.Gate.Verify(ctx, entry, nlSteps, historicalArgs)
+			if gateErr != nil {
+				p.markRepairAttempt(req.SkillName)
+				log.Printf("[evolution-pipeline] repair draft gate error skill=%s: %v", req.SkillName, gateErr)
+				return
+			}
+			if gateResult == nil || !gateResult.Passed {
+				p.markRepairAttempt(req.SkillName)
+				reason := "nil"
+				if gateResult != nil {
+					reason = gateResult.Reason
+				}
+				log.Printf("[evolution-pipeline] repair draft gate rejected skill=%s: %s", req.SkillName, reason)
+				return
+			}
+		}
+	}
+
+	draft := RepairDraft{
+		Skill:       req.SkillName,
+		OldSteps:    entry.Steps,
+		NewSteps:    nlSteps,
+		Explanation: result.Explanation,
+		LastError:   entry.LastError,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+	}
+	p.writeRepairDraftAndNotify(req.SkillName, entry.SkillDir, draft)
+}
+
+// writeRepairDraftAndNotify persists a repair draft and emits
+// EventSkillRepairDraftReady. A successful write consumes the repair cooldown
+// (shared with the auto-repair throttle); a failed write does not — nothing
+// was produced, so the next failure may retry immediately.
+func (p *EvolutionPipeline) writeRepairDraftAndNotify(skillName, skillDir string, draft RepairDraft) {
+	name, err := WriteRepairDraft(skillDir, draft)
+	if err != nil {
+		// 写盘失败不消耗冷却——draft 没产出，下次可立即重试。
+		log.Printf("[evolution-pipeline] repair draft write failed skill=%s: %v", skillName, err)
+		return
+	}
+	// 与自动修复共用 repairAttempts 冷却节流：draft 落盘成功才写时间戳。
+	p.markRepairAttempt(skillName)
+	if p.EventEmitter != nil {
+		p.EventEmitter(EventSkillRepairDraftReady, map[string]string{
+			"skill": skillName,
+			"draft": name,
+		})
+	}
+	log.Printf("[evolution-pipeline] repair draft ready skill=%s draft=%s", skillName, name)
+}
+
+// hasSkillYAMLFile reports whether skillDir contains a skill.yaml or
+// skill.yml — the only durable steps store a repair draft can be applied to.
+func hasSkillYAMLFile(skillDir string) bool {
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		if st, err := os.Stat(filepath.Join(skillDir, name)); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// markRepairAttempt records the cooldown timestamp for a skill repair attempt.
+// Call it once an LLM repair call has actually been spent (success, LLM error,
+// gate error/rejection, or a draft written to disk) — throttled, cancelled or
+// not-configured attempts must not consume the cooldown, and a failed draft
+// write doesn't either (nothing was produced, retry may happen immediately).
+func (p *EvolutionPipeline) markRepairAttempt(skillName string) {
+	p.throttleMu.Lock()
+	p.repairAttempts[skillName] = time.Now()
+	p.throttleMu.Unlock()
+}
+
+// mergeEvolvedEntry copies only the fields that self-repair / optimization may
+// modify from src into dst, preserving dst's live usage stats (UsageCount,
+// SuccessCount, FailureCount, LastError, LastUsedAt) that may have advanced
+// since src was loaded. Used when persisting evolved skills to avoid clobbering
+// concurrent stats updates (TOCTOU).
+//
+// LastError is the exception: ApplyRepair rewrites it into a repair artifact
+// marker ("auto-repaired: ..." / "auto-disabled: ...") instead of a live
+// failure stat, so only those prefixed markers are copied — otherwise the
+// marker would be lost and the persisted stale error would trigger repeated
+// repairs of an already-fixed skill.
+func mergeEvolvedEntry(dst *corelib.NLSkillEntry, src *corelib.NLSkillEntry) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.Steps = src.Steps
+	dst.Description = src.Description
+	dst.Status = src.Status
+	dst.RepairAttemptCount = src.RepairAttemptCount
+	dst.LastRepairAt = src.LastRepairAt
+	dst.RepairHistory = src.RepairHistory
+	dst.OptimizationCount = src.OptimizationCount
+	dst.LastOptimizedAt = src.LastOptimizedAt
+	if strings.HasPrefix(src.LastError, "auto-repaired:") || strings.HasPrefix(src.LastError, "auto-disabled:") {
+		dst.LastError = src.LastError
+	}
 }
 
 // OptimizeResult describes the outcome of a one-shot TriggerOptimize call.
@@ -522,27 +740,30 @@ func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionReques
 	}
 
 	if !force && !p.Optimizer.ShouldOptimize(req.Entry, records) {
-		return OptimizeResult{Skipped: true, SkipReason: "skill does not meet automatic optimization thresholds"}
+		reason := "skill does not meet automatic optimization thresholds"
+		log.Printf("[evolution-pipeline] optimize skipped skill=%s reason=%s", req.SkillName, reason)
+		return OptimizeResult{Skipped: true, SkipReason: reason}
 	}
 	if force && IsFileBackedSkill(*req.Entry) {
-		return OptimizeResult{Skipped: true, SkipReason: "file-backed skills require a reviewed patch flow"}
+		reason := "file-backed skills require a reviewed patch flow"
+		log.Printf("[evolution-pipeline] optimize skipped skill=%s reason=%s", req.SkillName, reason)
+		return OptimizeResult{Skipped: true, SkipReason: reason}
 	}
 
 	// Throttle: don't call LLM if we already attempted optimization for this
 	// skill within the cooldown period (even if it was rejected/failed).
-	// Manual force bypasses the attempt throttle.
+	// Manual force bypasses the attempt throttle and does NOT write a
+	// timestamp — 手动触发不应重置 24h 自动窗口。
 	if !force {
 		p.throttleMu.Lock()
 		if lastAttempt, ok := p.optimizeAttempts[req.SkillName]; ok {
 			if time.Since(lastAttempt).Hours() < 24 {
 				p.throttleMu.Unlock()
-				return OptimizeResult{Skipped: true, SkipReason: "optimization throttled (24h cooldown); pass force=true to override"}
+				reason := "optimization throttled (24h cooldown); pass force=true to override"
+				log.Printf("[evolution-pipeline] optimize skipped skill=%s reason=%s", req.SkillName, reason)
+				return OptimizeResult{Skipped: true, SkipReason: reason}
 			}
 		}
-		p.optimizeAttempts[req.SkillName] = time.Now()
-		p.throttleMu.Unlock()
-	} else {
-		p.throttleMu.Lock()
 		p.optimizeAttempts[req.SkillName] = time.Now()
 		p.throttleMu.Unlock()
 	}
@@ -564,33 +785,37 @@ func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionReques
 	// Apply optimization.
 	if ApplyOptimization(req.Entry, result, p.Versioner) {
 		// Persist atomically: SkillSaver's closure holds the write lock, so
-		// we pass the full updated list inside one call. The SkillSaver loads
-		// the latest state internally (under lock), applies our modification,
-		// and saves — preventing TOCTOU races with updateUsageStats.
-		if p.SkillSaver != nil {
-			// Build the updated list by loading fresh (SkillSaver holds lock),
-			// but since SkillSaver takes []NLSkillEntry we must load first.
-			// The brief window between SkillLoader/SkillSaver is acceptable
-			// because the worst case is a UsageCount being off by 1 (not data
-			// corruption), and the pipeline runs at low frequency (every 5s+).
-			var skills []corelib.NLSkillEntry
-			if p.SkillLoader != nil {
-				skills = p.SkillLoader()
+		// we pass the full updated list inside one call. Only the fields the
+		// optimization actually modified are merged into the freshly loaded
+		// entry (mergeEvolvedEntry), preserving live usage stats.
+		//
+		// When the optimization cannot be persisted (no SkillSaver, or the
+		// skill is missing from storage) nothing durable changed — log and
+		// return WITHOUT emitting EventSkillOptimized or triggering upload,
+		// so the frontend/audit never claim an optimization that didn't stick.
+		if p.SkillSaver == nil {
+			log.Printf("[evolution-pipeline] optimization not persisted skill=%s: SkillSaver not configured", req.SkillName)
+			return OptimizeResult{Attempted: true, Explanation: "optimization not persisted: SkillSaver not configured"}
+		}
+		var skills []corelib.NLSkillEntry
+		if p.SkillLoader != nil {
+			skills = p.SkillLoader()
+		}
+		found := false
+		for i := range skills {
+			if skills[i].Name == req.SkillName {
+				mergeEvolvedEntry(&skills[i], req.Entry)
+				found = true
+				break
 			}
-			found := false
-			for i := range skills {
-				if skills[i].Name == req.SkillName {
-					skills[i] = *req.Entry
-					found = true
-					break
-				}
-			}
-			if found {
-				if err := p.SkillSaver(skills); err != nil {
-					log.Printf("[evolution-pipeline] save optimized skill=%s failed: %v", req.SkillName, err)
-					return OptimizeResult{Attempted: true, Explanation: "save failed: " + err.Error()}
-				}
-			}
+		}
+		if !found {
+			log.Printf("[evolution-pipeline] optimization not persisted skill=%s: not found in storage", req.SkillName)
+			return OptimizeResult{Attempted: true, Explanation: "skill not found in storage, optimization not persisted"}
+		}
+		if err := p.SkillSaver(skills); err != nil {
+			log.Printf("[evolution-pipeline] save optimized skill=%s failed: %v", req.SkillName, err)
+			return OptimizeResult{Attempted: true, Explanation: "save failed: " + err.Error()}
 		}
 
 		// Write updated steps back to skill.yaml on disk so that loadSkills

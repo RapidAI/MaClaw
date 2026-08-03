@@ -44,6 +44,8 @@ import {
 import { mapLansengerGroupsForSurveyBind, parseWailsJSON } from './utilitiesParse';
 import { meetingRecordBaseTitle, meetingRecordCardDesc } from './utilitiesMeetingRecord';
 import { ExpertEditorDialog } from './ExpertEditorDialog';
+import { ExpertMarketDialog } from '../ExpertMarketDialog';
+import { ExpertShareDialog } from '../ExpertShareDialog';
 import type { ExpertDefinition } from '../ai/expertTypes';
 import type { CodingTaskLaunch } from '../ai/codingTaskLaunch';
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON } from '../ai/expertTypes';
@@ -163,6 +165,16 @@ const ToolCardCtaArrow = () => (
         aria-hidden="true"
     >
         <path d="M4 12h14M13 7l5 5-5 5" />
+    </svg>
+);
+
+/** Marketplace is an adjacent destination of the AI expert library. */
+const ExpertMarketIcon = () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 10.5V20h16v-9.5" />
+        <path d="M3 10.5 5.2 4h13.6l2.2 6.5" />
+        <path d="M3 10.5c.7 1.2 2 1.8 3.3 1.8s2.6-.6 3.3-1.8c.7 1.2 2 1.8 3.4 1.8 1.3 0 2.6-.6 3.3-1.8.7 1.2 2 1.8 3.4 1.8s2.6-.6 3.3-1.8" />
+        <path d="M9 20v-4h6v4" />
     </svg>
 );
 
@@ -334,12 +346,23 @@ export const UtilitiesPage = ({
     const [expertDeleteTarget, setExpertDeleteTarget] = useState<ExpertDefinition | null>(null);
     const [expertResetTarget, setExpertResetTarget] = useState<ExpertDefinition | null>(null);
     const [expertActionBusy, setExpertActionBusy] = useState(false);
+    const [expertPackageBusy, setExpertPackageBusy] = useState(false);
+    const [expertMarketOpen, setExpertMarketOpen] = useState(false);
+    const [expertMarketIntent, setExpertMarketIntent] = useState<'market' | 'library'>('market');
+    const [expertShareTarget, setExpertShareTarget] = useState<ExpertDefinition | null>(null);
+    const [expertMarketUploads, setExpertMarketUploads] = useState<Record<string, { id: string; status: string }>>({});
     const meetingStartingRef = useRef(false);
     const vscodeStartingRef = useRef(false);
     const vscodeExtStartingRef = useRef(false);
+    const expertPackageBusyRef = useRef(false);
     const mountedRef = useRef(true);
     const activeRef = useRef(active);
     const expertsRequestRef = useRef(0);
+    const expertMarketUploadsRequestRef = useRef(0);
+    // A mutation response is newer than an account read that was already in
+    // flight. Keep its state until the account endpoint confirms that same
+    // state, so an old response can never revive Share or Unlist.
+    const expertMarketUploadOverridesRef = useRef<Record<string, { id: string; status: string }>>({});
     const surveyListRequestRef = useRef(0);
     const bindableGroupsRequestRef = useRef(0);
     const selectedIdRef = useRef<string | null>(null);
@@ -357,6 +380,7 @@ export const UtilitiesPage = ({
         // Invalidate in-flight background reads immediately. A request may finish
         // between the render that hides this page and its caller observing active.
         expertsRequestRef.current += 1;
+        expertMarketUploadsRequestRef.current += 1;
         surveyListRequestRef.current += 1;
         bindableGroupsRequestRef.current += 1;
     }, [active]);
@@ -420,6 +444,75 @@ export const UtilitiesPage = ({
         void loadExperts();
     }, [active, view, loadExperts]);
 
+    const loadExpertMarketUploads = useCallback(async () => {
+        const requestID = ++expertMarketUploadsRequestRef.current;
+        try {
+            const mod = await getApp();
+            if (!mod?.GetExpertMarketAccount) return;
+            const account = await mod.GetExpertMarketAccount();
+            const next: Record<string, { id: string; status: string }> = {};
+            for (const upload of Array.isArray(account?.uploads) ? account.uploads : []) {
+                const localID = String(upload?.local_expert_id || '').trim();
+                const listingID = String(upload?.id || '').trim();
+                const status = String(upload?.status || '').trim();
+                // Keep unlisted submissions in the card state. Otherwise the
+                // card would offer Share again and allow a duplicate listing.
+                if (localID && listingID) next[localID] = { id: listingID, status };
+            }
+            if (mountedRef.current && activeRef.current && requestID === expertMarketUploadsRequestRef.current) {
+                const overrides = expertMarketUploadOverridesRef.current;
+                for (const [localID, override] of Object.entries(overrides)) {
+                    // Once the authoritative account response catches up, it
+                    // owns subsequent changes (for example, review approval).
+                    if (next[localID]?.id === override.id && next[localID]?.status === override.status) {
+                        delete overrides[localID];
+                    } else {
+                        next[localID] = override;
+                    }
+                }
+                setExpertMarketUploads(next);
+            }
+        } catch {
+            // Market availability must not block the local expert library.
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!active || view !== 'home') return;
+        void loadExpertMarketUploads();
+    }, [active, view, loadExpertMarketUploads]);
+
+    const handleWithdrawExpertMarketListing = useCallback(async (expert: ExpertDefinition) => {
+        const listing = expertMarketUploads[expert.id];
+        if (!listing || expertPackageBusyRef.current) return;
+        const confirmed = await showConfirm(
+            isZh ? '下架后不再接受新用户获取，已购用户仍可下载。' : 'New users will no longer be able to get this expert. Existing buyers retain downloads.',
+            isZh ? '下架专家' : 'Unlist expert',
+            { confirmText: isZh ? '下架' : 'Unlist', cancelText: isZh ? '取消' : 'Cancel' },
+        );
+        if (!confirmed) return;
+        expertPackageBusyRef.current = true;
+        setExpertPackageBusy(true);
+        setError('');
+        try {
+            const mod = await getApp();
+            if (!mod?.WithdrawExpertMarketListing) throw new Error(isZh ? '当前版本不支持下架专家' : 'Unlisting experts is not supported by this build');
+            await mod.WithdrawExpertMarketListing(listing.id);
+            // The mutation succeeded, so do not leave a second actionable
+            // Unlist button behind while the best-effort account reload is
+            // offline or still reading an older response.
+            const unlisted = { id: listing.id, status: 'unlisted' };
+            expertMarketUploadOverridesRef.current[expert.id] = unlisted;
+            setExpertMarketUploads(current => ({ ...current, [expert.id]: unlisted }));
+            await loadExpertMarketUploads();
+        } catch (e: any) {
+            if (mountedRef.current) setError(String(e?.message || e));
+        } finally {
+            expertPackageBusyRef.current = false;
+            if (mountedRef.current) setExpertPackageBusy(false);
+        }
+    }, [expertMarketUploads, isZh, loadExpertMarketUploads, showConfirm]);
+
     const handleDeleteExpert = useCallback(async () => {
         const target = expertDeleteTarget;
         if (!target || expertActionBusy) return;
@@ -428,6 +521,11 @@ export const UtilitiesPage = ({
             const mod = await getApp();
             if (!mod?.DeleteExpert) throw new Error(isZh ? '当前版本不支持删除专家' : 'Deleting experts is not supported by this build');
             await mod.DeleteExpert(target.id);
+            delete expertMarketUploadOverridesRef.current[target.id];
+            setExpertMarketUploads(current => {
+                const { [target.id]: _removed, ...remaining } = current;
+                return remaining;
+            });
             setExpertDeleteTarget(null);
             window.dispatchEvent(new CustomEvent('maclaw:expert-deleted', { detail: { expertId: target.id } }));
             await loadExperts();
@@ -456,6 +554,61 @@ export const UtilitiesPage = ({
             if (mountedRef.current) setExpertActionBusy(false);
         }
     }, [expertResetTarget, expertActionBusy, loadExperts, isZh]);
+
+    const handleExportExpertPackage = useCallback(async (expert: ExpertDefinition) => {
+        if (expertPackageBusyRef.current || expert.builtin) return;
+        expertPackageBusyRef.current = true;
+        setExpertPackageBusy(true);
+        setError('');
+        try {
+            const mod = await getApp();
+            if (!mod?.ExportExpertPackage) throw new Error(isZh ? '当前版本不支持导出专家' : 'Exporting experts is not supported by this build');
+            const savedPath = await mod.ExportExpertPackage(expert.id);
+            if (savedPath && mountedRef.current) {
+                setCopyHint(isZh ? `已导出「${expert.name}」` : `Exported “${expert.name}”`);
+                setTimeout(() => setCopyHint(''), 2500);
+            }
+        } catch (e: any) {
+            if (mountedRef.current) setError(String(e?.message || e));
+        } finally {
+            expertPackageBusyRef.current = false;
+            if (mountedRef.current) setExpertPackageBusy(false);
+        }
+    }, [isZh]);
+
+    const handleImportExpertPackage = useCallback(async () => {
+        if (expertPackageBusyRef.current) return;
+        expertPackageBusyRef.current = true;
+        setExpertPackageBusy(true);
+        setError('');
+        try {
+            const mod = await getApp();
+            if (!mod?.ImportExpertPackage) throw new Error(isZh ? '当前版本不支持导入专家' : 'Importing experts is not supported by this build');
+            const result = await mod.ImportExpertPackage();
+            if (!result || !mountedRef.current) return;
+            await loadExperts();
+            const installed = Array.isArray(result.installed_skills) ? result.installed_skills.length : 0;
+            const skipped = Array.isArray(result.skipped_skills) ? result.skipped_skills.length : 0;
+            const expertName = String(result.expert?.name || '');
+            if (result.already_imported) {
+                setCopyHint(isZh ? `“${expertName}” 已导入，无需重复创建` : `“${expertName}” is already imported`);
+                setTimeout(() => setCopyHint(''), 3500);
+                return;
+            }
+            const skillNote = installed || skipped
+                ? (isZh ? `（已导入 ${installed} 个技能，跳过 ${skipped} 个已有技能）` : ` (${installed} skill(s) imported, ${skipped} already installed)`)
+                : '';
+            setCopyHint(isZh ? `已导入「${expertName}」${skillNote}` : `Imported “${expertName}”${skillNote}`);
+            setTimeout(() => setCopyHint(''), 3500);
+        } catch (e: any) {
+            if (mountedRef.current) setError(String(e?.message || e));
+        } finally {
+            expertPackageBusyRef.current = false;
+            if (mountedRef.current) {
+                setExpertPackageBusy(false);
+            }
+        }
+    }, [isZh, loadExperts]);
 
     const copyText = async (text: string, okMsg: string) => {
         const value = (text || '').trim();
@@ -765,6 +918,14 @@ export const UtilitiesPage = ({
                 ? '点击卡片与专家对话；也可以创建自己的专家'
                 : 'Click a card to chat with an expert, or create your own',
         expertNew: lang === 'zh-Hant' ? '新建專家' : isZh ? '新建专家' : 'New expert',
+        expertImport: lang === 'zh-Hant' ? '匯入專家' : isZh ? '导入专家' : 'Import expert',
+        expertMarket: lang === 'zh-Hant' ? '專家市場' : isZh ? '专家市场' : 'Expert Market',
+        expertExport: lang === 'zh-Hant' ? '匯出' : isZh ? '导出' : 'Export',
+        expertExchangeHint: lang === 'zh-Hant'
+            ? '匯出自訂專家時，會一併打包其所依賴的技能'
+            : isZh
+                ? '导出自定义专家时，会一并打包其依赖的技能'
+                : 'Exporting a custom expert also packages its dependent skills',
         expertEdit: lang === 'zh-Hant' ? '編輯' : isZh ? '编辑' : 'Edit',
         expertResetDefault: lang === 'zh-Hant' ? '恢復預設' : isZh ? '恢复默认' : 'Reset default',
         expertDeleteTitle: lang === 'zh-Hant' ? '刪除專家' : isZh ? '删除专家' : 'Delete expert',
@@ -1584,9 +1745,16 @@ export const UtilitiesPage = ({
                     ))}
                 </div>
                 <div className="utilities-experts" data-testid="utilities-experts-section">
-                    <div className="utilities-experts__header">
-                        <h2 className="utilities-experts__title">{t.expertsTitle}</h2>
+                    <div className="utilities-experts__heading">
+                        <div className="utilities-experts__title-row">
+                            <h2 className="utilities-experts__title">{t.expertsTitle}</h2>
+                            <button type="button" className="utilities-btn utilities-experts__market-button" data-testid="utilities-expert-market" onClick={() => { setExpertMarketIntent('market'); setExpertMarketOpen(true); }}>
+                                <ExpertMarketIcon />
+                                <span>{t.expertMarket}</span>
+                            </button>
+                        </div>
                         <p className="utilities-experts__subtitle">{t.expertsSubtitle}</p>
+                        <p className="utilities-experts__exchange-hint">{t.expertExchangeHint}</p>
                     </div>
                     <div className="utilities-experts__grid">
                         {experts.map((expert) => (
@@ -1621,13 +1789,43 @@ export const UtilitiesPage = ({
                                             onClick={() => setExpertResetTarget(expert)}
                                         >{t.expertResetDefault}</button>
                                     ) : (
-                                        <button
-                                            type="button"
-                                            data-testid={`utilities-expert-delete-${expert.id}`}
-                                            className="utilities-expert-card__action utilities-expert-card__action--danger"
-                                            disabled={expertActionBusy}
-                                            onClick={() => setExpertDeleteTarget(expert)}
-                                        >{t.delete}</button>
+                                        <>
+                                            <button
+                                                type="button"
+                                                data-testid={`utilities-expert-export-${expert.id}`}
+                                                className="utilities-expert-card__action"
+                                                disabled={expertPackageBusy}
+                                                onClick={() => { void handleExportExpertPackage(expert); }}
+                                            >{t.expertExport}</button>
+                                            {expertMarketUploads[expert.id] ? ['pending_review', 'approved', 'listed', 'rejected'].includes(expertMarketUploads[expert.id].status) ? (
+                                                <button
+                                                    type="button"
+                                                    data-testid={`utilities-expert-unlist-${expert.id}`}
+                                                    className="utilities-expert-card__action"
+                                                    disabled={expertPackageBusy}
+                                                    onClick={() => { void handleWithdrawExpertMarketListing(expert); }}
+                                                >{isZh ? '下架' : 'Unlist'}</button>
+                                            ) : (
+                                                <span className="utilities-expert-card__state" data-testid={`utilities-expert-unlisted-${expert.id}`}>
+                                                    {isZh ? '已下架' : 'Unlisted'}
+                                                </span>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    data-testid={`utilities-expert-share-${expert.id}`}
+                                                    className="utilities-expert-card__action"
+                                                    disabled={expertPackageBusy}
+                                                    onClick={() => setExpertShareTarget(expert)}
+                                                >{isZh ? '分享' : 'Share'}</button>
+                                            )}
+                                            <button
+                                                type="button"
+                                                data-testid={`utilities-expert-delete-${expert.id}`}
+                                                className="utilities-expert-card__action utilities-expert-card__action--danger"
+                                                disabled={expertActionBusy}
+                                                onClick={() => setExpertDeleteTarget(expert)}
+                                            >{t.delete}</button>
+                                        </>
                                     )}
                                 </div>
                             </div>
@@ -1640,6 +1838,17 @@ export const UtilitiesPage = ({
                         >
                             <span className="utilities-expert-card__new-icon" aria-hidden>➕</span>
                             <span>{t.expertNew}</span>
+                        </button>
+                        <button
+                            type="button"
+                            className="utilities-expert-card utilities-expert-card--import"
+                            data-testid="utilities-expert-import"
+                            onClick={() => { void handleImportExpertPackage(); }}
+                            disabled={expertPackageBusy}
+                            aria-busy={expertPackageBusy || undefined}
+                        >
+                            <span className="utilities-expert-card__new-icon" aria-hidden>⇩</span>
+                            <span>{t.expertImport}</span>
                         </button>
                     </div>
                 </div>
@@ -1681,6 +1890,29 @@ export const UtilitiesPage = ({
                         }}
                     />
                 ) : null}
+                {expertMarketOpen ? <ExpertMarketDialog lang={lang || 'zh-Hans'} initialTab={expertMarketIntent} onClose={() => { setExpertMarketOpen(false); void loadExpertMarketUploads(); }} onInstalled={() => { void loadExperts(); }} onUninstalled={(expertID) => {
+                    // Invalidate a prior ListExperts request before applying the
+                    // optimistic removal; otherwise a slow pre-uninstall read
+                    // can put the just-removed card back on this screen.
+                    expertsRequestRef.current += 1;
+                    setExperts(current => current.filter(expert => expert.id !== expertID));
+                    window.dispatchEvent(new CustomEvent('maclaw:expert-deleted', { detail: { expertId: expertID } }));
+                }} onMarketChanged={() => { void loadExpertMarketUploads(); }} /> : null}
+                {expertShareTarget ? <ExpertShareDialog lang={lang || 'zh-Hans'} expert={expertShareTarget} onClose={() => setExpertShareTarget(null)} onSubmitted={(listing) => {
+                    const localID = expertShareTarget.id;
+                    const listingID = String(listing.id || '').trim();
+                    // A just-created listing must suppress Share immediately.
+                    // Account refresh remains a reconciliation step only.
+                    if (listingID) {
+                        const submitted = { id: listingID, status: String(listing.status || 'pending_review') };
+                        expertMarketUploadOverridesRef.current[localID] = submitted;
+                        setExpertMarketUploads(current => ({
+                            ...current,
+                            [localID]: submitted,
+                        }));
+                    }
+                    void loadExpertMarketUploads();
+                }} /> : null}
             </div>
         );
     }

@@ -13,8 +13,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// disableBingBaidu mocks Bing and Baidu endpoints to return 503 so that
-// existing tests exercise the DDG/Mojeek fallback paths they were designed for.
+// disableBingBaidu mocks Bing and Baidu endpoints to return 503 so tests can
+// exercise the remaining DuckDuckGo fallback path deterministically.
 // Returns a cleanup function that restores the original URLs.
 func disableBingBaidu(t *testing.T) func() {
 	t.Helper()
@@ -57,6 +57,59 @@ func TestSearchWithProvider_Brave(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Title != "Brave Result" {
 		t.Fatalf("unexpected results: %+v", results)
+	}
+}
+
+func TestSearchWithProvider_BravePreservesBaseURLQueryParameters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("region"); got != "cn" {
+			t.Errorf("region = %q, want cn", got)
+		}
+		if got := r.URL.Query().Get("q"); got != "golang search" {
+			t.Errorf("q = %q, want golang search", got)
+		}
+		if got := r.URL.Query().Get("count"); got != "5" {
+			t.Errorf("count = %q, want 5", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"web":{"results":[{"title":"Result","url":"https://example.com","description":"ok"}]}}`))
+	}))
+	defer server.Close()
+
+	results, err := SearchWithProvider("golang search", 5, corelib.WebSearchProvider{
+		Type: "brave", Key: "brave-key", BaseURL: server.URL + "/search?region=cn",
+	})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("results = %#v, error = %v", results, err)
+	}
+}
+
+func TestSearchWithProvider_TinyFishPreservesBaseURLQueryParameters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("region"); got != "cn" {
+			t.Errorf("region = %q, want cn", got)
+		}
+		if got := r.URL.Query().Get("query"); got != "golang search" {
+			t.Errorf("query = %q, want golang search", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Result","url":"https://example.com","snippet":"ok"}]}`))
+	}))
+	defer server.Close()
+
+	results, err := SearchWithProvider("golang search", 5, corelib.WebSearchProvider{
+		Type: "tinyfish", Key: "tinyfish-key", BaseURL: server.URL + "/search?region=cn",
+	})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("results = %#v, error = %v", results, err)
+	}
+}
+
+func TestDeriveTinyFishFetchURLDoesNotRewriteQueryValues(t *testing.T) {
+	got := deriveTinyFishFetchURL("https://proxy.example/search?route=search-v1")
+	want := "https://proxy.example/fetch?route=search-v1"
+	if got != want {
+		t.Fatalf("deriveTinyFishFetchURL() = %q, want %q", got, want)
 	}
 }
 
@@ -195,67 +248,18 @@ func TestSearchWithProvider_ProviderErrorFallsBackToDirectSearch(t *testing.T) {
 	}
 }
 
-func TestSearchWithProvider_DuckDuckGoHTTP202FallsBackToDirectSearch(t *testing.T) {
-	cleanup := disableBingBaidu(t)
-	defer cleanup()
-	legacyURL := defaultLegacySearchURL
-	mojeekURL := defaultMojeekSearchURL
-	legacyCalled := false
-	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		legacyCalled = true
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><a class="result__a" href="https://example.com/ddg-direct">DDG Direct</a><a class="result__snippet">ddg direct snippet</a></body></html>`))
-	}))
-	mojeekServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><a class="result-title" href="https://example.com/mojeek-direct">Mojeek Direct</a></body></html>`))
-	}))
-	defaultLegacySearchURL = legacyServer.URL
-	defaultMojeekSearchURL = mojeekServer.URL
-	defer func() {
-		defaultLegacySearchURL = legacyURL
-		defaultMojeekSearchURL = mojeekURL
-		legacyServer.Close()
-		mojeekServer.Close()
-	}()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "accepted but not ready", http.StatusAccepted)
-	}))
-	defer server.Close()
-
-	results, err := SearchWithProvider("golang", 5, corelib.WebSearchProvider{Type: "duckduckgo", BaseURL: server.URL})
-	if err == nil {
-		if legacyCalled {
-			t.Fatal("same failure-domain fallback was called")
-		}
-		if len(results) != 1 || results[0].Title != "Mojeek Direct" {
-			t.Fatalf("unexpected results: %+v", results)
-		}
-		return
-	}
-	t.Fatalf("SearchWithProvider() error = %v", err)
-}
-
 func TestSearchWithProvider_DirectFallbackUsesAlternateFailureDomain(t *testing.T) {
 	cleanup := disableBingBaidu(t)
 	defer cleanup()
 	legacyURL := defaultLegacySearchURL
-	mojeekURL := defaultMojeekSearchURL
 	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "accepted but not ready", http.StatusAccepted)
-	}))
-	mojeekServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><a class="result-title" href="https://example.com/alternate">Alternate Direct</a></body></html>`))
+		_, _ = w.Write([]byte(`<html><body><a class="result__a" href="https://example.com/alternate">Alternate Direct</a></body></html>`))
 	}))
 	defaultLegacySearchURL = legacyServer.URL
-	defaultMojeekSearchURL = mojeekServer.URL
 	defer func() {
 		defaultLegacySearchURL = legacyURL
-		defaultMojeekSearchURL = mojeekURL
 		legacyServer.Close()
-		mojeekServer.Close()
 	}()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,11 +276,10 @@ func TestSearchWithProvider_DirectFallbackUsesAlternateFailureDomain(t *testing.
 	}
 }
 
-func TestDirectFallbackChainTimesOutSlowEndpointAndTriesNext(t *testing.T) {
+func TestDirectFallbackChainTimesOutSlowFinalEndpoint(t *testing.T) {
 	cleanup := disableBingBaidu(t)
 	defer cleanup()
 	legacyURL := defaultLegacySearchURL
-	mojeekURL := defaultMojeekSearchURL
 	oldDirectEndpointTimeout := directEndpointSearchTimeout
 	directEndpointSearchTimeout = 20 * time.Millisecond
 
@@ -285,31 +288,21 @@ func TestDirectFallbackChainTimesOutSlowEndpointAndTriesNext(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body><a class="result__a" href="https://example.com/slow">Slow Direct</a></body></html>`))
 	}))
-	mojeekServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><a class="result-title" href="https://example.com/fast">Fast Direct</a></body></html>`))
-	}))
 	defaultLegacySearchURL = legacyServer.URL
-	defaultMojeekSearchURL = mojeekServer.URL
 	defer func() {
 		defaultLegacySearchURL = legacyURL
-		defaultMojeekSearchURL = mojeekURL
 		directEndpointSearchTimeout = oldDirectEndpointTimeout
 		legacyServer.Close()
-		mojeekServer.Close()
 	}()
 
 	start := time.Now()
-	results, err := Search("golang", 5)
+	_, err := Search("golang", 5)
 	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("Search() error = %v, want final endpoint timeout", err)
 	}
 	if elapsed >= 80*time.Millisecond {
-		t.Fatalf("Search() took %s, want slow endpoint timeout plus next endpoint", elapsed)
-	}
-	if len(results) != 1 || results[0].Title != "Fast Direct" {
-		t.Fatalf("unexpected results: %+v", results)
+		t.Fatalf("Search() took %s, want bounded endpoint timeout", elapsed)
 	}
 }
 
@@ -408,30 +401,6 @@ func TestSearchDirectLegacy_UsesOverrideURL(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].URL != "https://example.com/direct" {
 		t.Fatalf("unexpected results: %+v", results)
-	}
-}
-
-func TestParseMojeekResultsHandlesUppercaseAnchors(t *testing.T) {
-	html := `<html><body><div id="results"><A CLASS="result-title" HREF="https://example.com/upper">Upper Result</A></div></body></html>`
-	results := parseMojeekResults(html, 5)
-	if len(results) != 1 || results[0].Title != "Upper Result" || results[0].URL != "https://example.com/upper" {
-		t.Fatalf("parseMojeekResults() = %+v", results)
-	}
-}
-
-func TestParseMojeekResultsKeepsExternalSearchPathResults(t *testing.T) {
-	html := `<html><body><div id="results"><a class="result-title" href="https://docs.example.com/search/reference">Search Docs</a></div></body></html>`
-	results := parseMojeekResults(html, 5)
-	if len(results) != 1 || results[0].URL != "https://docs.example.com/search/reference" {
-		t.Fatalf("parseMojeekResults() = %+v, want external /search result kept", results)
-	}
-}
-
-func TestParseMojeekResultsFiltersProviderSearchChrome(t *testing.T) {
-	html := `<html><body><div id="results"><a class="result-title" href="https://www.mojeek.com/search?q=next">Next Page</a><a class="result-title" href="https://example.com/result">Real Result</a></div></body></html>`
-	results := parseMojeekResults(html, 5)
-	if len(results) != 1 || results[0].URL != "https://example.com/result" {
-		t.Fatalf("parseMojeekResults() = %+v, want only real result", results)
 	}
 }
 

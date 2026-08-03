@@ -4,9 +4,113 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
+
+func (s *SQLiteStore) searchTableRowsByEmbedding(ctx context.Context, opts StructuredSearchOptions, limit int) ([]SearchResult, error) {
+	emb, generation := s.currentEmbedderSnapshot()
+	if emb == nil || embedding.IsNoop(emb) || strings.TrimSpace(opts.Query) == "" {
+		return nil, nil
+	}
+	queryVector, err := emb.Embed(opts.Query)
+	if err != nil || !validEmbeddingVector(queryVector, emb.Dim()) {
+		return nil, nil
+	}
+	if !s.isEmbedderGenerationCurrent(generation) {
+		return nil, nil
+	}
+	where := []string{
+		"r.embedding IS NOT NULL",
+		"LENGTH(r.embedding) > 0",
+		`EXISTS (SELECT 1 FROM knowledge_embedding_metadata em WHERE em.entity_type = 'table_row' AND em.entity_id = r.id AND em.model_id = ? AND em.dimension = ?)`,
+	}
+	args := []interface{}{embeddingModelIdentifier(emb), len(queryVector)}
+	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id, r.table_id, r.row_index, COALESCE(r.primary_key_text, ''), COALESCE(r.row_text, ''), r.embedding,
+		t.sheet_name,
+		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
+		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
+		FROM kb_rows r JOIN kb_tables t ON t.id = r.table_id JOIN kb_sources s ON s.id = r.source_id
+		WHERE `+strings.Join(where, " AND "), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type candidate struct {
+		result SearchResult
+		vector []float32
+		sim    float64
+	}
+	var candidates []candidate
+	var vectors []vectorANNVector
+	for rows.Next() {
+		var result SearchResult
+		var source Source
+		var blob []byte
+		var publishedAt, fetchedAt, createdAt, updatedAt string
+		var primaryKey string
+		if err := rows.Scan(&result.RowID, &result.TableID, &result.RowIndex, &primaryKey, &result.Summary, &blob, &result.SheetName,
+			&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt, &source.ContentHash,
+			&source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath, &source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		vector := bytesToFloat32Slice(blob)
+		if !validEmbeddingVector(vector, len(queryVector)) {
+			continue
+		}
+		source.PublishedAt, source.FetchedAt, source.CreatedAt, source.UpdatedAt = parseTime(publishedAt), parseTime(fetchedAt), parseTime(createdAt), parseTime(updatedAt)
+		result.Source, result.ResultType = source, "table_row"
+		result.Claim = primaryKey
+		result.RowRange = fmt.Sprintf("%d:%d", result.RowIndex, result.RowIndex)
+		result.Snippet = result.Summary
+		result.Citation = formatResultCitation(result)
+		candidates = append(candidates, candidate{result: result, vector: vector})
+		vectors = append(vectors, vectorANNVector{key: "row:" + result.RowID, vector: vector})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	indexes := s.vectorANNCandidates("table_row:"+embeddingModelIdentifier(emb), generation, vectors, queryVector, limit*4)
+	for _, index := range indexes {
+		candidate := &candidates[index]
+		candidate.sim = cosineSimilarity(queryVector, candidate.vector)
+		if candidate.sim < .25 {
+			continue
+		}
+		candidate.result.Score = 1 + (candidate.sim-.25)*4
+	}
+	filtered := make([]candidate, 0, len(indexes))
+	for _, index := range indexes {
+		if candidates[index].sim >= .25 {
+			filtered = append(filtered, candidates[index])
+		}
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].sim == filtered[j].sim {
+			return filtered[i].result.RowID < filtered[j].result.RowID
+		}
+		return filtered[i].sim > filtered[j].sim
+	})
+	if limit > len(filtered) {
+		limit = len(filtered)
+	}
+	results := make([]SearchResult, limit)
+	for i := range results {
+		results[i] = filtered[i].result
+	}
+	// The row scan and exact cosine pass may run after a model switch. Return no
+	// semantic candidates in that case so SearchStructured retains only its
+	// lexical/filter results rather than mixing an old embedding space into a
+	// newly configured retriever.
+	if !s.isEmbedderGenerationCurrent(generation) {
+		return nil, nil
+	}
+	return results, nil
+}
 
 func (s *SQLiteStore) SearchStructured(ctx context.Context, opts StructuredSearchOptions) ([]SearchResult, error) {
 	if s == nil || s.db == nil {
@@ -40,7 +144,26 @@ func (s *SQLiteStore) SearchStructured(ctx context.Context, opts StructuredSearc
 		if err != nil {
 			return nil, err
 		}
+		// Spreadsheet rows use the same segmented FTS representation as documents,
+		// but legacy imports and dictionary gaps can still miss no-space-script
+		// substrings. Run a scoped literal LIKE fallback for those scripts before
+		// fusing semantic results; this keeps structured retrieval consistent with
+		// the general knowledge search path.
+		if containsNoSpaceScriptRunes(opts.Query) {
+			likeResults, err := s.searchTableRowsLikeFallback(ctx, opts, limit)
+			if err != nil {
+				return nil, err
+			}
+			ftsResults = mergeTableRowResults(ftsResults, likeResults, limit)
+		}
 		results = mergeTableRowResults(results, ftsResults, limit)
+		if emb, _ := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
+			semantic, err := s.searchTableRowsByEmbedding(ctx, opts, limit)
+			if err != nil {
+				return nil, err
+			}
+			results = rrfFuse(results, semantic, limit)
+		}
 	}
 	sortSearchResults(results)
 	if len(results) > limit {
@@ -49,7 +172,125 @@ func (s *SQLiteStore) SearchStructured(ctx context.Context, opts StructuredSearc
 	if err := s.hydrateSearchResultSourceLabels(ctx, results); err != nil {
 		return nil, err
 	}
+	if err := s.hydrateSearchResultNodeMetadata(ctx, results); err != nil {
+		return nil, err
+	}
 	return results, nil
+}
+
+func (s *SQLiteStore) searchTableRowsLikeFallback(ctx context.Context, opts StructuredSearchOptions, limit int) ([]SearchResult, error) {
+	terms := structuredLikeTerms(opts.Query)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	likeWhere, likeArgs := structuredRowLikeWhere(terms)
+	if likeWhere == "" {
+		return nil, nil
+	}
+	where := []string{likeWhere}
+	args := append([]interface{}{}, likeArgs...)
+	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	// Rank in SQLite before applying LIMIT. A one-character CJK match is useful
+	// for recall but much weaker than a row matching several query characters;
+	// ordering by row index first could otherwise discard the precise row before
+	// Go gets a chance to score it.
+	matchScore, matchArgs := structuredRowLikeMatchScore(terms)
+	args = append(args, matchArgs...)
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id, r.table_id, r.row_index, COALESCE(r.primary_key_text, ''), COALESCE(r.row_text, ''),
+		t.sheet_name,
+		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
+		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at,
+		COALESCE(r.row_text, ''), 0.0
+		FROM kb_rows r
+		JOIN kb_tables t ON t.id = r.table_id
+		JOIN kb_sources s ON s.id = r.source_id
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY `+matchScore+` DESC, r.row_index ASC, r.id ASC
+		LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := make([]SearchResult, 0, limit)
+	for rows.Next() {
+		result, err := scanTableRowSearchResult(rows, false)
+		if err != nil {
+			return nil, err
+		}
+		text := strings.ToLower(result.Claim + "\n" + result.Summary)
+		matches := 0
+		for _, term := range terms {
+			if strings.Contains(text, strings.ToLower(term)) {
+				matches++
+			}
+		}
+		result.Score = 1.5 + float64(matches)*.3
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func structuredRowLikeWhere(terms []string) (string, []interface{}) {
+	conditions := make([]string, 0, len(terms))
+	args := make([]interface{}, 0, len(terms)*2)
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		conditions = append(conditions, "(r.primary_key_text LIKE ? ESCAPE '\\' OR r.row_text LIKE ? ESCAPE '\\')")
+		pattern := "%" + escapeSQLiteLikePattern(term) + "%"
+		args = append(args, pattern, pattern)
+	}
+	if len(conditions) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(conditions, " OR ") + ")", args
+}
+
+func structuredRowLikeMatchScore(terms []string) (string, []interface{}) {
+	parts := make([]string, 0, len(terms))
+	args := make([]interface{}, 0, len(terms)*2)
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		parts = append(parts, "CASE WHEN (r.primary_key_text LIKE ? ESCAPE '\\' OR r.row_text LIKE ? ESCAPE '\\') THEN 1 ELSE 0 END")
+		pattern := "%" + escapeSQLiteLikePattern(term) + "%"
+		args = append(args, pattern, pattern)
+	}
+	if len(parts) == 0 {
+		return "0", nil
+	}
+	return strings.Join(parts, " + "), args
+}
+
+func structuredLikeTerms(query string) []string {
+	seen := make(map[string]struct{})
+	terms := make([]string, 0, 12)
+	for _, r := range normalizeKnowledgeLexicalText(query) {
+		if !isNoSpaceScriptRune(r) || isCJKStopChar(r) {
+			continue
+		}
+		term := string(r)
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		terms = append(terms, term)
+		if len(terms) >= 12 {
+			return terms
+		}
+	}
+	return terms
 }
 
 func (s *SQLiteStore) searchTableRowsFTS(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
@@ -250,8 +491,19 @@ func (s *SQLiteStore) searchTableRowsByCells(ctx context.Context, opts Structure
 		}
 	}
 	if query := buildFTSQuerySegmented(opts.Query); query != "" {
-		where = append(where, `r.id IN (SELECT row_id FROM kb_rows_fts WHERE kb_rows_fts MATCH ?)`)
-		args = append(args, query)
+		// FTS is the fast path. For no-space scripts, preserve the same literal
+		// fallback used by query-only structured search, inside this query so every
+		// cell and source filter applies to both branches.
+		queryWhere := `r.id IN (SELECT row_id FROM kb_rows_fts WHERE kb_rows_fts MATCH ?)`
+		queryArgs := []interface{}{query}
+		if containsNoSpaceScriptRunes(opts.Query) {
+			if likeWhere, likeArgs := structuredRowLikeWhere(structuredLikeTerms(opts.Query)); likeWhere != "" {
+				queryWhere = "(" + queryWhere + " OR " + likeWhere + ")"
+				queryArgs = append(queryArgs, likeArgs...)
+			}
+		}
+		where = append(where, queryWhere)
+		args = append(args, queryArgs...)
 	}
 	for column, value := range opts.ColumnEquals {
 		col := normalizeSpreadsheetColumnName(column)

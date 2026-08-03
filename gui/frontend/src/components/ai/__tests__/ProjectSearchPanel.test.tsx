@@ -121,7 +121,7 @@ describe("ProjectSearchPanel", () => {
             id: "p-remote-coding",
             name: "Remote coding task",
             project_path: "D:/p/remote-coding",
-            tags: ["remote_coding_dev", "remote_host:10.0.0.12"],
+            tags: ["remote_coding_dev", "remote_host:10.0.0.12", "source:remote_ops_diagnosis"],
         }]);
         const onCreateProjectTab = vi.fn();
         const onProjectSwitch = vi.fn();
@@ -136,11 +136,13 @@ describe("ProjectSearchPanel", () => {
                 autoSend: false,
                 agentMode: "remote_coding_dev",
                 remoteHost: "10.0.0.12",
+                remoteSafety: "diagnosis",
             }),
         ));
         expect(onProjectSwitch).not.toHaveBeenCalled();
         expect(ResumeTask).not.toHaveBeenCalled();
         expect(screen.getByTestId("search-remote-coding-badge")).toBeTruthy();
+        expect(screen.getByTestId("search-remote-coding-badge").textContent || "").toMatch(/Remote maintenance|远程维护/i);
     });
 
     it("loads scene evidence and opens artifact sources", async () => {

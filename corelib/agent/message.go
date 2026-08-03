@@ -18,6 +18,11 @@ type UserMessage struct {
 	// Attachments holds images/files attached to the message.
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 
+	// ClientCapabilities describes the concrete originating surface. Agent
+	// replies must be consumable by this client, not merely by the gateway
+	// platform used to transport the message.
+	ClientCapabilities *ClientCapabilities `json:"client_capabilities,omitempty"`
+
 	// IsBackground indicates this is a background task (scheduled, auto-picked).
 	IsBackground bool `json:"is_background,omitempty"`
 

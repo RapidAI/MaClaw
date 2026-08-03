@@ -128,6 +128,30 @@ describe("deriveChipStatus", () => {
 });
 
 describe("CodingWorkbenchControlPanel", () => {
+    it("uses maintenance intent instead of the remote coding implementation label", () => {
+        const { getByTestId } = render(
+            <CodingWorkbenchControlPanel
+                lang="zh-Hans"
+                theme={{ text: "#111", isDark: false } as any}
+                chrome={chrome}
+                remote
+                intent="remote_maintenance"
+                remoteHost="ops.example.test"
+                stepStatuses={[]}
+                pendingApproval={false}
+                conflictCount={0}
+                expanded={false}
+                onExpandedChange={vi.fn()}
+                envDescription="先只读诊断，高风险修复需要确认。"
+            >
+                <div />
+            </CodingWorkbenchControlPanel>,
+        );
+        const chip = getByTestId("remote-coding-env-banner");
+        expect(chip.textContent || "").toContain("远程维护");
+        expect(chip.getAttribute("title") || "").toContain("远程维护任务");
+    });
+
     it("puts env description on chip title and keeps chip above popover", () => {
         const onExpandedChange = vi.fn();
         const { getByTestId, rerender } = render(

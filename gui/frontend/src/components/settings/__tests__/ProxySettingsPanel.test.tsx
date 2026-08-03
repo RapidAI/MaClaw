@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { main } from "../../../../wailsjs/go/models";
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { corelib, main } from '../../../../wailsjs/go/models';
 import { ProxySettingsPanel } from "../ProxySettingsPanel";
 
 afterEach(() => {
@@ -13,11 +13,11 @@ afterEach(() => {
 
 const t = (key: string) => key;
 
-function renderHarness(initial: main.AppConfig) {
+function renderHarness(initial: corelib.AppConfig) {
   const saveProxyConfig = vi.fn(async () => undefined);
   (window as any).go = { main: { App: { SaveProxyConfig: saveProxyConfig } } };
   const Harness = () => {
-    const [config, setConfig] = useState<main.AppConfig | null>(initial);
+    const [config, setConfig] = useState<corelib.AppConfig | null>(initial);
     return <ProxySettingsPanel config={config} setConfig={setConfig} isWindows={false} lang="en" t={t} />;
   };
   render(<Harness />);
@@ -26,7 +26,7 @@ function renderHarness(initial: main.AppConfig) {
 
 describe("ProxySettingsPanel", () => {
   it("saves proxy settings through SaveProxyConfig only", () => {
-    const { saveProxyConfig } = renderHarness(new main.AppConfig({
+    const { saveProxyConfig } = renderHarness(new corelib.AppConfig({
       default_proxy_enabled: false,
       default_proxy_protocol: "http",
       default_proxy_host: "",

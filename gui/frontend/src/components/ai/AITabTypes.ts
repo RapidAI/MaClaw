@@ -50,6 +50,8 @@ export interface AITab {
     agentMode?: "coding_dev" | "remote_coding_dev";
     /** Optional remote host label for remote_coding_dev tabs (display only). */
     remoteHost?: string;
+    /** Remote incident diagnosis: keep the first SSH turn evidence-only. */
+    remoteSafety?: "diagnosis";
     /** Remote coding: SSH session missing/expired; show reconnect form. */
     remoteNeedsReconnect?: boolean;
     /** Whether this tab is archived (read-only mode) */

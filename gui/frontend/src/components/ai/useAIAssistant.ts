@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSessionForSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView, SetDesktopPetState } from "../../../wailsjs/go/main/App";
-import { main } from "../../../wailsjs/go/models";
-import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
+import { CancelAIAssistantSessionForSession, CancelAIAssistantTask, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, DismissAgentView, FetchNews, GetAIAssistantInitStatus, GetAIAssistantTrace, GetTrialReflectEnabled, HasAIAssistantGuideReferenceForSessionWithID, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, InjectAIAssistantSupplementaryForSession, IsAIAssistantReady, ListRemoteSessions, LoadAIAssistantUIState, LoadConfig, ResolveCriticalConfirm, SaveAIAssistantUIState, SelectAIAssistantFiles, SendAIAssistantMessage, SendBtwQuery, SetDesktopPetState, StartAIAssistantBackgroundTask, SubmitAgentView } from '../../../wailsjs/go/main/App';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
@@ -226,13 +226,10 @@ interface AgentViewLifecyclePayload {
 
 type DesktopPetState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'done' | 'alert';
 
-function emitDesktopPetState(state: DesktopPetState, source: string, ttlMs?: number) {
-    try {
-        EventsEmit('pet:state', { state, source, ttlMs });
-    } catch {
-        // The desktop pet window may not be open; AI assistant flow should continue unaffected.
-    }
-    // Bridge to Windows native layered pet (K11). Fire-and-forget.
+export function emitDesktopPetState(state: DesktopPetState, source: string, ttlMs?: number) {
+    // Bridge to Windows native layered pet (K11). Fire-and-forget. This is the
+    // only pet state channel; the legacy 'pet:state' runtime event had no
+    // listeners left and was removed.
     try {
         void SetDesktopPetState(state, typeof ttlMs === 'number' ? ttlMs : 0);
     } catch {
@@ -3067,7 +3064,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         LoadConfig()
             .then(config => {
                 if (!cancelled) {
-                    const appConfig = new main.AppConfig(config || {});
+                    const appConfig = new corelib.AppConfig(config || {});
                     setPreferences({ showTraceEntry: !!appConfig?.show_ai_trace_entry });
                     setTrialReflectEnabled(!!appConfig?.trial_reflect_enabled);
                     setResponseActivityTimeoutSec(normalizeAgentTimeoutSeconds(appConfig?.agent_response_timeout_sec));
@@ -3081,7 +3078,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             });
         const handleConfigChanged = (cfg?: unknown) => {
             if (cancelled) return;
-            const appConfig = new main.AppConfig(cfg || {});
+            const appConfig = new corelib.AppConfig(cfg || {});
             setPreferences({ showTraceEntry: !!appConfig?.show_ai_trace_entry });
             setTrialReflectEnabled(!!appConfig?.trial_reflect_enabled);
             setResponseActivityTimeoutSec(normalizeAgentTimeoutSeconds(appConfig?.agent_response_timeout_sec));
@@ -4145,6 +4142,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 forceResetAgentViewForActiveSession();
             } else {
                 setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, normalized, preferences));
+                if (normalized.confirmation) {
+                    // A confirmation request just surfaced: brief pet alert. It briefly
+                    // overrides an in-progress speaking state; the next speaking push
+                    // (≤900ms throttle) reasserts itself, and the TTL drops back to idle.
+                    emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
+                }
                 if (canMutateLocalHistory && normalized.clear_ui) {
                     contextBoundaryMessageIDRef.current = '';
                     persistContextBoundaryMessageID('');
@@ -4162,7 +4165,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);
         return () => { off(); };
-    }, [clearPendingTaskForRequest, clearTransientProgress, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, stopResponseTimeout]);
+    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
@@ -4244,7 +4247,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // via the "ai-assistant-response" event and is processed by the
             // event handler above.
             const rawResponse = await SendAIAssistantMessage(
-                buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, { ...options, lang: options?.lang || uiLang })
+                buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, { ...options, lang: options?.lang || uiLang }) as unknown as main.AIAssistantSendRequest
             ) as AIAssistantSendResult;
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
@@ -4281,6 +4284,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     return true;
                 }
                 setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
+                if (response.confirmation) {
+                    emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
+                }
                 stopResponseTimeout(effectiveRequestId);
                 resetStreamTokenBuffer(effectiveRequestId);
                 clearPendingTaskForRequest(effectiveRequestId);
@@ -4332,6 +4338,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     forceResetAgentViewForActiveSession();
                 } else {
                     setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
+                    if (response.confirmation) {
+                        emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
+                    }
                     if (canMutateLocalHistory && response.clear_ui) {
                         contextBoundaryMessageIDRef.current = userMsg.id;
                         persistContextBoundaryMessageID(userMsg.id);
@@ -4957,6 +4966,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const confirmLabel = typeof actionPayload[0]?.label === 'string' ? actionPayload[0].label : fallbackConfirmLabel;
             const rejectLabel = typeof actionPayload[1]?.label === 'string' ? actionPayload[1].label : fallbackRejectLabel;
             if (!confirmID) return;
+            // A confirmation request just surfaced: brief pet alert (same
+            // treatment as ai:confirmation-request above).
+            emitPetStateForAssistant('alert', 'ai:critical-risk-confirm', 1500);
             const msg: ChatMessage = {
                 id: nextId(),
                 role: 'assistant',
@@ -4974,7 +4986,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return () => {
             offCriticalConfirm();
         };
-    }, []);
+    }, [emitPetStateForAssistant]);
 
     // Listen for skill installation result events (success/failure feedback after
     // the user confirms or the async install completes).

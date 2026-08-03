@@ -39,21 +39,21 @@ var (
 
 // appendKnowledgeAutoRecall searches the knowledge base using the user message
 // and injects top results into the system prompt if they exceed the score threshold.
-func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg string, priorUserMessages []string, sourceIDScopes ...[]string) {
+func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg string, priorUserMessages []string, sourceIDScopes ...[]string) bool {
 	if msg == "" {
-		return
+		return false
 	}
 	minScore := agent.KnowledgeAutoRecallScoreThreshold
 	if h != nil && h.app != nil {
 		if cfg, err := h.app.LoadConfig(); err == nil {
 			if !cfg.IsKnowledgeAutoRecallEnabled() {
-				return
+				return false
 			}
 			minScore = cfg.EffectiveKnowledgeAutoRecallMinScore()
 		}
 	}
 	if !h.hasKnowledgeSources() {
-		return
+		return false
 	}
 
 	// Multi-turn: blend prior user turns; expand also enforces MaxQueryRunes.
@@ -62,7 +62,7 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	store, cleanupStore := h.getAutoRecallStoreForUse()
 	defer cleanupStore()
 	if store == nil {
-		return
+		return false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -88,14 +88,14 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 
 	if err != nil {
 		log.Printf("[knowledge_auto_recall] search error: %v (took %s)", err, queryDuration)
-		return
+		return false
 	}
 	if len(results) == 0 {
 		log.Printf("[knowledge_auto_recall] no results for query=%d chars embedder=%v (took %s)", len(msg), hasEmbedder, queryDuration)
 		// hasKnowledgeSources() pre-check above guarantees the KB is non-empty,
 		// but FTS (+ optional embedding hybrid) found zero matches. Hint tools.
 		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
-		return
+		return false
 	}
 
 	// Dynamic threshold + injection count based on top score.
@@ -106,7 +106,7 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		log.Printf("[knowledge_auto_recall] below threshold: topScore=%.2f min=%.2f, results=%d, query=%d chars (took %s)",
 			topScore, minScore, len(results), len(msg), queryDuration)
 		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
-		return
+		return false
 	}
 
 	b.WriteString(agent.KnowledgeAutoRecallHeader)
@@ -143,6 +143,7 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		log.Printf("[knowledge_auto_recall] done: query=%d chars, injected=%d/%d, topScore=%.2f, took=%s",
 			len(msg), injected, len(results), topScore, queryDuration)
 	}
+	return injected > 0
 }
 
 func (h *IMMessageHandler) getAutoRecallStoreForUse() (*knowledge.SQLiteStore, func()) {

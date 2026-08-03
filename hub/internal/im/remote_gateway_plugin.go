@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -82,8 +83,10 @@ type RemoteGatewayPlugin struct {
 	// generic UserTarget. Lansenger needs this to choose its group endpoint for
 	// Hub-originated replies, including replies emitted before a client can
 	// rebuild its own route cache.
-	routeMu     sync.RWMutex
-	replyRoutes map[string]remoteGatewayReplyRoute
+	routeMu                sync.RWMutex
+	replyRoutes            map[string]remoteGatewayReplyRoute
+	clientCapabilities     map[string]agent.ClientCapabilities
+	clientCapabilitiesSeen map[string]time.Time
 }
 
 type remoteGatewayReplyRoute struct {
@@ -106,15 +109,17 @@ type pendingRemoteBind struct {
 // platform name (e.g. "qqbot", "telegram").
 func NewRemoteGatewayPlugin(platform string, sender MachineMessageSender, users store.UserRepository, system store.SystemSettingsRepository) *RemoteGatewayPlugin {
 	p := &RemoteGatewayPlugin{
-		platform:    platform,
-		sender:      sender,
-		users:       users,
-		system:      system,
-		owners:      make(map[string]*gatewayOwner),
-		bindings:    make(map[string]string),
-		pending:     make(map[string]*pendingRemoteBind),
-		ctxTokens:   make(map[string]string),
-		replyRoutes: make(map[string]remoteGatewayReplyRoute),
+		platform:               platform,
+		sender:                 sender,
+		users:                  users,
+		system:                 system,
+		owners:                 make(map[string]*gatewayOwner),
+		bindings:               make(map[string]string),
+		pending:                make(map[string]*pendingRemoteBind),
+		ctxTokens:              make(map[string]string),
+		replyRoutes:            make(map[string]remoteGatewayReplyRoute),
+		clientCapabilities:     make(map[string]agent.ClientCapabilities),
+		clientCapabilitiesSeen: make(map[string]time.Time),
 	}
 	p.loadBindings()
 	return p
@@ -227,6 +232,36 @@ func (p *RemoteGatewayPlugin) Capabilities() CapabilityDeclaration {
 		SupportsMessageEdit: false,
 		MaxTextLength:       4000,
 	}
+}
+
+func (p *RemoteGatewayPlugin) SetClientCapabilities(tenantID, platformUID string, capabilities agent.ClientCapabilities) {
+	key := remoteTenantPlatformKey(normalizeRemoteTenantID(tenantID), strings.TrimSpace(platformUID))
+	if strings.TrimSpace(platformUID) == "" {
+		return
+	}
+	p.mu.Lock()
+	p.clientCapabilities[key] = agent.NormalizeClientCapabilities(&capabilities)
+	p.clientCapabilitiesSeen[key] = time.Now()
+	if len(p.clientCapabilities) > maxRemoteGatewayReplyRoutes {
+		var oldestKey string
+		var oldest time.Time
+		for candidate, seenAt := range p.clientCapabilitiesSeen {
+			if oldestKey == "" || seenAt.Before(oldest) {
+				oldestKey, oldest = candidate, seenAt
+			}
+		}
+		delete(p.clientCapabilities, oldestKey)
+		delete(p.clientCapabilitiesSeen, oldestKey)
+	}
+	p.mu.Unlock()
+}
+
+func (p *RemoteGatewayPlugin) ClientCapabilitiesForTarget(ctx context.Context, target UserTarget) (agent.ClientCapabilities, bool) {
+	key := remoteTenantPlatformKey(normalizeRemoteTenantID(TenantIDFromContext(ctx)), strings.TrimSpace(target.PlatformUID))
+	p.mu.RLock()
+	capabilities, ok := p.clientCapabilities[key]
+	p.mu.RUnlock()
+	return capabilities, ok
 }
 
 func remoteGatewaySupportsVoice(platform string) bool {
@@ -368,15 +403,16 @@ func (p *RemoteGatewayPlugin) GatewayOwnerForTenant(tenantID string) string {
 // It converts the payload to IncomingMessage and dispatches to the IM Adapter.
 func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload json.RawMessage) {
 	var msg struct {
-		PlatformUID  string              `json:"platform_uid"`
-		TenantID     string              `json:"tenant_id"`
-		Text         string              `json:"text"`
-		MessageType  string              `json:"message_type"`
-		MessageID    string              `json:"message_id"`
-		ChatType     string              `json:"chat_type,omitempty"`
-		ReplyTarget  string              `json:"reply_target,omitempty"`
-		ContextToken string              `json:"context_token"`
-		Attachments  []MessageAttachment `json:"attachments,omitempty"`
+		PlatformUID        string                    `json:"platform_uid"`
+		TenantID           string                    `json:"tenant_id"`
+		Text               string                    `json:"text"`
+		MessageType        string                    `json:"message_type"`
+		MessageID          string                    `json:"message_id"`
+		ChatType           string                    `json:"chat_type,omitempty"`
+		ReplyTarget        string                    `json:"reply_target,omitempty"`
+		ContextToken       string                    `json:"context_token"`
+		Attachments        []MessageAttachment       `json:"attachments,omitempty"`
+		ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		log.Printf("[remote-gw/%s] parse gateway_message failed: %v", p.platform, err)
@@ -452,6 +488,12 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		p.ctxTokenMu.Unlock()
 	}
 	p.rememberReplyRoute(tenantID, msg.PlatformUID, replyTarget, msg.ChatType)
+	if msg.ClientCapabilities != nil {
+		p.SetClientCapabilities(tenantID, replyTarget, *msg.ClientCapabilities)
+		if replyTarget != msg.PlatformUID {
+			p.SetClientCapabilities(tenantID, msg.PlatformUID, *msg.ClientCapabilities)
+		}
+	}
 	isLansengerGroup := strings.EqualFold(strings.TrimSpace(p.platform), "lansenger") && strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
 
 	log.Printf("[remote-gw/%s] dispatching: tenant=%s uid=%s type=%s text_len=%d attachments=%d has_ctx_token=%v", p.platform, tenantID, msg.PlatformUID, msg.MessageType, len(msg.Text), len(msg.Attachments), msg.ContextToken != "")
@@ -475,16 +517,17 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 	}
 
 	handler(IncomingMessage{
-		TenantID:     tenantID,
-		PlatformName: p.platform,
-		PlatformUID:  msg.PlatformUID,
-		ReplyTarget:  replyTarget,
-		MessageID:    msg.MessageID,
-		MessageType:  msgType,
-		Text:         msg.Text,
-		Attachments:  msg.Attachments,
-		RawPayload:   payload,
-		Timestamp:    time.Now(),
+		TenantID:           tenantID,
+		PlatformName:       p.platform,
+		PlatformUID:        msg.PlatformUID,
+		ReplyTarget:        replyTarget,
+		MessageID:          msg.MessageID,
+		MessageType:        msgType,
+		Text:               msg.Text,
+		Attachments:        msg.Attachments,
+		ClientCapabilities: msg.ClientCapabilities,
+		RawPayload:         payload,
+		Timestamp:          time.Now(),
 	})
 }
 

@@ -3,6 +3,7 @@ import {
     agentModeFromTaskTags,
     isCodingWorkflowSourceTags,
     isPureCodingTaskTags,
+    isRemoteMaintenanceTaskTags,
     remoteCodingMetaFromTaskTags,
     remoteHostFromTaskTags,
 } from "../codingTaskMode";
@@ -20,6 +21,11 @@ describe("codingTaskMode", () => {
         expect(isCodingWorkflowSourceTags(["remote_coding_dev", "source:coding_workflow"])).toBe(true);
         expect(isCodingWorkflowSourceTags(["coding_dev"])).toBe(false);
         expect(isCodingWorkflowSourceTags([])).toBe(false);
+    });
+
+    it("detects remote maintenance task origin", () => {
+        expect(isRemoteMaintenanceTaskTags(["remote_coding_dev", "source:remote_ops_diagnosis"])).toBe(true);
+        expect(isRemoteMaintenanceTaskTags(["remote_coding_dev"])).toBe(false);
     });
 
     it("extracts remote host from tags", () => {

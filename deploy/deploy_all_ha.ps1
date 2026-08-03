@@ -363,10 +363,20 @@ function Stage-DeployAssets {
 
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hubcenter\web\admin') -Label 'hubcenter admin web assets'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\admin-core.js') -Label 'hubcenter admin core script'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\petstore-admin.js') -Label 'hubcenter pet store admin script'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\css\admin-shell.css') -Label 'hubcenter admin shell stylesheet'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\problem-reports-tab.js') -Label 'hubcenter problem reports admin script'
     $hubCenterAdminIndex = Get-Content -LiteralPath (Join-Path $StageRoot 'hubcenter\web\admin\index.html') -Raw
     if ($hubCenterAdminIndex -notmatch '/admin/assets/js/problem-reports-tab\.js') {
         throw 'HubCenter admin page does not reference the problem reports script.'
+    }
+    if ($hubCenterAdminIndex -notmatch '/admin/assets/js/petstore-admin\.js\?v=pet-store-admin-20260801-2' -or $hubCenterAdminIndex -notmatch '/admin/assets/css/admin-shell\.css\?v=pet-store-preview-toggle-20260731-1') {
+        throw 'HubCenter admin page does not reference the current Pet Store preview assets.'
+    }
+    $hubCenterPetStoreScript = Get-Content -LiteralPath (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\petstore-admin.js') -Raw
+    $hubCenterAdminShellCSS = Get-Content -LiteralPath (Join-Path $StageRoot 'hubcenter\web\admin\assets\css\admin-shell.css') -Raw
+    if ($hubCenterPetStoreScript -notmatch 'setPetStorePreviewVisibility' -or $hubCenterPetStoreScript -notmatch "target\.style\.display = visible \? '' : 'none'" -or $hubCenterAdminShellCSS -notmatch '\.pet-admin-preview\[hidden\]\{display:none\}') {
+        throw 'HubCenter Pet Store preview toggle fix is missing from staged assets.'
     }
     $hubCenterProblemReportsScript = Get-Content -LiteralPath (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\problem-reports-tab.js') -Raw
     if ($hubCenterProblemReportsScript -notmatch 'URL\.createObjectURL' -or $hubCenterProblemReportsScript -notmatch "Authorization: 'Bearer '") {
@@ -377,6 +387,25 @@ function Stage-DeployAssets {
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\card_store') -Label 'hub card store web assets'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\index.html') -Label 'hub card store index'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\professional.css') -Label 'hub card store stylesheet'
+    # The guide is a Hub-only public page. Read UTF-8 explicitly so Windows
+    # PowerShell does not fall back to its ANSI code page for Chinese markers.
+    $hubPetPackHelpPath = Join-Path $StageRoot 'hub\web\pet-pack-help\index.html'
+    Assert-DeployFileExists -Path $hubPetPackHelpPath -Label 'hub pet pack 2.0 guide'
+    # HubCenter's static tree may not include this public guide in older
+    # worktrees. Stage the verified Hub copy so both public hosts stay aligned.
+    $hubCenterPetPackHelpPath = Join-Path $StageRoot 'hubcenter\web\pet-pack-help\index.html'
+    $hubCenterPetPackHelpParent = Split-Path -Parent $hubCenterPetPackHelpPath
+    New-Item -ItemType Directory -Path $hubCenterPetPackHelpParent -Force | Out-Null
+    Copy-Item -LiteralPath $hubPetPackHelpPath -Destination $hubCenterPetPackHelpPath -Force
+    $hubPetPackHelp = Get-Content -LiteralPath $hubPetPackHelpPath -Raw -Encoding UTF8
+    # The public guide now documents the Pet 3.0 performance-pack contract.
+    # Keep the staging guard aligned with the page rather than pinning it to
+    # superseded 2.0 copy.
+    foreach ($requiredMarker in @('MaClaw 宠物角色表演包规范 3.0', 'native-skeleton', 'native-character', 'pet-performance-v3')) {
+        if ($hubPetPackHelp -notmatch [regex]::Escape($requiredMarker)) {
+            throw ("Hub pet pack guide is missing required v2 marker: {0}" -f $requiredMarker)
+        }
+    }
 
     # Keep a content manifest in the archive.  The remote script validates the
     # deployed web trees against it after copying them, so a partial/stale copy
@@ -412,6 +441,18 @@ function Get-HubCenterProblemReportsScriptSrc {
         throw "HubCenter admin page does not provide a problem reports script URL: $AdminIndexPath"
     }
     return $match.Groups['src'].Value
+}
+
+function Get-HubCenterPetStoreAdminAssetSources {
+    param([string]$AdminIndexPath)
+
+    $html = Get-Content -LiteralPath $AdminIndexPath -Raw
+    $cssMatch = [regex]::Match($html, '<link\s+rel="stylesheet"\s+href="(?<src>/admin/assets/css/admin-shell\.css[^\"]*)"')
+    $scriptMatch = [regex]::Match($html, '<script\s+src="(?<src>/admin/assets/js/petstore-admin\.js[^\"]*)"')
+    if (-not $cssMatch.Success -or -not $scriptMatch.Success) {
+        throw "HubCenter admin page does not provide the Pet Store preview assets: $AdminIndexPath"
+    }
+    return [pscustomobject]@{ CSS = $cssMatch.Groups['src'].Value; Script = $scriptMatch.Groups['src'].Value }
 }
 
 function Build-LocalBinaries {
@@ -1234,10 +1275,63 @@ function Assert-HubCenterProblemReportAdminAsset {
     }
 }
 
+function Assert-HubCenterPetStoreAdminAssets {
+    param(
+        [string]$BaseUrl,
+        [pscustomobject]$ExpectedAssetSources,
+        [int]$TimeoutSec = 10
+    )
+
+    $baseUrl = $BaseUrl.TrimEnd('/')
+    $pagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("hubcenter-admin-{0}.html" -f [guid]::NewGuid().ToString('N'))
+    $cssPath = Join-Path ([System.IO.Path]::GetTempPath()) ("hubcenter-petstore-{0}.css" -f [guid]::NewGuid().ToString('N'))
+    $scriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("hubcenter-petstore-{0}.js" -f [guid]::NewGuid().ToString('N'))
+    try {
+        $curlExe = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
+        if ($null -eq $curlExe) {
+            throw 'curl.exe is required for the Pet Store admin asset check'
+        }
+        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --output $pagePath ($baseUrl + '/admin')
+        if ($LASTEXITCODE -ne 0) { throw 'could not fetch admin HTML' }
+        $adminPage = Get-Content -LiteralPath $pagePath -Raw
+        $cssMatch = [regex]::Match($adminPage, '<link\s+rel="stylesheet"\s+href="(?<src>/admin/assets/css/admin-shell\.css[^\"]*)"')
+        $scriptMatch = [regex]::Match($adminPage, '<script\s+src="(?<src>/admin/assets/js/petstore-admin\.js[^\"]*)"')
+        if (-not $cssMatch.Success -or -not $scriptMatch.Success) {
+            throw 'admin HTML does not provide the Pet Store preview assets'
+        }
+        $actualCSSSrc = $cssMatch.Groups['src'].Value
+        $actualScriptSrc = $scriptMatch.Groups['src'].Value
+        if ($null -ne $ExpectedAssetSources -and ($actualCSSSrc -ne $ExpectedAssetSources.CSS -or $actualScriptSrc -ne $ExpectedAssetSources.Script)) {
+            throw ("admin HTML references stale Pet Store assets: expected CSS {0}, script {1}; got CSS {2}, script {3}" -f $ExpectedAssetSources.CSS, $ExpectedAssetSources.Script, $actualCSSSrc, $actualScriptSrc)
+        }
+        foreach ($asset in @(
+                [pscustomobject]@{ Label = 'stylesheet'; Src = $actualCSSSrc; Path = $cssPath; Marker = '.pet-admin-preview[hidden]{display:none}' },
+                [pscustomobject]@{ Label = 'script'; Src = $actualScriptSrc; Path = $scriptPath; Marker = 'setPetStorePreviewVisibility' }
+            )) {
+            $assetURL = $baseUrl + $asset.Src
+            $separator = if ($assetURL.Contains('?')) { '&' } else { '?' }
+            $assetURL += ($separator + 'deploy_check=' + [guid]::NewGuid().ToString('N'))
+            & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --header 'Cache-Control: no-cache' --output $asset.Path $assetURL
+            if ($LASTEXITCODE -ne 0) { throw ("could not fetch Pet Store {0}" -f $asset.Label) }
+            $content = Get-Content -LiteralPath $asset.Path -Raw
+            if (-not $content.Contains($asset.Marker)) {
+                throw ("Pet Store {0} is missing the preview toggle fix" -f $asset.Label)
+            }
+        }
+    }
+    catch {
+        throw ("Pet Store admin asset check failed: {0}" -f $_.Exception.Message)
+    }
+    finally {
+        Remove-Item -LiteralPath $pagePath, $cssPath, $scriptPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-PostDeploySmokeCheck {
     param(
         [object[]]$Targets,
         [string]$ExpectedHubCenterProblemReportsScriptSrc,
+        [pscustomobject]$ExpectedHubCenterPetStoreAssetSources,
         [int]$TimeoutSec = 10
     )
 
@@ -1252,6 +1346,7 @@ function Invoke-PostDeploySmokeCheck {
         if ($target.DeployHub -and -not [string]::IsNullOrWhiteSpace($target.HubPublicUrl)) {
             $checks += [pscustomobject]@{ Label = 'hub healthz'; Url = ("{0}/healthz" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub admin'; Url = ("{0}/admin" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
+            $checks += [pscustomobject]@{ Label = 'hub pet pack v2 guide'; Url = ("{0}/pet-pack-help?lang=zh" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200; BodyMarker = 'native-skeleton' }
             $checks += [pscustomobject]@{ Label = 'hub card store page'; Url = ("{0}/card_store?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub card store public api'; Url = ("{0}/api/card-store/products?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub card store admin api'; Url = ("{0}/api/admin/card-store/config" -f $target.HubPublicUrl.TrimEnd('/')); Want = 401 }
@@ -1266,6 +1361,14 @@ function Invoke-PostDeploySmokeCheck {
                 Write-Host ("  - {0}: hubcenter problem reports admin asset -> ERROR" -f $target.Host)
                 $failures += ("{0}: {1}" -f $target.Host, $_.Exception.Message)
             }
+            try {
+                Assert-HubCenterPetStoreAdminAssets -BaseUrl ("https://{0}" -f $target.Host) -ExpectedAssetSources $ExpectedHubCenterPetStoreAssetSources -TimeoutSec $TimeoutSec
+                Write-Host ("  - {0}: hubcenter Pet Store admin assets -> OK" -f $target.Host)
+            }
+            catch {
+                Write-Host ("  - {0}: hubcenter Pet Store admin assets -> ERROR" -f $target.Host)
+                $failures += ("{0}: {1}" -f $target.Host, $_.Exception.Message)
+            }
         }
 
         foreach ($check in $checks) {
@@ -1276,6 +1379,12 @@ function Invoke-PostDeploySmokeCheck {
                 Write-Host ("  - {0}: {1} -> {2}" -f $target.Host, $check.Label, $status)
                 if ($status -ne $check.Want) {
                     $failures += ("{0}: {1} expected {2}, got {3} ({4})" -f $target.Host, $check.Label, $check.Want, $status, $check.Url)
+                }
+                elseif (($check.PSObject.Properties.Name -contains 'BodyMarker') -and -not [string]::IsNullOrWhiteSpace($check.BodyMarker)) {
+                    $response = Invoke-WebRequest -Uri $check.Url -UseBasicParsing -TimeoutSec $TimeoutSec
+                    if (-not ([string]$response.Content).Contains($check.BodyMarker)) {
+                        $failures += ("{0}: {1} response is missing required marker {2} ({3})" -f $target.Host, $check.Label, $check.BodyMarker, $check.Url)
+                    }
                 }
             }
             catch {
@@ -1513,7 +1622,9 @@ try {
     Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -MeetingASRWorkerBinaryName $meetingASRWorkerBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub -BuildHubCenter $shouldBuildHubCenter
     Stage-DeployAssets -SourceRoot $rootDir -StageRoot $stageRoot
     $expectedHubCenterProblemReportsScriptSrc = Get-HubCenterProblemReportsScriptSrc -AdminIndexPath (Join-Path $stageRoot 'hubcenter\web\admin\index.html')
+    $expectedHubCenterPetStoreAssetSources = Get-HubCenterPetStoreAdminAssetSources -AdminIndexPath (Join-Path $stageRoot 'hubcenter\web\admin\index.html')
     Write-Host ("  - HubCenter problem reports script: {0}" -f $expectedHubCenterProblemReportsScriptSrc)
+    Write-Host ("  - HubCenter Pet Store assets: {0}, {1}" -f $expectedHubCenterPetStoreAssetSources.CSS, $expectedHubCenterPetStoreAssetSources.Script)
 
     Write-Host '[6/9] Creating deploy archive...' -ForegroundColor Cyan
     & $tarExe -czf $archivePath -C $stageRoot .
@@ -1606,7 +1717,7 @@ try {
     else {
         Write-Host 'Running post-deploy smoke checks...' -ForegroundColor Cyan
         Start-Sleep -Seconds 3
-        Invoke-PostDeploySmokeCheck -Targets $targets -ExpectedHubCenterProblemReportsScriptSrc $expectedHubCenterProblemReportsScriptSrc
+        Invoke-PostDeploySmokeCheck -Targets $targets -ExpectedHubCenterProblemReportsScriptSrc $expectedHubCenterProblemReportsScriptSrc -ExpectedHubCenterPetStoreAssetSources $expectedHubCenterPetStoreAssetSources
     }
 
     Write-Host 'Deployment completed successfully.' -ForegroundColor Green

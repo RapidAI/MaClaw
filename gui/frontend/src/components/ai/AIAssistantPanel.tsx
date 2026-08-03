@@ -75,7 +75,7 @@ import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
 import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
-import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
+import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
@@ -93,6 +93,8 @@ export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 const LOCAL_HIGH_RISK_APPROVAL_KIND = "local_high_risk_bash";
 const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
+const REMOTE_DIRECTORY_WRITE_APPROVAL_KIND = "remote_shell_directory_write";
+const REMOTE_PATH_ACCESS_APPROVAL_KIND = "remote_path_access";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 
 type ConversationBranchPointLike = {
@@ -432,6 +434,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     /** Remote coding SSH reconnect form. Password is recalled from localStorage vault only. */
     const [remoteReconnect, setRemoteReconnect] = useState<{
         needsReconnect: boolean;
+        safety?: "diagnosis";
         host: string;
         user: string;
         port: number;
@@ -623,7 +626,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => { if (typeof off === "function") off(); };
     }, []);
     // SubAgent scope approval: interactive confirmation when accessing paths outside project
-    const [scopeApprovalPending, setScopeApprovalPending] = useState<{ id: string; tool: string; path: string; projectPath: string; directory: string; timeoutSeconds: number; kind: string; message: string; autoAllow: boolean } | null>(null);
+    const [scopeApprovalPending, setScopeApprovalPending] = useState<{ id: string; tool: string; path: string; projectPath: string; directory: string; timeoutSeconds: number; kind: string; message: string; autoAllow: boolean; maintenance: boolean } | null>(null);
     const [scopeApprovalCountdown, setScopeApprovalCountdown] = useState(0);
     useEffect(() => {
         const off = EventsOn("subagent-scope-approval", (payload: unknown) => {
@@ -641,6 +644,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 kind: (data.kind as string) || "",
                 message: (data.message as string) || "",
                 autoAllow: typeof data.auto_allow === "boolean" ? data.auto_allow : true,
+                maintenance: data.maintenance === true,
             });
             setScopeApprovalCountdown(timeoutSec);
         });
@@ -788,6 +792,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         paths.sort();
         onChange(paths);
     }, [tabState.tabs, props.onOpenProjectTabsChange]);
+    // Expert tabs do not have a project path, but each has a durable sidebar
+    // task keyed by expert id. Publish those ids so the sidebar cannot remove
+    // the task that makes an already-open expert reachable again.
+    useEffect(() => {
+        const onChange = props.onOpenExpertTabsChange as ((expertIDs: string[]) => void) | undefined;
+        if (typeof onChange !== "function") return;
+        const ids = Array.from(new Set(
+            tabState.tabs
+                .filter(t => t.type === "expert" && t.expertId)
+                .map(t => String(t.expertId || "").trim())
+                .filter(Boolean),
+        )).sort();
+        onChange(ids);
+    }, [tabState.tabs, props.onOpenExpertTabsChange]);
     // Pure coding workbench: load per-task permission tier (request|workspace|full).
     useEffect(() => {
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
@@ -1019,6 +1037,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     : prev));
             } else {
                 const needs = !!st.needs_reconnect;
+                const safety = st.remote_safety === "diagnosis"
+                    ? "diagnosis"
+                    : (activeTab.remoteSafety === "diagnosis" ? "diagnosis" : undefined);
                 const host = String(st.remote_host || activeTab.remoteHost || "").trim();
                 const user = String(st.remote_user || "").trim();
                 const port = Number(st.remote_port) > 0 ? Number(st.remote_port) : 22;
@@ -1038,6 +1059,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setRemoteReconnect(prev => ({
                         ...prev,
                         needsReconnect: false,
+                        safety,
                         host: host || prev.host || "",
                         user: user || prev.user || "",
                         port: (host || user) ? port : (prev.port || 22),
@@ -1066,6 +1088,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         return {
                             ...prev,
                             needsReconnect: true,
+                            safety,
                             host: host || prev.host || "",
                             user: user || prev.user || "",
                             port: port || prev.port || 22,
@@ -1082,6 +1105,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setRemoteReconnect(prev => ({
                         ...prev,
                         needsReconnect: true,
+                        safety,
                         workDir: workDir || prev.workDir || "",
                         sessionPlan: plan || prev.sessionPlan,
                         error: prev.error || "",
@@ -1273,7 +1297,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             let ok = false;
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
-                    await PrepareRemoteCodingEnvironment(projectPath, host, user, password, workDir, port);
+                    const prepareRemoteEnvironment = snap.safety === "diagnosis"
+                        ? PrepareRemoteOpsDiagnosisEnvironment
+                        : PrepareRemoteCodingEnvironment;
+                    await prepareRemoteEnvironment(projectPath, host, user, password, workDir, port);
                     st = await GetCodingWorkbenchStatus(projectPath);
                     ok = !st?.needs_reconnect && !!st?.armed;
                     if (ok) break;
@@ -1301,7 +1328,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 && activeTabRef.current.type === "project"
                 && activeTabRef.current.projectPath === projectPath;
             if (ok) {
-                saveRemoteSSHPassword(host, user, password, port, workDir);
+                if (snap.safety !== "diagnosis") {
+                    saveRemoteSSHPassword(host, user, password, port, workDir);
+                }
                 if (reconnectTabIsActive) setRemoteWorkspaceRefreshToken(token => token + 1);
                 // Allow a future auto-reconnect after a later disconnect.
                 remoteAutoReconnectKeyRef.current = "";
@@ -1318,7 +1347,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 needsReconnect: !ok,
                 error: ok ? "" : (st?.message || localizeText(lang, "Reconnect incomplete", "重连未完成", "重連未完成")),
                 success: ok
-                    ? localizeText(lang, "Reconnected. You can continue sending messages in this remote coding session.", "已重新连接。可以继续在本远程编程会话中发送消息。", "已重新連線。可以繼續在本遠端程式工作階段中傳送訊息。")
+                    ? (snap.safety === "diagnosis"
+                        ? localizeText(lang, "Reconnected. You can continue this remote maintenance task.", "已重新连接。可以继续此远程维护任务。", "已重新連線。可以繼續此遠端維護任務。")
+                        : localizeText(lang, "Reconnected. You can continue sending messages in this remote coding session.", "已重新连接。可以继续在本远程编程会话中发送消息。", "已重新連線。可以繼續在本遠端程式工作階段中傳送訊息。"))
                     : "",
                 sessionPlan: String(st?.session_plan || prev.sessionPlan || ""),
             }));
@@ -2239,6 +2270,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const isCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "coding_dev";
     const isRemoteCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "remote_coding_dev";
     const isPureCodingEnvironment = isCodingDevEnvironment || isRemoteCodingDevEnvironment;
+    // The remote coding engine is reused for maintenance diagnostics, but the
+    // visible label must describe the user's job rather than that implementation.
+    const isRemoteMaintenanceEnvironment = isRemoteCodingDevEnvironment && activeTab.remoteSafety === "diagnosis";
     // The tab carries the launch-time reconnect signal synchronously. Status RPC
     // hydration follows asynchronously, so include both sources to avoid briefly
     // announcing a connected remote workbench with an enabled composer.
@@ -2452,7 +2486,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 // Do not clear autoOpenedCodePreviewTabRef: reopen would wipe userClosed.
                 // Re-emit full workflow state from backend for the new active tab.
                 if (activeTab.type === "project" && activeTab.projectPath) {
-                    RefreshWorkflowV2StateForTab(activeTab.projectPath, activeTab.id).catch(() => {});
+                    RefreshWorkflowV2StateForTab(activeTab.projectPath, [activeTab.id]).catch(() => {});
                 }
             }
         }
@@ -2789,11 +2823,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }));
         }
     }, [getTabState, saveTabState, setProjectTabPreparing]);
-    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteNeedsReconnect?: boolean } | boolean) => {
+    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean } | boolean) => {
         const tabExisted = hasProjectTab(projectPath);
         const prepareMode = typeof options === "object" ? options.prepareMode : "restore-context";
         const agentMode = typeof options === "object" ? options.agentMode : undefined;
         const remoteHost = typeof options === "object" ? options.remoteHost : undefined;
+        const remoteSafety = typeof options === "object" ? options.remoteSafety : undefined;
         const remoteNeedsReconnect = typeof options === "object" ? options.remoteNeedsReconnect : undefined;
         const startedAt = performance.now();
         const scheduleNewAgentReady = (readyTab: { id: string; projectPath?: string }, delayMs: number, reason: string, options?: { skipInitialOpenCheck?: boolean }) => {
@@ -2812,6 +2847,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const tab = createProjectTab(projectPath, taskTitle, {
             agentMode,
             remoteHost,
+            remoteSafety,
             remoteNeedsReconnect,
             ...(prepareMode === "new-agent" ? {
                 onSessionReady: (readyTab: { id: string; projectPath?: string }) => {
@@ -3158,6 +3194,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             autoSend?: boolean;
             agentMode?: "coding_dev" | "remote_coding_dev";
             remoteHost?: string;
+            remoteSafety?: "diagnosis";
             tags?: string[];
         },
     ) => {
@@ -3171,6 +3208,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const tabExistedInList = hasProjectTab(projectPath);
             let resolvedMode = agentMode;
             let resolvedHost = remoteHost;
+            let resolvedRemoteSafety = options?.remoteSafety;
             let remoteNeedsReconnect = false;
             try {
                 const arm = await EnsureCodingWorkbenchArmed(projectPath);
@@ -3180,6 +3218,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
                 if (resolvedMode === "remote_coding_dev") {
                     remoteNeedsReconnect = !!(arm?.needs_reconnect);
+                    resolvedRemoteSafety = arm?.remote_safety === "diagnosis" ? "diagnosis" : resolvedRemoteSafety;
                     if (!resolvedHost && arm?.remote_host) {
                         resolvedHost = arm.remote_host;
                     }
@@ -3192,6 +3231,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 prepareMode: "restore-context",
                 agentMode: resolvedMode,
                 remoteHost: resolvedHost,
+                remoteSafety: resolvedMode === "remote_coding_dev" ? resolvedRemoteSafety : undefined,
                 remoteNeedsReconnect: resolvedMode === "remote_coding_dev" ? remoteNeedsReconnect : undefined,
             });
             if (!tab || !options?.autoSend || tabExistedInList) return;
@@ -3261,6 +3301,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         onPendingProjectTabOpenHandled: props.onPendingProjectTabOpenHandled,
         pendingExpertOpen: props.pendingExpertOpen,
         onPendingExpertOpenHandled: props.onPendingExpertOpenHandled,
+        onEnsureExpertTask: props.onEnsureExpertTask,
     });
     useEffect(() => {
         if (!tabLimitError) return;
@@ -3529,7 +3570,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const thinkingText = lang === "en" ? "Working... (you can keep typing)" : "\u5904\u7406\u4e2d\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const processingText = lang === "en" ? "Running tools... (you can keep typing)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const idlePlaceholderText = getComposeActionPlaceholder(composeAction, !lang?.startsWith("en"))
-        || (isRemoteCodingDevEnvironment
+        || (isRemoteMaintenanceEnvironment
+            ? localizeText(lang, "Describe the maintenance task on the remote host...", "描述远程主机上的维护任务…", "描述遠端主機上的維護任務…")
+            : isRemoteCodingDevEnvironment
             ? localizeText(lang, "Describe coding work on the remote host...", "描述远程主机上的开发任务…", "描述遠端主機上的開發任務…")
             : isCodingDevEnvironment
             ? localizeText(lang, "Describe coding work in this programming environment...", "在编程环境中描述你的开发任务…", "在程式開發環境中描述你的開發任務…")
@@ -3651,18 +3694,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!isPureCodingEnvironment) return "";
         if (isRemoteCodingDevEnvironment) {
             if (remoteCodingNeedsReconnect) {
-                return localizeText(lang, "SSH session is not connected. Reconnect below (password is remembered on this device) to continue multi-turn remote coding.", "SSH 未连接或已断开。请在下方重连（本机已记忆密码时会自动填充/重连）以继续多轮远程编程。", "SSH 未連線或已中斷。請在下方重連（本機已記憶密碼時會自動填入/重連）以繼續多輪遠端程式開發。");
+                return isRemoteMaintenanceEnvironment
+                    ? localizeText(lang, "SSH session is not connected. Reconnect below to continue this remote maintenance task.", "SSH 未连接或已断开。请在下方重连以继续此远程维护任务。", "SSH 未連線或已中斷。請在下方重新連線以繼續此遠端維護任務。")
+                    : localizeText(lang, "SSH session is not connected. Reconnect below (password is remembered on this device) to continue multi-turn remote coding.", "SSH 未连接或已断开。请在下方重连（本机已记忆密码时会自动填充/重连）以继续多轮远程编程。", "SSH 未連線或已中斷。請在下方重連（本機已記憶密碼時會自動填入/重連）以繼續多輪遠端程式開發。");
             }
             if (activeProjectPreparing && activeProjectPrepareMode === "new-agent") {
-                return localizeText(lang, "Connecting SSH and preparing full remote coding workbench (source preview + local Skill/MCP)…", "正在连接 SSH 并建立全功能远程编程工作台（源码预览 + 本机 Skill/MCP）…", "正在連線 SSH 並建立全功能遠端程式工作台（原始碼預覽 + 本機 Skill/MCP）…");
+                return isRemoteMaintenanceEnvironment
+                    ? localizeText(lang, "Connecting SSH and preparing remote maintenance diagnostics (read-only inspection first)…", "正在连接 SSH 并准备远程维护诊断（先进行只读检查）…", "正在連線 SSH 並準備遠端維護診斷（先進行唯讀檢查）…")
+                    : localizeText(lang, "Connecting SSH and preparing full remote coding workbench (source preview + local Skill/MCP)…", "正在连接 SSH 并建立全功能远程编程工作台（源码预览 + 本机 Skill/MCP）…", "正在連線 SSH 並建立全功能遠端程式工作台（原始碼預覽 + 本機 Skill/MCP）…");
             }
-            return localizeText(lang, "Full remote workbench: code runs on the remote host via SSH; Skill/MCP/web_search run on this machine. Multi-turn continues until you leave the tab. Source preview is on the right.", "全功能远程工作台：改码/命令在远端 SSH 执行；Skill、MCP、联网检索在本机。同一 Tab 可多轮续写。右侧为源码预览。", "全功能遠端工作台：改碼/命令在遠端 SSH 執行；Skill、MCP、聯網檢索在本機。同一 Tab 可多輪續寫。右側為原始碼預覽。");
+            return isRemoteMaintenanceEnvironment
+                ? localizeText(lang, "Remote maintenance task: inspect the host via SSH before making changes. Diagnostics start read-only; risky repairs require confirmation. Skill/MCP/web search run on this machine.", "远程维护任务：通过 SSH 检查主机后再执行变更。诊断默认只读；高风险修复需要确认。Skill、MCP、联网检索在本机运行。", "遠端維護任務：透過 SSH 檢查主機後再執行變更。診斷預設唯讀；高風險修復需要確認。Skill、MCP、聯網檢索在本機執行。")
+                : localizeText(lang, "Full remote workbench: code runs on the remote host via SSH; Skill/MCP/web_search run on this machine. Multi-turn continues until you leave the tab. Source preview is on the right.", "全功能远程工作台：改码/命令在远端 SSH 执行；Skill、MCP、联网检索在本机。同一 Tab 可多轮续写。右侧为源码预览。", "全功能遠端工作台：改碼/命令在遠端 SSH 執行；Skill、MCP、聯網檢索在本機。同一 Tab 可多輪續寫。右側為原始碼預覽。");
         }
         if (activeProjectPreparing && activeProjectPrepareMode === "new-agent") {
             return localizeText(lang, "Starting full coding workbench (tools, Skill/MCP, source preview)…", "正在启动全功能编程工作台（工具 / Skill / MCP / 源码预览）…", "正在啟動全功能程式工作台（工具 / Skill / MCP / 原始碼預覽）…");
         }
         return localizeText(lang, "Full coding workbench (Claude Code / Codex–level intent). Tools, Skill/MCP, web research, multi-turn session memory, and source preview are active. Follow-up messages continue in this coding environment.", "全功能编程工作台（对齐 Claude Code / Codex）。工具、Skill/MCP、联网检索、多轮会话记忆与源码预览已启用；后续消息仍在本编程环境中续写。", "全功能程式工作台（對齊 Claude Code / Codex）。工具、Skill/MCP、聯網檢索、多輪工作階段記憶與原始碼預覽已啟用；後續訊息仍在本程式環境中續寫。");
-    }, [isPureCodingEnvironment, isRemoteCodingDevEnvironment, remoteCodingNeedsReconnect, activeProjectPreparing, activeProjectPrepareMode, lang]);
+    }, [isPureCodingEnvironment, isRemoteCodingDevEnvironment, isRemoteMaintenanceEnvironment, remoteCodingNeedsReconnect, activeProjectPreparing, activeProjectPrepareMode, lang]);
     // Live record_audio card: hard-lock composer (no type-ahead / no queue) so the
     // user only uses pause/stop on the recording card until it finishes.
     const recordingActive = useMemo(
@@ -3879,7 +3928,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const initLabel = getAssistantInitLabel(initStatus, lang);
     const preparingPlaceholderText = activeProjectPrepareMode === "new-agent"
         ? (isRemoteCodingDevEnvironment
-            ? localizeText(lang, "Creating remote coding environment... type ahead, Enter will wait", "正在创建远程编程环境… 可预输入，Enter 会等待", "正在建立遠端程式開發環境… 可預輸入，Enter 會等待")
+            ? (isRemoteMaintenanceEnvironment
+                ? localizeText(lang, "Preparing remote maintenance... type ahead, Enter will wait", "正在准备远程维护… 可预输入，Enter 会等待", "正在準備遠端維護… 可預輸入，Enter 會等待")
+                : localizeText(lang, "Creating remote coding environment... type ahead, Enter will wait", "正在创建远程编程环境… 可预输入，Enter 会等待", "正在建立遠端程式開發環境… 可預輸入，Enter 會等待"))
             : isCodingDevEnvironment
             ? localizeText(lang, "Creating coding environment... type ahead, Enter will wait", "正在创建编程环境… 可预输入，Enter 会等待", "正在建立程式開發環境… 可預輸入，Enter 會等待")
             : (lang === "en" ? "Creating project session... type ahead, Enter will wait" : "正在创建项目会话… 可预输入，Enter 会等待"))
@@ -3984,14 +4035,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
     // modes — the embedded panel is now the primary usage mode.
     const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment));
-    const pureCodingEmptyTitle = isRemoteCodingDevEnvironment
+    const pureCodingEmptyTitle = isRemoteMaintenanceEnvironment
+        ? (remoteCodingNeedsReconnect
+            ? localizeText(lang, "Remote maintenance needs SSH reconnect", "远程维护需要重新连接 SSH", "遠端維護需要重新連線 SSH")
+            : localizeText(lang, "Remote maintenance ready", "远程维护已就绪", "遠端維護已就緒"))
+        : isRemoteCodingDevEnvironment
         ? (remoteCodingNeedsReconnect
             ? localizeText(lang, "Remote coding environment needs SSH reconnect", "远程编程环境需要重新连接 SSH", "遠端程式環境需要重新連線 SSH")
             : localizeText(lang, "Remote coding environment connected", "远程编程环境已连接", "遠端程式環境已連線"))
         : localizeText(lang, "Coding environment ready", "编程环境已就绪", "程式環境已就緒");
-    const pureCodingEmptyDescription = remoteCodingNeedsReconnect
-        ? localizeText(lang, "Reconnect above before sending a programming task.", "请先在上方重新连接，再发送编程任务。", "請先在上方重新連線，再傳送程式任務。")
-        : localizeText(lang, "Enter a programming task below to start working in this repository.", "在下方输入编程任务，即可开始处理此仓库。", "在下方輸入程式任務，即可開始處理此倉庫。");
+    const pureCodingEmptyDescription = isRemoteMaintenanceEnvironment
+        ? (remoteCodingNeedsReconnect
+            ? localizeText(lang, "Reconnect above before continuing this maintenance task.", "请先在上方重新连接，再继续此维护任务。", "請先在上方重新連線，再繼續此維護任務。")
+            : localizeText(lang, "Describe the incident or maintenance goal below. The assistant starts with read-only checks and asks before risky repairs.", "在下方描述故障或维护目标。助手会先进行只读检查，并在高风险修复前请求确认。", "在下方描述故障或維護目標。助手會先進行唯讀檢查，並在高風險修復前請求確認。"))
+        : remoteCodingNeedsReconnect
+            ? localizeText(lang, "Reconnect above before sending a programming task.", "请先在上方重新连接，再发送编程任务。", "請先在上方重新連線，再傳送程式任務。")
+            : localizeText(lang, "Enter a programming task below to start working in this repository.", "在下方输入编程任务，即可开始处理此仓库。", "在下方輸入程式任務，即可開始處理此倉庫。");
     const showPureCodingEmptyState = isPureCodingEnvironment
         && ready
         && !onboardingIncomplete
@@ -4878,9 +4937,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const isLast = idx === lastAssistantIdx;
             // Content key captures message-specific fields that affect render.
             // isBusy is included only for the last assistant (affects <details open>).
-            // Use -1 for undefined content to distinguish from empty string (length 0).
-            const contentLen = msg.content == null ? -1 : msg.content.length;
-            const contentKey = `${contentLen}|${msg.kind ?? ''}|${msg.reasoning?.length ?? 0}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}`;
+            // Include the actual text, not just its length. Tool retries and stream
+            // corrections can replace content in place without changing the length.
+            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -4993,6 +5052,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             };
     const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND || scopeApprovalPending?.kind === LOCAL_HIGH_RISK_APPROVAL_KIND;
     const scopeApprovalIsRemoteHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND;
+    const scopeApprovalIsRemoteScope = scopeApprovalPending?.kind === REMOTE_DIRECTORY_WRITE_APPROVAL_KIND || scopeApprovalPending?.kind === REMOTE_PATH_ACCESS_APPROVAL_KIND;
+    const scopeApprovalIsRemoteMaintenance = (scopeApprovalIsRemoteHighRisk || scopeApprovalIsRemoteScope) && scopeApprovalPending?.maintenance === true;
     return (
         <div data-testid="ai-panel-root" style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
@@ -5008,10 +5069,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 <div data-testid="scope-approval-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50001, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.35)", padding: 16 }}>
                     <div role="alertdialog" aria-modal="true" aria-labelledby="scope-approval-title" style={{ width: 440, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 8, boxShadow: "0 12px 32px rgba(15, 23, 42, 0.22)", color: t.text, overflow: "hidden" }} onMouseDown={e => e.stopPropagation()}>
                         <div style={{ padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
-                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Command Approval", "命令确认", "命令確認")) : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
+                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Command Approval", "命令确认", "命令確認")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote Maintenance Approval", "远程维护确认", "遠端維護確認") : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
                         </div>
                         <div style={{ padding: "12px 14px", fontSize: 13, lineHeight: 1.6 }}>
-                            <div style={{ marginBottom: 8 }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令：")) : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
+                            <div style={{ marginBottom: 8 }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting a high-risk command:", "远程维护请求执行高风险命令：", "遠端維護請求執行高風險命令：") : scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令：")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting access outside the project scope:", "远程维护请求访问项目范围外的路径：", "遠端維護請求存取專案範圍外的路徑：") : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
                             <div style={{ background: t.fieldBg, borderRadius: 4, padding: "6px 8px", fontSize: 12, fontFamily: "monospace", wordBreak: "break-all", marginBottom: 6 }}>
                                 <div><strong>{localizeText(lang, "Tool", "工具", "工具")}:</strong> {scopeApprovalPending.tool}</div>
                                 <div><strong>{scopeApprovalIsHighRisk ? localizeText(lang, "Command", "命令", "命令") : localizeText(lang, "Path", "路径", "路徑")}:</strong> {scopeApprovalPending.path}</div>
@@ -5061,8 +5122,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 activateTab(tab.id);
             }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} getLastActiveAt={getLastActiveAt} recordingTabId={skillRecordingTabId} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
-            {(activeTab?.type === "local" || activeTab?.type === "project") && (
-                <ProjectDirBar key={activeTab?.type === "local" ? "local" : activeTab?.id || "local"} tabId={activeTab?.type === "local" ? "" : (activeTab?.id || "")} theme={t} lang={lang} />
+            {(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") && (
+                <ProjectDirBar
+                    key={activeTab?.type === "project" ? activeTab.id : "local"}
+                    // Expert sessions do not own a task path, so they share the
+                    // current desktop working directory with the local assistant.
+                    tabId={activeTab?.type === "project" ? activeTab.id : ""}
+                    theme={t}
+                    lang={lang}
+                />
             )}
             {showChatUI && (
             <div data-testid="ai-chat-column" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
@@ -5072,6 +5140,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         theme={t}
                         chrome={codingBannerChrome}
                         remote={isRemoteCodingDevEnvironment}
+                        intent={isRemoteMaintenanceEnvironment ? "remote_maintenance" : undefined}
                         remoteHost={activeTab?.remoteHost}
                         preparing={activeProjectPreparing}
                         prepareMode={activeProjectPrepareMode || undefined}
@@ -5849,7 +5918,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
                         <span>{activeProjectPrepareMode === "new-agent"
                             ? (isRemoteCodingDevEnvironment
-                                ? localizeText(lang, "Creating remote coding environment", "正在创建远程编程环境", "正在建立遠端程式開發環境")
+                                ? (isRemoteMaintenanceEnvironment
+                                    ? localizeText(lang, "Preparing remote maintenance", "正在准备远程维护", "正在準備遠端維護")
+                                    : localizeText(lang, "Creating remote coding environment", "正在创建远程编程环境", "正在建立遠端程式開發環境"))
                                 : isCodingDevEnvironment
                                 ? localizeText(lang, "Creating coding environment", "正在创建编程环境", "正在建立程式開發環境")
                                 : (lang === "en" ? "Creating project session" : "正在创建项目会话"))

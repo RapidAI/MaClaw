@@ -1,30 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-
-import {
-    GetMaclawLLMProviders,
-    SaveMaclawLLMProviders,
-    TestMaclawLLM,
-    GetMaclawAgentMaxIterations,
-    SetMaclawAgentMaxIterations,
-    GetMaclawLLMThinkingMode,
-    SetMaclawLLMThinkingMode,
-    GetSubAgentConcurrency,
-    SetSubAgentConcurrency,
-    StartOpenAIOAuth,
-    CancelOpenAIOAuth,
-    StartXAIOAuth,
-    CancelXAIOAuth,
-    ImportCodexAuth,
-    StartAnthropicOAuth,
-    CompleteAnthropicOAuth,
-    StartGitHubCopilotOAuth,
-    WaitGitHubCopilotOAuth,
-    CancelGitHubCopilotOAuth,
-    FetchCodeGenModels,
-    FetchProviderModels,
-    SaveCodeGenModelChoice,
-    GetHubLLMServiceStatus,
-} from "../../../wailsjs/go/main/App";
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuth, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportCodexAuth, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartXAIOAuth, TestMaclawLLM, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
+import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, hubCreditGrants, hubOfficialStatus, inputStyle, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
@@ -492,7 +468,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setDlgSaving(true);
         setDlgTestResult(null);
         try {
-            await SaveMaclawLLMProviders(dlgProviders, HUB_SERVICE_PROVIDER_NAME);
+            await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], HUB_SERVICE_PROVIDER_NAME);
             try {
                 const freshData = await GetMaclawLLMProviders();
                 const fresh = (freshData?.providers || dlgProviders).map((p: LLMProvider) => ({ ...p }));
@@ -548,7 +524,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         if (dlgIsNone) {
             setDlgSaving(true);
             try {
-                await SaveMaclawLLMProviders(dlgProviders, NONE_PROVIDER);
+                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], NONE_PROVIDER);
                 setDlgDirty(false);
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(NONE_PROVIDER);
@@ -576,7 +552,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             }
             try {
                 const saveName = sp.name;
-                await SaveMaclawLLMProviders(dlgProviders, saveName);
+                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], saveName);
                 // For SSO (CodeGen), sync model choice to Claude Code and other tool configs
                 if (sp.auth_type === "sso" && sp.model) {
                     await SaveCodeGenModelChoice(sp.model, sp.model).catch(() => {});
@@ -602,7 +578,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             // without the probe overwriting their manual choice.
             if (dlgTested) {
                 const saveName = sp.name;
-                await SaveMaclawLLMProviders(dlgProviders, saveName);
+                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], saveName);
                 setDlgDirty(false);
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
@@ -625,7 +601,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 wire_api: sp.wire_api || "",
                 provider_name: sp.name,
                 auth_type: sp.auth_type || "",
-            });
+            } as corelib.MaclawLLMConfig); // Go marks supports_vision required; the probe result (not this flag) decides the persisted value.
             const saveName = sp.name;
             const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
             const nextProviders = dlgProviders.map((provider, index) => index === dlgSelectedIdx
@@ -636,7 +612,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     supports_vision: visionProbeInconclusive ? provider.supports_vision : testResult.supports_vision,
                 }
                 : { ...provider });
-            await SaveMaclawLLMProviders(nextProviders, saveName);
+            await SaveMaclawLLMProviders(nextProviders as corelib.MaclawLLMProvider[], saveName);
 
             // Refresh providers to pick up persisted supports_vision from backend
             try {

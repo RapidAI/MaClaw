@@ -372,6 +372,32 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         });
     });
 
+    it("restores remote diagnosis metadata from the backend tab index", async () => {
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            {
+                id: "proj-remote-incident",
+                type: "project",
+                title: "Diagnose service",
+                projectPath: "D:/tasks/remote-incident",
+                agentMode: "remote_coding_dev",
+                remoteHost: "ops.example.test",
+                remoteSafety: "diagnosis",
+                lastActiveAt: 1,
+                archived: false,
+            },
+        ] as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        await waitFor(() => {
+            expect(result.current.getTabs().find(tab => tab.id === "proj-remote-incident")).toMatchObject({
+                agentMode: "remote_coding_dev",
+                remoteHost: "ops.example.test",
+                remoteSafety: "diagnosis",
+            });
+        });
+    });
+
     it("does not restore transient guide receipts from persisted project tab history", async () => {
         const realMessage = { id: "assistant-1", role: "assistant", content: "继续处理", timestamp: 2 };
         const injection = { id: "injection-1", role: "user", kind: "guideInjection", content: "改为优先验证回归", timestamp: 1 };

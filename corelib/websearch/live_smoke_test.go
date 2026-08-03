@@ -43,10 +43,6 @@ func TestLiveSearchDuckDuckGo(t *testing.T) {
 	liveSearchAttempt(t, "duckduckgo-html", searchDirectLegacy)
 }
 
-func TestLiveSearchMojeek(t *testing.T) {
-	liveSearchAttempt(t, "mojeek-html", searchMojeekDirect)
-}
-
 func TestLiveSearchBaidu(t *testing.T) {
 	liveSearchAttempt(t, "baidu", searchBaiduDirect)
 }

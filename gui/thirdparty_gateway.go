@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
@@ -54,7 +55,19 @@ type thirdPartyGatewayManager struct {
 	clients      map[string]*thirdPartyClientState
 	notifyCh     chan struct{}
 	media        map[string]*thirdPartyMediaObject
+	pairings     map[string]thirdPartyDevicePairing
 }
+
+// thirdPartyDevicePairing is deliberately short lived and single use.  It is
+// only a bootstrap secret: once exchanged, the ESP stores the regular Gateway
+// bearer and speaks the normal third-party protocol.
+type thirdPartyDevicePairing struct {
+	Token     string
+	ExpiresAt time.Time
+	Remote    bool
+}
+
+const thirdPartyMaxPendingPairings = 16
 
 func (m *thirdPartyGatewayManager) currentLocalHandler() *IMMessageHandler {
 	if m == nil {
@@ -66,10 +79,11 @@ func (m *thirdPartyGatewayManager) currentLocalHandler() *IMMessageHandler {
 }
 
 type thirdPartyClientState struct {
-	NextSeq    int64
-	Messages   []thirdPartyOutgoingMessage
-	SeenEvents map[string]string
-	Acked      map[string]string
+	NextSeq            int64
+	Messages           []thirdPartyOutgoingMessage
+	SeenEvents         map[string]string
+	Acked              map[string]string
+	ClientCapabilities agent.ClientCapabilities
 }
 
 type thirdPartyMediaObject struct {
@@ -102,6 +116,7 @@ func newThirdPartyGatewayManager(app *App) *thirdPartyGatewayManager {
 		clients:  make(map[string]*thirdPartyClientState),
 		notifyCh: make(chan struct{}),
 		media:    make(map[string]*thirdPartyMediaObject),
+		pairings: make(map[string]thirdPartyDevicePairing),
 	}
 }
 
@@ -169,6 +184,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	mux.HandleFunc("/api/im-gateway/v1/tool-result", m.handleToolResult)
 	mux.HandleFunc("/api/im-gateway/v1/media/upload-url", m.handleMediaUploadURL)
 	mux.HandleFunc("/api/im-gateway/v1/media/", m.handleMedia)
+	mux.HandleFunc("/api/device-gateway/v1/pair", m.handleDevicePair)
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
@@ -275,8 +291,8 @@ func (m *thirdPartyGatewayManager) handleHandshake(w http.ResponseWriter, r *htt
 		writeGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	m.ensureClient(req.ClientID)
-	writeGatewayJSON(w, http.StatusOK, coreim.NewThirdPartyGatewayHandshakeResponse(coreim.ThirdPartyGatewayConfig{
+	m.setClientCapabilities(req.ClientID, req.ClientCapabilities)
+	response := coreim.NewThirdPartyGatewayHandshakeResponse(coreim.ThirdPartyGatewayConfig{
 		RequestID:      newGatewayRequestID(),
 		ChannelID:      thirdPartyPlatform(req.ClientID),
 		ServerTime:     time.Now().UnixMilli(),
@@ -286,7 +302,68 @@ func (m *thirdPartyGatewayManager) handleHandshake(w http.ResponseWriter, r *htt
 		MaxTimeoutSec:  thirdPartyMaxTimeoutSec,
 		MaxBatchSize:   thirdPartyMaxBatchSize,
 		MaxPollLimit:   thirdPartyMaxLimit,
-	}))
+	})
+	response.CapabilitiesAccepted = req.ClientCapabilities
+	// The local gateway can render the selected desktop pack directly.  Ship a
+	// compact RGB565 idle frame so the ESP shows the same pet, not an ID-based
+	// approximation.
+	data, _ := json.Marshal(response)
+	var payload map[string]any
+	_ = json.Unmarshal(data, &payload)
+	if cfg, err := m.app.LoadConfig(); err == nil {
+		profile := m.app.devicePetProfileForConfig(cfg)
+		if req.ClientCapabilities == nil || !req.ClientCapabilities.Features.PetAnimation {
+			delete(profile, "asset")
+		}
+		payload["pet"] = profile
+	}
+	writeGatewayJSON(w, http.StatusOK, payload)
+}
+
+func (m *thirdPartyGatewayManager) handleDevicePair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var req struct {
+		PairCode string `json:"pairCode"`
+		// Code keeps local pairing compatible with previous ESP firmware.
+		Code     string `json:"code"`
+		ClientID string `json:"clientId"`
+	}
+	if err := decodeGatewayJSON(r, &req); err != nil {
+		writeGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	pairCode := strings.TrimSpace(req.PairCode)
+	if pairCode == "" {
+		pairCode = strings.TrimSpace(req.Code)
+	}
+	if len(pairCode) != 6 || strings.Trim(pairCode, "0123456789") != "" || strings.TrimSpace(req.ClientID) == "" {
+		writeGatewayError(w, http.StatusBadRequest, "bad_request", "clientId and a six-digit pairCode are required")
+		return
+	}
+	now := time.Now()
+	m.mu.Lock()
+	for candidate, pairing := range m.pairings {
+		if !pairing.ExpiresAt.After(now) {
+			delete(m.pairings, candidate)
+		}
+	}
+	pairing, ok := m.pairings[pairCode]
+	if ok && !pairing.Remote {
+		delete(m.pairings, pairCode)
+	}
+	m.mu.Unlock()
+	if !ok || pairing.Remote || !pairing.ExpiresAt.After(now) {
+		writeGatewayError(w, http.StatusUnauthorized, "invalid_pairing_code", "pairing code is invalid or expired")
+		return
+	}
+	writeGatewayJSON(w, http.StatusCreated, map[string]any{
+		"ok":           true,
+		"gatewayToken": pairing.Token,
+		"clientId":     strings.TrimSpace(req.ClientID),
+	})
 }
 
 func (m *thirdPartyGatewayManager) handleIncoming(w http.ResponseWriter, r *http.Request) {
@@ -556,6 +633,20 @@ func (m *thirdPartyGatewayManager) ensureClient(clientID string) {
 	m.ensureClientLocked(clientID)
 }
 
+func (m *thirdPartyGatewayManager) setClientCapabilities(clientID string, capabilities *agent.ClientCapabilities) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensureClientLocked(clientID)
+	state.ClientCapabilities = agent.NormalizeClientCapabilities(capabilities)
+}
+
+func (m *thirdPartyGatewayManager) clientCapabilities(clientID string) agent.ClientCapabilities {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensureClientLocked(clientID)
+	return agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+}
+
 func (m *thirdPartyGatewayManager) ensureClientLocked(clientID string) *thirdPartyClientState {
 	if m.clients == nil {
 		m.clients = make(map[string]*thirdPartyClientState)
@@ -623,6 +714,11 @@ func (m *thirdPartyGatewayManager) messagesAfter(clientID string, cursor int64, 
 func (m *thirdPartyGatewayManager) enqueue(clientID string, msg thirdPartyOutgoingMessage) thirdPartyOutgoingMessage {
 	m.mu.Lock()
 	state := m.ensureClientLocked(clientID)
+	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+	if !adaptGUIThirdPartyOutgoingMessage(&msg, capabilities) {
+		m.mu.Unlock()
+		return thirdPartyOutgoingMessage{}
+	}
 	msg.Seq = state.NextSeq
 	state.NextSeq++
 	if msg.ID == "" {
@@ -642,6 +738,58 @@ func (m *thirdPartyGatewayManager) enqueue(clientID string, msg thirdPartyOutgoi
 	return msg
 }
 
+func adaptGUIThirdPartyOutgoingMessage(msg *thirdPartyOutgoingMessage, capabilities agent.ClientCapabilities) bool {
+	if msg == nil {
+		return false
+	}
+	switch normalizeThirdPartyGatewayMessageKind(msg.Type) {
+	case thirdPartyGatewayMessageImage:
+		return capabilities.SupportsOutputMIME("image", outgoingThirdPartyMIME(*msg))
+	case thirdPartyGatewayMessageFile:
+		return capabilities.SupportsOutputMIME("file", outgoingThirdPartyMIME(*msg)) && capabilities.SupportsOutputBytes("file", msg.SizeBytes)
+	case thirdPartyGatewayMessageVoice:
+		return capabilities.SupportsOutput("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback && capabilities.SupportsOutputMIME("audio", outgoingThirdPartyMIME(*msg))
+	case thirdPartyGatewayMessageAmbient:
+		return capabilities.Features.AmbientDisplay
+	case thirdPartyGatewayMessagePetState:
+		return capabilities.Features.PetStates
+	case thirdPartyGatewayMessageMeetingResult:
+		if !capabilities.Features.MeetingRecorder || !capabilities.SupportsOutput("text") {
+			return false
+		}
+		if capabilities.Output.Text != nil && capabilities.Output.Text.MaxChars > 0 {
+			msg.Text = truncateThirdPartyOutputText(msg.Text, capabilities.Output.Text.MaxChars)
+		}
+		return true
+	default:
+		if !capabilities.SupportsOutput("text") {
+			return false
+		}
+		msg.Type = thirdPartyGatewayMessageText.String()
+		if capabilities.Output.Text != nil && capabilities.Output.Text.MaxChars > 0 {
+			msg.Text = truncateThirdPartyOutputText(msg.Text, capabilities.Output.Text.MaxChars)
+		}
+		return strings.TrimSpace(msg.Text) != ""
+	}
+}
+
+func outgoingThirdPartyMIME(msg thirdPartyOutgoingMessage) string {
+	if strings.TrimSpace(msg.MimeType) != "" {
+		return msg.MimeType
+	}
+	return msg.ContentType
+}
+
+func truncateThirdPartyOutputText(text string, max int) string {
+	if max <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max])
+}
 func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest, maclawID string) {
 	if isPassthroughSlashText(req.Message.Text) {
 		log.Printf("[thirdparty-mgr] routing passthrough command locally: client=%s conversation=%s", req.ClientID, req.ConversationID)
@@ -657,15 +805,16 @@ func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
 			payload := map[string]any{
-				"platform_uid":    thirdPartySessionUserID(req.ClientID, req.ConversationID),
-				"text":            req.Message.Text,
-				"message_type":    req.Message.Type,
-				"client_id":       req.ClientID,
-				"conversation_id": req.ConversationID,
-				"message_id":      req.MessageID,
-				"event_id":        req.EventID,
-				"user_id":         req.User.ID,
-				"user_name":       req.User.Name,
+				"platform_uid":        thirdPartySessionUserID(req.ClientID, req.ConversationID),
+				"text":                req.Message.Text,
+				"message_type":        req.Message.Type,
+				"client_id":           req.ClientID,
+				"conversation_id":     req.ConversationID,
+				"message_id":          req.MessageID,
+				"event_id":            req.EventID,
+				"user_id":             req.User.ID,
+				"user_name":           req.User.Name,
+				"client_capabilities": m.clientCapabilities(req.ClientID),
 			}
 			if req.Extra != nil {
 				payload["extra"] = req.Extra
@@ -810,7 +959,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 				m.enqueueError(req, req.MessageID, "bad_request", err.Error())
 				return
 			}
-			prefix := "[收到" + mediaLabel(messageKind.String()) + ": " + mediaPath + "]\n"
+			prefix := "[media " + mediaLabel(messageKind.String()) + ": " + mediaPath + "]\n"
 			text = prefix + text
 		}
 	}
@@ -846,11 +995,12 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 	}
 
 	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
-		UserID:      thirdPartySessionUserID(req.ClientID, req.ConversationID),
-		Platform:    thirdPartyPlatform(req.ClientID),
-		Text:        text,
-		Lang:        appUILang(m.app),
-		Attachments: attachments,
+		UserID:             thirdPartySessionUserID(req.ClientID, req.ConversationID),
+		Platform:           thirdPartyPlatform(req.ClientID),
+		Text:               text,
+		Lang:               appUILang(m.app),
+		Attachments:        attachments,
+		ClientCapabilities: pointerToClientCapabilities(m.clientCapabilities(req.ClientID)),
 	}, onProgress)
 	if resp == nil || resp.Deferred {
 		return
@@ -859,10 +1009,11 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 }
 
 func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID, replyTo string, resp *IMAgentResponse) {
+	capabilities := m.clientCapabilities(clientID)
 	// acp_turn=final marks terminal messages for ACP bridge turn completion.
 	finalMeta := map[string]string{"acp_turn": "final"}
 	enqueued := false
-	if resp.Text != "" {
+	if resp.Text != "" && capabilities.SupportsOutput("text") {
 		text := textutil.StripMarkdown(resp.Text)
 		if len(resp.Actions) > 0 {
 			text = strings.TrimSpace(text)
@@ -876,7 +1027,7 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		}
 		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: finalMeta})
 		enqueued = true
-	} else if len(resp.Actions) > 0 {
+	} else if len(resp.Actions) > 0 && capabilities.SupportsOutput("text") {
 		text := "Please reply with an option:"
 		for i, action := range resp.Actions {
 			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
@@ -884,11 +1035,11 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: finalMeta})
 		enqueued = true
 	}
-	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 {
+	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 && capabilities.SupportsOutput("text") {
 		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "error", Error: "agent_error", Text: textutil.StripMarkdown(resp.Error), Metadata: finalMeta})
 		enqueued = true
 	}
-	if resp.ImageKey != "" {
+	if resp.ImageKey != "" && capabilities.SupportsOutput("image") {
 		meta := map[string]string{}
 		if !enqueued {
 			meta["acp_turn"] = "final"
@@ -896,7 +1047,7 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		}
 		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image", ContentType: "image/png", FileName: "image.png", Data: resp.ImageKey, Metadata: meta})
 	}
-	if resp.FileData != "" {
+	if resp.FileData != "" && capabilities.SupportsOutput("file") {
 		meta := map[string]string{}
 		if !enqueued {
 			meta["acp_turn"] = "final"
@@ -904,7 +1055,7 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		}
 		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: resp.FileMimeType, FileName: resp.FileName, Data: resp.FileData, Metadata: meta})
 	}
-	if resp.VoiceData != "" {
+	if resp.VoiceData != "" && capabilities.SupportsOutput("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback {
 		meta := map[string]string{}
 		if !enqueued {
 			meta["acp_turn"] = "final"
@@ -917,6 +1068,9 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		paths = append([]string{resp.LocalFilePath}, paths...)
 	}
 	for i, p := range paths {
+		if !capabilities.SupportsOutput("file") {
+			break
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			log.Printf("[thirdparty-mgr] read local file %s error: %v", p, err)
@@ -935,7 +1089,7 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), Metadata: meta})
 	}
 	// Ensure ACP bridge always sees a terminal marker even for empty agent results.
-	if !enqueued {
+	if !enqueued && capabilities.SupportsOutput("text") {
 		m.enqueue(clientID, thirdPartyOutgoingMessage{
 			ConversationID:   conversationID,
 			ReplyToMessageID: replyTo,
@@ -946,11 +1100,22 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 	}
 }
 
+func pointerToClientCapabilities(capabilities agent.ClientCapabilities) *agent.ClientCapabilities {
+	return &capabilities
+}
+
 func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 	clientID, conversationID := parseThirdPartyReplyTarget(reply)
 	if clientID == "" {
 		log.Printf("[thirdparty-mgr] hub reply missing client id")
 		return
+	}
+	if m.effectiveMode() == "hub" {
+		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+			if err := hubClient.SendDeviceGatewayReply(clientID, conversationID, reply); err == nil {
+				return
+			}
+		}
 	}
 	msg := thirdPartyOutgoingMessage{
 		ConversationID: conversationID,
@@ -963,18 +1128,21 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		Metadata: map[string]string{"acp_turn": "final"},
 	}
 	replyKind := normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String())
+	capabilities := m.clientCapabilities(clientID)
 	switch {
-	case replyKind == thirdPartyGatewayMessageImage:
+	case replyKind == thirdPartyGatewayMessageImage && capabilities.SupportsOutput("image"):
 		msg.Data = reply.ImageData
 		if msg.ContentType == "" {
 			msg.ContentType = "image/png"
 		}
-	case replyKind.IsMediaFile():
+	case replyKind.IsMediaFile() && capabilities.SupportsOutput("file"):
 		msg.Data = reply.FileData
 	default:
-		if msg.Type == "" {
-			msg.Type = thirdPartyGatewayMessageText.String()
+		if !capabilities.SupportsOutput("text") {
+			return
 		}
+		msg.Type = thirdPartyGatewayMessageText.String()
+		msg.Data, msg.FileName, msg.ContentType = "", "", ""
 	}
 	m.enqueue(clientID, msg)
 }
@@ -1416,6 +1584,105 @@ func (a *App) RestartThirdPartyGateway() string {
 		return gatewayConnectionStatusDisconnected.String()
 	}
 	return a.thirdPartyGateway.Status()
+}
+
+// CreateThirdPartyDevicePairing produces a six-digit, thirty-minute bootstrap
+// credential for a LAN device. The bearer itself never needs to be typed on
+// the ESP32.
+func (a *App) CreateThirdPartyDevicePairing() (map[string]any, error) {
+	a.ensureThirdPartyGateway()
+	if a.thirdPartyGateway == nil {
+		return nil, fmt.Errorf("enable third-party access before pairing a device")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	token := strings.TrimSpace(cfg.ThirdPartyGatewayToken)
+	if !cfg.ThirdPartyGatewayEnabled || token == "" {
+		return nil, fmt.Errorf("third-party gateway is not enabled")
+	}
+	expiresAt := time.Now().Add(30 * time.Minute)
+	m := a.thirdPartyGateway
+	m.mu.Lock()
+	now := time.Now()
+	for candidate, pairing := range m.pairings {
+		if !pairing.ExpiresAt.After(now) {
+			delete(m.pairings, candidate)
+		}
+	}
+	if len(m.pairings) >= thirdPartyMaxPendingPairings {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("too many pending device pairings; wait for an existing code to expire")
+	}
+	var code string
+	for attempt := 0; attempt < 16; attempt++ {
+		var random [4]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		candidate := fmt.Sprintf("%06d", (uint32(random[0])<<24|uint32(random[1])<<16|uint32(random[2])<<8|uint32(random[3]))%1000000)
+		if _, exists := m.pairings[candidate]; !exists {
+			code = candidate
+			break
+		}
+	}
+	if code == "" {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("cannot allocate a unique device pairing code; try again")
+	}
+	if !cfg.IsThirdPartyGatewayLocalMode() {
+		hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+		if hubURL == "" {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("Hub URL is not configured")
+		}
+		// Reserve the code locally while Hub owns the actual pairing. This prevents
+		// concurrent requests from choosing the same six-digit code without making
+		// it exchangeable at the local endpoint.
+		m.pairings[code] = thirdPartyDevicePairing{ExpiresAt: expiresAt, Remote: true}
+		// Release the local gateway lock before WebSocket I/O so device requests
+		// are never stalled by Hub.
+		m.mu.Unlock()
+		hubClient := a.hubClient()
+		if hubClient == nil || !hubClient.IsConnected() {
+			m.removeRemotePairingReservation(code)
+			return nil, fmt.Errorf("Hub mode requires the GUI to be connected to Hub")
+		}
+		if err := hubClient.SendDeviceGatewayPairing(code); err != nil {
+			m.removeRemotePairingReservation(code)
+			return nil, err
+		}
+		result := map[string]any{"pairCode": code, "expiresAt": expiresAt.Format(time.RFC3339), "transport": "hub", "gatewayURL": hubURL}
+		return result, nil
+	} else {
+		m.pairings[code] = thirdPartyDevicePairing{Token: token, ExpiresAt: expiresAt}
+		m.mu.Unlock()
+		host := strings.TrimSpace(cfg.ThirdPartyGatewayHost)
+		if host == "" {
+			host = thirdPartyDefaultHost
+		}
+		port := cfg.ThirdPartyGatewayPort
+		if port <= 0 {
+			port = thirdPartyDefaultPort
+		}
+		return map[string]any{
+			"pairCode": code, "expiresAt": expiresAt.Format(time.RFC3339),
+			"transport": "local", "gatewayURL": fmt.Sprintf("http://%s:%d", host, port),
+		}, nil
+	}
+}
+
+func (m *thirdPartyGatewayManager) removeRemotePairingReservation(code string) {
+	if m == nil || code == "" {
+		return
+	}
+	m.mu.Lock()
+	if pairing, exists := m.pairings[code]; exists && pairing.Remote {
+		delete(m.pairings, code)
+	}
+	m.mu.Unlock()
 }
 
 func (a *App) StopThirdPartyGateway() {

@@ -1,10 +1,10 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, SetStateAction } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 
 // Skill item surfaces use var(--theme-surface) in App.css.
 
 type InstallSkillListProps = {
-    filteredSkills: main.Skill[];
+    filteredSkills: corelib.Skill[];
     selectedSkillsToInstall: string[];
     setSelectedSkillsToInstall: Dispatch<SetStateAction<string[]>>;
     t: (key: string) => string;

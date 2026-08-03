@@ -1,0 +1,24 @@
+## IDF Component Manager Manifest File
+dependencies:
+  ## Required IDF version
+  idf:
+    version: '>=4.1.0'
+  # # Put list of dependencies here
+  # # For components maintained by Espressif:
+  # component: "~1.0.0"
+  # # For 3rd party components:
+  # username/component: ">=1.0.0,<2.0.0"
+  # username2/component2:
+  #   version: "~1.0.0"
+  #   # For transient dependencies `public` flag can be set.
+  #   # `public` flag doesn't have an effect dependencies of the `main` component.
+  #   # All dependencies of `main` are public by default.
+  #   public: true
+  espressif/cjson: ^1.7.19
+  espressif/esp_lcd_st77916: '*'
+  # Render the standard Wi-Fi QR code while the provisioning SoftAP is active.
+  espressif/qrcode: ^0.2.0
+  # Offline, always-listening command recognition. MultiNet is used as a
+  # train-free custom phrase detector for "ma ke luo" (Maclaw / 嘛可罗).
+  espressif/esp-sr:
+    version: ^2.4.7

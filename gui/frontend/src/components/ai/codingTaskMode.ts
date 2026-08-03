@@ -27,6 +27,11 @@ export function remoteHostFromTaskTags(tags?: string[] | null): string | undefin
     return host || undefined;
 }
 
+/** Whether a remote coding engine task was created for operations diagnosis. */
+export function isRemoteMaintenanceTaskTags(tags?: string[] | null): boolean {
+    return !!tags?.some((tag) => String(tag || "").trim() === "source:remote_ops_diagnosis");
+}
+
 /** Parse non-sensitive remote SSH metadata from task tags (password is never stored). */
 export function remoteCodingMetaFromTaskTags(tags?: string[] | null): RemoteCodingMetaFromTags {
     const meta: RemoteCodingMetaFromTags = { host: "", user: "", port: 22, workDir: "" };

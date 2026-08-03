@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { main } from "../../../../wailsjs/go/models";
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { corelib, main } from '../../../../wailsjs/go/models';
 import { SystemSettingsPanel } from "../SystemSettingsPanel";
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
@@ -17,7 +17,7 @@ function renderPanel(configPatch: Record<string, unknown> = {}) {
   const saveRemoteConfigField = vi.fn();
   render(
     <SystemSettingsPanel
-      config={new main.AppConfig({
+      config={new corelib.AppConfig({
         remote_heartbeat_sec: 30,
         screen_dim_timeout_min: 3,
         agent_response_timeout_sec: 600,

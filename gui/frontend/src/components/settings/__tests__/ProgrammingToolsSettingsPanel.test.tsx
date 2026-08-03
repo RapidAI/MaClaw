@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { main } from "../../../../wailsjs/go/models";
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { corelib, main } from '../../../../wailsjs/go/models';
 import {
   CodingKnowledgeCapacity,
   CodingKnowledgeConfirm,
@@ -23,8 +23,8 @@ import {
 import { ProgrammingToolsSettingsPanel } from "../ProgrammingToolsSettingsPanel";
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
-  LoadConfig: vi.fn(async () => new main.AppConfig({} as any)),
-  PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => new main.AppConfig({
+  LoadConfig: vi.fn(async () => new corelib.AppConfig({} as any)),
+  PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => new corelib.AppConfig({
     coding_knowledge_max_total: 1000,
     coding_knowledge_max_per_project: 200,
     ...patch,
@@ -130,7 +130,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
   it("loads stats and experiences from coding knowledge bindings", async () => {
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({ coding_knowledge_auto_save_mode: "observe" } as any)}
+        config={new corelib.AppConfig({ coding_knowledge_auto_save_mode: "observe" } as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -148,7 +148,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
   it("searches coding knowledge with the dedicated API", async () => {
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({} as any)}
+        config={new corelib.AppConfig({} as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -167,7 +167,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
   it("opens the editor and saves experience updates", async () => {
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({} as any)}
+        config={new corelib.AppConfig({} as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -200,7 +200,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
   it("exports and imports experience packs", async () => {
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({} as any)}
+        config={new corelib.AppConfig({} as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -224,7 +224,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
   it("graduates a verified experience", async () => {
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({} as any)}
+        config={new corelib.AppConfig({} as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -241,7 +241,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
   it("confirms a candidate experience", async () => {
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({} as any)}
+        config={new corelib.AppConfig({} as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -258,7 +258,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
   it("deletes an experience after confirm", async () => {
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({} as any)}
+        config={new corelib.AppConfig({} as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -275,7 +275,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
   it("resets the coding knowledge file", async () => {
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({} as any)}
+        config={new corelib.AppConfig({} as any)}
         setConfig={vi.fn()}
         lang="en"
       />
@@ -294,7 +294,7 @@ describe("ProgrammingToolsSettingsPanel coding knowledge", () => {
     const setConfig = vi.fn();
     render(
       <ProgrammingToolsSettingsPanel
-        config={new main.AppConfig({
+        config={new corelib.AppConfig({
           coding_knowledge_max_total: 1000,
           coding_knowledge_max_per_project: 200,
         } as any)}

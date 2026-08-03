@@ -839,6 +839,11 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 		if !groupPermissions.allowsTool(name) {
 			return toolExecutionResult{Text: "[system rejected] 群聊权限未授权该工具访问本地资源或知识库", Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		}
+		if name == "web_search" || name == "web_fetch" {
+			if reason := groupPermissions.webFallbackBlockReason(); reason != "" {
+				return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			}
+		}
 		switch name {
 		case "knowledge_search", "knowledge_explain", "knowledge_context_pack", "knowledge_search_facets":
 			if err := groupPermissions.restrictKnowledgeArgs(args); err != nil {
@@ -933,19 +938,31 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 				}
 			}
 			if execCtx.Err() != nil {
-				return registeredToolExecutionResultForContext("", execCtx)
+				return toolExecutionResult{Text: execCtx.Err().Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}
 			}
 			if tool.HandlerCtx != nil {
 				text := tool.HandlerCtx(execCtx, args, onProgress)
-				return registeredToolExecutionResultForContext(text, execCtx)
+				result := registeredToolExecutionResultForContext(text, execCtx)
+				if name == "knowledge_search" && groupPermissions != nil {
+					groupPermissions.recordKnowledgeSearchResult(result)
+				}
+				return result
 			}
 			if tool.HandlerProg != nil {
 				text := tool.HandlerProg(args, onProgress)
-				return registeredToolExecutionResult(text)
+				result := registeredToolExecutionResult(text)
+				if name == "knowledge_search" && groupPermissions != nil {
+					groupPermissions.recordKnowledgeSearchResult(result)
+				}
+				return result
 			}
 			if tool.Handler != nil {
 				text := tool.Handler(args)
-				return registeredToolExecutionResult(text)
+				result := registeredToolExecutionResult(text)
+				if name == "knowledge_search" && groupPermissions != nil {
+					groupPermissions.recordKnowledgeSearchResult(result)
+				}
+				return result
 			}
 		}
 	}

@@ -460,7 +460,6 @@ type NetworkingManager struct {
 	mdnsScanner       interface{}
 	projectScanner    interface{}
 	gossipClient      interface{}
-	autoUploadTrigger interface{}
 	gossipAutoPublish interface{}
 	skillHubClient    interface{}
 	skillMarketClient interface{}
@@ -516,16 +515,6 @@ func (nm *NetworkingManager) GetSkillHubClient() interface{} {
 // SetSkillHubClient sets the skill hub client
 func (nm *NetworkingManager) SetSkillHubClient(client interface{}) {
 	nm.skillHubClient = client
-}
-
-// GetAutoUploadTrigger returns the auto upload trigger
-func (nm *NetworkingManager) GetAutoUploadTrigger() interface{} {
-	return nm.autoUploadTrigger
-}
-
-// SetAutoUploadTrigger sets the auto upload trigger
-func (nm *NetworkingManager) SetAutoUploadTrigger(trigger interface{}) {
-	nm.autoUploadTrigger = trigger
 }
 
 // GetGossipAutoPublish returns the gossip auto publish

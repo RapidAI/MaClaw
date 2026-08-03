@@ -460,9 +460,10 @@ func (s *CodingKnowledgeStore) SearchExperiences(ctx context.Context, opts Codin
 // ListExperiences returns all experiences matching the given filter.
 func (s *CodingKnowledgeStore) ListExperiences(ctx context.Context, filter CodingListFilter) ([]CodingExperience, error) {
 	listOpts := ListSourcesOptions{
-		ProjectPath: filter.ProjectPath,
-		Labels:      filter.Labels,
-		Limit:       filter.Limit,
+		ProjectPath:     filter.ProjectPath,
+		Labels:          filter.Labels,
+		Limit:           filter.Limit,
+		IncludeDisabled: true,
 	}
 	if listOpts.Limit <= 0 {
 		listOpts.Limit = 100
@@ -500,7 +501,7 @@ func (s *CodingKnowledgeStore) ListExperiences(ctx context.Context, filter Codin
 
 // Stats returns aggregate statistics about the coding knowledge base.
 func (s *CodingKnowledgeStore) Stats(ctx context.Context) (CodingKnowledgeStats, error) {
-	sources, err := s.inner.ListSources(ctx, ListSourcesOptions{Limit: 10000})
+	sources, err := s.inner.ListSources(ctx, ListSourcesOptions{Limit: 10000, IncludeDisabled: true})
 	if err != nil {
 		return CodingKnowledgeStats{}, err
 	}
@@ -560,7 +561,7 @@ func (s *CodingKnowledgeStore) DeleteExperience(ctx context.Context, id string) 
 
 // DeleteByScope removes all experiences matching the given scope (and optional language).
 func (s *CodingKnowledgeStore) DeleteByScope(ctx context.Context, scope, language string) (int, error) {
-	sources, err := s.inner.ListSources(ctx, ListSourcesOptions{Limit: 10000})
+	sources, err := s.inner.ListSources(ctx, ListSourcesOptions{Limit: 10000, IncludeDisabled: true})
 	if err != nil {
 		return 0, err
 	}
@@ -588,7 +589,7 @@ func (s *CodingKnowledgeStore) DeleteByScope(ctx context.Context, scope, languag
 // Reset removes all coding knowledge by deleting and recreating the database.
 // The caller should close this store and create a new one after calling Reset.
 func (s *CodingKnowledgeStore) Reset(ctx context.Context) error {
-	sources, err := s.inner.ListSources(ctx, ListSourcesOptions{Limit: 100000})
+	sources, err := s.inner.ListSources(ctx, ListSourcesOptions{Limit: 100000, IncludeDisabled: true})
 	if err != nil {
 		return err
 	}

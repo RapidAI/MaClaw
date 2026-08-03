@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react';
-import { SetDataDir, SelectDataDir } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { SelectDataDir, SetDataDir } from '../../../wailsjs/go/main/App';
+import { useEffect, useState } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 
 type DataDirectorySectionProps = {
-    config: main.AppConfig | null;
-    setConfig: (c: main.AppConfig) => void;
+    config: corelib.AppConfig | null;
+    setConfig: (c: corelib.AppConfig) => void;
     lang: string;
     showToastMessage: (message: string) => void;
 };
@@ -30,7 +30,7 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
             if (errMsg) {
                 showToastMessage(errMsg);
             } else {
-                const newConfig = new main.AppConfig({ ...config, data_dir: dataDirInput.trim() } as any);
+                const newConfig = new corelib.AppConfig({ ...config, data_dir: dataDirInput.trim() } as any);
                 setConfig(newConfig);
                 showToastMessage(textForLang(lang,
                     'Data directory updated. Please restart maclaw for the change to take effect.',

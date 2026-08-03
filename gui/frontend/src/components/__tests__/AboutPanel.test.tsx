@@ -346,7 +346,7 @@ describe('AboutPanel', () => {
     });
 
     it('hydrates missing registered phone from logged-in hub profile before public probe', async () => {
-        vi.mocked(GetRemoteRegistrationProfile).mockResolvedValueOnce({ tenant_name: 'Acme Team', phone_number: '17090134628' });
+        vi.mocked(GetRemoteRegistrationProfile).mockResolvedValueOnce({ ok: true, tenant_name: 'Acme Team', phone_number: '17090134628' });
 
         render(<AboutPanel {...baseProps} config={{ remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
 
@@ -356,7 +356,7 @@ describe('AboutPanel', () => {
     });
 
     it('hydrates missing registered phone from hub probe for email accounts', async () => {
-        vi.mocked(ProbeRemoteHub).mockResolvedValueOnce({ tenant_name: 'Acme Team', phone_number: '17090134628' });
+        vi.mocked(ProbeRemoteHub).mockResolvedValueOnce({ invitation_code_required: false, tenant_name: 'Acme Team', phone_number: '17090134628' });
         render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
 
         expect(await screen.findByText('17090134628')).toBeTruthy();
@@ -376,6 +376,7 @@ describe('AboutPanel', () => {
             token_rank: 0,
             duration_rank: 0,
             total_users: 0,
+            period: 'monthly',
         });
 
         render(<AboutPanel {...baseProps} config={{ remote_tenant_name: 'Acme Team', remote_nickname: 'Build Desk', remote_hub_url: 'https://hub.example', remote_email: 'dev@example.com', remote_machine_id: 'm_123', remote_machine_token: 'mt_123' }} />);
@@ -411,8 +412,8 @@ describe('AboutPanel', () => {
 
     it('refreshes probed tenant when hub identity changes', async () => {
         vi.mocked(ProbeRemoteHub)
-            .mockResolvedValueOnce({ tenant_name: 'Team One' })
-            .mockResolvedValueOnce({ tenant_name: 'Team Two' });
+            .mockResolvedValueOnce({ invitation_code_required: false, tenant_name: 'Team One' })
+            .mockResolvedValueOnce({ invitation_code_required: false, tenant_name: 'Team Two' });
 
         const { rerender } = render(<AboutPanel {...baseProps} config={{ remote_hub_url: 'https://hub-one.example', remote_email: 'dev@example.com' }} />);
 
@@ -428,8 +429,8 @@ describe('AboutPanel', () => {
 
     it('refreshes probed tenant when phone registration identity changes', async () => {
         vi.mocked(ProbeRemoteHub)
-            .mockResolvedValueOnce({ tenant_name: 'Phone Team One' })
-            .mockResolvedValueOnce({ tenant_name: 'Phone Team Two' });
+            .mockResolvedValueOnce({ invitation_code_required: false, tenant_name: 'Phone Team One' })
+            .mockResolvedValueOnce({ invitation_code_required: false, tenant_name: 'Phone Team Two' });
 
         const { rerender } = render(<AboutPanel {...baseProps} config={{ remote_hub_url: 'https://hub.example', remote_mobile: '19900001111' } as any} />);
 

@@ -2221,3 +2221,19 @@ func TestCoreAgentManageSkillToolDefIncludesMaintenancePlan(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreAgentSystemPromptIncludesConcreteClientCapabilities(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		appCfg: corelib.AppConfig{},
+		clientCapabilities: &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+			Modalities: []string{"text"},
+			Text:       &agent.ClientTextCapabilities{MaxChars: 240, Locale: "zh-CN"},
+		}},
+	}
+	prompt := cb.BuildSystemPrompt("查询天气", true)
+	for _, want := range []string{"Target client capability contract", "Output modalities: text", "max 240 Unicode characters"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("system prompt missing %q: %s", want, prompt)
+		}
+	}
+}

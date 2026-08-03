@@ -25,7 +25,6 @@ const (
 )
 
 var defaultLegacySearchURL = "https://html.duckduckgo.com/html/"
-var defaultMojeekSearchURL = "https://www.mojeek.com/search"
 var defaultBingSearchURL = "https://cn.bing.com/search"
 var defaultBaiduSearchURL = "https://www.baidu.com/s"
 
@@ -119,7 +118,15 @@ func TestProvider(parent context.Context, provider corelib.WebSearchProvider) er
 }
 
 func runProviderSearch(parent context.Context, query string, maxResults int, provider corelib.WebSearchProvider, strict bool) ([]SearchResult, error) {
-	providerCtx, providerCancel := context.WithTimeout(parent, providerSearchTimeout)
+	return runProviderSearchWithTimeout(parent, query, maxResults, provider, strict, providerSearchTimeout)
+}
+
+func runProviderSearchWithTimeout(parent context.Context, query string, maxResults int, provider corelib.WebSearchProvider, strict bool, timeout time.Duration) ([]SearchResult, error) {
+	providerCtx := parent
+	providerCancel := func() {}
+	if timeout > 0 {
+		providerCtx, providerCancel = context.WithTimeout(parent, timeout)
+	}
 	defer providerCancel()
 
 	switch provider.Type {
@@ -199,14 +206,13 @@ func searchDuckDuckGo(ctx context.Context, provider corelib.WebSearchProvider, q
 	if baseURL == "" {
 		baseURL = "https://lite.duckduckgo.com/lite/"
 	}
-	sep := "?"
-	if strings.Contains(baseURL, "?") {
-		sep = "&"
-	}
 	// GET through the anti-bot chain: the DDG HTML endpoints accept GET, and
 	// anomaly challenges (HTTP 202 + challenge page) then escalate instead of
 	// failing flat.
-	searchURL := baseURL + sep + "q=" + url.QueryEscape(query)
+	searchURL, err := appendSearchURLQuery(baseURL, url.Values{"q": {query}})
+	if err != nil {
+		return nil, err
+	}
 	html, err := fetchRawHTMLWithChain(ctx, searchURL, nil)
 	if err != nil {
 		return nil, err
@@ -251,7 +257,7 @@ type BrowserSearchHit struct {
 
 // BrowserSearchProvider searches the web with the managed real browser
 // (last-resort path when every HTTP-level endpoint fails).
-type BrowserSearchProvider func(ctx context.Context, query string, maxResults int) ([]BrowserSearchHit, error)
+type BrowserSearchProvider func(ctx context.Context, engineID, query string, maxResults int, humanAssist bool) ([]BrowserSearchHit, error)
 
 var (
 	browserSearchProviderMu sync.RWMutex
@@ -299,7 +305,7 @@ func searchDirectFallbackChain(ctx context.Context, query string, maxResults int
 	// JS execution) searches Bing/Google directly. Registered by the GUI.
 	if hook := getBrowserSearchProvider(); hook != nil && ctx.Err() == nil {
 		dlogf("[search] all direct endpoints failed; trying browser search fallback")
-		hits, herr := hook(ctx, query, maxResults)
+		hits, herr := hook(ctx, "bing_cn", query, maxResults, false)
 		if herr == nil && len(hits) > 0 {
 			results := make([]SearchResult, 0, len(hits))
 			for _, h := range hits {
@@ -331,7 +337,6 @@ func directSearchEndpoints() []directSearchEndpoint {
 		{Name: "bing-cn", FailureDomain: "bing", Search: searchBingDirect},
 		{Name: "baidu", FailureDomain: "baidu", Search: searchBaiduDirect},
 		{Name: "duckduckgo-html", FailureDomain: "duckduckgo", Search: searchDirectLegacy},
-		{Name: "mojeek-html", FailureDomain: "mojeek", Search: searchMojeekDirect},
 	}
 }
 
@@ -397,7 +402,13 @@ func searchBrave(ctx context.Context, provider corelib.WebSearchProvider, query 
 	if baseURL == "" {
 		baseURL = defaultBraveSearchURL
 	}
-	searchURL := baseURL + "?q=" + url.QueryEscape(query) + "&count=" + fmt.Sprintf("%d", maxResults)
+	searchURL, err := appendSearchURLQuery(baseURL, url.Values{
+		"q":     {query},
+		"count": {fmt.Sprintf("%d", maxResults)},
+	})
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 	if err != nil {
 		return nil, err
@@ -495,7 +506,10 @@ func searchTinyFish(ctx context.Context, provider corelib.WebSearchProvider, que
 	if baseURL == "" {
 		baseURL = defaultTinyFishSearchURL
 	}
-	searchURL := baseURL + "?query=" + url.QueryEscape(query)
+	searchURL, err := appendSearchURLQuery(baseURL, url.Values{"query": {query}})
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 	if err != nil {
 		return nil, err
@@ -671,12 +685,23 @@ func deriveTinyFishFetchURL(searchBaseURL string) string {
 	if searchBaseURL == "" || searchBaseURL == defaultTinyFishSearchURL {
 		return defaultTinyFishFetchURL
 	}
-	// Custom base URL (e.g. proxy): try replacing "search" with "fetch"
-	fetched := strings.Replace(searchBaseURL, "search", "fetch", 1)
-	if fetched == searchBaseURL {
-		return defaultTinyFishFetchURL // no "search" in URL, use default
+	u, err := url.Parse(searchBaseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return defaultTinyFishFetchURL
 	}
-	return fetched
+	// Custom endpoints commonly identify the operation either in the path
+	// (/search) or hostname (api.search.example). Never replace query values:
+	// they may contain proxy credentials or routing data that happen to include
+	// the word "search".
+	if fetchedPath := strings.Replace(u.Path, "search", "fetch", 1); fetchedPath != u.Path {
+		u.Path = fetchedPath
+		return u.String()
+	}
+	if fetchedHost := strings.Replace(u.Host, "search", "fetch", 1); fetchedHost != u.Host {
+		u.Host = fetchedHost
+		return u.String()
+	}
+	return defaultTinyFishFetchURL
 }
 
 // applyFetchWindowing applies offset and maxChars windowing to a FetchResult.
@@ -848,16 +873,6 @@ func searchDirectLegacy(ctx context.Context, query string, maxResults int) ([]Se
 	return parseDDGResults(html, maxResults), nil
 }
 
-// searchMojeekDirect scrapes Mojeek HTML as a provider-diverse direct fallback.
-func searchMojeekDirect(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
-	searchURL := defaultMojeekSearchURL + "?q=" + url.QueryEscape(query)
-	html, err := fetchRawHTMLWithChain(ctx, searchURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	return parseMojeekResults(html, maxResults), nil
-}
-
 // parseDDGResults extracts search results from DuckDuckGo's HTML and Lite
 // responses. The two endpoints use different result-link class names.
 func parseDDGResults(html string, maxResults int) []SearchResult {
@@ -975,44 +990,6 @@ func hasDDGClass(class string, candidates ...string) bool {
 	return false
 }
 
-// parseMojeekResults extracts search results from Mojeek's HTML response.
-func parseMojeekResults(html string, maxResults int) []SearchResult {
-	var results []SearchResult
-	remaining := html
-	lowerRemaining := strings.ToLower(html)
-	for len(results) < maxResults {
-		idx := strings.Index(lowerRemaining, `<a `)
-		if idx < 0 {
-			break
-		}
-		contextBefore := remaining[:idx]
-		remaining = remaining[idx:]
-		lowerRemaining = lowerRemaining[idx:]
-		openEnd := strings.Index(remaining, ">")
-		if openEnd < 0 {
-			break
-		}
-		anchorOpen := remaining[:openEnd+1]
-
-		href := normalizeSearchResultURL(extractAttr(anchorOpen, "href"))
-		title := cleanHTML(extractTagText(remaining, "a"))
-		if href != "" && title != "" && isSearchResultAnchor(contextBefore, anchorOpen) && !looksLikeSearchChromeURL(href) {
-			results = append(results, SearchResult{
-				Title: title,
-				URL:   href,
-			})
-		}
-
-		if len(remaining) > 6 {
-			remaining = remaining[6:]
-			lowerRemaining = lowerRemaining[6:]
-		} else {
-			break
-		}
-	}
-	return results
-}
-
 func isSearchResultAnchor(contextBefore, anchorOpen string) bool {
 	class := strings.ToLower(extractAttr(anchorOpen, "class"))
 	if strings.Contains(class, "result") || strings.Contains(class, "title") || class == "ob" {
@@ -1108,8 +1085,6 @@ func looksLikeSearchChromeURL(href string) bool {
 
 func isSearchProviderHost(host string) bool {
 	switch {
-	case host == "mojeek.com" || strings.HasSuffix(host, ".mojeek.com"):
-		return true
 	case host == "duckduckgo.com" || strings.HasSuffix(host, ".duckduckgo.com"):
 		return true
 	case host == "bing.com" || strings.HasSuffix(host, ".bing.com"):
@@ -1225,7 +1200,17 @@ func cleanHTML(s string) string {
 // ---------------------------------------------------------------------------
 
 func searchBingDirect(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
-	searchURL := defaultBingSearchURL + "?q=" + url.QueryEscape(query) + "&count=" + fmt.Sprintf("%d", maxResults)
+	return searchBingDirectWithBaseURL(ctx, query, maxResults, defaultBingSearchURL)
+}
+
+func searchBingDirectWithBaseURL(ctx context.Context, query string, maxResults int, baseURL string) ([]SearchResult, error) {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultBingSearchURL
+	}
+	searchURL, err := appendSearchURLQuery(baseURL, url.Values{"q": {query}, "count": {fmt.Sprintf("%d", maxResults)}})
+	if err != nil {
+		return nil, err
+	}
 	html, err := fetchRawHTMLWithChain(ctx, searchURL, nil)
 	if err != nil {
 		return nil, err
@@ -1316,11 +1301,21 @@ func parseBingResults(html string, maxResults int) []SearchResult {
 // ---------------------------------------------------------------------------
 
 func searchBaiduDirect(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
+	return searchBaiduDirectWithBaseURL(ctx, query, maxResults, defaultBaiduSearchURL)
+}
+
+func searchBaiduDirectWithBaseURL(ctx context.Context, query string, maxResults int, baseURL string) ([]SearchResult, error) {
 	// Baidu requires a valid BAIDUID cookie to avoid redirect to verification page.
 	// Fetch one dynamically by hitting the homepage first.
 	cookie := acquireBaiduCookie(ctx)
 
-	searchURL := defaultBaiduSearchURL + "?wd=" + url.QueryEscape(query) + "&rn=" + fmt.Sprintf("%d", maxResults)
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultBaiduSearchURL
+	}
+	searchURL, err := appendSearchURLQuery(baseURL, url.Values{"wd": {query}, "rn": {fmt.Sprintf("%d", maxResults)}})
+	if err != nil {
+		return nil, err
+	}
 	html, err := fetchRawHTMLWithChain(ctx, searchURL, map[string]string{"Cookie": cookie})
 	if err != nil {
 		return nil, err
@@ -1331,6 +1326,22 @@ func searchBaiduDirect(ctx context.Context, query string, maxResults int) ([]Sea
 		return nil, fmt.Errorf("Baidu returned no parseable results (possibly captcha page)")
 	}
 	return results, nil
+}
+
+func appendSearchURLQuery(baseURL string, values url.Values) (string, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid search base URL")
+	}
+	query := u.Query()
+	for key, incoming := range values {
+		query.Del(key)
+		for _, value := range incoming {
+			query.Add(key, value)
+		}
+	}
+	u.RawQuery = query.Encode()
+	return u.String(), nil
 }
 
 // baiduCookie caches a dynamically acquired BAIDUID cookie to avoid

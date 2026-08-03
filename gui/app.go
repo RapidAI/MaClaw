@@ -140,11 +140,14 @@ type App struct {
 	skillMarketClient                  *SkillMarketClient
 	skillMarketAutoLoginRunning        atomic.Bool
 	skillMarketAutoLoginNextAttempt    atomic.Value // stores time.Time; throttles failed machine-login retries
-	skillLifecycle                     *SkillLifecycleManager
-	gossipClient                       *GossipClient
-	autoUploadTrigger                  *AutoUploadTrigger
-	gossipAutoPublish                  *AutoPublishTrigger
-	evolutionPipeline                  *skill.EvolutionPipeline
+	// petStoreSessionRefreshMu prevents several initial Pet Store requests
+	// (listings, account, and rankings) from all exchanging the same expired
+	// session at once when the embedded market opens.
+	petStoreSessionRefreshMu sync.Mutex
+	skillLifecycle           *SkillLifecycleManager
+	gossipClient             *GossipClient
+	gossipAutoPublish        *AutoPublishTrigger
+	evolutionPipeline        *skill.EvolutionPipeline
 	// Maclaw capability evolution components
 	riskAssessor      *RiskAssessor
 	policyEngine      *PolicyEngine
@@ -1111,21 +1114,7 @@ func (a *App) ensureSkillMarketClient() {
 	a.skillMarketClient = NewSkillMarketClient(a)
 }
 
-func (a *App) ensureAutoUploadTrigger() {
-	a.ensureSkillMarketClient()
-	if a.autoUploadTrigger != nil || a.skillMarketClient == nil {
-		return
-	}
-	a.autoUploadTrigger = NewAutoUploadTrigger(a.skillMarketClient, func() string {
-		if cfg, err := a.LoadConfig(); err == nil {
-			return strings.TrimSpace(cfg.RemoteEmail)
-		}
-		return ""
-	})
-}
-
 func (a *App) ensureSkillLifecycleManager() {
-	a.ensureAutoUploadTrigger()
 	if a.skillLifecycle != nil {
 		a.skillLifecycle.StartBackgroundProcessing(context.Background(), skillUploadQueueProcessInterval)
 		return
@@ -1152,9 +1141,7 @@ func (a *App) ensureSkillRunner() {
 	if a.skillRunner != nil || a.skillExecutor == nil {
 		return
 	}
-	a.ensureAutoUploadTrigger()
 	a.skillRunner = NewSkillRunner(a.skillExecutor)
-	a.skillRunner.uploadTrigger = a.autoUploadTrigger
 	a.skillRunner.packageFn = a.packageSkillForMarket
 
 	// Wire evolution pipeline (async background self-evolution + self-repair).
@@ -1244,6 +1231,9 @@ func (a *App) ensureEvolutionPipeline() {
 	// not goroutine-safe (no internal mutex).
 	a.ensureSkillLifecycleManager()
 	pipeline.UploadTrigger = func(skillName string, _ *skill.SkillExecutionResultCompat) {
+		if cfg, err := a.LoadConfig(); err != nil || !cfg.IsSkillAutoUploadEnabled() {
+			return
+		}
 		if a.skillLifecycle == nil {
 			return
 		}
@@ -1463,9 +1453,7 @@ func (a *App) buildSkillAutoSummaryPipeline() *SkillAutoSummaryPipeline {
 	return NewSkillAutoSummaryPipeline(
 		NewTagGenerator(),
 		checker,
-		a.autoUploadTrigger,
 		a.skillExecutor,
-		a.skillMarketClient,
 		nil,
 	).WithNamingLLM(NewSkillEvolutionLLMAdapter(a.GetMaclawLLMConfig))
 }
@@ -2130,6 +2118,9 @@ func (a *App) startup(ctx context.Context) {
 	a.logStoragePaths("startup.begin", nil)
 	// Initialize code event emitter for code preview panel.
 	a.codeEventEmitter = NewCodeEventEmitter(a)
+	// Ambient date is rendered locally by the hardware; GUI owns live weather
+	// resolution and publishes compact snapshots through the authenticated Hub.
+	a.startDeviceAmbientWeather(ctx)
 	// Migrate legacy ~/.cceasy data to ~/.maclaw/data on first launch.
 	a.MigrateDataDir()
 	// One-time enable shared agent loop for pre-default installs.
@@ -4919,11 +4910,6 @@ func (a *App) drainPendingConfigDiskWrite(cfg corelib.AppConfig) {
 	log.Printf("[config] deferred_disk_write ok variant=%q", cfg.PetVariant)
 }
 
-// drainPendingPetConfigPersist is a compatibility alias for older call sites.
-func (a *App) drainPendingPetConfigPersist(cfg corelib.AppConfig) {
-	a.drainPendingConfigDiskWrite(cfg)
-}
-
 // sshHostEntries returns configured SSH hosts for form option injection.
 // Never returns passwords to callers that only need profile metadata.
 func (a *App) sshHostEntries() []corelib.SSHHostEntry {
@@ -6047,6 +6033,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	floatingChanged := floatingAppearanceChanged(oldConfig, config)
 	motionChanged := floatingMotionChanged(oldConfig, config)
 	soundChanged := floatingSoundChanged(oldConfig, config)
+	devicePetChanged := !oldConfigLoaded || devicePetProfileChanged(oldConfig, config)
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {
 		hubClient = a.remoteSessions.hubClient
@@ -6110,11 +6097,16 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		if oldConfigLoaded && oldConfig.RemoteHeartbeatSec != config.RemoteHeartbeatSec {
 			hubClient.InvalidateHeartbeatIntervalCache()
 		}
-		go func(client *RemoteHubClient) {
+		go func(client *RemoteHubClient, cfg corelib.AppConfig, syncPet bool) {
 			if client.IsConnected() {
+				if syncPet {
+					if err := client.SendDeviceGatewayPetProfile(cfg); err != nil {
+						log.Printf("[device-pet] profile sync failed: %v", err)
+					}
+				}
 				client.SyncLaunchProjects()
 			}
-		}(hubClient)
+		}(hubClient, config, devicePetChanged)
 	}
 	log.Printf("[config] SaveConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
@@ -6379,13 +6371,22 @@ func (a *App) ListSkillEvolutionAudit(limit int) []map[string]interface{} {
 	}
 	out := make([]map[string]interface{}, 0, len(events))
 	for _, ev := range events {
-		out = append(out, map[string]interface{}{
+		row := map[string]interface{}{
 			"timestamp":   ev.Timestamp,
 			"kind":        ev.Kind,
 			"skill":       ev.Skill,
 			"explanation": ev.Explanation,
 			"source":      ev.Source,
-		})
+		}
+		// Optional fields (omitempty in the JSONL): only include when present
+		// so older rows keep their original shape.
+		if ev.Status != "" {
+			row["status"] = ev.Status
+		}
+		if ev.Via != "" {
+			row["via"] = ev.Via
+		}
+		out = append(out, row)
 	}
 	return out
 }
@@ -7339,6 +7340,21 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SetSkillEvolutionEnabled(v)
+		case "skill_auto_upload_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetSkillAutoUploadEnabled(v)
+		case "skill_auto_upload_min_successes":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 {
+				v = 0
+			}
+			cfg.SkillAutoUploadMinSuccesses = v
 		case "maclaw_llm_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
@@ -7649,6 +7665,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.PetSize = v
 			petChanged = true
+		case "pet_ambient_city":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.PetAmbientCity = strings.TrimSpace(v)
 		case "pet_motion_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7671,6 +7693,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			cfg.PetMotionSoundPreset = strings.TrimSpace(v)
 			petChanged = true
 		case "pet_text_interaction_enabled":
+			// 暂无消费者，功能落地后再暴露 UI（字段保留）。
 			v, err := boolField(key, value)
 			if err != nil {
 				return corelib.AppConfig{}, err
@@ -7692,6 +7715,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			cfg.PetVoiceReadback = v
 			petChanged = true
 		case "pet_file_drop_enabled":
+			// 暂无消费者，功能落地后再暴露 UI（字段保留）。
 			v, err := boolField(key, value)
 			if err != nil {
 				return corelib.AppConfig{}, err
@@ -7727,6 +7751,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			cfg.PetAutoRetryOnNoHear = v
 			petChanged = true
 		case "pet_continuous_timeout_sec":
+			// 暂无消费者，功能落地后再暴露 UI（字段保留）。
 			v, err := intField(key, value)
 			if err != nil {
 				return corelib.AppConfig{}, err
@@ -7825,6 +7850,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	floatingChanged := petChanged && floatingAppearanceChanged(current, cfg)
 	motionChanged := petChanged && floatingMotionChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
+	devicePetChanged := devicePetProfileChanged(current, cfg)
 	// Unified epilogue: publish → unlock → post-unlock drains → persist.
 	// Mark committed before finish so defer does not double-unlock.
 	configTxnCommitted = true
@@ -7930,6 +7956,18 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				}
 				if motionChanged {
 					fa.UpdateMotionConfig(cfg)
+				}
+			}
+		}(cfg)
+	}
+	if devicePetChanged && a.ctx != nil {
+		// Propagate the active GUI pet immediately. Previously the Hub profile was
+		// refreshed only when the GUI happened to send a gateway reply, so changing
+		// packs while the ESP was idle had no observable effect.
+		go func(cfg corelib.AppConfig) {
+			if hub := a.hubClient(); hub != nil && hub.IsConnected() {
+				if err := hub.SendDeviceGatewayPetProfile(cfg); err != nil {
+					log.Printf("[device-pet] profile sync failed: %v", err)
 				}
 			}
 		}(cfg)

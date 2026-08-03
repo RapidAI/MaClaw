@@ -468,6 +468,9 @@ func TestForwardOpenAICompatRequestDropsOrphanedToolHistory(t *testing.T) {
 		if _, ok := firstAssistant["tool_calls"]; ok {
 			t.Fatalf("orphaned tool_calls leaked upstream: %#v", firstAssistant)
 		}
+		if got, ok := firstAssistant["content"]; !ok || got != "" {
+			t.Fatalf("orphaned assistant content = %#v, want explicit empty string", firstAssistant)
+		}
 		if got := messages[2].(map[string]any)["role"]; got != "assistant" {
 			t.Fatalf("complete assistant role = %#v, want assistant", got)
 		}
@@ -1231,6 +1234,14 @@ func TestForwardOpenAICompatStreamRequestNormalizesDeepSeekFlashOptions(t *testi
 		if _, ok := body["tool_choice"]; ok {
 			t.Fatalf("orphaned tool_choice leaked upstream: %#v", body)
 		}
+		messages := body["messages"].([]any)
+		assistant := messages[1].(map[string]any)
+		if got, ok := assistant["content"]; !ok || got != "" {
+			t.Fatalf("assistant content = %#v, want explicit empty string: %#v", got, assistant)
+		}
+		if _, ok := assistant["tool_calls"]; ok {
+			t.Fatalf("empty tool_calls leaked upstream: %#v", assistant)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -1240,7 +1251,10 @@ func TestForwardOpenAICompatStreamRequestNormalizesDeepSeekFlashOptions(t *testi
 	})}
 
 	resp, err := ForwardOpenAICompatStreamRequest(context.Background(), MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"}, map[string]any{
-		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+			map[string]any{"role": "assistant", "tool_calls": []any{}},
+		},
 		"n":           2,
 		"tool_choice": "required",
 	}, client)

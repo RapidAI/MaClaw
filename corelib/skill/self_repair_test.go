@@ -293,3 +293,96 @@ func TestRepairMetadataHelpersIgnoreNilSkill(t *testing.T) {
 	MarkRepairVerified(nil)
 	ResetRepairCount(nil)
 }
+
+func TestExplainRepairGate_Reasons(t *testing.T) {
+	repairableErr := FormatErrorForLLM(ClassifiedError{Class: ErrCommandNotFound, UserMessage: "missing cmd", Repairable: true})
+	base := func() *corelib.NLSkillEntry {
+		return &corelib.NLSkillEntry{
+			Name:         "s",
+			Source:       "manual",
+			Status:       "active",
+			UsageCount:   5,
+			SuccessCount: 0,
+			FailureCount: 5,
+			LastError:    repairableErr,
+		}
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*corelib.NLSkillEntry) *corelib.NLSkillEntry
+		reason string
+	}{
+		{"nil_skill", func(*corelib.NLSkillEntry) *corelib.NLSkillEntry { return nil }, "no_skill"},
+		{"no_last_error", func(e *corelib.NLSkillEntry) *corelib.NLSkillEntry { e.LastError = ""; return e }, "no_last_error"},
+		{"status_not_active", func(e *corelib.NLSkillEntry) *corelib.NLSkillEntry { e.Status = "disabled"; return e }, "status_not_active"},
+		{"file_backed", func(e *corelib.NLSkillEntry) *corelib.NLSkillEntry {
+			e.Source = "file"
+			e.SkillDir = t.TempDir()
+			return e
+		}, "file_backed"},
+		{"max_attempts", func(e *corelib.NLSkillEntry) *corelib.NLSkillEntry {
+			e.RepairAttemptCount = SelfRepairMaxAttempts
+			return e
+		}, "max_attempts"},
+		{"error_class_not_repairable", func(e *corelib.NLSkillEntry) *corelib.NLSkillEntry {
+			e.LastError = FormatErrorForLLM(ClassifiedError{Class: ErrRateLimit, UserMessage: "rate limited", Repairable: false})
+			return e
+		}, "error_class_not_repairable"},
+		{"usage_threshold", func(e *corelib.NLSkillEntry) *corelib.NLSkillEntry { e.UsageCount = 2; return e }, "usage_threshold"},
+		{"success_rate_ok", func(e *corelib.NLSkillEntry) *corelib.NLSkillEntry { e.SuccessCount = 4; return e }, "success_rate_ok"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, reason := ExplainRepairGate(tc.mutate(base()))
+			if ok || reason != tc.reason {
+				t.Fatalf("ExplainRepairGate = (%v, %q), want (false, %q)", ok, reason, tc.reason)
+			}
+		})
+	}
+
+	// All gates pass.
+	ok, reason := ExplainRepairGate(base())
+	if !ok || reason != "" {
+		t.Fatalf("ExplainRepairGate = (%v, %q), want (true, \"\")", ok, reason)
+	}
+	// ShouldAttemptRepair must agree with the gate.
+	if !ShouldAttemptRepair(base()) {
+		t.Fatal("ShouldAttemptRepair disagrees with ExplainRepairGate on passing entry")
+	}
+}
+
+// End-to-end: flat optional fields (name/condition/when/label/capture) and
+// on_error in the LLM's JSON must survive parsing → sanitize → conversion.
+// Before the json tags + sanitize carry-through, they were silently dropped.
+func TestAttemptRepairPreservesFlatFieldsEndToEnd(t *testing.T) {
+	llm := &stubRepairLLM{
+		respond: `{"repaired":true,"explanation":"keep meta","should_disable":false,"new_steps":[{` +
+			`"action":"bash","params":{"command":"echo hi"},"on_error":"continue",` +
+			`"name":"greet","condition":"os == 'windows'","when":"prev.ok","label":"main",` +
+			`"capture":{"out":"(.*)"}}]}`,
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:      "meta-skill",
+		Status:    "active",
+		LastError: "[class: command_not_found] gone",
+		Steps:     []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "gone"}}},
+	}
+	result, err := AttemptRepairWithContext(llm, entry, NewRepairContext(entry, nil))
+	if err != nil {
+		t.Fatalf("AttemptRepairWithContext() error = %v", err)
+	}
+	if result == nil || !result.Repaired || len(result.NewSteps) != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	step := convertRepairResultSteps(result.NewSteps)[0]
+	if step.OnError != "continue" {
+		t.Fatalf("on_error lost: %+v", step)
+	}
+	if step.Name != "greet" || step.Condition != "os == 'windows'" || step.When != "prev.ok" || step.Label != "main" {
+		t.Fatalf("flat fields lost: %+v", step)
+	}
+	if step.Capture["out"] != "(.*)" {
+		t.Fatalf("capture lost: %+v", step.Capture)
+	}
+}

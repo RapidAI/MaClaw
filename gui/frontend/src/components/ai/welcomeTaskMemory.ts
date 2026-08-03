@@ -655,6 +655,8 @@ export type WelcomeCustomTemplate = {
     sourceKey?: string;
     sourceTabId?: string;
     agentMode?: "coding_dev" | "remote_coding_dev";
+    /** Evidence-only first SSH turn for an incident diagnosis. */
+    remoteSafety?: "diagnosis";
     /**
      * Coding environment captured when the user saved this as a favorite.
      * Stored in localStorage only (may include SSH password for local convenience).
@@ -684,6 +686,7 @@ export function loadWelcomeCustomTemplates(): WelcomeCustomTemplate[] {
                 t.agentMode === "coding_dev" || t.agentMode === "remote_coding_dev"
                     ? t.agentMode
                     : undefined,
+            remoteSafety: t.remoteSafety === "diagnosis" ? "diagnosis" as const : undefined,
             codingEnv: normalizeWelcomeStoredCodingEnv(t.codingEnv),
             createdAt: Number(t.createdAt) || 0,
             usedAt: Number(t.usedAt) || 0,
@@ -697,6 +700,7 @@ export function saveWelcomeCustomTemplate(input: {
     sourceKey?: string;
     sourceTabId?: string;
     agentMode?: "coding_dev" | "remote_coding_dev";
+    remoteSafety?: "diagnosis";
     codingEnv?: WelcomeStoredCodingEnv;
 }): { templates: WelcomeCustomTemplate[]; saved: WelcomeCustomTemplate | null } {
     const title = (input.title || "").trim().slice(0, 80);
@@ -721,6 +725,9 @@ export function saveWelcomeCustomTemplate(input: {
         sourceKey: input.sourceKey ?? prevSame?.sourceKey,
         sourceTabId: input.sourceTabId ?? prevSame?.sourceTabId,
         agentMode: input.agentMode ?? prevSame?.agentMode,
+        remoteSafety: input.remoteSafety === "diagnosis"
+            ? "diagnosis"
+            : (input.remoteSafety === undefined ? prevSame?.remoteSafety : undefined),
         codingEnv,
         createdAt: prevSame?.createdAt || Date.now(),
         usedAt: Date.now(),
@@ -836,6 +843,7 @@ export type WelcomeTemplatesExportPayload = {
         sourceKey?: string;
         sourceTabId?: string;
         agentMode?: "coding_dev" | "remote_coding_dev";
+        remoteSafety?: "diagnosis";
         /** Coding env; portable/cloud export strips password by default. */
         codingEnv?: WelcomeStoredCodingEnv;
     }>;
@@ -996,6 +1004,7 @@ export function buildWelcomeTemplatesExport(
             sourceKey: t.sourceKey,
             sourceTabId: t.sourceTabId,
             agentMode: t.agentMode,
+            remoteSafety: t.remoteSafety,
             codingEnv: includePasswords
                 ? t.codingEnv
                 : stripCodingEnvPassword(t.codingEnv),
@@ -1095,6 +1104,7 @@ export function parseWelcomeTemplatesImport(raw: string): {
             r.agentMode === "coding_dev" || r.agentMode === "remote_coding_dev"
                 ? r.agentMode
                 : undefined;
+        const remoteSafety = r.remoteSafety === "diagnosis" ? "diagnosis" : undefined;
         const codingEnv = normalizeWelcomeStoredCodingEnv(r.codingEnv);
         items.push({
             title,
@@ -1102,6 +1112,7 @@ export function parseWelcomeTemplatesImport(raw: string): {
             sourceKey: typeof r.sourceKey === "string" ? r.sourceKey : undefined,
             sourceTabId: typeof r.sourceTabId === "string" ? r.sourceTabId : undefined,
             agentMode,
+            remoteSafety,
             codingEnv,
         });
     }
@@ -1169,6 +1180,7 @@ export function importWelcomeCustomTemplates(
         sourceKey: item.sourceKey,
         sourceTabId: item.sourceTabId,
         agentMode: item.agentMode,
+        remoteSafety: item.remoteSafety,
         codingEnv: item.codingEnv,
         // Preserve relative order from the file (first in file → front).
         createdAt: now + (parsed.items.length - index),
@@ -1233,6 +1245,7 @@ export function customTemplateToWelcomePrompt(t: WelcomeCustomTemplate): Welcome
         template: t.body,
         templateEn: t.body,
         agentMode: t.agentMode,
+        remoteSafety: t.remoteSafety,
     };
 }
 

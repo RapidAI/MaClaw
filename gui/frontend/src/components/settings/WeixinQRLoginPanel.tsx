@@ -1,12 +1,12 @@
-import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
 import { LoadConfig, PollWeixinQRStatus, StartWeixinQRLogin } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { type Dispatch, type SetStateAction, useEffect, useRef } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { textForLang } from './imSettingsShared';
 
 type WeixinQRLoginPanelProps = {
     lang: string;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     setWeixinStatus: Dispatch<SetStateAction<string>>;
     weixinQRCode: string;
     setWeixinQRCode: Dispatch<SetStateAction<string>>;

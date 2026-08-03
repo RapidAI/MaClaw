@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -3146,6 +3148,45 @@ func TestFloatingAppearanceChangedIncludesPetRuntimeSettings(t *testing.T) {
 	}
 }
 
+func TestDevicePetProfileChangedOnlyTracksHardwareFields(t *testing.T) {
+	base := corelib.AppConfig{PetSkin: "clawmate", PetVariant: "default", PetSize: 88}
+
+	resized := base
+	resized.PetSize = 96
+	if devicePetProfileChanged(base, resized) {
+		t.Fatal("pet size is a GUI-only setting and should not resend the hardware profile")
+	}
+
+	newSkin := base
+	newSkin.PetSkin = "mini-claw"
+	if !devicePetProfileChanged(base, newSkin) {
+		t.Fatal("pet skin change must be synchronized to hardware")
+	}
+
+	motionOff := false
+	newMotion := base
+	newMotion.PetMotionEnabled = &motionOff
+	if !devicePetProfileChanged(base, newMotion) {
+		t.Fatal("pet motion change must be synchronized to hardware")
+	}
+}
+
+func TestDevicePetRGB565PreservesOpaqueAndAlphaColors(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	source.SetNRGBA(0, 0, color.NRGBA{R: 255, G: 0, B: 0, A: 255})
+	pixels := devicePetRGB565(source)
+	if len(pixels) < 2 || pixels[0] != 0x00 || pixels[1] != 0xf8 {
+		t.Fatalf("opaque red RGB565=%#v, want little-endian 0xf800", pixels[:2])
+	}
+
+	source.SetNRGBA(0, 0, color.NRGBA{R: 255, G: 255, B: 255, A: 128})
+	pixels = devicePetRGB565(source)
+	value := uint16(pixels[0]) | uint16(pixels[1])<<8
+	if value == 0 || value == 0xffff {
+		t.Fatalf("half-transparent white should blend with pet background, got %#04x", value)
+	}
+}
+
 func TestSaveConfigConcurrentWritesValidJSON(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -3661,5 +3702,47 @@ func TestCoreConfigManagerDefaultLaunchModeUsesFieldSetter(t *testing.T) {
 	}
 	if saved.DefaultLaunchMode != "local" {
 		t.Fatalf("DefaultLaunchMode = %q, want local", saved.DefaultLaunchMode)
+	}
+}
+
+func TestListSkillEvolutionAuditIncludesStatusAndVia(t *testing.T) {
+	tmpHome := t.TempDir()
+	corelib.SetMaclawBaseDir(filepath.Join(tmpHome, ".maclaw"))
+	t.Cleanup(func() { corelib.SetMaclawBaseDir("") })
+
+	// One row carrying status/via, one legacy row without them.
+	skill.RecordEvolutionEvent(skill.EventSkillRepairDraftReady, map[string]string{
+		"skill":  "s1",
+		"status": "rejected",
+	}, "desktop")
+	skill.RecordEvolutionEvent(skill.EventSkillExecutionFailed, map[string]string{
+		"skill": "s2",
+	}, "desktop")
+
+	app := &App{testHomeDir: tmpHome}
+	rows := app.ListSkillEvolutionAudit(10)
+	if len(rows) != 2 {
+		t.Fatalf("want 2 audit rows, got %d: %#v", len(rows), rows)
+	}
+	var withStatus, legacy map[string]interface{}
+	for _, r := range rows {
+		if r["skill"] == "s1" {
+			withStatus = r
+		} else if r["skill"] == "s2" {
+			legacy = r
+		}
+	}
+	if withStatus == nil || legacy == nil {
+		t.Fatalf("missing expected rows: %#v", rows)
+	}
+	if withStatus["status"] != "rejected" {
+		t.Fatalf("status not passed through: %#v", withStatus)
+	}
+	// Legacy rows keep their original shape (no status/via keys).
+	if _, ok := legacy["status"]; ok {
+		t.Fatalf("legacy row should have no status key: %#v", legacy)
+	}
+	if _, ok := legacy["via"]; ok {
+		t.Fatalf("legacy row should have no via key: %#v", legacy)
 	}
 }

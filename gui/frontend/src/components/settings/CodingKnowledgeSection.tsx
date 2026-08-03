@@ -1,30 +1,13 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
-import { useState, useEffect, useCallback, useRef, useId } from 'react';
-import {
-    CodingKnowledgeStats,
-    CodingKnowledgeList,
-    CodingKnowledgeGet,
-    CodingKnowledgeUpdate,
-    CodingKnowledgeDelete,
-    CodingKnowledgeConfirm,
-    CodingKnowledgeResetFile,
-    CodingKnowledgeSearch,
-    CodingKnowledgeExportToFile,
-    CodingKnowledgeImportFromFile,
-    CodingKnowledgeGraduateToSteering,
-    CodingKnowledgeCapacity,
-    CodingKnowledgeEvict,
-    SelectCodingKnowledgeExportPath,
-    SelectCodingKnowledgeImportFile,
-} from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { CodingKnowledgeCapacity, CodingKnowledgeConfirm, CodingKnowledgeDelete, CodingKnowledgeEvict, CodingKnowledgeExportToFile, CodingKnowledgeGet, CodingKnowledgeGraduateToSteering, CodingKnowledgeImportFromFile, CodingKnowledgeList, CodingKnowledgeResetFile, CodingKnowledgeSearch, CodingKnowledgeStats, CodingKnowledgeUpdate, SelectCodingKnowledgeExportPath, SelectCodingKnowledgeImportFile } from '../../../wailsjs/go/main/App';
+import { corelib, knowledge } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { useDialog } from '../CustomDialog';
 import { cfgVal, saveConfigPatch } from './programmingToolsConfig';
 
 type Props = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     versionRef: MutableRefObject<number>;
 };
@@ -194,7 +177,7 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
         if (!draft) return;
         setEditorSaving(true);
         try {
-            await CodingKnowledgeUpdate(draft);
+            await CodingKnowledgeUpdate(draft as knowledge.CodingExperience);
             setActionMessage(textForLang(lang, 'Experience saved.', '经验已保存。', '經驗已保存。'));
             setEditorOpen(false);
             setDraft(null);

@@ -15,8 +15,8 @@ interface HealthReport {
     embedder_active: boolean;
     category_counts: Record<string, number>;
     avg_access_count: number;
-    oldest_entry: string;
-    newest_entry: string;
+    oldest_entry?: string;
+    newest_entry?: string;
     versioned_entries: number;
 }
 
@@ -45,7 +45,7 @@ export function MemoryHealthDialog({ open, onClose, t }: Props) {
 
     if (!open) return null;
 
-    const formatDate = (iso: string) => {
+    const formatDate = (iso?: string) => {
         if (!iso) return '-';
         try {
             return new Date(iso).toLocaleString();

@@ -9,6 +9,9 @@ import (
 
 func (s *SQLiteStore) SourceQualityReport(ctx context.Context, opts ListSourcesOptions) (SourceQualityReport, error) {
 	opts.Limit = sourceQualityReportLimit(opts)
+	if opts.Status == "" {
+		opts.IncludeDisabled = true
+	}
 	sources, err := s.ListSources(ctx, opts)
 	if err != nil {
 		return SourceQualityReport{}, err

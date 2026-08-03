@@ -31,6 +31,9 @@ const (
 	manageSkillActionSetEvolutionEnabled    manageSkillAction = "set_evolution_enabled"
 	manageSkillActionTriggerRepair          manageSkillAction = "trigger_repair"
 	manageSkillActionTriggerOptimize        manageSkillAction = "trigger_optimize"
+	manageSkillActionListRepairDrafts       manageSkillAction = "list_repair_drafts"
+	manageSkillActionApplyRepairDraft       manageSkillAction = "apply_repair_draft"
+	manageSkillActionRejectRepairDraft      manageSkillAction = "reject_repair_draft"
 )
 
 func classifyManageSkillAction(action string) manageSkillAction {
@@ -73,6 +76,12 @@ func classifyManageSkillAction(action string) manageSkillAction {
 		return manageSkillActionTriggerRepair
 	case manageSkillActionTriggerOptimize:
 		return manageSkillActionTriggerOptimize
+	case manageSkillActionListRepairDrafts:
+		return manageSkillActionListRepairDrafts
+	case manageSkillActionApplyRepairDraft:
+		return manageSkillActionApplyRepairDraft
+	case manageSkillActionRejectRepairDraft:
+		return manageSkillActionRejectRepairDraft
 	default:
 		return manageSkillAction(strings.TrimSpace(action))
 	}
@@ -124,6 +133,12 @@ func (h *IMMessageHandler) toolManageSkill(ctx context.Context, args map[string]
 		return h.toolTriggerSkillRepair(args)
 	case manageSkillActionTriggerOptimize:
 		return h.toolTriggerSkillOptimize(args)
+	case manageSkillActionListRepairDrafts:
+		return h.toolListSkillRepairDrafts(args)
+	case manageSkillActionApplyRepairDraft:
+		return h.toolApplySkillRepairDraft(args)
+	case manageSkillActionRejectRepairDraft:
+		return h.toolRejectSkillRepairDraft(args)
 	default:
 		return cskill.ManageSkillUnknownActionError(action)
 	}

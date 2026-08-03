@@ -87,6 +87,9 @@ type RemoteCodingSubAgent struct {
 	// into an implementation workflow just because it happens over SSH. Build
 	// output is allowed because it is a normal consequence of executing a build.
 	operationalRequest bool
+	// maintenance changes presentation only. The underlying SSH tool and safety
+	// policies remain the remote-coding engine shared with development tasks.
+	maintenance bool
 }
 
 var remoteSourcePreviewSessionSeq atomic.Uint64
@@ -137,7 +140,7 @@ func (r *RemoteCodingSubAgent) SetCallbacks(onToken func(string), onProgress fun
 	r.onToken = onToken
 	r.onProgress = onProgress
 	if !r.highRiskApprovalExplicit && r.handler != nil && r.handler.app != nil {
-		r.setHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallback(r.handler, r.loopCtx, onProgress), false, false, true)
+		r.setHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallback(r.handler, r.loopCtx, onProgress, r.maintenance), false, false, true)
 	}
 }
 
@@ -311,6 +314,7 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		cb.completeRemotePostEditAudit()
 	}
 	out := cb.applyRemoteVerificationOutcome(remoteCodingSubAgentResultFromLoopResult(result))
+	r.normalizeUserFacingTaskOutcome(out)
 	if out != nil && out.Status == "success" {
 		r.persistLocalizationExperience(taskDescription, cb.localization.snapshot(), cb.commandsRun)
 	}
@@ -318,6 +322,31 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		out.Summary = appendCodingAgentTodoTurnNote(out.Summary, cb.todos.snapshot())
 	}
 	return out
+}
+
+// normalizeUserFacingTaskOutcome keeps the implementation engine name out of
+// maintenance task results. The task intentionally reuses the remote coding
+// engine, but users should see the maintenance intent they selected.
+func (r *RemoteCodingSubAgent) normalizeUserFacingTaskOutcome(out *RemoteCodingSubAgentResult) {
+	if r == nil || !r.maintenance || out == nil {
+		return
+	}
+	out.Error = strings.NewReplacer(
+		"RemoteCodingSubAgent", "远程维护",
+		"remoteCodingSubAgent", "远程维护",
+		"Remote coding SubAgent", "远程维护",
+		"remote coding subagent", "远程维护",
+		"Remote coding", "远程维护",
+		"remote coding", "远程维护",
+	).Replace(out.Error)
+	out.Summary = strings.NewReplacer(
+		"RemoteCodingSubAgent", "远程维护",
+		"remoteCodingSubAgent", "远程维护",
+		"Remote coding SubAgent", "远程维护",
+		"remote coding subagent", "远程维护",
+		"Remote coding", "远程维护",
+		"remote coding", "远程维护",
+	).Replace(out.Summary)
 }
 
 func remoteCodingUserContent(r *RemoteCodingSubAgent, userText string) interface{} {
@@ -1663,13 +1692,20 @@ func (c *remoteCodingCallbacks) OnToolCall(name string) {
 			Event:   codingAgentEventKindToolStarted.String(),
 			Phase:   codingAgentEventPhaseRunning.String(),
 			Detail:  strings.TrimSpace(name),
-			Title:   "远程编码",
+			Title:   c.userFacingActivityTitle(),
 		}
 		emitCodingAgentEvent(c.agent.onProgress, event)
 	}
 }
 
 func (c *remoteCodingCallbacks) OnToolResult(name string) {}
+
+func (c *remoteCodingCallbacks) userFacingActivityTitle() string {
+	if c != nil && c.agent != nil && c.agent.maintenance {
+		return "远程维护"
+	}
+	return "远程编码"
+}
 
 func (c *remoteCodingCallbacks) ShouldStop() bool {
 	if c != nil && c.agent != nil && c.agent.loopCtx != nil {
@@ -1708,7 +1744,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 				Event:      codingAgentEventKindToolFinished.String(),
 				Phase:      codingAgentEventPhaseRunning.String(),
 				Detail:     strings.TrimSpace(name),
-				Title:      "远程编码",
+				Title:      c.userFacingActivityTitle(),
 				Command:    remoteCodingToolEventCommand(canonicalName, normalizedArgsJSON),
 				Outcome:    outcome,
 				DurationMS: duration.Milliseconds(),
@@ -1816,7 +1852,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 				userID = strings.TrimSpace(c.agent.loopCtx.UserID)
 			}
 			if userID == "" {
-				result = "goal unavailable: remote coding session owner is missing (loopCtx.UserID empty)"
+				result = c.userFacingRemoteAgentMessage("goal unavailable: remote coding session owner is missing (loopCtx.UserID empty)")
 				return result
 			}
 			result = c.agent.handler.toolGoalForUser(userID, args)
@@ -1837,7 +1873,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		return result
 	}
 	if c.agent.handler == nil {
-		result = "remote coding subagent: handler unavailable"
+		result = c.userFacingRemoteAgentMessage("remote coding subagent: handler unavailable")
 		return result
 	}
 
@@ -2446,8 +2482,9 @@ func rememberRemoteScopeStickyDecision(handler *IMMessageHandler, loopCtx *LoopC
 	handler.maybeUpgradeStickyPermissionModeToFull(userID)
 }
 
-func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string)) ScopeApprovalCallback {
+func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string), maintenance bool) ScopeApprovalCallback {
 	return func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		req.Maintenance = maintenance
 		if loopCtx != nil && loopCtx.IsCancelled() {
 			recordScopeApprovalAudit(handler, "", req, ScopeApprovalDeny, "cancelled")
 			return ScopeApprovalDeny
@@ -2508,21 +2545,25 @@ func shouldPersistRemoteScopeFullAccess(req ScopeApprovalRequest, decision Scope
 
 func remoteScopeApprovalProgressMessage(req ScopeApprovalRequest) string {
 	message := strings.TrimSpace(req.Message)
+	remoteActor := "远程编码 SubAgent"
+	if req.Maintenance {
+		remoteActor = "远程维护"
+	}
 	switch req.Kind {
 	case localHighRiskApprovalKind:
 		return fmt.Sprintf("编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath)
 	case remoteHighRiskApprovalKind:
-		return fmt.Sprintf("远程编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath)
+		return fmt.Sprintf("%s 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", remoteActor, req.Path, req.ProjectPath)
 	case remoteDirectoryWriteKind:
 		if message != "" {
-			return fmt.Sprintf("远程编码 SubAgent 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s\n%s", req.Directory, req.ProjectPath, message)
+			return fmt.Sprintf("%s 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s\n%s", remoteActor, req.Directory, req.ProjectPath, message)
 		}
-		return fmt.Sprintf("远程编码 SubAgent 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s", req.Directory, req.ProjectPath)
+		return fmt.Sprintf("%s 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s", remoteActor, req.Directory, req.ProjectPath)
 	default:
 		if message != "" {
-			return fmt.Sprintf("远程编码 SubAgent 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s\n%s", req.Path, req.ProjectPath, message)
+			return fmt.Sprintf("%s 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s\n%s", remoteActor, req.Path, req.ProjectPath, message)
 		}
-		return fmt.Sprintf("远程编码 SubAgent 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s", req.Path, req.ProjectPath)
+		return fmt.Sprintf("%s 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s", remoteActor, req.Path, req.ProjectPath)
 	}
 }
 
@@ -3097,12 +3138,12 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 	}
 	// Hard block silenced git self-checks (no high-risk approval bypass).
 	if msg := rejectSilencedGitSelfCheckCommand(command); msg != "" {
-		msg = strings.Replace(msg, "编码 SubAgent", "远程编码 SubAgent", 1)
+		msg = c.userFacingSafetyActorMessage(msg)
 		c.trackRemoteCommand(command, workDir, msg, false)
 		return msg
 	}
 	if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
-		msg = strings.Replace(msg, "编码 SubAgent", "远程编码 SubAgent", 1)
+		msg = c.userFacingSafetyActorMessage(msg)
 		if c == nil || c.agent == nil {
 			return msg
 		}
@@ -3130,6 +3171,26 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 	result := c.execSSH(remoteBashCommandWithExitMarker(workDir, command), 60)
 	c.trackRemoteCommand(command, workDir, result, remoteCodingToolOutcome(result) == "success")
 	return result
+}
+
+func (c *remoteCodingCallbacks) userFacingSafetyActorMessage(message string) string {
+	return strings.Replace(message, "编码 SubAgent", c.userFacingRemoteActor(), 1)
+}
+
+func (c *remoteCodingCallbacks) userFacingRemoteActor() string {
+	if c != nil && c.agent != nil && c.agent.maintenance {
+		return "远程维护"
+	}
+	return "远程编码 SubAgent"
+}
+
+func (c *remoteCodingCallbacks) userFacingRemoteAgentMessage(message string) string {
+	return strings.NewReplacer(
+		"RemoteCodingSubAgent", c.userFacingRemoteActor(),
+		"remoteCodingSubAgent", c.userFacingRemoteActor(),
+		"Remote coding SubAgent", c.userFacingRemoteActor(),
+		"remote coding subagent", c.userFacingRemoteActor(),
+	).Replace(message)
 }
 
 func remoteBashCommandWithExitMarker(workDir, command string) string {
@@ -3180,7 +3241,7 @@ func (c *remoteCodingCallbacks) sshCheckTask(args map[string]interface{}) string
 		return "错误: 需要 task_id 参数"
 	}
 	if c == nil || c.agent == nil || c.agent.handler == nil {
-		return "remote coding subagent: handler unavailable"
+		return c.userFacingRemoteAgentMessage("remote coding subagent: handler unavailable")
 	}
 	// Delegate to the main SSH tool's check_task action.
 	h := c.agent.handler
@@ -3198,7 +3259,7 @@ func (c *remoteCodingCallbacks) sshCheckTask(args map[string]interface{}) string
 
 func (c *remoteCodingCallbacks) execSSH(command string, waitSec int) string {
 	if c == nil || c.agent == nil || c.agent.handler == nil {
-		return "remote coding subagent: handler unavailable"
+		return c.userFacingRemoteAgentMessage("remote coding subagent: handler unavailable")
 	}
 	h := c.agent.handler
 	return h.sshExec(map[string]interface{}{
@@ -3210,7 +3271,7 @@ func (c *remoteCodingCallbacks) execSSH(command string, waitSec int) string {
 
 func (c *remoteCodingCallbacks) execSSHBackground(command string) string {
 	if c == nil || c.agent == nil || c.agent.handler == nil {
-		return "remote coding subagent: handler unavailable"
+		return c.userFacingRemoteAgentMessage("remote coding subagent: handler unavailable")
 	}
 	h := c.agent.handler
 	return h.toolSSH(map[string]interface{}{
@@ -3243,7 +3304,7 @@ func (c *remoteCodingCallbacks) requireRemoteProjectScope(toolName, targetPath s
 	if remotePathWithinDir(targetPath, projectPath) {
 		return ""
 	}
-	msg := remoteScopeRejection(toolName, targetPath, projectPath)
+	msg := c.userFacingRemoteScopeRejection(toolName, targetPath, projectPath)
 	if c != nil && c.agent != nil && c.agent.highRiskApproval != nil {
 		return c.agent.highRiskApproval.checkRemotePath(toolName, targetPath, projectPath, remotePathAccessKind, msg, true)
 	}
@@ -3275,18 +3336,18 @@ func (c *remoteCodingCallbacks) requireRemoteShellDirectoryWriteApproval(command
 			continue
 		}
 		if c != nil && c.agent != nil && c.agent.highRiskApproval != nil {
-			msg := remoteScopeRejection(remoteSSHBashToolName, target, projectPath)
+			msg := c.userFacingRemoteScopeRejection(remoteSSHBashToolName, target, projectPath)
 			if approvalMsg := c.agent.highRiskApproval.checkRemotePath(remoteSSHBashToolName, target, projectPath, remotePathAccessKind, msg, true); approvalMsg != "" {
 				return approvalMsg
 			}
 			continue
 		}
-		return remoteScopeRejection(remoteSSHBashToolName, target, projectPath)
+		return c.userFacingRemoteScopeRejection(remoteSSHBashToolName, target, projectPath)
 	}
 	if c == nil || c.agent == nil || c.agent.highRiskApproval == nil {
 		return fallback
 	}
-	msg := fmt.Sprintf("remote coding subagent requests directory creation via ssh_bash: %s", strings.Join(targets, ", "))
+	msg := c.userFacingRemoteAgentMessage(fmt.Sprintf("remote coding subagent requests directory creation via ssh_bash: %s", strings.Join(targets, ", ")))
 	return c.agent.highRiskApproval.checkRemotePath(remoteSSHBashToolName, workDir, projectPath, remoteDirectoryWriteKind, msg, true)
 }
 
@@ -3383,6 +3444,10 @@ func remoteScopeRejection(toolName, path, projectPath string) string {
 	default:
 		return fmt.Sprintf("refusing to modify remote path outside the project: %s. Remote coding SubAgent may only modify files inside %s.", path, projectPath)
 	}
+}
+
+func (c *remoteCodingCallbacks) userFacingRemoteScopeRejection(toolName, path, projectPath string) string {
+	return c.userFacingRemoteAgentMessage(remoteScopeRejection(toolName, path, projectPath))
 }
 
 // --- System Prompt ---

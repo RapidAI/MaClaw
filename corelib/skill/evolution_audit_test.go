@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestKindFromEventName_MarkNeedsReviewAndRestore(t *testing.T) {
@@ -134,5 +136,48 @@ func TestRecordEvolutionEvent_WritesDefaultPathOverrideable(t *testing.T) {
 	st, err := os.Stat(path)
 	if err != nil || st.Size() == 0 {
 		t.Fatalf("file not written: %v", err)
+	}
+}
+
+// TestRecordEvolutionEventPassesThroughStatusAndVia covers the audit fix:
+// payload keys "status" (e.g. rejected) and "via" (e.g. reviewed_draft) must
+// land on the durable audit row so the audit list can tell a pending draft
+// apart from a rejected one.
+func TestRecordEvolutionEventPassesThroughStatusAndVia(t *testing.T) {
+	oldBaseDir := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBaseDir) })
+	path := DefaultEvolutionAuditPath()
+
+	RecordEvolutionEvent(EventSkillRepairDraftReady, map[string]string{
+		"skill":       "draft-skill",
+		"explanation": "not worth fixing",
+		"status":      "rejected",
+	}, "desktop")
+	RecordEvolutionEvent(EventSkillRepaired, map[string]string{
+		"skill":       "draft-skill",
+		"explanation": "fix the command",
+		"via":         "reviewed_draft",
+	}, "desktop")
+	RecordEvolutionEvent(EventSkillRepaired, map[string]string{
+		"skill": "no-extras",
+	}, "desktop")
+
+	events, err := ListEvolutionAudit(path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want 3", events)
+	}
+	// Newest first: no-extras, reviewed_draft, rejected.
+	if events[0].Status != "" || events[0].Via != "" {
+		t.Errorf("missing status/via keys must stay empty, got %+v", events[0])
+	}
+	if events[1].Via != "reviewed_draft" || events[1].Status != "" {
+		t.Errorf("via not passed through: %+v", events[1])
+	}
+	if events[2].Status != "rejected" || events[2].Kind != "repair_draft" {
+		t.Errorf("status not passed through: %+v", events[2])
 	}
 }

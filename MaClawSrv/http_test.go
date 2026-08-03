@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
@@ -7703,6 +7704,46 @@ func TestThirdPartyGatewayManagerBoundsState(t *testing.T) {
 	manager.mu.Unlock()
 	if messageLen != srvThirdPartyMaxStoredMsgs || ackLen != 1 || oldAcked || missingAcked || !liveAcked {
 		t.Fatalf("message/ack state not bounded: messages=%d ack=%d old=%v missing=%v live=%v", messageLen, ackLen, oldAcked, missingAcked, liveAcked)
+	}
+}
+
+func TestSrvThirdPartyGatewayEnqueueEnforcesClientCapabilities(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	clientKey := thirdPartyClientKey(principal, "text-device")
+	manager.setClientCapabilities(clientKey, &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text"}, Text: &agent.ClientTextCapabilities{MaxChars: 5},
+	}})
+	req := srvThirdPartyIncomingRequest{ClientID: "text-device", ConversationID: "room-1"}
+	manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: "image", Type: "image", Data: "png"})
+	manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: "text", Type: "text", Text: "123456789"})
+	manager.mu.Lock()
+	messages := append([]srvThirdPartyOutgoingMessage(nil), manager.clients[clientKey].Messages...)
+	manager.mu.Unlock()
+	if len(messages) != 1 || messages[0].Type != "text" || messages[0].Text != "12345" {
+		t.Fatalf("adapted messages=%#v", messages)
+	}
+}
+func TestSrvThirdPartyGatewayEnqueueRejectsUnsupportedMediaEncodingAndOversizedFile(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	clientKey := thirdPartyClientKey(principal, "media-device")
+	manager.setClientCapabilities(clientKey, &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"image", "audio", "file"},
+		Image:      &agent.ClientImageCapabilities{MimeTypes: []string{"image/png"}},
+		Audio:      &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/wav"}, Playback: true},
+		File:       &agent.ClientFileCapabilities{MimeTypes: []string{"application/pdf"}, MaxBytes: 8},
+	}})
+	req := srvThirdPartyIncomingRequest{ClientID: "media-device", ConversationID: "room-1"}
+	manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: "jpg", Type: "image", MimeType: "image/jpeg", Data: "x"})
+	manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: "mp3", Type: "audio", MimeType: "audio/mpeg", Data: "x"})
+	manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: "big", Type: "file", MimeType: "application/pdf", SizeBytes: 9, Data: "x"})
+	manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: "png", Type: "image", MimeType: "image/png", Data: "x"})
+	manager.mu.Lock()
+	messages := append([]srvThirdPartyOutgoingMessage(nil), manager.clients[clientKey].Messages...)
+	manager.mu.Unlock()
+	if len(messages) != 1 || messages[0].ID != "png" {
+		t.Fatalf("media capability filtering=%#v", messages)
 	}
 }
 

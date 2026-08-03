@@ -135,7 +135,7 @@ describe('SidebarTaskManagement', () => {
         expect(resumeTask).not.toHaveBeenCalled();
 
         fireEvent.doubleClick(screen.getByText('Build dashboard'));
-        expect(resumeTask).toHaveBeenCalledWith(baseProject.project_path);
+        expect(resumeTask).toHaveBeenCalledWith(baseProject.project_path, expect.objectContaining({ project_path: baseProject.project_path }));
     });
 
     it('hides recent projects without tangible output', () => {
@@ -173,6 +173,21 @@ describe('SidebarTaskManagement', () => {
         expect(container.textContent).not.toContain('TASK');
         expect(container.textContent).not.toContain('REF');
         expect(container.textContent).not.toContain('PIN');
+    });
+
+    it('shows an expert task as a normal resumable task item', () => {
+        renderTaskManagement({
+            tasks: [{
+                ...baseProject,
+                id: 'expert-task-1',
+                name: 'Literature Search Expert',
+                project_path: 'D:/work/tasks/literature-search-expert',
+                tags: ['task_management', 'source:expert:expert-literature-search'],
+            }],
+        });
+
+        expect(screen.getByText('Literature Search Expert')).toBeTruthy();
+        expect(screen.getByLabelText('Task')).toBeTruthy();
     });
 
     it('uses a clear SVG create icon instead of a plain plus glyph', () => {
@@ -223,6 +238,22 @@ describe('SidebarTaskManagement', () => {
 
         resolveOpen();
         await waitFor(() => expect(screen.queryByText('Restoring...')).toBeNull());
+    });
+
+    it('passes the clicked task row when reopening it', async () => {
+        const expertTask = {
+            ...baseProject,
+            tags: ['task_management', 'source:expert:expert-paper'],
+        };
+        const resumeTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ tasks: [expertTask], resumeTask });
+
+        fireEvent.doubleClick(screen.getByText('Build dashboard'));
+
+        await waitFor(() => expect(resumeTask).toHaveBeenCalledWith(
+            expertTask.project_path,
+            expect.objectContaining({ tags: expertTask.tags }),
+        ));
     });
 
     it('emits project close event when removing a task', async () => {
@@ -286,6 +317,32 @@ describe('SidebarTaskManagement', () => {
         expect(refreshTasks).not.toHaveBeenCalled();
         // Menu stays open so the user can see the disabled state / tooltip.
         expect(setTaskContextMenu).not.toHaveBeenCalledWith(null);
+    });
+
+    it('blocks remove when the matching expert tab is open', async () => {
+        const expertTask = {
+            ...baseProject,
+            tags: ['task_management', 'source:expert:expert-paper'],
+        };
+        const hideTask = vi.fn().mockResolvedValue(undefined);
+        const refreshTasks = vi.fn();
+        const setTaskContextMenu = vi.fn();
+        renderTaskManagement({
+            tasks: [expertTask],
+            hideTask,
+            refreshTasks,
+            setTaskContextMenu,
+            openExpertTabIDs: ['expert-paper'],
+            taskContextMenu: { x: 10, y: 20, projectPath: expertTask.project_path, name: expertTask.name, pinned: false, tags: expertTask.tags },
+        });
+
+        const removeItem = screen.getByTestId('task-context-remove');
+        expect(removeItem.getAttribute('data-disabled')).toBe('true');
+        fireEvent.click(removeItem);
+
+        await act(async () => { await Promise.resolve(); });
+        expect(hideTask).not.toHaveBeenCalled();
+        expect(refreshTasks).not.toHaveBeenCalled();
     });
 
 
@@ -378,7 +435,7 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByTestId('task-workflow-status').textContent).toBe('In progress · Tasks');
 
         fireEvent.doubleClick(screen.getByText('Build dashboard'));
-        expect(resumeTask).toHaveBeenCalledWith(baseProject.project_path);
+        expect(resumeTask).toHaveBeenCalledWith(baseProject.project_path, expect.objectContaining({ project_path: baseProject.project_path }));
         expect(continueWorkflowProject).not.toHaveBeenCalled();
 
         fireEvent.click(screen.getByLabelText('Scene details'));
@@ -1108,6 +1165,23 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByLabelText('Remote pure coding environment')).toBeTruthy();
         expect(screen.getByTestId('task-remote-coding-badge').textContent || '').toMatch(/Remote coding|远程编程|遠端程式/i);
         expect(screen.getByTestId('task-remote-coding-badge').textContent || '').toContain('10.0.0.8');
+    });
+
+    it('shows the maintenance intent for remote diagnosis tasks', () => {
+        renderTaskManagement({
+            tasks: [{
+                ...baseProject,
+                id: 'remote-maintenance-1',
+                name: 'Diagnose incident',
+                project_path: 'D:/work/tasks/remote-maintenance',
+                tags: ['remote_coding_dev', 'remote_host:ops.example.test', 'source:remote_ops_diagnosis'],
+            }],
+        });
+
+        const badge = screen.getByTestId('task-remote-coding-badge');
+        expect(badge.textContent || '').toMatch(/Remote maintenance|远程维护|遠端維護/i);
+        expect(badge.textContent || '').not.toMatch(/Remote coding|远程编程|遠端程式/i);
+        expect(badge.textContent || '').toContain('ops.example.test');
     });
 
     it('keeps pure-coding badge visible when the coding task is also pinned', () => {

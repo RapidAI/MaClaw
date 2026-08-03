@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchRouteMap, PatchConfigFields } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 
 type RouteRow = {
@@ -12,8 +12,8 @@ type RouteRow = {
 };
 
 type ModelRoutesSettingsSectionProps = {
-    config: main.AppConfig | null;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig | null;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     lang: string;
     showToastMessage?: (message: string, duration?: number) => void;
 };
@@ -30,7 +30,7 @@ const emptyRow = (task = ''): RouteRow => ({
     provider: '',
 });
 
-function routesFromConfig(config: main.AppConfig | null): RouteRow[] {
+function routesFromConfig(config: corelib.AppConfig | null): RouteRow[] {
     const raw = ((config as any)?.model_routes || {}) as Record<string, any>;
     const keys = Object.keys(raw || {});
     if (keys.length === 0) {
@@ -171,7 +171,7 @@ export const ModelRoutesSettingsSection = ({
         try {
             const model_routes = rowsToRoutes(rows);
             const saved = await PatchConfigFields({ model_routes });
-            setConfig(new main.AppConfig(saved));
+            setConfig(new corelib.AppConfig(saved));
             setRows(routesFromConfig(saved as any));
             await refreshPreview();
             showToastMessage?.(textForLang(lang, 'Model routes saved', '模型路由已保存', '模型路由已儲存'));
@@ -299,7 +299,7 @@ export const ModelRoutesSettingsSection = ({
                                 setPrefSaving(true);
                                 try {
                                     const saved = await PatchConfigFields({ coding_route_pref: pref });
-                                    setConfig(new main.AppConfig(saved));
+                                    setConfig(new corelib.AppConfig(saved));
                                     setDefaultPref(pref);
                                     showToastMessage?.(textForLang(lang, `Default pref: ${pref}`, `默认选模: ${pref}`, `預設選模: ${pref}`));
                                 } catch (err) {
@@ -335,7 +335,7 @@ export const ModelRoutesSettingsSection = ({
                             setPrefSaving(true);
                             try {
                                 const saved = await PatchConfigFields({ coding_route_pref_mirror: e.target.checked });
-                                setConfig(new main.AppConfig(saved));
+                                setConfig(new corelib.AppConfig(saved));
                             } catch (err) {
                                 const message = err instanceof Error ? err.message : String(err);
                                 showToastMessage?.(message, 5000);
@@ -373,7 +373,7 @@ export const ModelRoutesSettingsSection = ({
                             const mb = Number.isFinite(raw) ? Math.max(0, Math.min(8192, Math.round(raw))) : 0;
                             try {
                                 const saved = await PatchConfigFields({ coding_checkpoint_sidecar_max_mb: mb });
-                                setConfig(new main.AppConfig(saved));
+                                setConfig(new corelib.AppConfig(saved));
                                 showToastMessage?.(textForLang(
                                     lang,
                                     mb > 0 ? `Sidecar cap: ${mb} MB` : 'Sidecar cap: default 256 MB',

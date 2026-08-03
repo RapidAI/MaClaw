@@ -419,7 +419,9 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
         setLoading(true); setError("");
         try {
             const list = await ListScheduledTasks();
-            const all = Array.isArray(list) ? list : [];
+            // Go emits interval_minutes/start_date/end_date/... with omitempty;
+            // the local interface treats them as always present.
+            const all = (Array.isArray(list) ? list : []) as unknown as ScheduledTask[];
             // Filter out expired tasks — they are auto-deleted on the backend,
             // but hide them immediately on the frontend as well.
             if (mountedRef.current && requestSeq === loadRequestSeq.current) {

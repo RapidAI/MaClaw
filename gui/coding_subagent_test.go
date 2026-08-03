@@ -1451,6 +1451,27 @@ func TestRemoteCodingSubAgentResultFromLoopResultPreservesNonSuccessStates(t *te
 	}
 }
 
+func TestRemoteCodingSubAgentMaintenanceOutcomeHidesCodingEngineName(t *testing.T) {
+	agent := &RemoteCodingSubAgent{maintenance: true}
+	out := &RemoteCodingSubAgentResult{
+		Error:   "RemoteCodingSubAgent project context is incomplete",
+		Summary: "Remote coding SubAgent did not complete the remote check.",
+	}
+	agent.normalizeUserFacingTaskOutcome(out)
+	if strings.Contains(strings.ToLower(out.Error+out.Summary), "remote coding") || strings.Contains(out.Error+out.Summary, "RemoteCodingSubAgent") {
+		t.Fatalf("maintenance outcome exposed coding engine name: %#v", out)
+	}
+	if !strings.Contains(out.Error, "远程维护") || !strings.Contains(out.Summary, "远程维护") {
+		t.Fatalf("maintenance outcome = %#v, want maintenance wording", out)
+	}
+
+	standard := &RemoteCodingSubAgentResult{Error: "remote coding subagent: handler unavailable"}
+	(&RemoteCodingSubAgent{}).normalizeUserFacingTaskOutcome(standard)
+	if standard.Error != "remote coding subagent: handler unavailable" {
+		t.Fatalf("standard outcome should preserve existing wording, got %q", standard.Error)
+	}
+}
+
 func TestRemoteCodingSubAgentVerificationGateRequiresPostEditVerification(t *testing.T) {
 	cb := &remoteCodingCallbacks{}
 	cb.trackRemoteFileRead("/repo/main.py")
@@ -3208,6 +3229,51 @@ func TestRemoteCodingSubAgentCallbacksAreNilSafe(t *testing.T) {
 	cb = &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
 	if result := cb.ExecuteTool("ssh_check_task", `{"task_id":"task-123"}`); !strings.Contains(result, "handler unavailable") {
 		t.Fatalf("ssh_check_task should report unavailable handler instead of panicking, got %q", result)
+	}
+}
+
+func TestRemoteCodingSubAgentActivityTitleUsesMaintenanceIntent(t *testing.T) {
+	if got := (&remoteCodingCallbacks{agent: &RemoteCodingSubAgent{maintenance: true}}).userFacingActivityTitle(); got != "远程维护" {
+		t.Fatalf("maintenance activity title = %q, want 远程维护", got)
+	}
+	if got := (&remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}).userFacingActivityTitle(); got != "远程编码" {
+		t.Fatalf("standard activity title = %q, want 远程编码", got)
+	}
+}
+
+func TestRemoteScopeApprovalProgressMessageUsesMaintenanceIntent(t *testing.T) {
+	got := remoteScopeApprovalProgressMessage(ScopeApprovalRequest{
+		Kind:        remoteHighRiskApprovalKind,
+		Path:        "systemctl restart app",
+		ProjectPath: "/srv/app",
+		Maintenance: true,
+	})
+	if !strings.Contains(got, "远程维护") || strings.Contains(got, "远程编码") {
+		t.Fatalf("maintenance approval message = %q, want remote maintenance wording", got)
+	}
+}
+
+func TestRemoteCodingSafetyMessageUsesMaintenanceIntent(t *testing.T) {
+	callbacks := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{maintenance: true}}
+	got := callbacks.userFacingSafetyActorMessage("编码 SubAgent 禁止执行此命令")
+	if !strings.Contains(got, "远程维护") || strings.Contains(got, "远程编码") {
+		t.Fatalf("maintenance safety message = %q, want remote maintenance wording", got)
+	}
+}
+
+func TestRemoteScopeRejectionUsesMaintenanceIntent(t *testing.T) {
+	callbacks := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{maintenance: true}}
+	got := callbacks.userFacingRemoteScopeRejection("ssh_read_file", "/etc/app.conf", "/srv/app")
+	if !strings.Contains(got, "远程维护") || strings.Contains(got, "Remote coding SubAgent") {
+		t.Fatalf("maintenance scope rejection = %q, want remote maintenance wording", got)
+	}
+}
+
+func TestRemoteCodingDirectoryApprovalUsesMaintenanceIntent(t *testing.T) {
+	callbacks := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{maintenance: true}}
+	got := callbacks.userFacingRemoteAgentMessage("remote coding subagent requests directory creation")
+	if !strings.Contains(got, "远程维护") || strings.Contains(strings.ToLower(got), "remote coding subagent") {
+		t.Fatalf("maintenance directory approval message = %q, want remote maintenance wording", got)
 	}
 }
 

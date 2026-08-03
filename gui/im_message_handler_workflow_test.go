@@ -824,6 +824,11 @@ func TestEffectiveWorkingDirForOwnerNormalizesAndIgnoresProjectsList(t *testing.
 	if handler.effectiveWorkingDirForUser(desktopUserID) != want {
 		t.Fatalf("effectiveWorkingDirForUser(desktop) = %q, want %q", handler.effectiveWorkingDirForUser(desktopUserID), want)
 	}
+	// Expert sessions have their own persona/history identity, but deliberately
+	// inherit the desktop working directory selected in the shared top bar.
+	if got := handler.app.EffectiveWorkingDirForOwner(expertSessionUserID("literature")); got != want {
+		t.Fatalf("EffectiveWorkingDirForOwner(expert) = %q, want desktop working dir %q", got, want)
+	}
 }
 
 func TestSetWorkflowWorkingDirDelegatesToSync(t *testing.T) {
@@ -1521,6 +1526,66 @@ func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
 	}
 	if _, pending := handler.pendingV2SubAgentExecution.Load(userID); !pending {
 		t.Fatal("pendingV2SubAgentExecution should be re-armed for multi-turn pure coding")
+	}
+}
+
+func TestConsumePendingRemoteOpsDiagnosisForcesInquiry(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "remote-ops-diagnosis-user"
+	handler.clearStickyCodingEnvironment(userID)
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
+		SessionID:           "ssh-diagnosis",
+		WorkDir:             "/srv/app",
+		ProjectDir:          "/srv/app",
+		RequestKind:         codingRequestInquiry,
+		ForceInitialInquiry: true,
+	})
+
+	original := remoteCodingTemplateRunner
+	t.Cleanup(func() { remoteCodingTemplateRunner = original })
+	var captured remoteCodingTemplateContext
+	remoteCodingTemplateRunner = func(_ *IMMessageHandler, _ corelib.MaclawLLMConfig, _ *http.Client, ctx remoteCodingTemplateContext, _ *LoopContext, _ string, _ func(string), _ func(string)) *RemoteCodingSubAgentResult {
+		captured = ctx
+		return &RemoteCodingSubAgentResult{Status: "success", Summary: "inspection complete", ToolCalls: 1}
+	}
+
+	resp, handled := handler.consumePendingTemplateSubAgentExecution(
+		IMUserMessage{UserID: userID, Text: "investigate startup failure", Platform: "desktop"},
+		"investigate startup failure",
+		NewLoopContext("remote-ops-diagnosis-test", 1, nil),
+		"req-remote-ops-diagnosis-test",
+		nil,
+		nil,
+	)
+	if !handled || resp == nil {
+		t.Fatalf("diagnosis pending remote task should run, handled=%v response=%#v", handled, resp)
+	}
+	if captured.RequestKind != codingRequestInquiry {
+		t.Fatalf("diagnosis request kind=%q, want inquiry", captured.RequestKind)
+	}
+	if !captured.Maintenance {
+		t.Fatalf("diagnosis context must retain maintenance intent, got %#v", captured)
+	}
+	if nextRaw, pending := handler.pendingTemplateRemoteCoding.Load(userID); pending {
+		next, _ := nextRaw.(remoteCodingTemplateContext)
+		if next.ForceInitialInquiry {
+			t.Fatalf("completed diagnosis first turn must not re-lock follow-ups: %#v", next)
+		}
+		if !next.Maintenance {
+			t.Fatalf("re-armed diagnosis context must retain maintenance intent: %#v", next)
+		}
+	}
+}
+
+func TestRemoteMaintenancePlanStatusUsesMaintenanceIntent(t *testing.T) {
+	got := formatRemoteCodingPlanStatusText(true, "failed", 2, 1, 1, 0, true)
+	if !strings.Contains(got, "远程维护") || strings.Contains(got, "远程编程") {
+		t.Fatalf("maintenance plan status = %q, want maintenance wording", got)
+	}
+	standard := formatRemoteCodingPlanStatusText(true, "failed", 2, 1, 1, 0)
+	if !strings.Contains(standard, "远程编程") {
+		t.Fatalf("standard plan status = %q, want remote coding wording", standard)
 	}
 }
 

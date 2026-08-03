@@ -1,12 +1,12 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { main } from '../../../wailsjs/go/models';
+import { Dispatch, SetStateAction } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { ProjectManagerItem } from './ProjectManagerItem';
 
 type ProjectSortMode = 'default' | 'name-asc' | 'name-desc' | 'path-asc' | 'path-desc';
 
 interface ProjectManagerPageProps {
-    config: main.AppConfig;
-    setConfig: Dispatch<SetStateAction<main.AppConfig | null>>;
+    config: corelib.AppConfig;
+    setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     t: (key: string) => string;
     projectSearchKeyword: string;
     setProjectSearchKeyword: Dispatch<SetStateAction<string>>;

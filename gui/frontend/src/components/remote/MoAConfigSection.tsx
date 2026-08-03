@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { GetMoAConfig, GetMoASessionState, GetMoAStats, SaveMoAConfig, SetMoASticky } from "../../../wailsjs/go/main/App";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { GetMoAConfig, GetMoASessionState, GetMoAStats, SaveMoAConfig, SetMoASticky } from '../../../wailsjs/go/main/App';
+import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
@@ -377,7 +378,7 @@ export function MoAConfigSection({ lang, providers }: Props) {
                     return;
                 }
             }
-            await SaveMoAConfig(next);
+            await SaveMoAConfig(next as corelib.MoAConfig);
             // Optimistic: unlock sticky arm immediately (canArmSticky) without waiting for reload.
             setBaseCfg(next);
             // Disabling MoA should also clear session sticky arm.

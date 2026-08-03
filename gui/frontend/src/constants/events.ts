@@ -47,6 +47,9 @@ export const EVENT_SKILL_EXECUTION_FAILED = "skill:execution_failed";
 /** Skill indexes refreshed after mutation (repair/install). */
 export const EVENT_SKILL_INDEX_REFRESHED = "skill:index_refreshed";
 
+/** File-backed skill repair draft generated (or rejected) and pending human review. */
+export const EVENT_SKILL_REPAIR_DRAFT_READY = "skill:repair_draft_ready";
+
 /** Computer Use local observe (SoM text + element summary for operator UI). */
 export const EVENT_COMPUTER_USE_OBSERVE = "computer-use:observe";
 
@@ -86,6 +89,7 @@ export const EVENT_MACLAW_CONFIG_CHANGED = "maclaw-config-changed";
  *   name?: string;
  *   workingDir?: string;           // local coding workdir
  *   remote?: { host, port, user, password, workDir };
+ *   remoteSafety?: 'diagnosis';   // evidence-only SSH first turn
  *   autoCreate?: boolean;          // when true + valid env, create without dialog
  * }
  */
@@ -103,6 +107,8 @@ export type OpenCreateCodingTaskDetail = {
         password: string;
         workDir: string;
     };
+    /** Evidence-only initial SSH turn for incident diagnosis. */
+    remoteSafety?: "diagnosis";
     /** When true and required env is present, create the task immediately. */
     autoCreate?: boolean;
 };

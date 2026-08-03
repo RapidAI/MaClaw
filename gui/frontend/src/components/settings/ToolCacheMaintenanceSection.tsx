@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
 import { CleanToolCacheNow, GetToolCacheStatus, LoadConfig, PatchConfigFields } from '../../../wailsjs/go/main/App';
-import { main } from '../../../wailsjs/go/models';
+import { useEffect, useMemo, useState } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 
 type ToolCacheStatus = {
@@ -17,8 +17,8 @@ type ToolCacheStatus = {
 };
 
 type ToolCacheMaintenanceSectionProps = {
-    config: main.AppConfig | null;
-    setConfig: (c: main.AppConfig) => void;
+    config: corelib.AppConfig | null;
+    setConfig: (c: corelib.AppConfig) => void;
     lang: string;
     showToastMessage: (message: string) => void;
 };
@@ -97,7 +97,7 @@ export const ToolCacheMaintenanceSection = ({ config, setConfig, lang, showToast
         setSaving(true);
         try {
             const saved = await PatchConfigFields({ tool_cache_maintenance: patch });
-            setConfig(new main.AppConfig(saved));
+            setConfig(new corelib.AppConfig(saved));
             setStatus((previous) => previous ? {
                 ...previous,
                 auto_enabled: next.enabled,
@@ -138,7 +138,7 @@ export const ToolCacheMaintenanceSection = ({ config, setConfig, lang, showToast
         setBusy(true);
         try {
             const result = await CleanToolCacheNow();
-            const savedConfig = new main.AppConfig(await LoadConfig());
+            const savedConfig = new corelib.AppConfig(await LoadConfig());
             const savedMaintenance = normalizeMaintenance((savedConfig as any).tool_cache_maintenance);
             setConfig(savedConfig);
             setStatus((previous) => ({

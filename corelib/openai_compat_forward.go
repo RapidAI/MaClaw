@@ -295,6 +295,7 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 		ensureDeepSeekFlashForwardJSONResponseInstruction(body)
 	}
 	sanitizeOpenAICompatForwardStructuredFields(body, dropOrphanedToolHistory, preserveStandaloneToolResults)
+	ensureOpenAICompatForwardAssistantMessageContent(body)
 }
 
 func sanitizeOpenAICompatForwardStructuredFields(body map[string]interface{}, dropOrphanedToolHistory bool, preserveStandaloneToolResults bool) {
@@ -329,6 +330,37 @@ func sanitizeOpenAICompatForwardStructuredFields(body map[string]interface{}, dr
 		} else {
 			delete(body, "function_call")
 		}
+	}
+}
+
+// ensureOpenAICompatForwardAssistantMessageContent repairs assistant turns
+// whose malformed or orphaned tool calls were removed during sanitization.
+// Several OpenAI-compatible providers, including DeepSeek V4 Flash, require
+// every assistant message to include content or a non-empty tool_calls array.
+func ensureOpenAICompatForwardAssistantMessageContent(body map[string]interface{}) {
+	messages := openAICompatForwardMessageSlice(body["messages"])
+	if len(messages) == 0 {
+		return
+	}
+	changed := false
+	for i, item := range messages {
+		message := mapFromAny(item)
+		if message == nil || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(message["role"])), "assistant") {
+			continue
+		}
+		if _, hasContent := message["content"]; hasContent || len(sanitizeOpenAICompatForwardToolCallsForSDK(message["tool_calls"])) > 0 {
+			continue
+		}
+		patched := make(map[string]interface{}, len(message)+1)
+		for key, value := range message {
+			patched[key] = value
+		}
+		patched["content"] = ""
+		messages[i] = patched
+		changed = true
+	}
+	if changed {
+		body["messages"] = messages
 	}
 }
 

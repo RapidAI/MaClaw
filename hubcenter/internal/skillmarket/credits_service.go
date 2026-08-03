@@ -19,6 +19,82 @@ func NewCreditsService(store *Store) *CreditsService {
 	return &CreditsService{store: store}
 }
 
+// PetStorePlatformFeePct is the single source of truth for the platform fee
+// percentage withheld from a paid pet store sale before the seller earning is
+// settled.
+const PetStorePlatformFeePct int64 = 30
+
+// CompleteExpertMarketPurchase creates a permanent entitlement and its Credits
+// payment atomically. Expert packages are authored configurations, so v1 keeps
+// the full price in the platform ledger rather than attempting author revenue
+// settlement. This matches the platform-operated Expert Market policy and
+// avoids creating a second, incompatible Credits balance.
+func (s *CreditsService) CompleteExpertMarketPurchase(ctx context.Context, buyerID, buyerEmail, sellerID, listingID, entitlementID, transactionID string, amount int64) error {
+	if s == nil || s.store == nil || buyerID == "" || sellerID == "" || listingID == "" || entitlementID == "" || transactionID == "" || amount < 0 {
+		return fmt.Errorf("invalid expert market purchase")
+	}
+	tx, err := s.store.BeginImmediate(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	var ownerID string
+	var price int64
+	if err := tx.QueryRowContext(ctx, `SELECT owner_user_id, price FROM sm_expert_market_listings WHERE id=? AND status='listed'`, listingID).Scan(&ownerID, &price); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrExpertMarketUnavailable
+		}
+		return err
+	}
+	if ownerID != sellerID || price != amount {
+		return ErrExpertMarketUnavailable
+	}
+	var owned int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sm_expert_market_purchases WHERE listing_id=? AND buyer_user_id=? AND status='active'`, listingID, buyerID).Scan(&owned); err != nil {
+		return err
+	}
+	if owned > 0 {
+		return ErrExpertMarketAlreadyOwned
+	}
+	buyer, err := s.store.GetUserByIDForUpdate(ctx, tx, buyerID)
+	if err != nil {
+		return err
+	}
+	if buyer.Credits < amount {
+		return ErrInsufficientCredits
+	}
+	now := time.Now().Format(timeFmt)
+	if amount > 0 {
+		balance := buyer.Credits - amount
+		if _, err := tx.ExecContext(ctx, `UPDATE sm_users SET credits=?, updated_at=? WHERE id=?`, balance, now, buyerID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at) VALUES (?, ?, 'purchase', ?, ?, ?, ?, 'AI expert market purchase', ?)`, generateID(), buyerID, -amount, balance, listingID, transactionID, now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at) VALUES (?, 'platform', 'platform_fee', ?, 0, ?, ?, 'AI expert market settlement', ?)`, generateID(), amount, listingID, transactionID, now); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sm_expert_market_purchases (id, listing_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?)`, entitlementID, listingID, buyerID, buyerEmail, amount, now); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return ErrExpertMarketAlreadyOwned
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sm_expert_market_listings SET purchase_count=purchase_count+1, sales_amount=sales_amount+?, updated_at=? WHERE id=? AND status='listed'`, amount, now, listingID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.store.emitSync(ctx)
+	return nil
+}
+
+var ErrExpertMarketAlreadyOwned = errors.New("expert market listing already owned")
+var ErrExpertMarketUnavailable = errors.New("expert market listing is no longer available")
+
 func (s *CreditsService) GetBalance(ctx context.Context, userID string) (int64, error) {
 	u, err := s.store.GetUserByID(ctx, userID)
 	if err != nil {
@@ -116,9 +192,12 @@ func (s *CreditsService) RecordPlatformFee(ctx context.Context, amount int64, sk
 }
 
 // CompletePetStorePurchase atomically creates the lifetime entitlement and
-// settles the matching Credits movements. Keeping these writes in one SQLite
-// IMMEDIATE transaction prevents a buyer debit without an entitlement (or an
-// entitlement without a completed payment) when a process fails mid-request.
+// settles the matching Credits movements. Entitlements follow the stable
+// source_pack_id, rather than a transient market listing ID: a creator may
+// withdraw and re-publish the same local pack without charging existing buyers
+// again. Keeping these writes in one SQLite IMMEDIATE transaction prevents a
+// buyer debit without an entitlement (or an entitlement without a completed
+// payment) when a process fails mid-request.
 func (s *CreditsService) CompletePetStorePurchase(ctx context.Context, buyerID, buyerEmail, sellerID, packID, entitlementID, transactionID string, amount int64) error {
 	if s == nil || s.store == nil || buyerID == "" || sellerID == "" || packID == "" || entitlementID == "" || transactionID == "" || amount < 0 {
 		return fmt.Errorf("invalid pet store purchase")
@@ -133,9 +212,9 @@ func (s *CreditsService) CompletePetStorePurchase(ctx context.Context, buyerID, 
 	// under the write transaction, though: an owner may withdraw it between
 	// that read and checkout. Never create a new entitlement for a withdrawn
 	// listing, even if the client was already looking at its card.
-	var currentSellerID string
+	var currentSellerID, sourcePackID string
 	var currentPrice int64
-	if err := tx.QueryRowContext(ctx, `SELECT owner_user_id, price FROM sm_pet_store_packs WHERE id=? AND status='active'`, packID).Scan(&currentSellerID, &currentPrice); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT owner_user_id, source_pack_id, price FROM sm_pet_store_packs WHERE id=? AND status='active'`, packID).Scan(&currentSellerID, &sourcePackID, &currentPrice); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrPetStoreUnavailable
 		}
@@ -143,6 +222,22 @@ func (s *CreditsService) CompletePetStorePurchase(ctx context.Context, buyerID, 
 	}
 	if currentSellerID != sellerID || currentPrice != amount {
 		return ErrPetStoreUnavailable
+	}
+	// The schema requires newly published listings to have a source ID. Treat an
+	// old, malformed listing without one as unavailable instead of silently
+	// falling back to an unrelated listing-level entitlement.
+	if strings.TrimSpace(sourcePackID) == "" {
+		return ErrPetStoreUnavailable
+	}
+	var alreadyOwned int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM sm_pet_store_purchases b
+		JOIN sm_pet_store_packs owned ON owned.id=b.pack_id
+		WHERE b.buyer_user_id=? AND b.status='active' AND owned.source_pack_id=?`, buyerID, sourcePackID).Scan(&alreadyOwned); err != nil {
+		return err
+	}
+	if alreadyOwned > 0 {
+		return ErrPetStoreAlreadyOwned
 	}
 	buyer, err := s.store.GetUserByIDForUpdate(ctx, tx, buyerID)
 	if err != nil {
@@ -165,7 +260,7 @@ func (s *CreditsService) CompletePetStorePurchase(ctx context.Context, buyerID, 
 			if err != nil {
 				return err
 			}
-			fee := amount * 30 / 100
+			fee := amount * PetStorePlatformFeePct / 100
 			earning, actual, debt := amount-fee, amount-fee, seller.Debt
 			if actual <= debt {
 				debt -= actual
@@ -190,9 +285,9 @@ func (s *CreditsService) CompletePetStorePurchase(ctx context.Context, buyerID, 
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sm_pet_store_purchases (id, pack_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?)`, entitlementID, packID, buyerID, buyerEmail, amount, now); err != nil {
-		// The unique (pack_id, buyer_user_id) constraint is the final idempotency
-		// gate for concurrent processes/nodes. Map it to a stable sentinel so the
-		// HTTP layer returns "owned" instead of treating a repeat click as a 500.
+		// The unique (pack_id, buyer_user_id) constraint is an additional
+		// idempotency gate for legacy listings. The source-ID lookup above is the
+		// primary entitlement guard for current listings.
 		if strings.Contains(strings.ToLower(err.Error()), "unique") || errors.Is(err, sql.ErrNoRows) {
 			return ErrPetStoreAlreadyOwned
 		}

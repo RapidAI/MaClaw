@@ -70,21 +70,21 @@ type lightPreparedCard struct {
 }
 
 type lightPreparedFact struct {
-	fact        Fact
-	ftsSubject  string
-	ftsPred     string
-	ftsObject   string
+	fact       Fact
+	ftsSubject string
+	ftsPred    string
+	ftsObject  string
 }
 
 type lightPreparedItem struct {
-	index        int
-	item         ImportItem
-	source       Source
-	nodes        []lightPreparedNode
-	cards        []lightPreparedCard
-	facts        []lightPreparedFact
-	parseErr     error
-	unsupported  bool
+	index       int
+	item        ImportItem
+	source      Source
+	nodes       []lightPreparedNode
+	cards       []lightPreparedCard
+	facts       []lightPreparedFact
+	parseErr    error
+	unsupported bool
 	// itemFailed means the item should be recorded as failed after prep.
 	itemFailed bool
 	failMsg    string
@@ -191,7 +191,9 @@ func (s *SQLiteStore) importLightItemsBatch(
 
 	// Optional: batch-embed all cards that need vectors (single-threaded; embedders
 	// are often not concurrency-safe).
-	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
+	embeddingModelID := ""
+	if emb, _ := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
+		embeddingModelID = embeddingModelIdentifier(emb)
 		type cardRef struct {
 			jobIdx, cardIdx int
 		}
@@ -324,7 +326,7 @@ func (s *SQLiteStore) importLightItemsBatch(
 				continue
 			}
 			if len(prep.cards) > 0 {
-				if err := insertPreparedLightCardsFacts(ctx, stmts, prep); err != nil {
+				if err := insertPreparedLightCardsFacts(ctx, tx, stmts, prep, embeddingModelID); err != nil {
 					source.Status = StatusFailed
 					source.ErrorMessage = err.Error()
 					if saveErr := insertSource(ctx, tx, source); saveErr != nil {
@@ -391,6 +393,7 @@ func (s *SQLiteStore) prepareLightImportItem(ctx context.Context, req DirectoryI
 		prep.source = source
 		return prep
 	}
+	nodes = annotateMultilingualNodes(nodes)
 
 	source.NodeCount = len(nodes)
 	// Intra-document parallel prep (node FTS + cards/facts) so single large files
@@ -511,6 +514,6 @@ func insertPreparedLightNodes(ctx context.Context, stmts *lightImportStmts, node
 	return nil
 }
 
-func insertPreparedLightCardsFacts(ctx context.Context, stmts *lightImportStmts, prep lightPreparedItem) error {
-	return insertPreparedCardsFacts(ctx, stmts, prep.cards, prep.facts)
+func insertPreparedLightCardsFacts(ctx context.Context, tx *sql.Tx, stmts *lightImportStmts, prep lightPreparedItem, modelID string) error {
+	return insertPreparedCardsFacts(ctx, tx, stmts, prep.cards, prep.facts, modelID)
 }

@@ -199,31 +199,40 @@ func TestRegisterGetCreditsStaticRoutesServesPage(t *testing.T) {
 }
 
 func TestRegisterPetPackHelpStaticRoutesServesPage(t *testing.T) {
-	dir := t.TempDir()
-	html := `<!doctype html><html><body data-set-lang="zh">pet-pack-help</body></html>`
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(html), 0644); err != nil {
-		t.Fatalf("write index: %v", err)
-	}
-
+	dir := filepath.Clean(filepath.Join("..", "..", "web", "pet-pack-help"))
 	mux := http.NewServeMux()
 	registerStaticRoutes(mux, dir, "/pet-pack-help")
 
-	req := httptest.NewRequest(http.MethodGet, "/pet-pack-help", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("index status = %d", rec.Code)
-	}
-	if body := rec.Body.String(); body != html {
-		t.Fatalf("index body = %q", body)
-	}
-
-	// Trailing path should still fall back to index for SPA-style static pages.
-	req2 := httptest.NewRequest(http.MethodGet, "/pet-pack-help/", nil)
-	rec2 := httptest.NewRecorder()
-	mux.ServeHTTP(rec2, req2)
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("slash status = %d", rec2.Code)
+	for _, target := range []string{"/pet-pack-help", "/pet-pack-help?lang=en", "/pet-pack-help/getting-started"} {
+		t.Run(target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("pet-pack-help status = %d", rec.Code)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-cache, no-store, must-revalidate" {
+				t.Fatalf("pet-pack-help cache-control = %q", got)
+			}
+			for _, required := range []string{
+				"MaClaw 宠物角色表演包规范 3.0",
+				"MaClaw Pet Performance Pack Specification 3.0",
+				"native-character",
+				"自然动作质量约束（必须遵守）",
+				"Natural-motion quality floor",
+				"给 AI Agent 的硬性工作流",
+				"动物、物品、人物",
+				"animal, object, person",
+				"用于防止压缩炸弹",
+				"to prevent compression bombs",
+				"Agent 发布前自检",
+				"duration_ms",
+				"prefers-reduced-motion",
+			} {
+				if !strings.Contains(rec.Body.String(), required) {
+					t.Fatalf("guide response missing %q", required)
+				}
+			}
+		})
 	}
 }
 

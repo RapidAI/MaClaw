@@ -1,4 +1,4 @@
-import { main } from "../../../wailsjs/go/models";
+import { corelib } from "../../../wailsjs/go/models";
 import { RemoteRoutingCard } from "./RemoteRoutingCard";
 import { RemoteToolDiagnosticsCard } from "./RemoteToolDiagnosticsCard";
 import type {
@@ -11,7 +11,7 @@ import type {
 } from "./types";
 
 type Props = {
-    config: main.AppConfig | null;
+    config: corelib.AppConfig | null;
     remoteBusy: string;
     selectedRemoteTool: RemoteToolName;
     visibleRemoteTools: RemoteToolMetadataView[];
@@ -29,7 +29,7 @@ type Props = {
     getRemoteToolConfigHint: (tool: string) => string;
     getRemoteToolSmokeHint: (tool: string) => string;
     normalizeIssueItems: (items: unknown) => string[];
-    saveRemoteConfigField: (patch: Partial<main.AppConfig>) => void;
+    saveRemoteConfigField: (patch: Partial<corelib.AppConfig>) => void;
     setSelectedRemoteTool: (tool: RemoteToolName) => void;
     activateRemoteWithEmail: () => void;
     startRemoteSession: () => void;

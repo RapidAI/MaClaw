@@ -160,8 +160,8 @@ func NewRouter(
 	}
 	knowledgeSharePackageDir := filepath.Join(runtimeDataDir, "knowledge-packages")
 	knowledgeSyncPackageDir := filepath.Join(runtimeDataDir, "knowledge-sync")
-		welcomeSyncPackageDir := filepath.Join(runtimeDataDir, "welcome-sync")
-		virtualRepositorySyncDir := filepath.Join(runtimeDataDir, "virtual-repository-sync")
+	welcomeSyncPackageDir := filepath.Join(runtimeDataDir, "welcome-sync")
+	virtualRepositorySyncDir := filepath.Join(runtimeDataDir, "virtual-repository-sync")
 	StartKnowledgeSyncCleanup(knowledgeSyncPackageDir)
 	if hubDB != nil && identity != nil {
 		NewMigrationAPI(hubDB, runtimeDataDir, identity, identity.MachinesRepo(), system).RegisterRoutes(mux, requireTenantAdmin)
@@ -307,10 +307,10 @@ func NewRouter(
 	mux.HandleFunc("GET /api/welcome/sync/status", WelcomeSyncStatusHandler(identity, welcomeSyncPackageDir))
 	mux.HandleFunc("PUT /api/welcome/sync", UploadWelcomeSyncHandler(identity, welcomeSyncPackageDir))
 	mux.HandleFunc("GET /api/welcome/sync", DownloadWelcomeSyncHandler(identity, welcomeSyncPackageDir))
-		mux.HandleFunc("DELETE /api/welcome/sync", DeleteWelcomeSyncHandler(identity, welcomeSyncPackageDir))
-		// Per-user encrypted virtual repository definitions and credentials.
-		mux.HandleFunc("GET /api/virtual-repositories/sync", VirtualRepositorySyncHandler(identity, virtualRepositorySyncDir))
-		mux.HandleFunc("PUT /api/virtual-repositories/sync", VirtualRepositorySyncHandler(identity, virtualRepositorySyncDir))
+	mux.HandleFunc("DELETE /api/welcome/sync", DeleteWelcomeSyncHandler(identity, welcomeSyncPackageDir))
+	// Per-user encrypted virtual repository definitions and credentials.
+	mux.HandleFunc("GET /api/virtual-repositories/sync", VirtualRepositorySyncHandler(identity, virtualRepositorySyncDir))
+	mux.HandleFunc("PUT /api/virtual-repositories/sync", VirtualRepositorySyncHandler(identity, virtualRepositorySyncDir))
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))
@@ -698,6 +698,10 @@ func NewRouter(
 	mux.HandleFunc("GET /api/debug/session", requireAdmin(DebugGetSessionHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/routing/sync-verified-phone-routes", requireAdmin(AdminSyncVerifiedPhoneRoutesHandler(identity)))
 	mux.HandleFunc("/ws", gateway.HandleWS)
+	if gateway != nil && gateway.DeviceGateway != nil {
+		mux.Handle("/api/device-gateway/v1/", gateway.DeviceGateway)
+		mux.Handle("/api/im-gateway/v1/", gateway.DeviceGateway)
+	}
 	mux.HandleFunc("GET /api/shortcuts", GetShortcutsHandler(identity, system))
 	mux.HandleFunc("GET /marketplace", MarketplacePageHandler("hub"))
 	mux.HandleFunc("GET /api/capabilities", CapabilityListHandler(capabilitySvc, identity))

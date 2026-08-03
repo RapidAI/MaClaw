@@ -1,5 +1,5 @@
-﻿import { useEffect, useState } from "react";
-import { main } from "../../../wailsjs/go/models";
+﻿import { useEffect, useState } from 'react';
+import { corelib, main } from '../../../wailsjs/go/models';
 import { GetHubSecurityPolicy, IsHubSecurityReadOnly } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
 import { colors } from "./styles";
@@ -7,8 +7,8 @@ import { colors } from "./styles";
 type SecurityPolicyMode = "none" | "relaxed" | "standard" | "strict" | "developer";
 
 type Props = {
-    config: main.AppConfig | null;
-    saveRemoteConfigField: (patch: Partial<main.AppConfig>) => void;
+    config: corelib.AppConfig | null;
+    saveRemoteConfigField: (patch: Partial<corelib.AppConfig>) => void;
     lang: string;
 };
 

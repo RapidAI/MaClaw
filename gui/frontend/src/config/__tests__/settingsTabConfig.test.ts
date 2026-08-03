@@ -106,8 +106,8 @@ describe('settingsTabConfig', () => {
     });
 
     it('generated AppConfig preserves general entry and survey toggles', async () => {
-        const { main } = await import('../../../wailsjs/go/models');
-        const config = new main.AppConfig({
+        const { corelib } = await import('../../../wailsjs/go/models');
+        const config = new corelib.AppConfig({
             show_utilities_entry: false,
             survey_enabled: false,
         });

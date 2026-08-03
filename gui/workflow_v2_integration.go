@@ -3545,9 +3545,15 @@ func buildRemoteCodingPlanStepText(
 
 func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText string, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
 	ensureLoopCtxUserID(loopCtx, userID)
+	remoteTaskLabel := func(coding, maintenance string) string {
+		if remoteCtx.Maintenance {
+			return maintenance
+		}
+		return coding
+	}
 	userText = strings.TrimSpace(userText)
 	if userText == "" {
-		userText = "执行远程编程任务"
+		userText = remoteTaskLabel("执行远程编程任务", "执行远程维护任务")
 	}
 	// SSH/cancel preflight first; register before planning (see below).
 	cleanupPureCodingRuntime := func() {}
@@ -3570,7 +3576,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		if _, restored := h.restoreApprovedCodingPlanAsPending(userID); restored {
 			return &IMAgentResponse{Text: "远程 SSH 会话不可用，已将待执行计划恢复为待确认状态。请重连后再次点击“开始实施”。"}
 		}
-		return &IMAgentResponse{Text: "远程编程无法启动：缺少 SSH 会话。请先连接远程服务器。"}
+		return &IMAgentResponse{Text: remoteTaskLabel("远程编程无法启动：缺少 SSH 会话。请先连接远程服务器。", "远程维护无法启动：缺少 SSH 会话。请先连接远程服务器。")}
 	}
 	if remoteCtx.ProjectDir == "" {
 		remoteCtx.ProjectDir = "."
@@ -3580,7 +3586,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 
 	if loopCtx != nil && loopCtx.IsCancelled() {
-		return &IMAgentResponse{Text: "远程编程任务已取消"}
+		return &IMAgentResponse{Text: remoteTaskLabel("远程编程任务已取消", "远程维护任务已取消")}
 	}
 	// After SSH is healthy: register before planning so guide-launch mid-plan
 	// lands in pendingInjection. Plan-approve pause cleans up via defer.
@@ -3678,11 +3684,11 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80), sessionMem.TurnCount, planned, len(tasks))
 	if onProgress != nil {
 		if planned {
-			onProgress(fmt.Sprintf("全功能远程编程：按计划执行 %d 步（SSH %s）", len(tasks), remoteCtx.SessionID))
+			onProgress(fmt.Sprintf(remoteTaskLabel("全功能远程编程：按计划执行 %d 步（SSH %s）", "远程维护：按计划执行 %d 步（SSH %s）"), len(tasks), remoteCtx.SessionID))
 		} else if sessionMem.TurnCount > 0 {
-			onProgress(fmt.Sprintf("全功能远程编程：继续第 %d 轮（SSH %s）", sessionMem.TurnCount+1, remoteCtx.SessionID))
+			onProgress(fmt.Sprintf(remoteTaskLabel("全功能远程编程：继续第 %d 轮（SSH %s）", "远程维护：继续第 %d 轮（SSH %s）"), sessionMem.TurnCount+1, remoteCtx.SessionID))
 		} else {
-			onProgress(fmt.Sprintf("全功能远程编程：使用 SSH 会话 %s 开始执行", remoteCtx.SessionID))
+			onProgress(fmt.Sprintf(remoteTaskLabel("全功能远程编程：使用 SSH 会话 %s 开始执行", "远程维护：使用 SSH 会话 %s 开始执行"), remoteCtx.SessionID))
 		}
 	}
 	// Codex/Claude Code-style checklist banner once the multi-step plan is armed.
@@ -3936,7 +3942,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		log.Printf("[coding-hooks] remote post_turn: %s", truncateRunesV2(postTurn.Report, 200))
 	}
 	if result == nil {
-		return &IMAgentResponse{Text: "远程编程执行失败：RemoteCodingSubAgent 没有返回结果。"}
+		return &IMAgentResponse{Text: remoteTaskLabel("远程编程执行失败：RemoteCodingSubAgent 没有返回结果。", "远程维护执行失败：未收到执行结果。")}
 	}
 
 	memAfter := h.getStickyCodingWorkbenchMemory(userID)
@@ -3945,7 +3951,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if planned && totalSteps == 0 {
 		totalSteps = len(memAfter.StepStatuses)
 	}
-	statusText := formatRemoteCodingPlanStatusText(planned, result.Status, totalSteps, passedSteps, failedSteps, skippedSteps)
+	statusText := formatRemoteCodingPlanStatusText(planned, result.Status, totalSteps, passedSteps, failedSteps, skippedSteps, remoteCtx.Maintenance)
 	summary := strings.TrimSpace(result.Summary)
 	if planned && len(reportParts) > 0 {
 		summary = strings.Join(reportParts, "\n\n")
@@ -4097,6 +4103,7 @@ var remoteCodingTemplateRunner remoteCodingTemplateRunnerFunc
 func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, userText string, onProgress func(string), onToken func(string)) *RemoteCodingSubAgentResult {
 	subAgent := NewRemoteCodingSubAgent(h, cfg, httpClient, remoteCtx.SessionID, remoteCtx.WorkDir, remoteCtx.ProjectDir, loopCtx)
 	subAgent.requestKind = remoteCtx.RequestKind
+	subAgent.maintenance = remoteCtx.Maintenance
 	// The preview is a code-change affordance. Keep it out of simple remote
 	// inquiry/run/build turns: they may read files to locate an artifact, but
 	// force-opening a diff-like panel would incorrectly suggest source changes.
@@ -4111,7 +4118,7 @@ func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLL
 			userID = loopCtx.UserID
 		}
 		fullAccess := h.stickyCodingEffectiveFullAccess(userID, globalFull)
-		subAgent.SetHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallback(h, loopCtx, onProgress), fullAccess)
+		subAgent.SetHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallback(h, loopCtx, onProgress, remoteCtx.Maintenance), fullAccess)
 		// When not already full, overlay sticky path trust / high-risk / allow_dir.
 		if !fullAccess && subAgent.highRiskApproval != nil && userID != "" {
 			h.applyStickyRemoteCodingPermissions(userID, subAgent.highRiskApproval)
@@ -4211,6 +4218,12 @@ type remoteCodingTemplateContext struct {
 	ProjectDir       string
 	RequestKind      codingRequestKind
 	RequestNeedsPlan bool
+	// Maintenance keeps the user-visible operation intent separate from the
+	// shared remote-coding execution engine (including tool activity events).
+	Maintenance bool
+	// ForceInitialInquiry locks only an entry-point's first auto-sent turn to
+	// evidence-only inspection. Later messages are classified normally.
+	ForceInitialInquiry bool
 }
 
 func scrubActivePhaseSensitiveFormData(state *v2.WorkflowState) bool {

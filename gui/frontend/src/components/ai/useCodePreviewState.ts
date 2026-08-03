@@ -128,9 +128,14 @@ function normalizeCodeEventProjectPath(projectPath?: string): string {
 
 /** Exported for tests. Accepts exact project match or nested worktree paths under the active project. */
 export function shouldAcceptCodeEventForProject(eventProjectPath?: string, activeTabProjectPath?: string, forceOpen = false): boolean {
+    if (eventProjectPath === undefined || eventProjectPath === '') {
+        return true;
+    }
     const eventPath = normalizeCodeEventProjectPath(eventProjectPath);
     if (!eventPath) {
-        return true;
+        // A project_path was provided but normalizes to nothing (e.g. whitespace
+        // only). It is still a non-matching path — never broadcast it to every tab.
+        return false;
     }
     const activePath = normalizeCodeEventProjectPath(activeTabProjectPath);
     if (!activePath) {

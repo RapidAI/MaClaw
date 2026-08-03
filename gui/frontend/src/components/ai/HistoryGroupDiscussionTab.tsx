@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-import { GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, GroupDiscussionSendHistoryMessage, GroupDiscussionSendInvitation, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, GroupDiscussionSendHistoryMessage, GroupDiscussionSendInvitation, OpenFileOrShowInFolder } from '../../../wailsjs/go/main/App';
+import { a2a } from '../../../wailsjs/go/models';
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { localizeText } from "../../i18n";
 import { GroupParticipantPanel } from "./GroupParticipantPanel";
@@ -219,7 +219,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                 // Remove optimistic messages that are now present in the
                 // authoritative detail. Match by content (created_at format may
                 // differ between client and Hub, so we cannot rely on it).
-                const detailMsgs = nextDetail?.messages || nextDetail?.Messages || [];
+                const detailMsgs = nextDetail?.messages || [];
                 if (detailMsgs.length > 0) {
                     setOptimisticMessages((prev) => prev.filter((pending) =>
                         !detailMsgs.some((m: any) => String(m.content || m.Content || "") === String(pending.content || ""))
@@ -302,7 +302,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         try {
             const toIDs = historyTargetParticipantIds(content, mentionParticipantsRef.current);
             const outgoing = { kind: "statement", content, created_at: createdAt, ...(toIDs.length ? { to_ids: toIDs } : {}) };
-            await GroupDiscussionSendHistoryMessage(discussionId, outgoing);
+            await GroupDiscussionSendHistoryMessage(discussionId, outgoing as a2a.GroupDiscussionMessage);
             setInput("");
             setOptimisticMessages((prev) => [...prev, {
                 id: `local-${Date.now()}`,
@@ -342,7 +342,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         setSending(true);
         setError("");
         try {
-            await GroupDiscussionSendInvitation(discussionId, { to_id: toId, role: "speak", trusted: true });
+            await GroupDiscussionSendInvitation(discussionId, { to_id: toId, role: "speak", trusted: true } as a2a.GroupInvitation);
             await load();
             return true;
         } catch (e) {
@@ -568,7 +568,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         setError("");
         try {
             const result = await GroupDiscussionDownloadAttachment(discussionId, attachment.fileUrl, attachment.filename);
-            const localPath = result?.local_path || result?.LocalPath || "";
+            const localPath = result?.local_path || "";
             attachment.localPath = localPath;
             setDownloadedPaths((prev) => ({ ...prev, [attachment.fileUrl || key]: localPath }));
         } catch (e) {

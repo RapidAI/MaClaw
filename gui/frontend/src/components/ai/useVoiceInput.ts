@@ -26,11 +26,14 @@
  */
 import { useState, useRef, useCallback, useEffect } from "react";
 import { DiarizeAndTranscribeAudioBase64, TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText, NormalizeVoiceCommand, CorrectASRText, SetDesktopPetState } from "../../../wailsjs/go/main/App";
-import { EventsEmit, EventsOn } from "../../../wailsjs/runtime";
+import { EventsOn } from "../../../wailsjs/runtime";
 import { normalizeASRText, resolveNormalizedVoiceText, shouldDispatchASRText } from "./asrTextUtils";
 
 export type VoiceInputState = "idle" | "listening" | "transcribing";
 export type VoiceInputSource = "hold" | "continuous";
+
+/** Window event that asks the assistant panel to start voice input (e.g. desktop pet click). */
+export const START_VOICE_INPUT_EVENT = "maclaw:start-voice-input";
 
 type SpeakerTranscript = { start?: number; end?: number; speaker?: number; text?: string };
 
@@ -142,11 +145,6 @@ function petRetryPromptText(): string {
 }
 
 function emitPetState(state: "idle" | "listening" | "thinking" | "speaking" | "done" | "alert", source: string, ttlMs?: number) {
-    try {
-        EventsEmit("pet:state", { state, source, ttlMs });
-    } catch {
-        // Runtime events are best-effort; voice input should never fail because the pet view is absent.
-    }
     try {
         void SetDesktopPetState(state, typeof ttlMs === "number" ? ttlMs : 0);
     } catch {
@@ -624,6 +622,8 @@ export function useVoiceInput(
     const [segmentCount, setSegmentCount] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const [holdRecording, setHoldRecording] = useState(false);
+    const stateRef = useRef(state);
+    stateRef.current = state;
 
     const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const setErrorAuto = useCallback((msg: string | null) => {
@@ -1477,6 +1477,23 @@ export function useVoiceInput(
         }
         // If transcribing (after stop), ignore -will go idle when done
     }, [resetHoldBuffer, state, startListening, stopListening]);
+
+    // External triggers (desktop pet click with voice conversation enabled)
+    // start continuous listening without touching the mic toggle button.
+    useEffect(() => {
+        const onExternalStart = () => {
+            if (stateRef.current !== "idle" || startingRef.current || activeRef.current) {
+                voiceDebug("skip external voice start", { state: stateRef.current });
+                return;
+            }
+            holdModeRef.current = false;
+            setHoldRecording(false);
+            resetHoldBuffer();
+            void startListening();
+        };
+        window.addEventListener(START_VOICE_INPUT_EVENT, onExternalStart);
+        return () => window.removeEventListener(START_VOICE_INPUT_EVENT, onExternalStart);
+    }, [resetHoldBuffer, startListening]);
 
     return {
         state,

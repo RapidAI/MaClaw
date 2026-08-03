@@ -1,8 +1,6 @@
-import { useEffect, useState, useCallback, type ReactNode } from "react";
-import {
-  GetVEApprovalConfig,
-  SaveVEApprovalConfig,
-} from "../../../wailsjs/go/main/App";
+import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import { GetVEApprovalConfig, SaveVEApprovalConfig } from '../../../wailsjs/go/main/App';
+import { main } from '../../../wailsjs/go/models';
 import { localizeText } from "../../i18n";
 import { VEApprovalRulesSection, ApprovalRules } from "./VEApprovalRulesSection";
 
@@ -80,16 +78,16 @@ export function VEApprovalCapabilitySection({ lang, footerSlot }: Props) {
         const cfg: VEApprovalConfig = {
           enabled: resp.enabled ?? false,
           acl: {
-            mode: resp.acl?.mode || "whitelist",
+            mode: (resp.acl?.mode || "whitelist") as ACLMode,
             departments: resp.acl?.departments || [],
             roles: resp.acl?.roles || [],
             skills: resp.acl?.skills || [],
             entities: resp.acl?.entities || [],
           },
           rules: {
-            auto_reject: resp.rules?.auto_reject || [],
-            auto_approve: resp.rules?.auto_approve || [],
-            require_human: resp.rules?.require_human || [],
+            auto_reject: (resp.rules?.auto_reject || []) as ApprovalRules["auto_reject"],
+            auto_approve: (resp.rules?.auto_approve || []) as ApprovalRules["auto_approve"],
+            require_human: (resp.rules?.require_human || []) as ApprovalRules["require_human"],
           },
           max_queue_size: resp.max_queue_size ?? 50,
           timeout_hours: resp.timeout_hours ?? 24,
@@ -137,7 +135,7 @@ export function VEApprovalCapabilitySection({ lang, footerSlot }: Props) {
     };
 
     try {
-      await SaveVEApprovalConfig(toSave);
+      await SaveVEApprovalConfig(toSave as unknown as main.VEApprovalConfig);
       setConfig(toSave);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);

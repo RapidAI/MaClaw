@@ -92,6 +92,7 @@ type AppConfig struct {
 	ToolCacheMaintenance     ToolCacheMaintenanceConfig `json:"tool_cache_maintenance,omitempty"`
 	WebSearchProviders       []WebSearchProvider        `json:"web_search_providers,omitempty"`
 	WebSearchCurrentProvider string                     `json:"web_search_current_provider,omitempty"`
+	WebSearchStrategy        WebSearchStrategy          `json:"web_search_strategy,omitempty"`
 	MaclawAgentMaxIterations int                        `json:"maclaw_agent_max_iterations,omitempty"`
 	MaclawLLMThinkingMode    string                     `json:"maclaw_llm_thinking_mode,omitempty"` // global: "" = auto, "enabled" | "disabled"
 	SubAgentConcurrency      int                        `json:"subagent_concurrency,omitempty"`
@@ -118,6 +119,14 @@ type AppConfig struct {
 	// MACLAW_DISABLE_SKILL_EVOLUTION still overrides when set. Manual
 	// manage_skill trigger_repair/trigger_optimize remain available.
 	SkillEvolutionEnabled *bool `json:"skill_evolution_enabled,omitempty"`
+	// SkillAutoUploadEnabled controls whether skills are automatically uploaded
+	// to SkillMarket once they reach the success-run threshold. Nil means
+	// default true. Independent of SkillEvolutionEnabled.
+	SkillAutoUploadEnabled *bool `json:"skill_auto_upload_enabled,omitempty"`
+	// SkillAutoUploadMinSuccesses is the minimum number of successful runs a
+	// skill must accumulate before it is auto-uploaded to SkillMarket.
+	// <=0 means use the default (3).
+	SkillAutoUploadMinSuccesses int `json:"skill_auto_upload_min_successes,omitempty"`
 	// Memory
 	MemoryAutoCompress bool `json:"memory_auto_compress"`
 	MemoryMaxBackups   int  `json:"memory_max_backups"` // 0 means use default (20)
@@ -181,11 +190,14 @@ type AppConfig struct {
 	// PetFigurativeUpgradePromptPending is retained only to clear old prompts.
 	PetFigurativeUpgradePromptPending bool `json:"pet_figurative_upgrade_prompt_pending,omitempty"`
 	// PetReducedMotion forces static frames and disables halo/SFX (explicit setting).
-	PetReducedMotion       bool `json:"pet_reduced_motion,omitempty"`
-	FloatingBtnX           int  `json:"floating_btn_x,omitempty"`
-	FloatingBtnY           int  `json:"floating_btn_y,omitempty"`
-	FloatingBtnPositionSet bool `json:"floating_btn_position_set,omitempty"`
-	LogDetailEnabled       bool `json:"log_detail_enabled,omitempty"`
+	PetReducedMotion bool `json:"pet_reduced_motion,omitempty"`
+	// PetAmbientCity is the city used by GUI background weather lookup for
+	// hardware pets. Empty means auto-detect from the desktop's public network.
+	PetAmbientCity         string `json:"pet_ambient_city,omitempty"`
+	FloatingBtnX           int    `json:"floating_btn_x,omitempty"`
+	FloatingBtnY           int    `json:"floating_btn_y,omitempty"`
+	FloatingBtnPositionSet bool   `json:"floating_btn_position_set,omitempty"`
+	LogDetailEnabled       bool   `json:"log_detail_enabled,omitempty"`
 	// IM 闂?per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
@@ -667,6 +679,34 @@ func (c *AppConfig) SetSkillEvolutionEnabled(v bool) {
 	c.SkillEvolutionEnabled = &v
 }
 
+// IsSkillAutoUploadEnabled returns whether automatic SkillMarket upload is
+// allowed once a skill reaches the success-run threshold. Default true when
+// the field has never been set (nil).
+func (c AppConfig) IsSkillAutoUploadEnabled() bool {
+	return c.SkillAutoUploadEnabled == nil || *c.SkillAutoUploadEnabled
+}
+
+// SetSkillAutoUploadEnabled sets the SkillAutoUploadEnabled pointer field.
+func (c *AppConfig) SetSkillAutoUploadEnabled(v bool) {
+	if c == nil {
+		return
+	}
+	c.SkillAutoUploadEnabled = &v
+}
+
+// DefaultSkillAutoUploadMinSuccesses is the default number of successful runs
+// required before a skill is auto-uploaded to SkillMarket.
+const DefaultSkillAutoUploadMinSuccesses = 3
+
+// EffectiveSkillAutoUploadMinSuccesses returns the configured threshold or the
+// default when the configured value is not positive.
+func (c AppConfig) EffectiveSkillAutoUploadMinSuccesses() int {
+	if c.SkillAutoUploadMinSuccesses > 0 {
+		return c.SkillAutoUploadMinSuccesses
+	}
+	return DefaultSkillAutoUploadMinSuccesses
+}
+
 // CapabilityMarketPolicy controls enterprise capability discovery and install behavior.
 type CapabilityMarketPolicy struct {
 	ViewMode              string                                  `json:"view_mode,omitempty"`
@@ -1030,6 +1070,9 @@ func ApplyNewInstallPetDefaults(cfg *AppConfig) {
 	if strings.TrimSpace(cfg.PetSkin) == "" {
 		cfg.PetSkin = "clawmate"
 	}
+	// AppConfigDefaults seeds UnmarshalJSON as well. Set this only on new-install
+	// creation paths so an explicit persisted false is never changed to true.
+	cfg.PetEnabled = true
 	cfg.PetVariant = "default"
 	cfg.PetVariantMigrated = true
 	cfg.PetFigurativeUpgradePromptPending = false

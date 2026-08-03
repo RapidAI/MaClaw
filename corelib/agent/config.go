@@ -40,6 +40,10 @@ type Config struct {
 	// Defaults to 30 if nil.
 	MaxIterationsFunc func() int
 
+	// WebSearchStrategyFunc returns the current web-search strategy.
+	// When nil, standalone hosts use the mainland-friendly default strategy.
+	WebSearchStrategyFunc func() corelib.WebSearchStrategy
+
 	// IsProMode controls whether coding session tools are available.
 	// Defaults to true if nil.
 	IsProMode *bool

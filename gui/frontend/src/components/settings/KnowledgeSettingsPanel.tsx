@@ -1,120 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
-import {
-    KNOWLEDGE_IMPORT_EXPAND_EVENT,
-    consumeKnowledgeImportExpandFlag,
-    useKnowledgeImportOptional,
-} from './KnowledgeImportContext';
+import { KNOWLEDGE_IMPORT_EXPAND_EVENT, consumeKnowledgeImportExpandFlag, useKnowledgeImportOptional } from './KnowledgeImportContext';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
-import { DeepCrawlPanel } from './DeepCrawlPanel';
-import type { DeepCrawlConfig, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
+import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
-import {
-    LoadConfig,
-    PatchConfigFields,
-    KnowledgeCapabilities,
-    KnowledgeBackfillSourceAutoLabels,
-    KnowledgeDeleteSource,
-    KnowledgeDiscoverURLs,
-    KnowledgeDoctor,
-    KnowledgeContextPack,
-    KnowledgeDisableSensitiveSources,
-    KnowledgeDisableSource,
-    KnowledgeDisableSources,
-    KnowledgeDisableSourcesByFilter,
-    KnowledgeEnableSource,
-    KnowledgeEnableSourcesByFilter,
-    KnowledgeEntityProfile,
-    KnowledgeExecuteSourceQualityMaintenancePlan,
-    KnowledgeExplain,
-    KnowledgeFactGraph,
-    KnowledgeFactIndex,
-    KnowledgeExportSnapshotWithOptions,
-    KnowledgeHealth,
-    KnowledgeClearAll,
-    KnowledgeImportDirectory,
-    KnowledgeImportFiles,
-    KnowledgeImportHubShare,
-    KnowledgeImportSnapshot,
-    KnowledgeImportJobStatus,
-    KnowledgeListURLDomainPolicies,
-    KnowledgeListImportBatches,
-    KnowledgeListImportItems,
-    KnowledgeListNodesBySource,
-    KnowledgeListSourceLinks,
-    KnowledgeListSourceLabels,
-    KnowledgeListSourceLinkEvents,
-    KnowledgeListSourceVersions,
-    KnowledgeListCardsBySource,
-    KnowledgeListDuplicateCards,
-    KnowledgeListFactsBySource,
-    KnowledgeListSuppressedCards,
-    KnowledgeListSources,
-    KnowledgeLinkSources,
-    KnowledgeMaintain,
-    KnowledgePreviewSourceRefresh,
-    KnowledgePreviewSourcesRefreshByFilter,
-    KnowledgePreviewSourceTopicLinks,
-    KnowledgeRefreshChangedSources,
-    KnowledgeRefreshChangedSourcesByFilter,
-    KnowledgeRefreshSourceTopicLinks,
-    KnowledgeRefreshSourceTopicLinksByFilter,
-    KnowledgeRebuildSourceDerived,
-    KnowledgeRebuildSourcesDerived,
-    KnowledgeRebuildSourcesDerivedByFilter,
-    KnowledgeRefreshSource,
-    KnowledgeRefreshSources,
-    KnowledgeRefreshSourcesByFilter,
-    KnowledgeRetryImportBatch,
-    KnowledgeRestoreSuppressedCards,
-    KnowledgeSaveText,
-    KnowledgeSaveURL,
-    KnowledgeSaveURLs,
-    KnowledgeScanSensitiveContent,
-    KnowledgeScanDirectory,
-    KnowledgeScanFiles,
-    KnowledgeSearch,
-    KnowledgeSearchFacets,
-    KnowledgeSearchStructured,
-    KnowledgeStructuredCatalog,
-    KnowledgeSourceGraph,
-    KnowledgeSourceNeighborhood,
-    KnowledgeSourcePath,
-    KnowledgeSourceDigest,
-    KnowledgeShareToHub,
-    KnowledgeListMyHubShares,
-    KnowledgeDeleteHubShare,
-    KnowledgeUpdateHubShare,
-    OpenFileOrShowInFolder,
-    KnowledgeSyncDelete,
-    KnowledgeSyncDownload,
-    KnowledgeSyncStatus,
-    KnowledgeSyncUpload,
-    KnowledgeSyncVerifyPassword,
-    KnowledgeSourceTimeline,
-    KnowledgeTopicRelevance,
-    KnowledgeQualityMaintenancePolicies,
-    KnowledgeSourceQualityMaintenancePlan,
-    KnowledgeSourceQualityReport,
-    KnowledgeStartImportDirectory,
-    KnowledgeSuggest,
-    KnowledgeSuppressDuplicateCards,
-    KnowledgeUnlinkSources,
-    KnowledgeUpdateURLDomainPolicies,
-    KnowledgeUpdateSourceMetadata,
-    KnowledgeUpdateSourceLabels,
-    KnowledgeDeepCrawl,
-    KnowledgeDeepCrawlPreview,
-    KnowledgeGetImageAssetPaths,
-    KnowledgeOpenImageFile,
-    GetHubLLMServiceStatus,
-    OpenSystemUrl,
-    SelectKnowledgeDirectory,
-    SelectKnowledgeFiles,
-    SelectKnowledgeSnapshotExportPath,
-    SelectKnowledgeSnapshotFile,
-} from '../../../wailsjs/go/main/App';
+import { GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListNodesBySource, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageFile, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
+import { knowledge } from '../../../wailsjs/go/models';
 
 type Props = {
     lang?: string;
@@ -591,9 +482,12 @@ type ImportItem = {
 
 type SearchResult = {
     source?: Source;
-    result_type?: string;
-    node_id?: string;
-    node_title?: string;
+	result_type?: string;
+	node_id?: string;
+	parent_node_id?: string;
+	language?: string;
+	script?: string;
+	node_title?: string;
     node_type?: string;
     page?: number;
     sheet_name?: string;
@@ -1031,6 +925,7 @@ export function knowledgeSourceListPayload(capabilities: KnowledgeCapabilitiesRe
     if (kind && kind !== 'all') payload.kind = kind;
     const status = normalizeKnowledgeFilterToken(filter.status);
     if (status && status !== 'all') payload.status = status;
+    else payload.include_disabled = true;
     const coverageFilter = resolveKnowledgeCoverageOption(capabilities, filter.coverage || 'all');
     if (coverageFilter !== 'all' && coverageFilter) payload.coverage_filter = coverageFilter;
     applyKnowledgeDomainFilterPayload(payload, filter.domain);
@@ -1487,6 +1382,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         topic_hint: config.topicHint || '',
         labels: config.labels || [],
         client_run_id: config.clientRunID || '',
+        // Go marks preview_only as a required field; the Preview/Crawl binding
+        // decides the actual mode, so this stays false.
+        preview_only: false,
     }), []);
 
     const handleDeepCrawlPreview = useCallback(async (config: DeepCrawlConfig): Promise<DeepCrawlPreviewResult | void> => {
@@ -2260,7 +2158,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             distill_mode: textForm.distillMode,
             labels: parseLabelList(textForm.labels),
             auto_labels: true,
-        }), { refreshSources: true, refreshHealth: true, successMessage: false });
+        } as knowledge.TextSaveRequest), { refreshSources: true, refreshHealth: true, successMessage: false });
         if (result) {
             if (result.save_status === 'duplicate') {
                 notifySuccess(t('Content already exists in knowledge base (updated).', '内容已存在于知识库中（已更新）。'));
@@ -2415,7 +2313,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             };
         if (!payload) return;
         await runTask('executeQuality', async () => {
-            const result = await KnowledgeExecuteSourceQualityMaintenancePlan(payload);
+            const result = await KnowledgeExecuteSourceQualityMaintenancePlan(payload as knowledge.SourceQualityMaintenanceExecuteRequest);
             setExecutionResult(result || null);
             setExecutionContext({ source: action ? 'quality_action' : 'quality_plan', action: action?.kind || 'all_actions', dryRun: qualityOptions.dryRun });
             return result;

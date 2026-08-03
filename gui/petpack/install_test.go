@@ -21,7 +21,7 @@ func TestInstallZipBytesRejectsOversizeArchive(t *testing.T) {
 func TestPickShallowestManifest(t *testing.T) {
 	files := map[string][]byte{
 		"deep/nested/pet-pack.yaml": []byte("id: deep\n"),
-		"cool-pet/pet-pack.yaml":     []byte("id: cool-pet\n"),
+		"cool-pet/pet-pack.yaml":    []byte("id: cool-pet\n"),
 		"other.txt":                 []byte("x"),
 	}
 	name, data := pickShallowestManifest(files)
@@ -201,6 +201,91 @@ assets:
 	if reg.Allowlist()["cool-pet"] {
 		// may remain false after scan
 	}
+}
+
+func TestInstallZipRejectsDuplicateArchivePath(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, content := range []string{"first", "second"} {
+		w, err := zw.Create("duplicate-pet/pet-pack.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(t.TempDir(), nil)
+	if _, err := reg.InstallZipBytes(buf.Bytes()); err == nil {
+		t.Fatal("expected duplicate archive path rejection")
+	}
+}
+
+func TestInstallMarketZipDoesNotOverwriteLocalPackWithSameID(t *testing.T) {
+	user := t.TempDir()
+	reg := NewRegistry(user, nil)
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := testPetPackArchive(t, "shared-pet", "Local original")
+	if _, err := reg.InstallZipBytes(archive); err != nil {
+		t.Fatalf("install local pack: %v", err)
+	}
+	if _, err := reg.InstallMarketZipBytes(testPetPackArchive(t, "shared-pet", "Market replacement")); err == nil {
+		t.Fatal("market install should not overwrite a local pack with the same id")
+	}
+	manifest, err := os.ReadFile(filepath.Join(user, "shared-pet", "pet-pack.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(manifest, []byte("name: Local original")) {
+		t.Fatalf("local pack was overwritten: %s", manifest)
+	}
+
+	if err := reg.SetPackSource("shared-pet", SourceMarket); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.InstallMarketZipBytes(testPetPackArchive(t, "shared-pet", "Market upgrade")); err != nil {
+		t.Fatalf("market re-install should replace an existing market pack: %v", err)
+	}
+	manifest, err = os.ReadFile(filepath.Join(user, "shared-pet", "pet-pack.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(manifest, []byte("name: Market upgrade")) {
+		t.Fatalf("market pack was not upgraded: %s", manifest)
+	}
+	if got := packSourceForDir(filepath.Join(user, "shared-pet")); got != SourceMarket {
+		t.Fatalf("source=%q, want market", got)
+	}
+}
+
+func testPetPackArchive(t *testing.T, id, name string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(id + "/pet-pack.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("schema_version: 1\nid: " + id + "\nname: " + name + "\nversion: 1.0.0\nrenderer: native-raster\nassets:\n  native:\n    idle: native/idle.png\n")); err != nil {
+		t.Fatal(err)
+	}
+	w, err = zw.Create(id + "/native/idle.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(minimalPNG()); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func TestInstallZipRejectsOversizeAndZipBomb(t *testing.T) {

@@ -320,6 +320,8 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 		"assets/js/profile-settings.js",
 		"assets/js/gossip-admin.js",
 		"assets/js/skillmarket-admin.js",
+		"assets/js/petstore-admin.js",
+		"assets/js/expertmarket-admin.js",
 		"assets/js/ha-news-admin.js",
 		"assets/js/llm-service-tab.js",
 		"assets/js/compute-market-tab.js",
@@ -329,6 +331,99 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("admin split script order = %v, want %v", got, want)
+	}
+}
+
+func TestPetStoreAdminUsesDelegatedCardActions(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/petstore-admin.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	assertContainsAll(t, js, "pet store delegated card actions", []string{
+		`data-pet-admin-action="preview"`,
+		`data-pet-admin-action="pause"`,
+		`data-pet-admin-action="resume"`,
+		`data-pet-admin-action="delete"`,
+		`data-pet-admin-action="purge"`,
+		`function purgePetStorePack(id, button)`,
+		`function bindPetStoreAdminActions()`,
+		`function setPetStorePreviewVisibility(target, visible)`,
+		`target.style.display = visible ? '' : 'none'`,
+		`root.addEventListener('click'`,
+		`return text.replace(/&/g, '&amp;')`,
+	})
+	assertContainsAll(t, readAdminPageHTML(t), "pet store cache version", []string{
+		`/admin/assets/js/petstore-admin.js?v=pet-store-admin-20260801-2`,
+	})
+	if strings.Contains(js, `onclick="petAdminSetStatus(`) || strings.Contains(js, `onclick="togglePetStorePreview(`) || strings.Contains(js, `onclick="deletePetStorePack(`) {
+		t.Fatal("pet store cards must not interpolate JavaScript into inline onclick handlers")
+	}
+	assertContainsAll(t, css, "pet store preview visibility", []string{
+		`.pet-admin-preview[hidden]{display:none}`,
+	})
+}
+
+func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/expertmarket-admin.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
+
+	assertContainsAll(t, html, "expert market cache version", []string{
+		`/admin/assets/js/expertmarket-admin.js?v=expert-market-admin-20260802-9`,
+	})
+	if strings.Contains(html, `<option value="approved">`) {
+		t.Fatal("expert market filter must not expose the retired approved state")
+	}
+	assertContainsAll(t, js, "expert market compact review actions", []string{
+		`class="expert-market-card"`,
+		`data-expert-reason`,
+		`data-expert-action="approve"`,
+		`data-expert-action="reject"`,
+		`data-expert-action="unlist"`,
+		`status === 'unlisted'`,
+		`expertMarketAdminFilterLabel`,
+		`function bindExpertMarketActions()`,
+		`grid.addEventListener('click'`,
+		`reasonInput?.focus()`,
+		`deleteConfirm`,
+		`action === 'delete' && !window.confirm`,
+		`const successKey = { approve: 'approvedOk'`,
+		`expertMarketAdminRequestKey`,
+		`expertMarketAdminInFlight && expertMarketAdminRequestKey === requestKey`,
+		`async function loadExpertMarketAdmin(page, force = false)`,
+		`if (!force && expertMarketAdminInFlight && expertMarketAdminRequestKey === requestKey)`,
+		`expertMarketAdminLoadController.abort()`,
+		`signal: controller.signal`,
+		`expertMarketIsAbort(err)`,
+		`document.getElementById('tab-expertmarket')?.classList.contains('active')`,
+		`void loadExpertMarketAdmin()`,
+		`await loadExpertMarketAdmin(undefined, true);`,
+		`expertMarketSetStatus('success', expertMarketText(successKey), 3200)`,
+	})
+	assertContainsAll(t, css, "expert market compact card styles", []string{
+		`#expertMarketAdminGrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}`,
+		`.expert-market-card{display:flex`,
+		`.expert-market-note input:focus`,
+		`content-visibility:auto`,
+		`.sm-status.success`,
+	})
+	assertContainsAll(t, core, "expert market tab loader", []string{
+		`expertmarket:['expertMarketTabTitle','expertMarketTabSubtitle']`,
+		`if(name==='expertmarket'&&typeof loadExpertMarketAdmin==='function')loadExpertMarketAdmin()`,
+		`if(typeof applyExpertMarketAdminI18n==='function')applyExpertMarketAdminI18n()`,
+	})
+	if strings.Contains(js, `window.prompt(`) || strings.Contains(js, `onclick="expertMarket`) {
+		t.Fatal("expert market moderation must use an inline reason field and delegated card actions")
+	}
+	if strings.Contains(js, `status === 'approved'`) || strings.Contains(js, `data-expert-action="list"`) {
+		t.Fatal("expert market approval must publish directly without a separate list action")
+	}
+	if strings.Contains(readAdminAsset(t, "admin/assets/js/admin-core.js"), `/experts/{id}/list`) {
+		t.Fatal("expert market admin must not expose a retired separate listing action")
+	}
+	for _, retired := range []string{`approved: '已通过'`, `list: '上架'`, `listedOk: '专家条目已上架。'`} {
+		if strings.Contains(js, retired) {
+			t.Fatalf("expert market Chinese UI must not expose the retired separate listing state: %s", retired)
+		}
 	}
 }
 
@@ -364,7 +459,7 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
-		`/admin/assets/css/admin-shell.css?v=trust-dialog-20260711`,
+		`/admin/assets/css/admin-shell.css?v=pet-store-preview-toggle-20260731-1`,
 		`/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622-2`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{

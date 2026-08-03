@@ -364,16 +364,43 @@
     color: var(--theme-text-primary, #1a1a1a);
 }
 
+.utilities-experts__title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.utilities-experts__market-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 9px;
+    color: var(--theme-primary-strong, #183b63);
+    font-size: 0.76rem;
+}
+
+.utilities-experts__market-button svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+}
+
 .utilities-experts__subtitle {
     margin: 4px 0 0;
     font-size: 0.82rem;
     color: var(--theme-text-secondary, #666);
 }
 
+.utilities-experts__exchange-hint {
+    margin: 5px 0 0;
+    font-size: 0.75rem;
+    color: var(--theme-text-secondary, #666);
+}
+
 .utilities-experts__grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 340px));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(min(173px, 100%), 227px));
+    gap: 10px;
 }
 
 /* Expert card is a positioned wrapper: main click target + hover action row. */
@@ -381,9 +408,9 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    min-height: 132px;
+    min-height: 96px;
     text-align: left;
-    padding: 16px;
+    padding: 9px;
     border-radius: 12px;
     border: 1px solid var(--theme-border, #e2e5ea);
     background: var(--theme-surface, #fff);
@@ -402,9 +429,10 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 10px;
+    gap: 6px;
     flex: 1;
     min-height: 0;
+    min-width: 0;
     padding: 0;
     border: none;
     background: transparent;
@@ -423,39 +451,43 @@
 .utilities-expert-card__icon {
     display: grid;
     place-items: center;
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
     background: color-mix(in srgb, var(--theme-primary, #3b82f6) 10%, transparent);
-    font-size: 20px;
+    font-size: 14px;
     line-height: 1;
 }
 
 .utilities-expert-card__body {
     display: grid;
-    gap: 4px;
+    gap: 2px;
     min-width: 0;
 }
 
 .utilities-expert-card__title {
+    overflow: hidden;
     font-weight: 700;
-    font-size: 0.95rem;
+    font-size: 0.84rem;
     color: var(--theme-text-primary, #1a1a1a);
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .utilities-expert-card__desc {
-    font-size: 0.8rem;
+    font-size: 0.72rem;
     color: var(--theme-text-secondary, #666);
-    line-height: 1.45;
+    line-height: 1.35;
     display: -webkit-box;
-    -webkit-line-clamp: 2;
+    -webkit-line-clamp: 1;
     -webkit-box-orient: vertical;
     overflow: hidden;
+    overflow-wrap: anywhere;
 }
 
 .utilities-expert-card__cta {
     margin-top: auto;
-    font-size: 0.78rem;
+    font-size: 0.68rem;
     color: var(--theme-primary, #3b82f6);
     font-weight: 600;
 }
@@ -464,28 +496,36 @@
  * keyboard focus (focus-within) even when not hovering. */
 .utilities-expert-card__actions {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: 6px;
+    right: 6px;
     display: flex;
-    gap: 6px;
+    gap: 4px;
     opacity: 0;
+    pointer-events: none;
     transition: opacity 0.15s ease;
 }
 
 .utilities-expert-card:hover .utilities-expert-card__actions,
 .utilities-expert-card:focus-within .utilities-expert-card__actions {
     opacity: 1;
+    pointer-events: auto;
 }
 
 .utilities-expert-card__action {
-    padding: 3px 8px;
-    border-radius: 6px;
+    padding: 2px 6px;
+    border-radius: 4px;
     border: 1px solid var(--theme-border, #e2e5ea);
     background: var(--theme-surface, #fff);
     color: var(--theme-text-primary, #1a1a1a);
     font: inherit;
-    font-size: 0.72rem;
+    font-size: 0.64rem;
+    line-height: 1.2;
     cursor: pointer;
+}
+
+.utilities-expert-card__action:focus-visible {
+    outline: 2px solid var(--theme-primary, #3b82f6);
+    outline-offset: 1px;
 }
 
 .utilities-expert-card__action:hover:not(:disabled) {
@@ -503,6 +543,44 @@
     cursor: wait;
 }
 
+.utilities-expert-card__state {
+    padding: 3px 2px;
+    color: var(--theme-text-secondary, #666);
+    font-size: 0.68rem;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+/* Hover-only controls cannot be reached reliably on touch devices. Keep the
+ * same controls visible there without changing the desktop card density. */
+@media (hover: none), (pointer: coarse) {
+    .utilities-expert-card {
+        min-height: 112px;
+    }
+
+    .utilities-expert-card__actions {
+        position: static;
+        flex-wrap: wrap;
+        margin-top: 10px;
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    .utilities-expert-card__action {
+        min-height: 44px;
+        padding: 6px 8px;
+        font-size: 0.78rem;
+    }
+
+    .utilities-expert-card__state {
+        display: inline-flex;
+        min-height: 44px;
+        align-items: center;
+        padding: 6px 8px;
+        font-size: 0.78rem;
+    }
+}
+
 /* Dashed "new expert" card at the end of the grid. */
 .utilities-expert-card--new {
     align-items: center;
@@ -514,6 +592,7 @@
     color: var(--theme-text-secondary, #666);
     cursor: pointer;
     font-weight: 600;
+    min-height: 96px;
 }
 
 .utilities-expert-card--new:hover {
@@ -522,8 +601,49 @@
     box-shadow: none;
 }
 
+.utilities-expert-card--new:focus-visible,
+.utilities-expert-card--import:focus-visible {
+    outline: 2px solid var(--theme-primary, #3b82f6);
+    outline-offset: 2px;
+}
+
+.utilities-expert-card--import {
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--theme-primary, #3b82f6) 45%, var(--theme-border, #e2e5ea));
+    background: color-mix(in srgb, var(--theme-primary, #3b82f6) 5%, transparent);
+    color: var(--theme-primary, #3b82f6);
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.utilities-expert-card--import:hover:not(:disabled) {
+    border-color: var(--theme-primary, #3b82f6);
+    background: color-mix(in srgb, var(--theme-primary, #3b82f6) 10%, transparent);
+    box-shadow: none;
+}
+
+.utilities-expert-card--import:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+@media (max-width: 560px) {
+    .utilities-experts__title-row {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .utilities-experts__grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .utilities-expert-card__new-icon {
-    font-size: 20px;
+    font-size: 14px;
     line-height: 1;
 }
 
@@ -694,6 +814,25 @@
     resize: vertical;
     min-height: 160px;
     line-height: 1.5;
+}
+
+.expert-editor__textarea--description {
+    min-height: 76px;
+}
+
+@media (max-width: 420px) {
+    .expert-editor-overlay {
+        padding: 12px;
+    }
+
+    .expert-editor {
+        max-height: calc(100vh - 24px);
+        padding: 16px;
+    }
+
+    .expert-editor__grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .expert-editor__checks {

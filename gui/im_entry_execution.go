@@ -242,12 +242,24 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 	if remoteRaw, isRemoteCodingTemplate := h.pendingTemplateRemoteCoding.LoadAndDelete(msg.UserID); isRemoteCodingTemplate {
 		h.pendingV2SubAgentExecution.Delete(msg.UserID)
 		remoteCtx, _ := remoteRaw.(remoteCodingTemplateContext)
-		// Request intent belongs to this message, not to the sticky SSH session.
-		// Refresh it before every remote turn so a previous "run it" cannot
-		// constrain a later implementation request (or vice versa).
-		decision := h.resolveCodingRequestDecision(agentLoopUserText)
-		remoteCtx.RequestKind = decision.Kind
-		remoteCtx.RequestNeedsPlan = decision.NeedsPlan
+		// Request intent normally belongs to this message, not to the sticky SSH
+		// session. The incident-diagnosis entry point is the exception: it locks
+		// only its first auto-sent turn to evidence-only inspection, preventing a
+		// classifier outage from turning a diagnosis into remote writes.
+		if remoteCtx.ForceInitialInquiry {
+			// ForceInitialInquiry is the durable marker used by the diagnosis entry
+			// point. Infer the matching presentation intent as well so sticky
+			// contexts saved before Maintenance was introduced cannot regress to a
+			// misleading "remote coding" label after reopen or reconnect.
+			remoteCtx.Maintenance = true
+			remoteCtx.RequestKind = codingRequestInquiry
+			remoteCtx.RequestNeedsPlan = false
+			remoteCtx.ForceInitialInquiry = false
+		} else {
+			decision := h.resolveCodingRequestDecision(agentLoopUserText)
+			remoteCtx.RequestKind = decision.Kind
+			remoteCtx.RequestNeedsPlan = decision.NeedsPlan
+		}
 		// Attach images/files for this pure-coding turn (vision-capable models).
 		if loopCtx != nil && len(msg.Attachments) > 0 {
 			loopCtx.CodingAttachments = append([]MessageAttachment(nil), msg.Attachments...)
@@ -326,7 +338,9 @@ func (h *IMMessageHandler) rearmStickyRemoteCodingEnvironment(userID string, rem
 		}
 	}
 	// RequestKind is per turn. Never persist it with a reusable connection
-	// context: the next user message is classified independently above.
+	// context: the next user message is classified independently above. Keep
+	// ForceInitialInquiry when restoring an untouched diagnosis task; the first
+	// consuming turn clears it before calling this re-arm helper.
 	remoteCtx.RequestKind = ""
 	remoteCtx.RequestNeedsPlan = false
 	h.pendingTemplateCodingProjectPath.Delete(userID)

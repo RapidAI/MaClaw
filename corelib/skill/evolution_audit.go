@@ -20,6 +20,13 @@ type EvolutionAuditEvent struct {
 	Skill       string `json:"skill,omitempty"`
 	Explanation string `json:"explanation,omitempty"`
 	Source      string `json:"source,omitempty"` // desktop | tui | cli | test
+	// Status carries an outcome marker from the event payload (e.g.
+	// "rejected" for a reviewed repair draft), so the audit list can tell a
+	// pending draft apart from a rejected one.
+	Status string `json:"status,omitempty"`
+	// Via carries the channel marker from the event payload (e.g.
+	// "reviewed_draft" / "reviewed_draft_disable").
+	Via string `json:"via,omitempty"`
 }
 
 const (
@@ -48,6 +55,8 @@ func KindFromEventName(event string) string {
 		return "discovered"
 	case EventSkillExecutionFailed:
 		return "failed"
+	case EventSkillRepairDraftReady:
+		return "repair_draft"
 	case EventSkillEvolutionQueueFull:
 		return "queue_full"
 	case "skill:yaml_restore", "yaml_restore":
@@ -78,6 +87,8 @@ func RecordEvolutionEvent(event string, data map[string]string, source string) {
 	if data != nil {
 		ev.Skill = strings.TrimSpace(data["skill"])
 		ev.Explanation = strings.TrimSpace(data["explanation"])
+		ev.Status = strings.TrimSpace(data["status"])
+		ev.Via = strings.TrimSpace(data["via"])
 	}
 	_ = AppendEvolutionAudit(DefaultEvolutionAuditPath(), ev)
 }

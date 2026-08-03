@@ -66,6 +66,12 @@ func newKnowledgeStoreManager(dataRoot string) (*knowledgeStoreManager, error) {
 		store.SetEmbedder(mgr.embedder)
 		log.Printf("[knowledge] embedding waits for shared AI model manager")
 	}
+	// Exact cosine scan remains the default. Enable the candidate index only
+	// through an explicit deployment flag so it can be shadow-tested per rollout.
+	if enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("MACLAW_KNOWLEDGE_APPROX_VECTOR_SEARCH"))); enabled {
+		store.SetApproximateVectorSearch(true)
+		log.Printf("[knowledge] approximate vector candidate index enabled")
+	}
 
 	return mgr, nil
 }

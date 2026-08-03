@@ -27,6 +27,28 @@ func TestResolveStaticDirFromBasesPrefersExistingBase(t *testing.T) {
 	}
 }
 
+func TestStaticDirWorkingBasesIncludesHubCenterAncestor(t *testing.T) {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if filepath.Base(workingDir) != "httpapi" {
+		t.Skipf("test expects package working directory, got %q", workingDir)
+	}
+
+	want := filepath.Clean(filepath.Join(workingDir, "..", ".."))
+	found := false
+	for _, base := range staticDirWorkingBases() {
+		if filepath.Clean(base) == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("static working bases do not include hubcenter ancestor %q", want)
+	}
+}
+
 func TestRegisterSharedStaticAssetsServesProUI(t *testing.T) {
 	root := t.TempDir()
 	css := filepath.Join(root, "pro-ui.css")

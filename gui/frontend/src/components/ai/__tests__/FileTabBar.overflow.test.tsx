@@ -501,6 +501,32 @@ describe('FileTabBar overflow management', () => {
         expect(onCloseAll).toHaveBeenCalled();
     });
 
+    it.each([
+        ['zh-Hans', '在资源管理器中显示', '使用默认应用打开', '复制路径', '关闭其他'],
+        ['zh-Hant', '在檔案總管中顯示', '使用預設應用程式開啟', '複製路徑', '關閉其他'],
+    ])('localizes context-menu actions for %s', (lang, reveal, open, copyPath, closeOthers) => {
+        mockResizeObserver(800);
+
+        render(
+            <FileTabBar
+                files={makeFiles(['/src/a.ts', '/src/b.ts'])}
+                activeFilePath="/src/a.ts"
+                onSelectFile={vi.fn()}
+                onCloseFile={vi.fn()}
+                onCloseOtherFiles={vi.fn()}
+                theme={lightTheme}
+                lang={lang}
+            />,
+        );
+
+        fireEvent.contextMenu(screen.getAllByTestId('file-tab')[0]);
+
+        expect(screen.getByText(reveal)).toBeTruthy();
+        expect(screen.getByText(open)).toBeTruthy();
+        expect(screen.getByTestId('file-tab-ctx-copy-path').textContent).toBe(copyPath);
+        expect(screen.getByTestId('file-tab-ctx-close-others').textContent).toBe(closeOthers);
+    });
+
     it('disables close others/right/all when only pinned tabs would remain', () => {
         mockResizeObserver(800);
 

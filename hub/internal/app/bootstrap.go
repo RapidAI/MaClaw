@@ -284,10 +284,20 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	if err := imAdapter.RegisterPlugin(lansengerPlugin); err != nil {
 		log.Printf("[bootstrap] failed to register lansenger plugin: %v", err)
 	}
+	thirdPartyPlugin := im.NewRemoteGatewayPlugin("thirdparty", deviceService, st.Users, st.System)
+	if err := imAdapter.RegisterPlugin(thirdPartyPlugin); err != nil {
+		log.Printf("[bootstrap] failed to register thirdparty plugin: %v", err)
+	}
 	gateway.RegisterIMGatewayPlugin(qqRemotePlugin)
 	gateway.RegisterIMGatewayPlugin(telegramPlugin)
 	gateway.RegisterIMGatewayPlugin(weixinPlugin)
 	gateway.RegisterIMGatewayPlugin(lansengerPlugin)
+	gateway.RegisterIMGatewayPlugin(thirdPartyPlugin)
+	deviceGateway := im.NewPersistentDeviceGateway(thirdPartyPlugin, st.System)
+	deviceGateway.SetMeetingRecordingHandler(httpapi.HardwareMeetingRecordingsHandler(deviceGateway))
+	meetingTranscript, meetingMinutes := httpapi.HardwareMeetingRecordingWorkerAvailability()
+	deviceGateway.SetMeetingRecordingModes(meetingTranscript, meetingMinutes)
+	gateway.SetDeviceGateway(deviceGateway)
 
 	// 8b. QQBot Plugin 闂?connects to QQ Bot via WebSocket gateway (Hub-native)
 	qqbotPlugin := qqbot.New(func() qqbot.Config {

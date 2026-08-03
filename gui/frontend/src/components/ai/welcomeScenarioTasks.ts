@@ -31,7 +31,16 @@ export interface WelcomePrompt {
      * mode (same path as sidebar 本地编程 / 远程编程).
      */
     agentMode?: PureCodingAgentMode;
+    /**
+     * Extra safety posture for a remote coding card. Diagnosis starts with a
+     * read-only SSH inspection turn; it never creates a remote directory or
+     * changes a service just because the lightweight intent classifier failed.
+     */
+    remoteSafety?: "diagnosis";
 }
+
+/** The two execution contexts offered by the operations scenario. */
+export type WelcomeOpsMode = "local" | "remote";
 
 export interface ScenarioTab {
     id: string;
@@ -908,3 +917,23 @@ export const SCENARIO_TABS: ScenarioTab[] = [
         ],
     },
 ];
+
+/**
+ * The ops catalog is authored once for the local-machine context. Remote ops
+ * uses the same investigation intent, but always goes through the SSH task
+ * creation flow and starts with an evidence-only diagnosis turn.
+ */
+export function getWelcomeOpsPrompts(mode: WelcomeOpsMode): WelcomePrompt[] {
+    const prompts = SCENARIO_TABS.find((tab) => tab.id === "ops")?.prompts || [];
+    return prompts.map((prompt) => getWelcomeOpsPrompt(prompt, mode));
+}
+
+/** Apply the active ops execution context to one prompt from any entry point. */
+export function getWelcomeOpsPrompt(prompt: WelcomePrompt, mode: WelcomeOpsMode): WelcomePrompt {
+    if (mode === "local") return prompt;
+    return {
+        ...prompt,
+        agentMode: "remote_coding_dev",
+        remoteSafety: "diagnosis",
+    };
+}

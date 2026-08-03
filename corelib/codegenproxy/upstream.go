@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -46,6 +47,7 @@ func (c httpOpenAIUpstreamClient) DoModels(ctx context.Context, endpoint, apiKey
 }
 
 func (c httpOpenAIUpstreamClient) DoChatCompletions(ctx context.Context, endpoint, apiKey, clientName string, body []byte, accept string, _ bool) (*http.Response, error) {
+	body = ensureOpenAICompatAssistantContentBeforeUpstream(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -84,6 +86,7 @@ func (c openAISDKUpstreamClient) DoChatCompletions(ctx context.Context, endpoint
 	if stream {
 		return c.fallback.DoChatCompletions(ctx, endpoint, apiKey, clientName, body, accept, stream)
 	}
+	body = ensureOpenAICompatAssistantContentBeforeUpstream(body)
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
@@ -124,6 +127,89 @@ func (c openAISDKUpstreamClient) DoChatCompletions(ctx context.Context, endpoint
 	}
 	response.Body = io.NopCloser(bytes.NewReader(responseBody))
 	return response, nil
+}
+
+// ensureOpenAICompatAssistantContentBeforeUpstream is the final, deliberately
+// narrow guard before an OpenAI-compatible chat body leaves TigerProxy. Earlier
+// compatibility passes normalize full message histories, but tool-less retry
+// paths and future request transforms must not be able to reintroduce an
+// assistant entry with neither usable content nor a valid tool call. DeepSeek
+// V4 Flash rejects that shape with "content or tool_calls must be set".
+func ensureOpenAICompatAssistantContentBeforeUpstream(body []byte) []byte {
+	var payload map[string]interface{}
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	messages := codeGenProxySliceFromAny(payload["messages"])
+	if len(messages) == 0 {
+		return body
+	}
+
+	changed := false
+	for i, item := range messages {
+		message := codeGenProxyMapFromAny(item)
+		if message == nil || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(message["role"])), "assistant") {
+			continue
+		}
+		validToolCalls := codeGenProxyValidAssistantToolCalls(message["tool_calls"])
+		_, hadToolCalls := message["tool_calls"]
+		if !hadToolCalls && codeGenProxyAssistantHasContent(message) {
+			continue
+		}
+		if len(validToolCalls) > 0 {
+			continue
+		}
+		patched := make(map[string]interface{}, len(message)+1)
+		for key, value := range message {
+			patched[key] = value
+		}
+		if len(validToolCalls) > 0 {
+			patched["tool_calls"] = validToolCalls
+		} else {
+			delete(patched, "tool_calls")
+		}
+		if !codeGenProxyAssistantHasContent(patched) && len(validToolCalls) == 0 {
+			patched["content"] = ""
+		}
+		messages[i] = patched
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	payload["messages"] = messages
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return normalized
+}
+
+func codeGenProxyAssistantHasContent(message map[string]interface{}) bool {
+	if content, ok := message["content"]; ok && content != nil {
+		if items := codeGenProxySliceFromAny(content); len(items) > 0 {
+			return true
+		}
+		if _, isSlice := content.([]interface{}); !isSlice {
+			return true
+		}
+	}
+	return false
+}
+
+func codeGenProxyValidAssistantToolCalls(value interface{}) []interface{} {
+	out := make([]interface{}, 0)
+	for _, rawCall := range codeGenProxySliceFromAny(value) {
+		call := codeGenProxyMapFromAny(rawCall)
+		if call == nil {
+			continue
+		}
+		function := codeGenProxyMapFromAny(call["function"])
+		if function != nil && strings.TrimSpace(fmt.Sprint(function["name"])) != "" {
+			out = append(out, rawCall)
+		}
+	}
+	return out
 }
 
 func openAISDKBaseURLFromChatEndpoint(endpoint string) string {

@@ -16,7 +16,13 @@ import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
-import { SCENARIO_TABS, type WelcomePrompt } from "./welcomeScenarioTasks";
+import {
+    getWelcomeOpsPrompt,
+    getWelcomeOpsPrompts,
+    SCENARIO_TABS,
+    type WelcomeOpsMode,
+    type WelcomePrompt,
+} from "./welcomeScenarioTasks";
 import {
     matchWelcomeTasksFromClipboard,
     pickClipboardPrefillLabel,
@@ -61,6 +67,7 @@ import {
     WelcomeSyncPush,
     WelcomeSyncStatus,
 } from "../../../wailsjs/go/main/App";
+import { main } from "../../../wailsjs/go/models";
 
 // Keep standalone IM shortcuts in the desktop process. This is deliberately
 // separate from cloud sync: LANXIN local mode must not depend on Hub.
@@ -68,6 +75,7 @@ type LocalStartMenuTemplateSnapshot = Array<{
     title: string;
     body: string;
     agentMode?: "coding_dev" | "remote_coding_dev";
+    remoteSafety?: "diagnosis";
     codingEnv?: {
         workingDir?: string;
         remote?: { host?: string; port?: number; user?: string; workDir?: string };
@@ -87,6 +95,7 @@ function localStartMenuSnapshot(templates: WelcomeCustomTemplate[]): LocalStartM
         title: t.title,
         body: t.body,
         agentMode: t.agentMode,
+        remoteSafety: t.remoteSafety,
         codingEnv: t.codingEnv ? {
             workingDir: t.codingEnv.workingDir,
             remote: t.codingEnv.remote ? {
@@ -118,7 +127,7 @@ export function syncLocalStartMenuTemplates(templates: WelcomeCustomTemplate[]):
                 const snapshot = pendingLocalStartMenuSnapshot;
                 pendingLocalStartMenuSnapshot = null;
                 try {
-                    await UpdateLocalStartMenuTemplates(snapshot);
+                    await UpdateLocalStartMenuTemplates(snapshot as main.LocalStartMenuTemplate[]);
                 } catch (error) {
                     failedSnapshot = snapshot;
                     throw error;
@@ -196,6 +205,7 @@ function requestCreateCodingTask(
         name: command,
         workingDir: codingEnv?.workingDir,
         remote: codingEnv?.remote,
+        remoteSafety: codingEnv?.remoteSafety,
         autoCreate: codingEnv?.autoCreate === true,
     };
     window.dispatchEvent(new CustomEvent(EVENT_OPEN_CREATE_CODING_TASK, { detail }));
@@ -385,10 +395,12 @@ export function AssistantWelcomeView({
         clipboardPrefillLabel?: string | null;
         /** Per-template coding env (from "save as favorite"); may include local password. */
         initialCodingEnv?: WelcomeStoredCodingEnv;
+        remoteSafety?: "diagnosis";
     };
     const [paramDialog, setParamDialog] = useState<ParamDialogState | null>(null);
     const [recentEntries, setRecentEntries] = useState<WelcomeRecentEntry[]>(() => loadWelcomeRecentEntries());
     const [customTemplates, setCustomTemplates] = useState<WelcomeCustomTemplate[]>(() => loadWelcomeCustomTemplates());
+    const [opsMode, setOpsMode] = useState<WelcomeOpsMode>("local");
 
     useEffect(() => {
         if (!active) setParamDialog(null);
@@ -540,7 +552,7 @@ export function AssistantWelcomeView({
             if (!isWailsWelcomeSyncAvailable()) return;
             try {
                 const status = await WelcomeSyncStatus({});
-                if (!cancelled) applyCloudStatus(status as Record<string, unknown>);
+                if (!cancelled) applyCloudStatus(status as unknown as Record<string, unknown>);
             } catch {
                 if (!cancelled) {
                     setCloudSync((prev) => ({
@@ -582,14 +594,18 @@ export function AssistantWelcomeView({
             initialCodingEnv?: WelcomeStoredCodingEnv;
         },
     ) => {
-        const text = isZh ? (prompt.template || prompt.text) : (prompt.templateEn || prompt.textEn);
-        const title = isZh ? prompt.text : prompt.textEn;
-        const description = isZh ? prompt.desc : prompt.descEn;
+        // Quick hints, clipboard matches and recent entries bypass the card
+        // grid. Keep them in the active remote-ops context rather than
+        // accidentally downgrading them to an ordinary local chat prompt.
+        const resolvedPrompt = tabId === "ops" ? getWelcomeOpsPrompt(prompt, opsMode) : prompt;
+        const text = isZh ? (resolvedPrompt.template || resolvedPrompt.text) : (resolvedPrompt.templateEn || resolvedPrompt.textEn);
+        const title = isZh ? resolvedPrompt.text : resolvedPrompt.textEn;
+        const description = isZh ? resolvedPrompt.desc : resolvedPrompt.descEn;
         const taskKey = options?.taskKeyOverride
-            || (tabId === "custom" ? `custom::${prompt.textEn}` : welcomePromptKey(tabId, prompt.textEn));
+            || (tabId === "custom" ? `custom::${resolvedPrompt.textEn}` : welcomePromptKey(tabId, resolvedPrompt.textEn));
         const submitMode: WelcomePromptParamSubmitMode =
-            prompt.agentMode === "coding_dev" || prompt.agentMode === "remote_coding_dev"
-                ? prompt.agentMode
+            resolvedPrompt.agentMode === "coding_dev" || resolvedPrompt.agentMode === "remote_coding_dev"
+                ? resolvedPrompt.agentMode
                 : "chat";
         const clip = (options?.clipboardPrefill || "").trim();
         // Always open the param dialog — never dump raw [placeholder] templates into the composer.
@@ -601,12 +617,13 @@ export function AssistantWelcomeView({
             submitMode,
             taskKey,
             tabId,
-            textEn: prompt.textEn,
+            textEn: resolvedPrompt.textEn,
             clipboardPrefill: clip || undefined,
             clipboardPrefillLabel: clip ? pickClipboardPrefillLabel(text) : null,
             initialCodingEnv: options?.initialCodingEnv,
+            remoteSafety: resolvedPrompt.remoteSafety,
         });
-    }, [isZh]);
+    }, [isZh, opsMode]);
 
     const clipboardScanInFlightRef = useRef(false);
     const clipboardFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -721,6 +738,7 @@ export function AssistantWelcomeView({
                 meta?.submitMode === "coding_dev" || meta?.submitMode === "remote_coding_dev"
                     ? meta.submitMode
                     : undefined,
+            remoteSafety: meta?.remoteSafety,
             codingEnv,
         });
         setCustomTemplates(templates);
@@ -1001,7 +1019,7 @@ export function AssistantWelcomeView({
             const status = await WelcomeSyncPush({
                 payload_json: json,
                 if_match_revision: force ? "" : (loadWelcomeCloudRevision() || undefined),
-            }) as Record<string, unknown>;
+            }) as unknown as Record<string, unknown>;
             forceNextCloudPushRef.current = false;
             confirmEmptyCloudPushRef.current = false;
             confirmCloudDeleteRef.current = false;
@@ -1156,7 +1174,7 @@ export function AssistantWelcomeView({
         cloudBusyRef.current = true;
         setCloudSync((prev) => ({ ...prev, busy: true }));
         try {
-            const result = await WelcomeSyncPull({}) as Record<string, unknown>;
+            const result = await WelcomeSyncPull({}) as unknown as Record<string, unknown>;
             // Keep busy=true until apply finishes so auto-sync cannot interleave.
             applyCloudStatus({ ...result, logged_in: true }, { keepBusy: true });
             const text = welcomeCloudPayloadText(result);
@@ -1260,7 +1278,7 @@ export function AssistantWelcomeView({
         cloudBusyRef.current = true;
         setCloudSync((prev) => ({ ...prev, busy: true }));
         try {
-            const status = await WelcomeSyncDelete({}) as Record<string, unknown>;
+            const status = await WelcomeSyncDelete({}) as unknown as Record<string, unknown>;
             saveWelcomeCloudRevision("");
             lastAutoPushFingerprintRef.current = "";
             setCloudConflictOpen(false);
@@ -1348,6 +1366,9 @@ export function AssistantWelcomeView({
     }, [isZh, showTemplateIoNote, pullWelcomeFromCloud, pushWelcomeToCloud, setConflictPhase]);
 
     const currentTab = SCENARIO_TAB_BY_ID.get(activeTab) || SCENARIO_TABS[0];
+    const visiblePrompts = currentTab.id === "ops"
+        ? getWelcomeOpsPrompts(opsMode)
+        : currentTab.prompts;
     const recentPrompts = useMemo(() => {
         const resolved = resolveWelcomeRecentPrompts(recentEntries);
         return filterWelcomeRecentForQuickAccess(resolved, customTemplates, 4);
@@ -2348,6 +2369,79 @@ export function AssistantWelcomeView({
                 </div>
             </div>
 
+            {currentTab.id === "ops" && (
+                <div
+                    aria-label={isZh ? "运维执行位置" : "Ops execution location"}
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: "12px",
+                        width: "100%",
+                        maxWidth: CONTENT_MAX_WIDTH,
+                        padding: "8px 10px",
+                        background: t.fieldBg,
+                        border: `1px solid ${t.fieldBorder}`,
+                        borderRadius: "8px",
+                        boxSizing: "border-box",
+                    }}
+                >
+                    <div style={{ minWidth: 0 }}>
+                        <div style={{ color: t.text, fontSize: "12px", fontWeight: 600, lineHeight: 1.35 }}>
+                            {isZh ? "选择运维任务类型" : "Choose an ops task type"}
+                        </div>
+                        <div style={{ color: t.textMuted, fontSize: "11px", lineHeight: 1.35, marginTop: "2px" }}>
+                            {opsMode === "remote"
+                                ? (isZh ? "需填写 SSH 服务器连接信息；首轮仅收集证据，不执行变更。" : "SSH connection details are required; the first turn gathers evidence only.")
+                                : (isZh ? "仅分析当前本机提供的日志、配置或现象，不连接服务器。" : "Analyze local evidence only; no server connection is opened.")}
+                        </div>
+                    </div>
+                    <div
+                        role="group"
+                        aria-label={isZh ? "本地或远程运维" : "Local or remote operations"}
+                        style={{
+                            display: "inline-flex",
+                            flexShrink: 0,
+                            padding: "2px",
+                            background: t.bg,
+                            border: `1px solid ${t.fieldBorder}`,
+                            borderRadius: "6px",
+                        }}
+                    >
+                        {([
+                            ["local", isZh ? "本地运维" : "Local ops"],
+                            ["remote", isZh ? "远程运维" : "Remote ops"],
+                        ] as const).map(([mode, label]) => {
+                            const selected = opsMode === mode;
+                            return (
+                                <button
+                                    type="button"
+                                    key={mode}
+                                    aria-pressed={selected}
+                                    data-testid={`welcome-ops-mode-${mode}`}
+                                    onClick={() => setOpsMode(mode)}
+                                    style={{
+                                        padding: "4px 8px",
+                                        color: selected ? t.sendBtnColor : t.textMuted,
+                                        background: selected ? t.sendBtnBg : "transparent",
+                                        border: 0,
+                                        borderRadius: "4px",
+                                        cursor: "pointer",
+                                        fontSize: "11px",
+                                        fontWeight: selected ? 600 : 500,
+                                        lineHeight: 1.35,
+                                        fontFamily: "system-ui, -apple-system, sans-serif",
+                                        transition: "background 0.12s ease, color 0.12s ease",
+                                    }}
+                                >
+                                    {label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
             {/* Prompt cards */}
             <div
                 role="tabpanel"
@@ -2361,7 +2455,7 @@ export function AssistantWelcomeView({
                     maxWidth: CONTENT_MAX_WIDTH,
                 }}
             >
-                {currentTab.prompts.map((prompt, promptIndex) => (
+                {visiblePrompts.map((prompt, promptIndex) => (
                     <button
                         type="button"
                         key={`${currentTab.id}-${prompt.textEn}`}
@@ -2372,7 +2466,9 @@ export function AssistantWelcomeView({
                             prompt.agentMode === "coding_dev"
                                 ? (isZh ? `${prompt.text}（本地编程）` : `${prompt.textEn} (local coding)`)
                                 : prompt.agentMode === "remote_coding_dev"
-                                    ? (isZh ? `${prompt.text}（远程编程）` : `${prompt.textEn} (remote coding)`)
+                                    ? (prompt.remoteSafety === "diagnosis"
+                                        ? (isZh ? `${prompt.text}（远程维护）` : `${prompt.textEn} (remote maintenance)`)
+                                        : (isZh ? `${prompt.text}（远程编程）` : `${prompt.textEn} (remote coding)`))
                                     : undefined
                         }
                         onClick={() => openPrompt(prompt, currentTab.id)}
@@ -2447,6 +2543,7 @@ export function AssistantWelcomeView({
                 clipboardPrefillLabel={paramDialog?.clipboardPrefillLabel}
                 submitMode={paramDialog?.submitMode || "chat"}
                 initialCodingEnv={paramDialog?.initialCodingEnv}
+                remoteSafety={paramDialog?.remoteSafety}
                 canSend={cp.ready && !cp.inputLocked && !!onPromptSend}
                 onSubmit={handleParamSubmit}
                 onSaveTemplate={handleSaveTemplate}

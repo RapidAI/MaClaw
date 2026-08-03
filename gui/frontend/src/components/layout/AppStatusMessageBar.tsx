@@ -123,7 +123,7 @@ export const AppStatusMessageBar = ({
 
     return (
         <div
-            className="status-message"
+            className={inline ? 'status-message status-message--inline' : 'status-message'}
             data-testid="app-status-message-bar"
             data-variant={variant}
             style={rootStyle}

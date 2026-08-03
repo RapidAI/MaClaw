@@ -1381,6 +1381,42 @@ func TestAuditInstalledSkillQualityWritesStatus(t *testing.T) {
 	}
 }
 
+func TestSkillLifecyclePurgeLegacyGeneratedUploads(t *testing.T) {
+	m := &SkillLifecycleManager{queuePath: filepath.Join(t.TempDir(), "queue.json")}
+	seed := skillUploadQueueFile{Items: []SkillUploadQueueItem{
+		{ID: "1", SkillName: "legacy-pending", Reason: "generated_upload", Status: skillUploadStatusPending},
+		{ID: "2", SkillName: "legacy-failed", Reason: "generated_upload", Status: skillUploadStatusFailed},
+		{ID: "3", SkillName: "legacy-blocked", Reason: "generated_upload", Status: skillUploadStatusBlocked},
+		{ID: "4", SkillName: "legacy-uploaded", Reason: "generated_upload", Status: skillUploadStatusUploaded},
+		{ID: "5", SkillName: "run-verified", Reason: "auto_upload", Status: skillUploadStatusPending},
+	}}
+	if err := m.saveQueueLocked(seed); err != nil {
+		t.Fatalf("saveQueueLocked() error = %v", err)
+	}
+
+	purged, err := m.PurgeLegacyGeneratedUploads()
+	if err != nil {
+		t.Fatalf("PurgeLegacyGeneratedUploads() error = %v", err)
+	}
+	if purged != 2 {
+		t.Fatalf("purged = %d, want 2 (pending + failed legacy items)", purged)
+	}
+
+	items, err := m.ListUploadQueue()
+	if err != nil {
+		t.Fatalf("ListUploadQueue() error = %v", err)
+	}
+	if len(items) != 3 || items[0].ID != "3" || items[1].ID != "4" || items[2].ID != "5" {
+		t.Fatalf("queue after purge = %+v, want blocked/uploaded legacy + auto_upload kept", items)
+	}
+
+	// Idempotent: a second purge is a no-op.
+	purged, err = m.PurgeLegacyGeneratedUploads()
+	if err != nil || purged != 0 {
+		t.Fatalf("second purge = %d, %v; want 0, nil", purged, err)
+	}
+}
+
 func TestSkillLifecycleStaleUploadingItemIsRetried(t *testing.T) {
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	m := &SkillLifecycleManager{queuePath: filepath.Join(t.TempDir(), "queue.json")}

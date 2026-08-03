@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MessageContentRenderer } from "../MessageContentRenderer";
 import { lightTheme } from "../aiAssistantPanelTheme";
+import { exceedsMermaidRenderBudget, isMermaidCodeFence, sanitizeMermaidCode } from "../AssistantMermaidDiagram";
 
 describe("MessageContentRenderer role prefix display guard", () => {
     it("strips a leading Browser role prefix before rendering assistant content", () => {
@@ -24,5 +25,26 @@ describe("MessageContentRenderer role prefix display guard", () => {
 
         expect(screen.getByText("部署完成")).toBeTruthy();
         expect(screen.queryByText(/\u{1F680}/u)).toBeNull();
+    });
+
+    it("recognizes Mermaid fenced-block language tags case-insensitively", () => {
+        expect(isMermaidCodeFence("mermaid")).toBe(true);
+        expect(isMermaidCodeFence("MERMAID title=architecture")).toBe(true);
+        expect(isMermaidCodeFence("typescript")).toBe(false);
+    });
+
+    it("normalizes common Mermaid keyword casing without changing node labels", () => {
+        const source = "Graph TD\nSubgraph Platform\nA[Graph service]\nEnd";
+
+        expect(sanitizeMermaidCode(source)).toBe("graph TD\nsubgraph Platform\nA[Graph service]\nend");
+    });
+
+    it("rejects diagrams that exceed the chat rendering node budget", () => {
+        const oversized = Array.from({ length: 751 }, (_, i) => `N${i}[Node ${i}]`).join("\n");
+        const denseEdges = Array.from({ length: 1501 }, (_, i) => `A --> B${i}`).join("\n");
+
+        expect(exceedsMermaidRenderBudget(oversized)).toBe(true);
+        expect(exceedsMermaidRenderBudget(denseEdges)).toBe(true);
+        expect(exceedsMermaidRenderBudget("graph TD\nA[Start] --> B[Finish]")).toBe(false);
     });
 });

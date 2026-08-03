@@ -132,15 +132,30 @@ func parseExpertListJSON(raw json.RawMessage) ([]ExpertDefinition, error) {
 	}
 }
 
+// expertHubUpsertResult is the Hub's LWW decision and canonical expert payload.
+// Applied=false means the request was accepted but an existing newer value (or
+// a tombstone) won, so callers must not treat it as a successful local upload.
+type expertHubUpsertResult struct {
+	ExpertDefinition
+	Applied *bool `json:"applied"`
+}
+
+func (r expertHubUpsertResult) applied() bool {
+	// Older Hubs returned only the expert body. Treat that successful response
+	// as applied for backwards compatibility; current Hubs send applied=false
+	// whenever their LWW/tombstone decision rejected the write.
+	return r.Applied == nil || *r.Applied
+}
+
 // Upsert creates or replaces an expert; the client-provided id is authoritative.
-func (c *expertHubClient) Upsert(ctx context.Context, body json.RawMessage) (json.RawMessage, error) {
+func (c *expertHubClient) Upsert(ctx context.Context, body json.RawMessage) (expertHubUpsertResult, error) {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, err
+		return expertHubUpsertResult{}, err
 	}
-	var raw json.RawMessage
-	err := c.do(ctx, http.MethodPost, "/api/v1/experts", payload, &raw)
-	return raw, err
+	var result expertHubUpsertResult
+	err := c.do(ctx, http.MethodPost, "/api/v1/experts", payload, &result)
+	return result, err
 }
 
 func (c *expertHubClient) Delete(ctx context.Context, id string) error {

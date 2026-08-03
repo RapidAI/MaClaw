@@ -24,6 +24,21 @@ describe("normalizeCodingTaskLaunch", () => {
         expect(normalizeCodingTaskLaunch({ projectPath: "D:/tasks/plain", taskTitle: "Plain", remoteNeedsReconnect: true })?.remoteNeedsReconnect).toBeUndefined();
     });
 
+    it("preserves diagnosis safety only for remote launches", () => {
+        expect(normalizeCodingTaskLaunch({
+            projectPath: "D:/tasks/incident",
+            taskTitle: "Diagnose incident",
+            agentMode: "remote_coding_dev",
+            remoteSafety: "diagnosis",
+        })?.remoteSafety).toBe("diagnosis");
+        expect(normalizeCodingTaskLaunch({
+            projectPath: "D:/tasks/local",
+            taskTitle: "Local",
+            agentMode: "coding_dev",
+            remoteSafety: "diagnosis",
+        })?.remoteSafety).toBeUndefined();
+    });
+
     it("rejects an empty project path", () => {
         expect(normalizeCodingTaskLaunch({ taskTitle: "No path" })).toBeNull();
     });

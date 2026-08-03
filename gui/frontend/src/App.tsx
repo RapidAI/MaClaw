@@ -1,13 +1,13 @@
-import { Suspense, useCallback, useEffect, useState, useRef, useMemo } from 'react';
-import './App.css';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureCodingWorkbenchArmed, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, ReadBBS, ReadThanks, ReadTutorial, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BrowserOpenURL, EventsOff, EventsOn, Quit, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfigForUI, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, DeleteTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, SetMaclawLLMCurrentModel, IsNativeRoundedCorners, GetFramelessTopInset, ClampMaximizedWindowToWorkArea, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset, SetBugReportEnabled, SelectBugReportScreenshots, BugReportScreenshotPreviewDataURL, SubmitBugReport, RetryBugReportUpload, HasPendingBugReportUpload, ListMyBugReports } from "../wailsjs/go/main/App";
-import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
-import { main } from "../wailsjs/go/models";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import './App.css';
+import { a2a, corelib } from '../wailsjs/go/models';
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
@@ -74,7 +74,8 @@ import { normalizeCodingTaskLaunch, type CodingTaskLaunch } from './components/a
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
 import { getAssistantLightScheme, readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
-import { useAIAssistant } from './components/ai/useAIAssistant';
+import { useAIAssistant, emitDesktopPetState } from './components/ai/useAIAssistant';
+import { START_VOICE_INPUT_EVENT } from './components/ai/useVoiceInput';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL } from './utils/hubCredits';
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
@@ -113,7 +114,7 @@ import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage } from './appLazyComponents';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
-import type { ExpertDefinition } from './components/ai/expertTypes';
+import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
@@ -122,6 +123,19 @@ const unavailableDigitalEmployeeFeatureStatus = { visible: false, reason: 'unava
 
 function callBackend<T>(call: () => T | Promise<T>): Promise<T> {
     return Promise.resolve().then(call);
+}
+
+const EXPERT_TASK_SOURCE_PREFIX = 'source:expert:';
+
+/** Return the persistent expert identity encoded on a task-management row. */
+export function expertIDFromTaskTags(tags?: string[] | null): string {
+    for (const rawTag of tags || []) {
+        const tag = String(rawTag || '').trim();
+        if (!tag.startsWith(EXPERT_TASK_SOURCE_PREFIX)) continue;
+        const expertID = tag.slice(EXPERT_TASK_SOURCE_PREFIX.length).trim();
+        if (expertID) return expertID;
+    }
+    return '';
 }
 
 function safeEventsOn(eventName: string, callback: (...args: any[]) => void) {
@@ -375,7 +389,7 @@ function App() {
     };
     logStartupTrace('app-render-begin');
     const { showAlert, showConfirm } = useDialog();
-    const [config, setConfig] = useState<main.AppConfig | null>(null);
+    const [config, setConfig] = useState<corelib.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
     // Keep Utilities alive after its first visit so long-running virtual-repository
     // work continues when the user briefly switches to the AI assistant.
@@ -516,6 +530,8 @@ function App() {
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean; isRemoteCoding?: boolean; tags?: string[] } | null>(null);
     /** Project paths with an open AI assistant tab — used to block task-list remove. */
     const [openProjectTabPaths, setOpenProjectTabPaths] = useState<string[]>([]);
+    /** Expert IDs with an open AI assistant tab — protects their durable task rows. */
+    const [openExpertTabIDs, setOpenExpertTabIDs] = useState<string[]>([]);
     const handleOpenProjectTabsChange = useCallback((paths: string[]) => {
         setOpenProjectTabPaths(prev => {
             // Order-independent equality: tab reorder should not thrash sidebar props.
@@ -528,19 +544,36 @@ function App() {
             return paths;
         });
     }, []);
-    const hideTaskGuarded = useCallback(async (projectPath: string) => {
+    const handleOpenExpertTabsChange = useCallback((expertIDs: string[]) => {
+        setOpenExpertTabIDs(prev => {
+            if (prev.length === expertIDs.length) {
+                const prevSet = new Set(prev);
+                if (expertIDs.every(id => prevSet.has(id))) return prev;
+            }
+            return expertIDs;
+        });
+    }, []);
+    const hideTaskGuarded = useCallback(async (projectPath: string, tags?: string[]) => {
         // Keep the guard: an open task must be closed before its state is deleted.
         if (isProjectTabOpen(projectPath, openProjectTabPaths)) {
             return;
         }
+        const expertID = expertIDFromTaskTags(tags);
+        if (expertID && openExpertTabIDs.includes(expertID)) {
+            return;
+        }
         await DeleteTask(projectPath);
         purgeDeletedProjectTabLocalCache(projectPath);
-    }, [openProjectTabPaths]);
+    }, [openExpertTabIDs, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
     const taskItemsRef = useRef(taskItems);
     taskItemsRef.current = taskItems;
+    // A ListTasks response can complete after a task was just created locally.
+    // Keep a monotonically increasing generation so an older response never
+    // overwrites that optimistic, durable task-management entry.
+    const taskRefreshGenerationRef = useRef(0);
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
@@ -914,7 +947,7 @@ function App() {
         setFavoriteEmployeeNames(normalizedNames);
         try {
             const updated = await callBackend(() => PatchConfigFields({ favorite_employees: normalized, favorite_employee_names: normalizedNames }));
-            setConfig(new main.AppConfig(updated));
+            setConfig(new corelib.AppConfig(updated));
         } catch (error) {
             if (options?.throwOnError) {
                 setFavoriteEmployeeIds(previousIds);
@@ -1344,7 +1377,7 @@ function App() {
     const [sensitivePermissionRequest, setSensitivePermissionRequest] = useState<SensitivePermissionRequest | null>(null);
     const sensitivePermissionRequestRef = useRef<SensitivePermissionRequest | null>(null);
     const [sensitivePermissionQueue, setSensitivePermissionQueue] = useState<SensitivePermissionRequest[]>([]);
-    const [skills, setSkills] = useState<main.Skill[]>([]);
+    const [skills, setSkills] = useState<corelib.Skill[]>([]);
 
     const [showAddSkillModal, setShowAddSkillModal] = useState(false);
     const [gossipAllowed, setGossipAllowed] = useState(true);
@@ -1421,6 +1454,10 @@ function App() {
             } else if (current.request_id !== requestId) {
                 setSensitivePermissionQueue(queue => queue.some(item => item.request_id === requestId) ? queue : [...queue, request]);
             }
+            // Brief pet reaction for a sensitive authorization prompt. It briefly
+            // overrides an in-progress speaking state; the next speaking push (≤900ms
+            // throttle) reasserts itself, and the TTL drops the pet back to idle.
+            emitDesktopPetState('alert', 've:sensitive-request', 1500);
             const timeoutMs = Math.max(1, Number(payload?.timeout_seconds || 60)) * 1000;
             window.setTimeout(() => {
                 setSensitivePermissionRequest(current => {
@@ -1714,7 +1751,7 @@ function App() {
             setConfig((prev) => {
                 if (prev) return prev;
                 logStartupTrace('config-placeholder-applied', { reason, seq });
-                return new main.AppConfig({ projects: [] });
+                return new corelib.AppConfig({ projects: [] });
             });
         };
         const scheduleMainWindowOverlayReadiness = (seq: number) => {
@@ -2009,7 +2046,7 @@ function App() {
                     if (loadingShellCtlRef.current) {
                         loadingShellCtlRef.current.finish('config-retry-failed');
                     } else {
-                        setConfig(new main.AppConfig({ projects: [] }));
+                        setConfig(new corelib.AppConfig({ projects: [] }));
                         setIsLoading(false);
                     }
                 });
@@ -2017,7 +2054,7 @@ function App() {
         });
 
         // Listen for external config changes (e.g. from Tray)
-        const applyConfigChange = (cfg: main.AppConfig) => {
+        const applyConfigChange = (cfg: corelib.AppConfig) => {
             setConfig(cfg);
             // Prefer the payload's zoom field to avoid an extra backend round-trip.
             if (typeof cfg.ui_zoom_factor === 'number') {
@@ -2050,7 +2087,7 @@ function App() {
             // Config refreshes are frequent background events; they must not
             // navigate away from the user's current page.
         };
-        const handleConfigChange = (cfg?: main.AppConfig) => {
+        const handleConfigChange = (cfg?: corelib.AppConfig) => {
             if (cfg) {
                 applyConfigChange(cfg);
                 return;
@@ -2258,9 +2295,9 @@ function App() {
         setLang(newLang);
         void callBackend(() => SetLanguage(newLang));
         if (config) {
-            const newConfig = new main.AppConfig({ ...config, language: newLang });
+            const newConfig = new corelib.AppConfig({ ...config, language: newLang });
             setConfig(newConfig);
-            void callBackend(() => PatchConfigFields({ language: newLang })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save language:', err));
+            void callBackend(() => PatchConfigFields({ language: newLang })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save language:', err));
         }
     }, [config]);
 
@@ -2296,9 +2333,9 @@ function App() {
         if (config) {
             // Don't persist 'ai' as active_tool; it's a UI nav state, not a coding tool
             if (isToolTab(tool)) {
-                const newConfig = new main.AppConfig({ ...config, active_tool: tool });
+                const newConfig = new corelib.AppConfig({ ...config, active_tool: tool });
                 setConfig(newConfig);
-                void callBackend(() => PatchConfigFields({ active_tool: tool })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save active tool:', err));
+                void callBackend(() => PatchConfigFields({ active_tool: tool })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save active tool:', err));
             }
 
             const toolCfg = (config as any)[tool];
@@ -2424,9 +2461,9 @@ function App() {
         const newProjects = config.projects.map((project: any) =>
             project.id === launchPanelProject.id ? updater(project) : project
         );
-        const newConfig = new main.AppConfig({ ...config, projects: newProjects });
+        const newConfig = new corelib.AppConfig({ ...config, projects: newProjects });
         setConfig(newConfig);
-        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save launch project:', err));
+        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save launch project:', err));
     };
     useEffect(() => {
         if (launchProjectSelectOptions.length === 0) return;
@@ -2539,12 +2576,12 @@ function App() {
     }, [refreshGroupDiscussionStatus]);
 
     const handleGroupDiscussionAcceptInvite = useCallback(async (inviteId: string) => {
-        await GroupDiscussionAcceptInvite(inviteId, { accepted_by: "user" });
+        await GroupDiscussionAcceptInvite(inviteId, { accepted_by: "user" } as unknown as a2a.GroupInvitationResponse);
         await refreshGroupDiscussionStatus();
     }, [refreshGroupDiscussionStatus]);
 
     const handleGroupDiscussionRejectInvite = useCallback(async (inviteId: string) => {
-        await GroupDiscussionRejectInvite(inviteId, { reason: "rejected_by_user" });
+        await GroupDiscussionRejectInvite(inviteId, { reason: "rejected_by_user" } as a2a.GroupInvitationResponse);
         await refreshGroupDiscussionStatus();
     }, [refreshGroupDiscussionStatus]);
 
@@ -2562,6 +2599,23 @@ function App() {
         const unsubscribe = safeEventsOn('open-pet-settings', openPetSettings);
         return unsubscribe;
     }, [selectSettingsTab]);
+
+    useEffect(() => {
+        // Desktop pet click (OnFloatingButtonClicked in Go) shows the main
+        // window and emits this event with { source, voice }. Switch to the AI
+        // assistant panel; when the pet is configured for voice conversation
+        // (voice=true), also ask the assistant panel to open voice input.
+        const handleSwitchToAIPanel = (payload: any) => {
+            setNavTabNow('ai');
+            if (payload && payload.voice === true) {
+                // The AI panel stays mounted (only hidden), so its voice input
+                // hook is already listening for this window event.
+                window.dispatchEvent(new CustomEvent(START_VOICE_INPUT_EVENT));
+            }
+        };
+        const unsubscribe = safeEventsOn('switch-to-ai-panel', handleSwitchToAIPanel);
+        return unsubscribe;
+    }, [setNavTabNow]);
 
     useEffect(() => {
         if (!config) return;
@@ -2591,8 +2645,38 @@ function App() {
         [codingAgentTurnSnapshot, aiAssistant.sending, aiAssistant.progressMessages],
     );
     const refreshTasks = useCallback(() => {
-        callBackend(() => ListTasks(50)).then((r: any) => setTaskItems(r || [])).catch(() => setTaskItems([]));
+        const generation = ++taskRefreshGenerationRef.current;
+        callBackend(() => ListTasks(50)).then((r: any) => {
+            if (generation === taskRefreshGenerationRef.current) {
+                setTaskItems(r || []);
+            }
+        }).catch(() => {
+            // Preserve the last known list on a transient refresh failure rather
+            // than making a newly-created task disappear from the sidebar.
+        });
     }, []);
+    /** Single registration gateway for every route that opens an AI expert. */
+    const ensureExpertTask = useCallback(async (expert: ExpertDefinition) => {
+        try {
+            const created = await CreateExpertTask(expert.id, expert.name);
+            if (!created?.project_path) {
+                throw new Error('task record was not created');
+            }
+            // Invalidate any ListTasks call that started before creation. Its
+            // stale response must not erase the just-created expert entry.
+            taskRefreshGenerationRef.current += 1;
+            setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 50));
+        } catch (error) {
+            console.error('[task_management] create expert task failed:', error);
+            showAlert(lang === 'zh-Hans'
+                ? '无法打开专家：任务项未能保存到左侧任务管理。请稍后重试。'
+                : lang === 'zh-Hant'
+                    ? '無法開啟專家：任務項未能儲存到左側任務管理。請稍後重試。'
+                    : 'The expert could not be opened because its task could not be saved to Task Management. Please try again.');
+            refreshTasks();
+            throw error;
+        }
+    }, [lang, refreshTasks, showAlert]);
     /** One frontend gateway for every project/coding task handoff into the AI tab. */
     const openCodingTask = useCallback((launch: Partial<CodingTaskLaunch>) => {
         const normalized = normalizeCodingTaskLaunch(launch);
@@ -2623,6 +2707,7 @@ function App() {
                 prepareMode: payload.prepare_mode === 'restore-context' ? 'restore-context' : 'new-agent',
                 agentMode,
                 remoteHost: String(payload.remote_host || '').trim() || undefined,
+                remoteSafety: payload.remote_safety === 'diagnosis' ? 'diagnosis' : undefined,
                 remoteNeedsReconnect: payload.remote_needs_reconnect === true,
 				imPlatform: String(payload.im_platform || '').trim() || undefined,
 				imTargetUID: String(payload.im_target_uid || '').trim() || undefined,
@@ -2643,14 +2728,33 @@ function App() {
         };
     }, [refreshTasks]);
 
-    const resumeTask = useCallback(async (projectPath: string) => {
+    const resumeTask = useCallback(async (projectPath: string, task?: { project_path?: string; name?: string; tags?: string[] }) => {
         const startedAt = performance.now();
         try {
             // Normalize separators so Windows path variants still match list tags.
             const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
             const want = norm(projectPath);
-            const proj = taskItemsRef.current.find(p => norm(p.project_path || '') === want);
+            const currentRow = task && norm(task.project_path || '') === want ? task : undefined;
+            const proj = currentRow || taskItemsRef.current.find(p => norm(p.project_path || '') === want);
             console.info("[task_management] open requested", { taskPath: projectPath, foundInList: !!proj });
+            const expertID = expertIDFromTaskTags(proj?.tags);
+            if (expertID) {
+                const app = await getWailsAppModule();
+                const rawExperts = typeof app.ListExperts === 'function' ? await app.ListExperts() : '';
+                const expert = parseExpertListJSON(rawExperts).find(item => item.id === expertID);
+                if (!expert) {
+                    showAlert(lang === 'zh-Hans'
+                        ? '该 AI 专家已不可用。请从 AI 专家页面选择其他专家，或移除此任务项。'
+                        : lang === 'zh-Hant'
+                            ? '此 AI 專家已不可用。請從 AI 專家頁面選擇其他專家，或移除此任務項。'
+                            : 'This AI expert is no longer available. Choose another expert from AI Experts or remove this task.');
+                    return;
+                }
+                setPendingExpertOpen({ expert });
+                switchTool('ai');
+                refreshTasks();
+                return;
+            }
             await ResumeTask(projectPath);
             const title = proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
             // Tags from the task list are the source of truth for pure coding restore.
@@ -2658,6 +2762,7 @@ function App() {
             // kind from sticky/disk when the list cache is briefly stale.
             let agentMode: 'coding_dev' | 'remote_coding_dev' | undefined = agentModeFromTaskTags(proj?.tags);
             let remoteHost = remoteHostFromTaskTags(proj?.tags);
+            let remoteSafety: 'diagnosis' | undefined;
             // Re-arm pure coding workbench from sticky/disk memory so multi-turn
             // SubAgent routing continues after tab reopen or process restart.
             // Even when tags are briefly missing from the list cache, Ensure can
@@ -2671,6 +2776,7 @@ function App() {
                 }
                 if (agentMode === 'remote_coding_dev') {
                     remoteNeedsReconnect = !!(armStatus?.needs_reconnect);
+                    remoteSafety = armStatus?.remote_safety === 'diagnosis' ? 'diagnosis' : undefined;
                     if (!remoteHost && armStatus?.remote_host) {
                         remoteHost = armStatus.remote_host;
                     }
@@ -2694,12 +2800,13 @@ function App() {
                 autoSend: false,
                 agentMode,
                 remoteHost,
+                remoteSafety,
                 remoteNeedsReconnect: agentMode === 'remote_coding_dev' ? remoteNeedsReconnect : undefined,
             });
         } catch (error) {
             console.error("resumeTask failed:", error);
         }
-    }, [openCodingTask, switchTool]);
+    }, [lang, openCodingTask, refreshTasks, showAlert, switchTool]);
 
     const continueWorkflowProject = useCallback(async (projectPath: string) => {
         const sourcePath = projectPath.trim();
@@ -2721,7 +2828,7 @@ function App() {
         name: string,
         workingDir?: string,
         mode?: 'coding_dev' | 'remote_coding_dev',
-        remote?: { host: string; port: number; user: string; password: string; workDir: string },
+        remote?: { host: string; port: number; user: string; password: string; workDir: string; safety?: 'diagnosis' },
     ) => {
         const taskName = name.trim();
         if (!taskName) return;
@@ -2729,6 +2836,7 @@ function App() {
             let created: Awaited<ReturnType<typeof CreateTask>> | null = null;
             let agentMode: 'coding_dev' | 'remote_coding_dev' | undefined;
             let remoteHost: string | undefined;
+            let remoteSafety: 'diagnosis' | undefined;
             const localWorkDir = (workingDir || '').trim();
 
             if (mode === 'remote_coding_dev') {
@@ -2737,7 +2845,11 @@ function App() {
                 }
                 agentMode = 'remote_coding_dev';
                 remoteHost = remote.host.trim();
-                created = await CreateRemoteCodingTask(
+                remoteSafety = remote.safety === 'diagnosis' ? 'diagnosis' : undefined;
+                const createRemoteTask = remote.safety === 'diagnosis'
+                    ? CreateRemoteOpsDiagnosisTask
+                    : CreateRemoteCodingTask;
+                created = await createRemoteTask(
                     taskName,
                     remoteHost,
                     remote.user.trim(),
@@ -2750,7 +2862,10 @@ function App() {
                 // Connect SSH and arm RemoteCodingSubAgent before opening the tab so
                 // autoSend runs pure remote coding (with source preview events).
                 try {
-                    await PrepareRemoteCodingEnvironment(
+                    const prepareRemoteEnvironment = remote.safety === 'diagnosis'
+                        ? PrepareRemoteOpsDiagnosisEnvironment
+                        : PrepareRemoteCodingEnvironment;
+                    await prepareRemoteEnvironment(
                         created.project_path,
                         remoteHost,
                         remote.user.trim(),
@@ -2764,14 +2879,18 @@ function App() {
                     // same task/tab; hiding it here could hide an existing task.
                     throw prepareError;
                 }
-                // Remember password on this device for later SSH reconnect in the control panel.
-                saveRemoteSSHPassword(
-                    remoteHost,
-                    remote.user.trim(),
-                    remote.password,
-                    remote.port || 22,
-                    remote.workDir.trim(),
-                );
+                // A production-incident password should be entered explicitly
+                // for every diagnosis. Standard remote development retains its
+                // existing reconnect convenience behavior.
+                if (remote.safety !== 'diagnosis') {
+                    saveRemoteSSHPassword(
+                        remoteHost,
+                        remote.user.trim(),
+                        remote.password,
+                        remote.port || 22,
+                        remote.workDir.trim(),
+                    );
+                }
             } else if (mode === 'coding_dev') {
                 agentMode = 'coding_dev';
                 created = await CreateTaskWithMode(taskName, localWorkDir, agentMode);
@@ -2810,6 +2929,7 @@ function App() {
                 autoSend: true,
                 agentMode,
                 remoteHost,
+                remoteSafety,
             });
         } catch (error) {
             console.error("CreateTask failed:", error);
@@ -2906,7 +3026,7 @@ function App() {
             } catch {
                 hubStatus = null;
             }
-            const hubServiceURL = normalizeProviderURL(hubStatus?.hub_llm_base_url ?? hubStatus?.HubLLMBaseURL);
+            const hubServiceURL = normalizeProviderURL(hubStatus?.hub_llm_base_url);
             const currentProviderURL = normalizeProviderURL(currentProvider?.url);
             const currentProviderIsHubService = !!currentProvider?.isHubService || (!!hubServiceURL && !!currentProviderURL && hubServiceURL === currentProviderURL);
             const hubCredits = normalizeSidebarHubCredits(hubStatus);
@@ -3037,7 +3157,7 @@ function App() {
         // Switching main provider clears sticky multi-model council on backend.
         setMoaSession(prev => ({ ...prev, active: false }));
         callBackend(() => PatchConfigFields({ maclaw_llm_current_provider: providerName })).then((saved) => {
-            setConfig(new main.AppConfig(saved));
+            setConfig(new corelib.AppConfig(saved));
             // Refresh sidebar display with authoritative data from backend
             void refreshSidebarTokenUsage();
             // Toast notification
@@ -3488,7 +3608,7 @@ function App() {
             });
         }
 
-        const newConfig = new main.AppConfig(configCopy);
+        const newConfig = new corelib.AppConfig(configCopy);
         setConfig(newConfig);
     };
 
@@ -3506,7 +3626,7 @@ function App() {
             message: message,
             onConfirm: () => {
                 const newModels = toolCfg.models.filter((_: any, i: number) => i !== activeTab);
-                const newConfig = new main.AppConfig({ ...config, [activeTool]: { ...toolCfg, models: newModels } });
+                const newConfig = new corelib.AppConfig({ ...config, [activeTool]: { ...toolCfg, models: newModels } });
 
                 // Adjust active tab if it was the last one
                 const newActiveTab = Math.max(0, activeTab - 1);
@@ -3526,7 +3646,7 @@ function App() {
         setFetchedModelList([]);
         const toolCfg = JSON.parse(JSON.stringify((config as any)[activeTool]));
         toolCfg.models[activeTab].model_url = newUrl;
-        const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+        const newConfig = new corelib.AppConfig({ ...config, [activeTool]: toolCfg });
         setConfig(newConfig);
     };
 
@@ -3603,7 +3723,7 @@ function App() {
                     if (activeTool === 'codex' && !currentModel.wire_api) {
                         currentModel.wire_api = 'responses';
                     }
-                    const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+                    const newConfig = new corelib.AppConfig({ ...config, [activeTool]: toolCfg });
                     setConfig(newConfig);
                 }
             } else {
@@ -3645,7 +3765,7 @@ function App() {
             toolCfg.current_model = name;
         }
 
-        const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+        const newConfig = new corelib.AppConfig({ ...config, [activeTool]: toolCfg });
         setConfig(newConfig);
     };
 
@@ -3653,7 +3773,7 @@ function App() {
         if (!config) return;
         const toolCfg = JSON.parse(JSON.stringify((config as any)[activeTool]));
         toolCfg.models[activeTab].model_id = id;
-        const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+        const newConfig = new corelib.AppConfig({ ...config, [activeTool]: toolCfg });
         setConfig(newConfig);
     };
 
@@ -3661,7 +3781,7 @@ function App() {
         if (!config) return;
         const toolCfg = JSON.parse(JSON.stringify((config as any)[activeTool]));
         toolCfg.models[activeTab].wire_api = api;
-        const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+        const newConfig = new corelib.AppConfig({ ...config, [activeTool]: toolCfg });
         setConfig(newConfig);
     };
 
@@ -3736,7 +3856,7 @@ function App() {
         }
 
         const newToolCfg = { ...toolCfg, current_model: modelName };
-        const newConfig = new main.AppConfig({ ...config, [activeTool]: newToolCfg });
+        const newConfig = new corelib.AppConfig({ ...config, [activeTool]: newToolCfg });
         const isCodexProviderSwitch = activeTool === "codex";
         setConfig(newConfig);
         setStatus(t("syncing"));
@@ -3744,7 +3864,7 @@ function App() {
             setCodexConfigUpdateCount((count) => count + 1);
         }
         callBackend(() => PatchConfigFields({ tool_current_model: { tool: activeTool, model: modelName } })).then((saved) => {
-            setConfig(new main.AppConfig(saved));
+            setConfig(new corelib.AppConfig(saved));
             setStatus(t("switched"));
             setTimeout(() => setStatus(""), 1500);
         }).catch(err => {
@@ -3763,12 +3883,12 @@ function App() {
 
     const handleProjectSwitch = (projectId: string) => {
         if (!config) return;
-        const newConfig = new main.AppConfig({ ...config, current_project: projectId });
+        const newConfig = new corelib.AppConfig({ ...config, current_project: projectId });
         setConfig(newConfig);
         setSelectedProjectForLaunch(projectId);
         setStatus(t("projectSwitched"));
         setTimeout(() => setStatus(""), 1500);
-        void callBackend(() => PatchConfigFields({ current_project: projectId })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save current project:', err));
+        void callBackend(() => PatchConfigFields({ current_project: projectId })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save current project:', err));
     };
 
     const handleSelectDir = () => {
@@ -3783,11 +3903,11 @@ function App() {
                     p.id === currentProj.id ? { ...p, path: dir } : p
                 );
 
-                const newConfig = new main.AppConfig({ ...config, projects: newProjects, project_dir: dir });
+                const newConfig = new corelib.AppConfig({ ...config, projects: newProjects, project_dir: dir });
                 setConfig(newConfig);
                 setStatus(t("dirUpdated"));
                 setTimeout(() => setStatus(""), 1500);
-                void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save project directory:', err));
+                void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save project directory:', err));
             }
         });
     };
@@ -3802,11 +3922,11 @@ function App() {
             p.id === currentProj.id ? { ...p, yolo_mode: checked } : p
         );
 
-        const newConfig = new main.AppConfig({ ...config, projects: newProjects });
+        const newConfig = new corelib.AppConfig({ ...config, projects: newProjects });
         setConfig(newConfig);
         setStatus(t("saved"));
         setTimeout(() => setStatus(""), 1500);
-        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save project yolo mode:', err));
+        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save project yolo mode:', err));
     };
 
     const openRemoteActivationModal = (toolName: string) => {
@@ -3871,7 +3991,7 @@ function App() {
         const hubCenterURL = remoteActivationDraft.hubcenter_url.trim();
         const safeHubCenterURL = /(?:^|\/\/|\[)(?:127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|localhost)(?::|\]|\/|$)/i.test(hubCenterURL) ? "" : hubCenterURL;
         const email = remoteActivationDraft.email.trim();
-        const newConfig = new main.AppConfig({
+        const newConfig = new corelib.AppConfig({
             ...config,
             remote_hub_id: hubID,
             remote_hub_url: hubURL,
@@ -3887,7 +4007,7 @@ function App() {
             remote_email: email,
             remote_enabled: true,
         }));
-        setConfig(new main.AppConfig(saved));
+        setConfig(new corelib.AppConfig(saved));
         const activated = await activateRemoteWithEmail();
         if (!activated) {
             return;
@@ -3925,9 +4045,9 @@ function App() {
         };
 
         const newProjects = [...existingProjects, newProject];
-        const newConfig = new main.AppConfig({ ...config, projects: newProjects });
+        const newConfig = new corelib.AppConfig({ ...config, projects: newProjects });
         setConfig(newConfig);
-        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new main.AppConfig(saved))).catch((err) => console.error('Failed to save new project:', err));
+        void callBackend(() => PatchConfigFields({ projects: newProjects })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save new project:', err));
         setStatus(t("saved"));
         setTimeout(() => setStatus(""), 1500);
     };
@@ -3965,10 +4085,10 @@ function App() {
             }
         });
 
-        setConfig(new main.AppConfig(configCopy));
+        setConfig(new corelib.AppConfig(configCopy));
         setStatus(t("saving"));
         callBackend(() => PatchConfigFields(patch)).then((saved) => {
-            setConfig(new main.AppConfig(saved));
+            setConfig(new corelib.AppConfig(saved));
             setStatus(t("saved"));
             setTimeout(() => {
                 setStatus("");
@@ -4147,7 +4267,7 @@ ${instruction}`;
     const launchRemoteEnabled = launchMode === 'remote';
     const setLaunchMode = async (mode: 'local' | 'remote') => {
         if (!config) return;
-        const newConfig = new main.AppConfig({
+        const newConfig = new corelib.AppConfig({
             ...config,
             default_launch_mode: mode,
             remote_enabled: mode === 'remote',
@@ -4226,6 +4346,7 @@ ${instruction}`;
                 pinTask={PinTask}
                 hideTask={hideTaskGuarded}
                 openProjectTabPaths={openProjectTabPaths}
+                openExpertTabIDs={openExpertTabIDs}
                 sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                 sidebarHubCredits={sidebarHubCredits}
                 formatSidebarTokens={formatSidebarTokens}
@@ -4304,7 +4425,9 @@ ${instruction}`;
                             onPendingProjectTabOpenHandled={() => setPendingProjectTabOpen(null)}
                             pendingExpertOpen={pendingExpertOpen}
                             onPendingExpertOpenHandled={() => setPendingExpertOpen(null)}
+                            onEnsureExpertTask={ensureExpertTask}
                             onOpenProjectTabsChange={handleOpenProjectTabsChange}
+                            onOpenExpertTabsChange={handleOpenExpertTabsChange}
                             appUpdateAvailable={appUpdateAvailable}
                             onOpenAppUpdate={handleOpenAppUpdate}
                             onDismissAppUpdate={handleDismissAppUpdate}
@@ -4590,13 +4713,13 @@ ${instruction}`;
                                 // so the wizard can be re-triggered on next "Register" click.
                                 try {
                                     const saved = await PatchConfigFields({ onboarding_done: false });
-                                    setConfig(new main.AppConfig(saved));
+                                    setConfig(new corelib.AppConfig(saved));
                                 } catch (e) {
                                     console.error("Failed to clear onboarding_done:", e);
                                 }
                             }}
                             onRegistrationContactUpdated={() => {
-                                void callBackend(() => LoadConfigForUI()).then((freshConfig) => setConfig(new main.AppConfig(freshConfig))).catch((err) => console.error("Failed to refresh registration contact:", err));
+                                void callBackend(() => LoadConfigForUI()).then((freshConfig) => setConfig(new corelib.AppConfig(freshConfig))).catch((err) => console.error("Failed to refresh registration contact:", err));
                             }}
                         />
                     )}
@@ -4610,7 +4733,10 @@ ${instruction}`;
                                 {localizeText('Loading…', '加载中…', '載入中…')}
                             </div>
                         }>
-                            <UtilitiesPage lang={lang} active={navTab === 'utilities'} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => { switchTool('ai'); setPendingExpertOpen({ expert }); }} onOpenVirtualRepositoryTask={(launch) => {
+                            <UtilitiesPage lang={lang} active={navTab === 'utilities'} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => {
+                                switchTool('ai');
+                                setPendingExpertOpen({ expert });
+                            }} onOpenVirtualRepositoryTask={(launch) => {
                                 openCodingTask({ projectPath: launch.project_path, taskTitle: launch.task_title, prepareMode: 'new-agent', autoSend: false, agentMode: launch.agent_mode, remoteHost: launch.remote_host, remoteNeedsReconnect: false });
                             }} />
                         </Suspense>
@@ -5054,7 +5180,7 @@ ${instruction}`;
                                 setProblemMessage('');
                                 try {
                                     const saved = await SetBugReportEnabled(requested);
-                                    setConfig(new main.AppConfig(saved));
+                                    setConfig(new corelib.AppConfig(saved));
                                 } catch (err: any) {
                                     // This controlled input remains bound to the last persisted
                                     // config snapshot, so a failed native write naturally rolls
@@ -5605,7 +5731,7 @@ ${instruction}`;
                                             onConfirm: () => {
                                                 const newModels = allModels.filter((_: any, idx: number) => idx !== activeTab);
                                                 const toolCfg = { ...(config as any)[activeTool], models: newModels };
-                                                const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+                                                const newConfig = new corelib.AppConfig({ ...config, [activeTool]: toolCfg });
                                                 setConfig(newConfig);
                                                 setActiveTab(0);
                                                 setConfirmDialog({ ...confirmDialog, show: false });
@@ -5643,7 +5769,7 @@ ${instruction}`;
                                             const existingCustom = allModels.filter((m: any) => m.is_custom);
                                             const newModels = [...nonCustom, ...existingCustom, newCustom];
                                             const toolCfg = { ...(config as any)[activeTool], models: newModels };
-                                            const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+                                            const newConfig = new corelib.AppConfig({ ...config, [activeTool]: toolCfg });
                                             setConfig(newConfig);
                                             // Switch to the newly added custom provider
                                             setActiveTab(newModels.length - 1);
@@ -5713,7 +5839,7 @@ ${instruction}`;
                     onMigrationCompleted={async () => {
                         try {
                             const restored = await callBackend(() => LoadConfigForUI());
-                            setConfig(new main.AppConfig(restored));
+                            setConfig(new corelib.AppConfig(restored));
                         } catch (error) {
                             console.warn('[onboarding] failed to refresh restored config snapshot:', error);
                         }
@@ -5725,7 +5851,7 @@ ${instruction}`;
                     }}
                     onOnboardingCompleted={async () => {
                         const saved = await callBackend(() => PatchConfigFields({ onboarding_done: true }));
-                        setConfig(new main.AppConfig(saved));
+                        setConfig(new corelib.AppConfig(saved));
                     }}
                     onSaveField={(patch) => {
                         return saveRemoteConfigField(patch as any);

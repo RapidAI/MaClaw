@@ -22,10 +22,10 @@ func TestIsGroupChatAndNormalizeChatType(t *testing.T) {
 
 func TestGroupMessageAllowed(t *testing.T) {
 	base := IncomingMessage{
-		ChatType: "group",
-		GroupID:  "g1",
+		ChatType:   "group",
+		GroupID:    "g1",
 		FromUserID: "u1",
-		Text:     "hello",
+		Text:       "hello",
 	}
 	opts := GroupChatOptions{
 		Policy:         GroupPolicyOpen,
@@ -96,5 +96,25 @@ func TestBuildReplyDecorations(t *testing.T) {
 	}
 	if !PreferNativeGroupQuote(opts, ref) {
 		t.Fatal("expected native quote preference")
+	}
+
+	for _, chatType := range []string{"p2p", "private", "dm", "direct", ""} {
+		private := msg
+		private.ChatType = chatType
+		rem, ref = BuildReplyDecorations(private, opts)
+		if rem != nil {
+			t.Fatalf("private chat type %q must not @mention, reminder = %#v", chatType, rem)
+		}
+		if ref != "mid-9" {
+			t.Fatalf("private chat type %q changed native quote = %q", chatType, ref)
+		}
+	}
+
+	// Chat type normalization inside IsGroupChat must also apply to decorations.
+	spacedGroup := msg
+	spacedGroup.ChatType = " GROUP "
+	rem, ref = BuildReplyDecorations(spacedGroup, opts)
+	if rem == nil || len(rem.UserIDs) != 1 || rem.UserIDs[0] != "staff-1" || ref != "mid-9" {
+		t.Fatalf("normalized group decorations = reminder %#v ref %q", rem, ref)
 	}
 }

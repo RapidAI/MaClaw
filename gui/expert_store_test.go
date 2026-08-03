@@ -1,11 +1,29 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestExpertHubUpsertResultAppliedCompatibility(t *testing.T) {
+	var legacy expertHubUpsertResult
+	if err := json.Unmarshal([]byte(`{"id":"expert-legacy"}`), &legacy); err != nil {
+		t.Fatalf("decode legacy result: %v", err)
+	}
+	if !legacy.applied() {
+		t.Fatal("Hub responses without applied must remain compatible")
+	}
+	var rejected expertHubUpsertResult
+	if err := json.Unmarshal([]byte(`{"id":"expert-newer","applied":false}`), &rejected); err != nil {
+		t.Fatalf("decode rejected result: %v", err)
+	}
+	if rejected.applied() {
+		t.Fatal("explicit applied=false must retain the local retry marker")
+	}
+}
 
 func testExpert(id, updatedAt string) ExpertDefinition {
 	return ExpertDefinition{
@@ -94,6 +112,244 @@ func TestExpertStoreSaveClearsTombstone(t *testing.T) {
 	if _, ok := tombstones["expert-x"]; ok {
 		t.Fatalf("save should clear tombstone for expert-x")
 	}
+}
+
+func TestExpertStorePendingHubUploadLifecycle(t *testing.T) {
+	store := newExpertStore(filepath.Join(t.TempDir(), "experts.json"))
+	e := testExpert("expert-pending", "2026-02-01T10:00:00Z")
+	if err := store.Save(e); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := store.MarkPendingHubUpload(e.ID); err != nil {
+		t.Fatalf("mark pending: %v", err)
+	}
+	_, _, pending, _, err := store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list for hub sync: %v", err)
+	}
+	if !pending[e.ID] {
+		t.Fatalf("expected %q to be pending, got %v", e.ID, pending)
+	}
+	if err := store.ClearPendingHubUploadIfCurrent(e.ID, e.UpdatedAt); err != nil {
+		t.Fatalf("clear pending: %v", err)
+	}
+	if err := store.MarkPendingHubUpload(e.ID); err != nil {
+		t.Fatalf("mark pending again: %v", err)
+	}
+	if err := store.Delete(e.ID, true); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	_, tombstones, pending, _, err := store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list after delete: %v", err)
+	}
+	if _, ok := tombstones[e.ID]; !ok {
+		t.Fatalf("expected tombstone for %q, got %v", e.ID, tombstones)
+	}
+	if pending[e.ID] {
+		t.Fatalf("deleted expert %q must not remain pending, got %v", e.ID, pending)
+	}
+}
+
+func TestExpertStoreStaleHubUploadAcknowledgementKeepsNewerPendingChange(t *testing.T) {
+	store := newExpertStore(filepath.Join(t.TempDir(), "experts.json"))
+	older := testExpert("expert-race", "2026-02-01T10:00:00Z")
+	newer := testExpert("expert-race", "2026-02-01T10:00:01Z")
+	if err := store.Save(older); err != nil {
+		t.Fatalf("save older: %v", err)
+	}
+	if err := store.MarkPendingHubUpload(older.ID); err != nil {
+		t.Fatalf("mark pending: %v", err)
+	}
+	if err := store.Save(newer); err != nil {
+		t.Fatalf("save newer: %v", err)
+	}
+	if err := store.ClearPendingHubUploadIfCurrent(older.ID, older.UpdatedAt); err != nil {
+		t.Fatalf("clear stale acknowledgement: %v", err)
+	}
+	_, _, pending, _, err := store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list for hub sync: %v", err)
+	}
+	if !pending[older.ID] {
+		t.Fatal("stale acknowledgement must not clear the newer pending upload")
+	}
+	if err := store.ClearPendingHubUploadIfCurrent(newer.ID, newer.UpdatedAt); err != nil {
+		t.Fatalf("clear current acknowledgement: %v", err)
+	}
+	_, _, pending, _, err = store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list after current acknowledgement: %v", err)
+	}
+	if pending[newer.ID] {
+		t.Fatal("current acknowledgement should clear the pending upload")
+	}
+}
+
+func TestExpertStorePendingHubOperationsAreCurrentOnly(t *testing.T) {
+	store := newExpertStore(filepath.Join(t.TempDir(), "experts.json"))
+	expert := testExpert("expert-current", "2026-02-01T10:00:00Z")
+	if err := store.Save(expert); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := store.MarkPendingHubUpload(expert.ID); err != nil {
+		t.Fatalf("mark upload: %v", err)
+	}
+	if !store.PendingHubUploadIsCurrent(expert.ID, expert.UpdatedAt) {
+		t.Fatal("current pending upload should be selected")
+	}
+	if store.PendingHubUploadIsCurrent(expert.ID, "2026-02-01T10:00:01Z") {
+		t.Fatal("stale pending upload must be skipped")
+	}
+
+	if err := store.Delete(expert.ID, true); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := store.MarkPendingHubDelete(expert.ID); err != nil {
+		t.Fatalf("mark delete: %v", err)
+	}
+	_, tombstones, _, _, err := store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list tombstone: %v", err)
+	}
+	if !store.PendingHubDeleteIsCurrent(expert.ID, tombstones[expert.ID]) {
+		t.Fatal("current pending delete should be selected")
+	}
+	if err := store.Save(expert); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	if store.PendingHubDeleteIsCurrent(expert.ID, tombstones[expert.ID]) {
+		t.Fatal("recreated expert must cancel a queued delete")
+	}
+}
+
+func TestExpertStorePendingHubDeleteLifecycle(t *testing.T) {
+	store := newExpertStore(filepath.Join(t.TempDir(), "experts.json"))
+	e := testExpert("expert-pending-delete", "2026-02-01T10:00:00Z")
+	if err := store.Save(e); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := store.Delete(e.ID, true); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	deletedAt, err := store.MarkPendingHubDelete(e.ID)
+	if err != nil {
+		t.Fatalf("mark pending delete: %v", err)
+	}
+	_, _, _, pendingDeletes, err := store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list for hub sync: %v", err)
+	}
+	if pendingDeletes[e.ID] != deletedAt {
+		t.Fatalf("expected %q to be pending deletion, got %v", e.ID, pendingDeletes)
+	}
+	if err := store.ClearPendingHubDeleteIfCurrent(e.ID, deletedAt); err != nil {
+		t.Fatalf("clear pending delete: %v", err)
+	}
+	_, _, _, pendingDeletes, err = store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list after clear: %v", err)
+	}
+	if pendingDeletes[e.ID] != "" {
+		t.Fatalf("expected pending deletion to be cleared, got %v", pendingDeletes)
+	}
+}
+
+func TestExpertStoreStaleHubDeleteAcknowledgementKeepsNewerDeletePending(t *testing.T) {
+	store := newExpertStore(filepath.Join(t.TempDir(), "experts.json"))
+	expert := testExpert("expert-delete-race", "2026-02-01T10:00:00Z")
+	if err := store.Save(expert); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := store.Delete(expert.ID, true); err != nil {
+		t.Fatalf("first delete: %v", err)
+	}
+	firstDeleteAt, err := store.MarkPendingHubDelete(expert.ID)
+	if err != nil {
+		t.Fatalf("mark first delete: %v", err)
+	}
+	if err := store.Save(expert); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	if err := store.Delete(expert.ID, true); err != nil {
+		t.Fatalf("second delete: %v", err)
+	}
+	secondDeleteAt, err := store.MarkPendingHubDelete(expert.ID)
+	if err != nil {
+		t.Fatalf("mark second delete: %v", err)
+	}
+	if secondDeleteAt == firstDeleteAt {
+		t.Fatal("separate delete operations must have distinct revisions")
+	}
+	if err := store.ClearPendingHubDeleteIfCurrent(expert.ID, firstDeleteAt); err != nil {
+		t.Fatalf("clear stale delete acknowledgement: %v", err)
+	}
+	_, _, _, pendingDeletes, err := store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list after stale acknowledgement: %v", err)
+	}
+	if pendingDeletes[expert.ID] != secondDeleteAt {
+		t.Fatalf("stale delete acknowledgement must preserve newer delete, got %v", pendingDeletes)
+	}
+}
+
+func TestExpertsPendingHubSync(t *testing.T) {
+	localNew := testExpert("expert-new", "2026-02-03T10:00:00Z")
+	alreadySynced := testExpert("expert-removed-remotely", "2026-02-03T10:00:00Z")
+	localNewer := testExpert("expert-newer", "2026-02-04T10:00:00Z")
+	localOlder := testExpert("expert-older", "2026-02-01T10:00:00Z")
+	deleted := testExpert("expert-deleted", "2026-02-05T10:00:00Z")
+	builtin := testExpert("builtin-paper-polish", "2026-02-05T10:00:00Z")
+
+	pending := expertsPendingHubSync(
+		[]ExpertDefinition{localNew, alreadySynced, localNewer, localOlder, deleted, builtin},
+		map[string]string{"expert-deleted": "2026-02-05T10:00:00Z"},
+		map[string]bool{"expert-new": true, "expert-deleted": true},
+		[]ExpertDefinition{
+			testExpert("expert-newer", "2026-02-02T10:00:00Z"),
+			testExpert("expert-older", "2026-02-06T10:00:00Z"),
+		},
+	)
+	if len(pending) != 2 || !containsString(expertIDs(pending), "expert-new") || !containsString(expertIDs(pending), "expert-newer") {
+		t.Fatalf("expected pending new and newer experts, got %+v", pending)
+	}
+}
+
+func TestExpertsPendingHubSyncSkipsLocalOnlyMarketExpert(t *testing.T) {
+	store := newExpertStore(filepath.Join(t.TempDir(), "experts.json"))
+	marketExpert := testExpert("pkgexp-market-local", "2026-02-03T10:00:00Z")
+	regularExpert := testExpert("expert-regular", "2026-02-03T10:00:00Z")
+	if err := store.SaveLocalOnly(marketExpert); err != nil {
+		t.Fatalf("save local-only market expert: %v", err)
+	}
+	if err := store.Save(regularExpert); err != nil {
+		t.Fatalf("save regular expert: %v", err)
+	}
+	if err := store.MarkPendingHubUpload(regularExpert.ID); err != nil {
+		t.Fatalf("mark regular expert pending: %v", err)
+	}
+	local, tombstones, pendingUploads, _, err := store.ListForHubSync()
+	if err != nil {
+		t.Fatalf("list for Hub sync: %v", err)
+	}
+
+	pending := expertsPendingHubSync(
+		local,
+		tombstones,
+		pendingUploads,
+		nil,
+	)
+	if len(pending) != 1 || pending[0].ID != regularExpert.ID {
+		t.Fatalf("local-only market expert must not be queued for Hub upload, got %+v", pending)
+	}
+}
+
+func expertIDs(experts []ExpertDefinition) []string {
+	ids := make([]string, 0, len(experts))
+	for _, expert := range experts {
+		ids = append(ids, expert.ID)
+	}
+	return ids
 }
 
 func TestExpertStoreDeleteWithoutTombstone(t *testing.T) {
@@ -185,6 +441,16 @@ func TestMergeExpertsForSyncTombstonePreventsRevival(t *testing.T) {
 	}
 	if len(changedIDs) != 1 || changedIDs[0] != "expert-1" {
 		t.Fatalf("expected changedIDs [expert-1], got %v", changedIDs)
+	}
+}
+
+func TestMergeExpertsForSyncLocalOnlyPreventsMarketRevival(t *testing.T) {
+	marketID := "pkgexp-market-local"
+	hub := []ExpertDefinition{testExpert(marketID, "2026-02-09T10:00:00Z")}
+
+	merged, changedIDs, needsSave := mergeExpertsForSyncWithLocalOnly(nil, hub, nil, map[string]bool{marketID: true})
+	if needsSave || len(merged) != 0 || len(changedIDs) != 0 {
+		t.Fatalf("a local-only market uninstall must ignore stale Hub copy: merged=%+v changed=%v save=%v", merged, changedIDs, needsSave)
 	}
 }
 
@@ -281,6 +547,29 @@ func TestExpertStoreMergeAndSaveFromHub(t *testing.T) {
 	}
 	if !infoAfter.ModTime().Equal(infoBefore.ModTime()) {
 		t.Fatal("no-op merge must not rewrite the store file")
+	}
+}
+
+func TestExpertStoreUninstalledMarketExpertCannotReviveFromHub(t *testing.T) {
+	store := newExpertStore(filepath.Join(t.TempDir(), "experts", "experts.json"))
+	marketExpert := testExpert("pkgexp-market-local", "2026-02-01T10:00:00Z")
+	if err := store.SaveLocalOnly(marketExpert); err != nil {
+		t.Fatalf("save local-only market expert: %v", err)
+	}
+	if err := store.Delete(marketExpert.ID, false); err != nil {
+		t.Fatalf("uninstall local-only market expert: %v", err)
+	}
+	if changedIDs, err := store.MergeAndSaveFromHub([]ExpertDefinition{testExpert(marketExpert.ID, "2026-02-09T10:00:00Z")}); err != nil {
+		t.Fatalf("merge Hub copy: %v", err)
+	} else if len(changedIDs) != 0 {
+		t.Fatalf("local-only Hub copy must not change store, got %v", changedIDs)
+	}
+	experts, _, err := store.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(experts) != 0 {
+		t.Fatalf("uninstalled market expert was restored from Hub: %+v", experts)
 	}
 }
 

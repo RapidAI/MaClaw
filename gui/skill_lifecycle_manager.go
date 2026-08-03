@@ -91,6 +91,17 @@ func (m *SkillLifecycleManager) StartBackgroundProcessing(ctx context.Context, i
 	m.workerDone = done
 	m.workerCancel = cancel
 	m.workerMu.Unlock()
+
+	// Before the first processing pass, drop legacy "generated_upload" queue
+	// items enqueued before the success-run threshold policy: those skills
+	// were never really run and must not be uploaded after upgrade. A skill
+	// that later reaches the threshold is re-enqueued by the run path.
+	if n, err := m.PurgeLegacyGeneratedUploads(); err != nil {
+		log.Printf("[skill-lifecycle] legacy generated_upload purge failed: %v", err)
+	} else if n > 0 {
+		log.Printf("[skill-lifecycle] purged %d legacy generated_upload queue item(s) enqueued before the success-run threshold policy", n)
+	}
+
 	go func() {
 		defer close(done)
 		// Startup: clean stale staging dirs and .prev backups older than 24h.
@@ -333,9 +344,6 @@ func (m *SkillLifecycleManager) UploadNowWithCompletedTargets(ctx context.Contex
 		if data, marshalErr := json.Marshal(status); marshalErr == nil {
 			_ = os.WriteFile(filepath.Join(target.SkillDir, "upload_status.json"), data, 0o644)
 		}
-		if m.app.autoUploadTrigger != nil {
-			m.app.autoUploadTrigger.MarkUploadedHash(skillName, skillDirHash(target.SkillDir))
-		}
 	}
 	return submissionID, nil
 }
@@ -443,9 +451,6 @@ func (m *SkillLifecycleManager) UploadDirNowWithCompletedTargets(ctx context.Con
 	status := map[string]string{"submission_id": submissionID}
 	if data, marshalErr := json.Marshal(status); marshalErr == nil {
 		_ = os.WriteFile(filepath.Join(skillDir, "upload_status.json"), data, 0o644)
-	}
-	if m.app.autoUploadTrigger != nil {
-		m.app.autoUploadTrigger.MarkUploadedHash(entry.Name, skillDirHash(skillDir))
 	}
 	return submissionID, nil
 }
@@ -646,6 +651,42 @@ func (m *SkillLifecycleManager) ListUploadQueue() ([]SkillUploadQueueItem, error
 		return nil, err
 	}
 	return append([]SkillUploadQueueItem(nil), q.Items...), nil
+}
+
+// PurgeLegacyGeneratedUploads removes pending/failed queue items enqueued by
+// the retired generation-time auto upload (reason "generated_upload"). Those
+// skills were queued without any real run and must not be uploaded under the
+// success-run threshold policy. Blocked items are kept for manual review, and
+// a skill that later reaches the threshold is re-enqueued by the run path
+// with reason "auto_upload".
+func (m *SkillLifecycleManager) PurgeLegacyGeneratedUploads() (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q, err := m.loadQueueLocked()
+	if err != nil {
+		return 0, err
+	}
+	kept := make([]SkillUploadQueueItem, 0, len(q.Items))
+	purged := 0
+	for _, item := range q.Items {
+		if item.Reason == "generated_upload" &&
+			(item.Status == skillUploadStatusPending || item.Status == skillUploadStatusFailed) {
+			purged++
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if purged == 0 {
+		return 0, nil
+	}
+	q.Items = kept
+	if err := m.saveQueueLocked(q); err != nil {
+		return 0, err
+	}
+	return purged, nil
 }
 
 func (m *SkillLifecycleManager) mergeRegisteredRuntimeStats(entry *corelib.NLSkillEntry) *corelib.NLSkillEntry {

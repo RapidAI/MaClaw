@@ -173,9 +173,9 @@ describe('findMatchLineIndexes / cycleMatchIndex / parseGoToLineInput', () => {
             />,
         );
 
-        expect(screen.getByTestId('code-preview-workspace-status')).toBeTruthy();
+        expect(screen.getByTestId('code-preview-workspace')).toBeTruthy();
         fireEvent.click(screen.getByTestId('file-tab'));
-        expect(screen.queryByTestId('code-preview-workspace-status')).toBeNull();
+        expect(screen.queryByTestId('code-preview-workspace')).toBeNull();
         expect(screen.getByTestId('code-preview-plain-view')).toBeTruthy();
     });
 

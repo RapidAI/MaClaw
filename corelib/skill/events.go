@@ -11,6 +11,7 @@ const (
 	EventSkillOptimized          = "skill:optimized"
 	EventSkillAutoDiscovered     = "skill:auto_discovered"
 	EventSkillExecutionFailed    = "skill:execution_failed"
+	EventSkillRepairDraftReady   = "skill:repair_draft_ready"
 	EventSkillIndexRefreshed     = "skill:index_refreshed"
 	EventSkillEvolutionQueueFull = "skill:evolution_queue_full"
 )

@@ -36,8 +36,8 @@ func init() {
 	}
 	// Browser-based search is the ultimate web_search fallback when every
 	// HTTP-level endpoint (API + direct scraping) fails.
-	websearch.SetBrowserSearchProvider(func(ctx context.Context, query string, maxResults int) ([]websearch.BrowserSearchHit, error) {
-		hits, err := browser.SearchViaBrowser(ctx, query, maxResults)
+	websearch.SetBrowserSearchProvider(func(ctx context.Context, engineID, query string, maxResults int, humanAssist bool) ([]websearch.BrowserSearchHit, error) {
+		hits, err := browser.SearchViaBrowserWithOptions(ctx, engineID, query, maxResults, browser.SearchOptions{HumanAssist: humanAssist})
 		if err != nil {
 			return nil, err
 		}

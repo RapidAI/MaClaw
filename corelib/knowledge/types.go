@@ -25,9 +25,9 @@ const (
 	StatusStale     = "stale"
 	StatusDisabled  = "disabled"
 
-	ImportStatusScanned   = "scanned"
-	ImportStatusQueued    = "queued"
-	ImportStatusRunning   = "running"
+	ImportStatusScanned = "scanned"
+	ImportStatusQueued  = "queued"
+	ImportStatusRunning = "running"
 	// ImportStatusIndexing means file ingest finished and background post-work
 	// (topic linking + node embeddings) is still running.
 	ImportStatusIndexing  = "indexing"
@@ -697,6 +697,7 @@ type ListSourcesOptions struct {
 	SourceIDs       []string `json:"source_ids,omitempty"`
 	SourceID        string   `json:"source_id,omitempty"`
 	Status          string   `json:"status,omitempty"`
+	IncludeDisabled bool     `json:"include_disabled,omitempty"`
 	Kind            string   `json:"kind,omitempty"`
 	SourceKinds     []string `json:"source_kinds,omitempty"`
 	Domain          string   `json:"domain,omitempty"`
@@ -967,31 +968,37 @@ type StructuredCatalogResult struct {
 }
 
 type SearchResult struct {
-	Source     Source  `json:"source"`
-	ResultType string  `json:"result_type,omitempty"`
-	NodeID     string  `json:"node_id,omitempty"`
-	NodeTitle  string  `json:"node_title,omitempty"`
-	NodeType   string  `json:"node_type,omitempty"`
-	Page       int     `json:"page,omitempty"`
-	SheetName  string  `json:"sheet_name,omitempty"`
-	RowRange   string  `json:"row_range,omitempty"`
-	ColRange   string  `json:"col_range,omitempty"`
-	Citation   string  `json:"citation,omitempty"`
-	CardID     string  `json:"card_id,omitempty"`
-	CardTitle  string  `json:"card_title,omitempty"`
-	FactID     string  `json:"fact_id,omitempty"`
-	TableID    string  `json:"table_id,omitempty"`
-	RowID      string  `json:"row_id,omitempty"`
-	CellID     string  `json:"cell_id,omitempty"`
-	RowIndex   int     `json:"row_index,omitempty"`
-	ColumnName string  `json:"column_name,omitempty"`
-	Subject    string  `json:"subject,omitempty"`
-	Predicate  string  `json:"predicate,omitempty"`
-	Object     string  `json:"object,omitempty"`
-	Claim      string  `json:"claim,omitempty"`
-	Summary    string  `json:"summary,omitempty"`
-	Snippet    string  `json:"snippet,omitempty"`
-	Score      float64 `json:"score,omitempty"`
+	Source     Source `json:"source"`
+	ResultType string `json:"result_type,omitempty"`
+	NodeID     string `json:"node_id,omitempty"`
+	// ParentNodeID, Language and Script are hydrated from the originating
+	// document node. They keep chunked multilingual evidence inspectable by
+	// clients without changing the original citation target.
+	ParentNodeID string  `json:"parent_node_id,omitempty"`
+	Language     string  `json:"language,omitempty"`
+	Script       string  `json:"script,omitempty"`
+	NodeTitle    string  `json:"node_title,omitempty"`
+	NodeType     string  `json:"node_type,omitempty"`
+	Page         int     `json:"page,omitempty"`
+	SheetName    string  `json:"sheet_name,omitempty"`
+	RowRange     string  `json:"row_range,omitempty"`
+	ColRange     string  `json:"col_range,omitempty"`
+	Citation     string  `json:"citation,omitempty"`
+	CardID       string  `json:"card_id,omitempty"`
+	CardTitle    string  `json:"card_title,omitempty"`
+	FactID       string  `json:"fact_id,omitempty"`
+	TableID      string  `json:"table_id,omitempty"`
+	RowID        string  `json:"row_id,omitempty"`
+	CellID       string  `json:"cell_id,omitempty"`
+	RowIndex     int     `json:"row_index,omitempty"`
+	ColumnName   string  `json:"column_name,omitempty"`
+	Subject      string  `json:"subject,omitempty"`
+	Predicate    string  `json:"predicate,omitempty"`
+	Object       string  `json:"object,omitempty"`
+	Claim        string  `json:"claim,omitempty"`
+	Summary      string  `json:"summary,omitempty"`
+	Snippet      string  `json:"snippet,omitempty"`
+	Score        float64 `json:"score,omitempty"`
 }
 
 type TopicRelevanceSource struct {
@@ -1211,26 +1218,29 @@ type ContextPackResult struct {
 }
 
 type Stats struct {
-	Sources             int            `json:"sources"`
-	DocumentNodes       int            `json:"document_nodes"`
-	Cards               int            `json:"cards"`
-	Facts               int            `json:"facts"`
-	SourceLinks         int            `json:"source_links,omitempty"`
-	SourceLinkEvents    int            `json:"source_link_events,omitempty"`
-	Batches             int            `json:"batches"`
-	SourcesWithoutNodes int            `json:"sources_without_nodes,omitempty"`
-	SourcesWithoutCards int            `json:"sources_without_cards,omitempty"`
-	SourcesWithoutFacts int            `json:"sources_without_facts,omitempty"`
-	SourcesRebuildCards int            `json:"sources_rebuild_cards,omitempty"`
-	SourcesRebuildFacts int            `json:"sources_rebuild_facts,omitempty"`
-	SourcesWithoutLinks int            `json:"sources_without_links,omitempty"`
-	SourcesByKind       map[string]int `json:"sources_by_kind,omitempty"`
-	SourcesByStatus     map[string]int `json:"sources_by_status,omitempty"`
-	SourcesByDomain     map[string]int `json:"sources_by_domain,omitempty"`
-	SourcesByLabel      map[string]int `json:"sources_by_label,omitempty"`
-	LinkEventsByAction  map[string]int `json:"link_events_by_action,omitempty"`
-	BatchesByStatus     map[string]int `json:"batches_by_status,omitempty"`
-	ImportItemsByStatus map[string]int `json:"import_items_by_status,omitempty"`
+	Sources             int              `json:"sources"`
+	DocumentNodes       int              `json:"document_nodes"`
+	Cards               int              `json:"cards"`
+	Facts               int              `json:"facts"`
+	SourceLinks         int              `json:"source_links,omitempty"`
+	SourceLinkEvents    int              `json:"source_link_events,omitempty"`
+	Batches             int              `json:"batches"`
+	SourcesWithoutNodes int              `json:"sources_without_nodes,omitempty"`
+	SourcesWithoutCards int              `json:"sources_without_cards,omitempty"`
+	SourcesWithoutFacts int              `json:"sources_without_facts,omitempty"`
+	SourcesRebuildCards int              `json:"sources_rebuild_cards,omitempty"`
+	SourcesRebuildFacts int              `json:"sources_rebuild_facts,omitempty"`
+	SourcesWithoutLinks int              `json:"sources_without_links,omitempty"`
+	SourcesByKind       map[string]int   `json:"sources_by_kind,omitempty"`
+	SourcesByStatus     map[string]int   `json:"sources_by_status,omitempty"`
+	SourcesByDomain     map[string]int   `json:"sources_by_domain,omitempty"`
+	SourcesByLabel      map[string]int   `json:"sources_by_label,omitempty"`
+	LinkEventsByAction  map[string]int   `json:"link_events_by_action,omitempty"`
+	BatchesByStatus     map[string]int   `json:"batches_by_status,omitempty"`
+	ImportItemsByStatus map[string]int   `json:"import_items_by_status,omitempty"`
+	Languages           map[string]int   `json:"languages,omitempty"`
+	Scripts             map[string]int   `json:"scripts,omitempty"`
+	VectorIndex         VectorIndexStats `json:"vector_index,omitempty"`
 }
 
 type DoctorFinding struct {

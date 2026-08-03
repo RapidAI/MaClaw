@@ -19,11 +19,12 @@ func (c *coreAgentCallbacks) executeWebSearch(args map[string]interface{}) strin
 		maxResults = 20
 	}
 
-	provider := c.resolveWebSearchProvider()
-	results, err := websearch.SearchWithProviderCtx(c.parentContext(), query, maxResults, provider)
+	strategy := websearch.MigrateLegacyWebSearchStrategy(c.appCfg.WebSearchStrategy, c.appCfg.WebSearchProviders, c.appCfg.WebSearchCurrentProvider)
+	response, err := websearch.SearchWithStrategyCtx(c.parentContext(), query, maxResults, strategy)
 	if err != nil {
 		return fmt.Sprintf("Error: search failed: %v", err)
 	}
+	results := response.Results
 	if len(results) == 0 {
 		return "No results found."
 	}

@@ -93,6 +93,8 @@ Response:
 
 ### Handshake
 
+协议 `1.1` 增加“具体客户端能力”协商。服务端仍接受 `protocolVersion: "1"`；旧客户端未报告输出能力时按保守的纯文本客户端处理。能力分为 `input` 和 `output`，因为“可以上传语音”不代表“可以播放语音”。未声明的输出形式一律视为不支持。
+
 ```http
 POST /api/im-gateway/v1/handshake
 Authorization: Bearer <token>
@@ -105,20 +107,36 @@ Request:
 {
   "clientId": "crm-desktop-001",
   "clientName": "Example CRM",
-  "protocolVersion": "1",
+  "protocolVersion": "1.1",
   "capabilities": {
-    "text": true,
-    "image": true,
-    "file": true,
-    "voice": true,
-    "audio": true,
-    "attachments": true,
-    "serverMedia": true,
-    "longPolling": true,
-    "ack": true
+    "input": {
+      "modalities": ["text", "audio"],
+      "audio": { "mimeTypes": ["audio/wav"], "sampleRates": [16000], "channels": 1 }
+    },
+    "output": {
+      "modalities": ["text", "image"],
+      "preferred": ["text", "image"],
+      "combinations": [["text"], ["image"], ["text", "image"]],
+      "text": { "maxChars": 240, "markdown": false, "locale": "zh-CN" },
+      "image": { "mimeTypes": ["image/png"], "maxWidth": 360, "maxHeight": 360, "animated": false }
+    },
+    "features": { "petStates": true, "petAnimation": true, "ambientDisplay": true, "meetingRecorder": false }
   }
 }
 ```
+
+也可以把同一结构放在顶层 `clientCapabilities`，用于仍需保留旧版扁平 `capabilities` 传输特性的客户端。服务端规范化后通过 `capabilitiesAccepted` 回显实际接受的能力。
+
+- `modalities` 表示能够单独输入或输出的形式，当前标准值为 `text`、`audio`、`image`、`file`；后续协议版本可扩展其他形式。
+- `preferred` 表示客户端希望 Agent 优先返回的顺序。
+- `combinations` 表示可在同一回复中同时消费的组合。声明 `text` 和 `image` 但没有 `["text","image"]` 时，服务端只能择一发送。
+- `maxChars` 按 Unicode 字符计数，不按 UTF-8 字节计数。
+- 音频、图像与文件应声明 MIME、采样率、通道、尺寸或字节限制。
+- 对媒体消息，最终出口必须同时检查形式、MIME 和文件大小；例如只声明 `image/png` 的屏幕不能收到 JPEG，只声明 `audio/wav` 且 `playback:true` 的扬声器不能收到 MP3。若 `mimeTypes` 为空则不额外限制编码；非空时支持精确 MIME 或 `image/*` 这类通配符。
+- Hub 会把能力传给 MaClaw GUI Agent，并在最终发送前再次强制降级；不能只依赖模型遵守提示。
+- 同一规则也适用于直连 MaClaw GUI 和 MaClawSrv：握手端必须按认证主体 + `clientId` 保存规范化能力，后续每次 Agent 调用都带入该能力，并在出站队列入口再次过滤。`capabilitiesAccepted` 不能只是无状态回显。
+- `GET /outgoing` 是单消费者、有序 cursor 流。一个 `clientId` 同一时刻只能有一个读取循环；交互任务应等待该循环发出的本地事件，不能另起一个并发 poll，否则某个读取者可能消费并确认另一个任务正在等待的回复。
+- `timeout` 表示服务端长轮询秒数，当前范围 `0..30`；`0` 为立即返回。`limit` 当前范围 `1..20`。有新消息时服务端应立即唤醒请求，避免客户端持续建立 TLS 连接空轮询。
 
 Response:
 
@@ -127,7 +145,7 @@ Response:
   "ok": true,
   "requestId": "gw_1781028000000000000",
   "channelId": "thirdparty:crm-desktop-001",
-  "protocolVersion": "1",
+  "protocolVersion": "1.1",
   "serverTime": 1781028000000,
   "mode": "maclaw",
   "capabilities": [
@@ -184,6 +202,14 @@ Response:
     "tool_plan": true,
     "tool_result": true,
     "tool_cancel": true
+  },
+  "capabilitiesAccepted": {
+    "input": {"modalities": ["text", "audio"]},
+    "output": {
+      "modalities": ["text", "image"],
+      "preferred": ["text", "image"],
+      "combinations": [["text"], ["image"], ["text", "image"]]
+    }
   }
 }
 ```

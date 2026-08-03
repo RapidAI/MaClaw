@@ -39,21 +39,22 @@ func knowledgeListSourcesOptionsFromArgs(args map[string]interface{}, tenantID, 
 		limit = maxLimit
 	}
 	return knowledge.ListSourcesOptions{
-		TenantID:       tenantID,
-		OwnerID:        ownerID,
-		BatchID:        stringArg(args, "batch_id"),
-		ProjectPath:    stringArg(args, "project_path"),
-		SourceIDs:      toStringSlice(args["source_ids"]),
-		SourceID:       firstStringArg(args, "source_id", "id"),
-		Status:         stringArg(args, "status"),
-		Kind:           stringArg(args, "kind"),
-		SourceKinds:    toStringSlice(args["source_kinds"]),
-		Domain:         stringArg(args, "domain"),
-		Label:          stringArg(args, "label"),
-		Labels:         toStringSlice(args["labels"]),
-		Query:          stringArg(args, "query"),
-		CoverageFilter: stringArg(args, "coverage_filter"),
-		Limit:          limit,
+		TenantID:        tenantID,
+		OwnerID:         ownerID,
+		BatchID:         stringArg(args, "batch_id"),
+		ProjectPath:     stringArg(args, "project_path"),
+		SourceIDs:       toStringSlice(args["source_ids"]),
+		SourceID:        firstStringArg(args, "source_id", "id"),
+		Status:          stringArg(args, "status"),
+		IncludeDisabled: boolArg(args, "include_disabled", false),
+		Kind:            stringArg(args, "kind"),
+		SourceKinds:     toStringSlice(args["source_kinds"]),
+		Domain:          stringArg(args, "domain"),
+		Label:           stringArg(args, "label"),
+		Labels:          toStringSlice(args["labels"]),
+		Query:           stringArg(args, "query"),
+		CoverageFilter:  stringArg(args, "coverage_filter"),
+		Limit:           limit,
 	}
 }
 
@@ -622,7 +623,9 @@ func (c *coreAgentCallbacks) knowledgeManagementToolSpecs() []coreToolSpec {
 	return []coreToolSpec{
 		spec("knowledge_list_sources",
 			"List saved knowledge sources from the local store without calling an LLM. Use when the user asks what has been saved, imported, indexed, or grouped by label. Supports query, kind, status, domain, label, and limit filters.",
-			obj(sourceFilterProps())),
+			obj(withFilters(map[string]interface{}{
+				"include_disabled": boolParam("Include disabled own sources. Default false."),
+			}))),
 		spec("knowledge_source_detail",
 			"Get full details of one knowledge source by ID: title, URI, kind, status, labels, timestamps, and error message.",
 			obj(map[string]interface{}{

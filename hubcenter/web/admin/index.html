@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MaClaw Hub Center Admin</title>
   <link rel="stylesheet" href="/pro-ui.css">
-  <link rel="stylesheet" href="/admin/assets/css/admin-shell.css?v=trust-dialog-20260711">
+  <link rel="stylesheet" href="/admin/assets/css/admin-shell.css?v=pet-store-preview-toggle-20260731-1">
   <link rel="stylesheet" href="/admin/assets/css/admin-responsive.css">
 </head>
 <body>
@@ -159,6 +159,42 @@
     </div>
   </div>
 </section>
+      <section id="tab-petstore" class="panel card">
+        <div class="pet-admin-shell">
+          <div class="head pet-admin-head">
+            <div>
+              <h3 id="petAdminTitle">Pet Store</h3>
+              <div class="desc" id="petAdminDesc">Review packages published directly to the Pet Store.</div>
+            </div>
+            <div class="actions">
+              <label class="pet-admin-filter-label" for="petAdminStatusFilter" id="petAdminStatusLabel">Status</label>
+              <select id="petAdminStatusFilter" onchange="loadPetStoreAdmin(1)">
+                <option value="">All except deleted</option>
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="withdrawn">Withdrawn</option>
+                <option value="deleted">Deleted</option>
+              </select>
+              <button class="btn-ghost" type="button" id="petAdminRefreshBtn" onclick="loadPetStoreAdmin()">Refresh</button>
+            </div>
+          </div>
+          <div id="petAdminStatus" class="sm-status" aria-live="polite"></div>
+          <div id="petAdminGrid" class="pet-admin-grid" aria-live="polite"></div>
+          <div id="petAdminPager" class="pager pet-admin-pager">
+            <div class="pager-meta" id="petAdminPageInfo" aria-live="polite"></div>
+            <div class="pager-actions">
+              <button class="btn-ghost" id="petAdminPrevBtn" type="button" onclick="changePetStoreAdminPage(-1)" aria-label="Previous page">&larr;</button>
+              <button class="btn-ghost" id="petAdminNextBtn" type="button" onclick="changePetStoreAdminPage(1)" aria-label="Next page">&rarr;</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="tab-expertmarket" class="panel card">
+        <div class="pet-admin-shell">
+          <div class="head pet-admin-head"><div><h3 id="expertMarketAdminTitle">AI Expert Market</h3><div class="desc" id="expertMarketAdminDesc">Approval publishes immediately; unlist before deleting a listing.</div></div><div class="actions"><label class="pet-admin-filter-label" id="expertMarketAdminFilterLabel" for="expertMarketAdminStatus">Status</label><select id="expertMarketAdminStatus" onchange="loadExpertMarketAdmin(1)"><option value="">All statuses</option><option value="pending_review">Pending review</option><option value="listed">Listed</option><option value="unlisted">Unlisted</option><option value="rejected">Rejected</option><option value="deleted">Deleted</option></select><button class="btn-ghost" type="button" id="expertMarketAdminRefresh" onclick="loadExpertMarketAdmin()">Refresh</button></div></div>
+          <div id="expertMarketAdminStatusMessage" class="sm-status" aria-live="polite"></div><div id="expertMarketAdminGrid" class="pet-admin-grid" aria-live="polite"></div><div class="pager pet-admin-pager"><div class="pager-meta" id="expertMarketAdminPageInfo" aria-live="polite"></div><div class="pager-actions"><button class="btn-ghost" id="expertMarketAdminPrev" type="button" onclick="changeExpertMarketAdminPage(-1)" aria-label="Previous page">&larr;</button><button class="btn-ghost" id="expertMarketAdminNext" type="button" onclick="changeExpertMarketAdminPage(1)" aria-label="Next page">&rarr;</button></div></div>
+        </div>
+      </section>
       <section id="tab-computemarket" class="panel card">
         <div class="head"><div><h3 data-i18n="computeMarketTitle"></h3><div class="desc" data-i18n="computeMarketDesc"></div></div><button class="btn-ghost" onclick="initComputeMarketTab()" data-i18n="reload"></button></div>
         <div class="metrics cloud-metrics ops-summary-grid">
@@ -241,11 +277,13 @@
       <section id="tab-news" class="panel card"><div class="head"><div><h3 data-i18n="newsTitle"></h3><div class="desc" data-i18n="newsDesc"></div></div><div class="actions"><button class="btn-primary" onclick="showNewsEditor()" data-i18n="newsAdd"></button><button class="btn-ghost" onclick="loadNewsList()" data-i18n="reload"></button></div></div><div id="newsEditor" class="item news-editor"><input id="newsEditId" type="hidden"><div class="grid2"><div><label data-i18n="newsFieldTitle"></label><input id="newsEditTitle" placeholder=""></div><div><label data-i18n="newsFieldCategory"></label><select id="newsEditCategory"><option value="notice"></option><option value="update"></option><option value="tip"></option><option value="alert"></option></select></div></div><div class="stack-gap-sm"><label data-i18n="newsFieldContent"></label><textarea id="newsEditContent" class="news-textarea" rows="8" placeholder=""></textarea></div><div class="inline-check stack-gap-xs"><label class="inline-label" data-i18n="newsFieldPinned"></label><input type="checkbox" id="newsEditPinned" class="auto-check"></div><div class="actions section-gap"><button class="btn-primary" onclick="saveNews()" data-i18n="newsSave"></button><button class="btn-ghost" onclick="hideNewsEditor()" data-i18n="newsCancel"></button></div></div><div id="newsList" class="list"><div class="hint" data-i18n="newsEmpty"></div></div><div id="newsPager" class="actions"><button class="btn-ghost" id="newsPrevBtn" type="button" onclick="changeNewsPage(-1)" aria-label="Previous news page">&larr;</button><span id="newsPageInfo" aria-live="polite"></span><button class="btn-ghost" id="newsNextBtn" type="button" onclick="changeNewsPage(1)" aria-label="Next news page">&rarr;</button></div></section>
     </main>
   </div>
-  <script src="/admin/assets/js/admin-core.js?v=tab-autoload-20260616-1" defer></script>
+  <script src="/admin/assets/js/admin-core.js?v=expert-market-i18n-20260802-1" defer></script>
   <script src="/admin/assets/js/user-management.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/profile-settings.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/gossip-admin.js?v=trust-dialog-20260711" defer></script>
   <script src="/admin/assets/js/skillmarket-admin.js?v=tab-autoload-20260614-3" defer></script>
+  <script src="/admin/assets/js/petstore-admin.js?v=pet-store-admin-20260801-2" defer></script>
+  <script src="/admin/assets/js/expertmarket-admin.js?v=expert-market-admin-20260802-9" defer></script>
   <script src="/admin/assets/js/ha-news-admin.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/llm-service-tab.js?v=tab-autoload-20260614-2" defer></script>
   <script src="/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622-2" defer></script>

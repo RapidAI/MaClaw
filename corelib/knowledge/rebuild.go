@@ -99,6 +99,9 @@ func appendSourceRebuildFailure(result *SourceRebuildResult, sourceID string, er
 
 func (s *SQLiteStore) RebuildSourcesDerivedByFilter(ctx context.Context, opts ListSourcesOptions, distillMode string) (SourceRebuildResult, error) {
 	opts.Limit = sourceFilterLimit(opts, 100, 500, 5000)
+	if opts.Status == "" {
+		opts.IncludeDisabled = true
+	}
 	sources, err := s.ListSources(ctx, opts)
 	if err != nil {
 		return SourceRebuildResult{}, err

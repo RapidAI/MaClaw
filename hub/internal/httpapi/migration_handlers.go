@@ -82,23 +82,25 @@ type migrationExportRow struct {
 }
 
 type migrationPublicManifest struct {
-	Version        string                              `json:"version"`
-	CreatedAt      time.Time                           `json:"created_at"`
-	TenantID       string                              `json:"tenant_id,omitempty"`
-	TenantName     string                              `json:"tenant_name,omitempty"`
-	UserID         string                              `json:"user_id,omitempty"`
-	Email          string                              `json:"email,omitempty"`
-	MachineID      string                              `json:"machine_id,omitempty"`
-	MachineName    string                              `json:"machine_name,omitempty"`
-	MemoryEntries  int                                 `json:"memory_entries"`
-	KnowledgeBytes int64                               `json:"knowledge_bytes"`
-	AssetBytes     int64                               `json:"asset_bytes"`
-	ConfigSchema   string                              `json:"config_schema_version,omitempty"`
-	ConfigSections int                                 `json:"config_section_count,omitempty"`
-	SecretCount    int                                 `json:"secret_count,omitempty"`
-	ExcludedConfig []string                            `json:"excluded_config_paths,omitempty"`
-	Files          []migrationPublicManifestFileDigest `json:"files"`
-	Meta           *migrationPublicManifestMeta        `json:"meta,omitempty"`
+	Version          string                              `json:"version"`
+	CreatedAt        time.Time                           `json:"created_at"`
+	TenantID         string                              `json:"tenant_id,omitempty"`
+	TenantName       string                              `json:"tenant_name,omitempty"`
+	UserID           string                              `json:"user_id,omitempty"`
+	Email            string                              `json:"email,omitempty"`
+	MachineID        string                              `json:"machine_id,omitempty"`
+	MachineName      string                              `json:"machine_name,omitempty"`
+	MemoryEntries    int                                 `json:"memory_entries"`
+	KnowledgeBytes   int64                               `json:"knowledge_bytes"`
+	AssetBytes       int64                               `json:"asset_bytes"`
+	PetPackBytes     int64                               `json:"pet_pack_bytes"`
+	PetPacksIncluded bool                                `json:"pet_packs_included,omitempty"`
+	ConfigSchema     string                              `json:"config_schema_version,omitempty"`
+	ConfigSections   int                                 `json:"config_section_count,omitempty"`
+	SecretCount      int                                 `json:"secret_count,omitempty"`
+	ExcludedConfig   []string                            `json:"excluded_config_paths,omitempty"`
+	Files            []migrationPublicManifestFileDigest `json:"files"`
+	Meta             *migrationPublicManifestMeta        `json:"meta,omitempty"`
 }
 
 type migrationPublicManifestFileDigest struct {
@@ -819,10 +821,15 @@ func validateMigrationPublicManifest(raw json.RawMessage) error {
 	if decoder.Decode(&struct{}{}) != io.EOF {
 		return fmt.Errorf("manifest must contain one JSON object")
 	}
-	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
+	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 || manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
 		return fmt.Errorf("manifest contains invalid counts")
 	}
+	if !manifest.PetPacksIncluded && manifest.PetPackBytes != 0 {
+		return fmt.Errorf("manifest pet-pack bytes require pet_packs_included")
+	}
 	seen := make(map[string]struct{}, len(manifest.Files))
+	var petPackBytes int64
+	petPackFileCount := 0
 	for _, file := range manifest.Files {
 		clean, key, err := canonicalMigrationManifestPath(file.Path)
 		if err != nil || file.Bytes < 0 || !validSHA256(file.SHA256) {
@@ -831,10 +838,26 @@ func validateMigrationPublicManifest(raw json.RawMessage) error {
 		if key == "manifest.json" {
 			return fmt.Errorf("manifest must not list itself")
 		}
+		if key == "pet_packs" {
+			return fmt.Errorf("manifest pet-pack root must be a directory")
+		}
 		if _, exists := seen[key]; exists {
 			return fmt.Errorf("manifest contains duplicate file path: %s", clean)
 		}
 		seen[key] = struct{}{}
+		if strings.HasPrefix(key, "pet_packs/") {
+			if file.Bytes > int64(^uint64(0)>>1)-petPackBytes {
+				return fmt.Errorf("manifest pet-pack byte count overflow")
+			}
+			petPackBytes += file.Bytes
+			petPackFileCount++
+		}
+	}
+	if petPackBytes != manifest.PetPackBytes {
+		return fmt.Errorf("manifest pet-pack byte count mismatch")
+	}
+	if !manifest.PetPacksIncluded && petPackFileCount != 0 {
+		return fmt.Errorf("manifest contains pet-pack files without declaring them")
 	}
 	return nil
 }
