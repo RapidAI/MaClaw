@@ -420,6 +420,31 @@ func TestDeviceGatewayEnqueueReplyEnforcesNegotiatedOutput(t *testing.T) {
 	}
 }
 
+func TestDeviceGatewayEnqueueReplyPreservesHardwareFeatureMessages(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	gateway.mu.Lock()
+	state := gateway.clientLocked("pet-features")
+	state.capabilities = agent.NormalizeClientCapabilities(&agent.ClientCapabilities{
+		Output: agent.ClientOutputCapabilities{
+			Modalities: []string{"text"}, Text: &agent.ClientTextCapabilities{MaxChars: 5},
+		},
+		Features: agent.ClientFeatureCapabilities{PetStates: true, AmbientDisplay: true, MeetingRecorder: true},
+	})
+	gateway.mu.Unlock()
+	gateway.EnqueueReply("pet-features", "default", map[string]any{"type": "pet_state", "extra": map[string]any{"state": "thinking"}})
+	gateway.EnqueueReply("pet-features", "default", map[string]any{"type": "ambient", "ambient": map[string]any{"weather": "sunny"}})
+	gateway.EnqueueReply("pet-features", "default", map[string]any{"type": "meeting_result", "text": "123456789"})
+	gateway.mu.Lock()
+	messages := append([]map[string]any(nil), gateway.clients["pet-features"].messages...)
+	gateway.mu.Unlock()
+	if len(messages) != 3 || messages[0]["type"] != "pet_state" || messages[1]["type"] != "ambient" || messages[2]["type"] != "meeting_result" {
+		t.Fatalf("feature messages=%#v", messages)
+	}
+	if messages[2]["text"] != "12345" {
+		t.Fatalf("meeting result text=%#v", messages[2]["text"])
+	}
+}
+
 func TestDeviceGatewayRelaysAmbientWeatherToPairedHardware(t *testing.T) {
 	gateway := NewDeviceGateway(nil)
 	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "112233"); err != nil {

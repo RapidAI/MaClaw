@@ -1059,18 +1059,20 @@ func (a *App) buildUserDataMigrationPackage(ctx context.Context, cfg userDataMig
 	} else if !os.IsNotExist(err) {
 		return "", userDataMigrationManifest{}, fmt.Errorf("read pet-packs: %w", err)
 	}
-	expertBytes := int64(0)
-	expertsDir := a.userDataMigrationExpertsDir()
-	if st, err := os.Stat(expertsDir); err == nil {
-		if !st.IsDir() {
-			return "", userDataMigrationManifest{}, fmt.Errorf("experts is not a directory")
-		}
-		expertBytes, err = userDataMigrationCopyDirInto(payloadDir, expertsDir, "experts")
-		if err != nil {
-			return "", userDataMigrationManifest{}, err
-		}
-	} else if !os.IsNotExist(err) {
-		return "", userDataMigrationManifest{}, fmt.Errorf("read experts: %w", err)
+	// Built-in experts ship with every app installation and must not be part of
+	// a migration package. Export only persisted user-created, overridden, or
+	// installed definitions and their relevant local sync/install state.
+	expertPath := filepath.Join(payloadDir, "experts", "experts.json")
+	experts, err := userDataMigrationExportableExperts(filepath.Join(a.userDataMigrationExpertsDir(), "experts.json"))
+	if err != nil {
+		return "", userDataMigrationManifest{}, err
+	}
+	if err := userDataMigrationWriteJSONFile(expertPath, experts); err != nil {
+		return "", userDataMigrationManifest{}, err
+	}
+	_, expertBytes, err := userDataMigrationFileSHA256(expertPath)
+	if err != nil {
+		return "", userDataMigrationManifest{}, err
 	}
 	manifest := userDataMigrationManifest{
 		Version:          userDataMigrationPackageVersion,
@@ -1208,7 +1210,7 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 		if err := userDataMigrationValidateExperts(expertSrc); err != nil {
 			return nil, userDataMigrationRollbackError(err, rollbackPetPacks, rollbackAssets, rollbackMemory, rollbackConfig)
 		}
-		expertBytes, rollbackExperts, commitExperts, err = a.replaceUserDataMigrationExperts(expertSrc, workDir)
+		expertBytes, rollbackExperts, commitExperts, err = a.restoreUserDataMigrationExperts(expertSrc, workDir)
 		if err != nil {
 			return nil, userDataMigrationRollbackError(err, rollbackPetPacks, rollbackAssets, rollbackMemory, rollbackConfig)
 		}
@@ -1815,8 +1817,145 @@ func (a *App) userDataMigrationExpertsDir() string {
 	return filepath.Join(a.GetDataDir(), "experts")
 }
 
-func (a *App) replaceUserDataMigrationExperts(source, workDir string) (int64, func() error, func(), error) {
-	return userDataMigrationReplaceDirectory(source, a.userDataMigrationExpertsDir(), workDir, "experts.backup", "experts")
+func (a *App) restoreUserDataMigrationExperts(source, workDir string) (int64, func() error, func(), error) {
+	currentPath := filepath.Join(a.userDataMigrationExpertsDir(), "experts.json")
+	incomingPath := filepath.Join(source, "experts.json")
+	var incoming expertStoreFile
+	if err := userDataMigrationReadJSONFileLimited(incomingPath, &incoming, userDataMigrationMaxConfigJSON); err != nil {
+		return 0, nil, nil, fmt.Errorf("read migration experts store: %w", err)
+	}
+	current, err := userDataMigrationReadExpertStore(currentPath)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	merged := userDataMigrationMergeExpertStores(current, incoming)
+	stagingDir := filepath.Join(workDir, "experts")
+	stagingPath := filepath.Join(stagingDir, "experts.json")
+	if err := userDataMigrationWriteJSONFile(stagingPath, merged); err != nil {
+		return 0, nil, nil, err
+	}
+	return userDataMigrationReplaceDirectory(stagingDir, a.userDataMigrationExpertsDir(), workDir, "experts.backup", "experts")
+}
+
+func userDataMigrationReadExpertStore(path string) (expertStoreFile, error) {
+	var store expertStoreFile
+	if err := userDataMigrationReadJSONFileLimited(path, &store, userDataMigrationMaxConfigJSON); err != nil {
+		if os.IsNotExist(err) {
+			return expertStoreFile{}, nil
+		}
+		return expertStoreFile{}, fmt.Errorf("read target experts store: %w", err)
+	}
+	return store, nil
+}
+
+func userDataMigrationMergeExpertStores(current, incoming expertStoreFile) expertStoreFile {
+	merged := expertStoreFile{
+		Experts:           append([]ExpertDefinition(nil), incoming.Experts...),
+		DeletedIDs:        userDataMigrationMergeExpertTimestamps(current.DeletedIDs, incoming.DeletedIDs),
+		PendingHubUploads: mergeUserDataMigrationExpertFlags(current.PendingHubUploads, incoming.PendingHubUploads),
+		PendingHubDeletes: userDataMigrationMergeExpertTimestamps(current.PendingHubDeletes, incoming.PendingHubDeletes),
+		LocalOnlyIDs:      mergeUserDataMigrationExpertFlags(current.LocalOnlyIDs, incoming.LocalOnlyIDs),
+		MarketInstallIDs:  mergeUserDataMigrationExpertFlags(current.MarketInstallIDs, incoming.MarketInstallIDs),
+	}
+	incomingIDs := make(map[string]struct{}, len(incoming.Experts))
+	for _, expert := range incoming.Experts {
+		incomingIDs[expert.ID] = struct{}{}
+	}
+	for _, expert := range current.Experts {
+		if builtinExpertByID(expert.ID) != nil {
+			if _, replaced := incomingIDs[expert.ID]; replaced {
+				continue
+			}
+			merged.Experts = append(merged.Experts, expert)
+		}
+	}
+	return merged
+}
+
+func userDataMigrationMergeExpertTimestamps(current, incoming map[string]string) map[string]string {
+	if len(current) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(current)+len(incoming))
+	for id, timestamp := range incoming {
+		merged[id] = timestamp
+	}
+	for id, timestamp := range current {
+		if builtinExpertByID(id) != nil {
+			merged[id] = timestamp
+		}
+	}
+	return merged
+}
+
+func mergeUserDataMigrationExpertFlags(current, incoming map[string]bool) map[string]bool {
+	if len(current) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	merged := make(map[string]bool, len(current)+len(incoming))
+	for id, enabled := range incoming {
+		if enabled {
+			merged[id] = true
+		}
+	}
+	for id, enabled := range current {
+		if enabled && builtinExpertByID(id) != nil {
+			merged[id] = true
+		}
+	}
+	return merged
+}
+
+func userDataMigrationExportableExperts(path string) (expertStoreFile, error) {
+	out := expertStoreFile{Experts: []ExpertDefinition{}}
+	var source expertStoreFile
+	if err := userDataMigrationReadJSONFileLimited(path, &source, userDataMigrationMaxConfigJSON); err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return out, fmt.Errorf("read experts for migration: %w", err)
+	}
+	for _, expert := range source.Experts {
+		if !expert.Builtin {
+			out.Experts = append(out.Experts, expert)
+		}
+	}
+	// Built-ins are not persisted by the normal expert store. Keep metadata for
+	// stored records (including a user override of a builtin expert) because it
+	// is part of the user's local customization and synchronization state, but
+	// never carry state entries for an app-provided expert definition.
+	out.DeletedIDs = userDataMigrationFilterSystemExpertTimestamps(source.DeletedIDs)
+	out.PendingHubUploads = userDataMigrationFilterSystemExpertFlags(source.PendingHubUploads)
+	out.PendingHubDeletes = userDataMigrationFilterSystemExpertTimestamps(source.PendingHubDeletes)
+	out.LocalOnlyIDs = userDataMigrationFilterSystemExpertFlags(source.LocalOnlyIDs)
+	out.MarketInstallIDs = userDataMigrationFilterSystemExpertFlags(source.MarketInstallIDs)
+	return out, nil
+}
+
+func userDataMigrationFilterSystemExpertTimestamps(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(source))
+	for id, timestamp := range source {
+		if builtinExpertByID(id) == nil {
+			out[id] = timestamp
+		}
+	}
+	return out
+}
+
+func userDataMigrationFilterSystemExpertFlags(source map[string]bool) map[string]bool {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(source))
+	for id, enabled := range source {
+		if enabled && builtinExpertByID(id) == nil {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 func userDataMigrationValidateExperts(source string) error {
@@ -1836,6 +1975,9 @@ func userDataMigrationValidateExperts(source string) error {
 		id := strings.TrimSpace(expert.ID)
 		if id == "" || !expertIDPattern.MatchString(id) {
 			return fmt.Errorf("migration expert has invalid id %q", expert.ID)
+		}
+		if expert.Builtin {
+			return fmt.Errorf("migration package must not contain system expert %q", id)
 		}
 		if _, exists := seen[id]; exists {
 			return fmt.Errorf("migration experts contain duplicate id %q", id)

@@ -25,6 +25,28 @@ func TestThirdPartyGatewayEnqueueEnforcesClientCapabilities(t *testing.T) {
 		t.Fatalf("adapted messages=%#v", messages)
 	}
 }
+
+func TestThirdPartyGatewayEnqueuePreservesHardwareFeatureMessages(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{
+		Output: agent.ClientOutputCapabilities{
+			Modalities: []string{"text"}, Text: &agent.ClientTextCapabilities{MaxChars: 5},
+		},
+		Features: agent.ClientFeatureCapabilities{PetStates: true, AmbientDisplay: true, MeetingRecorder: true},
+	})
+	m.enqueue("pet", thirdPartyOutgoingMessage{ID: "pet-state", Type: "pet_state", Extra: map[string]any{"state": "thinking"}})
+	m.enqueue("pet", thirdPartyOutgoingMessage{ID: "ambient", Type: "ambient", Extra: map[string]any{"weather": "sunny"}})
+	m.enqueue("pet", thirdPartyOutgoingMessage{ID: "meeting", Type: "meeting_result", Text: "123456789"})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 3 || messages[0].Type != "pet_state" || messages[1].Type != "ambient" || messages[2].Type != "meeting_result" {
+		t.Fatalf("feature messages=%#v", messages)
+	}
+	if messages[2].Text != "12345" {
+		t.Fatalf("meeting result text=%q", messages[2].Text)
+	}
+}
 func TestThirdPartyGatewayHandshakeCapabilitiesReachLocalAgentContract(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{

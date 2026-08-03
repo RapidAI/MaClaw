@@ -300,9 +300,10 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 	}
 	t.Cleanup(sourceStore.Stop)
 	source := &App{testHomeDir: t.TempDir(), memoryStore: sourceStore}
-	sourceExperts := expertStoreFile{Experts: []ExpertDefinition{{
-		ID: "expert-source", Name: "Source Expert", SystemPrompt: "source prompt", CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z",
-	}}}
+	sourceExperts := expertStoreFile{Experts: []ExpertDefinition{
+		{ID: "expert-source", Name: "Source Expert", SystemPrompt: "source prompt", CreatedAt: "2026-08-03T00:00:00Z", UpdatedAt: "2026-08-03T00:00:00Z"},
+		{ID: "builtin-paper-polish", Name: "System Expert", Builtin: true, SystemPrompt: "must not migrate"},
+	}, PendingHubUploads: map[string]bool{"expert-source": true, "builtin-paper-polish": true}}
 	if err := userDataMigrationWriteJSONFile(filepath.Join(source.userDataMigrationExpertsDir(), "experts.json"), sourceExperts); err != nil {
 		t.Fatalf("write source experts: %v", err)
 	}
@@ -333,7 +334,10 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 	}
 	t.Cleanup(targetStore.Stop)
 	target := &App{testHomeDir: t.TempDir(), memoryStore: targetStore}
-	if err := userDataMigrationWriteJSONFile(filepath.Join(target.userDataMigrationExpertsDir(), "experts.json"), expertStoreFile{Experts: []ExpertDefinition{{ID: "expert-target", Name: "Target Expert"}}}); err != nil {
+	if err := userDataMigrationWriteJSONFile(filepath.Join(target.userDataMigrationExpertsDir(), "experts.json"), expertStoreFile{Experts: []ExpertDefinition{
+		{ID: "expert-target", Name: "Target Expert"},
+		{ID: "builtin-paper-polish", Name: "Customized System Expert", SystemPrompt: "target override"},
+	}}); err != nil {
 		t.Fatalf("write target experts: %v", err)
 	}
 	result, err := target.restoreUserDataMigrationPackage(context.Background(), zipPath, t.TempDir())
@@ -344,12 +348,28 @@ func TestUserDataMigrationPackageMigratesExperts(t *testing.T) {
 	if err := userDataMigrationReadJSONFileLimited(filepath.Join(target.userDataMigrationExpertsDir(), "experts.json"), &restored, userDataMigrationMaxConfigJSON); err != nil {
 		t.Fatalf("read restored experts: %v", err)
 	}
-	if len(restored.Experts) != 1 || restored.Experts[0].ID != "expert-source" || restored.Experts[0].SystemPrompt != "source prompt" {
+	if len(restored.Experts) != 2 || restored.Experts[0].ID != "expert-source" || restored.Experts[0].SystemPrompt != "source prompt" ||
+		restored.Experts[1].ID != "builtin-paper-polish" || restored.Experts[1].SystemPrompt != "target override" {
 		t.Fatalf("restored experts mismatch: %#v", restored)
+	}
+	if !restored.PendingHubUploads["expert-source"] || restored.PendingHubUploads["builtin-paper-polish"] {
+		t.Fatalf("restored expert sync state mismatch: %#v", restored.PendingHubUploads)
 	}
 	experts, ok := result["experts"].(map[string]interface{})
 	if !ok || experts["included"] != true || experts["bytes"] != manifest.ExpertBytes {
 		t.Fatalf("expert restore result mismatch: %#v", result)
+	}
+}
+
+func TestUserDataMigrationRejectsSystemExpertPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "experts")
+	if err := userDataMigrationWriteJSONFile(filepath.Join(path, "experts.json"), expertStoreFile{Experts: []ExpertDefinition{{
+		ID: "builtin-paper-polish", Name: "System Expert", Builtin: true,
+	}}}); err != nil {
+		t.Fatalf("write experts: %v", err)
+	}
+	if err := userDataMigrationValidateExperts(path); err == nil || !strings.Contains(err.Error(), "system expert") {
+		t.Fatalf("expected system expert rejection, got %v", err)
 	}
 }
 

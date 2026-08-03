@@ -470,6 +470,20 @@ after they have successfully handled the response.
 Outgoing media replies may include `data` for small direct media or `url` /
 `attachments[]` for downloadable media.
 
+Hardware surfaces may also receive feature messages. These messages remain in
+the same ordered cursor/ACK stream and are emitted only when the handshake's
+accepted feature flags allow them:
+
+| `type` | Required accepted capability | Payload |
+| --- | --- | --- |
+| `ambient` | `features.ambientDisplay` | `ambient.weather.summary`, `temperatureC`, optional `location`, `expiresAt`, and compact `glyphs` |
+| `pet_state` | `features.petStates` | `extra.state` using `idle/listening/thinking/speaking/done/alert/quiet`; optional `durationMs` |
+| `meeting_result` | `features.meetingRecorder` and text output | `text` for the short device summary; `extra.status`, `summary`, and document identifiers may link to Mobile/GUI library content |
+
+Feature messages must not be coerced to `text` by an intermediate GUI or Hub.
+Unknown or unsupported feature types are filtered before enqueueing. Text in a
+`meeting_result` is still truncated to the negotiated `output.text.maxChars`.
+
 ### ACK
 
 ```http
