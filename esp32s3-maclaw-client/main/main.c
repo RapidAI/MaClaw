@@ -197,7 +197,10 @@ static void finish_interaction_task(void) {
     // the interaction task, which completes it on another task context.
     // Releasing a FreeRTOS mutex from that child task asserts and reboots.
     if (s_interaction_lock) xSemaphoreGive(s_interaction_lock);
-    vTaskDeleteWithCaps(NULL);
+    // The interaction worker now uses ordinary xTaskCreate() with an internal
+    // RAM stack, so it must be destroyed by the matching FreeRTOS API.
+    // vTaskDeleteWithCaps() asserts when given a normally allocated task.
+    vTaskDelete(NULL);
 }
 
 // A foreground command owns the LCD from the end of capture until a final
@@ -837,15 +840,23 @@ static void load_meeting_recovery(void) {
 
 static esp_err_t save_meeting_recovery(bool pending, const char *recording_id,
                                        int32_t next_chunk, int32_t phase) {
+    // Gateway polling can persist weather/glyph state while a meeting upload
+    // advances its recovery cursor. Serialize every NVS writer: an overlapping
+    // flash commit can reset the MCU exactly at a successful chunk boundary.
+    if (!nvs_lock()) return ESP_ERR_TIMEOUT;
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("maclaw", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        nvs_unlock();
+        return err;
+    }
     err = nvs_set_u8(nvs, "meet_pending", pending ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(nvs, "meet_id", recording_id ? recording_id : "");
     if (err == ESP_OK) err = nvs_set_i32(nvs, "meet_next", next_chunk);
     if (err == ESP_OK) err = nvs_set_i32(nvs, "meet_phase", phase);
     if (err == ESP_OK) err = nvs_commit(nvs);
     nvs_close(nvs);
+    nvs_unlock();
     if (err == ESP_OK) {
         s_meeting_pending = pending;
         s_meeting_next_chunk = next_chunk;
@@ -1479,7 +1490,9 @@ static esp_err_t hash_file_range(FILE *file, size_t offset, size_t length,
 
 static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE *file,
                                       size_t offset, size_t length, const char sha256_hex[65],
-                                      uint8_t *buffer, size_t buffer_size) {
+                                      uint8_t *buffer, size_t buffer_size,
+                                      size_t completed_before, size_t total_bytes,
+                                      bool publish_progress) {
     char path[MEETING_BASE_PATH_CAPACITY + MEETING_RECORDING_ID_CAPACITY + 48];
     char url[URL_CAPACITY];
     int path_len = snprintf(path, sizeof(path), "%s/%s/chunks/%d",
@@ -1538,6 +1551,19 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
             written += (size_t)result;
         }
         remaining -= count;
+        // Repainting the complete 360x360 LCD after each 16 KiB TLS write
+        // overlaps QSPI DMA, PSRAM traffic and Wi-Fi for the whole upload. On
+        // this board that causes a repeatable brownout/watchdog-style reset.
+        // Update once per 256 KiB (and at completion) instead.
+        size_t transferred = length - remaining;
+        if (publish_progress &&
+            (remaining == 0 || (transferred % (256u * 1024u)) < count)) {
+            board_port_show_upload_progress(completed_before + transferred,
+                                            total_bytes, "正在上传录音");
+        }
+        // A multi-megabyte HTTPS PUT can otherwise monopolize this task long
+        // enough to starve the idle watchdog on a slow Wi-Fi link.
+        vTaskDelay(1);
     }
     if (err == ESP_OK) {
         int headers = esp_http_client_fetch_headers(client);
@@ -1690,12 +1716,19 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
         char chunk_hash[65];
         err = hash_file_range(file, offset, length, buffer, MEETING_IO_BUFFER_SIZE, chunk_hash);
         if (err == ESP_OK) {
+            if (publish_state) {
+                board_port_show_upload_progress(offset, file_size, "正在上传录音");
+            }
             err = stream_meeting_chunk(recording_id, index, file, offset, length,
-                                       chunk_hash, buffer, MEETING_IO_BUFFER_SIZE);
+                                       chunk_hash, buffer, MEETING_IO_BUFFER_SIZE,
+                                       offset, file_size, publish_state);
         }
         if (err == ESP_OK) {
             next_chunk = index + 1;
             err = save_meeting_recovery(true, recording_id, next_chunk, phase);
+            if (publish_state) {
+                board_port_show_upload_progress(offset + length, file_size, "正在上传录音");
+            }
         }
         if (!publish_state && err == ESP_OK && s_foreground_http_requested) {
             // Recovery metadata is already durable at this chunk boundary. End
@@ -1708,6 +1741,7 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
     char whole_hash[65];
     if (err == ESP_OK && phase < 1) {
         if (publish_state) meeting_set_state(MEETING_FINALIZING);
+        if (publish_state) board_port_show_upload_progress(file_size, file_size, "正在校验录音");
         err = hash_file_range(file, 0, file_size, buffer, MEETING_IO_BUFFER_SIZE, whole_hash);
         if (err == ESP_OK) {
             uint32_t pcm_bytes = file_size > 44 ? (uint32_t)(file_size - 44) : 0;
@@ -1734,6 +1768,7 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
     }
     if (err == ESP_OK && phase < 2) {
         if (publish_state) meeting_set_state(MEETING_PROCESSING);
+        if (publish_state) board_port_show_upload_progress(file_size, file_size, "正在提交处理");
         char payload[48];
         int length = snprintf(payload, sizeof(payload), "{\"mode\":\"%s\"}", s_meeting_process_mode);
         if (length <= 0 || length >= (int)sizeof(payload)) err = ESP_ERR_INVALID_SIZE;
@@ -1826,7 +1861,7 @@ static void meeting_task(void *arg) {
             s_command_display_locked = true;
             board_port_set_command_display_lock(true);
             board_port_set_recording_visual(false, false, 0);
-            board_port_show_text("会议记录", "正在保存并上传");
+            board_port_show_upload_progress(0, 1, "正在准备上传");
         } else {
             fclose(file);
             if (total_samples == 0) {
@@ -2112,13 +2147,14 @@ static bool start_voice_interaction(bool consume_screen_wake) {
     (void)board_port_wake_from_idle();
     board_port_cancel_ready_prompt();
     TaskHandle_t created_handle = NULL;
-    // ESP-SR and TLS leave enough total PSRAM but can fragment the internal
-    // heap below a contiguous 12 KiB block. The interaction task does not use
-    // DMA from its stack, so place that stack in PSRAM and keep only its TCB
-    // internal. This makes a screen tap reliable after the wake model starts.
-    BaseType_t created = xTaskCreateWithCaps(interaction_task, "maclaw_interaction",
-                                             12288, NULL, 5, &created_handle,
-                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // Keep the command worker stack in internal RAM.  It calls Wi-Fi/TLS and
+    // its callbacks can run while the flash cache is temporarily disabled;
+    // a PSRAM-backed task stack is then unsafe and manifests as an intermittent
+    // reboot immediately after the six-second recording completes.  Payloads
+    // and HTTP buffers still use PSRAM, so this only reserves a small, stable
+    // internal stack for control flow.
+    BaseType_t created = xTaskCreate(interaction_task, "maclaw_interaction",
+                                     10240, NULL, 5, &created_handle);
     taskENTER_CRITICAL(&s_task_state_lock);
     s_interaction_task = created == pdPASS ? created_handle : NULL;
     taskEXIT_CRITICAL(&s_task_state_lock);
@@ -2872,6 +2908,7 @@ static void gateway_startup_task(void *arg) {
     vTaskDelete(NULL);
 }
 void app_main(void) {
+    ESP_LOGW(TAG, "boot reset reason=%d", (int)esp_reset_reason());
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());

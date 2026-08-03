@@ -1597,24 +1597,33 @@ static void button_task(void *arg) {
     // and does not provide a dependable application GPIO while running.
     // Treat a panel tap as the normal interaction gesture as well, matching
     // the vendor user guide; both inputs feed the same short/double/long logic.
-    bool pressed = gpio_get_level(FUNCTION_BUTTON) == 0 || touch_pressed();
+    bool button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
+    bool panel_pressed = touch_pressed();
+    bool pressed = button_pressed || panel_pressed;
+    bool gesture_from_touch = panel_pressed;
     int64_t pressed_at_us = pressed ? esp_timer_get_time() : 0;
     int64_t released_at_us = 0;
+    int64_t touch_echo_ignored_at_us = 0;
     bool long_sent = false;
     bool short_pending = false;
     ESP_LOGI(TAG, "interaction monitor ready: boot_gpio=%d idle_level=%d touch=%s irq=%d",
              FUNCTION_BUTTON, gpio_get_level(FUNCTION_BUTTON), s_touch ? "yes" : "no", TOUCH_IRQ);
     while (true) {
-        bool now_pressed = gpio_get_level(FUNCTION_BUTTON) == 0 || touch_pressed();
+        bool now_button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
+        bool now_panel_pressed = touch_pressed();
+        bool now_pressed = now_button_pressed || now_panel_pressed;
         int64_t now_us = esp_timer_get_time();
         if (now_pressed != pressed) {
             vTaskDelay(pdMS_TO_TICKS(25));
-            now_pressed = gpio_get_level(FUNCTION_BUTTON) == 0 || touch_pressed();
+            now_button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
+            now_panel_pressed = touch_pressed();
+            now_pressed = now_button_pressed || now_panel_pressed;
             if (now_pressed != pressed) {
                 pressed = now_pressed;
                 if (pressed) {
                     pressed_at_us = now_us;
                     long_sent = false;
+                    gesture_from_touch = now_panel_pressed;
                     ESP_LOGI(TAG, "button/touch down");
                 } else {
                     uint32_t held_ms = pressed_at_us > 0
@@ -1622,13 +1631,26 @@ static void button_task(void *arg) {
                                            : 0;
                     ESP_LOGI(TAG, "button/touch up: held=%lu ms", (unsigned long)held_ms);
                     if (!long_sent && held_ms >= 30) {
-                        if (short_pending && now_us - released_at_us <= 500000) {
+                        // CST816 can report a single physical panel tap as two
+                        // contacts close together. Keep the first tap pending
+                        // when that short echo arrives; a later contact within
+                        // the double-tap window is the user's real second tap.
+                        int64_t since_previous_us = now_us - released_at_us;
+                        if (gesture_from_touch && short_pending &&
+                            since_previous_us <= 260000 &&
+                            touch_echo_ignored_at_us == 0) {
+                            ESP_LOGI(TAG, "duplicate touch contact ignored: gap=%lld ms",
+                                     (long long)(since_previous_us / 1000));
+                            touch_echo_ignored_at_us = now_us;
+                        } else if (short_pending && since_previous_us <= 650000) {
                             short_pending = false;
+                            touch_echo_ignored_at_us = 0;
                             ESP_LOGI(TAG, "button gesture: double");
                             if (s_on_button) s_on_button(BOARD_BUTTON_DOUBLE, s_on_press_arg);
                         } else {
                             short_pending = true;
                             released_at_us = now_us;
+                            touch_echo_ignored_at_us = 0;
                         }
                     }
                 }
@@ -1638,10 +1660,11 @@ static void button_task(void *arg) {
             now_us - pressed_at_us >= 3000000) {
             long_sent = true;
             short_pending = false;
+            touch_echo_ignored_at_us = 0;
             ESP_LOGI(TAG, "button gesture: long");
             if (s_on_button) s_on_button(BOARD_BUTTON_LONG, s_on_press_arg);
         }
-        if (!pressed && short_pending && now_us - released_at_us > 500000) {
+        if (!pressed && short_pending && now_us - released_at_us > 650000) {
             short_pending = false;
             ESP_LOGI(TAG, "button gesture: short");
             if (s_on_button) s_on_button(BOARD_BUTTON_SHORT, s_on_press_arg);
@@ -1833,8 +1856,17 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
         taskEXIT_CRITICAL(&s_state_lock);
     }
     if (!active) s_recording_audio_level = 0;
-    if (active) draw_recording_visual();
-    else draw_pet();
+    if (active) {
+        draw_recording_visual();
+    } else if (!s_command_display_locked && !s_response_active) {
+        // Finishing a command recording is a foreground transition, not a
+        // return to the ambient pet.  The caller has already selected the
+        // thinking/result/error surface; repainting a pet here queues one old
+        // full frame between the waveform and that surface, which resembles a
+        // brief boot/standby screen.  Only restore the pet when no foreground
+        // command owns the display.
+        draw_pet();
+    }
 }
 
 void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
@@ -1932,6 +1964,35 @@ void board_port_show_text(const char *title, const char *text) {
         s_status_text));
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "%s: %s", title ? title : "MaClaw", text ? text : "");
+}
+
+void board_port_show_upload_progress(size_t completed_bytes, size_t total_bytes,
+                                     const char *stage) {
+    if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
+    // A transfer is an independent, quiet surface. It avoids the animated pet
+    // DMA path while a large HTTPS upload is active and makes progress legible.
+    const uint16_t bg = rgb565(9, 35, 64);
+    const uint16_t fg = rgb565(244, 250, 255);
+    const uint16_t muted = rgb565(174, 206, 224);
+    const uint16_t track = rgb565(28, 80, 111);
+    const uint16_t fill = rgb565(72, 205, 220);
+    uint32_t percent = total_bytes ? (uint32_t)(completed_bytes * 100u / total_bytes) : 0;
+    if (percent > 100) percent = 100;
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, bg);
+    draw_text24(88, 78, "会议录音", fg, bg);
+    draw_text24(72, 118, stage && stage[0] ? stage : "正在上传", muted, bg);
+    const int x = 42, y = 178, w = 276, h = 18;
+    fill_rect(x, y, x + w, y + h, track);
+    if (percent) fill_rect(x, y, x + (int)(w * percent / 100u), y + h, fill);
+    char label[16];
+    snprintf(label, sizeof(label), "%lu%%", (unsigned long)percent);
+    draw_centered_text(222, label, fg, bg);
+    char bytes[40];
+    snprintf(bytes, sizeof(bytes), "%lu/%lu KB", (unsigned long)(completed_bytes / 1024u),
+             (unsigned long)(total_bytes / 1024u));
+    draw_centered_text(258, bytes, muted, bg);
+    draw_text24(72, 302, "上传中，请勿断电", muted, bg);
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
 void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {

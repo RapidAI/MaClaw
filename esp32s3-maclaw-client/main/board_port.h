@@ -39,6 +39,10 @@ void board_port_set_recording_mode(bool meeting);
 // I2S task. The renderer receives its signed waveform directly from the PCM capture paths.
 void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds);
 void board_port_show_text(const char *title, const char *text);
+// Full-screen meeting upload state. The caller supplies completed/total bytes
+// so users can distinguish a slow transfer from a stalled device.
+void board_port_show_upload_progress(size_t completed_bytes, size_t total_bytes,
+                                     const char *stage);
 // Shows an assistant reply in a four-line paged reading surface. Long text
 // advances automatically while keeping each page readable on the round LCD.
 void board_port_show_response(const char *title, const char *text);
