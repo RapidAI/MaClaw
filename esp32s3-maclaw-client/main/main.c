@@ -55,7 +55,7 @@
 #define DNS_PACKET_CAPACITY 512
 #define DHCPS_OFFER_DNS 0x02
 #define DYNAMIC_GLYPH_BYTES 72
-#define DYNAMIC_GLYPH_MAX_PER_MESSAGE 24
+#define DYNAMIC_GLYPH_MAX_PER_MESSAGE 96
 #define MEETING_WAV_PATH "/storage/meeting.wav"
 #define MEETING_SAMPLE_RATE 16000
 #define MEETING_DEFAULT_CHUNK_SIZE (1U << 20)
@@ -93,12 +93,16 @@ static TaskHandle_t s_gateway_task;
 static TaskHandle_t s_interaction_task;
 static TaskHandle_t s_meeting_task;
 static TaskHandle_t s_meeting_resume_supervisor_task;
+static TaskHandle_t s_meeting_capability_refresh_task;
 static bool s_meeting_task_running;
 static bool s_pairing_recovery_portal;
 static TaskHandle_t s_ambient_task;
 static TaskHandle_t s_gateway_poll_task;
+static TaskHandle_t s_setup_restart_task;
+static volatile bool s_command_display_locked;
 static SemaphoreHandle_t s_http_mutex;
 static SemaphoreHandle_t s_interaction_lock;
+static SemaphoreHandle_t s_nvs_mutex;
 static portMUX_TYPE s_task_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static char s_weather_summary[24];
 static char s_weather_location[24];
@@ -106,6 +110,13 @@ static int s_weather_temperature_c;
 static int64_t s_weather_expires_at_ms;
 static bool s_weather_valid;
 static void on_wake_word(void *arg);
+static void setup_restart_task(void *arg) {
+    (void)arg;
+    // Let esp_http_server complete the response before tearing down Wi-Fi.
+    vTaskDelay(pdMS_TO_TICKS(1200));
+    ESP_LOGI(TAG, "setup saved; restarting into normal mode");
+    esp_restart();
+}
 // Once SNTP supplies an epoch, the display advances from ESP32's monotonic
 // microsecond counter. This keeps the visible seconds moving independently of
 // network timing and avoids a network request or SNTP poll per screen update.
@@ -157,6 +168,15 @@ static esp_err_t poll_reply(void);
 static bool json_number(cJSON *root, const char *key, int *value);
 static int apply_glyphs_json(cJSON *glyphs);
 static bool start_meeting_task(bool resume_only);
+static esp_err_t gateway_handshake(void);
+
+static bool nvs_lock(void) {
+    return s_nvs_mutex && xSemaphoreTake(s_nvs_mutex, pdMS_TO_TICKS(3000)) == pdTRUE;
+}
+
+static void nvs_unlock(void) {
+    if (s_nvs_mutex) xSemaphoreGive(s_nvs_mutex);
+}
 
 static bool meeting_is_active(void) {
     meeting_state_t state = s_meeting_state;
@@ -173,8 +193,22 @@ static void finish_interaction_task(void) {
     s_interaction_task = NULL;
     s_foreground_http_requested = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    // This is a binary admission token, not a mutex: the button task starts
+    // the interaction task, which completes it on another task context.
+    // Releasing a FreeRTOS mutex from that child task asserts and reboots.
     if (s_interaction_lock) xSemaphoreGive(s_interaction_lock);
     vTaskDeleteWithCaps(NULL);
+}
+
+// A foreground command owns the LCD from the end of capture until a final
+// answer or explicit error is displayed. Background updates may refresh data,
+// but must not replace that flow with the ambient/weather screen.
+static bool command_display_active(void) {
+    bool active;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    active = s_interaction_task != NULL || s_command_display_locked;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return active;
 }
 
 static void log_heap_snapshot(const char *stage) {
@@ -518,13 +552,11 @@ static bool start_gateway_ready_tasks(void) {
         board_port_show_text("设备启动失败", "无法启动网关轮询");
         return false;
     }
-    // Provisioning recovery stops ESP-SR to return its internal RAM to the
-    // HTTP server. A successful normal handshake may therefore need to bring
-    // the listener back before the device announces that it is ready.
-    esp_err_t wake_err = board_port_start_wake_word(on_wake_word, NULL);
-    if (wake_err != ESP_OK && wake_err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "offline wake restart failed: %s", esp_err_to_name(wake_err));
-    }
+    // Do not load the ESP-SR MultiNet model on this hardware revision. Its
+    // model-partition mapping faults the cache/MMU shortly after a successful
+    // handshake, causing a real CPU reset. Button/touch voice capture remains
+    // available and is the safe command entry path.
+    ESP_LOGW(TAG, "offline wake word disabled: model partition is unstable");
     board_port_show_ready_prompt("设备已就绪", "点屏说话 双点会议");
     if (s_meeting_pending) {
         ESP_LOGI(TAG, "pending meeting upload found; scheduling resumable retries");
@@ -555,19 +587,31 @@ static void start_clock_sync(void) {
 }
 
 static void save_ambient_weather(void) {
+    if (!nvs_lock()) {
+        ESP_LOGW(TAG, "weather cache save deferred: NVS busy");
+        return;
+    }
     nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READWRITE, &nvs) != ESP_OK) return;
+    if (nvs_open("maclaw", NVS_READWRITE, &nvs) != ESP_OK) {
+        nvs_unlock();
+        return;
+    }
     (void)nvs_set_str(nvs, "weather", s_weather_summary);
     (void)nvs_set_str(nvs, "weather_loc", s_weather_location);
     (void)nvs_set_i32(nvs, "weather_temp", s_weather_temperature_c);
     (void)nvs_set_i64(nvs, "weather_exp", s_weather_expires_at_ms);
     (void)nvs_commit(nvs);
     nvs_close(nvs);
+    nvs_unlock();
 }
 
 static void load_ambient_weather(void) {
+    if (!nvs_lock()) return;
     nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READONLY, &nvs) != ESP_OK) return;
+    if (nvs_open("maclaw", NVS_READONLY, &nvs) != ESP_OK) {
+        nvs_unlock();
+        return;
+    }
     size_t summary_len = sizeof(s_weather_summary);
     size_t location_len = sizeof(s_weather_location);
     int32_t temperature = 0;
@@ -576,6 +620,7 @@ static void load_ambient_weather(void) {
     (void)nvs_get_i32(nvs, "weather_temp", &temperature);
     (void)nvs_get_i64(nvs, "weather_exp", &s_weather_expires_at_ms);
     nvs_close(nvs);
+    nvs_unlock();
     s_weather_temperature_c = temperature;
     s_weather_valid = found && s_weather_summary[0] != '\0';
 }
@@ -841,8 +886,9 @@ static esp_err_t gateway_handshake(void) {
         "{\"clientId\":\"%s\",\"clientName\":\"ESP32-S3 Pet\",\"protocolVersion\":\"1.1\","
         "\"capabilities\":{\"input\":{\"modalities\":[\"text\",\"audio\"],"
         "\"audio\":{\"mimeTypes\":[\"audio/wav\"],\"sampleRates\":[16000],\"channels\":1}},"
-        "\"output\":{\"modalities\":[\"text\"],\"preferred\":[\"text\"],"
-        "\"combinations\":[[\"text\"]],\"text\":{\"maxChars\":240,\"markdown\":false,\"locale\":\"zh-CN\"}},"
+        "\"output\":{\"modalities\":[\"text\",\"audio\"],\"preferred\":[\"audio\",\"text\"],"
+        "\"combinations\":[[\"text\"],[\"audio\",\"text\"]],\"text\":{\"maxChars\":240,\"markdown\":false,\"locale\":\"zh-CN\"},"
+        "\"audio\":{\"mimeTypes\":[\"audio/wav\"],\"sampleRates\":[16000],\"channels\":1,\"playback\":true}},"
         "\"features\":{\"petStates\":true,\"petAnimation\":false,\"petAsset\":false,"
         "\"ambientDisplay\":true,\"meetingRecorder\":true}}}", CONFIG_MACLAW_CLIENT_ID);
     if (request_len <= 0 || request_len >= (int)sizeof(payload)) return ESP_ERR_INVALID_SIZE;
@@ -876,7 +922,7 @@ static esp_err_t gateway_handshake(void) {
         }
     }
     if (accepted) {
-        ESP_LOGI(TAG, "client capabilities accepted: output=%s maxChars=240",
+        ESP_LOGI(TAG, "client capabilities accepted: output=%s+audio maxChars=240",
                  accepted_text ? "text" : "unsupported");
     } else {
         ESP_LOGW(TAG, "gateway did not acknowledge client capabilities (legacy Hub?)");
@@ -1212,6 +1258,8 @@ static esp_err_t poll_reply(void) {
     cJSON_ArrayForEach(item, messages) {
         const char *type = json_string(item, "type");
         const char *text = json_string(item, "text");
+        const char *audio_data = json_string(item, "file_data");
+        const char *audio_mime = json_string(item, "mime_type");
         const char *id = json_string(item, "id");
         const char *skin = json_string(item, "pet_skin");
         cJSON *motion = cJSON_GetObjectItemCaseSensitive(item, "pet_motion_enabled");
@@ -1226,7 +1274,9 @@ static esp_err_t poll_reply(void) {
         if (type && !strcmp(type, "pet_state")) {
             const char *state = cJSON_IsObject(extra) ? json_string(extra, "state") : NULL;
             if (!state) state = json_string(item, "state");
-            if (state) pet(state);
+            // An unsolicited idle/quiet state must never interrupt the
+            // foreground thinking -> result transition.
+            if (state && !command_display_active()) pet(state);
         }
         if (type && !strcmp(type, "meeting_result")) {
             const char *summary = cJSON_IsObject(extra) ? json_string(extra, "summary") : NULL;
@@ -1235,11 +1285,14 @@ static esp_err_t poll_reply(void) {
                                   text && text[0] ? text :
                                   status && status[0] ? status : "已保存到文稿库";
             pet("done");
-            board_port_show_text("会议处理完成", message);
+            board_port_show_response("会议处理完成", message);
         }
         if (type && !strcmp(type, "text") && text) {
-            pet("speaking");
-            board_port_show_text("MaClaw", text);
+            // Keep the final response surface continuous with the thinking
+            // surface.  Do not briefly switch to idle here: the idle renderer
+            // owns the weather/boot-like face and its full repaint reads as a
+            // restart before the green response screen appears.
+            board_port_show_response("码卡龙", text);
             // Keep the handle protected until the notification is queued.
             // Otherwise the interaction task can clear/delete itself after a
             // snapshot is taken and the poller would notify a stale TCB.
@@ -1247,6 +1300,31 @@ static esp_err_t poll_reply(void) {
             TaskHandle_t waiter = s_interaction_task;
             if (waiter) xTaskNotifyGive(waiter);
             taskEXIT_CRITICAL(&s_task_state_lock);
+        }
+        if (type && (!strcmp(type, "voice") || !strcmp(type, "audio")) && audio_data &&
+            (!audio_mime || !strcmp(audio_mime, "audio/wav"))) {
+            size_t wav_capacity = 0;
+            int decode_status = mbedtls_base64_decode(NULL, 0, &wav_capacity,
+                                                       (const unsigned char *)audio_data,
+                                                       strlen(audio_data));
+            if (decode_status == MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL && wav_capacity > 44 &&
+                wav_capacity <= RESPONSE_CAPACITY * 8) {
+                uint8_t *wav = heap_caps_malloc(wav_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!wav) wav = malloc(wav_capacity);
+                size_t wav_len = 0;
+                if (wav && mbedtls_base64_decode(wav, wav_capacity, &wav_len,
+                                                  (const unsigned char *)audio_data,
+                                                  strlen(audio_data)) == 0) {
+                    ESP_LOGI(TAG, "playing server speech: %u bytes", (unsigned)wav_len);
+                    esp_err_t play_err = board_port_play_wav(wav, wav_len);
+                    if (play_err != ESP_OK) ESP_LOGW(TAG, "server speech playback failed: %s", esp_err_to_name(play_err));
+                } else {
+                    ESP_LOGW(TAG, "invalid server speech payload");
+                }
+                free(wav);
+            } else {
+                ESP_LOGW(TAG, "ignored server speech payload: base64=%d size=%u", decode_status, (unsigned)wav_capacity);
+            }
         }
         if (id) {
             cJSON *ack_id = cJSON_CreateString(id);
@@ -1708,6 +1786,7 @@ static void meeting_task(void *arg) {
         uint32_t last_elapsed = UINT32_MAX;
         meeting_set_state(MEETING_RECORDING);
         pet("listening");
+        board_port_set_recording_mode(true);
         board_port_set_recording_visual(true, false, 0);
         while (s_meeting_state == MEETING_RECORDING || s_meeting_state == MEETING_PAUSED) {
             size_t count = 0;
@@ -1741,9 +1820,13 @@ static void meeting_task(void *arg) {
         if (stopped_state == MEETING_FINALIZING && finalize_err == ESP_OK) {
             fclose(file);
             meeting_set_state(MEETING_UPLOADING);
-            pet("thinking");
+            // Meeting delivery has its own status surface. Reusing the normal
+            // command "thinking" pet made a completed meeting look like a
+            // short voice command and allowed ambient frames to replace it.
+            s_command_display_locked = true;
+            board_port_set_command_display_lock(true);
             board_port_set_recording_visual(false, false, 0);
-            board_port_show_text("会议录音", "正在安全上传");
+            board_port_show_text("会议记录", "正在保存并上传");
         } else {
             fclose(file);
             if (total_samples == 0) {
@@ -1771,8 +1854,10 @@ static void meeting_task(void *arg) {
         if (!resume_only) {
             meeting_set_state(MEETING_DONE);
             pet("done");
-            board_port_show_text("会议已保存", "可在文稿库中查看");
-            vTaskDelay(pdMS_TO_TICKS(1800));
+            board_port_show_text("会议记录已保存", "可在文稿库中查看");
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            s_command_display_locked = false;
+            board_port_set_command_display_lock(false);
             pet("idle");
         } else {
             ESP_LOGI(TAG, "background meeting resume delivered");
@@ -1782,6 +1867,10 @@ static void meeting_task(void *arg) {
             meeting_set_state(MEETING_ERROR);
             pet("alert");
             board_port_show_text("上传未完成", "联网后将自动续传");
+            vTaskDelay(pdMS_TO_TICKS(2200));
+            s_command_display_locked = false;
+            board_port_set_command_display_lock(false);
+            pet("idle");
         } else {
             ESP_LOGW(TAG, "background meeting resume deferred until next reconnect");
         }
@@ -1791,12 +1880,29 @@ finish:
     s_meeting_task = NULL;
     s_meeting_task_running = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!resume_only && s_interaction_lock) xSemaphoreGive(s_interaction_lock);
-    vTaskDeleteWithCaps(NULL);
+    if (!resume_only) {
+        // Error exits before the normal success/deferred UI cleanup still
+        // need to release the display for the ambient screen.
+        s_command_display_locked = false;
+        board_port_set_command_display_lock(false);
+        if (s_interaction_lock) xSemaphoreGive(s_interaction_lock);
+    }
+    vTaskDelete(NULL);
 }
 
 static bool start_meeting_task(bool resume_only) {
-    if (!s_storage_mounted || (!resume_only && !s_meeting_available) || !s_gateway_token[0]) return false;
+    if (!s_storage_mounted) {
+        ESP_LOGW(TAG, "meeting start refused: storage is not mounted");
+        return false;
+    }
+    if (!resume_only && !s_meeting_available) {
+        ESP_LOGW(TAG, "meeting start refused: capability is unavailable");
+        return false;
+    }
+    if (!s_gateway_token[0]) {
+        ESP_LOGW(TAG, "meeting start refused: device is not paired");
+        return false;
+    }
     taskENTER_CRITICAL(&s_task_state_lock);
     if (s_meeting_task_running) {
         taskEXIT_CRITICAL(&s_task_state_lock);
@@ -1804,7 +1910,8 @@ static bool start_meeting_task(bool resume_only) {
     }
     s_meeting_task_running = true;
     taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!resume_only && (!s_interaction_lock || xSemaphoreTake(s_interaction_lock, 0) != pdTRUE)) {
+    if (!resume_only && (!s_interaction_lock || xSemaphoreTake(s_interaction_lock, pdMS_TO_TICKS(1500)) != pdTRUE)) {
+        ESP_LOGI(TAG, "meeting start deferred: foreground interaction owns the lock");
         taskENTER_CRITICAL(&s_task_state_lock);
         s_meeting_task_running = false;
         taskEXIT_CRITICAL(&s_task_state_lock);
@@ -1812,9 +1919,12 @@ static bool start_meeting_task(bool resume_only) {
     }
     if (!resume_only) board_port_cancel_ready_prompt();
     TaskHandle_t handle = NULL;
-    BaseType_t created = xTaskCreateWithCaps(meeting_task, "maclaw_meeting", 12288,
-                                             resume_only ? (void *)1 : NULL, 5, &handle,
-                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // Meeting startup writes recovery metadata to NVS before the microphone
+    // begins.  Flash writes disable the cache, so this task must keep its
+    // stack in internal RAM; a PSRAM stack causes a cache-disabled assertion
+    // and an apparent reboot on a double tap.
+    BaseType_t created = xTaskCreate(meeting_task, "maclaw_meeting", 12288,
+                                     resume_only ? (void *)1 : NULL, 5, &handle);
     taskENTER_CRITICAL(&s_task_state_lock);
     s_meeting_task = created == pdPASS ? handle : NULL;
     if (created != pdPASS) s_meeting_task_running = false;
@@ -1826,36 +1936,104 @@ static bool start_meeting_task(bool resume_only) {
     }
     return true;
 }
+
+// A Hub can be upgraded while the watch remains online.  Meeting capability is
+// negotiated during handshake, so do not make the user reboot the device just
+// because it still holds an older, capability-less response in RAM.  The
+// refresh runs outside the input scan task because TLS can take several
+// seconds; after a successful refresh it retries the original double-tap.
+static void meeting_capability_refresh_task(void *arg) {
+    (void)arg;
+    ESP_LOGI(TAG, "refreshing gateway handshake for meeting recording");
+    board_port_show_text("会议录音", "正在检查网关支持");
+    esp_err_t err = gateway_handshake();
+    if (err == ESP_OK && s_meeting_available) {
+        // A just-finished touch/voice action can still own the foreground
+        // mutex for a moment.  This task is deliberately off the input scan
+        // path, so wait and retry instead of turning that harmless race into
+        // a visible recording failure.
+        bool started = false;
+        for (unsigned retry = 0; retry < 32 && !started; ++retry) {
+            started = start_meeting_task(false);
+            if (!started) {
+                if (retry == 0) {
+                    board_port_show_text("会议录音", "正在等待设备就绪");
+                }
+                vTaskDelay(pdMS_TO_TICKS(250));
+            }
+        }
+        if (!started) {
+            pet("alert");
+            board_port_show_text("录音启动失败", "请稍后再次双击屏幕");
+        }
+    } else {
+        ESP_LOGW(TAG, "meeting capability refresh failed: err=%s available=%s",
+                 esp_err_to_name(err), s_meeting_available ? "yes" : "no");
+        pet("alert");
+        board_port_show_text("会议录音不可用", "请检查网关连接");
+    }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_capability_refresh_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    vTaskDelete(NULL);
+}
+
+static bool refresh_meeting_capability(void) {
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool already_refreshing = s_meeting_capability_refresh_task != NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (already_refreshing) return true;
+    TaskHandle_t handle = NULL;
+    // gateway_handshake() persists fresh ambient data in NVS.  Flash writes
+    // temporarily disable the cache, so this task's stack must remain in
+    // internal RAM; a PSRAM stack causes esp_task_stack_is_sane_cache_disabled
+    // to assert and looks like a reboot immediately after a double tap.
+    BaseType_t created = xTaskCreate(meeting_capability_refresh_task,
+                                     "maclaw_meeting_cap", 8192, NULL, 4,
+                                     &handle);
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_meeting_capability_refresh_task = created == pdPASS ? handle : NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "cannot start meeting capability refresh task");
+        return false;
+    }
+    return true;
+}
+
 static void interaction_task(void *arg) {
     (void)arg;
-    pet("listening");
-    // Immediate visual acknowledgement: the animated waveform starts before
-    // codec capture so a button press never appears to have been ignored.
+    // Keep capture screen-neutral. Once a spoken command is accepted, the
+    // visible path is only thinking -> result (or an explicit error).
+    board_port_set_recording_mode(false);
     board_port_set_recording_visual(true, false, 0);
-    board_port_show_text("码卡龙", "正在听取语音");
     uint8_t *wav = NULL;
     size_t wav_len = 0;
     esp_err_t err = board_port_capture_wav(&wav, &wav_len);
     if (err != ESP_OK || !wav || wav_len == 0) {
-        board_port_set_recording_visual(false, false, 0);
         // Audio is board-specific. Keep the hardware interface useful while
         // the I2S driver is brought up: a button press sends a text probe that
         // exercises the complete ESP 鈫?Hub 鈫?GUI relay.
         if (s_gateway_token[0]) {
             pet("thinking");
+            // Switch to thinking before removing the recorder.  Otherwise
+            // closing the recorder redraws the previous idle face for one
+            // frame, exposing the weather/clock screen mid-command.
+            board_port_set_recording_visual(false, false, 0);
             board_port_show_text("码卡龙", "正在检查连接");
             (void)ulTaskNotifyTake(pdTRUE, 0);
             if (send_text_event("Hello from my ESP32-S3 pet. Confirm the Hub relay is online.") == ESP_OK) {
                 if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(60000)) == 0) {
                     board_port_show_text("码卡龙", "网关已连接，等待回复");
                 }
-                pet("idle");
+                // Preserve the result screen if the reply arrived.
             } else {
                 pet("alert");
                 board_port_show_text("请求失败", "请检查网关连接");
             }
         } else {
             pet("alert");
+            board_port_set_recording_visual(false, false, 0);
             board_port_show_text("麦克风不可用", "语音驱动未配置");
         }
         free(wav);
@@ -1866,7 +2044,6 @@ static void interaction_task(void *arg) {
         board_port_show_text("设备配对", "请说出六位配对码");
         err = pair_by_voice(wav, wav_len);
         free(wav);
-        board_port_set_recording_visual(false, false, 0);
         if (err == ESP_OK && gateway_handshake() == ESP_OK) {
             if (ensure_gateway_poll_task()) {
                 pet("done");
@@ -1885,19 +2062,35 @@ static void interaction_task(void *arg) {
     // authorization, agent/tool execution, IM delivery, and the final reply.
     // The ESP32 only submits a server-owned `voice` media attachment.
     char media_id[96] = {0};
-    board_port_set_recording_visual(false, false, 0);
+    // Switch state before closing the recorder. board_port_set_recording_visual
+    // redraws the pet when it removes the waveform; doing that while the
+    // previous state is idle briefly drew the time/weather face between
+    // “received” and “thinking”.
     pet("thinking");
+    // Keep the foreground screen locked after capture as well.  The task can
+    // receive its reply and clear its task handle before a delayed gateway
+    // `pet_state: idle` notification is processed; that notification used to
+    // repaint the Wi-Fi/time face in the gap before the final response draw.
+    s_command_display_locked = true;
+    board_port_set_command_display_lock(true);
+    board_port_set_recording_visual(false, false, 0);
+    // Keep the pet's animated thinking state on screen during upload and the
+    // server-side reply wait. Do not switch the shared I2S bus to playback
+    // here: on EchoEar it races the just-stopped microphone DMA and resets
+    // the CPU. The thinking screen is the immediate acknowledgement.
     err = upload_voice(wav, wav_len, media_id, sizeof(media_id));
     free(wav);
     if (err != ESP_OK) { pet("alert"); board_port_show_text("上传失败", "请检查网关语音支持"); finish_interaction_task(); return; }
     err = send_voice_event(media_id);
     if (err != ESP_OK) { pet("alert"); board_port_show_text("码卡龙错误", "请求失败"); finish_interaction_task(); return; }
-    board_port_show_text("码卡龙", "正在处理中");
     if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(90000)) == 0) {
         board_port_show_text("等待超时", "没有收到回复");
     }
-    pet("done"); vTaskDelay(pdMS_TO_TICKS(800));
-    pet("idle");
+    // The poller has already painted the final reply in the speaking state.
+    // Returning through done/idle immediately after the notification repaints
+    // the ambient face over it, producing the distracting apparent reboot.
+    // Leave the response visible until the next user interaction or a later
+    // server state update explicitly changes it.
     finish_interaction_task();
 }
 
@@ -1911,13 +2104,12 @@ static bool start_voice_interaction(bool consume_screen_wake) {
         return false;
     }
     s_foreground_http_requested = true;
-    bool woke_display = board_port_wake_from_idle();
-    if (woke_display && consume_screen_wake) {
-        s_foreground_http_requested = false;
-        xSemaphoreGive(s_interaction_lock);
-        board_port_show_ready_prompt("设备已就绪", "请再按一次说话");
-        return false;
-    }
+    s_command_display_locked = true;
+    board_port_set_command_display_lock(true);
+    // A command press starts the command flow even when it wakes a sleeping
+    // panel. Do not consume it to show the time/weather ready screen.
+    (void)consume_screen_wake;
+    (void)board_port_wake_from_idle();
     board_port_cancel_ready_prompt();
     TaskHandle_t created_handle = NULL;
     // ESP-SR and TLS leave enough total PSRAM but can fragment the internal
@@ -2027,15 +2219,31 @@ static void on_user_button(board_port_button_event_t event, void *arg) {
     }
     if (event == BOARD_BUTTON_DOUBLE) {
         if (s_meeting_pending) {
-            if (!start_meeting_task(true)) {
+            bool resume_running;
+            taskENTER_CRITICAL(&s_task_state_lock);
+            resume_running = s_meeting_task_running;
+            taskEXIT_CRITICAL(&s_task_state_lock);
+            if (resume_running) {
+                // A worker is already transferring the retained file. Calling
+                // start_meeting_task() again only reports a busy condition; it
+                // is not a network failure and must not be labelled as one.
+                board_port_show_text("会议记录续传中", "完成后可开始新会议");
+            } else if (ensure_meeting_resume_supervisor()) {
+                board_port_show_text("正在续传上次录音", "完成后可开始新会议");
+            } else {
                 pet("alert");
-                board_port_show_text("续传失败", "请检查网关连接");
+                board_port_show_text("续传任务未启动", "设备将稍后自动重试");
             }
             return;
         }
         if (!s_meeting_available) {
-            pet("alert");
-            board_port_show_text("会议录音不可用", "请升级或配置网关");
+            // A stale handshake must not permanently disable a local hardware
+            // feature. Re-negotiate on demand, then continue the same double
+            // tap if the current Hub advertises meeting recording.
+            if (!refresh_meeting_capability()) {
+                pet("alert");
+                board_port_show_text("录音启动失败", "无法检查网关支持");
+            }
             return;
         }
         if (!start_meeting_task(false)) {
@@ -2354,9 +2562,19 @@ static esp_err_t setup_save_handler(httpd_req_t *req) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, reason);
         return ESP_FAIL;
     }
+    // Do not reset from the HTTP server task.  esp_http_server sends responses
+    // asynchronously, so a reset here can race its final socket write and, on
+    // this board, leave the setup QR frame on screen indefinitely.  Schedule
+    // the reset after this handler has returned and the response is flushed.
     httpd_resp_sendstr(req, "Saved. The device is restarting and will connect to MaClaw.");
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
+    if (!s_setup_restart_task) {
+        BaseType_t created = xTaskCreate(setup_restart_task, "maclaw_setup_restart", 2048,
+                                         NULL, 2, &s_setup_restart_task);
+        if (created != pdPASS) {
+            s_setup_restart_task = NULL;
+            ESP_LOGE(TAG, "cannot schedule restart after setup save");
+        }
+    }
     return ESP_OK;
 }
 
@@ -2665,8 +2883,14 @@ void app_main(void) {
     load_meeting_recovery();
     s_http_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_http_mutex ? ESP_OK : ESP_ERR_NO_MEM);
-    s_interaction_lock = xSemaphoreCreateMutex();
+    s_nvs_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_nvs_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    // A foreground interaction starts in the button callback but finishes in
+    // its worker task, therefore mutual exclusion must use a binary semaphore
+    // rather than an ownership-tracked mutex.
+    s_interaction_lock = xSemaphoreCreateBinary();
     ESP_ERROR_CHECK(s_interaction_lock ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(xSemaphoreGive(s_interaction_lock) == pdTRUE ? ESP_OK : ESP_FAIL);
     load_device_config();
     load_gateway_token();
     load_ambient_weather();

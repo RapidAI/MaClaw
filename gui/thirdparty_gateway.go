@@ -1127,6 +1127,12 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		// Deferred hub/async replies complete an ACP bridge turn.
 		Metadata: map[string]string{"acp_turn": "final"},
 	}
+	// The local gateway takes the same direct path as the Hub relay.  Attach
+	// the compact glyph atlas before the message enters the ESP queue, so CJK
+	// reply text cannot degrade into question-mark placeholders.
+	if glyphs := deviceGlyphsForText(reply.Text, reply.Caption); len(glyphs) > 0 {
+		msg.Glyphs = glyphs
+	}
 	replyKind := normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String())
 	capabilities := m.clientCapabilities(clientID)
 	switch {

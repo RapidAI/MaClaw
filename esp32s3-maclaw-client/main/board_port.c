@@ -18,6 +18,7 @@
 #include "esp_lcd_st77916.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "mbedtls/base64.h"
 #include "model_path.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -25,6 +26,7 @@
 #include "freertos/task.h"
 
 #include "echoear_st77916_init.h"
+#include "ack_voice_adpcm.h"
 #include "font_cjk24.h"
 
 // EchoEar-2ST board definition. GPIO values are the physical GPIO numbers;
@@ -48,12 +50,22 @@
 #define AUDIO_MCLK      GPIO_NUM_10
 #define AUDIO_BCLK      GPIO_NUM_15
 #define AUDIO_WS        GPIO_NUM_16
+#define AUDIO_DOUT      GPIO_NUM_14
 #define AUDIO_DIN       GPIO_NUM_13
+#define AUDIO_PA_ENABLE GPIO_NUM_18
 #define ES7210_ADDRESS  0x40
+#define ES8311_ADDRESS  0x18
 #define AUDIO_RATE      16000
 #define AUDIO_SECONDS   6
 #define WAKE_WORD_COMMAND_ID 1
-#define WAKE_WORD_PHRASE "ma ke luo"
+// Keep one recognizer running in standby. Running Chinese and English models
+// together doubles inference work and makes normal-speed wake-up unreliable.
+#define WAKE_WORD_CN_LABEL "码卡龙"
+#define WAKE_WORD_CN_PHONETIC "ma ka long"
+// The default command threshold favours deliberate, slow commands.  A modest
+// reduction preserves a practical false-wake margin while accepting normal
+// conversational delivery of the short product name.
+#define WAKE_WORD_DETECTION_THRESHOLD 0.45f
 #define WAKE_WORD_COOLDOWN_US (2LL * 1000 * 1000)
 
 #define LCD_STRIPE_ROWS 40
@@ -68,12 +80,18 @@
 #define COMPACT_FONT_SIZE 16
 #define COMPACT_CJK_ADVANCE 17
 #define COMPACT_ASCII_ADVANCE 12
-#define COMPACT_COLON_ADVANCE 6
 #define STATUS_TEXT_X   54
 #define STATUS_TEXT_Y   254
 #define STATUS_TEXT_GAP 38
 #define STATUS_TEXT_W   (LCD_WIDTH - STATUS_TEXT_X)
 #define STATUS_TEXT_H   (STATUS_TEXT_GAP + CJK_FONT_SIZE)
+#define RESPONSE_TEXT_X 32
+#define RESPONSE_TEXT_Y 94
+#define RESPONSE_TEXT_W (LCD_WIDTH - RESPONSE_TEXT_X * 2)
+#define RESPONSE_LINE_GAP 32
+#define RESPONSE_LINES_PER_PAGE 4
+#define RESPONSE_PAGE_INTERVAL_US (3LL * 1000 * 1000)
+#define RESPONSE_TEXT_CAPACITY 768
 #define AMBIENT_TOP_W   336
 #define AMBIENT_TOP_H   60
 #define AMBIENT_BOTTOM_W 316
@@ -106,10 +124,11 @@ static bool s_recording_paused;
 static volatile uint32_t s_recording_elapsed_seconds;
 static volatile uint16_t s_recording_audio_level;
 // The recording screen is fed from the same signed PCM samples that are saved
-// or uploaded. Each display column is the real min/max pair from 128 samples
-// (8 ms at 16 kHz), so the 96-column trace covers the most recent 768 ms.
-// Keeping both polarities avoids turning the signal into a synthetic volume
-// meter and preserves short transients such as consonants and hand claps.
+// or uploaded. Each display column represents the measured, gated signal
+// envelope from 128 samples (8 ms at 16 kHz), so the 96-column trace covers
+// the most recent 768 ms. Using the envelope rather than literal extrema is
+// important on this shared full-duplex I2S bus: a clipped bus word must not
+// turn the whole waveform area into one opaque rectangle.
 #define RECORDING_WAVE_COLUMNS 96
 #define RECORDING_WAVE_SAMPLES_PER_COLUMN 128
 static int16_t s_recording_wave_min[RECORDING_WAVE_COLUMNS];
@@ -117,6 +136,9 @@ static int16_t s_recording_wave_max[RECORDING_WAVE_COLUMNS];
 static int16_t s_recording_wave_pending_min = INT16_MAX;
 static int16_t s_recording_wave_pending_max = INT16_MIN;
 static uint16_t s_recording_wave_pending_samples;
+// ES7210 frames on EchoEar have a board-dependent DC offset. Track it slowly
+// so only variation around the microphone's idle level reaches the waveform.
+static int32_t s_recording_wave_dc;
 static char s_ambient_time[9];
 static char s_ambient_location[24];
 static char s_ambient_date[8];
@@ -132,6 +154,14 @@ static bool s_display_sleeping;
 // Provisioning is a task-focused screen, not a temporary pet overlay. Keep
 // the animation task from repainting the QR code after it is shown.
 static bool s_setup_qrcode_visible;
+// A reply is a small, paged reading surface rather than a clipped status
+// line.  The original two-line status buffer remains for short system states;
+// replies use the full lower safe area and advance only after a calm pause.
+static bool s_response_active;
+static unsigned s_response_page;
+static int64_t s_response_next_page_us;
+static char s_response_title[48];
+static char s_response_text[RESPONSE_TEXT_CAPACITY];
 static volatile uint32_t s_ambient_revision;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
 typedef struct {
@@ -167,9 +197,13 @@ static uint16_t s_draw_transactions;
 static volatile uint32_t s_skipped_pet_frames;
 static i2c_master_bus_handle_t s_audio_i2c_bus;
 static i2c_master_dev_handle_t s_es7210;
+static i2c_master_dev_handle_t s_es8311;
 static i2c_master_dev_handle_t s_touch;
 static i2s_chan_handle_t s_audio_rx;
+static i2s_chan_handle_t s_audio_tx;
 static bool s_audio_ready;
+static volatile bool s_command_display_locked;
+static bool s_recording_is_meeting;
 static SemaphoreHandle_t s_audio_mutex;
 static TaskHandle_t s_wake_word_task;
 static board_port_wake_word_cb_t s_on_wake_word;
@@ -197,15 +231,32 @@ static esp_err_t wait_for_lcd_color_transfer(void) {
                ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
+static esp_err_t draw_bitmap_sync(int x0, int y0, int x1, int y1,
+                                  const void *pixels);
+static unsigned response_page_count(void);
+static void draw_response_page(void);
+
 // Every frame present uses the same completion fence. Keeping this in one
 // helper prevents the pet and recording paths from drifting apart, and makes
 // a failed submission unable to consume a completion from a later transfer.
 static esp_err_t present_frame_sync(const uint16_t *frame) {
     if (!s_panel || !frame) return ESP_ERR_INVALID_ARG;
-    esp_err_t err = esp_lcd_panel_draw_bitmap(
-        s_panel, 0, 0, LCD_WIDTH, LCD_HEIGHT, frame);
-    if (err != ESP_OK) return err;
-    return wait_for_lcd_color_transfer();
+    // The frame lives in PSRAM, while this ESP32-S3 shares its MSPI fabric
+    // between PSRAM and the LCD. With psram_dma_direct disabled, esp_lcd must
+    // allocate an internal bounce buffer for every submitted color transfer.
+    // A 360x360 submission needs 259 KB of contiguous DMA memory, which is
+    // unavailable after Wi-Fi/TLS start and manifests as a noisy screen.
+    // Stage one 40-row stripe through the dedicated internal DMA buffer.
+    for (int y = 0; y < LCD_HEIGHT; y += LCD_STRIPE_ROWS) {
+        const int rows = (LCD_HEIGHT - y) < LCD_STRIPE_ROWS
+                             ? (LCD_HEIGHT - y) : LCD_STRIPE_ROWS;
+        memcpy(s_line, frame + (size_t)y * LCD_WIDTH,
+               (size_t)LCD_WIDTH * rows * sizeof(s_line[0]));
+        esp_err_t err = draw_bitmap_sync(0, y, LCD_WIDTH, y + rows, s_line);
+        if (err != ESP_OK) return err;
+        if ((++s_draw_transactions & 0x0Fu) == 0) vTaskDelay(1);
+    }
+    return ESP_OK;
 }
 
 // esp_lcd_panel_draw_bitmap() only queues the color transaction. Keep every
@@ -226,6 +277,32 @@ static esp_err_t es7210_write(uint8_t reg, uint8_t value) {
     return i2c_master_transmit(s_es7210, bytes, sizeof(bytes), 1000);
 }
 
+static esp_err_t es8311_write(uint8_t reg, uint8_t value) {
+    uint8_t bytes[2] = {reg, value};
+    return i2c_master_transmit(s_es8311, bytes, sizeof(bytes), 1000);
+}
+
+static esp_err_t es8311_init(void) {
+    // EchoEar-2ST uses the ES8311 at 0x18 as I2S slave. This sequence is
+    // Espressif's BSP initialization for 16-bit, 16 kHz playback with the
+    // ESP32-S3 supplying its 4.096 MHz MCLK.
+    static const uint8_t init[][2] = {
+        {0x00, 0x1F}, {0x00, 0x00}, {0x00, 0x80},
+        {0x01, 0x3F}, {0x02, 0x00}, {0x03, 0x10}, {0x04, 0x10},
+        {0x05, 0x00}, {0x06, 0x04}, {0x07, 0x00}, {0x08, 0xFF},
+        {0x09, 0x0C}, {0x0A, 0x0C}, {0x0D, 0x01}, {0x0E, 0x02},
+        {0x12, 0x00}, {0x13, 0x10}, {0x1C, 0x6A}, {0x37, 0x08},
+        {0x31, 0x00}, {0x32, 0xB2},
+    };
+    ESP_RETURN_ON_ERROR(es8311_write(init[0][0], init[0][1]), TAG, "ES8311 reset");
+    vTaskDelay(pdMS_TO_TICKS(20));
+    for (size_t i = 1; i < sizeof(init) / sizeof(init[0]); ++i) {
+        ESP_RETURN_ON_ERROR(es8311_write(init[i][0], init[i][1]), TAG,
+                            "ES8311 reg %02x", init[i][0]);
+    }
+    return ESP_OK;
+}
+
 static esp_err_t audio_init(void) {
     if (s_audio_ready) return ESP_OK;
     i2c_master_bus_config_t bus_cfg = {
@@ -239,6 +316,11 @@ static esp_err_t audio_init(void) {
         .scl_speed_hz = 100000,
     };
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_audio_i2c_bus, &dev_cfg, &s_es7210), TAG, "ES7210 add");
+    i2c_device_config_t speaker_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = ES8311_ADDRESS,
+        .scl_speed_hz = 100000,
+    };
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_audio_i2c_bus, &speaker_cfg, &s_es8311), TAG, "ES8311 add");
     i2c_device_config_t touch_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = CST8XX_ADDRESS,
         .scl_speed_hz = 100000,
@@ -277,8 +359,20 @@ static esp_err_t audio_init(void) {
     };
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_audio_rx, &std_cfg), TAG, "I2S RX mode");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_audio_rx), TAG, "I2S RX enable");
+    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_audio_tx, NULL), TAG, "I2S TX create");
+    std_cfg.gpio_cfg.dout = AUDIO_DOUT;
+    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_audio_tx, &std_cfg), TAG, "I2S TX mode");
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_audio_tx), TAG, "I2S TX enable");
+    gpio_config_t pa_cfg = {
+        .pin_bit_mask = 1ULL << AUDIO_PA_ENABLE, .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&pa_cfg), TAG, "speaker PA GPIO");
+    ESP_RETURN_ON_ERROR(gpio_set_level(AUDIO_PA_ENABLE, 0), TAG, "speaker PA off");
+    ESP_RETURN_ON_ERROR(es8311_init(), TAG, "ES8311 init");
     s_audio_ready = true;
-    ESP_LOGI(TAG, "ES7210 microphone ready: 16kHz stereo input");
+    ESP_LOGI(TAG, "EchoEar audio ready: ES7210 mic + ES8311 speaker at 16kHz");
     return ESP_OK;
 }
 
@@ -385,7 +479,8 @@ static void draw_or_compose_bitmap(int x0, int y0, int x1, int y1,
 static const uint8_t *glyph(char c) {
     static const uint8_t blank[5] = {0, 0, 0, 0, 0};
     static const uint8_t question[5] = {2, 1, 0x59, 9, 6};
-    static const uint8_t colon[5] = {0, 0x24, 0, 0x24, 0};
+    // The compact clock uses a single vertical colon, not two adjacent ones.
+    static const uint8_t colon[5] = {0, 0x24, 0, 0, 0};
     static const uint8_t slash[5] = {0x40, 0x30, 0x0C, 0x03, 0};
     static const uint8_t hyphen[5] = {0x08, 0x08, 0x08, 0x08, 0x08};
     static const uint8_t table[][5] = {
@@ -570,8 +665,13 @@ static uint32_t utf8_next(const char **cursor) {
     uint32_t cp;
     size_t count;
     if (s[0] < 0x80) { cp = s[0]; count = 1; }
-    else if ((s[0] & 0xE0) == 0xC0 && s[1]) { cp = ((s[0] & 0x1F) << 6) | (s[1] & 0x3F); count = 2; }
-    else if ((s[0] & 0xF0) == 0xE0 && s[1] && s[2]) { cp = ((s[0] & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); count = 3; }
+    else if ((s[0] & 0xE0) == 0xC0 && s[1] && (s[1] & 0xC0) == 0x80) {
+        cp = ((s[0] & 0x1F) << 6) | (s[1] & 0x3F); count = 2;
+    }
+    else if ((s[0] & 0xF0) == 0xE0 && s[1] && s[2] &&
+             (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80) {
+        cp = ((s[0] & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); count = 3;
+    }
     else { cp = '?'; count = 1; }
     *cursor += count;
     return cp;
@@ -593,7 +693,13 @@ static void draw_text24(int x, int y, const char *text, uint16_t fg, uint16_t bg
     const char *cursor = text;
     while (*cursor && count < 21) cps[count++] = utf8_next(&cursor);
     if (!count) return;
-    int width = count * CJK_ADVANCE - 1;
+    // Measure with the same per-codepoint advance used by wrapping and the
+    // status compositor.  The old `count * CJK_ADVANCE` allocation was left
+    // over from the CJK-only renderer: it made every ASCII letter occupy a
+    // full 24px cell even though the glyph itself is 10px wide.
+    int width = 0;
+    for (int index = 0; index < count; ++index) width += text24_advance(cps[index]);
+    if (width > 0) --width; // do not paint one trailing inter-character pixel
     if (x < 0) x = 0;
     if (x + width > LCD_WIDTH) width = LCD_WIDTH - x;
     if (s_render_target) {
@@ -603,6 +709,7 @@ static void draw_text24(int x, int y, const char *text, uint16_t fg, uint16_t bg
             uint16_t *dst = s_render_target + (size_t)py * LCD_WIDTH + x;
             for (int col = 0; col < width; ++col) dst[col] = bg;
         }
+        int pen_x = 0;
         for (int index = 0; index < count; ++index) {
             uint32_t cp = cps[index];
             const uint32_t *rows = cjk24_rows(cp);
@@ -613,12 +720,13 @@ static void draw_text24(int x, int y, const char *text, uint16_t fg, uint16_t bg
                 int py = y + row;
                 if (py < 0 || py >= LCD_HEIGHT) continue;
                 for (int col = 0; col < CJK_FONT_SIZE; ++col) {
-                    int px = index * CJK_ADVANCE + col;
+                    int px = pen_x + col;
                     if (px >= 0 && px < width && glyph24_pixel(cp, rows, dynamic, row, col)) {
                         s_render_target[(size_t)py * LCD_WIDTH + x + px] = fg;
                     }
                 }
             }
+            pen_x += text24_advance(cp);
         }
         return;
     }
@@ -633,6 +741,7 @@ static void draw_text24(int x, int y, const char *text, uint16_t fg, uint16_t bg
                                 : LCD_STRIPE_ROWS;
         size_t pixels = (size_t)width * rows_in_strip;
         for (size_t i = 0; i < pixels; ++i) s_line[i] = bg;
+        int pen_x = 0;
         for (int index = 0; index < count; ++index) {
             uint32_t cp = cps[index];
             const uint32_t *rows = cjk24_rows(cp);
@@ -642,12 +751,13 @@ static void draw_text24(int x, int y, const char *text, uint16_t fg, uint16_t bg
             for (int row = strip_y; row < strip_y + rows_in_strip; ++row) {
                 for (int col = 0; col < CJK_FONT_SIZE; ++col) {
 					bool set = glyph24_pixel(cp, rows, dynamic, row, col);
-                    int px = index * CJK_ADVANCE + col;
+                    int px = pen_x + col;
                     if (set && px >= 0 && px < width) {
                         s_line[(row - strip_y) * width + px] = fg;
                     }
                 }
             }
+            pen_x += text24_advance(cp);
         }
         ESP_ERROR_CHECK_WITHOUT_ABORT(draw_bitmap_sync(
             x, y + strip_y, x + width, y + strip_y + rows_in_strip, s_line));
@@ -678,7 +788,7 @@ static void compose_text24(uint16_t *target, int stride, int width, int y,
 
 // A compact 16-dot renderer for the ambient header. CJK glyphs are sampled
 // from the existing high-quality 24-dot table; ASCII keeps the crisp 5x7
-// source at 2x scale. Variable advances keep the clock and calendar compact
+// source at 2x scale. Their advances keep the clock and calendar compact
 // enough to remain centred inside the round screen without colliding with Wi-Fi.
 static void compose_text16_region(uint16_t *target, int stride, int width, int height,
                                   int x, int y, const char *text, uint16_t fg) {
@@ -702,7 +812,10 @@ static void compose_text16_region(uint16_t *target, int stride, int width, int h
                     }
                 }
             }
-            pen_x += cp == ':' ? COMPACT_COLON_ADVANCE : COMPACT_ASCII_ADVANCE;
+            // ':' is a 5-column glyph just like digits.  Advancing it by
+            // only six pixels let the following digit overpaint its right dot,
+            // leaving a misleading double-colon mark in the clock.
+            pen_x += COMPACT_ASCII_ADVANCE;
             continue;
         }
 
@@ -767,14 +880,13 @@ static void compose_text16_curve(uint16_t *target, int stride, int width, int he
     while (*cursor && count < (int)(sizeof(glyphs) / sizeof(glyphs[0]))) {
         uint32_t cp = utf8_next(&cursor);
         glyphs[count] = cp;
-        advances[count] = cp < 0x80 ? (cp == ':' ? COMPACT_COLON_ADVANCE : COMPACT_ASCII_ADVANCE)
-                                   : COMPACT_CJK_ADVANCE;
+        advances[count] = cp < 0x80 ? COMPACT_ASCII_ADVANCE : COMPACT_CJK_ADVANCE;
         total += advances[count++];
     }
     int pen = 0;
     for (int i = 0; i < count; ++i) {
         int midpoint = pen + advances[i] / 2 - total / 2;
-        int glyph_width = glyphs[i] < 0x80 ? (glyphs[i] == ':' ? 6 : 10) : COMPACT_FONT_SIZE;
+        int glyph_width = glyphs[i] < 0x80 ? 10 : COMPACT_FONT_SIZE;
         int x = center_x + midpoint - glyph_width / 2;
         int y = apex_y + midpoint * midpoint / curve_divisor;
         char encoded[5];
@@ -803,13 +915,24 @@ static void compose_text24_curve(uint16_t *target, int stride, int width, int he
         // Keep separation between city/weather/temperature, but make it a
         // narrow gap rather than a full 24-dot blank glyph. This leaves room
         // for four-character cities such as “乌鲁木齐” on the same ring.
-        advances[count] = cp == ' ' ? 8 : cp == 0x00B0 ? 10 : CJK_ADVANCE;
+        // Latin glyphs use the 10-pixel ASCII fallback, not a 24-pixel CJK
+        // cell.  The latter made "Buffalo" appear as "B U F F" and consumed
+        // the four-glyph city limit before its remaining letters could draw.
+        // Keep °C as a unit: a small gap follows the number, then C sits
+        // close to the degree mark instead of being spaced like a CJK glyph.
+        advances[count] = cp == ' ' ? 8 : cp == 0x00B0 ? 10
+                        : cp < 0x80 ? TEXT24_ASCII_ADVANCE : CJK_ADVANCE;
         total += advances[count++];
     }
     int pen = 0;
     for (int i = 0; i < count; ++i) {
         int midpoint = pen + advances[i] / 2 - total / 2;
-        int x = center_x + midpoint - CJK_FONT_SIZE / 2;
+        // The degree symbol is a compact ASCII-like mark, despite its Unicode
+        // codepoint. Center it in a narrow cell so it sits after the number,
+        // while the following C remains close enough to read as one unit.
+        int glyph_width = (glyphs[i] < 0x80 || glyphs[i] == 0x00B0)
+                              ? 10 : CJK_FONT_SIZE;
+        int x = center_x + midpoint - glyph_width / 2;
         // Deliberately mirror the upper date/weekday/time calculation. Every
         // glyph in city + weather + temperature participates in one centred
         // parabola; the negative divisor reverses the arc for the lower rim.
@@ -908,8 +1031,10 @@ static void draw_clock_calendar(uint16_t bg) {
         // clear local fallback instead of leaving an invisible leading gap.
         const char *city = ambient_location;
         while (*city == ' ' || *city == '\t') ++city;
-        // Four CJK glyphs cover normal long city names (e.g. “乌鲁木齐”).
-        copy_utf8_glyphs(location, sizeof(location), city[0] ? city : "本地", 4);
+        // Four CJK glyphs cover normal long city names (e.g. “乌鲁木齐”),
+        // while Latin cities need more characters to remain meaningful.
+        copy_utf8_glyphs(location, sizeof(location), city[0] ? city : "本地",
+                         (unsigned char)city[0] < 0x80 ? 10 : 4);
         copy_utf8_glyphs(weather, sizeof(weather), ambient_weather, 2);
         char lower_ring[40];
         snprintf(lower_ring, sizeof(lower_ring), "%s %s %d°C", location, weather,
@@ -1020,6 +1145,12 @@ static void ragdoll_tail_offsets(uint32_t motion_tick, int *root, int *mid, int 
 
 static uint32_t pet_motion_signature(void) {
     uint32_t signature = pet_blink_stage(s_pet_motion_tick);
+    // Processing is an active state, not a static acknowledgement. Advance a
+    // small three-dot orbit at 320 ms steps so the user can tell that the
+    // recorded request is still being handled while network work is pending.
+    if (!strcmp(s_pet_state, "thinking")) {
+        signature |= 0x10000u | ((s_pet_motion_tick / 4u) & 3u) << 17;
+    }
     if (strstr(s_pet_skin, "ragdoll") != NULL) {
         int root = 0, mid = 0, tip = 0;
         ragdoll_tail_offsets(s_pet_motion_tick, &root, &mid, &tip);
@@ -1212,6 +1343,17 @@ static void draw_pet_frame_contents(bool redraw_background) {
                                   rgb565(255, 180, 164), blush);
     fill_circle_vertical_gradient(242, 191 + pet_y_offset + bob, 14,
                                   rgb565(255, 180, 164), blush);
+    if (!strcmp(s_pet_state, "thinking")) {
+        // A restrained orbit above the head is visible without competing with
+        // the time band. The changing brightness gives the state an obvious
+        // direction even on the small round LCD.
+        const int dot_x[3] = {158, 180, 202};
+        const int active = (int)((s_pet_motion_tick / 4u) % 3u);
+        for (int i = 0; i < 3; ++i) {
+            uint16_t dot = i == active ? rgb565(244, 250, 255) : rgb565(142, 190, 255);
+            fill_circle(dot_x[i], 82, i == active ? 5 : 3, dot);
+        }
+    }
     fill_circle_vertical_gradient(180, 236 + pet_y_offset + bob, 39,
                                   rgb565_lerp(face, face_light, 90), face_shadow);
     // The pack identifier is implementation metadata, not the pet visual.
@@ -1222,8 +1364,20 @@ static void draw_pet_frame_contents(bool redraw_background) {
 }
 
 static void draw_pet_frame(bool redraw_background) {
-    if (s_display_sleeping) return;
+    // A renderer can be selected by the animation task and then wait behind a
+    // result/recording transfer for the LCD mutex. Re-check ownership after
+    // taking the mutex so that this stale pet frame cannot paint over the
+    // newer command surface once the transfer ahead of it has completed.
+    if (s_display_sleeping || s_recording_active || s_response_active ||
+        s_setup_qrcode_visible ||
+        (s_command_display_locked && ambient_visible_for_state())) return;
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
+    if (s_display_sleeping || s_recording_active || s_response_active ||
+        s_setup_qrcode_visible ||
+        (s_command_display_locked && ambient_visible_for_state())) {
+        if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
 
     uint16_t *frame = redraw_background ? s_framebuffers[s_next_framebuffer] : NULL;
     if (frame) s_render_target = frame;
@@ -1258,6 +1412,12 @@ static void draw_pet(void) {
 
 static void draw_recording_visual(void) {
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
+    // The animation task may have queued this draw just before capture ended.
+    // Never allow that old waveform frame to replace the thinking/result page.
+    if (!s_recording_active) {
+        if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
     // Compose the complete recording surface off-screen, then present it as
     // one DMA transaction. Direct drawing exposes every clear/bar/text step.
     uint16_t *frame = s_framebuffers[s_next_framebuffer];
@@ -1281,48 +1441,36 @@ static void draw_recording_visual(void) {
     snprintf(elapsed, sizeof(elapsed), "%02lu %02lu", (unsigned long)minutes, (unsigned long)seconds);
     draw_centered_text(104, elapsed, fg, bg);
 
-    // Copy the real PCM min/max history atomically. Every vertical segment is
-    // derived from signed microphone samples; no random ripple, mirrored shape
-    // or synthesized motion is added by the renderer.
-    int16_t wave_min[RECORDING_WAVE_COLUMNS];
-    int16_t wave_max[RECORDING_WAVE_COLUMNS];
-    taskENTER_CRITICAL(&s_state_lock);
-    memcpy(wave_min, s_recording_wave_min, sizeof(wave_min));
-    memcpy(wave_max, s_recording_wave_max, sizeof(wave_max));
-    taskEXIT_CRITICAL(&s_state_lock);
+    // Render the same measured audio level as spaced columns instead of a
+    // solid min/max fill. EchoEar's codec may report a large DC bias after
+    // switching the speaker path; this presentation makes that a bounded
+    // meter rather than an opaque cyan block, while still responding to voice.
+    uint16_t visual_level = s_recording_paused ? 0 : s_recording_audio_level;
+    if (visual_level > 700) visual_level = 700;
     const int wave_left = 26;
     const int wave_width = 308;
     const int wave_center = 220;
-    const int wave_half_height = 58;
+    const int wave_half_height = 42;
     fill_rect(wave_left, wave_center, wave_left + wave_width, wave_center + 1, muted);
-    for (int column = 0; column < RECORDING_WAVE_COLUMNS; ++column) {
-        int min_sample = s_recording_paused ? 0 : wave_min[column];
-        int max_sample = s_recording_paused ? 0 : wave_max[column];
-        // ES7210 speech commonly peaks around 10k-12k on this board. Map that
-        // useful range to the display and clip only visual outliers.
-        int y_top = wave_center - max_sample * wave_half_height / 12000;
-        int y_bottom = wave_center - min_sample * wave_half_height / 12000;
-        if (y_top < wave_center - wave_half_height) y_top = wave_center - wave_half_height;
-        if (y_top > wave_center + wave_half_height) y_top = wave_center + wave_half_height;
-        if (y_bottom < wave_center - wave_half_height) y_bottom = wave_center - wave_half_height;
-        if (y_bottom > wave_center + wave_half_height) y_bottom = wave_center + wave_half_height;
-        if (y_top > y_bottom) {
-            int swap = y_top;
-            y_top = y_bottom;
-            y_bottom = swap;
-        }
-        if (y_bottom - y_top < 2) {
-            y_top = wave_center - 1;
-            y_bottom = wave_center + 1;
-        }
-        int x = wave_left + column * wave_width / RECORDING_WAVE_COLUMNS;
-        int next_x = wave_left + (column + 1) * wave_width / RECORDING_WAVE_COLUMNS;
-        if (next_x <= x) next_x = x + 1;
-        fill_rect(x, y_top, next_x, y_bottom + 1,
+    for (int column = 0; column < 24; ++column) {
+        // Preserve a readable rhythm at quiet levels. The phase offset is
+        // deterministic, so the user sees live motion rather than random UI.
+        uint16_t variation = (uint16_t)((column * 37u + s_pet_frame * 29u) % 120u);
+        uint16_t column_level = visual_level > variation ? visual_level - variation : 0;
+        int half = 3 + (int)(column_level * wave_half_height / 700u);
+        if (half > wave_half_height) half = wave_half_height;
+        int x = wave_left + column * wave_width / 24;
+        fill_rect(x, wave_center - half, x + 7, wave_center + half + 1,
                   s_recording_paused ? muted : cyan);
     }
-    draw_text24(80, 266, s_recording_paused ? "录音已暂停" : "声音实时波形", s_recording_paused ? amber : cyan, bg);
-    draw_text24(80, 302, "点屏停止保存", muted, bg);
+    if (s_recording_is_meeting) {
+        draw_text24(98, 266, s_recording_paused ? "会议记录已暂停" : "会议记录进行中",
+                    s_recording_paused ? amber : red, bg);
+        draw_text24(80, 302, "点屏停止保存", muted, bg);
+    } else {
+        draw_text24(98, 266, "正在记录命令", cyan, bg);
+        draw_text24(80, 302, "说完后自动处理", muted, bg);
+    }
     s_render_target = NULL;
     if (frame) {
         esp_err_t draw_err = present_frame_sync(frame);
@@ -1356,7 +1504,17 @@ static void pet_animation_task(void *arg) {
         } else if (s_recording_active) {
             s_pet_frame = (uint8_t)((s_pet_frame + 1u) % 8u);
             draw_recording_visual();
-        } else if (s_ready_prompt_expires_us > 0 &&
+        } else if (s_response_active && s_response_next_page_us > 0 &&
+                   esp_timer_get_time() >= s_response_next_page_us) {
+            unsigned pages = response_page_count();
+            if (pages > 1) {
+                s_response_page = (s_response_page + 1) % pages;
+                s_response_next_page_us = esp_timer_get_time() + RESPONSE_PAGE_INTERVAL_US;
+                draw_response_page();
+            } else {
+                s_response_next_page_us = 0;
+            }
+        } else if (!s_command_display_locked && s_ready_prompt_expires_us > 0 &&
                    esp_timer_get_time() >= s_ready_prompt_expires_us) {
             s_ready_prompt_expires_us = 0;
             // The pet profile has already been received from MaClaw GUI. A
@@ -1371,7 +1529,8 @@ static void pet_animation_task(void *arg) {
             s_display_sleeping = true;
             ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
             ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
-        } else if (s_idle_pet_visible && !s_display_sleeping && s_pet_motion_enabled) {
+        } else if (!s_display_sleeping && s_pet_motion_enabled &&
+                   (s_idle_pet_visible || !strcmp(s_pet_state, "thinking"))) {
             s_pet_frame = (uint8_t)((s_pet_frame + 1u) % 8u);
             ++s_pet_motion_tick;
             uint32_t motion_signature = pet_motion_signature();
@@ -1508,11 +1667,15 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     esp_lcd_panel_io_handle_t io = NULL;
     esp_lcd_panel_io_spi_config_t io_config = ST77916_PANEL_IO_QSPI_CONFIG(
         LCD_CS, lcd_color_transfer_done, s_lcd_transfer_done);
-    /* This board's RAMWR payload must stay on one data wire. */
-    io_config.flags.quad_mode = false;
-    // Full animation frames are transferred directly from DMA-capable PSRAM.
-    // draw_pet_frame() fences reuse with the actual color-complete callback.
-    io_config.flags.psram_dma_direct = true;
+    // ST77916 uses the board's four QSPI data lines for RAMWR pixel payloads.
+    // Keep the QSPI macro's quad_mode=true; forcing a one-wire payload while
+    // the panel is initialized for QSPI produces the diagonal stripe pattern.
+    // This board shares the MSPI fabric between octal PSRAM and the LCD.
+    // Direct PSRAM DMA causes SPI TX underflows during full-frame QSPI writes,
+    // leaving the last pet frame visible and preventing the setup QR from
+    // reaching the panel. Let esp_lcd stage PSRAM buffers through its DMA-safe
+    // internal bounce buffer instead.
+    io_config.flags.psram_dma_direct = false;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(LCD_HOST, &io_config, &io));
     s_panel_io = io;
     st77916_vendor_config_t vendor_config = {
@@ -1592,6 +1755,16 @@ void board_port_set_pet_state(const char *state) {
         ESP_LOGD(TAG, "pet state deferred while setup QR is visible: %s", next_state);
         return;
     }
+    // The complete command path owns the LCD, not merely the final response.
+    // Ignore both remote and locally generated ambient states from capture
+    // through thinking/result so Wi-Fi/clock/weather can never appear between
+    // two foreground frames.
+    bool ambient_state = !strcmp(next_state, "idle") || !strcmp(next_state, "quiet");
+    if (ambient_state && (s_command_display_locked || s_response_active)) return;
+    if (strcmp(next_state, "speaking")) {
+        s_response_active = false;
+        s_response_next_page_us = 0;
+    }
     strlcpy(s_pet_state, next_state, sizeof(s_pet_state));
     // Idle/quiet are the permanent ambient pet face. Previously every state
     // update cleared s_idle_pet_visible, so the animation task stopped owning
@@ -1607,7 +1780,13 @@ void board_port_set_pet_state(const char *state) {
     if (!s_recording_active) draw_pet();
 }
 
+void board_port_set_command_display_lock(bool locked) {
+    s_command_display_locked = locked;
+    if (locked) s_ready_prompt_expires_us = 0;
+}
+
 void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
+	if (s_command_display_locked) return;
 	const char *next_skin = (skin && skin[0]) ? skin : s_pet_skin;
 	char normalized_skin[sizeof(s_pet_skin)];
 	strlcpy(normalized_skin, next_skin, sizeof(normalized_skin));
@@ -1650,6 +1829,7 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
         s_recording_wave_pending_min = INT16_MAX;
         s_recording_wave_pending_max = INT16_MIN;
         s_recording_wave_pending_samples = 0;
+        s_recording_wave_dc = 0;
         taskEXIT_CRITICAL(&s_state_lock);
     }
     if (!active) s_recording_audio_level = 0;
@@ -1667,23 +1847,51 @@ static void recording_wave_push_pcm(const int16_t *samples, size_t count) {
     if (!samples || count == 0) return;
     // Only one capture task owns the pending bucket. Aggregate PCM outside the
     // critical section so I2S is never held behind hundreds of sample compares.
+    // A single 8 ms column must remain legible even if the shared I2S bus
+    // delivers saturated words while the speaker path changes state.
     int16_t completed_min[8];
     int16_t completed_max[8];
     size_t completed = 0;
+    uint32_t amplitude_sum = 0;
+    uint16_t usable_samples = 0;
+    uint16_t clipped_samples = 0;
     for (size_t i = 0; i < count; ++i) {
         int16_t sample = samples[i];
-        if (sample < s_recording_wave_pending_min) s_recording_wave_pending_min = sample;
-        if (sample > s_recording_wave_pending_max) s_recording_wave_pending_max = sample;
+        int32_t raw_magnitude = sample < 0 ? -(int32_t)sample : sample;
+        // Values this close to full scale are transport/clock artefacts on
+        // EchoEar's ES7210 path far more often than voice. Do not let them
+        // dominate the visual signal. The original PCM is still retained.
+        if (raw_magnitude >= 32500) {
+            ++clipped_samples;
+        } else {
+            // A 1/64 low-pass baseline follows the analogue DC level but is
+            // far too slow to follow speech. This makes silence a thin line
+            // and spoken sound the visible changing envelope.
+            s_recording_wave_dc += ((int32_t)sample - s_recording_wave_dc) / 64;
+            int32_t deviation = (int32_t)sample - s_recording_wave_dc;
+            uint32_t magnitude = deviation < 0 ? (uint32_t)-deviation : (uint32_t)deviation;
+            amplitude_sum += (uint32_t)magnitude;
+            ++usable_samples;
+        }
         ++s_recording_wave_pending_samples;
         if (s_recording_wave_pending_samples >= RECORDING_WAVE_SAMPLES_PER_COLUMN) {
             if (completed < sizeof(completed_min) / sizeof(completed_min[0])) {
-                completed_min[completed] = s_recording_wave_pending_min;
-                completed_max[completed] = s_recording_wave_pending_max;
+                // Discard a predominantly clipped bucket. Otherwise use a
+                // gated mean absolute amplitude, which is naturally smoother
+                // than min/max yet still follows consonants and speech rhythm.
+                uint32_t mean = usable_samples ? amplitude_sum / usable_samples : 0;
+                if (clipped_samples > RECORDING_WAVE_SAMPLES_PER_COLUMN / 4 || mean <= 180) mean = 0;
+                if (mean > 9000) mean = 9000;
+                completed_min[completed] = -(int16_t)mean;
+                completed_max[completed] = (int16_t)mean;
                 ++completed;
             }
             s_recording_wave_pending_min = INT16_MAX;
             s_recording_wave_pending_max = INT16_MIN;
             s_recording_wave_pending_samples = 0;
+            amplitude_sum = 0;
+            usable_samples = 0;
+            clipped_samples = 0;
         }
     }
     if (completed == 0) return;
@@ -1797,7 +2005,10 @@ void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
 }
 
 void board_port_set_wifi_status(const char *ssid, bool connected) {
-    if (!s_panel || s_recording_active || s_setup_qrcode_visible) return;
+    if (!s_panel || s_recording_active || s_setup_qrcode_visible || s_command_display_locked) return;
+    // Wi-Fi is transport state, not command UI. Never overlay it on the
+    // thinking/result states, where it resembles a transition to startup.
+    if (strcmp(s_pet_state, "idle") && strcmp(s_pet_state, "quiet")) return;
     // This indicator is cosmetic. Never let it hold Wi-Fi startup behind a
     // full animated frame; the next status event can paint it instead.
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, pdMS_TO_TICKS(40)) != pdTRUE) {
@@ -1854,7 +2065,7 @@ void board_port_set_ambient(const char *time, const char *location, const char *
     // Animated idle frames already redraw the complete pet and both ambient
     // rings. Let that task coalesce the update instead of issuing a competing
     // LCD transfer from the once-per-second clock task.
-    if (idle_pet_visible || s_setup_qrcode_visible) return;
+    if (idle_pet_visible || s_setup_qrcode_visible || s_command_display_locked) return;
     if ((top_changed || bottom_changed) && !display_sleeping && !recording_active &&
         ambient_visible_for_state()) {
         if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
@@ -1945,6 +2156,129 @@ void board_port_pause_wake_word(bool paused) {
     s_wake_word_paused = paused;
 }
 
+static bool response_break(uint32_t cp) {
+    return cp == '\n' || cp == '\r';
+}
+
+void board_port_set_recording_mode(bool meeting) {
+    s_recording_is_meeting = meeting;
+}
+
+// Return the byte pointer after one wrapped line.  Wrapping is based on the
+// same variable advances used by the renderer, so Chinese, Latin and numbers
+// share a line naturally instead of being cut by an arbitrary byte count.
+static const char *response_next_line(const char *cursor, char *line, size_t line_size) {
+    if (!line || line_size == 0) return cursor;
+    line[0] = '\0';
+    if (!cursor) return cursor;
+    int width = 0;
+    size_t used = 0;
+    while (*cursor) {
+        const char *before = cursor;
+        uint32_t cp = utf8_next(&cursor);
+        if (response_break(cp)) {
+            while (*cursor == '\n' || *cursor == '\r') ++cursor;
+            break;
+        }
+        int advance = text24_advance(cp);
+        size_t bytes = (size_t)(cursor - before);
+        if (width && width + advance > RESPONSE_TEXT_W) {
+            cursor = before;
+            break;
+        }
+        if (used + bytes >= line_size) {
+            cursor = before;
+            break;
+        }
+        memcpy(line + used, before, bytes);
+        used += bytes;
+        line[used] = '\0';
+        width += advance;
+        if (width + TEXT24_ASCII_ADVANCE > RESPONSE_TEXT_W) break;
+    }
+    // Invalid or unusually wide input must always make progress.
+    if (!line[0] && *cursor) {
+        const char *before = cursor;
+        (void)utf8_next(&cursor);
+        size_t bytes = (size_t)(cursor - before);
+        if (bytes < line_size) {
+            memcpy(line, before, bytes);
+            line[bytes] = '\0';
+        }
+    }
+    return cursor;
+}
+
+static unsigned response_page_count(void) {
+    const char *cursor = s_response_text;
+    unsigned lines = 0;
+    char line[96];
+    while (*cursor && lines < 96) {
+        cursor = response_next_line(cursor, line, sizeof(line));
+        ++lines;
+    }
+    return lines ? (lines + RESPONSE_LINES_PER_PAGE - 1) / RESPONSE_LINES_PER_PAGE : 1;
+}
+
+static void draw_response_page(void) {
+    if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
+    // A timed page turn can already be waiting when the next recording starts.
+    // Check after serialization, otherwise the old answer can cover that newer
+    // foreground screen in exactly the same way as a stale thinking frame.
+    if (!s_response_active || s_recording_active || s_setup_qrcode_visible) {
+        if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
+    uint16_t bg = state_color(s_pet_state);
+    uint16_t title_color = rgb565(255, 255, 255);
+    uint16_t body_color = rgb565(220, 235, 255);
+    uint16_t rule = rgb565(117, 202, 177);
+    // A reply is a dedicated reading surface.  Drawing it over the pet made
+    // the face compete with the glyphs and, when pages changed, left the old
+    // line positions visible.  A full repaint is inexpensive here because it
+    // occurs only on arrival and at the three-second page boundary.
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, bg);
+    fill_rect(RESPONSE_TEXT_X, 68, LCD_WIDTH - RESPONSE_TEXT_X, 70, rule);
+    char title[64];
+    snprintf(title, sizeof(title), "%s", s_response_title[0] ? s_response_title : "码卡龙");
+    draw_text24(RESPONSE_TEXT_X, 28, title, title_color, bg);
+    const char *cursor = s_response_text;
+    unsigned skip = s_response_page * RESPONSE_LINES_PER_PAGE;
+    char line[96];
+    while (*cursor && skip--) cursor = response_next_line(cursor, line, sizeof(line));
+    for (int row = 0; row < RESPONSE_LINES_PER_PAGE && *cursor; ++row) {
+        cursor = response_next_line(cursor, line, sizeof(line));
+        draw_text24(RESPONSE_TEXT_X, RESPONSE_TEXT_Y + row * RESPONSE_LINE_GAP,
+                    line, body_color, bg);
+    }
+    unsigned pages = response_page_count();
+    if (pages > 1) {
+        char indicator[16];
+        snprintf(indicator, sizeof(indicator), "%u/%u", s_response_page + 1, pages);
+        draw_text24(292, 310, indicator, rgb565(180, 211, 230), bg);
+    }
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
+void board_port_show_response(const char *title, const char *text) {
+    s_ready_prompt_expires_us = 0;
+    // Enter the result state without calling board_port_set_pet_state(). That
+    // public setter paints a complete pet frame immediately; doing so just
+    // before this page produced a visible boot/idle-looking flash between the
+    // thinking screen and every streamed response message.
+    strlcpy(s_pet_state, "speaking", sizeof(s_pet_state));
+    s_idle_pet_visible = false;
+    s_idle_pet_sleep_expires_us = 0;
+    s_display_sleeping = false;
+    s_response_active = true;
+    s_response_page = 0;
+    strlcpy(s_response_title, title && title[0] ? title : "码卡龙", sizeof(s_response_title));
+    strlcpy(s_response_text, text && text[0] ? text : "没有收到文字回复", sizeof(s_response_text));
+    s_response_next_page_us = esp_timer_get_time() + RESPONSE_PAGE_INTERVAL_US;
+    draw_response_page();
+    ESP_LOGI(TAG, "response: %s", s_response_text);
+}
+
 static void wake_word_task(void *arg) {
     (void)arg;
     srmodel_list_t *models = esp_srmodel_init("model");
@@ -1965,32 +2299,33 @@ static void wake_word_task(void *arg) {
         esp_srmodel_deinit(models);
         goto finish;
     }
-    model_iface_data_t *model_data = multinet->create(model_name, 6000);
+    model_iface_data_t *model_data = multinet->create(model_name, 4000);
     if (!model_data) {
         ESP_LOGE(TAG, "offline wake disabled: cannot create model %s", model_name);
         esp_srmodel_deinit(models);
         goto finish;
     }
-
     esp_err_t command_err = esp_mn_commands_alloc(multinet, model_data);
-    // alloc() creates a fresh empty root. Clearing it immediately is
-    // redundant and makes initialization depend on process-global state.
-    if (command_err == ESP_OK) command_err = esp_mn_commands_add(WAKE_WORD_COMMAND_ID, WAKE_WORD_PHRASE);
+    if (command_err == ESP_OK) command_err = esp_mn_commands_add(WAKE_WORD_COMMAND_ID, WAKE_WORD_CN_PHONETIC);
     esp_mn_error_t *command_errors = command_err == ESP_OK ? esp_mn_commands_update() : NULL;
     if (command_err != ESP_OK || command_errors != NULL) {
-        ESP_LOGE(TAG, "offline wake disabled: phrase '%s' is not accepted (err=%s, rejected=%d)",
-                 WAKE_WORD_PHRASE, esp_err_to_name(command_err),
-                 command_errors ? command_errors->num : 0);
+        ESP_LOGE(TAG, "offline wake disabled: word '%s' is not accepted (err=%s, rejected=%d)",
+                 WAKE_WORD_CN_LABEL, esp_err_to_name(command_err), command_errors ? command_errors->num : 0);
         multinet->destroy(model_data);
         esp_srmodel_deinit(models);
         goto finish;
     }
-
+    if (multinet->set_det_threshold) {
+        int threshold_err = multinet->set_det_threshold(model_data, WAKE_WORD_DETECTION_THRESHOLD);
+        if (threshold_err != 0) {
+            ESP_LOGW(TAG, "offline wake threshold %.2f was not applied: %d",
+                     (double)WAKE_WORD_DETECTION_THRESHOLD, threshold_err);
+        }
+    }
     const int chunk_samples = multinet->get_samp_chunksize(model_data);
     const int sample_rate = multinet->get_samp_rate(model_data);
     if (chunk_samples <= 0 || sample_rate != AUDIO_RATE) {
-        ESP_LOGE(TAG, "offline wake disabled: model audio format is %d Hz / %d samples",
-                 sample_rate, chunk_samples);
+        ESP_LOGE(TAG, "offline wake disabled: model audio format is %d Hz / %d samples", sample_rate, chunk_samples);
         multinet->destroy(model_data);
         esp_srmodel_deinit(models);
         goto finish;
@@ -2009,8 +2344,9 @@ static void wake_word_task(void *arg) {
         goto finish;
     }
 
-    ESP_LOGI(TAG, "offline wake listening: model=%s phrase='%s' rate=%d chunk=%d",
-             model_name, WAKE_WORD_PHRASE, sample_rate, chunk_samples);
+    ESP_LOGI(TAG, "offline wake listening: model=%s word='%s' threshold=%.2f rate=%d chunk=%d",
+             model_name, WAKE_WORD_CN_LABEL,
+             (double)WAKE_WORD_DETECTION_THRESHOLD, sample_rate, chunk_samples);
     multinet->print_active_speech_commands(model_data);
     bool model_was_paused = false;
     int64_t last_detection_us = 0;
@@ -2058,19 +2394,15 @@ static void wake_word_task(void *arg) {
         // per inference chunk so IDLE1 can feed the task watchdog and service
         // low-priority system work without affecting the audio cadence.
         vTaskDelay(1);
-        if (state == ESP_MN_STATE_TIMEOUT) {
-            multinet->clean(model_data);
-            continue;
-        }
+        if (state == ESP_MN_STATE_TIMEOUT) { multinet->clean(model_data); continue; }
         if (state != ESP_MN_STATE_DETECTED) continue;
-
         esp_mn_results_t *result = multinet->get_results(model_data);
+        if (!result || result->num == 0 || result->command_id[0] != WAKE_WORD_COMMAND_ID) continue;
         int64_t now_us = esp_timer_get_time();
-        if (result && result->num > 0 && result->command_id[0] == WAKE_WORD_COMMAND_ID &&
-            now_us - last_detection_us >= WAKE_WORD_COOLDOWN_US) {
+        if (now_us - last_detection_us >= WAKE_WORD_COOLDOWN_US) {
             last_detection_us = now_us;
             ESP_LOGI(TAG, "offline wake word detected: %s (prob=%.3f)",
-                     WAKE_WORD_PHRASE, (double)result->prob[0]);
+                     WAKE_WORD_CN_LABEL, (double)result->prob[0]);
             board_port_wake_word_cb_t callback = s_on_wake_word;
             void *callback_arg = s_on_wake_word_arg;
             multinet->clean(model_data);
@@ -2082,9 +2414,6 @@ static void wake_word_task(void *arg) {
 
     heap_caps_free(mono);
     heap_caps_free(stereo);
-    // The MultiNet destroy path owns and releases the active command tree.
-    // Calling esp_mn_commands_free() as well double-clears that process-wide
-    // state and produces MN_COMMAND's misleading "not initialized" error.
     multinet->destroy(model_data);
     esp_srmodel_deinit(models);
     ESP_LOGI(TAG, "offline wake stopped and model memory released");
@@ -2244,7 +2573,164 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
 }
 
 esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len) {
-    (void)wav;
-    (void)wav_len;
-    return ESP_ERR_NOT_SUPPORTED;
+    if (!wav || wav_len < 44 || memcmp(wav, "RIFF", 4) != 0 || memcmp(wav + 8, "WAVE", 4) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const uint8_t *fmt = NULL, *data = NULL;
+    size_t fmt_len = 0, data_len = 0;
+    for (size_t offset = 12; offset + 8 <= wav_len;) {
+        const uint8_t *chunk = wav + offset;
+        uint32_t chunk_len = (uint32_t)chunk[4] | ((uint32_t)chunk[5] << 8) |
+                             ((uint32_t)chunk[6] << 16) | ((uint32_t)chunk[7] << 24);
+        offset += 8;
+        if (chunk_len > wav_len - offset) return ESP_ERR_INVALID_SIZE;
+        if (memcmp(chunk, "fmt ", 4) == 0) { fmt = wav + offset; fmt_len = chunk_len; }
+        if (memcmp(chunk, "data", 4) == 0) { data = wav + offset; data_len = chunk_len; }
+        offset += chunk_len + (chunk_len & 1u);
+    }
+    if (!fmt || fmt_len < 16 || !data || !data_len) return ESP_ERR_INVALID_ARG;
+    uint16_t format = (uint16_t)fmt[0] | ((uint16_t)fmt[1] << 8);
+    uint16_t channels = (uint16_t)fmt[2] | ((uint16_t)fmt[3] << 8);
+    uint32_t rate = (uint32_t)fmt[4] | ((uint32_t)fmt[5] << 8) |
+                    ((uint32_t)fmt[6] << 16) | ((uint32_t)fmt[7] << 24);
+    uint16_t bits = (uint16_t)fmt[14] | ((uint16_t)fmt[15] << 8);
+    if (format != 1 || bits != 16 || rate != AUDIO_RATE || (channels != 1 && channels != 2)) {
+        ESP_LOGW(TAG, "unsupported WAV: format=%u rate=%lu bits=%u channels=%u",
+                 format, (unsigned long)rate, bits, channels);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    board_port_pause_wake_word(true);
+    esp_err_t err = audio_init();
+    if (err == ESP_OK) err = gpio_set_level(AUDIO_PA_ENABLE, 1);
+    int16_t stereo[512];
+    for (size_t offset = 0; err == ESP_OK && offset < data_len;) {
+        size_t frames = (data_len - offset) / (channels * sizeof(int16_t));
+        if (frames > 256) frames = 256;
+        if (frames == 0) break;
+        const int16_t *source = (const int16_t *)(data + offset);
+        for (size_t i = 0; i < frames; ++i) {
+            int16_t sample = source[i * channels];
+            stereo[i * 2] = sample;
+            stereo[i * 2 + 1] = channels == 2 ? source[i * 2 + 1] : sample;
+        }
+        size_t written = 0;
+        err = i2s_channel_write(s_audio_tx, stereo, frames * 2 * sizeof(int16_t),
+                                &written, pdMS_TO_TICKS(1000));
+        if (written != frames * 2 * sizeof(int16_t) && err == ESP_OK) err = ESP_ERR_TIMEOUT;
+        offset += frames * channels * sizeof(int16_t);
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+    (void)gpio_set_level(AUDIO_PA_ENABLE, 0);
+    xSemaphoreGive(s_audio_mutex);
+    board_port_pause_wake_word(false);
+    return err;
+}
+
+esp_err_t board_port_play_ack_chime(void) {
+    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    board_port_pause_wake_word(true);
+    esp_err_t err = audio_init();
+    if (err == ESP_OK) err = gpio_set_level(AUDIO_PA_ENABLE, 1);
+    int16_t stereo[512];
+    // A short two-note acknowledgement: distinct enough to hear, soft enough
+    // not to be confused with an alarm. The waveform is generated locally so
+    // the board can confirm receipt before network TTS is available.
+    for (int note = 0; err == ESP_OK && note < 2; ++note) {
+        const int half_period = note == 0 ? 20 : 15; // 400 Hz, then ~533 Hz.
+        for (int frame = 0; frame < AUDIO_RATE / 7; frame += 256) {
+            int frames = (AUDIO_RATE / 7 - frame) > 256 ? 256 : (AUDIO_RATE / 7 - frame);
+            for (int i = 0; i < frames; ++i) {
+                int phase = (frame + i) % (half_period * 2);
+                int16_t sample = phase < half_period ? 2600 : -2600;
+                stereo[i * 2] = sample;
+                stereo[i * 2 + 1] = sample;
+            }
+            size_t written = 0;
+            err = i2s_channel_write(s_audio_tx, stereo, frames * 2 * sizeof(int16_t),
+                                    &written, pdMS_TO_TICKS(1000));
+            if (written != (size_t)frames * 2 * sizeof(int16_t) && err == ESP_OK) err = ESP_ERR_TIMEOUT;
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+    (void)gpio_set_level(AUDIO_PA_ENABLE, 0);
+    xSemaphoreGive(s_audio_mutex);
+    board_port_pause_wake_word(false);
+    return err;
+}
+
+esp_err_t board_port_play_ack_voice(void) {
+    return board_port_play_ack_chime();
+#if 0
+    // The acknowledgement is a compact IMA ADPCM asset generated from a
+    // Mandarin voice. Decode it in small pieces so confirmation is immediate
+    // and does not consume a large PCM buffer while Wi-Fi is uploading.
+    static const int s_ima_index_delta[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+    static const int s_ima_step[89] = {
+        7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31,
+        34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130,
+        143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408,
+        449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282,
+        1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+        3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630,
+        9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350,
+        22385, 24623, 27086, 29794, 32767,
+    };
+    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    board_port_pause_wake_word(true);
+    esp_err_t err = audio_init();
+    if (err == ESP_OK) err = gpio_set_level(AUDIO_PA_ENABLE, 1);
+    uint8_t compressed[MACLAW_ACK_VOICE_SAMPLES / 2 + 1];
+    size_t compressed_len = 0;
+    int base64_err = mbedtls_base64_decode(compressed, sizeof(compressed), &compressed_len,
+                                           (const unsigned char *)s_maclaw_ack_voice_b64,
+                                           strlen(s_maclaw_ack_voice_b64));
+    if (base64_err != 0 || compressed_len == 0) {
+        ESP_LOGE(TAG, "acknowledgement voice decode failed: %d", base64_err);
+        (void)gpio_set_level(AUDIO_PA_ENABLE, 0);
+        xSemaphoreGive(s_audio_mutex);
+        board_port_pause_wake_word(false);
+        return ESP_FAIL;
+    }
+    int16_t stereo[512];
+    int predictor = 0;
+    int step_index = 0;
+    size_t packed_offset = 0;
+    size_t decoded = 0;
+    while (err == ESP_OK && decoded < MACLAW_ACK_VOICE_SAMPLES && packed_offset < compressed_len) {
+        int frames = (MACLAW_ACK_VOICE_SAMPLES - decoded) > 256 ? 256 : (int)(MACLAW_ACK_VOICE_SAMPLES - decoded);
+        for (int i = 0; i < frames; ++i) {
+            // The asset is 8 kHz ADPCM. Repeat every decoded sample once so
+            // it plays at its intended pitch on the 16 kHz I2S clock.
+            if ((i & 1) == 0) {
+                uint8_t packed = compressed[packed_offset + ((size_t)i / 4)];
+                int code = ((i / 2) & 1) ? (packed >> 4) : (packed & 0x0f);
+                int step = s_ima_step[step_index];
+                int delta = step >> 3;
+                if (code & 4) delta += step;
+                if (code & 2) delta += step >> 1;
+                if (code & 1) delta += step >> 2;
+                predictor += (code & 8) ? -delta : delta;
+                if (predictor > INT16_MAX) predictor = INT16_MAX;
+                if (predictor < INT16_MIN) predictor = INT16_MIN;
+                step_index += s_ima_index_delta[code & 7];
+                if (step_index < 0) step_index = 0;
+                if (step_index > 88) step_index = 88;
+            }
+            stereo[i * 2] = (int16_t)predictor;
+            stereo[i * 2 + 1] = (int16_t)predictor;
+        }
+        size_t written = 0;
+        err = i2s_channel_write(s_audio_tx, stereo, (size_t)frames * 2 * sizeof(int16_t),
+                                &written, pdMS_TO_TICKS(1000));
+        if (written != (size_t)frames * 2 * sizeof(int16_t) && err == ESP_OK) err = ESP_ERR_TIMEOUT;
+        decoded += frames;
+        packed_offset += (size_t)(frames + 3) / 4;
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+    (void)gpio_set_level(AUDIO_PA_ENABLE, 0);
+    xSemaphoreGive(s_audio_mutex);
+    board_port_pause_wake_word(false);
+    return err;
+#endif
 }

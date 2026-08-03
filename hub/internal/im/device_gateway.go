@@ -82,7 +82,11 @@ type deviceAmbient struct {
 
 const (
 	deviceGlyphBytesPerGlyph = 72 // 24 rows * 3 packed bytes per row.
-	deviceGlyphMaxPerPayload = 24
+	// The ESP reply reader paginates long answers and caches up to 96 glyphs.
+	// Keep the Hub validation limit aligned with that negotiated device limit;
+	// otherwise a normal long Chinese answer is rejected as a whole and falls
+	// back to question marks on the device.
+	deviceGlyphMaxPerPayload = 96
 )
 
 // devicePetProfile is a deliberately small, portable description. The ESP

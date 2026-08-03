@@ -236,8 +236,12 @@ type ThirdPartyOutgoingMessage struct {
 	Progress         bool                       `json:"progress,omitempty"`
 	Error            string                     `json:"error,omitempty"`
 	CreatedAt        int64                      `json:"createdAt"`
-	Metadata         map[string]string          `json:"metadata,omitempty"`
-	Extra            map[string]any             `json:"extra,omitempty"`
+	// Glyphs carries the compact 24x24 bitmaps required by constrained ESP
+	// displays to render non-ASCII reply text. It deliberately lives beside
+	// Text so the device can cache it before drawing the message.
+	Glyphs   map[string]string `json:"glyphs,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+	Extra    map[string]any    `json:"extra,omitempty"`
 }
 
 type ThirdPartyNormalizeOptions struct {

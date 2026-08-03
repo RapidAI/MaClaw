@@ -20,6 +20,10 @@ typedef void (*board_port_wake_word_cb_t)(void *arg);
 
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg);
 void board_port_set_pet_state(const char *state);
+// Suppresses every background pet/profile/Wi-Fi/ambient repaint while a
+// foreground command owns the screen. The command code clears it only when a
+// later explicit interaction begins, so the answer remains stable.
+void board_port_set_command_display_lock(bool locked);
 // Applies the selected MaClaw GUI pet profile. The ESP uses a compact native
 // renderer for supported skins and falls back gracefully for custom packs.
 void board_port_set_pet_profile(const char *skin, bool motion_enabled);
@@ -27,10 +31,17 @@ void board_port_set_pet_profile(const char *skin, bool motion_enabled);
 // with the elapsed duration while recording; passing active=false restores the
 // selected pet screen.
 void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds);
+// Selects the copy shown by the shared waveform renderer. The waveform is
+// reused for both modes, but a one-shot command must never claim to be a
+// meeting recording.
+void board_port_set_recording_mode(bool meeting);
 // Updates the normalized microphone level and elapsed time without forcing an LCD refresh from the
 // I2S task. The renderer receives its signed waveform directly from the PCM capture paths.
 void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds);
 void board_port_show_text(const char *title, const char *text);
+// Shows an assistant reply in a four-line paged reading surface. Long text
+// advances automatically while keeping each page readable on the round LCD.
+void board_port_show_response(const char *title, const char *text);
 // Adds/refreshes compact 24x24 glyphs supplied by the Hub. The RAM cache is
 // bounded and uses least-recently-used replacement, so arbitrary UTF-8 text
 // can render without embedding a full Chinese font in the firmware.
@@ -71,7 +82,7 @@ esp_err_t board_port_audio_stream_read(int16_t *mono, size_t sample_capacity,
                                        size_t *samples_read, uint16_t *level);
 void board_port_audio_stream_stop(void);
 // Starts the always-listening ESP-SR/MultiNet detector. The callback runs from
-// the recognition task when the offline phrase "ma ke luo" is detected.
+// the recognition task when the Chinese offline wake word “码卡龙” is detected.
 esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t on_wake, void *arg);
 // Stops the recognizer and releases its model/audio buffers so a provisioning
 // portal can run even on the smallest supported ESP32-S3 memory variant.
@@ -80,5 +91,9 @@ esp_err_t board_port_stop_wake_word(void);
 // capture, then resumes offline recognition when released.
 void board_port_pause_wake_word(bool paused);
 
-// Optional follow-up: decode and play the WAV returned by MaClawSrv TTS.
+// Plays PCM WAV returned by MaClawSrv TTS (16 kHz, signed 16-bit mono/stereo).
 esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len);
+// Short local acknowledgement used while the network/TTS reply is pending.
+esp_err_t board_port_play_ack_chime(void);
+// Spoken local acknowledgement: “好的，正在处理。”
+esp_err_t board_port_play_ack_voice(void);

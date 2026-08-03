@@ -22,7 +22,9 @@ import (
 const (
 	deviceGlyphSize       = 24
 	deviceGlyphBytes      = deviceGlyphSize * 3
-	deviceGlyphPayloadMax = 24
+	// The round ESP screen pages long replies locally.  Send enough glyphs for
+	// several pages so later pages do not degrade to question marks.
+	deviceGlyphPayloadMax = 96
 )
 
 var deviceGlyphFontLoader struct {

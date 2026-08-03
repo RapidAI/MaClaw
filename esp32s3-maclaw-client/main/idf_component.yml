@@ -19,6 +19,6 @@ dependencies:
   # Render the standard Wi-Fi QR code while the provisioning SoftAP is active.
   espressif/qrcode: ^0.2.0
   # Offline, always-listening command recognition. MultiNet is used as a
-  # train-free custom phrase detector for "ma ke luo" (Maclaw / 嘛可罗).
+  # train-free custom detector for the wake words "码卡龙" and "Maclaw".
   espressif/esp-sr:
     version: ^2.4.7
