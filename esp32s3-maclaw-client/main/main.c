@@ -65,6 +65,8 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_CONNECT_TIMEOUT_MS 20000
 #define RESPONSE_CAPACITY 16384
+#define OUTGOING_POLL_LIMIT 1
+#define OUTGOING_AUDIO_URL_CAPACITY (512 * 1024)
 #define HANDSHAKE_RESPONSE_CAPACITY 24576
 #define URL_CAPACITY 256
 #define WIFI_VALUE_CAPACITY 65
@@ -379,6 +381,12 @@ static bool outgoing_message_is_final(cJSON *item) {
     if (!turn) turn = json_string(item, "acp_turn");
     return turn && (!strcasecmp(turn, "final") || !strcasecmp(turn, "complete") ||
                     !strcasecmp(turn, "completed"));
+}
+
+static bool outgoing_message_completes_command(const char *type, bool progress, bool final) {
+    if (progress) return false;
+    if (type && (!strcmp(type, "voice") || !strcmp(type, "audio"))) return final;
+    return final || (type && (!strcmp(type, "text") || !strcmp(type, "error")));
 }
 
 // The outgoing poll can resume as soon as the POST releases the shared HTTP
@@ -1369,7 +1377,8 @@ static esp_err_t gateway_handshake(void) {
         "\"audio\":{\"mimeTypes\":[\"audio/wav\"],\"sampleRates\":[16000],\"channels\":1}},"
         "\"output\":{\"modalities\":[\"text\",\"audio\"],\"preferred\":[\"audio\",\"text\"],"
         "\"combinations\":[[\"text\"],[\"audio\",\"text\"]],\"text\":{\"maxChars\":240,\"markdown\":false,\"locale\":\"zh-CN\"},"
-        "\"audio\":{\"mimeTypes\":[\"audio/wav\"],\"sampleRates\":[16000],\"channels\":1,\"playback\":true}},"
+        "\"audio\":{\"mimeTypes\":[\"audio/wav\"],\"sampleRates\":[16000],\"channels\":1,\"playback\":true,"
+        "\"deliveryModes\":[\"url\"],\"maxDownloadBytes\":524288}},"
         "\"features\":{\"petStates\":true,\"petAnimation\":false,\"petAsset\":false,"
         "\"ambientDisplay\":true,\"meetingRecorder\":true}}}", CONFIG_MACLAW_CLIENT_ID);
     if (request_len <= 0 || request_len >= (int)sizeof(payload)) return ESP_ERR_INVALID_SIZE;
@@ -1743,8 +1752,11 @@ static esp_err_t poll_reply(void) {
     int poll_timeout_seconds = command_display_active() ? 2 : 5;
     int64_t poll_started_us = esp_timer_get_time();
     long long previous_cursor = s_cursor;
-    snprintf(path, sizeof(path), "/api/im-gateway/v1/outgoing?clientId=%s&cursor=%lld&limit=16&timeout=%d",
-             CONFIG_MACLAW_CLIENT_ID, s_cursor, poll_timeout_seconds);
+    // One message per response bounds JSON/PSRAM use. Voice responses are
+    // negotiated as URL delivery, so a text result can never be combined with
+    // a large base64 audio body and truncate the entire poll batch.
+    snprintf(path, sizeof(path), "/api/im-gateway/v1/outgoing?clientId=%s&cursor=%lld&limit=%d&timeout=%d",
+             CONFIG_MACLAW_CLIENT_ID, s_cursor, OUTGOING_POLL_LIMIT, poll_timeout_seconds);
     http_response_t response;
     esp_err_t err = request("GET", path, NULL, NULL, 0, &response);
     if (err != ESP_OK || response.status != 200) {
@@ -1791,12 +1803,17 @@ static esp_err_t poll_reply(void) {
     cJSON_ArrayForEach(item, messages) {
         const char *type = json_string(item, "type");
         const char *text = json_string(item, "text");
-        const char *audio_data = json_string(item, "file_data");
-        const char *audio_mime = json_string(item, "mime_type");
+        const char *audio_data = json_string(item, "data");
+        if (!audio_data) audio_data = json_string(item, "file_data");
+        const char *audio_url = json_string(item, "url");
+        const char *audio_mime = json_string(item, "mimeType");
+        if (!audio_mime) audio_mime = json_string(item, "contentType");
+        if (!audio_mime) audio_mime = json_string(item, "mime_type");
         const char *id = json_string(item, "id");
         const char *reply_to = outgoing_reply_correlation(item);
         bool progress = outgoing_message_is_progress(item);
         bool final = outgoing_message_is_final(item);
+        bool completes_command = outgoing_message_completes_command(type, progress, final);
         const char *skin = json_string(item, "pet_skin");
         cJSON *motion = cJSON_GetObjectItemCaseSensitive(item, "pet_motion_enabled");
         cJSON *extra = cJSON_GetObjectItemCaseSensitive(item, "extra");
@@ -1837,7 +1854,7 @@ static esp_err_t poll_reply(void) {
                 // Progress refreshes the thinking state but is not the answer.
                 // Completing here would hide the eventual terminal response.
                 ESP_LOGI(TAG, "remote progress received: replyTo=%s", reply_to);
-            } else if (active_reply) {
+            } else if (active_reply && completes_command) {
                 // Once a reply is present the thinking phase has ended; a
                 // double tap arriving while this frame is drawn must not turn
                 // an already completed command into a cancellation.
@@ -1882,7 +1899,8 @@ static esp_err_t poll_reply(void) {
                          reply_to && reply_to[0] ? reply_to : "<none>",
                          text && text[0] ? text : "<none>");
             }
-        } else if (final && active_reply && (!type || strcmp(type, "text"))) {
+        } else if (final && active_reply && type && strcmp(type, "text") &&
+                   strcmp(type, "voice") && strcmp(type, "audio")) {
             TaskHandle_t waiter = begin_active_command_reply();
             if (waiter) {
                 board_port_show_response("任务已完成",
@@ -1890,10 +1908,32 @@ static esp_err_t poll_reply(void) {
                 xTaskNotifyGive(waiter);
             }
         }
-        if (type && (!strcmp(type, "voice") || !strcmp(type, "audio")) && audio_data &&
-            !cancelled_command_reply_matches(reply_to) &&
-            !command_display_active() &&
-            (!audio_mime || !strcmp(audio_mime, "audio/wav"))) {
+        bool playable_command_audio = active_reply || !command_display_active();
+        bool audio_played = false;
+        if (type && (!strcmp(type, "voice") || !strcmp(type, "audio")) &&
+            !cancelled_reply && playable_command_audio &&
+            (!audio_mime || !strcmp(audio_mime, "audio/wav")) && audio_url && audio_url[0]) {
+            http_response_t media_response;
+            esp_err_t media_err = request_with_capacity("GET", audio_url, NULL, NULL, 0,
+                                                        OUTGOING_AUDIO_URL_CAPACITY,
+                                                        &media_response);
+            if (media_err == ESP_OK && media_response.status == 200 && media_response.len > 44) {
+                ESP_LOGI(TAG, "playing server speech URL: %u bytes", (unsigned)media_response.len);
+                esp_err_t play_err = board_port_play_wav((const uint8_t *)media_response.data,
+                                                         media_response.len);
+                audio_played = play_err == ESP_OK;
+                if (play_err != ESP_OK) {
+                    ESP_LOGW(TAG, "server speech URL playback failed: %s", esp_err_to_name(play_err));
+                }
+            } else {
+                ESP_LOGW(TAG, "server speech URL download failed: err=%s status=%d len=%u",
+                         esp_err_to_name(media_err), media_response.status,
+                         (unsigned)media_response.len);
+            }
+            response_release(&media_response);
+        } else if (type && (!strcmp(type, "voice") || !strcmp(type, "audio")) && audio_data &&
+                   !cancelled_reply && playable_command_audio &&
+                   (!audio_mime || !strcmp(audio_mime, "audio/wav"))) {
             size_t wav_capacity = 0;
             int decode_status = mbedtls_base64_decode(NULL, 0, &wav_capacity,
                                                        (const unsigned char *)audio_data,
@@ -1908,6 +1948,7 @@ static esp_err_t poll_reply(void) {
                                                   strlen(audio_data)) == 0) {
                     ESP_LOGI(TAG, "playing server speech: %u bytes", (unsigned)wav_len);
                     esp_err_t play_err = board_port_play_wav(wav, wav_len);
+                    audio_played = play_err == ESP_OK;
                     if (play_err != ESP_OK) ESP_LOGW(TAG, "server speech playback failed: %s", esp_err_to_name(play_err));
                 } else {
                     ESP_LOGW(TAG, "invalid server speech payload");
@@ -1915,6 +1956,15 @@ static esp_err_t poll_reply(void) {
                 free(wav);
             } else {
                 ESP_LOGW(TAG, "ignored server speech payload: base64=%d size=%u", decode_status, (unsigned)wav_capacity);
+            }
+        }
+        if (final && active_reply && type &&
+            (!strcmp(type, "voice") || !strcmp(type, "audio"))) {
+            TaskHandle_t waiter = begin_active_command_reply();
+            if (waiter) {
+                board_port_show_response(audio_played ? "语音回复" : "任务已完成",
+                                         audio_played ? "语音结果播放完成" : "远端已完成，但语音结果无法播放");
+                xTaskNotifyGive(waiter);
             }
         }
         if (id) {

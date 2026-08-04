@@ -1586,6 +1586,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		}
 	}
 	if text == "" && len(attachments) == 0 {
+		m.enqueueError(req, maclawID, "empty_input", "没有识别到可处理的语音或文字内容")
 		return
 	}
 
@@ -1644,6 +1645,7 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 	// do not involve audio (e.g. image) still suppress text as declared.
 	allowText := allow("text") || (containsString(selected, "audio") && capabilities.SupportsOutput("text"))
 	enqueued := false
+	textTerminalExpected := allowText && (resp.Text != "" || resp.Error != "" || len(resp.Actions) > 0)
 	// Voice goes first: ESP32 firmware treats an incoming text message as the
 	// end of the current command, so a voice reply arriving after the text
 	// would be dropped as an unrelated message.
@@ -1651,7 +1653,11 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		// Mark enqueued only when the message was actually queued: enqueue
 		// silently drops audio that fails preparation, and a premature true
 		// here would suppress the "(no output)" terminal fallback below.
-		if queued := m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: resp.VoiceMimeType, FileName: resp.VoiceFileName, Data: resp.VoiceData, Metadata: map[string]string{"acp_turn": "final"}}); queued.ID != "" {
+		audioMetadata := map[string]string{}
+		if !textTerminalExpected {
+			audioMetadata["acp_turn"] = "final"
+		}
+		if queued := m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: resp.VoiceMimeType, FileName: resp.VoiceFileName, Data: resp.VoiceData, Metadata: audioMetadata}); queued.ID != "" {
 			enqueued = true
 		}
 	}

@@ -26,7 +26,6 @@
 #include "freertos/task.h"
 
 #include "echoear_st77916_init.h"
-#include "ack_voice_adpcm.h"
 #include "font_cjk24.h"
 
 // EchoEar-2ST board definition. GPIO values are the physical GPIO numbers;

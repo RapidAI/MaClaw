@@ -171,6 +171,31 @@ func TestThirdPartyGatewayHubReplyCorrelation(t *testing.T) {
 		t.Fatalf("legacy correlation=%q", got)
 	}
 }
+
+func TestThirdPartyGatewayVoiceBeforeTextHasSingleTerminalMessage(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities:   []string{"text", "audio"},
+		Combinations: [][]string{{"audio", "text"}},
+		Text:         &agent.ClientTextCapabilities{MaxChars: 240},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"url"}, MaxDownloadBytes: 1024,
+		},
+	}})
+	m.enqueueAgentResponse("pet", "default", "mc_in_voice_text", &IMAgentResponse{
+		Text: "天气晴朗", VoiceData: base64.StdEncoding.EncodeToString([]byte("fake-wav")), VoiceMimeType: "audio/wav",
+	})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 2 || messages[0].Type != "voice" || messages[1].Type != "text" {
+		t.Fatalf("voice/text ordering=%#v", messages)
+	}
+	if messages[0].Metadata["acp_turn"] == "final" || messages[1].Metadata["acp_turn"] != "final" {
+		t.Fatalf("terminal markers=%#v", messages)
+	}
+}
 func TestThirdPartyGatewayHandshakeCapabilitiesReachLocalAgentContract(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
