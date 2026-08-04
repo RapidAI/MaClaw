@@ -2,6 +2,7 @@ package im
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -1221,7 +1222,7 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		return
 	}
 	_ = targetCaps // retained from the early pass used to protect audit inputs
-	if shouldSendVoiceAsPrimary(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
+	if shouldSendVoiceAsPrimary(plugin.Name()) && responseHasVoice(resp) {
 		if a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps) {
 			voiceDelivered = true
 			log.Printf("[IM Adapter] sent voice as primary response for %s; text suppressed", plugin.Name())
@@ -1231,7 +1232,7 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 	// Voice-first platforms (ESP32 pets): the device firmware ends the current
 	// command when a text message arrives, so the voice reply must reach the
 	// device before the text or it is dropped as an unrelated message.
-	if shouldSendVoiceBeforeText(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
+	if shouldSendVoiceBeforeText(plugin.Name()) && responseHasVoice(resp) {
 		a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
 		// Mark voice as handled even when the send failed: the deferred retry
 		// above would run after the text, when the device has already ended
@@ -1310,6 +1311,9 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 	if caps.MaxTextLength > 0 && len(text) > caps.MaxTextLength {
 		text = truncateAtLine(text, caps.MaxTextLength)
 	}
+	if !responseHasTextContent(resp) && responseHasVoice(resp) {
+		return
+	}
 
 	// If the message is marked urgent and the plugin supports it, use urgent delivery.
 	if out.Urgent {
@@ -1369,26 +1373,107 @@ func (a *Adapter) sendVoiceResponse(ctx context.Context, plugin IMPlugin, target
 }
 
 func (a *Adapter) sendVoiceResponseWithCapabilities(ctx context.Context, plugin IMPlugin, target UserTarget, resp *GenericResponse, caps CapabilityDeclaration) bool {
-	if resp == nil || resp.VoiceData == "" || resp.VoiceFileName == "" {
+	parts := responseVoiceParts(resp)
+	if len(parts) == 0 {
 		return false
+	}
+	// Target-specific hardware contracts include the accepted codec and per-part
+	// transport size. Validate again at the final send boundary so malformed or
+	// stale upstream audio degrades to text instead of being queued and failing
+	// later inside the gateway.
+	if resolver, ok := plugin.(TargetCapabilityResolver); ok {
+		if client, found := resolver.ClientCapabilitiesForTarget(ctx, target); found {
+			client = agent.NormalizeClientCapabilities(&client)
+			for index, part := range parts {
+				decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(part.Data))
+				if err != nil || len(decoded) == 0 || !client.SupportsOutputMIME("audio", part.MimeType) ||
+					(!client.SupportsOutputAudioDelivery("inline", int64(len(decoded))) &&
+						!client.SupportsOutputAudioDelivery("url", int64(len(decoded)))) {
+					log.Printf("[IM Adapter] rejected incompatible voice part for %s part=%d/%d mime=%s", plugin.Name(), index+1, len(parts), part.MimeType)
+					return false
+				}
+			}
+		}
 	}
 	if caps.SupportsVoice {
 		if voicePlugin, ok := plugin.(VoiceSender); ok {
-			if err := voicePlugin.SendVoice(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
-				log.Printf("[IM Adapter] SendVoice failed for %s: %v", plugin.Name(), err)
-				return false
+			partPlugin, preservesParts := plugin.(VoicePartSender)
+			// VoicePartSender is implemented by the shared remote-gateway
+			// transport, but part indexes and ACP terminal semantics belong only
+			// to the third-party hardware protocol. Other IM gateways must retain
+			// their ordinary native voice-message behavior.
+			preservesParts = preservesParts && plugin.Name() == "thirdparty" && len(resp.VoiceParts) > 0
+			voiceIsTerminal := !responseHasNonVoiceContent(resp)
+			for i, part := range parts {
+				var err error
+				if preservesParts {
+					err = partPlugin.SendVoicePart(ctx, target, part.Data, part.FileName, part.MimeType, i+1, len(parts), voiceIsTerminal && i == len(parts)-1)
+				} else {
+					err = voicePlugin.SendVoice(ctx, target, part.Data, part.FileName, part.MimeType)
+				}
+				if err != nil {
+					log.Printf("[IM Adapter] SendVoice failed for %s part=%d/%d: %v", plugin.Name(), i+1, len(parts), err)
+					return false
+				}
 			}
 			return true
 		}
 	}
 	if caps.SupportsFile {
-		if err := plugin.SendFile(ctx, target, resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType); err != nil {
-			log.Printf("[IM Adapter] SendFile (voice fallback) failed for %s: %v", plugin.Name(), err)
-			return false
+		for i, part := range parts {
+			if err := plugin.SendFile(ctx, target, part.Data, part.FileName, part.MimeType); err != nil {
+				log.Printf("[IM Adapter] SendFile (voice fallback) failed for %s part=%d/%d: %v", plugin.Name(), i+1, len(parts), err)
+				return false
+			}
 		}
 		return true
 	}
 	return false
+}
+
+func responseHasVoice(resp *GenericResponse) bool {
+	return len(responseVoiceParts(resp)) > 0
+}
+
+func responseVoiceParts(resp *GenericResponse) []VoicePart {
+	if resp == nil {
+		return nil
+	}
+	if len(resp.VoiceParts) > 0 {
+		parts := make([]VoicePart, 0, len(resp.VoiceParts))
+		for _, part := range resp.VoiceParts {
+			if part.Data != "" && part.FileName != "" {
+				parts = append(parts, part)
+			}
+		}
+		return parts
+	}
+	if resp.VoiceData != "" && resp.VoiceFileName != "" {
+		return []VoicePart{{Data: resp.VoiceData, FileName: resp.VoiceFileName, MimeType: resp.VoiceMimeType}}
+	}
+	return nil
+}
+
+func responseHasNonVoiceContent(resp *GenericResponse) bool {
+	if resp == nil {
+		return false
+	}
+	return responseHasTextContent(resp) || resp.ImageKey != "" ||
+		(resp.FileData != "" && resp.FileName != "")
+}
+
+// responseHasTextContent intentionally ignores StatusIcon. AgentResponse uses
+// the semantic "info" icon for every successful reply; treating that marker as
+// user-visible text turns a voice-only response into a synthetic "[i]" frame
+// and prevents the last audio part from terminating the hardware turn.
+func responseHasTextContent(resp *GenericResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if strings.TrimSpace(resp.FallbackText) != "" || strings.TrimSpace(resp.Title) != "" || strings.TrimSpace(resp.Body) != "" {
+		return true
+	}
+	return len(resp.Fields) > 0 || len(resp.Actions) > 0
 }
 
 // deliverSingleResponse delivers a GenericResponse through the plugin,
@@ -1403,7 +1488,7 @@ func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, ta
 	if !deliverable {
 		return
 	}
-	if shouldSendVoiceAsPrimary(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
+	if shouldSendVoiceAsPrimary(plugin.Name()) && responseHasVoice(resp) {
 		if a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps) {
 			return
 		}
@@ -1412,7 +1497,7 @@ func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, ta
 	// sender below would otherwise deliver voice after the text, which ESP32
 	// firmware discards.
 	voiceDelivered := false
-	if shouldSendVoiceBeforeText(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
+	if shouldSendVoiceBeforeText(plugin.Name()) && responseHasVoice(resp) {
 		a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
 		// Same rationale as sendResponse: a failed first attempt must not be
 		// retried by the deferred sender after the text, so mark the voice as
@@ -1443,6 +1528,9 @@ func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, ta
 	}
 	if caps.MaxTextLength > 0 && len(text) > caps.MaxTextLength {
 		text = truncateAtLine(text, caps.MaxTextLength)
+	}
+	if !responseHasTextContent(resp) && responseHasVoice(resp) {
+		return
 	}
 	_ = plugin.SendText(ctx, target, text)
 }
@@ -1511,11 +1599,11 @@ func adaptResponseForTarget(ctx context.Context, plugin IMPlugin, target UserTar
 	}
 	client = agent.NormalizeClientCapabilities(&client)
 	resp := *original
-	textPresent := resp.ToFallbackText() != ""
+	textPresent := responseHasTextContent(&resp)
 	textSupported := client.SupportsOutput("text")
 	imagePresent := resp.ImageKey != "" && caps.SupportsImage
 	filePresent := resp.FileData != "" && resp.FileName != "" && caps.SupportsFile
-	voicePresent := resp.VoiceData != "" && resp.VoiceFileName != "" && caps.SupportsVoice
+	voicePresent := responseHasVoice(&resp) && caps.SupportsVoice
 	if !textSupported {
 		clearResponseText(&resp)
 		textPresent = false
@@ -1528,6 +1616,7 @@ func adaptResponseForTarget(ctx context.Context, plugin IMPlugin, target UserTar
 	}
 	if !voicePresent {
 		resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
+		resp.VoiceParts = nil
 	}
 	present := make([]string, 0, 4)
 	if textPresent {
@@ -1558,6 +1647,7 @@ func adaptResponseForTarget(ctx context.Context, plugin IMPlugin, target UserTar
 		}
 		if !containsModality(chosen, "audio") {
 			resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
+			resp.VoiceParts = nil
 		}
 	}
 	return &resp, caps, true

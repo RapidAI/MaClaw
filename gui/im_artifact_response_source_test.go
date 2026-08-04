@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +21,25 @@ func TestAttachLocalPreviewMarksScreenshotResponseSource(t *testing.T) {
 	}
 	if resp.LocalFilePath == "" || len(resp.LocalFilePaths) != 1 || resp.ThumbnailBase64 != "thumb" {
 		t.Fatalf("preview fields not populated: %+v", resp)
+	}
+}
+
+func TestAttachVoiceArtifactDecodesHardwareVoiceParts(t *testing.T) {
+	parts := []IMVoicePart{
+		{Data: "part-1", FileName: "reply-1.wav", MimeType: "audio/wav"},
+		{Data: "part-2", FileName: "reply-2.wav", MimeType: "audio/wav"},
+	}
+	encoded, err := json.Marshal(parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := &IMAgentResponse{}
+	attachVoiceArtifact(resp, base64.StdEncoding.EncodeToString(encoded), "voice-parts.json", deviceVoicePartsArtifactMIME)
+	if len(resp.VoiceParts) != 2 || resp.VoiceParts[0].Data != "part-1" || resp.VoiceParts[1].Data != "part-2" {
+		t.Fatalf("hardware voice parts=%#v", resp.VoiceParts)
+	}
+	if resp.VoiceData != "" || resp.VoiceFileName != "" || resp.VoiceMimeType != "" {
+		t.Fatalf("legacy voice fields must stay empty: %#v", resp)
 	}
 }
 

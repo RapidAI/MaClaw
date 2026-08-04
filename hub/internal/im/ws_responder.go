@@ -14,21 +14,45 @@ type WSAgentResponder struct {
 // HandleAgentResponse parses the raw JSON payload and delegates to the
 // MessageRouter.
 func (w *WSAgentResponder) HandleAgentResponse(requestID string, raw json.RawMessage) {
-	var envelope struct {
-		Response AgentResponse `json:"response"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		// Try parsing as a direct AgentResponse (no wrapper).
-		var direct AgentResponse
-		if err2 := json.Unmarshal(raw, &direct); err2 != nil {
-			log.Printf("[WSAgentResponder] failed to parse agent response for request_id=%s: %v", requestID, err)
-			return
-		}
-		w.Router.HandleAgentResponse(requestID, &direct)
+	if w == nil || w.Router == nil {
 		return
 	}
-	resp := envelope.Response
+	// json.Unmarshal accepts unknown fields, so decoding a direct AgentResponse
+	// into the old wrapper struct succeeds with an empty Response. Inspect the
+	// wrapper key explicitly before choosing the wire shape.
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		log.Printf("[WSAgentResponder] failed to parse agent response for request_id=%s: %v", requestID, err)
+		return
+	}
+	responseRaw, wrapped := object["response"]
+	if !wrapped {
+		responseRaw = raw
+	}
+	var resp AgentResponse
+	if len(responseRaw) == 0 || string(responseRaw) == "null" {
+		log.Printf("[WSAgentResponder] empty agent response for request_id=%s", requestID)
+		return
+	}
+	if err := json.Unmarshal(responseRaw, &resp); err != nil {
+		log.Printf("[WSAgentResponder] failed to parse agent response body for request_id=%s: %v", requestID, err)
+		return
+	}
 	w.Router.HandleAgentResponse(requestID, &resp)
+}
+
+// HandleAgentVoicePart parses one bounded GUI -> Hub voice frame and stores it
+// on the pending request. The final response commits the assembled stream.
+func (w *WSAgentResponder) HandleAgentVoicePart(requestID string, raw json.RawMessage) {
+	if w == nil || w.Router == nil {
+		return
+	}
+	var frame AgentVoicePart
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		log.Printf("[WSAgentResponder] failed to parse agent voice part for request_id=%s: %v", requestID, err)
+		return
+	}
+	w.Router.HandleAgentVoicePart(requestID, frame)
 }
 
 // HandleAgentProgress delegates progress updates to the MessageRouter,

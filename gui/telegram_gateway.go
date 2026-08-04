@@ -610,16 +610,19 @@ func (m *telegramGatewayManager) sendLocalFiles(gw *telegram.Gateway, chatID int
 
 // GatewayReplyPayload holds the fields of an im.gateway_reply from Hub.
 type GatewayReplyPayload struct {
-	ReplyType    gatewayReplyTypeKind `json:"reply_type"`
-	PlatformUID  string               `json:"platform_uid"`
-	Text         string               `json:"text"`
-	ImageData    string               `json:"image_data"`
-	Caption      string               `json:"caption"`
-	FileData     string               `json:"file_data"`
-	FileName     string               `json:"file_name"`
-	MimeType     string               `json:"mime_type"`
-	ContextToken string               `json:"context_token,omitempty"`
-	ChatType     string               `json:"chat_type,omitempty"`
+	ReplyType      gatewayReplyTypeKind `json:"reply_type"`
+	PlatformUID    string               `json:"platform_uid"`
+	Text           string               `json:"text"`
+	ImageData      string               `json:"image_data"`
+	Caption        string               `json:"caption"`
+	FileData       string               `json:"file_data"`
+	FileName       string               `json:"file_name"`
+	MimeType       string               `json:"mime_type"`
+	VoicePartIndex int                  `json:"voice_part_index,omitempty"`
+	VoicePartTotal int                  `json:"voice_part_total,omitempty"`
+	VoicePartFinal bool                 `json:"voice_part_final,omitempty"`
+	ContextToken   string               `json:"context_token,omitempty"`
+	ChatType       string               `json:"chat_type,omitempty"`
 	// SourceMessageID / SenderID correlate Lansenger group decorations when
 	// hub replies complete out of FIFO order for the same group.
 	SourceMessageID string         `json:"source_message_id,omitempty"`

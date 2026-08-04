@@ -137,9 +137,19 @@ static volatile bool s_command_cancel_enabled;
 static bool s_command_cancel_ui_shown;
 #define CANCELLED_REPLY_SLOTS 4
 #define COMMAND_REPLY_ID_CAPACITY 96
+#define PLAYED_VOICE_MESSAGE_SLOTS 16
 static char s_active_command_reply_to[COMMAND_REPLY_ID_CAPACITY];
+// New replies deliver ordered voice parts before terminal text. Retain the
+// completed correlation while the result page remains visible as a defensive
+// allowance for an already-queued trailing packet or transport reordering.
+static char s_result_command_reply_to[COMMAND_REPLY_ID_CAPACITY];
 static char s_cancelled_command_reply_to[CANCELLED_REPLY_SLOTS][COMMAND_REPLY_ID_CAPACITY];
 static unsigned s_cancelled_command_reply_next;
+// Playback completes before the gateway ACK is posted. If that ACK fails, the
+// cursor intentionally stays put and the message is polled again; remember
+// successful voice message IDs so retries ACK them without speaking twice.
+static char s_played_voice_message_ids[PLAYED_VOICE_MESSAGE_SLOTS][COMMAND_REPLY_ID_CAPACITY];
+static unsigned s_played_voice_message_next;
 static int64_t s_ignore_command_input_until_us;
 static uint32_t s_interaction_generation;
 static uint32_t s_cancel_requested_generation;
@@ -343,6 +353,33 @@ static bool active_command_reply_matches(const char *reply_to) {
     return matches;
 }
 
+static bool result_command_reply_matches(const char *reply_to) {
+    if (!reply_to || !reply_to[0]) return false;
+    bool matches;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    matches = s_command_display_locked && s_result_command_reply_to[0] &&
+              !strcmp(s_result_command_reply_to, reply_to);
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return matches;
+}
+
+static bool voice_message_was_played(const char *message_id) {
+    if (!message_id || !message_id[0]) return false;
+    for (unsigned i = 0; i < PLAYED_VOICE_MESSAGE_SLOTS; ++i) {
+        if (s_played_voice_message_ids[i][0] &&
+            !strcmp(s_played_voice_message_ids[i], message_id)) return true;
+    }
+    return false;
+}
+
+static void remember_played_voice_message(const char *message_id) {
+    if (!message_id || !message_id[0] || voice_message_was_played(message_id)) return;
+    strlcpy(s_played_voice_message_ids[s_played_voice_message_next], message_id,
+            COMMAND_REPLY_ID_CAPACITY);
+    s_played_voice_message_next =
+        (s_played_voice_message_next + 1) % PLAYED_VOICE_MESSAGE_SLOTS;
+}
+
 static const char *outgoing_reply_correlation(cJSON *item) {
     if (!cJSON_IsObject(item)) return NULL;
     const char *value = json_string(item, "replyTo");
@@ -431,6 +468,10 @@ static TaskHandle_t begin_active_command_reply(void) {
         // Marking RESULT here makes the UI transition atomic from the point of
         // view of both tasks while keeping the worker alive for cleanup.
         s_interaction_phase = INTERACTION_RESULT;
+        if (s_active_command_reply_to[0]) {
+            strlcpy(s_result_command_reply_to, s_active_command_reply_to,
+                    sizeof(s_result_command_reply_to));
+        }
         waiter = s_interaction_task;
     }
     taskEXIT_CRITICAL(&s_task_state_lock);
@@ -1985,10 +2026,20 @@ static esp_err_t poll_reply(void) {
                 xTaskNotifyGive(waiter);
             }
         }
-        bool playable_command_audio = active_reply || !command_display_active();
+        // New hardware replies are an ordered series of non-terminal audio
+        // parts followed by terminal text. Keep accepting the same replyTo
+        // while the command is active. result_reply also permits a trailing
+        // packet already queued when a terminal response completed the worker.
+        bool result_reply = !cancelled_reply && result_command_reply_matches(reply_to);
+        bool playable_command_audio = active_reply || result_reply || !command_display_active();
         bool audio_played = false;
+        bool replayed_audio = type && (!strcmp(type, "voice") || !strcmp(type, "audio")) &&
+                              voice_message_was_played(id);
+        if (replayed_audio) {
+            ESP_LOGI(TAG, "skipped already-played speech while retrying ACK: id=%s", id);
+        }
         if (type && (!strcmp(type, "voice") || !strcmp(type, "audio")) &&
-            !cancelled_reply && playable_command_audio &&
+            !replayed_audio && !cancelled_reply && playable_command_audio &&
             (!audio_mime || !strcmp(audio_mime, "audio/wav")) && audio_url && audio_url[0]) {
             http_response_t media_response;
             esp_err_t media_err = request_with_capacity("GET", audio_url, NULL, NULL, 0,
@@ -1999,6 +2050,9 @@ static esp_err_t poll_reply(void) {
                 esp_err_t play_err = board_port_play_wav((const uint8_t *)media_response.data,
                                                          media_response.len);
                 audio_played = play_err == ESP_OK;
+                if (audio_played && result_reply) {
+                    ESP_LOGI(TAG, "played trailing speech for displayed result: %s", reply_to);
+                }
                 if (play_err != ESP_OK) {
                     ESP_LOGW(TAG, "server speech URL playback failed: %s", esp_err_to_name(play_err));
                 }
@@ -2009,7 +2063,7 @@ static esp_err_t poll_reply(void) {
             }
             response_release(&media_response);
         } else if (type && (!strcmp(type, "voice") || !strcmp(type, "audio")) && audio_data &&
-                   !cancelled_reply && playable_command_audio &&
+                   !replayed_audio && !cancelled_reply && playable_command_audio &&
                    (!audio_mime || !strcmp(audio_mime, "audio/wav"))) {
             size_t wav_capacity = 0;
             int decode_status = mbedtls_base64_decode(NULL, 0, &wav_capacity,
@@ -2026,6 +2080,9 @@ static esp_err_t poll_reply(void) {
                     ESP_LOGI(TAG, "playing server speech: %u bytes", (unsigned)wav_len);
                     esp_err_t play_err = board_port_play_wav(wav, wav_len);
                     audio_played = play_err == ESP_OK;
+                    if (audio_played && result_reply) {
+                        ESP_LOGI(TAG, "played trailing speech for displayed result: %s", reply_to);
+                    }
                     if (play_err != ESP_OK) ESP_LOGW(TAG, "server speech playback failed: %s", esp_err_to_name(play_err));
                 } else {
                     ESP_LOGW(TAG, "invalid server speech payload");
@@ -2035,7 +2092,8 @@ static esp_err_t poll_reply(void) {
                 ESP_LOGW(TAG, "ignored server speech payload: base64=%d size=%u", decode_status, (unsigned)wav_capacity);
             }
         }
-        if (final && active_reply && type &&
+        if (audio_played) remember_played_voice_message(id);
+        if (final && active_reply && !replayed_audio && type &&
             (!strcmp(type, "voice") || !strcmp(type, "audio"))) {
             TaskHandle_t waiter = begin_active_command_reply();
             if (waiter) {
@@ -2043,6 +2101,12 @@ static esp_err_t poll_reply(void) {
                                          audio_played ? "语音结果播放完成" : "远端已完成，但语音结果无法播放");
                 xTaskNotifyGive(waiter);
             }
+        }
+        if (audio_played && result_reply) {
+            // Keep the text result and its paging position on screen. The
+            // trailing audio packet is presentation for that result, not a
+            // second terminal UI transition.
+            ESP_LOGI(TAG, "speech completed without replacing result page");
         }
         if (id) {
             cJSON *ack_id = cJSON_CreateString(id);
@@ -3036,6 +3100,7 @@ static bool start_voice_interaction(bool consume_screen_wake) {
     if (!interaction_generation) interaction_generation = ++s_interaction_generation;
     s_interaction_phase = INTERACTION_RECORDING;
     s_active_command_reply_to[0] = '\0';
+    s_result_command_reply_to[0] = '\0';
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (s_command_cancel_ui_ready) {
         while (xSemaphoreTake(s_command_cancel_ui_ready, 0) == pdTRUE) {}
@@ -3279,6 +3344,9 @@ static void on_user_input(board_input_action_t action, void *arg) {
         s_interaction_phase = INTERACTION_IDLE;
         taskEXIT_CRITICAL(&s_task_state_lock);
         s_command_display_locked = false;
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_result_command_reply_to[0] = '\0';
+        taskEXIT_CRITICAL(&s_task_state_lock);
         board_port_set_command_display_lock(false);
         pet("idle");
         ESP_LOGI(TAG, "response dismissed; ambient screen restored");

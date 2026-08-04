@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"log"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -11,8 +12,9 @@ import (
 )
 
 const (
-	// deviceVoiceMaxRunes keeps the spoken reply short enough that the
-	// resulting 16kHz mono WAV stays well under the ESP32 download limit.
+	deviceVoicePartsArtifactMIME = "application/vnd.maclaw.voice-parts+json"
+	// deviceVoiceMaxRunes bounds each hardware audio payload, not the complete
+	// answer. Long answers are synthesized and queued as ordered parts.
 	deviceVoiceMaxRunes = 40
 	// deviceVoiceRetryMaxRunes is the shorter cut retried once when the first
 	// synthesis still exceeds deviceVoiceMaxWAVBytes.
@@ -34,7 +36,7 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 		// channel: even error replies are spoken when there is text to read
 		// aloud (the IM-channel eligibility gate below intentionally still
 		// skips errors).
-		if resp.Text != "" && resp.VoiceData == "" {
+		if resp.Text != "" && len(resp.VoiceParts) == 0 && resp.VoiceData == "" {
 			h.attachDeviceVoiceReply(resp, platform)
 		}
 		return
@@ -129,38 +131,45 @@ func (h *IMMessageHandler) attachDeviceVoiceReply(resp *IMAgentResponse, platfor
 
 // attachDeviceVoicePayload synthesizes a short 16kHz mono WAV (the only audio
 // format ESP32 firmware accepts) and attaches it to resp. Failures only log;
-// resp.VoiceData stays empty so the caller falls back to text-only delivery.
+// resp.VoiceParts stays empty so the caller falls back to text-only delivery.
 func attachDeviceVoicePayload(synth tts.TextSynthesizer, resp *IMAgentResponse, platform string) {
 	clean := tts.CleanForSpeech(resp.Text)
-	speak := tts.TruncateRunesSmart(clean, deviceVoiceMaxRunes)
-	if speak == "" {
+	speechParts := tts.PrepareSpeechChunks(clean, 0, deviceVoiceMaxRunes)
+	if len(speechParts) == 0 {
 		log.Printf("[tts-auto] device skip reason=empty_after_clean platform=%s", platform)
 		return
 	}
-	wav, err := synthesizeDeviceWAV(synth, speak, platform)
-	if err != nil {
-		return
-	}
-	if len(wav) > deviceVoiceMaxWAVBytes {
-		// 40 Chinese runes at Kokoro pace can be ~10s of 32KB/s audio and
-		// still exceed the byte cap; retry once with a shorter cut before
-		// dropping the voice reply entirely.
-		if retry := tts.TruncateRunesSmart(clean, deviceVoiceRetryMaxRunes); retry != "" && retry != speak {
-			log.Printf("[tts-auto] device retry shorter text platform=%s bytes=%d", platform, len(wav))
-			wav, err = synthesizeDeviceWAV(synth, retry, platform)
-			if err != nil {
-				return
+	voiceParts := make([]IMVoicePart, 0, len(speechParts))
+	for index := 0; index < len(speechParts); index++ {
+		speak := speechParts[index]
+		wav, err := synthesizeDeviceWAV(synth, speak, platform)
+		if err != nil {
+			return
+		}
+		if len(wav) > deviceVoiceMaxWAVBytes {
+			// Preserve all content: split an unusually slow segment into smaller
+			// segments and synthesize every resulting part instead of truncating
+			// the retry to a prefix.
+			retryParts := tts.PrepareSpeechChunks(speak, 0, deviceVoiceRetryMaxRunes)
+			if len(retryParts) > 1 {
+				log.Printf("[tts-auto] device split oversized segment platform=%s part=%d/%d bytes=%d subparts=%d", platform, index+1, len(speechParts), len(wav), len(retryParts))
+				speechParts = append(speechParts[:index], append(retryParts, speechParts[index+1:]...)...)
+				index--
+				continue
 			}
 		}
+		if len(wav) > deviceVoiceMaxWAVBytes {
+			log.Printf("[tts-auto] device skip reason=wav_too_large platform=%s part=%d/%d bytes=%d", platform, index+1, len(speechParts), len(wav))
+			return
+		}
+		voiceParts = append(voiceParts, IMVoicePart{
+			Data:     base64.StdEncoding.EncodeToString(wav),
+			FileName: "reply-" + strconv.Itoa(index+1) + ".wav",
+			MimeType: "audio/wav",
+		})
 	}
-	if len(wav) > deviceVoiceMaxWAVBytes {
-		log.Printf("[tts-auto] device skip reason=wav_too_large platform=%s bytes=%d", platform, len(wav))
-		return
-	}
-	resp.VoiceData = base64.StdEncoding.EncodeToString(wav)
-	resp.VoiceFileName = "reply.wav"
-	resp.VoiceMimeType = "audio/wav"
-	log.Printf("[tts-auto] device attached voice: %s %d bytes", resp.VoiceFileName, len(resp.VoiceData))
+	resp.VoiceParts = voiceParts
+	log.Printf("[tts-auto] device attached voice parts=%d", len(voiceParts))
 }
 
 // synthesizeDeviceWAV synthesizes speak and converts it to 16kHz mono 16-bit

@@ -958,37 +958,70 @@ func (m *thirdPartyGatewayManager) messagesAfter(clientID string, cursor int64, 
 }
 
 func (m *thirdPartyGatewayManager) enqueue(clientID string, msg thirdPartyOutgoingMessage) thirdPartyOutgoingMessage {
+	queued := m.enqueueBatch(clientID, []thirdPartyOutgoingMessage{msg}, false)
+	if len(queued) == 0 {
+		return thirdPartyOutgoingMessage{}
+	}
+	return queued[0]
+}
+
+// enqueueBatch prepares and publishes a logical response atomically. When
+// terminalLast is set, exactly the last message that survives capability and
+// media validation closes the ACP turn. This avoids exposing an intermediate
+// text/image/file frame as terminal while later frames are still queued.
+func (m *thirdPartyGatewayManager) enqueueBatch(clientID string, messages []thirdPartyOutgoingMessage, terminalLast bool) []thirdPartyOutgoingMessage {
 	started := time.Now()
 	m.mu.Lock()
 	state := m.ensureClientLocked(clientID)
 	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
-	if !m.prepareOutgoingAudioLocked(clientID, &msg, capabilities) {
+	prepared := make([]thirdPartyOutgoingMessage, 0, len(messages))
+	for _, msg := range messages {
+		if !m.prepareOutgoingAudioLocked(clientID, &msg, capabilities) {
+			continue
+		}
+		if !adaptGUIThirdPartyOutgoingMessage(&msg, capabilities) {
+			continue
+		}
+		prepared = append(prepared, msg)
+	}
+	if len(prepared) == 0 {
 		m.mu.Unlock()
-		return thirdPartyOutgoingMessage{}
+		return nil
 	}
-	if !adaptGUIThirdPartyOutgoingMessage(&msg, capabilities) {
-		m.mu.Unlock()
-		return thirdPartyOutgoingMessage{}
+	if terminalLast {
+		for index := range prepared {
+			delete(prepared[index].Metadata, "acp_turn")
+		}
+		last := len(prepared) - 1
+		if prepared[last].Metadata == nil {
+			prepared[last].Metadata = make(map[string]string)
+		}
+		prepared[last].Metadata["acp_turn"] = "final"
 	}
-	msg.Seq = state.NextSeq
-	state.NextSeq++
-	if msg.ID == "" {
-		msg.ID = fmt.Sprintf("mc_out_%d_%06d", time.Now().UnixMilli(), msg.Seq)
+	for index := range prepared {
+		msg := &prepared[index]
+		msg.Seq = state.NextSeq
+		state.NextSeq++
+		if msg.ID == "" {
+			msg.ID = fmt.Sprintf("mc_out_%d_%06d", time.Now().UnixMilli(), msg.Seq)
+		}
+		if msg.CreatedAt == 0 {
+			msg.CreatedAt = time.Now().UnixMilli()
+		}
+		state.Messages = append(state.Messages, *msg)
 	}
-	if msg.CreatedAt == 0 {
-		msg.CreatedAt = time.Now().UnixMilli()
-	}
-	state.Messages = append(state.Messages, msg)
 	pruneThirdPartyMessagesLocked(state)
 	old := m.notifyCh
 	m.notifyCh = make(chan struct{})
 	close(old)
 	m.mu.Unlock()
-	log.Printf("[thirdparty-mgr] outgoing queued client=%s id=%s seq=%d type=%s replyTo=%s final=%t progress=%t textChars=%d elapsed=%s",
-		clientID, msg.ID, msg.Seq, msg.Type, msg.ReplyToMessageID,
-		strings.EqualFold(msg.Metadata["acp_turn"], "final"), msg.Progress, len([]rune(msg.Text)),
-		time.Since(started).Round(time.Millisecond))
-	return msg
+	for _, msg := range prepared {
+		log.Printf("[thirdparty-mgr] outgoing queued client=%s id=%s seq=%d type=%s replyTo=%s final=%t progress=%t textChars=%d elapsed=%s",
+			clientID, msg.ID, msg.Seq, msg.Type, msg.ReplyToMessageID,
+			strings.EqualFold(msg.Metadata["acp_turn"], "final"), msg.Progress, len([]rune(msg.Text)),
+			time.Since(started).Round(time.Millisecond))
+	}
+	return prepared
 }
 
 func (m *thirdPartyGatewayManager) prepareOutgoingAudioLocked(clientID string, msg *thirdPartyOutgoingMessage, capabilities agent.ClientCapabilities) bool {
@@ -1638,27 +1671,21 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 	capabilities := m.clientCapabilities(clientID)
 	selected := agent.SelectClientOutputCombination(capabilities, agentResponseModalities(resp, capabilities)...)
 	allow := func(modality string) bool { return containsString(selected, modality) }
-	// A client declaring modalities [text,audio] with only singleton
-	// combinations [[text],[audio]] resolves to ["audio"] alone; without this
-	// fallback the text reply would be silently dropped (a regression for old
-	// firmware that expects text alongside voice). Single-modality wins that
-	// do not involve audio (e.g. image) still suppress text as declared.
+	// Hardware clients display the result text as well as playing the ordered
+	// audio stream, even when their declared preference selects audio first.
 	allowText := allow("text") || (containsString(selected, "audio") && capabilities.SupportsOutput("text"))
-	enqueued := false
-	textTerminalExpected := allowText && (resp.Text != "" || resp.Error != "" || len(resp.Actions) > 0)
+	messages := make([]thirdPartyOutgoingMessage, 0, len(resp.VoiceParts)+4)
 	// Voice goes first: ESP32 firmware treats an incoming text message as the
 	// end of the current command, so a voice reply arriving after the text
 	// would be dropped as an unrelated message.
-	if resp.VoiceData != "" && allow("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback && capabilities.SupportsOutputMIME("audio", resp.VoiceMimeType) {
-		// Mark enqueued only when the message was actually queued: enqueue
-		// silently drops audio that fails preparation, and a premature true
-		// here would suppress the "(no output)" terminal fallback below.
-		audioMetadata := map[string]string{}
-		if !textTerminalExpected {
-			audioMetadata["acp_turn"] = "final"
-		}
-		if queued := m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: resp.VoiceMimeType, FileName: resp.VoiceFileName, Data: resp.VoiceData, Metadata: audioMetadata}); queued.ID != "" {
-			enqueued = true
+	voiceParts := validThirdPartyVoiceParts(resp.VoiceParts, capabilities)
+	if len(voiceParts) > 0 && allow("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback {
+		for index, part := range voiceParts {
+			audioMetadata := map[string]string{
+				"voice_part_index": strconv.Itoa(index + 1),
+				"voice_part_total": strconv.Itoa(len(voiceParts)),
+			}
+			messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: part.MimeType, FileName: part.FileName, Data: part.Data, Metadata: audioMetadata})
 		}
 	}
 	if resp.Text != "" && allowText {
@@ -1673,33 +1700,24 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 				text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 			}
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: map[string]string{"acp_turn": "final"}})
-		enqueued = true
+		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text})
 	} else if len(resp.Actions) > 0 && allowText {
 		text := "Please reply with an option:"
 		for i, action := range resp.Actions {
 			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: map[string]string{"acp_turn": "final"}})
-		enqueued = true
+		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text})
 	}
 	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 && allowText {
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "error", Error: "agent_error", Text: textutil.StripMarkdown(resp.Error), Metadata: map[string]string{"acp_turn": "final"}})
-		enqueued = true
+		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "error", Error: "agent_error", Text: textutil.StripMarkdown(resp.Error)})
 	}
 	if resp.ImageKey != "" && allow("image") && capabilities.SupportsOutputMIME("image", "image/png") {
-		if !enqueued {
-			enqueued = true
-		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image", ContentType: "image/png", FileName: "image.png", Data: resp.ImageKey, Metadata: map[string]string{"acp_turn": "final"}})
+		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image", ContentType: "image/png", FileName: "image.png", Data: resp.ImageKey})
 	}
 	if resp.FileData != "" && allow("file") && capabilities.SupportsOutputMIME("file", resp.FileMimeType) {
 		decoded, decodeErr := base64.StdEncoding.DecodeString(resp.FileData)
 		if decodeErr == nil && capabilities.SupportsOutputBytes("file", int64(len(decoded))) {
-			if !enqueued {
-				enqueued = true
-			}
-			m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: resp.FileMimeType, FileName: resp.FileName, Data: resp.FileData, SizeBytes: int64(len(decoded)), Metadata: map[string]string{"acp_turn": "final"}})
+			messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: resp.FileMimeType, FileName: resp.FileName, Data: resp.FileData, SizeBytes: int64(len(decoded))})
 		}
 	}
 	paths := resp.LocalFilePaths
@@ -1724,18 +1742,42 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		if !capabilities.SupportsOutputMIME("file", ct) || !capabilities.SupportsOutputBytes("file", int64(len(data))) {
 			continue
 		}
-		if !enqueued {
-			enqueued = true
-		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), SizeBytes: int64(len(data)), Metadata: map[string]string{"acp_turn": "final"}})
+		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), SizeBytes: int64(len(data))})
 	}
-	// Ensure ACP bridge always sees one terminal marker even for empty results.
-	if !enqueued && capabilities.SupportsOutput("text") {
+	// Publish the complete logical response in one lock scope so polling cannot
+	// observe a premature terminal marker between its constituent messages.
+	if queued := m.enqueueBatch(clientID, messages, true); len(queued) == 0 && capabilities.SupportsOutput("text") {
 		m.enqueue(clientID, thirdPartyOutgoingMessage{
 			ConversationID: conversationID, ReplyToMessageID: replyTo,
 			Type: "text", Text: "(no output)", Metadata: map[string]string{"acp_turn": "final"},
 		})
 	}
+}
+
+// validThirdPartyVoiceParts performs the inexpensive checks that enqueue would
+// otherwise apply one part at a time. Filtering first is important because the
+// final ACP marker belongs on the last deliverable part, not necessarily the
+// last element of the untrusted response slice.
+func validThirdPartyVoiceParts(parts []IMVoicePart, capabilities agent.ClientCapabilities) []IMVoicePart {
+	if capabilities.Output.Audio == nil || !capabilities.Output.Audio.Playback {
+		return nil
+	}
+	valid := make([]IMVoicePart, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part.Data) == "" || !capabilities.SupportsOutputMIME("audio", part.MimeType) {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(part.Data))
+		if err != nil || len(decoded) == 0 || int64(len(decoded)) > thirdPartyMaxMediaBytes {
+			continue
+		}
+		size := int64(len(decoded))
+		if !capabilities.SupportsOutputAudioDelivery("inline", size) && !capabilities.SupportsOutputAudioDelivery("url", size) {
+			continue
+		}
+		valid = append(valid, part)
+	}
+	return valid
 }
 
 func agentResponseModalities(resp *IMAgentResponse, capabilities agent.ClientCapabilities) []string {
@@ -1776,8 +1818,13 @@ func agentResponseModalities(resp *IMAgentResponse, capabilities agent.ClientCap
 	if filePresent {
 		modalities = append(modalities, "file")
 	}
-	if resp.VoiceData != "" && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback && capabilities.SupportsOutputMIME("audio", resp.VoiceMimeType) {
-		modalities = append(modalities, "audio")
+	if len(resp.VoiceParts) > 0 && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback {
+		for _, part := range resp.VoiceParts {
+			if part.Data != "" && capabilities.SupportsOutputMIME("audio", part.MimeType) {
+				modalities = append(modalities, "audio")
+				break
+			}
+		}
 	}
 	return modalities
 }
@@ -1807,8 +1854,7 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		Caption:          reply.Caption,
 		FileName:         reply.FileName,
 		ContentType:      reply.MimeType,
-		// Deferred hub/async replies complete an ACP bridge turn.
-		Metadata: map[string]string{"acp_turn": "final"},
+		Metadata:         map[string]string{},
 	}
 	log.Printf("[thirdparty-mgr] Hub reply received client=%s sourceMessageID=%s correlatedReplyTo=%s type=%s",
 		clientID, reply.SourceMessageID, msg.ReplyToMessageID, reply.ReplyType.String())
@@ -1819,6 +1865,18 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		msg.Glyphs = glyphs
 	}
 	replyKind := normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String())
+	if reply.VoicePartIndex > 0 {
+		msg.Metadata["voice_part_index"] = strconv.Itoa(reply.VoicePartIndex)
+	}
+	if reply.VoicePartTotal > 0 {
+		msg.Metadata["voice_part_total"] = strconv.Itoa(reply.VoicePartTotal)
+	}
+	// A streamed voice part is presentation, not command completion, when a
+	// final text frame follows. Voice-only responses explicitly mark their
+	// last part terminal; all other deferred reply types remain terminal.
+	if replyKind != thirdPartyGatewayMessageVoice || reply.VoicePartFinal {
+		msg.Metadata["acp_turn"] = "final"
+	}
 	capabilities := m.clientCapabilities(clientID)
 	switch {
 	case replyKind == thirdPartyGatewayMessageImage && capabilities.SupportsOutput("image"):
@@ -1826,6 +1884,8 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		if msg.ContentType == "" {
 			msg.ContentType = "image/png"
 		}
+	case replyKind == thirdPartyGatewayMessageVoice && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback && capabilities.SupportsOutputMIME("audio", msg.ContentType):
+		msg.Data = reply.FileData
 	case replyKind.IsMediaFile() && capabilities.SupportsOutput("file"):
 		msg.Data = reply.FileData
 	default:

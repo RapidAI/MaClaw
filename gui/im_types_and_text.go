@@ -46,6 +46,7 @@ type IMAgentResponse struct {
 	VoiceData            string                        `json:"voice_data,omitempty"`      // Base64-encoded voice audio (OGG Opus or WAV)
 	VoiceFileName        string                        `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
 	VoiceMimeType        string                        `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
+	VoiceParts           []IMVoicePart                 `json:"voice_parts,omitempty"`     // ordered hardware playback segments
 	LocalFilePath        string                        `json:"local_file_path,omitempty"`
 	LocalFilePaths       []string                      `json:"local_file_paths,omitempty"`
 	ThumbnailBase64      string                        `json:"thumbnail_base64,omitempty"`
@@ -126,6 +127,14 @@ type IMAgentResponse struct {
 	// Populated only for interrupt responses (Merge/Queue). The Hub frontend
 	// renders these as clickable buttons; IM gateways format them as text.
 	Corrections []progress.CorrectionOption `json:"corrections,omitempty"`
+}
+
+// IMVoicePart is one bounded audio segment of a longer hardware voice reply.
+// Bread Compact and EchoEar-2ST both consume this ordered protocol.
+type IMVoicePart struct {
+	Data     string `json:"data"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
 }
 
 const stalledNoToolRecoverThreshold = 2

@@ -11,21 +11,22 @@ import (
 // can be converted to OutgoingMessage for any IM plugin, or degraded
 // to plain text for platforms with limited capabilities.
 type GenericResponse struct {
-	StatusCode   int              // Status code: 200 success, 400 bad request, 404 not found, 500 internal error
-	StatusIcon   string           // Semantic status token: ok|error|warning|busy|info|offline (never emoji)
-	Title        string           // Response title
-	Body         string           // Response body (supports Markdown)
-	Fields       []ResponseField  // Structured field list
-	Actions      []ResponseAction // Action button definitions
-	FallbackText string           // Explicit plain text fallback (optional override)
-	ImageKey     string           // Base64 image data or image key for IM delivery (optional)
-	ImageCaption string           // Caption for the image (optional)
-	FileData     string           // Base64-encoded file data for IM delivery (optional)
-	FileName     string           // File display name (optional)
-	FileMimeType string           // File MIME type (optional)
-	VoiceData     string          // Base64-encoded voice audio for IM delivery (optional, OGG Opus or WAV)
-	VoiceFileName string          // Voice file name, e.g. "voice.ogg" (optional)
-	VoiceMimeType string          // Voice MIME type, e.g. "audio/ogg" (optional)
+	StatusCode    int              // Status code: 200 success, 400 bad request, 404 not found, 500 internal error
+	StatusIcon    string           // Semantic status token: ok|error|warning|busy|info|offline (never emoji)
+	Title         string           // Response title
+	Body          string           // Response body (supports Markdown)
+	Fields        []ResponseField  // Structured field list
+	Actions       []ResponseAction // Action button definitions
+	FallbackText  string           // Explicit plain text fallback (optional override)
+	ImageKey      string           // Base64 image data or image key for IM delivery (optional)
+	ImageCaption  string           // Caption for the image (optional)
+	FileData      string           // Base64-encoded file data for IM delivery (optional)
+	FileName      string           // File display name (optional)
+	FileMimeType  string           // File MIME type (optional)
+	VoiceData     string           // Base64-encoded voice audio for IM delivery (optional, OGG Opus or WAV)
+	VoiceFileName string           // Voice file name, e.g. "voice.ogg" (optional)
+	VoiceMimeType string           // Voice MIME type, e.g. "audio/ogg" (optional)
+	VoiceParts    []VoicePart      // Ordered bounded audio segments for hardware delivery
 }
 
 // FormatStatusIconMark maps semantic StatusIcon tokens to short ASCII marks

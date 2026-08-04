@@ -167,13 +167,13 @@ func TestEchoInboundVoiceForDiagnosticsDisabledByDefault(t *testing.T) {
 }
 
 type fakeDeviceSynthesizer struct {
-	gotText string
-	wav     []byte
-	err     error
+	texts []string
+	wav   []byte
+	err   error
 }
 
 func (f *fakeDeviceSynthesizer) SynthesizeText(text string) ([]byte, error) {
-	f.gotText = text
+	f.texts = append(f.texts, text)
 	return f.wav, f.err
 }
 
@@ -218,30 +218,38 @@ func TestAttachDeviceVoicePayloadAttaches16kHzWAV(t *testing.T) {
 	resp := &IMAgentResponse{Text: longText}
 	attachDeviceVoicePayload(synth, resp, "thirdparty:pet-01")
 
-	if resp.VoiceData == "" || resp.VoiceMimeType != "audio/wav" || resp.VoiceFileName != "reply.wav" {
-		t.Fatalf("voice fields = %q %q %q", resp.VoiceFileName, resp.VoiceMimeType, resp.VoiceData)
+	if len(resp.VoiceParts) < 2 {
+		t.Fatalf("voice parts = %d, want multiple ordered parts", len(resp.VoiceParts))
 	}
-	if got := utf8.RuneCountInString(synth.gotText); got > deviceVoiceMaxRunes {
-		t.Fatalf("synthesized text length = %d runes, want <= %d", got, deviceVoiceMaxRunes)
+	if resp.VoiceData != "" || resp.VoiceFileName != "" || resp.VoiceMimeType != "" {
+		t.Fatalf("hardware response must use only voice_parts: %#v", resp)
 	}
-	decoded, err := base64.StdEncoding.DecodeString(resp.VoiceData)
-	if err != nil {
-		t.Fatalf("VoiceData is not valid base64: %v", err)
+	if len(synth.texts) != len(resp.VoiceParts) {
+		t.Fatalf("synthesize calls=%d voice parts=%d", len(synth.texts), len(resp.VoiceParts))
 	}
-	if len(decoded) > deviceVoiceMaxWAVBytes {
-		t.Fatalf("decoded WAV = %d bytes, exceeds %d", len(decoded), deviceVoiceMaxWAVBytes)
-	}
-	if len(decoded) < 44 || string(decoded[0:4]) != "RIFF" || string(decoded[8:12]) != "WAVE" {
-		t.Fatalf("decoded payload is not a WAV file")
-	}
-	if rate := binary.LittleEndian.Uint32(decoded[24:28]); rate != 16000 {
-		t.Fatalf("sample rate = %d, want 16000 (ESP32 only accepts 16kHz)", rate)
-	}
-	if channels := binary.LittleEndian.Uint16(decoded[22:24]); channels != 1 {
-		t.Fatalf("channels = %d, want 1", channels)
-	}
-	if bits := binary.LittleEndian.Uint16(decoded[34:36]); bits != 16 {
-		t.Fatalf("bits per sample = %d, want 16", bits)
+	for i, part := range resp.VoiceParts {
+		if got := utf8.RuneCountInString(synth.texts[i]); got > deviceVoiceMaxRunes {
+			t.Fatalf("part %d synthesized text length = %d runes, want <= %d", i, got, deviceVoiceMaxRunes)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(part.Data)
+		if err != nil {
+			t.Fatalf("part %d data is not valid base64: %v", i, err)
+		}
+		if len(decoded) > deviceVoiceMaxWAVBytes {
+			t.Fatalf("part %d WAV = %d bytes, exceeds %d", i, len(decoded), deviceVoiceMaxWAVBytes)
+		}
+		if len(decoded) < 44 || string(decoded[0:4]) != "RIFF" || string(decoded[8:12]) != "WAVE" {
+			t.Fatalf("part %d payload is not WAV", i)
+		}
+		if rate := binary.LittleEndian.Uint32(decoded[24:28]); rate != 16000 {
+			t.Fatalf("part %d sample rate = %d, want 16000", i, rate)
+		}
+		if channels := binary.LittleEndian.Uint16(decoded[22:24]); channels != 1 {
+			t.Fatalf("part %d channels = %d, want 1", i, channels)
+		}
+		if bits := binary.LittleEndian.Uint16(decoded[34:36]); bits != 16 {
+			t.Fatalf("part %d bits per sample = %d, want 16", i, bits)
+		}
 	}
 }
 
@@ -251,8 +259,11 @@ func TestAttachDeviceVoicePayloadShortTextStillGetsVoice(t *testing.T) {
 	synth := &fakeDeviceSynthesizer{wav: buildDeviceTestWAV(24000, 2400)}
 	resp := &IMAgentResponse{Text: "好的"}
 	attachDeviceVoicePayload(synth, resp, "thirdparty")
-	if resp.VoiceData == "" {
+	if len(resp.VoiceParts) != 1 {
 		t.Fatal("short device reply must still carry voice")
+	}
+	if resp.VoiceData != "" {
+		t.Fatal("short replies must use the new voice_parts protocol")
 	}
 }
 
@@ -260,7 +271,7 @@ func TestAttachDeviceVoicePayloadDegradesOnSynthesizeFailure(t *testing.T) {
 	synth := &fakeDeviceSynthesizer{err: fmt.Errorf("model not loaded")}
 	resp := &IMAgentResponse{Text: "你好"}
 	attachDeviceVoicePayload(synth, resp, "thirdparty:pet-01")
-	if resp.VoiceData != "" || resp.VoiceFileName != "" || resp.VoiceMimeType != "" {
+	if len(resp.VoiceParts) != 0 || resp.VoiceData != "" || resp.VoiceFileName != "" || resp.VoiceMimeType != "" {
 		t.Fatalf("voice fields must stay empty on failure: %#v", resp)
 	}
 }
@@ -270,8 +281,8 @@ func TestAttachDeviceVoicePayloadDropsOversizedAudio(t *testing.T) {
 	synth := &fakeDeviceSynthesizer{wav: buildDeviceTestWAV(24000, 24000*16)}
 	resp := &IMAgentResponse{Text: "你好"}
 	attachDeviceVoicePayload(synth, resp, "thirdparty:pet-01")
-	if resp.VoiceData != "" {
-		t.Fatalf("oversized audio must be dropped, got %d base64 bytes", len(resp.VoiceData))
+	if len(resp.VoiceParts) != 0 {
+		t.Fatalf("oversized indivisible audio must be dropped, got %d parts", len(resp.VoiceParts))
 	}
 }
 
@@ -280,34 +291,35 @@ func TestAttachDeviceVoicePayloadDropsOversizedAudio(t *testing.T) {
 type runeSizedSynthesizer struct {
 	samplesPerRune int
 	texts          []string
+	accepted       []string
 }
 
 func (f *runeSizedSynthesizer) SynthesizeText(text string) ([]byte, error) {
 	f.texts = append(f.texts, text)
+	if utf8.RuneCountInString(text) <= deviceVoiceRetryMaxRunes {
+		f.accepted = append(f.accepted, text)
+	}
 	return buildDeviceTestWAV(24000, utf8.RuneCountInString(text)*f.samplesPerRune), nil
 }
 
-func TestAttachDeviceVoicePayloadRetriesShorterTextWhenOversized(t *testing.T) {
+func TestAttachDeviceVoicePayloadSplitsOversizedSegmentWithoutLosingSuffix(t *testing.T) {
 	// At this rate the 40-rune cut exceeds the 240KB cap after the 16kHz
 	// resample while the 25-rune retry fits, so the voice must survive.
 	synth := &runeSizedSynthesizer{samplesPerRune: 6000}
-	resp := &IMAgentResponse{Text: strings.Repeat("好", 80)}
+	input := strings.Repeat("好", 80)
+	resp := &IMAgentResponse{Text: input}
 	attachDeviceVoicePayload(synth, resp, "thirdparty:pet-01")
-	if resp.VoiceData == "" {
-		t.Fatal("oversized first attempt must retry with shorter text, not drop the voice")
+	if len(resp.VoiceParts) < 3 {
+		t.Fatalf("oversized segments must be split into multiple parts, got %d", len(resp.VoiceParts))
 	}
-	if len(synth.texts) != 2 {
-		t.Fatalf("synthesize calls = %d, want 2 (initial + shorter retry)", len(synth.texts))
+	if got := strings.Join(synth.accepted, ""); got != input {
+		t.Fatalf("final synthesized parts lost content: runes=%d texts=%q", utf8.RuneCountInString(got), synth.accepted)
 	}
-	if got := utf8.RuneCountInString(synth.texts[1]); got > deviceVoiceRetryMaxRunes {
-		t.Fatalf("retry text length = %d runes, want <= %d", got, deviceVoiceRetryMaxRunes)
-	}
-	decoded, err := base64.StdEncoding.DecodeString(resp.VoiceData)
-	if err != nil {
-		t.Fatalf("VoiceData is not valid base64: %v", err)
-	}
-	if len(decoded) > deviceVoiceMaxWAVBytes {
-		t.Fatalf("decoded WAV = %d bytes, exceeds %d", len(decoded), deviceVoiceMaxWAVBytes)
+	for i, part := range resp.VoiceParts {
+		decoded, err := base64.StdEncoding.DecodeString(part.Data)
+		if err != nil || len(decoded) > deviceVoiceMaxWAVBytes {
+			t.Fatalf("part %d invalid or oversized: bytes=%d err=%v", i, len(decoded), err)
+		}
 	}
 }
 
@@ -315,10 +327,10 @@ func TestAttachDeviceVoicePayloadSkipsEmptySpeech(t *testing.T) {
 	synth := &fakeDeviceSynthesizer{wav: buildDeviceTestWAV(24000, 2400)}
 	resp := &IMAgentResponse{Text: "```\nfmt.Println(1)\n```"}
 	attachDeviceVoicePayload(synth, resp, "thirdparty:pet-01")
-	if resp.VoiceData != "" {
+	if len(resp.VoiceParts) != 0 {
 		t.Fatal("text that cleans to empty speech must not produce voice")
 	}
-	if synth.gotText != "" {
-		t.Fatalf("synthesizer must not be called for empty speech, got %q", synth.gotText)
+	if len(synth.texts) != 0 {
+		t.Fatalf("synthesizer must not be called for empty speech, got %q", synth.texts)
 	}
 }

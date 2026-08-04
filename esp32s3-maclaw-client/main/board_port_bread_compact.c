@@ -37,6 +37,9 @@
 #define BUTTON_ACTIVATE GPIO_NUM_0
 #define BUTTON_VOLUME_UP GPIO_NUM_38
 #define BUTTON_VOLUME_DOWN GPIO_NUM_39
+// Some 1.54-inch Bread Compact assemblies route the second side key using
+// the Zhengchen carrier mapping instead of the generic expansion header.
+#define BUTTON_VOLUME_DOWN_ALT GPIO_NUM_10
 #define MIC_WS GPIO_NUM_4
 #define MIC_BCLK GPIO_NUM_5
 #define MIC_DIN GPIO_NUM_6
@@ -869,6 +872,22 @@ static void show_status(const char *title, const char *line) {
     finish_screen_frame(composed);
 }
 
+static void show_thinking_status(const char *title, const char *line) {
+    uint16_t bg = state_color("thinking");
+    bool composed = begin_screen_frame();
+    fill_screen(bg);
+    // Keep the same robot geometry as show_state_screen("thinking") because
+    // draw_thinking_mouth_frame() deliberately updates only this small,
+    // fixed-position mouth region between full-screen refreshes.
+    draw_robot_face_at("thinking", 10, 0, 92, bg);
+    draw_text24_centered(226, title && title[0] ? title : "远端处理中",
+                         color(255, 255, 255), bg, 8);
+    draw_text24_centered(274, line && line[0] ? line : "双击激活键可取消",
+                         color(145, 220, 235), bg, 8);
+    finish_screen_frame(composed);
+    s_thinking_surface_visible = true;
+}
+
 static void lcd_startup_pattern(void) {
     if (!s_panel) return;
     const uint16_t bars[] = {
@@ -962,20 +981,26 @@ static void button_task(void *arg) {
     bool previous = gpio_get_level(BUTTON_ACTIVATE) != 0;
     bool volume_up_stable = gpio_get_level(BUTTON_VOLUME_UP) != 0;
     bool volume_down_stable = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
+    bool volume_down_alt_stable = gpio_get_level(BUTTON_VOLUME_DOWN_ALT) != 0;
     // The two side keys are not guaranteed to share the same electrical
     // polarity on Bread Compact revisions. Treat each settled boot level as
     // its own released state so GPIO38 and GPIO39 both dispatch a press edge.
     const bool volume_up_idle = volume_up_stable;
     const bool volume_down_idle = volume_down_stable;
+    const bool volume_down_alt_idle = volume_down_alt_stable;
     bool volume_up_candidate = volume_up_stable;
     bool volume_down_candidate = volume_down_stable;
+    bool volume_down_alt_candidate = volume_down_alt_stable;
     int64_t volume_up_changed_at = 0;
     int64_t volume_down_changed_at = 0;
+    int64_t volume_down_alt_changed_at = 0;
     int64_t pressed_at = 0;
     int64_t short_pending_at = 0;
     bool long_sent = false;
-    ESP_LOGI(TAG, "side key idle levels: volume_up(GPIO%d)=%d volume_down(GPIO%d)=%d",
-             BUTTON_VOLUME_UP, volume_up_idle, BUTTON_VOLUME_DOWN, volume_down_idle);
+    ESP_LOGI(TAG,
+             "side key idle levels: volume_up(GPIO%d)=%d volume_down(GPIO%d)=%d alt(GPIO%d)=%d",
+             BUTTON_VOLUME_UP, volume_up_idle, BUTTON_VOLUME_DOWN, volume_down_idle,
+             BUTTON_VOLUME_DOWN_ALT, volume_down_alt_idle);
     while (true) {
         int64_t now = esp_timer_get_time();
         bool released = gpio_get_level(BUTTON_ACTIVATE) != 0;
@@ -1039,6 +1064,22 @@ static void button_task(void *arg) {
             if (volume_down_stable != volume_down_idle) {
                 ESP_LOGI(TAG, "volume down key pressed (GPIO%d level=%d idle=%d)",
                          BUTTON_VOLUME_DOWN, volume_down_stable, volume_down_idle);
+                if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_DOWN, s_button_arg);
+            }
+        }
+
+        bool volume_down_alt_level = gpio_get_level(BUTTON_VOLUME_DOWN_ALT) != 0;
+        if (volume_down_alt_level != volume_down_alt_candidate) {
+            volume_down_alt_candidate = volume_down_alt_level;
+            volume_down_alt_changed_at = now;
+        }
+        if (volume_down_alt_stable != volume_down_alt_candidate &&
+            volume_down_alt_changed_at && now - volume_down_alt_changed_at >= 30000) {
+            volume_down_alt_stable = volume_down_alt_candidate;
+            if (volume_down_alt_stable != volume_down_alt_idle) {
+                ESP_LOGI(TAG, "volume down key pressed (alternate GPIO%d level=%d idle=%d)",
+                         BUTTON_VOLUME_DOWN_ALT, volume_down_alt_stable,
+                         volume_down_alt_idle);
                 if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_DOWN, s_button_arg);
             }
         }
@@ -1107,10 +1148,22 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     vTaskDelay(pdMS_TO_TICKS(1500));
     fill_screen(state_color("idle"));
     gpio_config_t button = {.pin_bit_mask = (1ULL << BUTTON_ACTIVATE) |
-                                            (1ULL << BUTTON_VOLUME_UP) | (1ULL << BUTTON_VOLUME_DOWN),
+                                            (1ULL << BUTTON_VOLUME_UP) |
+                                            (1ULL << BUTTON_VOLUME_DOWN_ALT),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE};
     ESP_ERROR_CHECK(gpio_config(&button));
+    // GPIO38 is active-low on this Bread Compact revision, while GPIO39 is
+    // active-high. Configuring both with the same pull-up held GPIO39 at its
+    // pressed level permanently, so its scanner could never observe an edge.
+    // Keep the board-specific electrical bias here; the application still
+    // receives the same hardware-independent VOLUME_DOWN action.
+    gpio_config_t volume_down_button = {
+        .pin_bit_mask = 1ULL << BUTTON_VOLUME_DOWN,
+        .mode = GPIO_MODE_INPUT,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&volume_down_button));
     ESP_RETURN_ON_ERROR(audio_init(), TAG, "audio init");
     if (xTaskCreate(button_task, "bread_button", 3072, NULL, 4, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
@@ -1270,6 +1323,17 @@ void board_port_show_text(const char *title, const char *text) {
     s_foreground_surface = true;
     if (title && !strcmp(title, "SETUP MODE")) {
         show_status("设备设置", "正在准备配置");
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
+    // The interaction worker refreshes this message periodically while the
+    // remote Agent is still running. Treat it as the live thinking surface,
+    // not as a static message page; the latter disables the mouth animator.
+    if (title && !strcmp(title, "远端处理中")) {
+        strlcpy(s_state, "thinking", sizeof(s_state));
+        s_thinking_mouth_frame = 0;
+        show_thinking_status(title, text);
+        ESP_LOGI(TAG, "remote processing surface refreshed; mouth animation active");
         xSemaphoreGiveRecursive(s_lcd_mutex);
         return;
     }

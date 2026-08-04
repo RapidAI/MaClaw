@@ -67,3 +67,37 @@ func TestAdaptResponseKeepsRichestDeclaredCombination(t *testing.T) {
 		t.Fatalf("richest supported combination not selected: %#v", resp)
 	}
 }
+
+func TestSendVoiceResponseRejectsTargetCodecMismatch(t *testing.T) {
+	plugin := NewRemoteGatewayPlugin("thirdparty", &remoteGatewayTestSender{}, nil, nil)
+	target := UserTarget{PlatformUID: "thirdparty:pet-a:default"}
+	plugin.SetClientCapabilities("tenant-a", target.PlatformUID, agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
+		Audio: &agent.ClientAudioCapabilities{Playback: true, MimeTypes: []string{"audio/wav"}, DeliveryModes: []string{"url"}, MaxDownloadBytes: 1024},
+	}})
+	ctx := WithTenant(context.Background(), "tenant-a")
+	adapter := &Adapter{}
+	resp := &GenericResponse{VoiceParts: []VoicePart{{
+		Data: "dm9pY2U=", FileName: "reply.ogg", MimeType: "audio/ogg",
+	}}}
+	if adapter.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, effectiveCapabilitiesForTarget(ctx, plugin, target)) {
+		t.Fatal("codec-incompatible voice part must be rejected")
+	}
+}
+
+func TestSendVoiceResponseRejectsTargetSizeOverflow(t *testing.T) {
+	plugin := NewRemoteGatewayPlugin("thirdparty", &remoteGatewayTestSender{}, nil, nil)
+	target := UserTarget{PlatformUID: "thirdparty:pet-a:default"}
+	plugin.SetClientCapabilities("tenant-a", target.PlatformUID, agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
+		Audio: &agent.ClientAudioCapabilities{Playback: true, MimeTypes: []string{"audio/wav"}, DeliveryModes: []string{"url"}, MaxDownloadBytes: 4},
+	}})
+	ctx := WithTenant(context.Background(), "tenant-a")
+	adapter := &Adapter{}
+	resp := &GenericResponse{VoiceParts: []VoicePart{{
+		Data: "MTIzNDU=", FileName: "reply.wav", MimeType: "audio/wav",
+	}}}
+	if adapter.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, effectiveCapabilitiesForTarget(ctx, plugin, target)) {
+		t.Fatal("oversized voice part must be rejected")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1779,6 +1780,9 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			FileData:        reply.FileData,
 			FileName:        reply.FileName,
 			MimeType:        reply.MimeType,
+			VoicePartIndex:  reply.VoicePartIndex,
+			VoicePartTotal:  reply.VoicePartTotal,
+			VoicePartFinal:  reply.VoicePartFinal,
 			SourceMessageID: reply.SourceMessageID,
 			Extra:           reply.Extra,
 		})
@@ -1830,16 +1834,39 @@ func (c *RemoteHubClient) sendIMAgentResponse(requestID string, resp *IMAgentRes
 		return nil
 	}
 
+	// Hardware WAV replies can contain many independently playable parts. Send
+	// one bounded frame at a time, then commit with the text response. This keeps
+	// WebSocket memory/latency bounded and lets Hub reject incomplete streams.
+	voiceParts := append([]IMVoicePart(nil), resp.VoiceParts...)
+	if len(voiceParts) > 0 {
+		for index, part := range voiceParts {
+			partMsg := HubEnvelope{
+				Type: "im.agent_voice_part", RequestID: requestID,
+				TS: time.Now().Unix(), MachineID: c.machineID,
+				Payload: map[string]interface{}{"index": index, "total": len(voiceParts), "part": part},
+			}
+			if err := c.conn.WriteJSON(partMsg); err != nil {
+				return fmt.Errorf("send voice part %d/%d: %w", index+1, len(voiceParts), err)
+			}
+			log.Printf("[hub-client] sent agent voice part request_id=%s part=%d/%d base64_bytes=%d", requestID, index+1, len(voiceParts), len(part.Data))
+		}
+	}
+	responseCopy := *resp
+	responseCopy.VoiceParts = nil
 	msg := HubEnvelope{
 		Type:      "im.agent_response",
 		RequestID: requestID,
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
 		Payload: map[string]interface{}{
-			"response": resp,
+			"response": &responseCopy,
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	if err := c.conn.WriteJSON(msg); err != nil {
+		return err
+	}
+	log.Printf("[hub-client] sent agent response request_id=%s text_chars=%d voice_parts=%d", requestID, len([]rune(resp.Text)), len(voiceParts))
+	return nil
 }
 
 // sendIMAgentProgress sends an intermediate progress update to Hub while the
@@ -2132,6 +2159,25 @@ func (c *RemoteHubClient) SendDeviceGatewayReply(clientID, conversationID string
 	// Rendering and attaching RGB565 frames to every assistant reply wasted CPU
 	// and added roughly 90 KiB to otherwise small text messages.
 	payload := map[string]any{"reply_type": reply.ReplyType.String(), "text": reply.Text, "caption": reply.Caption, "image_data": reply.ImageData, "file_data": reply.FileData, "file_name": reply.FileName, "mime_type": reply.MimeType, "extra": reply.Extra}
+	if reply.VoicePartIndex > 0 {
+		payload["voice_part_index"] = reply.VoicePartIndex
+	}
+	if reply.VoicePartTotal > 0 {
+		payload["voice_part_total"] = reply.VoicePartTotal
+	}
+	metadata := map[string]string{}
+	if reply.VoicePartIndex > 0 {
+		metadata["voice_part_index"] = strconv.Itoa(reply.VoicePartIndex)
+	}
+	if reply.VoicePartTotal > 0 {
+		metadata["voice_part_total"] = strconv.Itoa(reply.VoicePartTotal)
+	}
+	if normalizeGatewayReplyTypeKind(reply.ReplyType) != gatewayReplyTypeVoice || reply.VoicePartFinal {
+		metadata["acp_turn"] = "final"
+	}
+	if len(metadata) > 0 {
+		payload["metadata"] = metadata
+	}
 	if sourceID := thirdPartyReplyCorrelation(reply); sourceID != "" {
 		// Carry both protocol spellings while deployed clients converge. The
 		// ESP32 accepts either and can therefore complete the exact command.

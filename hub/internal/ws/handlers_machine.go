@@ -268,6 +268,7 @@ type identityService interface {
 // IMAgentResponseHandler handles agent responses routed back from MaClaw clients.
 type IMAgentResponseHandler interface {
 	HandleAgentResponse(requestID string, resp json.RawMessage)
+	HandleAgentVoicePart(requestID string, resp json.RawMessage)
 	HandleAgentProgress(requestID string, text string)
 }
 
@@ -565,6 +566,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "im.agent_response":
 			if err := g.handleIMAgentResponse(ctx, msg); err != nil {
+				return
+			}
+		case "im.agent_voice_part":
+			if err := g.handleIMAgentVoicePart(ctx, msg); err != nil {
 				return
 			}
 		case "im.agent_progress":
@@ -1332,6 +1337,25 @@ func (g *Gateway) handleIMAgentResponse(ctx *ConnContext, msg Envelope) error {
 		return nil
 	}
 	g.IMResponder.HandleAgentResponse(msg.RequestID, msg.Payload)
+	return nil
+}
+
+// handleIMAgentVoicePart accepts one bounded hardware-audio segment. The Hub
+// assembles these ordered segments onto the final im.agent_response, avoiding
+// a single unbounded WebSocket JSON frame for long spoken answers.
+func (g *Gateway) handleIMAgentVoicePart(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	if g.IMResponder == nil {
+		log.Printf("[ws] handleIMAgentVoicePart: no IMResponder configured, dropping message")
+		return nil
+	}
+	if msg.RequestID == "" {
+		log.Printf("[ws] handleIMAgentVoicePart: missing request_id, dropping message")
+		return nil
+	}
+	g.IMResponder.HandleAgentVoicePart(msg.RequestID, msg.Payload)
 	return nil
 }
 

@@ -196,6 +196,18 @@ func (p *RemoteGatewayPlugin) SendVoice(ctx context.Context, target UserTarget, 
 	})
 }
 
+func (p *RemoteGatewayPlugin) SendVoicePart(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string, index, total int, terminal bool) error {
+	return p.sendToGatewayOwner(ctx, "voice", map[string]any{
+		"platform_uid":     target.PlatformUID,
+		"file_data":        voiceData,
+		"file_name":        fileName,
+		"mime_type":        mimeType,
+		"voice_part_index": index,
+		"voice_part_total": total,
+		"voice_part_final": terminal,
+	})
+}
+
 func (p *RemoteGatewayPlugin) ResolveUser(ctx context.Context, platformUID string) (string, error) {
 	_, userID, err := p.ResolveUserWithTenant(ctx, platformUID)
 	return userID, err

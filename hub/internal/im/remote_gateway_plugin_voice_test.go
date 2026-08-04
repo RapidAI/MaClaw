@@ -49,6 +49,27 @@ func TestRemoteGatewaySendVoiceUsesVoiceReplyType(t *testing.T) {
 	if inner["file_data"] != "base64-audio" || inner["file_name"] != "voice.wav" || inner["mime_type"] != "audio/wav" {
 		t.Fatalf("voice payload = %#v", inner)
 	}
+	if _, ok := inner["voice_part_index"]; ok {
+		t.Fatalf("legacy IM voice unexpectedly carries hardware stream metadata: %#v", inner)
+	}
+}
+
+func TestRemoteGatewaySendVoicePartCarriesStreamMetadata(t *testing.T) {
+	sender := &captureMachineSender{}
+	plugin := &RemoteGatewayPlugin{
+		platform: "thirdparty",
+		sender:   sender,
+		owner:    &gatewayOwner{TenantID: "tenant_default", MachineID: "machine-1"},
+	}
+	if err := plugin.SendVoicePart(context.Background(), UserTarget{PlatformUID: "pet"}, "part-2", "reply-2.wav", "audio/wav", 2, 3, false); err != nil {
+		t.Fatalf("SendVoicePart() error = %v", err)
+	}
+	msg := sender.msg.(map[string]any)
+	payload := msg["payload"].(map[string]any)
+	inner := payload["payload"].(map[string]any)
+	if inner["voice_part_index"] != 2 || inner["voice_part_total"] != 3 || inner["voice_part_final"] != false {
+		t.Fatalf("voice part metadata = %#v", inner)
+	}
 }
 func TestRemoteGatewayVoiceCapabilityIsPlatformAware(t *testing.T) {
 	for _, platform := range []string{"weixin", "telegram", "qqbot", "thirdparty"} {

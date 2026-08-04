@@ -54,6 +54,14 @@ type VoiceSender interface {
 	SendVoice(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string) error
 }
 
+// VoicePartSender is an optional extension for transports that preserve an
+// ordered hardware playback stream. Terminal is true only when this part is
+// the final message of the whole response; when text follows, every voice part
+// is non-terminal and the text frame closes the turn.
+type VoicePartSender interface {
+	SendVoicePart(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string, index, total int, terminal bool) error
+}
+
 // TargetCapabilityResolver is implemented by gateways whose individual
 // clients have different output hardware. It augments (and narrows) the
 // platform-wide CapabilityDeclaration for one reply target.

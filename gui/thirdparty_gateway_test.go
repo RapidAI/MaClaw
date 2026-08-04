@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
@@ -66,6 +67,9 @@ func TestThirdPartyGatewayAgentResponseAllowsDeclaredMultimodalCombination(t *te
 	if len(messages) != 2 || messages[0].Type != "text" || messages[1].Type != "image" {
 		t.Fatalf("declared multimodal combination not delivered: %#v", messages)
 	}
+	if messages[0].Metadata["acp_turn"] != "" || messages[1].Metadata["acp_turn"] != "final" {
+		t.Fatalf("only the last multimodal frame may terminate the turn: %#v", messages)
+	}
 }
 
 func TestThirdPartyGatewayAgentResponseEnqueuesVoiceBeforeText(t *testing.T) {
@@ -82,19 +86,25 @@ func TestThirdPartyGatewayAgentResponseEnqueuesVoiceBeforeText(t *testing.T) {
 		},
 	}})
 	m.enqueueAgentResponse("pet", "room", "in-1", &IMAgentResponse{
-		Text:          "answer",
-		VoiceData:     base64.StdEncoding.EncodeToString([]byte("RIFF-voice")),
-		VoiceFileName: "reply.wav",
-		VoiceMimeType: "audio/wav",
+		Text: "answer",
+		VoiceParts: []IMVoicePart{
+			{Data: base64.StdEncoding.EncodeToString([]byte("RIFF-part-1")), FileName: "reply-1.wav", MimeType: "audio/wav"},
+			{Data: base64.StdEncoding.EncodeToString([]byte("RIFF-part-2")), FileName: "reply-2.wav", MimeType: "audio/wav"},
+		},
 	})
 	m.mu.Lock()
 	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
 	m.mu.Unlock()
-	if len(messages) != 2 || messages[0].Type != "voice" || messages[1].Type != "text" {
-		t.Fatalf("voice must be enqueued before text: %#v", messages)
+	if len(messages) != 3 || messages[0].Type != "voice" || messages[1].Type != "voice" || messages[2].Type != "text" {
+		t.Fatalf("all voice parts must be enqueued before text: %#v", messages)
 	}
-	if messages[0].ReplyToMessageID != "in-1" || messages[1].ReplyToMessageID != "in-1" {
-		t.Fatalf("both messages must reply to the same command: %#v", messages)
+	for _, message := range messages {
+		if message.ReplyToMessageID != "in-1" {
+			t.Fatalf("all messages must reply to the same command: %#v", messages)
+		}
+	}
+	if messages[0].FileName != "reply-1.wav" || messages[1].FileName != "reply-2.wav" {
+		t.Fatalf("voice part order was not preserved: %#v", messages)
 	}
 }
 
@@ -114,10 +124,8 @@ func TestThirdPartyGatewayAgentResponseKeepsTextWhenAudioCombinationWins(t *test
 		},
 	}})
 	m.enqueueAgentResponse("pet", "room", "in-1", &IMAgentResponse{
-		Text:          "answer",
-		VoiceData:     base64.StdEncoding.EncodeToString([]byte("RIFF-voice")),
-		VoiceFileName: "reply.wav",
-		VoiceMimeType: "audio/wav",
+		Text:       "answer",
+		VoiceParts: []IMVoicePart{{Data: base64.StdEncoding.EncodeToString([]byte("RIFF-voice")), FileName: "reply-1.wav", MimeType: "audio/wav"}},
 	})
 	m.mu.Lock()
 	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
@@ -172,6 +180,46 @@ func TestThirdPartyGatewayHubReplyCorrelation(t *testing.T) {
 	}
 }
 
+func TestThirdPartyGatewayHubVoiceUsesAudioCapability(t *testing.T) {
+	localMode := true
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{ThirdPartyGatewayLocalMode: &localMode}}
+	m := newThirdPartyGatewayManager(app)
+	m.setClientCapabilities("echoear-2st", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"},
+		Text:       &agent.ClientTextCapabilities{},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"inline"}, MaxInlineBytes: 8192,
+		},
+	}})
+	m.HandleGatewayReply(GatewayReplyPayload{
+		ReplyType: gatewayReplyTypeVoice, PlatformUID: "thirdparty:echoear-2st:default",
+		FileData: base64.StdEncoding.EncodeToString([]byte("fake-wav")), FileName: "reply-1.wav", MimeType: "audio/wav",
+		VoicePartIndex: 1, VoicePartTotal: 2, SourceMessageID: "in-voice",
+	})
+	m.HandleGatewayReply(GatewayReplyPayload{
+		ReplyType: gatewayReplyTypeVoice, PlatformUID: "thirdparty:echoear-2st:default",
+		FileData: base64.StdEncoding.EncodeToString([]byte("fake-wav-2")), FileName: "reply-2.wav", MimeType: "audio/wav",
+		VoicePartIndex: 2, VoicePartTotal: 2, SourceMessageID: "in-voice",
+	})
+	m.HandleGatewayReply(GatewayReplyPayload{
+		ReplyType: gatewayReplyTypeText, PlatformUID: "thirdparty:echoear-2st:default",
+		Text: "完整结果", SourceMessageID: "in-voice",
+	})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["echoear-2st"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 3 || messages[0].Type != "voice" || messages[1].Type != "voice" || messages[2].Type != "text" {
+		t.Fatalf("streamed reply ordering is invalid: %#v", messages)
+	}
+	if messages[0].Metadata["acp_turn"] != "" || messages[1].Metadata["acp_turn"] != "" || messages[2].Metadata["acp_turn"] != "final" {
+		t.Fatalf("streamed reply terminal markers=%#v %#v %#v", messages[0].Metadata, messages[1].Metadata, messages[2].Metadata)
+	}
+	if messages[0].Metadata["voice_part_index"] != "1" || messages[1].Metadata["voice_part_index"] != "2" || messages[1].Metadata["voice_part_total"] != "2" {
+		t.Fatalf("streamed reply part metadata=%#v %#v", messages[0].Metadata, messages[1].Metadata)
+	}
+}
+
 func TestThirdPartyGatewayVoiceBeforeTextHasSingleTerminalMessage(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
@@ -184,7 +232,7 @@ func TestThirdPartyGatewayVoiceBeforeTextHasSingleTerminalMessage(t *testing.T) 
 		},
 	}})
 	m.enqueueAgentResponse("pet", "default", "mc_in_voice_text", &IMAgentResponse{
-		Text: "天气晴朗", VoiceData: base64.StdEncoding.EncodeToString([]byte("fake-wav")), VoiceMimeType: "audio/wav",
+		Text: "天气晴朗", VoiceParts: []IMVoicePart{{Data: base64.StdEncoding.EncodeToString([]byte("fake-wav")), FileName: "reply-1.wav", MimeType: "audio/wav"}},
 	})
 	m.mu.Lock()
 	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
@@ -196,6 +244,31 @@ func TestThirdPartyGatewayVoiceBeforeTextHasSingleTerminalMessage(t *testing.T) 
 		t.Fatalf("terminal markers=%#v", messages)
 	}
 }
+
+func TestThirdPartyGatewayLastDeliverableVoicePartTerminatesTurn(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"audio"},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"inline"}, MaxInlineBytes: 1024,
+		},
+	}})
+	m.enqueueAgentResponse("pet", "default", "mc_in_voice_only", &IMAgentResponse{VoiceParts: []IMVoicePart{
+		{Data: base64.StdEncoding.EncodeToString([]byte("fake-wav")), FileName: "reply-1.wav", MimeType: "audio/wav"},
+		{Data: "not-base64", FileName: "reply-2.wav", MimeType: "audio/wav"},
+	}})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 1 || messages[0].Type != "voice" {
+		t.Fatalf("deliverable messages=%#v", messages)
+	}
+	if messages[0].Metadata["acp_turn"] != "final" {
+		t.Fatalf("last deliverable voice part must terminate turn: %#v", messages[0].Metadata)
+	}
+}
+
 func TestThirdPartyGatewayHandshakeCapabilitiesReachLocalAgentContract(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{

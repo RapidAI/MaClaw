@@ -6,27 +6,45 @@ import "strings"
 // It is sent from the MaClaw client to Hub via the "im.agent_response"
 // WebSocket message, then converted to GenericResponse for IM delivery.
 type AgentResponse struct {
-	Text         string           `json:"text"`                     // Main reply text
-	Fields       []ResponseField  `json:"fields,omitempty"`         // Structured fields (optional)
-	Actions      []ResponseAction `json:"actions,omitempty"`        // Suggested actions (optional)
-	ImageKey     string           `json:"image_key,omitempty"`      // Image key (optional)
-	FileData     string           `json:"file_data,omitempty"`      // Base64-encoded file data (optional)
-	FileName     string           `json:"file_name,omitempty"`      // File display name (optional)
-	FileMimeType string           `json:"file_mime_type,omitempty"` // File MIME type (optional)
-	VoiceData     string          `json:"voice_data,omitempty"`     // Base64-encoded voice audio (optional, OGG Opus or WAV)
-	VoiceFileName string          `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
-	VoiceMimeType string          `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
-	Error        string           `json:"error,omitempty"`          // Error message (optional)
-	Deferred     bool             `json:"deferred,omitempty"`       // true = media buffered, Hub should not reply to user
+	Text          string           `json:"text"`                      // Main reply text
+	Fields        []ResponseField  `json:"fields,omitempty"`          // Structured fields (optional)
+	Actions       []ResponseAction `json:"actions,omitempty"`         // Suggested actions (optional)
+	ImageKey      string           `json:"image_key,omitempty"`       // Image key (optional)
+	FileData      string           `json:"file_data,omitempty"`       // Base64-encoded file data (optional)
+	FileName      string           `json:"file_name,omitempty"`       // File display name (optional)
+	FileMimeType  string           `json:"file_mime_type,omitempty"`  // File MIME type (optional)
+	VoiceData     string           `json:"voice_data,omitempty"`      // Base64-encoded voice audio (optional, OGG Opus or WAV)
+	VoiceFileName string           `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
+	VoiceMimeType string           `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
+	VoiceParts    []VoicePart      `json:"voice_parts,omitempty"`     // Ordered bounded audio segments for hardware clients
+	Error         string           `json:"error,omitempty"`           // Error message (optional)
+	Deferred      bool             `json:"deferred,omitempty"`        // true = media buffered, Hub should not reply to user
+}
+
+// VoicePart is one independently deliverable segment of a hardware voice
+// response. Each part is kept below the device's advertised download limit.
+type VoicePart struct {
+	Data     string `json:"data"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+}
+
+// AgentVoicePart is one frame in the GUI -> Hub hardware voice stream.
+// Total is repeated on every frame so the Hub can reject incomplete streams
+// instead of delivering a response that would be spoken only in part.
+type AgentVoicePart struct {
+	Index int       `json:"index"`
+	Total int       `json:"total"`
+	Part  VoicePart `json:"part"`
 }
 
 // IMUserMessage is sent from Hub to MaClaw client via WebSocket
 // when a user sends a message through an IM platform.
 type IMUserMessage struct {
-	Type        string              `json:"type"`                  // "im.user_message"
-	RequestID   string              `json:"request_id"`            // Correlates with the agent response
+	Type        string              `json:"type"`       // "im.user_message"
+	RequestID   string              `json:"request_id"` // Correlates with the agent response
 	UserID      string              `json:"user_id"`
-	Platform    string              `json:"platform"`              // "feishu", "qbot", "openclaw"
+	Platform    string              `json:"platform"` // "feishu", "qbot", "openclaw"
 	Text        string              `json:"text"`
 	Lang        string              `json:"lang,omitempty"`        // User language ("zh", "en"); empty defaults to "zh"
 	Attachments []MessageAttachment `json:"attachments,omitempty"` // File/image attachments from user
@@ -67,6 +85,7 @@ func (r *AgentResponse) ToGenericResponse() *GenericResponse {
 		VoiceData:     r.VoiceData,
 		VoiceFileName: r.VoiceFileName,
 		VoiceMimeType: r.VoiceMimeType,
+		VoiceParts:    append([]VoicePart(nil), r.VoiceParts...),
 	}
 
 	return resp
