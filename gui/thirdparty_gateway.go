@@ -609,6 +609,7 @@ func thirdPartySpokenEnglishDigit(word string) (byte, bool) {
 }
 
 func (m *thirdPartyGatewayManager) handleIncoming(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	if r.Method != http.MethodPost {
 		writeGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
@@ -636,6 +637,8 @@ func (m *thirdPartyGatewayManager) handleIncoming(w http.ResponseWriter, r *http
 	if !duplicate {
 		go m.processIncoming(req, maclawID)
 	}
+	log.Printf("[thirdparty-mgr] incoming accepted client=%s event=%s maclawID=%s duplicate=%t type=%s elapsed=%s",
+		req.ClientID, req.EventID, maclawID, duplicate, req.Message.Type, time.Since(started).Round(time.Millisecond))
 	writeGatewayJSON(w, http.StatusOK, coreim.NewThirdPartyIncomingAcceptedResponse(newGatewayRequestID(), maclawID, duplicate))
 }
 
@@ -955,6 +958,7 @@ func (m *thirdPartyGatewayManager) messagesAfter(clientID string, cursor int64, 
 }
 
 func (m *thirdPartyGatewayManager) enqueue(clientID string, msg thirdPartyOutgoingMessage) thirdPartyOutgoingMessage {
+	started := time.Now()
 	m.mu.Lock()
 	state := m.ensureClientLocked(clientID)
 	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
@@ -980,6 +984,10 @@ func (m *thirdPartyGatewayManager) enqueue(clientID string, msg thirdPartyOutgoi
 	m.notifyCh = make(chan struct{})
 	close(old)
 	m.mu.Unlock()
+	log.Printf("[thirdparty-mgr] outgoing queued client=%s id=%s seq=%d type=%s replyTo=%s final=%t progress=%t textChars=%d elapsed=%s",
+		clientID, msg.ID, msg.Seq, msg.Type, msg.ReplyToMessageID,
+		strings.EqualFold(msg.Metadata["acp_turn"], "final"), msg.Progress, len([]rune(msg.Text)),
+		time.Since(started).Round(time.Millisecond))
 	return msg
 }
 
@@ -1388,6 +1396,9 @@ func truncateThirdPartyOutputText(text string, max int) string {
 	return string(runes[:max])
 }
 func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest, maclawID string) {
+	started := time.Now()
+	log.Printf("[thirdparty-mgr] processing start client=%s event=%s maclawID=%s type=%s",
+		req.ClientID, req.EventID, maclawID, req.Message.Type)
 	if isPassthroughSlashText(req.Message.Text) {
 		log.Printf("[thirdparty-mgr] routing passthrough command locally: client=%s conversation=%s", req.ClientID, req.ConversationID)
 		m.handleLocalMessage(req, maclawID)
@@ -1395,19 +1406,22 @@ func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest
 	}
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
-		m.enqueueError(req, req.MessageID, "bad_request", err.Error())
+		m.enqueueError(req, maclawID, "bad_request", err.Error())
 		return
 	}
 	if !cfg.IsThirdPartyGatewayLocalMode() {
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
 			payload := map[string]any{
-				"platform_uid":        thirdPartySessionUserID(req.ClientID, req.ConversationID),
-				"text":                req.Message.Text,
-				"message_type":        req.Message.Type,
-				"client_id":           req.ClientID,
-				"conversation_id":     req.ConversationID,
-				"message_id":          req.MessageID,
+				"platform_uid":    thirdPartySessionUserID(req.ClientID, req.ConversationID),
+				"text":            req.Message.Text,
+				"message_type":    req.Message.Type,
+				"client_id":       req.ClientID,
+				"conversation_id": req.ConversationID,
+				// The HTTP acceptance response exposes maclawID as the canonical
+				// correlation key. Preserve it across the Hub relay so the ESP32
+				// waits for the same id that the final answer carries.
+				"message_id":          maclawID,
 				"event_id":            req.EventID,
 				"user_id":             req.User.ID,
 				"user_name":           req.User.Name,
@@ -1417,12 +1431,16 @@ func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest
 				payload["extra"] = req.Extra
 			}
 			if err := hubClient.SendIMGatewayMessage(imGatewayPlatformThirdParty, payload); err == nil {
+				log.Printf("[thirdparty-mgr] forwarded to Hub client=%s maclawID=%s elapsed=%s",
+					req.ClientID, maclawID, time.Since(started).Round(time.Millisecond))
 				return
 			}
 			log.Printf("[thirdparty-mgr] forwardToHub error: %v, falling back to local", err)
 		}
 	}
 	m.handleLocalMessage(req, maclawID)
+	log.Printf("[thirdparty-mgr] local processing complete client=%s maclawID=%s elapsed=%s",
+		req.ClientID, maclawID, time.Since(started).Round(time.Millisecond))
 }
 
 func (m *thirdPartyGatewayManager) enqueueError(req thirdPartyIncomingRequest, replyTo, code, text string) {
@@ -1517,6 +1535,7 @@ func (m *thirdPartyGatewayManager) ensureLocalHandler() *IMMessageHandler {
 }
 
 func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequest, maclawID string) {
+	started := time.Now()
 	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(req.Message.Text, "thirdparty:"+req.ClientID+":"+req.ConversationID); handled {
 		reply := resp.Text
 		if reply == "" {
@@ -1527,7 +1546,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		}
 		m.enqueue(req.ClientID, thirdPartyOutgoingMessage{
 			ConversationID:   req.ConversationID,
-			ReplyToMessageID: req.MessageID,
+			ReplyToMessageID: maclawID,
 			Type:             thirdPartyGatewayMessageText.String(),
 			Text:             reply,
 			Metadata:         map[string]string{"acp_turn": "final"},
@@ -1537,7 +1556,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 	if !m.app.isMaclawLLMConfigured() {
 		m.enqueue(req.ClientID, thirdPartyOutgoingMessage{
 			ConversationID:   req.ConversationID,
-			ReplyToMessageID: req.MessageID,
+			ReplyToMessageID: maclawID,
 			Type:             "text",
 			Text:             i18n.T(i18n.MsgLLMNotConfigured, "zh"),
 			Metadata:         map[string]string{"acp_turn": "final"},
@@ -1551,7 +1570,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 	if messageKind != thirdPartyGatewayMessageText {
 		mediaData, mediaName, mediaMime, err := m.decodeThirdPartyMedia(req.Message)
 		if err != nil {
-			m.enqueueError(req, req.MessageID, "bad_request", err.Error())
+			m.enqueueError(req, maclawID, "bad_request", err.Error())
 			return
 		}
 		if messageKind == thirdPartyGatewayMessageImage {
@@ -1559,7 +1578,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		} else {
 			mediaPath, err := saveMediaToTempDir("thirdparty", "tp_", safeFileToken(req.User.ID), messageKind.String(), mediaData, mediaName)
 			if err != nil {
-				m.enqueueError(req, req.MessageID, "bad_request", err.Error())
+				m.enqueueError(req, maclawID, "bad_request", err.Error())
 				return
 			}
 			prefix := "[media " + mediaLabel(messageKind.String()) + ": " + mediaPath + "]\n"
@@ -1590,7 +1609,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		lastProgressText = stripped
 		m.enqueue(req.ClientID, thirdPartyOutgoingMessage{
 			ConversationID:   req.ConversationID,
-			ReplyToMessageID: req.MessageID,
+			ReplyToMessageID: maclawID,
 			Type:             "text",
 			Text:             i18n.T(i18n.MsgProgressPrefix, appUILang(m.app)) + stripped,
 			Progress:         true,
@@ -1605,10 +1624,13 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		Attachments:        attachments,
 		ClientCapabilities: pointerToClientCapabilities(m.clientCapabilities(req.ClientID)),
 	}, onProgress)
+	log.Printf("[thirdparty-mgr] agent returned client=%s maclawID=%s deferred=%t hasResponse=%t elapsed=%s",
+		req.ClientID, maclawID, resp != nil && resp.Deferred, resp != nil,
+		time.Since(started).Round(time.Millisecond))
 	if resp == nil || resp.Deferred {
 		return
 	}
-	m.enqueueAgentResponse(req.ClientID, req.ConversationID, req.MessageID, resp)
+	m.enqueueAgentResponse(req.ClientID, req.ConversationID, maclawID, resp)
 }
 
 func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID, replyTo string, resp *IMAgentResponse) {
@@ -1758,6 +1780,7 @@ func pointerToClientCapabilities(capabilities agent.ClientCapabilities) *agent.C
 }
 
 func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
+	started := time.Now()
 	clientID, conversationID := parseThirdPartyReplyTarget(reply)
 	if clientID == "" {
 		log.Printf("[thirdparty-mgr] hub reply missing client id")
@@ -1771,15 +1794,18 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		}
 	}
 	msg := thirdPartyOutgoingMessage{
-		ConversationID: conversationID,
-		Type:           reply.ReplyType.String(),
-		Text:           reply.Text,
-		Caption:        reply.Caption,
-		FileName:       reply.FileName,
-		ContentType:    reply.MimeType,
+		ConversationID:   conversationID,
+		ReplyToMessageID: thirdPartyReplyCorrelation(reply),
+		Type:             reply.ReplyType.String(),
+		Text:             reply.Text,
+		Caption:          reply.Caption,
+		FileName:         reply.FileName,
+		ContentType:      reply.MimeType,
 		// Deferred hub/async replies complete an ACP bridge turn.
 		Metadata: map[string]string{"acp_turn": "final"},
 	}
+	log.Printf("[thirdparty-mgr] Hub reply received client=%s sourceMessageID=%s correlatedReplyTo=%s type=%s",
+		clientID, reply.SourceMessageID, msg.ReplyToMessageID, reply.ReplyType.String())
 	// The local gateway takes the same direct path as the Hub relay.  Attach
 	// the compact glyph atlas before the message enters the ESP queue, so CJK
 	// reply text cannot degrade into question-mark placeholders.
@@ -1804,6 +1830,20 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		msg.Data, msg.FileName, msg.ContentType = "", "", ""
 	}
 	m.enqueue(clientID, msg)
+	log.Printf("[thirdparty-mgr] Hub reply delivered client=%s replyTo=%s elapsed=%s",
+		clientID, msg.ReplyToMessageID, time.Since(started).Round(time.Millisecond))
+}
+
+func thirdPartyReplyCorrelation(reply GatewayReplyPayload) string {
+	if sourceID := strings.TrimSpace(reply.SourceMessageID); sourceID != "" {
+		return sourceID
+	}
+	for _, key := range []string{"replyTo", "replyToMessageId", "source_message_id", "sourceMessageId", "sourceMessageID"} {
+		if value, ok := reply.Extra[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func parseThirdPartyReplyTarget(reply GatewayReplyPayload) (string, string) {

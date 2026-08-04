@@ -1,5 +1,19 @@
 menu "MaClaw ESP32-S3 thin client"
 
+choice MACLAW_BOARD
+    prompt "Hardware board"
+    default MACLAW_BOARD_ECHOEAR_2ST
+    help
+        Select the physical board. Existing EchoEar-2ST builds remain the
+        default; Bread Compact uses a codec-less I2S microphone and amplifier.
+
+    config MACLAW_BOARD_ECHOEAR_2ST
+        bool "EchoEar-2ST (ST77916 + ES7210/ES8311)"
+
+    config MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
+        bool "Bread Compact Wi-Fi LCD (ST7789 + direct I2S audio)"
+endchoice
+
 config MACLAW_WIFI_SSID
     string "Wi-Fi SSID"
     default ""

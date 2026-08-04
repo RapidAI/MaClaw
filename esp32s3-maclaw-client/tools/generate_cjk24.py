@@ -11,7 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 FONT_PATH = Path(r"C:\Windows\Fonts\msyh.ttc")
 OUTPUT = ROOT / "main" / "font_cjk24.h"
 BINARY_OUTPUT = ROOT / "data" / "cjk24_cjk.bin"
-SOURCE_FILES = (ROOT / "main" / "main.c", ROOT / "main" / "board_port.c")
+EMBEDDED_BINARY_OUTPUT = ROOT / "main" / "cjk24_cjk.bin"
+SOURCE_FILES = (
+    ROOT / "main" / "main.c",
+    ROOT / "main" / "board_port.c",
+    ROOT / "main" / "board_port_bread_compact.c",
+)
 # Weather summaries are supplied by MaClaw GUI at runtime, so they cannot all
 # be discovered by scanning firmware string literals. Keep every character
 # emitted by openMeteoWeatherSummary() here to prevent a valid Hub payload from
@@ -21,6 +26,7 @@ EXTRA_CHARACTERS = (
     "\u798f\u5dde\u53a6\u95e8\u5357\u660c\u957f\u6c99\u6606\u660e\u8d35\u9633\u5357\u5b81\u6d77\u53e3\u77f3\u5bb6\u5e84\u592a\u539f\u547c\u548c\u6d69\u7279\u5170\u5dde\u897f\u5b81\u94f6\u5ddd\u62c9\u8428"
     "\u4e4c\u9c81\u6728\u9f50\u56fe\u68ee\u672c\u5730"
     "\u6674\u9634\u591a\u4e91\u5c11\u4e91\u5c0f\u96e8\u4e2d\u96e8\u5927\u96e8\u66b4\u96e8\u9635\u96e8\u96f7\u96e8\u96e8\u5939\u96ea\u5c0f\u96ea\u4e2d\u96ea\u5927\u96ea\u66b4\u96ea\u96fe\u973e\u51b0\u96f9\u98ce\u6c99\u6d6e\u5c18\u5e72\u71e5\u6e7f\u6da6"
+    "，。！？：；、‘’“”（）【】《》〈〉—…·℃°～•"
 )
 
 
@@ -71,15 +77,22 @@ def main() -> None:
         lines.append(f"    {{0x{ord(char):04X}, {{{rows}}}}}, // U+{ord(char):04X}")
     lines.extend(("};", ""))
     OUTPUT.write_text("\n".join(lines), encoding="utf-8")
-    # The firmware header retains a small startup/core subset. The complete
-    # CJK Unified Ideographs block lives in SPIFFS: 20,992 glyphs x 24 rows x
-    # 4 bytes = about 2 MiB, comfortably within the dedicated storage
-    # partition and sufficient for arbitrary Chinese city/weather strings.
-    BINARY_OUTPUT.parent.mkdir(exist_ok=True)
-    with BINARY_OUTPUT.open("wb") as output:
-        for codepoint in range(0x4E00, 0xA000):
-            output.write(struct.pack("<24I", *glyph_rows(font, chr(codepoint))))
-    print(f"generated {OUTPUT} with {len(chars)} glyphs and {BINARY_OUTPUT}")
+    # Keep the complete CJK Unified Ideographs block in a packed 24x24 format:
+    # 20,992 glyphs x 24 rows x 3 bytes = about 1.5 MiB.  The compact board
+    # display boards embed this binary in their application partition, so
+    # arbitrary Chinese replies render even when the writable meeting-recording
+    # SPIFFS partition is deliberately preserved during an app-only update.
+    packed = bytearray()
+    for codepoint in range(0x4E00, 0xA000):
+        for row in glyph_rows(font, chr(codepoint)):
+            packed.extend(((row >> 16) & 0xFF, (row >> 8) & 0xFF, row & 0xFF))
+    for destination in (BINARY_OUTPUT, EMBEDDED_BINARY_OUTPUT):
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_bytes(packed)
+    print(
+        f"generated {OUTPUT} with {len(chars)} glyphs and "
+        f"{EMBEDDED_BINARY_OUTPUT} ({len(packed)} bytes)"
+    )
 
 
 if __name__ == "__main__":

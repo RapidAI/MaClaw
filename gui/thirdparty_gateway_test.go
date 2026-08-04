@@ -147,6 +147,30 @@ func TestThirdPartyGatewayEnqueuePreservesHardwareFeatureMessages(t *testing.T) 
 		t.Fatalf("meeting result text=%q", messages[2].Text)
 	}
 }
+
+func TestThirdPartyGatewayCanonicalReplyCorrelation(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text"}, Text: &agent.ClientTextCapabilities{MaxChars: 240},
+	}})
+	m.enqueueAgentResponse("pet", "default", "mc_in_canonical_1", &IMAgentResponse{Text: "天气晴朗"})
+
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 1 || messages[0].ReplyToMessageID != "mc_in_canonical_1" {
+		t.Fatalf("canonical reply correlation was lost: %#v", messages)
+	}
+}
+
+func TestThirdPartyGatewayHubReplyCorrelation(t *testing.T) {
+	if got := thirdPartyReplyCorrelation(GatewayReplyPayload{SourceMessageID: " mc_in_source "}); got != "mc_in_source" {
+		t.Fatalf("source correlation=%q", got)
+	}
+	if got := thirdPartyReplyCorrelation(GatewayReplyPayload{Extra: map[string]any{"replyToMessageId": "mc_in_legacy"}}); got != "mc_in_legacy" {
+		t.Fatalf("legacy correlation=%q", got)
+	}
+}
 func TestThirdPartyGatewayHandshakeCapabilitiesReachLocalAgentContract(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{

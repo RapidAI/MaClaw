@@ -1771,15 +1771,16 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			return
 		}
 		c.app.thirdPartyGateway.HandleGatewayReply(GatewayReplyPayload{
-			ReplyType:   reply.ReplyType,
-			PlatformUID: reply.PlatformUID,
-			Text:        reply.Text,
-			ImageData:   reply.ImageData,
-			Caption:     reply.Caption,
-			FileData:    reply.FileData,
-			FileName:    reply.FileName,
-			MimeType:    reply.MimeType,
-			Extra:       reply.Extra,
+			ReplyType:       reply.ReplyType,
+			PlatformUID:     reply.PlatformUID,
+			Text:            reply.Text,
+			ImageData:       reply.ImageData,
+			Caption:         reply.Caption,
+			FileData:        reply.FileData,
+			FileName:        reply.FileName,
+			MimeType:        reply.MimeType,
+			SourceMessageID: reply.SourceMessageID,
+			Extra:           reply.Extra,
 		})
 	}
 }
@@ -2131,6 +2132,12 @@ func (c *RemoteHubClient) SendDeviceGatewayReply(clientID, conversationID string
 	// Rendering and attaching RGB565 frames to every assistant reply wasted CPU
 	// and added roughly 90 KiB to otherwise small text messages.
 	payload := map[string]any{"reply_type": reply.ReplyType.String(), "text": reply.Text, "caption": reply.Caption, "image_data": reply.ImageData, "file_data": reply.FileData, "file_name": reply.FileName, "mime_type": reply.MimeType, "extra": reply.Extra}
+	if sourceID := thirdPartyReplyCorrelation(reply); sourceID != "" {
+		// Carry both protocol spellings while deployed clients converge. The
+		// ESP32 accepts either and can therefore complete the exact command.
+		payload["replyTo"] = sourceID
+		payload["replyToMessageId"] = sourceID
+	}
 	if glyphs := deviceGlyphsForText(reply.Text, reply.Caption); len(glyphs) > 0 {
 		payload["glyphs"] = glyphs
 	}
