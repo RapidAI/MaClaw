@@ -45,6 +45,28 @@ func TestMobileWriteStoredOriginalHTTPRejectsLateGzipChecksumCorruption(t *testi
 	}
 }
 
+func TestMobileWriteStoredOriginalHTTPRejectsSmallGzipChecksumCorruptionBeforeCommit(t *testing.T) {
+	raw := []byte("small-checksum-content")
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := append([]byte(nil), compressed.Bytes()...)
+	corrupt[len(corrupt)-8] ^= 0xff
+
+	rec := httptest.NewRecorder()
+	if mobileWriteStoredOriginalHTTP(rec, "text/plain", "small.txt", corrupt, "", "gzip", len(raw)) {
+		t.Fatal("corrupt small gzip should fail before commit")
+	}
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+		t.Fatalf("response was committed: status=%d body=%q", rec.Code, rec.Body.Bytes())
+	}
+}
+
 func TestMobileDocumentBlobWriteReadDelete(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(mobileBlobDirEnv, root)

@@ -552,6 +552,14 @@ func mobileWriteStoredOriginalHTTP(w http.ResponseWriter, contentType, filename 
 	if _, err := io.ReadFull(zr, prefix); err != nil {
 		return false
 	}
+	// Small originals fit entirely in the preflight buffer, so verify gzip EOF
+	// (including CRC32) before any response headers or bytes are committed.
+	if prefixLimit == originalSize {
+		var extra [1]byte
+		if n, err := zr.Read(extra[:]); n != 0 || err != io.EOF {
+			return false
+		}
+	}
 	contentType = strings.TrimSpace(contentType)
 	if contentType == "" {
 		contentType = "application/octet-stream"
