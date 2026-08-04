@@ -57,6 +57,24 @@ type CreditsTransaction struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// CreditRedeemCard is a single-use card that adds buyer Credits to an account.
+// A card is never deleted: revocation, export, and redemption remain auditable.
+type CreditRedeemCard struct {
+	ID               string     `json:"id"`
+	Code             string     `json:"code"`
+	Credits          int64      `json:"credits"`
+	Status           string     `json:"status"` // active, redeemed, revoked
+	ExportedAt       *time.Time `json:"exported_at,omitempty"`
+	ExportedBy       string     `json:"exported_by,omitempty"`
+	IssuedBy         string     `json:"issued_by,omitempty"`
+	IssuedAt         time.Time  `json:"issued_at"`
+	RedeemedByUserID string     `json:"redeemed_by_user_id,omitempty"`
+	RedeemedByEmail  string     `json:"redeemed_by_email,omitempty"`
+	RedeemedAt       *time.Time `json:"redeemed_at,omitempty"`
+	RevokedBy        string     `json:"revoked_by,omitempty"`
+	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
+}
+
 // ── Skill Submission ────────────────────────────────────────────────────
 
 // SkillSubmission 记录一次 Skill 上传提交。

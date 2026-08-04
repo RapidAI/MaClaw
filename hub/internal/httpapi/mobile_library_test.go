@@ -129,6 +129,17 @@ func TestMobileLibraryLabelsGeneratedMeetingResultsWithParentRecording(t *testin
 	}
 }
 
+func TestMobileLibraryDocumentItemReportsOriginalAndStoredSizes(t *testing.T) {
+	item := mobileLibraryDocumentItem(mobileDocumentDraftRecord{
+		ID: "compressed-library-draft", OwnerID: "owner", UpdatedAt: time.Now().UTC(),
+		SourcePath: "owner/upload/source.bin", SourceSize: 321,
+		SourceEncoding: "gzip", SourceOriginalSize: 8192,
+	}, false)
+	if item["source_size"] != 8192 || item["source_storage_size"] != 321 {
+		t.Fatalf("sizes=%#v", item)
+	}
+}
+
 func TestMobileLibraryListsMultipleGeneratedResultsWithTheirParents(t *testing.T) {
 	owner := "library-meeting-result-list-owner"
 	now := time.Now().UTC()

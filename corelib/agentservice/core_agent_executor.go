@@ -50,6 +50,15 @@ type CoreAgentExecutor struct {
 	// IMMessageHandler hosts im_message (list_targets | send) for proactive IM push.
 	// Independent of the scheduler; nil returns "not initialized".
 	IMMessageHandler func(args map[string]interface{}) string
+	// IMMessageHandlerContext is the request-scoped variant. Hosts should prefer
+	// it when delivery configuration is tenant or user specific.
+	IMMessageHandlerContext func(ctx context.Context, principal Principal, args map[string]interface{}) string
+	// IMFileHandler hosts send_file/send_to_im for runtimes that can deliver
+	// generated workspace files to IM channels (including exact targets).
+	IMFileHandler func(args map[string]interface{}) string
+	// IMFileHandlerContext prevents concurrent users from sharing a fixed
+	// delivery identity or configuration.
+	IMFileHandlerContext func(ctx context.Context, principal Principal, args map[string]interface{}) string
 
 	mu             sync.Mutex
 	userMemory     map[string]*memory.Store
@@ -116,6 +125,7 @@ type coreAgentCallbacks struct {
 	scheduleHandler func(args map[string]interface{}) string
 	// Host-injected proactive IM message tool.
 	imMessageHandler func(args map[string]interface{}) string
+	imFileHandler    func(args map[string]interface{}) string
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -159,6 +169,18 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 	}
 	sshResources := e.sshResourcesForUser(req.Principal.TenantID, req.Principal.UserID)
 	taskStore := e.taskStoreForSession(req.Session.ID)
+	imMessageHandler := e.IMMessageHandler
+	if e.IMMessageHandlerContext != nil {
+		imMessageHandler = func(args map[string]interface{}) string {
+			return e.IMMessageHandlerContext(ctx, req.Principal, args)
+		}
+	}
+	imFileHandler := e.IMFileHandler
+	if e.IMFileHandlerContext != nil {
+		imFileHandler = func(args map[string]interface{}) string {
+			return e.IMFileHandlerContext(ctx, req.Principal, args)
+		}
+	}
 	cb := &coreAgentCallbacks{
 		ctx:                  ctx,
 		appCfg:               req.Config,
@@ -185,7 +207,8 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		onToolCall:           req.OnToolCall,
 		onToolResult:         req.OnToolResult,
 		scheduleHandler:      e.ScheduleHandler,
-		imMessageHandler:     e.IMMessageHandler,
+		imMessageHandler:     imMessageHandler,
+		imFileHandler:        imFileHandler,
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:       sshResources.mgr,
 			BGTaskMgr:     sshResources.bg,
@@ -515,6 +538,14 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if clientContext := agent.BuildClientCapabilityPrompt(c.clientCapabilities); clientContext != "" {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + clientContext)
 	}
+	if c.imMessageHandler != nil && c.imFileHandler != nil {
+		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + `
+
+Specified IM file delivery:
+- When the user asks to send a generated/existing file to a named IM group or user, first call im_message(action="list_targets", channel=..., query=...) unless an exact group_id/user_id is already known.
+- Then call send_to_im(path=..., channel=..., group_id=... or user_id=...). Do not encode a destination only in the caption or file name.
+- Never guess an ambiguous destination, broadcast an exact-target request, or silently reroute it to the current conversation.`)
+	}
 
 	// Record prompt bundle observability for cache-hit analysis.
 	c.promptStats = bundle.TokenStats()
@@ -609,9 +640,33 @@ type coreToolSpec struct {
 	DisabledReason string
 }
 
+func imFileToolParameters(_ bool) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path":          map[string]interface{}{"type": "string", "description": "Workspace file path"},
+			"file_name":     map[string]interface{}{"type": "string", "description": "Optional display file name"},
+			"destination":   map[string]interface{}{"type": "string", "description": "desktop/chat or im/platform alias"},
+			"forward_to_im": map[string]interface{}{"type": "boolean"},
+			"channel":       map[string]interface{}{"type": "string", "description": "Exact IM channel: weixin|feishu|qq|telegram|lansenger. Required with group_id/user_id."},
+			"group_id":      map[string]interface{}{"type": "string", "description": "Exact group/conversation ID; resolve a spoken group name with im_message action=list_targets first"},
+			"group_name":    map[string]interface{}{"type": "string", "description": "Human-readable group name for context; do not send by name alone—resolve to group_id first"},
+			"user_id":       map[string]interface{}{"type": "string", "description": "Exact private recipient ID or self; mutually exclusive with group_id"},
+			"message":       map[string]interface{}{"type": "string", "description": "Optional file caption/message"},
+			"caption":       map[string]interface{}{"type": "string", "description": "Alias for message"},
+		},
+		"required": []string{"path"},
+	}
+}
+
 func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req ExecuteRequest) (*AgentCapabilities, error) {
-	_ = ctx
-	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer, toolPolicy: req.ToolPolicy, mutationScope: req.MutationScope, opsApprovedCommands: append([]v2.OpsApprovedCommand(nil), req.OpsApprovedCommands...)}
+	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer, toolPolicy: req.ToolPolicy, mutationScope: req.MutationScope, opsApprovedCommands: append([]v2.OpsApprovedCommand(nil), req.OpsApprovedCommands...), imMessageHandler: e.IMMessageHandler, imFileHandler: e.IMFileHandler}
+	if e.IMMessageHandlerContext != nil {
+		cb.imMessageHandler = func(args map[string]interface{}) string { return e.IMMessageHandlerContext(ctx, req.Principal, args) }
+	}
+	if e.IMFileHandlerContext != nil {
+		cb.imFileHandler = func(args map[string]interface{}) string { return e.IMFileHandlerContext(ctx, req.Principal, args) }
+	}
 	return &AgentCapabilities{
 		Executor:          "core_agent",
 		SupportsSessions:  true,
@@ -812,6 +867,18 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"delivery":         map[string]interface{}{"type": "object", "description": "可选完整投递配置"},
 				},
 			},
+		},
+		{
+			Name:        "send_file",
+			Description: "Deliver a local workspace file. Use destination=desktop for the current client, or destination=im plus channel/group_id/group_name/user_id for an IM destination.",
+			Enabled:     c.imFileHandler != nil,
+			Parameters:  imFileToolParameters(false),
+		},
+		{
+			Name:        "send_to_im",
+			Description: "Send a local workspace file to IM. Specify channel and group_id/group_name/user_id for an exact destination; omit target fields for legacy bound-channel delivery.",
+			Enabled:     c.imFileHandler != nil,
+			Parameters:  imFileToolParameters(true),
 		},
 		{
 			Name:        "knowledge_search",
@@ -1083,6 +1150,19 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			},
 		},
 		{
+			Name:        "read_tool_result",
+			Description: "Re-read a losslessly stored tool result from a [tool_result_handle]. Page with offset/limit and continue from next_offset only when omitted details are needed.",
+			Enabled:     true,
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id":     map[string]interface{}{"type": "string", "description": "Handle id from [tool_result_handle]"},
+					"offset": map[string]interface{}{"type": "integer", "description": "0-based byte offset"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Maximum bytes, default 6000, max 32768"},
+				},
+			},
+		},
+		{
 			Name:        "write_file",
 			Description: "Write content to a file. Supports overwrite (default) and append mode. Files are scoped to the instance workspace. Content is always UTF-8.",
 			Enabled:     c.workspace != "",
@@ -1348,6 +1428,27 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 			outcome = agent.ToolExecutionOutcomeError
 		}
 		return agent.ToolExecutionResult{Result: out, Outcome: outcome}
+	case "send_file", "send_to_im":
+		if c.imFileHandler == nil {
+			return agent.ToolExecutionResult{Result: "Error: IM file delivery is not initialized", Outcome: agent.ToolExecutionOutcomeError}
+		}
+		if strings.TrimSpace(name) == "send_to_im" {
+			args["forward_to_im"] = true
+			if strings.TrimSpace(agent.StringArg(args, "destination")) == "" {
+				args["destination"] = "im"
+			}
+		}
+		resolvedPath, err := c.resolveWorkspacePath(agent.StringArg(args, "path"))
+		if err != nil {
+			return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+		}
+		args["path"] = resolvedPath
+		out := c.imFileHandler(args)
+		outcome := agent.ToolExecutionOutcomeOK
+		if strings.HasPrefix(out, "Error:") {
+			outcome = agent.ToolExecutionOutcomeError
+		}
+		return agent.ToolExecutionResult{Result: out, Outcome: outcome}
 	case "memory":
 		return agent.ToolExecutionResult{Result: memory.HandleTool(c.memory, args, memory.ToolOptions{
 			ProjectPath: c.workspace,
@@ -1357,6 +1458,11 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		}), Outcome: agent.ToolExecutionOutcomeOK}
 	case "read_file":
 		return agent.ToolExecutionResult{Result: c.executeReadFile(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "read_tool_result":
+		// The authenticated principal is authoritative; never let model-provided
+		// arguments select another tenant/user handle namespace.
+		args["session_key"] = memoryOwnerIDForPrincipal(c.principal)
+		return agent.ToolExecutionResult{Result: agent.ToolReadToolResult(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "write_file":
 		return agent.ToolExecutionResult{Result: c.executeWriteFile(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "edit_file":
@@ -1435,6 +1541,12 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		}
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
+}
+
+// ProjectToolResult implements agent.ToolResultProjector for the server/shared
+// executor. Tenant+user ownership scopes both storage and ID-based re-read.
+func (c *coreAgentCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	return agent.TruncateToolResultForToolWithSession(name, memoryOwnerIDForPrincipal(c.principal), result.Result)
 }
 
 // isMutationScopeAllowed returns true if the tool is permitted under the given

@@ -847,6 +847,14 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 			if reason := groupPermissions.memoryRecallTransportBlockReason(args); reason != "" {
 				return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 			}
+			groupPermissions.restrictMemoryRecallArgs(args)
+			// The group loop context, rather than a best-effort callback flag, is
+			// authoritative for the memory owner. This keeps a callback that omitted
+			// hasRuntimeOwner from silently falling back to shared desktop memory.
+			if policyUserID == "" {
+				return toolExecutionResult{Text: "[system rejected] 群聊 memory 缺少隔离会话标识", Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			}
+			args[registeredToolPolicyOwnerIDField] = policyUserID
 		}
 		if name == "web_search" || name == "web_fetch" {
 			if reason := groupPermissions.webFallbackBlockReason(); reason != "" {
@@ -854,6 +862,13 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 			}
 		}
 		switch name {
+		case "web_search":
+			markLansengerGroupPublicWebToolArgs(args)
+		case "web_fetch":
+			if err := groupPermissions.restrictWebFetchArgs(args); err != nil {
+				return toolExecutionResult{Text: "[system rejected] " + err.Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			}
+			markLansengerGroupPublicWebToolArgs(args)
 		case "knowledge_search", "knowledge_explain", "knowledge_context_pack", "knowledge_search_facets":
 			if err := groupPermissions.restrictKnowledgeArgs(args); err != nil {
 				return toolExecutionResult{Text: "[system rejected] " + err.Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
@@ -863,11 +878,6 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 				return h.resolveFileToolPathForOwner(path, policyUserID)
 			}); err != nil {
 				return toolExecutionResult{Text: "[system rejected] " + err.Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
-			}
-		}
-		if name == "web_fetch" {
-			if savePath, _ := args["save_path"].(string); strings.TrimSpace(savePath) != "" {
-				return toolExecutionResult{Text: "[system rejected] 群聊权限不允许 web_fetch 写入本地文件", Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 			}
 		}
 	}
@@ -1111,7 +1121,7 @@ func (h *IMMessageHandler) registeredToolAcceptsRuntimePlatformArg(name string) 
 func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 	switch strings.TrimSpace(name) {
 	case "bash",
-		"read_file", "write_file", "edit_file", "edit_lines", "list_directory", "send_file", "send_to_im",
+		"read_file", "read_tool_result", "write_file", "edit_file", "edit_lines", "list_directory", "send_file", "send_to_im",
 		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
 		"group_discussion", "screenshot", "call_mcp_tool",

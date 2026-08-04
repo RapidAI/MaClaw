@@ -259,6 +259,9 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	if opts.RunState != nil && strings.TrimSpace(opts.RunState.ActiveConfig.Model) != "" {
 		llmCfg = opts.RunState.ActiveConfig
 	}
+	requestBreakdown := agent.EstimateLoopInputBreakdown(*opts.Conversation, *opts.Tools)
+	agent.RecordLoopInputBreakdown(requestBreakdown)
+	opts.Telemetry.InputBreakdown = requestBreakdown
 
 	phaseStartedAt = time.Now()
 	llmDispatch := h.dispatchAgentLoopLLMRound(agentLoopLLMDispatchOptions{

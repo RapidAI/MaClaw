@@ -56,6 +56,22 @@ func TestAppConfig_UnmarshalIgnoresUnknownExtraToolKeys(t *testing.T) {
 	}
 }
 
+func TestLansengerGroupFileLimitDefaultsUnlimitedAndRoundTrips(t *testing.T) {
+	var cfg AppConfig
+	if got := cfg.LansengerGroupFileLimit("group-1"); got != 0 {
+		t.Fatalf("default limit = %d, want unlimited", got)
+	}
+	if !cfg.SetLansengerGroupFileLimit("group-1", 8<<20) {
+		t.Fatal("setting limit reported no change")
+	}
+	if got := cfg.LansengerGroupFileLimit("group-1"); got != 8<<20 {
+		t.Fatalf("limit = %d", got)
+	}
+	if !cfg.SetLansengerGroupFileLimit("group-1", 0) || cfg.LansengerGroupFileMaxBytes != nil {
+		t.Fatalf("unlimited did not remove map entry: %#v", cfg.LansengerGroupFileMaxBytes)
+	}
+}
+
 func TestAppConfigMarshalKeepsUserMemoryZeroValues(t *testing.T) {
 	data, err := json.Marshal(AppConfig{})
 	if err != nil {
@@ -165,6 +181,23 @@ func TestAppConfig_UnmarshalIgnoresCompletelyUnknownTopLevelKeys(t *testing.T) {
 
 	if cfg.Claude.CurrentModel != "sonnet" {
 		t.Errorf("Claude.CurrentModel = %q, want %q", cfg.Claude.CurrentModel, "sonnet")
+	}
+}
+
+func TestAppConfigHardwareDefaultsSurviveLegacyUnmarshal(t *testing.T) {
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(`{"thirdparty_gateway_enabled":true}`), &cfg); err != nil {
+		t.Fatalf("unmarshal legacy config: %v", err)
+	}
+	if cfg.HardwareWelcomeText != "Hello, Maclaw" || cfg.HardwareVolume != 70 {
+		t.Fatalf("hardware defaults=%#v, want welcome text and 70%% volume", cfg)
+	}
+
+	if err := json.Unmarshal([]byte(`{"hardware_volume":0}`), &cfg); err != nil {
+		t.Fatalf("unmarshal muted config: %v", err)
+	}
+	if cfg.HardwareVolume != 0 {
+		t.Fatalf("explicit mute was overwritten: %d", cfg.HardwareVolume)
 	}
 }
 

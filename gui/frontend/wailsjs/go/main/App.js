@@ -1310,6 +1310,14 @@ export function GetPetStoreAccount() {
   return window['go']['main']['App']['GetPetStoreAccount']();
 }
 
+export function GetCreditsAssetAccount() {
+  return window['go']['main']['App']['GetCreditsAssetAccount']();
+}
+
+export function GetCreditsAssetTransactions(arg1) {
+	return window['go']['main']['App']['GetCreditsAssetTransactions'](arg1);
+}
+
 export function GetPetStoreCreatorReport(arg1, arg2) {
   return window['go']['main']['App']['GetPetStoreCreatorReport'](arg1, arg2);
 }
@@ -1516,6 +1524,26 @@ export function GetThirdPartyGatewayStatus() {
 
 export function CreateThirdPartyDevicePairing() {
   return window['go']['main']['App']['CreateThirdPartyDevicePairing']();
+}
+
+export function GenerateHardwareWelcomeAudio(arg1) {
+  return window['go']['main']['App']['GenerateHardwareWelcomeAudio'](arg1);
+}
+
+export function SelectHardwareWelcomeAudio() {
+  return window['go']['main']['App']['SelectHardwareWelcomeAudio']();
+}
+
+export function SendHardwareWelcomeAudio() {
+  return window['go']['main']['App']['SendHardwareWelcomeAudio']();
+}
+
+export function SyncHardwareWelcome() {
+  return window['go']['main']['App']['SyncHardwareWelcome']();
+}
+
+export function SendHardwareVolume(arg1) {
+  return window['go']['main']['App']['SendHardwareVolume'](arg1);
 }
 
 export function GetToolCacheStatus() {
@@ -1868,6 +1896,10 @@ export function ImportMobileDocumentBytes(arg1, arg2) {
 
 export function ImportMobileDocumentFromPath(arg1) {
   return window['go']['main']['App']['ImportMobileDocumentFromPath'](arg1);
+}
+
+export function GetMobileDocumentQuota() {
+  return window['go']['main']['App']['GetMobileDocumentQuota']();
 }
 
 export function ImportNLSkillZip() {
@@ -3102,6 +3134,10 @@ export function QueryIMAuditMessages(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['QueryIMAuditMessages'](arg1, arg2, arg3, arg4);
 }
 
+export function RevealIMAuditAttachment(arg1) {
+  return window['go']['main']['App']['RevealIMAuditAttachment'](arg1);
+}
+
 export function QuerySecurityEvents(arg1) {
   return window['go']['main']['App']['QuerySecurityEvents'](arg1);
 }
@@ -3184,6 +3220,10 @@ export function RecoverCC() {
 
 export function RedeemHubLLMService(arg1) {
   return window['go']['main']['App']['RedeemHubLLMService'](arg1);
+}
+
+export function RedeemCreditsCard(arg1) {
+  return window['go']['main']['App']['RedeemCreditsCard'](arg1);
 }
 
 export function RefreshHubLLMServiceStatus() {
@@ -3808,6 +3848,10 @@ export function SetLanguage(arg1) {
 
 export function SetLansengerGroupAllowed(arg1, arg2) {
   return window['go']['main']['App']['SetLansengerGroupAllowed'](arg1, arg2);
+}
+
+export function SetLansengerGroupFileMaxBytes(arg1, arg2) {
+  return window['go']['main']['App']['SetLansengerGroupFileMaxBytes'](arg1, arg2);
 }
 
 export function SetLansengerGroupIgnored(arg1, arg2) {

@@ -26,6 +26,8 @@ func normalizeThirdPartyGatewayMessageKind(kind string) thirdPartyGatewayMessage
 		return thirdPartyGatewayMessageFile
 	case thirdPartyGatewayMessageVoice:
 		return thirdPartyGatewayMessageVoice
+	case "audio":
+		return thirdPartyGatewayMessageVoice
 	case thirdPartyGatewayMessageVideo:
 		return thirdPartyGatewayMessageVideo
 	case thirdPartyGatewayMessageAmbient:

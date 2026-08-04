@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -123,15 +124,90 @@ func (h *IMMessageHandler) handleExecutionConfirmationGate(freshTask bool, msg I
 		return nil, false
 	}
 
-	// Attempt LLM-based task understanding for a structured summary. On
-	// failure (timeout, LLM not configured, etc.), understanding is nil and
-	// buildPendingConfirmation falls back to raw-text echo.
+	// A confirmation is useful only when it gives the user a meaningful,
+	// reviewable interpretation of the task.  In IM channels, echoing the
+	// incoming text inside a confirmation card is both redundant and confusing.
+	// If task understanding is unavailable, let the normal agent path handle the
+	// request instead of sending a no-op confirmation.
 	understanding := h.understandTaskWithLLM(msg.UserID, trimmed, intent)
+	if !hasMeaningfulTaskUnderstanding(understanding, trimmed) {
+		return nil, false
+	}
 	item := buildPendingConfirmation(h.app, msg.UserID, trimmed, intent, understanding)
 	if h.confirmationStore != nil {
 		h.confirmationStore.set(item)
 	}
 	return buildConfirmationResponse(item, h.getWorkflowLang()), true
+}
+
+// hasMeaningfulTaskUnderstanding reports whether the confirmation card adds
+// information beyond simply restating the user's message. A summary, plan, or
+// rewritten instruction must contain substantive content that differs from
+// the original request.
+func hasMeaningfulTaskUnderstanding(understanding *taskUnderstandingResult, original string) bool {
+	if understanding == nil {
+		return false
+	}
+	original = normalizeTaskUnderstandingText(original)
+	for _, candidate := range []string{understanding.Summary, understanding.EnhancedInstruction} {
+		if taskUnderstandingAddsDetail(candidate, original) {
+			return true
+		}
+	}
+	return hasMeaningfulTaskUnderstandingItems(understanding.Goals, original) ||
+		hasMeaningfulTaskUnderstandingItems(understanding.Constraints, original) ||
+		hasMeaningfulTaskUnderstandingItems(understanding.ExecutionPlan, original)
+}
+
+func taskUnderstandingAddsDetail(candidate, normalizedOriginal string) bool {
+	normalizedCandidate := normalizeTaskUnderstandingText(candidate)
+	if normalizedCandidate == "" || normalizedCandidate == normalizedOriginal {
+		return false
+	}
+	// A shortened extract of the original request is not an expanded
+	// understanding either. Confirmations should introduce reviewable detail,
+	// not merely restate or discard part of what the user already supplied.
+	if strings.Contains(normalizedOriginal, normalizedCandidate) {
+		return false
+	}
+	if !strings.Contains(normalizedCandidate, normalizedOriginal) {
+		return true
+	}
+
+	// A useful expansion can include the original request (for example, add
+	// verification steps after it). Ignore generic labels before deciding
+	// whether the remaining text adds enough substance to review.
+	extra := strings.ReplaceAll(normalizedCandidate, normalizedOriginal, "")
+	for _, label := range []string{
+		"task", "request", "yourtaskis", "please", "couldyou", "canyou", "helpme",
+		"任务", "用户请求", "任务理解", "执行指令", "请", "请帮我", "帮我", "帮忙",
+	} {
+		extra = strings.ReplaceAll(extra, label, "")
+	}
+	return len([]rune(extra)) >= 3
+}
+
+func hasMeaningfulTaskUnderstandingItems(items []string, normalizedOriginal string) bool {
+	for _, item := range items {
+		if taskUnderstandingAddsDetail(item, normalizedOriginal) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeTaskUnderstandingText removes cosmetic differences that do not
+// make a task understanding more useful, such as whitespace, casing, and
+// trailing punctuation. It deliberately preserves words and CJK characters.
+func normalizeTaskUnderstandingText(text string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(text)) {
+		if unicode.IsSpace(r) || strings.ContainsRune(".,;:!?，。；：！？、'\"“”‘’()（）[]【】", r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func confirmationTaskLabel(intent taskIntent) string {
@@ -209,12 +285,18 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		lang = app.CurrentLanguage
 	}
 
-	if understanding != nil && strings.TrimSpace(understanding.Summary) != "" {
-		enhancedSummary = formatTaskUnderstandingSummary(understanding, projectPath)
-		enhancedInstruction = formatEnhancedInstruction(understanding)
+	if understanding != nil && hasDisplayableTaskUnderstanding(understanding) {
+		// Do not render or later execute a field that only paraphrases the raw
+		// request. Retain the independently useful structured parts (such as a
+		// plan), which are what make the confirmation worthwhile.
+		displayUnderstanding := taskUnderstandingForConfirmation(understanding, text)
+		enhancedSummary = formatTaskUnderstandingSummary(displayUnderstanding, projectPath)
+		enhancedInstruction = formatEnhancedInstruction(displayUnderstanding)
 		summary = enhancedSummary
 	} else {
-		// Fallback: raw-text echo (previous behavior).
+		// This fallback is retained for non-IM callers that construct a pending
+		// confirmation directly. The IM gate only creates confirmation cards when
+		// hasMeaningfulTaskUnderstanding has already accepted the understanding.
 		if strings.HasPrefix(strings.ToLower(lang), "en") {
 			summary = fmt.Sprintf("I understand you want me to handle this task: %s", strings.TrimSpace(text))
 		} else {
@@ -242,8 +324,10 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 	}
 
 	plannedActions := confirmationPlannedActions(result.Intent, lang)
-	if understanding != nil && len(understanding.ExecutionPlan) > 0 {
-		plannedActions = understanding.ExecutionPlan
+	if understanding != nil {
+		if meaningfulPlan := meaningfulTaskUnderstandingItems(understanding.ExecutionPlan, text); len(meaningfulPlan) > 0 {
+			plannedActions = meaningfulPlan
+		}
 	}
 
 	return &pendingConfirmation{
@@ -264,6 +348,45 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		EnhancedSummary:     enhancedSummary,
 		EnhancedInstruction: enhancedInstruction,
 	}
+}
+
+func taskUnderstandingForConfirmation(understanding *taskUnderstandingResult, original string) *taskUnderstandingResult {
+	if understanding == nil {
+		return nil
+	}
+	clone := *understanding
+	normalizedOriginal := normalizeTaskUnderstandingText(original)
+	if !taskUnderstandingAddsDetail(clone.Summary, normalizedOriginal) {
+		clone.Summary = ""
+	}
+	if !taskUnderstandingAddsDetail(clone.EnhancedInstruction, normalizedOriginal) {
+		clone.EnhancedInstruction = ""
+	}
+	clone.Goals = meaningfulTaskUnderstandingItems(clone.Goals, original)
+	clone.Constraints = meaningfulTaskUnderstandingItems(clone.Constraints, original)
+	clone.ExecutionPlan = meaningfulTaskUnderstandingItems(clone.ExecutionPlan, original)
+	return &clone
+}
+
+func meaningfulTaskUnderstandingItems(items []string, original string) []string {
+	normalizedOriginal := normalizeTaskUnderstandingText(original)
+	result := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		key := normalizeTaskUnderstandingText(item)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if taskUnderstandingAddsDetail(item, normalizedOriginal) {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func buildConfirmationPayload(item *pendingConfirmation, lang string) *IMResponseConfirmation {

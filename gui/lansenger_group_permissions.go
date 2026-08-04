@@ -17,6 +17,7 @@ import (
 // existing permissions.
 type lansengerGroupPermissionPolicy struct {
 	KnowledgeSourceIDs  []string
+	AllowWebSearch      bool
 	AllowAllDirectories bool
 	AllowedDirectories  []string
 
@@ -35,12 +36,18 @@ type lansengerGroupKnowledgePriorityState struct {
 
 var lansengerGroupKnowledgePriorityInitMu sync.Mutex
 
+// This internal argument marks the narrowly-scoped public-network contract
+// after group permission checks have succeeded. It is never advertised in a
+// tool schema and lets the shared handlers disable implicit browser state.
+const lansengerGroupPublicWebToolFlag = "_lansenger_group_public_web"
+
 func lansengerGroupPermissionsFromConfig(cfg *corelib.AppConfig) lansengerGroupPermissionPolicy {
 	if cfg == nil {
 		return lansengerGroupPermissionPolicy{}
 	}
 	return lansengerGroupPermissionPolicy{
 		KnowledgeSourceIDs:  normalizedLansengerKnowledgeSourceIDs(cfg.LansengerGroupKnowledgeSourceIDs),
+		AllowWebSearch:      cfg.LansengerGroupAllowWebSearch,
 		AllowAllDirectories: cfg.LansengerGroupAllowAllDirectories,
 		AllowedDirectories:  append([]string(nil), cfg.LansengerGroupAllowedDirectories...),
 		knowledgePriority:   &lansengerGroupKnowledgePriorityState{},
@@ -211,10 +218,12 @@ func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
 	switch name {
 	case "read_file", "list_directory", "search_files", "send_file", "send_to_im":
 		return p.AllowAllDirectories || len(p.AllowedDirectories) > 0
-	case "current_datetime", "web_search", "web_fetch":
-		// These tools do not read from or mutate local resources. web_fetch is
-		// separately prevented from using save_path at execution time.
+	case "current_datetime":
 		return true
+	case "web_search", "web_fetch":
+		// Network access is opt-in for group bots. Downloads are constrained to
+		// the agent working directory by the shared web_fetch implementation.
+		return p.AllowWebSearch
 	default:
 		// Fail closed. Registered tools evolve frequently and many apparently
 		// innocuous tools (for example git_status, project search, browser/MCP
@@ -226,8 +235,50 @@ func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
 	}
 }
 
+func markLansengerGroupPublicWebToolArgs(args map[string]interface{}) {
+	if args != nil {
+		args[lansengerGroupPublicWebToolFlag] = true
+	}
+}
+
+func isLansengerGroupPublicWebToolCall(args map[string]interface{}) bool {
+	value, _ := args[lansengerGroupPublicWebToolFlag].(bool)
+	return value
+}
+
+// lansengerGroupPublicWebSearchStrategy removes browser-based engines and the
+// browser fallback. A group permission authorizes public research, not access
+// through the user's managed browser profile.
+func lansengerGroupPublicWebSearchStrategy(strategy corelib.WebSearchStrategy) corelib.WebSearchStrategy {
+	strategy.BrowserFallbackEnabled = false
+	strategy.BrowserHumanAssistEnabled = false
+	strategy.Engines = append([]corelib.WebSearchEngineConfig(nil), strategy.Engines...)
+	for i := range strategy.Engines {
+		// API engines use configured user credentials. Baidu's HTML adapter
+		// acquires a verification cookie. The group contract allows only
+		// anonymous public HTTP search.
+		if strategy.Engines[i].Transport != corelib.WebSearchTransportHTTPHTML || strategy.Engines[i].ID == "baidu" {
+			strategy.Engines[i].Enabled = false
+		}
+	}
+	return strategy
+}
+
 func (p lansengerGroupPermissionPolicy) allowsMemoryAction(action string) bool {
 	return normalizeMemoryToolAction(action) == memoryToolActionRecall
+}
+
+// restrictMemoryRecallArgs preserves the narrow group-memory contract at both
+// the schema and dispatch boundaries. Group owners are conversations, not
+// project workspaces, so all caller-controlled recall scope selectors are
+// discarded before the shared memory tool executes.
+func (p lansengerGroupPermissionPolicy) restrictMemoryRecallArgs(args map[string]interface{}) {
+	if args == nil {
+		return
+	}
+	delete(args, "project_path")
+	delete(args, "project")
+	delete(args, "category")
 }
 
 // memoryRecallTransportBlockReason rejects recall modes that carry state from
@@ -276,9 +327,12 @@ func filterToolsForLansengerGroupPermissions(tools []map[string]interface{}, pol
 	for _, def := range tools {
 		name := tool.ExtractToolName(def)
 		if policy.allowsTool(name) {
-			if name == "memory" {
+			switch name {
+			case "memory":
 				out = append(out, lansengerGroupMemoryRecallToolDefinition(def))
-			} else {
+			case "web_fetch":
+				out = append(out, lansengerGroupWebFetchToolDefinition(def))
+			default:
 				out = append(out, def)
 			}
 		}
@@ -311,10 +365,9 @@ func lansengerGroupMemoryRecallToolDefinition(def map[string]interface{}) map[st
 			"enum":        []string{"recall"},
 			"description": "固定为 recall。",
 		},
-		"query":        copyLansengerGroupMemoryProperty(parameters, "query"),
-		"tags":         copyLansengerGroupMemoryProperty(parameters, "tags"),
-		"limit":        copyLansengerGroupMemoryProperty(parameters, "limit"),
-		"project_path": copyLansengerGroupMemoryProperty(parameters, "project_path"),
+		"query": copyLansengerGroupMemoryProperty(parameters, "query"),
+		"tags":  copyLansengerGroupMemoryProperty(parameters, "tags"),
+		"limit": copyLansengerGroupMemoryProperty(parameters, "limit"),
 	}
 	for name, property := range properties {
 		if property == nil {
@@ -323,6 +376,35 @@ func lansengerGroupMemoryRecallToolDefinition(def map[string]interface{}) map[st
 	}
 	parametersCopy["properties"] = properties
 	parametersCopy["required"] = []string{"action"}
+	functionCopy["parameters"] = parametersCopy
+	result["function"] = functionCopy
+	return result
+}
+
+// lansengerGroupWebFetchToolDefinition advertises the narrower public-web
+// contract used in group conversations. The execution boundary below enforces
+// the same restriction for manually constructed tool calls.
+func lansengerGroupWebFetchToolDefinition(def map[string]interface{}) map[string]interface{} {
+	result := copyLansengerGroupToolMap(def)
+	function, ok := def["function"].(map[string]interface{})
+	if !ok {
+		return result
+	}
+	functionCopy := copyLansengerGroupToolMap(function)
+	functionCopy["description"] = "抓取公开网页内容或下载公开文件。不可使用浏览器登录态、Cookie 或自定义请求头。"
+	parameters, ok := function["parameters"].(map[string]interface{})
+	if !ok {
+		result["function"] = functionCopy
+		return result
+	}
+	parametersCopy := copyLansengerGroupToolMap(parameters)
+	if properties, ok := parameters["properties"].(map[string]interface{}); ok {
+		propertiesCopy := copyLansengerGroupToolMap(properties)
+		for _, name := range []string{"render_js", "headers", "cookie", "use_browser_cookies", "via_browser"} {
+			delete(propertiesCopy, name)
+		}
+		parametersCopy["properties"] = propertiesCopy
+	}
 	functionCopy["parameters"] = parametersCopy
 	result["function"] = functionCopy
 	return result
@@ -351,11 +433,53 @@ func copyLansengerGroupMemoryProperty(parameters map[string]interface{}, name st
 	return property
 }
 
+// restrictWebFetchArgs prevents a group message from turning the workstation's
+// authenticated browser state into a network credential. Public web fetches
+// and explicit file downloads remain allowed when AllowWebSearch is enabled.
+func (p lansengerGroupPermissionPolicy) restrictWebFetchArgs(args map[string]interface{}) error {
+	if args == nil {
+		return nil
+	}
+	for _, key := range []string{"render_js", "headers", "cookie", "use_browser_cookies", "via_browser"} {
+		if value, exists := args[key]; exists && lansengerGroupWebFetchSensitiveArgSet(value) {
+			return fmt.Errorf("群聊 web_fetch 不允许 %s；仅支持访问公开网页", key)
+		}
+	}
+	return nil
+}
+
+func lansengerGroupWebFetchSensitiveArgSet(value interface{}) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return typed
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case map[string]interface{}:
+		return len(typed) > 0
+	case map[string]string:
+		return len(typed) > 0
+	default:
+		return true
+	}
+}
+
 func (p lansengerGroupPermissionPolicy) restrictKnowledgeArgs(args map[string]interface{}) error {
 	allowedIDs := normalizedLansengerKnowledgeSourceIDs(p.KnowledgeSourceIDs)
 	if len(allowedIDs) == 0 {
 		return fmt.Errorf("群聊权限未授权访问知识库")
 	}
+	// A disabled source is deliberately unavailable until its owner restores it.
+	// A group permission selects eligible sources; it must not let a caller
+	// override that lifecycle state with an include_disabled flag.
+	delete(args, "include_disabled")
+	// The source allowlist is the complete group boundary. Project scope filters
+	// are global workspace selectors and can make an otherwise authorised source
+	// look empty (or disclose whether an unrelated project exists). Keep group
+	// retrieval source-scoped and independent of the desktop's current project.
+	delete(args, "project_path")
+	delete(args, "search_scope")
 	requested, specified, err := knowledgeSourceIDsFromArgs(args)
 	if err != nil {
 		return err

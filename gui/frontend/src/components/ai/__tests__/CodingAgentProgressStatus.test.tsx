@@ -471,7 +471,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentFileActivityStatusLabel('read_only', 'en')).toBe('Read only');
         expect(codingAgentFileActivityStatusLabel('none', 'zh-Hans')).toBe('\u65e0\u52a8\u4f5c');
         expect(codingAgentFileActivityStatusTone('changed').accent).toBe('#4f7f6f');
-        expect(codingAgentFileActivityStatusTone('read_only').accent).toBe('#2f5f98');
+        expect(codingAgentFileActivityStatusTone('read_only').accent).toBe('#2f6fbc');
     });
 
     it('normalizes coding-agent quality labels and tones', () => {
@@ -884,13 +884,13 @@ describe('CodingAgentProgressStatus', () => {
     });
 
     it('maps status phases to distinct semantic tones', () => {
-        expect(codingAgentStatusTone('running').accent).toBe('#2f5f98');
+        expect(codingAgentStatusTone('running').accent).toBe('#2f6fbc');
         expect(codingAgentStatusTone('retrying').accent).toBe('#64748b');
         expect(codingAgentStatusTone('failed').accent).toBe(CODING_AGENT_FAILURE_ACCENT);
         expect(codingAgentStatusTone('completed').accent).toBe('#4f7f6f');
         expect(codingAgentStatusTone('result').accent).toBe('#4f7f6f');
         expect(codingAgentStatusTone('skipped').accent).toBe('#64748b');
-        expect(codingAgentStatusTone('queued').accent).toBe('#2f5f98');
+        expect(codingAgentStatusTone('queued').accent).toBe('#2f6fbc');
         expect(codingAgentStatusLabel('queued', 'en')).toBe('Status');
         expect(codingAgentStatusLabel('queued', 'zh-Hans')).toBe('\u72b6\u6001');
     });

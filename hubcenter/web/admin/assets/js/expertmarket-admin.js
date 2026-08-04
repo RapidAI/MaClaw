@@ -9,8 +9,8 @@ let expertMarketAdminStatusTimer = null;
 let expertMarketAdminLoadController = null;
 
 const EXPERT_MARKET_TEXT = {
-  en: { nav: 'AI Expert Market', navDesc: 'Expert listing management', title: 'AI Expert Market', desc: 'Approve submissions to publish them immediately, then manage their visibility.', filter: 'Status', all: 'All statuses', pending: 'Pending review', listed: 'Listed', unlisted: 'Unlisted', rejected: 'Rejected', deleted: 'Deleted', refresh: 'Refresh', loading: 'Loading...', empty: 'No expert listings match this filter.', author: 'Author', version: 'Version', price: 'Credits', downloads: 'Downloads', sales: 'Sales', updated: 'Updated', approve: 'Approve & publish', reject: 'Reject', unlist: 'Unlist', remove: 'Delete', purge: 'Permanently delete', reason: 'Moderation note', reasonHint: 'Required to record this decision', reasonRequired: 'Enter a moderation note before continuing.', purgeConfirm: 'Permanently delete this package? This is allowed only when no active buyer entitlement exists.', deleteConfirm: 'Delete this unlisted package? Buyers who already own it keep their download access.', actionFailed: 'Action failed: {error}', approvedOk: 'Expert listing approved and published.', rejectedOk: 'Expert listing rejected.', unlistedOk: 'Expert listing unlisted.', deletedOk: 'Expert listing deleted.', purgedOk: 'Expert listing permanently deleted.', page: '{start}-{end} / {total}' },
-  zh: { nav: 'AI 专家市场', navDesc: '专家审核与上架管理', title: 'AI 专家市场', desc: '审核通过即上架；下架后可删除。', filter: '状态', all: '全部状态', pending: '待审核', listed: '已上架', unlisted: '已下架', rejected: '已驳回', deleted: '已删除', refresh: '刷新', loading: '加载中...', empty: '没有符合条件的专家条目。', author: '作者', version: '版本', price: 'Credits', downloads: '下载', sales: '销售额', updated: '更新时间', approve: '通过并上架', reject: '驳回', unlist: '下架', remove: '删除', purge: '彻底删除', reason: '审核说明', reasonHint: '处理前请填写，用于留存审核记录', reasonRequired: '请先填写审核说明。', purgeConfirm: '确认彻底删除该专家包？仅当没有有效买家权益时允许。', deleteConfirm: '确认删除这个已下架专家包？已购买用户仍可下载。', actionFailed: '操作失败：{error}', approvedOk: '专家条目已通过审核并上架。', rejectedOk: '专家条目已驳回。', unlistedOk: '专家条目已下架。', deletedOk: '专家条目已删除。', purgedOk: '专家条目已彻底删除。', page: '{start}-{end} / {total}' }
+  en: { nav: 'AI Expert Market', navDesc: 'Expert listing management', title: 'AI Expert Market', desc: 'Approve submissions to publish them immediately, then manage their visibility.', filter: 'Status', all: 'All statuses', pending: 'Pending review', listed: 'Listed', unlisted: 'Unlisted', rejected: 'Rejected', deleted: 'Deleted', refresh: 'Refresh', loading: 'Loading...', empty: 'No expert listings match this filter.', author: 'Author', version: 'Version', price: 'Credits', downloads: 'Downloads', sales: 'Sales', updated: 'Updated', approve: 'Approve & publish', reject: 'Reject', unlist: 'Unlist', remove: 'Delete', purge: 'Permanently delete', reason: 'Moderation note (optional)', reasonHint: 'Retained with the review record', operationReason: 'Operation reason', operationReasonHint: 'Required for this lifecycle action', operationReasonRequired: 'Enter an operation reason before continuing.', purgeConfirm: 'Permanently delete this package? This is allowed only when no active buyer entitlement exists.', deleteConfirm: 'Delete this unlisted package? Buyers who already own it keep their download access.', actionFailed: 'Action failed: {error}', approvedOk: 'Expert listing approved and published.', rejectedOk: 'Expert listing rejected.', unlistedOk: 'Expert listing unlisted.', deletedOk: 'Expert listing deleted.', purgedOk: 'Expert listing permanently deleted.', page: '{start}-{end} / {total}' },
+  zh: { nav: 'AI 专家市场', navDesc: '专家审核与上架管理', title: 'AI 专家市场', desc: '审核通过即上架；下架后可删除。', filter: '状态', all: '全部状态', pending: '待审核', listed: '已上架', unlisted: '已下架', rejected: '已驳回', deleted: '已删除', refresh: '刷新', loading: '加载中...', empty: '没有符合条件的专家条目。', author: '作者', version: '版本', price: 'Credits', downloads: '下载', sales: '销售额', updated: '更新时间', approve: '通过并上架', reject: '驳回', unlist: '下架', remove: '删除', purge: '彻底删除', reason: '审核说明（选填）', reasonHint: '用于留存审核记录', operationReason: '操作原因', operationReasonHint: '执行此生命周期操作前必填', operationReasonRequired: '请先填写操作原因。', purgeConfirm: '确认彻底删除该专家包？仅当没有有效买家权益时允许。', deleteConfirm: '确认删除这个已下架专家包？已购买用户仍可下载。', actionFailed: '操作失败：{error}', approvedOk: '专家条目已通过审核并上架。', rejectedOk: '专家条目已驳回。', unlistedOk: '专家条目已下架。', deletedOk: '专家条目已删除。', purgedOk: '专家条目已彻底删除。', page: '{start}-{end} / {total}' }
 };
 
 function expertMarketText(key, vars = {}) { const lang = window.currentLang === 'zh' ? 'zh' : 'en'; return (EXPERT_MARKET_TEXT[lang][key] || EXPERT_MARKET_TEXT.en[key] || key).replace(/\{(\w+)\}/g, (_, n) => vars[n] ?? ''); }
@@ -48,12 +48,27 @@ function expertMarketActionButton(status) {
 
 function expertMarketRenderCard(item) {
   const id = String(item.id || ''), status = String(item.status || '').toLowerCase();
+  const reviewNote = status === 'pending_review' ? `<label class="expert-market-note"><span>${expertMarketEsc(expertMarketText('reason'))}</span><input type="text" maxlength="2048" data-expert-reason placeholder="${expertMarketEsc(expertMarketText('reasonHint'))}"></label>` : '';
+  const actions = expertMarketActionButton(status);
+  const footer = reviewNote || actions ? `<div class="expert-market-footer">${reviewNote}<div class="expert-market-actions">${actions}</div></div>` : '';
   return `<article class="expert-market-card" data-expert-id="${expertMarketEsc(id)}">
     <div class="expert-market-card-head"><div class="expert-market-avatar" aria-hidden="true">${expertMarketEsc(item.icon || 'AI')}</div><div class="expert-market-identity"><strong title="${expertMarketEsc(item.name || id)}">${expertMarketEsc(item.name || id)}</strong><span title="${expertMarketEsc(id)}">${expertMarketEsc(id)}</span></div><span class="expert-market-status expert-market-status-${expertMarketEsc(status)}">${expertMarketEsc(expertMarketStatus(status))}</span></div>
     <p class="expert-market-description" title="${expertMarketEsc(item.description || '')}">${expertMarketEsc(item.description || '—')}</p>
     <dl class="expert-market-details"><div><dt>${expertMarketEsc(expertMarketText('author'))}</dt><dd title="${expertMarketEsc(item.owner_email || '')}">${expertMarketEsc(item.owner_email || '—')}</dd></div><div><dt>${expertMarketEsc(expertMarketText('version'))}</dt><dd>${expertMarketEsc(item.version || '—')}</dd></div><div><dt>${expertMarketEsc(expertMarketText('price'))}</dt><dd>${expertMarketEsc(Number(item.price || 0).toLocaleString())}</dd></div><div><dt>${expertMarketEsc(expertMarketText('downloads'))}</dt><dd>${expertMarketEsc(Number(item.download_count || 0).toLocaleString())}</dd></div></dl>
-    <div class="expert-market-footer"><label class="expert-market-note"><span>${expertMarketEsc(expertMarketText('reason'))}</span><input type="text" maxlength="2048" data-expert-reason placeholder="${expertMarketEsc(expertMarketText('reasonHint'))}"></label><div class="expert-market-actions">${expertMarketActionButton(status)}</div></div>
+    ${footer}
   </article>`;
+}
+
+function expertMarketEnsureActionReason(card) {
+  const existing = card.querySelector('[data-expert-reason]');
+  if (existing) return existing;
+  const footer = card.querySelector('.expert-market-footer');
+  if (!footer) return null;
+  const label = document.createElement('label');
+  label.className = 'expert-market-note expert-market-operation-reason';
+  label.innerHTML = `<span>${expertMarketEsc(expertMarketText('operationReason'))}</span><input type="text" maxlength="2048" data-expert-reason placeholder="${expertMarketEsc(expertMarketText('operationReasonHint'))}">`;
+  footer.insertBefore(label, footer.firstChild);
+  return label.querySelector('[data-expert-reason]');
 }
 
 function expertMarketSetStatus(kind, message, dismissAfter = 0) {
@@ -98,11 +113,15 @@ async function loadExpertMarketAdmin(page, force = false) {
 }
 
 async function expertMarketAdminAction(card, button) {
-  const action = button.dataset.expertAction, id = String(card.dataset.expertId || ''), reasonInput = card.querySelector('[data-expert-reason]'), reason = String(reasonInput?.value || '').trim();
+  const action = button.dataset.expertAction, id = String(card.dataset.expertId || '');
   if (!id || !action || button.disabled) return;
-  if (!reason) { reasonInput?.focus(); expertMarketSetStatus('error', expertMarketText('reasonRequired')); return; }
-  if (action === 'purge' && !window.confirm(expertMarketText('purgeConfirm'))) return;
-  if (action === 'delete' && !window.confirm(expertMarketText('deleteConfirm'))) return;
+  const requiresReason = action === 'unlist' || action === 'delete' || action === 'purge';
+  let reasonInput = card.querySelector('[data-expert-reason]');
+  if (requiresReason && !reasonInput) { reasonInput = expertMarketEnsureActionReason(card); reasonInput?.focus(); expertMarketSetStatus('error', expertMarketText('operationReasonRequired')); return; }
+  const reason = String(reasonInput?.value || '').trim();
+  if (requiresReason && !reason) { reasonInput?.focus(); expertMarketSetStatus('error', expertMarketText('operationReasonRequired')); return; }
+  if (action === 'purge' && !window.confirm(expertMarketText('purgeConfirm'))) { reasonInput?.focus(); return; }
+  if (action === 'delete' && !window.confirm(expertMarketText('deleteConfirm'))) { reasonInput?.focus(); return; }
   const route = { approve: 'approve', reject: 'reject', unlist: 'unlist' }[action], method = (action === 'delete' || action === 'purge') ? 'DELETE' : 'POST';
   const buttons = Array.from(card.querySelectorAll('[data-expert-action]')), labels = buttons.map(item => item.textContent); buttons.forEach(item => { item.disabled = true; }); if (reasonInput) reasonInput.disabled = true; button.textContent = expertMarketText('loading');
   try {

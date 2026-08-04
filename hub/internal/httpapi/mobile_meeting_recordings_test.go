@@ -361,10 +361,14 @@ func TestMobileStoreMeetingResultDocumentsIsIdempotentAcrossRetry(t *testing.T) 
 		mobileDocuments.Unlock()
 	})
 
-	mobileStoreMeetingResultDocuments(rec, "verified transcript", "verified minutes")
+	if err := mobileStoreMeetingResultDocuments(rec, "verified transcript", "verified minutes"); err != nil {
+		t.Fatal(err)
+	}
 	// Simulate a duplicate worker completion that still holds the original
 	// recording snapshot without the newly persisted draft IDs.
-	mobileStoreMeetingResultDocuments(rec, "verified transcript", "verified minutes")
+	if err := mobileStoreMeetingResultDocuments(rec, "verified transcript", "verified minutes"); err != nil {
+		t.Fatal(err)
+	}
 
 	stored, ok := mobileMeetingRecordingOwnedForTenant(rec.OwnerID, rec.TenantID, recordingID)
 	if !ok {
@@ -387,6 +391,37 @@ func TestMobileStoreMeetingResultDocumentsIsIdempotentAcrossRetry(t *testing.T) 
 	mobileDocuments.Unlock()
 	if !transcriptOK || !minutesOK || count != 2 {
 		t.Fatalf("result drafts transcript=%v minutes=%v count=%d", transcriptOK, minutesOK, count)
+	}
+}
+
+func TestMobileStoreMeetingResultDocumentsRespectsQuota(t *testing.T) {
+	rec := mobileMeetingRecording{
+		ID: "meeting-result-quota", OwnerID: "meeting-result-quota-owner", TenantID: "meeting-result-quota-tenant",
+		Title: "Quota result", DocumentQuotaBytes: 64,
+	}
+	mobileMeetingRecordings.Lock()
+	mobileMeetingRecordings.items[rec.ID] = rec
+	mobileMeetingRecordings.Unlock()
+	t.Cleanup(func() {
+		mobileMeetingRecordings.Lock()
+		delete(mobileMeetingRecordings.items, rec.ID)
+		mobileMeetingRecordings.Unlock()
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, "mobdoc_meeting_transcript_"+rec.ID)
+		delete(mobileDocuments.drafts, "mobdoc_meeting_minutes_"+rec.ID)
+		mobileDocuments.Unlock()
+	})
+
+	err := mobileStoreMeetingResultDocuments(rec, strings.Repeat("transcript ", 20), strings.Repeat("minutes ", 20))
+	if err != errMobileDocumentQuotaExceeded {
+		t.Fatalf("err=%v want quota exceeded", err)
+	}
+	mobileDocuments.Lock()
+	_, transcriptExists := mobileDocuments.drafts["mobdoc_meeting_transcript_"+rec.ID]
+	_, minutesExists := mobileDocuments.drafts["mobdoc_meeting_minutes_"+rec.ID]
+	mobileDocuments.Unlock()
+	if transcriptExists || minutesExists {
+		t.Fatalf("quota rejection inserted drafts: transcript=%t minutes=%t", transcriptExists, minutesExists)
 	}
 }
 
@@ -1028,8 +1063,11 @@ func TestMobileMeetingRecordingDeleteRemovesGeneratedResultDocuments(t *testing.
 func TestMobileMeetingRecordingDeleteAndProcessClaimsCannotRace(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "meeting-delete-process-race@example.com")
-	SetMeetingRecordingWorkers(testMeetingTranscriber{}, testMeetingMinutes{})
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	SetMeetingRecordingWorkers(blockingMeetingTranscriber{started: started, release: release}, testMeetingMinutes{})
 	t.Cleanup(func() { SetMeetingRecordingWorkers(nil, nil) })
+	t.Cleanup(func() { close(release) })
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/recording.m4a", []byte("audio"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1058,6 +1096,11 @@ func TestMobileMeetingRecordingDeleteAndProcessClaimsCannotRace(t *testing.T) {
 	MobileMeetingRecordingsHandler(identity).ServeHTTP(processResp, processReq)
 	if processResp.Code != http.StatusAccepted {
 		t.Fatalf("process=%d %s", processResp.Code, processResp.Body.String())
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("processing worker did not start")
 	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/mobile/meeting-recordings/"+recording.ID, nil)

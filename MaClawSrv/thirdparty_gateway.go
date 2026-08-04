@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
 const (
@@ -501,18 +502,131 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 		return
 	}
 	if assistant != nil && strings.TrimSpace(assistant.Content) != "" {
+		m.enqueueAssistantReply(ctx, p, req, maclawID, assistant.ID, assistant.Content, assistant.CreatedAt)
+	}
+	_ = parent
+}
+
+// enqueueAssistantReply turns one logical Agent answer into the richest output
+// combination the concrete client declared. Voice-originated turns are spoken
+// automatically; text-originated turns use the user's existing automatic TTS
+// preference. A TTS/model/media failure always degrades to useful text when the
+// client supports it.
+func (m *srvThirdPartyGatewayManager) enqueueAssistantReply(ctx context.Context, p agentservice.Principal, req srvThirdPartyIncomingRequest, replyTo, assistantID, text string, createdAt time.Time) {
+	text = strings.TrimSpace(text)
+	if m == nil || text == "" {
+		return
+	}
+	capabilities := agent.NormalizeClientCapabilities(m.clientCapabilities(thirdPartyClientKey(p, req.ClientID)))
+	present := make([]string, 0, 2)
+	if capabilities.SupportsOutput("text") {
+		present = append(present, "text")
+	}
+
+	var audio *srvThirdPartyOutgoingMessage
+	voiceTurn := strings.EqualFold(req.Message.Type, "voice") || strings.EqualFold(req.Message.Type, "audio")
+	var cfg corelib.AppConfig
+	if m.svc != nil {
+		if userCfg, err := m.svc.GetUserConfig(ctx, p); err == nil && userCfg != nil {
+			cfg = userCfg.AppConfig
+		}
+	}
+	if (voiceTurn || cfg.TTSAutoVoiceSummary) && m.aiModels != nil &&
+		capabilities.SupportsOutputMIME("audio", "audio/wav") &&
+		capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback {
+		// Hardware replies should stay short enough for bounded RAM/download
+		// clients. The full useful answer is still carried by the text half.
+		spoken := tts.CapSpeechText(text, 64)
+		wav, _, err := m.aiModels.synthesizeText(ctx, cfg, spoken)
+		if err == nil {
+			if msg, ok := m.prepareAssistantAudio(p, req.ClientID, req.ConversationID, replyTo, assistantID, wav, createdAt); ok {
+				audio = &msg
+				present = append(present, "audio")
+			}
+		} else {
+			_ = m.aiModels.startDownload(srvAIModelTTS, cfg, false)
+		}
+	}
+
+	selected := agent.SelectClientOutputCombination(capabilities, present...)
+	allows := func(modality string) bool {
+		for _, item := range selected {
+			if item == modality {
+				return true
+			}
+		}
+		return false
+	}
+	metadata := map[string]string{"assistant_message_id": assistantID}
+	if allows("text") {
 		m.enqueue(p, req, srvThirdPartyOutgoingMessage{
-			ID:             "mc_out_" + assistant.ID,
-			ReplyTo:        maclawID,
+			ID:             "mc_out_" + assistantID,
+			ReplyTo:        replyTo,
 			ClientID:       req.ClientID,
 			ConversationID: req.ConversationID,
 			Type:           "text",
-			Text:           assistant.Content,
-			CreatedAt:      assistant.CreatedAt.UnixMilli(),
-			Metadata:       map[string]string{"assistant_message_id": assistant.ID},
+			Text:           text,
+			CreatedAt:      createdAt.UnixMilli(),
+			Metadata:       metadata,
 		})
 	}
-	_ = parent
+	if allows("audio") && audio != nil {
+		m.enqueue(p, req, *audio)
+	}
+}
+
+// prepareAssistantAudio chooses inline or same-origin URL delivery using the
+// negotiated byte ceilings. URL objects are private to the authenticated user
+// and additionally protected by a random media token.
+func (m *srvThirdPartyGatewayManager) prepareAssistantAudio(p agentservice.Principal, clientID, conversationID, replyTo, assistantID string, wav []byte, createdAt time.Time) (srvThirdPartyOutgoingMessage, bool) {
+	clientKey := thirdPartyClientKey(p, clientID)
+	capabilities := agent.NormalizeClientCapabilities(m.clientCapabilities(clientKey))
+	size := int64(len(wav))
+	msg := srvThirdPartyOutgoingMessage{
+		ID:             "mc_voice_" + assistantID,
+		ReplyTo:        replyTo,
+		ClientID:       clientID,
+		ConversationID: conversationID,
+		Type:           "audio",
+		FileName:       "reply.wav",
+		MimeType:       "audio/wav",
+		ContentType:    "audio/wav",
+		SizeBytes:      size,
+		CreatedAt:      createdAt.UnixMilli(),
+		Metadata:       map[string]string{"assistant_message_id": assistantID, "tts": "true"},
+	}
+	if size <= 44 || size > srvThirdPartyMaxMediaBytes {
+		return srvThirdPartyOutgoingMessage{}, false
+	}
+	if capabilities.SupportsOutputAudioDelivery("inline", size) {
+		msg.Data = base64.StdEncoding.EncodeToString(wav)
+		return msg, true
+	}
+	if !capabilities.SupportsOutputAudioDelivery("url", size) {
+		return srvThirdPartyOutgoingMessage{}, false
+	}
+	id, err := randomThirdPartyGatewayToken()
+	if err != nil {
+		return srvThirdPartyOutgoingMessage{}, false
+	}
+	token, err := randomThirdPartyGatewayToken()
+	if err != nil {
+		return srvThirdPartyOutgoingMessage{}, false
+	}
+	now := time.Now().UTC()
+	media := &srvThirdPartyMediaObject{
+		Principal: p, ClientID: clientID, ID: id, Token: token, Type: "audio",
+		FileName: "reply.wav", MimeType: "audio/wav", SizeBytes: size,
+		Data: append([]byte(nil), wav...), Uploaded: true, CreatedAt: now, LastAccessedAt: now,
+	}
+	m.mu.Lock()
+	m.media[id] = media
+	m.pruneMediaLocked(now)
+	m.mu.Unlock()
+	// Keep the URL same-origin and relative. Constrained clients must never send
+	// their durable gateway bearer to an arbitrary absolute host.
+	msg.URL = fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", id, token)
+	return msg, true
 }
 
 // transcribeThirdPartyVoice turns a gateway voice attachment into the text
@@ -855,8 +969,8 @@ func (m *srvThirdPartyGatewayManager) prepareMedia(p agentservice.Principal, req
 		LastAccessedAt: time.Now().UTC(),
 	}
 	m.mu.Lock()
-	m.pruneMediaLocked(time.Now().UTC())
 	m.media[id] = obj
+	m.pruneMediaLocked(time.Now().UTC())
 	m.mu.Unlock()
 	ref := coreim.ThirdPartyMediaReference{ID: id, Type: req.Type, FileName: fileName, MimeType: mimeType, URL: downloadURL, SizeBytes: req.SizeBytes, DurationMs: req.DurationMs}
 	return &coreim.ThirdPartyMediaPrepareResponse{

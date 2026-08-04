@@ -673,6 +673,10 @@ export function GetPetPacksDir():Promise<string>;
 
 export function GetPetStoreAccount():Promise<Record<string, any>>;
 
+export function GetCreditsAssetAccount():Promise<Record<string, any>>;
+
+export function GetCreditsAssetTransactions(arg1:number):Promise<Record<string, any>>;
+
 export function GetPetStoreCreatorReport(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function GetPetStoreRankings():Promise<Record<string, any>>;
@@ -776,6 +780,16 @@ export function GetThirdPartyGatewayLocalMode():Promise<boolean>;
 export function GetThirdPartyGatewayStatus():Promise<string>;
 
 export function CreateThirdPartyDevicePairing():Promise<Record<string, any>>;
+
+export function GenerateHardwareWelcomeAudio(arg1:string):Promise<string>;
+
+export function SelectHardwareWelcomeAudio():Promise<string>;
+
+export function SendHardwareWelcomeAudio():Promise<void>;
+
+export function SyncHardwareWelcome():Promise<void>;
+
+export function SendHardwareVolume(arg1:number):Promise<void>;
 
 export function GetToolCacheStatus():Promise<main.ToolCacheStatus>;
 
@@ -952,6 +966,8 @@ export function ImportMCPServersFromJSON(arg1:string,arg2:string):Promise<main.m
 export function ImportMobileDocumentBytes(arg1:string,arg2:string):Promise<main.MobileDocumentDraftSummary>;
 
 export function ImportMobileDocumentFromPath(arg1:string):Promise<main.MobileDocumentDraftSummary>;
+
+export function GetMobileDocumentQuota():Promise<main.MobileDocumentQuota>;
 
 export function ImportNLSkillZip():Promise<string>;
 
@@ -1568,6 +1584,7 @@ export function QueryExperienceToolRecoverySummaries(arg1:main.ExperienceToolRec
 export function QueryExperienceTraceDetails(arg1:main.ExperienceTraceDetailQuery):Promise<main.ExperienceTraceDetailQueryResult>;
 
 export function QueryIMAuditMessages(arg1:string,arg2:string,arg3:string,arg4:number):Promise<main.IMAuditQueryResult>;
+export function RevealIMAuditAttachment(arg1:string):Promise<void>;
 
 export function QuerySecurityEvents(arg1:number):Promise<Array<main.SecurityEventItem>>;
 
@@ -1610,6 +1627,8 @@ export function RecordMaclawAppRunHistory(arg1:main.maclawAppRunHistoryEntry):Pr
 export function RecoverCC():Promise<void>;
 
 export function RedeemHubLLMService(arg1:string):Promise<main.HubLLMServiceStatus>;
+
+export function RedeemCreditsCard(arg1:string):Promise<Record<string, any>>;
 
 export function RefreshHubLLMServiceStatus():Promise<main.HubLLMServiceStatus>;
 
@@ -1922,6 +1941,7 @@ export function SetLLMTrajectoryLogging(arg1:boolean):Promise<void>;
 export function SetLanguage(arg1:string):Promise<void>;
 
 export function SetLansengerGroupAllowed(arg1:string,arg2:boolean):Promise<void>;
+export function SetLansengerGroupFileMaxBytes(arg1:string,arg2:number):Promise<void>;
 
 export function SetLansengerGroupIgnored(arg1:string,arg2:boolean):Promise<void>;
 

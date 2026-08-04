@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,106 @@ func TestLansengerStatusNeedsWatchdogRestart(t *testing.T) {
 		if lansengerStatusNeedsWatchdogRestart(status) {
 			t.Fatalf("status %q should not trigger stale-status watchdog restart", status)
 		}
+	}
+}
+
+func TestRecordGroupFileAuditDoesNotDependOnAgentRouting(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", root)
+	app := &App{testHomeDir: root}
+	mgr := newLansengerGatewayManager(app)
+	msg := lansenger.IncomingMessage{ChatType: "group", GroupID: "g1", FromUserID: "u1", MessageID: "m1", MediaType: "file", MediaName: "report.txt", MediaData: []byte("hello")}
+	if !mgr.recordGroupFileAudit(msg) {
+		t.Fatal("audit was not recorded")
+	}
+	store := app.getIMAuditStore()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewIMAuditStore(filepath.Join(app.GetDataDir(), "im_audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Close()
+	page, err := result.Query("lansenger", "", "", 1)
+	if err != nil || len(page.Messages) != 1 {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+	if page.Messages[0].AttachmentName != "report.txt" || page.Messages[0].AttachmentPath == "" {
+		t.Fatalf("message=%#v", page.Messages[0])
+	}
+}
+
+func TestLansengerInboundMediaLimitUsesLiveSnapshot(t *testing.T) {
+	mgr := newLansengerGatewayManager(nil)
+	file := lansenger.IncomingMediaInfo{ChatType: "group", GroupID: " group-1 ", MediaType: "file"}
+	if got, ok := mgr.inboundMediaLimit(file); !ok || got != 0 {
+		t.Fatalf("default limit = %d, ok=%v; want unlimited", got, ok)
+	}
+
+	mgr.updateGroupFileLimit("group-1", 8<<20)
+	if got, ok := mgr.inboundMediaLimit(file); !ok || got != 8<<20 {
+		t.Fatalf("updated limit = %d, ok=%v; want %d", got, ok, 8<<20)
+	}
+	mgr.updateGroupFileLimit("group-1", 0)
+	if got, ok := mgr.inboundMediaLimit(file); !ok || got != 0 {
+		t.Fatalf("cleared limit = %d, ok=%v; want unlimited", got, ok)
+	}
+
+	image := file
+	image.MediaType = "image"
+	mgr.updateGroupFileLimit("group-1", 1)
+	if got, ok := mgr.inboundMediaLimit(image); !ok || got != 0 {
+		t.Fatalf("image limit = %d, ok=%v; want legacy image policy", got, ok)
+	}
+}
+
+func TestSetLansengerGroupFileMaxBytesUpdatesRunningManager(t *testing.T) {
+	root := t.TempDir()
+	app := &App{testHomeDir: root, configCache: corelib.AppConfig{}, configCacheValid: true}
+	mgr := newLansengerGatewayManager(app)
+	app.lansengerGateway = mgr
+
+	if err := app.SetLansengerGroupFileMaxBytes(" group-live ", 4<<20); err != nil {
+		t.Fatal(err)
+	}
+	info := lansenger.IncomingMediaInfo{ChatType: "group", GroupID: "group-live", MediaType: "file"}
+	if got, ok := mgr.inboundMediaLimit(info); !ok || got != 4<<20 {
+		t.Fatalf("live limit = %d, ok=%v; want %d", got, ok, 4<<20)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LansengerGroupFileLimit("group-live"); got != 4<<20 {
+		t.Fatalf("persisted limit = %d, want %d", got, 4<<20)
+	}
+}
+
+func TestLansengerLocalHandlerWiresLongTermMemory(t *testing.T) {
+	// The local gateway creates its handler outside the usual Hub lifecycle.
+	// Keep this wiring covered: a visible group memory tool must have the same
+	// initialized store that its handler will use at execution time.
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", tempHome)
+	app := &App{testHomeDir: tempHome}
+	t.Cleanup(func() {
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+		}
+	})
+
+	handler := newLansengerGatewayManager(app).ensureLocalHandler()
+	if handler == nil {
+		t.Fatal("local Lansenger handler was not created")
+	}
+	if app.memoryStore == nil {
+		t.Fatal("local Lansenger handler did not initialize the long-term memory store")
+	}
+	if handler.memoryStore != app.memoryStore {
+		t.Fatal("local Lansenger handler is not wired to the app long-term memory store")
 	}
 }
 

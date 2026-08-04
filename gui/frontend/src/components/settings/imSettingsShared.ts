@@ -5,7 +5,9 @@ export const textForLang = localizeText;
 
 export const channelModeLabel = (lang: string) => textForLang(lang, 'Mode:', '\u901a\u9053\uff1a', '\u901a\u9053\uff1a');
 export const restartLabel = (lang: string) => textForLang(lang, 'Restart', '\u91cd\u542f', '\u91cd\u555f');
-export const watchLabel = (lang: string) => textForLang(lang, 'Watch', '\u76d1\u770b', '\u76e3\u770b');
+// This opens persisted chat history; avoid confusing it with the separate
+// Lansenger follow/watch-task feature.
+export const watchLabel = (lang: string) => textForLang(lang, 'Chat history', '\u804a\u5929\u5386\u53f2', '\u804a\u5929\u6b77\u53f2');
 /** Lansenger people-watch entry (only when channel is connected). */
 export const followLabel = (lang: string) => textForLang(lang, 'Watch people', '\u76ef\u4eba', '\u76ef\u4eba');
 export const switchFailedLabel = (lang: string) => textForLang(lang, 'Switch failed', '\u5207\u6362\u5931\u8d25', '\u5207\u63db\u5931\u6557');

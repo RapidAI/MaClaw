@@ -3,6 +3,7 @@ package im
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -11,12 +12,14 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
 // DeviceGateway exposes the same small HTTP protocol as a third-party
@@ -24,17 +27,27 @@ import (
 // GUI that claimed the tenant's thirdparty channel. This lets a GUI remain
 // behind NAT or a corporate firewall.
 type DeviceGateway struct {
-	plugin            *RemoteGatewayPlugin
-	store             deviceCredentialStore
-	meetingRecordings http.Handler
-	meetingTranscript bool
-	meetingMinutes    bool
+	plugin               *RemoteGatewayPlugin
+	store                deviceCredentialStore
+	meetingRecordings    http.Handler
+	meetingTranscript    bool
+	meetingMinutes       bool
+	voicePairTranscriber func(context.Context, string, string) (string, error)
+	voicePairAttempts    map[string]*deviceVoicePairAttempt
 
 	mu       sync.Mutex
 	pairings map[string]devicePairing
 	tokens   map[string]devicePrincipal
 	clients  map[string]*deviceClientState
 	media    map[string]*deviceMedia
+	hardware map[string]deviceHardwareConfig
+}
+
+// DeviceMeetingResultNotifier is the narrow callback used by the shared
+// Mobile meeting pipeline to publish a terminal status back to the originating
+// hardware client without importing the IM package from httpapi.
+type DeviceMeetingResultNotifier interface {
+	EnqueueReply(clientID, conversationID string, reply map[string]any)
 }
 
 type deviceCredentialStore interface {
@@ -45,7 +58,19 @@ type deviceCredentialStore interface {
 const deviceGatewayCredentialsKey = "device_gateway_credentials_v1"
 
 type persistedDeviceCredentials struct {
-	Tokens map[string]devicePrincipal `json:"tokens"`
+	Tokens          map[string]devicePrincipal      `json:"tokens"`
+	MachineHardware map[string]deviceHardwareConfig `json:"machineHardware,omitempty"`
+}
+
+// deviceHardwareConfig is Hub-owned state for the hardware paired to one GUI.
+// WelcomeAudio is base64 PCM WAV so Hub can play it after a hardware reboot
+// even while the GUI is offline.
+type deviceHardwareConfig struct {
+	WelcomeEnabled bool   `json:"welcomeEnabled,omitempty"`
+	WelcomeAudio   string `json:"welcomeAudio,omitempty"`
+	// Volume is a pointer so zero (mute) remains distinguishable from the
+	// legacy "not configured" state.
+	Volume *int `json:"volume,omitempty"`
 }
 
 type devicePairing struct {
@@ -56,16 +81,27 @@ type devicePairing struct {
 	ExpiresAt time.Time
 }
 
+type deviceVoicePairAttempt struct {
+	WindowStart time.Time
+	Count       int
+}
+
+const (
+	deviceVoicePairAttemptWindow = time.Minute
+	deviceVoicePairAttemptLimit  = 6
+)
+
 // Hardware pairing often includes switching the phone to the device hotspot
 // and back. Keep the one-time code usable long enough for that physical flow.
 const deviceGatewayPairingTTL = 30 * time.Minute
 
 type devicePrincipal struct {
-	ClientID  string
-	MachineID string
-	TenantID  string
-	UserID    string
-	Pet       devicePetProfile
+	ClientID          string
+	MachineID         string
+	TenantID          string
+	UserID            string
+	Pet               devicePetProfile
+	LastWelcomeBootID string `json:"lastWelcomeBootId,omitempty"`
 }
 
 type deviceAmbientWeather struct {
@@ -109,13 +145,31 @@ type DevicePetAsset struct {
 	Frames   []string `json:"frames,omitempty"`
 }
 
+// devicePetAssetReference is intentionally small enough for the handshake and
+// poll JSON buffers used by embedded clients. The RGB565 payload itself lives
+// in the existing authenticated media store and is fetched after TLS setup.
+type devicePetAssetReference struct {
+	Encoding string   `json:"encoding"`
+	Width    int      `json:"width"`
+	Height   int      `json:"height"`
+	URLs     []string `json:"urls"`
+	FrameMS  int      `json:"frameMs,omitempty"`
+	Revision string   `json:"revision"`
+}
+
 type deviceClientState struct {
 	next         int64
 	messages     []map[string]any
 	acked        map[string]bool
+	ackStatus    map[string]string
 	notify       chan struct{}
 	ambient      map[string]any
 	capabilities agent.ClientCapabilities
+	// capabilitiesDeclared distinguishes a legacy client that never completed
+	// capability negotiation from a modern client that intentionally declares
+	// a restricted input contract. Before handshake, preserve the historical
+	// text/audio upload behavior; after handshake, enforce the declaration.
+	capabilitiesDeclared bool
 }
 
 type deviceMedia struct {
@@ -136,10 +190,11 @@ const (
 	deviceGatewayMaxMediaBytes     int64 = 10 * 1024 * 1024
 	deviceGatewayMaxMediaObjects         = 200
 	deviceGatewayMaxQueuedMessages       = 100
+	deviceGatewayMaxAckReceipts          = 100
 )
 
 func NewDeviceGateway(plugin *RemoteGatewayPlugin) *DeviceGateway {
-	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), media: make(map[string]*deviceMedia)}
+	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), voicePairAttempts: make(map[string]*deviceVoicePairAttempt)}
 }
 
 // NewPersistentDeviceGateway keeps hardware bearer credentials across Hub
@@ -156,8 +211,13 @@ func NewPersistentDeviceGateway(plugin *RemoteGatewayPlugin, store deviceCredent
 		return g
 	}
 	var saved persistedDeviceCredentials
-	if json.Unmarshal([]byte(raw), &saved) == nil && saved.Tokens != nil {
-		g.tokens = saved.Tokens
+	if json.Unmarshal([]byte(raw), &saved) == nil {
+		if saved.Tokens != nil {
+			g.tokens = saved.Tokens
+		}
+		if saved.MachineHardware != nil {
+			g.hardware = saved.MachineHardware
+		}
 	}
 	return g
 }
@@ -170,7 +230,11 @@ func (g *DeviceGateway) persistTokensLocked() error {
 	for token, principal := range g.tokens {
 		copyTokens[token] = principal
 	}
-	raw, err := json.Marshal(persistedDeviceCredentials{Tokens: copyTokens})
+	copyHardware := make(map[string]deviceHardwareConfig, len(g.hardware))
+	for machineID, config := range g.hardware {
+		copyHardware[machineID] = config
+	}
+	raw, err := json.Marshal(persistedDeviceCredentials{Tokens: copyTokens, MachineHardware: copyHardware})
 	if err != nil {
 		return err
 	}
@@ -210,6 +274,8 @@ func (g *DeviceGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/device-gateway/v1/pair":
 		g.handlePair(w, r)
+	case "/api/device-gateway/v1/pair/voice":
+		g.handleVoicePair(w, r)
 	case "/api/im-gateway/v1/health":
 		g.handleHealth(w, r)
 	case "/api/im-gateway/v1/handshake":
@@ -254,6 +320,15 @@ func (g *DeviceGateway) SetMeetingRecordingModes(transcript, minutes bool) {
 	g.mu.Unlock()
 }
 
+// SetVoicePairTranscriber wires the deployment's existing ASR worker into the
+// unauthenticated, rate-limited-at-the-edge spoken pairing bootstrap. The
+// callback receives a temporary 16 kHz WAV file and must return plain text.
+func (g *DeviceGateway) SetVoicePairTranscriber(transcriber func(context.Context, string, string) (string, error)) {
+	g.mu.Lock()
+	g.voicePairTranscriber = transcriber
+	g.mu.Unlock()
+}
+
 // AuthenticatedDeviceOwner resolves a durable hardware credential to the Hub
 // user who created its pairing code. It intentionally returns no bearer or
 // machine secret; downstream handlers only receive the tenant/owner binding.
@@ -284,6 +359,10 @@ func (g *DeviceGateway) handlePair(w http.ResponseWriter, r *http.Request) {
 	if pairCode == "" {
 		pairCode = strings.TrimSpace(req.Code)
 	}
+	g.exchangePairing(w, strings.TrimSpace(req.ClientID), pairCode)
+}
+
+func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCode string) {
 	g.mu.Lock()
 	pairing, ok := g.pairings[pairCode]
 	if ok {
@@ -301,15 +380,208 @@ func (g *DeviceGateway) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 	token := hex.EncodeToString(bytes[:])
 	g.mu.Lock()
-	g.tokens[token] = devicePrincipal{ClientID: strings.TrimSpace(req.ClientID), MachineID: pairing.MachineID, TenantID: pairing.TenantID, UserID: pairing.UserID, Pet: pairing.Pet}
+	// A physical client ID identifies one device across the gateway. Re-pairing
+	// it must revoke an earlier credential (including one bound to another
+	// machine) and discard that device's stale queue before issuing the new
+	// bearer. Otherwise an old device could remain authorized after replacement.
+	clientID = strings.TrimSpace(clientID)
+	revoked := make(map[string]devicePrincipal)
+	for existingToken, principal := range g.tokens {
+		if principal.ClientID == clientID {
+			revoked[existingToken] = principal
+			delete(g.tokens, existingToken)
+		}
+	}
+	previousState := g.clients[clientID]
+	delete(g.clients, clientID)
+	g.tokens[token] = devicePrincipal{ClientID: clientID, MachineID: pairing.MachineID, TenantID: pairing.TenantID, UserID: pairing.UserID, Pet: pairing.Pet}
 	if err := g.persistTokensLocked(); err != nil {
 		delete(g.tokens, token)
+		for revokedToken, principal := range revoked {
+			g.tokens[revokedToken] = principal
+		}
+		if previousState != nil {
+			g.clients[clientID] = previousState
+		}
 		g.mu.Unlock()
 		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot persist device credential")
 		return
 	}
 	g.mu.Unlock()
-	writeDeviceJSON(w, http.StatusCreated, map[string]any{"ok": true, "gatewayToken": token, "clientId": strings.TrimSpace(req.ClientID)})
+	writeDeviceJSON(w, http.StatusCreated, map[string]any{"ok": true, "gatewayToken": token, "clientId": clientID})
+}
+
+func (g *DeviceGateway) handleVoicePair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeDeviceError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	clientID := strings.TrimSpace(r.Header.Get("X-MaClaw-Client-ID"))
+	if clientID == "" {
+		writeDeviceError(w, http.StatusBadRequest, "bad_request", "X-MaClaw-Client-ID is required")
+		return
+	}
+	attemptKey := deviceVoicePairAttemptKey(r, clientID)
+	if !g.allowVoicePairAttempt(attemptKey, time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		writeDeviceError(w, http.StatusTooManyRequests, "rate_limited", "too many voice pairing attempts; retry later")
+		return
+	}
+	g.mu.Lock()
+	transcriber := g.voicePairTranscriber
+	g.mu.Unlock()
+	if transcriber == nil {
+		writeDeviceError(w, http.StatusServiceUnavailable, "unavailable", "speech recognition is unavailable")
+		return
+	}
+	const maxVoicePairWAVBytes = 512 << 10
+	wav, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxVoicePairWAVBytes))
+	if err != nil || len(wav) < 44 {
+		writeDeviceError(w, http.StatusBadRequest, "bad_request", "a short WAV recording is required")
+		return
+	}
+	tmp, err := os.CreateTemp("", "maclaw-device-pair-*.wav")
+	if err != nil {
+		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot prepare speech recognition")
+		return
+	}
+	path := tmp.Name()
+	defer os.Remove(path)
+	if _, err = tmp.Write(wav); err == nil {
+		err = tmp.Close()
+	} else {
+		_ = tmp.Close()
+	}
+	if err != nil {
+		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot prepare speech recognition")
+		return
+	}
+	transcript, err := transcriber(r.Context(), path, "audio/wav")
+	if err != nil {
+		log.Printf("[device-gateway] voice pairing ASR failed: %v", err)
+		writeDeviceError(w, http.StatusServiceUnavailable, "unavailable", "speech recognition is unavailable")
+		return
+	}
+	pairCode, ok := deviceGatewayPairCodeFromTranscript(transcript)
+	if !ok {
+		writeDeviceError(w, http.StatusBadRequest, "bad_pair_code", "please speak exactly six digits")
+		return
+	}
+	g.exchangePairing(w, clientID, pairCode)
+}
+
+func deviceVoicePairAttemptKey(r *http.Request, clientID string) string {
+	host := ""
+	if r != nil {
+		host = strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+		if comma := strings.IndexByte(host, ','); comma >= 0 {
+			host = strings.TrimSpace(host[:comma])
+		}
+		if host == "" {
+			host = strings.TrimSpace(r.RemoteAddr)
+		}
+	}
+	return host + "\x00" + strings.TrimSpace(clientID)
+}
+
+func (g *DeviceGateway) allowVoicePairAttempt(key string, now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.voicePairAttempts == nil {
+		g.voicePairAttempts = make(map[string]*deviceVoicePairAttempt)
+	}
+	if len(g.voicePairAttempts) > 1024 {
+		for candidate, attempt := range g.voicePairAttempts {
+			if attempt == nil || now.Sub(attempt.WindowStart) >= deviceVoicePairAttemptWindow {
+				delete(g.voicePairAttempts, candidate)
+			}
+		}
+	}
+	attempt := g.voicePairAttempts[key]
+	if attempt == nil || now.Sub(attempt.WindowStart) >= deviceVoicePairAttemptWindow {
+		g.voicePairAttempts[key] = &deviceVoicePairAttempt{WindowStart: now, Count: 1}
+		return true
+	}
+	if attempt.Count >= deviceVoicePairAttemptLimit {
+		return false
+	}
+	attempt.Count++
+	return true
+}
+
+func deviceGatewayPairCodeFromTranscript(transcript string) (string, bool) {
+	var digits strings.Builder
+	normalized := strings.ToLower(strings.TrimSpace(transcript))
+	for _, r := range normalized {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+			continue
+		}
+		if digit, ok := deviceGatewaySpokenChineseDigit(r); ok {
+			digits.WriteByte(digit)
+		}
+	}
+	for _, word := range strings.FieldsFunc(normalized, func(r rune) bool { return r < 'a' || r > 'z' }) {
+		if digit, ok := deviceGatewaySpokenEnglishDigit(word); ok {
+			digits.WriteByte(digit)
+		}
+	}
+	code := digits.String()
+	return code, len(code) == 6
+}
+
+func deviceGatewaySpokenChineseDigit(r rune) (byte, bool) {
+	switch r {
+	case '零', '〇':
+		return '0', true
+	case '一', '幺':
+		return '1', true
+	case '二', '两':
+		return '2', true
+	case '三':
+		return '3', true
+	case '四':
+		return '4', true
+	case '五':
+		return '5', true
+	case '六':
+		return '6', true
+	case '七':
+		return '7', true
+	case '八':
+		return '8', true
+	case '九':
+		return '9', true
+	default:
+		return 0, false
+	}
+}
+
+func deviceGatewaySpokenEnglishDigit(word string) (byte, bool) {
+	switch word {
+	case "zero", "oh":
+		return '0', true
+	case "one":
+		return '1', true
+	case "two", "to", "too":
+		return '2', true
+	case "three":
+		return '3', true
+	case "four", "for":
+		return '4', true
+	case "five":
+		return '5', true
+	case "six":
+		return '6', true
+	case "seven":
+		return '7', true
+	case "eight", "ate":
+		return '8', true
+	case "nine":
+		return '9', true
+	default:
+		return 0, false
+	}
 }
 
 func (g *DeviceGateway) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -330,33 +602,47 @@ func (g *DeviceGateway) handleHandshake(w http.ResponseWriter, r *http.Request) 
 		writeDeviceError(w, 401, "unauthorized", "missing or invalid bearer token")
 		return
 	}
-	var req struct {
-		ClientID        string                    `json:"clientId"`
-		ProtocolVersion string                    `json:"protocolVersion"`
-		Capabilities    *agent.ClientCapabilities `json:"capabilities"`
-	}
+	var req coreim.ThirdPartyHandshakeRequest
 	if !decodeDeviceJSON(w, r, &req) {
+		return
+	}
+	if err := coreim.NormalizeThirdPartyHandshakeRequest(&req); err != nil {
+		writeDeviceError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	if strings.TrimSpace(req.ClientID) != p.ClientID {
 		writeDeviceError(w, 403, "forbidden", "clientId does not match credential")
 		return
 	}
-	capabilities := agent.NormalizeClientCapabilities(req.Capabilities)
+	capabilities := agent.NormalizeClientCapabilities(req.ClientCapabilities)
+	bootSessionID := strings.TrimSpace(req.BootSessionID)
+	if len(bootSessionID) > 96 {
+		writeDeviceError(w, http.StatusBadRequest, "bad_request", "bootSessionId is too long")
+		return
+	}
 	g.mu.Lock()
-	g.clientLocked(p.ClientID).capabilities = capabilities
+	state := g.clientLocked(p.ClientID)
+	state.capabilities = capabilities
+	state.capabilitiesDeclared = req.ClientCapabilities != nil
+	g.queueHardwareConfigForClientLocked(p, state)
+	g.queueWelcomeForBootLocked(p, bootSessionID, state)
+	petProfile := p.Pet
+	var petAsset *devicePetAssetReference
+	if capabilities.Features.PetAsset {
+		petAsset = g.preparePetAssetLocked(p.ClientID, petProfile.Asset,
+			capabilities.Features.PetAnimation && petProfile.MotionEnabled)
+	}
 	meetingRecordings := g.meetingRecordings
 	meetingTranscript := g.meetingTranscript
 	meetingMinutes := g.meetingMinutes
 	g.mu.Unlock()
-	petProfile := p.Pet
-	if !capabilities.Features.PetAnimation {
-		// Small ESP clients advertise that they render skins locally. Do not make
-		// them parse a ~90 KiB base64 asset during the memory-sensitive TLS
-		// handshake; skin and motion are sufficient for their renderer.
-		petProfile.Asset = nil
-	}
+	// Never embed RGB565 base64 in the handshake. Even one 128px frame expands
+	// to ~44 KiB and used to exhaust the ESP's memory-sensitive TLS path.
+	petProfile.Asset = nil
 	response := map[string]any{"ok": true, "mode": "maclaw", "channelId": "thirdparty:" + p.ClientID, "serverTime": time.Now().UnixMilli(), "pet": petProfile, "poll": map[string]int{"timeoutSec": 30, "maxTimeoutSec": 60, "maxBatchSize": 20, "maxLimit": 100}, "limits": map[string]int{"maxBodyBytes": 1048576, "maxMediaBytes": 10485760}}
+	if petAsset != nil {
+		response["petAsset"] = *petAsset
+	}
 	if meetingRecordings != nil {
 		response["meetingRecording"] = map[string]any{
 			"basePath": "/api/device-gateway/v1/meeting-recordings", "chunkSize": 1 << 20,
@@ -408,6 +694,22 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 		writeDeviceError(w, 400, "bad_request", "clientId and eventId are required")
 		return
 	}
+	g.mu.Lock()
+	state := g.clientLocked(p.ClientID)
+	capabilities := state.capabilities
+	capabilitiesDeclared := state.capabilitiesDeclared
+	g.mu.Unlock()
+	messageType := normalizeDeviceInputModality(req.Message.Type, req.Message.MimeType)
+	if messageType == "" {
+		messageType = strings.ToLower(strings.TrimSpace(req.Message.Type))
+	}
+	if messageType == "" {
+		messageType = "text"
+	}
+	if capabilitiesDeclared && !capabilities.SupportsInput(messageType) {
+		writeDeviceError(w, http.StatusBadRequest, "unsupported_input", "message type is not declared by client capabilities")
+		return
+	}
 	if g.plugin == nil {
 		writeDeviceError(w, 503, "unavailable", "GUI relay is unavailable")
 		return
@@ -422,9 +724,14 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 		writeDeviceError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	g.mu.Lock()
-	capabilities := g.clientLocked(p.ClientID).capabilities
-	g.mu.Unlock()
+	for _, attachment := range attachments {
+		modality := normalizeDeviceInputModality(attachment.Type, attachment.MimeType)
+		if capabilitiesDeclared &&
+			(modality == "" || !capabilities.SupportsInputMIME(modality, attachment.MimeType)) {
+			writeDeviceError(w, http.StatusBadRequest, "unsupported_input", "attachment is not declared by client capabilities")
+			return
+		}
+	}
 	payload, _ := json.Marshal(map[string]any{"tenant_id": p.TenantID, "platform_uid": "thirdparty:" + p.ClientID + ":" + firstDeviceValue(req.ConversationID, "default"), "reply_target": "thirdparty:" + p.ClientID + ":" + firstDeviceValue(req.ConversationID, "default"), "message_id": firstDeviceValue(req.MessageID, req.EventID), "message_type": firstDeviceValue(req.Message.Type, "text"), "text": req.Message.Text, "attachments": attachments, "client_capabilities": capabilities})
 	go g.plugin.HandleGatewayMessage(ownerID, payload)
 	writeDeviceJSON(w, 200, map[string]any{"ok": true, "accepted": true, "messageId": req.MessageID, "duplicate": false})
@@ -455,6 +762,17 @@ func (g *DeviceGateway) handleMediaUploadURL(w http.ResponseWriter, r *http.Requ
 		writeDeviceError(w, http.StatusBadRequest, "bad_request", "invalid media request")
 		return
 	}
+	g.mu.Lock()
+	state := g.clientLocked(p.ClientID)
+	capabilities := state.capabilities
+	capabilitiesDeclared := state.capabilitiesDeclared
+	g.mu.Unlock()
+	mediaType := normalizeDeviceInputModality(req.Type, req.MimeType)
+	if capabilitiesDeclared && (mediaType == "" || !capabilities.SupportsInput(mediaType) ||
+		!capabilities.SupportsInputMIME(mediaType, req.MimeType)) {
+		writeDeviceError(w, http.StatusBadRequest, "unsupported_media", "media is not declared by client capabilities")
+		return
+	}
 	mediaID, token, err := newDeviceToken(16)
 	if err != nil {
 		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot prepare media")
@@ -469,6 +787,19 @@ func (g *DeviceGateway) handleMediaUploadURL(w http.ResponseWriter, r *http.Requ
 	downloadURL := fmt.Sprintf("%s/api/im-gateway/v1/media/%s?mediaToken=%s", baseURL, mediaID, token)
 	uploadURL := fmt.Sprintf("%s/api/im-gateway/v1/media/%s/upload?mediaToken=%s", baseURL, mediaID, token)
 	writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "media": map[string]any{"id": mediaID, "type": media.Type, "fileName": media.FileName, "mimeType": media.MimeType, "url": downloadURL, "sizeBytes": media.SizeBytes, "durationMs": media.DurationMs}, "upload": map[string]any{"method": http.MethodPut, "url": uploadURL, "contentType": media.MimeType, "maxBytes": deviceGatewayMaxMediaBytes}, "download": map[string]any{"url": downloadURL}, "expiresAt": time.Now().Add(24 * time.Hour).UnixMilli()})
+}
+
+func normalizeDeviceInputModality(messageType, mimeType string) string {
+	messageType = strings.ToLower(strings.TrimSpace(messageType))
+	mimeType = strings.ToLower(strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0]))
+	switch {
+	case messageType == "voice" || messageType == "audio" || strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	case messageType == "image" || strings.HasPrefix(mimeType, "image/"):
+		return "image"
+	default:
+		return ""
+	}
 }
 
 func (g *DeviceGateway) handleMedia(w http.ResponseWriter, r *http.Request) {
@@ -586,17 +917,19 @@ func (g *DeviceGateway) handleAck(w http.ResponseWriter, r *http.Request) {
 		writeDeviceError(w, 401, "unauthorized", "missing or invalid bearer token")
 		return
 	}
-	var req struct {
-		ClientID   string   `json:"clientId"`
-		MessageIDs []string `json:"messageIds"`
-	}
+	var req coreim.ThirdPartyAckRequest
 	if !decodeDeviceJSON(w, r, &req) {
+		return
+	}
+	if err := coreim.NormalizeThirdPartyAckRequest(&req, coreim.ThirdPartyMaxAckIDs); err != nil {
+		writeDeviceError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	if req.ClientID != p.ClientID {
 		writeDeviceError(w, 403, "forbidden", "clientId does not match credential")
 		return
 	}
+	status := coreim.NormalizeThirdPartyAckStatus(req.Status)
 	g.mu.Lock()
 	state := g.clientLocked(p.ClientID)
 	known := make(map[string]struct{}, len(state.messages))
@@ -609,9 +942,21 @@ func (g *DeviceGateway) handleAck(w http.ResponseWriter, r *http.Request) {
 		id = strings.TrimSpace(id)
 		if _, exists := known[id]; exists {
 			state.acked[id] = true
+			state.ackStatus[id] = status
 		}
 	}
 	pruneDeviceMessagesLocked(state)
+	// Keep a bounded diagnostic receipt after the queue entry is removed. This
+	// lets Hub distinguish an ESP playback failure from successful delivery
+	// without turning ACK metadata into an unbounded per-device map.
+	if len(state.ackStatus) > deviceGatewayMaxAckReceipts {
+		for id := range state.ackStatus {
+			delete(state.ackStatus, id)
+			if len(state.ackStatus) <= deviceGatewayMaxAckReceipts {
+				break
+			}
+		}
+	}
 	g.mu.Unlock()
 	writeDeviceJSON(w, 200, map[string]any{"ok": true})
 }
@@ -623,6 +968,10 @@ func (g *DeviceGateway) EnqueueReply(clientID, conversationID string, reply map[
 	}
 	g.mu.Lock()
 	state := g.clientLocked(clientID)
+	if !g.prepareOutgoingAudioLocked(clientID, reply, state.capabilities) {
+		g.mu.Unlock()
+		return
+	}
 	// Text glyphs use the same compact format as ambient glyphs. Validate the
 	// optional attachment before retaining it in the device's outgoing queue.
 	if glyphs := normalizeDeviceGlyphs(reply["glyphs"]); len(glyphs) > 0 {
@@ -646,6 +995,304 @@ func (g *DeviceGateway) EnqueueReply(clientID, conversationID string, reply map[
 	g.mu.Unlock()
 }
 
+func (g *DeviceGateway) prepareOutgoingAudioLocked(clientID string, reply map[string]any, capabilities agent.ClientCapabilities) bool {
+	replyType := strings.ToLower(strings.TrimSpace(deviceReplyString(reply, "type", "reply_type")))
+	if replyType != "audio" && replyType != "voice" {
+		return true
+	}
+	capabilities = agent.NormalizeClientCapabilities(&capabilities)
+	raw := firstDeviceValue(deviceReplyString(reply, "file_data"), deviceReplyString(reply, "data"))
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		url := deviceReplyString(reply, "url")
+		size := deviceReplyInt64(reply, "sizeBytes", "size_bytes")
+		return url != "" && capabilities.SupportsOutputAudioDelivery("url", size)
+	}
+	data, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil || len(data) == 0 {
+		return false
+	}
+	size := int64(len(data))
+	if capabilities.SupportsOutputAudioDelivery("inline", size) {
+		reply["sizeBytes"] = size
+		return true
+	}
+	if !capabilities.SupportsOutputAudioDelivery("url", size) || size > deviceGatewayMaxMediaBytes {
+		return false
+	}
+	mediaID, token, err := newDeviceToken(16)
+	if err != nil {
+		return false
+	}
+	mimeType := firstDeviceValue(deviceReplyString(reply, "mimeType", "mime_type", "contentType", "content_type"), "audio/wav")
+	fileName := safeDeviceFileName(firstDeviceValue(deviceReplyString(reply, "fileName", "file_name"), "response.wav"))
+	g.pruneMediaLocked(time.Now().UTC())
+	g.media[mediaID] = &deviceMedia{
+		ClientID: clientID, ID: mediaID, Token: token, Type: "audio", FileName: fileName,
+		MimeType: mimeType, SizeBytes: size, Data: data, Uploaded: true, LastAccessedAt: time.Now().UTC(),
+	}
+	reply["url"] = fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", mediaID, token)
+	reply["sizeBytes"] = size
+	reply["mime_type"] = mimeType
+	delete(reply, "file_data")
+	delete(reply, "data")
+	return true
+}
+
+// preparePetAssetLocked publishes GUI-rendered RGB565 frames through the same
+// short-lived, same-origin media transport used by server speech.  The caller
+// holds g.mu. Invalid base64 or an unexpected byte count disables the remote
+// asset and leaves the device's native skin renderer as a safe fallback.
+func (g *DeviceGateway) preparePetAssetLocked(clientID string, asset *DevicePetAsset, animated bool) *devicePetAssetReference {
+	asset = normalizeDevicePetAsset(asset)
+	if asset == nil {
+		return nil
+	}
+	encoded := []string{asset.Data}
+	if animated && len(asset.Frames) > 0 {
+		encoded = append(encoded, asset.Frames...)
+	}
+	expected := asset.Width * asset.Height * 2
+	if expected <= 0 || expected > 128*128*2 {
+		return nil
+	}
+	frames := make([][]byte, 0, len(encoded))
+	for _, text := range encoded {
+		frame, err := base64.StdEncoding.DecodeString(text)
+		if err != nil || len(frame) != expected {
+			return nil
+		}
+		frames = append(frames, frame)
+	}
+	digest := sha256.New()
+	_, _ = digest.Write([]byte(asset.Encoding))
+	_, _ = digest.Write([]byte(fmt.Sprintf("/%d/%d", asset.Width, asset.Height)))
+	for _, frame := range frames {
+		_, _ = digest.Write(frame)
+	}
+	revision := hex.EncodeToString(digest.Sum(nil)[:8])
+
+	g.pruneMediaLocked(time.Now().UTC())
+	urls := make([]string, 0, len(frames))
+	for index, frame := range frames {
+		mediaID, token, err := newDeviceToken(16)
+		if err != nil {
+			return nil
+		}
+		g.media[mediaID] = &deviceMedia{
+			ClientID: clientID, ID: mediaID, Token: token, Type: "pet_asset",
+			FileName: fmt.Sprintf("pet-%s-%d.rgb565le", revision, index),
+			MimeType: "application/vnd.maclaw.rgb565le", SizeBytes: int64(len(frame)),
+			Data: frame, Uploaded: true, LastAccessedAt: time.Now().UTC(),
+		}
+		urls = append(urls, fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", mediaID, token))
+	}
+	return &devicePetAssetReference{
+		Encoding: asset.Encoding, Width: asset.Width, Height: asset.Height,
+		URLs: urls, FrameMS: 700, Revision: revision,
+	}
+}
+
+// EnqueueMachineReply broadcasts a GUI-originated device configuration update
+// only to the hardware credentials paired with that GUI machine.
+func (g *DeviceGateway) EnqueueMachineReply(machineID, conversationID string, reply map[string]any) {
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" || reply == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	replyType, _ := reply["reply_type"].(string)
+	if strings.TrimSpace(replyType) == "" {
+		replyType, _ = reply["type"].(string)
+	}
+	volume := 0
+	isVolumeConfig := false
+	if strings.EqualFold(strings.TrimSpace(replyType), "hardware_config") {
+		extra, _ := reply["extra"].(map[string]any)
+		volume, isVolumeConfig = deviceVolume(extra["volume"])
+	}
+	for _, principal := range g.tokens {
+		if principal.MachineID != machineID {
+			continue
+		}
+		state := g.clientLocked(principal.ClientID)
+		message := make(map[string]any, len(reply)+4)
+		for key, value := range reply {
+			message[key] = value
+		}
+		if replyType, _ := message["reply_type"].(string); strings.TrimSpace(replyType) != "" {
+			message["type"] = replyType
+		}
+		if !g.prepareOutgoingAudioLocked(principal.ClientID, message, state.capabilities) {
+			continue
+		}
+		if !adaptDeviceGatewayReply(message, state.capabilities) {
+			continue
+		}
+		if isVolumeConfig && replaceQueuedDeviceVolume(state, volume) {
+			old := state.notify
+			state.notify = make(chan struct{})
+			close(old)
+			continue
+		}
+		state.next++
+		message["seq"] = state.next
+		message["id"] = fmt.Sprintf("hub_hardware_%d_%d", time.Now().UnixMilli(), state.next)
+		message["conversationId"] = firstDeviceValue(conversationID, "system")
+		state.messages = append(state.messages, message)
+		pruneDeviceMessagesLocked(state)
+		old := state.notify
+		state.notify = make(chan struct{})
+		close(old)
+	}
+}
+
+const deviceGatewayWelcomeMaxBytes = 96 * 1024
+
+// UpdateMachineWelcome persists the boot-time greeting chosen in the GUI.
+// replaceAudio makes an empty payload an intentional clear; callers that only
+// change the switch can leave it false to preserve the existing sound.
+func (g *DeviceGateway) UpdateMachineWelcome(machineID string, enabled bool, audioBase64 string, replaceAudio bool) error {
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return fmt.Errorf("machine ID is required")
+	}
+	audioBase64 = strings.TrimSpace(audioBase64)
+	if audioBase64 != "" {
+		audio, err := base64.StdEncoding.DecodeString(audioBase64)
+		if err != nil || len(audio) == 0 || len(audio) > deviceGatewayWelcomeMaxBytes {
+			return fmt.Errorf("invalid welcome audio")
+		}
+	}
+	g.mu.Lock()
+	config := g.hardware[machineID]
+	config.WelcomeEnabled = enabled
+	if replaceAudio {
+		config.WelcomeAudio = audioBase64
+	} else if audioBase64 != "" {
+		config.WelcomeAudio = audioBase64
+	}
+	g.hardware[machineID] = config
+	err := g.persistTokensLocked()
+	g.mu.Unlock()
+	return err
+}
+
+// UpdateMachineVolume makes the requested speaker level durable for a GUI
+// machine. This lets a device that pairs or reconnects later receive the
+// current level during its handshake, not only while it happened to be online.
+func (g *DeviceGateway) UpdateMachineVolume(machineID string, value any) error {
+	machineID = strings.TrimSpace(machineID)
+	volume, ok := deviceVolume(value)
+	if machineID == "" || !ok {
+		return fmt.Errorf("invalid hardware volume")
+	}
+	g.mu.Lock()
+	config := g.hardware[machineID]
+	config.Volume = &volume
+	g.hardware[machineID] = config
+	err := g.persistTokensLocked()
+	g.mu.Unlock()
+	return err
+}
+
+// queueHardwareConfigForClientLocked places durable, lightweight settings
+// ahead of boot-time media. At present this is the speaker volume; keeping it
+// in the handshake path also covers a device paired after the desktop setting
+// was chosen.
+func (g *DeviceGateway) queueHardwareConfigForClientLocked(principal devicePrincipal, state *deviceClientState) {
+	if state == nil {
+		return
+	}
+	config := g.hardware[principal.MachineID]
+	if config.Volume == nil {
+		return
+	}
+	// A reconnect or rapid slider movement can arrive before the ESP ACKs the
+	// prior setting. Coalesce into its pending control message so the device
+	// always receives the latest level without filling the queue with stale
+	// values that could later overwrite the user's last choice.
+	if replaceQueuedDeviceVolume(state, *config.Volume) {
+		return
+	}
+	message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": map[string]any{"volume": *config.Volume}}
+	if !adaptDeviceGatewayReply(message, state.capabilities) {
+		return
+	}
+	state.next++
+	message["seq"] = state.next
+	message["id"] = fmt.Sprintf("hub_hardware_config_%d_%d", time.Now().UnixMilli(), state.next)
+	message["conversationId"] = "system"
+	state.messages = append(state.messages, message)
+	pruneDeviceMessagesLocked(state)
+	old := state.notify
+	state.notify = make(chan struct{})
+	close(old)
+}
+
+func replaceQueuedDeviceVolume(state *deviceClientState, volume int) bool {
+	if state == nil {
+		return false
+	}
+	for index := len(state.messages) - 1; index >= 0; index-- {
+		message := state.messages[index]
+		if deviceReplyString(message, "type", "reply_type") != "hardware_config" {
+			continue
+		}
+		message["extra"] = map[string]any{"volume": volume}
+		return true
+	}
+	return false
+}
+
+// queueWelcomeForBootLocked emits the greeting only after a freshly booted
+// device finishes its handshake. Its durable boot ID prevents a Hub restart
+// or a capability-refresh handshake from replaying the greeting.
+func (g *DeviceGateway) queueWelcomeForBootLocked(principal devicePrincipal, bootSessionID string, state *deviceClientState) {
+	if bootSessionID == "" || state == nil {
+		return
+	}
+	config := g.hardware[principal.MachineID]
+	if !config.WelcomeEnabled || config.WelcomeAudio == "" || principal.LastWelcomeBootID == bootSessionID {
+		return
+	}
+	// principal was resolved just before this mutex was acquired. Check the
+	// durable map as well so two overlapping handshakes cannot both emit the
+	// same boot's greeting.
+	for _, candidate := range g.tokens {
+		if candidate.ClientID == principal.ClientID && candidate.MachineID == principal.MachineID && candidate.LastWelcomeBootID == bootSessionID {
+			return
+		}
+	}
+	message := map[string]any{"reply_type": "audio", "type": "audio", "mime_type": "audio/wav", "file_data": config.WelcomeAudio, "bootSessionId": bootSessionID}
+	if !g.prepareOutgoingAudioLocked(principal.ClientID, message, state.capabilities) {
+		return
+	}
+	if !adaptDeviceGatewayReply(message, state.capabilities) {
+		return
+	}
+	state.next++
+	message["seq"] = state.next
+	message["id"] = fmt.Sprintf("hub_welcome_%d_%d", time.Now().UnixMilli(), state.next)
+	message["conversationId"] = "system"
+	state.messages = append(state.messages, message)
+	pruneDeviceMessagesLocked(state)
+	old := state.notify
+	state.notify = make(chan struct{})
+	close(old)
+	for token, candidate := range g.tokens {
+		if candidate.ClientID != principal.ClientID || candidate.MachineID != principal.MachineID {
+			continue
+		}
+		candidate.LastWelcomeBootID = bootSessionID
+		g.tokens[token] = candidate
+	}
+	if err := g.persistTokensLocked(); err != nil {
+		log.Printf("device gateway: persist welcome boot ID for client %q: %v", principal.ClientID, err)
+	}
+}
+
 func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapabilities) bool {
 	if reply == nil {
 		return false
@@ -655,13 +1302,25 @@ func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapa
 	mimeType := deviceReplyString(reply, "mimeType", "mime_type", "contentType", "content_type")
 	sizeBytes := deviceReplyInt64(reply, "sizeBytes", "size_bytes")
 	switch replyType {
+	case "hardware_config":
+		extra, _ := reply["extra"].(map[string]any)
+		if extra == nil {
+			return false
+		}
+		return validDeviceVolume(extra["volume"]) && capabilities.Features.VolumeControl
 	case "image":
 		return capabilities.SupportsOutputMIME("image", firstDeviceValue(mimeType, "image/png"))
 	case "file":
 		return capabilities.SupportsOutputMIME("file", mimeType) && capabilities.SupportsOutputBytes("file", sizeBytes)
 	case "voice", "audio":
+		sizeBytes := deviceReplyInt64(reply, "sizeBytes", "size_bytes")
+		delivery := "inline"
+		if deviceReplyString(reply, "url") != "" {
+			delivery = "url"
+		}
 		return capabilities.SupportsOutput("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback &&
-			capabilities.SupportsOutputMIME("audio", mimeType)
+			capabilities.SupportsOutputMIME("audio", mimeType) &&
+			capabilities.SupportsOutputAudioDelivery(delivery, sizeBytes)
 	case "ambient":
 		return capabilities.Features.AmbientDisplay
 	case "pet_state":
@@ -692,6 +1351,38 @@ func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapa
 		}
 		return strings.TrimSpace(text) != ""
 	}
+}
+
+func validDeviceVolume(value any) bool {
+	_, ok := deviceVolume(value)
+	return ok
+}
+
+func deviceVolume(value any) (int, bool) {
+	var volume int64
+	switch value := value.(type) {
+	case int:
+		volume = int64(value)
+	case int64:
+		volume = value
+	case float64:
+		if value != float64(int64(value)) {
+			return 0, false
+		}
+		volume = int64(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err != nil {
+			return 0, false
+		}
+		volume = parsed
+	default:
+		return 0, false
+	}
+	if volume < 0 || volume > 100 {
+		return 0, false
+	}
+	return int(volume), true
 }
 
 func deviceReplyString(reply map[string]any, keys ...string) string {
@@ -886,12 +1577,21 @@ func (g *DeviceGateway) updateMachinePetProfileAsset(machineID, skin string, mot
 		}
 		notifiedClients[principal.ClientID] = struct{}{}
 		state := g.clientLocked(principal.ClientID)
+		var assetRef *devicePetAssetReference
+		if state.capabilities.Features.PetAsset {
+			assetRef = g.preparePetAssetLocked(principal.ClientID, profile.Asset,
+				state.capabilities.Features.PetAnimation && profile.MotionEnabled)
+		}
 		state.next++
-		state.messages = append(state.messages, map[string]any{
+		message := map[string]any{
 			"seq": state.next, "id": fmt.Sprintf("hub_pet_%d_%d", time.Now().UnixMilli(), state.next),
 			"type": "pet_profile", "conversationId": "system",
 			"pet_skin": profile.Skin, "pet_motion_enabled": profile.MotionEnabled,
-		})
+		}
+		if assetRef != nil {
+			message["pet_asset"] = *assetRef
+		}
+		state.messages = append(state.messages, message)
 		pruneDeviceMessagesLocked(state)
 		old := state.notify
 		state.notify = make(chan struct{})
@@ -1078,8 +1778,11 @@ func (g *DeviceGateway) pruneMediaLocked(now time.Time) {
 func (g *DeviceGateway) clientLocked(clientID string) *deviceClientState {
 	state := g.clients[clientID]
 	if state == nil {
-		state = &deviceClientState{acked: make(map[string]bool), notify: make(chan struct{})}
+		state = &deviceClientState{acked: make(map[string]bool), ackStatus: make(map[string]string), notify: make(chan struct{})}
 		g.clients[clientID] = state
+	} else if state.ackStatus == nil {
+		// Older tests and in-memory states can predate delivery-status tracking.
+		state.ackStatus = make(map[string]string)
 	}
 	return state
 }
@@ -1106,6 +1809,7 @@ func pruneDeviceMessagesLocked(state *deviceClientState) {
 		for index := 0; index < drop; index++ {
 			id, _ := kept[index]["id"].(string)
 			delete(state.acked, id)
+			delete(state.ackStatus, id)
 		}
 		copy(kept, kept[drop:])
 		kept = kept[:deviceGatewayMaxQueuedMessages]

@@ -2,7 +2,7 @@ package main
 
 func (h *IMMessageHandler) imAuditFinalizer(msg IMUserMessage, trimmed string, result **IMAgentResponse) func() {
 	platform := normalizeIMMessagePlatformKind(msg.Platform)
-	if h == nil || h.app == nil || platform.IsDesktopPlaybackTarget() || trimmed == "" {
+	if h == nil || h.app == nil || platform.IsDesktopPlaybackTarget() || (trimmed == "" && !msg.SkipUserAudit) {
 		return nil
 	}
 	return func() {
@@ -10,12 +10,11 @@ func (h *IMMessageHandler) imAuditFinalizer(msg IMUserMessage, trimmed string, r
 		if store == nil {
 			return
 		}
-		store.Write(IMAuditMessage{
-			UserID:   msg.UserID,
-			Platform: msg.Platform,
-			Role:     "user",
-			Content:  msg.Text,
-		})
+		if !msg.SkipUserAudit {
+			store.Write(IMAuditMessage{
+				UserID: msg.UserID, Platform: msg.Platform, Role: "user", Content: msg.Text,
+			})
+		}
 		if result == nil || *result == nil {
 			return
 		}

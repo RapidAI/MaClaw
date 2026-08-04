@@ -31,7 +31,7 @@ describe("getAssistantInputComposerStyles", () => {
         expect(inputBarStyle.margin).toBe("0 10px 0 10px");
         // Safe-area moves to the footer bar; composer keeps a fixed inner pad only.
         expect(inputBarStyle.paddingBottom).toBe("6px");
-        expect(inputBarStyle.borderRadius).toBe("12px 12px 0 0");
+        expect(inputBarStyle.borderRadius).toBe("14px 14px 0 0");
         expect(inputBarStyle.borderBottom).toBe("none");
     });
 
@@ -41,7 +41,7 @@ describe("getAssistantInputComposerStyles", () => {
             inline: false,
             flushBottom: false,
         });
-        expect(inputBarStyle.borderRadius).toBe("12px");
+        expect(inputBarStyle.borderRadius).toBe("14px");
         expect(inputBarStyle.borderBottom).toBeUndefined();
     });
 

@@ -83,6 +83,7 @@ const atomicPatchFields = new Set([
     'lansenger_auto_mention_reply',
     'lansenger_auto_quote_reply',
     'lansenger_group_knowledge_source_ids',
+    'lansenger_group_allow_web_search',
     'lansenger_group_allow_all_directories',
     'lansenger_group_allowed_directories',
     'lansenger_allowed_group_ids',

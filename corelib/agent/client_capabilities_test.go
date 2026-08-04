@@ -75,3 +75,36 @@ func TestSelectClientOutputCombinationUsesRichestThenPreferred(t *testing.T) {
 		t.Fatalf("preferred singleton=%#v", selected)
 	}
 }
+
+func TestAudioDeliveryCapabilitiesAreBoundedAndURLIsExplicit(t *testing.T) {
+	legacy := NormalizeClientCapabilities(&ClientCapabilities{Output: ClientOutputCapabilities{
+		Modalities: []string{"audio"}, Audio: &ClientAudioCapabilities{MimeTypes: []string{"audio/wav"}, Playback: true},
+	}})
+	if !legacy.SupportsOutputAudioDelivery("inline", 1024) || legacy.SupportsOutputAudioDelivery("url", 1024) {
+		t.Fatalf("legacy delivery=%#v", legacy.Output.Audio)
+	}
+
+	bounded := NormalizeClientCapabilities(&ClientCapabilities{Output: ClientOutputCapabilities{
+		Modalities: []string{"audio"}, Audio: &ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes:  []string{"INLINE", "url", "ftp", "url"},
+			MaxInlineBytes: 8, MaxDownloadBytes: 64,
+		},
+	}})
+	if !bounded.SupportsOutputAudioDelivery("inline", 8) || bounded.SupportsOutputAudioDelivery("inline", 9) {
+		t.Fatal("inline size bound was not enforced")
+	}
+	if !bounded.SupportsOutputAudioDelivery("url", 64) || bounded.SupportsOutputAudioDelivery("url", 65) {
+		t.Fatal("URL size bound was not enforced")
+	}
+	if len(bounded.Output.Audio.DeliveryModes) != 2 || bounded.Output.Audio.DeliveryModes[0] != "inline" || bounded.Output.Audio.DeliveryModes[1] != "url" {
+		t.Fatalf("delivery normalization=%#v", bounded.Output.Audio.DeliveryModes)
+	}
+
+	urlWithoutLimit := NormalizeClientCapabilities(&ClientCapabilities{Output: ClientOutputCapabilities{
+		Modalities: []string{"audio"}, Audio: &ClientAudioCapabilities{Playback: true, DeliveryModes: []string{"url"}},
+	}})
+	if urlWithoutLimit.SupportsOutputAudioDelivery("url", 1) {
+		t.Fatal("URL delivery without an explicit download limit must be rejected")
+	}
+}

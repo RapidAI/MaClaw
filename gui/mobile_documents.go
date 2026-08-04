@@ -20,6 +20,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const mobileDocumentMaxStoredBytes = 100 << 20
+
 // MobileDocumentDraftImage is an illustration extracted from an Office original.
 type MobileDocumentDraftImage struct {
 	ID          string `json:"id"`
@@ -66,6 +68,46 @@ type MobileLibraryProcessing struct {
 type MobileLibraryDerivedDocuments struct {
 	TranscriptDraftID string `json:"transcript_draft_id,omitempty"`
 	MinutesDraftID    string `json:"minutes_draft_id,omitempty"`
+}
+
+type MobileDocumentQuota struct {
+	TotalBytes     int64 `json:"document_quota_bytes"`
+	UsedBytes      int64 `json:"document_quota_used_bytes"`
+	RemainingBytes int64 `json:"document_quota_remaining"`
+}
+
+func (a *App) GetMobileDocumentQuota() (*MobileDocumentQuota, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return nil, fmt.Errorf("MaClaw Hub login is required to read document quota")
+	}
+	req, err := http.NewRequest(http.MethodGet, hubURL+"/api/mobile/documents/quota", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get mobile document quota failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("get mobile document quota failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var out MobileDocumentQuota
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode mobile document quota: %w", err)
+	}
+	return &out, nil
 }
 
 // MobileMeetingRecordingAudioPayload is intentionally capped in the desktop
@@ -703,19 +745,19 @@ func (a *App) ImportMobileDocumentFromPath(path string) (*MobileDocumentDraftSum
 	if info.IsDir() {
 		return nil, fmt.Errorf("path is a directory")
 	}
-	// Match Hub mobileDocumentUploadMaxBytes (25MiB).
-	const maxBytes = 25 << 20
-	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("file too large (max 25MB)")
+	// The Hub applies the 100MiB limit after optional compression.
+	if info.Size() > mobileDocumentMaxStoredBytes*4 {
+		return nil, fmt.Errorf("file too large to compress safely")
 	}
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return nil, fmt.Errorf("open file: %w", err)
 	}
-	if len(raw) == 0 {
+	defer f.Close()
+	if info.Size() == 0 {
 		return nil, fmt.Errorf("file is empty")
 	}
-	return a.uploadMobileDocumentOriginal(filepath.Base(path), raw, contentTypeForMobileImport(path))
+	return a.uploadMobileDocumentOriginalReader(filepath.Base(path), f, contentTypeForMobileImport(path))
 }
 
 // ImportMobileDocumentBytes publishes an original file from base64 content when
@@ -747,15 +789,20 @@ func (a *App) ImportMobileDocumentBytes(filename, contentBase64 string) (*Mobile
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("file is empty")
 	}
-	const maxBytes = 25 << 20
-	if len(raw) > maxBytes {
-		return nil, fmt.Errorf("file too large (max 25MB)")
+	if len(raw) > mobileDocumentMaxStoredBytes*4 {
+		return nil, fmt.Errorf("file too large to compress safely")
 	}
-	return a.uploadMobileDocumentOriginal(filepath.Base(filename), raw, contentTypeForMobileImport(filename))
+	return a.uploadMobileDocumentOriginalReader(filepath.Base(filename), bytes.NewReader(raw), contentTypeForMobileImport(filename))
 }
 
 // uploadMobileDocumentOriginal POSTs the original bytes to Hub upload API.
 func (a *App) uploadMobileDocumentOriginal(filename string, raw []byte, contentType string) (*MobileDocumentDraftSummary, error) {
+	return a.uploadMobileDocumentOriginalReader(filename, bytes.NewReader(raw), contentType)
+}
+
+// uploadMobileDocumentOriginalReader streams multipart data to Hub. Local-path
+// imports therefore avoid holding both the original file and multipart body in RAM.
+func (a *App) uploadMobileDocumentOriginalReader(filename string, raw io.Reader, contentType string) (*MobileDocumentDraftSummary, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return nil, err
@@ -775,12 +822,8 @@ func (a *App) uploadMobileDocumentOriginal(filename string, raw []byte, contentT
 		contentType = "application/octet-stream"
 	}
 
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	// Original display name as a separate field (handles non-ASCII filenames).
-	if err := writer.WriteField("filename", filename); err != nil {
-		return nil, err
-	}
+	pipeReader, pipeWriter := io.Pipe()
+	writer := multipart.NewWriter(pipeWriter)
 	ext := filepath.Ext(filename)
 	if ext == "" {
 		ext = ".bin"
@@ -795,24 +838,31 @@ func (a *App) uploadMobileDocumentOriginal(filename string, raw []byte, contentT
 		percentEncodeRFC5987(filename),
 	))
 	h.Set("Content-Type", contentType)
-	part, err := writer.CreatePart(h)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := part.Write(raw); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
+	go func() {
+		var writeErr error
+		defer func() { _ = pipeWriter.CloseWithError(writeErr) }()
+		if writeErr = writer.WriteField("filename", filename); writeErr != nil {
+			return
+		}
+		var part io.Writer
+		part, writeErr = writer.CreatePart(h)
+		if writeErr != nil {
+			return
+		}
+		_, writeErr = io.Copy(part, raw)
+		if writeErr != nil {
+			return
+		}
+		writeErr = writer.Close()
+	}()
 
-	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/mobile/documents/upload", &body)
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/api/mobile/documents/upload", pipeReader)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+viewerToken)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("upload mobile document failed: %w", err)
@@ -870,8 +920,16 @@ func contentTypeForMobileImport(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".docx":
 		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".doc":
+		return "application/msword"
 	case ".xlsx":
 		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	case ".ppt":
+		return "application/vnd.ms-powerpoint"
 	case ".pdf":
 		return "application/pdf"
 	case ".png":
@@ -882,6 +940,16 @@ func contentTypeForMobileImport(path string) string {
 		return "image/gif"
 	case ".webp":
 		return "image/webp"
+	case ".zip":
+		return "application/zip"
+	case ".gz", ".gzip", ".tgz":
+		return "application/gzip"
+	case ".rar":
+		return "application/vnd.rar"
+	case ".7z":
+		return "application/x-7z-compressed"
+	case ".tar":
+		return "application/x-tar"
 	case ".md", ".markdown", ".txt", ".log", ".csv", ".json", ".yaml", ".yml":
 		return "text/plain; charset=utf-8"
 	default:
@@ -1066,7 +1134,7 @@ func (a *App) GetMobileDocumentDraft(draftID string) (*MobileDocumentDraftSummar
 	return decodeMobileDocumentDraftResponse(data)
 }
 
-const mobileDocumentOriginalMaxBytes = 25 << 20
+const mobileDocumentOriginalMaxBytes = 400 << 20
 
 // SaveMobileDocumentOriginal downloads the Hub-stored original and prompts for a
 // local save path. Returns the saved path, or empty string if the user cancels.
@@ -1183,7 +1251,7 @@ func (a *App) fetchMobileDocumentOriginal(draftID string) (filename string, raw 
 		return "", nil, fmt.Errorf("download original failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	if len(body) > mobileDocumentOriginalMaxBytes {
-		return "", nil, fmt.Errorf("original file exceeds 25MB limit")
+		return "", nil, fmt.Errorf("decoded original file exceeds 400MB safety limit")
 	}
 	filename = strings.TrimSpace(draft.SourceFilename)
 	if filename == "" {

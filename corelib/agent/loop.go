@@ -95,6 +95,14 @@ type StructuredToolExecutor interface {
 	ExecuteToolStructured(name, argsJSON string) ToolExecutionResult
 }
 
+// ToolResultProjector optionally lets a host build the model-facing view of a
+// tool result. RunLoop passes the complete execution result so runtime/UI/audit
+// consumers can retain raw output while the model receives a compact preview
+// with a lossless read-back handle.
+type ToolResultProjector interface {
+	ProjectToolResult(name string, result ToolExecutionResult) string
+}
+
 // LLMRequestContextProvider lets hosts wrap each LLM round with their own
 // scheduling, tracing, and cancellation boundary without making corelib/agent
 // depend on GUI/runtime packages.
@@ -412,6 +420,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if transformed := h.TransformConversation(conversation); transformed != nil {
 			conversation = transformed
 		}
+		observeLoopInputBreakdown(cb, conversation, tools)
 
 		// Call LLM with tools via corelib/llm (streaming for real-time display).
 		if llmRequestAttempts > 0 {
@@ -988,21 +997,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 			}
 
-			// Drift detection: track this call and check for repetition.
+			// Drift detection deliberately tracks the raw result. Projection is a
+			// model-context concern and must not make distinct runtime outputs look
+			// identical to the loop detector.
 			record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
 			recentCalls = append(recentCalls, record)
 			if len(recentCalls) > driftWindow*2 {
 				recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
 			}
 
-			// Truncate long results.
-			maxLen := 4000
-			if tc.Function.Name == "web_fetch" {
-				maxLen = 20000
-			}
-			if len(result) > maxLen {
-				result = result[:maxLen] + "\n...(truncated)"
-			}
+			// Project exactly once, after every runtime consumer has observed the
+			// complete result and immediately before model/history commit. The
+			// projection carries a lossless handle to the persisted raw payload.
+			result = projectLoopToolResult(cb, tc.Function.Name, execResult)
 
 			conversation = append(conversation, map[string]interface{}{
 				"role":         "tool",
@@ -1082,6 +1089,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 	log.Printf("[agent-loop] max iterations (%d) reached", maxIter)
 	return finish(LoopResult{Error: "max iterations reached", Iterations: maxIter, ToolCalls: totalToolCalls})
+}
+
+func projectLoopToolResult(cb LoopCallbacks, name string, result ToolExecutionResult) string {
+	if projector, ok := cb.(ToolResultProjector); ok {
+		return projector.ProjectToolResult(name, result)
+	}
+	return TruncateToolResultForTool(name, result.Result)
 }
 
 func executeLoopTool(cb LoopCallbacks, name, argsJSON string) ToolExecutionResult {

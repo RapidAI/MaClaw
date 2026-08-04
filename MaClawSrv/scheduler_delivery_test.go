@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -13,6 +15,39 @@ func TestNewChannelSenderUnsupported(t *testing.T) {
 	_, err := newChannelSender(context.Background(), nil, agentservice.Principal{}, "discord")
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("want unsupported channel err, got %v", err)
+	}
+}
+
+func TestChannelSenderDeliveryStateIsScopedToPrincipal(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "01234567890123456789012345678901",
+		TokenTTL:    time.Hour,
+	}, agentservice.NewMemoryStore(), nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	principalA := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	principalB := agentservice.Principal{TenantID: "tenant-a", UserID: "user-b"}
+	storeA := deliveryStateForChannelSender(svc, principalA)
+	storeB := deliveryStateForChannelSender(svc, principalB)
+	if storeA == nil || storeB == nil || storeA == storeB {
+		t.Fatalf("channel sender stores must be distinct and non-nil: A=%p B=%p", storeA, storeB)
+	}
+
+	storeA.RememberPeer(scheduler.DeliveryChannelTelegram, "10001")
+	if got := storeA.ResolveSelfPeer(scheduler.DeliveryChannelTelegram, "self"); got != "10001" {
+		t.Fatalf("principal A self peer = %q, want 10001", got)
+	}
+	if got := storeB.ResolveSelfPeer(scheduler.DeliveryChannelTelegram, "self"); got == "10001" {
+		t.Fatalf("principal B resolved principal A peer: %q", got)
+	}
+
+	rootA := filepath.Clean(svc.UserDataRoot(principalA))
+	rootB := filepath.Clean(svc.UserDataRoot(principalB))
+	if rootA == rootB {
+		t.Fatalf("principal data roots must differ: %q", rootA)
 	}
 }
 

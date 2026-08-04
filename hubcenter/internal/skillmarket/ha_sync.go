@@ -38,6 +38,7 @@ type SnapshotUser struct {
 type Snapshot struct {
 	Users                 []SnapshotUser           `json:"users"`
 	Transactions          []CreditsTransaction     `json:"transactions"`
+	RedeemCards           []SnapshotRedeemCard     `json:"redeem_cards"`
 	Submissions           []SkillSubmission        `json:"submissions"`
 	Purchases             []PurchaseRecord         `json:"purchases"`
 	Ratings               []Rating                 `json:"ratings"`
@@ -51,6 +52,26 @@ type Snapshot struct {
 	NotificationSequences []NotificationSequence   `json:"notification_sequences"`
 	ProblemReports        []ProblemReport          `json:"problem_reports"`
 	ProblemReportDeletes  []ProblemReportTombstone `json:"problem_report_deletes"`
+}
+
+// SnapshotRedeemCard keeps redemption-card timestamps in the same wire format
+// as the SQLite store. Cards must participate in HA snapshots: otherwise a
+// failover node cannot validate cards issued by its peer or show their audit
+// history.
+type SnapshotRedeemCard struct {
+	ID               string `json:"id"`
+	Code             string `json:"code"`
+	Credits          int64  `json:"credits"`
+	Status           string `json:"status"`
+	ExportedAt       string `json:"exported_at"`
+	ExportedBy       string `json:"exported_by"`
+	IssuedBy         string `json:"issued_by"`
+	IssuedAt         string `json:"issued_at"`
+	RedeemedByUserID string `json:"redeemed_by_user_id"`
+	RedeemedByEmail  string `json:"redeemed_by_email"`
+	RedeemedAt       string `json:"redeemed_at"`
+	RevokedBy        string `json:"revoked_by"`
+	RevokedAt        string `json:"revoked_at"`
 }
 
 // ProblemReportTombstone makes a deletion durable across full HA snapshots
@@ -184,6 +205,7 @@ func (s *Store) CountSnapshotRecords(ctx context.Context) (int64, error) {
 	tables := []string{
 		"sm_users",
 		"sm_credits_transactions",
+		"sm_credit_redeem_cards",
 		"sm_submissions",
 		"sm_purchase_records",
 		"sm_ratings",
@@ -222,6 +244,9 @@ func (s *Store) DumpSnapshot(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 	if snap.Transactions, err = s.dumpTransactions(ctx); err != nil {
+		return nil, err
+	}
+	if snap.RedeemCards, err = s.dumpRedeemCards(ctx); err != nil {
 		return nil, err
 	}
 	if snap.Submissions, err = s.dumpSubmissions(ctx); err != nil {
@@ -291,6 +316,12 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 			item.ID, canonicalSnapshotUserID(userIDAliases, item.UserID), item.Type, item.Amount, item.Balance, item.SkillID, item.PurchaseID, item.Description, fmtTime(item.CreatedAt),
 		); err != nil {
 			return fmt.Errorf("insert sm_credits_transactions: %w", err)
+		}
+	}
+	for _, item := range snap.RedeemCards {
+		item.RedeemedByUserID = canonicalSnapshotUserID(userIDAliases, item.RedeemedByUserID)
+		if err := upsertSnapshotRedeemCard(ctx, tx, item); err != nil {
+			return fmt.Errorf("insert sm_credit_redeem_cards: %w", err)
 		}
 	}
 	for _, item := range snap.Submissions {
@@ -603,6 +634,82 @@ func (s *Store) dumpTransactions(ctx context.Context) ([]CreditsTransaction, err
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) dumpRedeemCards(ctx context.Context) ([]SnapshotRedeemCard, error) {
+	rows, err := s.readDB.QueryContext(ctx, `SELECT `+creditRedeemCardColumns+` FROM sm_credit_redeem_cards ORDER BY issued_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SnapshotRedeemCard
+	for rows.Next() {
+		var item SnapshotRedeemCard
+		if err := rows.Scan(&item.ID, &item.Code, &item.Credits, &item.Status, &item.ExportedAt, &item.ExportedBy,
+			&item.IssuedBy, &item.IssuedAt, &item.RedeemedByUserID, &item.RedeemedByEmail, &item.RedeemedAt,
+			&item.RevokedBy, &item.RevokedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func upsertSnapshotRedeemCard(ctx context.Context, tx *sql.Tx, item SnapshotRedeemCard) error {
+	var local SnapshotRedeemCard
+	err := tx.QueryRowContext(ctx, `SELECT `+creditRedeemCardColumns+` FROM sm_credit_redeem_cards WHERE id=?`, item.ID).Scan(
+		&local.ID, &local.Code, &local.Credits, &local.Status, &local.ExportedAt, &local.ExportedBy,
+		&local.IssuedBy, &local.IssuedAt, &local.RedeemedByUserID, &local.RedeemedByEmail, &local.RedeemedAt,
+		&local.RevokedBy, &local.RevokedAt,
+	)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil && !shouldApplySnapshotRedeemCard(local, item) {
+		return nil
+	}
+	if err == sql.ErrNoRows {
+		_, err = tx.ExecContext(ctx, `INSERT INTO sm_credit_redeem_cards (`+creditRedeemCardColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			item.ID, item.Code, item.Credits, item.Status, item.ExportedAt, item.ExportedBy, item.IssuedBy, item.IssuedAt,
+			item.RedeemedByUserID, item.RedeemedByEmail, item.RedeemedAt, item.RevokedBy, item.RevokedAt,
+		)
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE sm_credit_redeem_cards SET code=?, credits=?, status=?, exported_at=?, exported_by=?, issued_by=?, issued_at=?, redeemed_by_user_id=?, redeemed_by_email=?, redeemed_at=?, revoked_by=?, revoked_at=? WHERE id=?`,
+		item.Code, item.Credits, item.Status, item.ExportedAt, item.ExportedBy, item.IssuedBy, item.IssuedAt,
+		item.RedeemedByUserID, item.RedeemedByEmail, item.RedeemedAt, item.RevokedBy, item.RevokedAt, item.ID,
+	)
+	return err
+}
+
+func shouldApplySnapshotRedeemCard(local, incoming SnapshotRedeemCard) bool {
+	localTerminal := local.Status == "redeemed" || local.Status == "revoked"
+	incomingTerminal := incoming.Status == "redeemed" || incoming.Status == "revoked"
+	if localTerminal && !incomingTerminal {
+		return false
+	}
+	if !localTerminal && incomingTerminal {
+		return true
+	}
+	incomingVersion, localVersion := redeemCardSnapshotVersion(incoming), redeemCardSnapshotVersion(local)
+	if incomingVersion != localVersion {
+		return incomingVersion > localVersion
+	}
+	return redeemCardSnapshotTieBreak(incoming) > redeemCardSnapshotTieBreak(local)
+}
+
+func redeemCardSnapshotVersion(item SnapshotRedeemCard) string {
+	latest := item.IssuedAt
+	for _, value := range []string{item.ExportedAt, item.RedeemedAt, item.RevokedAt} {
+		if value > latest {
+			latest = value
+		}
+	}
+	return latest
+}
+
+func redeemCardSnapshotTieBreak(item SnapshotRedeemCard) string {
+	return item.Status + "\x00" + item.ExportedAt + "\x00" + item.ExportedBy + "\x00" + item.RedeemedAt + "\x00" + item.RedeemedByUserID + "\x00" + item.RevokedAt + "\x00" + item.RevokedBy
 }
 
 func (s *Store) dumpSubmissions(ctx context.Context) ([]SkillSubmission, error) {

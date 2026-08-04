@@ -203,6 +203,30 @@ func TestCreditsRepository_Transactions(t *testing.T) {
 	}
 }
 
+func TestCreditsRepository_TransactionsUseStablePaginationOrder(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	user := createTestUser(t, store, "stable-ledger@example.com", 0)
+	createdAt := time.Now().Truncate(time.Second)
+	for _, id := range []string{"tx-a", "tx-c", "tx-b"} {
+		if err := store.CreateTransaction(ctx, &CreditsTransaction{ID: id, UserID: user.ID, Type: "topup", Amount: 1, Balance: 1, CreatedAt: createdAt}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	firstPage, total, err := store.ListTransactionsByUser(ctx, user.ID, 0, 2)
+	if err != nil || total != 3 || len(firstPage) != 2 {
+		t.Fatalf("first page = %#v total=%d err=%v", firstPage, total, err)
+	}
+	secondPage, _, err := store.ListTransactionsByUser(ctx, user.ID, 2, 2)
+	if err != nil || len(secondPage) != 1 {
+		t.Fatalf("second page = %#v err=%v", secondPage, err)
+	}
+	if firstPage[0].ID != "tx-c" || firstPage[1].ID != "tx-b" || secondPage[0].ID != "tx-a" {
+		t.Fatalf("unexpected stable order: first=%#v second=%#v", firstPage, secondPage)
+	}
+}
+
 func TestSubmissionRepository_StatusFlow(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

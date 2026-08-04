@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -410,6 +411,240 @@ func (h *SkillMarketHandlers) WithdrawCredits(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// CreditAccount handles GET /api/v1/credits/account for the authenticated
+// SkillMarket session. This endpoint deliberately does not accept a user ID.
+func (h *SkillMarketHandlers) CreditAccount(w http.ResponseWriter, r *http.Request) {
+	if !h.creditDataAvailable(w) {
+		return
+	}
+	user, ok := h.creditSessionUser(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"credits": user.Credits, "user_id": user.ID, "email": user.Email})
+}
+
+// CreditTransactions handles GET /api/v1/credits/account/transactions for the
+// authenticated user, keeping wallet history private to that user.
+func (h *SkillMarketHandlers) CreditTransactions(w http.ResponseWriter, r *http.Request) {
+	if !h.creditDataAvailable(w) {
+		return
+	}
+	user, ok := h.creditSessionUser(w, r)
+	if !ok {
+		return
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	txs, total, err := h.store.ListTransactionsByUser(r.Context(), user.ID, offset, limit)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"transactions": txs, "total": total})
+}
+
+// CreditWithdraw handles POST /api/v1/credits/account/withdraw for the
+// authenticated user. The account is derived from the session so the request
+// cannot withdraw another user's settled earnings.
+func (h *SkillMarketHandlers) CreditWithdraw(w http.ResponseWriter, r *http.Request) {
+	if !h.creditDataAvailable(w) {
+		return
+	}
+	user, ok := h.creditSessionUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Amount int64 `json:"amount"`
+	}
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
+		return
+	}
+	if err := h.creditsSvc.Withdraw(r.Context(), user.ID, req.Amount); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, skillmarket.ErrUnverifiedAccount) {
+			status = http.StatusForbidden
+		} else if errors.Is(err, skillmarket.ErrInsufficientCredits) {
+			status = http.StatusPaymentRequired
+		} else if req.Amount <= 0 {
+			status = http.StatusBadRequest
+		}
+		smError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// RedeemCreditCard handles POST /api/v1/credits/redeem for the authenticated
+// user. User identity is always sourced from the session, never the body.
+func (h *SkillMarketHandlers) RedeemCreditCard(w http.ResponseWriter, r *http.Request) {
+	if !h.creditDataAvailable(w) {
+		return
+	}
+	user, ok := h.creditSessionUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
+		return
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		smError(w, http.StatusBadRequest, "redeem code is required")
+		return
+	}
+	balance, err := h.creditsSvc.RedeemCard(r.Context(), user.ID, user.Email, req.Code)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, skillmarket.ErrUnverifiedAccount) {
+			status = http.StatusForbidden
+		} else if errors.Is(err, skillmarket.ErrRedeemCardUnavailable) {
+			status = http.StatusBadRequest
+		} else if errors.Is(err, skillmarket.ErrRedeemCardNotActive) {
+			status = http.StatusConflict
+		}
+		smError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "redeemed", "balance": balance})
+}
+
+func (h *SkillMarketHandlers) creditSessionUser(w http.ResponseWriter, r *http.Request) (*skillmarket.SkillMarketUser, bool) {
+	if h == nil || h.authSvc == nil {
+		smError(w, http.StatusServiceUnavailable, "credits authentication unavailable")
+		return nil, false
+	}
+	user, err := h.authSvc.CurrentUser(r.Context(), extractSessionToken(r))
+	if err != nil {
+		smError(w, http.StatusUnauthorized, "session expired or invalid")
+		return nil, false
+	}
+	return user, true
+}
+
+func (h *SkillMarketHandlers) creditDataAvailable(w http.ResponseWriter) bool {
+	if h == nil || h.store == nil || h.creditsSvc == nil {
+		smError(w, http.StatusServiceUnavailable, "credits service unavailable")
+		return false
+	}
+	return true
+}
+
+// AdminIssueCreditRedeemCards handles POST /api/v1/admin/credits/redeem-cards.
+func (h *SkillMarketHandlers) AdminIssueCreditRedeemCards(w http.ResponseWriter, r *http.Request) {
+	if !h.creditDataAvailable(w) {
+		return
+	}
+	var req struct {
+		Credits int64 `json:"credits"`
+		Count   int   `json:"count"`
+	}
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
+		return
+	}
+	if req.Credits == 0 {
+		req.Credits = 100
+	}
+	if req.Count == 0 {
+		req.Count = 1
+	}
+	cards, err := h.creditsSvc.IssueRedeemCards(r.Context(), req.Credits, req.Count, adminUsername(r))
+	if err != nil {
+		smError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"cards": cards})
+}
+
+// AdminListCreditRedeemCards handles GET /api/v1/admin/credits/redeem-cards.
+func (h *SkillMarketHandlers) AdminListCreditRedeemCards(w http.ResponseWriter, r *http.Request) {
+	if !h.creditDataAvailable(w) {
+		return
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status != "" && status != "active" && status != "redeemed" && status != "revoked" {
+		smError(w, http.StatusBadRequest, "invalid card status")
+		return
+	}
+	cards, total, err := h.store.ListCreditRedeemCards(r.Context(), status, offset, limit)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cards": cards, "total": total})
+}
+
+// AdminRevokeCreditRedeemCard handles POST /api/v1/admin/credits/redeem-cards/{id}/revoke.
+func (h *SkillMarketHandlers) AdminRevokeCreditRedeemCard(w http.ResponseWriter, r *http.Request) {
+	if !h.creditDataAvailable(w) {
+		return
+	}
+	if err := h.creditsSvc.RevokeRedeemCard(r.Context(), r.PathValue("id"), adminUsername(r)); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, skillmarket.ErrRedeemCardNotActive) || errors.Is(err, skillmarket.ErrRedeemCardUnavailable) {
+			status = http.StatusConflict
+		}
+		smError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+// AdminExportCreditRedeemCards marks the selected unused cards as exported and
+// returns their code values. Export remains an audit event, not a file write.
+func (h *SkillMarketHandlers) AdminExportCreditRedeemCards(w http.ResponseWriter, r *http.Request) {
+	if !h.creditDataAvailable(w) {
+		return
+	}
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
+		return
+	}
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" {
+		mode = "only_unexported_unused"
+	}
+	if mode != "only_unexported_unused" && mode != "all_unused" {
+		smError(w, http.StatusBadRequest, "invalid export mode")
+		return
+	}
+	cards, err := h.creditsSvc.ExportUnusedRedeemCards(r.Context(), mode == "only_unexported_unused", adminUsername(r))
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cards": cards, "total": len(cards)})
+}
+
+func adminUsername(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if admin := AdminFromContext(r.Context()); admin != nil {
+		return strings.TrimSpace(admin.Username)
+	}
+	return ""
 }
 
 // ── Crypto ──────────────────────────────────────────────────────────────

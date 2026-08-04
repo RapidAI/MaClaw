@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -13,6 +14,36 @@ import (
 	"testing"
 	"time"
 )
+
+func TestMobileWriteStoredOriginalHTTPRejectsLateGzipChecksumCorruption(t *testing.T) {
+	raw := bytes.Repeat([]byte("late-checksum-content-"), 10_000)
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := append([]byte(nil), compressed.Bytes()...)
+	// Corrupt only CRC32. Preserve the final ISIZE bytes so the preflight size
+	// check succeeds and the decoder discovers corruption at EOF.
+	corrupt[len(corrupt)-8] ^= 0xff
+
+	rec := httptest.NewRecorder()
+	if !mobileWriteStoredOriginalHTTP(rec, "text/plain", "late.txt", corrupt, "", "gzip", len(raw)) {
+		t.Fatal("stream should commit before late checksum failure")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	if rec.Body.Len() >= len(raw) {
+		t.Fatalf("corrupt gzip returned a complete body: got=%d want<%d", rec.Body.Len(), len(raw))
+	}
+	if rec.Header().Get("Content-Length") != strconv.Itoa(len(raw)) {
+		t.Fatalf("content-length=%q", rec.Header().Get("Content-Length"))
+	}
+}
 
 func TestMobileDocumentBlobWriteReadDelete(t *testing.T) {
 	root := t.TempDir()
@@ -752,7 +783,7 @@ func TestMobileDocumentUploadMultipartPersistsOriginalToDisk(t *testing.T) {
 		mobileStatePersistence.Unlock()
 	})
 
-	raw := []byte("multipart original body for disk store")
+	raw := bytes.Repeat([]byte("multipart original body for disk store\n"), 4096)
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	_ = mw.WriteField("filename", "memo.txt")
@@ -800,9 +831,16 @@ func TestMobileDocumentUploadMultipartPersistsOriginalToDisk(t *testing.T) {
 	if !mobileDraftHasOriginal(draft) || draft.SourcePath == "" {
 		t.Fatalf("draft original not on disk: path=%q size=%d mem=%d", draft.SourcePath, draft.SourceSize, len(draft.SourceBytes))
 	}
-	got, err := mobileReadDocumentBlob(draft.SourcePath)
+	stored, err := mobileReadDocumentBlob(draft.SourcePath)
+	if err != nil {
+		t.Fatalf("draft blob err=%v", err)
+	}
+	got, err := mobileDecodeStoredDocumentBounded(stored, draft.SourceEncoding, draft.SourceOriginalSize)
 	if err != nil || !bytes.Equal(got, raw) {
-		t.Fatalf("draft blob err=%v got=%q", err, got)
+		t.Fatalf("draft decode err=%v stored=%d raw=%d", err, len(stored), len(raw))
+	}
+	if draft.SourceEncoding != "gzip" || draft.SourceOriginalSize != len(raw) || draft.SourceSize >= len(raw) {
+		t.Fatalf("draft compression meta encoding=%q stored=%d original=%d", draft.SourceEncoding, draft.SourceSize, draft.SourceOriginalSize)
 	}
 	// ready text imports should release upload-side original.
 	if upload.Status == "ready" && mobileUploadHasSource(upload) {
@@ -836,8 +874,8 @@ func TestMobileDocumentUploadMultipartPersistsOriginalToDisk(t *testing.T) {
 	if len(persisted.SourceBytes) != 0 {
 		t.Fatal("state.json still embeds SourceBytes")
 	}
-	if persisted.SourcePath == "" || persisted.SourceSize != len(raw) {
-		t.Fatalf("path=%q size=%d", persisted.SourcePath, persisted.SourceSize)
+	if persisted.SourcePath == "" || persisted.SourceSize != draft.SourceSize || persisted.SourceEncoding != "gzip" || persisted.SourceOriginalSize != len(raw) {
+		t.Fatalf("path=%q stored=%d encoding=%q original=%d", persisted.SourcePath, persisted.SourceSize, persisted.SourceEncoding, persisted.SourceOriginalSize)
 	}
 	_ = enroll
 }

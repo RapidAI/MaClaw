@@ -204,6 +204,28 @@ type stopAfterFirstToolCallbacks struct {
 	*mockCallbacks
 }
 
+type projectingCallbacks struct {
+	*mockCallbacks
+	rawSeen       string
+	projectedSeen string
+}
+
+func (m *projectingCallbacks) OnToolExecuted(name, argsJSON, result string, success bool) {
+	_ = name
+	_ = argsJSON
+	_ = success
+	m.rawSeen = result
+}
+
+func (m *projectingCallbacks) TransformConversation([]interface{}) []interface{} { return nil }
+func (m *projectingCallbacks) OnEmptyResponse(int) bool                          { return false }
+
+func (m *projectingCallbacks) ProjectToolResult(name string, result ToolExecutionResult) string {
+	_ = name
+	m.projectedSeen = result.Result
+	return "MODEL_PREVIEW_WITH_HANDLE"
+}
+
 func (m *stopAfterFirstToolCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
 	result := m.mockCallbacks.ExecuteToolStructured(name, args)
 	if len(m.toolCalls) == 1 {
@@ -734,6 +756,130 @@ func TestRunLoop_EmptyToolArgumentsNormalizeToObject(t *testing.T) {
 	}
 	if len(cb.toolArgs) != 1 || cb.toolArgs[0] != "{}" {
 		t.Fatalf("tool args = %#v, want normalized empty args to {}", cb.toolArgs)
+	}
+}
+
+func TestRunLoopProjectsAfterRawHooksAndCommitsProjection(t *testing.T) {
+	raw := strings.Repeat("raw-output-", 1000)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if requests.Add(1) == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"tc_project","type":"function","function":{"name":"bash","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		var toolContent string
+		for _, msg := range req.Messages {
+			if msg["role"] == "tool" && msg["tool_call_id"] == "tc_project" {
+				toolContent = fmt.Sprint(msg["content"])
+			}
+		}
+		if toolContent != "MODEL_PREVIEW_WITH_HANDLE" {
+			t.Fatalf("model tool content = %q", toolContent)
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &projectingCallbacks{mockCallbacks: &mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    3,
+		sysPrompt:  "sys",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("bash", "Run", map[string]interface{}{"type": "object"})},
+		toolResult: raw,
+	}}
+	result := RunLoop(cb, "run", nil, server.Client(), cb)
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	if cb.rawSeen != raw || cb.projectedSeen != raw {
+		t.Fatalf("raw consumers lost result: hook=%d projector=%d raw=%d", len(cb.rawSeen), len(cb.projectedSeen), len(raw))
+	}
+	var committed *ConversationEntry
+	for i := range result.HistoryDelta {
+		if result.HistoryDelta[i].Role == "tool" && result.HistoryDelta[i].ToolCallID == "tc_project" {
+			committed = &result.HistoryDelta[i]
+			break
+		}
+	}
+	if committed == nil || committed.Content != "MODEL_PREVIEW_WITH_HANDLE" {
+		t.Fatalf("history delta did not commit paired projection: %#v", result.HistoryDelta)
+	}
+}
+
+func TestRunLoopProjectsEveryParallelToolCallWithoutOrphans(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if requests.Add(1) == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"tc_a","type":"function","function":{"name":"bash","arguments":"{}"}},{"id":"tc_b","type":"function","function":{"name":"bash","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		seen := map[string]string{}
+		for _, msg := range req.Messages {
+			if msg["role"] == "tool" {
+				seen[fmt.Sprint(msg["tool_call_id"])] = fmt.Sprint(msg["content"])
+			}
+		}
+		for _, id := range []string{"tc_a", "tc_b"} {
+			if seen[id] != "MODEL_PREVIEW_WITH_HANDLE" {
+				t.Fatalf("missing or unprojected tool result %s: %#v", id, seen)
+			}
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &projectingCallbacks{mockCallbacks: &mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    3,
+		sysPrompt:  "sys",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("bash", "Run", map[string]interface{}{"type": "object"})},
+		toolResult: strings.Repeat("raw-output-", 1000),
+	}}
+	result := RunLoop(cb, "run", nil, server.Client(), cb)
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	toolIDs := map[string]bool{}
+	var assistantCallIDs map[string]bool
+	for _, entry := range result.HistoryDelta {
+		switch entry.Role {
+		case "assistant":
+			data, _ := json.Marshal(entry.ToolCalls)
+			var calls []struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(data, &calls) == nil && len(calls) > 0 {
+				assistantCallIDs = map[string]bool{}
+				for _, call := range calls {
+					assistantCallIDs[call.ID] = true
+				}
+			}
+		case "tool":
+			toolIDs[entry.ToolCallID] = true
+			if entry.Content != "MODEL_PREVIEW_WITH_HANDLE" {
+				t.Fatalf("history committed raw result for %s", entry.ToolCallID)
+			}
+		}
+	}
+	if len(assistantCallIDs) != 2 || len(toolIDs) != 2 {
+		t.Fatalf("parallel group mismatch calls=%v tools=%v", assistantCallIDs, toolIDs)
+	}
+	for id := range assistantCallIDs {
+		if !toolIDs[id] {
+			t.Fatalf("orphaned assistant tool call %s", id)
+		}
 	}
 }
 

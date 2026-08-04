@@ -933,10 +933,17 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/account/ensure", smHandlers.EnsureAccount)
 		mux.HandleFunc("GET /api/v1/account/{email}", smHandlers.GetAccount)
 		mux.HandleFunc("POST /api/v1/account/verify", smHandlers.VerifyAccount)
-		mux.HandleFunc("GET /api/v1/credits/balance", smHandlers.GetCreditsBalance)
-		mux.HandleFunc("GET /api/v1/credits/transactions", smHandlers.GetCreditsTransactions)
-		mux.HandleFunc("POST /api/v1/credits/topup", smHandlers.TopUpCredits)
-		mux.HandleFunc("POST /api/v1/credits/withdraw", smHandlers.WithdrawCredits)
+		// Legacy user_id-based Credits operations remain available only to platform
+		// administrators. End-user wallet access must use the session-bound account
+		// endpoints below, so a caller cannot read or mutate another user's balance.
+		mux.HandleFunc("GET /api/v1/credits/balance", RequireAdmin(adminService, smHandlers.GetCreditsBalance))
+		mux.HandleFunc("GET /api/v1/credits/transactions", RequireAdmin(adminService, smHandlers.GetCreditsTransactions))
+		mux.HandleFunc("POST /api/v1/credits/topup", RequireAdmin(adminService, smHandlers.TopUpCredits))
+		mux.HandleFunc("POST /api/v1/credits/withdraw", RequireAdmin(adminService, smHandlers.WithdrawCredits))
+		mux.HandleFunc("GET /api/v1/credits/account", smHandlers.CreditAccount)
+		mux.HandleFunc("GET /api/v1/credits/account/transactions", smHandlers.CreditTransactions)
+		mux.HandleFunc("POST /api/v1/credits/account/withdraw", smHandlers.CreditWithdraw)
+		mux.HandleFunc("POST /api/v1/credits/redeem", smHandlers.RedeemCreditCard)
 		mux.HandleFunc("GET /api/v1/crypto/pubkey", smHandlers.GetPublicKey)
 		mux.HandleFunc("GET /api/v1/skillmarket/{id}/download", smHandlers.DownloadSkillMarket)
 		mux.HandleFunc("GET /api/capability-market/capabilities/{id}/download", smHandlers.DownloadSkillMarket)
@@ -949,6 +956,10 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/skillmarket/{id}/ratings", smHandlers.GetRatingStats)
 		// Admin review & config
 		mux.HandleFunc("GET /api/v1/admin/skillmarket/review", RequireAdmin(adminService, smHandlers.AdminReviewQueue))
+		mux.HandleFunc("POST /api/v1/admin/credits/redeem-cards", RequireAdmin(adminService, smHandlers.AdminIssueCreditRedeemCards))
+		mux.HandleFunc("GET /api/v1/admin/credits/redeem-cards", RequireAdmin(adminService, smHandlers.AdminListCreditRedeemCards))
+		mux.HandleFunc("POST /api/v1/admin/credits/redeem-cards/export", RequireAdmin(adminService, smHandlers.AdminExportCreditRedeemCards))
+		mux.HandleFunc("POST /api/v1/admin/credits/redeem-cards/{id}/revoke", RequireAdmin(adminService, smHandlers.AdminRevokeCreditRedeemCard))
 		mux.HandleFunc("POST /api/v1/admin/skillmarket/{id}/approve", RequireAdmin(adminService, smHandlers.AdminApproveSkill))
 		mux.HandleFunc("POST /api/v1/admin/skillmarket/{id}/reject", RequireAdmin(adminService, smHandlers.AdminRejectSkill))
 		mux.HandleFunc("GET /api/v1/admin/config/trial", RequireAdmin(adminService, smHandlers.GetTrialConfig))

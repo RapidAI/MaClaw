@@ -128,10 +128,13 @@ func (h *IMMessageHandler) handleAgentLoopFileArtifacts(
 		result.Response = resp
 		return result
 	}
-	// Multi-file on IM/other channels: deliver via LocalFilePaths only.
+	// Multi-file on IM/other channels: deliver via LocalFilePaths only. An
+	// explicitly targeted file must also take this materialization path even when
+	// it is the only artifact; the single-file shortcut below is only for a reply
+	// to the originating gateway.
 	// Gateways already send LocalFilePaths; using FileData for the last file
 	// as well would double-send that file.
-	if len(pendingFiles) > 1 {
+	if len(pendingFiles) > 1 || pendingFilesHaveExplicitTarget(pendingFiles) {
 		h.populateFileArtifactResponse(resp, pendingFiles, platform)
 		attachVoiceArtifact(resp, voiceData, voiceFileName, voiceMimeType)
 		result.Response = resp
@@ -246,8 +249,10 @@ func (h *IMMessageHandler) populateFileArtifactResponse(resp *IMAgentResponse, p
 	}
 	lang := h.imUILangOrZh()
 	onIMChannel := normalizeIMMessagePlatformKind(platform).IsIMChannel()
+	originGatewayDeliversFiles := onIMChannel || isThirdPartyFileOriginPlatform(platform)
 	fileMaterializeStartedAt := time.Now()
 	var savedPaths []string
+	var originReplyPaths []string
 	var failLines []string
 	var imForwardedCount int
 	var deliveryMessage string
@@ -262,36 +267,69 @@ func (h *IMMessageHandler) populateFileArtifactResponse(resp *IMAgentResponse, p
 			continue
 		}
 		savedPaths = append(savedPaths, filePath)
+		// Exact-target delivery is never also attached to the originating IM or
+		// hardware reply. This preserves the no-broadcast/no-fallback guarantee.
+		if !(originGatewayDeliversFiles && pf.target.Active()) {
+			originReplyPaths = append(originReplyPaths, filePath)
+		}
 		if strings.TrimSpace(pf.message) != "" && !isLegacyBotFileInstruction(pf.message) && !isAutoProactiveCaption(pf.message) {
 			deliveryMessage = strings.TrimSpace(pf.message)
 		}
-		// Active IM session: gateway will send LocalFilePaths. Skip imFileSender
-		// entirely to avoid duplicate media in the same WeChat/Feishu chat.
-		if onIMChannel || !pf.forwardIM {
+		// Active IM session without an explicit target: the current gateway sends
+		// LocalFilePaths, so invoking the desktop sender would duplicate media.
+		// With an explicit target (for example hardware voice asks for another
+		// Lansenger group), the target sender must run even though the origin is an
+		// IM/third-party channel.
+		if (originGatewayDeliversFiles && !pf.target.Active()) || !pf.forwardIM {
 			continue
 		}
-		if h == nil || h.imFileSender == nil {
+		if h == nil || (h.structuredIMFileSender == nil && h.imFileSender == nil) {
 			failLines = append(failLines, i18n.Tf(i18n.MsgIMFileSenderNotConfigured, lang, pf.name))
 			continue
 		}
 		// Caption on WeChat/Feishu: GUI language, never legacy "Please send … to the user."
 		caption := resolveIMProactiveCaption(lang, pf.message, pf.name, pf.mimeType)
-		if err := h.imFileSender(pf.data, pf.name, pf.mimeType, caption); err != nil {
-			log.Printf("[IMMessageHandler] IM forward failed for %s: %v", pf.name, err)
-			failLines = append(failLines, i18n.Tf(i18n.MsgIMFileForwardFailed, lang, pf.name, err.Error()))
+		req := agent.IMFileDeliveryRequest{Data: pf.data, FileName: pf.name, MIMEType: pf.mimeType, Message: caption, Target: pf.target}
+		var sendErr error
+		if h.structuredIMFileSender != nil {
+			sendErr = h.structuredIMFileSender(req)
+		} else {
+			sendErr = h.imFileSender(req.Data, req.FileName, req.MIMEType, req.Message)
+		}
+		if sendErr != nil {
+			log.Printf("[IMMessageHandler] IM forward failed for %s: %v", pf.name, sendErr)
+			failLines = append(failLines, i18n.Tf(i18n.MsgIMFileForwardFailed, lang, pf.name, sendErr.Error()))
 			continue
 		}
 		log.Printf("[IMMessageHandler] IM forward OK name=%s mime=%s caption=%q", pf.name, pf.mimeType, truncateRunes(caption, 80))
 		imForwardedCount++
 	}
-	resp.Text = buildFileArtifactStatusText(lang, onIMChannel, savedPaths, failLines, imForwardedCount, deliveryMessage)
+	resp.Text = buildFileArtifactStatusText(lang, onIMChannel, originReplyPaths, failLines, imForwardedCount, deliveryMessage)
 	resp.ResponseSource = imResponseSourceFileDelivery.String()
-	resp.LocalFilePaths = savedPaths
+	resp.LocalFilePaths = originReplyPaths
 	resp.FileMaterializeNanos = time.Since(fileMaterializeStartedAt).Nanoseconds()
-	if len(savedPaths) > 0 {
-		resp.LocalFilePath = savedPaths[0]
+	if len(originReplyPaths) > 0 {
+		resp.LocalFilePath = originReplyPaths[0]
 	}
 	return imForwardedCount
+}
+
+func pendingFilesHaveExplicitTarget(pendingFiles []pendingFile) bool {
+	for _, pf := range pendingFiles {
+		if pf.target.Active() {
+			return true
+		}
+	}
+	return false
+}
+
+// Third-party hardware gateways return untargeted artifacts on their own reply
+// channel, just like an IM gateway. Keep this predicate narrow instead of making
+// thirdparty:* an IM platform globally: that would also change audio formats,
+// playback targets, auditing, and unrelated platform-specific behavior.
+func isThirdPartyFileOriginPlatform(platform string) bool {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	return platform == "thirdparty" || strings.HasPrefix(platform, "thirdparty:")
 }
 
 func (h *IMMessageHandler) imUILangOrZh() string {

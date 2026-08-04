@@ -1,6 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +19,41 @@ const mobileBlobDirEnv = "MACLAW_MOBILE_BLOB_DIR"
 // Hot in-process cache limit for original bytes. Larger files stay disk-only
 // (SourcePath + SourceSize) and are loaded on demand without re-caching.
 const mobileDocumentSourceHotCacheMax = 512 << 10 // 512 KiB
+
+// The public limit applies to the stored representation. A separate bounded
+// original-size ceiling prevents a tiny gzip envelope from expanding without
+// limit in workers or download handlers.
+const mobileDocumentOriginalMaxBytes = 400 << 20
+
+var (
+	errMobileDocumentOriginalTooLarge = errors.New("mobile document original exceeds safety limit")
+	errMobileDocumentStoredTooLarge   = errors.New("mobile document stored size exceeds limit")
+)
+
+type mobileBoundedWriter struct {
+	w   io.Writer
+	n   int64
+	max int64
+}
+
+func (w *mobileBoundedWriter) Write(p []byte) (int, error) {
+	remaining := w.max - w.n
+	if remaining <= 0 {
+		return 0, errMobileDocumentStoredTooLarge
+	}
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
+		n, err := w.w.Write(p)
+		w.n += int64(n)
+		if err != nil {
+			return n, err
+		}
+		return n, errMobileDocumentStoredTooLarge
+	}
+	n, err := w.w.Write(p)
+	w.n += int64(n)
+	return n, err
+}
 
 // mobileDocumentBlobDir is the on-disk store for original mobile documents
 // (draft/upload binaries). Defaults to <state.json parent>/blobs.
@@ -90,6 +129,109 @@ func mobileWriteDocumentBlob(ownerID, kind, id string, raw []byte) (string, erro
 		return "", err
 	}
 	return rel, nil
+}
+
+// mobilePersistUploadedDocument streams a multipart source into the durable
+// store, optionally gzip-wrapping it. If gzip does not save space, it rewinds
+// the multipart file and stores the original bytes instead.
+func mobilePersistUploadedDocument(ownerID, id string, src io.ReadSeeker, compress bool) (path string, storedSize, originalSize int, encoding string, mem []byte, err error) {
+	root := mobileDocumentBlobDir()
+	if root == "" {
+		return "", 0, 0, "", nil, fmt.Errorf("mobile blob dir is not configured")
+	}
+	ownerID, id = filepath.Base(strings.TrimSpace(ownerID)), filepath.Base(strings.TrimSpace(id))
+	if ownerID == "" || id == "" || ownerID == "." || ownerID == ".." || id == "." || id == ".." {
+		return "", 0, 0, "", nil, fmt.Errorf("invalid blob key")
+	}
+	rel := filepath.ToSlash(filepath.Join(ownerID, "upload", id+".bin"))
+	abs := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
+		return "", 0, 0, "", nil, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(abs), id+"-*.tmp")
+	if err != nil {
+		return "", 0, 0, "", nil, err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return "", 0, 0, "", nil, err
+	}
+
+	writeRaw := func() (int, int, error) {
+		if _, seekErr := src.Seek(0, io.SeekStart); seekErr != nil {
+			return 0, 0, seekErr
+		}
+		if truncateErr := tmp.Truncate(0); truncateErr != nil {
+			return 0, 0, truncateErr
+		}
+		if _, seekErr := tmp.Seek(0, io.SeekStart); seekErr != nil {
+			return 0, 0, seekErr
+		}
+		bounded := &mobileBoundedWriter{w: tmp, max: int64(mobileDocumentUploadMaxBytes)}
+		limited := &io.LimitedReader{R: src, N: int64(mobileDocumentOriginalMaxBytes) + 1}
+		n, copyErr := io.Copy(bounded, limited)
+		if n > int64(mobileDocumentOriginalMaxBytes) {
+			return 0, 0, errMobileDocumentOriginalTooLarge
+		}
+		if copyErr != nil {
+			return 0, 0, copyErr
+		}
+		return int(bounded.n), int(n), nil
+	}
+
+	if compress {
+		bounded := &mobileBoundedWriter{w: tmp, max: int64(mobileDocumentUploadMaxBytes)}
+		zw, zipErr := gzip.NewWriterLevel(bounded, gzip.BestSpeed)
+		if zipErr != nil {
+			return "", 0, 0, "", nil, zipErr
+		}
+		limited := &io.LimitedReader{R: src, N: int64(mobileDocumentOriginalMaxBytes) + 1}
+		n, copyErr := io.Copy(zw, limited)
+		closeErr := zw.Close()
+		if n > int64(mobileDocumentOriginalMaxBytes) {
+			return "", 0, 0, "", nil, errMobileDocumentOriginalTooLarge
+		}
+		// A gzip envelope can be slightly larger than an incompressible original.
+		// Retry verbatim before rejecting: a raw file at exactly 100 MiB is valid.
+		if errors.Is(copyErr, errMobileDocumentStoredTooLarge) || errors.Is(closeErr, errMobileDocumentStoredTooLarge) {
+			storedSize, originalSize, err = writeRaw()
+			encoding = ""
+		} else if copyErr != nil {
+			return "", 0, 0, "", nil, copyErr
+		} else if closeErr != nil {
+			return "", 0, 0, "", nil, closeErr
+		} else {
+			storedSize, originalSize, encoding = int(bounded.n), int(n), "gzip"
+			if storedSize >= originalSize {
+				storedSize, originalSize, err = writeRaw()
+				encoding = ""
+			}
+		}
+	} else {
+		storedSize, originalSize, err = writeRaw()
+	}
+	if err != nil {
+		return "", 0, 0, "", nil, err
+	}
+	if err := tmp.Sync(); err != nil {
+		return "", 0, 0, "", nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", 0, 0, "", nil, err
+	}
+	if err := os.Rename(tmpName, abs); err != nil {
+		return "", 0, 0, "", nil, err
+	}
+	if storedSize <= mobileDocumentSourceHotCacheMax {
+		if raw, readErr := os.ReadFile(abs); readErr == nil {
+			mem = raw
+		}
+	}
+	return rel, storedSize, originalSize, encoding, mem, nil
 }
 
 // mobileBlobAbsPath resolves a relative blob path under the blob root.
@@ -258,8 +400,8 @@ func mobileDraftRepairSourceMeta(d *mobileDocumentDraftRecord) bool {
 	}
 	p := strings.TrimSpace(d.SourcePath)
 	if p == "" {
-		if d.SourceSize != 0 {
-			d.SourceSize = 0
+		if d.SourceSize != 0 || d.SourceEncoding != "" || d.SourceOriginalSize != 0 {
+			mobileClearDraftSourceMeta(d)
 			return true
 		}
 		return false
@@ -270,8 +412,7 @@ func mobileDraftRepairSourceMeta(d *mobileDocumentDraftRecord) bool {
 	if mobileDocumentBlobSize(p) > 0 {
 		return false
 	}
-	d.SourcePath = ""
-	d.SourceSize = 0
+	mobileClearDraftSourceMeta(d)
 	return true
 }
 
@@ -284,8 +425,8 @@ func mobileUploadRepairSourceMeta(u *mobileDocumentUploadRecord) bool {
 	}
 	p := strings.TrimSpace(u.SourcePath)
 	if p == "" {
-		if u.SourceSize != 0 {
-			u.SourceSize = 0
+		if u.SourceSize != 0 || u.SourceEncoding != "" || u.SourceOriginalSize != 0 {
+			mobileClearUploadSourceMeta(u)
 			return true
 		}
 		return false
@@ -296,8 +437,7 @@ func mobileUploadRepairSourceMeta(u *mobileDocumentUploadRecord) bool {
 	if mobileDocumentBlobSize(p) > 0 {
 		return false
 	}
-	u.SourcePath = ""
-	u.SourceSize = 0
+	mobileClearUploadSourceMeta(u)
 	return true
 }
 
@@ -328,6 +468,150 @@ func mobileDraftSourceSize(d mobileDocumentDraftRecord) int {
 	return 0
 }
 
+func mobileDraftOriginalSize(d mobileDocumentDraftRecord) int {
+	if d.SourceOriginalSize > 0 {
+		return d.SourceOriginalSize
+	}
+	return mobileDraftSourceSize(d)
+}
+
+func mobileUploadOriginalSize(u mobileDocumentUploadRecord) int {
+	if u.SourceOriginalSize > 0 {
+		return u.SourceOriginalSize
+	}
+	return mobileUploadSourceSize(u)
+}
+
+func mobileDecodeStoredDocument(raw []byte, encoding string) ([]byte, error) {
+	return mobileDecodeStoredDocumentBounded(raw, encoding, 0)
+}
+
+func mobileDecodeStoredDocumentBounded(raw []byte, encoding string, expectedSize int) ([]byte, error) {
+	if strings.ToLower(strings.TrimSpace(encoding)) != "gzip" {
+		if len(raw) > mobileDocumentOriginalMaxBytes {
+			return nil, fmt.Errorf("original exceeds safety limit")
+		}
+		return raw, nil
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	limit := int64(mobileDocumentOriginalMaxBytes)
+	if expectedSize > 0 && int64(expectedSize) < limit {
+		limit = int64(expectedSize)
+	}
+	decoded, err := io.ReadAll(io.LimitReader(zr, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(decoded)) > limit || (expectedSize > 0 && len(decoded) != expectedSize) {
+		return nil, fmt.Errorf("decoded original size mismatch")
+	}
+	return decoded, nil
+}
+
+// mobileWriteStoredOriginalHTTP transparently decodes the storage envelope so
+// callers always download the original filename, content type and bytes.
+func mobileWriteStoredOriginalHTTP(w http.ResponseWriter, contentType, filename string, mem []byte, relPath, encoding string, originalSize int) bool {
+	if strings.TrimSpace(encoding) == "" {
+		return mobileWriteOriginalHTTP(w, contentType, filename, mem, relPath)
+	}
+	if strings.ToLower(strings.TrimSpace(encoding)) != "gzip" || originalSize <= 0 || originalSize > mobileDocumentOriginalMaxBytes {
+		return false
+	}
+	// Gzip's trailer carries the uncompressed size modulo 2^32. Our original
+	// safety ceiling is below 2^32, so this cheaply rejects stale/corrupt metadata
+	// before committing HTTP headers while keeping the response fully streaming.
+	if trailerSize, ok := mobileStoredGzipTrailerSize(mem, relPath); !ok || trailerSize != originalSize {
+		return false
+	}
+	var source io.ReadCloser
+	if p := strings.TrimSpace(relPath); p != "" {
+		f, _, err := mobileOpenDocumentBlob(p)
+		if err != nil {
+			return false
+		}
+		source = f
+	} else if len(mem) > 0 {
+		source = io.NopCloser(bytes.NewReader(mem))
+	} else {
+		return false
+	}
+	defer source.Close()
+	zr, err := gzip.NewReader(source)
+	if err != nil {
+		return false
+	}
+	defer zr.Close()
+	// Validate a small prefix before committing headers. This catches corrupt
+	// envelopes while preserving streaming for the remainder of large downloads.
+	prefixLimit := min(originalSize, 64<<10)
+	prefix := make([]byte, prefixLimit)
+	if _, err := io.ReadFull(zr, prefix); err != nil {
+		return false
+	}
+	contentType = strings.TrimSpace(contentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	filename = filepath.Base(strings.TrimSpace(filename))
+	if filename == "" || filename == "." {
+		filename = "download"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filename))
+	w.Header().Set("Content-Length", strconv.Itoa(originalSize))
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(prefix)
+	// Keep the final chunk buffered until gzip reports a clean EOF. In
+	// particular, io.CopyN alone can consume exactly originalSize bytes and hide
+	// the checksum error returned with the final read. Withholding the tail makes
+	// late corruption observable to clients as a truncated Content-Length body.
+	remaining := originalSize - prefixLimit
+	tailSize := min(remaining, 64<<10)
+	middleSize := remaining - tailSize
+	if middleSize > 0 {
+		if n, err := io.CopyN(w, zr, int64(middleSize)); err != nil || n != int64(middleSize) {
+			return true // headers are committed; caller must not append a JSON error
+		}
+	}
+	tail := make([]byte, tailSize)
+	if _, err := io.ReadFull(zr, tail); err != nil {
+		return true
+	}
+	var extra [1]byte
+	if n, err := zr.Read(extra[:]); n != 0 || err != io.EOF {
+		return true
+	}
+	_, _ = w.Write(tail)
+	return true
+}
+
+func mobileStoredGzipTrailerSize(mem []byte, relPath string) (int, bool) {
+	if p := strings.TrimSpace(relPath); p != "" {
+		f, size, err := mobileOpenDocumentBlob(p)
+		if err != nil {
+			return 0, false
+		}
+		defer f.Close()
+		if size < 4 {
+			return 0, false
+		}
+		var trailer [4]byte
+		if _, err := f.ReadAt(trailer[:], size-4); err != nil {
+			return 0, false
+		}
+		return int(binary.LittleEndian.Uint32(trailer[:])), true
+	}
+	if len(mem) < 4 {
+		return 0, false
+	}
+	return int(binary.LittleEndian.Uint32(mem[len(mem)-4:])), true
+}
+
 // mobileDraftLoadSourceBytes returns original bytes (memory cache or disk).
 // Large files on disk are not re-cached into SourceBytes.
 // On hard miss with an online store, clears ghost path/size on the provided
@@ -337,7 +621,11 @@ func mobileDraftLoadSourceBytes(d *mobileDocumentDraftRecord) []byte {
 		return nil
 	}
 	if len(d.SourceBytes) > 0 {
-		return d.SourceBytes
+		raw, err := mobileDecodeStoredDocumentBounded(d.SourceBytes, d.SourceEncoding, d.SourceOriginalSize)
+		if err == nil {
+			return raw
+		}
+		return nil
 	}
 	if strings.TrimSpace(d.SourcePath) == "" {
 		return nil
@@ -345,8 +633,7 @@ func mobileDraftLoadSourceBytes(d *mobileDocumentDraftRecord) []byte {
 	raw, err := mobileReadDocumentBlob(d.SourcePath)
 	if err != nil || len(raw) == 0 {
 		if mobileDocumentBlobStoreReady() && mobileDocumentBlobSize(d.SourcePath) == 0 {
-			d.SourcePath = ""
-			d.SourceSize = 0
+			mobileClearDraftSourceMeta(d)
 		}
 		return nil
 	}
@@ -356,7 +643,11 @@ func mobileDraftLoadSourceBytes(d *mobileDocumentDraftRecord) []byte {
 	if d.SourceSize == 0 {
 		d.SourceSize = len(raw)
 	}
-	return raw
+	decoded, err := mobileDecodeStoredDocumentBounded(raw, d.SourceEncoding, d.SourceOriginalSize)
+	if err != nil {
+		return nil
+	}
+	return decoded
 }
 
 func mobileUploadHasSource(u mobileDocumentUploadRecord) bool {
@@ -386,7 +677,11 @@ func mobileUploadLoadSourceBytes(u *mobileDocumentUploadRecord) []byte {
 		return nil
 	}
 	if len(u.SourceBytes) > 0 {
-		return u.SourceBytes
+		raw, err := mobileDecodeStoredDocumentBounded(u.SourceBytes, u.SourceEncoding, u.SourceOriginalSize)
+		if err == nil {
+			return raw
+		}
+		return nil
 	}
 	if strings.TrimSpace(u.SourcePath) == "" {
 		return nil
@@ -394,8 +689,7 @@ func mobileUploadLoadSourceBytes(u *mobileDocumentUploadRecord) []byte {
 	raw, err := mobileReadDocumentBlob(u.SourcePath)
 	if err != nil || len(raw) == 0 {
 		if mobileDocumentBlobStoreReady() && mobileDocumentBlobSize(u.SourcePath) == 0 {
-			u.SourcePath = ""
-			u.SourceSize = 0
+			mobileClearUploadSourceMeta(u)
 		}
 		return nil
 	}
@@ -405,7 +699,11 @@ func mobileUploadLoadSourceBytes(u *mobileDocumentUploadRecord) []byte {
 	if u.SourceSize == 0 {
 		u.SourceSize = len(raw)
 	}
-	return raw
+	decoded, err := mobileDecodeStoredDocumentBounded(raw, u.SourceEncoding, u.SourceOriginalSize)
+	if err != nil {
+		return nil
+	}
+	return decoded
 }
 
 // mobilePersistDocumentOriginal stores raw on disk when possible and updates
@@ -447,7 +745,7 @@ func mobileReleaseUploadOriginalWhenDraftOwns(record *mobileDocumentUploadRecord
 		return false
 	}
 	draft, ok := mobileDocuments.drafts[record.DraftID]
-	if !ok || draft.OwnerID != record.OwnerID {
+	if !ok || draft.OwnerID != record.OwnerID || !mobileMeetingRecordingTenantMatches(record.TenantID, draft.TenantID) {
 		return false
 	}
 	if mobileDraftRepairSourceMeta(&draft) {
@@ -474,10 +772,37 @@ func mobileReleaseUploadOriginalWhenDraftOwns(record *mobileDocumentUploadRecord
 		record.SourceBytes = nil
 		released = true
 	}
+	if record.SourceEncoding != "" || record.SourceOriginalSize != 0 {
+		record.SourceEncoding = ""
+		record.SourceOriginalSize = 0
+		released = true
+	}
 	if released {
 		dirty = true
 	}
 	return dirty
+}
+
+func mobileClearDraftSourceMeta(d *mobileDocumentDraftRecord) {
+	if d == nil {
+		return
+	}
+	d.SourcePath = ""
+	d.SourceSize = 0
+	d.SourceBytes = nil
+	d.SourceEncoding = ""
+	d.SourceOriginalSize = 0
+}
+
+func mobileClearUploadSourceMeta(u *mobileDocumentUploadRecord) {
+	if u == nil {
+		return
+	}
+	u.SourcePath = ""
+	u.SourceSize = 0
+	u.SourceBytes = nil
+	u.SourceEncoding = ""
+	u.SourceOriginalSize = 0
 }
 
 // mobileReleaseUploadOriginalAfterReady is kept as a thin alias for call sites.

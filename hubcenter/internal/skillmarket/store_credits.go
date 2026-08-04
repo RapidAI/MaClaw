@@ -28,7 +28,7 @@ func (s *Store) ListTransactionsByUser(ctx context.Context, userID string, offse
 		SELECT id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at
 		FROM sm_credits_transactions
 		WHERE user_id = ?
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT ? OFFSET ?`, userID, limit, offset)
 	if err != nil {
 		return nil, 0, err

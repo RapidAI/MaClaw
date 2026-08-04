@@ -274,6 +274,8 @@ func (c *RemoteHubClient) Connect() error {
 	go c.app.PullUnreadNotifications()
 	go c.app.refreshDeviceAmbientWeatherOnce()
 	go c.syncDeviceGatewayPetProfile()
+	go c.syncDeviceGatewayWelcome()
+	go c.syncDeviceGatewayVolume()
 
 	log.Printf("[onboarding] RemoteHubClient.Connect total=%s", time.Since(start))
 
@@ -656,6 +658,8 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	go c.app.PullUnreadNotifications()
 	go c.app.refreshDeviceAmbientWeatherOnce()
 	go c.syncDeviceGatewayPetProfile()
+	go c.syncDeviceGatewayWelcome()
+	go c.syncDeviceGatewayVolume()
 
 	log.Printf("[asyncHubConnect] ConnectAuthOnly total=%s", time.Since(start))
 
@@ -2007,6 +2011,13 @@ func (c *RemoteHubClient) SendNicknameUpdate(nickname string) error {
 // SendIMProactiveFile sends a proactive file (non-request-based) to the Hub
 // for delivery to the user's IM channels. Used for Swarm PDF document delivery.
 func (c *RemoteHubClient) SendIMProactiveFile(b64Data, fileName, mimeType, message string) error {
+	return c.SendIMProactiveFileRequest(agent.IMFileDeliveryRequest{
+		Data: b64Data, FileName: fileName, MIMEType: mimeType, Message: message,
+	})
+}
+
+// SendIMProactiveFileRequest sends a file plus optional exact IM target.
+func (c *RemoteHubClient) SendIMProactiveFileRequest(req agent.IMFileDeliveryRequest) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
@@ -2018,11 +2029,14 @@ func (c *RemoteHubClient) SendIMProactiveFile(b64Data, fileName, mimeType, messa
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
 		Payload: map[string]interface{}{
-			"file_data": b64Data,
-			"file_name": fileName,
-			"mime_type": mimeType,
-			"message":   message,
+			"file_data": req.Data,
+			"file_name": req.FileName,
+			"mime_type": req.MIMEType,
+			"message":   req.Message,
 		},
+	}
+	if target := req.Target.Normalize(); target.Active() {
+		msg.Payload.(map[string]interface{})["target"] = target
 	}
 	return c.conn.WriteJSON(msg)
 }
@@ -2142,6 +2156,25 @@ func (c *RemoteHubClient) SendDeviceGatewayPetProfile(cfg corelib.AppConfig) err
 	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
 }
 
+// SendDeviceGatewayHardwareConfig relays hardware-only settings to every
+// device paired with this GUI. Hub retains the client-to-machine ownership
+// boundary and fans the message out to matching device queues.
+func (c *RemoteHubClient) SendDeviceGatewayHardwareConfig(extra map[string]any) error {
+	return c.SendDeviceGatewayHardwareReply(map[string]any{"reply_type": "hardware_config", "extra": extra})
+}
+
+func (c *RemoteHubClient) SendDeviceGatewayHardwareReply(reply map[string]any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return fmt.Errorf("Hub not connected")
+	}
+	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+		"clientId": "*", "conversationId": "system",
+		"reply": reply,
+	}})
+}
+
 // syncDeviceGatewayPetProfile makes reconnects self-healing. A pet can be
 // changed while the GUI is offline; without this catch-up push the Hub and ESP
 // would retain the old skin until another setting change or gateway reply.
@@ -2153,6 +2186,22 @@ func (c *RemoteHubClient) syncDeviceGatewayPetProfile() {
 	}
 	if err := c.SendDeviceGatewayPetProfile(cfg); err != nil {
 		log.Printf("[device-pet] reconnect profile sync failed: %v", err)
+	}
+}
+
+// syncDeviceGatewayWelcome restores Hub's durable boot-time sound after a GUI
+// reconnect. It intentionally does not trigger a test playback.
+func (c *RemoteHubClient) syncDeviceGatewayWelcome() {
+	if err := c.app.SyncHardwareWelcome(); err != nil {
+		log.Printf("[device-welcome] reconnect sync failed: %v", err)
+	}
+}
+
+// syncDeviceGatewayVolume restores the latest local speaker setting after a
+// Hub reconnect, including changes made while the Hub was unavailable.
+func (c *RemoteHubClient) syncDeviceGatewayVolume() {
+	if err := c.app.SyncHardwareVolume(); err != nil {
+		log.Printf("[device-volume] reconnect sync failed: %v", err)
 	}
 }
 

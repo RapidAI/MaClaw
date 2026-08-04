@@ -9,6 +9,7 @@ package toolresult
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 )
 
@@ -61,6 +63,10 @@ type ProjectOptions struct {
 	Root string
 	// ForceSpill stores Content even when Preview equals Content.
 	ForceSpill bool
+	// IncludeHandleFooter appends the model-facing read-back handle to Preview.
+	// Nil defaults to true. Set false for preview-only compatibility helpers;
+	// the full content is still spilled and Projection.Handle remains available.
+	IncludeHandleFooter *bool
 }
 
 // Project builds a provider preview and optionally spills the full content.
@@ -107,8 +113,15 @@ func Project(opts ProjectOptions) (Projection, error) {
 		return Projection{Preview: preview}, err
 	}
 	handle.PreviewBytes = len(preview)
+	includeFooter := opts.IncludeHandleFooter == nil || *opts.IncludeHandleFooter
+	modelPreview := preview
+	if includeFooter {
+		preview = fitPreviewWithHandleFooter(preview, handle, limit)
+		handle.PreviewBytes = len(preview)
+		modelPreview = appendHandleFooter(preview, handle)
+	}
 	out := Projection{
-		Preview: appendHandleFooter(preview, handle),
+		Preview: modelPreview,
 		Handle:  handle,
 		Spilled: true,
 	}
@@ -124,13 +137,30 @@ type SpillOptions struct {
 	Root       string
 }
 
+// SessionDirectoryName returns the opaque on-disk namespace for a session key.
+// Hosts may use it for diagnostics; models should only see handle IDs.
+func SessionDirectoryName(sessionKey string) string {
+	raw := strings.TrimSpace(sessionKey)
+	if raw == "" {
+		return ""
+	}
+	segment := sanitizePathSegment(raw)
+	// Preserve the historical directory for common portable owner IDs. Other
+	// values get an additional stable digest so case-insensitive filesystems,
+	// Windows device names, and Unicode normalization cannot merge owners.
+	if sessionKey == raw && segment == raw && isPortableSessionSegment(raw) && !isWindowsDeviceName(raw) && len(raw) <= maxSessionSegmentBytes {
+		return raw
+	}
+	return hashedSessionSegment(segment, sessionKey)
+}
+
 // Spill writes full content to disk and returns a handle.
 func Spill(opts SpillOptions) (*Handle, error) {
 	root := strings.TrimSpace(opts.Root)
 	if root == "" {
 		root = maclawpath.ToolResultsDir()
 	}
-	session := sanitizePathSegment(opts.SessionKey)
+	session := SessionDirectoryName(opts.SessionKey)
 	if session == "" {
 		session = "default"
 	}
@@ -144,15 +174,16 @@ func Spill(opts SpillOptions) (*Handle, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, id+".txt")
-	if err := os.WriteFile(path, []byte(opts.Content), 0o600); err != nil {
+	if err := fileutil.AtomicWriteFile(path, []byte(opts.Content), 0o600); err != nil {
 		return nil, fmt.Errorf("toolresult: write: %w", err)
 	}
+	invalidateStoreStats(root)
 
 	return &Handle{
 		ID:            id,
 		Path:          path,
 		ToolName:      strings.TrimSpace(opts.ToolName),
-		SessionKey:    session,
+		SessionKey:    opts.SessionKey,
 		OriginalBytes: len(opts.Content),
 		CreatedAt:     time.Now().UTC(),
 	}, nil
@@ -184,11 +215,11 @@ func DefaultPreview(s string, limit int) string {
 	sep := fmt.Sprintf("\n\n... (已截断，共 %d 字节) ...\n\n", len(s))
 	budget := limit - len(sep)
 	if budget < 64 {
-		return s[:limit]
+		return utf8Prefix(s, limit)
 	}
 	headLen := budget * 2 / 3
 	tailLen := budget - headLen
-	return s[:headLen] + sep + s[len(s)-tailLen:]
+	return utf8Prefix(s, headLen) + sep + utf8Suffix(s, tailLen)
 }
 
 func appendHandleFooter(preview string, h *Handle) string {
@@ -200,16 +231,62 @@ func appendHandleFooter(preview string, h *Handle) string {
 	b.WriteString("\n\n")
 	b.WriteString("[tool_result_handle]\n")
 	fmt.Fprintf(&b, "id: %s\n", h.ID)
-	fmt.Fprintf(&b, "path: %s\n", h.Path)
-	fmt.Fprintf(&b, "tool: %s\n", h.ToolName)
+	fmt.Fprintf(&b, "tool: %s\n", modelVisibleToolName(h.ToolName))
 	fmt.Fprintf(&b, "original_bytes: %d\n", h.OriginalBytes)
 	fmt.Fprintf(&b, "preview_bytes: %d\n", h.PreviewBytes)
-	b.WriteString("hint: 完整结果已落盘。需要细节时用 read_tool_result(id=... 或 path=..., offset, limit) 分段读取；勿要求模型复述全文。\n")
+	b.WriteString("hint: 完整结果已落盘。需要细节时用 read_tool_result(id=..., offset, limit) 分段读取；勿要求模型复述全文。\n")
 	return b.String()
 }
 
+func modelVisibleToolName(toolName string) string {
+	name := strings.TrimSpace(toolName)
+	if name == "" {
+		return "tool"
+	}
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '_'
+		}
+		return r
+	}, name)
+	const maxToolNameBytes = 96
+	if len(name) > maxToolNameBytes {
+		name = utf8Prefix(name, maxToolNameBytes)
+	}
+	return name
+}
+
+// fitPreviewWithHandleFooter keeps the complete model projection within the
+// caller's preview budget. Historically callers applied a second blind byte
+// truncation after Project, which could cut the handle footer itself. Reserve
+// footer space up front instead, then compact only the lossy preview portion.
+func fitPreviewWithHandleFooter(preview string, h *Handle, limit int) string {
+	if h == nil || limit <= 0 {
+		return preview
+	}
+	// PreviewBytes only changes decimal width by a few bytes. Iterate to a fixed
+	// point so the final footer length is accounted for exactly.
+	for i := 0; i < 8; i++ {
+		h.PreviewBytes = len(preview)
+		footerOnly := appendHandleFooter("", h)
+		budget := limit - len(footerOnly)
+		if budget < 0 {
+			budget = 0
+		}
+		if len(preview) <= budget {
+			return preview
+		}
+		if budget == 0 {
+			preview = ""
+			continue
+		}
+		preview = DefaultPreview(preview, budget)
+	}
+	return preview
+}
+
 func newHandleID(toolName string) (string, error) {
-	var buf [4]byte
+	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return "", fmt.Errorf("toolresult: rand: %w", err)
 	}
@@ -218,7 +295,7 @@ func newHandleID(toolName string) (string, error) {
 		tool = "tool"
 	}
 	if len(tool) > 24 {
-		tool = tool[:24]
+		tool = utf8Prefix(tool, 24)
 	}
 	return fmt.Sprintf("%s_%s_%s",
 		time.Now().UTC().Format("20060102T150405"),
@@ -228,12 +305,13 @@ func newHandleID(toolName string) (string, error) {
 }
 
 func sanitizePathSegment(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	raw := strings.TrimSpace(s)
+	if raw == "" {
 		return ""
 	}
 	var b strings.Builder
-	for _, r := range s {
+	changed := false
+	for _, r := range raw {
 		switch {
 		case unicode.IsLetter(r) || unicode.IsDigit(r):
 			b.WriteRune(r)
@@ -241,12 +319,69 @@ func sanitizePathSegment(s string) string {
 			b.WriteRune(r)
 		default:
 			b.WriteByte('_')
+			changed = true
 		}
 	}
-	out := b.String()
-	out = strings.Trim(out, "._")
+	built := b.String()
+	out := strings.Trim(built, "._")
+	if out != built {
+		changed = true
+	}
 	if out == "" {
-		return "x"
+		out = "x"
+		changed = true
+	}
+	// Escaping alone is not injective ("a:b" and "a/b" both became "a_b"),
+	// which could merge security namespaces. Keep readable safe IDs unchanged;
+	// append a stable digest whenever normalization altered the raw owner/tool.
+	if changed {
+		sum := sha256.Sum256([]byte(raw))
+		out += "_" + hex.EncodeToString(sum[:8])
 	}
 	return out
+}
+
+const maxSessionSegmentBytes = 120
+
+const derivedSessionPrefix = "_tr_"
+
+func isPortableSessionSegment(s string) bool {
+	if s == "" || strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") ||
+		strings.EqualFold(s, "default") || strings.HasPrefix(strings.ToLower(s), derivedSessionPrefix) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isWindowsDeviceName(s string) bool {
+	base := strings.ToLower(strings.SplitN(s, ".", 2)[0])
+	switch base {
+	case "con", "prn", "aux", "nul":
+		return true
+	}
+	if len(base) == 4 && base[3] >= '1' && base[3] <= '9' {
+		return strings.HasPrefix(base, "com") || strings.HasPrefix(base, "lpt")
+	}
+	return false
+}
+
+func hashedSessionSegment(readable, raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	suffix := "_" + hex.EncodeToString(sum[:8])
+	budget := maxSessionSegmentBytes - len(derivedSessionPrefix) - len(suffix)
+	if budget < 1 {
+		return derivedSessionPrefix + hex.EncodeToString(sum[:8])
+	}
+	prefix := strings.TrimRight(utf8Prefix(readable, budget), "._")
+	if prefix == "" {
+		prefix = "x"
+	}
+	return derivedSessionPrefix + prefix + suffix
 }

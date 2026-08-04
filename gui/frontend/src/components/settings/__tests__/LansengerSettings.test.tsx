@@ -77,7 +77,7 @@ describe('LansengerSettings', () => {
         fireEvent.click(screen.getByRole('button', { name: '\u91cd\u542f' }));
         await waitFor(() => expect(props.setLansengerStatus).toHaveBeenCalledWith('connected'));
 
-        fireEvent.click(screen.getByRole('button', { name: '\u76d1\u770b' }));
+        fireEvent.click(screen.getByRole('button', { name: '\u804a\u5929\u5386\u53f2' }));
         expect(props.setIMAuditPlatform).toHaveBeenCalledWith('lansenger');
 
         // Group-chat options must go through saveRemoteConfigField (atomic whitelist).
@@ -101,6 +101,9 @@ describe('LansengerSettings', () => {
         fireEvent.click(screen.getByText('允许所有目录'));
         expect(props.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_group_allow_all_directories: true });
 
+        fireEvent.click(screen.getByText('允许网络检索与文件下载'));
+        expect(props.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_group_allow_web_search: true });
+
         // A fresh mount models the persisted controlled config after toggling.
         first.unmount();
         const directoryProps = baseProps();
@@ -119,8 +122,8 @@ describe('LansengerSettings', () => {
         expect(follow).toBeTruthy();
         expect(follow.textContent).toBe('\u76ef\u4eba');
 
-        // Follow sits after 监看 in the toolbar
-        const watchBtn = screen.getByRole('button', { name: '\u76d1\u770b' });
+        // Follow sits after chat history in the toolbar.
+        const watchBtn = screen.getByRole('button', { name: '\u804a\u5929\u5386\u53f2' });
         expect(watchBtn.compareDocumentPosition(follow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
         fireEvent.click(follow);

@@ -1168,22 +1168,22 @@ func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) a
 		outcome = agent.ToolExecutionOutcomeError
 	}
 
-	// Codex-inspired adaptive truncation: reduce context consumption for verbose
-	// tool outputs while preserving reachability (truncation hints tell the LLM
-	// how to access omitted content). Only truncate successful results — errors
-	// are already compact and should be shown in full.
-	if outcome == agent.ToolExecutionOutcomeOK {
-		toolName := canonicalCodingSubAgentToolName(name)
-		full := result.Text
-		preview := truncateToolResultForSubAgent(toolName, full)
-		sessionKey := ""
-		if c.subagent != nil && c.subagent.handler != nil {
-			sessionKey = c.subagent.handler.currentRuntimeOrLegacyPolicyOwnerID()
-		}
-		result.Text = projectToolResultHandle(toolName, sessionKey, full, preview, maxToolResultLen)
-	}
-
 	return agent.ToolExecutionResult{Result: result.Text, Outcome: outcome}
+}
+
+// ProjectToolResult implements agent.ToolResultProjector. RunLoop calls it only
+// after hooks and diagnostics have observed the complete execution result.
+func (c *codingSubAgentCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	if result.Outcome != agent.ToolExecutionOutcomeOK {
+		return result.Result
+	}
+	toolName := canonicalCodingSubAgentToolName(name)
+	preview := truncateToolResultForSubAgent(toolName, result.Result)
+	sessionKey := ""
+	if c != nil && c.subagent != nil && c.subagent.handler != nil {
+		sessionKey = c.subagent.handler.currentRuntimeOrLegacyPolicyOwnerID()
+	}
+	return projectToolResultHandle(toolName, sessionKey, result.Result, preview, maxToolResultLen)
 }
 
 func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) (toolResult codingToolExecutionResult) {

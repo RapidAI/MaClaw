@@ -39,7 +39,7 @@ type BuildCodingBannerChromeOpts = {
  * accent (foreground), not a fill. White-on-btnColor fails WCAG badly on graphite/etc.
  */
 export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodingBannerChromeOpts): CodingBannerChrome {
-    const accentFallback = isDark ? "#5f89b8" : "#2f5f98";
+    const accentFallback = isDark ? "#5f89b8" : "#2f6fbc";
     const productAccent = t.btnColor || accentFallback;
     const accent = remote
         ? (isDark ? "#38bdf8" : "#0284c7")
@@ -55,13 +55,13 @@ export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodin
         : (t.titleBarBorder || "#d8dee8");
     const chipActiveBg = isDark
         ? `color-mix(in srgb, ${accent} 14%, transparent)`
-        : "rgba(47, 95, 152, 0.10)";
+        : "rgba(47, 111, 188, 0.10)";
     const chipIdleBg = isDark ? "transparent" : "#ffffff";
     // Stronger idle border on dark so chip outlines remain visible
     const chipIdleBorder = t.fieldBorder || (isDark ? "rgba(180,190,205,0.42)" : "#d8dee8");
     const iconWellBg = isDark
         ? `color-mix(in srgb, ${accent} 14%, transparent)`
-        : "rgba(47, 95, 152, 0.08)";
+        : "rgba(47, 111, 188, 0.08)";
     const insetBg = isDark ? (t.fieldBg || "transparent") : "#ffffff";
     // Labels / secondary text: prefer fieldLabel, keep ≥ readable slate (not washed gray)
     const muted = t.fieldLabel || t.textMuted || t.promptColor || (isDark ? "#c4cdd8" : "#64748b");

@@ -206,9 +206,7 @@ Typical usage: Run shell commands, check system status, install packages`,
 Typical usage: Read source code, config files, logs`,
 
 	"read_tool_result": `Parameters:
-- id (string): Handle id from a prior [tool_result_handle] footer (preferred)
-- path (string): Absolute path from the handle footer (must be under tool_results)
-- session_key (string, optional): Session/user key used when the handle was spilled
+- id (string): Handle id from a prior [tool_result_handle] footer
 - offset (int, optional): 0-based byte offset, default 0
 - limit (int, optional): Max bytes to return, default 6000, max 32768
 How to use: When a tool result was truncated and shows [tool_result_handle], call read_tool_result(id=..., offset=0, limit=6000) for a slice; if truncated=true, continue with next_offset.`,

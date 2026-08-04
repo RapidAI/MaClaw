@@ -189,6 +189,18 @@ func TestNormalizeThirdPartyHandshakeAcceptsLegacyAndStructuredClientCapabilitie
 	}
 }
 
+func TestNormalizeThirdPartyHandshakeAcceptsFeatureOnlyClientCapabilities(t *testing.T) {
+	req := ThirdPartyHandshakeRequest{ClientID: "client-a", ProtocolVersion: ThirdPartyProtocolVersion, Capabilities: map[string]any{
+		"features": map[string]any{"volumeControl": true, "ambientDisplay": true},
+	}}
+	if err := NormalizeThirdPartyHandshakeRequest(&req); err != nil {
+		t.Fatal(err)
+	}
+	if req.ClientCapabilities == nil || !req.ClientCapabilities.Features.VolumeControl || !req.ClientCapabilities.Features.AmbientDisplay {
+		t.Fatalf("normalized feature-only capabilities=%#v", req.ClientCapabilities)
+	}
+}
+
 func TestDecodeThirdPartyGatewayJSONRejectsUnknownFields(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/im-gateway/v1/handshake", strings.NewReader(`{"clientId":"client-a","extra":true}`))
 	var hs ThirdPartyHandshakeRequest

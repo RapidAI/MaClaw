@@ -317,6 +317,19 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 	if err != nil {
 		return SearchResponse{}, err
 	}
+	publicNetworkOnly := isPublicNetworkOnly(parent)
+	if publicNetworkOnly {
+		strategy.BrowserFallbackEnabled = false
+		strategy.BrowserHumanAssistEnabled = false
+		for i := range strategy.Engines {
+			// API engines use user-configured credentials and Baidu obtains a
+			// verification cookie before searching. Neither belongs to the
+			// public, unauthenticated group-search contract.
+			if strategy.Engines[i].Transport != corelib.WebSearchTransportHTTPHTML || strategy.Engines[i].ID == "baidu" {
+				strategy.Engines[i].Enabled = false
+			}
+		}
+	}
 	if parent == nil {
 		parent = context.Background()
 	}

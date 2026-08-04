@@ -1533,6 +1533,13 @@ func TestCoreAgentBuildToolsDisablesBashByDefault(t *testing.T) {
 		fn, _ := tool["function"].(map[string]interface{})
 		name, _ := fn["name"].(string)
 		seen[name] = true
+		if name == "read_tool_result" {
+			params, _ := fn["parameters"].(map[string]interface{})
+			properties, _ := params["properties"].(map[string]interface{})
+			if _, exposed := properties["session_key"]; exposed {
+				t.Fatal("read_tool_result exposed principal-owned session_key")
+			}
+		}
 	}
 	if seen["bash"] {
 		t.Fatalf("did not expect bash tool definition by default in %#v", seen)
@@ -2232,6 +2239,114 @@ func TestCoreAgentSystemPromptIncludesConcreteClientCapabilities(t *testing.T) {
 	}
 	prompt := cb.BuildSystemPrompt("查询天气", true)
 	for _, want := range []string{"Target client capability contract", "Output modalities: text", "max 240 Unicode characters"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("system prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
+func TestCoreAgentContextIMHandlersAreRequestScoped(t *testing.T) {
+	want := Principal{TenantID: "tenant-a", UserID: "user-a"}
+	executor := &CoreAgentExecutor{
+		IMMessageHandlerContext: func(_ context.Context, got Principal, _ map[string]interface{}) string {
+			if got.TenantID != want.TenantID || got.UserID != want.UserID {
+				t.Fatalf("message principal=%#v, want %#v", got, want)
+			}
+			return "ok"
+		},
+		IMFileHandlerContext: func(_ context.Context, got Principal, _ map[string]interface{}) string {
+			if got.TenantID != want.TenantID || got.UserID != want.UserID {
+				t.Fatalf("file principal=%#v, want %#v", got, want)
+			}
+			return "ok"
+		},
+	}
+	ctx := context.Background()
+	cb := &coreAgentCallbacks{ctx: ctx, principal: want}
+	cb.imMessageHandler = func(args map[string]interface{}) string {
+		return executor.IMMessageHandlerContext(ctx, want, args)
+	}
+	cb.imFileHandler = func(args map[string]interface{}) string {
+		return executor.IMFileHandlerContext(ctx, want, args)
+	}
+	if got := cb.imMessageHandler(nil); got != "ok" {
+		t.Fatalf("message result=%q", got)
+	}
+	if got := cb.imFileHandler(nil); got != "ok" {
+		t.Fatalf("file result=%q", got)
+	}
+	tools := cb.coreToolSpecs()
+	enabled := map[string]bool{}
+	for _, spec := range tools {
+		enabled[spec.Name] = spec.Enabled
+	}
+	for _, name := range []string{"im_message", "send_file", "send_to_im"} {
+		if !enabled[name] {
+			t.Fatalf("context handler did not enable %s", name)
+		}
+	}
+}
+
+func TestCoreAgentDescribeCapabilitiesEnablesContextIMHandlers(t *testing.T) {
+	executor := &CoreAgentExecutor{
+		IMMessageHandlerContext: func(context.Context, Principal, map[string]interface{}) string { return "ok" },
+		IMFileHandlerContext:    func(context.Context, Principal, map[string]interface{}) string { return "ok" },
+	}
+	caps, err := executor.DescribeCapabilities(context.Background(), ExecuteRequest{Principal: Principal{TenantID: "t", UserID: "u"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := map[string]bool{}
+	for _, tool := range caps.Tools {
+		enabled[tool.Name] = tool.Enabled
+	}
+	for _, name := range []string{"im_message", "send_file", "send_to_im"} {
+		if !enabled[name] {
+			t.Fatalf("DescribeCapabilities did not enable %s", name)
+		}
+	}
+}
+
+func TestCoreAgentIMFileSchemaExplainsSpokenExactTargets(t *testing.T) {
+	params := imFileToolParameters(true)
+	props, ok := params["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("properties=%T", params["properties"])
+	}
+	for _, name := range []string{"channel", "group_id", "group_name", "user_id"} {
+		prop, ok := props[name].(map[string]interface{})
+		if !ok {
+			t.Fatalf("property %q=%T", name, props[name])
+		}
+		description, _ := prop["description"].(string)
+		if strings.TrimSpace(description) == "" {
+			t.Fatalf("property %q has no description", name)
+		}
+	}
+	groupDescription := props["group_id"].(map[string]interface{})["description"].(string)
+	if !strings.Contains(groupDescription, "im_message") || !strings.Contains(groupDescription, "list_targets") {
+		t.Fatalf("group_id must explain spoken-name resolution: %s", groupDescription)
+	}
+}
+
+func TestServiceUserDataRootIsPrincipalScoped(t *testing.T) {
+	svc := &Service{dataRoot: t.TempDir()}
+	a := svc.UserDataRoot(Principal{TenantID: "tenant-a", UserID: "user-a"})
+	b := svc.UserDataRoot(Principal{TenantID: "tenant-b", UserID: "user-a"})
+	c := svc.UserDataRoot(Principal{TenantID: "tenant-a", UserID: "user-b"})
+	if a == "" || a == b || a == c || b == c {
+		t.Fatalf("user data roots must be isolated: a=%q b=%q c=%q", a, b, c)
+	}
+}
+
+func TestCoreAgentSystemPromptRequiresExactIMFileTargetResolution(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		appCfg:           corelib.AppConfig{},
+		imMessageHandler: func(map[string]interface{}) string { return "ok" },
+		imFileHandler:    func(map[string]interface{}) string { return "ok" },
+	}
+	prompt := cb.BuildSystemPrompt("把报告发到蓝信研发群", true)
+	for _, want := range []string{"list_targets", "send_to_im", "group_id", "broadcast", "current conversation"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("system prompt missing %q: %s", want, prompt)
 		}

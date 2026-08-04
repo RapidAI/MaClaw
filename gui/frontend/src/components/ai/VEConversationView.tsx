@@ -1766,6 +1766,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                 wordBreak: "break-word",
                                 overflowWrap: "anywhere",
                                 whiteSpace: "pre-wrap",
+                                borderRadius: "14px 14px 14px 4px",
                             }}
                         >
                             {state.streamContent && <MessageContentRenderer content={state.streamContent} theme={theme} />}
@@ -2109,6 +2110,8 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                         wordBreak: "break-word",
                         overflowWrap: "anywhere",
                         whiteSpace: "pre-wrap",
+                        // Tail-side corner stays tight (user: bottom-right, peer: bottom-left).
+                        borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
                     }}
                 >
                     {hasContent && <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />}

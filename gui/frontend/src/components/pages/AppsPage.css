@@ -9,8 +9,6 @@
     --apps-control-h-sm: 24px;
     --apps-control-h-md: 28px;
     --apps-control-h-lg: 32px;
-    /* Darker muted ink: keeps auxiliary text ≥4.5:1 on tinted surfaces (AA). */
-    --theme-text-muted: #64707f;
 }
 
 .apps-page {
@@ -113,6 +111,11 @@
     font-weight: 700;
     cursor: pointer;
     transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+/* 28×28 square icon buttons take the small radius; pill text buttons keep md. */
+.apps-icon-button {
+    border-radius: var(--radius-sm);
 }
 
 .apps-studio-button {
@@ -1730,27 +1733,27 @@
 }
 
 .apps-approval-row__urgency--overdue {
-    color: #9a3412;
-    background: #ffedd5;
+    color: var(--theme-warning);
+    background: color-mix(in srgb, var(--theme-warning) 14%, transparent);
 }
 
 .apps-approval-row__urgency--critical {
-    color: #991b1b;
-    background: #fee2e2;
+    color: var(--theme-danger);
+    background: color-mix(in srgb, var(--theme-danger) 14%, transparent);
 }
 
 .apps-approval-row__urgency--attention {
-    color: #854d0e;
-    background: #fef9c3;
+    color: var(--theme-warning);
+    background: color-mix(in srgb, var(--theme-warning) 7%, transparent);
 }
 
 .apps-approval-row[data-escalation='pending'] {
-    border-color: color-mix(in srgb, #7c3aed 36%, var(--theme-border));
+    border-color: color-mix(in srgb, var(--theme-primary) 36%, var(--theme-border));
 }
 
 .apps-approval-row[data-escalation='exhausted'] {
-    border-color: color-mix(in srgb, #b45309 36%, var(--theme-border));
-    background: color-mix(in srgb, #fbbf24 12%, var(--theme-surface));
+    border-color: color-mix(in srgb, var(--theme-warning) 36%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-warning) 12%, var(--theme-surface));
 }
 
 .apps-approval-row__escalation {
@@ -1761,8 +1764,8 @@
     border-radius: 999px;
     font-size: var(--apps-font-xs) !important;
     font-weight: 700;
-    color: #5b21b6;
-    background: #ede9fe;
+    color: var(--theme-primary-strong);
+    background: var(--theme-primary-soft);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1770,9 +1773,9 @@
 
 /* Permanent offline peers (any-N may still complete) — amber, not purple. */
 .apps-approval-row__escalation--exhausted {
-    color: #9a3412;
-    background: #ffedd5;
-    border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
+    color: var(--theme-warning);
+    background: color-mix(in srgb, var(--theme-warning) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--theme-warning) 45%, transparent);
 }
 
 .apps-approval-facts .apps-approval-row__escalation,
@@ -3379,7 +3382,7 @@
     max-width: 100%;
     padding: 4px 7px;
     border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-sm);
     color: var(--theme-text-secondary);
     background: var(--theme-surface-muted);
     font-size: var(--apps-font-xs);
@@ -6171,7 +6174,7 @@
     row-gap: 8px;
     padding: 8px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     background: var(--theme-surface);
 }
 
@@ -6231,9 +6234,9 @@
 .apps-danger-button {
     min-height: var(--apps-control-h-lg);
     padding: 0 10px;
-    border: 1px solid color-mix(in srgb, var(--danger-color) 42%, var(--theme-border));
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 42%, var(--theme-border));
     border-radius: var(--radius-md);
-    color: var(--danger-color);
+    color: var(--theme-danger);
     background: var(--theme-surface);
     font-weight: 700;
     cursor: pointer;
@@ -6241,12 +6244,12 @@
 }
 
 .apps-danger-button:hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--danger-color) 70%, var(--theme-border));
-    background: var(--danger-bg);
+    border-color: color-mix(in srgb, var(--theme-danger) 70%, var(--theme-border));
+    background: var(--theme-danger-bg);
 }
 
 .apps-danger-button:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--danger-color) 32%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--theme-danger) 32%, transparent);
     outline-offset: 1px;
 }
 

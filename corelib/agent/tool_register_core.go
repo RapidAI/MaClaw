@@ -99,17 +99,15 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name: "read_tool_result",
-		Description: "Re-read a spilled tool_result handle by id or path (from a prior [tool_result_handle] footer). " +
+		Description: "Re-read a spilled tool_result handle by id from a prior [tool_result_handle] footer. " +
 			"Use when a tool preview was truncated and you need a specific byte range of the full output. " +
 			"Prefer small limit windows and raise offset to page through large results.",
 		Properties: map[string]interface{}{
-			"id":          map[string]string{"type": "string", "description": "Handle id from [tool_result_handle] (preferred)"},
-			"path":        map[string]string{"type": "string", "description": "Absolute path from the handle footer (must be under tool_results)"},
-			"session_key": map[string]string{"type": "string", "description": "Optional session/user key used when the handle was spilled"},
-			"offset":      map[string]string{"type": "integer", "description": "0-based byte offset into the full result (default 0)"},
-			"limit":       map[string]string{"type": "integer", "description": "Max bytes to return (default 6000, max 32768)"},
+			"id":     map[string]string{"type": "string", "description": "Handle id from [tool_result_handle]"},
+			"offset": map[string]string{"type": "integer", "description": "0-based byte offset into the full result (default 0)"},
+			"limit":  map[string]string{"type": "integer", "description": "Max bytes to return (default 6000, max 32768)"},
 		},
-		// id OR path required — enforced in handler for clearer errors.
+		// id is enforced in the handler; legacy internal callers may still pass path.
 		Handler: func(args map[string]interface{}) string { return ToolReadToolResult(args) },
 	})
 
@@ -216,12 +214,18 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "send_file",
-		Description: "Read a local file and show it in the current chat (desktop). Does not forward to WeChat/IM unless destination/forward_to_im is set. Prefer send_to_im for IM delivery.",
+		Description: "Read a local file and show it in the current chat (desktop). Does not forward to IM unless destination/forward_to_im is set. For a named group or user, first resolve it with im_message(action=list_targets), then pass channel plus exactly one of group_id or user_id; an exact target is never broadcast or rerouted.",
 		Properties: map[string]interface{}{
 			"path":          map[string]string{"type": "string", "description": "File path"},
 			"file_name":     map[string]string{"type": "string", "description": "Display file name (optional)"},
 			"destination":   map[string]string{"type": "string", "description": "chat/desktop or im/wechat/feishu/qq/dingtalk"},
 			"forward_to_im": map[string]string{"type": "boolean", "description": "Whether to forward through IM"},
+			"channel":       map[string]string{"type": "string", "description": "Exact IM channel (for example weixin, feishu, qq, telegram, lansenger)"},
+			"group_id":      map[string]string{"type": "string", "description": "Exact destination group/conversation ID"},
+			"group_name":    map[string]string{"type": "string", "description": "Destination group name; resolve with im_message action=list_targets when ambiguous"},
+			"user_id":       map[string]string{"type": "string", "description": "Exact private recipient ID or self"},
+			"message":       map[string]string{"type": "string", "description": "Optional file caption/message"},
+			"caption":       map[string]string{"type": "string", "description": "Alias for message"},
 			"phase_id":      map[string]string{"type": "string", "description": workflowDocSchemaPhaseIDDescription()},
 			"doc_type":      map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},
 		},
@@ -231,11 +235,17 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "send_to_im",
-		Description: "Send a local file to the user's bound IM channels (WeChat/Feishu/QQ/etc). Use when the user asks to deliver a file to WeChat. Always forwards; no extra flags required.",
+		Description: "Send a local file to IM. With no exact target it uses the user's bound/active IM route. For a named group or user, first resolve it with im_message(action=list_targets), then pass channel plus exactly one of group_id or user_id; exact-target failure must be reported and never falls back to broadcast.",
 		Properties: map[string]interface{}{
 			"path":        map[string]string{"type": "string", "description": "File path"},
 			"file_name":   map[string]string{"type": "string", "description": "Display file name (optional)"},
 			"destination": map[string]string{"type": "string", "description": "Optional: wechat/feishu/qq/dingtalk/im (default im)"},
+			"channel":     map[string]string{"type": "string", "description": "Exact IM channel (weixin, feishu, qq, telegram, lansenger)"},
+			"group_id":    map[string]string{"type": "string", "description": "Exact destination group/conversation ID"},
+			"group_name":  map[string]string{"type": "string", "description": "Destination group name; use im_message action=list_targets first when needed"},
+			"user_id":     map[string]string{"type": "string", "description": "Exact private recipient ID or self"},
+			"message":     map[string]string{"type": "string", "description": "Optional file caption/message"},
+			"caption":     map[string]string{"type": "string", "description": "Alias for message"},
 			"phase_id":    map[string]string{"type": "string", "description": workflowDocSchemaPhaseIDDescription()},
 			"doc_type":    map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},
 		},

@@ -96,6 +96,11 @@ type SharedAgentLoopStatus struct {
 	ToolCompressSpills     int64            `json:"tool_compress_spills,omitempty"`
 	ToolCompressProjects   int64            `json:"tool_compress_projects,omitempty"`
 	ToolCompressByTool     map[string]int64 `json:"tool_compress_by_tool,omitempty"`
+	// Provider-independent input composition and lossless checkpoint rollout.
+	InputBreakdown        agent.LoopInputBreakdownStats `json:"input_breakdown,omitempty"`
+	ContextCheckpoints    agent.ContextCheckpointStats  `json:"context_checkpoints,omitempty"`
+	ContextCheckpointMode string                        `json:"context_checkpoint_mode,omitempty"`
+	ToolResultStore       toolresult.StoreStats         `json:"tool_result_store,omitempty"`
 	// Cost tracker (process session / daily) when OpenHuman cost module is live.
 	CostSessionUSD  float64 `json:"cost_session_usd,omitempty"`
 	CostDailyUSD    float64 `json:"cost_daily_usd,omitempty"`
@@ -477,6 +482,10 @@ func (a *App) buildSharedAgentLoopStatus(cfg corelib.AppConfig) SharedAgentLoopS
 	st.ToolCompressSpills = cs.Spills
 	st.ToolCompressProjects = cs.Projects
 	st.ToolCompressByTool = cs.ByToolSaved
+	st.InputBreakdown = agent.CurrentLoopInputBreakdownStats()
+	st.ContextCheckpoints = agent.CurrentContextCheckpointStats()
+	st.ContextCheckpointMode = contextCheckpointStatusMode()
+	st.ToolResultStore = toolresult.GetStoreStats("")
 	st.CostBudgetUSD = cfg.DailyLLMBudgetUSD
 	if a != nil && a.ohModules.costTracker != nil {
 		ct := a.ohModules.costTracker

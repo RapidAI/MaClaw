@@ -34,6 +34,8 @@ Authorization: Bearer <integration_token>
 `/health` is public. Media upload/download URLs are protected by the
 server-generated `mediaToken` in the URL query or by `X-Media-Token`.
 
+硬件设备可以先用一次性六码完成引导配对，再使用返回的持久 Gateway Token。配对码默认有效 30 分钟、仅可成功消费一次，不是 Bearer 凭据。正常启动、重连、长轮询和媒体请求均只使用持久 Token，不应重复提交配对码。
+
 All request and response bodies use UTF-8 JSON. Responses usually include
 `requestId`; include it when reporting integration issues. MaClawSrv and
 MaClaw GUI both use the same gateway response shape and `gw_` request ID
@@ -72,6 +74,42 @@ not separate client protocol modes.
 | `auto` | Prefer Hub when configured and connected; otherwise fall back to local. |
 
 ## Endpoints
+
+### Hardware bootstrap pairing
+
+带键盘或配置门户的设备直接提交六码：
+
+```http
+POST /api/device-gateway/v1/pair
+Content-Type: application/json
+
+{"clientId":"esp32s3-pet-001","pairCode":"645432"}
+```
+
+无键盘设备可以提交一段包含六码的短 WAV：
+
+```http
+POST /api/device-gateway/v1/pair/voice
+Content-Type: audio/wav
+X-MaClaw-Client-ID: esp32s3-pet-001
+```
+
+两种方式成功时都返回 `201`：
+
+```json
+{
+  "ok": true,
+  "clientId": "esp32s3-pet-001",
+  "gatewayToken": "<persistent-device-token>"
+}
+```
+
+- `pair/voice` 接受至多 512 KiB 的短 WAV；参考实现将推理时长限制在 10 秒。
+- ASR 可识别阿拉伯数字，以及逐位说出的中文或英文数字；不得把“十、百”等数值单位解释为配对码。
+- Hub 复用部署的会议 ASR worker；本地 GUI 网关复用桌面 SenseVoice。没有可用 ASR 时返回 `503`，设备应提示服务暂不可用，而不是判定短码已经失效。
+- Hub 对相同来源地址与 `clientId` 的语音配对限制为每分钟 6 次；超限返回 `429` 和 `Retry-After`。
+- `400/401/403/404/409/410/422` 表示当前输入不能靠原样重试解决；`408/429/5xx` 或传输错误应按指数退避重试。
+- 公网部署必须使用 HTTPS。反向代理应保留可靠的客户端地址，并可在边缘增加更严格的限流。
 
 ### Health
 
@@ -114,13 +152,20 @@ Request:
       "audio": { "mimeTypes": ["audio/wav"], "sampleRates": [16000], "channels": 1 }
     },
     "output": {
-      "modalities": ["text", "image"],
-      "preferred": ["text", "image"],
-      "combinations": [["text"], ["image"], ["text", "image"]],
+      "modalities": ["text", "audio"],
+      "preferred": ["text", "audio"],
+      "combinations": [["text"], ["audio"], ["audio", "text"]],
       "text": { "maxChars": 240, "markdown": false, "locale": "zh-CN" },
-      "image": { "mimeTypes": ["image/png"], "maxWidth": 360, "maxHeight": 360, "animated": false }
+      "audio": {
+        "mimeTypes": ["audio/wav"], "sampleRates": [16000], "channels": 1,
+        "playback": true, "deliveryModes": ["inline", "url"],
+        "maxInlineBytes": 8192, "maxDownloadBytes": 262144
+      }
     },
-    "features": { "petStates": true, "petAnimation": true, "ambientDisplay": true, "meetingRecorder": false }
+    "features": {
+      "petStates": true, "petAnimation": false, "petAsset": false,
+      "ambientDisplay": true, "meetingRecorder": true, "volumeControl": true
+    }
   }
 }
 ```
@@ -132,8 +177,11 @@ Request:
 - `combinations` 表示可在同一回复中同时消费的组合。声明 `text` 和 `image` 但没有 `["text","image"]` 时，服务端只能择一发送。
 - `maxChars` 按 Unicode 字符计数，不按 UTF-8 字节计数。
 - 音频、图像与文件应声明 MIME、采样率、通道、尺寸或字节限制。
+- 音频的 `deliveryModes` 可为 `inline` 或 `url`。旧客户端默认只视为支持 `inline`；只有显式声明 `url` 且 `maxDownloadBytes>0` 才能接收下载地址。URL 模式必须受 `maxDownloadBytes` 限制。
+- `petAsset:true` 表示客户端能下载并渲染 `petAsset`/`pet_asset` 中的 GUI 宠物帧引用；`petAnimation:true` 进一步表示能按 `frameMs` 播放多帧。仅仅播放本地程序化眨眼/摇尾不能声明这两个能力。
 - 对媒体消息，最终出口必须同时检查形式、MIME 和文件大小；例如只声明 `image/png` 的屏幕不能收到 JPEG，只声明 `audio/wav` 且 `playback:true` 的扬声器不能收到 MP3。若 `mimeTypes` 为空则不额外限制编码；非空时支持精确 MIME 或 `image/*` 这类通配符。
-- Hub 会把能力传给 MaClaw GUI Agent，并在最终发送前再次强制降级；不能只依赖模型遵守提示。
+- 当一个逻辑回复实际包含多种形式时，服务端必须先剔除 MIME、`playback`、尺寸和 `maxBytes` 不合法的媒体，再从剩余形式中选择 `combinations` 允许的最丰富组合；组合大小相同时按 `preferred` 的先后顺序决定。未被选中的回复部分必须丢弃，不能拆成客户端未声明可同时消费的多条消息。
+- 纯文本 ESP32 客户端只声明 `output.modalities:["text"]`，因此不得收到图片、音频或文件；它上传 `audio/wav` 只属于输入能力，并不自动获得音频播放能力。- Hub 会把能力传给 MaClaw GUI Agent，并在最终发送前再次强制降级；不能只依赖模型遵守提示。
 - 同一规则也适用于直连 MaClaw GUI 和 MaClawSrv：握手端必须按认证主体 + `clientId` 保存规范化能力，后续每次 Agent 调用都带入该能力，并在出站队列入口再次过滤。`capabilitiesAccepted` 不能只是无状态回显。
 - `GET /outgoing` 是单消费者、有序 cursor 流。一个 `clientId` 同一时刻只能有一个读取循环；交互任务应等待该循环发出的本地事件，不能另起一个并发 poll，否则某个读取者可能消费并确认另一个任务正在等待的回复。
 - `timeout` 表示服务端长轮询秒数，当前范围 `0..30`；`0` 为立即返回。`limit` 当前范围 `1..20`。有新消息时服务端应立即唤醒请求，避免客户端持续建立 TLS 连接空轮询。
@@ -206,10 +254,55 @@ Response:
   "capabilitiesAccepted": {
     "input": {"modalities": ["text", "audio"]},
     "output": {
-      "modalities": ["text", "image"],
-      "preferred": ["text", "image"],
-      "combinations": [["text"], ["image"], ["text", "image"]]
+      "modalities": ["text", "audio"],
+      "preferred": ["text", "audio"],
+      "combinations": [["text"], ["audio"], ["audio", "text"]]
     }
+  }
+}
+```
+
+#### Voice-turn response behavior
+
+When an incoming message is `type:"voice"` or `type:"audio"`, a server may
+generate a spoken copy of the Agent answer when the client declares playable
+audio output. The response is still governed by `output.combinations`:
+
+- `['audio','text']` allows the useful text reply and a spoken WAV reply to be
+  queued as one logical answer (both carry the same `replyTo` and
+  `assistant_message_id`).
+- `['audio']` allows only the spoken reply; `['text']` allows only text.
+- A TTS or media-allocation failure falls back to text whenever text is
+  declared. It must not turn a successful Agent answer into a transport error.
+- Small WAV payloads use `data` (base64) only when `inline` and
+  `maxInlineBytes` permit it. Larger payloads use a same-origin relative `url`
+  only when `url` and `maxDownloadBytes` permit it.
+- A constrained client must reject absolute or foreign-host media URLs and must
+  not forward its durable gateway bearer token to them. Server-generated URL
+  audio should use a separate short-lived media token.
+- Text-originated turns are not spoken automatically unless the user enables
+  the server's automatic TTS reply preference.
+- If a client abandons an audio message after bounded playback retries, it must
+  acknowledge that message with `status:"failed"` rather than `delivered`.
+  Both statuses are terminal delivery receipts and therefore unblock the
+  at-least-once queue; the difference preserves accurate playback telemetry.
+
+Example URL-delivered audio message:
+
+```json
+{
+  "id": "mc_voice_msg_123",
+  "replyTo": "mc_in_123",
+  "clientId": "esp32-pet",
+  "conversationId": "default",
+  "type": "audio",
+  "mimeType": "audio/wav",
+  "fileName": "reply.wav",
+  "sizeBytes": 87344,
+  "url": "/api/im-gateway/v1/media/abc123?mediaToken=short-lived-token",
+  "metadata": {
+    "assistant_message_id": "msg_123",
+    "tts": "true"
   }
 }
 ```
@@ -479,6 +572,7 @@ accepted feature flags allow them:
 | `ambient` | `features.ambientDisplay` | `ambient.weather.summary`, `temperatureC`, optional `location`, `expiresAt`, and compact `glyphs` |
 | `pet_state` | `features.petStates` | `extra.state` using `idle/listening/thinking/speaking/done/alert/quiet`; optional `durationMs` |
 | `meeting_result` | `features.meetingRecorder` and text output | `text` for the short device summary; `extra.status`, `summary`, and document identifiers may link to Mobile/GUI library content |
+| `pet_profile` | none for the settings fields; `extra.pet_asset` only with `features.petAsset` | message-level `pet_skin` and `pet_motion_enabled` reflect the current GUI pet settings; optional `extra.pet_asset` contains `encoding`, dimensions, short-lived same-origin `urls`, `revision`, and optional `frameMs`; multiple URLs require `features.petAnimation` |
 
 Feature messages must not be coerced to `text` by an intermediate GUI or Hub.
 Unknown or unsupported feature types are filtered before enqueueing. Text in a
@@ -823,6 +917,50 @@ approved sequential workflows.
 | `tool-result.resultId` / `tool-result.idempotencyKey` | Stable result identity. Reusing it on retry prevents duplicate Agent injection. |
 | `toolPlan.steps[].dependsOn` | Step dependency list for `dag` or guarded sequential execution. |
 | `cursor` | Outgoing message cursor. The client stores the last returned value. |
+
+### Agent-side targeted IM file delivery
+
+Hardware clients such as ESP32 remain input/display endpoints; they do not
+execute arbitrary IM sends locally. When a voice request asks MaClaw to send a
+generated file to another IM conversation, the Agent uses `send_to_im` (or
+`send_file` with `destination=im`) and may provide this structured target:
+
+```json
+{
+  "path": "report.pdf",
+  "channel": "lansenger",
+  "group_id": "group-42",
+  "group_name": "研发群"
+}
+```
+
+Supported target fields are `channel`, `group_id`, `group_name`, and `user_id`.
+When the name is ambiguous, the Agent first calls
+`im_message(action="list_targets", channel=..., query=...)`. An explicitly
+targeted file is never broadcast or silently rerouted to another channel. If no
+target fields are present, the legacy bound/active-channel behavior is retained.
+
+Hardware may persist the downloaded `petAsset` locally. The cache should bind
+the `revision`, dimensions, frame timing and complete RGB565 payload to an
+integrity digest, use an atomic replacement strategy, and reject malformed or
+truncated data at boot. A matching installed revision may skip another media
+download; this is only a client-side cache optimization and does not change the
+authenticated media URL or capability negotiation rules.
+
+GUI-to-Hub `im.proactive_file` carries the same optional target object:
+
+```json
+{
+  "file_data": "BASE64",
+  "file_name": "report.pdf",
+  "mime_type": "application/pdf",
+  "message": "这是您要的报告",
+  "target": {
+    "channel": "feishu",
+    "group_id": "oc_xxx"
+  }
+}
+```
 
 ## Error Format
 

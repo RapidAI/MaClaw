@@ -39,10 +39,13 @@ type ClientTextCapabilities struct {
 }
 
 type ClientAudioCapabilities struct {
-	MimeTypes   []string `json:"mimeTypes,omitempty"`
-	SampleRates []int    `json:"sampleRates,omitempty"`
-	Channels    int      `json:"channels,omitempty"`
-	Playback    bool     `json:"playback,omitempty"`
+	MimeTypes        []string `json:"mimeTypes,omitempty"`
+	SampleRates      []int    `json:"sampleRates,omitempty"`
+	Channels         int      `json:"channels,omitempty"`
+	Playback         bool     `json:"playback,omitempty"`
+	DeliveryModes    []string `json:"deliveryModes,omitempty"`
+	MaxInlineBytes   int64    `json:"maxInlineBytes,omitempty"`
+	MaxDownloadBytes int64    `json:"maxDownloadBytes,omitempty"`
 }
 
 type ClientImageCapabilities struct {
@@ -58,10 +61,16 @@ type ClientFileCapabilities struct {
 }
 
 type ClientFeatureCapabilities struct {
-	PetStates       bool `json:"petStates,omitempty"`
-	PetAnimation    bool `json:"petAnimation,omitempty"`
+	PetStates    bool `json:"petStates,omitempty"`
+	PetAnimation bool `json:"petAnimation,omitempty"`
+	// PetAsset is separate from PetAnimation: a small client may display an
+	// exact GUI-rendered frame but choose not to animate it.  Treating the two
+	// as one flag made capable ESP clients either receive no asset at all or
+	// have to overstate their animation support.
+	PetAsset        bool `json:"petAsset,omitempty"`
 	AmbientDisplay  bool `json:"ambientDisplay,omitempty"`
 	MeetingRecorder bool `json:"meetingRecorder,omitempty"`
+	VolumeControl   bool `json:"volumeControl,omitempty"`
 }
 
 const (
@@ -324,7 +333,71 @@ func normalizeAudio(in *ClientAudioCapabilities, enabled bool) *ClientAudioCapab
 		}
 	}
 	out.Channels = clampInt(out.Channels, 0, 8)
+	out.DeliveryModes = normalizeAudioDeliveryModes(out.DeliveryModes)
+	if len(out.DeliveryModes) == 0 {
+		// Backwards-compatible default: existing clients only understood media
+		// embedded directly in an outgoing JSON message.
+		out.DeliveryModes = []string{"inline"}
+	}
+	// A zero inline limit keeps the legacy unbounded meaning. URL delivery is
+	// opt-in and therefore requires an explicit positive download bound.
+	if containsClientString(out.DeliveryModes, "url") && out.MaxDownloadBytes == 0 {
+		out.DeliveryModes = removeClientString(out.DeliveryModes, "url")
+	}
+	if out.MaxInlineBytes < 0 {
+		out.MaxInlineBytes = 0
+	} else if out.MaxInlineBytes > maxClientMediaBytes {
+		out.MaxInlineBytes = maxClientMediaBytes
+	}
+	if out.MaxDownloadBytes < 0 {
+		out.MaxDownloadBytes = 0
+	} else if out.MaxDownloadBytes > maxClientMediaBytes {
+		out.MaxDownloadBytes = maxClientMediaBytes
+	}
 	return &out
+}
+
+func normalizeAudioDeliveryModes(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if (value != "inline" && value != "url") || seen[value] || len(out) >= maxClientCapabilityItems {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func removeClientString(values []string, remove string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if value != remove {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+// SupportsOutputAudioDelivery reports whether a client accepts the requested
+// audio transport and whether the declared size fits that transport's bound.
+func (c ClientCapabilities) SupportsOutputAudioDelivery(mode string, sizeBytes int64) bool {
+	normalized := NormalizeClientCapabilities(&c)
+	audio := normalized.Output.Audio
+	if audio == nil || !audio.Playback || sizeBytes < 0 {
+		return false
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if !containsClientString(audio.DeliveryModes, mode) {
+		return false
+	}
+	limit := audio.MaxInlineBytes
+	if mode == "url" {
+		limit = audio.MaxDownloadBytes
+	}
+	return limit <= 0 || sizeBytes <= limit
 }
 
 func normalizeImage(in *ClientImageCapabilities, enabled bool) *ClientImageCapabilities {

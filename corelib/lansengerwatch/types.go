@@ -117,22 +117,22 @@ type Member struct {
 
 // GroupRoster is persisted per group_id.
 type GroupRoster struct {
-	GroupID   string   `json:"group_id"`
-	GroupName string   `json:"group_name,omitempty"`
-	Members   []Member `json:"members"`
+	GroupID   string    `json:"group_id"`
+	GroupName string    `json:"group_name,omitempty"`
+	Members   []Member  `json:"members"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Incoming is the minimal message surface needed by the engine.
 type Incoming struct {
-	GroupID      string
-	GroupName    string
-	SpeakerID    string
-	SpeakerName  string
-	Text         string
-	MessageID    string
-	ReceivedAt   time.Time
-	IsGroup      bool
+	GroupID     string
+	GroupName   string
+	SpeakerID   string
+	SpeakerName string
+	Text        string
+	MessageID   string
+	ReceivedAt  time.Time
+	IsGroup     bool
 }
 
 // ActionResult describes side effects for one processed message.
@@ -147,11 +147,11 @@ type ActionResult struct {
 
 // ForwardRequest is a push to one of the owner's IM channels.
 type ForwardRequest struct {
-	JobID    string
-	Channel  string // weixin | lansenger | telegram | qq | hub
-	Text     string
-	Reason   string // "target_speech" | "keyword"
-	Keyword  string
+	JobID   string
+	Channel string // weixin | lansenger | telegram | qq | hub
+	Text    string
+	Reason  string // "target_speech" | "keyword"
+	Keyword string
 }
 
 // KeywordHit is one matched keyword rule.

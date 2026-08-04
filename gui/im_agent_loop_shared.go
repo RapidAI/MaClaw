@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -557,6 +558,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 			telemetry.PromptProfile = string(pp)
 		}
 	}
+	telemetry.InputBreakdown = cb.inputBreakdown
 	telemetry.Attach(resp)
 	if onStreamDone != nil {
 		onStreamDone()
@@ -610,10 +612,17 @@ type sharedAgentLoopCallbacks struct {
 	deliveredPaths       []string
 	fileMaterializeNanos int64
 	filesForwarded       int
+	inputBreakdown       agent.LoopInputBreakdown
 	// Revision last incorporated by TransformConversation. Keeping this at the
 	// conversation boundary (rather than the later HTTP-start boundary) closes
 	// the race where steering arrives between transform and request creation.
 	llmReplanRevision atomic.Int64
+}
+
+func (c *sharedAgentLoopCallbacks) OnLoopInputBreakdown(b agent.LoopInputBreakdown) {
+	if c != nil {
+		c.inputBreakdown = b
+	}
 }
 
 // effectivePlatform prefers the pinned turn platform, then loop context.
@@ -900,7 +909,9 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	} else if agent.IsAskUserResult(mat.Text) {
 		outText = mat.Text
 	} else {
-		outText = truncateToolResultForToolWithSession(name, c.userID, mat.Text)
+		// Keep raw output through UI/ACP reporting, hooks and drift detection.
+		// RunLoop invokes ProjectToolResult exactly once before model commit.
+		outText = mat.Text
 	}
 	trimOut := strings.TrimSpace(outText)
 	if strings.HasPrefix(trimOut, "[system rejected]") ||
@@ -1210,6 +1221,19 @@ func (c *sharedAgentLoopCallbacks) ExecuteToolStructured(name, argsJSON string) 
 	return agent.ToolExecutionResult{Result: text, Outcome: outcome}
 }
 
+// ProjectToolResult implements agent.ToolResultProjector. It deliberately uses
+// the same dual-view projector as the legacy GUI loop.
+func (c *sharedAgentLoopCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	sessionKey := ""
+	if c != nil {
+		sessionKey = c.userID
+		if c.handler != nil {
+			sessionKey = c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
+		}
+	}
+	return truncateToolResultForToolWithSession(name, sessionKey, result.Result)
+}
+
 func (c *sharedAgentLoopCallbacks) OnToken(delta string) {
 	if c.onToken != nil {
 		c.onToken(delta)
@@ -1275,9 +1299,38 @@ func (c *sharedAgentLoopCallbacks) TransformConversation(conversation []interfac
 		c.llmReplanRevision.Store(processedRevision)
 	}
 	if injected == "" {
+		next = conversation
+	}
+	compacted := c.handler.compactAgentLoopConversation(c.loopCtx, c.userID, next, c.tools, c.llmCfg.EffectiveContextTokens(), agent.EstimateToolsTokens(c.tools))
+	if injected == "" && sameConversationElements(compacted, conversation) {
 		return nil
 	}
-	return next
+	return compacted
+}
+
+func sameConversationElements(a, b []interface{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !sameConversationElement(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameConversationElement(a, b interface{}) bool {
+	switch av := a.(type) {
+	case map[string]interface{}:
+		bv, ok := b.(map[string]interface{})
+		return ok && reflect.ValueOf(av).Pointer() == reflect.ValueOf(bv).Pointer()
+	case map[string]string:
+		bv, ok := b.(map[string]string)
+		return ok && reflect.ValueOf(av).Pointer() == reflect.ValueOf(bv).Pointer()
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 // LLMReplanRequested implements agent.LLMReplanAware. RequestReplan cancels

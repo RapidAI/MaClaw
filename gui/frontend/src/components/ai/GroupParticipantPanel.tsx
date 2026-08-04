@@ -76,8 +76,8 @@ function participantIconStyle(p: Participant, theme: Theme): CSSProperties {
         justifyContent: "center",
         flexShrink: 0,
         color: isLocal ? "#4f7f6f" : (theme.btnColor || "#2f5f98"),
-        background: isLocal ? "rgba(79, 127, 111, 0.12)" : "rgba(47, 95, 152, 0.10)",
-        border: `1px solid ${isLocal ? "rgba(79, 127, 111, 0.26)" : "rgba(47, 95, 152, 0.22)"}`,
+        background: isLocal ? "rgba(79, 127, 111, 0.12)" : "rgba(47, 111, 188, 0.10)",
+        border: `1px solid ${isLocal ? "rgba(79, 127, 111, 0.26)" : "rgba(47, 111, 188, 0.22)"}`,
     };
 }
 

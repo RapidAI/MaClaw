@@ -91,6 +91,11 @@ func runFetchChain(ctx context.Context, rawURL, logTag string, maxAttemptsPerLev
 	// on a copy.
 	c := *client
 	c.Timeout = 0
+	if opts.DisableCookies {
+		// A public-only caller must not inherit cookies accumulated by another
+		// desktop request, nor retain a cookie set during a redirect chain.
+		c.Jar = nil
+	}
 
 	start := time.Now()
 	logURL := sanitizeURLForLog(rawURL)
@@ -149,7 +154,7 @@ func runFetchChain(ctx context.Context, rawURL, logTag string, maxAttemptsPerLev
 			dlogf("%s attempt=%d level=%d try=%d failed: %v (blocked=%t retryable=%t)",
 				logTag, attempt, level, try+1, out.err, out.blocked, out.retryable)
 			if out.blocked {
-				levels = appendNextLevel(levels, level, ctx, rawURL)
+				levels = appendNextLevel(levels, level, ctx, rawURL, opts.DisableBrowserAuthFallback, opts.PublicNetworkOnly)
 				break // escalate to next level
 			}
 			if !out.retryable {
@@ -160,6 +165,9 @@ func runFetchChain(ctx context.Context, rawURL, logTag string, maxAttemptsPerLev
 	}
 	dlogf("%s failed url=%q err=%v dur=%s", logTag, logURL, lastErr, time.Since(start).Round(time.Millisecond))
 	if lastBlocked {
+		if opts.PublicNetworkOnly {
+			return nil, fmt.Errorf("%v（目标站点要求反爬或登录验证；蓝信群聊的公开网络权限不允许使用浏览器、会话或 Cookie，请改用无需登录的公开来源）", lastErr)
+		}
 		return nil, fmt.Errorf("%v（目标站点存在反爬验证。请先用 browser 工具打开 %s 完成人机验证后重试；仍失败则用 download_file(url, save_path, via_browser=true) 让浏览器直接下载）", lastErr, rawURL)
 	}
 	return nil, lastErr
@@ -174,15 +182,23 @@ func downloadToFile(ctx context.Context, rawURL string, opts *FetchOptions, clie
 }
 
 // appendNextLevel prepares the header set for the next escalation level.
-func appendNextLevel(levels []downloadLevel, level int, ctx context.Context, rawURL string) []downloadLevel {
+func appendNextLevel(levels []downloadLevel, level int, ctx context.Context, rawURL string, disableBrowserAuthFallback, publicNetworkOnly bool) []downloadLevel {
 	switch level {
 	case 0:
 		dlogf("[fetch-chain] escalate to L1: browser-like headers url=%q", sanitizeURLForLog(rawURL))
 		return append(levels, downloadLevel{headers: browserLikeHeaders()})
 	case 1:
+		if publicNetworkOnly {
+			dlogf("[fetch-chain] L1.5 skipped: public-network caller requires the guarded HTTP transport")
+			return levels
+		}
 		dlogf("[fetch-chain] escalate to L1.5: chrome TLS fingerprint url=%q", sanitizeURLForLog(rawURL))
 		return append(levels, downloadLevel{headers: browserLikeHeaders(), utls: true})
 	case 2:
+		if disableBrowserAuthFallback {
+			dlogf("[fetch-chain] L2 skipped: browser-session auth disabled by caller")
+			return levels
+		}
 		if u, err := url.Parse(rawURL); (err != nil || !strings.EqualFold(u.Scheme, "https")) && !allowInsecureL2Hook {
 			// Injecting the browser session's cookies (including Secure and
 			// HttpOnly ones like cf_clearance) into a plaintext http:// request

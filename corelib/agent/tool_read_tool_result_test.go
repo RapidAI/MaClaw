@@ -81,6 +81,11 @@ func TestRegisterCoreTools_IncludesReadToolResult(t *testing.T) {
 		}
 		if name, _ := fn["name"].(string); name == "read_tool_result" {
 			found = true
+			parameters, _ := fn["parameters"].(map[string]interface{})
+			properties, _ := parameters["properties"].(map[string]interface{})
+			if _, exposed := properties["session_key"]; exposed {
+				t.Fatal("read_tool_result exposed host-owned session_key to the model")
+			}
 			break
 		}
 	}

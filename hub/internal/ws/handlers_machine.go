@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
@@ -277,6 +278,8 @@ type IMProactiveSender interface {
 	SendProactiveMessageToTarget(ctx context.Context, tenantID, userID, platformName, platformUID, text string) error
 	// SendProactiveFile sends a file to the user's IM channels (e.g. Swarm PDF documents).
 	SendProactiveFile(ctx context.Context, tenantID, userID, b64Data, fileName, mimeType, message string) error
+	// SendProactiveFileToTarget is exact and must not fall back to another channel.
+	SendProactiveFileToTarget(ctx context.Context, tenantID, userID string, target agent.IMFileDeliveryTarget, b64Data, fileName, mimeType, message string) error
 }
 
 // IMGatewayPlugin handles gateway claim/release and message forwarding for
@@ -1404,10 +1407,11 @@ func (g *Gateway) handleIMProactiveFile(ctx *ConnContext, msg Envelope) error {
 		return nil
 	}
 	var payload struct {
-		FileData string `json:"file_data"`
-		FileName string `json:"file_name"`
-		MimeType string `json:"mime_type"`
-		Message  string `json:"message"`
+		FileData string                     `json:"file_data"`
+		FileName string                     `json:"file_name"`
+		MimeType string                     `json:"mime_type"`
+		Message  string                     `json:"message"`
+		Target   agent.IMFileDeliveryTarget `json:"target,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		log.Printf("[ws] handleIMProactiveFile: parse error: %v", err)
@@ -1416,7 +1420,20 @@ func (g *Gateway) handleIMProactiveFile(ctx *ConnContext, msg Envelope) error {
 	if payload.FileData == "" || payload.FileName == "" {
 		return nil
 	}
-	if err := g.IMProactive.SendProactiveFile(context.Background(), ctx.TenantID, ctx.UserID, payload.FileData, payload.FileName, payload.MimeType, payload.Message); err != nil {
+	var err error
+	if target := payload.Target.Normalize(); target.Active() {
+		// Any target field changes the operation from broadcast to exact routing.
+		// Reject incomplete target objects instead of letting a downstream
+		// canonicalizer guess a channel or recipient.
+		if target.Channel == "" || (target.GroupID == "" && target.UserID == "") {
+			log.Printf("[ws] handleIMProactiveFile: invalid exact target for user_id=%s: %#v", ctx.UserID, target)
+			return nil
+		}
+		err = g.IMProactive.SendProactiveFileToTarget(context.Background(), ctx.TenantID, ctx.UserID, target, payload.FileData, payload.FileName, payload.MimeType, payload.Message)
+	} else {
+		err = g.IMProactive.SendProactiveFile(context.Background(), ctx.TenantID, ctx.UserID, payload.FileData, payload.FileName, payload.MimeType, payload.Message)
+	}
+	if err != nil {
 		log.Printf("[ws] handleIMProactiveFile: send failed for user_id=%s: %v", ctx.UserID, err)
 	}
 	return nil
@@ -1629,6 +1646,37 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) error
 			motionEnabled, _ := payload.Reply["pet_motion_enabled"].(bool)
 			asset, _ := payload.Reply["pet_asset"].(map[string]any)
 			profiler.UpdateMachinePetProfileAsset(ctx.MachineID, petSkin, motionEnabled, asset)
+		}
+		return nil
+	}
+	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_welcome_config") {
+		if updater, ok := g.DeviceGateway.(interface {
+			UpdateMachineWelcome(string, bool, string, bool) error
+		}); ok {
+			enabled, _ := payload.Reply["welcome_enabled"].(bool)
+			audio, _ := payload.Reply["file_data"].(string)
+			replaceAudio, _ := payload.Reply["replace_audio"].(bool)
+			if err := updater.UpdateMachineWelcome(ctx.MachineID, enabled, audio, replaceAudio); err != nil {
+				return writeWSError(ctx.Conn, "INVALID_MESSAGE", err.Error())
+			}
+		}
+		return nil
+	}
+	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_config") {
+		if updater, ok := g.DeviceGateway.(interface {
+			UpdateMachineVolume(string, any) error
+		}); ok {
+			extra, _ := payload.Reply["extra"].(map[string]any)
+			if err := updater.UpdateMachineVolume(ctx.MachineID, extra["volume"]); err != nil {
+				return writeWSError(ctx.Conn, "INVALID_MESSAGE", err.Error())
+			}
+		}
+	}
+	if payload.ClientID == "*" {
+		if relay, ok := g.DeviceGateway.(interface {
+			EnqueueMachineReply(string, string, map[string]any)
+		}); ok {
+			relay.EnqueueMachineReply(ctx.MachineID, payload.ConversationID, payload.Reply)
 		}
 		return nil
 	}

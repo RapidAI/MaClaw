@@ -52,7 +52,7 @@ func previewHeadTail(s string, limit int, headFrac, tailFrac float64) string {
 	sep := fmt.Sprintf("\n\n... (已截断，共 %d 字节) ...\n\n", len(s))
 	budget := limit - len(sep)
 	if budget < 64 {
-		return s[:limit]
+		return utf8Prefix(s, limit)
 	}
 	if headFrac < 0 {
 		headFrac = 0
@@ -72,7 +72,7 @@ func previewHeadTail(s string, limit int, headFrac, tailFrac float64) string {
 		headLen = budget - 32
 	}
 	tailLen := budget - headLen
-	return s[:headLen] + sep + s[len(s)-tailLen:]
+	return utf8Prefix(s, headLen) + sep + utf8Suffix(s, tailLen)
 }
 
 // previewWebFetch prefers keeping trailing integrity markers when present.
@@ -91,19 +91,19 @@ func previewWebFetch(s string, limit int) string {
 	if len(meta)+len(sep) >= limit {
 		keep := limit - len(sep)
 		if keep < 1 {
-			return s[len(s)-limit:]
+			return utf8Suffix(s, limit)
 		}
 		if keep > len(meta) {
 			keep = len(meta)
 		}
-		return sep + meta[len(meta)-keep:]
+		return sep + utf8Suffix(meta, keep)
 	}
 	headBudget := limit - len(meta) - len(sep)
 	if headBudget <= 0 {
 		return sep + meta
 	}
 	if len(head) > headBudget {
-		head = head[:headBudget]
+		head = utf8Prefix(head, headBudget)
 	}
 	return head + sep + meta
 }
@@ -155,7 +155,7 @@ func previewJSON(s string, limit int) string {
 	}
 	out := b.String()
 	if len(out) > limit {
-		return out[:limit-20] + "\n…(json preview truncated)\n"
+		return utf8PrefixWithSuffix(out, "\n…(json preview truncated)\n", limit)
 	}
 	// If summary is tiny, append a short raw head for context.
 	if len(out) < limit/3 {
@@ -163,7 +163,7 @@ func previewJSON(s string, limit int) string {
 		if rawBudget > 64 {
 			raw := t
 			if len(raw) > rawBudget {
-				raw = raw[:rawBudget] + "…"
+				raw = utf8PrefixWithSuffix(raw, "…", rawBudget)
 			}
 			out = out + "\n[raw_head]\n" + raw
 		}
@@ -182,7 +182,7 @@ func jsonValueSketch(v interface{}, max int) string {
 	case string:
 		s := x
 		if len(s) > max {
-			s = s[:max] + "…"
+			s = utf8PrefixWithSuffix(s, "…", max)
 		}
 		return fmt.Sprintf("%q", s)
 	case map[string]interface{}:
@@ -192,7 +192,7 @@ func jsonValueSketch(v interface{}, max int) string {
 	default:
 		s := fmt.Sprintf("%v", x)
 		if len(s) > max {
-			s = s[:max] + "…"
+			s = utf8PrefixWithSuffix(s, "…", max)
 		}
 		return s
 	}
@@ -274,12 +274,12 @@ func previewDiff(s string, limit int) string {
 	if tailBudget > 64 {
 		tail := s
 		if len(tail) > tailBudget {
-			tail = tail[len(tail)-tailBudget:]
+			tail = utf8Suffix(tail, tailBudget)
 		}
 		out += tail
 	}
 	if len(out) > limit {
-		return out[:limit]
+		return utf8Prefix(out, limit)
 	}
 	return out
 }

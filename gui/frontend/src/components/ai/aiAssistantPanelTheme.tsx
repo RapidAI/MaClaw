@@ -51,137 +51,137 @@ export interface Theme {
 }
 
 export const overlayTheme: Theme = {
-    bg: "#f3f5f8",
-    titleBarBg: "#eef2f7",
-    titleBarBorder: "#d8dee8",
-    titleText: "#334155",
-    text: "#1f2937",
-    textMuted: "#64748b",
+    bg: "#f4f7fb",
+    titleBarBg: "#edf2f8",
+    titleBarBorder: "#d9e1ec",
+    titleText: "#44546a",
+    text: "#1c2733",
+    textMuted: "#657384",
     inputBarBg: "#ffffff",
-    inputBarBorder: "#cbd5e1",
-    inputText: "#111827",
-    codeBg: "#eef2f7",
-    codeText: "#334155",
-    codeBlockBg: "#f8fafc",
-    codeBlockBorder: "#d8dee8",
-    codeBlockLang: "#64748b",
-    borderLeft: "#d8dee8",
+    inputBarBorder: "#c9d6e4",
+    inputText: "#1c2733",
+    codeBg: "#edf2f8",
+    codeText: "#44546a",
+    codeBlockBg: "#f6f9fc",
+    codeBlockBorder: "#d9e1ec",
+    codeBlockLang: "#657384",
+    borderLeft: "#d9e1ec",
     responseBorderLeft: "#8aa4bf",
-    headingColor: "#1f2937",
-    linkColor: "#2f5f98",
-    pathColor: "#334155",
-    promptColor: "#334155",
-    userColor: "#334155",
-    divider: "#d8dee8",
-    fieldBg: "#f8fafc",
-    fieldBorder: "#d8dee8",
-    fieldLabel: "#64748b",
+    headingColor: "#1c2733",
+    linkColor: "#2f6fbc",
+    pathColor: "#44546a",
+    promptColor: "#44546a",
+    userColor: "#44546a",
+    divider: "#d9e1ec",
+    fieldBg: "#f6f9fc",
+    fieldBorder: "#d9e1ec",
+    fieldLabel: "#657384",
     errorText: "#c43d34",
     errorBg: "rgba(196, 61, 52, 0.06)",
     errorBorder: "#c43d34",
-    emptyHint: "#94a3b8",
-    boldColor: "#111827",
-    italicColor: "#334155",
-    bulletColor: "#64748b",
+    emptyHint: "#657384",
+    boldColor: "#141c26",
+    italicColor: "#44546a",
+    bulletColor: "#657384",
     quoteBorder: "#b7c5d4",
     quoteText: "#526579",
-    btnColor: "#2f5f98",
+    btnColor: "#2f6fbc",
     btnBorder: "#b7c5d4",
-    actionBtnColor: "#64748b",
-    closeBtnColor: "#64748b",
+    actionBtnColor: "#657384",
+    closeBtnColor: "#657384",
     sendBtnColor: "#fff",
-    sendBtnBorder: "#2f5f98",
-    sendBtnBg: "#2f5f98",
+    sendBtnBorder: "#2f6fbc",
+    sendBtnBg: "#2f6fbc",
 };
 
 export const lightTheme: Theme = {
-    bg: "#f7f9fc",
-    titleBarBg: "#eef2f7",
-    titleBarBorder: "#d8dee8",
-    titleText: "#334155",
-    text: "#1f2937",
-    textMuted: "#64748b",
+    bg: "#f4f7fb",
+    titleBarBg: "#edf2f8",
+    titleBarBorder: "#d9e1ec",
+    titleText: "#44546a",
+    text: "#1c2733",
+    textMuted: "#657384",
     inputBarBg: "#ffffff",
-    inputBarBorder: "#cbd5e1",
-    inputText: "#111827",
-    codeBg: "#eef2f7",
-    codeText: "#334155",
-    codeBlockBg: "#f8fafc",
-    codeBlockBorder: "#d8dee8",
-    codeBlockLang: "#64748b",
-    borderLeft: "#d8dee8",
+    inputBarBorder: "#c9d6e4",
+    inputText: "#1c2733",
+    codeBg: "#edf2f8",
+    codeText: "#44546a",
+    codeBlockBg: "#f6f9fc",
+    codeBlockBorder: "#d9e1ec",
+    codeBlockLang: "#657384",
+    borderLeft: "#d9e1ec",
     responseBorderLeft: "#8aa4bf",
-    headingColor: "#1f2937",
-    linkColor: "#2f5f98",
-    pathColor: "#334155",
-    promptColor: "#334155",
-    userColor: "#334155",
-    divider: "#d8dee8",
-    fieldBg: "#f8fafc",
-    fieldBorder: "#d8dee8",
-    fieldLabel: "#64748b",
+    headingColor: "#1c2733",
+    linkColor: "#2f6fbc",
+    pathColor: "#44546a",
+    promptColor: "#44546a",
+    userColor: "#44546a",
+    divider: "#d9e1ec",
+    fieldBg: "#f6f9fc",
+    fieldBorder: "#d9e1ec",
+    fieldLabel: "#657384",
     errorText: "#c43d34",
     errorBg: "rgba(196, 61, 52, 0.06)",
     errorBorder: "#c43d34",
-    emptyHint: "#94a3b8",
-    boldColor: "#111827",
-    italicColor: "#334155",
-    bulletColor: "#64748b",
+    emptyHint: "#657384",
+    boldColor: "#141c26",
+    italicColor: "#44546a",
+    bulletColor: "#657384",
     quoteBorder: "#b7c5d4",
     quoteText: "#526579",
-    btnColor: "#2f5f98",
+    btnColor: "#2f6fbc",
     btnBorder: "#b7c5d4",
-    actionBtnColor: "#64748b",
-    closeBtnColor: "#64748b",
+    actionBtnColor: "#657384",
+    closeBtnColor: "#657384",
     sendBtnColor: "#ffffff",
-    sendBtnBorder: "#2f5f98",
-    sendBtnBg: "#2f5f98",
+    sendBtnBorder: "#2f6fbc",
+    sendBtnBg: "#2f6fbc",
 };
 
 
 export const darkTheme: Theme = {
     ...lightTheme,
-    bg: "#0b1220",
-    titleBarBg: "#111827",
-    titleBarBorder: "#334155",
-    titleText: "#f1f5f9",
-    text: "#e2e8f0",
-    textMuted: "#a8b8c8",
-    inputBarBg: "#0f172a",
-    inputBarBorder: "#334155",
-    inputText: "#e5e7eb",
-    codeBg: "#1e293b",
-    codeText: "#b7d3ef",
-    codeBlockBg: "#0f172a",
-    codeBlockBorder: "#1e3a5f",
-    codeBlockLang: "#8fb4dc",
-    borderLeft: "#334155",
-    responseBorderLeft: "#5b7898",
-    headingColor: "#d9e7f5",
-    linkColor: "#9bc2ea",
-    pathColor: "#b7d3ef",
-    promptColor: "#b7d3ef",
-    userColor: "#c7d7e8",
-    divider: "#1e293b",
-    fieldBg: "#111827",
-    fieldBorder: "#475569",
-    fieldLabel: "#cbd5e1",
-    errorText: "#e07a72",
-    errorBg: "rgba(196, 61, 52, 0.10)",
-    errorBorder: "#b95b52",
-    emptyHint: "#7a8a9b",
-    boldColor: "#f8fafc",
-    italicColor: "#e2e8f0",
-    bulletColor: "#8a9ab0",
-    quoteBorder: "#5b7898",
-    quoteText: "#c7d7e8",
-    actionBtnColor: "#cbd5e1",
-    closeBtnColor: "#cbd5e1",
-    btnColor: "#b7d3ef",
-    btnBorder: "#5b7898",
-    sendBtnColor: "#ffffff",
-    sendBtnBorder: "#5b7898",
-    sendBtnBg: "#2f5f98",
+    bg: "#0f141b",
+    titleBarBg: "#161c26",
+    titleBarBorder: "#2b3444",
+    titleText: "#e3e9f1",
+    text: "#e3e9f1",
+    textMuted: "#7f8ea1",
+    inputBarBg: "#181f2a",
+    inputBarBorder: "#2b3444",
+    inputText: "#e3e9f1",
+    codeBg: "#1b2230",
+    codeText: "#b4c0cf",
+    codeBlockBg: "#121822",
+    codeBlockBorder: "#2b3444",
+    codeBlockLang: "#7f8ea1",
+    borderLeft: "#2b3444",
+    responseBorderLeft: "#5f7ea8",
+    headingColor: "#e9eff7",
+    linkColor: "#7ea8e0",
+    pathColor: "#7ea8e0",
+    promptColor: "#b4c0cf",
+    userColor: "#e3e9f1",
+    divider: "#232b39",
+    fieldBg: "#1b2230",
+    fieldBorder: "#3b4760",
+    fieldLabel: "#bfccdb",
+    errorText: "#f47067",
+    errorBg: "rgba(244, 112, 103, 0.10)",
+    errorBorder: "#b85c56",
+    emptyHint: "#5f6f84",
+    boldColor: "#f4f8fc",
+    italicColor: "#d3dce8",
+    bulletColor: "#7f8ea1",
+    quoteBorder: "#3d4c64",
+    quoteText: "#b4c0cf",
+    actionBtnColor: "#8ea0b5",
+    closeBtnColor: "#8ea0b5",
+    btnColor: "#7ea8e0",
+    btnBorder: "#4a5b78",
+    sendBtnColor: "#0f141b",
+    sendBtnBorder: "#7ea8e0",
+    sendBtnBg: "#7ea8e0",
 };
 
 export const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
@@ -208,14 +208,14 @@ export const overlayStyle: React.CSSProperties = {
     ...fixedContainingBlockFill,
     zIndex: 10000,
     background: overlayTheme.bg,
-    boxShadow: "0 0 40px rgba(0,0,0,0.08)",
+    boxShadow: "0 8px 28px -6px rgba(30, 58, 95, 0.18)",
 };
 
 /** Full-bleed AI panel when the inline assistant is maximized. */
 export const maximizedInlineStyle: React.CSSProperties = {
     ...fixedContainingBlockFill,
     zIndex: 12000,
-    boxShadow: "0 0 40px rgba(0,0,0,0.12)",
+    boxShadow: "0 8px 28px -6px rgba(30, 58, 95, 0.18)",
     overflow: "hidden",
 };
 
@@ -230,7 +230,7 @@ export const dotBase: React.CSSProperties = {
 export const baseInputBtnStyle: React.CSSProperties = {
     background: "transparent",
     border: "1px solid",
-    borderRadius: "7px",
+    borderRadius: "10px",
     padding: 0,
     fontSize: "13px",
     fontFamily: "'Segoe UI Symbol', 'Segoe UI', sans-serif",
@@ -458,7 +458,8 @@ export function contrastingInkOnFill(fillCss: string, preferred?: string): strin
         }
     }
     const L = relativeLuminance(fillCss);
-    // Threshold ~0.45: mid-light fills get dark ink (graphite #d4d4d4 ≈ 0.64)
+    // Threshold ~0.45: mid-light fills get dark ink (e.g. legacy graphite #d4d4d4 ≈ 0.64).
+    // New graphite fill #7ea8e0 (≈ 0.38) stays readable via the preferred-ink path in callers.
     if (L == null) return "#ffffff";
     return L > 0.45 ? "#111111" : "#ffffff";
 }
@@ -471,7 +472,7 @@ export function contrastingInkOnFill(fillCss: string, preferred?: string): strin
 export function resolvePrimaryFilledColors(
     t: Pick<Theme, "sendBtnBg" | "sendBtnColor" | "btnColor">,
 ): { bg: string; fg: string } {
-    const bg = (t.sendBtnBg && t.sendBtnBg.trim()) || t.btnColor || "#2f5f98";
+    const bg = (t.sendBtnBg && t.sendBtnBg.trim()) || t.btnColor || "#2f6fbc";
     const preferredFg = (t.sendBtnColor && t.sendBtnColor.trim()) || undefined;
     // If caller only has light btnColor as bg (no sendBtn), auto-ink prevents white-on-light.
     const fg = contrastingInkOnFill(bg, preferredFg);
@@ -529,12 +530,12 @@ export function getInputActionButtonStyle(
 ): React.CSSProperties {
     const dark = themeMode === 'dark';
     const palette = {
-        neutral: { color: t.textMuted, border: dark ? t.fieldBorder : "rgba(47, 95, 152, 0.12)", bg: dark ? t.inputBarBg : "rgba(255, 255, 255, 0.92)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 1px 2px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.88)" },
-        attach: { color: dark ? t.btnColor : "#2f5f98", border: dark ? t.btnBorder : "rgba(47, 95, 152, 0.24)", bg: dark ? `color-mix(in srgb, ${t.btnColor} 12%, ${t.fieldBg})` : "rgba(243, 247, 251, 0.94)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(47,95,152,0.07), inset 0 1px 0 rgba(255,255,255,0.9)" },
+        neutral: { color: t.textMuted, border: dark ? t.fieldBorder : "rgba(47, 111, 188, 0.12)", bg: dark ? t.inputBarBg : "rgba(255, 255, 255, 0.92)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 1px 2px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.88)" },
+        attach: { color: dark ? t.btnColor : "#2f6fbc", border: dark ? t.btnBorder : "rgba(47, 111, 188, 0.24)", bg: dark ? `color-mix(in srgb, ${t.btnColor} 12%, ${t.fieldBg})` : "rgba(243, 247, 251, 0.94)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(47,111,188,0.07), inset 0 1px 0 rgba(255,255,255,0.9)" },
         voice: { color: dark ? t.text : "#475569", border: dark ? t.fieldBorder : "rgba(71, 85, 105, 0.20)", bg: dark ? t.inputBarBg : "rgba(248, 250, 252, 0.92)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "0 1px 2px rgba(15,23,42,0.05), inset 0 1px 0 rgba(255,255,255,0.86)" },
         voiceHold: { color: dark ? t.quoteText : "#475569", border: dark ? t.btnBorder : "rgba(100, 116, 139, 0.28)", bg: dark ? `color-mix(in srgb, ${t.btnColor} 10%, ${t.fieldBg})` : "rgba(248, 250, 252, 0.94)", shadow: dark ? `0 0 0 2px color-mix(in srgb, ${t.btnColor} 10%, transparent), inset 0 1px 0 rgba(255,255,255,0.05)` : "0 0 0 2px rgba(100, 116, 139, 0.08), inset 0 1px 0 rgba(255,255,255,0.9)" },
-        send: { color: t.sendBtnColor, border: dark ? t.sendBtnBorder : "rgba(47, 95, 152, 0.70)", bg: dark ? t.sendBtnBg : "#2f5f98", shadow: dark ? `0 4px 10px color-mix(in srgb, ${t.sendBtnBg} 24%, transparent), inset 0 1px 0 rgba(255,255,255,0.10)` : "0 3px 8px rgba(47,95,152,0.14), inset 0 1px 0 rgba(255,255,255,0.16)" },
-        cancel: { color: dark ? t.btnColor : "#2f5f98", border: dark ? t.btnBorder : "rgba(47, 95, 152, 0.24)", bg: dark ? `color-mix(in srgb, ${t.btnColor} 10%, ${t.fieldBg})` : "rgba(243, 247, 251, 0.96)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(47,95,152,0.07), inset 0 1px 0 rgba(255,255,255,0.9)" },
+        send: { color: t.sendBtnColor, border: dark ? t.sendBtnBorder : "rgba(47, 111, 188, 0.70)", bg: dark ? t.sendBtnBg : "#2f6fbc", shadow: dark ? `0 4px 10px color-mix(in srgb, ${t.sendBtnBg} 24%, transparent), inset 0 1px 0 rgba(255,255,255,0.10)` : "0 3px 8px rgba(47,111,188,0.14), inset 0 1px 0 rgba(255,255,255,0.16)" },
+        cancel: { color: dark ? t.btnColor : "#2f6fbc", border: dark ? t.btnBorder : "rgba(47, 111, 188, 0.24)", bg: dark ? `color-mix(in srgb, ${t.btnColor} 10%, ${t.fieldBg})` : "rgba(243, 247, 251, 0.96)", shadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.05)" : "0 1px 2px rgba(47,111,188,0.07), inset 0 1px 0 rgba(255,255,255,0.9)" },
     }[tone];
     return { ...baseInputBtnStyle, color: palette.color, borderColor: palette.border, background: palette.bg, boxShadow: palette.shadow, opacity: disabled ? 0.45 : 1, cursor: disabled ? "default" : "pointer" };
 }
@@ -586,8 +587,8 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
         50% { transform: scale(1.03); opacity: 0.92; }
     }
     @keyframes maclaw-brand-shimmer {
-        0%, 100% { filter: drop-shadow(0 0 3px rgba(47, 95, 152, 0.28)) brightness(1); }
-        50% { filter: drop-shadow(0 0 7px rgba(47, 95, 152, 0.38)) brightness(1.08); }
+        0%, 100% { filter: drop-shadow(0 0 3px rgba(47, 111, 188, 0.28)) brightness(1); }
+        50% { filter: drop-shadow(0 0 7px rgba(47, 111, 188, 0.38)) brightness(1.08); }
     }
     @keyframes ai-update-notice-pulse {
         0%, 100% { box-shadow: inset 0 0 0 1px rgba(79, 127, 111, 0.34), 0 0 0 0 rgba(79, 127, 111, 0.28); }
@@ -597,31 +598,31 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
     .ai-window-control:hover { background: var(--ai-window-control-hover-bg, rgba(148, 163, 184, 0.14)) !important; }
     .ai-window-control:active { filter: brightness(0.96); }
     .ai-window-control:focus-visible {
-        outline: 2px solid rgba(47, 95, 152, 0.48);
+        outline: 2px solid rgba(47, 111, 188, 0.48);
         outline-offset: 1px;
     }
     .ai-titlebar-tool:hover:not(:disabled) { background: var(--ai-titlebar-tool-hover-bg, rgba(148, 163, 184, 0.12)) !important; }
     .ai-titlebar-tool:active:not(:disabled) { filter: brightness(0.96); }
     .ai-titlebar-tool:focus-visible {
-        outline: 2px solid rgba(47, 95, 152, 0.38);
+        outline: 2px solid rgba(47, 111, 188, 0.38);
         outline-offset: 1px;
     }
     .ai-update-notice-button { animation: ai-update-notice-pulse 1.35s ease-in-out infinite; }
     .ai-update-menu-item:hover { background: rgba(148, 163, 184, 0.14) !important; }
-    .ai-plus-menu-item:hover:not(:disabled) { background: var(--ai-plus-menu-item-hover-bg, rgba(47, 95, 152, 0.08)) !important; }
+    .ai-plus-menu-item:hover:not(:disabled) { background: var(--ai-plus-menu-item-hover-bg, rgba(47, 111, 188, 0.08)) !important; }
     .ai-plus-menu-item:focus-visible:not(:disabled) {
-        outline: 2px solid rgba(47, 95, 152, 0.38);
+        outline: 2px solid rgba(47, 111, 188, 0.38);
         outline-offset: -1px;
     }
     .ai-plus-menu-item[data-active="true"]:not(:disabled) {
-        background: var(--ai-plus-menu-item-hover-bg, rgba(47, 95, 152, 0.08)) !important;
+        background: var(--ai-plus-menu-item-hover-bg, rgba(47, 111, 188, 0.08)) !important;
     }
     .ai-plus-menu-item:disabled {
         cursor: not-allowed !important;
     }
     .ai-permission-mode-trigger:focus-visible,
     .ai-permission-mode-item:focus-visible {
-        outline: 2px solid rgba(47, 95, 152, 0.48);
+        outline: 2px solid rgba(47, 111, 188, 0.48);
         outline-offset: 1px;
     }
     .ai-attachment-row {

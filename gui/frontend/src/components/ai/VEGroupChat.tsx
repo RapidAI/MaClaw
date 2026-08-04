@@ -526,6 +526,8 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                         overflowWrap: "anywhere",
                         whiteSpace: "pre-wrap",
                         maxWidth: "82%",
+                        // Tail-side corner stays tight (user: bottom-right, peer: bottom-left).
+                        borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
                     }}
                 >
                     <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />

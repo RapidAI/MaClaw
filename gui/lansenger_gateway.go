@@ -67,7 +67,12 @@ type lansengerGatewayManager struct {
 	groupSummary *lansengerGroupSummaryService
 	// groupSummaryAtomic is the lock-free hot-path pointer after first init.
 	groupSummaryAtomic atomic.Pointer[lansengerGroupSummaryService]
+	// groupFileLimits is an immutable snapshot used by the inbound attachment
+	// callback. Downloads must not parse config.json on the WebSocket hot path.
+	groupFileLimits atomic.Pointer[lansengerGroupFileLimits]
 }
+
+type lansengerGroupFileLimits map[string]int64
 
 func (m *lansengerGatewayManager) currentLocalHandler() *IMMessageHandler {
 	if m == nil {
@@ -157,6 +162,7 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 	if err != nil {
 		return
 	}
+	m.storeGroupFileLimits(cfg.LansengerGroupFileMaxBytes)
 
 	appID := strings.TrimSpace(cfg.LansengerAppID)
 	appSecret := strings.TrimSpace(cfg.LansengerAppSecret)
@@ -206,10 +212,11 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 	}
 
 	gwCfg := lansenger.Config{
-		AppID:            appID,
-		AppSecret:        appSecret,
-		ApiGatewayURL:    gwURL,
-		WebSocketBaseURL: wssURL,
+		AppID:             appID,
+		AppSecret:         appSecret,
+		ApiGatewayURL:     gwURL,
+		WebSocketBaseURL:  wssURL,
+		InboundMediaLimit: m.inboundMediaLimit,
 	}
 	gw := lansenger.NewGateway(gwCfg, m.onIncomingMessage)
 	gw.SetStatusCallback(func(status string) {
@@ -402,6 +409,9 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 		return
 	}
 	groupOpts := lansengerGroupChatOptionsFromConfig(&cfg)
+	if isLansengerGroupMessage(msg) && msg.MediaType != "" && !normalizeIMMediaKind(msg.MediaType).IsImage() {
+		msg.AuditUserRecorded = m.recordGroupFileAudit(msg)
+	}
 	// Remember last private peer so proactive self-notify can reach "my" 蓝信会话.
 	if !isLansengerGroupMessage(msg) {
 		if uid := strings.TrimSpace(msg.FromUserID); uid != "" {
@@ -502,6 +512,86 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 
 func isLansengerGroupMessage(msg lansenger.IncomingMessage) bool {
 	return lansenger.IsGroupChat(msg.ChatType)
+}
+
+func (m *lansengerGatewayManager) inboundMediaLimit(info lansenger.IncomingMediaInfo) (int64, bool) {
+	if !lansenger.IsGroupChat(info.ChatType) {
+		return 0, true
+	}
+	// Images retain the established multimodal path and legacy safety cap.
+	if normalizeIMMediaKind(info.MediaType).IsImage() {
+		return 0, true
+	}
+	limits := m.groupFileLimits.Load()
+	if limits == nil {
+		return 0, true
+	}
+	return (*limits)[strings.TrimSpace(info.GroupID)], true
+}
+
+func (m *lansengerGatewayManager) storeGroupFileLimits(source map[string]int64) {
+	limits := make(lansengerGroupFileLimits, len(source))
+	for groupID, maxBytes := range source {
+		if groupID = strings.TrimSpace(groupID); groupID != "" && maxBytes > 0 {
+			limits[groupID] = maxBytes
+		}
+	}
+	m.groupFileLimits.Store(&limits)
+}
+
+// updateGroupFileLimit publishes a copy-on-write snapshot. syncMu serializes
+// this with config reconciliation so an older config read cannot win afterward.
+func (m *lansengerGatewayManager) updateGroupFileLimit(groupID string, maxBytes int64) {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+	limits := make(lansengerGroupFileLimits)
+	if current := m.groupFileLimits.Load(); current != nil {
+		for key, value := range *current {
+			limits[key] = value
+		}
+	}
+	groupID = strings.TrimSpace(groupID)
+	if maxBytes > 0 {
+		limits[groupID] = maxBytes
+	} else {
+		delete(limits, groupID)
+	}
+	m.groupFileLimits.Store(&limits)
+}
+
+// recordGroupFileAudit persists group files independently of agent routing.
+// This keeps chat history complete even when mention/allowlist policy drops the
+// message before it reaches the local agent loop.
+func (m *lansengerGatewayManager) recordGroupFileAudit(msg lansenger.IncomingMessage) bool {
+	store := m.app.getIMAuditStore()
+	if store == nil {
+		return false
+	}
+	audit := IMAuditMessage{
+		UserID: lansengerConversationUserID(msg), Platform: "lansenger_local", Role: "user", Content: msg.Text,
+		AttachmentName: safeIMAuditAttachmentName(msg.MediaName), AttachmentMediaType: msg.MediaType,
+	}
+	if len(msg.MediaData) > 0 {
+		audit.AttachmentSize = int64(len(msg.MediaData))
+		path, err := m.app.saveIMAuditAttachmentNamed("lansenger", msg.GroupID, msg.MessageID, audit.AttachmentName, msg.MediaData)
+		if err != nil {
+			log.Printf("[lansenger-mgr] save audit attachment failed: group=%s message=%s err=%v", msg.GroupID, msg.MessageID, err)
+			if strings.TrimSpace(audit.Content) == "" {
+				audit.Content = "[文件未保存到本地]"
+			}
+		} else {
+			audit.AttachmentPath = path
+		}
+	} else if strings.TrimSpace(audit.Content) == "" {
+		audit.Content = "[文件未保存到本地]"
+	}
+	if store.WriteCritical(audit) {
+		return true
+	}
+	if audit.AttachmentPath != "" {
+		_ = os.Remove(audit.AttachmentPath)
+	}
+	return false
 }
 
 // lansengerMayStageNonImageMediaLocally keeps group attachments outside the
@@ -1168,11 +1258,12 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	}
 
 	userMessage := IMUserMessage{
-		UserID:      lansengerConversationUserID(msg),
-		Platform:    "lansenger_local",
-		Text:        text,
-		Lang:        appUILang(m.app),
-		Attachments: attachments,
+		UserID:        lansengerConversationUserID(msg),
+		Platform:      "lansenger_local",
+		Text:          text,
+		Lang:          appUILang(m.app),
+		Attachments:   attachments,
+		SkipUserAudit: msg.AuditUserRecorded,
 	}
 	var loopCtx *LoopContext
 	if isLansengerGroupMessage(msg) {
@@ -1653,6 +1744,8 @@ type LansengerGroupListEntry struct {
 	// Orphan means this row comes only from the local ignore/allow list (not the
 	// platform group fetch). Used by the UI to drop the row after "Resume".
 	Orphan bool `json:"orphan,omitempty"`
+	// FileMaxBytes is the local chat-history attachment cap. Zero means unlimited.
+	FileMaxBytes int64 `json:"file_max_bytes"`
 }
 
 // LansengerGroupListResult is the Wails payload for ListLansengerGroups.
@@ -1731,6 +1824,7 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			IsPublic:     g.IsPublic,
 			Ignored:      cfg.IsLansengerGroupIgnored(g.GroupID),
 			Allowed:      cfg.IsLansengerGroupAllowed(g.GroupID),
+			FileMaxBytes: cfg.LansengerGroupFileLimit(g.GroupID),
 		})
 	}
 	// Surface ignore/allowlist-only entries that are no longer returned by the
@@ -1744,11 +1838,12 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			continue
 		}
 		entries = append(entries, LansengerGroupListEntry{
-			GroupID: id,
-			Name:    id,
-			Ignored: true,
-			Allowed: cfg.IsLansengerGroupAllowed(id),
-			Orphan:  true,
+			GroupID:      id,
+			Name:         id,
+			Ignored:      true,
+			Allowed:      cfg.IsLansengerGroupAllowed(id),
+			FileMaxBytes: cfg.LansengerGroupFileLimit(id),
+			Orphan:       true,
 		})
 		seen[id] = struct{}{}
 	}
@@ -1761,10 +1856,11 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			continue
 		}
 		entries = append(entries, LansengerGroupListEntry{
-			GroupID: id,
-			Name:    id,
-			Allowed: true,
-			Orphan:  true,
+			GroupID:      id,
+			Name:         id,
+			Allowed:      true,
+			FileMaxBytes: cfg.LansengerGroupFileLimit(id),
+			Orphan:       true,
 		})
 	}
 	return &LansengerGroupListResult{Total: list.Total, Groups: entries}, nil
@@ -1806,4 +1902,24 @@ func (a *App) SetLansengerGroupAllowed(groupID string, allowed bool) error {
 	return a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.SetLansengerGroupAllowed(groupID, allowed)
 	})
+}
+
+// SetLansengerGroupFileMaxBytes updates the local history attachment cap for a group.
+func (a *App) SetLansengerGroupFileMaxBytes(groupID string, maxBytes int64) error {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return fmt.Errorf("group id is required")
+	}
+	if maxBytes < 0 {
+		return fmt.Errorf("file size limit cannot be negative")
+	}
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SetLansengerGroupFileLimit(groupID, maxBytes)
+	}); err != nil {
+		return err
+	}
+	if a.lansengerGateway != nil {
+		a.lansengerGateway.updateGroupFileLimit(groupID, maxBytes)
+	}
+	return nil
 }

@@ -1,4 +1,4 @@
-import { KnowledgeListSources, ListLansengerGroups, LoadConfig, RestartLansenger, SelectVEAllowedDirectory, SetLansengerGroupAllowed, SetLansengerGroupIgnored, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
+import { KnowledgeListSources, ListLansengerGroups, LoadConfig, RestartLansenger, SelectVEAllowedDirectory, SetLansengerGroupAllowed, SetLansengerGroupFileMaxBytes, SetLansengerGroupIgnored, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
 import { Suspense, lazy, type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react';
 import { corelib, main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
@@ -51,6 +51,7 @@ type LansengerGroupRow = {
     allowed?: boolean;
     /** Local ignore/allow list only (not returned by Lansenger group fetch). */
     orphan?: boolean;
+    file_max_bytes?: number;
 };
 
 type LansengerGroupListPayload = {
@@ -90,6 +91,8 @@ export const LansengerSettings = ({
     const [groups, setGroups] = useState<LansengerGroupRow[]>([]);
     const [groupsTotal, setGroupsTotal] = useState(0);
     const [ignoreBusyID, setIgnoreBusyID] = useState('');
+    const [fileLimitBusyID, setFileLimitBusyID] = useState('');
+    const [fileLimitDrafts, setFileLimitDrafts] = useState<Record<string, string>>({});
     const [watchOpen, setWatchOpen] = useState(false);
     const [permissionSources, setPermissionSources] = useState<KnowledgeSourceRow[]>([]);
     const [permissionSourcesLoading, setPermissionSourcesLoading] = useState(false);
@@ -242,6 +245,22 @@ export const LansengerSettings = ({
             })
             .finally(() => setIgnoreBusyID((cur) => (cur === id ? '' : cur)));
     }, [isAllowlistPolicy, lang, setConfig, showAlert]);
+
+    const saveGroupFileLimit = useCallback(async (groupID: string, megabytes: number) => {
+        const id = String(groupID || '').trim();
+        if (!id) return;
+        const maxBytes = Math.max(0, Math.floor(Number.isFinite(megabytes) ? megabytes : 0)) * 1024 * 1024;
+        setFileLimitBusyID(id);
+        try {
+            await SetLansengerGroupFileMaxBytes(id, maxBytes);
+            setGroups((prev) => prev.map((g) => g.group_id === id ? { ...g, file_max_bytes: maxBytes } : g));
+            setFileLimitDrafts((prev) => ({ ...prev, [id]: String(maxBytes / (1024 * 1024)) }));
+        } catch (err) {
+            void showAlert(wailsErrorMessage(err, textForLang(lang, 'Failed to save file limit', '保存文件上限失败', '儲存檔案上限失敗')));
+        } finally {
+            setFileLimitBusyID('');
+        }
+    }, [lang, showAlert]);
 
     // One Escape handler for whichever sheet is open (watch stacks above groups).
     // Capture phase so nested inputs / other listeners do not swallow Escape first.
@@ -502,6 +521,25 @@ export const LansengerSettings = ({
 
                         <div className="im-group-permissions__section">
                             <label className="im-settings-toggle">
+                                <input
+                                    type="checkbox"
+                                    checked={!!(config as any)?.lansenger_group_allow_web_search}
+                                    onChange={(e) => saveRemoteConfigField({ lansenger_group_allow_web_search: e.target.checked } as any)}
+                                />
+                                <span>{textForLang(lang, 'Allow web research and downloads', '允许网络检索与文件下载', '允許網路檢索與檔案下載')}</span>
+                            </label>
+                            <p className="im-group-permissions__hint">
+                                {textForLang(
+                                    lang,
+                                    'Disabled by default. When enabled, group replies may use public web_search and web_fetch. Downloads (up to 25 MB, 60 s) are saved in the agent working directory; private-network targets, browser access, sessions, cookies, proxies, custom headers and JS rendering remain unavailable.',
+                                    '默认关闭。启用后，群聊回复可使用公开网络的 web_search 和 web_fetch；下载文件（最大 25 MB、60 秒）保存到 Agent 工作目录。内网地址、浏览器访问、会话、Cookie、代理、自定义请求头和 JS 渲染仍不可用。',
+                                    '預設關閉。啟用後，群組回覆可使用公開網路的 web_search 與 web_fetch；下載檔案（最大 25 MB、60 秒）儲存在 Agent 工作目錄。內網位址、瀏覽器存取、工作階段、Cookie、Proxy、自訂請求標頭與 JS 渲染仍不可用。',
+                                )}
+                            </p>
+                        </div>
+
+                        <div className="im-group-permissions__section">
+                            <label className="im-settings-toggle">
                                 <input type="checkbox" checked={allowAllDirectories} onChange={(e) => saveRemoteConfigField({ lansenger_group_allow_all_directories: e.target.checked } as any)} />
                                 <span>{textForLang(lang, 'Allow all directories', '允许所有目录', '允許所有目錄')}</span>
                             </label>
@@ -596,6 +634,7 @@ export const LansengerSettings = ({
                                                     <th>{textForLang(lang, 'Members', '\u6210\u5458', '\u6210\u54e1')}</th>
                                                     <th>{textForLang(lang, 'Owner', '\u7fa4\u4e3b', '\u7fa4\u4e3b')}</th>
                                                     <th>{textForLang(lang, 'Description', '\u63cf\u8ff0', '\u63cf\u8ff0')}</th>
+                                                    <th>{textForLang(lang, 'File limit', '文件上限', '檔案上限')}</th>
                                                     <th>{textForLang(lang, 'Response', '\u54cd\u5e94', '\u56de\u61c9')}</th>
                                                 </tr>
                                             </thead>
@@ -622,6 +661,19 @@ export const LansengerSettings = ({
                                                             <td>{typeof g.total_members === 'number' ? g.total_members : '—'}</td>
                                                             <td title={g.owner_id || ''}>{owner}</td>
                                                             <td className="im-groups-table__desc">{g.description || '—'}</td>
+                                                            <td className="im-groups-table__file-limit">
+                                                                <label>
+                                                                    <input type="number" min="0" step="1" inputMode="numeric"
+                                                                        value={fileLimitDrafts[id] ?? String(Math.round(Math.max(0, g.file_max_bytes || 0) / (1024 * 1024)))}
+                                                                        disabled={!id || fileLimitBusyID === id}
+                                                                        aria-label={textForLang(lang, `File limit for ${g.name || id}`, `${g.name || id} 文件大小上限`, `${g.name || id} 檔案大小上限`)}
+                                                                        onChange={(e) => setFileLimitDrafts((prev) => ({ ...prev, [id]: e.currentTarget.value }))}
+                                                                        onBlur={(e) => void saveGroupFileLimit(id, Number(e.currentTarget.value))}
+                                                                        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+                                                                    <span>MB</span>
+                                                                </label>
+                                                                <small>{textForLang(lang, '0 = unlimited', '0 = 不限制', '0 = 不限制')}</small>
+                                                            </td>
                                                             <td className="im-groups-table__action">
                                                                 <button
                                                                     type="button"

@@ -368,7 +368,7 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
 
 	assertContainsAll(t, html, "expert market cache version", []string{
-		`/admin/assets/js/expertmarket-admin.js?v=expert-market-admin-20260802-9`,
+		`/admin/assets/js/expertmarket-admin.js?v=expert-market-admin-20260804-3`,
 	})
 	if strings.Contains(html, `<option value="approved">`) {
 		t.Fatal("expert market filter must not expose the retired approved state")
@@ -376,6 +376,13 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 	assertContainsAll(t, js, "expert market compact review actions", []string{
 		`class="expert-market-card"`,
 		`data-expert-reason`,
+		`const reviewNote = status === 'pending_review'`,
+		`const footer = reviewNote || actions ?`,
+		`function expertMarketEnsureActionReason(card)`,
+		`const existing = card.querySelector('[data-expert-reason]')`,
+		`operationReasonRequired`,
+		`const requiresReason = action === 'unlist' || action === 'delete' || action === 'purge'`,
+		`reasonInput?.focus(); expertMarketSetStatus('error', expertMarketText('operationReasonRequired')); return;`,
 		`data-expert-action="approve"`,
 		`data-expert-action="reject"`,
 		`data-expert-action="unlist"`,
@@ -383,9 +390,9 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 		`expertMarketAdminFilterLabel`,
 		`function bindExpertMarketActions()`,
 		`grid.addEventListener('click'`,
-		`reasonInput?.focus()`,
 		`deleteConfirm`,
 		`action === 'delete' && !window.confirm`,
+		`reasonInput?.focus(); return;`,
 		`const successKey = { approve: 'approvedOk'`,
 		`expertMarketAdminRequestKey`,
 		`expertMarketAdminInFlight && expertMarketAdminRequestKey === requestKey`,
@@ -413,6 +420,9 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 	})
 	if strings.Contains(js, `window.prompt(`) || strings.Contains(js, `onclick="expertMarket`) {
 		t.Fatal("expert market moderation must use an inline reason field and delegated card actions")
+	}
+	if strings.Contains(js, `action === 'approve' || action === 'reject'`) || strings.Contains(js, `reasonRequired`) || strings.Contains(js, `if (!reason)`) {
+		t.Fatal("expert market approval and rejection review notes must remain optional")
 	}
 	if strings.Contains(js, `status === 'approved'`) || strings.Contains(js, `data-expert-action="list"`) {
 		t.Fatal("expert market approval must publish directly without a separate list action")

@@ -61,6 +61,37 @@ func TestRunDoctor_AlwaysIncludesSharedLoopStats(t *testing.T) {
 	_ = filepath.Join(tempHome, "config.json")
 }
 
+func TestRunDoctor_IncludesTokenOptimizationTelemetry(t *testing.T) {
+	t.Setenv("MACLAW_CONTEXT_CHECKPOINT", "on")
+	before := agent.CurrentLoopInputBreakdownStats()
+	agent.RecordLoopInputBreakdown(agent.LoopInputBreakdown{
+		SystemPromptTokens:   2,
+		ToolDefinitionTokens: 3,
+		HistoryTokens:        5,
+		ToolResultTokens:     7,
+		TotalEstimatedTokens: 17,
+	})
+
+	report := (&App{testHomeDir: t.TempDir()}).RunDoctor()
+	for _, check := range report.Checks {
+		if check.ID != "agent.shared_loop_stats" {
+			continue
+		}
+		breakdown, ok := check.Detail["input_breakdown"].(agent.LoopInputBreakdownStats)
+		if !ok {
+			t.Fatalf("input_breakdown type/value = %#v", check.Detail["input_breakdown"])
+		}
+		if breakdown.Requests != before.Requests+1 || breakdown.TotalEstimatedTokens != before.TotalEstimatedTokens+17 {
+			t.Fatalf("doctor breakdown not current: before=%+v got=%+v", before, breakdown)
+		}
+		if got := check.Detail["context_checkpoint_mode"]; got != "on" {
+			t.Fatalf("context checkpoint mode = %#v, want on", got)
+		}
+		return
+	}
+	t.Fatal("missing agent.shared_loop_stats check")
+}
+
 func TestRunDoctor_IncludesLightDenyWhenPresent(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

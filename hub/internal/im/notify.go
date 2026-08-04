@@ -11,6 +11,8 @@ import (
 	"log"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -232,6 +234,67 @@ func (b *NotifyBroadcaster) BroadcastFileForTenant(ctx context.Context, tenantID
 	}
 }
 
+// SendFileToTargetForTenant delivers to exactly one platform/conversation.
+// It never broadcasts or falls back when a target was explicitly requested.
+func (b *NotifyBroadcaster) SendFileToTargetForTenant(ctx context.Context, tenantID string, target agent.IMFileDeliveryTarget, b64Data, fileName, mimeType, message string) error {
+	if b == nil || b.adapter == nil {
+		return fmt.Errorf("IM broadcaster unavailable")
+	}
+	target = target.Normalize()
+	channel := scheduler.CanonicalDeliveryChannel(target.Channel)
+	if channel == "" {
+		return fmt.Errorf("target channel is required")
+	}
+	tenantID = normalizeTenantID(tenantID)
+	ctx = store.WithTenant(WithTenant(ctx, tenantID), tenantID)
+	plugins := b.adapter.PluginsForTenant(tenantID)
+	pluginNames := []string{channel}
+	switch channel {
+	case scheduler.DeliveryChannelQQ:
+		pluginNames = []string{"qqbot", "qqbot_remote"}
+	case scheduler.DeliveryChannelWeixin:
+		pluginNames = []string{"weixin", "weixin_remote"}
+	case scheduler.DeliveryChannelTelegram:
+		pluginNames = []string{"telegram", "telegram_remote"}
+	case scheduler.DeliveryChannelLansenger:
+		pluginNames = []string{"lansenger", "lansenger_remote"}
+	}
+	var plugin IMPlugin
+	for _, name := range pluginNames {
+		if candidate := plugins[name]; candidate != nil {
+			plugin = candidate
+			break
+		}
+	}
+	if plugin == nil {
+		return fmt.Errorf("IM channel %q is unavailable", channel)
+	}
+	uid := strings.TrimSpace(target.UserID)
+	if uid == "" {
+		uid = strings.TrimSpace(target.GroupID)
+	}
+	if scheduler.IsSelfPeerID(uid) {
+		return fmt.Errorf("target user_id=self must be resolved to a concrete platform id before Hub delivery")
+	}
+	if uid == "" {
+		return fmt.Errorf("target group_id or user_id is required")
+	}
+	if !plugin.Capabilities().SupportsFile {
+		return fmt.Errorf("IM channel %q does not support file delivery", channel)
+	}
+	if err := plugin.SendFile(ctx, UserTarget{PlatformUID: uid}, b64Data, fileName, mimeType); err != nil {
+		return fmt.Errorf("send file to %s target %s: %w", channel, uid, err)
+	}
+	// Send the file before its separate caption. Otherwise a media failure leaves
+	// a misleading success-looking text message in the exact target conversation.
+	if strings.TrimSpace(message) != "" {
+		if err := plugin.SendText(ctx, UserTarget{PlatformUID: uid}, message); err != nil {
+			return fmt.Errorf("file sent but caption delivery to %s failed: %w", channel, err)
+		}
+	}
+	return nil
+}
+
 func platformDisplayName(name string) string {
 	switch name {
 	case "feishu":
@@ -395,4 +458,12 @@ func (p *ProactiveSender) SendProactiveFile(ctx context.Context, tenantID, userI
 	}
 	p.broadcaster.BroadcastFileForTenant(ctx, tenantID, email, b64Data, fileName, mimeType, message)
 	return nil
+}
+
+func (p *ProactiveSender) SendProactiveFileToTarget(ctx context.Context, tenantID, userID string, target agent.IMFileDeliveryTarget, b64Data, fileName, mimeType, message string) error {
+	if p == nil || p.broadcaster == nil {
+		return fmt.Errorf("IM broadcaster unavailable")
+	}
+	_ = userID // authorization already comes from the authenticated machine context
+	return p.broadcaster.SendFileToTargetForTenant(ctx, tenantID, target, b64Data, fileName, mimeType, message)
 }

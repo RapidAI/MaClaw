@@ -1496,6 +1496,7 @@ func TestPatchConfigFieldsLansengerGroupPermissions(t *testing.T) {
 
 	patched, err := app.PatchConfigFields(map[string]interface{}{
 		"lansenger_group_knowledge_source_ids":  []any{" source-a ", "source-a", "source-b"},
+		"lansenger_group_allow_web_search":      true,
 		"lansenger_group_allow_all_directories": true,
 		"lansenger_group_allowed_directories":   []any{" C:\\allowed ", "C:\\allowed", "D:\\docs"},
 	})
@@ -1507,6 +1508,9 @@ func TestPatchConfigFieldsLansengerGroupPermissions(t *testing.T) {
 	}
 	if !patched.LansengerGroupAllowAllDirectories {
 		t.Fatal("allow all directories should be true")
+	}
+	if !patched.LansengerGroupAllowWebSearch {
+		t.Fatal("web search should be allowed")
 	}
 	if got, want := patched.LansengerGroupAllowedDirectories, []string{"C:\\allowed", "D:\\docs"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("allowed directories = %#v, want %#v", got, want)
@@ -1918,6 +1922,10 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"thirdparty_gateway_token":     " gateway-token ",
 		"thirdparty_gateway_host":      " 0.0.0.0 ",
 		"thirdparty_gateway_port":      float64(18888),
+		"hardware_welcome_enabled":     true,
+		"hardware_welcome_text":        " Hello, Maclaw ",
+		"hardware_welcome_audio_path":  " C:/hardware/welcome.wav ",
+		"hardware_volume":              float64(62),
 		"ui_zoom_factor":               float64(3.5),
 		"chat_font_size":               float64(99),
 		"env_check_interval":           float64(14),
@@ -2005,6 +2013,9 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if !patched.ThirdPartyGatewayEnabled || patched.ThirdPartyGatewayToken != "gateway-token" || patched.ThirdPartyGatewayHost != "0.0.0.0" || patched.ThirdPartyGatewayPort != 18888 {
 		t.Fatalf("third-party gateway fields not applied: %#v", patched)
 	}
+	if !patched.HardwareWelcomeEnabled || patched.HardwareWelcomeText != "Hello, Maclaw" || patched.HardwareWelcomeAudioPath != "C:/hardware/welcome.wav" || patched.HardwareVolume != 62 {
+		t.Fatalf("hardware configuration fields not applied: %#v", patched)
+	}
 	if patched.UIZoomFactor != 2.0 || patched.ChatFontSize != 24 || patched.EnvCheckInterval != 14 || patched.LastEnvCheckTime != "2026-06-05T12:00:00Z" || patched.VectorSearchEnabled || patched.ScreenParsingEnabled == nil || *patched.ScreenParsingEnabled || patched.ASREnabled || patched.TTSEnabled || patched.TTSVoiceID != "zm_yunxi" || patched.MaclawAgentMaxIterations != 30 || patched.SubAgentConcurrency != corelib.MaxSubAgentConcurrency || !patched.TrialReflectEnabled {
 		t.Fatalf("ui/vector/agent fields not applied with normalization: %#v", patched)
 	}
@@ -2046,6 +2057,30 @@ func TestPatchConfigFieldsRejectsLoopbackHubCenterURL(t *testing.T) {
 		"remote_hubcenter_url": "http://127.0.0.1:65140",
 	}); err == nil {
 		t.Fatal("PatchConfigFields accepted loopback remote_hubcenter_url")
+	}
+}
+
+func TestPatchConfigFieldsUpdatesHardwareConfiguration(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"hardware_welcome_enabled":    true,
+		"hardware_welcome_text":       " Hello, Maclaw ",
+		"hardware_welcome_audio_path": " C:/hardware/welcome.wav ",
+		"hardware_volume":             float64(62),
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if !patched.HardwareWelcomeEnabled || patched.HardwareWelcomeText != "Hello, Maclaw" || patched.HardwareWelcomeAudioPath != "C:/hardware/welcome.wav" || patched.HardwareVolume != 62 {
+		t.Fatalf("hardware configuration fields not applied: %#v", patched)
+	}
+
+	if _, err := app.PatchConfigFields(map[string]interface{}{"hardware_volume": float64(101)}); err == nil {
+		t.Fatal("expected out-of-range hardware volume to be rejected")
 	}
 }
 
@@ -3168,6 +3203,44 @@ func TestDevicePetProfileChangedOnlyTracksHardwareFields(t *testing.T) {
 	newMotion.PetMotionEnabled = &motionOff
 	if !devicePetProfileChanged(base, newMotion) {
 		t.Fatal("pet motion change must be synchronized to hardware")
+	}
+}
+
+func TestHardwareWelcomeConfigChangedOnlyTracksHubConfigFields(t *testing.T) {
+	base := corelib.AppConfig{HardwareWelcomeEnabled: true, HardwareWelcomeText: "Hello, Maclaw", HardwareWelcomeAudioPath: "C:/hardware/welcome.wav"}
+
+	copyOnly := base
+	copyOnly.HardwareWelcomeText = "A different script"
+	if hardwareWelcomeConfigChanged(base, copyOnly) {
+		t.Fatal("welcome copy is not sent directly to hardware; it should not trigger a Hub sync")
+	}
+
+	disabled := base
+	disabled.HardwareWelcomeEnabled = false
+	if !hardwareWelcomeConfigChanged(base, disabled) {
+		t.Fatal("welcome enablement must be synchronized to Hub")
+	}
+
+	newAudio := base
+	newAudio.HardwareWelcomeAudioPath = "C:/hardware/new-welcome.wav"
+	if !hardwareWelcomeConfigChanged(base, newAudio) {
+		t.Fatal("welcome audio path change must be synchronized to Hub")
+	}
+}
+
+func TestHardwareVolumeChangedOnlyTracksVolume(t *testing.T) {
+	base := corelib.AppConfig{HardwareVolume: 70, HardwareWelcomeEnabled: true}
+
+	welcomeChanged := base
+	welcomeChanged.HardwareWelcomeEnabled = false
+	if hardwareVolumeChanged(base, welcomeChanged) {
+		t.Fatal("welcome switch must not trigger a volume synchronization")
+	}
+
+	muted := base
+	muted.HardwareVolume = 0
+	if !hardwareVolumeChanged(base, muted) {
+		t.Fatal("mute must be synchronized to paired hardware")
 	}
 }
 

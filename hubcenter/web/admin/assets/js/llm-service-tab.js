@@ -695,3 +695,25 @@ if (typeof I18N_EN !== 'undefined') {
   }
 
 })();
+
+// Credits redemption-card administration is kept in the Platform tab bundle
+// so the HubCenter shell retains its established static asset layout.
+(function () {
+  'use strict';
+  function enhanceButtonTypes(root = document) { root.querySelectorAll('button:not([type])').forEach(btn => { btn.type='button'; }); }
+  function enhanceFormAccessibility(node) { enhanceButtonTypes(node); }
+  document.addEventListener('DOMContentLoaded', () => { applyI18n();enhanceFormAccessibility();enhanceButtonTypes();enhanceStatusHints(); });
+  if(typeof enhanceButtonTypes==='function')enhanceButtonTypes();
+  function api(path, options) { return window.api(path, options || {}); }
+  function status(message, isError) { var target=document.getElementById('redeemCardsStatusMessage'); if(target){target.textContent=message||'';target.className='sm-status'+(isError?' error':'');} }
+  function trRedeem(key, vars) { var value=(typeof tr==='function'?tr(key):key); return Object.keys(vars||{}).reduce(function(result,name){return result.replace('{'+name+'}',String(vars[name]));},value); }
+  function esc(value) { return String(value||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function statusLabel(card) { return card.status==='active'?trRedeem('redeemCardsUnused'):card.status==='redeemed'?trRedeem('redeemCardsRedeemed'):trRedeem('redeemCardsRevoked'); }
+  function render(cards) { var root=document.getElementById('redeemCardsList'); if(!root)return; if(!cards.length){root.innerHTML='<div class="hint">'+esc(trRedeem('redeemCardsNone'))+'</div>';return;} root.innerHTML=cards.map(function(card){var detail=card.status==='redeemed'?trRedeem('redeemCardsRedeemedBy')+': '+(card.redeemed_by_email||card.redeemed_by_user_id||'–')+' · '+(card.redeemed_at||''):trRedeem('redeemCardsIssued')+': '+(card.issued_at||'');var flag=card.status==='active'&&!card.exported_at?'<span class="badge warn">'+esc(trRedeem('redeemCardsNotExported'))+'</span>':'';var revoke=card.status==='active'?'<button type="button" class="btn-danger-ghost" data-redeem-card-id="'+esc(card.id)+'">'+esc(trRedeem('redeemCardsRevoke'))+'</button>':'';return '<div class="data-row"><div class="data-row-main"><strong class="mono">'+esc(card.code)+'</strong><span class="data-row-meta">'+esc(detail)+'</span></div><div class="data-row-actions"><span>'+Number(card.credits||0)+' Credits</span><span class="badge info">'+esc(statusLabel(card))+'</span>'+flag+revoke+'</div></div>';}).join(''); }
+  window.loadCreditRedeemCards=async function(){var filter=document.getElementById('redeemCardsStatus'),suffix=filter&&filter.value?'?status='+encodeURIComponent(filter.value):'';try{var result=await api('/api/v1/admin/credits/redeem-cards'+suffix);render(result.cards||[]);}catch(err){status(err.message||String(err),true);}};
+  window.initRedeemCardsTab=window.loadCreditRedeemCards;
+  document.addEventListener('click', function(event) { var button=event.target.closest('[data-redeem-card-id]'); if(button) window.revokeCreditRedeemCard(button.dataset.redeemCardId); });
+  window.issueCreditRedeemCards=async function(){try{var result=await api('/api/v1/admin/credits/redeem-cards',{method:'POST',body:JSON.stringify({credits:Number(document.getElementById('redeemCardCredits').value||100),count:Number(document.getElementById('redeemCardCount').value||1)})});status(trRedeem('redeemCardsIssuedSuccess',{count:(result.cards||[]).length}));window.loadCreditRedeemCards();}catch(err){status(err.message||String(err),true);}};
+  window.revokeCreditRedeemCard=async function(id){if(!confirm(trRedeem('redeemCardsConfirmRevoke')))return;try{await api('/api/v1/admin/credits/redeem-cards/'+encodeURIComponent(id)+'/revoke',{method:'POST'});window.loadCreditRedeemCards();}catch(err){status(err.message||String(err),true);}};
+  window.exportCreditRedeemCards=async function(mode){try{var result=await api('/api/v1/admin/credits/redeem-cards/export',{method:'POST',body:JSON.stringify({mode:mode})}),rows=['code,credits'];(result.cards||[]).forEach(function(card){rows.push('="'+String(card.code||'').replace(/"/g,'""')+'",'+Number(card.credits||0));});var link=document.createElement('a');var href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv;charset=utf-8'}));link.href=href;link.download='maclaw-credits-redeem-cards.csv';link.click();URL.revokeObjectURL(href);status(trRedeem('redeemCardsExportedSuccess',{count:(result.cards||[]).length}));window.loadCreditRedeemCards();}catch(err){status(err.message||String(err),true);}};
+}());

@@ -11,6 +11,7 @@ import '../../shared/surface.dart';
 import 'document_draft.dart';
 import 'document_original_image.dart';
 import 'documents_controller.dart';
+import '../tasks/mobile_jobs_provider.dart';
 
 typedef DocumentsExportFileShare = Future<ShareResult> Function(
   List<XFile> files, {
@@ -304,6 +305,7 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
     final s = ref.watch(appStringsProvider);
     final loading = ref.watch(documentsControllerProvider).isLoading;
     final controller = ref.read(documentsControllerProvider.notifier);
+    final quota = ref.watch(documentQuotaProvider).valueOrNull;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -323,11 +325,48 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              s.mobileImportHint,
+              s.isZh
+                  ? '支持任意格式；自动压缩后单文件不超过 100 MB。压缩包及 DOCX/XLSX/PPTX 不重复压缩。'
+                  : 'Any file type; maximum 100 MB after automatic compression. Archives and DOCX/XLSX/PPTX are not recompressed.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
             ),
+            if (quota != null) ...[
+              const SizedBox(height: 10),
+              Semantics(
+                label: s.isZh ? '文稿库存储空间' : 'Document storage usage',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 4,
+                      children: [
+                        Text(s.isZh
+                            ? '已用 ${formatMobileFileSize(quota.documentQuotaUsedBytes)}'
+                            : '${formatMobileFileSize(quota.documentQuotaUsedBytes)} used'),
+                        Text(s.isZh
+                            ? '剩余 ${formatMobileFileSize(quota.documentQuotaRemaining)}'
+                            : '${formatMobileFileSize(quota.documentQuotaRemaining)} remaining'),
+                        Text(s.isZh
+                            ? '总限额 ${formatMobileFileSize(quota.documentQuotaBytes)}'
+                            : '${formatMobileFileSize(quota.documentQuotaBytes)} total'),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    LinearProgressIndicator(
+                      value: quota.documentQuotaBytes <= 0
+                          ? 0
+                          : (quota.documentQuotaUsedBytes /
+                                  quota.documentQuotaBytes)
+                              .clamp(0, 1)
+                              .toDouble(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -839,7 +878,9 @@ class _DocumentReadonlyPreviewState
     final scheme = Theme.of(context).colorScheme;
     final s = ref.watch(appStringsProvider);
     final body = draft.markdown.trim().isEmpty
-        ? (draft.hasOriginal ? s.documentOriginalOnlyBody : s.documentBodyEmpty)
+        ? (draft.hasOriginal
+            ? (s.isZh ? '不支持内容预览' : 'Content preview is not supported')
+            : s.documentBodyEmpty)
         : draft.markdown;
     return Card(
       child: Padding(

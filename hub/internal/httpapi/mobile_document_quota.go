@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -11,11 +13,20 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
+var (
+	errMobileDocumentDraftNotFound = errString("document draft not found")
+	errMobileDocumentQuotaExceeded = errString("document storage quota exceeded")
+	errMobileDocumentDraftChanged  = errString("document draft changed during processing")
+)
+
 // Optional system settings for resolving paid document quota on write paths.
 // Configured from NewRouter; nil-safe (falls back to free 100MiB).
 var (
 	mobileQuotaSystem   store.SystemSettingsRepository
 	mobileQuotaSecurity *security.SecurityService
+	// Serializes quota check + document insertion so concurrent uploads cannot
+	// each pass against the same pre-upload usage snapshot.
+	mobileDocumentQuotaAdmissionMu sync.Mutex
 )
 
 // ConfigureMobileDocumentQuota wires service-grant resolution into document
@@ -48,7 +59,7 @@ func mobileDocumentQuotaScan(ownerID, tenantID string, repair bool) (used int64,
 	}
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
-	draftsWithOriginal := make(map[string]struct{})
+	draftSourcePaths := make(map[string]struct{})
 	for id, draft := range mobileDocuments.drafts {
 		if draft.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, draft.TenantID) {
 			continue
@@ -58,9 +69,16 @@ func mobileDocumentQuotaScan(ownerID, tenantID string, repair bool) (used int64,
 			repaired = true
 		}
 		used += int64(len(draft.Markdown))
+		for _, image := range draft.Images {
+			if image.SourceSize > 0 {
+				used += int64(image.SourceSize)
+			}
+		}
 		if n := mobileDraftSourceSize(draft); n > 0 {
 			used += int64(n)
-			draftsWithOriginal[draft.ID] = struct{}{}
+			if path := strings.TrimSpace(draft.SourcePath); path != "" {
+				draftSourcePaths[path] = struct{}{}
+			}
 		}
 	}
 	for id, upload := range mobileDocuments.uploads {
@@ -71,9 +89,11 @@ func mobileDocumentQuotaScan(ownerID, tenantID string, repair bool) (used int64,
 			mobileDocuments.uploads[id] = upload
 			repaired = true
 		}
-		// Avoid double-counting when the same original bytes already live on the draft.
-		if upload.DraftID != "" {
-			if _, ok := draftsWithOriginal[upload.DraftID]; ok {
+		// Avoid double-counting only when draft/upload reference the same durable
+		// immutable blob. DraftID alone is insufficient: legacy records may have a
+		// separately persisted upload source that still consumes real storage.
+		if path := strings.TrimSpace(upload.SourcePath); path != "" {
+			if _, shared := draftSourcePaths[path]; shared {
 				continue
 			}
 		}
@@ -137,6 +157,87 @@ func mobileCheckDocumentQuotaForPrincipal(ctx context.Context, principal *auth.V
 	ownerID := mobilePrincipalOwnerID(principal)
 	limit := mobileEffectiveDocumentQuota(ctx, principal)
 	return mobileCheckDocumentQuota(ownerID, principal.TenantID, additionalBytes, limit)
+}
+
+// mobileTransformDocumentDraftWithinQuota serializes a body transform with all
+// other quota-increasing document writes. The transform is computed outside the
+// document lock; a bounded retry prevents a concurrent self-heal from turning a
+// previously checked delta into an unchecked larger write.
+func mobileTransformDocumentDraftWithinQuota(
+	ctx context.Context,
+	principal *auth.ViewerPrincipal,
+	draftID string,
+	transform func(string) string,
+) (mobileDocumentDraftRecord, error) {
+	if principal == nil || transform == nil {
+		return mobileDocumentDraftRecord{}, errMobileDocumentDraftNotFound
+	}
+	ownerID := mobilePrincipalOwnerID(principal)
+	if ownerID == "" {
+		return mobileDocumentDraftRecord{}, errMobileDocumentDraftNotFound
+	}
+
+	mobileDocumentQuotaAdmissionMu.Lock()
+	defer mobileDocumentQuotaAdmissionMu.Unlock()
+	for attempt := 0; attempt < 3; attempt++ {
+		mobileDocuments.Lock()
+		current, ok := mobileDocuments.drafts[draftID]
+		mobileDocuments.Unlock()
+		if !ok || current.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, current.TenantID) {
+			return mobileDocumentDraftRecord{}, errMobileDocumentDraftNotFound
+		}
+
+		nextMarkdown := transform(current.Markdown)
+		delta := int64(len(nextMarkdown)) - int64(len(current.Markdown))
+		if delta > 0 {
+			if err := mobileCheckDocumentQuotaForPrincipal(ctx, principal, delta); err != nil {
+				return mobileDocumentDraftRecord{}, errMobileDocumentQuotaExceeded
+			}
+		}
+
+		mobileDocuments.Lock()
+		latest, stillExists := mobileDocuments.drafts[draftID]
+		if !stillExists || latest.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, latest.TenantID) {
+			mobileDocuments.Unlock()
+			return mobileDocumentDraftRecord{}, errMobileDocumentDraftNotFound
+		}
+		if latest.Markdown != current.Markdown {
+			mobileDocuments.Unlock()
+			continue
+		}
+		latest.Markdown = nextMarkdown
+		latest.UpdatedAt = time.Now().UTC()
+		mobileDocuments.drafts[draftID] = latest
+		mobileDocuments.Unlock()
+		return latest, nil
+	}
+	return mobileDocumentDraftRecord{}, errMobileDocumentDraftChanged
+}
+
+func mobileDraftHealQuotaDelta(current mobileDocumentDraftRecord, heal mobileDraftHealResult) int64 {
+	before := int64(len(current.Markdown))
+	for _, image := range current.Images {
+		before += int64(max(image.SourceSize, 0))
+	}
+	after := int64(len(current.Markdown))
+	display := strings.TrimSpace(heal.Display)
+	stored := strings.TrimSpace(current.Markdown)
+	if display != "" && display != stored {
+		allow := mobileDraftRecordBodyUnreadable(current, current.Markdown) ||
+			(mobileDraftSourceIsPDF(current) && mobilePDFTextLooksOverSpaced(stored)) ||
+			heal.ReplaceImages
+		if allow {
+			after = int64(len(display))
+		}
+	}
+	images := current.Images
+	if heal.ReplaceImages && len(heal.Images) > 0 {
+		images = heal.Images
+	}
+	for _, image := range images {
+		after += int64(max(image.SourceSize, 0))
+	}
+	return after - before
 }
 
 // MobileDocumentQuotaHandler returns current used/limit for the viewer.

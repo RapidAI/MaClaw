@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -56,6 +57,10 @@ type thirdPartyGatewayManager struct {
 	notifyCh     chan struct{}
 	media        map[string]*thirdPartyMediaObject
 	pairings     map[string]thirdPartyDevicePairing
+	// Per-IP sliding-window attempts for the voice pairing endpoint. Each
+	// request costs a full local ASR inference, so an unauthenticated LAN
+	// caller must not be able to spin the CPU with WAV uploads.
+	voicePairAttempts map[string][]time.Time
 }
 
 // thirdPartyDevicePairing is deliberately short lived and single use.  It is
@@ -84,6 +89,7 @@ type thirdPartyClientState struct {
 	SeenEvents         map[string]string
 	Acked              map[string]string
 	ClientCapabilities agent.ClientCapabilities
+	LastWelcomeBootID  string
 }
 
 type thirdPartyMediaObject struct {
@@ -185,6 +191,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	mux.HandleFunc("/api/im-gateway/v1/media/upload-url", m.handleMediaUploadURL)
 	mux.HandleFunc("/api/im-gateway/v1/media/", m.handleMedia)
 	mux.HandleFunc("/api/device-gateway/v1/pair", m.handleDevicePair)
+	mux.HandleFunc("/api/device-gateway/v1/pair/voice", m.handleDeviceVoicePair)
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
@@ -312,12 +319,62 @@ func (m *thirdPartyGatewayManager) handleHandshake(w http.ResponseWriter, r *htt
 	_ = json.Unmarshal(data, &payload)
 	if cfg, err := m.app.LoadConfig(); err == nil {
 		profile := m.app.devicePetProfileForConfig(cfg)
-		if req.ClientCapabilities == nil || !req.ClientCapabilities.Features.PetAnimation {
-			delete(profile, "asset")
+		if req.ClientCapabilities != nil && req.ClientCapabilities.Features.PetAsset {
+			if asset, ok := profile["asset"].(devicePetAsset); ok {
+				// preparePetAssetLocked mutates m.media and requires m.mu, but
+				// handleHandshake otherwise runs unlocked; broadcastPetProfile
+				// calls the same helper with the mutex already held, so lock at
+				// this call site instead of inside the helper.
+				m.mu.Lock()
+				ref := m.preparePetAssetLocked(req.ClientID, asset,
+					req.ClientCapabilities.Features.PetAnimation && profile["motionEnabled"] == true)
+				m.mu.Unlock()
+				if ref != nil {
+					payload["petAsset"] = ref
+				}
+			}
 		}
+		delete(profile, "asset")
 		payload["pet"] = profile
 	}
+	// Send the persisted speaker level to devices that pair or reconnect after
+	// the setting was chosen. It is a control-plane message, so it is safe to
+	// deliver on an ordinary capability refresh as well. Enqueue before the
+	// handshake response finishes, otherwise a fast client can begin its first
+	// long poll before the asynchronous work runs and wait an unnecessary 30 s.
+	m.queueHardwareConfigForClient(req.ClientID)
+	// A welcome message belongs to cold-start initialization, not a regular
+	// handshake refresh. The ESP sends a fresh boot session ID once per boot.
+	if req.BootSessionID != "" {
+		m.queueWelcomeForClient(req.ClientID, req.BootSessionID)
+	}
 	writeGatewayJSON(w, http.StatusOK, payload)
+}
+
+func (m *thirdPartyGatewayManager) queueHardwareConfigForClient(clientID string) {
+	if m == nil || m.app == nil {
+		return
+	}
+	cfg, err := m.app.LoadConfig()
+	if err != nil {
+		return
+	}
+	m.enqueueHardwareConfigForClient(clientID, cfg.HardwareVolume)
+}
+
+func (m *thirdPartyGatewayManager) queueWelcomeForClient(clientID, bootSessionID string) {
+	if m == nil || m.app == nil {
+		return
+	}
+	cfg, err := m.app.LoadConfig()
+	if err != nil || !cfg.HardwareWelcomeEnabled || strings.TrimSpace(cfg.HardwareWelcomeAudioPath) == "" {
+		return
+	}
+	wav, err := os.ReadFile(cfg.HardwareWelcomeAudioPath)
+	if err != nil || len(wav) == 0 || len(wav) > hardwareWelcomeMaxWAVBytes {
+		return
+	}
+	m.enqueueHardwareAudioForBoot(clientID, bootSessionID, base64.StdEncoding.EncodeToString(wav))
 }
 
 func (m *thirdPartyGatewayManager) handleDevicePair(w http.ResponseWriter, r *http.Request) {
@@ -343,6 +400,116 @@ func (m *thirdPartyGatewayManager) handleDevicePair(w http.ResponseWriter, r *ht
 		writeGatewayError(w, http.StatusBadRequest, "bad_request", "clientId and a six-digit pairCode are required")
 		return
 	}
+	m.exchangeDevicePairing(w, httplessDevicePairRequest{PairCode: pairCode, ClientID: req.ClientID})
+}
+
+// voicePairWindow/voicePairMaxAttempts rate-limit the unauthenticated voice
+// pairing endpoint: every attempt runs a full local ASR inference, so a LAN
+// caller must not be able to spin the CPU with WAV uploads.
+const (
+	voicePairWindow       = time.Minute
+	voicePairMaxAttempts  = 5
+	voicePairMaxTrackedIP = 1024
+)
+
+// clientRemoteIP extracts the host part of the request's remote address.
+func clientRemoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// allowVoicePairAttempt records one attempt from ip and reports whether it
+// fits the per-IP sliding window. Attempts are counted before ASR runs —
+// rejected codes are exactly the expensive case to keep bounded.
+func (m *thirdPartyGatewayManager) allowVoicePairAttempt(ip string) bool {
+	if m == nil {
+		return true
+	}
+	if ip == "" {
+		ip = "unknown"
+	}
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.voicePairAttempts == nil {
+		m.voicePairAttempts = make(map[string][]time.Time)
+	}
+	attempts := m.voicePairAttempts[ip]
+	kept := attempts[:0]
+	for _, at := range attempts {
+		if now.Sub(at) < voicePairWindow {
+			kept = append(kept, at)
+		}
+	}
+	if len(kept) >= voicePairMaxAttempts {
+		m.voicePairAttempts[ip] = kept
+		return false
+	}
+	m.voicePairAttempts[ip] = append(kept, now)
+	// Bound the map itself: spoofed source IPs must not grow it forever.
+	if len(m.voicePairAttempts) > voicePairMaxTrackedIP {
+		for candidate, list := range m.voicePairAttempts {
+			if len(list) == 0 || now.Sub(list[len(list)-1]) >= voicePairWindow {
+				delete(m.voicePairAttempts, candidate)
+			}
+		}
+	}
+	return true
+}
+
+// handleDeviceVoicePair is the screenless-device equivalent of handleDevicePair.
+// The GUI's existing local SenseVoice model transcribes the short WAV and the
+// resulting six digits are exchanged through the same single-use pairing store.
+// Hub mode keeps this endpoint at the public Hub; this local handler is for
+// deployments that deliberately expose the GUI gateway on their LAN.
+func (m *thirdPartyGatewayManager) handleDeviceVoicePair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	if !m.allowVoicePairAttempt(clientRemoteIP(r)) {
+		writeGatewayError(w, http.StatusTooManyRequests, "rate_limited", "too many voice pairing attempts; retry later")
+		return
+	}
+	if m == nil || m.app == nil {
+		writeGatewayError(w, http.StatusServiceUnavailable, "unavailable", "speech recognition is unavailable")
+		return
+	}
+	clientID := strings.TrimSpace(r.Header.Get("X-MaClaw-Client-ID"))
+	if clientID == "" {
+		writeGatewayError(w, http.StatusBadRequest, "bad_request", "X-MaClaw-Client-ID is required")
+		return
+	}
+	const maxPairingWAVBytes = 512 << 10
+	wav, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPairingWAVBytes))
+	if err != nil || len(wav) < 44 {
+		writeGatewayError(w, http.StatusBadRequest, "bad_request", "a short WAV recording is required")
+		return
+	}
+	transcript, err := m.app.transcribeWAVBytes(wav, asrTranscribeOpts{MaxDurationSec: 10, SkipVAD: true})
+	if err != nil {
+		log.Printf("[thirdparty-mgr] voice pairing ASR failed: %v", err)
+		writeGatewayError(w, http.StatusServiceUnavailable, "unavailable", "speech recognition is unavailable")
+		return
+	}
+	pairCode, ok := thirdPartyPairCodeFromTranscript(transcript)
+	if !ok {
+		writeGatewayError(w, http.StatusBadRequest, "bad_pair_code", "please speak exactly six digits")
+		return
+	}
+	req := httplessDevicePairRequest{PairCode: pairCode, ClientID: clientID}
+	m.exchangeDevicePairing(w, req)
+}
+
+type httplessDevicePairRequest struct {
+	PairCode string
+	ClientID string
+}
+
+func (m *thirdPartyGatewayManager) exchangeDevicePairing(w http.ResponseWriter, req httplessDevicePairRequest) {
 	now := time.Now()
 	m.mu.Lock()
 	for candidate, pairing := range m.pairings {
@@ -350,9 +517,9 @@ func (m *thirdPartyGatewayManager) handleDevicePair(w http.ResponseWriter, r *ht
 			delete(m.pairings, candidate)
 		}
 	}
-	pairing, ok := m.pairings[pairCode]
+	pairing, ok := m.pairings[req.PairCode]
 	if ok && !pairing.Remote {
-		delete(m.pairings, pairCode)
+		delete(m.pairings, req.PairCode)
 	}
 	m.mu.Unlock()
 	if !ok || pairing.Remote || !pairing.ExpiresAt.After(now) {
@@ -360,10 +527,85 @@ func (m *thirdPartyGatewayManager) handleDevicePair(w http.ResponseWriter, r *ht
 		return
 	}
 	writeGatewayJSON(w, http.StatusCreated, map[string]any{
-		"ok":           true,
-		"gatewayToken": pairing.Token,
-		"clientId":     strings.TrimSpace(req.ClientID),
+		"ok": true, "gatewayToken": pairing.Token, "clientId": strings.TrimSpace(req.ClientID),
 	})
+}
+
+func thirdPartyPairCodeFromTranscript(transcript string) (string, bool) {
+	var digits strings.Builder
+	normalized := strings.ToLower(strings.TrimSpace(transcript))
+	for _, r := range normalized {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+			continue
+		}
+		if digit, ok := thirdPartySpokenChineseDigit(r); ok {
+			digits.WriteByte(digit)
+		}
+	}
+	for _, word := range strings.FieldsFunc(normalized, func(r rune) bool {
+		return r < 'a' || r > 'z'
+	}) {
+		if digit, ok := thirdPartySpokenEnglishDigit(word); ok {
+			digits.WriteByte(digit)
+		}
+	}
+	code := digits.String()
+	return code, len(code) == 6
+}
+
+func thirdPartySpokenChineseDigit(r rune) (byte, bool) {
+	switch r {
+	case '零', '〇':
+		return '0', true
+	case '一', '幺':
+		return '1', true
+	case '二', '两':
+		return '2', true
+	case '三':
+		return '3', true
+	case '四':
+		return '4', true
+	case '五':
+		return '5', true
+	case '六':
+		return '6', true
+	case '七':
+		return '7', true
+	case '八':
+		return '8', true
+	case '九':
+		return '9', true
+	default:
+		return 0, false
+	}
+}
+
+func thirdPartySpokenEnglishDigit(word string) (byte, bool) {
+	switch word {
+	case "zero", "oh":
+		return '0', true
+	case "one":
+		return '1', true
+	case "two", "to", "too":
+		return '2', true
+	case "three":
+		return '3', true
+	case "four", "for":
+		return '4', true
+	case "five":
+		return '5', true
+	case "six":
+		return '6', true
+	case "seven":
+		return '7', true
+	case "eight", "ate":
+		return '8', true
+	case "nine":
+		return '9', true
+	default:
+		return 0, false
+	}
 }
 
 func (m *thirdPartyGatewayManager) handleIncoming(w http.ResponseWriter, r *http.Request) {
@@ -545,6 +787,7 @@ func (m *thirdPartyGatewayManager) ack(clientID string, req thirdPartyAckRequest
 			state.Acked[id] = status
 		}
 	}
+	pruneThirdPartyMessagesLocked(state)
 }
 
 func (m *thirdPartyGatewayManager) handleToolResult(w http.ResponseWriter, r *http.Request) {
@@ -715,6 +958,10 @@ func (m *thirdPartyGatewayManager) enqueue(clientID string, msg thirdPartyOutgoi
 	m.mu.Lock()
 	state := m.ensureClientLocked(clientID)
 	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+	if !m.prepareOutgoingAudioLocked(clientID, &msg, capabilities) {
+		m.mu.Unlock()
+		return thirdPartyOutgoingMessage{}
+	}
 	if !adaptGUIThirdPartyOutgoingMessage(&msg, capabilities) {
 		m.mu.Unlock()
 		return thirdPartyOutgoingMessage{}
@@ -728,14 +975,358 @@ func (m *thirdPartyGatewayManager) enqueue(clientID string, msg thirdPartyOutgoi
 		msg.CreatedAt = time.Now().UnixMilli()
 	}
 	state.Messages = append(state.Messages, msg)
-	if len(state.Messages) > thirdPartyHistoryLimit {
-		state.Messages = state.Messages[len(state.Messages)-thirdPartyHistoryLimit:]
-	}
+	pruneThirdPartyMessagesLocked(state)
 	old := m.notifyCh
 	m.notifyCh = make(chan struct{})
 	close(old)
 	m.mu.Unlock()
 	return msg
+}
+
+func (m *thirdPartyGatewayManager) prepareOutgoingAudioLocked(clientID string, msg *thirdPartyOutgoingMessage, capabilities agent.ClientCapabilities) bool {
+	if msg == nil || normalizeThirdPartyGatewayMessageKind(msg.Type) != thirdPartyGatewayMessageVoice {
+		return true
+	}
+	if strings.TrimSpace(msg.Data) == "" {
+		return strings.TrimSpace(msg.URL) != "" && capabilities.SupportsOutputAudioDelivery("url", msg.SizeBytes)
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(msg.Data))
+	if err != nil || len(data) == 0 {
+		return false
+	}
+	msg.SizeBytes = int64(len(data))
+	if capabilities.SupportsOutputAudioDelivery("inline", msg.SizeBytes) {
+		return true
+	}
+	if !capabilities.SupportsOutputAudioDelivery("url", msg.SizeBytes) || msg.SizeBytes > thirdPartyMaxMediaBytes {
+		return false
+	}
+	id, err := randomThirdPartyMediaToken()
+	if err != nil {
+		return false
+	}
+	token, err := randomThirdPartyMediaToken()
+	if err != nil {
+		return false
+	}
+	fileName := coreim.SafeThirdPartyFileName(msg.FileName)
+	if fileName == "" {
+		fileName = "response.wav"
+	}
+	mimeType := outgoingThirdPartyMIME(*msg)
+	if mimeType == "" {
+		mimeType = "audio/wav"
+	}
+	m.pruneMediaLocked(time.Now().UTC())
+	m.media[id] = &thirdPartyMediaObject{
+		ClientID: clientID, ID: id, Token: token, Type: "audio", FileName: fileName,
+		MimeType: mimeType, SizeBytes: msg.SizeBytes, Data: data, Uploaded: true,
+		CreatedAt: time.Now().UTC(), LastAccessedAt: time.Now().UTC(),
+	}
+	msg.URL = fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", id, token)
+	msg.Data = ""
+	msg.MimeType = mimeType
+	return true
+}
+
+func (m *thirdPartyGatewayManager) preparePetAssetLocked(clientID string, asset devicePetAsset, animated bool) map[string]any {
+	if asset.Encoding != "rgb565le" || asset.Width < 32 || asset.Width > 128 ||
+		asset.Height < 32 || asset.Height > 128 || asset.Data == "" {
+		return nil
+	}
+	encoded := []string{asset.Data}
+	if animated && len(asset.Frames) > 0 {
+		encoded = append(encoded, asset.Frames[0])
+	}
+	expected := asset.Width * asset.Height * 2
+	frames := make([][]byte, 0, len(encoded))
+	for _, text := range encoded {
+		frame, err := base64.StdEncoding.DecodeString(text)
+		if err != nil || len(frame) != expected {
+			return nil
+		}
+		frames = append(frames, frame)
+	}
+	digest := sha256.New()
+	for _, frame := range frames {
+		_, _ = digest.Write(frame)
+	}
+	revision := hex.EncodeToString(digest.Sum(nil)[:8])
+	urls := make([]string, 0, len(frames))
+	for index, frame := range frames {
+		id, err := randomThirdPartyMediaToken()
+		if err != nil {
+			return nil
+		}
+		token, err := randomThirdPartyMediaToken()
+		if err != nil {
+			return nil
+		}
+		m.pruneMediaLocked(time.Now().UTC())
+		m.media[id] = &thirdPartyMediaObject{
+			ClientID: clientID, ID: id, Token: token, Type: "pet_asset",
+			FileName: fmt.Sprintf("pet-%s-%d.rgb565le", revision, index),
+			MimeType: "application/vnd.maclaw.rgb565le", SizeBytes: int64(len(frame)),
+			Data: frame, Uploaded: true, CreatedAt: time.Now().UTC(), LastAccessedAt: time.Now().UTC(),
+		}
+		urls = append(urls, fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", id, token))
+	}
+	return map[string]any{"encoding": asset.Encoding, "width": asset.Width, "height": asset.Height,
+		"urls": urls, "frameMs": 700, "revision": revision}
+}
+
+// broadcastHardwareConfig sends a small settings message to every paired
+// client.  It bypasses regular answer modality selection because controls such
+// as speaker volume are negotiated through client feature capabilities rather
+// than a text/audio output modality.
+func (m *thirdPartyGatewayManager) broadcastHardwareConfig(extra map[string]any) {
+	if m == nil || len(extra) == 0 {
+		return
+	}
+	m.mu.Lock()
+	for _, state := range m.clients {
+		capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+		if !capabilities.Features.VolumeControl {
+			continue
+		}
+		if volume, ok := hardwareConfigVolume(extra); ok && replaceQueuedThirdPartyVolume(state, volume) {
+			continue
+		}
+		seq := state.NextSeq
+		state.NextSeq++
+		state.Messages = append(state.Messages, thirdPartyOutgoingMessage{
+			ID:        fmt.Sprintf("mc_hardware_%d_%06d", time.Now().UnixMilli(), seq),
+			Seq:       seq,
+			Type:      "hardware_config",
+			CreatedAt: time.Now().UnixMilli(),
+			Extra:     extra,
+		})
+		pruneThirdPartyMessagesLocked(state)
+	}
+	old := m.notifyCh
+	m.notifyCh = make(chan struct{})
+	close(old)
+	m.mu.Unlock()
+}
+
+// broadcastPetProfile pushes a GUI pet settings change to every paired client.
+// Like broadcastHardwareConfig it bypasses enqueue/adaptation: pet_profile is a
+// control-plane message, not a text reply, and the adapt layer would otherwise
+// coerce the unknown type to text. RGB565 frames are published through small
+// media references only for clients that negotiated pet assets; everyone receives the
+// message-level pet_skin/pet_motion_enabled fields the firmware parses.
+func (m *thirdPartyGatewayManager) broadcastPetProfile(profile map[string]any) {
+	if m == nil || len(profile) == 0 {
+		return
+	}
+	skin, hasSkin := profile["skin"].(string)
+	// Only a present, well-typed motionEnabled key is broadcast: a caller that
+	// omits the key must not have its zero value mistaken for an explicit
+	// "disable motion" update, so the pointer stays nil and the JSON field is
+	// omitted entirely.
+	var motionEnabled *bool
+	if value, ok := profile["motionEnabled"].(bool); ok {
+		motionEnabled = &value
+	}
+	m.mu.Lock()
+	for clientID, state := range m.clients {
+		var petExtra map[string]any
+		capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+		if capabilities.Features.PetAsset {
+			if asset, ok := profile["asset"].(devicePetAsset); ok && (asset.Data != "" || len(asset.Frames) > 0) {
+				if ref := m.preparePetAssetLocked(clientID, asset, capabilities.Features.PetAnimation && motionEnabled != nil && *motionEnabled); ref != nil {
+					petExtra = map[string]any{"pet_asset": ref}
+				}
+			}
+		}
+		if replaceQueuedThirdPartyPetProfile(state, skin, hasSkin, motionEnabled, petExtra) {
+			continue
+		}
+		seq := state.NextSeq
+		state.NextSeq++
+		msg := thirdPartyOutgoingMessage{
+			ID:               fmt.Sprintf("mc_pet_%d_%06d", time.Now().UnixMilli(), seq),
+			Seq:              seq,
+			Type:             "pet_profile",
+			PetSkin:          skin,
+			PetMotionEnabled: motionEnabled,
+			CreatedAt:        time.Now().UnixMilli(),
+			Extra:            petExtra,
+		}
+		state.Messages = append(state.Messages, msg)
+		pruneThirdPartyMessagesLocked(state)
+	}
+	old := m.notifyCh
+	m.notifyCh = make(chan struct{})
+	close(old)
+	m.mu.Unlock()
+}
+
+func hardwareConfigVolume(extra map[string]any) (int, bool) {
+	if extra == nil {
+		return 0, false
+	}
+	volume, ok := extra["volume"].(int)
+	return volume, ok && volume >= 0 && volume <= 100
+}
+
+func (m *thirdPartyGatewayManager) enqueueHardwareConfigForClient(clientID string, volume int) {
+	if m == nil || volume < 0 || volume > 100 {
+		return
+	}
+	m.mu.Lock()
+	state := m.ensureClientLocked(clientID)
+	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+	if capabilities.Features.VolumeControl && !replaceQueuedThirdPartyVolume(state, volume) {
+		seq := state.NextSeq
+		state.NextSeq++
+		state.Messages = append(state.Messages, thirdPartyOutgoingMessage{
+			ID:        fmt.Sprintf("mc_hardware_%d_%06d", time.Now().UnixMilli(), seq),
+			Seq:       seq,
+			Type:      "hardware_config",
+			CreatedAt: time.Now().UnixMilli(),
+			Extra:     map[string]any{"volume": volume},
+		})
+		pruneThirdPartyMessagesLocked(state)
+		old := m.notifyCh
+		m.notifyCh = make(chan struct{})
+		close(old)
+	}
+	m.mu.Unlock()
+}
+
+// replaceQueuedThirdPartyVolume keeps one pending latest-wins control message.
+// It prevents a burst of slider updates or handshake retries from replaying an
+// old volume after the user has selected a newer one.
+func replaceQueuedThirdPartyVolume(state *thirdPartyClientState, volume int) bool {
+	if state == nil {
+		return false
+	}
+	for index := len(state.Messages) - 1; index >= 0; index-- {
+		message := &state.Messages[index]
+		if message.Type != "hardware_config" || message.Extra == nil {
+			continue
+		}
+		message.Extra = map[string]any{"volume": volume}
+		return true
+	}
+	return false
+}
+
+// replaceQueuedThirdPartyPetProfile keeps one pending latest-wins pet_profile
+// message per client: while a device is offline, repeated skin changes would
+// otherwise pile up N messages whose pet_asset payload runs ~85KB each. The
+// newest queued, still-unacked pet_profile is rewritten in place. The acked
+// check is defensive: pruneThirdPartyMessagesLocked drops acked entries on
+// every ack, so the branch is unreachable in production — but if an acked
+// message ever lingered, rewriting it would silently drop the update because
+// messagesAfter never resends acked entries. A nil motionEnabled or
+// hasSkin == false means the caller omitted that key, so the queued value is
+// preserved rather than reset to the zero value. Note the inherent
+// latest-wins race: if the device has already fetched the old value and its
+// ack is still in flight, this rewrite lands under the pending ack and gets
+// pruned away — the same accepted trade-off as replaceQueuedThirdPartyVolume.
+func replaceQueuedThirdPartyPetProfile(state *thirdPartyClientState, skin string, hasSkin bool, motionEnabled *bool, extra map[string]any) bool {
+	if state == nil {
+		return false
+	}
+	for index := len(state.Messages) - 1; index >= 0; index-- {
+		message := &state.Messages[index]
+		if message.Type != "pet_profile" || state.Acked[message.ID] != "" {
+			continue
+		}
+		if hasSkin {
+			message.PetSkin = skin
+		}
+		if motionEnabled != nil {
+			message.PetMotionEnabled = motionEnabled
+		}
+		message.Extra = extra
+		return true
+	}
+	return false
+}
+
+func (m *thirdPartyGatewayManager) broadcastHardwareAudio(payload map[string]any) {
+	if m == nil || len(payload) == 0 {
+		return
+	}
+	data, _ := payload["file_data"].(string)
+	m.mu.Lock()
+	for clientID := range m.clients {
+		m.enqueueHardwareAudioForClientLocked(clientID, data)
+	}
+	old := m.notifyCh
+	m.notifyCh = make(chan struct{})
+	close(old)
+	m.mu.Unlock()
+}
+
+func (m *thirdPartyGatewayManager) enqueueHardwareAudioForClient(clientID, data string) {
+	m.mu.Lock()
+	m.enqueueHardwareAudioForClientLocked(clientID, data)
+	old := m.notifyCh
+	m.notifyCh = make(chan struct{})
+	close(old)
+	m.mu.Unlock()
+}
+
+func (m *thirdPartyGatewayManager) enqueueHardwareAudioForBoot(clientID, bootSessionID, data string) {
+	m.mu.Lock()
+	state := m.ensureClientLocked(clientID)
+	if bootSessionID == "" || state.LastWelcomeBootID == bootSessionID || !m.enqueueHardwareAudioForClientLocked(clientID, data) {
+		m.mu.Unlock()
+		return
+	}
+	// Bind the queued greeting to this boot. A client can reject a delayed
+	// greeting after reconnecting or after the desktop gateway restarts.
+	state.Messages[len(state.Messages)-1].Extra = map[string]any{"bootSessionId": bootSessionID}
+	state.LastWelcomeBootID = bootSessionID
+	old := m.notifyCh
+	m.notifyCh = make(chan struct{})
+	close(old)
+	m.mu.Unlock()
+}
+
+func (m *thirdPartyGatewayManager) enqueueHardwareAudioForClientLocked(clientID, data string) bool {
+	state := m.ensureClientLocked(clientID)
+	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
+	if data == "" || !capabilities.SupportsOutput("audio") || capabilities.Output.Audio == nil || !capabilities.Output.Audio.Playback || !capabilities.SupportsOutputMIME("audio", "audio/wav") {
+		return false
+	}
+	message := thirdPartyOutgoingMessage{Type: "audio", MimeType: "audio/wav", FileName: "welcome.wav", Data: data, CreatedAt: time.Now().UnixMilli()}
+	if !m.prepareOutgoingAudioLocked(clientID, &message, capabilities) {
+		return false
+	}
+	seq := state.NextSeq
+	state.NextSeq++
+	message.ID = fmt.Sprintf("mc_welcome_%d_%06d", time.Now().UnixMilli(), seq)
+	message.Seq = seq
+	state.Messages = append(state.Messages, message)
+	pruneThirdPartyMessagesLocked(state)
+	return true
+}
+
+// pruneThirdPartyMessagesLocked bounds history without allowing delivered
+// entries to evict control messages a device has not acknowledged yet. Cursor
+// progression stays monotonic, while pruning acknowledged entries keeps a
+// frequently connected device from accumulating a full history in memory.
+func pruneThirdPartyMessagesLocked(state *thirdPartyClientState) {
+	if state == nil || len(state.Messages) == 0 {
+		return
+	}
+	kept := state.Messages[:0]
+	for _, message := range state.Messages {
+		if state.Acked[message.ID] != "" {
+			delete(state.Acked, message.ID)
+			continue
+		}
+		kept = append(kept, message)
+	}
+	if len(kept) > thirdPartyHistoryLimit {
+		kept = kept[len(kept)-thirdPartyHistoryLimit:]
+	}
+	state.Messages = kept
 }
 
 func adaptGUIThirdPartyOutgoingMessage(msg *thirdPartyOutgoingMessage, capabilities agent.ClientCapabilities) bool {
@@ -748,7 +1339,13 @@ func adaptGUIThirdPartyOutgoingMessage(msg *thirdPartyOutgoingMessage, capabilit
 	case thirdPartyGatewayMessageFile:
 		return capabilities.SupportsOutputMIME("file", outgoingThirdPartyMIME(*msg)) && capabilities.SupportsOutputBytes("file", msg.SizeBytes)
 	case thirdPartyGatewayMessageVoice:
-		return capabilities.SupportsOutput("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback && capabilities.SupportsOutputMIME("audio", outgoingThirdPartyMIME(*msg))
+		delivery := "inline"
+		if strings.TrimSpace(msg.URL) != "" {
+			delivery = "url"
+		}
+		return capabilities.SupportsOutput("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback &&
+			capabilities.SupportsOutputMIME("audio", outgoingThirdPartyMIME(*msg)) &&
+			capabilities.SupportsOutputAudioDelivery(delivery, msg.SizeBytes)
 	case thirdPartyGatewayMessageAmbient:
 		return capabilities.Features.AmbientDisplay
 	case thirdPartyGatewayMessagePetState:
@@ -903,6 +1500,12 @@ func (m *thirdPartyGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	if a.securityFirewall != nil {
 		h.SetSecurityFirewall(a.securityFirewall)
 	}
+	// Hardware requests may ask the Agent to send a generated file to a separate
+	// IM group/user. Wire the same structured sender used by the desktop handler;
+	// the ESP remains an input/display endpoint and never executes the send.
+	h.SetStructuredIMFileSender(func(req agent.IMFileDeliveryRequest) error {
+		return a.forwardDesktopFileToIMRequest(a.hubClient(), req)
+	})
 	a.ensureConversationArchiver()
 	if a.conversationArchiver != nil {
 		h.memory.Archiver = a.conversationArchiver
@@ -1010,10 +1613,27 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 
 func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID, replyTo string, resp *IMAgentResponse) {
 	capabilities := m.clientCapabilities(clientID)
-	// acp_turn=final marks terminal messages for ACP bridge turn completion.
-	finalMeta := map[string]string{"acp_turn": "final"}
+	selected := agent.SelectClientOutputCombination(capabilities, agentResponseModalities(resp, capabilities)...)
+	allow := func(modality string) bool { return containsString(selected, modality) }
+	// A client declaring modalities [text,audio] with only singleton
+	// combinations [[text],[audio]] resolves to ["audio"] alone; without this
+	// fallback the text reply would be silently dropped (a regression for old
+	// firmware that expects text alongside voice). Single-modality wins that
+	// do not involve audio (e.g. image) still suppress text as declared.
+	allowText := allow("text") || (containsString(selected, "audio") && capabilities.SupportsOutput("text"))
 	enqueued := false
-	if resp.Text != "" && capabilities.SupportsOutput("text") {
+	// Voice goes first: ESP32 firmware treats an incoming text message as the
+	// end of the current command, so a voice reply arriving after the text
+	// would be dropped as an unrelated message.
+	if resp.VoiceData != "" && allow("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback && capabilities.SupportsOutputMIME("audio", resp.VoiceMimeType) {
+		// Mark enqueued only when the message was actually queued: enqueue
+		// silently drops audio that fails preparation, and a premature true
+		// here would suppress the "(no output)" terminal fallback below.
+		if queued := m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: resp.VoiceMimeType, FileName: resp.VoiceFileName, Data: resp.VoiceData, Metadata: map[string]string{"acp_turn": "final"}}); queued.ID != "" {
+			enqueued = true
+		}
+	}
+	if resp.Text != "" && allowText {
 		text := textutil.StripMarkdown(resp.Text)
 		if len(resp.Actions) > 0 {
 			text = strings.TrimSpace(text)
@@ -1025,50 +1645,41 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 				text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 			}
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: finalMeta})
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: map[string]string{"acp_turn": "final"}})
 		enqueued = true
-	} else if len(resp.Actions) > 0 && capabilities.SupportsOutput("text") {
+	} else if len(resp.Actions) > 0 && allowText {
 		text := "Please reply with an option:"
 		for i, action := range resp.Actions {
 			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: finalMeta})
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: map[string]string{"acp_turn": "final"}})
 		enqueued = true
 	}
-	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 && capabilities.SupportsOutput("text") {
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "error", Error: "agent_error", Text: textutil.StripMarkdown(resp.Error), Metadata: finalMeta})
+	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 && allowText {
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "error", Error: "agent_error", Text: textutil.StripMarkdown(resp.Error), Metadata: map[string]string{"acp_turn": "final"}})
 		enqueued = true
 	}
-	if resp.ImageKey != "" && capabilities.SupportsOutput("image") {
-		meta := map[string]string{}
+	if resp.ImageKey != "" && allow("image") && capabilities.SupportsOutputMIME("image", "image/png") {
 		if !enqueued {
-			meta["acp_turn"] = "final"
 			enqueued = true
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image", ContentType: "image/png", FileName: "image.png", Data: resp.ImageKey, Metadata: meta})
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image", ContentType: "image/png", FileName: "image.png", Data: resp.ImageKey, Metadata: map[string]string{"acp_turn": "final"}})
 	}
-	if resp.FileData != "" && capabilities.SupportsOutput("file") {
-		meta := map[string]string{}
-		if !enqueued {
-			meta["acp_turn"] = "final"
-			enqueued = true
+	if resp.FileData != "" && allow("file") && capabilities.SupportsOutputMIME("file", resp.FileMimeType) {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(resp.FileData)
+		if decodeErr == nil && capabilities.SupportsOutputBytes("file", int64(len(decoded))) {
+			if !enqueued {
+				enqueued = true
+			}
+			m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: resp.FileMimeType, FileName: resp.FileName, Data: resp.FileData, SizeBytes: int64(len(decoded)), Metadata: map[string]string{"acp_turn": "final"}})
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: resp.FileMimeType, FileName: resp.FileName, Data: resp.FileData, Metadata: meta})
-	}
-	if resp.VoiceData != "" && capabilities.SupportsOutput("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback {
-		meta := map[string]string{}
-		if !enqueued {
-			meta["acp_turn"] = "final"
-			enqueued = true
-		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: resp.VoiceMimeType, FileName: resp.VoiceFileName, Data: resp.VoiceData, Metadata: meta})
 	}
 	paths := resp.LocalFilePaths
 	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
 		paths = append([]string{resp.LocalFilePath}, paths...)
 	}
-	for i, p := range paths {
-		if !capabilities.SupportsOutput("file") {
+	for _, p := range paths {
+		if !allow("file") || !capabilities.SupportsOutput("file") {
 			break
 		}
 		data, err := os.ReadFile(p)
@@ -1081,25 +1692,67 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		if ct == "" {
 			ct = "application/octet-stream"
 		}
-		meta := map[string]string{}
-		if !enqueued && i == len(paths)-1 {
-			meta["acp_turn"] = "final"
+
+		if !capabilities.SupportsOutputMIME("file", ct) || !capabilities.SupportsOutputBytes("file", int64(len(data))) {
+			continue
+		}
+		if !enqueued {
 			enqueued = true
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), Metadata: meta})
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), SizeBytes: int64(len(data)), Metadata: map[string]string{"acp_turn": "final"}})
 	}
-	// Ensure ACP bridge always sees a terminal marker even for empty agent results.
+	// Ensure ACP bridge always sees one terminal marker even for empty results.
 	if !enqueued && capabilities.SupportsOutput("text") {
 		m.enqueue(clientID, thirdPartyOutgoingMessage{
-			ConversationID:   conversationID,
-			ReplyToMessageID: replyTo,
-			Type:             "text",
-			Text:             "(no output)",
-			Metadata:         finalMeta,
+			ConversationID: conversationID, ReplyToMessageID: replyTo,
+			Type: "text", Text: "(no output)", Metadata: map[string]string{"acp_turn": "final"},
 		})
 	}
 }
 
+func agentResponseModalities(resp *IMAgentResponse, capabilities agent.ClientCapabilities) []string {
+	modalities := make([]string, 0, 4)
+	if resp == nil {
+		return modalities
+	}
+	if resp.Text != "" || resp.Error != "" || len(resp.Actions) > 0 {
+		modalities = append(modalities, "text")
+	}
+	if resp.ImageKey != "" && capabilities.SupportsOutputMIME("image", "image/png") {
+		modalities = append(modalities, "image")
+	}
+	filePresent := false
+	if resp.FileData != "" && capabilities.SupportsOutputMIME("file", resp.FileMimeType) {
+		if decoded, err := base64.StdEncoding.DecodeString(resp.FileData); err == nil && capabilities.SupportsOutputBytes("file", int64(len(decoded))) {
+			filePresent = true
+		}
+	}
+	paths := resp.LocalFilePaths
+	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
+		paths = append([]string{resp.LocalFilePath}, paths...)
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		mimeType := mime.TypeByExtension(filepath.Ext(path))
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		if capabilities.SupportsOutputMIME("file", mimeType) && capabilities.SupportsOutputBytes("file", info.Size()) {
+			filePresent = true
+			break
+		}
+	}
+	if filePresent {
+		modalities = append(modalities, "file")
+	}
+	if resp.VoiceData != "" && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback && capabilities.SupportsOutputMIME("audio", resp.VoiceMimeType) {
+		modalities = append(modalities, "audio")
+	}
+	return modalities
+}
 func pointerToClientCapabilities(capabilities agent.ClientCapabilities) *agent.ClientCapabilities {
 	return &capabilities
 }
@@ -1590,6 +2243,24 @@ func (a *App) RestartThirdPartyGateway() string {
 		return gatewayConnectionStatusDisconnected.String()
 	}
 	return a.thirdPartyGateway.Status()
+}
+
+// SendHardwareVolume persists and immediately sends the requested speaker
+// level to every currently connected Macaron-style client.
+func (a *App) SendHardwareVolume(volume int) error {
+	if volume < 0 || volume > 100 {
+		return fmt.Errorf("hardware volume must be between 0 and 100")
+	}
+	if _, err := a.PatchConfigFields(map[string]interface{}{"hardware_volume": volume}); err != nil {
+		return err
+	}
+	if a.thirdPartyGateway != nil {
+		a.thirdPartyGateway.broadcastHardwareConfig(map[string]any{"volume": volume})
+	}
+	// PatchConfigFields synchronizes Hub mode after committing the same value.
+	// Keeping the relay there also covers non-UI callers that patch volume
+	// directly and prevents this public method from sending duplicates.
+	return nil
 }
 
 // CreateThirdPartyDevicePairing produces a six-digit, thirty-minute bootstrap

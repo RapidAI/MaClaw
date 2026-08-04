@@ -126,7 +126,8 @@ func TestExpertMarketSubmitReviewPurchaseAndDownload(t *testing.T) {
 	if accountRec.Code != http.StatusOK || !bytes.Contains(accountRec.Body.Bytes(), []byte(`"id":"`+listing.ID+`"`)) {
 		t.Fatalf("seller account should include its submitted expert: status=%d body=%s", accountRec.Code, accountRec.Body.String())
 	}
-	approve := httptest.NewRequest(http.MethodPost, "/api/v1/admin/expert-market/experts/"+listing.ID+"/approve", strings.NewReader(`{"reason":"content reviewed"}`))
+	// Review notes are optional; approving with an empty body must still publish.
+	approve := httptest.NewRequest(http.MethodPost, "/api/v1/admin/expert-market/experts/"+listing.ID+"/approve", nil)
 	approve.SetPathValue("id", listing.ID)
 	approveRec := httptest.NewRecorder()
 	h.AdminApproveExpertMarketListing(approveRec, approve)
@@ -136,6 +137,10 @@ func TestExpertMarketSubmitReviewPurchaseAndDownload(t *testing.T) {
 	var approved map[string]string
 	if err := json.Unmarshal(approveRec.Body.Bytes(), &approved); err != nil || approved["status"] != "listed" {
 		t.Fatalf("approval must publish listing: response=%s err=%v", approveRec.Body.String(), err)
+	}
+	var reviewNote string
+	if err := h.store.DB().QueryRow(`SELECT review_note FROM sm_expert_market_listings WHERE id=?`, listing.ID).Scan(&reviewNote); err != nil || reviewNote != "" {
+		t.Fatalf("optional review note=%q err=%v", reviewNote, err)
 	}
 	var approvalEvents int
 	if err := h.store.DB().QueryRow(`SELECT COUNT(*) FROM sm_expert_market_events WHERE listing_id=? AND action='approved'`, listing.ID).Scan(&approvalEvents); err != nil || approvalEvents != 1 {
@@ -318,7 +323,7 @@ func TestExpertMarketDeleteRetainsEntitledDownloadButPurgeRequiresNoEntitlements
 	_ = sellerSession // seller session verifies the test follows normal account setup.
 }
 
-func TestExpertMarketModerationRequiresReasonAndInstallationAudit(t *testing.T) {
+func TestExpertMarketOptionalModerationNoteAndInstallationAudit(t *testing.T) {
 	h, users, auth, credits := newExpertMarketTestHandler(t)
 	ctx := context.Background()
 	seller, _ := users.EnsureAccountWithID(ctx, "seller-audit", "seller-audit@example.test")
@@ -342,11 +347,12 @@ func TestExpertMarketModerationRequiresReasonAndInstallationAudit(t *testing.T) 
 	approve.SetPathValue("id", "audit-listing")
 	approveRec := httptest.NewRecorder()
 	h.AdminApproveExpertMarketListing(approveRec, approve)
-	if approveRec.Code != http.StatusBadRequest {
+	if approveRec.Code != http.StatusOK {
 		t.Fatalf("approve without reason=%d", approveRec.Code)
 	}
-	if _, err := h.store.DB().Exec(`UPDATE sm_expert_market_listings SET status='listed' WHERE id='audit-listing'`); err != nil {
-		t.Fatal(err)
+	var reviewNote string
+	if err := h.store.DB().QueryRow(`SELECT review_note FROM sm_expert_market_listings WHERE id='audit-listing'`).Scan(&reviewNote); err != nil || reviewNote != "" {
+		t.Fatalf("optional review note=%q err=%v", reviewNote, err)
 	}
 	purchase := httptest.NewRequest(http.MethodPost, "/", nil)
 	purchase.SetPathValue("id", "audit-listing")
@@ -367,6 +373,91 @@ func TestExpertMarketModerationRequiresReasonAndInstallationAudit(t *testing.T) 
 	var stage string
 	if err := h.store.DB().QueryRow(`SELECT failure_stage FROM sm_expert_market_installations WHERE listing_id='audit-listing'`).Scan(&stage); err != nil || stage != "dependencies" {
 		t.Fatalf("stage=%q err=%v", stage, err)
+	}
+}
+
+func TestExpertMarketRejectAllowsEmptyReviewNote(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, _ := users.EnsureAccountWithID(ctx, "seller-reject", "seller-reject@example.test")
+	h.ensureExpertMarketSchema()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "reject-listing", seller.ID, seller.Email, "pkgexp-reject", "Rejected expert", "", "", "1", 0, "pending_review", "", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	reject := httptest.NewRequest(http.MethodPost, "/", nil)
+	reject.SetPathValue("id", "reject-listing")
+	rejectRec := httptest.NewRecorder()
+	h.AdminRejectExpertMarketListing(rejectRec, reject)
+	if rejectRec.Code != http.StatusOK {
+		t.Fatalf("reject without note=%d %s", rejectRec.Code, rejectRec.Body.String())
+	}
+	var status, reviewNote string
+	if err := h.store.DB().QueryRow(`SELECT status, review_note FROM sm_expert_market_listings WHERE id='reject-listing'`).Scan(&status, &reviewNote); err != nil || status != "rejected" || reviewNote != "" {
+		t.Fatalf("status=%q review note=%q err=%v", status, reviewNote, err)
+	}
+}
+
+func TestExpertMarketReviewRollsBackWhenAuditWriteFails(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, _ := users.EnsureAccountWithID(ctx, "seller-review-rollback", "seller-review-rollback@example.test")
+	h.ensureExpertMarketSchema()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "review-rollback-listing", seller.ID, seller.Email, "pkgexp-review-rollback", "Review rollback", "", "", "1", 0, "pending_review", "", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.DB().Exec(`CREATE TRIGGER fail_expert_review_audit BEFORE INSERT ON sm_expert_market_events BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	approve := httptest.NewRequest(http.MethodPost, "/", nil)
+	approve.SetPathValue("id", "review-rollback-listing")
+	approveRec := httptest.NewRecorder()
+	h.AdminApproveExpertMarketListing(approveRec, approve)
+	if approveRec.Code != http.StatusInternalServerError {
+		t.Fatalf("approve with failed audit=%d %s", approveRec.Code, approveRec.Body.String())
+	}
+	var status string
+	if err := h.store.DB().QueryRow(`SELECT status FROM sm_expert_market_listings WHERE id='review-rollback-listing'`).Scan(&status); err != nil || status != "pending_review" {
+		t.Fatalf("status after failed audit=%q err=%v", status, err)
+	}
+}
+
+func TestExpertMarketLifecycleActionsStillRequireReason(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, _ := users.EnsureAccountWithID(ctx, "seller-lifecycle", "seller-lifecycle@example.test")
+	h.ensureExpertMarketSchema()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	insert := func(id, sourceID, status string) {
+		t.Helper()
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, id, seller.ID, seller.Email, sourceID, id, "", "", "1", 0, status, "", 0, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("listed-requires-reason", "pkgexp-listed-reason", "listed")
+	insert("unlisted-requires-reason", "pkgexp-unlisted-reason", "unlisted")
+	insert("deleted-requires-reason", "pkgexp-deleted-reason", "deleted")
+
+	tests := []struct {
+		name    string
+		id      string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{name: "unlist", id: "listed-requires-reason", handler: h.AdminUnlistExpertMarketListing},
+		{name: "delete", id: "unlisted-requires-reason", handler: h.AdminDeleteExpertMarketListing},
+		{name: "purge", id: "deleted-requires-reason", handler: h.AdminPurgeExpertMarketListing},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req.SetPathValue("id", tc.id)
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

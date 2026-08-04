@@ -928,3 +928,28 @@ func explicitInferredExecutionContractForTest(name string) ToolExecutionContract
 	contract.Explicit = true
 	return contract
 }
+
+func TestPrepareAgentLoopToolsLightKeepsToolResultReader(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	if err := h.registry.Register(RegisteredTool{Name: "web_search", Description: "search", Status: RegToolAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.registry.Register(RegisteredTool{Name: "read_tool_result", Description: "reader", Status: RegToolAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewLoopContext("chat", 3, nil)
+	ctx.Runtime.Execution = ExecutionProfile{
+		Layer:                string(executionLayerLight),
+		PromptProfile:        "light",
+		RequiredCapabilities: []string{"web"},
+		ToolBudget:           1,
+	}
+	tools := h.prepareAgentLoopTools("reader-user", "search weather", ctx, agentLoopPhase{}).Tools
+	names := make(map[string]bool, len(tools))
+	for _, def := range tools {
+		names[extractToolName(def)] = true
+	}
+	if !names["read_tool_result"] {
+		t.Fatalf("light tools must retain the handle reader: %#v", names)
+	}
+}

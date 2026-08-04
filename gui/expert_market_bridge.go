@@ -99,20 +99,9 @@ func (a *App) markExpertMarketListingsInstalled(result map[string]interface{}, k
 	if result == nil {
 		return
 	}
-	rows, _, err := defaultExpertStore.List()
+	installed, err := defaultExpertStore.ListMarketInstallIDs()
 	if err != nil {
 		return
-	}
-	installed := make(map[string]string)
-	for _, expert := range rows {
-		id := strings.TrimSpace(expert.ID)
-		isMarketInstall, markerErr := defaultExpertStore.IsMarketInstall(id)
-		if markerErr != nil {
-			return
-		}
-		if isMarketInstall {
-			installed[id] = id
-		}
 	}
 	if len(installed) == 0 {
 		return
@@ -125,9 +114,9 @@ func (a *App) markExpertMarketListingsInstalled(result map[string]interface{}, k
 				continue
 			}
 			packageID := strings.TrimSpace(fmt.Sprint(listing["source_expert_id"]))
-			if localID := installed[packageID]; localID != "" {
+			if installed[packageID] {
 				listing["installed"] = true
-				listing["local_expert_id"] = localID
+				listing["local_expert_id"] = packageID
 			}
 		}
 	}

@@ -294,8 +294,8 @@ export function AssistantInputActionsLeft({
 
     const menuBg = dark ? t.inputBarBg : t.bg;
     const menuShadow = dark ? "0 12px 32px rgba(0, 0, 0, 0.55)" : "0 12px 28px rgba(15, 23, 42, 0.16)";
-    const menuItemHoverBg = dark ? "rgba(148, 163, 184, 0.14)" : "rgba(47, 95, 152, 0.08)";
-    const iconColor = dark ? t.btnColor : "#2f5f98";
+    const menuItemHoverBg = dark ? "rgba(148, 163, 184, 0.14)" : "rgba(47, 111, 188, 0.08)";
+    const iconColor = dark ? t.btnColor : "#2f6fbc";
     const dividerColor = dark ? "rgba(148, 163, 184, 0.18)" : "rgba(15, 23, 42, 0.08)";
 
     const renderMenuItem = (item: PlusMenuItemDef) => {
@@ -430,9 +430,9 @@ export function AssistantInputActionsLeft({
                         height: "22px",
                         padding: "0 7px",
                         borderRadius: "999px",
-                        border: `1px solid ${dark ? t.btnBorder : "rgba(47, 95, 152, 0.28)"}`,
-                        background: dark ? `color-mix(in srgb, ${t.btnColor} 14%, ${t.fieldBg})` : "rgba(47, 95, 152, 0.08)",
-                        color: dark ? t.btnColor : "#2f5f98",
+                        border: `1px solid ${dark ? t.btnBorder : "rgba(47, 111, 188, 0.28)"}`,
+                        background: dark ? `color-mix(in srgb, ${t.btnColor} 14%, ${t.fieldBg})` : "rgba(47, 111, 188, 0.08)",
+                        color: dark ? t.btnColor : "#2f6fbc",
                         fontSize: "11px",
                         lineHeight: 1,
                         cursor: "pointer",
@@ -477,7 +477,7 @@ export function AssistantInputActionsRight({ canSend, cancelSession, handleCance
             )}
             aria-label={localizeText(lang, "Cancel", "\u53d6\u6d88")}
         >
-            {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(199, 215, 232, 0.24)" : "rgba(47, 95, 152, 0.18)"}`, borderTopColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, borderRightColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
+            {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(199, 215, 232, 0.24)" : "rgba(47, 111, 188, 0.18)"}`, borderTopColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, borderRightColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
             <span style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}>{localizeText(lang, "Cancel", "\u53d6\u6d88")}</span>
         </button>
     ) : (

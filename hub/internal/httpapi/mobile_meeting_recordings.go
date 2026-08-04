@@ -108,6 +108,19 @@ type mobileMeetingRecording struct {
 	RetentionUntil    time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	// HardwareClientID is set only for recordings created through the device
+	// gateway. It lets terminal processing status return to that same pet while
+	// the record itself remains part of the shared Mobile document library.
+	HardwareClientID string `json:"hardware_client_id,omitempty"`
+	// HardwareNotifiedStatus records the exact terminal state last queued. A
+	// failed run may be retried and later become ready; a single boolean would
+	// suppress that successful result forever. HardwareNotified remains only to
+	// read old persisted state and is migrated on load/update.
+	HardwareNotifiedStatus string `json:"hardware_notified_status,omitempty"`
+	HardwareNotified       bool   `json:"hardware_notified,omitempty"`
+	// Effective document quota captured when the authenticated processing
+	// request is claimed. Background/restart workers do not retain that request.
+	DocumentQuotaBytes int64 `json:"document_quota_bytes,omitempty"`
 }
 
 // mobileMeetingSpeakerSegment is deliberately optional in P0. ASR workers
@@ -169,7 +182,7 @@ func MobileMeetingRecordingsHandler(identity *auth.IdentityService) http.Handler
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/complete"):
 			mobileMeetingRecordingComplete(w, r, ownerID, principal.TenantID, id)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/process"):
-			mobileMeetingRecordingProcess(w, r, ownerID, principal.TenantID, id)
+			mobileMeetingRecordingProcess(w, r, principal, id)
 		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/audio"):
 			mobileMeetingRecordingDeleteAudio(w, ownerID, principal.TenantID, id)
 		case r.Method == http.MethodDelete && id != "":
@@ -219,7 +232,28 @@ func mobileMeetingRecordingWorkerAvailability() (transcript, minutes bool) {
 	return transcript, minutes
 }
 
+// TranscribeHardwarePairingWAV reuses the configured meeting ASR boundary for
+// a short hardware-pairing utterance. It intentionally exposes no storage or
+// meeting state: callers provide a temporary WAV and receive only text.
+func TranscribeHardwarePairingWAV(ctx context.Context, audioPath, contentType string) (string, error) {
+	meetingWorkers.RLock()
+	transcriber := meetingWorkers.transcriber
+	meetingWorkers.RUnlock()
+	if transcriber == nil {
+		transcriber = commandMeetingTranscriber{command: os.Getenv("MACLAW_MEETING_TRANSCRIBE_COMMAND")}
+	}
+	return transcriber.Transcribe(ctx, audioPath, contentType)
+}
+
 func mobileMeetingRecordingCreate(w http.ResponseWriter, r *http.Request, principal *auth.ViewerPrincipal, ownerID string) {
+	mobileMeetingRecordingCreateWithHardware(w, r, principal, ownerID, "")
+}
+
+func mobileMeetingRecordingCreateForHardware(w http.ResponseWriter, r *http.Request, principal *auth.ViewerPrincipal, ownerID, clientID string) {
+	mobileMeetingRecordingCreateWithHardware(w, r, principal, ownerID, strings.TrimSpace(clientID))
+}
+
+func mobileMeetingRecordingCreateWithHardware(w http.ResponseWriter, r *http.Request, principal *auth.ViewerPrincipal, ownerID, hardwareClientID string) {
 	var req mobileMeetingRecordingCreateRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
@@ -245,6 +279,7 @@ func mobileMeetingRecordingCreate(w http.ResponseWriter, r *http.Request, princi
 		ConversationID: strings.TrimSpace(req.ConversationID), Title: title, Purpose: strings.TrimSpace(req.Purpose),
 		ContentType: contentType, Status: "uploading", Message: "ready for upload", Dir: dir,
 		CreatedAt: now, UpdatedAt: now, RetentionUntil: now.Add(30 * 24 * time.Hour),
+		HardwareClientID: hardwareClientID,
 	}
 	if rec.TenantID == "" {
 		rec.TenantID = "default"
@@ -525,7 +560,12 @@ func mobileMeetingRecordingClaimFinalize(ownerID, tenantID, id string) (mobileMe
 	}
 }
 
-func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, ownerID, tenantID, id string) {
+func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, principal *auth.ViewerPrincipal, id string) {
+	ownerID := mobilePrincipalOwnerID(principal)
+	tenantID := ""
+	if principal != nil {
+		tenantID = principal.TenantID
+	}
 	var req mobileMeetingRecordingProcessRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
@@ -574,7 +614,7 @@ func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, owner
 		writeError(w, http.StatusConflict, "PROCESSING_MODE_UNAVAILABLE", "selected meeting processing mode is not configured on this Hub")
 		return
 	}
-	rec, claim := mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode)
+	rec, claim := mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode, mobileEffectiveDocumentQuota(r.Context(), principal))
 	if claim == "missing" {
 		writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "meeting recording not found")
 		return
@@ -591,7 +631,7 @@ func mobileMeetingRecordingProcess(w http.ResponseWriter, r *http.Request, owner
 // or archive-only-ready recording into processing. A ready transcript/minutes
 // result stays immutable, while an archive-only recording may be promoted later
 // when the user explicitly asks for transcription or meeting minutes.
-func mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode string) (mobileMeetingRecording, string) {
+func mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode string, documentQuotaBytes int64) (mobileMeetingRecording, string) {
 	mobileMeetingRecordings.Lock()
 	rec, ok := mobileMeetingRecordings.items[id]
 	if !ok || rec.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(tenantID, rec.TenantID) {
@@ -607,8 +647,16 @@ func mobileMeetingRecordingClaimProcess(ownerID, tenantID, id, mode string) (mob
 	rec.Message = "queued for transcription"
 	rec.Progress = .25
 	rec.ProcessMode = mode
+	if documentQuotaBytes <= 0 {
+		documentQuotaBytes = mobileCapDocFreeBytes()
+	}
+	rec.DocumentQuotaBytes = documentQuotaBytes
 	rec.FailureCode = ""
 	rec.RetryCount++
+	// A new processing attempt owns a new terminal notification. Preserve the
+	// last status for auditability, but legacy boolean state must no longer gate
+	// the eventual ready message.
+	rec.HardwareNotified = false
 	rec.UpdatedAt = time.Now().UTC()
 	mobileMeetingRecordings.items[id] = rec
 	mobileMeetingRecordings.Unlock()
@@ -691,7 +739,15 @@ func mobileRunMeetingRecording(id string) {
 	}
 	if rec.ProcessMode == "transcript" {
 		rec, _ = mobileMeetingRecordingOwned(rec.OwnerID, id)
-		mobileStoreMeetingResultDocuments(rec, transcript, "")
+		if err := mobileStoreMeetingResultDocuments(rec, transcript, ""); err != nil {
+			mobileMeetingRecordingUpdate(id, func(m *mobileMeetingRecording) {
+				m.Status = "failed"
+				m.Message = "document storage quota exceeded; free space and retry"
+				m.Progress = 1
+				m.FailureCode = "DOCUMENT_QUOTA_EXCEEDED"
+			})
+			return
+		}
 		mobileMeetingRecordingUpdate(id, func(m *mobileMeetingRecording) { m.Status = "ready"; m.Message = "transcript ready"; m.Progress = 1 })
 		return
 	}
@@ -711,7 +767,15 @@ func mobileRunMeetingRecording(id string) {
 		return
 	}
 	rec, _ = mobileMeetingRecordingOwned(rec.OwnerID, id)
-	mobileStoreMeetingResultDocuments(rec, transcript, minutes)
+	if err := mobileStoreMeetingResultDocuments(rec, transcript, minutes); err != nil {
+		mobileMeetingRecordingUpdate(id, func(m *mobileMeetingRecording) {
+			m.Status = "failed"
+			m.Message = "document storage quota exceeded; free space and retry"
+			m.Progress = 1
+			m.FailureCode = "DOCUMENT_QUOTA_EXCEEDED"
+		})
+		return
+	}
 	mobileMeetingRecordingUpdate(id, func(m *mobileMeetingRecording) {
 		m.Status = "ready"
 		m.Message = "meeting minutes ready"
@@ -727,8 +791,17 @@ func mobileRunMeetingRecording(id string) {
 // processing result.
 func mobileResumeMeetingRecordingWorkers() {
 	resume := make([]string, 0)
+	terminal := make([]mobileMeetingRecording, 0)
 	mobileMeetingRecordings.Lock()
 	for id, rec := range mobileMeetingRecordings.items {
+		// A terminal state may have been persisted before its queue notification
+		// flag (or a Hub restart may have lost the in-memory device queue). Replay
+		// once at startup; DeviceGateway will retain it until the hardware ACKs.
+		if strings.TrimSpace(rec.HardwareClientID) != "" &&
+			(rec.Status == "ready" || rec.Status == "failed") &&
+			rec.HardwareNotifiedStatus != rec.Status {
+			terminal = append(terminal, rec)
+		}
 		if rec.Status != "processing" || strings.TrimSpace(rec.Dir) == "" {
 			continue
 		}
@@ -749,6 +822,9 @@ func mobileResumeMeetingRecordingWorkers() {
 		resume = append(resume, id)
 	}
 	mobileMeetingRecordings.Unlock()
+	for _, rec := range terminal {
+		mobileNotifyHardwareMeetingResult(rec.ID, rec)
+	}
 	if len(resume) == 0 {
 		return
 	}
@@ -1008,6 +1084,56 @@ func mobileMeetingRecordingUpdate(id string, mutate func(*mobileMeetingRecording
 			"recording_id": rec.ID,
 			"status":       rec.Status,
 		})
+		mobileNotifyHardwareMeetingResult(id, rec)
+	}
+}
+
+func mobileNotifyHardwareMeetingResult(id string, rec mobileMeetingRecording) {
+	clientID := strings.TrimSpace(rec.HardwareClientID)
+	if clientID == "" || rec.HardwareNotifiedStatus == rec.Status ||
+		(rec.Status != "ready" && rec.Status != "failed") {
+		return
+	}
+	notifier := hardwareMeetingResults
+	if notifier == nil {
+		return
+	}
+	summary := strings.TrimSpace(rec.Minutes)
+	if summary == "" {
+		summary = strings.TrimSpace(rec.Transcript)
+	}
+	if summary == "" {
+		summary = strings.TrimSpace(rec.Message)
+	}
+	if summary == "" {
+		summary = map[bool]string{true: "会议处理失败", false: "会议记录已保存"}[rec.Status == "failed"]
+	}
+	runes := []rune(summary)
+	if len(runes) > 180 {
+		summary = string(runes[:180])
+	}
+	conversationID := strings.TrimSpace(rec.ConversationID)
+	if conversationID == "" {
+		conversationID = "system"
+	}
+	notifier.EnqueueReply(clientID, conversationID, map[string]any{
+		"type": "meeting_result", "text": summary,
+		"extra": map[string]any{
+			"status": rec.Status, "summary": summary, "recording_id": rec.ID,
+			"transcript_draft_id": rec.TranscriptDraftID, "minutes_draft_id": rec.MinutesDraftID,
+		},
+	})
+	mobileMeetingRecordings.Lock()
+	current, exists := mobileMeetingRecordings.items[id]
+	if exists && current.HardwareNotifiedStatus != rec.Status {
+		current.HardwareNotifiedStatus = rec.Status
+		current.HardwareNotified = true
+		current.UpdatedAt = time.Now().UTC()
+		mobileMeetingRecordings.items[id] = current
+	}
+	mobileMeetingRecordings.Unlock()
+	if exists {
+		mobilePersistState()
 	}
 }
 func mobileMeetingRecordingPayload(rec mobileMeetingRecording) map[string]any {
@@ -1040,11 +1166,11 @@ func mobileMeetingRecordingDirectory() (string, error) {
 // shared document library (and therefore on desktop), while keeping the audio
 // API as the canonical source for processing state. It is idempotent for a
 // recording that has already received its result draft IDs.
-func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, minutes string) {
+func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, minutes string) error {
 	transcript = strings.TrimSpace(transcript)
 	minutes = strings.TrimSpace(minutes)
 	if transcript == "" && minutes == "" {
-		return
+		return nil
 	}
 	now := time.Now().UTC()
 	principal := &auth.ViewerPrincipal{UserID: rec.OwnerID, TenantID: rec.TenantID}
@@ -1056,6 +1182,8 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 		title = "Meeting recording"
 	}
 	var transcriptDraft, minutesDraft *mobileDocumentDraftRecord
+	mobileDocumentQuotaAdmissionMu.Lock()
+	defer mobileDocumentQuotaAdmissionMu.Unlock()
 	mobileDocuments.Lock()
 	transcriptDraftID := strings.TrimSpace(rec.TranscriptDraftID)
 	if transcript != "" && transcriptDraftID == "" {
@@ -1074,7 +1202,6 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 				Markdown:  mobileMeetingTranscriptMarkdown(title, transcript, rec.SpeakerSegments),
 				UpdatedAt: now,
 			}
-			mobileDocuments.drafts[draft.ID] = draft
 			transcriptDraft = &draft
 		}
 	}
@@ -1093,14 +1220,45 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 				Markdown:  "# " + title + " — Meeting minutes\n\n" + minutes + "\n",
 				UpdatedAt: now,
 			}
-			mobileDocuments.drafts[draft.ID] = draft
 			minutesDraft = &draft
 		}
 	}
 	mobileDocuments.Unlock()
 
 	if transcriptDraftID == "" && minutesDraftID == "" {
-		return
+		return nil
+	}
+	additionalBytes := int64(0)
+	if transcriptDraft != nil {
+		additionalBytes += int64(len(transcriptDraft.Markdown))
+	}
+	if minutesDraft != nil {
+		additionalBytes += int64(len(minutesDraft.Markdown))
+	}
+	limit := rec.DocumentQuotaBytes
+	if limit <= 0 {
+		limit = mobileCapDocFreeBytes()
+	}
+	if additionalBytes > 0 {
+		if err := mobileCheckDocumentQuota(rec.OwnerID, rec.TenantID, additionalBytes, limit); err != nil {
+			return errMobileDocumentQuotaExceeded
+		}
+		mobileDocuments.Lock()
+		if transcriptDraft != nil {
+			if _, exists := mobileDocuments.drafts[transcriptDraft.ID]; !exists {
+				mobileDocuments.drafts[transcriptDraft.ID] = *transcriptDraft
+			} else {
+				transcriptDraft = nil
+			}
+		}
+		if minutesDraft != nil {
+			if _, exists := mobileDocuments.drafts[minutesDraft.ID]; !exists {
+				mobileDocuments.drafts[minutesDraft.ID] = *minutesDraft
+			} else {
+				minutesDraft = nil
+			}
+		}
+		mobileDocuments.Unlock()
 	}
 	mobileMeetingRecordingUpdate(rec.ID, func(current *mobileMeetingRecording) {
 		if transcriptDraftID != "" && current.TranscriptDraftID == "" {
@@ -1116,6 +1274,7 @@ func mobileStoreMeetingResultDocuments(rec mobileMeetingRecording, transcript, m
 	if minutesDraft != nil {
 		go mobileIngestDocumentDraft(principal, *minutesDraft)
 	}
+	return nil
 }
 
 func mobileMeetingTranscriptMarkdown(title, transcript string, segments []mobileMeetingSpeakerSegment) string {

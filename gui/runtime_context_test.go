@@ -694,6 +694,21 @@ func TestToolMemoryEmptyHiddenRuntimeOwnerDoesNotFallbackToDesktop(t *testing.T)
 	}
 }
 
+func TestReadToolResultAcceptsRuntimeOwnerMetadata(t *testing.T) {
+	if !toolAcceptsRuntimePolicyOwnerArg("read_tool_result") {
+		t.Fatal("read_tool_result must receive the hidden runtime owner")
+	}
+	h := &IMMessageHandler{}
+	got := h.toolReadToolResult(map[string]interface{}{
+		"id":                             "missing",
+		"session_key":                    "untrusted-model-value",
+		registeredToolPolicyOwnerIDField: "remote:mobile",
+	})
+	if strings.Contains(got, "untrusted-model-value") {
+		t.Fatalf("model-provided session key remained authoritative: %q", got)
+	}
+}
+
 func TestSituationReportWithoutRuntimeOwnerDoesNotExposeDesktopArtifacts(t *testing.T) {
 	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {

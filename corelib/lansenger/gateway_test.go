@@ -161,6 +161,74 @@ func TestProcessEventDownloadsTextAttachmentAndPreservesContext(t *testing.T) {
 	}
 }
 
+func TestProcessEventSkipsAttachmentDownloadWhenPolicyRejects(t *testing.T) {
+	var fetches atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/medias/") {
+			fetches.Add(1)
+		}
+		t.Fatalf("unexpected request: %s", r.URL.Path)
+	}))
+	defer api.Close()
+	var got IncomingMessage
+	gw := NewGateway(Config{
+		AppID: "app", AppSecret: "secret", ApiGatewayURL: api.URL,
+		InboundMediaLimit: func(info IncomingMediaInfo) (int64, bool) {
+			if info.GroupID != "group-1" || info.FromUserID != "user-1" || info.MediaType != "file" {
+				t.Fatalf("media info = %#v", info)
+			}
+			return 0, false
+		},
+	}, func(msg IncomingMessage) { got = msg })
+	gw.handleWSMessage([]byte(`{"events":[{"eventType":"bot_group_message","data":{"from":"user-1","conversationId":"group-1","senderName":"Alice","msgType":"text","msgData":{"text":{"content":"see attachment","mediaType":3,"mediaIds":["media-1"]}}}}]}`))
+	if fetches.Load() != 0 || got.MediaType != "file" || len(got.MediaData) != 0 {
+		t.Fatalf("fetches=%d media=%q bytes=%d", fetches.Load(), got.MediaType, len(got.MediaData))
+	}
+}
+
+func TestDownloadMediaWithConfiguredLimitRejectsContentLength(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"appToken": "token", "expiresIn": 3600}})
+		case "/v1/medias/media-1/fetch":
+			w.Header().Set("Content-Length", "5")
+			_, _ = w.Write([]byte("hello"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+	gw := NewGateway(Config{AppID: "app", AppSecret: "secret", ApiGatewayURL: api.URL}, nil)
+	if _, _, err := gw.downloadMediaWithLimit(context.Background(), "media-1", 3); err == nil || !strings.Contains(err.Error(), "3 byte limit") {
+		t.Fatalf("limit error = %v", err)
+	}
+}
+
+func TestDownloadMediaWithConfiguredLimitPreservesFilename(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"appToken": "token", "expiresIn": 3600}})
+		case "/v1/medias/media-1/fetch":
+			w.Header().Set("Content-Disposition", `attachment; filename="large-report.zip"`)
+			w.Header().Set("Content-Length", "5")
+			_, _ = w.Write([]byte("hello"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+	gw := NewGateway(Config{AppID: "app", AppSecret: "secret", ApiGatewayURL: api.URL}, nil)
+	data, name, err := gw.downloadMediaWithLimit(context.Background(), "media-1", 3)
+	if err == nil || !strings.Contains(err.Error(), "3 byte limit") {
+		t.Fatalf("limit error = %v", err)
+	}
+	if data != nil || name != "large-report.zip" {
+		t.Fatalf("data=%q name=%q; want nil data and original filename", data, name)
+	}
+}
+
 func TestExtractTextReturnsAttachmentLabelWithoutCaption(t *testing.T) {
 	got := extractText(json.RawMessage(`{"text":{"mediaType":2,"mediaIds":["image-1"]}}`), "text")
 	if got != "[image: image-1]" {
@@ -547,7 +615,6 @@ func TestSendTextSkipsBlankContent(t *testing.T) {
 		t.Fatalf("API requests = %d, want 0", got)
 	}
 }
-
 
 func TestSendTextDoesNotStripReminderOnNetworkError(t *testing.T) {
 	// When the first attempt fails with a non-API error, we must not silently

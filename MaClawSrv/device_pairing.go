@@ -16,7 +16,12 @@ import (
 
 // A spoken pairing code is a short-lived, single-use bootstrap secret. It is
 // never used as a gateway bearer token.
-const srvDevicePairingTTL = 10 * time.Minute
+// Keep the direct MaClawSrv bootstrap window aligned with the Hub/GUI device
+// gateway. Speaking a code on a small hardware terminal can take several
+// attempts (opening the owner UI, starting capture and waiting for ASR), so the
+// former ten-minute window was noticeably shorter than the advertised
+// third-party protocol behavior.
+const srvDevicePairingTTL = 30 * time.Minute
 
 type srvDevicePairingRecord struct {
 	Principal agentservice.Principal
@@ -237,12 +242,20 @@ func isSixDigitCode(value string) bool {
 
 func devicePairCodeFromTranscript(transcript string) (string, bool) {
 	var digits strings.Builder
-	for _, r := range strings.TrimSpace(transcript) {
+	normalized := strings.ToLower(strings.TrimSpace(transcript))
+	for _, r := range normalized {
 		if r >= '0' && r <= '9' {
 			digits.WriteRune(r)
 			continue
 		}
 		if digit, ok := spokenChineseDigit(r); ok {
+			digits.WriteByte(digit)
+		}
+	}
+	for _, word := range strings.FieldsFunc(normalized, func(r rune) bool {
+		return r < 'a' || r > 'z'
+	}) {
+		if digit, ok := spokenEnglishDigit(word); ok {
 			digits.WriteByte(digit)
 		}
 	}
@@ -274,6 +287,33 @@ func spokenChineseDigit(r rune) (byte, bool) {
 	case '八':
 		return '8', true
 	case '九':
+		return '9', true
+	default:
+		return 0, false
+	}
+}
+
+func spokenEnglishDigit(word string) (byte, bool) {
+	switch word {
+	case "zero", "oh":
+		return '0', true
+	case "one":
+		return '1', true
+	case "two", "to", "too":
+		return '2', true
+	case "three":
+		return '3', true
+	case "four", "for":
+		return '4', true
+	case "five":
+		return '5', true
+	case "six":
+		return '6', true
+	case "seven":
+		return '7', true
+	case "eight", "ate":
+		return '8', true
+	case "nine":
 		return '9', true
 	default:
 		return 0, false

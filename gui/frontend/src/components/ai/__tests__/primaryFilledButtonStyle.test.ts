@@ -57,8 +57,8 @@ describe("primaryFilledButtonStyle / resolvePrimaryFilledColors", () => {
                 expect(style.background).not.toBe(t.btnColor);
             }
             if (id === "graphite") {
-                expect(style.background).toBe("#d4d4d4");
-                expect(style.color).toBe("#111111");
+                expect(style.background).toBe("#7ea8e0");
+                expect(style.color).toBe("#0f141b");
             }
             if (id === "classic") {
                 expect(style.background).toBe("#2f5f98");
@@ -91,7 +91,7 @@ describe("primaryFilledButtonStyle / resolvePrimaryFilledColors", () => {
             sendBtnColor: "",
             sendBtnBorder: "",
         });
-        expect(style.background).toBe("#2f5f98");
+        expect(style.background).toBe("#2f6fbc");
         expect(style.color).toBe("#ffffff");
     });
 });
@@ -99,6 +99,6 @@ describe("primaryFilledButtonStyle / resolvePrimaryFilledColors", () => {
 describe("formFieldLabelColor", () => {
     it("prefers fieldLabel over washed textMuted", () => {
         expect(formFieldLabelColor(darkTheme)).toBe(darkTheme.fieldLabel);
-        expect(formFieldLabelColor(getAssistantDarkScheme("graphite").assistantTheme)).toBe("#c8c8c8");
+        expect(formFieldLabelColor(getAssistantDarkScheme("graphite").assistantTheme)).toBe("#bfccdb");
     });
 });

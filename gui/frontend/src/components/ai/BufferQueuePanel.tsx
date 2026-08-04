@@ -99,7 +99,7 @@ const fileTypeLabelStyle: React.CSSProperties = {
     height: "16px",
     padding: "0 3px",
     borderRadius: "3px",
-    background: "rgba(47, 95, 152, 0.08)",
+    background: "rgba(47, 111, 188, 0.08)",
     color: "#334155",
     fontSize: "9px",
     fontWeight: 700,

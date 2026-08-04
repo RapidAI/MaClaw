@@ -127,23 +127,6 @@ final documentDraftHistoryProvider =
   DocumentDraftHistoryController.new,
 );
 
-const mobileDocumentImportExtensions = [
-  'docx',
-  'doc',
-  'pdf',
-  'xlsx',
-  'xls',
-  'txt',
-  'md',
-  'markdown',
-  'log',
-  'csv',
-  'json',
-  'png',
-  'jpg',
-  'jpeg',
-];
-
 class DocumentDraftHistoryController
     extends AsyncNotifier<List<DocumentDraft>> {
   @override
@@ -681,8 +664,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   Future<void> pickAndUploadDocument() async {
     try {
       final picked = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: mobileDocumentImportExtensions,
+        type: FileType.any,
       );
       final path = picked?.files.single.path;
       if (path == null || path.isEmpty) return;
@@ -734,11 +716,6 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     // Outbound share writes temp files under maclaw_outbound_share / maclaw_share_*
     // — never re-import when ReceiveSharingIntent echoes them back.
     if (isMaclawOutboundSharePath(path)) {
-      return;
-    }
-    final typeError = validateMobileDocumentImportPath(path);
-    if (typeError != null) {
-      _setOperationError(typeError);
       return;
     }
     final sizeError = await _validateUploadSize(path);
@@ -811,9 +788,10 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     final file = File(path);
     if (!await file.exists()) return null;
     final length = await file.length();
-    if (length <= maxUploadBytes) return null;
-    return '文件大小 ${formatMobileFileSize(length)} 超过官方服务上传限制 '
-        '${formatMobileFileSize(maxUploadBytes)}，请压缩或拆分后再导入。';
+    // The Hub enforces the user-facing 100MB cap after optional compression.
+    // Let compressible inputs through; keep a bounded raw-input guard.
+    if (length <= 400 * 1024 * 1024) return null;
+    return '文件大小 ${formatMobileFileSize(length)} 过大；自动压缩后单文件必须不超过 100 MB。';
   }
 
   Future<void> _notifyUploadReady(MobileDocumentUploadTask upload) async {
@@ -1138,16 +1116,6 @@ String formatMobileFileSize(int bytes) {
   return '$text ${units[unitIndex]}';
 }
 
-String? validateMobileDocumentImportPath(String path) {
-  final extension = _mobileDocumentExtension(path);
-  if (extension == null ||
-      !mobileDocumentImportExtensions.contains(extension.toLowerCase())) {
-    return '暂不支持该文件类型。请导入 Word、PDF、Excel、图片、Markdown、'
-        'CSV、JSON、TXT 或日志文件。';
-  }
-  return null;
-}
-
 /// True for temp files written by [DocumentsController.prepareOriginalShareFile].
 /// Used to ignore ReceiveSharingIntent re-delivery of outbound shares.
 bool isMaclawOutboundSharePath(String path) {
@@ -1158,14 +1126,4 @@ bool isMaclawOutboundSharePath(String path) {
         orElse: () => '',
       );
   return base.startsWith('maclaw_share_');
-}
-
-String? _mobileDocumentExtension(String path) {
-  final withoutQuery = path.split('?').first.split('#').first.trim();
-  final parts = withoutQuery.split(RegExp(r'[\\/]'));
-  final filename = parts.where((part) => part.isNotEmpty).lastOrNull;
-  if (filename == null) return null;
-  final dot = filename.lastIndexOf('.');
-  if (dot <= 0 || dot == filename.length - 1) return null;
-  return filename.substring(dot + 1);
 }

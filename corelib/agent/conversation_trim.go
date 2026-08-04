@@ -533,14 +533,32 @@ func TruncateToolResult(s string) string {
 const WebFetchMaxToolResult = 32768
 
 func TruncateToolResultForTool(toolName, s string) string {
-	return TruncateToolResultForToolWithSession(toolName, "", s)
+	return PreviewToolResultForTool(toolName, s)
 }
 
 // TruncateToolResultForToolWithSession truncates for the model and spills the
 // full original result to a tool_result handle when the preview is shorter.
 // Preview uses toolresult.StructuredPreview (Phase 4: tool-aware reducers).
 func TruncateToolResultForToolWithSession(toolName, sessionKey, original string) string {
-	// web_fetch gets a higher budget — content is already windowed in handler
+	proj, err := ProjectToolResult(toolName, sessionKey, original)
+	if err != nil {
+		if proj.Preview != "" {
+			return proj.Preview
+		}
+		limit := MaxToolResultLen
+		if toolName == "web_fetch" {
+			limit = WebFetchMaxToolResult
+		}
+		return toolresult.StructuredPreview(toolName, original, limit)
+	}
+	return proj.Preview
+}
+
+// PreviewToolResultForTool returns only the bounded model preview. It keeps the
+// legacy no-footer size contract for callers that are not committing a tool
+// message. Agent-loop paths should use TruncateToolResultForToolWithSession.
+func PreviewToolResultForTool(toolName, original string) string {
+	includeFooter := false
 	limit := MaxToolResultLen
 	if toolName == "web_fetch" {
 		limit = WebFetchMaxToolResult
@@ -548,20 +566,35 @@ func TruncateToolResultForToolWithSession(toolName, sessionKey, original string)
 	if strings.HasPrefix(toolName, "browser") {
 		limit = max(limit, 4096)
 	}
-	// Empty Preview → StructuredPreview inside Project; spill when truncated.
 	proj, err := toolresult.Project(toolresult.ProjectOptions{
+		ToolName:            toolName,
+		Content:             original,
+		Limit:               limit,
+		IncludeHandleFooter: &includeFooter,
+	})
+	if err != nil && proj.Preview == "" {
+		return toolresult.StructuredPreview(toolName, original, limit)
+	}
+	return proj.Preview
+}
+
+// ProjectToolResult exposes the canonical core model-facing projection for
+// hosts that need the full Projection metadata (for tests/metrics) instead of
+// only the preview string returned by TruncateToolResultForToolWithSession.
+func ProjectToolResult(toolName, sessionKey, original string) (toolresult.Projection, error) {
+	limit := MaxToolResultLen
+	if toolName == "web_fetch" {
+		limit = WebFetchMaxToolResult
+	}
+	if strings.HasPrefix(toolName, "browser") {
+		limit = max(limit, 4096)
+	}
+	return toolresult.Project(toolresult.ProjectOptions{
 		ToolName:   toolName,
 		SessionKey: sessionKey,
 		Content:    original,
 		Limit:      limit,
 	})
-	if err != nil {
-		if proj.Preview != "" {
-			return proj.Preview
-		}
-		return toolresult.StructuredPreview(toolName, original, limit)
-	}
-	return proj.Preview
 }
 
 // InferFileDeliveryMessage is kept for compatibility. Without structured

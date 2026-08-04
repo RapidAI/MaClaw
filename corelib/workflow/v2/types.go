@@ -146,6 +146,7 @@ const (
 var DocOnlyAllowedTools = map[string]bool{
 	"bash":                     true,
 	"read_file":                true,
+	"read_tool_result":         true,
 	"memory":                   true,
 	"generate_pdf":             true,
 	"office":                   true,
@@ -167,6 +168,7 @@ var DocOnlyAllowedTools = map[string]bool{
 // PlanningAllowedTools is the canonical set for reviewable coding-planning phases.
 var PlanningAllowedTools = map[string]bool{
 	"read_file":                true,
+	"read_tool_result":         true,
 	"write_file":               true,
 	"list_directory":           true,
 	"memory":                   true,
@@ -187,17 +189,18 @@ var PlanningAllowedTools = map[string]bool{
 // OpsControlledAllowedTools is the canonical tool set for controlled server
 // operations phases.
 var OpsControlledAllowedTools = map[string]bool{
-	"bash":           true,
-	"ssh":            true,
-	"read_file":      true,
-	"list_directory": true,
-	"memory":         true,
-	"async_wait":     true,
-	"send_file":      true,
-	"send_to_im":     true,
-	"web_search":     true,
-	"web_fetch":      true,
-	"set_nickname":   true,
+	"bash":             true,
+	"ssh":              true,
+	"read_file":        true,
+	"read_tool_result": true,
+	"list_directory":   true,
+	"memory":           true,
+	"async_wait":       true,
+	"send_file":        true,
+	"send_to_im":       true,
+	"web_search":       true,
+	"web_fetch":        true,
+	"set_nickname":     true,
 }
 
 // ---------------------------------------------------------------------------

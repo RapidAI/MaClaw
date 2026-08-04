@@ -182,6 +182,36 @@ func TestListExpertMarketListingsDoesNotTreatPortablePackageAsMarketInstall(t *t
 	}
 }
 
+func TestListExpertMarketListingsDoesNotTreatUninstalledMarketExpertAsInstalled(t *testing.T) {
+	previousStore := defaultExpertStore
+	defaultExpertStore = newExpertStore(filepath.Join(t.TempDir(), "experts.json"))
+	t.Cleanup(func() { defaultExpertStore = previousStore })
+	const installedID = "pkgexp-uninstalled-market-expert"
+	if err := defaultExpertStore.SaveMarketInstall(ExpertDefinition{ID: installedID, Name: "Previously installed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&App{}).UninstallExpertMarketListing(installedID); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"experts":[{"id":"listing-1","source_expert_id":"pkgexp-uninstalled-market-expert"}]}`))
+	}))
+	defer hub.Close()
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: hub.URL, SkillMarketSessionToken: "market-token"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.ListExpertMarketListings("", "published", 1, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing := result["experts"].([]interface{})[0].(map[string]interface{})
+	if listing["installed"] == true || listing["local_expert_id"] != nil {
+		t.Fatalf("uninstalled market expert must not be shown as installed: %#v", listing)
+	}
+}
+
 func TestPetStoreRequestDoesNotFollowRedirects(t *testing.T) {
 	redirectTargetCalls := 0
 	var targetAuthorization string

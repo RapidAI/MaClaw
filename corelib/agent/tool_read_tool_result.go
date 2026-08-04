@@ -6,9 +6,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
-// ToolReadToolResult re-reads a spilled tool_result handle (id or path) with
-// optional byte offset/limit. Used when large tool outputs were projected to a
-// preview + handle footer.
+// ToolReadToolResult re-reads a spilled tool_result handle with an optional byte
+// offset/limit. Hosts inject session_key authoritatively; path remains accepted
+// only for legacy internal callers and is not exposed in model tool schemas.
 func ToolReadToolResult(args map[string]interface{}) string {
 	id := toolresult.ParseArgsString(args, "id")
 	if id == "" {

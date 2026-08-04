@@ -157,7 +157,8 @@ type IMMessageHandler struct {
 	// IM channels (Feishu/WeChat/etc.) via the Hub WebSocket. Set by the
 	// desktop GUI after connecting to the Hub. When nil, IM forwarding is
 	// silently skipped.
-	imFileSender func(b64Data, fileName, mimeType, message string) error
+	imFileSender           func(b64Data, fileName, mimeType, message string) error
+	structuredIMFileSender func(agent.IMFileDeliveryRequest) error
 
 	// agentActivity is a process-local shared store that lets the GUI AI
 	// assistant and IM channels see each other's active tasks.
@@ -801,6 +802,12 @@ func (h *IMMessageHandler) SetIMFileSender(fn func(b64Data, fileName, mimeType, 
 	h.imFileSender = fn
 }
 
+// SetStructuredIMFileSender configures exact-target-aware IM file delivery.
+// SetIMFileSender remains as a source-compatible adapter for legacy hosts/tests.
+func (h *IMMessageHandler) SetStructuredIMFileSender(fn func(agent.IMFileDeliveryRequest) error) {
+	h.structuredIMFileSender = fn
+}
+
 // SetGoalAnchor configures the goal anchoring module for the agent loop.
 func (h *IMMessageHandler) SetGoalAnchor(ga *GoalAnchor) {
 	h.goalAnchor = ga
@@ -1062,6 +1069,19 @@ func imManagementToolNames(userMessage string) []string {
 			names = append(names, "im_message")
 			break
 		}
+	}
+	// File delivery needs both target discovery and the artifact sender. Short
+	// voice transcripts are often classified as light turns, so mark these tools
+	// explicitly instead of relying only on semantic retrieval.
+	fileIntent := false
+	for _, marker := range []string{"文件", "报告", "文档", "附件", "表格", "图片", "照片", "录音", "音频", "pdf", "docx", "xlsx", "pptx", "file", "attachment", "report", "document"} {
+		if strings.Contains(s, marker) {
+			fileIntent = true
+			break
+		}
+	}
+	if fileIntent && len(names) > 0 {
+		names = append(names, "send_to_im", "send_file")
 	}
 	return names
 }

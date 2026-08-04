@@ -27,6 +27,61 @@ config MACLAW_CLIENT_ID
     help
         Use an immutable ID per device (for example the chip MAC suffix).
 
+config MACLAW_HEAP_MONITOR
+    bool "Log heap and task-stack watermarks once per minute"
+    default y
+    help
+        Periodically logs free/largest-block heap stats (internal + PSRAM)
+        and per-task stack high-water marks. Used to validate memory headroom
+        for the esp-sr AFE and to size task stacks from measured data.
+
+config MACLAW_AFE_ENABLE
+    bool "Enable esp-sr AFE (AEC/NS/AGC) on the wake-word path"
+    default y
+    help
+        Runs the ES7210 microphone through the esp-sr audio front-end
+        (acoustic echo cancellation with the speaker signal as reference,
+        WebRTC noise suppression and AGC) before MultiNet wake-word
+        detection, keeping detection alive during speaker playback as
+        barge-in groundwork. If AFE initialisation fails at runtime (for
+        example out of internal RAM), the firmware logs the failure and
+        falls back to the raw microphone wake-word path, so this option can
+        never brick the device. Disable to reclaim the AFE memory.
+
+config MACLAW_POWER_SAVE
+    bool "Enable DFS (80-240 MHz) and tickless idle power management"
+    default n
+    help
+        Switches the firmware power-management code paths on: esp_pm_configure
+        with dynamic frequency scaling between 80 and 240 MHz, plus APB
+        frequency locks around LCD QSPI DMA and the speaker I2S enable points.
+        This option alone is not sufficient: it also requires
+        CONFIG_PM_ENABLE=y and CONFIG_FREERTOS_USE_TICKLESS_IDLE=y, which are
+        deliberately NOT in sdkconfig.defaults so the default build behaviour
+        is unchanged. Enable them via idf.py menuconfig (or add them to
+        sdkconfig.defaults manually). Must be validated on hardware: audio
+        (I2S clock continuity) and LCD (QSPI DMA) timing under reduced CPU
+        frequency. Light sleep stays disabled on purpose: the esp-sr AFE feed
+        task must run continuously for wake-word AEC, which conflicts with
+        light sleep. For a battery product that can drop always-on listening,
+        a button-wake deep/light sleep scheme is the alternative.
+
+config MACLAW_BATTERY_ADC_ENABLE
+    bool "Enable battery voltage monitoring via ADC"
+    default n
+    help
+        Samples the battery divider once per minute (ADC1 oneshot, 12 dB
+        attenuation, assumes a 1:1 divider: Vbat = 2 x Vadc). Logs the level,
+        warns below 10% and deep-sleeps below 3% after flushing (no wake
+        source is configured; the device stays off until manual reset or
+        charger attach). Enable only after confirming the divider GPIO below
+        against the board schematic.
+
+config MACLAW_BATTERY_ADC_GPIO
+    int "Battery divider GPIO (must map to ADC1)"
+    default 4
+    depends on MACLAW_BATTERY_ADC_ENABLE
+
 config MACLAW_CONVERSATION_ID
     string "Default conversation ID"
     default "default"

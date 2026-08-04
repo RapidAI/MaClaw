@@ -1037,7 +1037,7 @@ export function RemoteSessionConsole(props: Props) {
                     )}
                     {!readOnly && (
                         <button onClick={handleCtrlC} disabled={sessionClosed}
-                            style={{ ...actionBtnStyle, color: "var(--theme-info, #3f6f8f)" }}
+                            style={{ ...actionBtnStyle, color: "var(--theme-primary, #2f6fbc)" }}
                             title={isStructured ? localizeText(currentLang, "Interrupt", "中断", "中斷") : "Ctrl+C"}>
                             {isStructured ? "INT" : "CTRL-C"}
                         </button>
@@ -1080,7 +1080,7 @@ export function RemoteSessionConsole(props: Props) {
                 <div style={{
                     flexShrink: 0,
                     padding: "8px 10px",
-                    background: "rgba(47, 95, 152, 0.10)",
+                    background: "rgba(47, 111, 188, 0.10)",
                     borderTop: "1px solid rgba(91, 120, 152, 0.26)",
                     borderBottom: "1px solid rgba(91, 120, 152, 0.26)",
                     color: "#9fb7d6",
@@ -1167,7 +1167,7 @@ export function RemoteSessionConsole(props: Props) {
                         <button
                             onClick={() => fileInputRef.current?.click()}
                             disabled={disabled || imageUploading}
-                            style={{ ...inputBtnStyle, color: "var(--theme-info, #3f6f8f)", borderColor: "var(--theme-info, #3f6f8f)" }}
+                            style={{ ...inputBtnStyle, color: "var(--theme-primary, #2f6fbc)", borderColor: "var(--theme-primary, #2f6fbc)" }}
                             title={localizeText(currentLang, "Upload image (or paste)", "上传图片 (也可粘贴)", "上傳圖片 (也可貼上)")}
                         >
                             {imageUploading ? "..." : "IMG"}

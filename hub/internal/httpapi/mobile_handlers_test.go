@@ -3375,6 +3375,91 @@ func TestMobileDocumentUploadSourceHandlerDownloadsClaimedSource(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentUploadWorkerRoundTripKeepsCompressedBlobShared(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-compressed-roundtrip@example.com")
+	clearMobileStateForTest(t)
+	t.Setenv(mobileBlobDirEnv, t.TempDir())
+
+	original := bytes.Repeat([]byte("legacy office document row\n"), 4096)
+	path, storedSize, originalSize, encoding, mem, err := mobilePersistUploadedDocument(
+		enroll.UserID, "upload-compressed-roundtrip", bytes.NewReader(original), true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoding != "gzip" || storedSize >= originalSize {
+		t.Fatalf("stored encoding=%q size=%d original=%d", encoding, storedSize, originalSize)
+	}
+	now := time.Date(2026, 7, 1, 9, 56, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-compressed-roundtrip"] = mobileDocumentUploadRecord{
+		TaskID:             "upload-compressed-roundtrip",
+		OwnerID:            enroll.UserID,
+		TenantID:           enroll.TenantID,
+		Filename:           "legacy.doc",
+		ContentType:        "application/msword",
+		Status:             "in_progress",
+		ClaimedBy:          enroll.MachineID,
+		SourcePath:         path,
+		SourceSize:         storedSize,
+		SourceBytes:        mem,
+		SourceEncoding:     encoding,
+		SourceOriginalSize: originalSize,
+		UpdatedAt:          now,
+	}
+	mobileDocuments.Unlock()
+
+	sourceReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/upload/upload-compressed-roundtrip/source", nil)
+	sourceReq.SetPathValue("taskId", "upload-compressed-roundtrip")
+	sourceReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	sourceReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	sourceRec := httptest.NewRecorder()
+	MobileDocumentUploadSourceHandler(identity).ServeHTTP(sourceRec, sourceReq)
+	if sourceRec.Code != http.StatusOK || !bytes.Equal(sourceRec.Body.Bytes(), original) {
+		t.Fatalf("source status=%d bytes_equal=%v body=%s", sourceRec.Code, bytes.Equal(sourceRec.Body.Bytes(), original), sourceRec.Body.String())
+	}
+	if got := sourceRec.Header().Get("Content-Type"); got != "application/msword" {
+		t.Fatalf("source content-type=%q", got)
+	}
+	if got := sourceRec.Header().Get("Content-Disposition"); !strings.Contains(got, "legacy.doc") {
+		t.Fatalf("source disposition=%q", got)
+	}
+
+	resultReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-compressed-roundtrip/result", strings.NewReader(`{"status":"ready","markdown":"# Parsed legacy document"}`))
+	resultReq.SetPathValue("taskId", "upload-compressed-roundtrip")
+	resultReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	resultReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	resultRec := httptest.NewRecorder()
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(resultRec, resultReq)
+	if resultRec.Code != http.StatusOK {
+		t.Fatalf("result status=%d body=%s", resultRec.Code, resultRec.Body.String())
+	}
+
+	mobileDocuments.Lock()
+	upload := mobileDocuments.uploads["upload-compressed-roundtrip"]
+	draft := mobileDocuments.drafts[upload.DraftID]
+	mobileDocuments.Unlock()
+	if upload.SourcePath != "" || upload.SourceSize != 0 || upload.SourceEncoding != "" || upload.SourceOriginalSize != 0 {
+		t.Fatalf("terminal upload retained source metadata: %#v", upload)
+	}
+	if draft.SourcePath != path || draft.SourceEncoding != "gzip" || draft.SourceSize != storedSize || draft.SourceOriginalSize != originalSize {
+		t.Fatalf("draft did not retain shared stored source: %#v", draft)
+	}
+	if _, err := os.Stat(mustMobileBlobAbsPath(t, path)); err != nil {
+		t.Fatalf("shared blob was deleted: %v", err)
+	}
+
+	draftReq := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/drafts/"+draft.ID+"/source", nil)
+	draftReq.SetPathValue("draftId", draft.ID)
+	draftReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	draftRec := httptest.NewRecorder()
+	MobileDocumentDraftSourceHandler(identity).ServeHTTP(draftRec, draftReq)
+	if draftRec.Code != http.StatusOK || !bytes.Equal(draftRec.Body.Bytes(), original) {
+		t.Fatalf("draft source status=%d bytes_equal=%v body=%s", draftRec.Code, bytes.Equal(draftRec.Body.Bytes(), original), draftRec.Body.String())
+	}
+}
+
 func TestMobileDocumentUploadSourceHandlerRejectsOtherClaimedWorker(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	_, enroll := issueViewerToken(t, identity, "mobile-source-other@example.com")
@@ -3508,6 +3593,77 @@ func TestMobileDocumentUploadResultHandlerRejectsOtherClaimedWorker(t *testing.T
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d body=%s, want forbidden", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMobileDocumentUploadResultValidatesClaimBeforeQuotaAndDoesNotMutate(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-result-order@example.com")
+	clearMobileStateForTest(t)
+	t.Setenv("MACLAW_MOBILE_CAP_DOC_FREE_MIB", "1")
+	now := time.Date(2026, 7, 1, 10, 4, 30, 0, time.UTC)
+	fill := strings.Repeat("x", (1<<20)-8)
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["quota-fill-result-order"] = mobileDocumentDraftRecord{
+		ID: "quota-fill-result-order", OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Markdown: fill, UpdatedAt: now,
+	}
+	mobileDocuments.uploads["upload-result-order"] = mobileDocumentUploadRecord{
+		TaskID: "upload-result-order", OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Filename: "screenshot.png", Status: "in_progress", ClaimedBy: "different-machine", UpdatedAt: now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-result-order/result", strings.NewReader(`{"status":"ready","markdown":"# this exceeds the remaining quota"}`))
+	req.SetPathValue("taskId", "upload-result-order")
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s, want claim rejection before quota", rec.Code, rec.Body.String())
+	}
+	mobileDocuments.Lock()
+	upload := mobileDocuments.uploads["upload-result-order"]
+	_, createdDraft := mobileDocuments.drafts[upload.DraftID]
+	mobileDocuments.Unlock()
+	if upload.Status != "in_progress" || upload.OCRMarkdown != "" || upload.DraftID != "" || createdDraft {
+		t.Fatalf("rejected worker mutated upload/draft: upload=%#v createdDraft=%v", upload, createdDraft)
+	}
+}
+
+func TestMobileDocumentUploadResultOverQuotaDoesNotMutate(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-result-quota@example.com")
+	clearMobileStateForTest(t)
+	t.Setenv("MACLAW_MOBILE_CAP_DOC_FREE_MIB", "1")
+	now := time.Date(2026, 7, 1, 10, 4, 45, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["quota-fill-result"] = mobileDocumentDraftRecord{
+		ID: "quota-fill-result", OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Markdown: strings.Repeat("x", (1<<20)-8), UpdatedAt: now,
+	}
+	mobileDocuments.uploads["upload-result-quota"] = mobileDocumentUploadRecord{
+		TaskID: "upload-result-quota", OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Filename: "screenshot.png", Status: "in_progress", ClaimedBy: enroll.MachineID, UpdatedAt: now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/mobile/documents/upload/upload-result-quota/result", strings.NewReader(`{"status":"ready","markdown":"# this exceeds the remaining quota"}`))
+	req.SetPathValue("taskId", "upload-result-quota")
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadResultHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusInsufficientStorage {
+		t.Fatalf("status=%d body=%s, want quota rejection", rec.Code, rec.Body.String())
+	}
+	mobileDocuments.Lock()
+	upload := mobileDocuments.uploads["upload-result-quota"]
+	_, createdDraft := mobileDocuments.drafts[upload.DraftID]
+	mobileDocuments.Unlock()
+	if upload.Status != "in_progress" || upload.OCRMarkdown != "" || upload.DraftID != "" || createdDraft {
+		t.Fatalf("quota rejection mutated upload/draft: upload=%#v createdDraft=%v", upload, createdDraft)
 	}
 }
 

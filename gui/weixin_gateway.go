@@ -10,12 +10,18 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/lansenger"
+	"github.com/RapidAI/CodeClaw/corelib/qqbot"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/telegram"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
@@ -1398,12 +1404,33 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 // user's IM channels. Prefer the local Weixin gateway (single-machine mode);
 // fall back to Hub proactive file broadcast for multi-machine / Feishu etc.
 func (a *App) forwardDesktopFileToIM(hubClient *RemoteHubClient, b64Data, fileName, mimeType, message string) error {
+	return a.forwardDesktopFileToIMRequest(hubClient, agent.IMFileDeliveryRequest{
+		Data: b64Data, FileName: fileName, MIMEType: mimeType, Message: message,
+	})
+}
+
+// forwardDesktopFileToIMRequest routes an artifact to an exact IM destination
+// when supplied, otherwise preserving the legacy local-Weixin-first/broadcast
+// behavior.
+func (a *App) forwardDesktopFileToIMRequest(hubClient *RemoteHubClient, req agent.IMFileDeliveryRequest) error {
+	req.Target = req.Target.Normalize()
+	if req.Target.Active() {
+		if err := a.resolveIMFileDeliveryTarget(&req.Target); err != nil {
+			return err
+		}
+		if err := a.sendLocalIMFileToTarget(req); err == nil {
+			return nil
+		} else if hubClient == nil {
+			return err
+		}
+		return hubClient.SendIMProactiveFileRequest(req)
+	}
 	var localErr, hubErr error
 	// Local Weixin first — users on weixin_local often have no Hub IM route.
 	if a != nil {
 		a.ensureWeixinGateway()
 		if a.weixinGateway != nil {
-			localErr = a.weixinGateway.SendProactiveFile(b64Data, fileName, mimeType, message)
+			localErr = a.weixinGateway.SendProactiveFile(req.Data, req.FileName, req.MIMEType, req.Message)
 			if localErr == nil {
 				return nil
 			}
@@ -1413,7 +1440,7 @@ func (a *App) forwardDesktopFileToIM(hubClient *RemoteHubClient, b64Data, fileNa
 		}
 	}
 	if hubClient != nil {
-		hubErr = hubClient.SendIMProactiveFile(b64Data, fileName, mimeType, message)
+		hubErr = hubClient.SendIMProactiveFileRequest(req)
 		if hubErr == nil {
 			if localErr != nil {
 				log.Printf("[IM-forward] hub proactive file OK after local failure: %v", localErr)
@@ -1431,6 +1458,124 @@ func (a *App) forwardDesktopFileToIM(hubClient *RemoteHubClient, b64Data, fileNa
 		return localErr
 	}
 	return hubErr
+}
+
+func (a *App) resolveIMFileDeliveryTarget(target *agent.IMFileDeliveryTarget) error {
+	if target == nil {
+		return fmt.Errorf("IM file target is nil")
+	}
+	*target = target.Normalize()
+	if strings.TrimSpace(target.Channel) == "" {
+		return fmt.Errorf("target channel is required")
+	}
+	if target.GroupID == "" && target.UserID == "" && target.GroupName != "" {
+		d := &scheduler.TaskDelivery{Enabled: true, Channel: target.Channel, Targets: []scheduler.DeliveryTarget{{Kind: scheduler.DeliveryKindGroup, GroupName: target.GroupName}}}
+		if err := a.resolveScheduleDelivery(d); err != nil {
+			return fmt.Errorf("resolve IM file target %q: %w", target.GroupName, err)
+		}
+		if len(d.Targets) != 1 || strings.TrimSpace(d.Targets[0].GroupID) == "" {
+			return fmt.Errorf("unable to resolve IM group %q", target.GroupName)
+		}
+		target.Channel = d.Channel
+		target.GroupID = d.Targets[0].GroupID
+		target.GroupName = d.Targets[0].GroupName
+	}
+	if target.GroupID == "" && target.UserID == "" {
+		return fmt.Errorf("target group_id or user_id is required")
+	}
+	return nil
+}
+
+func (a *App) sendLocalIMFileToTarget(req agent.IMFileDeliveryRequest) error {
+	raw, err := decodeToolPayloadBase64(req.Data)
+	if err != nil {
+		return fmt.Errorf("decode file payload: %w", err)
+	}
+	if len(raw) == 0 {
+		return fmt.Errorf("file payload is empty")
+	}
+	target := req.Target.Normalize()
+	channel := scheduler.CanonicalDeliveryChannel(target.Channel)
+	peer := strings.TrimSpace(target.UserID)
+	isGroup := false
+	if peer == "" {
+		peer = strings.TrimSpace(target.GroupID)
+		isGroup = peer != ""
+	}
+	switch channel {
+	case scheduler.DeliveryChannelWeixin:
+		if isGroup || (!scheduler.IsSelfPeerID(peer) && peer != "") {
+			return fmt.Errorf("weixin local gateway only supports user_id=self")
+		}
+		a.ensureWeixinGateway()
+		if a.weixinGateway == nil {
+			return fmt.Errorf("weixin gateway unavailable")
+		}
+		return a.weixinGateway.SendProactiveFile(req.Data, req.FileName, req.MIMEType, req.Message)
+	case scheduler.DeliveryChannelLansenger:
+		if scheduler.IsSelfPeerID(peer) {
+			peer = ""
+			if a.lansengerGateway != nil {
+				peer = a.lansengerGateway.LastPrivatePeerID()
+			}
+		}
+		if peer == "" {
+			return fmt.Errorf("lansenger target is unavailable")
+		}
+		gw, err := a.lansengerGatewayForSend()
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(req.Message) != "" {
+			if err := gw.SendText(context.Background(), lansenger.OutgoingText{ToUserID: peer, Text: req.Message, IsGroup: isGroup}); err != nil {
+				return err
+			}
+		}
+		return gw.SendMedia(context.Background(), lansenger.OutgoingMedia{ToUserID: peer, FileData: raw, FileName: req.FileName, MediaType: mediaTypeForProactiveFile(req.MIMEType, req.FileName), IsGroup: isGroup})
+	case scheduler.DeliveryChannelTelegram:
+		var chatID int64
+		if scheduler.IsSelfPeerID(peer) {
+			peer = ""
+		}
+		if peer != "" {
+			chatID, err = strconv.ParseInt(peer, 10, 64)
+			if err != nil {
+				return fmt.Errorf("telegram target must be a chat id: %w", err)
+			}
+		}
+		a.ensureTelegramGateway()
+		if a.telegramGateway == nil {
+			return fmt.Errorf("telegram gateway unavailable")
+		}
+		chatID = a.telegramGateway.ResolveProactiveChatID(chatID)
+		a.telegramGateway.mu.Lock()
+		gw := a.telegramGateway.gateway
+		a.telegramGateway.mu.Unlock()
+		if gw == nil || chatID == 0 {
+			return fmt.Errorf("telegram target is unavailable")
+		}
+		fileType := "document"
+		if strings.HasPrefix(strings.ToLower(req.MIMEType), "image/") {
+			fileType = "photo"
+		}
+		return gw.SendMedia(context.Background(), telegram.OutgoingMedia{ChatID: chatID, FileType: fileType, FileData: req.Data, FileName: req.FileName, MimeType: req.MIMEType, Caption: req.Message})
+	case scheduler.DeliveryChannelQQ:
+		a.ensureQQBotGateway()
+		if a.qqBotGateway == nil {
+			return fmt.Errorf("qq gateway unavailable")
+		}
+		peer = a.qqBotGateway.ResolveProactiveOpenID(peer)
+		if peer == "" {
+			return fmt.Errorf("qq target is unavailable")
+		}
+		fileType := 4
+		if strings.HasPrefix(strings.ToLower(req.MIMEType), "image/") {
+			fileType = 1
+		}
+		return a.qqBotGateway.SendQQBotMedia(qqbot.OutgoingMedia{OpenID: peer, FileType: fileType, FileData: req.Data, FileName: req.FileName, MimeType: req.MIMEType, Caption: req.Message})
+	default:
+		return fmt.Errorf("local IM channel %q is unsupported", channel)
+	}
 }
 
 // ensureWeixinGateway lazily creates the gateway manager and syncs from config.

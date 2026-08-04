@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -132,21 +133,23 @@ func mobileRunDocumentProcessJob(jobID string, principal *auth.ViewerPrincipal) 
 		return
 	}
 
-	now := time.Now().UTC()
-	mobileDocuments.Lock()
-	record, found := mobileDocuments.drafts[job.DraftID]
-	if !found || record.OwnerID != job.OwnerID || !mobileMeetingRecordingTenantMatches(job.TenantID, record.TenantID) {
-		mobileDocuments.Unlock()
+	record, err := mobileTransformDocumentDraftWithinQuota(context.Background(), principal, job.DraftID, func(markdown string) string {
+		return mobileProcessDocumentMarkdown(job.Action, markdown)
+	})
+	if err != nil {
 		mobileDocumentProcessJobUpdate(jobID, func(j *mobileDocumentProcessJobRecord) {
 			j.Status = mobileDocProcessStatusFailed
-			j.Message = "draft not found"
+			switch err {
+			case errMobileDocumentQuotaExceeded:
+				j.Message = "document storage quota exceeded"
+			case errMobileDocumentDraftChanged:
+				j.Message = "draft changed during processing; retry"
+			default:
+				j.Message = "draft not found"
+			}
 		})
 		return
 	}
-	record.Markdown = mobileProcessDocumentMarkdown(job.Action, record.Markdown)
-	record.UpdatedAt = now
-	mobileDocuments.drafts[job.DraftID] = record
-	mobileDocuments.Unlock()
 	mobilePersistState()
 	if principal != nil {
 		go mobileIngestDocumentDraft(principal, record)

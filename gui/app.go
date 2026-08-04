@@ -1747,8 +1747,8 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		}
 		// Wire IM file sender so the desktop AI assistant can forward files to
 		// the user's Feishu/WeChat. Prefer local Weixin gateway; fall back to Hub.
-		handler.SetIMFileSender(func(b64Data, fileName, mimeType, message string) error {
-			return a.forwardDesktopFileToIM(hubClient, b64Data, fileName, mimeType, message)
+		handler.SetStructuredIMFileSender(func(req agent.IMFileDeliveryRequest) error {
+			return a.forwardDesktopFileToIMRequest(hubClient, req)
 		})
 		// Initialize and wire BackgroundLoopManager + SessionMonitor.
 		statusC := make(chan StatusEvent, 32)
@@ -2008,8 +2008,8 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		}
 		// Wire IM file sender so the desktop AI assistant can forward files to
 		// the user's Feishu/WeChat. Prefer local Weixin gateway; fall back to Hub.
-		handler.SetIMFileSender(func(b64Data, fileName, mimeType, message string) error {
-			return a.forwardDesktopFileToIM(hubClient, b64Data, fileName, mimeType, message)
+		handler.SetStructuredIMFileSender(func(req agent.IMFileDeliveryRequest) error {
+			return a.forwardDesktopFileToIMRequest(hubClient, req)
 		})
 		// Initialize and wire BackgroundLoopManager + SessionMonitor.
 		statusC := make(chan StatusEvent, 32)
@@ -6030,6 +6030,8 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	motionChanged := floatingMotionChanged(oldConfig, config)
 	soundChanged := floatingSoundChanged(oldConfig, config)
 	devicePetChanged := !oldConfigLoaded || devicePetProfileChanged(oldConfig, config)
+	hardwareWelcomeChanged := !oldConfigLoaded || hardwareWelcomeConfigChanged(oldConfig, config)
+	hardwareVolumeChanged := !oldConfigLoaded || hardwareVolumeChanged(oldConfig, config)
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {
 		hubClient = a.remoteSessions.hubClient
@@ -6089,20 +6091,38 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 			}
 		}(config)
 	}
+	if devicePetChanged && a.thirdPartyGateway != nil {
+		// Local Gateway mode has no Hub relay; broadcast to paired devices
+		// directly so they follow the same settings change in real time. Runs
+		// outside the hubClient guard because local mode may have no Hub client.
+		go func(cfg corelib.AppConfig) {
+			a.thirdPartyGateway.broadcastPetProfile(a.devicePetProfileForConfig(cfg))
+		}(config)
+	}
 	if hubClient != nil {
 		if oldConfigLoaded && oldConfig.RemoteHeartbeatSec != config.RemoteHeartbeatSec {
 			hubClient.InvalidateHeartbeatIntervalCache()
 		}
-		go func(client *RemoteHubClient, cfg corelib.AppConfig, syncPet bool) {
+		go func(client *RemoteHubClient, cfg corelib.AppConfig, syncPet, syncWelcome, syncVolume bool) {
 			if client.IsConnected() {
 				if syncPet {
 					if err := client.SendDeviceGatewayPetProfile(cfg); err != nil {
 						log.Printf("[device-pet] profile sync failed: %v", err)
 					}
 				}
+				if syncWelcome {
+					if err := a.SyncHardwareWelcome(); err != nil {
+						log.Printf("[device-welcome] configuration sync failed: %v", err)
+					}
+				}
+				if syncVolume {
+					if err := a.SyncHardwareVolume(); err != nil {
+						log.Printf("[device-volume] configuration sync failed: %v", err)
+					}
+				}
 				client.SyncLaunchProjects()
 			}
-		}(hubClient, config, devicePetChanged)
+		}(hubClient, config, devicePetChanged, hardwareWelcomeChanged, hardwareVolumeChanged)
 	}
 	log.Printf("[config] SaveConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
@@ -7052,6 +7072,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LansengerGroupKnowledgeSourceIDs = ids
+		case "lansenger_group_allow_web_search":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerGroupAllowWebSearch = v
 		case "lansenger_group_allow_all_directories":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7107,6 +7133,36 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.ThirdPartyGatewayPort = v
 			imGatewayChanged = true
+		case "hardware_welcome_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.HardwareWelcomeEnabled = v
+		case "hardware_welcome_text":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if len([]rune(strings.TrimSpace(v))) > 80 {
+				return corelib.AppConfig{}, fmt.Errorf("hardware_welcome_text must be at most 80 characters")
+			}
+			cfg.HardwareWelcomeText = strings.TrimSpace(v)
+		case "hardware_welcome_audio_path":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.HardwareWelcomeAudioPath = strings.TrimSpace(v)
+		case "hardware_volume":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 || v > 100 {
+				return corelib.AppConfig{}, fmt.Errorf("hardware_volume must be between 0 and 100")
+			}
+			cfg.HardwareVolume = v
 		case "acp_host_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7847,6 +7903,8 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	motionChanged := petChanged && floatingMotionChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
 	devicePetChanged := devicePetProfileChanged(current, cfg)
+	hardwareWelcomeChanged := hardwareWelcomeConfigChanged(current, cfg)
+	hardwareVolumeChanged := hardwareVolumeChanged(current, cfg)
 	// Unified epilogue: publish → unlock → post-unlock drains → persist.
 	// Mark committed before finish so defer does not double-unlock.
 	configTxnCommitted = true
@@ -7966,7 +8024,29 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 					log.Printf("[device-pet] profile sync failed: %v", err)
 				}
 			}
+			// Local Gateway mode has no Hub relay; broadcast to paired devices
+			// directly so they follow the same settings change in real time.
+			if a.thirdPartyGateway != nil {
+				a.thirdPartyGateway.broadcastPetProfile(a.devicePetProfileForConfig(cfg))
+			}
 		}(cfg)
+	}
+	if hardwareWelcomeChanged {
+		// PatchConfigFields is also used by non-settings callers. Sync here so
+		// changing the switch or replacing the WAV cannot depend on the settings
+		// panel remaining mounted.
+		go func() {
+			if err := a.SyncHardwareWelcome(); err != nil {
+				log.Printf("[device-welcome] configuration sync failed: %v", err)
+			}
+		}()
+	}
+	if hardwareVolumeChanged {
+		go func() {
+			if err := a.SyncHardwareVolume(); err != nil {
+				log.Printf("[device-volume] configuration sync failed: %v", err)
+			}
+		}()
 	}
 	if proxyChanged {
 		a.applyAgentProxy()

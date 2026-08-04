@@ -357,6 +357,15 @@ func (h *IMMessageHandler) resolveToolWorkDirForOwner(workingDir, ownerID string
 }
 
 func (h *IMMessageHandler) toolReadToolResult(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "error: read_tool_result runtime owner is missing; isolated runtime will not fall back to desktop session"
+	}
+	if ownerID != "" {
+		// The runtime owner is authoritative. Do not allow model-provided session
+		// keys to escape the current conversation's handle namespace.
+		args["session_key"] = ownerID
+	}
 	return agent.ToolReadToolResult(args)
 }
 
@@ -794,8 +803,15 @@ func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 	// No free-text keyword guessing on the user message.
 	forwardIM := applySendFileForwardArgs(args)
 	if forwardIM {
+		targetFlag := agent.EncodeIMFileDeliveryTargetFlag(args)
 		if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
+			if targetFlag != "" {
+				return fmt.Sprintf("[file_base64|%s|%s|im|%s|%s]%s", fileName, mimeType, targetFlag, msgFlag, b64)
+			}
 			return fmt.Sprintf("[file_base64|%s|%s|im|%s]%s", fileName, mimeType, msgFlag, b64)
+		}
+		if targetFlag != "" {
+			return fmt.Sprintf("[file_base64|%s|%s|im|%s]%s", fileName, mimeType, targetFlag, b64)
 		}
 		// Use | as delimiter; append |im flag so the interceptor knows to forward.
 		return fmt.Sprintf("[file_base64|%s|%s|im]%s", fileName, mimeType, b64)

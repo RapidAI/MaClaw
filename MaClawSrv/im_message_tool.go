@@ -11,28 +11,53 @@ import (
 
 // newSrvIMMessageHandler builds im_message for CoreAgentExecutor (list_targets | send).
 func newSrvIMMessageHandler(svc *agentservice.Service) func(args map[string]interface{}) string {
+	h := newSrvIMMessageHandlerContext(svc)
 	return func(args map[string]interface{}) string {
+		return h(context.Background(), agentservice.Principal{TenantID: "system", UserID: "scheduler"}, args)
+	}
+}
+
+func newSrvIMMessageHandlerContext(svc *agentservice.Service) func(context.Context, agentservice.Principal, map[string]interface{}) string {
+	return func(ctx context.Context, principal agentservice.Principal, args map[string]interface{}) string {
 		return scheduler.RunIMMessageTool(args,
-			func(a map[string]interface{}) string { return srvToolListScheduleDeliveryTargets(svc, a) },
-			func(a map[string]interface{}) string { return srvToolIMMessageSend(svc, a) },
+			func(a map[string]interface{}) string {
+				text, err := srvListIMTargetsForPrincipal(ctx, svc, principal, a)
+				if err != nil {
+					return err.Error()
+				}
+				return text
+			},
+			func(a map[string]interface{}) string { return srvToolIMMessageSendForPrincipal(ctx, svc, principal, a) },
 		)
 	}
 }
 
+func srvListIMTargetsForPrincipal(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, args map[string]interface{}) (string, error) {
+	channel := firstNonEmpty(stringArg(args, "channel"), stringArg(args, "platform"))
+	query := firstNonEmpty(stringArg(args, "query"), stringArg(args, "group_name"), stringArg(args, "name"))
+	return listSrvScheduleDeliveryTargetsForPrincipal(ctx, svc, principal, channel, query)
+}
+
 func srvToolIMMessageSend(svc *agentservice.Service, args map[string]interface{}) string {
+	return srvToolIMMessageSendForPrincipal(context.Background(), svc, agentservice.Principal{TenantID: "system", UserID: "scheduler"}, args)
+}
+
+func srvToolIMMessageSendForPrincipal(parent context.Context, svc *agentservice.Service, principal agentservice.Principal, args map[string]interface{}) string {
 	text := scheduler.IMMessageTextFromArgs(args)
 	if text == "" {
 		return "缺少 text 参数（要发送的消息正文）"
 	}
-	d, err := parseAndResolveSrvDelivery(svc, args)
+	d, err := parseSrvScheduleDelivery(args)
 	if err != nil {
+		return err.Error()
+	}
+	if err := resolveSrvScheduleDeliveryForPrincipal(parent, svc, principal, d); err != nil {
 		return err.Error()
 	}
 	if d == nil || !d.Active() {
 		return "缺少投递目标：请提供 group_name / group_id / user_id，或 delivery.targets"
 	}
-	principal := agentservice.Principal{TenantID: "system", UserID: "scheduler"}
-	ctx, cancel := scheduler.WithDeliveryTimeout(nil, scheduler.DefaultIMDeliveryTimeout)
+	ctx, cancel := scheduler.WithDeliveryTimeout(parent, scheduler.DefaultIMDeliveryTimeout)
 	defer cancel()
 	if err := deliverSrvIMText(ctx, svc, principal, d.Channel, d.Targets, text); err != nil {
 		return fmt.Sprintf("发送失败: %s", err.Error())
@@ -56,7 +81,7 @@ func deliverSrvIMText(ctx context.Context, svc *agentservice.Service, principal 
 	if err != nil {
 		return err
 	}
-	store := srvDeliveryState(svc)
+	store := srvDeliveryStateForPrincipal(svc, principal)
 	_, err = scheduler.FanOutDeliveryTargets(targets, func(i int, target scheduler.DeliveryTarget) error {
 		peer, sendErr := send(ctx, target, text)
 		if sendErr != nil {

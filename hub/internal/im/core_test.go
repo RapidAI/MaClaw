@@ -615,6 +615,63 @@ func TestDeliverSingleResponseKeepsVoiceAfterTextForOtherIM(t *testing.T) {
 	}
 }
 
+// mockOrderVoicePlugin records the delivery order of voice vs text so tests
+// can assert voice-first platforms (ESP32 pets) get audio before the text that
+// would terminate the device command.
+type mockOrderVoicePlugin struct {
+	mockPlugin
+	calls []string
+}
+
+func (m *mockOrderVoicePlugin) SendText(_ context.Context, _ UserTarget, text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "text")
+	m.sentTexts = append(m.sentTexts, text)
+	return nil
+}
+
+func (m *mockOrderVoicePlugin) SendVoice(_ context.Context, _ UserTarget, voiceData, _, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "voice")
+	return nil
+}
+
+func TestSendResponseSendsThirdPartyVoiceBeforeText(t *testing.T) {
+	plugin := &mockOrderVoicePlugin{mockPlugin: mockPlugin{
+		name: "thirdparty",
+		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
+	}}
+	adapter := &Adapter{}
+	adapter.sendResponse(context.Background(), plugin, UserTarget{PlatformUID: "dev-1"}, &GenericResponse{
+		Body:          "回答",
+		VoiceData:     "dm9pY2U=",
+		VoiceFileName: "reply.wav",
+		VoiceMimeType: "audio/wav",
+	})
+	if len(plugin.calls) != 2 || plugin.calls[0] != "voice" || plugin.calls[1] != "text" {
+		t.Fatalf("delivery order = %v, want [voice text]", plugin.calls)
+	}
+}
+
+func TestDeliverSingleResponseSendsThirdPartyVoiceBeforeText(t *testing.T) {
+	plugin := &mockOrderVoicePlugin{mockPlugin: mockPlugin{
+		name: "thirdparty",
+		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
+	}}
+	adapter := &Adapter{}
+	adapter.deliverSingleResponse(context.Background(), plugin, UserTarget{PlatformUID: "dev-1"}, &GenericResponse{
+		Body:          "审核后回答",
+		VoiceData:     "dm9pY2U=",
+		VoiceFileName: "reply.wav",
+		VoiceMimeType: "audio/wav",
+	})
+	if len(plugin.calls) != 2 || plugin.calls[0] != "voice" || plugin.calls[1] != "text" {
+		t.Fatalf("delivery order = %v, want [voice text]", plugin.calls)
+	}
+}
+
 func TestIsIncomingVoiceMessageUsesStructuralModality(t *testing.T) {
 	if !isIncomingVoiceMessage(IncomingMessage{MessageType: "voice"}) {
 		t.Fatal("voice message type was not recognized")

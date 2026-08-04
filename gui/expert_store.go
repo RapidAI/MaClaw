@@ -458,6 +458,27 @@ func (s *expertStore) IsMarketInstall(id string) (bool, error) {
 	return f.MarketInstallIDs[id], nil
 }
 
+// ListMarketInstallIDs returns the currently installed Expert Market records
+// from one consistent store snapshot. MarketInstallIDs deliberately survives
+// an uninstall to preserve the local-only anti-resurrection marker, so stale
+// marker-only IDs are excluded here.
+func (s *expertStore) ListMarketInstallIDs() (map[string]bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	installed := make(map[string]bool)
+	for _, expert := range f.Experts {
+		id := strings.TrimSpace(expert.ID)
+		if id != "" && f.MarketInstallIDs[id] {
+			installed[id] = true
+		}
+	}
+	return installed, nil
+}
+
 // MarkMarketInstall promotes an existing package definition to an Expert
 // Market install without changing its content. It is used for an idempotent
 // market download when the exact package was previously imported locally.

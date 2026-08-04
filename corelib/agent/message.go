@@ -18,6 +18,10 @@ type UserMessage struct {
 	// Attachments holds images/files attached to the message.
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 
+	// SkipUserAudit is local-only. Gateways set it after persisting the inbound
+	// user record directly (for example, before group mention/policy filtering).
+	SkipUserAudit bool `json:"-"`
+
 	// ClientCapabilities describes the concrete originating surface. Agent
 	// replies must be consumable by this client, not merely by the gateway
 	// platform used to transport the message.

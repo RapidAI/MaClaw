@@ -73,6 +73,13 @@ func httpClient() *http.Client {
 	return sharedClient
 }
 
+// PublicHTTPClient returns an isolated direct client that rejects private
+// targets and redirects. It is for untrusted public-network calls; it has no
+// desktop proxy, cookie jar or browser-session fallback.
+func PublicHTTPClient(timeout time.Duration) *http.Client {
+	return newPublicHTTPClient(timeout)
+}
+
 // SetProxy swaps the shared HTTP client for one whose transport uses the
 // given proxy. The client is replaced as a whole (never mutated in place):
 // assigning sharedClient.Transport directly would race in-flight requests.

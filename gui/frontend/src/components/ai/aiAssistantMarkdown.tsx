@@ -617,14 +617,21 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
     if (!model) return null;
     const repaired = repairMixedNarrativeTable(model);
     const { headerCells, bodyRows, columnAlignments, minTableWidth, prefix, notes } = repaired;
-    const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, boxSizing: "border-box", overflowWrap: "anywhere", padding: "6px 10px", textAlign: "left", verticalAlign: "top", wordBreak: "break-word", fontSize: "0.9em", lineHeight: 1.5 };
+    const lastCol = headerCells.length - 1;
+    // Inner grid lines only — the rounded shell draws the outer edge, so cells
+    // skip their outer-side borders to avoid doubled 2px seams.
+    const cellStyle: React.CSSProperties = { boxSizing: "border-box", overflowWrap: "anywhere", padding: "6px 10px", textAlign: "left", verticalAlign: "top", wordBreak: "break-word", fontSize: "0.9em", lineHeight: 1.5 };
+    const rowHoverBg = `color-mix(in srgb, ${t.btnColor} 7%, transparent)`;
     return (
-        <div key={key} data-testid="markdown-table-block" style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflowX: "auto", overscrollBehaviorX: "contain", margin: "6px 0", whiteSpace: "normal" }}>
+        <div key={key} style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", margin: "6px 0", whiteSpace: "normal" }}>
             {prefix && <div data-testid="markdown-table-prefix" style={{ marginBottom: 6, ...blockWrapStyle }}>{renderInlineMarkdown(prefix, t)}</div>}
-            <table data-testid="markdown-table" style={{ borderCollapse: "collapse", minWidth: minTableWidth, tableLayout: "fixed", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
-                <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci], fontWeight: 600, background: t.fieldBg, color: t.headingColor, fontSize: "0.88em", letterSpacing: "0.02em" }}>{renderInlineMarkdown(cell, t)}</th>)}</tr></thead>
-                {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseMarkdownTableCells(row); return <tr key={ri} style={{ background: ri % 2 === 1 ? t.fieldBg : undefined }}>{headerCells.map((_, ci) => <td key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci] }}>{renderInlineMarkdown(cells[ci] || "", t)}</td>)}</tr>; })}</tbody>}
-            </table>
+            {/* Rounded, bordered shell; the scrollport clips the table corners. */}
+            <div data-testid="markdown-table-block" style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflowX: "auto", overscrollBehaviorX: "contain", border: `1px solid ${t.fieldBorder}`, borderRadius: "10px" }}>
+                <table data-testid="markdown-table" style={{ borderCollapse: "collapse", minWidth: minTableWidth, tableLayout: "fixed", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
+                    <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci], fontWeight: 600, background: t.codeBlockBg, color: t.headingColor, fontSize: "0.88em", letterSpacing: "0.02em", borderBottom: bodyRows.length > 0 ? `1px solid ${t.fieldBorder}` : undefined, borderRight: ci < lastCol ? `1px solid ${t.fieldBorder}` : undefined }}>{renderInlineMarkdown(cell, t)}</th>)}</tr></thead>
+                    {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseMarkdownTableCells(row); const zebraBg = ri % 2 === 1 ? t.fieldBg : ""; return <tr key={ri} style={{ background: zebraBg || undefined, transition: "background-color 140ms cubic-bezier(0.22, 1, 0.36, 1)" }} onMouseEnter={(e) => { e.currentTarget.style.background = rowHoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = zebraBg; }}>{headerCells.map((_, ci) => <td key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci], borderBottom: ri < bodyRows.length - 1 ? `1px solid ${t.fieldBorder}` : undefined, borderRight: ci < lastCol ? `1px solid ${t.fieldBorder}` : undefined }}>{renderInlineMarkdown(cells[ci] || "", t)}</td>)}</tr>; })}</tbody>}
+                </table>
+            </div>
             {notes.map((note, index) => <div key={`note-${index}`} data-testid="markdown-table-note" style={{ marginTop: 6, ...blockWrapStyle }}>{renderInlineMarkdown(note, t)}</div>)}
         </div>
     );
@@ -668,7 +675,7 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
                 <pre key={`code-${elements.length}`} style={{
                     background: t.codeBlockBg,
                     border: `1px solid ${t.codeBlockBorder}`,
-                    borderRadius: "6px",
+                    borderRadius: "10px",
                     padding: "10px 12px",
                     margin: "6px 0",
                     fontSize: "0.88em",
@@ -1290,6 +1297,8 @@ export function renderMessage(
                             lineHeight: 1.55,
                             overflowWrap: "anywhere",
                             whiteSpace: "pre-wrap",
+                            // Tail-side corner stays tight (14/14/4/14 — small corner at bottom-right).
+                            borderRadius: "14px 14px 4px 14px",
                         }}
                     >
                         {msg.content}
@@ -1337,6 +1346,8 @@ export function renderMessage(
                             color: t.text,
                             lineHeight: 1.55,
                             overflowWrap: "anywhere",
+                            // Tail-side corner stays tight (14/14/14/4 — small corner at bottom-left).
+                            borderRadius: "14px 14px 14px 4px",
                         }}
                     >
                         {/* Streaming: show thinking indicator on the last assistant message placeholder */}

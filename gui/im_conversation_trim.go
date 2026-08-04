@@ -18,7 +18,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
@@ -1148,60 +1147,13 @@ func truncateToolResult(s string) string {
 const webFetchMaxToolResult = 32768
 
 func truncateToolResultForTool(toolName, s string) string {
-	return truncateToolResultForToolWithSession(toolName, "", s)
+	return agent.PreviewToolResultForTool(toolName, s)
 }
 
 // truncateToolResultForToolWithSession compresses/truncates for the model and
 // spills the original full result to a tool_result handle when truncated.
 func truncateToolResultForToolWithSession(toolName, sessionKey, original string) string {
-	toolKind := classifyAgentToolKind(toolName)
-	s := original
-
-	// Phase 0: TokenJuice content-type-aware compression — classifies the
-	// content (HTML/JSON/terminal/plain) and applies type-specific rules
-	// (strip HTML tags/scripts, truncate JSON arrays, collapse ANSI/progress,
-	// shorten URLs, replace base64). This is the first compression pass.
-	s = coretool.CompressToolResult(toolName, s)
-
-	// Phase 1: semantic compression — deduplicate repeated lines and
-	// collapse homogeneous blocks BEFORE size truncation. This reduces
-	// the effective size so more unique information survives the budget.
-	s = compressToolResultSemantic(toolName, s)
-
-	// web_fetch gets a higher budget — content is already windowed in handler
-	limit := maxToolResultLen
-	if toolKind == agentToolKindWebFetch {
-		limit = webFetchMaxToolResult
-	}
-	if strings.HasPrefix(toolName, "browser") {
-		limit = max(limit, 4096)
-	}
-
-	var preview string
-	if len(s) <= limit {
-		preview = s
-	} else if toolKind == agentToolKindWebFetch {
-		preview = truncateWebFetchToolResult(s, limit)
-	} else {
-		sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
-		sepLen := len(sep)
-		budget := limit - sepLen
-		switch toolName {
-		case "get_session_output", "bash":
-			// Terminal output: tail is more important (recent lines)
-			headLen := budget / 4
-			tailLen := budget - headLen
-			preview = s[:headLen] + sep + s[len(s)-tailLen:]
-		default:
-			// Default: head-heavy (status/headers at top)
-			headLen := budget * 2 / 3
-			tailLen := budget - headLen
-			preview = s[:headLen] + sep + s[len(s)-tailLen:]
-		}
-	}
-
-	// Dual-view: keep full original on disk when the model only sees a preview.
-	return projectToolResultHandle(toolName, sessionKey, original, preview, limit)
+	return agent.TruncateToolResultForToolWithSession(toolName, sessionKey, original)
 }
 
 // projectToolResultHandle spills oversized full results and appends a handle

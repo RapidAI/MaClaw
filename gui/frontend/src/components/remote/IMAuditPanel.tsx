@@ -7,6 +7,7 @@ import {
     GetIMAuditUsers,
     OpenFileOrShowInFolder,
     QueryIMAuditMessages,
+    RevealIMAuditAttachment,
 } from "../../../wailsjs/go/main/App";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { useDialog } from "../CustomDialog";
@@ -18,6 +19,10 @@ interface IMAuditMessage {
     platform: string;
     role: "user" | "assistant";
     content: string;
+    attachment_path?: string;
+    attachment_name?: string;
+    attachment_media_type?: string;
+    attachment_size?: number;
 }
 
 interface IMAuditQueryResult {
@@ -87,6 +92,10 @@ function normalizeAuditResult(result: any): IMAuditQueryResult {
                 platform: typeof (item.platform ?? item.Platform) === "string" ? String(item.platform ?? item.Platform) : "",
                 role: role === "user" ? "user" : "assistant",
                 content,
+                attachment_path: typeof (item.attachment_path ?? item.AttachmentPath) === "string" ? String(item.attachment_path ?? item.AttachmentPath) : "",
+                attachment_name: typeof (item.attachment_name ?? item.AttachmentName) === "string" ? String(item.attachment_name ?? item.AttachmentName) : "",
+                attachment_media_type: typeof (item.attachment_media_type ?? item.AttachmentMediaType) === "string" ? String(item.attachment_media_type ?? item.AttachmentMediaType) : "",
+                attachment_size: Number(item.attachment_size ?? item.AttachmentSize) || 0,
             }];
         })
         : [];
@@ -125,13 +134,30 @@ const auditMarkdownComponents: Components = {
 };
 const auditMarkdownPlugins = [remarkGfm];
 
+function formatFileSize(bytes?: number) {
+    const value = Number(bytes) || 0;
+	if (value <= 0) return "";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function auditAttachmentSubtitle(message: IMAuditMessage, isZh: boolean) {
+    const size = formatFileSize(message.attachment_size);
+	const action = message.attachment_path
+		? (isZh ? "打开所在目录" : "Open containing folder")
+		: (isZh ? "未保存到本地" : "Not saved locally");
+	return size ? `${size} · ${action}` : action;
+}
+
 type AuditMessageCardProps = {
     message: IMAuditMessage;
     isZh: boolean;
+    onRevealError: () => void;
 };
 
 /** Isolate expensive GFM parsing from toolbar-only state changes. */
-const AuditMessageCard = memo(function AuditMessageCard({ message, isZh }: AuditMessageCardProps) {
+const AuditMessageCard = memo(function AuditMessageCard({ message, isZh, onRevealError }: AuditMessageCardProps) {
     const isUser = message.role === "user";
     return (
         <div className="im-audit-item" data-role={isUser ? "user" : "assistant"}>
@@ -140,9 +166,21 @@ const AuditMessageCard = memo(function AuditMessageCard({ message, isZh }: Audit
                 <span>{formatTimestamp(message.timestamp)}</span>
             </div>
             <div className="im-audit-bubble">
-                <ReactMarkdown remarkPlugins={auditMarkdownPlugins} components={auditMarkdownComponents}>
-                    {message.content}
-                </ReactMarkdown>
+                {message.content && <ReactMarkdown remarkPlugins={auditMarkdownPlugins} components={auditMarkdownComponents}>{message.content}</ReactMarkdown>}
+                {message.attachment_name && (message.attachment_path ? (
+                    <button type="button" className="im-audit-attachment" onClick={() => void Promise.resolve(RevealIMAuditAttachment(message.attachment_path!)).catch(onRevealError)}>
+                        <span className="im-audit-attachment__icon" aria-hidden="true">↗</span>
+                        <span className="im-audit-attachment__copy">
+                            <strong>{message.attachment_name || (isZh ? "文件附件" : "File attachment")}</strong>
+                            <small>{auditAttachmentSubtitle(message, isZh)}</small>
+                        </span>
+                    </button>
+                ) : (
+                    <div className="im-audit-attachment im-audit-attachment--unavailable">
+                        <span className="im-audit-attachment__icon" aria-hidden="true">–</span>
+                        <span className="im-audit-attachment__copy"><strong>{message.attachment_name}</strong><small>{auditAttachmentSubtitle(message, isZh)}</small></span>
+                    </div>
+                ))}
             </div>
         </div>
     );
@@ -179,7 +217,7 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
     const isZh = isZhLang(lang);
     const isZhRef = useRef(isZh);
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
-    const title = labelForPlatform(platform, lang) + (isZh ? " \u6d88\u606f\u76d1\u770b" : " Message Watch");
+    const title = labelForPlatform(platform, lang) + (isZh ? " \u804a\u5929\u5386\u53f2" : " Chat History");
 
     useEffect(() => { isZhRef.current = isZh; }, [isZh]);
 
@@ -284,6 +322,10 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
         setPage(Math.max(1, Math.ceil(total / pageSize)));
         setRefreshKey(k => k + 1);
     };
+
+    const handleRevealError = useCallback(() => {
+		setMessage(isZhRef.current ? "无法打开文件所在目录，文件可能已被移动或删除" : "Could not open the containing folder; the file may have moved or been deleted");
+	}, []);
 
     const handleCleanup = async () => {
         if (cleaning || cleanupPendingRef.current) return;
@@ -406,7 +448,7 @@ export function IMAuditPanel({ platform, onClose, lang }: IMAuditPanelProps) {
                     {loading && messages.length === 0 && <div className="im-audit-empty">{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</div>}
                     {loading && messages.length > 0 && <div className="im-audit-refreshing" role="status">{isZh ? "\u6b63\u5728\u66f4\u65b0..." : "Refreshing..."}</div>}
                     {!loading && messages.length === 0 && <div className="im-audit-empty">{isZh ? "\u6682\u65e0\u6d88\u606f\u8bb0\u5f55" : "No messages found"}</div>}
-                    {messages.map(msg => <AuditMessageCard key={msg.id} message={msg} isZh={isZh} />)}
+                    {messages.map(msg => <AuditMessageCard key={msg.id} message={msg} isZh={isZh} onRevealError={handleRevealError} />)}
                 </div>
 
                 {totalPages > 1 && (

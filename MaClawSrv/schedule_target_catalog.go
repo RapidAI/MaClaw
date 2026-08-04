@@ -72,21 +72,62 @@ func listSrvScheduleDeliveryTargets(svc *agentservice.Service, channel, query st
 	return scheduler.FormatTargetList(ch, refs, query), nil
 }
 
+func listSrvScheduleDeliveryTargetsForPrincipal(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, channel, query string) (string, error) {
+	reg := newSrvScheduleTargetCatalogsForPrincipal(svc, principal)
+	ch := scheduler.DefaultDeliveryChannel(channel)
+	refs, err := reg.ListTargets(ctx, ch, query)
+	if err != nil {
+		return "", err
+	}
+	return scheduler.FormatTargetList(ch, refs, query), nil
+}
+
+func newSrvScheduleTargetCatalogsForPrincipal(svc *agentservice.Service, principal agentservice.Principal) *scheduler.TargetCatalogRegistry {
+	return newSrvScheduleTargetCatalogsForPrincipalWithLansengerLoader(svc, principal, listSrvLansengerDeliveryTargetsForPrincipal)
+}
+
+type srvLansengerTargetLoader func(context.Context, *agentservice.Service, agentservice.Principal, string) ([]scheduler.TargetRef, error)
+
+func newSrvScheduleTargetCatalogsForPrincipalWithLansengerLoader(svc *agentservice.Service, principal agentservice.Principal, load srvLansengerTargetLoader) *scheduler.TargetCatalogRegistry {
+	reg := scheduler.NewTargetCatalogRegistry()
+	reg.Register(scheduler.TargetCatalogFunc{
+		ChannelName: scheduler.DeliveryChannelLansenger,
+		List: func(ctx context.Context, query string) ([]scheduler.TargetRef, error) {
+			return load(ctx, svc, principal, query)
+		},
+	})
+	for _, channel := range []string{scheduler.DeliveryChannelWeixin, scheduler.DeliveryChannelTelegram, scheduler.DeliveryChannelQQ} {
+		ch := channel
+		reg.Register(scheduler.TargetCatalogFunc{
+			ChannelName: ch,
+			List: func(_ context.Context, query string) ([]scheduler.TargetRef, error) {
+				return listSrvPeerDeliveryTargetsWithStore(srvDeliveryStateForPrincipal(svc, principal), ch, ch, query), nil
+			},
+		})
+	}
+	return reg
+}
+
 func listSrvPeerDeliveryTargets(channel, label, query string) []scheduler.TargetRef {
+	return listSrvPeerDeliveryTargetsWithStore(srvDeliveryState(srvScheduleCatalogSvc), channel, label, query)
+}
+
+func listSrvPeerDeliveryTargetsWithStore(store *scheduler.DeliveryStateStore, channel, label, query string) []scheduler.TargetRef {
 	refs := []scheduler.TargetRef{{
 		Kind:    scheduler.DeliveryKindUser,
 		ID:      "self",
 		Name:    label + " 最近会话 (self)",
 		Channel: channel,
 	}}
-	store := srvDeliveryState(srvScheduleCatalogSvc)
-	if peer := store.GetLastPeer(channel); peer != "" && !scheduler.IsSelfPeerID(peer) {
-		refs = append(refs, scheduler.TargetRef{
-			Kind:    scheduler.DeliveryKindUser,
-			ID:      peer,
-			Name:    label + " " + peer,
-			Channel: channel,
-		})
+	if store != nil {
+		if peer := store.GetLastPeer(channel); peer != "" && !scheduler.IsSelfPeerID(peer) {
+			refs = append(refs, scheduler.TargetRef{
+				Kind:    scheduler.DeliveryKindUser,
+				ID:      peer,
+				Name:    label + " " + peer,
+				Channel: channel,
+			})
+		}
 	}
 	// Live weixin peers from connected runtimes (if wired).
 	if channel == scheduler.DeliveryChannelWeixin && srvScheduleWeixinLister != nil {
@@ -111,13 +152,15 @@ func listSrvPeerDeliveryTargets(channel, label, query string) []scheduler.Target
 }
 
 func listSrvLansengerDeliveryTargets(ctx context.Context, query string) ([]scheduler.TargetRef, error) {
+	return listSrvLansengerDeliveryTargetsForPrincipal(ctx, srvScheduleCatalogSvc, agentservice.Principal{TenantID: "system", UserID: "scheduler"}, query)
+}
+
+func listSrvLansengerDeliveryTargetsForPrincipal(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, query string) ([]scheduler.TargetRef, error) {
 	load := func() ([]scheduler.TargetRef, error) {
-		svc := srvScheduleCatalogSvc
 		if svc == nil {
 			return nil, fmt.Errorf("agentservice unavailable")
 		}
-		// Prefer default client config (scheduler principal often has no user config).
-		cfg, err := appConfigForPrincipal(svc, agentservice.Principal{TenantID: "system", UserID: "scheduler"})
+		cfg, err := appConfigForPrincipal(svc, principal)
 		if err != nil {
 			return nil, err
 		}
@@ -169,7 +212,9 @@ func listSrvLansengerDeliveryTargets(ctx context.Context, query string) ([]sched
 	}
 	var refs []scheduler.TargetRef
 	var err error
-	if srvScheduleCatalogCache != nil {
+	// The shared cache is safe only for the scheduler/default identity. A user
+	// request must not reuse another principal's group catalog.
+	if principal.TenantID == "system" && principal.UserID == "scheduler" && srvScheduleCatalogCache != nil {
 		refs, err = srvScheduleCatalogCache.GetOrLoad(scheduler.DeliveryChannelLansenger, load)
 	} else {
 		refs, err = load()
@@ -190,4 +235,11 @@ func resolveSrvScheduleDelivery(svc *agentservice.Service, d *scheduler.TaskDeli
 		return fmt.Errorf("delivery target catalog unavailable")
 	}
 	return reg.ResolveDeliveryNames(context.Background(), d)
+}
+
+func resolveSrvScheduleDeliveryForPrincipal(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, d *scheduler.TaskDelivery) error {
+	if d == nil || !d.Enabled {
+		return nil
+	}
+	return newSrvScheduleTargetCatalogsForPrincipal(svc, principal).ResolveDeliveryNames(ctx, d)
 }

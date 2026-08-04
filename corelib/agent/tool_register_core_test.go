@@ -354,3 +354,27 @@ func TestCoreWorkflowDocumentToolsExposeMetadata(t *testing.T) {
 	assertProps("send_file", "phase_id", "doc_type")
 	assertProps("send_to_im", "phase_id", "doc_type")
 }
+
+func TestCoreIMFileToolsExplainExactTargetVoiceRouting(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+
+	for _, name := range []string{"send_file", "send_to_im"} {
+		reg.mu.RLock()
+		entry := reg.tools[name]
+		reg.mu.RUnlock()
+		if entry == nil {
+			t.Fatalf("tool %q is not registered", name)
+		}
+		for _, want := range []string{"im_message", "list_targets", "channel", "group_id", "user_id", "broadcast"} {
+			if !strings.Contains(entry.Description, want) {
+				t.Fatalf("tool %q description missing %q: %s", name, want, entry.Description)
+			}
+		}
+		for _, prop := range []string{"channel", "group_id", "group_name", "user_id", "message", "caption"} {
+			if _, ok := entry.Properties[prop]; !ok {
+				t.Fatalf("tool %q missing exact-target property %q", name, prop)
+			}
+		}
+	}
+}

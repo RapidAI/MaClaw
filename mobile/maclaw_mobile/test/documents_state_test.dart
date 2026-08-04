@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
 import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
 import 'package:maclaw_mobile/core/api/mobile_realtime_client.dart';
+import 'package:maclaw_mobile/core/documents/mobile_document_import.dart';
 import 'package:maclaw_mobile/core/notifications/mobile_notification_service.dart';
 import 'package:maclaw_mobile/core/storage/mobile_local_store.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
@@ -722,7 +723,7 @@ void main() {
     expect(formatMobileFileSize(12 * 1024 * 1024), '12 MB');
   });
 
-  test('validates mobile document import extensions', () {
+  test('accepts arbitrary mobile document import extensions', () {
     expect(validateMobileDocumentImportPath('/tmp/incident.PDF'), isNull);
     expect(
       validateMobileDocumentImportPath('/tmp/notice.docx?shared=true'),
@@ -730,18 +731,12 @@ void main() {
     );
     expect(validateMobileDocumentImportPath('/tmp/table.csv'), isNull);
     expect(validateMobileDocumentImportPath('/tmp/photo.jpeg'), isNull);
-    expect(
-      validateMobileDocumentImportPath('/tmp/archive.zip'),
-      contains('暂不支持该文件类型'),
-    );
-    expect(
-      validateMobileDocumentImportPath('/tmp/README'),
-      contains('暂不支持该文件类型'),
-    );
+    expect(validateMobileDocumentImportPath('/tmp/archive.zip'), isNull);
+    expect(validateMobileDocumentImportPath('/tmp/README'), isNull);
+    expect(validateMobileDocumentImportPath(''), isNotNull);
   });
 
-  test('shared document upload rejects unsupported files before uploading',
-      () async {
+  test('shared document upload accepts arbitrary files', () async {
     final cacheDir = await Directory.systemTemp.createTemp(
       'maclaw_mobile_store_',
     );
@@ -772,11 +767,8 @@ void main() {
 
     final state = container.read(documentsControllerProvider);
     expect(state.hasError, isFalse);
-    expect(
-      state.valueOrNull?.operationError,
-      contains('暂不支持该文件类型'),
-    );
-    expect(client.uploadedPaths, isEmpty);
+    expect(state.valueOrNull?.operationError, isNull);
+    expect(client.uploadedPaths, contains('/tmp/server-backup.zip'));
   });
 
   test('shared document upload accepts supported emergency file types',
@@ -888,9 +880,7 @@ void main() {
     );
   });
 
-  test(
-      'document upload waits for session before enforcing official mobile limit',
-      () async {
+  test('document upload enforces the raw-input safety limit', () async {
     final cacheDir = await Directory.systemTemp.createTemp(
       'maclaw_mobile_store_',
     );
@@ -905,7 +895,9 @@ void main() {
     );
     addTearDown(store.close);
     final file = File('${Directory.systemTemp.path}/maclaw_mobile_big.txt');
-    await file.writeAsString('0123456789abcdef');
+    final handle = await file.open(mode: FileMode.write);
+    await handle.truncate(400 * 1024 * 1024 + 1);
+    await handle.close();
     addTearDown(() async {
       if (await file.exists()) {
         await file.delete();
@@ -928,8 +920,7 @@ void main() {
     final state = container.read(documentsControllerProvider);
     expect(state.hasError, isFalse);
     final err = state.valueOrNull?.operationError ?? '';
-    expect(err, contains('超过官方服务上传限制'));
-    expect(err, contains('8 B'));
+    expect(err, contains('自动压缩后单文件必须不超过 100 MB'));
   });
 
   test('document realtime export completion is cached and notified once',

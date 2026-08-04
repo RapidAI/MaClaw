@@ -123,7 +123,7 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
                 <Check label={textForLang(lang, 'Synthesize stream on cache hit', '\u6d41\u5f0f\u8bf7\u6c42\u547d\u4e2d\u540e\u5408\u6210\u8f93\u51fa', '\u4e32\u6d41\u8acb\u6c42\u547d\u4e2d\u5f8c\u5408\u6210\u8f38\u51fa')} checked={cache.stream_synthesis_enabled} onChange={(v) => updateCache({ stream_synthesis_enabled: v })} />
             </div>
 
-            <div style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
+            <div style={{ color: 'var(--theme-text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
                 {textForLang(
                     lang,
                     'Caches deterministic OpenAI-compatible and Anthropic requests. Streaming requests use cached full responses when hit. MaClaw official Hub service is always bypassed.',
@@ -176,9 +176,9 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
                     {saving ? textForLang(lang, 'Saving...', '\u4fdd\u5b58\u4e2d...', '\u4fdd\u5b58\u4e2d...') : textForLang(lang, 'Save', '\u4fdd\u5b58', '\u4fdd\u5b58')}
                 </button>
             </div>
-            {saveError && <div style={{ color: 'var(--error-color, #c43d34)', fontSize: 13 }}>{saveError}</div>}
+            {saveError && <div style={{ color: 'var(--theme-danger, #c43d34)', fontSize: 13 }}>{saveError}</div>}
 
-            <hr style={{ border: 'none', borderTop: '1px solid var(--border-color, rgba(127,127,127,0.25))', margin: '8px 0' }} />
+            <hr style={{ border: 'none', borderTop: '1px solid var(--theme-border, rgba(127,127,127,0.25))', margin: '8px 0' }} />
             <ModelRoutesSettingsSection
                 config={config}
                 setConfig={setConfig}

@@ -470,8 +470,11 @@ export function UtilitiesWatchPanel({
     }, [draft?.group_id, loadMembers]);
 
     useEffect(() => {
-        if (draft?.id) void loadLogs(draft.id);
-        else setLogs([]);
+        if (draft?.id) {
+            void loadLogs(draft.id);
+        } else {
+            setLogs([]);
+        }
     }, [draft?.id, loadLogs]);
 
     const toggleTarget = (staffId: string, name?: string) => {
@@ -604,6 +607,7 @@ export function UtilitiesWatchPanel({
             setError(e?.message || String(e));
         }
     };
+
 
     const addManual = async () => {
         if (!draft?.group_id || !manualId.trim()) return;
@@ -1049,6 +1053,10 @@ export function UtilitiesWatchPanel({
                                 ) : null}
                             </div>
                         ) : null}
+
+                        {Boolean(0) && Boolean(isZh) && (
+                                    <p className="utilities-meta utilities-watch-files-empty" role="status">{isZh ? '正在加载文件…' : 'Loading files…'}</p>
+                        )}
 
                         <div className="utilities-actions utilities-watch-actions">
                             <button type="button" className="utilities-btn utilities-btn--danger" disabled={busy} onClick={() => void remove()}>

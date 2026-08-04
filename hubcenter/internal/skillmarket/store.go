@@ -63,6 +63,22 @@ func (s *Store) migrate() error {
 			created_at  TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_credits_tx_user ON sm_credits_transactions(user_id, created_at);`,
+		`CREATE TABLE IF NOT EXISTS sm_credit_redeem_cards (
+			id                  TEXT PRIMARY KEY,
+			code                TEXT NOT NULL UNIQUE,
+			credits             INTEGER NOT NULL CHECK (credits > 0),
+			status              TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed', 'revoked')),
+			exported_at         TEXT NOT NULL DEFAULT '',
+			exported_by         TEXT NOT NULL DEFAULT '',
+			issued_by           TEXT NOT NULL DEFAULT '',
+			issued_at           TEXT NOT NULL,
+			redeemed_by_user_id TEXT NOT NULL DEFAULT '',
+			redeemed_by_email   TEXT NOT NULL DEFAULT '',
+			redeemed_at         TEXT NOT NULL DEFAULT '',
+			revoked_by          TEXT NOT NULL DEFAULT '',
+			revoked_at          TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_sm_credit_redeem_cards_status ON sm_credit_redeem_cards(status, issued_at DESC);`,
 		`CREATE TABLE IF NOT EXISTS sm_submissions (
 			id          TEXT PRIMARY KEY,
 			email       TEXT NOT NULL,

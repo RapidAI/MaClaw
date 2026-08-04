@@ -7724,6 +7724,182 @@ func TestSrvThirdPartyGatewayEnqueueEnforcesClientCapabilities(t *testing.T) {
 		t.Fatalf("adapted messages=%#v", messages)
 	}
 }
+
+func TestSrvThirdPartyAssistantVoiceReplyUsesInlineAudioCombination(t *testing.T) {
+	dataRoot := t.TempDir()
+	seedReadyTTSModel(t, dataRoot)
+	fakeTTS := &fakeSrvTTSSynthesizer{wav: testWAVBytes()}
+	aiModels := newSrvAIModelManager(dataRoot)
+	aiModels.ttsMgr = fakeTTS
+	aiModels.ttsVoice = "zf_xiaoyi"
+	manager := newSrvThirdPartyGatewayManager(nil, aiModels)
+	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	clientKey := thirdPartyClientKey(principal, "pet")
+	manager.setClientCapabilities(clientKey, &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities:   []string{"text", "audio"},
+		Preferred:    []string{"audio", "text"},
+		Combinations: [][]string{{"text"}, {"audio"}, {"audio", "text"}},
+		Text:         &agent.ClientTextCapabilities{MaxChars: 240},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"inline", "url"}, MaxInlineBytes: 8192, MaxDownloadBytes: 262144,
+		},
+	}})
+	req := srvThirdPartyIncomingRequest{ClientID: "pet", ConversationID: "room-1", Message: srvThirdPartyMessageBody{Type: "voice"}}
+	manager.enqueueAssistantReply(context.Background(), principal, req, "mc-in-1", "assistant-1", "这是语音查询的回答", time.Unix(100, 0))
+
+	manager.mu.Lock()
+	messages := append([]srvThirdPartyOutgoingMessage(nil), manager.clients[clientKey].Messages...)
+	manager.mu.Unlock()
+	if len(messages) != 2 || messages[0].Type != "text" || messages[1].Type != "audio" {
+		t.Fatalf("voice answer messages=%#v", messages)
+	}
+	if messages[1].Data == "" || messages[1].URL != "" || messages[1].ConversationID != "room-1" || messages[1].ReplyTo != "mc-in-1" {
+		t.Fatalf("inline voice message=%#v", messages[1])
+	}
+	decoded, err := base64.StdEncoding.DecodeString(messages[1].Data)
+	if err != nil || !bytes.Equal(decoded, testWAVBytes()) {
+		t.Fatalf("inline WAV decode err=%v data=%q", err, decoded)
+	}
+	if len(fakeTTS.seen) != 1 || !strings.Contains(fakeTTS.seen[0], "语音查询") {
+		t.Fatalf("tts inputs=%#v", fakeTTS.seen)
+	}
+}
+
+func TestSrvThirdPartyVoiceTurnRoutesThroughAgentAndQueuesTextAndAudio(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{
+		DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345",
+	}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(ctx, agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(ctx, principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+
+	seedReadyTTSModel(t, dataRoot)
+	fakeTTS := &fakeSrvTTSSynthesizer{wav: testWAVBytes()}
+	aiModels := newSrvAIModelManager(dataRoot)
+	aiModels.ttsMgr = fakeTTS
+	aiModels.ttsVoice = "zf_xiaoyi"
+	manager := newSrvThirdPartyGatewayManager(svc, aiModels)
+	clientKey := thirdPartyClientKey(principal, "pet")
+	manager.setClientCapabilities(clientKey, &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities:   []string{"text", "audio"},
+		Combinations: [][]string{{"text"}, {"audio"}, {"text", "audio"}},
+		Text:         &agent.ClientTextCapabilities{MaxChars: 240},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"inline"}, MaxInlineBytes: 8192,
+		},
+	}})
+
+	manager.processIncoming(ctx, principal, srvThirdPartyIncomingRequest{
+		ClientID:       "pet",
+		EventID:        "evt-voice-agent",
+		ConversationID: "default",
+		Message: srvThirdPartyMessageBody{
+			Type: "voice",
+			Text: "查询今天的天气",
+		},
+	}, "mc-in-agent")
+
+	manager.mu.Lock()
+	messages := append([]srvThirdPartyOutgoingMessage(nil), manager.clients[clientKey].Messages...)
+	manager.mu.Unlock()
+	if len(messages) != 2 || messages[0].Type != "text" || messages[1].Type != "audio" {
+		t.Fatalf("agent voice turn messages=%#v", messages)
+	}
+	if !strings.Contains(messages[0].Text, "查询今天的天气") || messages[0].ReplyTo != "mc-in-agent" || messages[1].ReplyTo != "mc-in-agent" {
+		t.Fatalf("agent voice reply correlation/text mismatch: %#v", messages)
+	}
+	if len(fakeTTS.seen) != 1 || strings.TrimSpace(fakeTTS.seen[0]) == "" {
+		t.Fatalf("agent reply was not synthesized: %#v", fakeTTS.seen)
+	}
+}
+
+func TestSrvThirdPartyAssistantVoiceReplyFallsBackToSameOriginURL(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	clientKey := thirdPartyClientKey(principal, "pet")
+	manager.setClientCapabilities(clientKey, &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"audio"},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"inline", "url"}, MaxInlineBytes: 8, MaxDownloadBytes: 262144,
+		},
+	}})
+	wav := testWAVBytes()
+	msg, ok := manager.prepareAssistantAudio(principal, "pet", "room-2", "mc-in-2", "assistant-2", wav, time.Unix(200, 0))
+	if !ok || msg.Data != "" || !strings.HasPrefix(msg.URL, "/api/im-gateway/v1/media/") || msg.SizeBytes != int64(len(wav)) {
+		t.Fatalf("URL voice message ok=%v msg=%#v", ok, msg)
+	}
+	u, err := url.Parse(msg.URL)
+	if err != nil {
+		t.Fatalf("parse media URL: %v", err)
+	}
+	id := strings.TrimPrefix(u.Path, "/api/im-gateway/v1/media/")
+	req := httptest.NewRequest(http.MethodGet, msg.URL, nil)
+	media, err := manager.mediaForDownload(req, id)
+	if err != nil || !bytes.Equal(media.Data, wav) || media.Principal.TenantID != principal.TenantID || media.Principal.UserID != principal.UserID {
+		t.Fatalf("private media err=%v media=%#v", err, media)
+	}
+}
+
+func TestSrvThirdPartyAssistantAudioCacheStaysWithinLimit(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	clientKey := thirdPartyClientKey(principal, "pet")
+	manager.setClientCapabilities(clientKey, &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"audio"},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"url"}, MaxDownloadBytes: 262144,
+		},
+	}})
+	for i := 0; i < srvThirdPartyMaxMediaObjects+5; i++ {
+		if _, ok := manager.prepareAssistantAudio(principal, "pet", "room", "reply", fmt.Sprintf("assistant-%d", i), testWAVBytes(), time.Now()); !ok {
+			t.Fatalf("prepare audio %d failed", i)
+		}
+	}
+	manager.mu.Lock()
+	count := len(manager.media)
+	manager.mu.Unlock()
+	if count != srvThirdPartyMaxMediaObjects {
+		t.Fatalf("media cache size=%d, want %d", count, srvThirdPartyMaxMediaObjects)
+	}
+}
+
+func TestSrvThirdPartyAssistantReplyDoesNotSpeakTextTurnByDefault(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	clientKey := thirdPartyClientKey(principal, "pet")
+	manager.setClientCapabilities(clientKey, &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"},
+		Text:       &agent.ClientTextCapabilities{},
+		Audio:      &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/wav"}, Playback: true},
+	}})
+	req := srvThirdPartyIncomingRequest{ClientID: "pet", ConversationID: "room", Message: srvThirdPartyMessageBody{Type: "text"}}
+	manager.enqueueAssistantReply(context.Background(), principal, req, "mc-in", "assistant", "text answer", time.Now())
+	manager.mu.Lock()
+	messages := append([]srvThirdPartyOutgoingMessage(nil), manager.clients[clientKey].Messages...)
+	manager.mu.Unlock()
+	if len(messages) != 1 || messages[0].Type != "text" {
+		t.Fatalf("text turn messages=%#v", messages)
+	}
+}
+
 func TestSrvThirdPartyGatewayEnqueueRejectsUnsupportedMediaEncodingAndOversizedFile(t *testing.T) {
 	manager := newSrvThirdPartyGatewayManager(nil)
 	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}

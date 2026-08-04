@@ -84,7 +84,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
     );
 
     return (
-        <div data-testid={inputBarTestId} style={inputBarStyle} onDragOver={handleDragOver} onDrop={handleDrop}>
+        <div data-testid={inputBarTestId} className="ai-composer" style={inputBarStyle} onDragOver={handleDragOver} onDrop={handleDrop}>
             <AssistantAttachmentsStrip
                 cancelPending={cancelPending}
                 clearSelectedFile={clearSelectedFile}

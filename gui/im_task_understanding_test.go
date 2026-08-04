@@ -68,6 +68,17 @@ func TestParseTaskUnderstandingResponse_EmptySummaryAndInstruction(t *testing.T)
 	}
 }
 
+func TestParseTaskUnderstandingResponse_PlanOnly(t *testing.T) {
+	raw := `{"task_type":"","summary":"","execution_plan":["Inspect the affected login flow","Implement and verify the correction"],"enhanced_instruction":""}`
+	result, err := parseTaskUnderstandingResponse(raw)
+	if err != nil {
+		t.Fatalf("plan-only structured understanding should be accepted: %v", err)
+	}
+	if len(result.ExecutionPlan) != 2 {
+		t.Fatalf("execution plan = %#v, want two steps", result.ExecutionPlan)
+	}
+}
+
 func TestFormatTaskUnderstandingSummary(t *testing.T) {
 	r := &taskUnderstandingResult{
 		TaskType:      "信息搜集",
@@ -159,7 +170,7 @@ func TestBuildPendingConfirmation_WithUnderstanding(t *testing.T) {
 	}
 }
 
-func TestBuildPendingConfirmation_WithoutUnderstanding(t *testing.T) {
+func TestBuildPendingConfirmation_WithoutUnderstandingIsOnlyForNonIMCallers(t *testing.T) {
 	intent := taskIntentResult{Intent: intentCoding, Matched: "修改代码"}
 	item := buildPendingConfirmation(nil, "u1", "帮我修改代码", intent, nil)
 
@@ -172,6 +183,58 @@ func TestBuildPendingConfirmation_WithoutUnderstanding(t *testing.T) {
 	}
 	if item.EnhancedInstruction != "" {
 		t.Errorf("EnhancedInstruction should be empty: %q", item.EnhancedInstruction)
+	}
+}
+
+func TestHasMeaningfulTaskUnderstanding(t *testing.T) {
+	original := "fix the login bug"
+	for _, tc := range []struct {
+		name  string
+		value *taskUnderstandingResult
+		want  bool
+	}{
+		{name: "missing", value: nil, want: false},
+		{name: "echo only", value: &taskUnderstandingResult{Summary: original, EnhancedInstruction: original}, want: false},
+		{name: "echo only with punctuation", value: &taskUnderstandingResult{Summary: "Fix the login bug."}, want: false},
+		{name: "echo with label", value: &taskUnderstandingResult{Summary: "Task: fix the login bug"}, want: false},
+		{name: "echo with polite wrapper", value: &taskUnderstandingResult{Summary: "Please fix the login bug"}, want: false},
+		{name: "echo only plan", value: &taskUnderstandingResult{ExecutionPlan: []string{"Fix the login bug"}}, want: false},
+		{name: "shortened extract", value: &taskUnderstandingResult{Summary: "Fix the login"}, want: false},
+		{name: "echo plus expanded steps", value: &taskUnderstandingResult{Summary: "Fix the login bug, then verify the authentication flow."}, want: true},
+		{name: "rewritten summary", value: &taskUnderstandingResult{Summary: "Diagnose and repair the login flow."}, want: true},
+		{name: "execution plan", value: &taskUnderstandingResult{ExecutionPlan: []string{"Inspect logs", "Apply fix"}}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasMeaningfulTaskUnderstanding(tc.value, original); got != tc.want {
+				t.Fatalf("hasMeaningfulTaskUnderstanding() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildPendingConfirmation_UsesEnhancedInstructionWithoutSummary(t *testing.T) {
+	item := buildPendingConfirmation(nil, "u1", "fix the login bug", taskIntentResult{Intent: intentCoding}, &taskUnderstandingResult{
+		TaskType:            "code repair",
+		EnhancedInstruction: "Diagnose the login flow, correct the defect, and verify the affected path.",
+	})
+	if strings.Contains(item.Summary, "I understand you want me to handle this task") {
+		t.Fatalf("confirmation must not fall back to raw-text echo: %q", item.Summary)
+	}
+	if !strings.Contains(item.Summary, "Diagnose the login flow") {
+		t.Fatalf("confirmation should show enhanced instruction: %q", item.Summary)
+	}
+}
+
+func TestBuildPendingConfirmation_DropsEchoOnlyPlanItems(t *testing.T) {
+	item := buildPendingConfirmation(nil, "u1", "fix the login bug", taskIntentResult{Intent: intentCoding}, &taskUnderstandingResult{
+		Summary:       "Diagnose the login flow and verify the correction.",
+		ExecutionPlan: []string{"Fix the login bug", "Inspect the authentication flow", "Inspect the authentication flow"},
+	})
+	if len(item.PlannedActions) != 1 || item.PlannedActions[0] != "Inspect the authentication flow" {
+		t.Fatalf("planned actions should retain only unique non-echo details, got %#v", item.PlannedActions)
+	}
+	if strings.Contains(item.Summary, "任务理解：fix the login bug") {
+		t.Fatalf("confirmation must not display the echoed request: %q", item.Summary)
 	}
 }
 

@@ -66,6 +66,24 @@ func TestLansengerGroupPermissionPolicyRestrictsKnowledgeSources(t *testing.T) {
 	if err := policy.restrictKnowledgeArgs(map[string]interface{}{"source_ids": []interface{}{"other"}}); err == nil {
 		t.Fatal("unapproved source should be rejected")
 	}
+	args = map[string]interface{}{
+		"query":            "status",
+		"include_disabled": true,
+		"project_path":     "C:\\untrusted",
+		"search_scope":     "project",
+	}
+	if err := policy.restrictKnowledgeArgs(args); err != nil {
+		t.Fatalf("restrict knowledge args with disabled-source override: %v", err)
+	}
+	if _, ok := args["include_disabled"]; ok {
+		t.Fatalf("group knowledge query must not override disabled-source state: %#v", args)
+	}
+	if _, ok := args["project_path"]; ok {
+		t.Fatalf("group knowledge query must not carry a caller-controlled project scope: %#v", args)
+	}
+	if _, ok := args["search_scope"]; ok {
+		t.Fatalf("group knowledge query must not carry a caller-controlled search scope: %#v", args)
+	}
 	if err := policy.restrictKnowledgeArgs(map[string]interface{}{"source_ids": []interface{}{}}); err == nil {
 		t.Fatal("explicit empty source list should be rejected")
 	}
@@ -158,8 +176,8 @@ func TestLansengerGroupPermissionPolicyFiltersToolExposure(t *testing.T) {
 	if containsLansengerPermissionTestTool(filtered, "knowledge_search") || containsLansengerPermissionTestTool(filtered, "read_file") || containsLansengerPermissionTestTool(filtered, "bash") || containsLansengerPermissionTestTool(filtered, "git_status") {
 		t.Fatalf("ungranted tools remain exposed: %#v", filtered)
 	}
-	if !containsLansengerPermissionTestTool(filtered, "current_datetime") || !containsLansengerPermissionTestTool(filtered, "web_fetch") {
-		t.Fatal("explicitly safe tools should remain exposed")
+	if !containsLansengerPermissionTestTool(filtered, "current_datetime") || containsLansengerPermissionTestTool(filtered, "web_fetch") {
+		t.Fatal("only default-safe tools should remain exposed")
 	}
 	assertLansengerGroupMemoryRecallSchema(t, filtered)
 
@@ -171,8 +189,158 @@ func TestLansengerGroupPermissionPolicyFiltersToolExposure(t *testing.T) {
 	if !containsLansengerPermissionTestTool(filtered, "knowledge_search") || !containsLansengerPermissionTestTool(filtered, "read_file") {
 		t.Fatalf("granted retrieval tools missing: %#v", filtered)
 	}
+	if containsLansengerPermissionTestTool(filtered, "web_fetch") {
+		t.Fatal("web access must stay disabled until explicitly granted")
+	}
+	filtered = filterToolsForLansengerGroupPermissions(tools, lansengerGroupPermissionPolicy{AllowWebSearch: true})
+	if !containsLansengerPermissionTestTool(filtered, "web_fetch") {
+		t.Fatal("granted web fetch missing")
+	}
 	if containsLansengerPermissionTestTool(filtered, "knowledge_delete_source") || containsLansengerPermissionTestTool(filtered, "bash") || containsLansengerPermissionTestTool(filtered, "git_status") {
 		t.Fatalf("unsafe tools remain exposed: %#v", filtered)
+	}
+}
+
+func TestLansengerGroupWebFetchSchemaAndExecutionRejectAuthenticatedTransport(t *testing.T) {
+	webFetch := agent.ToolDef("web_fetch", "desktop fetch", map[string]interface{}{
+		"url":                 map[string]interface{}{"type": "string"},
+		"render_js":           map[string]interface{}{"type": "boolean"},
+		"save_path":           map[string]interface{}{"type": "string"},
+		"headers":             map[string]interface{}{"type": "object"},
+		"cookie":              map[string]interface{}{"type": "string"},
+		"use_browser_cookies": map[string]interface{}{"type": "boolean"},
+		"via_browser":         map[string]interface{}{"type": "boolean"},
+	}, []string{"url"})
+	filtered := filterToolsForLansengerGroupPermissions([]map[string]interface{}{webFetch}, lansengerGroupPermissionPolicy{AllowWebSearch: true})
+	if len(filtered) != 1 {
+		t.Fatalf("web fetch = %#v", filtered)
+	}
+	function, _ := filtered[0]["function"].(map[string]interface{})
+	if function["description"] == "desktop fetch" {
+		t.Fatalf("group filter preserved the unrestricted description: %#v", function)
+	}
+	parameters, _ := function["parameters"].(map[string]interface{})
+	properties, _ := parameters["properties"].(map[string]interface{})
+	for _, name := range []string{"render_js", "headers", "cookie", "use_browser_cookies", "via_browser"} {
+		if _, exists := properties[name]; exists {
+			t.Fatalf("group web fetch schema exposes %q: %#v", name, properties)
+		}
+	}
+
+	policy := lansengerGroupPermissionPolicy{AllowWebSearch: true}
+	for _, args := range []map[string]interface{}{
+		{"url": "https://example.com", "headers": map[string]interface{}{"Authorization": "Bearer token"}},
+		{"url": "https://example.com", "render_js": true},
+		{"url": "https://example.com", "cookie": "sid=secret"},
+		{"url": "https://example.com", "use_browser_cookies": true},
+		{"url": "https://example.com", "via_browser": true},
+	} {
+		if err := policy.restrictWebFetchArgs(args); err == nil {
+			t.Fatalf("sensitive group web fetch args accepted: %#v", args)
+		}
+	}
+	if err := policy.restrictWebFetchArgs(map[string]interface{}{"url": "https://example.com", "save_path": "report.pdf"}); err != nil {
+		t.Fatalf("public group web fetch was rejected: %v", err)
+	}
+
+	registry := NewToolRegistry()
+	handlerCalled := false
+	var handlerArgs map[string]interface{}
+	if err := registry.Register(RegisteredTool{
+		Name:     "web_fetch",
+		Required: []string{"url"},
+		Handler: func(args map[string]interface{}) string {
+			handlerCalled = true
+			handlerArgs = args
+			return "public fetch completed"
+		},
+	}); err != nil {
+		t.Fatalf("register web fetch: %v", err)
+	}
+	h := &IMMessageHandler{registry: registry}
+	ownerID := "lansenger:group:public-web"
+	ctx := NewLoopContext("lansenger-group", 1, nil)
+	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{AllowWebSearch: true}
+	h.setSessionLoopCtx(ownerID, ctx)
+
+	rejected := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "web_fetch", `{"url":"https://example.com","cookie":"sid=secret"}`, "", nil)
+	if handlerCalled {
+		t.Fatal("web_fetch handler ran with authenticated group transport arguments")
+	}
+	if rejected.FailureKind != toolFailurePolicyRejected || !strings.Contains(rejected.Text, "cookie") {
+		t.Fatalf("authenticated group fetch = %+v, want policy rejection", rejected)
+	}
+	rejected = h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "web_fetch", `{"url":"https://example.com","render_js":true}`, "", nil)
+	if handlerCalled || rejected.FailureKind != toolFailurePolicyRejected || !strings.Contains(rejected.Text, "render_js") {
+		t.Fatalf("browser-rendered group fetch = %+v handlerCalled=%v, want policy rejection", rejected, handlerCalled)
+	}
+
+	allowed := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "web_fetch", `{"url":"https://example.com/report.pdf","save_path":"report.pdf"}`, "", nil)
+	if !handlerCalled || allowed.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("public group download = %+v handlerCalled=%v", allowed, handlerCalled)
+	}
+	if got, _ := handlerArgs["save_path"].(string); got != "report.pdf" {
+		t.Fatalf("public download save_path = %q, want report.pdf", got)
+	}
+	if !isLansengerGroupPublicWebToolCall(handlerArgs) {
+		t.Fatalf("public web marker missing from dispatched args: %#v", handlerArgs)
+	}
+}
+
+func TestLansengerGroupPublicWebSearchStrategyDisablesBrowserPaths(t *testing.T) {
+	strategy := corelib.WebSearchStrategy{
+		BrowserFallbackEnabled:    true,
+		BrowserHumanAssistEnabled: true,
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "bing_cn", Enabled: true, Transport: corelib.WebSearchTransportHTTPHTML},
+			{ID: "google", Enabled: true, Transport: corelib.WebSearchTransportBrowser},
+		},
+	}
+	public := lansengerGroupPublicWebSearchStrategy(strategy)
+	if public.BrowserFallbackEnabled || public.BrowserHumanAssistEnabled {
+		t.Fatalf("public group strategy retained browser fallback settings: %#v", public)
+	}
+	if !public.Engines[0].Enabled || public.Engines[1].Enabled {
+		t.Fatalf("public group strategy browser filtering = %#v", public.Engines)
+	}
+	if !strategy.Engines[1].Enabled {
+		t.Fatal("public group strategy mutated desktop strategy")
+	}
+	// API engines can carry the user's configured provider key, and Baidu's
+	// HTML adapter first obtains a verification cookie. They must be disabled
+	// before the public network context reaches the shared search executor.
+	strategy.Engines = append(strategy.Engines,
+		corelib.WebSearchEngineConfig{ID: "brave", Enabled: true, Transport: corelib.WebSearchTransportAPI, APIKey: "secret"},
+		corelib.WebSearchEngineConfig{ID: "baidu", Enabled: true, Transport: corelib.WebSearchTransportHTTPHTML},
+	)
+	public = lansengerGroupPublicWebSearchStrategy(strategy)
+	if public.Engines[2].Enabled || public.Engines[3].Enabled {
+		t.Fatalf("public group strategy retained credential-bearing engines: %#v", public.Engines)
+	}
+}
+
+func TestLansengerGroupMemorySchemaDoesNotMutateSharedToolDefinition(t *testing.T) {
+	shared := agent.ToolDef("memory", "desktop memory actions", map[string]interface{}{
+		"action":       map[string]interface{}{"type": "string", "description": "save, recall, list"},
+		"content":      map[string]interface{}{"type": "string"},
+		"query":        map[string]interface{}{"type": "string"},
+		"project_path": map[string]interface{}{"type": "string"},
+	}, []string{"action"})
+
+	filtered := filterToolsForLansengerGroupPermissions([]map[string]interface{}{shared}, lansengerGroupPermissionPolicy{})
+	assertLansengerGroupMemoryRecallSchema(t, filtered)
+
+	function, _ := shared["function"].(map[string]interface{})
+	if function["description"] != "desktop memory actions" {
+		t.Fatalf("group filter mutated shared memory description: %#v", function)
+	}
+	parameters, _ := function["parameters"].(map[string]interface{})
+	properties, _ := parameters["properties"].(map[string]interface{})
+	if _, ok := properties["content"]; !ok {
+		t.Fatalf("group filter removed desktop memory content property: %#v", properties)
+	}
+	if _, ok := properties["project_path"]; !ok {
+		t.Fatalf("group filter removed desktop memory project scope: %#v", properties)
 	}
 }
 
@@ -196,6 +364,9 @@ func assertLansengerGroupMemoryRecallSchema(t *testing.T, defs []map[string]inte
 		}
 		if _, ok := properties["mode"]; ok {
 			t.Fatalf("group memory schema must not expose alternate recall modes: %#v", properties)
+		}
+		if _, ok := properties["project_path"]; ok {
+			t.Fatalf("group memory schema must not expose caller-controlled project scope: %#v", properties)
 		}
 		action, _ := properties["action"].(map[string]interface{})
 		enum, _ := action["enum"].([]string)
@@ -255,6 +426,13 @@ func TestLansengerGroupPermissionPolicyAllowsMemoryRecallOnly(t *testing.T) {
 			t.Fatalf("group recall transport %s = %+v, want policy rejection", args, result)
 		}
 	}
+	// A callback can preserve the group loop context while omitting its explicit
+	// runtime-owner flag. It must still recall only the group owner, never the
+	// desktop default, and must ignore its caller-controlled project scope.
+	projectScoped := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "memory", `{"action":"recall","query":"deployment","project_path":"/untrusted","category":"user_fact"}`, "", nil)
+	if projectScoped.FailureKind == toolFailurePolicyRejected || !strings.Contains(projectScoped.Text, "group deployment runbook") || strings.Contains(projectScoped.Text, "shared desktop deployment secret") {
+		t.Fatalf("group recall must remain owner-scoped without an explicit runtime flag: %+v", projectScoped)
+	}
 }
 
 func TestLansengerGroupMemoryPromptExcludesSharedDesktopEntries(t *testing.T) {
@@ -300,9 +478,20 @@ func TestLansengerGroupPermissionPolicyFailsClosedForUnlistedTools(t *testing.T)
 			t.Fatalf("%q must be denied unless it has an explicit group-permission contract", name)
 		}
 	}
-	for _, name := range []string{"memory", "knowledge_search", "read_file", "web_search", "web_fetch", "current_datetime"} {
+	for _, name := range []string{"memory", "knowledge_search", "read_file", "current_datetime"} {
 		if !policy.allowsTool(name) {
 			t.Fatalf("%q should be allowed by its explicit contract", name)
+		}
+	}
+	for _, name := range []string{"web_search", "web_fetch"} {
+		if policy.allowsTool(name) {
+			t.Fatalf("%q must be disabled until explicitly granted", name)
+		}
+	}
+	policy.AllowWebSearch = true
+	for _, name := range []string{"web_search", "web_fetch"} {
+		if !policy.allowsTool(name) {
+			t.Fatalf("%q should be enabled by the web permission", name)
 		}
 	}
 }
@@ -391,6 +580,15 @@ func TestLansengerGroupKnowledgePermissionDropsBlankSourceIDs(t *testing.T) {
 	}
 }
 
+func TestLansengerGroupWebPermissionDefaultsOffAndMapsFromConfig(t *testing.T) {
+	if policy := lansengerGroupPermissionsFromConfig(&corelib.AppConfig{}); policy.AllowWebSearch {
+		t.Fatal("group web permission must default to disabled")
+	}
+	if policy := lansengerGroupPermissionsFromConfig(&corelib.AppConfig{LansengerGroupAllowWebSearch: true}); !policy.AllowWebSearch {
+		t.Fatal("group web permission was not mapped from config")
+	}
+}
+
 func TestLansengerGroupKnowledgeSearchScopesAndUnlocksWebFallback(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := registry.Register(RegisteredTool{
@@ -415,7 +613,7 @@ func TestLansengerGroupKnowledgeSearchScopesAndUnlocksWebFallback(t *testing.T) 
 	h := &IMMessageHandler{registry: registry}
 	ownerID := "lansenger:group:priority"
 	ctx := NewLoopContext("lansenger-group", 2, nil)
-	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
+	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}, AllowWebSearch: true}
 	h.setSessionLoopCtx(ownerID, ctx)
 
 	blocked := h.executeToolDetailedWithRuntimeContext(context.Background(), ownerID, false, "", "web_search", `{"query":"jump failed"}`, "", nil)
@@ -516,6 +714,22 @@ func TestNewIMMessageHandlerKeepsAuthorizedKnowledgeSearchForLansengerGroup(t *t
 	}
 }
 
+func TestNewIMMessageHandlerKeepsMemoryButHidesUnapprovedKnowledgeForLansengerGroup(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	h := NewIMMessageHandler(app, nil)
+	ctx := NewLoopContext("lansenger-group", 1, nil)
+	ctx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{}
+
+	toolSet := h.prepareAgentLoopTools("lansenger:group:no-knowledge", "查询群内已有记忆", ctx, agentLoopPhase{})
+	if !containsLansengerPermissionTestTool(toolSet.Tools, "memory") {
+		t.Fatalf("unconfigured local Lansenger group must retain read-only memory recall: %#v", toolSet.Tools)
+	}
+	assertLansengerGroupMemoryRecallSchema(t, toolSet.Tools)
+	if containsLansengerPermissionTestTool(toolSet.Tools, "knowledge_search") {
+		t.Fatalf("unconfigured local Lansenger group must not expose knowledge_search: %#v", toolSet.Tools)
+	}
+}
+
 func TestLansengerGroupRestoresMemoryRecallAfterRoutingDropsIt(t *testing.T) {
 	registry := NewToolRegistry()
 	for _, name := range []string{"memory", "web_fetch"} {
@@ -553,8 +767,8 @@ func TestLansengerGroupRecoveryReappliesPermissions(t *testing.T) {
 	}
 
 	restored, _, _ := h.restoreToolsAfterSkillRecover("lansenger:group:recover", ctx, baseTools, agentLoopPhase{})
-	if !containsLansengerPermissionTestTool(restored, "memory") || !containsLansengerPermissionTestTool(restored, "knowledge_search") || !containsLansengerPermissionTestTool(restored, "web_fetch") {
-		t.Fatalf("group recovery missing safe retrieval tools: %#v", restored)
+	if !containsLansengerPermissionTestTool(restored, "memory") || !containsLansengerPermissionTestTool(restored, "knowledge_search") || containsLansengerPermissionTestTool(restored, "web_fetch") {
+		t.Fatalf("group recovery did not reapply the web permission: %#v", restored)
 	}
 	if containsLansengerPermissionTestTool(restored, "knowledge_save_text") || containsLansengerPermissionTestTool(restored, "bash") {
 		t.Fatalf("group recovery restored unsafe tools: %#v", restored)
@@ -582,8 +796,8 @@ func TestLansengerGroupFallbackCatalogReappliesPermissions(t *testing.T) {
 	if containsLansengerPermissionTestTool(catalog, "bash") || containsLansengerPermissionTestTool(catalog, "craft_tool") {
 		t.Fatalf("group fallback catalog retained unsafe tools: %#v", catalog)
 	}
-	if !containsLansengerPermissionTestTool(catalog, "memory") || !containsLansengerPermissionTestTool(catalog, "knowledge_search") || !containsLansengerPermissionTestTool(catalog, "web_fetch") {
-		t.Fatalf("group fallback catalog missing safe retrieval tools: %#v", catalog)
+	if !containsLansengerPermissionTestTool(catalog, "memory") || !containsLansengerPermissionTestTool(catalog, "knowledge_search") || containsLansengerPermissionTestTool(catalog, "web_fetch") {
+		t.Fatalf("group fallback catalog did not reapply the web permission: %#v", catalog)
 	}
 	assertLansengerGroupMemoryRecallSchema(t, catalog)
 }

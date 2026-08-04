@@ -661,6 +661,12 @@ func FetchWithProviderCtx(parent context.Context, rawURL string, opts *FetchOpti
 	if err := parent.Err(); err != nil {
 		return nil, err
 	}
+	if opts != nil && opts.PublicNetworkOnly {
+		// Enhanced providers are configured with desktop credentials and may
+		// fetch the requested URL from their own infrastructure. Public group
+		// fetches must use only the local guarded HTTP transport.
+		provider = corelib.WebSearchProvider{}
+	}
 	provider = normalizeProvider(provider)
 
 	// TinyFish has its own fetch API with better content extraction.
@@ -853,8 +859,21 @@ func FetchWithTinyFish(ctx context.Context, rawURL string, apiKey string, fetchU
 // under a tight shared time budget, so a failing endpoint must fail fast and
 // yield to the next one instead of burning the budget on same-URL retries.
 func fetchRawHTMLWithChain(ctx context.Context, rawURL string, headers map[string]string) (string, error) {
-	opts := &FetchOptions{TimeoutS: 30, MaxBytes: 2 * 1024 * 1024, Headers: headers}
-	result, err := runFetchChain(ctx, rawURL, "[search]", 1, opts, httpClient(), func(c *http.Client, extra map[string]string) *fetchAttempt {
+	return fetchRawHTMLWithChainOptions(ctx, rawURL, headers, isPublicNetworkOnly(ctx))
+}
+
+func fetchRawHTMLWithChainOptions(ctx context.Context, rawURL string, headers map[string]string, publicNetworkOnly bool) (string, error) {
+	opts := &FetchOptions{TimeoutS: 30, MaxBytes: 2 * 1024 * 1024, Headers: headers, PublicNetworkOnly: publicNetworkOnly}
+	client := httpClient()
+	if publicNetworkOnly {
+		publicURL, err := validatePublicHTTPURL(rawURL)
+		if err != nil {
+			return "", err
+		}
+		rawURL = publicURL.String()
+		client = PublicHTTPClient(30 * time.Second)
+	}
+	result, err := runFetchChain(ctx, rawURL, "[search]", 1, opts, client, func(c *http.Client, extra map[string]string) *fetchAttempt {
 		return performTextFetch(ctx, rawURL, opts, c, extra, true)
 	})
 	if err != nil {

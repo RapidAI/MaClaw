@@ -80,7 +80,7 @@ const CATEGORIES = [
 const CATEGORY_COLORS: Record<string, string> = {
     self_identity: "var(--theme-primary-strong, #183b63)",
     user_fact: "var(--theme-primary)",
-    preference: "var(--theme-info, var(--theme-primary))",
+    preference: "var(--theme-primary)",
     project_knowledge: "var(--theme-success)",
     instruction: "var(--theme-primary)",
     conversation_summary: "var(--theme-primary-strong, #183b63)",

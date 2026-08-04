@@ -108,12 +108,12 @@ export const lightCodePreviewTheme: CodePreviewTheme = {
     diffAddText: '#4f7f6f',
     diffDeleteBg: 'rgba(196, 61, 52, 0.10)',
     diffDeleteText: '#c43d34',
-    syntaxKeyword: '#2f5f98',
+    syntaxKeyword: '#2f6fbc',
     syntaxString: '#4f7f6f',
     syntaxComment: '#64748b',
-    syntaxNumber: '#2f5f98',
+    syntaxNumber: '#2f6fbc',
     syntaxFunction: '#334155',
-    syntaxType: '#2f5f98',
+    syntaxType: '#2f6fbc',
     syntaxOperator: '#334155',
 };
 

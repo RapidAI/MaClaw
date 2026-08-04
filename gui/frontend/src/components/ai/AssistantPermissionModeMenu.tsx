@@ -142,7 +142,7 @@ export function AssistantPermissionModeMenu({ active: panelActive = true, lang, 
                             ? (theme.errorBg || "#fbf1f0")
                             : workspace
                                 ? (dark ? "rgba(74, 222, 128, 0.12)" : "rgba(22, 163, 74, 0.1)")
-                                : (dark ? "rgba(143, 180, 220, 0.14)" : "rgba(47, 95, 152, 0.08)"))
+                                : (dark ? "rgba(143, 180, 220, 0.14)" : "rgba(47, 111, 188, 0.08)"))
                         : "transparent";
                     const selectedColor = dangerous
                         ? (theme.errorText || "#c43d34")

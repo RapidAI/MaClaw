@@ -56,8 +56,21 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			heal := mobileDraftHealMarkdownOutsideLock(record)
 			display := heal.Display
 			if heal.ShouldPersist {
+				mobileDocumentQuotaAdmissionMu.Lock()
 				mobileDocuments.Lock()
-				if cur, exists := mobileDocuments.drafts[draftID]; exists && cur.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, cur.TenantID) {
+				cur, exists := mobileDocuments.drafts[draftID]
+				admitOwner := exists && cur.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, cur.TenantID)
+				mobileDocuments.Unlock()
+				additionalBytes := int64(0)
+				if admitOwner {
+					additionalBytes = mobileDraftHealQuotaDelta(cur, heal)
+				}
+				quotaOK := additionalBytes <= 0 || mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, additionalBytes) == nil
+				mobileDocuments.Lock()
+				if quotaOK {
+					cur, exists = mobileDocuments.drafts[draftID]
+				}
+				if quotaOK && exists && cur.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, cur.TenantID) {
 					if mobileDraftRepairSourceMeta(&cur) {
 						repaired = true
 					}
@@ -90,6 +103,13 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 					}
 				}
 				mobileDocuments.Unlock()
+				mobileDocumentQuotaAdmissionMu.Unlock()
+				if !quotaOK {
+					// Extraction wrote immutable image blobs before admission. Reclaim them
+					// if the account cannot retain the generated preview metadata.
+					mobileDraftDeleteImages(heal.Images)
+					display = strings.TrimSpace(record.Markdown)
+				}
 			}
 			if repaired {
 				// Drop dead blob paths / persist healed markdown.
@@ -161,7 +181,8 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				item["has_original"] = true
 				item["source_filename"] = strings.TrimSpace(rec.SourceFilename)
 				item["source_content_type"] = strings.TrimSpace(rec.SourceContentType)
-				item["source_size"] = mobileDraftSourceSize(rec)
+				item["source_size"] = mobileDraftOriginalSize(rec)
+				item["source_storage_size"] = mobileDraftSourceSize(rec)
 				item["source_download_url"] = "/api/mobile/documents/drafts/" + rec.ID + "/source"
 			} else {
 				item["has_original"] = false
@@ -245,15 +266,14 @@ func MobileDocumentDraftSourceHandler(identity *auth.IdentityService) http.Handl
 				filename = draftID
 			}
 		}
-		if !mobileWriteOriginalHTTP(w, contentType, filename, mem, path) {
+		if !mobileWriteStoredOriginalHTTP(w, contentType, filename, mem, path, record.SourceEncoding, mobileDraftOriginalSize(record)) {
 			// Clear stale meta only when the blob is confirmed missing — not during
 			// store outages or open errors where the file may still exist.
 			if mobileShouldClearSourceMetaAfterStreamFail(path) {
 				mobileDocuments.Lock()
 				if rec, exists := mobileDocuments.drafts[draftID]; exists && rec.OwnerID == owner && mobileMeetingRecordingTenantMatches(principal.TenantID, rec.TenantID) {
 					if len(rec.SourceBytes) == 0 {
-						rec.SourcePath = ""
-						rec.SourceSize = 0
+						mobileClearDraftSourceMeta(&rec)
 						mobileDocuments.drafts[draftID] = rec
 						mobileDocuments.Unlock()
 						mobilePersistState()

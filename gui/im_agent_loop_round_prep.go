@@ -1,10 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
@@ -145,7 +149,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	prepStartedAt := time.Now()
 
 	effectiveTokenLimit, _ := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
-	conversation = trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
+	conversation = h.compactAgentLoopConversation(ctx, opts.UserID, conversation, tools, effectiveTokenLimit, toolsTokenBudget)
 
 	phase := derefAgentLoopPhase(opts.Phase)
 	conversation, systemMessagesStart := h.injectAgentLoopHarnessPrompts(
@@ -205,6 +209,72 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		DirectModeToolsFiltered: directModeToolsFiltered,
 		PrepElapsed:             time.Since(prepStartedAt),
 	}
+}
+
+func contextCheckpointMode(sessionKey string) agent.ContextCheckpointMode {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_CONTEXT_CHECKPOINT"))) {
+	case "off", "0", "false":
+		return agent.ContextCheckpointOff
+	case "shadow":
+		return agent.ContextCheckpointShadow
+	case "on", "1", "true":
+		return agent.ContextCheckpointOn
+	default:
+		// Conservative process-independent rollout: 10% active, 90% shadow.
+		// Stable owner hashing keeps one session on one behavior and requires no
+		// user-facing setting. Operators may force off/shadow/on with the env above.
+		sum := sha256.Sum256([]byte(strings.TrimSpace(sessionKey)))
+		if sum[0] < 26 { // 26/256 ~= 10.2%
+			return agent.ContextCheckpointOn
+		}
+		return agent.ContextCheckpointShadow
+	}
+}
+
+func contextCheckpointStatusMode() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_CONTEXT_CHECKPOINT"))) {
+	case "off", "0", "false":
+		return string(agent.ContextCheckpointOff)
+	case "shadow":
+		return string(agent.ContextCheckpointShadow)
+	case "on", "1", "true":
+		return string(agent.ContextCheckpointOn)
+	default:
+		return "rollout_10pct"
+	}
+}
+
+func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID string, conversation []interface{}, tools []map[string]interface{}, effectiveTokenLimit, toolsTokenBudget int) []interface{} {
+	sessionKey := userID
+	if h != nil {
+		sessionKey = h.workflowPolicyOwnerID(userID, ctx)
+	}
+	mode := contextCheckpointMode(sessionKey)
+	if mode == agent.ContextCheckpointOff {
+		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
+	}
+	var flush func() error
+	if h != nil && h.memoryStore != nil {
+		flush = h.memoryStore.Flush
+	}
+	checkpoint := agent.CheckpointConversation(conversation, agent.ContextCheckpointOptions{
+		ContextLimit:   effectiveTokenLimit,
+		ToolsTokens:    toolsTokenBudget,
+		SessionKey:     sessionKey,
+		Tools:          tools,
+		BeforeCompress: flush,
+		DryRun:         mode == agent.ContextCheckpointShadow,
+	})
+	if checkpoint.WouldApply && mode == agent.ContextCheckpointShadow {
+		log.Printf("[context-checkpoint] mode=shadow owner=%q before=%d after~=%d dropped=%d (no persistence)", sessionKey, checkpoint.BeforeTokens, checkpoint.AfterTokens, checkpoint.DroppedCount)
+	}
+	if checkpoint.Applied {
+		log.Printf("[context-checkpoint] mode=%s owner=%q before=%d after=%d dropped=%d handle=%s", mode, sessionKey, checkpoint.BeforeTokens, checkpoint.AfterTokens, checkpoint.DroppedCount, checkpoint.Handle.ID)
+		if mode == agent.ContextCheckpointOn {
+			return checkpoint.Conversation
+		}
+	}
+	return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
 }
 
 func shouldForceLightFinalizeWithoutTools(ctx *LoopContext, iteration int, effectiveMax int, chatFinalizeGrace int) bool {

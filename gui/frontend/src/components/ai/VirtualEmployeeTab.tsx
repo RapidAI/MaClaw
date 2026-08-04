@@ -104,8 +104,8 @@ function EmployeeAvatar({ ve, displayName }: { ve: VirtualEmployeeEntry; display
                 alignItems: "center",
                 justifyContent: "center",
                 flexShrink: 0,
-                background: "rgba(47, 95, 152, 0.10)",
-                color: "#2f5f98",
+                background: "rgba(47, 111, 188, 0.10)",
+                color: "#2f6fbc",
                 fontSize: 11,
                 fontWeight: 700,
             }}
@@ -798,7 +798,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                     <span style={{
                                         width: 72, height: 72, borderRadius: "50%",
                                         display: "inline-flex", alignItems: "center", justifyContent: "center",
-                                        background: "rgba(47, 95, 152, 0.10)", color: "#2f5f98",
+                                        background: "rgba(47, 111, 188, 0.10)", color: "#2f6fbc",
                                         fontSize: 28, fontWeight: 700,
                                         border: `3px solid ${theme.divider}`,
                                     }}>
@@ -816,7 +816,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                                 {viewInfoVE.displayName}
                             </h2>
                             {viewInfoVE.ve.resident && (
-                                <span style={{ fontSize: 11, color: theme.btnColor || "#2f5f98", background: theme.fieldBg, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
+                                <span style={{ fontSize: 11, color: theme.btnColor || "#2f6fbc", background: theme.fieldBg, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
                                     {isZh ? "\u5e38\u9a7b" : "Resident"}
                                 </span>
                             )}

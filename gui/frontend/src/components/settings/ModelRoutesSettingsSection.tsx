@@ -190,7 +190,7 @@ export const ModelRoutesSettingsSection = ({
                 <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
                     {textForLang(lang, 'Model routes (ModelRouter)', '模型路由 (ModelRouter)', '模型路由 (ModelRouter)')}
                 </div>
-                <div style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.45 }}>
+                <div style={{ color: 'var(--theme-text-secondary)', fontSize: 12, lineHeight: 1.45 }}>
                     {textForLang(
                         lang,
                         'Per-task model overrides for pure-coding route prefs (auto/primary/reasoning/vision). Empty model fields are ignored. Leave URL empty to inherit the primary provider.',
@@ -280,7 +280,7 @@ export const ModelRoutesSettingsSection = ({
                 </button>
             </div>
             {saveError ? (
-                <div style={{ color: 'var(--error-color, #c43d34)', fontSize: 13 }}>{saveError}</div>
+                <div style={{ color: 'var(--theme-danger, #c43d34)', fontSize: 13 }}>{saveError}</div>
             ) : null}
 
             <div data-testid="coding-route-pref-default" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -313,8 +313,8 @@ export const ModelRoutesSettingsSection = ({
                                 height: 26,
                                 padding: '0 10px',
                                 borderRadius: 4,
-                                border: `1px solid ${defaultPref === pref ? 'var(--accent-color, #2f5f98)' : 'var(--border-color, rgba(127,127,127,0.3))'}`,
-                                background: defaultPref === pref ? 'color-mix(in srgb, var(--accent-color, #2f5f98) 16%, transparent)' : 'transparent',
+                                border: `1px solid ${defaultPref === pref ? 'var(--theme-primary)' : 'var(--theme-border, rgba(127,127,127,0.3))'}`,
+                                background: defaultPref === pref ? 'color-mix(in srgb, var(--theme-primary) 16%, transparent)' : 'transparent',
                                 fontWeight: defaultPref === pref ? 600 : 400,
                                 fontSize: 12,
                                 cursor: prefSaving ? 'wait' : 'pointer',
@@ -386,7 +386,7 @@ export const ModelRoutesSettingsSection = ({
                             }
                         }}
                     />
-                    <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>
+                    <span style={{ color: 'var(--theme-text-secondary)', fontSize: 11 }}>
                         {textForLang(lang, '0 = default 256; min effective 32', '0 = 默认 256；生效最小 32', '0 = 預設 256；生效最小 32')}
                     </span>
                 </div>
@@ -408,13 +408,13 @@ export const ModelRoutesSettingsSection = ({
                                 : textForLang(lang, 'Refresh', '刷新', '重新整理')}
                         </button>
                         {sidecarStats ? (
-                            <span style={{ fontSize: 12, color: (Number(sidecarStats.usage_ratio) >= 0.85) ? 'var(--error-color, #c43d34)' : 'var(--text-secondary)' }}>
+                            <span style={{ fontSize: 12, color: (Number(sidecarStats.usage_ratio) >= 0.85) ? 'var(--theme-danger, #c43d34)' : 'var(--theme-text-secondary)' }}>
                                 {`${((Number(sidecarStats.total_bytes) || 0) / (1024 * 1024)).toFixed(1)} / ${((Number(sidecarStats.max_bytes) || 0) / (1024 * 1024)).toFixed(0)} MB`}
                                 {Number(sidecarStats.dir_count) > 0 ? ` · ${sidecarStats.dir_count} labels` : ''}
                                 {Number(sidecarStats.usage_ratio) > 0 ? ` · ${Math.round(Number(sidecarStats.usage_ratio) * 100)}%` : ''}
                             </span>
                         ) : (
-                            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                            <span style={{ fontSize: 12, color: 'var(--theme-text-secondary)' }}>
                                 {textForLang(lang, 'No usage data', '暂无用量', '暫無用量')}
                             </span>
                         )}
@@ -425,7 +425,7 @@ export const ModelRoutesSettingsSection = ({
                             style={{
                                 height: 8,
                                 borderRadius: 4,
-                                background: 'var(--border-color, rgba(127,127,127,0.2))',
+                                background: 'var(--theme-border, rgba(127,127,127,0.2))',
                                 overflow: 'hidden',
                             }}
                         >
@@ -434,15 +434,15 @@ export const ModelRoutesSettingsSection = ({
                                     height: '100%',
                                     width: `${Math.min(100, Math.max(0, (Number(sidecarStats.usage_ratio) || 0) * 100))}%`,
                                     background: (Number(sidecarStats.usage_ratio) >= 0.85)
-                                        ? 'var(--error-color, #c43d34)'
-                                        : 'var(--accent-color, #2f5f98)',
+                                        ? 'var(--theme-danger, #c43d34)'
+                                        : 'var(--theme-primary)',
                                     transition: 'width 0.2s ease',
                                 }}
                             />
                         </div>
                     ) : null}
                 </div>
-                <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>
+                <span style={{ color: 'var(--theme-text-secondary)', fontSize: 11 }}>
                     {textForLang(
                         lang,
                         'Default pref applies when a pure-coding session has no sticky pref yet.',
@@ -471,7 +471,7 @@ export const ModelRoutesSettingsSection = ({
                     </button>
                 </div>
                 {preview.length === 0 ? (
-                    <div style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                    <div style={{ color: 'var(--theme-text-secondary)', fontSize: 12 }}>
                         {textForLang(lang, 'No resolution data yet.', '暂无解析结果。', '暫無解析結果。')}
                     </div>
                 ) : (
@@ -486,7 +486,7 @@ export const ModelRoutesSettingsSection = ({
                                     gap: 8,
                                     padding: '4px 6px',
                                     borderRadius: 4,
-                                    border: '1px solid var(--border-color, rgba(127,127,127,0.2))',
+                                    border: '1px solid var(--theme-border, rgba(127,127,127,0.2))',
                                 }}
                             >
                                 <strong>{c.pref}</strong>
@@ -494,7 +494,7 @@ export const ModelRoutesSettingsSection = ({
                                     {c.model || '—'}
                                     {c.note ? ` · ${c.note}` : ''}
                                 </span>
-                                <span style={{ color: 'var(--text-secondary)', opacity: 0.9 }}>{c.source || '—'}</span>
+                                <span style={{ color: 'var(--theme-text-secondary)', opacity: 0.9 }}>{c.source || '—'}</span>
                             </div>
                         ))}
                     </div>

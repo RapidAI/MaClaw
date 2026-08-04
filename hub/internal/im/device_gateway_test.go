@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
 type memoryDeviceCredentialStore struct {
@@ -50,6 +53,16 @@ func TestDeviceGatewayPairsUploadsForwardsAndPollsReply(t *testing.T) {
 	token, _ := pairBody["gatewayToken"].(string)
 	if token == "" {
 		t.Fatalf("missing gateway token: %#v", pairBody)
+	}
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{
+		"clientId": "pet-a", "protocolVersion": "1.1",
+		"capabilities": map[string]any{
+			"input":  map[string]any{"modalities": []string{"text", "audio"}, "audio": map[string]any{"mimeTypes": []string{"audio/wav"}}},
+			"output": map[string]any{"modalities": []string{"text"}},
+		},
+	})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("handshake status=%d body=%s", handshake.Code, handshake.Body.String())
 	}
 
 	prepare := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/media/upload-url", token, map[string]any{"clientId": "pet-a", "type": "voice", "fileName": "voice.wav", "mimeType": "audio/wav", "sizeBytes": 3})
@@ -101,6 +114,53 @@ func TestDeviceGatewayPairsUploadsForwardsAndPollsReply(t *testing.T) {
 	_ = json.NewDecoder(poll.Body).Decode(&pollBody)
 	if len(pollBody.Messages) != 1 || pollBody.Messages[0]["text"] != "hello" {
 		t.Fatalf("poll=%#v", pollBody)
+	}
+}
+
+func TestDeviceGatewayRejectsUndeclaredInputMedia(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "991122"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "text-only", "code": "991122"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{
+		"clientId": "text-only", "protocolVersion": "1.1",
+		"capabilities": map[string]any{"input": map[string]any{"modalities": []string{"text"}}, "output": map[string]any{"modalities": []string{"text"}}},
+	})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("handshake=%d %s", handshake.Code, handshake.Body.String())
+	}
+	prepare := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/media/upload-url", token, map[string]any{
+		"clientId": "text-only", "type": "voice", "fileName": "voice.wav", "mimeType": "audio/wav", "sizeBytes": 12,
+	})
+	if prepare.Code != http.StatusBadRequest {
+		t.Fatalf("undeclared media prepare=%d %s", prepare.Code, prepare.Body.String())
+	}
+	incoming := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/incoming", token, map[string]any{
+		"clientId": "text-only", "eventId": "evt-audio", "message": map[string]any{"type": "voice"},
+	})
+	if incoming.Code != http.StatusBadRequest {
+		t.Fatalf("undeclared incoming=%d %s", incoming.Code, incoming.Body.String())
+	}
+}
+
+func TestDeviceGatewayLegacyClientCanUploadBeforeHandshake(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "991123"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "legacy-audio", "code": "991123"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	prepare := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/media/upload-url", token, map[string]any{
+		"clientId": "legacy-audio", "type": "voice", "fileName": "voice.wav", "mimeType": "audio/wav", "sizeBytes": 12,
+	})
+	if prepare.Code != http.StatusOK {
+		t.Fatalf("legacy media prepare=%d %s", prepare.Code, prepare.Body.String())
 	}
 }
 
@@ -218,6 +278,106 @@ func TestDeviceGatewayAckIgnoresUnknownMessageIDs(t *testing.T) {
 	}
 }
 
+func TestDeviceGatewayAckPreservesFailedDeliveryStatus(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223357"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-failed-ack", "code": "223357"})
+	var paired map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&paired)
+	token, _ := paired["gatewayToken"].(string)
+	gateway.EnqueueReply("pet-failed-ack", "default", map[string]any{"type": "text", "text": "fallback"})
+	state := gateway.clients["pet-failed-ack"]
+	if state == nil || len(state.messages) != 1 {
+		t.Fatalf("reply was not queued: %#v", state)
+	}
+	messageID, _ := state.messages[0]["id"].(string)
+
+	ack := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/ack", token, map[string]any{
+		"clientId": "pet-failed-ack", "messageIds": []string{messageID}, "status": "failed",
+	})
+	if ack.Code != http.StatusOK {
+		t.Fatalf("ack status=%d body=%s", ack.Code, ack.Body.String())
+	}
+	state = gateway.clients["pet-failed-ack"]
+	if state == nil || len(state.messages) != 0 || state.ackStatus[messageID] != "failed" {
+		t.Fatalf("failed receipt was not preserved: %#v", state)
+	}
+}
+
+func TestDeviceGatewayAckRejectsOversizedBatch(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223358"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-ack-limit", "code": "223358"})
+	var paired map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&paired)
+	token, _ := paired["gatewayToken"].(string)
+	ids := make([]string, coreim.ThirdPartyMaxAckIDs+1)
+	for index := range ids {
+		ids[index] = fmt.Sprintf("message-%d", index)
+	}
+	ack := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/ack", token, map[string]any{
+		"clientId": "pet-ack-limit", "messageIds": ids,
+	})
+	if ack.Code != http.StatusBadRequest {
+		t.Fatalf("oversized ACK status=%d body=%s", ack.Code, ack.Body.String())
+	}
+}
+
+func TestDeviceGatewayAckReceiptMapIsBounded(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223359"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-ack-bounded", "code": "223359"})
+	var paired map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&paired)
+	token, _ := paired["gatewayToken"].(string)
+	for index := 0; index < deviceGatewayMaxAckReceipts+25; index++ {
+		gateway.EnqueueReply("pet-ack-bounded", "default", map[string]any{"type": "text", "text": fmt.Sprintf("reply-%d", index)})
+		state := gateway.clients["pet-ack-bounded"]
+		messageID, _ := state.messages[len(state.messages)-1]["id"].(string)
+		ack := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/ack", token, map[string]any{
+			"clientId": "pet-ack-bounded", "messageIds": []string{messageID}, "status": "failed",
+		})
+		if ack.Code != http.StatusOK {
+			t.Fatalf("ack %d status=%d body=%s", index, ack.Code, ack.Body.String())
+		}
+	}
+	state := gateway.clients["pet-ack-bounded"]
+	if len(state.ackStatus) > deviceGatewayMaxAckReceipts {
+		t.Fatalf("ACK receipts grew to %d, limit %d", len(state.ackStatus), deviceGatewayMaxAckReceipts)
+	}
+}
+
+func TestDeviceGatewayHandshakeAcceptsTopLevelClientCapabilities(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "223360"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-top-level-caps", "code": "223360"})
+	var paired map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&paired)
+	token, _ := paired["gatewayToken"].(string)
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{
+		"clientId": "pet-top-level-caps", "protocolVersion": "1.1",
+		"clientCapabilities": map[string]any{
+			"output":   map[string]any{"modalities": []string{"text"}, "text": map[string]any{"maxChars": 240}},
+			"features": map[string]any{"ambientDisplay": true},
+		},
+	})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("handshake status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+	state := gateway.clients["pet-top-level-caps"]
+	if state == nil || !state.capabilities.SupportsOutput("text") || !state.capabilities.Features.AmbientDisplay {
+		t.Fatalf("top-level client capabilities were not retained: %#v", state)
+	}
+}
+
 func TestDeviceGatewayQueueIsBounded(t *testing.T) {
 	gateway := NewDeviceGateway(nil)
 	for index := 0; index < deviceGatewayMaxQueuedMessages+25; index++ {
@@ -257,9 +417,10 @@ func TestDeviceGatewayTokenSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestDeviceGatewayHandshakeOmitsPetAssetUnlessAnimationSupported(t *testing.T) {
+func TestDeviceGatewayHandshakePublishesPetAssetByReference(t *testing.T) {
 	gateway := NewDeviceGateway(nil)
-	asset := &DevicePetAsset{Encoding: "rgb565le", Width: 32, Height: 32, Data: "asset-data"}
+	rawFrame := bytes.Repeat([]byte{0x12, 0x34}, 32*32)
+	asset := &DevicePetAsset{Encoding: "rgb565le", Width: 32, Height: 32, Data: base64.StdEncoding.EncodeToString(rawFrame), Frames: []string{base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x56, 0x78}, 32*32))}}
 	if err := gateway.registerPairingWithPetProfileAsset("gui-a", "tenant-a", "user-a", "654322", "mini-claw", true, asset); err != nil {
 		t.Fatal(err)
 	}
@@ -280,14 +441,53 @@ func TestDeviceGatewayHandshakeOmitsPetAssetUnlessAnimationSupported(t *testing.
 	}
 
 	assetRenderer := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{
-		"clientId": "pet-asset", "capabilities": map[string]any{"features": map[string]any{"petAnimation": true}},
+		"clientId": "pet-asset", "capabilities": map[string]any{"features": map[string]any{"petAsset": true, "petAnimation": true}},
 	})
 	var assetBody struct {
-		Pet devicePetProfile `json:"pet"`
+		Pet      devicePetProfile        `json:"pet"`
+		PetAsset devicePetAssetReference `json:"petAsset"`
 	}
 	_ = json.NewDecoder(assetRenderer.Body).Decode(&assetBody)
-	if assetBody.Pet.Asset == nil || assetBody.Pet.Asset.Data != "asset-data" {
-		t.Fatalf("animation renderer did not receive asset=%#v", assetBody.Pet)
+	if assetBody.Pet.Asset != nil || len(assetBody.PetAsset.URLs) != 2 || assetBody.PetAsset.Revision == "" {
+		t.Fatalf("animation renderer received unexpected profile=%#v reference=%#v", assetBody.Pet, assetBody.PetAsset)
+	}
+	for index, rawURL := range assetBody.PetAsset.URLs {
+		media := deviceGatewayRequest(t, gateway, http.MethodGet, mustDeviceURLPath(t, rawURL), "", nil)
+		if media.Code != http.StatusOK {
+			t.Fatalf("frame %d status=%d body=%s", index, media.Code, media.Body.String())
+		}
+		if got := media.Body.Bytes(); len(got) != len(rawFrame) {
+			t.Fatalf("frame %d bytes=%d want=%d", index, len(got), len(rawFrame))
+		}
+	}
+}
+
+func TestDeviceGatewayPetProfileUpdateIncludesAssetForCapableHardware(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	frame := bytes.Repeat([]byte{0xAA, 0x55}, 32*32)
+	asset := &DevicePetAsset{Encoding: "rgb565le", Width: 32, Height: 32, Data: base64.StdEncoding.EncodeToString(frame)}
+	if err := gateway.registerPairingWithPetProfileAsset("gui-a", "tenant-a", "user-a", "654323", "clawmate", true, asset); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-update-asset", "code": "654323"})
+	var paired map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&paired)
+	token, _ := paired["gatewayToken"].(string)
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{
+		"clientId": "pet-update-asset", "capabilities": map[string]any{"features": map[string]any{"petAsset": true}},
+	})
+	gateway.updateMachinePetProfileAsset("gui-a", "mini-claw", true, asset)
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-update-asset&cursor=0", token, nil)
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&body)
+	if len(body.Messages) != 1 {
+		t.Fatalf("messages=%#v", body.Messages)
+	}
+	ref, ok := body.Messages[0]["pet_asset"].(map[string]any)
+	if !ok || ref["revision"] == "" {
+		t.Fatalf("pet asset reference missing: %#v", body.Messages[0])
 	}
 }
 
@@ -346,7 +546,7 @@ func TestDeviceGatewayNegotiatesAndForwardsClientCapabilities(t *testing.T) {
 	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
 	token, _ := pairBody["gatewayToken"].(string)
 
-	declared := agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+	declared := agent.ClientCapabilities{Input: agent.ClientInputCapabilities{Modalities: []string{"text"}}, Output: agent.ClientOutputCapabilities{
 		Modalities:   []string{"text", "image", "unsupported"},
 		Preferred:    []string{"image", "text"},
 		Combinations: [][]string{{"text", "image"}},
@@ -445,6 +645,37 @@ func TestDeviceGatewayEnqueueReplyPreservesHardwareFeatureMessages(t *testing.T)
 	}
 }
 
+func TestDeviceGatewayAudioUsesMediaURLWhenInlineLimitIsExceeded(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	gateway.mu.Lock()
+	state := gateway.clientLocked("pet-audio-url")
+	state.capabilities = agent.NormalizeClientCapabilities(&agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"audio"},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"inline", "url"}, MaxInlineBytes: 4, MaxDownloadBytes: 1024,
+		},
+	}})
+	gateway.mu.Unlock()
+	wav := []byte("0123456789")
+	gateway.EnqueueReply("pet-audio-url", "default", map[string]any{
+		"type": "audio", "mime_type": "audio/wav", "file_data": base64.StdEncoding.EncodeToString(wav),
+	})
+	gateway.mu.Lock()
+	messages := append([]map[string]any(nil), gateway.clients["pet-audio-url"].messages...)
+	gateway.mu.Unlock()
+	if len(messages) != 1 || messages[0]["file_data"] != nil || messages[0]["url"] == "" || messages[0]["sizeBytes"] != int64(len(wav)) {
+		t.Fatalf("URL audio message=%#v", messages)
+	}
+	url, _ := messages[0]["url"].(string)
+	request := httptest.NewRequest(http.MethodGet, url, nil)
+	response := httptest.NewRecorder()
+	gateway.handleMedia(response, request)
+	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), wav) {
+		t.Fatalf("media download status=%d body=%q", response.Code, response.Body.Bytes())
+	}
+}
+
 func TestDeviceGatewayRelaysAmbientWeatherToPairedHardware(t *testing.T) {
 	gateway := NewDeviceGateway(nil)
 	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "112233"); err != nil {
@@ -515,11 +746,15 @@ func TestDeviceGatewayPetProfileUpdateWakesPairedHardware(t *testing.T) {
 func TestDeviceGatewayPetProfileUpdatePersistsAndDeduplicates(t *testing.T) {
 	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
 	gateway := NewPersistentDeviceGateway(nil, store)
-	for _, code := range []string{"123451", "123452"} {
+	// Two physical devices (distinct clientIds) pair under the same user:
+	// each must keep its own token. Pairing the same clientId twice would
+	// intentionally revoke the first credential instead.
+	for i, code := range []string{"123451", "123452"} {
 		if err := gateway.RegisterPairingWithPetProfile("gui-a", "tenant-a", "user-a", code, "clawmate", true); err != nil {
 			t.Fatalf("register pairing %s: %v", code, err)
 		}
-		pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-a", "code": code})
+		clientID := []string{"pet-a", "pet-b"}[i]
+		pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "code": code})
 		if pair.Code != http.StatusCreated {
 			t.Fatalf("pair %s status=%d body=%s", code, pair.Code, pair.Body.String())
 		}
@@ -545,6 +780,286 @@ func TestDeviceGatewayPetProfileUpdatePersistsAndDeduplicates(t *testing.T) {
 	gateway.UpdateMachinePetProfile("gui-a", "mini-claw", false)
 	if len(state.messages) != 1 {
 		t.Fatalf("identical profile update queued %d messages, want 1", len(state.messages))
+	}
+}
+
+func TestDeviceGatewayWelcomePlaysOncePerBootAndPersists(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445566"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-welcome", "code": "445566"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	if pair.Code != http.StatusCreated || token == "" {
+		t.Fatalf("pair status=%d body=%#v", pair.Code, pairBody)
+	}
+	if err := gateway.UpdateMachineWelcome("gui-a", true, base64.StdEncoding.EncodeToString([]byte("wav")), true); err != nil {
+		t.Fatal(err)
+	}
+	capabilities := map[string]any{"output": map[string]any{"modalities": []string{"audio"}, "audio": map[string]any{"mimeTypes": []string{"audio/wav"}, "playback": true}}}
+	first := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-welcome", "bootSessionId": "boot-a", "capabilities": capabilities})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first handshake status=%d body=%s", first.Code, first.Body.String())
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-welcome&cursor=0", token, nil)
+	var polled struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&polled)
+	if len(polled.Messages) != 1 || polled.Messages[0]["type"] != "audio" || polled.Messages[0]["bootSessionId"] != "boot-a" {
+		t.Fatalf("first boot messages=%#v", polled.Messages)
+	}
+	// A capability refresh is a normal handshake, not a new boot.
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-welcome", "bootSessionId": "boot-a", "capabilities": capabilities})
+	poll = deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-welcome&cursor=1", token, nil)
+	_ = json.NewDecoder(poll.Body).Decode(&polled)
+	if len(polled.Messages) != 0 {
+		t.Fatalf("same boot queued another welcome: %#v", polled.Messages)
+	}
+	// A Hub restart retains both the sound and the last boot ID.
+	restarted := NewPersistentDeviceGateway(nil, store)
+	_ = deviceGatewayRequest(t, restarted, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-welcome", "bootSessionId": "boot-a", "capabilities": capabilities})
+	poll = deviceGatewayRequest(t, restarted, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-welcome&cursor=0", token, nil)
+	_ = json.NewDecoder(poll.Body).Decode(&polled)
+	if len(polled.Messages) != 0 {
+		t.Fatalf("restart replayed same boot welcome: %#v", polled.Messages)
+	}
+	_ = deviceGatewayRequest(t, restarted, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-welcome", "bootSessionId": "boot-b", "capabilities": capabilities})
+	poll = deviceGatewayRequest(t, restarted, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-welcome&cursor=0", token, nil)
+	_ = json.NewDecoder(poll.Body).Decode(&polled)
+	if len(polled.Messages) != 1 || polled.Messages[0]["type"] != "audio" || polled.Messages[0]["bootSessionId"] != "boot-b" {
+		t.Fatalf("new boot messages=%#v", polled.Messages)
+	}
+}
+
+func TestDeviceGatewayWelcomeCanClearPersistedAudio(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.UpdateMachineWelcome("gui-a", true, base64.StdEncoding.EncodeToString([]byte("wav")), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineWelcome("gui-a", true, "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := NewPersistentDeviceGateway(nil, store)
+	config, ok := restarted.hardware["gui-a"]
+	if !ok || !config.WelcomeEnabled || config.WelcomeAudio != "" {
+		t.Fatalf("persisted welcome config = %#v, want enabled with cleared audio", config)
+	}
+}
+
+func TestDeviceGatewayRepairingRevokesPreviousCredentialAndQueue(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445569"); err != nil {
+		t.Fatal(err)
+	}
+	first := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "repaired-pet", "code": "445569"})
+	var firstBody map[string]any
+	_ = json.NewDecoder(first.Body).Decode(&firstBody)
+	firstToken, _ := firstBody["gatewayToken"].(string)
+	if first.Code != http.StatusCreated || firstToken == "" {
+		t.Fatalf("first pair status=%d body=%#v", first.Code, firstBody)
+	}
+	gateway.EnqueueReply("repaired-pet", "system", map[string]any{"type": "text", "text": "stale"})
+	if err := gateway.RegisterPairing("gui-b", "tenant-b", "user-b", "445570"); err != nil {
+		t.Fatal(err)
+	}
+	second := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "repaired-pet", "code": "445570"})
+	var secondBody map[string]any
+	_ = json.NewDecoder(second.Body).Decode(&secondBody)
+	secondToken, _ := secondBody["gatewayToken"].(string)
+	if second.Code != http.StatusCreated || secondToken == "" || secondToken == firstToken {
+		t.Fatalf("second pair status=%d body=%#v", second.Code, secondBody)
+	}
+
+	oldHandshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", firstToken, map[string]any{"clientId": "repaired-pet"})
+	if oldHandshake.Code != http.StatusUnauthorized {
+		t.Fatalf("old token handshake status=%d body=%s", oldHandshake.Code, oldHandshake.Body.String())
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=repaired-pet&cursor=0", secondToken, nil)
+	var outgoing struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if poll.Code != http.StatusOK || len(outgoing.Messages) != 0 {
+		t.Fatalf("new device inherited stale queue status=%d messages=%#v", poll.Code, outgoing.Messages)
+	}
+
+	restarted := NewPersistentDeviceGateway(nil, store)
+	if len(restarted.tokens) != 1 {
+		t.Fatalf("persisted token count=%d, want exactly one replacement credential", len(restarted.tokens))
+	}
+}
+
+func TestDeviceGatewayMachineHardwareReplyHonorsCapabilities(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445567"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-volume", "code": "445567"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-volume", "capabilities": map[string]any{"features": map[string]any{"volumeControl": true}}})
+	gateway.EnqueueMachineReply("gui-a", "system", map[string]any{"reply_type": "hardware_config", "extra": map[string]any{"volume": 35}})
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-volume&cursor=0", token, nil)
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&body)
+	if len(body.Messages) != 1 || body.Messages[0]["type"] != "hardware_config" {
+		t.Fatalf("hardware reply=%#v", body.Messages)
+	}
+	gateway.EnqueueMachineReply("gui-a", "system", map[string]any{"reply_type": "hardware_config", "extra": map[string]any{"volume": 101}})
+	poll = deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-volume&cursor=1", token, nil)
+	_ = json.NewDecoder(poll.Body).Decode(&body)
+	if len(body.Messages) != 0 {
+		t.Fatalf("out-of-range volume was queued: %#v", body.Messages)
+	}
+}
+
+func TestDeviceGatewayVolumePersistsAndSyncsOnHandshake(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445568"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineVolume("gui-a", 0); err != nil {
+		t.Fatalf("UpdateMachineVolume(mute): %v", err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-volume-persist", "code": "445568"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	capabilities := map[string]any{"features": map[string]any{"volumeControl": true}}
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-volume-persist", "capabilities": capabilities})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("handshake status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-volume-persist&cursor=0", token, nil)
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&body)
+	if len(body.Messages) != 1 || body.Messages[0]["type"] != "hardware_config" {
+		t.Fatalf("persisted volume message=%#v", body.Messages)
+	}
+	extra, _ := body.Messages[0]["extra"].(map[string]any)
+	if extra["volume"] != float64(0) {
+		t.Fatalf("persisted volume=%#v, want mute", extra)
+	}
+
+	restarted := NewPersistentDeviceGateway(nil, store)
+	handshake = deviceGatewayRequest(t, restarted, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-volume-persist", "capabilities": capabilities})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("restart handshake status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+	poll = deviceGatewayRequest(t, restarted, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=pet-volume-persist&cursor=0", token, nil)
+	_ = json.NewDecoder(poll.Body).Decode(&body)
+	if len(body.Messages) != 1 {
+		t.Fatalf("restart volume message=%#v", body.Messages)
+	}
+	extra, _ = body.Messages[0]["extra"].(map[string]any)
+	if extra["volume"] != float64(0) {
+		t.Fatalf("restart persisted volume=%#v, want mute", extra)
+	}
+}
+
+func TestDeviceGatewayHandshakeDoesNotDuplicatePendingVolume(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445571"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineVolume("gui-a", 55); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "volume-repeat", "code": "445571"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	capabilities := map[string]any{"features": map[string]any{"volumeControl": true}}
+	for range 3 {
+		handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "volume-repeat", "capabilities": capabilities})
+		if handshake.Code != http.StatusOK {
+			t.Fatalf("handshake status=%d body=%s", handshake.Code, handshake.Body.String())
+		}
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=volume-repeat&cursor=0", token, nil)
+	var outgoing struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 1 {
+		t.Fatalf("duplicate persisted volume messages=%#v", outgoing.Messages)
+	}
+	extra, _ := outgoing.Messages[0]["extra"].(map[string]any)
+	if extra["volume"] != float64(55) {
+		t.Fatalf("coalesced volume=%#v, want 55", extra)
+	}
+}
+
+func TestDeviceGatewayPendingVolumeKeepsLatestValue(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445572"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "volume-latest", "code": "445572"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	capabilities := map[string]any{"features": map[string]any{"volumeControl": true}}
+	for _, volume := range []int{22, 78, 41} {
+		if err := gateway.UpdateMachineVolume("gui-a", volume); err != nil {
+			t.Fatal(err)
+		}
+		handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "volume-latest", "capabilities": capabilities})
+		if handshake.Code != http.StatusOK {
+			t.Fatalf("handshake status=%d", handshake.Code)
+		}
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=volume-latest&cursor=0", token, nil)
+	var outgoing struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 1 {
+		t.Fatalf("pending volume messages=%#v", outgoing.Messages)
+	}
+	extra, _ := outgoing.Messages[0]["extra"].(map[string]any)
+	if extra["volume"] != float64(41) {
+		t.Fatalf("latest volume=%#v, want 41", extra)
+	}
+}
+
+func TestDeviceGatewayBroadcastVolumeKeepsLatestValue(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445573"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "volume-broadcast", "code": "445573"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "volume-broadcast", "capabilities": map[string]any{"features": map[string]any{"volumeControl": true}}})
+	for _, volume := range []int{22, 78, 41} {
+		gateway.EnqueueMachineReply("gui-a", "system", map[string]any{"reply_type": "hardware_config", "extra": map[string]any{"volume": volume}})
+	}
+	poll := deviceGatewayRequest(t, gateway, http.MethodGet, "/api/im-gateway/v1/outgoing?clientId=volume-broadcast&cursor=0", token, nil)
+	var outgoing struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.NewDecoder(poll.Body).Decode(&outgoing)
+	if len(outgoing.Messages) != 1 {
+		t.Fatalf("broadcast volume messages=%#v", outgoing.Messages)
+	}
+	extra, _ := outgoing.Messages[0]["extra"].(map[string]any)
+	if extra["volume"] != float64(41) {
+		t.Fatalf("broadcast latest volume=%#v, want 41", extra)
 	}
 }
 
@@ -629,4 +1144,74 @@ func mustDeviceURLPath(t *testing.T, raw string) string {
 		t.Fatal(err)
 	}
 	return req.URL.RequestURI()
+}
+
+func TestDeviceGatewayPairCodeFromTranscript(t *testing.T) {
+	cases := map[string]string{
+		"645432":                       "645432",
+		"请配对 六 四 五 四 三 二":              "645432",
+		"零幺两三四五":                       "012345",
+		"six four five four three two": "645432",
+	}
+	for input, want := range cases {
+		got, ok := deviceGatewayPairCodeFromTranscript(input)
+		if !ok || got != want {
+			t.Errorf("deviceGatewayPairCodeFromTranscript(%q) = %q, %v; want %q, true", input, got, ok, want)
+		}
+	}
+	if _, ok := deviceGatewayPairCodeFromTranscript("六码 64 54 32 七"); ok {
+		t.Fatal("accepted transcript containing seven digits")
+	}
+}
+
+func TestDeviceGatewayVoicePairConsumesCodeAndIssuesToken(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "645432"); err != nil {
+		t.Fatal(err)
+	}
+	gateway.SetVoicePairTranscriber(func(_ context.Context, path, contentType string) (string, error) {
+		if contentType != "audio/wav" {
+			t.Fatalf("contentType=%q", contentType)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || len(data) != 44 {
+			t.Fatalf("temporary WAV len=%d err=%v", len(data), err)
+		}
+		return "六 四 五 四 三 二", nil
+	})
+	wav := make([]byte, 44)
+	req := httptest.NewRequest(http.MethodPost, "/api/device-gateway/v1/pair/voice", bytes.NewReader(wav))
+	req.Header.Set("X-MaClaw-Client-ID", "pet-voice")
+	rec := httptest.NewRecorder()
+	gateway.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated || !bytes.Contains(rec.Body.Bytes(), []byte("gatewayToken")) {
+		t.Fatalf("voice pair status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/device-gateway/v1/pair/voice", bytes.NewReader(wav))
+	req.Header.Set("X-MaClaw-Client-ID", "pet-voice")
+	rec = httptest.NewRecorder()
+	gateway.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("voice pairing code reused: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeviceGatewayVoicePairRateLimitIsPerClientAndAddress(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	base := time.Date(2026, 8, 4, 13, 0, 0, 0, time.UTC)
+	key := "203.0.113.8\x00pet-a"
+	for i := 0; i < deviceVoicePairAttemptLimit; i++ {
+		if !gateway.allowVoicePairAttempt(key, base) {
+			t.Fatalf("attempt %d unexpectedly denied", i+1)
+		}
+	}
+	if gateway.allowVoicePairAttempt(key, base) {
+		t.Fatal("attempt above limit was allowed")
+	}
+	if !gateway.allowVoicePairAttempt("203.0.113.8\x00pet-b", base) {
+		t.Fatal("different client ID shared rate limit")
+	}
+	if !gateway.allowVoicePairAttempt(key, base.Add(deviceVoicePairAttemptWindow)) {
+		t.Fatal("rate limit did not reset after window")
+	}
 }

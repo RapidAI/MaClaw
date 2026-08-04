@@ -7,6 +7,7 @@ const QueryIMAuditMessagesMock = vi.fn();
 const GetIMAuditUsersMock = vi.fn();
 const ExportIMAuditCSVMock = vi.fn();
 const DeleteIMAuditMessagesBeforeMock = vi.fn();
+const RevealIMAuditAttachmentMock = vi.fn();
 const showConfirmMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -15,6 +16,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetIMAuditUsers: (...args: unknown[]) => GetIMAuditUsersMock(...args),
     OpenFileOrShowInFolder: vi.fn(),
     QueryIMAuditMessages: (...args: unknown[]) => QueryIMAuditMessagesMock(...args),
+    RevealIMAuditAttachment: (...args: unknown[]) => RevealIMAuditAttachmentMock(...args),
 }));
 
 vi.mock('../../../hooks/useSafeBackdropDismiss', () => ({
@@ -58,6 +60,42 @@ describe('IMAuditPanel', () => {
         expect(screen.getByText('注意安全').tagName).toBe('STRONG');
         expect(QueryIMAuditMessagesMock).toHaveBeenCalledTimes(1);
     });
+
+    it('renders a persisted file in chat history and reveals its containing folder', async () => {
+        QueryIMAuditMessagesMock.mockResolvedValue({
+            messages: [{
+                id: 21, timestamp: '2026-08-04T12:00:00Z', user_id: 'group-1:user-1', platform: 'lansenger',
+                role: 'user', content: '[file attachment]', attachment_path: 'D:\\data\\im_audit_attachments\\report.pdf',
+                attachment_name: 'report.pdf', attachment_size: 1536,
+            }], total: 1, page: 1, page_size: 50,
+        });
+        render(<IMAuditPanel platform="lansenger" lang="en" onClose={vi.fn()} />);
+        const button = await screen.findByRole('button', { name: /report\.pdf/i });
+        fireEvent.click(button);
+        expect(RevealIMAuditAttachmentMock).toHaveBeenCalledWith('D:\\data\\im_audit_attachments\\report.pdf');
+        expect(screen.getByText(/1\.5 KB/)).toBeTruthy();
+    });
+
+    it('shows a useful error when a saved file can no longer be revealed', async () => {
+        RevealIMAuditAttachmentMock.mockRejectedValueOnce(new Error('missing'));
+        QueryIMAuditMessagesMock.mockResolvedValue({
+            messages: [{ id: 22, timestamp: '2026-08-04T12:00:00Z', user_id: 'group-1:user-1', platform: 'lansenger', role: 'user', content: '', attachment_path: 'D:\\missing.pdf', attachment_name: 'missing.pdf', attachment_size: 10 }],
+            total: 1, page: 1, page_size: 50,
+        });
+        render(<IMAuditPanel platform="lansenger" lang="en" onClose={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: /missing\.pdf/i }));
+        expect(await screen.findByText(/may have moved or been deleted/i)).toBeTruthy();
+    });
+
+	it('does not present an unknown rejected-file size as zero bytes', async () => {
+		QueryIMAuditMessagesMock.mockResolvedValue({
+			messages: [{ id: 23, timestamp: '2026-08-04T12:00:00Z', user_id: 'group-1:user-1', platform: 'lansenger', role: 'user', content: '', attachment_name: 'oversized.zip', attachment_size: 0 }],
+			total: 1, page: 1, page_size: 50,
+		});
+		render(<IMAuditPanel platform="lansenger" lang="en" onClose={vi.fn()} />);
+		expect(await screen.findByText('Not saved locally')).toBeTruthy();
+		expect(screen.queryByText('0 B')).toBeNull();
+	});
 
     it('keeps markup supplied in an audit message inert', async () => {
         QueryIMAuditMessagesMock.mockResolvedValue({
@@ -349,7 +387,7 @@ describe('IMAuditPanel', () => {
         rerender(<IMAuditPanel platform="telegram" lang="en" onClose={vi.fn()} />);
         resolveDelete?.(7);
 
-        await waitFor(() => expect(screen.getByText('Telegram Message Watch')).toBeTruthy());
+        await waitFor(() => expect(screen.getByText('Telegram Chat History')).toBeTruthy());
         expect(screen.queryByText('Deleted 7 records')).toBeNull();
         expect(screen.getByRole('button', { name: 'Cleanup' }).hasAttribute('disabled')).toBe(false);
     });

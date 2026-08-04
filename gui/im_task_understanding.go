@@ -22,7 +22,8 @@ import (
 // the agent loop input, giving the LLM a clearer directive.
 //
 // Token budget: ~400 input + ~200 output. Timeout: 30s per attempt.
-// On failure: falls back to raw-text summary (current behavior).
+// On failure: the IM confirmation gate falls through to the normal agent path
+// instead of presenting a card that merely echoes the raw request.
 // ---------------------------------------------------------------------------
 
 // taskUnderstandingResult holds the LLM-generated structured understanding.
@@ -79,8 +80,8 @@ const taskUnderstandingSimplifiedPrompt = `理解用户任务，输出 JSON：
 只输出 JSON。`
 
 // understandTaskWithLLM calls the LLM to generate a structured understanding
-// of the user's task request. Returns nil on any failure (caller should
-// fall back to raw-text summary).
+// of the user's task request. Returns nil on any failure so the caller can
+// skip a no-op confirmation and continue through the normal agent path.
 //
 // On first failure (timeout, parse error, etc.), retries once with a
 // simplified prompt. Total worst-case latency is capped at ~35s to avoid
@@ -179,9 +180,11 @@ func parseTaskUnderstandingResponse(raw string) (*taskUnderstandingResult, error
 		return nil, fmt.Errorf("JSON parse: %w", err)
 	}
 
-	// Validate: at minimum we need a summary or enhanced_instruction.
-	if strings.TrimSpace(result.Summary) == "" && strings.TrimSpace(result.EnhancedInstruction) == "" {
-		return nil, fmt.Errorf("both summary and enhanced_instruction are empty")
+	// A structured plan, goal, or constraint is also useful task
+	// understanding. The confirmation gate subsequently decides whether it
+	// adds enough information beyond the original request to show a card.
+	if !hasDisplayableTaskUnderstanding(&result) {
+		return nil, fmt.Errorf("task understanding contains no usable content")
 	}
 
 	return &result, nil
@@ -200,8 +203,8 @@ func formatTaskUnderstandingSummary(r *taskUnderstandingResult, projectPath stri
 	if r.TaskType != "" {
 		fmt.Fprintf(&b, "任务类型：%s\n", r.TaskType)
 	}
-	if r.Summary != "" {
-		fmt.Fprintf(&b, "任务理解：%s\n", r.Summary)
+	if summary := firstNonEmptyTaskUnderstandingText(r.Summary, r.EnhancedInstruction); summary != "" {
+		fmt.Fprintf(&b, "任务理解：%s\n", summary)
 	}
 
 	// Goals
@@ -234,6 +237,26 @@ func formatTaskUnderstandingSummary(r *taskUnderstandingResult, projectPath stri
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+func hasDisplayableTaskUnderstanding(r *taskUnderstandingResult) bool {
+	if r == nil {
+		return false
+	}
+	// A category alone (for example, "code repair") is not a reviewable task
+	// understanding. It must be accompanied by a summary, rewritten directive,
+	// goal, constraint, or plan.
+	return firstNonEmptyTaskUnderstandingText(r.Summary, r.EnhancedInstruction) != "" ||
+		len(r.Goals) > 0 || len(r.Constraints) > 0 || len(r.ExecutionPlan) > 0
+}
+
+func firstNonEmptyTaskUnderstandingText(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // formatEnhancedInstruction builds the enhanced instruction text that

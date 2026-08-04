@@ -41,6 +41,13 @@ type expertPackageSkill struct {
 	Archive string `json:"archive"`
 }
 
+// expertPackageDependencyPlan is the fully preflighted set of skills that an
+// import needs. Its archives are unpacked and parsed once before the guarded
+// importer runs.
+type expertPackageDependencyPlan struct {
+	Skills []expertPackageSkill
+}
+
 type expertPackageManifest struct {
 	Format          string               `json:"format"`
 	Version         int                  `json:"version"`
@@ -180,17 +187,22 @@ func (a *App) importExpertPackageFromFile(packagePath string, localOnly bool) (*
 	// no-op. A user can remove a dependency after a previous import; importing
 	// the exact same package again must then repair that missing dependency.
 	// This also keeps genuinely repeated imports fast and side-effect free.
-	existingSkills := make(map[string]bool)
+	existingSkillEntries := make(map[string]corelib.NLSkillEntry)
 	if a.skillExecutor != nil {
 		for _, entry := range a.skillExecutor.loadSkills() {
-			existingSkills[entry.Name] = true
+			existingSkillEntries[entry.Name] = entry
 		}
 	}
+	dependencyPlan, err := a.expertPackageDependencyPlan(manifest.Expert.Skills, existingSkillEntries, manifest.Skills, archives)
+	if err != nil {
+		return nil, err
+	}
+	selectedSkills := dependencyPlan.Skills
 	var existingExpert *ExpertDefinition
 	if existing, ok, err := defaultExpertStore.Get(manifest.ExpertPackageID); err != nil {
 		return nil, err
 	} else if ok {
-		if expertPackageDefinitionsEqual(existing, manifest.Expert) && expertPackageDependenciesInstalled(existingSkills, manifest.Expert.Skills) {
+		if expertPackageDefinitionsEqual(existing, manifest.Expert) && len(selectedSkills) == 0 {
 			if localOnly {
 				if err := defaultExpertStore.MarkMarketInstall(existing.ID); err != nil {
 					return nil, err
@@ -206,22 +218,18 @@ func (a *App) importExpertPackageFromFile(packagePath string, localOnly bool) (*
 	// as the standalone skill importer. A re-import whose bundled skills are
 	// already available only writes the expert definition, so it does not need
 	// the unrelated skill-management capability.
-	if expertPackageHasMissingSkills(existingSkills, manifest.Skills) {
+	if expertPackageHasMissingSkills(existingSkillEntries, selectedSkills) {
 		if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "import", "source": "expert_package"}); err != nil {
 			return nil, err
 		}
 	}
 
-	if a.skillExecutor == nil && len(manifest.Skills) > 0 {
+	if a.skillExecutor == nil && len(selectedSkills) > 0 {
 		return nil, fmt.Errorf("skill executor is not initialized")
 	}
-	if err := validateExpertPackageNestedArchives(manifest.Skills, archives); err != nil {
-		return nil, err
-	}
-
 	result := &ExpertPackageImportResult{}
-	for _, item := range manifest.Skills {
-		if existingSkills[item.Name] {
+	for _, item := range selectedSkills {
+		if _, installed := existingSkillEntries[item.Name]; installed {
 			result.SkippedSkills = append(result.SkippedSkills, item.Name)
 			continue
 		}
@@ -229,10 +237,9 @@ func (a *App) importExpertPackageFromFile(packagePath string, localOnly bool) (*
 		if !ok {
 			return nil, fmt.Errorf("package is missing skill archive %q", item.Archive)
 		}
-		if err := a.validateExpertPackageSkillArchive(archive, item.Name); err != nil {
-			a.cleanupImportedExpertPackageSkills(result.InstalledSkills)
-			return nil, err
-		}
+		// dependencyPlan has already validated that this archive declares this
+		// exact skill and safely inspected its Pipeline dependencies. The
+		// guarded importer below remains the sole state-mutating operation.
 		tmpPath, err := writeExpertPackageSkillTemp(a.GetTempDir(), archive)
 		if err != nil {
 			a.cleanupImportedExpertPackageSkills(result.InstalledSkills)
@@ -250,15 +257,9 @@ func (a *App) importExpertPackageFromFile(packagePath string, localOnly bool) (*
 			a.cleanupImportedExpertPackageSkills(result.InstalledSkills)
 			return nil, fmt.Errorf("skill archive %q declares %q, expected %q", item.Archive, importedName, item.Name)
 		}
-		existingSkills[item.Name] = true
+		existingSkillEntries[item.Name] = corelib.NLSkillEntry{Name: item.Name}
 	}
 
-	for _, name := range manifest.Expert.Skills {
-		if !existingSkills[name] {
-			a.cleanupImportedExpertPackageSkills(result.InstalledSkills)
-			return nil, fmt.Errorf("expert requires skill %q, but it was not included or installed", name)
-		}
-	}
 	def := manifest.Expert
 	if existingExpert != nil {
 		// SaveExpert preserves the original created_at for a matching id. Keep a
@@ -315,41 +316,49 @@ func (a *App) importExpertPackageFromFile(packagePath string, localOnly bool) (*
 // multiple skills or a skill whose declared name does not match the package
 // manifest. This prevents a crafted expert bundle from installing unrelated
 // skills through the general multi-skill ZIP importer.
-func (a *App) validateExpertPackageSkillArchive(archive []byte, expectedName string) error {
+func (a *App) readExpertPackageSkillArchive(archive []byte, expectedName string) (corelib.NLSkillEntry, error) {
 	if a == nil {
-		return fmt.Errorf("app is unavailable")
+		return corelib.NLSkillEntry{}, fmt.Errorf("app is unavailable")
 	}
 	tmpPath, err := writeExpertPackageSkillTemp(a.GetTempDir(), archive)
 	if err != nil {
-		return fmt.Errorf("write temporary skill package: %w", err)
+		return corelib.NLSkillEntry{}, fmt.Errorf("write temporary skill package: %w", err)
 	}
 	defer os.Remove(tmpPath)
 	tmpDir, err := os.MkdirTemp(a.GetTempDir(), "expert-skill-validate-*")
 	if err != nil {
-		return fmt.Errorf("create temporary skill directory: %w", err)
+		return corelib.NLSkillEntry{}, fmt.Errorf("create temporary skill directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 	if err := a.unzip(tmpPath, tmpDir); err != nil {
-		return fmt.Errorf("unpack dependent skill %q: %w", expectedName, err)
+		return corelib.NLSkillEntry{}, fmt.Errorf("unpack dependent skill %q: %w", expectedName, err)
 	}
 	roots, err := resolveImportedSkillPackageRoots(tmpDir)
 	if err != nil {
-		return fmt.Errorf("validate dependent skill %q: %w", expectedName, err)
+		return corelib.NLSkillEntry{}, fmt.Errorf("validate dependent skill %q: %w", expectedName, err)
 	}
 	if len(roots) != 1 {
-		return fmt.Errorf("dependent skill archive %q must contain exactly one skill", expectedName)
+		return corelib.NLSkillEntry{}, fmt.Errorf("dependent skill archive %q must contain exactly one skill", expectedName)
 	}
 	entry, err := loadImportedSkillEntry(roots[0])
 	if err != nil {
-		return fmt.Errorf("read dependent skill %q: %w", expectedName, err)
+		return corelib.NLSkillEntry{}, fmt.Errorf("read dependent skill %q: %w", expectedName, err)
 	}
 	if entry.Name != expectedName {
-		return fmt.Errorf("dependent skill archive declares %q, expected %q", entry.Name, expectedName)
+		return corelib.NLSkillEntry{}, fmt.Errorf("dependent skill archive declares %q, expected %q", entry.Name, expectedName)
 	}
 	// Keep the package preflight in parity with the guarded importer: syntax
 	// validation alone is insufficient because security policy can reject a
 	// skill during installation after earlier dependencies were already added.
-	return nil
+	return *entry, nil
+}
+
+// validateExpertPackageSkillArchive is retained for callers that only need
+// validation. Dependency resolution uses readExpertPackageSkillArchive so it
+// can follow a bundled Pipeline skill's declared children before installing it.
+func (a *App) validateExpertPackageSkillArchive(archive []byte, expectedName string) error {
+	_, err := a.readExpertPackageSkillArchive(archive, expectedName)
+	return err
 }
 
 func writeExpertPackageSkillTemp(dir string, archive []byte) (string, error) {
@@ -442,13 +451,93 @@ func expertPackageDependenciesInstalled(installed map[string]bool, required []st
 	return true
 }
 
-func expertPackageHasMissingSkills(installed map[string]bool, bundled []expertPackageSkill) bool {
+func expertPackageHasMissingSkills(installed map[string]corelib.NLSkillEntry, bundled []expertPackageSkill) bool {
 	for _, item := range bundled {
-		if !installed[item.Name] {
+		if _, ok := installed[item.Name]; !ok {
 			return true
 		}
 	}
 	return false
+}
+
+// expertPackageRequiredSkills derives the exact dependency closure required to
+// run an imported expert. A valid exporter bundles that same closure, but an
+// externally crafted archive may contain extra skills. Those extras are never
+// installed: they are neither an expert dependency nor a child of one.
+func (a *App) expertPackageRequiredSkills(roots []string, installed map[string]corelib.NLSkillEntry, bundled []expertPackageSkill, archives map[string][]byte) ([]expertPackageSkill, error) {
+	plan, err := a.expertPackageDependencyPlan(roots, installed, bundled, archives)
+	if err != nil {
+		return nil, err
+	}
+	return plan.Skills, nil
+}
+
+func (a *App) expertPackageDependencyPlan(roots []string, installed map[string]corelib.NLSkillEntry, bundled []expertPackageSkill, archives map[string][]byte) (expertPackageDependencyPlan, error) {
+	plan := expertPackageDependencyPlan{}
+	byName := make(map[string]expertPackageSkill, len(bundled))
+	for _, item := range bundled {
+		byName[item.Name] = item
+	}
+	queued := append([]string(nil), roots...)
+	seen := make(map[string]bool)
+	plan.Skills = make([]expertPackageSkill, 0, len(roots))
+	// Resolve a nested archive's declared size before unpacking it to inspect
+	// its Pipeline. Without this incremental preflight, a crafted chain of
+	// individually valid archives could be expanded into temporary storage
+	// before validateExpertPackageNestedArchives gets a chance to enforce the
+	// package-wide expansion ceiling.
+	checkedArchives := make(map[string]bool)
+	var expandedTotal uint64
+	for len(queued) > 0 {
+		name := strings.TrimSpace(queued[0])
+		queued = queued[1:]
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		// The package itself is capped at maxExpertPackageSkills, but its roots
+		// can point at already-installed Pipeline skills. Bound that full graph
+		// as well so a malformed local chain cannot make an otherwise small
+		// package import walk an unbounded number of nodes.
+		if len(seen) > maxExpertPackageSkills {
+			return expertPackageDependencyPlan{}, fmt.Errorf("expert has too many dependent skills (maximum %d)", maxExpertPackageSkills)
+		}
+		entry, installedLocally := installed[name]
+		if !installedLocally {
+			item, bundledHere := byName[name]
+			if !bundledHere {
+				return expertPackageDependencyPlan{}, fmt.Errorf("expert requires skill %q, but it was not included or installed", name)
+			}
+			archive, ok := archives[item.Archive]
+			if !ok {
+				return expertPackageDependencyPlan{}, fmt.Errorf("package is missing skill archive %q", item.Archive)
+			}
+			if !checkedArchives[item.Archive] {
+				expanded, err := expertPackageNestedArchiveExpandedSize(archive)
+				if err != nil {
+					return expertPackageDependencyPlan{}, fmt.Errorf("validate dependent skill archive %q: %w", item.Archive, err)
+				}
+				if expanded > maxExpertPackageNestedExpandedBytes-expandedTotal {
+					return expertPackageDependencyPlan{}, fmt.Errorf("expert package dependent skills expand to too much data: maximum %d bytes", maxExpertPackageNestedExpandedBytes)
+				}
+				expandedTotal += expanded
+				checkedArchives[item.Archive] = true
+			}
+			var err error
+			entry, err = a.readExpertPackageSkillArchive(archive, name)
+			if err != nil {
+				return expertPackageDependencyPlan{}, err
+			}
+			plan.Skills = append(plan.Skills, item)
+		}
+		for _, step := range entry.Pipeline {
+			if child := strings.TrimSpace(step.Skill); child != "" && !seen[child] {
+				queued = append(queued, child)
+			}
+		}
+	}
+	sort.Slice(plan.Skills, func(i, j int) bool { return plan.Skills[i].Name < plan.Skills[j].Name })
+	return plan, nil
 }
 
 // expertPackageIdentity is deterministic from the original local expert id.

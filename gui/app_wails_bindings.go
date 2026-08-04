@@ -3191,7 +3191,36 @@ func (a *App) ensureIMAuditStore() {
 			log.Printf("[im-audit] failed to open store: %v", err)
 			return
 		}
+		store.cleanupWG.Add(1)
 		a.imAuditStore = store
+		go func() {
+			defer store.cleanupWG.Done()
+			timer := time.NewTimer(2 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-store.closing:
+				return
+			}
+			select {
+			case <-store.closing:
+				return
+			default:
+			}
+			n, paths, deleteErr := store.DeleteBeforeWithAttachmentPaths(imAuditRetentionDays)
+			if deleteErr != nil {
+				log.Printf("[im-audit] auto cleanup: %v", deleteErr)
+			} else if n > 0 {
+				log.Printf("[im-audit] auto cleanup: removed %d records", n)
+			}
+			a.cleanupIMAuditAttachmentPaths(paths)
+			select {
+			case <-store.closing:
+				return
+			default:
+			}
+			a.cleanupOrphanIMAuditAttachments(store)
+		}()
 	})
 }
 
@@ -3216,7 +3245,12 @@ func (a *App) DeleteIMAuditMessagesBefore(days int) (int64, error) {
 	if store == nil {
 		return 0, nil
 	}
-	return store.DeleteBefore(days)
+	deleted, paths, err := store.DeleteBeforeWithAttachmentPaths(days)
+	if err != nil {
+		return 0, err
+	}
+	a.cleanupIMAuditAttachmentPaths(paths)
+	return deleted, nil
 }
 
 // ExportIMAuditCSV exports matching IM audit messages to CSV and returns the file path (Wails binding).

@@ -1228,6 +1228,17 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 			return
 		}
 	}
+	// Voice-first platforms (ESP32 pets): the device firmware ends the current
+	// command when a text message arrives, so the voice reply must reach the
+	// device before the text or it is dropped as an unrelated message.
+	if shouldSendVoiceBeforeText(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
+		a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
+		// Mark voice as handled even when the send failed: the deferred retry
+		// above would run after the text, when the device has already ended
+		// the command and would discard the audio — and a future ack-based
+		// send would risk playing it twice.
+		voiceDelivered = true
+	}
 
 	// If the response contains an image, send it first via SendImage.
 	if resp.ImageKey != "" && caps.SupportsImage {
@@ -1339,6 +1350,20 @@ func shouldSendVoiceAsPrimary(platform string) bool {
 	}
 }
 
+// shouldSendVoiceBeforeText reports whether the voice reply must be delivered
+// before the text instead of after it (the default deferred order). Third-party
+// hardware pets terminate the current command on text arrival; voice sent after
+// text would never be played. Unlike shouldSendVoiceAsPrimary, the text reply
+// is still sent.
+func shouldSendVoiceBeforeText(platform string) bool {
+	switch platform {
+	case "thirdparty":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Adapter) sendVoiceResponse(ctx context.Context, plugin IMPlugin, target UserTarget, resp *GenericResponse) bool {
 	return a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, effectiveCapabilitiesForTarget(ctx, plugin, target))
 }
@@ -1383,7 +1408,22 @@ func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, ta
 			return
 		}
 	}
-	defer a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
+	// Voice-first platforms: see shouldSendVoiceBeforeText. The deferred
+	// sender below would otherwise deliver voice after the text, which ESP32
+	// firmware discards.
+	voiceDelivered := false
+	if shouldSendVoiceBeforeText(plugin.Name()) && resp.VoiceData != "" && resp.VoiceFileName != "" {
+		a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
+		// Same rationale as sendResponse: a failed first attempt must not be
+		// retried by the deferred sender after the text, so mark the voice as
+		// handled regardless of the send result.
+		voiceDelivered = true
+	}
+	defer func() {
+		if !voiceDelivered {
+			a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
+		}
+	}()
 
 	out := resp.ToOutgoingMessage()
 

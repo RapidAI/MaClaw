@@ -67,9 +67,13 @@ describe('ExpertEditorDialog', () => {
         const generateButton = screen.getByTestId('expert-generate-button') as HTMLButtonElement;
         expect(generateButton.disabled).toBe(true);
 
-        fireEvent.change(screen.getByTestId('expert-idea-input'), { target: { value: '论文翻译' } });
+        const ideaInput = screen.getByTestId('expert-idea-input') as HTMLTextAreaElement;
+        expect(ideaInput.tagName).toBe('TEXTAREA');
+        expect(ideaInput.getAttribute('rows')).toBe('4');
+
+        fireEvent.change(ideaInput, { target: { value: '论文翻译' } });
         expect(generateButton.disabled).toBe(false);
-        fireEvent.click(generateButton);
+        fireEvent.keyDown(ideaInput, { key: 'Enter', ctrlKey: true });
 
         await waitFor(() => expect(spies.GenerateExpertProfile).toHaveBeenCalledWith('论文翻译'));
         await waitFor(() => expect((screen.getByTestId('expert-name-input') as HTMLInputElement).value).toBe('翻译专家'));
@@ -77,6 +81,7 @@ describe('ExpertEditorDialog', () => {
         expect((screen.getByTestId('expert-desc-input') as HTMLTextAreaElement).value).toBe('中英互译');
         expect(screen.getByTestId('expert-desc-input').tagName).toBe('TEXTAREA');
         expect(screen.getByTestId('expert-desc-input').getAttribute('rows')).toBe('3');
+        expect(screen.getByText('Ctrl / ⌘ + Enter 生成')).toBeTruthy();
         expect((screen.getByTestId('expert-prompt-input') as HTMLTextAreaElement).value).toBe('你是翻译专家');
 
         // Suggestions show as summary chips (friendly labels); whitelist is NOT auto-applied.
@@ -97,6 +102,28 @@ describe('ExpertEditorDialog', () => {
         const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
         expect(payload.tools).toEqual([]);
         expect(payload.skills).toEqual([]);
+    });
+
+    it('keeps Ctrl+Enter available to an active IME composition', async () => {
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        const ideaInput = screen.getByTestId('expert-idea-input');
+        fireEvent.change(ideaInput, { target: { value: '论文翻译' } });
+        fireEvent.keyDown(ideaInput, { key: 'Enter', ctrlKey: true, isComposing: true });
+        expect(spies.GenerateExpertProfile).not.toHaveBeenCalled();
+    });
+
+    it('starts only one AI generation when shortcut and click arrive in the same render', async () => {
+        let resolveGenerate: ((value: string) => void) | undefined;
+        spies.GenerateExpertProfile.mockImplementation(() => new Promise<string>((resolve) => { resolveGenerate = resolve; }));
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        const ideaInput = screen.getByTestId('expert-idea-input');
+        fireEvent.change(ideaInput, { target: { value: '论文翻译' } });
+        fireEvent.keyDown(ideaInput, { key: 'Enter', ctrlKey: true });
+        fireEvent.click(screen.getByTestId('expert-generate-button'));
+
+        await waitFor(() => expect(spies.GenerateExpertProfile).toHaveBeenCalledTimes(1));
+        resolveGenerate?.('{}');
+        await waitFor(() => expect((screen.getByTestId('expert-generate-button') as HTMLButtonElement).disabled).toBe(false));
     });
 
     it('shows a retryable error when generation fails', async () => {
@@ -127,6 +154,20 @@ describe('ExpertEditorDialog', () => {
         expect(payload.skills).toEqual([]);
         await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
         expect(onSaved.mock.calls[0][0].id).toBe('new-id-1');
+    });
+
+    it('starts only one save when duplicate clicks arrive in the same render', async () => {
+        let resolveSave: ((value: string) => void) | undefined;
+        spies.SaveExpert.mockImplementation(() => new Promise<string>((resolve) => { resolveSave = resolve; }));
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '新专家' } });
+        const saveButton = screen.getByTestId('expert-save-button');
+        fireEvent.click(saveButton);
+        fireEvent.click(saveButton);
+
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+        resolveSave?.('{}');
+        await waitFor(() => expect((screen.getByTestId('expert-save-button') as HTMLButtonElement).disabled).toBe(false));
     });
 
     it('keeps meaningful line breaks while trimming only surrounding description whitespace', async () => {
@@ -253,6 +294,50 @@ describe('ExpertEditorDialog', () => {
         await waitFor(() => expect((screen.getByTestId('expert-generate-button') as HTMLButtonElement).disabled).toBe(false));
     });
 
+    it('ignores a late AI generation result after the editor unmounts', async () => {
+        let resolveGenerate: ((value: string) => void) | undefined;
+        spies.GenerateExpertProfile.mockImplementation(() => new Promise<string>((resolve) => { resolveGenerate = resolve; }));
+        const { unmount } = render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        fireEvent.change(screen.getByTestId('expert-idea-input'), { target: { value: '论文翻译' } });
+        fireEvent.click(screen.getByTestId('expert-generate-button'));
+        await waitFor(() => expect(spies.GenerateExpertProfile).toHaveBeenCalledTimes(1));
+
+        unmount();
+        resolveGenerate?.(JSON.stringify({ name: '不应写入已关闭的编辑器' }));
+        await Promise.resolve();
+    });
+
+    it('keeps manual edits when an earlier AI generation finishes late', async () => {
+        let resolveGenerate: ((value: string) => void) | undefined;
+        spies.GenerateExpertProfile.mockImplementation(() => new Promise<string>((resolve) => { resolveGenerate = resolve; }));
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        fireEvent.change(screen.getByTestId('expert-idea-input'), { target: { value: '论文翻译' } });
+        fireEvent.click(screen.getByTestId('expert-generate-button'));
+        await waitFor(() => expect(spies.GenerateExpertProfile).toHaveBeenCalledTimes(1));
+
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '手动专家' } });
+        resolveGenerate?.(JSON.stringify({ name: '迟到的 AI 专家', system_prompt: '不应覆盖' }));
+
+        await waitFor(() => expect((screen.getByTestId('expert-name-input') as HTMLInputElement).value).toBe('手动专家'));
+        expect((screen.getByTestId('expert-prompt-input') as HTMLTextAreaElement).value).toBe('');
+        expect((screen.getByTestId('expert-generate-button') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('ignores a late save completion after the editor unmounts', async () => {
+        let resolveSave: ((value: string) => void) | undefined;
+        const onSaved = vi.fn();
+        spies.SaveExpert.mockImplementation(() => new Promise<string>((resolve) => { resolveSave = resolve; }));
+        const { unmount } = render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={onSaved} />);
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '新专家' } });
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+
+        unmount();
+        resolveSave?.(JSON.stringify({ id: 'late-expert', name: '新专家' }));
+        await Promise.resolve();
+        expect(onSaved).not.toHaveBeenCalled();
+    });
+
     it('defaults to full capability tier and applies docs tier allow-list on save', async () => {
         spies.SaveExpert.mockImplementation(async (json: string) => json);
         render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
@@ -344,7 +429,7 @@ describe('ExpertEditorDialog', () => {
 
         expect((screen.getByTestId('expert-name-input') as HTMLInputElement).value).toBe('办公助手');
         expect((screen.getByTestId('expert-icon-input') as HTMLInputElement).value).toBe('📊');
-        expect((screen.getByTestId('expert-idea-input') as HTMLInputElement).value).toContain('办公');
+        expect((screen.getByTestId('expert-idea-input') as HTMLTextAreaElement).value).toContain('办公');
         expect(screen.getByTestId('expert-tier-office').getAttribute('aria-checked')).toBe('true');
         await waitFor(() => expect(screen.getByTestId('expert-default-access').textContent).toMatch(/已限制/));
 

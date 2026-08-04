@@ -92,6 +92,8 @@ func appendFileDeliveryChannelRules(b *strings.Builder, platform string) {
 ## 文件发送（当前为 IM 通道）
 - 当前对话就是微信/飞书/QQ 通道本身。
 - 用户说「发微信」时直接 send_file；工具结果写「已发到当前 IM 通道」即成功。
+- 若用户明确说“另一个群/指定群/指定用户”，不要发回当前对话：先用 im_message(action="list_targets", channel=..., query=群名) 消歧，再调用 send_to_im(path=..., channel=..., group_id=... 或 user_id=...)。
+- 指定目标必须使用结构化 channel/group_id/group_name/user_id；禁止把群名拼进文件名、caption 或自由文本来猜路由。
 - 禁止说「发送器未配置 / 需要客户端登录 / 无法发到微信」；不要让用户手动转发，也不要对同一文件再调 send_to_im。
 `)
 		return
@@ -100,6 +102,8 @@ func appendFileDeliveryChannelRules(b *strings.Builder, platform string) {
 ## 文件发到微信/飞书（桌面端）
 - send_file：默认只在当前桌面对话展示，不会到微信。
 - send_to_im：专用「发到 IM」工具，调用即转发到微信/飞书等。用户说「发到微信」「放到飞书」时必须用 send_to_im，不要用 send_file。
+- 发送到指定群/用户时，先用 im_message(action="list_targets", channel=..., query=群名) 取得唯一 ID，再调用 send_to_im(path=..., channel=..., group_id=... 或 user_id=...)。如果用户已给出明确 ID，可直接发送。
+- 目标有歧义或不存在时应向用户说明并列出候选；不得广播、不得悄悄改发最近会话。
 - 不要只在回复文字里写「已发到微信」却未调用 send_to_im；若工具结果提示未转发，立刻用 send_to_im 重试。
 `)
 }

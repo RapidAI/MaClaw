@@ -66,7 +66,7 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
     const isZh = !lang?.startsWith("en");
     const dark = t.bg.startsWith("#0") || t.bg.startsWith("#1") || t.bg.startsWith("#2");
     const safeIndex = Math.max(0, Math.min(selectedIndex, matches.length - 1));
-    const activeBg = dark ? "rgba(148, 163, 184, 0.16)" : "rgba(47, 95, 152, 0.10)";
+    const activeBg = dark ? "rgba(148, 163, 184, 0.16)" : "rgba(47, 111, 188, 0.10)";
 
     const baseItemStyle: CSSProperties = {
         width: "100%",

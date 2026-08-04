@@ -9,6 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/doctor"
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 // RunDoctor evaluates local readiness using the shared corelib/doctor report.
@@ -188,6 +189,17 @@ func (a *App) RunDoctor() doctor.Report {
 			msg += fmt.Sprintf("; tool_compress saved=%dB spills=%d",
 				st.ToolCompressSavedBytes, st.ToolCompressSpills)
 		}
+	}
+	if st.InputBreakdown.Requests > 0 {
+		detail["input_breakdown"] = st.InputBreakdown
+	}
+	detail["tool_result_store"] = toolresult.RefreshStoreStats("")
+	detail["context_checkpoint_mode"] = st.ContextCheckpointMode
+	if st.ContextCheckpoints.Attempted > 0 {
+		detail["context_checkpoints"] = st.ContextCheckpoints
+		msg += fmt.Sprintf("; context_checkpoint applied=%d/%d saved~%d tokens fallbacks=%d",
+			st.ContextCheckpoints.Applied, st.ContextCheckpoints.Attempted,
+			st.ContextCheckpoints.SavedTokens, st.ContextCheckpoints.Fallbacks)
 	}
 	if st.CostSessionLine != "" || st.CostDailyLine != "" || st.CostFleetLine != "" || st.CostRouteLine != "" {
 		detail["cost_session_usd"] = st.CostSessionUSD

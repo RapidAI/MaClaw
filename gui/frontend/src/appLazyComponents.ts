@@ -17,6 +17,7 @@ export const ProgrammingToolsSettingsPanel = lazy(() => import('./components/set
 // GeneralSettingsPanel / GeneralAdvancedSettingsPanel are eager in SettingsActiveContent
 // so the default settings tab never suspends (OEM intermittent blank fix).
 export const SystemSettingsPanel = lazy(() => import('./components/settings/SystemSettingsPanel').then((module) => ({ default: module.SystemSettingsPanel })));
+export const AssetManagementPanel = lazy(() => import('./components/settings/AssetManagementPanel').then((module) => ({ default: module.AssetManagementPanel })));
 export const MigrationSettingsPanel = lazy(() => import('./components/settings/MigrationSettingsPanel').then((module) => ({ default: module.MigrationSettingsPanel })));
 export const ProxySettingsPanel = lazy(() => import('./components/settings/ProxySettingsPanel').then((module) => ({ default: module.ProxySettingsPanel })));
 export const LLMCacheSettingsPanel = lazy(() => import('./components/settings/LLMCacheSettingsPanel').then((module) => ({ default: module.LLMCacheSettingsPanel })));

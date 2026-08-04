@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -48,6 +49,11 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	}
 	beforeProfileFilter := len(tools)
 	tools = filterToolsForExecutionProfile(tools, profile)
+	if isIMManagementRequest(userText) {
+		// Explicit delivery intent stays authoritative after light-profile
+		// filtering; otherwise send_to_im/list_targets can disappear here.
+		tools = ensureIMManagementToolsRouted(tools, allTools, userText)
+	}
 	if profile.IsLight() || isLightPromptProfile(profile.PromptProfile) {
 		tool.WriteToolExposureLog("execution_profile", userText, requestID, userID, profile.Layer, profile.TaskType, beforeProfileFilter, agentLoopToolNamesForLog(tools))
 		log.Printf("[exec-profile] layer=%s prompt=%s task=%s request_id=%q user=%q confidence=%.2f reason=%q tool_budget=%d iteration_budget=%d routed_before=%d routed_after=%d tools=%q",
@@ -97,6 +103,15 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		}
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
+	// Large tool previews carry a lossless [tool_result_handle]. Keep its
+	// companion reader available through light, skill, workflow and recovery
+	// filters whenever the host policy permits it. This adds no user-facing step;
+	// the model calls it only when omitted details are actually needed.
+	readerOwnerID := userID
+	if strings.TrimSpace(policyOwnerID) != "" {
+		readerOwnerID = policyOwnerID
+	}
+	tools = h.ensureToolResultReader(readerOwnerID, tools, allTools)
 
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
 	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)
@@ -118,6 +133,27 @@ func containsAgentLoopToolNamed(tools []map[string]interface{}, name string) boo
 		}
 	}
 	return false
+}
+
+func (h *IMMessageHandler) ensureToolResultReader(userID string, tools, allTools []map[string]interface{}) []map[string]interface{} {
+	const name = "read_tool_result"
+	if h == nil || len(tools) == 0 || containsAgentLoopToolNamed(tools, name) || expertDefForUserID(userID) != nil {
+		return tools
+	}
+	if !h.isWorkflowToolAllowedForOwner(userID, name) {
+		return tools
+	}
+	for _, def := range allTools {
+		if tool.ExtractToolName(def) == name {
+			return append(tools, def)
+		}
+	}
+	if h.registry != nil {
+		if registered, ok := h.registry.Get(name); ok && registered != nil {
+			return append(tools, registeredToolToDef(*registered))
+		}
+	}
+	return tools
 }
 
 // ensureLansengerGroupMemoryRecallTool keeps the group-scoped memory recall

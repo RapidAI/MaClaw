@@ -593,10 +593,13 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 			t.Fatalf("table header %s must expose column scope", header)
 		}
 	}
-	for _, id := range []string{"login-email", "reg-email", "current-password", "credits-amount", "apikey-skill-id", "apikey-bulk"} {
+	for _, id := range []string{"login-email", "reg-email", "current-password", "redeem-code", "credits-amount", "apikey-skill-id", "apikey-bulk"} {
 		if !strings.Contains(user, `for="`+id+`"`) {
 			t.Fatalf("missing form label for %s", id)
 		}
+	}
+	if !strings.Contains(user, `const csvCell = value =>`) || !strings.Contains(user, `const safeText = /^[=+\-@]/.test(text.trimStart())`) {
+		t.Fatal("transaction CSV export must protect spreadsheet formula cells")
 	}
 
 	gossip := read(t, "gossip", "index.html")

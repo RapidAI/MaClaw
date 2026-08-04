@@ -31,15 +31,25 @@ import (
 	"golang.org/x/text/transform"
 )
 
+const (
+	publicNetworkTextMaxBytes     = 2 * 1024 * 1024
+	publicNetworkDownloadMaxBytes = 25 * 1024 * 1024
+	publicNetworkTimeoutSeconds   = 60
+)
+
 // FetchOptions configures the Fetch operation.
 type FetchOptions struct {
-	MaxBytes int64             // max response body size (default 2MB text / 100MB save_path; hard caps apply)
-	RenderJS bool              // attempt headless Chrome rendering
-	SavePath string            // if set, save raw content to this file path instead of returning text
-	TimeoutS int               // timeout in seconds (default 30, max 600)
-	Offset   int               // rune offset for continued reading
-	MaxChars int               // max characters to return in Content (0 = full content)
-	Headers  map[string]string // extra request headers (e.g. Cookie, Referer); applied after defaults
+	MaxBytes                   int64             // max response body size (default 2MB text / 100MB save_path; hard caps apply)
+	RenderJS                   bool              // attempt headless Chrome rendering
+	SavePath                   string            // if set, save raw content to this file path instead of returning text
+	SaveRoot                   string            // optional root that SavePath must remain under after resolving existing symlinks
+	TimeoutS                   int               // timeout in seconds (default 30, max 600)
+	Offset                     int               // rune offset for continued reading
+	MaxChars                   int               // max characters to return in Content (0 = full content)
+	Headers                    map[string]string // extra request headers (e.g. Cookie, Referer); applied after defaults
+	DisableCookies             bool              // do not send or retain the shared HTTP cookie jar
+	DisableBrowserAuthFallback bool              // do not escalate anti-bot failures through the managed browser session
+	PublicNetworkOnly          bool              // only use direct public HTTP(S) targets; blocks private IPs and redirect SSRF
 }
 
 // FetchResult contains the fetched content.
@@ -124,6 +134,37 @@ func FetchWithClientCtx(parent context.Context, rawURL string, opts *FetchOption
 	if opts.MaxChars < 0 {
 		opts.MaxChars = 0
 	}
+	if opts.PublicNetworkOnly {
+		publicURL, err := validatePublicHTTPURL(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		rawURL = publicURL.String()
+		// Public mode makes an authenticated/rendered request contractually
+		// impossible even if a caller accidentally supplies those options.
+		opts.DisableCookies = true
+		opts.DisableBrowserAuthFallback = true
+		opts.RenderJS = false
+		// The public-network contract is stronger than a schema filter: callers
+		// must not be able to smuggle credentials through FetchOptions directly.
+		opts.Headers = nil
+		if strings.TrimSpace(opts.SavePath) != "" {
+			if opts.MaxBytes > publicNetworkDownloadMaxBytes {
+				opts.MaxBytes = publicNetworkDownloadMaxBytes
+			}
+		} else if opts.MaxBytes > publicNetworkTextMaxBytes {
+			opts.MaxBytes = publicNetworkTextMaxBytes
+		}
+		if opts.TimeoutS > publicNetworkTimeoutSeconds {
+			opts.TimeoutS = publicNetworkTimeoutSeconds
+		}
+		if strings.TrimSpace(opts.SavePath) != "" && strings.TrimSpace(opts.SaveRoot) != "" {
+			if err := validateSavePathInsideRoot(opts.SavePath, opts.SaveRoot); err != nil {
+				return nil, err
+			}
+		}
+		client = newPublicHTTPClient(time.Duration(opts.TimeoutS) * time.Second)
+	}
 
 	// Dispatch by scheme
 	if strings.HasPrefix(rawURL, "ftps://") {
@@ -155,6 +196,67 @@ func FetchWithClientCtx(parent context.Context, rawURL string, opts *FetchOption
 	}
 
 	return fetchHTTPWithClientCtx(parent, rawURL, opts, client)
+}
+
+// validateSavePathInsideRoot rejects save paths that escape root through an
+// existing symlink or junction. Group downloads accept an LLM-provided path,
+// so lexical containment alone is not sufficient when a workbench contains a
+// link to another local directory.
+func validateSavePathInsideRoot(savePath, root string) error {
+	root = filepath.Clean(strings.TrimSpace(root))
+	savePath = filepath.Clean(strings.TrimSpace(savePath))
+	if root == "" || savePath == "" {
+		return fmt.Errorf("public download path and root are required")
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("prepare public download root: %w", err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve public download root: %w", err)
+	}
+	if info, err := os.Lstat(savePath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("public download save_path must not be a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect public download save_path: %w", err)
+	}
+
+	ancestor := filepath.Dir(savePath)
+	for {
+		if _, err := os.Lstat(ancestor); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect public download directory: %w", err)
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return fmt.Errorf("public download save_path has no existing parent")
+		}
+		ancestor = parent
+	}
+	realAncestor, err := filepath.EvalSymlinks(ancestor)
+	if err != nil {
+		return fmt.Errorf("resolve public download directory: %w", err)
+	}
+	if !pathIsContained(realAncestor, realRoot) {
+		return fmt.Errorf("public download save_path escapes its working directory")
+	}
+	return nil
+}
+
+func pathIsContained(path, root string) bool {
+	path = filepath.Clean(path)
+	root = filepath.Clean(root)
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+		root = strings.ToLower(root)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, "../"))
 }
 
 func fetchHTTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {

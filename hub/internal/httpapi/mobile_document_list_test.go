@@ -143,6 +143,45 @@ func TestMobileDocumentDraftsListHandler(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentDraftsListReportsOriginalAndStoredSizes(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "mobile-drafts-compressed-size@example.com")
+	clearMobileStateForTest(t)
+	now := time.Now().UTC()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["compressed-size-draft"] = mobileDocumentDraftRecord{
+		ID: "compressed-size-draft", OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Title: "legacy", Markdown: mobileDocumentUnsupportedPreviewText, UpdatedAt: now,
+		SourceFilename: "legacy.doc", SourcePath: "offline/blob.bin", SourceSize: 123,
+		SourceEncoding: "gzip", SourceOriginalSize: 4096,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/drafts", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	MobileDocumentDraftsListHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Drafts []map[string]any `json:"drafts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range body.Drafts {
+		if item["id"] != "compressed-size-draft" {
+			continue
+		}
+		if item["source_size"] != float64(4096) || item["source_storage_size"] != float64(123) {
+			t.Fatalf("sizes=%#v", item)
+		}
+		return
+	}
+	t.Fatal("compressed draft missing from list")
+}
+
 func TestMobileDocumentDraftsListLabelsGeneratedMeetingResultsWithParentRecording(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "mobile-drafts-meeting-parent@example.com")

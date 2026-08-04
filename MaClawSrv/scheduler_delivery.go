@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"strconv"
@@ -17,9 +18,8 @@ import (
 )
 
 var (
-	srvDeliveryStateMu    sync.Mutex
-	srvDeliveryStateStore *scheduler.DeliveryStateStore
-	srvDeliveryStateRoot  string
+	srvDeliveryStateMu     sync.Mutex
+	srvDeliveryStateStores = map[string]*scheduler.DeliveryStateStore{}
 
 	// Optional live WeChat proactive sender (registered from HTTPServer / weixin runtime).
 	srvWeixinProactiveMu     sync.RWMutex
@@ -76,7 +76,7 @@ func deliverScheduledTaskResult(svc *agentservice.Service, principal agentservic
 		return err
 	}
 
-	store := srvDeliveryState(svc)
+	store := srvDeliveryStateForPrincipal(svc, principal)
 	body = scheduler.TruncateDeliveryBody(body)
 	_, err = scheduler.FanOutDeliveryTargets(d.Targets, func(i int, target scheduler.DeliveryTarget) error {
 		peer, sendErr := send(ctx, target, body)
@@ -110,28 +110,124 @@ func deliverScheduledTaskResult(svc *agentservice.Service, principal agentservic
 }
 
 func srvDeliveryState(svc *agentservice.Service) *scheduler.DeliveryStateStore {
+	return srvDeliveryStateForPrincipal(svc, agentservice.Principal{TenantID: "system", UserID: "scheduler"})
+}
+
+func srvDeliveryStateForPrincipal(svc *agentservice.Service, principal agentservice.Principal) *scheduler.DeliveryStateStore {
 	root := ""
 	if svc != nil {
-		root = strings.TrimSpace(svc.DataRoot())
+		root = strings.TrimSpace(svc.UserDataRoot(principal))
 	}
 	if root == "" {
 		return nil
 	}
 	srvDeliveryStateMu.Lock()
 	defer srvDeliveryStateMu.Unlock()
-	if srvDeliveryStateStore == nil || srvDeliveryStateRoot != root {
-		srvDeliveryStateRoot = root
-		srvDeliveryStateStore = scheduler.NewDeliveryStateStore(root)
+	store := srvDeliveryStateStores[root]
+	if store == nil {
+		store = scheduler.NewDeliveryStateStore(root)
+		srvDeliveryStateStores[root] = store
 	}
-	return srvDeliveryStateStore
+	return store
 }
 
 // channelSendFunc sends one target and returns the concrete peer id for memory.
 type channelSendFunc func(ctx context.Context, target scheduler.DeliveryTarget, text string) (peer string, err error)
 
+// deliveryStateForChannelSender is separate from gateway construction so the
+// principal boundary can be verified without live network credentials.
+func deliveryStateForChannelSender(svc *agentservice.Service, principal agentservice.Principal) *scheduler.DeliveryStateStore {
+	return srvDeliveryStateForPrincipal(svc, principal)
+}
+
+// deliverSrvIMFileToTarget sends one file to exactly one resolved target. It
+// deliberately has no broadcast or active-channel fallback: an explicit target
+// must either receive the file or return an error to the Agent.
+func deliverSrvIMFileToTarget(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, channel string, target scheduler.DeliveryTarget, data []byte, fileName, mimeType, caption string) error {
+	if len(data) == 0 {
+		return fmt.Errorf("file payload is empty")
+	}
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		fileName = "file"
+	}
+	channel = scheduler.DefaultDeliveryChannel(channel)
+	store := deliveryStateForChannelSender(svc, principal)
+	switch channel {
+	case scheduler.DeliveryChannelLansenger:
+		gw, err := newLansengerGatewayForPrincipal(svc, principal)
+		if err != nil {
+			return err
+		}
+		peer, isGroup, err := resolveSrvMediaPeer(store, channel, target, true)
+		if err != nil {
+			return err
+		}
+		return gw.SendMedia(ctx, lansenger.OutgoingMedia{ToUserID: peer, FileData: data, FileName: fileName, MediaType: "file", IsGroup: isGroup})
+	case scheduler.DeliveryChannelTelegram:
+		gw, err := newTelegramGatewayForPrincipal(svc, principal)
+		if err != nil {
+			return err
+		}
+		peer, _, err := resolveSrvMediaPeer(store, channel, target, false)
+		if err != nil {
+			return err
+		}
+		chatID, err := strconv.ParseInt(peer, 10, 64)
+		if err != nil {
+			return fmt.Errorf("telegram: chat_id must be numeric: %q", peer)
+		}
+		return gw.SendMedia(ctx, telegram.OutgoingMedia{ChatID: chatID, FileType: "document", FileData: base64.StdEncoding.EncodeToString(data), FileName: fileName, MimeType: mimeType, Caption: strings.TrimSpace(caption)})
+	case scheduler.DeliveryChannelQQ:
+		if target.Kind != "" && target.Kind != scheduler.DeliveryKindUser {
+			return fmt.Errorf("qq file delivery only supports kind=user")
+		}
+		gw, err := newQQGatewayForPrincipal(svc, principal)
+		if err != nil {
+			return err
+		}
+		peer, _, err := resolveSrvMediaPeer(store, channel, target, false)
+		if err != nil {
+			return err
+		}
+		return gw.SendMedia(ctx, qqbot.OutgoingMedia{OpenID: peer, FileType: 4, FileData: base64.StdEncoding.EncodeToString(data), FileName: fileName, MimeType: mimeType, Caption: strings.TrimSpace(caption)})
+	case scheduler.DeliveryChannelWeixin:
+		return fmt.Errorf("weixin exact file delivery is unavailable in MaClawSrv; use the active WeChat conversation")
+	default:
+		return fmt.Errorf("unsupported channel %q", channel)
+	}
+}
+
+func resolveSrvMediaPeer(store *scheduler.DeliveryStateStore, channel string, target scheduler.DeliveryTarget, allowGroup bool) (string, bool, error) {
+	isGroup := target.Kind == scheduler.DeliveryKindGroup || (strings.TrimSpace(target.GroupID) != "" && strings.TrimSpace(target.UserID) == "")
+	if isGroup && !allowGroup {
+		// Telegram uses one chat ID namespace for users and groups, so callers pass
+		// allowGroup=false only to skip platform-specific group restrictions.
+		isGroup = false
+	}
+	peer := strings.TrimSpace(target.UserID)
+	if strings.TrimSpace(target.GroupID) != "" {
+		peer = strings.TrimSpace(target.GroupID)
+		if allowGroup {
+			isGroup = true
+		}
+	}
+	if store != nil {
+		peer = store.ResolveSelfPeer(channel, peer)
+	}
+	if peer == "" || scheduler.IsSelfPeerID(peer) {
+		return "", false, fmt.Errorf("%s: exact target id is required; user_id=self is unresolved", channel)
+	}
+	return peer, isGroup, nil
+}
+
 func newChannelSender(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, channel string) (channelSendFunc, error) {
 	channel = scheduler.DefaultDeliveryChannel(channel)
-	store := srvDeliveryState(svc)
+	// Text sends are used by both scheduled jobs and interactive im_message
+	// calls. Keep remembered "self" peers scoped to the principal supplied by
+	// the caller; using the scheduler's shared store here can leak one user's
+	// recent peer into another user's request.
+	store := srvDeliveryStateForPrincipal(svc, principal)
 	switch channel {
 	case scheduler.DeliveryChannelLansenger:
 		gw, err := newLansengerGatewayForPrincipal(svc, principal)

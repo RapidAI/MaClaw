@@ -4,12 +4,14 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -202,6 +204,10 @@ type mobileDocumentDraftRecord struct {
 	SourcePath  string
 	SourceSize  int
 	SourceBytes []byte
+	// SourceEncoding is "gzip" when SourcePath/SourceBytes store a transparent
+	// single-file gzip envelope. Downloads always expose the original bytes.
+	SourceEncoding     string
+	SourceOriginalSize int
 	// Images: illustrations extracted from Office docs (DOCX media) for in-app preview.
 	Images []mobileDocumentDraftImage
 }
@@ -218,23 +224,25 @@ type mobileDocumentExportRecord struct {
 }
 
 type mobileDocumentUploadRecord struct {
-	TaskID      string
-	OwnerID     string
-	TenantID    string
-	Filename    string
-	ContentType string
-	Status      string
-	DraftID     string
-	Message     string
-	ClaimedBy   string
-	SourcePath  string
-	SourceSize  int
-	SourceBytes []byte
-	OCRMarkdown string
-	OCRMessage  string
-	OCRError    string
-	UploadedAt  time.Time
-	UpdatedAt   time.Time
+	TaskID             string
+	OwnerID            string
+	TenantID           string
+	Filename           string
+	ContentType        string
+	Status             string
+	DraftID            string
+	Message            string
+	ClaimedBy          string
+	SourcePath         string
+	SourceSize         int
+	SourceBytes        []byte
+	SourceEncoding     string
+	SourceOriginalSize int
+	OCRMarkdown        string
+	OCRMessage         string
+	OCRError           string
+	UploadedAt         time.Time
+	UpdatedAt          time.Time
 }
 
 type mobileDigitalEmployeeTaskRecord struct {
@@ -1932,7 +1940,8 @@ func mobileDocumentDraftPayloadWithMarkdown(record mobileDocumentDraftRecord, ma
 		payload["has_original"] = true
 		payload["source_filename"] = strings.TrimSpace(record.SourceFilename)
 		payload["source_content_type"] = strings.TrimSpace(record.SourceContentType)
-		payload["source_size"] = mobileDraftSourceSize(record)
+		payload["source_size"] = mobileDraftOriginalSize(record)
+		payload["source_storage_size"] = mobileDraftSourceSize(record)
 		payload["source_download_url"] = "/api/mobile/documents/drafts/" + record.ID + "/source"
 	} else {
 		payload["has_original"] = false
@@ -1943,29 +1952,39 @@ func mobileDocumentDraftPayloadWithMarkdown(record mobileDocumentDraftRecord, ma
 	return payload
 }
 
-// mobileAttachDraftOriginal stores the original file on a draft (disk + memory cache).
-func mobileAttachDraftOriginal(draft *mobileDocumentDraftRecord, filename, contentType string, raw []byte) {
-	if draft == nil || len(raw) == 0 {
-		return
+// mobileShareUploadOriginalWithDraft transfers ownership metadata for the
+// upload's immutable stored blob to a draft. It deliberately does not read,
+// decode, or rewrite the source: upload and draft may safely reference the
+// same path until terminal upload metadata is released.
+// Caller must hold mobileDocuments.Lock when the records are map-backed.
+func mobileShareUploadOriginalWithDraft(draft *mobileDocumentDraftRecord, upload mobileDocumentUploadRecord) bool {
+	if draft == nil || !mobileUploadHasSource(upload) {
+		return false
 	}
-	name := strings.TrimSpace(filepath.Base(filename))
-	if name == "" {
+	name := strings.TrimSpace(filepath.Base(upload.Filename))
+	if name == "" || name == "." {
 		name = "upload"
 	}
-	draft.SourceFilename = name
-	draft.SourceContentType = strings.TrimSpace(contentType)
-	if draft.SourceContentType == "" {
-		draft.SourceContentType = "application/octet-stream"
+	contentType := strings.TrimSpace(upload.ContentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
-	path, size, mem := mobilePersistDocumentOriginal(draft.OwnerID, "draft", draft.ID, raw)
-	draft.SourcePath = path
-	draft.SourceSize = size
-	draft.SourceBytes = mem
+	draft.SourceFilename = name
+	draft.SourceContentType = contentType
+	draft.SourcePath = upload.SourcePath
+	draft.SourceSize = mobileUploadSourceSize(upload)
+	draft.SourceBytes = upload.SourceBytes
+	draft.SourceEncoding = strings.ToLower(strings.TrimSpace(upload.SourceEncoding))
+	draft.SourceOriginalSize = mobileUploadOriginalSize(upload)
+	return true
 }
 
 // mobileDraftWorkingText returns text for AI/preview: prefer extracted/OCR markdown;
 // for text-like originals fall back to raw UTF-8; otherwise a short original-file notice.
 func mobileDraftWorkingText(draft mobileDocumentDraftRecord) string {
+	if strings.TrimSpace(draft.Markdown) == mobileDocumentUnsupportedPreviewText {
+		return ""
+	}
 	return mobileDraftDisplayMarkdown(draft)
 }
 
@@ -2454,16 +2473,18 @@ func mobileDocumentUploadPayloadTracked(record mobileDocumentUploadRecord) (map[
 		}
 	}
 	payload := map[string]any{
-		"task_id":      record.TaskID,
-		"filename":     record.Filename,
-		"content_type": record.ContentType,
-		"status":       record.Status,
-		"draft_id":     record.DraftID,
-		"message":      record.Message,
-		"claimed_by":   record.ClaimedBy,
-		"uploaded_at":  record.UploadedAt.Format(time.RFC3339),
-		"updated_at":   record.UpdatedAt.Format(time.RFC3339),
-		"owner_id":     record.OwnerID,
+		"task_id":             record.TaskID,
+		"filename":            record.Filename,
+		"content_type":        record.ContentType,
+		"status":              record.Status,
+		"draft_id":            record.DraftID,
+		"message":             record.Message,
+		"claimed_by":          record.ClaimedBy,
+		"uploaded_at":         record.UploadedAt.Format(time.RFC3339),
+		"updated_at":          record.UpdatedAt.Format(time.RFC3339),
+		"owner_id":            record.OwnerID,
+		"source_size":         mobileUploadOriginalSize(record),
+		"source_storage_size": mobileUploadSourceSize(record),
 	}
 	draftHasOriginal := false
 	if record.DraftID != "" {
@@ -2554,9 +2575,7 @@ func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time
 	draft.UpdatedAt = now
 	// Ensure original survives OCR promotion.
 	if !mobileDraftHasOriginal(draft) {
-		if src := mobileUploadLoadSourceBytes(&record); len(src) > 0 {
-			mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, src)
-		}
+		mobileShareUploadOriginalWithDraft(&draft, record)
 	}
 	mobileDocuments.drafts[draft.ID] = draft
 	record.Status = "ready"
@@ -4276,8 +4295,9 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 			}
 			markdown = "# " + title + "\n\n" + content + "\n"
 		}
-		// Free baseline limit; paid bootstrap may show higher but enforcement uses free unless we re-resolve grants (kept simple).
+		mobileDocumentQuotaAdmissionMu.Lock()
 		if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, int64(len(markdown))); err != nil {
+			mobileDocumentQuotaAdmissionMu.Unlock()
 			writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
 			return
 		}
@@ -4295,6 +4315,7 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 		mobileDocuments.Lock()
 		mobileDocuments.drafts[draftID] = record
 		mobileDocuments.Unlock()
+		mobileDocumentQuotaAdmissionMu.Unlock()
 		mobilePersistState()
 		go mobileIngestDocumentDraft(principal, record)
 
@@ -4351,17 +4372,20 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer identity missing")
 			return
 		}
-		// Pre-check ownership + delta quota outside mutation.
+		mobileDocumentQuotaAdmissionMu.Lock()
+		// Check ownership + delta while quota writers are serialized.
 		mobileDocuments.Lock()
 		prev, okPrev := mobileDocuments.drafts[draftID]
 		mobileDocuments.Unlock()
 		if !okPrev || prev.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, prev.TenantID) {
+			mobileDocumentQuotaAdmissionMu.Unlock()
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
 		delta := int64(len(markdown)) - int64(len(prev.Markdown))
 		if delta > 0 {
 			if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, delta); err != nil {
+				mobileDocumentQuotaAdmissionMu.Unlock()
 				writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
 				return
 			}
@@ -4376,6 +4400,7 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			mobileDocuments.drafts[draftID] = record
 		}
 		mobileDocuments.Unlock()
+		mobileDocumentQuotaAdmissionMu.Unlock()
 		if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
@@ -4543,17 +4568,19 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 			return
 		}
 
-		now := time.Now().UTC()
-		mobileDocuments.Lock()
-		record, ok = mobileDocuments.drafts[draftID]
-		if ok && record.OwnerID == ownerID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
-			record.Markdown = mobileProcessDocumentMarkdown(action, record.Markdown)
-			record.UpdatedAt = now
-			mobileDocuments.drafts[draftID] = record
-		}
-		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != ownerID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
+		record, err = mobileTransformDocumentDraftWithinQuota(r.Context(), principal, draftID, func(markdown string) string {
+			return mobileProcessDocumentMarkdown(action, markdown)
+		})
+		if err == errMobileDocumentDraftNotFound {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
+			return
+		}
+		if err == errMobileDocumentQuotaExceeded {
+			writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusConflict, "DRAFT_STATE_CHANGED", "draft changed while processing; retry")
 			return
 		}
 		mobilePersistState()
@@ -5034,7 +5061,62 @@ func mobileXMLEscape(text string) string {
 	return b.String()
 }
 
-const mobileDocumentUploadMaxBytes = 25 << 20
+// Upload admission is based on the stored representation. Compressible legacy
+// Office/text formats are gzip-wrapped first; already-compressed formats and
+// archives are kept verbatim.
+const mobileDocumentUploadMaxBytes = 100 << 20
+const mobileDocumentInlineParseMaxBytes = 32 << 20
+
+func mobileDocumentShouldCompress(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
+	switch ext {
+	case ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".pdf",
+		".zip", ".rar", ".7z", ".gz", ".gzip", ".bz2", ".xz", ".zst", ".lz", ".lz4", ".lzh", ".cab", ".arj", ".ace",
+		".tar", ".tgz", ".tbz", ".tbz2", ".txz", ".tzst", ".jar", ".war", ".ear", ".apk", ".aab", ".ipa", ".epub":
+		return false
+	default:
+		return true
+	}
+}
+
+func mobileDocumentLooksPrecompressed(filename string, head []byte) bool {
+	if !mobileDocumentShouldCompress(filename) {
+		return true
+	}
+	return bytes.HasPrefix(head, []byte{'P', 'K', 0x03, 0x04}) ||
+		bytes.HasPrefix(head, []byte{'P', 'K', 0x05, 0x06}) ||
+		bytes.HasPrefix(head, []byte{'P', 'K', 0x07, 0x08}) ||
+		bytes.HasPrefix(head, []byte{'R', 'a', 'r', '!', 0x1a, 0x07}) ||
+		bytes.HasPrefix(head, []byte{'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}) ||
+		bytes.HasPrefix(head, []byte{0x1f, 0x8b}) ||
+		bytes.HasPrefix(head, []byte{'B', 'Z', 'h'}) ||
+		bytes.HasPrefix(head, []byte{0xfd, '7', 'z', 'X', 'Z', 0x00}) ||
+		bytes.HasPrefix(head, []byte{0x28, 0xb5, 0x2f, 0xfd}) ||
+		bytes.HasPrefix(head, []byte{0x04, 0x22, 0x4d, 0x18})
+}
+
+func mobileDocumentPrepareStoredSource(filename string, raw []byte) (stored []byte, encoding string, err error) {
+	if len(raw) == 0 || !mobileDocumentShouldCompress(filename) {
+		return raw, "", nil
+	}
+	var out bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&out, gzip.BestSpeed)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := zw.Write(raw); err != nil {
+		_ = zw.Close()
+		return nil, "", err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, "", err
+	}
+	// Compression is a storage optimization, not an expansion tax.
+	if out.Len() >= len(raw) {
+		return raw, "", nil
+	}
+	return out.Bytes(), "gzip", nil
+}
 
 // Stale in_progress claims (worker crash / network drop) become claimable again.
 const mobileDocumentUploadClaimTimeout = 5 * time.Minute
@@ -5274,6 +5356,13 @@ func mobileDraftMarkdownFromImage(filename string, raw []byte) string {
 func mobileDraftOriginalOnlyMarkdown(filename string, raw []byte) string {
 	return mobileDraftOriginalOnlyMarkdownSize(filename, len(raw))
 }
+
+func mobileDraftUnsupportedPreviewMarkdown(filename string) string {
+	_ = filename
+	return mobileDocumentUnsupportedPreviewText
+}
+
+const mobileDocumentUnsupportedPreviewText = "不支持内容预览"
 
 func mobileDraftOriginalOnlyMarkdownSize(filename string, size int) string {
 	title := mobileUploadTitle(filename)
@@ -6031,9 +6120,13 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			return
 		}
 		mobileEnsureStateLoaded()
-		if err := r.ParseMultipartForm(mobileDocumentUploadMaxBytes); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, int64(mobileDocumentOriginalMaxBytes)+(1<<20))
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_MULTIPART", "file upload must be multipart/form-data")
 			return
+		}
+		if r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll()
 		}
 		file, header, err := r.FormFile("file")
 		if err != nil {
@@ -6050,45 +6143,101 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		if name == "" || name == "." || name == string(filepath.Separator) {
 			name = "upload"
 		}
-		body, err := io.ReadAll(io.LimitReader(file, mobileDocumentUploadMaxBytes+1))
+		now := time.Now().UTC()
+		taskID := fmt.Sprintf("mobparse_%d", now.UnixNano())
+		seekFile, ok := file.(io.ReadSeeker)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "UPLOAD_READ_FAILED", "uploaded file is not seekable")
+			return
+		}
+		var head [16]byte
+		headN, headErr := io.ReadFull(seekFile, head[:])
+		if headErr != nil && headErr != io.EOF && headErr != io.ErrUnexpectedEOF {
+			writeError(w, http.StatusBadRequest, "UPLOAD_READ_FAILED", "failed to inspect uploaded file")
+			return
+		}
+		if _, err := seekFile.Seek(0, io.SeekStart); err != nil {
+			writeError(w, http.StatusBadRequest, "UPLOAD_READ_FAILED", "failed to rewind uploaded file")
+			return
+		}
+		blobPath, blobSize, originalSize, sourceEncoding, blobMem, err := mobilePersistUploadedDocument(
+			principal.UserID, taskID, seekFile, !mobileDocumentLooksPrecompressed(name, head[:headN]),
+		)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "UPLOAD_READ_FAILED", "failed to read uploaded file")
+			if errors.Is(err, errMobileDocumentStoredTooLarge) || errors.Is(err, errMobileDocumentOriginalTooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "compressed file exceeds 100MB or original exceeds 400MB safety limit")
+			} else {
+				writeError(w, http.StatusBadRequest, "UPLOAD_STORE_FAILED", "failed to store uploaded file")
+			}
 			return
 		}
-		if len(body) > mobileDocumentUploadMaxBytes {
-			writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "file exceeds mobile upload limit")
-			return
-		}
-		if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, int64(len(body))); err != nil {
+		cleanupUploadBlob := true
+		defer func() {
+			if cleanupUploadBlob {
+				mobileDeleteDocumentBlob(blobPath)
+			}
+		}()
+		// Fast rejection before parsing. A definitive check runs atomically with
+		// insertion below so concurrent uploads cannot overbook the same quota.
+		if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, int64(blobSize)); err != nil {
 			writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
 			return
 		}
-		now := time.Now().UTC()
-		taskID := fmt.Sprintf("mobparse_%d", now.UnixNano())
-		blobPath, blobSize, blobMem := mobilePersistDocumentOriginal(principal.UserID, "upload", taskID, body)
 		record := mobileDocumentUploadRecord{
-			TaskID:      taskID,
-			OwnerID:     principal.UserID,
-			TenantID:    principal.TenantID,
-			Filename:    name,
-			ContentType: strings.TrimSpace(header.Header.Get("Content-Type")),
-			Status:      "queued",
-			Message:     "已上传，等待文档解析管线处理。",
-			SourcePath:  blobPath,
-			SourceSize:  blobSize,
-			SourceBytes: blobMem,
-			UploadedAt:  now,
-			UpdatedAt:   now,
+			TaskID:             taskID,
+			OwnerID:            principal.UserID,
+			TenantID:           principal.TenantID,
+			Filename:           name,
+			ContentType:        strings.TrimSpace(header.Header.Get("Content-Type")),
+			Status:             "queued",
+			Message:            "已上传，等待文档解析管线处理。",
+			SourcePath:         blobPath,
+			SourceSize:         blobSize,
+			SourceBytes:        blobMem,
+			SourceEncoding:     sourceEncoding,
+			SourceOriginalSize: originalSize,
+			UploadedAt:         now,
+			UpdatedAt:          now,
 		}
 		contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
 		record.ContentType = contentType
 
 		// Always keep the original file on the draft (source of truth for share/AI).
 		attachOriginal := func(draft *mobileDocumentDraftRecord) {
-			mobileAttachDraftOriginal(draft, name, contentType, body)
+			draft.SourceFilename = name
+			draft.SourceContentType = contentType
+			if draft.SourceContentType == "" {
+				draft.SourceContentType = "application/octet-stream"
+			}
+			// Draft and upload share one immutable blob. The upload record releases
+			// only its metadata after terminal completion, not the shared path.
+			draft.SourcePath = blobPath
+			draft.SourceSize = blobSize
+			draft.SourceBytes = blobMem
+			draft.SourceEncoding = sourceEncoding
+			draft.SourceOriginalSize = originalSize
+		}
+		admitDraft := func(draft mobileDocumentDraftRecord, releaseUploadOriginal bool) (map[string]any, bool) {
+			mobileDocumentQuotaAdmissionMu.Lock()
+			defer mobileDocumentQuotaAdmissionMu.Unlock()
+			// Quota counts both the stored original and generated markdown. Include
+			// both in the atomic admission check so highly-compressible text cannot
+			// exceed the account limit through its extracted preview.
+			additionalBytes := int64(blobSize) + int64(len(draft.Markdown))
+			if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, additionalBytes); err != nil {
+				writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
+				return nil, false
+			}
+			payload := mobileStoreDraftAndUpload(draft, &record, releaseUploadOriginal)
+			cleanupUploadBlob = false
+			return payload, true
+		}
+		var body []byte
+		if originalSize <= mobileDocumentInlineParseMaxBytes && (mobileUploadedFileIsImmediateDraft(name) || mobileUploadedFileIsImage(name)) {
+			body = mobileUploadLoadSourceBytes(&record)
 		}
 
-		if mobileUploadedFileIsImmediateDraft(name) {
+		if mobileUploadedFileIsImmediateDraft(name) && len(body) > 0 {
 			draftID := fmt.Sprintf("mobdoc_%d", now.UnixNano())
 			if markdown, images, ok := mobileDraftMarkdownFromUploadWithImages(principal.UserID, draftID, name, body); ok {
 				draft := mobileDocumentDraftRecord{
@@ -6111,7 +6260,10 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				if len(images) > 0 {
 					record.Message = fmt.Sprintf("文件已导入（保留原件，抽取正文与 %d 张插图）。", len(images))
 				}
-				payload := mobileStoreDraftAndUpload(draft, &record, true)
+				payload, admitted := admitDraft(draft, true)
+				if !admitted {
+					return
+				}
 				mobilePersistState()
 				mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 				writeJSON(w, http.StatusAccepted, payload)
@@ -6124,14 +6276,17 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				TenantID:  principal.TenantID,
 				Title:     mobileUploadTitle(name),
 				Template:  "report",
-				Markdown:  mobileDraftOriginalOnlyMarkdown(name, body),
+				Markdown:  mobileDraftUnsupportedPreviewMarkdown(name),
 				UpdatedAt: now,
 			}
 			attachOriginal(&draft)
 			record.Status = "ready"
 			record.DraftID = draft.ID
 			record.Message = "原件已保存到文稿库（正文提取有限，可分享原文件）。"
-			payload := mobileStoreDraftAndUpload(draft, &record, true)
+			payload, admitted := admitDraft(draft, true)
+			if !admitted {
+				return
+			}
 			mobilePersistState()
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 			writeJSON(w, http.StatusAccepted, payload)
@@ -6144,15 +6299,21 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				TenantID:  principal.TenantID,
 				Title:     mobileUploadTitle(name),
 				Template:  "report",
-				Markdown:  mobileDraftMarkdownFromImage(name, body),
+				Markdown:  mobileDraftUnsupportedPreviewMarkdown(name),
 				UpdatedAt: now,
+			}
+			if len(body) > 0 {
+				draft.Markdown = mobileDraftMarkdownFromImage(name, body)
 			}
 			attachOriginal(&draft)
 			record.Status = "needs_ocr"
 			record.DraftID = draft.ID
 			record.Message = "图片原件已保存，等待 OCR/视觉识别（可先分享原图）。"
 			// Keep upload source for OCR workers until ready.
-			payload := mobileStoreDraftAndUpload(draft, &record, false)
+			payload, admitted := admitDraft(draft, false)
+			if !admitted {
+				return
+			}
 			mobilePersistState()
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 			writeJSON(w, http.StatusAccepted, payload)
@@ -6165,14 +6326,17 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			TenantID:  principal.TenantID,
 			Title:     mobileUploadTitle(name),
 			Template:  "report",
-			Markdown:  mobileDraftOriginalOnlyMarkdown(name, body),
+			Markdown:  mobileDraftUnsupportedPreviewMarkdown(name),
 			UpdatedAt: now,
 		}
 		attachOriginal(&draft)
 		record.Status = "ready"
 		record.DraftID = draft.ID
 		record.Message = "原件已保存到文稿库。"
-		payload := mobileStoreDraftAndUpload(draft, &record, true)
+		payload, admitted := admitDraft(draft, true)
+		if !admitted {
+			return
+		}
 		mobilePersistState()
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		writeJSON(w, http.StatusAccepted, payload)
@@ -6268,6 +6432,8 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 		}
 		contentType := record.ContentType
 		filename := record.Filename
+		sourceEncoding := record.SourceEncoding
+		originalSize := mobileUploadOriginalSize(record)
 		owner := record.OwnerID
 		claimedBy := record.ClaimedBy
 		hasSrc := mobileUploadHasSource(record)
@@ -6285,6 +6451,8 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 				if strings.TrimSpace(draft.SourceFilename) != "" {
 					filename = draft.SourceFilename
 				}
+				sourceEncoding = draft.SourceEncoding
+				originalSize = mobileDraftOriginalSize(*draft)
 				hasSrc = true
 				if draftRepaired {
 					repaired = true
@@ -6305,7 +6473,7 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusForbidden, "UPLOAD_CLAIMED_BY_OTHER_WORKER", "upload task is claimed by another worker")
 			return
 		}
-		if !mobileWriteOriginalHTTP(w, contentType, filename, mem, path) {
+		if !mobileWriteStoredOriginalHTTP(w, contentType, filename, mem, path, sourceEncoding, originalSize) {
 			// Stream failed. Clear meta only when the attempted path is confirmed
 			// missing under an online store — never during store outages.
 			failedPath := strings.TrimSpace(path)
@@ -6316,12 +6484,11 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 					if len(rec.SourceBytes) == 0 {
 						upPath := strings.TrimSpace(rec.SourcePath)
 						if upPath != "" && (failedPath == "" || upPath == failedPath) {
-							rec.SourcePath = ""
-							rec.SourceSize = 0
+							mobileClearUploadSourceMeta(&rec)
 							mobileDocuments.uploads[taskID] = rec
 							dirty = true
 						} else if upPath == "" && rec.SourceSize != 0 {
-							rec.SourceSize = 0
+							mobileClearUploadSourceMeta(&rec)
 							mobileDocuments.uploads[taskID] = rec
 							dirty = true
 						}
@@ -6329,8 +6496,7 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 					if draftID := strings.TrimSpace(rec.DraftID); draftID != "" && failedPath != "" {
 						if draft, ok := mobileDocuments.drafts[draftID]; ok && draft.OwnerID == owner && mobileMeetingRecordingTenantMatches(record.TenantID, draft.TenantID) && len(draft.SourceBytes) == 0 {
 							if strings.TrimSpace(draft.SourcePath) == failedPath {
-								draft.SourcePath = ""
-								draft.SourceSize = 0
+								mobileClearDraftSourceMeta(&draft)
 								mobileDocuments.drafts[draftID] = draft
 								dirty = true
 							}
@@ -6521,68 +6687,119 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 		}
 
 		now := time.Now().UTC()
+		// Validate ownership, claim and terminal state before doing grant/quota
+		// work. Besides being cheaper, this avoids exposing quota behavior to a
+		// stale or unauthorized worker.
 		mobileDocuments.Lock()
 		record, exists := mobileDocuments.uploads[taskID]
-		if exists && record.OwnerID == principal.UserID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
-			if strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID {
-				mobileDocuments.Unlock()
-				writeError(w, http.StatusForbidden, "UPLOAD_CLAIMED_BY_OTHER_WORKER", "upload task is claimed by another worker")
-				return
-			}
-			if record.Status == "ready" || record.Status == "failed" {
-				mobileDocuments.Unlock()
-				writeError(w, http.StatusConflict, "UPLOAD_ALREADY_FINISHED", "upload task already finished")
-				return
-			}
-			record.OCRMarkdown = markdown
-			record.OCRMessage = message
-			record.OCRError = errText
-			// Intermediate status so mobileApplyUploadPipelineResult can promote to ready/failed.
-			if record.Status == "" || record.Status == "queued" || record.Status == "in_progress" {
-				record.Status = "needs_ocr"
-			}
-			if markdown != "" {
-				draft, hasDraft := mobileDocuments.drafts[record.DraftID]
-				if record.DraftID == "" || !hasDraft || draft.OwnerID != record.OwnerID {
-					draft = mobileDocumentDraftRecord{
-						ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
-						OwnerID:   record.OwnerID,
-						TenantID:  record.TenantID,
-						Title:     mobileUploadTitle(record.Filename),
-						Template:  "report",
-						Markdown:  markdown,
-						UpdatedAt: now,
-					}
-					// Preserve original from upload when creating draft late.
-					if src := mobileUploadLoadSourceBytes(&record); len(src) > 0 {
-						mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, src)
-					}
-					record.DraftID = draft.ID
-					mobileDocuments.drafts[draft.ID] = draft
-				} else {
-					// Keep draft body current; never drop the original attachment.
-					// Repair ghost SourcePath before deciding whether to re-attach.
-					_ = mobileDraftRepairSourceMeta(&draft)
-					draft.Markdown = markdown
-					draft.UpdatedAt = now
-					if !mobileDraftHasOriginal(draft) {
-						if src := mobileUploadLoadSourceBytes(&record); len(src) > 0 {
-							mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, src)
-						}
-					}
-					mobileDocuments.drafts[draft.ID] = draft
-				}
-			}
-			record.UpdatedAt = now
-			record, _ = mobileApplyUploadPipelineResult(record, now)
-			mobileDocuments.uploads[taskID] = record
-		}
-		payload := mobileDocumentUploadPayload(record)
+		owned := exists && record.OwnerID == principal.UserID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID)
+		claimedByOther := owned && strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID
+		finished := owned && (record.Status == "ready" || record.Status == "failed")
 		mobileDocuments.Unlock()
-		if !exists || record.OwnerID != principal.UserID || !mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID) {
+		if !owned {
 			writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
 			return
 		}
+		if claimedByOther {
+			writeError(w, http.StatusForbidden, "UPLOAD_CLAIMED_BY_OTHER_WORKER", "upload task is claimed by another worker")
+			return
+		}
+		if finished {
+			writeError(w, http.StatusConflict, "UPLOAD_ALREADY_FINISHED", "upload task already finished")
+			return
+		}
+
+		mobileDocumentQuotaAdmissionMu.Lock()
+		// Re-snapshot after entering the admission critical section. All normal
+		// document writes use this mutex, so the computed markdown delta and the
+		// following mutation form one quota admission operation.
+		mobileDocuments.Lock()
+		record, exists = mobileDocuments.uploads[taskID]
+		owned = exists && record.OwnerID == principal.UserID && mobileMeetingRecordingTenantMatches(principal.TenantID, record.TenantID)
+		claimedByOther = owned && strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID
+		finished = owned && (record.Status == "ready" || record.Status == "failed")
+		previousMarkdown := ""
+		if owned {
+			if draft, ok := mobileDocuments.drafts[record.DraftID]; ok && draft.OwnerID == record.OwnerID && mobileMeetingRecordingTenantMatches(record.TenantID, draft.TenantID) {
+				previousMarkdown = draft.Markdown
+			}
+		}
+		mobileDocuments.Unlock()
+		if !owned || claimedByOther || finished {
+			mobileDocumentQuotaAdmissionMu.Unlock()
+			if !owned {
+				writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
+			} else if claimedByOther {
+				writeError(w, http.StatusForbidden, "UPLOAD_CLAIMED_BY_OTHER_WORKER", "upload task is claimed by another worker")
+			} else {
+				writeError(w, http.StatusConflict, "UPLOAD_ALREADY_FINISHED", "upload task already finished")
+			}
+			return
+		}
+		if delta := int64(len(markdown)) - int64(len(previousMarkdown)); delta > 0 {
+			viewer := &auth.ViewerPrincipal{UserID: record.OwnerID, TenantID: record.TenantID}
+			if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), viewer, delta); err != nil {
+				mobileDocumentQuotaAdmissionMu.Unlock()
+				writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
+				return
+			}
+		}
+
+		mobileDocuments.Lock()
+		// Revalidate after the quota scan, which necessarily acquires and releases
+		// mobileDocuments.Lock. A status poll may have completed the task meanwhile.
+		current, stillExists := mobileDocuments.uploads[taskID]
+		if !stillExists || current.OwnerID != record.OwnerID || current.TenantID != record.TenantID ||
+			(strings.TrimSpace(current.ClaimedBy) != "" && current.ClaimedBy != principal.MachineID) ||
+			current.Status == "ready" || current.Status == "failed" {
+			mobileDocuments.Unlock()
+			mobileDocumentQuotaAdmissionMu.Unlock()
+			writeError(w, http.StatusConflict, "UPLOAD_STATE_CHANGED", "upload task changed while applying result")
+			return
+		}
+		record = current
+		record.OCRMarkdown = markdown
+		record.OCRMessage = message
+		record.OCRError = errText
+		// Intermediate status so mobileApplyUploadPipelineResult can promote to ready/failed.
+		if record.Status == "" || record.Status == "queued" || record.Status == "in_progress" {
+			record.Status = "needs_ocr"
+		}
+		if markdown != "" {
+			draft, hasDraft := mobileDocuments.drafts[record.DraftID]
+			if record.DraftID == "" || !hasDraft || draft.OwnerID != record.OwnerID || !mobileMeetingRecordingTenantMatches(record.TenantID, draft.TenantID) {
+				draft = mobileDocumentDraftRecord{
+					ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
+					OwnerID:   record.OwnerID,
+					TenantID:  record.TenantID,
+					Title:     mobileUploadTitle(record.Filename),
+					Template:  "report",
+					Markdown:  markdown,
+					UpdatedAt: now,
+				}
+				// Preserve the immutable stored representation without decoding or
+				// creating a duplicate draft blob.
+				mobileShareUploadOriginalWithDraft(&draft, record)
+				record.DraftID = draft.ID
+				mobileDocuments.drafts[draft.ID] = draft
+			} else {
+				// Keep draft body current; never drop the original attachment.
+				// Repair ghost SourcePath before deciding whether to re-attach.
+				_ = mobileDraftRepairSourceMeta(&draft)
+				draft.Markdown = markdown
+				draft.UpdatedAt = now
+				if !mobileDraftHasOriginal(draft) {
+					mobileShareUploadOriginalWithDraft(&draft, record)
+				}
+				mobileDocuments.drafts[draft.ID] = draft
+			}
+		}
+		record.UpdatedAt = now
+		record, _ = mobileApplyUploadPipelineResult(record, now)
+		mobileDocuments.uploads[taskID] = record
+		payload := mobileDocumentUploadPayload(record)
+		mobileDocuments.Unlock()
+		mobileDocumentQuotaAdmissionMu.Unlock()
 		mobilePersistState()
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		writeJSON(w, http.StatusOK, payload)

@@ -2306,11 +2306,13 @@ export namespace corelib {
 	    lansenger_ignored_group_ids?: string[];
 	    lansenger_group_policy?: string;
 	    lansenger_allowed_group_ids?: string[];
+	    lansenger_group_file_max_bytes?: {[key: string]: number};
 	    lansenger_require_mention?: boolean;
 	    lansenger_respond_to_at_all?: boolean;
 	    lansenger_auto_mention_reply?: boolean;
 	    lansenger_auto_quote_reply?: boolean;
 	    lansenger_group_knowledge_source_ids?: string[];
+	    lansenger_group_allow_web_search?: boolean;
 	    lansenger_group_allow_all_directories?: boolean;
 	    lansenger_group_allowed_directories?: string[];
 	    qqbot_local_mode?: boolean;
@@ -2321,6 +2323,10 @@ export namespace corelib {
 	    thirdparty_gateway_host?: string;
 	    thirdparty_gateway_port?: number;
 	    thirdparty_gateway_local_mode?: boolean;
+	    hardware_welcome_enabled?: boolean;
+	    hardware_welcome_text?: string;
+	    hardware_welcome_audio_path?: string;
+	    hardware_volume?: number;
 	    acp_host_enabled?: boolean;
 	    acp_host_port?: number;
 	    acp_host_mirror_ui?: boolean;
@@ -2561,11 +2567,13 @@ export namespace corelib {
 	        this.lansenger_ignored_group_ids = source["lansenger_ignored_group_ids"];
 	        this.lansenger_group_policy = source["lansenger_group_policy"];
 	        this.lansenger_allowed_group_ids = source["lansenger_allowed_group_ids"];
+	        this.lansenger_group_file_max_bytes = source["lansenger_group_file_max_bytes"];
 	        this.lansenger_require_mention = source["lansenger_require_mention"];
 	        this.lansenger_respond_to_at_all = source["lansenger_respond_to_at_all"];
 	        this.lansenger_auto_mention_reply = source["lansenger_auto_mention_reply"];
 	        this.lansenger_auto_quote_reply = source["lansenger_auto_quote_reply"];
 	        this.lansenger_group_knowledge_source_ids = source["lansenger_group_knowledge_source_ids"];
+	        this.lansenger_group_allow_web_search = source["lansenger_group_allow_web_search"];
 	        this.lansenger_group_allow_all_directories = source["lansenger_group_allow_all_directories"];
 	        this.lansenger_group_allowed_directories = source["lansenger_group_allowed_directories"];
 	        this.qqbot_local_mode = source["qqbot_local_mode"];
@@ -2576,6 +2584,10 @@ export namespace corelib {
 	        this.thirdparty_gateway_host = source["thirdparty_gateway_host"];
 	        this.thirdparty_gateway_port = source["thirdparty_gateway_port"];
 	        this.thirdparty_gateway_local_mode = source["thirdparty_gateway_local_mode"];
+	        this.hardware_welcome_enabled = source["hardware_welcome_enabled"];
+	        this.hardware_welcome_text = source["hardware_welcome_text"];
+	        this.hardware_welcome_audio_path = source["hardware_welcome_audio_path"];
+	        this.hardware_volume = source["hardware_volume"];
 	        this.acp_host_enabled = source["acp_host_enabled"];
 	        this.acp_host_port = source["acp_host_port"];
 	        this.acp_host_mirror_ui = source["acp_host_mirror_ui"];
@@ -13922,6 +13934,23 @@ export namespace main {
 	        this.size = source["size"];
 	    }
 	}
+	export class MobileDocumentQuota {
+	    document_quota_bytes: number;
+	    document_quota_used_bytes: number;
+	    document_quota_remaining: number;
+
+	    static createFrom(source: any = {}) {
+	        return new MobileDocumentQuota(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.document_quota_bytes = source["document_quota_bytes"];
+	        this.document_quota_used_bytes = source["document_quota_used_bytes"];
+	        this.document_quota_remaining = source["document_quota_remaining"];
+	    }
+	}
+
 	export class MobileDocumentDraftSummary {
 	    id: string;
 	    title: string;

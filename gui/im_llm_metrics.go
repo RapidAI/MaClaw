@@ -52,6 +52,9 @@ type agentLoopTelemetry struct {
 	PromptABSample bool
 	// PromptSoftFull is true when SoftFullAgentIntent upgraded light→full.
 	PromptSoftFull bool
+	// InputBreakdown is the latest provider-independent request composition.
+	// It is diagnostic-only and never changes the prompt sent to the model.
+	InputBreakdown agent.LoopInputBreakdown
 }
 
 func newAgentLoopTelemetry() *agentLoopTelemetry {

@@ -14,8 +14,21 @@
 <script>
   try {
     var d = localStorage.getItem('ai_assistant_theme_mode') === 'dark';
-    var s = localStorage.getItem('maclaw.ai.darkScheme');
-    var c = d ? (s === 'aurora' ? '#071018' : (s === 'classic' ? '#0b1220' : '#111111')) : '#f4f5f7';
+    var c;
+    if (d) {
+      var s = localStorage.getItem('maclaw.ai.darkScheme');
+      c = s === 'aurora' ? '#071018'
+        : s === 'classic' ? '#0b1220'
+        : s === 'ember' ? '#140e0a'
+        : s === 'violet' ? '#0e0a18'
+        : '#0f141b';
+    } else {
+      var l = localStorage.getItem('maclaw.ai.lightScheme');
+      c = l === 'notion' || l === 'stripe' || l === 'vercel' ? '#ffffff'
+        : l === 'linear' ? '#fbfbfd'
+        : l === 'github' ? '#f6f8fa'
+        : '#f4f7fb';
+    }
     document.documentElement.style.backgroundColor = c;
     document.body.style.backgroundColor = c;
   } catch(e) {}

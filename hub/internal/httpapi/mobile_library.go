@@ -171,7 +171,8 @@ func mobileLibraryDocumentItemWithParent(draft mobileDocumentDraftRecord, includ
 		item["has_original"] = true
 		item["source_filename"] = strings.TrimSpace(draft.SourceFilename)
 		item["source_content_type"] = strings.TrimSpace(draft.SourceContentType)
-		item["source_size"] = mobileDraftSourceSize(draft)
+		item["source_size"] = mobileDraftOriginalSize(draft)
+		item["source_storage_size"] = mobileDraftSourceSize(draft)
 		item["source_download_url"] = "/api/mobile/documents/drafts/" + draft.ID + "/source"
 	}
 	// Generated meeting results share the document list with ordinary drafts.

@@ -1260,6 +1260,140 @@ func TestExpertMarketAdminRoutesRequireAdminToken(t *testing.T) {
 	}
 }
 
+func TestCreditRedeemCardRoutesAuthorizeAndAuditAdmin(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	smStore, err := skillmarket.NewStore(db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := skillmarket.NewUserService(smStore, nil)
+	authSvc := skillmarket.NewAuthService(smStore, nil, "")
+	handlers := NewSkillMarketHandlers(SkillMarketConfig{Store: smStore, UserSvc: users, AuthSvc: authSvc, CreditsSvc: skillmarket.NewCreditsService(smStore), DataDir: t.TempDir()})
+	svc := newHubCenterHTTPTestServices(t)
+	svc.handler = NewRouter(svc.admins, svc.hubs, svc.entry, nil, nil, svc.store.FailureLogs, nil, nil, handlers, svc.store.System, svc.store.News, nil)
+
+	for _, route := range []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{http.MethodGet, "/api/v1/credits/balance?user_id=another-user", nil},
+		{http.MethodGet, "/api/v1/credits/transactions?user_id=another-user", nil},
+		{http.MethodPost, "/api/v1/credits/topup", map[string]any{"user_id": "another-user", "amount": 100}},
+		{http.MethodPost, "/api/v1/credits/withdraw", map[string]any{"user_id": "another-user", "amount": 100}},
+	} {
+		resp := doJSONRequest(t, svc.handler, route.method, route.path, route.body, "")
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without admin token = %d, want %d; body=%s", route.method, route.path, resp.Code, http.StatusUnauthorized, resp.Body.String())
+		}
+	}
+
+	unauthorized := doJSONRequest(t, svc.handler, http.MethodPost, "/api/v1/admin/credits/redeem-cards", map[string]any{}, "")
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized issue status = %d, want %d", unauthorized.Code, http.StatusUnauthorized)
+	}
+	token := issueAdminToken(t, svc)
+	issued := doJSONRequest(t, svc.handler, http.MethodPost, "/api/v1/admin/credits/redeem-cards", map[string]any{"credits": 125}, token)
+	if issued.Code != http.StatusCreated {
+		t.Fatalf("issue status = %d body=%s", issued.Code, issued.Body.String())
+	}
+	var payload struct {
+		Cards []struct {
+			ID       string `json:"id"`
+			IssuedBy string `json:"issued_by"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal(issued.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode issue response: %v", err)
+	}
+	if len(payload.Cards) != 1 || payload.Cards[0].ID == "" || payload.Cards[0].IssuedBy != "admin" {
+		t.Fatalf("unexpected issue audit payload: %+v", payload)
+	}
+
+	revoked := doJSONRequest(t, svc.handler, http.MethodPost, "/api/v1/admin/credits/redeem-cards/"+payload.Cards[0].ID+"/revoke", nil, token)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("revoke status = %d body=%s", revoked.Code, revoked.Body.String())
+	}
+	cards, total, err := smStore.ListCreditRedeemCards(context.Background(), "revoked", 0, 10)
+	if err != nil || total != 1 || len(cards) != 1 || cards[0].RevokedBy != "admin" {
+		t.Fatalf("unexpected revoke audit record: cards=%#v total=%d err=%v", cards, total, err)
+	}
+}
+
+func TestSessionBoundCreditRoutesKeepAccountsIsolated(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	smStore, err := skillmarket.NewStore(db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := skillmarket.NewUserService(smStore, nil)
+	authSvc := skillmarket.NewAuthService(smStore, nil, "")
+	credits := skillmarket.NewCreditsService(smStore)
+	handlers := NewSkillMarketHandlers(SkillMarketConfig{Store: smStore, UserSvc: users, AuthSvc: authSvc, CreditsSvc: credits, DataDir: t.TempDir()})
+	svc := newHubCenterHTTPTestServices(t)
+	svc.handler = NewRouter(svc.admins, svc.hubs, svc.entry, nil, nil, svc.store.FailureLogs, nil, nil, handlers, svc.store.System, svc.store.News, nil)
+
+	ctx := context.Background()
+	owner, err := users.EnsureAccountWithID(ctx, "credit-owner", "owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := users.EnsureAccountWithID(ctx, "credit-other", "other@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []*skillmarket.SkillMarketUser{owner, other} {
+		if err := smStore.UpdateUserStatus(ctx, user.ID, "verified", "email"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := credits.Credit(ctx, owner.ID, 60, true, "", "", "owner settled earning"); err != nil {
+		t.Fatal(err)
+	}
+	if err := credits.Credit(ctx, other.ID, 25, true, "", "", "other settled earning"); err != nil {
+		t.Fatal(err)
+	}
+	ownerSession, err := authSvc.CreateSessionForUser(ctx, owner.ID, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp := doJSONRequest(t, svc.handler, http.MethodGet, "/api/v1/credits/account/transactions", nil, ""); resp.Code != http.StatusUnauthorized {
+		t.Fatalf("transactions without session = %d, want %d", resp.Code, http.StatusUnauthorized)
+	}
+	account := doJSONRequest(t, svc.handler, http.MethodGet, "/api/v1/credits/account?user_id="+other.ID, nil, ownerSession.Token)
+	if account.Code != http.StatusOK || !bytes.Contains(account.Body.Bytes(), []byte(`"user_id":"credit-owner"`)) || bytes.Contains(account.Body.Bytes(), []byte(`"user_id":"credit-other"`)) {
+		t.Fatalf("account must use session identity: status=%d body=%s", account.Code, account.Body.String())
+	}
+	transactions := doJSONRequest(t, svc.handler, http.MethodGet, "/api/v1/credits/account/transactions?user_id="+other.ID, nil, ownerSession.Token)
+	if transactions.Code != http.StatusOK || !bytes.Contains(transactions.Body.Bytes(), []byte("owner settled earning")) || bytes.Contains(transactions.Body.Bytes(), []byte("other settled earning")) {
+		t.Fatalf("transactions must use session identity: status=%d body=%s", transactions.Code, transactions.Body.String())
+	}
+	withdraw := doJSONRequest(t, svc.handler, http.MethodPost, "/api/v1/credits/account/withdraw", map[string]any{"user_id": other.ID, "amount": 40}, ownerSession.Token)
+	if withdraw.Code != http.StatusOK {
+		t.Fatalf("session-bound withdraw status=%d body=%s", withdraw.Code, withdraw.Body.String())
+	}
+	ownerAfter, err := smStore.GetUserByID(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAfter, err := smStore.GetUserByID(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerAfter.SettledCredits != 20 || otherAfter.SettledCredits != 25 {
+		t.Fatalf("withdraw must affect only session owner: owner=%d other=%d", ownerAfter.SettledCredits, otherAfter.SettledCredits)
+	}
+}
+
 func TestManagementHandlersBlockEmailAndDisableHub(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 	token := issueAdminToken(t, svc)

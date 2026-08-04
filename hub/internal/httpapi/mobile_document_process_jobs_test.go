@@ -162,3 +162,45 @@ func TestMobileDocumentProcessSyncStillWorks(t *testing.T) {
 		t.Fatal("missing draft")
 	}
 }
+
+func TestMobileDocumentProcessSyncRejectsQuotaExpansion(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "mobile-doc-proc-quota@example.com")
+	t.Setenv("MACLAW_MOBILE_CAP_DOC_FREE_MIB", "1")
+	draftID := "draft_proc_quota_1"
+	markdown := "# Title\n\n- one\n"
+	fillID := "draft_proc_quota_fill"
+	mobileDocuments.Lock()
+	mobileDocuments.drafts[draftID] = mobileDocumentDraftRecord{
+		ID: draftID, OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Title: "quota", Markdown: markdown, UpdatedAt: time.Now().UTC(),
+	}
+	mobileDocuments.drafts[fillID] = mobileDocumentDraftRecord{
+		ID: fillID, OwnerID: enroll.UserID, TenantID: enroll.TenantID,
+		Title: "fill", Markdown: strings.Repeat("x", 1<<20-len(markdown)-4), UpdatedAt: time.Now().UTC(),
+	}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, draftID)
+		delete(mobileDocuments.drafts, fillID)
+		mobileDocuments.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/drafts/"+draftID+"/process",
+		strings.NewReader(`{"action":"expand"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("draftId", draftID)
+	rec := httptest.NewRecorder()
+	MobileDocumentProcessHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusInsufficientStorage {
+		t.Fatalf("status=%d body=%s want 507", rec.Code, rec.Body.String())
+	}
+	mobileDocuments.Lock()
+	got := mobileDocuments.drafts[draftID].Markdown
+	mobileDocuments.Unlock()
+	if got != markdown {
+		t.Fatalf("quota rejection mutated draft: %q", got)
+	}
+}

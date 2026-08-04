@@ -394,14 +394,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolReadFile(args) })
 
-	reg("read_tool_result", "分段回读被截断的工具完整输出（[tool_result_handle] 的 id 或 path）。大日志/网页/bash 输出被投影为预览后，用此工具按 offset/limit 读取细节。",
+	reg("read_tool_result", "分段回读被截断的工具完整输出（使用 [tool_result_handle] 的 id）。大日志/网页/bash 输出被投影为预览后，用此工具按 offset/limit 读取细节。",
 		ToolCategoryBuiltin, []string{"file", "read", "tool_result", "handle"},
 		map[string]interface{}{
-			"id":          map[string]string{"type": "string", "description": "handle id（来自 [tool_result_handle] 页脚，优先）"},
-			"path":        map[string]string{"type": "string", "description": "handle 页脚中的绝对路径（必须位于 tool_results 目录）"},
-			"session_key": map[string]string{"type": "string", "description": "可选 session/user key（spill 时使用的会话隔离键）"},
-			"offset":      map[string]string{"type": "integer", "description": "从完整结果的字节偏移（默认 0）"},
-			"limit":       map[string]string{"type": "integer", "description": "返回最大字节数（默认 6000，最大 32768）"},
+			"id":     map[string]string{"type": "string", "description": "handle id（来自 [tool_result_handle] 页脚，优先）"},
+			"offset": map[string]string{"type": "integer", "description": "从完整结果的字节偏移（默认 0）"},
+			"limit":  map[string]string{"type": "integer", "description": "返回最大字节数（默认 6000，最大 32768）"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolReadToolResult(args) })
 
@@ -453,6 +451,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"doc_type":      map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
 			"destination":   map[string]string{"type": "string", "description": "chat/desktop 或 im/wechat/feishu/qq/dingtalk 等；已在 IM 通道中可不设"},
 			"forward_to_im": map[string]string{"type": "boolean", "description": "桌面端是否转发到 IM；已在微信/飞书通道中无需设置"},
+			"channel":       map[string]string{"type": "string", "description": "精确 IM 渠道"},
+			"group_id":      map[string]string{"type": "string", "description": "精确群/会话 ID"},
+			"group_name":    map[string]string{"type": "string", "description": "群名（必要时先 list_targets）"},
+			"user_id":       map[string]string{"type": "string", "description": "精确私聊 ID 或 self"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolSendFile(args) })
 
@@ -462,6 +464,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"path":        map[string]string{"type": "string", "description": "文件的绝对路径或相对于主目录的路径"},
 			"file_name":   map[string]string{"type": "string", "description": "发送时显示的文件名（可选）"},
 			"destination": map[string]string{"type": "string", "description": "可选：wechat/feishu/qq/dingtalk/im（默认 im）"},
+			"channel":     map[string]string{"type": "string", "description": "精确 IM 渠道"},
+			"group_id":    map[string]string{"type": "string", "description": "精确群/会话 ID"},
+			"group_name":  map[string]string{"type": "string", "description": "群名（必要时先 list_targets）"},
+			"user_id":     map[string]string{"type": "string", "description": "精确私聊 ID 或 self"},
 			"phase_id":    map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
 			"doc_type":    map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
 		}, []string{"path"},

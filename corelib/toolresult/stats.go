@@ -2,8 +2,11 @@ package toolresult
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Process-local compression counters (OpenSquilla-style tool-compress observability).
@@ -19,13 +22,96 @@ var (
 
 // CompressionStats is a snapshot for doctor / CLI.
 type CompressionStats struct {
-	Projects       int64            `json:"projects"`
-	Spills         int64            `json:"spills"`
-	OriginalBytes  int64            `json:"original_bytes"`
-	PreviewBytes   int64            `json:"preview_bytes"`
-	SavedBytes     int64            `json:"saved_bytes"`
-	SavedPercent   int              `json:"saved_percent,omitempty"`
-	ByToolSaved    map[string]int64 `json:"by_tool_saved,omitempty"`
+	Projects      int64            `json:"projects"`
+	Spills        int64            `json:"spills"`
+	OriginalBytes int64            `json:"original_bytes"`
+	PreviewBytes  int64            `json:"preview_bytes"`
+	SavedBytes    int64            `json:"saved_bytes"`
+	SavedPercent  int              `json:"saved_percent,omitempty"`
+	ByToolSaved   map[string]int64 `json:"by_tool_saved,omitempty"`
+}
+
+// StoreStats is a read-only snapshot of durable lossless tool-result storage.
+// Handles are intentionally retained because persisted conversation history may
+// reference them; automatic age-based deletion would silently break read-back.
+type StoreStats struct {
+	Files int64 `json:"files"`
+	Bytes int64 `json:"bytes"`
+}
+
+type storeStatsCacheEntry struct {
+	stats     StoreStats
+	scannedAt time.Time
+}
+
+var (
+	storeStatsMu         sync.Mutex
+	storeStatsCache      = make(map[string]storeStatsCacheEntry)
+	storeStatsGeneration = make(map[string]uint64)
+)
+
+const storeStatsCacheTTL = 5 * time.Second
+
+// GetStoreStats reports the number and size of stored result files. Errors are
+// ignored so diagnostics never interfere with an agent turn.
+func GetStoreStats(root string) StoreStats {
+	rootAbs, err := storeRoot(root)
+	if err != nil {
+		return StoreStats{}
+	}
+	storeStatsMu.Lock()
+	if cached, ok := storeStatsCache[rootAbs]; ok && time.Since(cached.scannedAt) < storeStatsCacheTTL {
+		storeStatsMu.Unlock()
+		return cached.stats
+	}
+	generation := storeStatsGeneration[rootAbs]
+	storeStatsMu.Unlock()
+
+	// Directory walks can become slow after many durable handles accumulate.
+	// Never hold the cache lock during filesystem I/O: Spill invalidation runs on
+	// the agent path and must not wait behind an operator diagnostics scan.
+	var out StoreStats
+	_ = filepath.WalkDir(rootAbs, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+		if filepath.Ext(entry.Name()) != ".txt" {
+			return nil
+		}
+		out.Files++
+		out.Bytes += info.Size()
+		return nil
+	})
+	storeStatsMu.Lock()
+	// If a Spill completed during the walk, do not install a potentially stale
+	// snapshot. The caller may receive its point-in-time scan, while the next call
+	// is guaranteed to rescan instead of observing stale cache state.
+	if storeStatsGeneration[rootAbs] == generation {
+		storeStatsCache[rootAbs] = storeStatsCacheEntry{stats: out, scannedAt: time.Now()}
+	}
+	storeStatsMu.Unlock()
+	return out
+}
+
+// RefreshStoreStats bypasses the short status cache for explicit diagnostics.
+func RefreshStoreStats(root string) StoreStats {
+	invalidateStoreStats(root)
+	return GetStoreStats(root)
+}
+
+func invalidateStoreStats(root string) {
+	rootAbs, err := storeRoot(root)
+	if err != nil {
+		return
+	}
+	storeStatsMu.Lock()
+	storeStatsGeneration[rootAbs]++
+	delete(storeStatsCache, rootAbs)
+	storeStatsMu.Unlock()
 }
 
 // RecordProjection updates process counters after a Project/truncate.

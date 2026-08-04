@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +156,131 @@ func TestDownloadL2BrowserSessionCookies(t *testing.T) {
 	}
 }
 
+func TestFetchWithExplicitIsolationDoesNotUseCookieJarOrBrowserAuthFallback(t *testing.T) {
+	setupDownloadTestLog(t)
+	allowInsecureL2Hook = true // httptest is plaintext; the test verifies the explicit caller opt-out.
+	t.Cleanup(func() { allowInsecureL2Hook = false })
+
+	var sawCookie atomic.Bool
+	var browserAuthCalled atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "" {
+			sawCookie.Store(true)
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("Just a moment..."))
+	}))
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar.SetCookies(u, []*http.Cookie{{Name: "desktop_session", Value: "secret"}})
+	SetBrowserAuthProvider(func(context.Context, string) (map[string]string, error) {
+		browserAuthCalled.Store(true)
+		return map[string]string{"Cookie": "browser_session=secret"}, nil
+	})
+	t.Cleanup(func() { SetBrowserAuthProvider(nil) })
+
+	_, err = FetchWithClientCtx(context.Background(), srv.URL, &FetchOptions{
+		TimeoutS:                   5,
+		MaxBytes:                   1024,
+		DisableCookies:             true,
+		DisableBrowserAuthFallback: true,
+	}, &http.Client{Jar: jar})
+	if err == nil {
+		t.Fatal("isolated fetch should retain the anti-bot failure")
+	}
+	if sawCookie.Load() {
+		t.Fatal("isolated fetch sent a shared cookie jar value")
+	}
+	if browserAuthCalled.Load() {
+		t.Fatal("isolated fetch invoked browser-auth fallback")
+	}
+}
+
+func TestFetchPublicModeRejectsPrivateTargets(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://127.0.0.1:8080/internal",
+		"http://localhost:8080/internal",
+		"http://192.168.1.10/internal",
+		"http://[::1]/internal",
+	} {
+		_, err := FetchCtx(context.Background(), rawURL, &FetchOptions{PublicNetworkOnly: true})
+		if err == nil || !strings.Contains(err.Error(), "not public") {
+			t.Fatalf("public fetch %q error = %v, want non-public target rejection", rawURL, err)
+		}
+	}
+}
+
+func TestFetchPublicModeRejectsURLCredentials(t *testing.T) {
+	_, err := FetchCtx(context.Background(), "https://user:secret@example.com/report", &FetchOptions{PublicNetworkOnly: true})
+	if err == nil || !strings.Contains(err.Error(), "must not contain credentials") {
+		t.Fatalf("public fetch URL credentials error = %v, want rejection", err)
+	}
+}
+
+func TestFetchPublicModeCapsResourceLimits(t *testing.T) {
+	textOpts := &FetchOptions{PublicNetworkOnly: true, MaxBytes: 10 * 1024 * 1024, TimeoutS: 600}
+	_, _ = FetchCtx(context.Background(), "https://example.invalid", textOpts)
+	if textOpts.MaxBytes != publicNetworkTextMaxBytes || textOpts.TimeoutS != publicNetworkTimeoutSeconds {
+		t.Fatalf("public text limits = max_bytes:%d timeout:%d", textOpts.MaxBytes, textOpts.TimeoutS)
+	}
+
+	downloadOpts := &FetchOptions{PublicNetworkOnly: true, SavePath: filepath.Join(t.TempDir(), "report.pdf"), MaxBytes: 100 * 1024 * 1024, TimeoutS: 600}
+	_, _ = FetchCtx(context.Background(), "https://example.invalid", downloadOpts)
+	if downloadOpts.MaxBytes != publicNetworkDownloadMaxBytes || downloadOpts.TimeoutS != publicNetworkTimeoutSeconds {
+		t.Fatalf("public download limits = max_bytes:%d timeout:%d", downloadOpts.MaxBytes, downloadOpts.TimeoutS)
+	}
+}
+
+func TestFetchPublicModeDropsCallerHeadersAndEnhancedProvider(t *testing.T) {
+	var providerCalled atomic.Bool
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalled.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"content":"unexpected"}]}`))
+	}))
+	t.Cleanup(providerServer.Close)
+
+	opts := &FetchOptions{
+		PublicNetworkOnly: true,
+		Headers:           map[string]string{"Authorization": "Bearer secret", "Cookie": "sid=secret"},
+	}
+	_, _ = FetchWithProviderCtx(context.Background(), "https://example.invalid", opts, corelib.WebSearchProvider{
+		Type: "tinyfish", Key: "secret", BaseURL: providerServer.URL + "/search",
+	})
+	if opts.Headers != nil {
+		t.Fatalf("public fetch retained caller headers: %#v", opts.Headers)
+	}
+	if providerCalled.Load() {
+		t.Fatal("public fetch invoked an enhanced provider")
+	}
+}
+
+func TestFetchPublicModeRejectsSavePathSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	opts := &FetchOptions{
+		PublicNetworkOnly: true,
+		SaveRoot:          root,
+		SavePath:          filepath.Join(link, "escape.pdf"),
+	}
+	_, err := FetchCtx(context.Background(), "https://example.invalid", opts)
+	if err == nil || !strings.Contains(err.Error(), "escapes its working directory") {
+		t.Fatalf("public download symlink escape error = %v, want rejection", err)
+	}
+}
+
 func TestDownloadAntiBotErrorGuidance(t *testing.T) {
 	setupDownloadTestLog(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +300,27 @@ func TestDownloadAntiBotErrorGuidance(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "browser") || !strings.Contains(err.Error(), "反爬") {
 		t.Fatalf("error should guide agent to browser verification, got: %v", err)
+	}
+}
+
+func TestFetchPublicModeAntiBotGuidanceDoesNotSuggestBrowserBypass(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "cloudflare")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("Just a moment..."))
+	}))
+	t.Cleanup(srv.Close)
+
+	opts := &FetchOptions{TimeoutS: 5, MaxBytes: 1024, PublicNetworkOnly: true}
+	_, err := runFetchChain(context.Background(), srv.URL+"/blocked", "[test]", 1, opts, &http.Client{}, func(c *http.Client, extra map[string]string) *fetchAttempt {
+		return performTextFetch(context.Background(), srv.URL+"/blocked", opts, c, extra, false)
+	})
+	if err == nil {
+		t.Fatal("expected public fetch anti-bot error")
+	}
+	if !strings.Contains(err.Error(), "公开来源") || strings.Contains(err.Error(), "browser 工具") || strings.Contains(err.Error(), "via_browser") {
+		t.Fatalf("public anti-bot guidance must not suggest a browser bypass: %v", err)
 	}
 }
 

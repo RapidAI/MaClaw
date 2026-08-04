@@ -166,16 +166,16 @@ describe('Lansenger Follow e2e', () => {
         document.body.style.overflow = '';
     });
 
-    it('hides Follow when disconnected and shows it after 监看 when connected', () => {
+    it('hides Follow when disconnected and shows it after chat history when connected', () => {
         const { rerender } = render(
             <LansengerSettings {...lansengerBaseProps({ lansengerStatus: 'disconnected' })} />,
         );
         expect(screen.queryByTestId('lansenger-follow-button')).toBeNull();
-        expect(screen.getByRole('button', { name: '监看' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '聊天历史' })).toBeTruthy();
 
         rerender(<LansengerSettings {...lansengerBaseProps({ lansengerStatus: 'connected' })} />);
         const follow = screen.getByTestId('lansenger-follow-button');
-        const watchBtn = screen.getByRole('button', { name: '监看' });
+        const watchBtn = screen.getByRole('button', { name: '聊天历史' });
         expect(follow.textContent).toBe('盯人');
         expect(watchBtn.compareDocumentPosition(follow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });

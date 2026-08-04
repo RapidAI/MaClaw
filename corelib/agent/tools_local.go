@@ -900,8 +900,15 @@ func ToolSendFile(args map[string]interface{}) string {
 	// Structured only: destination enum and/or forward_to_im flag (no free-text NLP).
 	forwardIM := resolveToolSendFileForward(args)
 	if forwardIM {
+		targetFlag := EncodeIMFileDeliveryTargetFlag(args)
 		if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
+			if targetFlag != "" {
+				return fmt.Sprintf("[file_base64|%s|%s|im|%s|%s]%s", fileName, mimeType, targetFlag, msgFlag, b64)
+			}
 			return fmt.Sprintf("[file_base64|%s|%s|im|%s]%s", fileName, mimeType, msgFlag, b64)
+		}
+		if targetFlag != "" {
+			return fmt.Sprintf("[file_base64|%s|%s|im|%s]%s", fileName, mimeType, targetFlag, b64)
 		}
 		return fmt.Sprintf("[file_base64|%s|%s|im]%s", fileName, mimeType, b64)
 	}

@@ -4,10 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestExportableExpertDefinitionClearsLocalIdentity(t *testing.T) {
@@ -75,12 +78,127 @@ func TestExpertPackageDependenciesInstalled(t *testing.T) {
 }
 
 func TestExpertPackageHasMissingSkills(t *testing.T) {
-	installed := map[string]bool{"skill-a": true}
+	installed := map[string]corelib.NLSkillEntry{"skill-a": {Name: "skill-a"}}
 	if expertPackageHasMissingSkills(installed, []expertPackageSkill{{Name: "skill-a"}}) {
 		t.Fatal("an already-installed bundled skill should not require skill-import permission")
 	}
 	if !expertPackageHasMissingSkills(installed, []expertPackageSkill{{Name: "skill-a"}, {Name: "skill-b"}}) {
 		t.Fatal("a missing bundled skill must require the skill-import path")
+	}
+}
+
+func TestExpertPackageRequiredSkillsIgnoresUnreferencedBundledSkills(t *testing.T) {
+	installed := map[string]corelib.NLSkillEntry{
+		"required": {Name: "required"},
+	}
+	selected, err := (&App{}).expertPackageRequiredSkills(
+		[]string{"required"},
+		installed,
+		[]expertPackageSkill{
+			{Name: "required", Archive: "skills/required.zip"},
+			{Name: "unrelated", Archive: "skills/unrelated.zip"},
+		},
+		map[string][]byte{},
+	)
+	if err != nil {
+		t.Fatalf("resolve required skills: %v", err)
+	}
+	if len(selected) != 0 {
+		t.Fatalf("unreferenced bundled skills must not be selected for installation: %+v", selected)
+	}
+}
+
+func TestExpertPackageRequiredSkillsInstallsMissingChildOfInstalledPipeline(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	installed := map[string]corelib.NLSkillEntry{
+		"parent": {
+			Name:     "parent",
+			Pipeline: []corelib.SkillPipelineStep{{Skill: "child"}},
+		},
+	}
+	child := expertPackageTestSkillArchive(t, "skill.yaml", []byte("name: child\ndescription: Child dependency\nsteps: []\n"))
+
+	selected, err := app.expertPackageRequiredSkills(
+		[]string{"parent"},
+		installed,
+		[]expertPackageSkill{
+			{Name: "child", Archive: "skills/child.zip"},
+			{Name: "unrelated", Archive: "skills/unrelated.zip"},
+		},
+		map[string][]byte{"skills/child.zip": child},
+	)
+	if err != nil {
+		t.Fatalf("resolve installed pipeline dependency: %v", err)
+	}
+	if len(selected) != 1 || selected[0].Name != "child" {
+		t.Fatalf("selected skills = %+v, want only missing child", selected)
+	}
+}
+
+func TestExpertPackageRequiredSkillsTraversesBundledPipelineDependencies(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	parent := expertPackageTestSkillArchive(t, "skill.yaml", []byte("name: parent\ndescription: Parent pipeline\npipeline:\n  - skill: child\n"))
+	child := expertPackageTestSkillArchive(t, "skill.yaml", []byte("name: child\ndescription: Child dependency\nsteps: []\n"))
+
+	selected, err := app.expertPackageRequiredSkills(
+		[]string{"parent"},
+		nil,
+		[]expertPackageSkill{
+			{Name: "parent", Archive: "skills/parent.zip"},
+			{Name: "child", Archive: "skills/child.zip"},
+			{Name: "unrelated", Archive: "skills/unrelated.zip"},
+		},
+		map[string][]byte{
+			"skills/parent.zip": parent,
+			"skills/child.zip":  child,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve bundled pipeline dependency: %v", err)
+	}
+	if len(selected) != 2 || selected[0].Name != "child" || selected[1].Name != "parent" {
+		t.Fatalf("selected skills = %+v, want parent dependency closure only", selected)
+	}
+}
+
+func TestExpertPackageRequiredSkillsRejectsMissingPipelineChildBeforeImport(t *testing.T) {
+	installed := map[string]corelib.NLSkillEntry{
+		"parent": {
+			Name:     "parent",
+			Pipeline: []corelib.SkillPipelineStep{{Skill: "child"}},
+		},
+	}
+
+	_, err := (&App{}).expertPackageRequiredSkills(
+		[]string{"parent"},
+		installed,
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), `skill "child"`) {
+		t.Fatalf("resolve missing pipeline dependency error = %v, want child dependency error", err)
+	}
+}
+
+func TestExpertPackageRequiredSkillsBoundsInstalledPipelineClosure(t *testing.T) {
+	installed := make(map[string]corelib.NLSkillEntry, maxExpertPackageSkills+1)
+	for i := 0; i <= maxExpertPackageSkills; i++ {
+		name := fmt.Sprintf("pipeline-%03d", i)
+		entry := corelib.NLSkillEntry{Name: name}
+		if i < maxExpertPackageSkills {
+			entry.Pipeline = []corelib.SkillPipelineStep{{Skill: fmt.Sprintf("pipeline-%03d", i+1)}}
+		}
+		installed[name] = entry
+	}
+
+	_, err := (&App{}).expertPackageRequiredSkills(
+		[]string{"pipeline-000"},
+		installed,
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "too many dependent skills") {
+		t.Fatalf("resolve oversized installed pipeline closure error = %v, want size limit", err)
 	}
 }
 

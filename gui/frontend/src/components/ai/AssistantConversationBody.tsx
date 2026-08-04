@@ -157,7 +157,7 @@ export function AssistantConversationBody({
                     </div>
                     <button
                         onClick={onOpenOnboarding}
-                        style={{ padding: "10px 28px", fontSize: "15px", fontWeight: 600, background: "#2f5f98", color: "#fff", border: "1px solid #2f5f98", borderRadius: "8px", cursor: "pointer", transition: "opacity 0.2s" }}
+                        style={{ padding: "10px 28px", fontSize: "15px", fontWeight: 600, background: "#2f6fbc", color: "#fff", border: "1px solid #2f6fbc", borderRadius: "8px", cursor: "pointer", transition: "opacity 0.2s" }}
                         onMouseEnter={e => (e.currentTarget.style.opacity = "0.85")}
                         onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
                     >
@@ -172,7 +172,7 @@ export function AssistantConversationBody({
                             fontFamily: "'Monoton', cursive",
                             fontSize: '38px',
                             lineHeight: 1,
-                            color: '#2f5f98',
+                            color: '#2f6fbc',
                             animation: 'maclaw-brand-shimmer 2.5s ease-in-out infinite',
                         }}>6</span>
                     </div>

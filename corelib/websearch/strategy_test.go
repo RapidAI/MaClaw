@@ -596,6 +596,31 @@ func TestSearchWithStrategyRejectsInvalidBrowserFallbackResults(t *testing.T) {
 	}
 }
 
+func TestPublicNetworkSearchDisablesCredentialAndBrowserTransports(t *testing.T) {
+	calledBrowser := false
+	SetBrowserSearchProvider(func(_ context.Context, _ string, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		calledBrowser = true
+		return []BrowserSearchHit{{Title: "unexpected", URL: "https://example.com"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: corelib.WebSearchStrategyVersion, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "google", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportBrowser},
+			{ID: "brave", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportAPI, APIKey: "secret"},
+		},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
+	}
+	_, err := SearchWithStrategyCtx(WithPublicNetworkOnly(context.Background()), "golang", 3, strategy)
+	if err == nil || !strings.Contains(err.Error(), "no enabled") {
+		t.Fatalf("public search error = %v, want no permitted engine", err)
+	}
+	if calledBrowser {
+		t.Fatal("public search invoked the managed browser")
+	}
+}
+
 func TestQueryFingerprintUsesProcessSalt(t *testing.T) {
 	query := "sensitive search"
 	plain := sha256.Sum256([]byte(query))

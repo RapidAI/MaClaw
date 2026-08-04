@@ -8,6 +8,9 @@ import (
 )
 
 func TestDevicePairingStoreConsumesCodeOnceAndExpires(t *testing.T) {
+	if srvDevicePairingTTL != 30*time.Minute {
+		t.Fatalf("device pairing TTL = %s, want 30m", srvDevicePairingTTL)
+	}
 	store := newSrvDevicePairingStore()
 	now := time.Date(2026, time.August, 2, 9, 0, 0, 0, time.UTC)
 	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}
@@ -33,9 +36,10 @@ func TestDevicePairingStoreConsumesCodeOnceAndExpires(t *testing.T) {
 
 func TestDevicePairCodeFromTranscript(t *testing.T) {
 	cases := map[string]string{
-		"645432":          "645432",
-		"请配对 六 四 五 四 三 二": "645432",
-		"零幺两三四五":          "012345",
+		"645432":                       "645432",
+		"请配对 六 四 五 四 三 二":              "645432",
+		"零幺两三四五":                       "012345",
+		"six four five four three two": "645432",
 	}
 	for input, want := range cases {
 		got, ok := devicePairCodeFromTranscript(input)

@@ -112,6 +112,16 @@ func (s *Service) Close() error {
 
 func (s *Service) DataRoot() string { return s.dataRoot }
 
+// UserDataRoot returns the isolated persistent data directory for one
+// principal. Host-side integrations use it for per-user delivery cursors and
+// must not place that state in the service-wide root.
+func (s *Service) UserDataRoot(p Principal) string {
+	if s == nil {
+		return ""
+	}
+	return s.userDataRoot(p.TenantID, p.UserID)
+}
+
 func (s *Service) registerRunCancel(runID string, cancel context.CancelFunc) {
 	if strings.TrimSpace(runID) == "" || cancel == nil {
 		return

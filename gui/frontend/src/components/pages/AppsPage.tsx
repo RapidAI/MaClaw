@@ -2268,7 +2268,7 @@ const initialApps: AppEntry[] = [];
 
 const marketCatalogApps: AppEntry[] = [
     { id: 'market-contract-archive', name: '\u5408\u540c\u5f52\u6863', description: '\u4e0a\u4f20\u5408\u540c\u548c\u9644\u4ef6\uff0c\u751f\u6210\u5f52\u6863\u7f16\u53f7\u3001\u5ba1\u6838\u72b6\u6001\u548c\u8bc1\u636e\u6458\u8981\u3002', category: '\u6cd5\u52a1', kind: 'tool_app', icon: 'contract', accent: '#7c3f58', source: 'market', manifest: makeSkillManifest('contract-archive', 'mixed', ['docx', 'pdf', 'json']) },
-    { id: 'market-invoice-check', name: '\u53d1\u7968\u6838\u9a8c', description: '\u6838\u5bf9\u53d1\u7968\u3001\u91d1\u989d\u3001\u62ac\u5934\u548c\u8d39\u7528\u79d1\u76ee\uff0c\u8f93\u51fa\u5f02\u5e38\u6e05\u5355\u3002', category: '\u8d22\u52a1', kind: 'tool_app', icon: 'invoice', accent: '#2f5f98', source: 'market', manifest: makeSkillManifest('invoice-check', 'file', ['xlsx', 'pdf']) },
+    { id: 'market-invoice-check', name: '\u53d1\u7968\u6838\u9a8c', description: '\u6838\u5bf9\u53d1\u7968\u3001\u91d1\u989d\u3001\u62ac\u5934\u548c\u8d39\u7528\u79d1\u76ee\uff0c\u8f93\u51fa\u5f02\u5e38\u6e05\u5355\u3002', category: '\u8d22\u52a1', kind: 'tool_app', icon: 'invoice', accent: '#2f6fbc', source: 'market', manifest: makeSkillManifest('invoice-check', 'file', ['xlsx', 'pdf']) },
     { id: 'market-meeting-minutes', name: '\u4f1a\u8bae\u7eaa\u8981', description: '\u6574\u7406\u4f1a\u8bae\u8bb0\u5f55\u6216\u5f55\u97f3\u8f6c\u5199\uff0c\u751f\u6210\u51b3\u8bae\u3001\u5f85\u529e\u548c\u8d23\u4efb\u4eba\u3002', category: 'OA', kind: 'tool_app', icon: 'calendar', accent: '#4b6572', source: 'market', manifest: makeSkillManifest('meeting-minutes', 'mixed', ['docx', 'txt']) },
     { id: 'market-sales-followup', name: '\u5ba2\u6237\u8ddf\u8fdb', description: '\u6839\u636e\u5ba2\u6237\u6c9f\u901a\u8bb0\u5f55\u751f\u6210\u8ddf\u8fdb\u8ba1\u5212\uff0c\u540c\u6b65\u5ba2\u6237\u72b6\u6001\u548c\u4e0b\u4e00\u6b65\u52a8\u4f5c\u3002', category: 'CRM', kind: 'enterprise_normal_app', icon: 'customer', accent: '#8a5a44', source: 'market', manifest: makeDataSrvManifest('sales', 'sales.followup_upsert', 'sales.customer_directory', 'sales.followup_by_status', 'sales.overview') },
 ];
@@ -2307,7 +2307,7 @@ const appIconLabel = (icon: AppIconName, lang?: string) => {
 };
 
 const appAccentSwatches = [
-    { value: '#2f5f98', zh: '\u84dd\u8272', hant: '\u85cd\u8272', en: 'Blue' },
+    { value: '#2f6fbc', zh: '\u84dd\u8272', hant: '\u85cd\u8272', en: 'Blue' },
     { value: '#657a42', zh: '\u7eff\u8272', hant: '\u7da0\u8272', en: 'Green' },
     { value: '#7c3f58', zh: '\u7d2b\u7ea2', hant: '\u7d2b\u7d05', en: 'Plum' },
     { value: '#b45309', zh: '\u7425\u73c0', hant: '\u7425\u73c0', en: 'Amber' },
@@ -2318,7 +2318,7 @@ const appAccentSwatches = [
     { value: '#6b7280', zh: '\u4e2d\u6027\u7070', en: 'Gray' },
 ];
 
-const defaultAccentForKind = (kind: AppKind) => kind === 'enterprise_approval_app' ? '#2f5f98' : kind === 'enterprise_normal_app' ? '#4b6572' : kind === 'automation_app' ? '#4b6572' : '#28705f';
+const defaultAccentForKind = (kind: AppKind) => kind === 'enterprise_approval_app' ? '#2f6fbc' : kind === 'enterprise_normal_app' ? '#4b6572' : kind === 'automation_app' ? '#4b6572' : '#28705f';
 
 function normalizeAppKind(raw: unknown): AppKind {
     if (raw === 'enterprise_approval_app' || raw === 'approval_app') return 'enterprise_approval_app';
@@ -4685,7 +4685,7 @@ function domainAccent(domain: string) {
         sales: '#8a5a44',
         procurement: '#657a42',
         inventory: '#6b7280',
-        finance: '#2f5f98',
+        finance: '#2f6fbc',
         hr: '#5b5ea6',
         company: '#4b6572',
         assets: '#28705f',
@@ -18758,7 +18758,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             </div>
             {manageFilterSummary && <div className="apps-filter-summary apps-filter-summary--manage" aria-live="polite">{manageFilterSummary}</div>}
             {skillDiscovery.status === 'error' && (
-                <div className="apps-filter-summary apps-filter-summary--manage" style={{ color: 'var(--error-color, #ef4444)' }}>
+                <div className="apps-filter-summary apps-filter-summary--manage" style={{ color: 'var(--theme-danger, #ef4444)' }}>
                     {localizeText(lang, 'Could not check installed capabilities', '\u68c0\u67e5\u5df2\u5b89\u88c5\u80fd\u529b\u65f6\u9047\u5230\u95ee\u9898', '\u6aa2\u67e5\u5df2\u5b89\u88dd\u80fd\u529b\u6642\u9047\u5230\u554f\u984c')}
                     {skillDiscovery.error && <span> &middot; {skillDiscovery.error}</span>}
                 </div>

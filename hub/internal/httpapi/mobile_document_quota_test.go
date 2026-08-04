@@ -19,7 +19,8 @@ func TestMobileDocumentQuotaUsedBytes(t *testing.T) {
 
 	mobileDocuments.Lock()
 	mobileDocuments.drafts["q_d1"] = mobileDocumentDraftRecord{
-		ID: "q_d1", OwnerID: owner, TenantID: enroll.TenantID, Title: "A", Markdown: strings.Repeat("x", 100), UpdatedAt: time.Now().UTC(),
+		ID: "q_d1", OwnerID: owner, TenantID: enroll.TenantID, Title: "A", Markdown: strings.Repeat("x", 100),
+		Images: []mobileDocumentDraftImage{{ID: "img1", SourceSize: 25}}, UpdatedAt: time.Now().UTC(),
 	}
 	mobileDocuments.uploads["q_u1"] = mobileDocumentUploadRecord{
 		TaskID: "q_u1", OwnerID: owner, TenantID: enroll.TenantID, SourceBytes: []byte(strings.Repeat("y", 50)),
@@ -37,8 +38,8 @@ func TestMobileDocumentQuotaUsedBytes(t *testing.T) {
 	})
 
 	used := mobileDocumentQuotaUsedBytes(owner, enroll.TenantID)
-	if used != 150 {
-		t.Fatalf("used=%d want 150", used)
+	if used != 175 {
+		t.Fatalf("used=%d want 175", used)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/quota", nil)
@@ -52,7 +53,7 @@ func TestMobileDocumentQuotaUsedBytes(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["document_quota_used_bytes"] != float64(150) {
+	if body["document_quota_used_bytes"] != float64(175) {
 		t.Fatalf("body=%#v", body)
 	}
 }
@@ -82,6 +83,38 @@ func TestMobileDocumentQuotaKeepsTenantsIsolated(t *testing.T) {
 	}
 	if runes := mobileDocumentDraftRuneEstimate(owner, "tenant-a"); runes != 20 {
 		t.Fatalf("tenant-a runes=%d want 20", runes)
+	}
+}
+
+func TestMobileDocumentQuotaDeduplicatesOnlySharedBlobPath(t *testing.T) {
+	owner := "quota-shared-blob-owner"
+	tenant := "quota-shared-blob-tenant"
+	now := time.Now().UTC()
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["quota-shared-draft"] = mobileDocumentDraftRecord{
+		ID: "quota-shared-draft", OwnerID: owner, TenantID: tenant,
+		Markdown: "body", SourcePath: "owner/upload/shared.bin", SourceSize: 40, UpdatedAt: now,
+	}
+	mobileDocuments.uploads["quota-shared-upload"] = mobileDocumentUploadRecord{
+		TaskID: "quota-shared-upload", DraftID: "quota-shared-draft", OwnerID: owner, TenantID: tenant,
+		SourcePath: "owner/upload/shared.bin", SourceSize: 40,
+	}
+	mobileDocuments.uploads["quota-distinct-upload"] = mobileDocumentUploadRecord{
+		TaskID: "quota-distinct-upload", DraftID: "quota-shared-draft", OwnerID: owner, TenantID: tenant,
+		SourcePath: "owner/upload/distinct.bin", SourceSize: 30,
+	}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, "quota-shared-draft")
+		delete(mobileDocuments.uploads, "quota-shared-upload")
+		delete(mobileDocuments.uploads, "quota-distinct-upload")
+		mobileDocuments.Unlock()
+	})
+
+	// Markdown 4 + shared blob 40 + separately stored upload blob 30.
+	if used, _ := mobileDocumentQuotaScan(owner, tenant, false); used != 74 {
+		t.Fatalf("used=%d want 74", used)
 	}
 }
 

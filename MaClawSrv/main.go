@@ -106,9 +106,11 @@ func runServer(ctx context.Context) error {
 
 	// Proactive IM text tool (independent of scheduler enablement).
 	if executor != nil {
-		executor.IMMessageHandler = newSrvIMMessageHandler(svc)
+		executor.IMMessageHandlerContext = newSrvIMMessageHandlerContext(svc)
+		executor.IMFileHandlerContext = newSrvIMFileHandlerContext(svc)
 		defer func() {
-			executor.IMMessageHandler = nil
+			executor.IMMessageHandlerContext = nil
+			executor.IMFileHandlerContext = nil
 		}()
 	}
 

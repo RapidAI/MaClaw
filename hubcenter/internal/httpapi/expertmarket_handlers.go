@@ -772,11 +772,15 @@ func (h *SkillMarketHandlers) adminSetExpertMarketStatus(w http.ResponseWriter, 
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body)
 	body.Reason = strings.TrimSpace(body.Reason)
-	if body.Reason == "" {
-		smError(w, http.StatusBadRequest, "a moderation reason is required")
+	listingID := strings.TrimSpace(r.PathValue("id"))
+	tx, err := h.store.DB().BeginTx(r.Context(), nil)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	res, err := h.store.DB().ExecContext(r.Context(), "UPDATE sm_expert_market_listings SET status=?, review_note=?, updated_at=? WHERE id=? AND status=?", to, body.Reason, expertMarketNow(), r.PathValue("id"), from)
+	defer tx.Rollback()
+	now := expertMarketNow()
+	res, err := tx.ExecContext(r.Context(), "UPDATE sm_expert_market_listings SET status=?, review_note=?, updated_at=? WHERE id=? AND status=?", to, body.Reason, now, listingID, from)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -785,7 +789,18 @@ func (h *SkillMarketHandlers) adminSetExpertMarketStatus(w http.ResponseWriter, 
 		smError(w, http.StatusConflict, "expert listing is not in the expected status")
 		return
 	}
-	h.recordExpertMarketEvent(r, r.PathValue("id"), eventAction, body.Reason)
+	actor := "administrator"
+	if admin := AdminFromContext(r.Context()); admin != nil {
+		actor = firstNonEmpty(admin.Username, admin.Email, actor)
+	}
+	if _, err := tx.ExecContext(r.Context(), `INSERT INTO sm_expert_market_events (id, listing_id, actor, action, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)`, "expert_"+uniqueID("event"), listingID, actor, eventAction, body.Reason, now); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": to})
 }
 func (h *SkillMarketHandlers) AdminApproveExpertMarketListing(w http.ResponseWriter, r *http.Request) {

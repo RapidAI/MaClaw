@@ -14,9 +14,15 @@ import (
 func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution(t *testing.T) {
 	setUnifiedClassifierForIM(nil)
 	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
+	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"coding\",\"confidence\":0.96,\"reason\":\"code change request\",\"evidence\":[\"bug fix\"]}"}}]}`)
+		requestCount++
+		if requestCount == 1 {
+			_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"coding\",\"confidence\":0.96,\"reason\":\"code change request\",\"evidence\":[\"bug fix\"]}"}}]}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"task_type\":\"code repair\",\"summary\":\"Fix the login flow defect in the current project.\",\"execution_plan\":[\"Inspect the login implementation\",\"Implement and verify the fix\"],\"enhanced_instruction\":\"Diagnose and fix the login defect in the current project, then verify the affected flow.\"}"}}]}`)
 	}))
 	defer server.Close()
 
@@ -73,6 +79,49 @@ func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution
 	}
 	if len(resp.Actions) < 2 || resp.Actions[0].Command != buildConfirmationActionCommand("confirm", resp.Confirmation.ID) {
 		t.Fatalf("expected structured confirmation command, got %+v", resp.Actions)
+	}
+}
+
+func TestHandleIMMessageWithProgressAndStream_SkipsEchoOnlyConfirmation(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		requestCount++
+		if requestCount == 1 {
+			_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"coding\",\"confidence\":0.96,\"reason\":\"code change request\",\"evidence\":[\"bug fix\"]}"}}]}`)
+			return
+		}
+		// No task understanding can be parsed, which used to produce a card that
+		// merely repeated the original text.
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"not valid task-understanding json"}}]}`)
+	}))
+	defer server.Close()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{Name: "Custom1", URL: server.URL, Model: "test-model", Protocol: "openai", IsCustom: true, AuthType: "none", ContextLength: 16000}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	msg := IMUserMessage{UserID: "u1", Platform: "wecom", Text: "fix the login bug and edit code"}
+	resp, handled := h.handleExecutionConfirmationGate(true, msg, msg.Text, http.DefaultClient)
+	if handled || resp != nil {
+		t.Fatalf("echo-only task understanding must fall through without a confirmation, handled=%v response=%+v", handled, resp)
+	}
+	if got := h.confirmationStore.get("u1"); got != nil {
+		t.Fatalf("echo-only task understanding must not be stored, got %+v", got)
 	}
 }
 

@@ -292,26 +292,26 @@ func validateEmbeddingBatchOutput(entity string, vectors [][]float32, expected, 
 	return nil
 }
 
+type rrfScoredResult struct {
+	result SearchResult
+	score  float64
+}
+
 // rrfFuse merges FTS results and embedding results using Reciprocal Rank Fusion.
 // k=60 is the standard RRF constant.
 func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
 	const k = 60.0
 
-	type scored struct {
-		result SearchResult
-		score  float64
-	}
-
 	// Build a score map by the concrete result entity. Provenance fields (for
 	// example Fact.CardID) must not collapse different result types.
-	scoreMap := make(map[string]*scored)
+	scoreMap := make(map[string]*rrfScoredResult)
 
 	for rank, r := range ftsResults {
 		key := embeddingResultKey(r)
 		if s, ok := scoreMap[key]; ok {
 			s.score += 1.0 / (k + float64(rank+1))
 		} else {
-			scoreMap[key] = &scored{result: r, score: 1.0 / (k + float64(rank+1))}
+			scoreMap[key] = &rrfScoredResult{result: r, score: 1.0 / (k + float64(rank+1))}
 		}
 	}
 	for rank, r := range embResults {
@@ -323,14 +323,18 @@ func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
 				s.result.Score = r.Score
 			}
 		} else {
-			scoreMap[key] = &scored{result: r, score: 1.0 / (k + float64(rank+1))}
+			scoreMap[key] = &rrfScoredResult{result: r, score: 1.0 / (k + float64(rank+1))}
 		}
 	}
+	// Different indexes can surface the same evidence through different entity
+	// types (for example a distilled card plus its source node). Merge only exact
+	// normalized evidence duplicates; distinct facts from one card remain intact.
+	scoreMap = mergeExactEvidenceDuplicates(scoreMap)
 
 	// Sort by RRF score. A map iteration order must never leak into retrieval
 	// output: tied scores are common for short result lists and pagination needs
 	// deterministic ordering.
-	all := make([]scored, 0, len(scoreMap))
+	all := make([]rrfScoredResult, 0, len(scoreMap))
 	for _, s := range scoreMap {
 		all = append(all, *s)
 	}
@@ -354,6 +358,59 @@ func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
 		results = append(results, s.result)
 	}
 	return results
+}
+
+func mergeExactEvidenceDuplicates(in map[string]*rrfScoredResult) map[string]*rrfScoredResult {
+	if len(in) < 2 {
+		return in
+	}
+	out := make(map[string]*rrfScoredResult, len(in))
+	evidenceToKey := make(map[string]string, len(in))
+	keys := make([]string, 0, len(in))
+	for key := range in {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		candidate := in[key]
+		evidence := exactSearchEvidenceKey(candidate.result)
+		if evidence == "" {
+			out[key] = candidate
+			continue
+		}
+		if existingKey, ok := evidenceToKey[evidence]; ok {
+			existing := out[existingKey]
+			existing.score += candidate.score
+			if candidate.result.Score > existing.result.Score {
+				existing.result.Score = candidate.result.Score
+			}
+			continue
+		}
+		evidenceToKey[evidence] = key
+		out[key] = candidate
+	}
+	return out
+}
+
+func exactSearchEvidenceKey(r SearchResult) string {
+	text := strings.ToLower(strings.Join(strings.Fields(BestContentText(r)), " "))
+	if len([]rune(text)) < 24 {
+		return ""
+	}
+	source := strings.TrimSpace(r.Source.ContentHash)
+	if source == "" {
+		source = strings.TrimSpace(r.Source.ID)
+	}
+	if source == "" {
+		return ""
+	}
+	location := fmt.Sprintf("page=%d\x00sheet=%s\x00row=%s\x00col=%s",
+		r.Page,
+		strings.ToLower(strings.TrimSpace(r.SheetName)),
+		strings.ToLower(strings.TrimSpace(r.RowRange)),
+		strings.ToLower(strings.TrimSpace(r.ColRange)),
+	)
+	return source + "\x00" + location + "\x00" + text
 }
 
 // backfillCardEmbeddings generates embeddings for cards that don't have one yet.

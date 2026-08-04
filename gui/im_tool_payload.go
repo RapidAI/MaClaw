@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
@@ -11,6 +12,7 @@ type pendingFile struct {
 	name, mimeType, data string
 	forwardIM            bool
 	message              string
+	target               agent.IMFileDeliveryTarget
 }
 
 type toolPayloadObservation struct {
@@ -102,6 +104,7 @@ func parseToolPayloadResultForPlatformLang(result, platform, lang string) toolPa
 		forwardIM := false
 		mimeType := parts[1]
 		var message string
+		var target agent.IMFileDeliveryTarget
 		for i := 2; i < len(parts); i++ {
 			seg := parts[i]
 			if normalizeToolPayloadFileFlag(seg) == toolPayloadFileFlagForwardIM {
@@ -112,6 +115,8 @@ func parseToolPayloadResultForPlatformLang(result, platform, lang string) toolPa
 				}
 			} else if strings.HasPrefix(seg, "msg:") {
 				message = strings.TrimPrefix(seg, "msg:")
+			} else if decoded, ok := agent.DecodeIMFileDeliveryTargetFlag(seg); ok {
+				target = decoded
 			} else {
 				mimeType += "|" + seg
 			}
@@ -125,6 +130,7 @@ func parseToolPayloadResultForPlatformLang(result, platform, lang string) toolPa
 			data:      rest[closeBracket+1:],
 			forwardIM: forwardIM,
 			message:   message,
+			target:    target,
 		}
 		// Interim observation for the model (materialize may replace with final status).
 		onIMChannel := normalizeIMMessagePlatformKind(platform).IsIMChannel()

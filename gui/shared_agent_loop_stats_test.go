@@ -167,6 +167,29 @@ func TestGetSharedAgentLoopStatus_PromptProfileEnvOverride(t *testing.T) {
 	}
 }
 
+func TestGetSharedAgentLoopStatusIncludesTokenOptimizationTelemetry(t *testing.T) {
+	t.Setenv("MACLAW_CONTEXT_CHECKPOINT", "shadow")
+	before := agent.CurrentLoopInputBreakdownStats()
+	agent.RecordLoopInputBreakdown(agent.LoopInputBreakdown{
+		SystemPromptTokens:   11,
+		ToolDefinitionTokens: 13,
+		HistoryTokens:        17,
+		ToolResultTokens:     19,
+		TotalEstimatedTokens: 60,
+	})
+
+	st := (&App{}).GetSharedAgentLoopStatus()
+	if st.InputBreakdown.Requests != before.Requests+1 || st.InputBreakdown.TotalEstimatedTokens != before.TotalEstimatedTokens+60 {
+		t.Fatalf("input breakdown not surfaced: before=%+v status=%+v", before, st.InputBreakdown)
+	}
+	if st.ContextCheckpoints != agent.CurrentContextCheckpointStats() {
+		t.Fatalf("checkpoint stats differ: status=%+v current=%+v", st.ContextCheckpoints, agent.CurrentContextCheckpointStats())
+	}
+	if st.ContextCheckpointMode != "shadow" {
+		t.Fatalf("checkpoint mode = %q, want shadow", st.ContextCheckpointMode)
+	}
+}
+
 func TestResetAdaptivePromptStats(t *testing.T) {
 	agent.ResetPromptProfileStatsForTest()
 	agent.RecordPromptProfileSavings(agent.PromptProfileLight, 2000, 500)

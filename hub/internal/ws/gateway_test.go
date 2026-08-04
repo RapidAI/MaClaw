@@ -3,18 +3,160 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/gorilla/websocket"
 )
+
+type proactiveFileCapture struct {
+	broadcastCalls int
+	targetCalls    int
+	tenantID       string
+	userID         string
+	target         agent.IMFileDeliveryTarget
+	data           string
+	fileName       string
+	mimeType       string
+	message        string
+	targetErr      error
+}
+
+func (p *proactiveFileCapture) SendProactiveMessage(context.Context, string, string, string) error {
+	return nil
+}
+
+func (p *proactiveFileCapture) SendProactiveMessageToTarget(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
+func (p *proactiveFileCapture) SendProactiveFile(_ context.Context, tenantID, userID, data, fileName, mimeType, message string) error {
+	p.broadcastCalls++
+	p.capture(tenantID, userID, agent.IMFileDeliveryTarget{}, data, fileName, mimeType, message)
+	return nil
+}
+
+func (p *proactiveFileCapture) SendProactiveFileToTarget(_ context.Context, tenantID, userID string, target agent.IMFileDeliveryTarget, data, fileName, mimeType, message string) error {
+	p.targetCalls++
+	p.capture(tenantID, userID, target, data, fileName, mimeType, message)
+	return p.targetErr
+}
+
+func (p *proactiveFileCapture) capture(tenantID, userID string, target agent.IMFileDeliveryTarget, data, fileName, mimeType, message string) {
+	p.tenantID = tenantID
+	p.userID = userID
+	p.target = target
+	p.data = data
+	p.fileName = fileName
+	p.mimeType = mimeType
+	p.message = message
+}
+
+func proactiveFileEnvelope(t *testing.T, payload map[string]any) Envelope {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Envelope{Type: "im.proactive_file", Payload: raw}
+}
+
+func TestHandleIMProactiveFileUsesExactTargetWithoutBroadcast(t *testing.T) {
+	capture := &proactiveFileCapture{}
+	gateway := &Gateway{IMProactive: capture}
+	ctx := &ConnContext{Role: "machine", TenantID: "tenant-authenticated", UserID: "user-authenticated"}
+	target := map[string]any{
+		"channel": " lansenger ", "group_id": " group-9 ", "group_name": " 研发群 ",
+	}
+	msg := proactiveFileEnvelope(t, map[string]any{
+		"file_data": "ZGF0YQ==", "file_name": "report.pdf", "mime_type": "application/pdf",
+		"message": "报告已生成", "target": target,
+		// Payload identity is deliberately untrusted and must never override the
+		// authenticated WebSocket connection identity.
+		"tenant_id": "tenant-attacker", "user_id": "user-attacker",
+	})
+
+	if err := gateway.handleIMProactiveFile(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+	if capture.targetCalls != 1 || capture.broadcastCalls != 0 {
+		t.Fatalf("target calls=%d broadcast calls=%d", capture.targetCalls, capture.broadcastCalls)
+	}
+	if capture.tenantID != ctx.TenantID || capture.userID != ctx.UserID {
+		t.Fatalf("sender identity=%q/%q, want authenticated %q/%q", capture.tenantID, capture.userID, ctx.TenantID, ctx.UserID)
+	}
+	if capture.target.Channel != "lansenger" || capture.target.GroupID != "group-9" || capture.target.GroupName != "研发群" {
+		t.Fatalf("normalized target=%#v", capture.target)
+	}
+	if capture.data != "ZGF0YQ==" || capture.fileName != "report.pdf" || capture.mimeType != "application/pdf" || capture.message != "报告已生成" {
+		t.Fatalf("file request not preserved: %#v", capture)
+	}
+}
+
+func TestHandleIMProactiveFileWithoutTargetPreservesLegacyBroadcast(t *testing.T) {
+	capture := &proactiveFileCapture{}
+	gateway := &Gateway{IMProactive: capture}
+	ctx := &ConnContext{Role: "machine", TenantID: "tenant-a", UserID: "user-a"}
+	msg := proactiveFileEnvelope(t, map[string]any{
+		"file_data": "ZGF0YQ==", "file_name": "notes.txt", "mime_type": "text/plain",
+	})
+
+	if err := gateway.handleIMProactiveFile(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+	if capture.broadcastCalls != 1 || capture.targetCalls != 0 {
+		t.Fatalf("broadcast calls=%d target calls=%d", capture.broadcastCalls, capture.targetCalls)
+	}
+}
+
+func TestHandleIMProactiveFileExactTargetFailureNeverFallsBack(t *testing.T) {
+	capture := &proactiveFileCapture{targetErr: errors.New("target is outside tenant")}
+	gateway := &Gateway{IMProactive: capture}
+	ctx := &ConnContext{Role: "machine", TenantID: "tenant-a", UserID: "user-a"}
+	msg := proactiveFileEnvelope(t, map[string]any{
+		"file_data": "ZGF0YQ==", "file_name": "report.pdf",
+		"target": map[string]any{"channel": "feishu", "group_id": "foreign-chat"},
+	})
+
+	if err := gateway.handleIMProactiveFile(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+	if capture.targetCalls != 1 || capture.broadcastCalls != 0 {
+		t.Fatalf("failed exact target must not fall back: target=%d broadcast=%d", capture.targetCalls, capture.broadcastCalls)
+	}
+}
+
+func TestHandleIMProactiveFileIncompleteExactTargetIsRejectedWithoutBroadcast(t *testing.T) {
+	for name, target := range map[string]map[string]any{
+		"missing channel":   {"group_id": "group-9"},
+		"missing recipient": {"channel": "feishu", "group_name": "研发群"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			capture := &proactiveFileCapture{}
+			gateway := &Gateway{IMProactive: capture}
+			ctx := &ConnContext{Role: "machine", TenantID: "tenant-a", UserID: "user-a"}
+			msg := proactiveFileEnvelope(t, map[string]any{
+				"file_data": "ZGF0YQ==", "file_name": "report.pdf", "target": target,
+			})
+
+			if err := gateway.handleIMProactiveFile(ctx, msg); err != nil {
+				t.Fatal(err)
+			}
+			if capture.targetCalls != 0 || capture.broadcastCalls != 0 {
+				t.Fatalf("incomplete target must not be sent: target=%d broadcast=%d", capture.targetCalls, capture.broadcastCalls)
+			}
+		})
+	}
+}
 
 type testIdentityService struct{}
 
@@ -1191,6 +1333,8 @@ type deviceGatewayReplyCapture struct {
 	replies        []map[string]any
 	profileUpdates int
 	petSkin        string
+	volumeUpdates  int
+	volume         any
 }
 
 func (g *deviceGatewayReplyCapture) RegisterPairing(string, string, string, string) error { return nil }
@@ -1198,9 +1342,17 @@ func (g *deviceGatewayReplyCapture) ServeHTTP(http.ResponseWriter, *http.Request
 func (g *deviceGatewayReplyCapture) EnqueueReply(_, _ string, reply map[string]any) {
 	g.replies = append(g.replies, reply)
 }
+func (g *deviceGatewayReplyCapture) EnqueueMachineReply(_ string, _ string, reply map[string]any) {
+	g.replies = append(g.replies, reply)
+}
 func (g *deviceGatewayReplyCapture) UpdateMachinePetProfileAsset(_ string, skin string, _ bool, _ map[string]any) {
 	g.profileUpdates++
 	g.petSkin = skin
+}
+func (g *deviceGatewayReplyCapture) UpdateMachineVolume(_ string, volume any) error {
+	g.volumeUpdates++
+	g.volume = volume
+	return nil
 }
 
 func TestHandleDeviceGatewayReplyDoesNotResetPetProfile(t *testing.T) {
@@ -1235,5 +1387,24 @@ func TestHandleDeviceGatewayPetProfileUpdateIsExplicit(t *testing.T) {
 	}
 	if capture.profileUpdates != 1 || capture.petSkin != "mini-claw" || len(capture.replies) != 0 {
 		t.Fatalf("explicit profile update=%d skin=%q replies=%#v", capture.profileUpdates, capture.petSkin, capture.replies)
+	}
+}
+
+func TestHandleDeviceGatewayVolumeUpdateIsDurableAndRelayed(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{}
+	gateway := &Gateway{DeviceGateway: capture}
+	ctx := &ConnContext{Role: "machine", MachineID: "gui-a"}
+	payload, _ := json.Marshal(map[string]any{
+		"clientId": "*", "conversationId": "system",
+		"reply": map[string]any{"reply_type": "hardware_config", "extra": map[string]any{"volume": 0}},
+	})
+	if err := gateway.handleDeviceGatewayReply(ctx, Envelope{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if capture.volumeUpdates != 1 || capture.volume != float64(0) {
+		t.Fatalf("volume update=%d value=%#v", capture.volumeUpdates, capture.volume)
+	}
+	if len(capture.replies) != 1 || capture.replies[0]["reply_type"] != "hardware_config" {
+		t.Fatalf("volume update was not relayed: %#v", capture.replies)
 	}
 }

@@ -2959,6 +2959,10 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 	ctx, cancel := h.imToolContext()
 	defer cancel()
 	strategy := h.getWebSearchStrategy()
+	if isLansengerGroupPublicWebToolCall(args) {
+		strategy = lansengerGroupPublicWebSearchStrategy(strategy)
+		ctx = websearch.WithPublicNetworkOnly(ctx)
+	}
 	response, err := websearch.SearchWithStrategyCtx(ctx, query, maxResults, strategy)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %s", err.Error())
@@ -2995,6 +2999,11 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		maxChars = 0
 	}
 	opts := &websearch.FetchOptions{Offset: offset, MaxChars: maxChars}
+	if isLansengerGroupPublicWebToolCall(args) {
+		// A group member may access only public HTTP(S) endpoints. This also
+		// avoids cookies, proxy transport and browser-auth fallbacks.
+		opts.PublicNetworkOnly = true
+	}
 	if renderJS, ok := args["render_js"].(bool); ok {
 		opts.RenderJS = renderJS
 	}
@@ -3022,6 +3031,9 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		}
 		opts.SavePath = abs
 		opts.MaxBytes = maxWebFetchDownloadBytes
+		if opts.PublicNetworkOnly {
+			opts.SaveRoot = baseDir
+		}
 	} else {
 		// For text content, allow up to 2MB raw before extraction/windowing.
 		opts.MaxBytes = 2 * 1024 * 1024
@@ -3060,7 +3072,7 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	// Use provider-aware fetch: TinyFish has better content extraction.
 	// FetchWithProvider handles TinyFish routing, offset/maxChars windowing, and fallback.
 	var fetchProvider corelib.WebSearchProvider
-	if opts.SavePath == "" && h != nil && h.app != nil {
+	if opts.SavePath == "" && !opts.PublicNetworkOnly && h != nil && h.app != nil {
 		strategy := h.app.effectiveWebSearchStrategy()
 		for _, engine := range strategy.Engines {
 			if !engine.Enabled {

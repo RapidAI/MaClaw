@@ -53,7 +53,10 @@ export const DataMigrationOverlay = () => {
             alignItems: 'center',
             justifyContent: 'center',
             background: 'rgba(15, 23, 42, 0.88)',
-            color: 'var(--theme-on-primary, #ffffff)',
+            // Backdrop is a hardcoded dark scrim, so text must stay white —
+            // --theme-on-primary flips to dark (#0f141b) under dark schemes and
+            // would render dark-on-dark here.
+            color: '#ffffff',
             fontFamily: 'system-ui, -apple-system, sans-serif',
         }}>
             <div style={{ textAlign: 'center', maxWidth: '480px', padding: '32px' }}>

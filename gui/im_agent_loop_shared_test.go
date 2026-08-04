@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 // shouldUseSharedAgentLoopLive mirrors shouldUseSharedAgentLoop but uses the
@@ -38,6 +41,53 @@ func shouldUseSharedAgentLoopLive(h *IMMessageHandler, ctx *LoopContext, userID 
 		return true
 	default:
 		return false
+	}
+}
+
+func TestSharedProjectToolResultUsesRuntimePolicyOwner(t *testing.T) {
+	oldBase := maclawpath.BaseDir()
+	maclawpath.SetBaseDir(t.TempDir())
+	t.Cleanup(func() { maclawpath.SetBaseDir(oldBase) })
+	ctx := NewLoopContext("chat", 3, nil)
+	ctx.Runtime.PolicyOwnerID = "remote:mobile"
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, loopCtx: ctx, userID: "desktop-user"}
+	raw := strings.Repeat("raw-result\n", 2000)
+	projected := cb.ProjectToolResult("bash", agent.ToolExecutionResult{Result: raw, Outcome: agent.ToolExecutionOutcomeOK})
+	if !strings.Contains(projected, "[tool_result_handle]") {
+		t.Fatalf("projection missing handle: %q", projected[max(0, len(projected)-300):])
+	}
+	if strings.Contains(projected, maclawpath.ToolResultsDir()) || strings.Contains(projected, "path:") {
+		t.Fatalf("projection exposed local storage path: %q", projected[max(0, len(projected)-500):])
+	}
+	entries, err := os.ReadDir(filepath.Join(maclawpath.ToolResultsDir(), toolresult.SessionDirectoryName("remote:mobile")))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("projection was not stored under runtime policy owner: entries=%d err=%v", len(entries), err)
+	}
+}
+
+func TestGUIAndCoreToolResultProjectionStayEquivalent(t *testing.T) {
+	oldBase := maclawpath.BaseDir()
+	maclawpath.SetBaseDir(t.TempDir())
+	t.Cleanup(func() { maclawpath.SetBaseDir(oldBase) })
+	raw := strings.Repeat("build output\n", 2000)
+	guiProjection := truncateToolResultForToolWithSession("bash", "owner-a", raw)
+	coreProjection := agent.TruncateToolResultForToolWithSession("bash", "owner-a", raw)
+	previewOnly := func(s string) string {
+		if i := strings.Index(s, "\n\n[tool_result_handle]\n"); i >= 0 {
+			return s[:i]
+		}
+		return s
+	}
+	if previewOnly(guiProjection) != previewOnly(coreProjection) {
+		t.Fatal("GUI and core projections diverged before handle metadata")
+	}
+	for label, projection := range map[string]string{"gui": guiProjection, "core": coreProjection} {
+		if !strings.Contains(projection, "[tool_result_handle]") || !strings.Contains(projection, "read_tool_result") {
+			t.Fatalf("%s projection lost read-back metadata: %q", label, projection[max(0, len(projection)-300):])
+		}
+		if len(projection) > agent.MaxToolResultLen {
+			t.Fatalf("%s projection exceeded budget: %d", label, len(projection))
+		}
 	}
 }
 
@@ -472,5 +522,20 @@ func TestSharedAgentLoopCallbacks_SteerSuppressesPostToolFileMaterialization(t *
 		}
 	case <-time.After(time.Second):
 		t.Fatal("tool did not return after release")
+	}
+}
+
+func TestSameConversationElementsDetectsSameLengthReplacement(t *testing.T) {
+	first := map[string]interface{}{"role": "system", "content": "sys"}
+	oldUser := map[string]string{"role": "user", "content": "old"}
+	conversation := []interface{}{first, oldUser}
+	alias := conversation[:]
+	replacement := []interface{}{first, map[string]string{"role": "user", "content": "new"}}
+
+	if !sameConversationElements(alias, conversation) {
+		t.Fatal("slice aliases should compare as the same conversation")
+	}
+	if sameConversationElements(replacement, conversation) {
+		t.Fatal("same-length replacement must be detected")
 	}
 }

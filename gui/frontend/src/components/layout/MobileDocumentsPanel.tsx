@@ -42,6 +42,13 @@ type UploadJob = {
   status: 'reading' | 'uploading' | 'done' | 'error';
   message?: string;
 };
+type MobileDocumentQuota = { document_quota_bytes?: number; document_quota_used_bytes?: number; document_quota_remaining?: number };
+
+function callGetDocumentQuota(): Promise<MobileDocumentQuota> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.GetMobileDocumentQuota) return Promise.reject(new Error('Desktop binding missing GetMobileDocumentQuota — rebuild GUI after pull.'));
+  return app.GetMobileDocumentQuota();
+}
 
 function callListDrafts(limit: number, includeBody: boolean): Promise<MobileDocumentDraftSummary[]> {
   const app = (window as any)?.go?.main?.App;
@@ -518,7 +525,7 @@ function libraryDeleteConfirmCopy(
 function isProcessingAudio(item: MobileLibraryItem | null | undefined): boolean { const status = item?.processing?.status || ''; return status === 'processing' || status === 'finalizing'; }
 function hasMeetingMinutes(item: MobileLibraryItem | null | undefined): boolean { return Boolean(item?.derived_documents?.minutes_draft_id); }
 function formatAudioDuration(seconds?: number): string { const total = Math.max(0, Math.round(Number(seconds || 0))); const min = Math.floor(total / 60); return `${min}:${String(total % 60).padStart(2, '0')}`; }
-function formatLibraryFileSize(bytes?: number): string { const value = Math.max(0, Number(bytes || 0)); return value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / (1024 * 1024)).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`; }
+function formatLibraryFileSize(bytes?: number): string { const value = Math.max(0, Number(bytes || 0)); if (value === 0) return '0 B'; return value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / (1024 * 1024)).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`; }
 function MeetingRecordingPlayer({ item }: { item: MobileLibraryItem }) {
   const [src, setSrc] = useState(''); const [error, setError] = useState('');
   useEffect(() => { let url = ''; let cancelled = false; setSrc(''); setError(''); if (!item.audio?.available) return () => undefined; void callGetMeetingRecordingAudio(item.id).then((payload) => { const raw = String(payload?.data_base64 || ''); if (!raw) throw new Error('empty audio'); const binary = atob(raw); const bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i); url = URL.createObjectURL(new Blob([bytes], { type: String(payload?.content_type || item.audio?.content_type || 'audio/mp4').split(';')[0] })); if (!cancelled) setSrc(url); }).catch((e: any) => { if (!cancelled) setError(String(e?.message || e || 'load failed')); }); return () => { cancelled = true; if (url) URL.revokeObjectURL(url); }; }, [item.id, item.audio?.available, item.audio?.content_type]);
@@ -584,22 +591,6 @@ const TEXT_EXTS = new Set([
   'env',
 ]);
 
-/** Office / binary originals — always import via native path (Hub keeps original). */
-const ORIGINAL_FILE_EXTS = new Set([
-  'docx',
-  'xlsx',
-  'pdf',
-  'doc',
-  'xls',
-  'pptx',
-  'png',
-  'jpg',
-  'jpeg',
-  'webp',
-  'gif',
-  'bmp',
-]);
-
 function extOf(name: string): string {
   const i = name.lastIndexOf('.');
   if (i < 0) return '';
@@ -610,25 +601,6 @@ function titleFromFilename(name: string): string {
   const base = name.replace(/\\/g, '/').split('/').pop() || name;
   const i = base.lastIndexOf('.');
   return (i > 0 ? base.slice(0, i) : base).trim() || base;
-}
-
-function isProbablyTextFile(file: File): boolean {
-  const ext = extOf(file.name);
-  if (ORIGINAL_FILE_EXTS.has(ext)) return false;
-  if (TEXT_EXTS.has(ext)) return true;
-  if (file.type.startsWith('text/')) return true;
-  if (file.type === 'application/json' || file.type === 'application/xml') return true;
-  // Small unknown types: try as text later
-  return file.size > 0 && file.size < 512 * 1024 && !file.type.startsWith('image/') && !file.type.startsWith('video/') && !file.type.startsWith('audio/') && file.type !== 'application/pdf';
-}
-
-function isOriginalBinaryFile(file: File): boolean {
-  const ext = extOf(file.name);
-  if (ORIGINAL_FILE_EXTS.has(ext)) return true;
-  if (file.type.startsWith('image/')) return true;
-  if (file.type === 'application/pdf') return true;
-  if (file.type.includes('officedocument') || file.type.includes('msword')) return true;
-  return false;
 }
 
 function formatUpdatedAt(raw?: string, isZh?: boolean): string {
@@ -672,6 +644,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
+  const [quota, setQuota] = useState<MobileDocumentQuota | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   // State updates do not take effect until the next render, so use a ref to
@@ -690,9 +663,13 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     setLoading(true);
     setError('');
     try {
-      const list = await callListLibraryItems(80);
+      const [list, quotaResult] = await Promise.all([
+        callListLibraryItems(80),
+        callGetDocumentQuota().catch(() => null),
+      ]);
       const next = Array.isArray(list) ? list : [];
       setDrafts(next);
+      if (quotaResult) setQuota(quotaResult);
       return next;
     } catch (e: any) {
       setError(String(e?.message || e || 'load failed'));
@@ -808,9 +785,9 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
         setJobs((prev) => prev.map((j, idx) => (idx === i ? { ...j, ...job } : j)));
       };
       try {
-        const maxBytes = 25 * 1024 * 1024;
-        if (file.size > maxBytes) {
-          throw new Error(t('File too large (max 25MB)', '文件过大（最大 25MB）'));
+        const maxInputBytes = 400 * 1024 * 1024;
+        if (file.size > maxInputBytes) {
+          throw new Error(t('File is too large to compress safely', '文件过大，无法安全压缩（压缩后必须 ≤100MB）'));
         }
         if (file.size <= 0) {
           throw new Error(t('File is empty', '文件内容为空'));
@@ -1303,8 +1280,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
             </div>
             <div style={{ fontSize: '0.78rem', opacity: 0.72, marginTop: 4, lineHeight: 1.4 }}>
               {t(
-                'Shared Hub library with the phone app. Drop original files here (Office/PDF/images/text).',
-                '与手机端共用 Hub 文库。将原始文件拖入此处即可发布到手机（Office/PDF/图片/文本）。',
+                'Shared Hub library with the phone app. Drop files of any type here.',
+                '与手机端共用 Hub 文库。可将任意格式文件拖入此处。',
               )}
             </div>
           </div>
@@ -1324,6 +1301,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
           onDragEnter={onDragEnter}
           onDragLeave={onDragLeave}
           onDragOver={onDragOver}
+          role="group"
+          aria-label={t('Document upload drop zone', '文档上传拖放区')}
           style={{
             margin: '12px 16px 0',
             borderRadius: 12,
@@ -1348,16 +1327,27 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
             </div>
             <div style={{ fontSize: '0.75rem', opacity: 0.68, marginTop: 4 }}>
               {t(
-                'Original files: DOCX / PDF / images / Markdown / text. Max 25MB. Phone can preview & share the original.',
-                '原件入库：DOCX / PDF / 图片 / Markdown / 文本，单文件 ≤25MB。手机可预览并分享原文件。',
+                'Any file type. Max 100MB after automatic compression; existing archives and DOCX/XLSX/PPTX are not recompressed.',
+                '支持任意格式；自动压缩后单文件 ≤100MB。压缩包及 DOCX/XLSX/PPTX 不重复压缩。',
               )}
             </div>
+            {quota ? (
+              <div style={{ marginTop: 8, maxWidth: 520 }} aria-label={t('Document storage usage', '文稿库存储空间')}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', fontSize: '0.72rem', opacity: 0.78 }}>
+                  <span>{t('Used', '已用')} {formatLibraryFileSize(quota.document_quota_used_bytes)}</span>
+                  <span>{t('Remaining', '剩余')} {formatLibraryFileSize(quota.document_quota_remaining)}</span>
+                  <span>{t('Total', '总限额')} {formatLibraryFileSize(quota.document_quota_bytes)}</span>
+                </div>
+                <div style={{ height: 4, marginTop: 6, borderRadius: 2, overflow: 'hidden', background: 'var(--theme-border, rgba(255,255,255,0.12))' }}>
+                  <div style={{ height: '100%', width: `${Math.min(100, Math.max(0, 100 * Number(quota.document_quota_used_bytes || 0) / Math.max(1, Number(quota.document_quota_bytes || 1))))}%`, background: 'var(--theme-primary, #4f7f6f)' }} />
+                </div>
+              </div>
+            ) : null}
           </div>
           <input
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".md,.markdown,.txt,.log,.json,.yaml,.yml,.csv,.xml,.html,.css,.js,.ts,.go,.py,.sh,.ps1,.docx,.xlsx,.pdf,.doc,.png,.jpg,.jpeg,.webp,.gif,text/*,image/*"
             style={{ display: 'none' }}
             onChange={(e) => {
               if (e.target.files?.length) void publishFiles(e.target.files);
@@ -1376,6 +1366,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
 
         {banner ? (
           <div
+            role="status"
+            aria-live="polite"
             style={{
               margin: '10px 16px 0',
               padding: '10px 12px',
@@ -1391,6 +1383,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
         ) : null}
         {error ? (
           <div
+            role="alert"
             style={{
               margin: '10px 16px 0',
               padding: '10px 12px',
@@ -1405,7 +1398,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
           </div>
         ) : null}
         {jobs.length > 0 ? (
-          <div style={{ margin: '8px 16px 0', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <div aria-live="polite" aria-label={t('Upload progress', '上传进度')} style={{ margin: '8px 16px 0', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {jobs.map((j, i) => (
               <span
                 key={`${j.name}-${i}`}
@@ -1519,7 +1512,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                                 ? `${d.rune_count} ${t('chars', '字')}`
                                 : ''}
                           {!isAudioItem(d) && d.has_original && d.source_size
-                            ? ` · ${Math.max(1, Math.round(d.source_size / 1024))} KB`
+                            ? ` · ${formatLibraryFileSize(d.source_size)}`
                             : ''}
                           {d.updated_at
                             ? ` · ${formatUpdatedAt(d.updated_at, isZh)}`
@@ -1671,7 +1664,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                     {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>{selected.derived_documents?.transcript_draft_id ? <button type="button" style={styles.btn} onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" style={styles.btnPrimary} onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
                     {selected.retention_until ? <div style={{ opacity: 0.58, fontSize: '0.78rem' }}>{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
                   </div>
-                ) : <MobileDocPreviewBody markdown={selected.markdown || selected.preview || ''} emptyLabel={t('(empty body)', '（无正文）')} />
+                ) : <MobileDocPreviewBody markdown={selected.markdown || selected.preview || ''} emptyLabel={t('Content preview is not supported', '不支持内容预览')} />
               ) : (
                 t('Select a draft on the left, or drop original files above to share with Mobile.', '请选择左侧文稿，或将原始文件拖到上方以分享到手机。')
               )}

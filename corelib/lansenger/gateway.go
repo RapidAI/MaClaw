@@ -43,6 +43,18 @@ type Config struct {
 	AppSecret        string // Application secret (from token field 2)
 	ApiGatewayURL    string // API gateway base URL (from token field 3)
 	WebSocketBaseURL string // optional WebSocket gateway base URL override
+	// InboundMediaLimit returns (maxBytes, download) for an incoming message
+	// before its attachment is fetched. maxBytes <= 0 means unlimited.
+	InboundMediaLimit func(IncomingMediaInfo) (int64, bool)
+}
+
+// IncomingMediaInfo identifies a pending inbound attachment before download.
+type IncomingMediaInfo struct {
+	FromUserID string
+	GroupID    string
+	ChatType   string
+	MediaType  string
+	MediaID    string
 }
 
 // ParseToken parses a composite token string "AppID:AppSecret:ApiGatewayURL".
@@ -74,22 +86,23 @@ func ParseToken(token string) (Config, error) {
 
 // IncomingMessage represents a message received from Lansenger.
 type IncomingMessage struct {
-	FromUserID      string           // staffId of the sender
-	Text            string           // text content
-	MessageID       string           // platform message ID
-	MessageType     string           // "text", "formatText", "image", "file", etc.
-	ChatType        string           // "p2p" or "group"
-	GroupID         string           // group ID if group message
-	MediaType       string           // "image", "video", "file", "voice" or ""
-	MediaData       []byte           // downloaded media bytes (if any)
-	MediaName       string           // media file name
-	SenderName      string           // display name of the sender, when supplied by Lansenger
-	GroupName       string           // display name of the group, when supplied by Lansenger
-	ReferenceText   string           // quoted/referenced message rendered as plain text
-	MentionedStaffs []MentionedStaff // staff @mentioned in this message
-	MentionedBots   []MentionedBot   // bots @mentioned in this message
-	IsAtMe          bool             // true when Lansenger marks this bot as explicitly @mentioned
-	IsAtAll         bool             // true when the message @mentions all members
+	FromUserID        string           // staffId of the sender
+	Text              string           // text content
+	MessageID         string           // platform message ID
+	MessageType       string           // "text", "formatText", "image", "file", etc.
+	ChatType          string           // "p2p" or "group"
+	GroupID           string           // group ID if group message
+	MediaType         string           // "image", "video", "file", "voice" or ""
+	MediaData         []byte           // downloaded media bytes (if any)
+	MediaName         string           // media file name
+	AuditUserRecorded bool             // local desktop history already persisted this inbound message
+	SenderName        string           // display name of the sender, when supplied by Lansenger
+	GroupName         string           // display name of the group, when supplied by Lansenger
+	ReferenceText     string           // quoted/referenced message rendered as plain text
+	MentionedStaffs   []MentionedStaff // staff @mentioned in this message
+	MentionedBots     []MentionedBot   // bots @mentioned in this message
+	IsAtMe            bool             // true when Lansenger marks this bot as explicitly @mentioned
+	IsAtAll           bool             // true when the message @mentions all members
 }
 
 // MentionedStaff and MentionedBot preserve the mention metadata sent by the
@@ -842,7 +855,7 @@ func (g *Gateway) processEvent(evt wsEvent) {
 	msg.ReferenceText = extractReferenceText(actual.ReferenceMsg)
 	mediaCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	msg.MediaType, msg.MediaName, msg.MediaData = g.extractMedia(mediaCtx, actual.MsgData, msgType)
+	msg.MediaType, msg.MediaName, msg.MediaData = g.extractMedia(mediaCtx, actual.MsgData, msgType, msg)
 	if msg.ReferenceText != "" {
 		msg.Text = joinMessageContext(msg.Text, msg.ReferenceText)
 	}
@@ -1073,7 +1086,7 @@ func mediaLabel(kind string, mediaIDs []string, caption string) string {
 
 // extractMedia follows the current Lansenger convention: attachments may use
 // their own msgType or a text payload containing mediaType and mediaIds.
-func (g *Gateway) extractMedia(ctx context.Context, raw json.RawMessage, msgType string) (string, string, []byte) {
+func (g *Gateway) extractMedia(ctx context.Context, raw json.RawMessage, msgType string, msg IncomingMessage) (string, string, []byte) {
 	var wrapper map[string]json.RawMessage
 	if json.Unmarshal(raw, &wrapper) != nil {
 		return "", "", nil
@@ -1100,10 +1113,26 @@ func (g *Gateway) extractMedia(ctx context.Context, raw json.RawMessage, msgType
 			mediaKind = "file"
 		}
 	}
-	data, name, err := g.downloadMedia(ctx, payload.MediaIDs[0])
+	maxBytes := int64(0)
+	if g.config.InboundMediaLimit != nil {
+		var download bool
+		maxBytes, download = g.config.InboundMediaLimit(IncomingMediaInfo{
+			FromUserID: msg.FromUserID, GroupID: msg.GroupID, ChatType: msg.ChatType,
+			MediaType: mediaKind, MediaID: payload.MediaIDs[0],
+		})
+		if !download {
+			return mediaKind, "", nil
+		}
+		// Distinguish policy-level unlimited from the legacy helper's zero value,
+		// which retains the private/image 50 MiB safety cap.
+		if maxBytes <= 0 {
+			maxBytes = -1
+		}
+	}
+	data, name, err := g.downloadMediaWithLimit(ctx, payload.MediaIDs[0], maxBytes)
 	if err != nil {
 		log.Printf("[lansenger] media download failed: mediaId=%s: %v", payload.MediaIDs[0], err)
-		return mediaKind, "", nil
+		return mediaKind, name, nil
 	}
 	return mediaKind, name, data
 }
@@ -1804,9 +1833,13 @@ func (g *Gateway) uploadMedia(ctx context.Context, appToken string, data []byte,
 	return result.Data.MediaID, nil
 }
 
-// downloadMedia retrieves an inbound attachment. The gateway returns the
-// original filename in Content-Disposition when available.
+// downloadMedia retrieves an inbound attachment with the legacy 50 MiB safety
+// cap. The gateway returns the original filename in Content-Disposition when available.
 func (g *Gateway) downloadMedia(ctx context.Context, mediaID string) ([]byte, string, error) {
+	return g.downloadMediaWithLimit(ctx, mediaID, 0)
+}
+
+func (g *Gateway) downloadMediaWithLimit(ctx context.Context, mediaID string, configuredLimit int64) ([]byte, string, error) {
 	if strings.TrimSpace(mediaID) == "" {
 		return nil, "", fmt.Errorf("empty mediaId")
 	}
@@ -1828,18 +1861,30 @@ func (g *Gateway) downloadMedia(ctx context.Context, mediaID string) ([]byte, st
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, "", fmt.Errorf("media download HTTP %d: %s", resp.StatusCode, string(body))
 	}
-	const maxInboundMediaBytes = 50 << 20
-	if resp.ContentLength > maxInboundMediaBytes {
-		return nil, "", fmt.Errorf("media download exceeds %d byte limit", maxInboundMediaBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxInboundMediaBytes+1))
-	if err != nil {
-		return nil, "", err
-	}
-	if len(data) > maxInboundMediaBytes {
-		return nil, "", fmt.Errorf("media download exceeds %d byte limit", maxInboundMediaBytes)
-	}
 	name := mediaFilename(resp.Header.Get("Content-Disposition"))
+	// configuredLimit: 0 = legacy cap, <0 = explicit unlimited, >0 = exact cap.
+	const maxInboundMediaBytes int64 = 50 << 20
+	limit := maxInboundMediaBytes
+	if configuredLimit < 0 {
+		limit = 0 // explicitly unlimited by the group-watch policy
+	}
+	if configuredLimit > 0 {
+		limit = configuredLimit
+	}
+	if limit > 0 && resp.ContentLength > limit {
+		return nil, name, fmt.Errorf("media download exceeds %d byte limit", limit)
+	}
+	reader := io.Reader(resp.Body)
+	if limit > 0 {
+		reader = io.LimitReader(resp.Body, limit+1)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, name, err
+	}
+	if limit > 0 && int64(len(data)) > limit {
+		return nil, name, fmt.Errorf("media download exceeds %d byte limit", limit)
+	}
 	return data, name, nil
 }
 

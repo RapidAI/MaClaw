@@ -233,6 +233,10 @@ type AppConfig struct {
 	LansengerGroupPolicy string `json:"lansenger_group_policy,omitempty"`
 	// LansengerAllowedGroupIDs is used when group policy is allowlist.
 	LansengerAllowedGroupIDs []string `json:"lansenger_allowed_group_ids,omitempty"`
+	// LansengerGroupFileMaxBytes limits persisted chat-history attachments per
+	// group. Missing/zero values mean unlimited; negative values are normalized
+	// to zero when read.
+	LansengerGroupFileMaxBytes map[string]int64 `json:"lansenger_group_file_max_bytes,omitempty"`
 	// LansengerRequireMention: when true (default), group messages must @ the bot.
 	// Nil means default true. Set false to answer every group message.
 	LansengerRequireMention *bool `json:"lansenger_require_mention,omitempty"`
@@ -246,6 +250,11 @@ type AppConfig struct {
 	// bot may read while answering a group message. An empty list means group
 	// messages cannot access the knowledge base (safe default).
 	LansengerGroupKnowledgeSourceIDs []string `json:"lansenger_group_knowledge_source_ids,omitempty"`
+	// LansengerGroupAllowWebSearch enables web_search and web_fetch for local
+	// Lansenger group turns. It is disabled by default because group messages are
+	// untrusted public input; when enabled web_fetch may also download a file into
+	// the agent working directory.
+	LansengerGroupAllowWebSearch bool `json:"lansenger_group_allow_web_search,omitempty"`
 	// LansengerGroupAllowAllDirectories removes the directory allowlist for group
 	// messages. It is deliberately false by default: group bots otherwise have no
 	// local filesystem access until an owner explicitly grants it.
@@ -263,6 +272,13 @@ type AppConfig struct {
 	ThirdPartyGatewayHost      string `json:"thirdparty_gateway_host,omitempty"`
 	ThirdPartyGatewayPort      int    `json:"thirdparty_gateway_port,omitempty"`
 	ThirdPartyGatewayLocalMode *bool  `json:"thirdparty_gateway_local_mode,omitempty"`
+	// Hardware settings delivered to paired third-party clients such as the
+	// Macaron ESP32. The audio itself lives in the application data directory;
+	// the config only keeps its stable local path.
+	HardwareWelcomeEnabled   bool   `json:"hardware_welcome_enabled,omitempty"`
+	HardwareWelcomeText      string `json:"hardware_welcome_text,omitempty"`
+	HardwareWelcomeAudioPath string `json:"hardware_welcome_audio_path,omitempty"`
+	HardwareVolume           int    `json:"hardware_volume,omitempty"`
 	// ACP Mode B: GUI hosts industry ACP so VS Code programming agents use the
 	// desktop AI assistant. Nil means default enabled. Port 0 = ephemeral bind.
 	AcpHostEnabled *bool `json:"acp_host_enabled,omitempty"`
@@ -1020,6 +1036,8 @@ func AppConfigDefaults() AppConfig {
 		ShowAssistantEntry:    true,
 		// ShowAppEntry left nil: absent/nil means enabled (default-on).
 		ShowCodex:                  true,
+		HardwareWelcomeText:        "Hello, Maclaw",
+		HardwareVolume:             70,
 		ShowOpenCode:               true,
 		ShowCodeBuddy:              true,
 		ShowIFlow:                  true,
@@ -1341,6 +1359,50 @@ func (c *AppConfig) IsLansengerLocalMode() bool {
 // SetLansengerLocal sets the LansengerLocalMode pointer field.
 func (c *AppConfig) SetLansengerLocal(v bool) {
 	c.LansengerLocalMode = &v
+}
+
+// LansengerGroupFileLimit returns the attachment limit for a group. Zero is
+// the explicit unlimited value and the default for groups without an entry.
+func (c *AppConfig) LansengerGroupFileLimit(groupID string) int64 {
+	if c == nil || strings.TrimSpace(groupID) == "" {
+		return 0
+	}
+	limit := c.LansengerGroupFileMaxBytes[strings.TrimSpace(groupID)]
+	if limit < 0 {
+		return 0
+	}
+	return limit
+}
+
+// SetLansengerGroupFileLimit sets a per-group attachment limit. Zero removes
+// the entry because unlimited is the default. It reports whether config changed.
+func (c *AppConfig) SetLansengerGroupFileLimit(groupID string, maxBytes int64) bool {
+	if c == nil {
+		return false
+	}
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return false
+	}
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
+	current := c.LansengerGroupFileLimit(groupID)
+	if current == maxBytes {
+		return false
+	}
+	if maxBytes == 0 {
+		delete(c.LansengerGroupFileMaxBytes, groupID)
+		if len(c.LansengerGroupFileMaxBytes) == 0 {
+			c.LansengerGroupFileMaxBytes = nil
+		}
+		return true
+	}
+	if c.LansengerGroupFileMaxBytes == nil {
+		c.LansengerGroupFileMaxBytes = make(map[string]int64)
+	}
+	c.LansengerGroupFileMaxBytes[groupID] = maxBytes
+	return true
 }
 
 // IsLansengerGroupIgnored reports whether groupID is on the ignore list.

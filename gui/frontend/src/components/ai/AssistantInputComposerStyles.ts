@@ -63,12 +63,13 @@ export function getAssistantInputComposerStyles({
             // double hairline.
             ...(inline ? {} : {
                 margin: flushBottom ? "0 10px 0 10px" : "0 10px 10px 10px",
-                borderRadius: flushBottom ? "12px 12px 0 0" : "12px",
+                borderRadius: flushBottom ? "14px 14px 0 0" : "14px",
                 border: `1.5px solid ${t.inputBarBorder}`,
                 borderBottom: flushBottom ? "none" : undefined,
                 boxShadow: t.bg.startsWith("#0")
                     ? "0 2px 12px rgba(0, 0, 0, 0.32), 0 1px 4px rgba(0, 0, 0, 0.18)"
                     : "0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)",
+                transition: "border-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1)",
             }),
         },
         inputRowStyle: {

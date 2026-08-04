@@ -108,7 +108,7 @@ function riskClass(risk: ToolRisk): string {
 
 /**
  * Expert create/edit dialog.
- * - Create mode: optional starter template + one-line idea + AI generate.
+ * - Create mode: optional starter template + multi-line brief + AI generate.
  * - Capability tier is the primary way to set tool/skill access (not raw checkboxes).
  * - Tool/skill pickers live under Advanced; empty = no restriction.
  * - AI suggestions are reference-only unless "Adopt as whitelist" is checked.
@@ -126,6 +126,7 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                 : 'e.g. Translate my Chinese papers into idiomatic English',
         generate: lang === 'zh-Hant' ? 'AI 生成' : isZh ? 'AI 生成' : 'Generate with AI',
         generating: lang === 'zh-Hant' ? '生成中…' : isZh ? '生成中…' : 'Generating…',
+        generateShortcut: lang === 'zh-Hant' ? 'Ctrl / ⌘ + Enter 生成' : isZh ? 'Ctrl / ⌘ + Enter 生成' : 'Ctrl / ⌘ + Enter to generate',
         generateFailed: lang === 'zh-Hant' ? '生成失败，请重试' : isZh ? '生成失败，请重试' : 'Generation failed — please retry',
         nameLabel: lang === 'zh-Hant' ? '名稱' : isZh ? '名称' : 'Name',
         iconLabel: lang === 'zh-Hant' ? '圖標（emoji）' : isZh ? '图标（emoji）' : 'Icon (emoji)',
@@ -260,6 +261,14 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
 
     /** Invalidates in-flight applyTier backend refinements (race / manual edit). */
     const tierApplySeq = useRef(0);
+    /** Invalidates a late AI generation after the editor has been closed. */
+    const generateSeq = useRef(0);
+    /** Blocks duplicate generate triggers before React can render disabled UI. */
+    const generatingRef = useRef(false);
+    /** Blocks duplicate save triggers before React can render disabled UI. */
+    const savingRef = useRef(false);
+    /** Invalidates a late save completion after the editor has been closed. */
+    const saveSeq = useRef(0);
     const toolsRef = useRef(tools);
     const skillsRef = useRef(skills);
     const capabilityTierRef = useRef(capabilityTier);
@@ -355,6 +364,21 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [generating, onClose]);
 
+    useEffect(() => () => {
+        generateSeq.current += 1;
+        saveSeq.current += 1;
+    }, []);
+
+    // A generated profile is a suggestion. If the user starts editing the
+    // expert while it is in flight, discard that stale suggestion rather than
+    // overwriting their changes when the backend eventually responds.
+    const cancelPendingGeneration = () => {
+        if (!generatingRef.current) return;
+        generateSeq.current += 1;
+        generatingRef.current = false;
+        setGenerating(false);
+    };
+
     /** Intersect AI suggestions with the available lists; when a list failed to
      * load (empty), keep suggestions as-is rather than dropping everything. */
     const reconcileSuggestions = (incomingTools: string[], incomingSkills: string[]) => {
@@ -418,6 +442,7 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
     };
 
     const markCustomFromManualEdit = (nextTools: string[], nextSkills: string[]) => {
+        cancelPendingGeneration();
         invalidatePendingTierApply();
         setAdoptSuggestions(false);
         setActiveStarter(null);
@@ -430,6 +455,7 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
     };
 
     const applyAdoptState = (adopt: boolean, nextTools: string[], nextSkills: string[]) => {
+        cancelPendingGeneration();
         invalidatePendingTierApply();
         setAdoptSuggestions(adopt);
         setActiveStarter(null);
@@ -454,6 +480,7 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
     const handleStarterPick = (id: ExpertStarterTemplateId) => {
         const tpl = EXPERT_STARTER_TEMPLATES.find((x) => x.id === id);
         if (!tpl) return;
+        cancelPendingGeneration();
         setActiveStarter(id);
         setName(isZh ? tpl.nameZh : tpl.nameEn);
         setIcon(tpl.icon);
@@ -465,13 +492,16 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
 
     const handleGenerate = async () => {
         const text = idea.trim();
-        if (!text || generating) return;
+        if (!text || generatingRef.current) return;
+        const seq = ++generateSeq.current;
+        generatingRef.current = true;
         setGenerating(true);
         setGenerateError('');
         try {
             const mod = await getApp();
             if (!mod?.GenerateExpertProfile) throw new Error('GenerateExpertProfile unavailable');
             const raw = await mod.GenerateExpertProfile(text);
+            if (seq !== generateSeq.current) return;
             const profile = JSON.parse(raw || '{}') as GeneratedExpertProfile;
             if (profile.name) setName(String(profile.name));
             if (profile.icon) setIcon(String(profile.icon));
@@ -495,10 +525,14 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
             }
             // custom: leave the user's current allow-lists alone
         } catch (e: unknown) {
+            if (seq !== generateSeq.current) return;
             const msg = e instanceof Error ? e.message : String(e);
             setGenerateError(msg ? `${t.generateFailed}: ${msg}` : t.generateFailed);
         } finally {
-            setGenerating(false);
+            if (seq === generateSeq.current) {
+                generatingRef.current = false;
+                setGenerating(false);
+            }
         }
     };
 
@@ -511,7 +545,9 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
             setSaveError(t.nameRequired);
             return;
         }
-        if (saving) return;
+        if (savingRef.current) return;
+        const seq = ++saveSeq.current;
+        savingRef.current = true;
         setSaving(true);
         setSaveError('');
         try {
@@ -535,9 +571,13 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                 saved = { ...(expert || {}), ...payload, id: (payload.id as string) || '' } as ExpertDefinition;
             }
             // Parent typically unmounts on success; reset saving so a stuck dialog can retry.
+            if (seq !== saveSeq.current) return;
+            savingRef.current = false;
             setSaving(false);
             onSaved(saved);
         } catch (e: unknown) {
+            if (seq !== saveSeq.current) return;
+            savingRef.current = false;
             setSaveError(e instanceof Error ? e.message : String(e));
             setSaving(false);
         }
@@ -649,26 +689,35 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                     <div className="expert-editor__idea">
                         <label className="expert-editor__label" htmlFor="expert-idea-input">{t.ideaLabel}</label>
                         <div className="expert-editor__idea-row">
-                            <input
+                            <textarea
                                 id="expert-idea-input"
                                 data-testid="expert-idea-input"
-                                className="expert-editor__input"
-                                type="text"
+                                className="expert-editor__input expert-editor__idea-input"
+                                rows={4}
                                 value={idea}
                                 placeholder={t.ideaPlaceholder}
                                 onChange={(e) => setIdea(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (!e.nativeEvent.isComposing && (e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                                        e.preventDefault();
+                                        void handleGenerate();
+                                    }
+                                }}
                                 disabled={generating}
                             />
-                            <button
-                                type="button"
-                                data-testid="expert-generate-button"
-                                className="expert-editor__button expert-editor__button--primary"
-                                onClick={() => { void handleGenerate(); }}
-                                disabled={generating || !idea.trim()}
-                                aria-busy={generating || undefined}
-                            >
-                                {generating ? t.generating : t.generate}
-                            </button>
+                            <div className="expert-editor__generate-action">
+                                <button
+                                    type="button"
+                                    data-testid="expert-generate-button"
+                                    className="expert-editor__button expert-editor__button--primary"
+                                    onClick={() => { void handleGenerate(); }}
+                                    disabled={generating || !idea.trim()}
+                                    aria-busy={generating || undefined}
+                                >
+                                    {generating ? t.generating : t.generate}
+                                </button>
+                                <span className="expert-editor__generate-shortcut">{t.generateShortcut}</span>
+                            </div>
                         </div>
                         {generateError ? <p className="expert-editor__error" role="alert">{generateError}</p> : null}
                     </div>
@@ -694,7 +743,10 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                             className="expert-editor__input"
                             type="text"
                             value={name}
-                            onChange={(e) => setName(e.target.value)}
+                            onChange={(e) => {
+                                cancelPendingGeneration();
+                                setName(e.target.value);
+                            }}
                         />
                     </div>
                     <div className="expert-editor__field expert-editor__field--icon">
@@ -705,7 +757,10 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                             className="expert-editor__input"
                             type="text"
                             value={icon}
-                            onChange={(e) => setIcon(e.target.value)}
+                            onChange={(e) => {
+                                cancelPendingGeneration();
+                                setIcon(e.target.value);
+                            }}
                         />
                     </div>
                 </div>
@@ -718,7 +773,10 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                         className="expert-editor__textarea expert-editor__textarea--description"
                         rows={3}
                         value={description}
-                        onChange={(e) => setDescription(e.target.value)}
+                        onChange={(e) => {
+                            cancelPendingGeneration();
+                            setDescription(e.target.value);
+                        }}
                     />
                 </div>
 
@@ -730,7 +788,10 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                         className="expert-editor__textarea"
                         rows={8}
                         value={systemPrompt}
-                        onChange={(e) => setSystemPrompt(e.target.value)}
+                        onChange={(e) => {
+                            cancelPendingGeneration();
+                            setSystemPrompt(e.target.value);
+                        }}
                     />
                 </div>
 
@@ -749,6 +810,7 @@ export const ExpertEditorDialog = ({ lang, expert, onClose, onSaved }: ExpertEdi
                                     data-testid={`expert-tier-${id}`}
                                     className={`expert-editor__tier${selected ? ' expert-editor__tier--active' : ''}`}
                                     onClick={() => {
+                                        cancelPendingGeneration();
                                         setActiveStarter(null);
                                         void applyTier(id);
                                     }}

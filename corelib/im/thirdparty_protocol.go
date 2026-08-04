@@ -40,8 +40,11 @@ const (
 )
 
 type ThirdPartyHandshakeRequest struct {
-	ClientID           string                     `json:"clientId"`
-	ClientName         string                     `json:"clientName,omitempty"`
+	ClientID   string `json:"clientId"`
+	ClientName string `json:"clientName,omitempty"`
+	// BootSessionID changes only after a client cold-starts. It distinguishes
+	// boot initialization from an ordinary handshake refresh.
+	BootSessionID      string                     `json:"bootSessionId,omitempty"`
 	ProtocolVersion    string                     `json:"protocolVersion,omitempty"`
 	Capabilities       map[string]any             `json:"capabilities,omitempty"` // legacy transport feature map
 	ClientCapabilities *agent.ClientCapabilities  `json:"clientCapabilities,omitempty"`
@@ -236,6 +239,11 @@ type ThirdPartyOutgoingMessage struct {
 	Progress         bool                       `json:"progress,omitempty"`
 	Error            string                     `json:"error,omitempty"`
 	CreatedAt        int64                      `json:"createdAt"`
+	// PetSkin and PetMotionEnabled carry pet_profile settings updates so a
+	// paired device can follow GUI pet changes without waiting for the next
+	// handshake. The pointer keeps "unset" distinct from an explicit false.
+	PetSkin          string `json:"pet_skin,omitempty"`
+	PetMotionEnabled *bool  `json:"pet_motion_enabled,omitempty"`
 	// Glyphs carries the compact 24x24 bitmaps required by constrained ESP
 	// displays to render non-ASCII reply text. It deliberately lives beside
 	// Text so the device can cache it before drawing the message.
@@ -638,6 +646,10 @@ func ValidateThirdPartyID(field, value string) error {
 func NormalizeThirdPartyHandshakeRequest(req *ThirdPartyHandshakeRequest) error {
 	req.ClientID = NormalizeThirdPartyID(req.ClientID)
 	req.ClientName = strings.TrimSpace(req.ClientName)
+	req.BootSessionID = strings.TrimSpace(req.BootSessionID)
+	if len(req.BootSessionID) > 96 {
+		return errors.New("bootSessionId is too long")
+	}
 	req.ProtocolVersion = strings.TrimSpace(req.ProtocolVersion)
 	if req.ProtocolVersion != "" && req.ProtocolVersion != ThirdPartyProtocolVersion && req.ProtocolVersion != ThirdPartyProtocolLegacyVersion {
 		return fmt.Errorf("protocolVersion must be %s or %s", ThirdPartyProtocolLegacyVersion, ThirdPartyProtocolVersion)
@@ -684,7 +696,8 @@ func looksLikeStructuredClientCapabilities(capabilities map[string]any) bool {
 	}
 	_, hasInput := capabilities["input"]
 	_, hasOutput := capabilities["output"]
-	return hasInput || hasOutput
+	_, hasFeatures := capabilities["features"]
+	return hasInput || hasOutput || hasFeatures
 }
 
 func NormalizeThirdPartyMediaPrepareRequest(req *ThirdPartyMediaPrepareRequest, maxMediaBytes int64) error {

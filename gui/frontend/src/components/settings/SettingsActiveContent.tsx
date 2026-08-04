@@ -12,6 +12,7 @@ import {
 import { EVENT_MACLAW_CONFIG_CHANGED } from '../../constants/events';
 import { resolveSettingsTabId, type SettingsTabId } from '../../config/settingsTabs';
 import {
+    AssetManagementPanel,
     ASRConfigPanel,
 	DiarizationConfigPanel,
     EmbeddingConfigPanel,
@@ -498,6 +499,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     showToastMessage={showToastMessage}
                 />
             ));
+            break;
+        case 'assetManagement':
+            body = wrapPanel('settings-content settings-panel', <AssetManagementPanel lang={lang} />);
             break;
         case 'ui':
             body = wrapPanel('settings-content', (

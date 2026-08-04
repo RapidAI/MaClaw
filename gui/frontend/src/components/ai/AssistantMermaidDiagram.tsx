@@ -181,7 +181,7 @@ export function AssistantMermaidDiagram({ code, theme }: { code: string; theme: 
                     dangerouslySetInnerHTML={{ __html: svg }}
                 />
             ) : error ? (
-                <pre data-testid="assistant-mermaid-fallback" style={{ background: theme.codeBlockBg, border: `1px solid ${theme.codeBlockBorder}`, borderRadius: "6px", padding: "10px 12px", margin: "6px 0", overflowX: "auto", color: theme.codeText, lineHeight: 1.6 }}>
+                <pre data-testid="assistant-mermaid-fallback" style={{ background: theme.codeBlockBg, border: `1px solid ${theme.codeBlockBorder}`, borderRadius: "10px", padding: "10px 12px", margin: "6px 0", overflowX: "auto", color: theme.codeText, lineHeight: 1.6 }}>
                     <div role="status" style={{ marginBottom: 6, color: theme.textMuted, fontFamily: "inherit", fontSize: "0.9em" }}>{getMermaidFallbackMessage(error)}</div>
                     <code>{code}</code>
                 </pre>

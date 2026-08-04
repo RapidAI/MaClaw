@@ -529,7 +529,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		logSlow("trace_and_steering", stageStartedAt, tc)
 
 		stageStartedAt = time.Now()
-		truncated := truncateToolResultForToolWithSession(tc.Function.Name, opts.UserID, toolContent)
+		projectionOwnerID := opts.UserID
+		if h != nil {
+			projectionOwnerID = h.workflowPolicyOwnerID(opts.UserID, opts.Context)
+		}
+		truncated := truncateToolResultForToolWithSession(tc.Function.Name, projectionOwnerID, toolContent)
 		// OpenHuman-inspired: check tool result for prompt injection attempts.
 		// Only check external-source tools (web_fetch, web_search, read_file, bash)
 		// to avoid wasting CPU on internal tools that return safe content.

@@ -27,9 +27,9 @@ const successTone: CodingAgentStatusTone = {
     border: "rgba(79, 127, 111, 0.22)",
 };
 const runningTone: CodingAgentStatusTone = {
-    accent: "#2f5f98",
-    bg: "rgba(47, 95, 152, 0.08)",
-    border: "rgba(47, 95, 152, 0.22)",
+    accent: "#2f6fbc",
+    bg: "rgba(47, 111, 188, 0.08)",
+    border: "rgba(47, 111, 188, 0.22)",
 };
 const slateTone: CodingAgentStatusTone = {
     accent: "#64748b",
@@ -799,9 +799,9 @@ export function renderCodingAgentActivityFeed(
             `${lineRows.length} ${lang.startsWith("zh") ? "\u6b65" : "steps"}`,
         )
         : codingAgentDisplayText(header, lang);
-    const borderColor = t.isDark ? "rgba(148,163,184,0.18)" : "rgba(47, 95, 152, 0.14)";
+    const borderColor = t.isDark ? "rgba(148,163,184,0.18)" : "rgba(47, 111, 188, 0.14)";
     const bg = t.isDark ? "rgba(15, 23, 42, 0.42)" : "rgba(246, 248, 251, 0.98)";
-    const hairline = t.isDark ? "rgba(148,163,184,0.12)" : "rgba(47, 95, 152, 0.09)";
+    const hairline = t.isDark ? "rgba(148,163,184,0.12)" : "rgba(47, 111, 188, 0.09)";
     const showHeaderRule = isMulti;
     // Parent Fragment owns the React list key; avoid remount-churning key on the shell.
 
