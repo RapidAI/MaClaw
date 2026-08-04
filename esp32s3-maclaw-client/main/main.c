@@ -145,6 +145,12 @@ static uint32_t s_interaction_generation;
 static uint32_t s_cancel_requested_generation;
 static uint32_t s_cancel_ui_ready_generation;
 static SemaphoreHandle_t s_http_mutex;
+// Relative gateway requests all target the same HTTPS origin. Reusing one
+// esp_http_client handle preserves its TLS socket across perform() calls;
+// creating and cleaning a handle for every poll/upload/submit previously
+// added roughly four seconds of handshake latency to every protocol step.
+// Access is serialized by s_http_mutex.
+static esp_http_client_handle_t s_gateway_http_client;
 // Protects the foreground client pointer through cancel/cleanup. The general
 // HTTP mutex cannot serve this purpose because it remains owned for the whole
 // request and cancellation must run concurrently with esp_http_client_perform.
@@ -419,6 +425,12 @@ static TaskHandle_t begin_active_command_reply(void) {
     taskENTER_CRITICAL(&s_task_state_lock);
     if (!s_command_cancel_requested) {
         s_command_cancel_enabled = false;
+        // Publish the terminal phase before rendering. The interaction worker
+        // can wake on the notification immediately after show_response(); if
+        // it observes PROCESSING it may refresh “远端处理中” over the result.
+        // Marking RESULT here makes the UI transition atomic from the point of
+        // view of both tasks while keeping the worker alive for cleanup.
+        s_interaction_phase = INTERACTION_RESULT;
         waiter = s_interaction_task;
     }
     taskEXIT_CRITICAL(&s_task_state_lock);
@@ -610,6 +622,23 @@ static esp_err_t on_http_event(esp_http_client_event_t *event) {
     return ESP_OK;
 }
 
+static bool same_http_origin(const char *left, const char *right) {
+    if (!left || !right) return false;
+    const char *left_scheme_end = strstr(left, "://");
+    const char *right_scheme_end = strstr(right, "://");
+    if (!left_scheme_end || !right_scheme_end) return false;
+    size_t left_scheme_len = (size_t)(left_scheme_end - left);
+    size_t right_scheme_len = (size_t)(right_scheme_end - right);
+    if (left_scheme_len != right_scheme_len ||
+        strncasecmp(left, right, left_scheme_len) != 0) return false;
+    const char *left_authority = left_scheme_end + 3;
+    const char *right_authority = right_scheme_end + 3;
+    size_t left_authority_len = strcspn(left_authority, "/?#");
+    size_t right_authority_len = strcspn(right_authority, "/?#");
+    return left_authority_len == right_authority_len &&
+           strncasecmp(left_authority, right_authority, left_authority_len) == 0;
+}
+
 static esp_err_t request_with_capacity(const char *method, const char *path, const char *content_type,
                                        const char *body, int body_len, size_t response_capacity,
                                        http_response_t *out) {
@@ -617,7 +646,10 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
     memset(out, 0, sizeof(*out));
     if (!method || !path || response_capacity < 2) return ESP_ERR_INVALID_ARG;
     char url[URL_CAPACITY];
-    int n = strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0
+    bool absolute_url = strncmp(path, "http://", 7) == 0 ||
+                        strncmp(path, "https://", 8) == 0;
+    bool gateway_origin = !absolute_url || same_http_origin(path, s_gateway_url);
+    int n = absolute_url
                 ? snprintf(url, sizeof(url), "%s", path)
                 : snprintf(url, sizeof(url), "%s%s", s_gateway_url, path);
     if (n < 0 || n >= sizeof(url)) return ESP_ERR_INVALID_SIZE;
@@ -661,16 +693,21 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
     }
     out->capacity = response_capacity;
     out->data[0] = '\0';
-    esp_http_client_config_t config = {
-        .url = url, .event_handler = on_http_event, .user_data = out,
-        .timeout_ms = cancellation_request ? 5000 : 30000,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        // The public Hub is fronted by nginx and answers with HTTP/1.1
-        // keep-alive. Do not wait for the peer to close the TLS socket to
-        // decide that a complete JSON response has ended.
-        .keep_alive_enable = true,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
+    bool reused_gateway_client = gateway_origin && s_gateway_http_client != NULL;
+    esp_http_client_handle_t client = gateway_origin ? s_gateway_http_client : NULL;
+    if (!client) {
+        esp_http_client_config_t config = {
+            .url = url, .event_handler = on_http_event, .user_data = out,
+            .timeout_ms = cancellation_request ? 5000 : 30000,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            // The public Hub is fronted by nginx and answers with HTTP/1.1
+            // keep-alive. Repeated perform() calls on this handle reuse the
+            // underlying TLS connection when the peer leaves it open.
+            .keep_alive_enable = true,
+        };
+        client = esp_http_client_init(&config);
+        if (client && gateway_origin) s_gateway_http_client = client;
+    }
     if (!client) {
         ESP_LOGE(TAG, "HTTP client allocation failed: path=%s", path);
         log_heap_snapshot("http-client-fail");
@@ -678,6 +715,27 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         out->data = NULL;
         xSemaphoreGive(s_http_mutex);
         return ESP_ERR_NO_MEM;
+    }
+    // A cached handle retains request configuration as well as its socket.
+    // Replace every per-request value so GET/POST and response buffers cannot
+    // leak state into one another.
+    esp_err_t configure_err = esp_http_client_set_url(client, url);
+    if (configure_err == ESP_OK) {
+        configure_err = esp_http_client_set_user_data(client, out);
+    }
+    if (configure_err == ESP_OK) {
+        configure_err = esp_http_client_set_timeout_ms(
+            client, cancellation_request ? 5000 : 30000);
+    }
+    if (configure_err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP client configure failed: path=%s err=%s",
+                 path, esp_err_to_name(configure_err));
+        if (gateway_origin) s_gateway_http_client = NULL;
+        esp_http_client_cleanup(client);
+        free(out->data);
+        out->data = NULL;
+        xSemaphoreGive(s_http_mutex);
+        return configure_err;
     }
     if (foreground_request) {
         xSemaphoreTake(s_foreground_http_client_mutex, portMAX_DELAY);
@@ -688,13 +746,22 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
     if (!strcmp(method, "POST")) http_method = HTTP_METHOD_POST;
     else if (!strcmp(method, "PUT")) http_method = HTTP_METHOD_PUT;
     esp_http_client_set_method(client, http_method);
-    if (content_type) esp_http_client_set_header(client, "Content-Type", content_type);
+    if (content_type) {
+        esp_http_client_set_header(client, "Content-Type", content_type);
+    } else {
+        (void)esp_http_client_delete_header(client, "Content-Type");
+    }
     esp_http_client_set_header(client, "Accept", "application/json");
     if (s_gateway_token[0]) {
         char authorization[128];
         snprintf(authorization, sizeof(authorization), "Bearer %s", s_gateway_token);
         esp_http_client_set_header(client, "Authorization", authorization);
+    } else {
+        (void)esp_http_client_delete_header(client, "Authorization");
     }
+    // set_post_field stores the caller's pointer; explicitly clear the prior
+    // request before installing this request's body.
+    esp_http_client_set_post_field(client, NULL, 0);
     if (body && body_len > 0) esp_http_client_set_post_field(client, body, body_len);
     int64_t perform_started_us = esp_timer_get_time();
     esp_err_t err;
@@ -710,7 +777,15 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         if (s_foreground_http_client == client) s_foreground_http_client = NULL;
         xSemaphoreGive(s_foreground_http_client_mutex);
     }
-    esp_http_client_cleanup(client);
+    // Absolute media URLs may use another origin and remain one-shot. Keep the
+    // gateway handle only after a healthy transport result; a cancelled or
+    // failed connection is discarded so the next request starts cleanly.
+    if (!gateway_origin || err != ESP_OK) {
+        if (gateway_origin && s_gateway_http_client == client) {
+            s_gateway_http_client = NULL;
+        }
+        esp_http_client_cleanup(client);
+    }
     xSemaphoreGive(s_http_mutex);
     char target[96];
     if (!strncmp(path, "http://", 7) || !strncmp(path, "https://", 8)) {
@@ -720,8 +795,10 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         char *query = strchr(target, '?');
         if (query) *query = '\0';
     }
-    ESP_LOGI(TAG, "HTTP %s %s status=%d err=%s lock=%ums perform=%ums total=%ums response=%u%s",
-             method, target, out->status, esp_err_to_name(err), (unsigned)lock_wait_ms,
+    ESP_LOGI(TAG, "HTTP %s %s status=%d err=%s conn=%s lock=%ums perform=%ums total=%ums response=%u%s",
+             method, target, out->status, esp_err_to_name(err),
+             !gateway_origin ? "one-shot" : (reused_gateway_client ? "reused" : "new"),
+             (unsigned)lock_wait_ms,
              (unsigned)perform_ms, (unsigned)((esp_timer_get_time() - request_started_us) / 1000),
              (unsigned)out->len, out->truncated ? " truncated" : "");
     if (err != ESP_OK) {
@@ -2899,6 +2976,11 @@ static void interaction_task(void *arg) {
     // the device never looks stalled while the remote Agent is still working.
     while (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(COMMAND_RESULT_PROGRESS_MS)) == 0) {
         if (command_cancel_requested_for(interaction_generation)) break;
+        taskENTER_CRITICAL(&s_task_state_lock);
+        bool result_already_arrived = s_interaction_generation == interaction_generation &&
+                                      s_interaction_phase == INTERACTION_RESULT;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (result_already_arrived) break;
         board_port_show_text("远端处理中", "双击激活键可取消");
         ESP_LOGI(TAG, "remote Agent still processing command generation=%lu",
                  (unsigned long)interaction_generation);

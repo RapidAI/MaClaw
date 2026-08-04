@@ -67,6 +67,7 @@ static uint16_t *s_present_staging;
 static unsigned s_front_frame;
 static bool s_front_frame_valid;
 static bool s_audio_ready;
+static bool s_speaker_enabled;
 static bool s_audio_stream_owned;
 static unsigned s_thinking_mouth_frame;
 static bool s_thinking_surface_visible;
@@ -919,12 +920,15 @@ static esp_err_t audio_init(void) {
                      .dout = SPK_DOUT, .din = I2S_GPIO_UNUSED, .invert_flags = {0}},
     };
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx, &speaker), TAG, "speaker mode");
-    /* Keep TX stopped while it is idle. Leaving the channel enabled after a
-     * short chime lets some direct-I2S amplifiers continue reproducing the
-     * final DMA descriptor, which sounds like a tone that never ends. Each
-     * playback owns an explicit enable/write/disable cycle below. */
+    /* Keep BCLK/WS running for the direct-I2S amplifier. Repeatedly enabling
+     * and disabling TX made some Bread Compact amplifiers miss an entire short
+     * playback while their serial input was waking. auto_clear_after_cb above
+     * makes every completed descriptor silence, so an enabled idle channel no
+     * longer repeats the final tone. */
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "speaker enable");
+    s_speaker_enabled = true;
     s_audio_ready = true;
-    ESP_LOGI(TAG, "Bread Compact direct-I2S audio ready");
+    ESP_LOGI(TAG, "Bread Compact direct-I2S audio ready (continuous clocks, silent idle)");
     return ESP_OK;
 }
 
@@ -949,14 +953,12 @@ static esp_err_t read_mono(int16_t *mono, size_t capacity, size_t *read, uint16_
 static void button_task(void *arg) {
     (void)arg;
     bool previous = gpio_get_level(BUTTON_ACTIVATE) != 0;
-    bool volume_up_raw = gpio_get_level(BUTTON_VOLUME_UP) != 0;
-    bool volume_down_raw = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
-    const bool volume_up_idle = volume_up_raw;
-    const bool volume_down_idle = volume_down_raw;
-    bool volume_up_stable = volume_up_raw;
-    bool volume_down_stable = volume_down_raw;
-    bool volume_up_armed = false;
-    bool volume_down_armed = false;
+    bool volume_up_stable = gpio_get_level(BUTTON_VOLUME_UP) != 0;
+    bool volume_down_stable = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
+    const bool volume_up_idle = volume_up_stable;
+    const bool volume_down_idle = volume_down_stable;
+    bool volume_up_candidate = volume_up_stable;
+    bool volume_down_candidate = volume_down_stable;
     int64_t volume_up_changed_at = 0;
     int64_t volume_down_changed_at = 0;
     int64_t pressed_at = 0;
@@ -996,36 +998,33 @@ static void button_task(void *arg) {
             if (s_button_cb) s_button_cb(BOARD_BUTTON_SHORT, s_button_arg);
         }
 
-        bool volume_up_released = gpio_get_level(BUTTON_VOLUME_UP) != 0;
-        if (volume_up_released != volume_up_raw) {
-            volume_up_raw = volume_up_released;
+        bool volume_up_level = gpio_get_level(BUTTON_VOLUME_UP) != 0;
+        if (volume_up_level != volume_up_candidate) {
+            volume_up_candidate = volume_up_level;
             volume_up_changed_at = now;
         }
-        if (volume_up_stable != volume_up_raw && volume_up_changed_at &&
+        if (volume_up_stable != volume_up_candidate && volume_up_changed_at &&
             now - volume_up_changed_at >= 30000) {
-            volume_up_stable = volume_up_raw;
+            volume_up_stable = volume_up_candidate;
+            // Dispatch on the debounced press edge. Waiting for release made
+            // short taps easy to lose when one 20 ms scan landed inside the
+            // contact bounce window, which left paging apparently inert.
             if (volume_up_stable != volume_up_idle) {
-                volume_up_armed = true;
-            } else if (volume_up_armed) {
-                volume_up_armed = false;
-                ESP_LOGI(TAG, "volume up key released (GPIO%d)", BUTTON_VOLUME_UP);
+                ESP_LOGI(TAG, "volume up key pressed (GPIO%d)", BUTTON_VOLUME_UP);
                 if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_UP, s_button_arg);
             }
         }
 
-        bool volume_down_released = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
-        if (volume_down_released != volume_down_raw) {
-            volume_down_raw = volume_down_released;
+        bool volume_down_level = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
+        if (volume_down_level != volume_down_candidate) {
+            volume_down_candidate = volume_down_level;
             volume_down_changed_at = now;
         }
-        if (volume_down_stable != volume_down_raw && volume_down_changed_at &&
+        if (volume_down_stable != volume_down_candidate && volume_down_changed_at &&
             now - volume_down_changed_at >= 30000) {
-            volume_down_stable = volume_down_raw;
+            volume_down_stable = volume_down_candidate;
             if (volume_down_stable != volume_down_idle) {
-                volume_down_armed = true;
-            } else if (volume_down_armed) {
-                volume_down_armed = false;
-                ESP_LOGI(TAG, "volume down key released (GPIO%d)", BUTTON_VOLUME_DOWN);
+                ESP_LOGI(TAG, "volume down key pressed (GPIO%d)", BUTTON_VOLUME_DOWN);
                 if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_DOWN, s_button_arg);
             }
         }
@@ -1513,22 +1512,23 @@ static esp_err_t write_stereo(const int16_t *source, size_t frames, unsigned cha
 }
 
 static esp_err_t speaker_play_begin(void) {
-    return i2s_channel_enable(s_tx);
+    if (!s_audio_ready || !s_tx || !s_speaker_enabled) return ESP_ERR_INVALID_STATE;
+    return ESP_OK;
 }
 
 static esp_err_t speaker_play_end(esp_err_t playback_err) {
-    /* Give the final descriptor time to leave DMA, followed by a short zero
-     * tail. Disabling immediately after i2s_channel_write only proves that the
-     * bytes were queued, not that the speaker consumed them. */
-    vTaskDelay(pdMS_TO_TICKS(20));
-    int16_t silence[128] = {0};
-    esp_err_t silence_err = write_stereo(silence, 128, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    esp_err_t stop_err = i2s_channel_disable(s_tx);
-    if (stop_err != ESP_OK) ESP_LOGW(TAG, "speaker stop failed: %s", esp_err_to_name(stop_err));
     if (playback_err != ESP_OK) return playback_err;
-    if (silence_err != ESP_OK) return silence_err;
-    return stop_err;
+    /* Queue at least one complete DMA ring of silence. i2s_channel_write can
+     * return while the last speech descriptor is still queued; filling a full
+     * ring forces that descriptor onto the wire before this call returns and
+     * leaves all reusable buffers silent. Keep TX enabled so the amplifier
+     * remains locked and ready for the next prompt. */
+    int16_t silence[256] = {0};
+    for (unsigned block = 0; block < 8; ++block) {
+        esp_err_t err = write_stereo(silence, 256, 1);
+        if (err != ESP_OK) return err;
+    }
+    return ESP_OK;
 }
 
 esp_err_t board_port_play_wav(const uint8_t *wav, size_t len) {
@@ -1570,13 +1570,34 @@ esp_err_t board_port_play_wav(const uint8_t *wav, size_t len) {
     }
     size_t frame_bytes = channels * sizeof(int16_t);
     if (audio_size % frame_bytes != 0) return ESP_ERR_INVALID_SIZE;
+    size_t frames = audio_size / frame_bytes;
+    const int16_t *samples = (const int16_t *)audio_data;
+    int32_t peak = 0;
+    uint64_t square_sum = 0;
+    size_t sample_count = frames * channels;
+    for (size_t i = 0; i < sample_count; ++i) {
+        int32_t sample = samples[i];
+        int32_t magnitude = sample < 0 ? -sample : sample;
+        if (magnitude > peak) peak = magnitude;
+        square_sum += (uint64_t)((int64_t)sample * sample);
+    }
+    unsigned rms = sample_count
+                       ? (unsigned)sqrt((double)square_sum / (double)sample_count)
+                       : 0;
+    ESP_LOGI(TAG,
+             "WAV playback start: %u Hz %u-bit %u ch frames=%u duration=%ums peak=%ld rms=%u volume=%u%%",
+             (unsigned)rate, (unsigned)bits, (unsigned)channels, (unsigned)frames,
+             (unsigned)((frames * 1000u) / rate), (long)peak, rms, s_output_volume);
     if (xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    int64_t started_at = esp_timer_get_time();
     esp_err_t err = speaker_play_begin();
     if (err == ESP_OK) {
-        err = write_stereo((const int16_t *)audio_data, audio_size / frame_bytes, channels);
+        err = write_stereo(samples, frames, channels);
         err = speaker_play_end(err);
     }
     xSemaphoreGive(s_audio_mutex);
+    ESP_LOGI(TAG, "WAV playback end: result=%s elapsed=%lldms",
+             esp_err_to_name(err), (long long)((esp_timer_get_time() - started_at) / 1000));
     return err;
 }
 esp_err_t board_port_play_ack_chime(void) {
@@ -1586,7 +1607,7 @@ esp_err_t board_port_play_ack_chime(void) {
     if (err == ESP_OK) {
         for (int block = 0; block < 10 && err == ESP_OK; ++block) {
             for (int i = 0; i < 256; ++i) {
-                mono[i] = sinf(2 * 3.14159265f * 660 * (block * 256 + i) / AUDIO_RATE) * 3500;
+                mono[i] = sinf(2 * 3.14159265f * 660 * (block * 256 + i) / AUDIO_RATE) * 9000;
             }
             err = write_stereo(mono, 256, 1);
         }
