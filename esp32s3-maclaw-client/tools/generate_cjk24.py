@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import struct
+import math
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -17,11 +18,17 @@ SOURCE_FILES = (
     ROOT / "main" / "board_port.c",
     ROOT / "main" / "board_port_bread_compact.c",
 )
+# Keep the complete Latin/ASCII set in the same 24 px typeface as Chinese.
+# The firmware's old 5x7 fallback was intended for tiny status numbers; using
+# it for assistant prose produced narrow all-caps text, question marks for
+# punctuation, and very uneven mixed-language baselines.
+ASCII_PRINTABLE = "".join(chr(codepoint) for codepoint in range(0x20, 0x7F))
 # Weather summaries are supplied by MaClaw GUI at runtime, so they cannot all
 # be discovered by scanning firmware string literals. Keep every character
 # emitted by openMeteoWeatherSummary() here to prevent a valid Hub payload from
 # rendering as a missing-glyph box on the device.
 EXTRA_CHARACTERS = (
+    ASCII_PRINTABLE +
     "\u5317\u4eac\u4e0a\u6d77\u5929\u6d25\u91cd\u5e86\u5e7f\u5dde\u6df1\u5733\u676d\u5dde\u5357\u4eac\u6b66\u6c49\u6210\u90fd\u897f\u5b89\u90d1\u5dde\u6d4e\u5357\u6c88\u9633\u5927\u8fde\u957f\u6625\u54c8\u5c14\u6ee8"
     "\u798f\u5dde\u53a6\u95e8\u5357\u660c\u957f\u6c99\u6606\u660e\u8d35\u9633\u5357\u5b81\u6d77\u53e3\u77f3\u5bb6\u5e84\u592a\u539f\u547c\u548c\u6d69\u7279\u5170\u5dde\u897f\u5b81\u94f6\u5ddd\u62c9\u8428"
     "\u4e4c\u9c81\u6728\u9f50\u56fe\u68ee\u672c\u5730"
@@ -42,20 +49,29 @@ def collect_characters() -> list[str]:
 def glyph_rows(font: ImageFont.FreeTypeFont, char: str) -> list[int]:
     image = Image.new("1", (24, 24), 0)
     draw = ImageDraw.Draw(image)
-    draw.text((0, 0), char, fill=1, font=font, anchor="lt")
-    # Pillow's `lt` anchor uses the glyph's tight ink box. For the single-line
-    # ideograph 一 that puts the stroke at the top of the em square, unlike its
-    # normal visual position inside words such as 星期一. Keep generated fonts
-    # consistent with the firmware-side correction.
-    if char == "一":
-        image = image.transform(
-            image.size, Image.Transform.AFFINE, (1, 0, 0, 0, 1, -10),
-            resample=Image.Resampling.NEAREST,
-        )
+    # Use one shared baseline instead of Pillow's tight-top anchor. Tight-top
+    # normalised every glyph to y=0, which visibly lifted commas, periods and
+    # degree signs and destroyed their intended vertical metrics. The 24 px
+    # Microsoft YaHei baseline at y=18 keeps CJK, Latin and punctuation aligned.
+    # Scale tall glyphs just enough to keep descenders inside the 24-dot cell;
+    # this is preferable to clipping the bottom of g/p/y or shifting only those
+    # characters off the shared baseline.
+    draw.text((0, 18), char, fill=1, font=font, anchor="ls")
+    bbox = image.getbbox()
+    if bbox and bbox[3] > 24:
+        ink = image.crop((0, 0, 24, bbox[3]))
+        ink = ink.resize((24, 24), Image.Resampling.NEAREST)
+        image = Image.new("1", (24, 24), 0)
+        image.paste(ink, (0, 0))
     return [
         sum((1 << (23 - x)) for x in range(24) if image.getpixel((x, y)))
         for y in range(24)
     ]
+
+
+def ascii_advance(font: ImageFont.FreeTypeFont, char: str) -> int:
+    """Return the typeface's real horizontal advance for one ASCII glyph."""
+    return max(1, min(24, math.ceil(font.getlength(char))))
 
 
 def main() -> None:
@@ -75,6 +91,12 @@ def main() -> None:
     for char in chars:
         rows = ",".join(f"0x{row:06X}" for row in glyph_rows(font, char))
         lines.append(f"    {{0x{ord(char):04X}, {{{rows}}}}}, // U+{ord(char):04X}")
+    lines.extend(("};", "", "// U+0020..U+007E advances from the same font used above.",
+                  "static const uint8_t s_maclaw_ascii24_advance[95] = {"))
+    advances = [ascii_advance(font, chr(codepoint)) for codepoint in range(0x20, 0x7F)]
+    for offset in range(0, len(advances), 16):
+        chunk = ",".join(str(value) for value in advances[offset:offset + 16])
+        lines.append(f"    {chunk},")
     lines.extend(("};", ""))
     OUTPUT.write_text("\n".join(lines), encoding="utf-8")
     # Keep the complete CJK Unified Ideographs block in a packed 24x24 format:

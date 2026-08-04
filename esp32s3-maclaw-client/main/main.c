@@ -3123,10 +3123,11 @@ static void deferred_setup_task(void *arg) {
 static void on_user_input(board_input_action_t action, void *arg) {
     (void)arg;
     if (action == BOARD_INPUT_VOLUME_UP || action == BOARD_INPUT_VOLUME_DOWN) {
-        // On a response page the two side keys become deterministic reading
-        // controls: upper goes back, lower advances. Everywhere else they keep
-        // their original audio-volume behaviour.
-        int page_delta = action == BOARD_INPUT_VOLUME_UP ? -1 : 1;
+        // Follow the labels users see on the enclosure: volume-up advances
+        // through the answer and volume-down goes back. The old mapping made
+        // the first press of the upper key request page zero while already on
+        // page zero, which looked exactly like a dead button.
+        int page_delta = action == BOARD_INPUT_VOLUME_UP ? 1 : -1;
         bool page_handled = app_ui_navigate_response(page_delta);
         ESP_LOGI(TAG, "volume key: %s page_delta=%d response_handled=%s",
                  action == BOARD_INPUT_VOLUME_UP ? "up" : "down", page_delta,

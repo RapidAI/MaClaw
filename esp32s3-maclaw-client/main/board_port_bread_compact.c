@@ -373,8 +373,12 @@ static bool glyph24_pixel(uint32_t codepoint, const uint32_t *rows,
 }
 
 static int text24_advance(uint32_t codepoint) {
-    if (codepoint == ' ') return 7;
-    return codepoint < 0x80 ? 11 : 25;
+    // Measure and render Latin with one source of truth. Hand-grouping narrow
+    // and wide letters still made mixed-case prose look uneven and caused the
+    // wrapper to disagree with what was actually painted.
+    if (codepoint >= 0x20 && codepoint <= 0x7E)
+        return s_maclaw_ascii24_advance[codepoint - 0x20];
+    return 25;
 }
 
 static bool response_break(uint32_t codepoint) {
@@ -459,7 +463,10 @@ static void draw_response_page(void) {
     while (*cursor && skip--) cursor = response_next_line(cursor, line, sizeof(line));
     for (int row = 0; row < RESPONSE_LINES_PER_PAGE && *cursor; ++row) {
         cursor = response_next_line(cursor, line, sizeof(line));
-        draw_text24_clipped(14, 72 + row * 33, line, body, bg, 10);
+        // response_next_line() already clips by the actual pixel width.  The
+        // former ten-glyph cap silently discarded the rest of longer Latin
+        // lines (for example "ROUTE SOURCE" became "ROUTE SOUR").
+        draw_text24_clipped(14, 72 + row * 33, line, body, bg, 32);
     }
 
     unsigned pages = response_page_count();
@@ -955,6 +962,9 @@ static void button_task(void *arg) {
     bool previous = gpio_get_level(BUTTON_ACTIVATE) != 0;
     bool volume_up_stable = gpio_get_level(BUTTON_VOLUME_UP) != 0;
     bool volume_down_stable = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
+    // The two side keys are not guaranteed to share the same electrical
+    // polarity on Bread Compact revisions. Treat each settled boot level as
+    // its own released state so GPIO38 and GPIO39 both dispatch a press edge.
     const bool volume_up_idle = volume_up_stable;
     const bool volume_down_idle = volume_down_stable;
     bool volume_up_candidate = volume_up_stable;
@@ -964,6 +974,8 @@ static void button_task(void *arg) {
     int64_t pressed_at = 0;
     int64_t short_pending_at = 0;
     bool long_sent = false;
+    ESP_LOGI(TAG, "side key idle levels: volume_up(GPIO%d)=%d volume_down(GPIO%d)=%d",
+             BUTTON_VOLUME_UP, volume_up_idle, BUTTON_VOLUME_DOWN, volume_down_idle);
     while (true) {
         int64_t now = esp_timer_get_time();
         bool released = gpio_get_level(BUTTON_ACTIVATE) != 0;
@@ -1010,7 +1022,8 @@ static void button_task(void *arg) {
             // short taps easy to lose when one 20 ms scan landed inside the
             // contact bounce window, which left paging apparently inert.
             if (volume_up_stable != volume_up_idle) {
-                ESP_LOGI(TAG, "volume up key pressed (GPIO%d)", BUTTON_VOLUME_UP);
+                ESP_LOGI(TAG, "volume up key pressed (GPIO%d level=%d idle=%d)",
+                         BUTTON_VOLUME_UP, volume_up_stable, volume_up_idle);
                 if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_UP, s_button_arg);
             }
         }
@@ -1024,7 +1037,8 @@ static void button_task(void *arg) {
             now - volume_down_changed_at >= 30000) {
             volume_down_stable = volume_down_candidate;
             if (volume_down_stable != volume_down_idle) {
-                ESP_LOGI(TAG, "volume down key pressed (GPIO%d)", BUTTON_VOLUME_DOWN);
+                ESP_LOGI(TAG, "volume down key pressed (GPIO%d level=%d idle=%d)",
+                         BUTTON_VOLUME_DOWN, volume_down_stable, volume_down_idle);
                 if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_DOWN, s_button_arg);
             }
         }
@@ -1316,11 +1330,14 @@ bool board_port_navigate_response(int page_delta) {
     unsigned pages = response_page_count();
     if (pages > 1) {
         int next = (int)s_response_page + page_delta;
-        if (next < 0) next = 0;
-        if (next >= (int)pages) next = (int)pages - 1;
+        // Wrap at both ends so every press produces visible feedback instead
+        // of being silently swallowed on the first or last page.
+        if (next < 0) next = (int)pages - 1;
+        if (next >= (int)pages) next = 0;
         if ((unsigned)next != s_response_page) {
             s_response_page = (unsigned)next;
             draw_response_page();
+            ESP_LOGI(TAG, "response page changed: %u/%u", s_response_page + 1, pages);
         }
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);

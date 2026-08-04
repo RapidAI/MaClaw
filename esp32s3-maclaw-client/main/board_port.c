@@ -795,7 +795,8 @@ static uint32_t utf8_next(const char **cursor) {
 // cell made provisioning SSIDs look as though a space was inserted between
 // each letter and clipped their suffix on the round display.
 static int text24_advance(uint32_t codepoint) {
-    if (codepoint == ' ') return TEXT24_SPACE_ADVANCE;
+    if (codepoint >= 0x20 && codepoint <= 0x7E && cjk24_rows(codepoint))
+        return s_maclaw_ascii24_advance[codepoint - 0x20];
     return codepoint < 0x80 ? TEXT24_ASCII_ADVANCE : CJK_ADVANCE;
 }
 
