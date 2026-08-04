@@ -56,6 +56,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			heal := mobileDraftHealMarkdownOutsideLock(record)
 			display := heal.Display
 			if heal.ShouldPersist {
+				healPersisted := false
 				mobileDocumentQuotaAdmissionMu.Lock()
 				mobileDocuments.Lock()
 				cur, exists := mobileDocuments.drafts[draftID]
@@ -81,6 +82,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 					}
 					if mobileDraftApplyHealed(&cur, heal) {
 						mobileDocuments.drafts[draftID] = cur
+						healPersisted = true
 						record = cur
 						display = strings.TrimSpace(cur.Markdown)
 						if display == "" {
@@ -104,10 +106,12 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				}
 				mobileDocuments.Unlock()
 				mobileDocumentQuotaAdmissionMu.Unlock()
-				if !quotaOK {
+				if !healPersisted && len(heal.Images) > 0 {
 					// Extraction wrote immutable image blobs before admission. Reclaim them
-					// if the account cannot retain the generated preview metadata.
+					// if quota rejected the heal or its draft disappeared concurrently.
 					mobileDraftDeleteImages(heal.Images)
+				}
+				if !quotaOK {
 					display = strings.TrimSpace(record.Markdown)
 				}
 			}
