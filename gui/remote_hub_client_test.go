@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +17,88 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/gorilla/websocket"
 )
+
+func TestRemoteHubClientListsAndDeletesHardwareBindings(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			var request HubEnvelope
+			if err := conn.ReadJSON(&request); err != nil {
+				return
+			}
+			switch request.Type {
+			case "im.device_gateway_devices_list":
+				_ = conn.WriteJSON(map[string]any{"type": "im.device_gateway_devices", "request_id": request.RequestID, "payload": map[string]any{"devices": []map[string]any{{"clientId": "esp32s3-a", "clientName": "Desk Pet", "online": true}}}})
+			case "im.device_gateway_device_delete":
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "request_id": request.RequestID, "payload": map[string]any{"ok": true}})
+			}
+		}
+	}))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &RemoteHubClient{conn: conn, connected: true, machineID: "gui-a"}
+	go client.readLoop()
+	devices, err := client.ListHardwareDevices()
+	if err != nil || len(devices) != 1 || devices[0].ClientID != "esp32s3-a" {
+		t.Fatalf("devices=%#v err=%v", devices, err)
+	}
+	if err := client.DeleteHardwareDevice("esp32s3-a"); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	client.connected = false
+	_ = client.conn.Close()
+	client.conn = nil
+	client.mu.Unlock()
+}
+
+func TestRemoteHubClientHardwareRequestsPropagateCorrelatedErrors(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			var request HubEnvelope
+			if err := conn.ReadJSON(&request); err != nil {
+				return
+			}
+			code := "LIST_FAILED"
+			if request.Type == "im.device_gateway_device_delete" {
+				code = "HARDWARE_NOT_OWNED"
+			}
+			_ = conn.WriteJSON(map[string]any{"type": "error", "request_id": request.RequestID, "payload": map[string]any{"code": code, "message": "rejected for test"}})
+		}
+	}))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &RemoteHubClient{conn: conn, connected: true, machineID: "gui-a"}
+	go client.readLoop()
+	if _, err := client.ListHardwareDevices(); err == nil || !strings.Contains(err.Error(), "LIST_FAILED") {
+		t.Fatalf("list error=%v", err)
+	}
+	if err := client.DeleteHardwareDevice("owned-elsewhere"); err == nil || !strings.Contains(err.Error(), "HARDWARE_NOT_OWNED") {
+		t.Fatalf("delete error=%v", err)
+	}
+	client.mu.Lock()
+	client.connected = false
+	_ = client.conn.Close()
+	client.conn = nil
+	client.mu.Unlock()
+}
 
 func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -358,6 +443,148 @@ func TestRemoteHubClientReadLoopStoresHubError(t *testing.T) {
 	t.Fatalf("LastError() = %q, want %q", client.LastError(), "hub says no")
 }
 
+func TestRemoteHubClientHardwareReplyWaitsForMatchingAck(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	ackSeen := make(chan string, 1)
+	releasePlaybackReceipt := make(chan struct{})
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			var msg map[string]any
+			if conn.ReadJSON(&msg) != nil {
+				return
+			}
+			switch msg["type"] {
+			case "auth.machine":
+				_ = conn.WriteJSON(map[string]any{"type": "auth.ok", "payload": map[string]any{"role": "machine"}})
+			case "machine.hello":
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "request_id": msg["request_id"], "payload": map[string]any{"ok": true}})
+			case "im.device_gateway_reply":
+				requestID, _ := msg["request_id"].(string)
+				if !strings.HasPrefix(requestID, "device-hardware-") {
+					_ = conn.WriteJSON(map[string]any{"type": "ack", "request_id": requestID, "payload": map[string]any{"ok": true}})
+					continue
+				}
+				payload, _ := msg["payload"].(map[string]any)
+				reply, _ := payload["reply"].(map[string]any)
+				extra, _ := reply["extra"].(map[string]any)
+				if extra["hardware_audio_preview"] != true || extra["hardware_audio_preview_request_id"] != requestID {
+					t.Errorf("hardware preview correlation extra=%#v requestID=%q", extra, requestID)
+					return
+				}
+				_ = conn.WriteJSON(map[string]any{"type": "ack", "request_id": requestID, "payload": map[string]any{"ok": true}})
+				ackSeen <- requestID
+				<-releasePlaybackReceipt
+				_ = conn.WriteJSON(map[string]any{
+					"type": "im.device_gateway_playback_receipt", "request_id": requestID,
+					"payload": map[string]any{"clientId": "pet-preview", "messageId": "audio-1", "status": "delivered"},
+				})
+			}
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-hardware", RemoteMachineToken: "token"}); err != nil {
+		t.Fatal(err)
+	}
+	client := NewRemoteHubClient(app, NewRemoteSessionManager(app))
+	if err := client.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Disconnect() }()
+	result := make(chan error, 1)
+	go func() {
+		result <- client.SendDeviceGatewayHardwareReplyConfirmed(map[string]any{"reply_type": "audio", "file_data": "d2F2"})
+	}()
+	select {
+	case <-ackSeen:
+	case <-time.After(time.Second):
+		t.Fatal("Hub acceptance ACK was not observed")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("hardware reply completed before ESP32 playback receipt: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releasePlaybackReceipt)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("confirmed hardware reply: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hardware reply did not complete after ESP32 playback receipt")
+	}
+}
+
+func TestRemoteHubClientHardwareReplyReturnsMatchingHubError(t *testing.T) {
+	client := &RemoteHubClient{}
+	waiter := make(chan error, 1)
+	client.playbackWaiters.Store("hardware-error-1", waiter)
+	client.completeHubPlaybackRequest("hardware-error-1", errors.New("invalid welcome audio"))
+	select {
+	case err := <-waiter:
+		if err == nil || !strings.Contains(err.Error(), "invalid welcome audio") {
+			t.Fatalf("matching request error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("matching request error was not delivered")
+	}
+}
+
+func TestHubRequestErrorUsesStructuredMessage(t *testing.T) {
+	err := hubRequestError(json.RawMessage(`{"code":"NO_COMPATIBLE_HARDWARE","message":"no online remote ESP32 supports welcome audio playback"}`))
+	if got := err.Error(); !strings.Contains(got, "NO_COMPATIBLE_HARDWARE") || !strings.Contains(got, "no online remote ESP32") || strings.Contains(got, `{"code"`) {
+		t.Fatalf("structured Hub request error=%q", got)
+	}
+}
+
+func TestRemoteHubClientDisconnectCompletesHubRequestWaiter(t *testing.T) {
+	client := &RemoteHubClient{}
+	waiter := make(chan error, 1)
+	client.requestWaiters.Store("hardware-acceptance-1", waiter)
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-waiter:
+		if err == nil || !strings.Contains(err.Error(), "disconnected") {
+			t.Fatalf("disconnect request error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Hub request waiter was not completed on disconnect")
+	}
+}
+
+func TestRemoteHubClientHardwareReplyReturnsPlaybackFailure(t *testing.T) {
+	client := &RemoteHubClient{}
+	waiter := make(chan error, 1)
+	client.playbackWaiters.Store("hardware-failed-1", waiter)
+	payload, _ := json.Marshal(map[string]any{"clientId": "pet-failed", "status": "failed"})
+	client.handleDeviceGatewayPlaybackReceipt(inboundHubEnvelope{RequestID: "hardware-failed-1", Payload: payload})
+	select {
+	case err := <-waiter:
+		if err == nil || !strings.Contains(err.Error(), "playback failed") {
+			t.Fatalf("playback failure error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("playback failure was not delivered")
+	}
+}
+
 func TestRemoteHubClientHandlesSessionInput(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -645,6 +872,104 @@ func TestHubAckHasConfigOnlyMatchesHubConfigPayload(t *testing.T) {
 		t.Fatal("expected null hub_config to skip capability sync")
 	}
 }
+
+func TestSendDeviceGatewayHardwareEnabledUsesDurableControlMessage(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	messageCh := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		var message map[string]any
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Errorf("read websocket message: %v", err)
+			return
+		}
+		messageCh <- message
+		if err := conn.WriteJSON(map[string]any{
+			"type": "ack", "request_id": message["request_id"], "payload": map[string]any{"ok": true},
+		}); err != nil {
+			t.Errorf("write websocket ack: %v", err)
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client := &RemoteHubClient{conn: conn, connected: true, machineID: "gui-a"}
+	client.app = &App{}
+	go client.readLoop()
+	if err := client.SendDeviceGatewayHardwareEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+
+	message := <-messageCh
+	if message["type"] != "im.device_gateway_reply" {
+		t.Fatalf("message=%#v", message)
+	}
+	if strings.TrimSpace(fmt.Sprint(message["request_id"])) == "" {
+		t.Fatalf("hardware state request is not correlated: %#v", message)
+	}
+	payload, _ := message["payload"].(map[string]any)
+	reply, _ := payload["reply"].(map[string]any)
+	if payload["clientId"] != "*" || reply["reply_type"] != "hardware_enabled" || reply["enabled"] != false {
+		t.Fatalf("hardware state payload=%#v", payload)
+	}
+}
+
+func TestSendDeviceGatewayTextReplyMarksTerminalTurn(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	messageCh := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		var message map[string]any
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Errorf("read websocket message: %v", err)
+			return
+		}
+		messageCh <- message
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client := &RemoteHubClient{conn: conn, connected: true, machineID: "gui-a"}
+	if err := client.SendDeviceGatewayReply("pet-a", "default", GatewayReplyPayload{
+		ReplyType: gatewayReplyTypeText, Text: "done", SourceMessageID: "mc_in_1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	message := <-messageCh
+	payload, _ := message["payload"].(map[string]any)
+	reply, _ := payload["reply"].(map[string]any)
+	metadata, _ := reply["metadata"].(map[string]any)
+	if reply["replyTo"] != "mc_in_1" || reply["replyToMessageId"] != "mc_in_1" {
+		t.Fatalf("reply correlation=%#v", reply)
+	}
+	if progress, ok := reply["progress"].(bool); !ok || progress {
+		t.Fatalf("terminal progress=%#v, want false", reply["progress"])
+	}
+	if metadata["acp_turn"] != "final" {
+		t.Fatalf("terminal metadata=%#v", metadata)
+	}
+}
+
 func collectMessageTypes(t *testing.T, messageCh <-chan map[string]any, count int, timeout time.Duration) []string {
 	return messageTypes(collectMessages(t, messageCh, count, timeout))
 }

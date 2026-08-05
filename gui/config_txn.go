@@ -194,6 +194,10 @@ func (a *App) mutateConfigMaybe(patchFn func(cfg *corelib.AppConfig) bool, opts 
 	} else if !opts.allowHubManagedSecurity && a.hubSecurityExplicitlyCentralizedFalse() {
 		cfg.HubSecurityCentralized = false
 	}
+	if err := validateHardwareGatewayInvariant(cfg); err != nil {
+		a.unlockConfigAbort(current)
+		return false, err
+	}
 	sanitizeCodingToolSelection(&cfg)
 	normalizeConfigTimeouts(&cfg)
 	path, err := a.getConfigPath()

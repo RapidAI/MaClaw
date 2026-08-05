@@ -73,7 +73,7 @@ import { renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
+import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
@@ -779,7 +779,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             (window as any).go?.main?.App?.ResolveSkillRecording?.("save", name, desc).catch(() => { /* ignore */ });
         }
     }, []);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
     // Publish open project-tab paths so the sidebar can block deleting active tasks.
     useEffect(() => {
         const onChange = props.onOpenProjectTabsChange as ((paths: string[]) => void) | undefined;
@@ -2235,7 +2235,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Fire-and-forget cancel the backend agent. The live-sync effect guard
             // and displayMessages guard prevent cancel responses from resurrecting.
             if (activeTab.projectPath) {
-                CancelAIAssistantSessionForSession(`desktop-user:${activeTab.projectPath}`).catch(() => {});
+                const sessionKey = activeTab.sessionKey || `desktop-user:${activeTab.projectPath}`;
+                // Invalidate all session-owned transient state before the async
+                // cancel returns. Otherwise an open file picker or late stream
+                // event can revive attachments/messages after a clear.
+                forgetAIAssistantSessionRounds(sessionKey);
+                CancelAIAssistantSessionForSession(sessionKey).catch(() => {});
             }
             return;
         }
@@ -2255,7 +2260,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setQueueEditDraftActive(false);
             setEditingEntryId(null);
             const sessionKey = expertSessionKey(activeTab.expertId);
-            if (sessionKey) CancelAIAssistantSessionForSession(sessionKey).catch(() => {});
+            if (sessionKey) {
+                forgetAIAssistantSessionRounds(sessionKey);
+                CancelAIAssistantSessionForSession(sessionKey).catch(() => {});
+            }
             return;
         }
         // Local tab: full reset to show welcome/guide page.
@@ -2339,7 +2347,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [isPureCodingEnvironment, codingInterruptScopeKey, codingPendingApproval, codingConflictCount, remoteCodingNeedsReconnect]);
     const showChatUI = isLocalTabActive || isProjectTabActive || isExpertTabActive;
     const activeSessionKey = isProjectTabActive && activeTab.projectPath
-        ? `desktop-user:${activeTab.projectPath}`
+        ? (activeTab.sessionKey || `desktop-user:${activeTab.projectPath}`)
         : (isExpertTabActive && activeTab.expertId ? expertSessionKey(activeTab.expertId) : 'desktop-user');
     const {
         handlePaste: handlePasteBase,
@@ -2497,7 +2505,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             let historyToSave = projectTabMessages;
             const prevRound = findProjectRoundForTab(prevTabId, prevTab.projectPath);
             if (sending && prevRound) {
-                const prevSessionKey = projectSessionKey(prevTab.projectPath);
+                const prevSessionKey = prevTab.sessionKey || prevRound.sessionKey || projectSessionKey(prevTab.projectPath);
                 const inFlightMessages = prevSessionKey
                     ? messages.slice(prevRound.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, prevSessionKey))
                     : [];
@@ -2548,8 +2556,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [agentView]); // eslint-disable-line react-hooks/exhaustive-deps
     const projectTabRoundSeqRef = useRef(0);
-    const projectTabRoundsRef = useRef<Map<string, { tabId: string | null; projectPath: string; baseline: number; seq: number }>>(new Map());
+    const projectTabRoundsRef = useRef<Map<string, { tabId: string | null; projectPath: string; sessionKey: string; baseline: number; seq: number }>>(new Map());
     const findProjectRoundForTab = useCallback((tabId: string, projectPath?: string | null) => {
+		const tabSessionKey = getTabs().find(tab => tab.id === tabId)?.sessionKey || "";
+		if (tabSessionKey) {
+			const bySession = projectTabRoundsRef.current.get(tabSessionKey);
+			if (bySession && bySession.tabId === tabId) return bySession;
+		}
         const sessionKey = projectSessionKey(projectPath);
         if (sessionKey) {
             const byPath = projectTabRoundsRef.current.get(sessionKey);
@@ -2559,7 +2572,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (round.tabId === tabId) return round;
         }
         return undefined;
-    }, []);
+    }, [getTabs]);
     const detachedProjectRoundsRef = useRef<Map<string, { tabId: string; messageIds: Set<string> }>>(new Map());
     const [detachedProjectRoundVersion, setDetachedProjectRoundVersion] = useState(0);
     const projectTabMsgIdsRef = useRef<Set<string>>(null!);
@@ -2625,7 +2638,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const projectTabs = getTabs().filter(tab => (tab.type === "project" && tab.projectPath) || (tab.type === "expert" && tab.expertId));
         if (projectTabs.length === 0) return;
         for (const tab of projectTabs) {
-            const sessionKey = tab.type === "expert" ? expertSessionKey(tab.expertId) : `desktop-user:${tab.projectPath}`;
+            const sessionKey = tab.type === "expert" ? expertSessionKey(tab.expertId) : (tab.sessionKey || `desktop-user:${tab.projectPath}`);
             const liveMessages = messages.filter((message: ChatMessage) => messageBelongsToSession(message, sessionKey));
             if (liveMessages.length === 0) continue;
             const existingState = getTabState(tab.id);
@@ -2707,11 +2720,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const wasSending = prevSendingRef.current;
         prevSendingRef.current = sending;
         if (!wasSending && sending && isProjectTabActive && activeTab.projectPath && !findProjectRoundForTab(activeTab.id, activeTab.projectPath)) {
-            const sessionKey = projectSessionKey(activeTab.projectPath);
+            const sessionKey = activeTab.sessionKey || projectSessionKey(activeTab.projectPath);
             if (sessionKey) {
                 projectTabRoundsRef.current.set(sessionKey, {
                     tabId: activeTab.id,
                     projectPath: activeTab.projectPath,
+                    sessionKey,
                     baseline: messages.length,
                     seq: projectTabRoundSeqRef.current,
                 });
@@ -2721,7 +2735,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (wasSending && !sending && projectTabRoundsRef.current.size > 0) {
             const rounds = Array.from(projectTabRoundsRef.current.entries());
             for (const [roundKey, round] of rounds) {
-                const roundSessionKey = projectSessionKey(round.projectPath);
+                const roundSessionKey = round.sessionKey || roundKey;
                 const newMessages = roundSessionKey
                     ? messages.slice(round.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, roundSessionKey))
                     : [];
@@ -2823,8 +2837,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }));
         }
     }, [getTabState, saveTabState, setProjectTabPreparing]);
-    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean } | boolean) => {
-        const tabExisted = hasProjectTab(projectPath);
+    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean; sessionKey?: string } | boolean) => {
+        const sessionKey = typeof options === "object" ? String(options.sessionKey || "").trim() : "";
+        const tabExisted = sessionKey
+            ? getTabs().some(tab => tab.type === "project" && tab.sessionKey === sessionKey)
+            : hasProjectTab(projectPath);
         const prepareMode = typeof options === "object" ? options.prepareMode : "restore-context";
         const agentMode = typeof options === "object" ? options.agentMode : undefined;
         const remoteHost = typeof options === "object" ? options.remoteHost : undefined;
@@ -2849,6 +2866,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             remoteHost,
             remoteSafety,
             remoteNeedsReconnect,
+            sessionKey,
             ...(prepareMode === "new-agent" ? {
                 onSessionReady: (readyTab: { id: string; projectPath?: string }) => {
                     const minimumVisibleMs = Math.max(0, 120 - (performance.now() - startedAt));
@@ -2856,6 +2874,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 },
             } : {}),
         });
+		// ACP's owner and transcript live exclusively in its external session.
+		// Never hydrate a path-owned project transcript/context into this mirror.
+		if (tab && sessionKey) return tab;
         if (tab && tab.projectPath && !tabExisted) {
             const projectPathForTab = tab.projectPath;
             setProjectTabPreparing(tab.id, true, prepareMode || "restore-context");
@@ -2916,17 +2937,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (!data || data.role !== "user") return;
             const projectPath = normalizeProjectSessionPath(String(data.project_path || data.projectPath || ""));
             if (!projectPath) return;
-            const sessionKey = projectSessionKey(projectPath);
+            const sessionKey = String(data.session_key || data.sessionKey || "").trim();
+            if (!sessionKey) return;
             const tab = createProjectTabWithContext(projectPath, "VS Code / ACP", {
                 prepareMode: "restore-context",
                 agentMode: "coding_dev",
+                sessionKey,
             });
             if (tab?.id) {
                 activateTab(tab.id);
             }
-            if (sessionKey) {
-                setActiveSessionKey(sessionKey);
-            }
+            setActiveSessionKey(sessionKey);
             logAIPanelDiagnostic({
                 event: "acp_mode_b_open_project",
                 projectPath,
@@ -2955,8 +2976,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const optionProjectPath = typeof sendOptions.project_path === "string" ? sendOptions.project_path : undefined;
         const optionTabId = typeof sendOptions.tabId === "string" ? sendOptions.tabId : undefined;
         const liveActiveTab = activeTabRef.current;
+        // ACP owns the turn lifecycle outside the desktop project assistant.
+        // Its mirror may share a working directory with a normal project tab, so
+        // never let composer input fall through to that path-owned conversation.
+        if (liveActiveTab.type === "project" && isACPAssistantSessionKey(liveActiveTab.sessionKey)) {
+            return Promise.resolve(false);
+        }
         const activeSessionProjectPath = projectPathFromSessionKey(getActiveSessionKey());
+        const resolvedACPProjectPath = queueSessionKey.startsWith("desktop-user:acp:")
+            ? getTabs().find(tab => tab.type === "project" && tab.sessionKey === queueSessionKey)?.projectPath
+            : undefined;
         const resolvedProjectPath = queuedProjectPath
+			|| resolvedACPProjectPath
             || optionProjectPath
             || (!forceLocalQueueRoute && !queuedExpertId && liveActiveTab.type === "project" ? liveActiveTab.projectPath : undefined)
             || (!forceLocalQueueRoute && !queuedExpertId ? activeSessionProjectPath : undefined)
@@ -2973,6 +3004,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 tabId: resolvedTabId,
                 project_path: resolvedProjectPath,
             };
+			// ACP turns are already executing through the external host. Never route
+			// a queued UI action into the path-owned desktop project conversation.
+			if (queueSessionKey.startsWith("desktop-user:acp:")) {
+				return Promise.resolve(false);
+			}
             const pendingIMCompletion = resolvedTabId ? getTabState(resolvedTabId)?.pendingIMCompletion : undefined;
             if (pendingIMCompletion) {
                 if (!mergedOptions.im_platform) mergedOptions.im_platform = pendingIMCompletion.platform;
@@ -3011,6 +3047,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 projectTabRoundsRef.current.set(roundKey, {
                     tabId: typeof mergedOptions.tabId === "string" ? mergedOptions.tabId : null,
                     projectPath: resolvedProjectPath,
+                    sessionKey: roundKey,
                     baseline: messagesLengthRef.current,
                     seq: roundSeq,
                 });
@@ -3117,7 +3154,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         let changed = false;
         const tab = getTabs().find(t => t.id === tabId);
         if (tab?.type === "project" && tab.projectPath) {
-            forgetAIAssistantSessionRounds(`desktop-user:${tab.projectPath}`);
+            forgetAIAssistantSessionRounds(tab.sessionKey || `desktop-user:${tab.projectPath}`);
             const prepareTimer = projectPrepareTimersRef.current.get(tabId);
             if (prepareTimer !== undefined) {
                 window.clearTimeout(prepareTimer);
@@ -3129,7 +3166,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         for (const [roundKey, round] of projectTabRoundsRef.current) {
             if (round.tabId !== tabId) continue;
-            const sessionKey = projectSessionKey(tab?.type === "project" ? tab.projectPath : round.projectPath);
+            const sessionKey = tab?.type === "project" ? (tab.sessionKey || projectSessionKey(tab.projectPath)) : projectSessionKey(round.projectPath);
             const messagesToMark = sessionKey
                 ? messages.slice(round.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, sessionKey))
                 : [];
@@ -3176,6 +3213,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     lastActiveAt: Date.now(),
                 });
             }
+        }
+        // Closing an expert removes its UI owner. Revoke all hook-owned work
+        // before the tab disappears, so a late file-picker result or stream
+        // cannot restore data into a subsequently reopened expert session.
+        if (tab?.type === "expert") {
+            const sessionKey = expertSessionKey(tab.expertId);
+            if (sessionKey) forgetAIAssistantSessionRounds(sessionKey);
         }
         clearProjectRoundTrackingForTab(tabId);
         previewStateMapRef.current.delete(tabId);
@@ -3741,7 +3785,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         handleDropBase(event);
     }, [handleDropBase, recordingActive]);
-    const inputLocked = isBusy || cancelPending || !codingTaskReadyForIntents || recordingActive;
+    const isACPMirrorTabActive = activeTab.type === "project" && isACPAssistantSessionKey(activeTab.sessionKey);
+    const inputLocked = isBusy || cancelPending || !codingTaskReadyForIntents || recordingActive || isACPMirrorTabActive;
     // Busy agent allows type-ahead queue; live mic does not — keep submitLocked true
     // for lock UI, but send paths hard-return when recordingActive.
     const submitLocked = inputLocked;
@@ -3937,6 +3982,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         : (lang === "en" ? "Restoring task context... type ahead, Enter will wait" : "正在恢复任务上下文… 可预输入，Enter 会等待");
     const placeholderText = !ready
         ? initLabel
+        : isACPMirrorTabActive
+            ? (lang === "en" ? "This ACP session is controlled by its external client" : "此 ACP 会话由外部客户端控制")
         : recordingActive
             ? (lang === "en"
                 ? "Recording in progress — use Pause / Stop on the card above"
@@ -3967,7 +4014,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         setDraftInputValue?.(nextValue);
     }, [activeTab.id, activeTab.type, saveTabState, setDraftInputValue]);
-    const canSend = ready && !recordingActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
+    const canSend = ready && !recordingActive && !isACPMirrorTabActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
     const [welcomeTemplateOffer, setWelcomeTemplateOffer] = useState<WelcomeTemplateSaveOffer | null>(null);
     // Drop the save-offer when switching tabs.
     useEffect(() => {
@@ -4274,7 +4321,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return;
         }
         // Live mic: do not queue — user must finish via the recording card.
-        if (recordingActive) return;
+        if (recordingActive || isACPMirrorTabActive) return;
         // Busy: queue like voice input so the message is not dropped.
         if (inputLocked || submitLocked) {
             addEntry(trimmed, [], { autoDrain: true });
@@ -4855,24 +4902,43 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // gate so stale confirmation/recovery cards cannot send into a remote
         // workbench while its SSH connection is unavailable.
         if (isPureCodingEnvironment && !codingTaskReadyForIntents) return;
+        const routeOptions = isProjectTabActive && activeTab.projectPath
+            ? {
+                project_path: activeTab.projectPath,
+                tabId: activeTab.id,
+                recentMessages: buildProjectTabRecentMessages(projectTabMessages),
+            }
+            : isExpertTabActive && activeTab.expertId
+                ? {
+                    expert_id: activeTab.expertId,
+                    tabId: activeTab.id,
+                    recentMessages: buildProjectTabRecentMessages(projectTabMessages),
+                }
+                : undefined;
+        // Preserve the single-argument callback contract for local actions;
+        // some panel integrations intentionally expose only that legacy shape.
+        const executeRoutedAction = (actionCommand: string) => routeOptions
+            ? executeAction(actionCommand, routeOptions)
+            : executeAction(actionCommand);
         if (!isProjectTabActive || !activeTab.projectPath) {
-            return executeAction(command);
+            return executeRoutedAction(command);
         }
         // Commands handled entirely in the frontend — they call Wails bindings
         // directly without sendMessage. Do NOT pre-register a project round
         // for these (it would create a stale round that's never consumed).
         if (command.startsWith('__resolve_critical_confirm__') || command.startsWith('__view_trace__')) {
-            return executeAction(command);
+            return executeRoutedAction(command);
         }
         // Pre-register the project round with correct baseline (current
         // messages.length BEFORE executeAction adds user+placeholder).
-        const roundKey = projectSessionKey(activeTab.projectPath);
+        const roundKey = activeTab.sessionKey || projectSessionKey(activeTab.projectPath);
         if (roundKey && !projectTabRoundsRef.current.has(roundKey)) {
             const roundSeq = projectTabRoundSeqRef.current + 1;
             projectTabRoundSeqRef.current = roundSeq;
             projectTabRoundsRef.current.set(roundKey, {
                 tabId: activeTab.id,
                 projectPath: activeTab.projectPath,
+                sessionKey: roundKey,
                 baseline: messagesLengthRef.current,
                 seq: roundSeq,
             });
@@ -4881,8 +4947,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // Call the original executeAction which handles all special command
         // logic (__workflow_choice__, __confirm_execution__, etc.) and
         // internally calls sendMessage with proper options.
-        return executeAction(command);
-    }, [activeTab.id, activeTab.projectPath, codingTaskReadyForIntents, executeAction, isProjectTabActive, isPureCodingEnvironment]);
+        return executeRoutedAction(command);
+    }, [activeTab.expertId, activeTab.id, activeTab.projectPath, codingTaskReadyForIntents, executeAction, isExpertTabActive, isProjectTabActive, isPureCodingEnvironment, projectTabMessages]);
 
     const handleRecordingComplete = useCallback((result: RecordingCompleteResult, messageId: string) => {
         // Deactivate before sending completion so input unlocks and the card
@@ -5120,7 +5186,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 }
                 setParticipantInviteTargetTabId(tab.id);
                 activateTab(tab.id);
-            }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} getLastActiveAt={getLastActiveAt} recordingTabId={skillRecordingTabId} />
+            }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} lang={lang} recordingTabId={skillRecordingTabId} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") && (
                 <ProjectDirBar

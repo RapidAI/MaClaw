@@ -51,7 +51,7 @@ func (m *SSHBackgroundTaskManager) findDuplicateActiveTaskForOwner(command, owne
 		if !status.IsActive() {
 			continue
 		}
-		if ownerID != "" && taskOwnerID != "" && taskOwnerID != ownerID {
+		if taskOwnerID != ownerID {
 			continue
 		}
 		if existingCmd == command || normalizeCommandForDedup(existingCmd) == normalized {
@@ -370,9 +370,6 @@ func (m *SSHBackgroundTaskManager) ListTasks() []*SSHBackgroundTask {
 func SSHBackgroundTaskOwnerMatches(taskOwnerID, filterOwnerID string) bool {
 	taskOwnerID = strings.TrimSpace(taskOwnerID)
 	filterOwnerID = strings.TrimSpace(filterOwnerID)
-	if filterOwnerID == "" || taskOwnerID == "" {
-		return true
-	}
 	return taskOwnerID == filterOwnerID
 }
 
@@ -404,9 +401,6 @@ func (m *SSHBackgroundTaskManager) ListTasksForOwner(ownerID string) []*SSHBackg
 		return nil
 	}
 	tasks := m.ListTasks()
-	if strings.TrimSpace(ownerID) == "" {
-		return tasks
-	}
 	filtered := make([]*SSHBackgroundTask, 0, len(tasks))
 	for _, task := range tasks {
 		if SSHBackgroundTaskOwnerMatches(task.OwnerID, ownerID) {

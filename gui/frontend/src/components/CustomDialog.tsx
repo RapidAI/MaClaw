@@ -26,6 +26,10 @@ function getCurrentLightScheme(): string | undefined {
 type DialogMode = 'alert' | 'confirm' | 'prompt';
 type DialogResult = boolean | string | null;
 
+const dismissResultForMode = (mode: DialogMode): DialogResult => (
+    mode === 'alert' ? true : mode === 'prompt' ? null : false
+);
+
 interface DialogState {
     open: boolean;
     title: string;
@@ -59,6 +63,11 @@ interface DialogContextValue {
     showConfirm: (message: string, title?: string, options?: ConfirmOptions) => Promise<boolean>;
     showPrompt: (message: string, title?: string, options?: PromptOptions) => Promise<string | null>;
 }
+
+type PendingDialog = {
+    mode: DialogMode;
+    resolve: (value: DialogResult) => void;
+};
 
 const DialogContext = createContext<DialogContextValue | null>(null);
 
@@ -96,7 +105,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     });
     const [inputValue, setInputValue] = useState('');
     const inputValueRef = useRef('');
-    const resolveRef = useRef<((value: DialogResult) => void) | null>(null);
+    const pendingDialogRef = useRef<PendingDialog | null>(null);
     const backdropMouseDownRef = useRef(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
     const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -108,8 +117,8 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     }, []);
 
     const close = useCallback((result: DialogResult) => {
-        resolveRef.current?.(result);
-        resolveRef.current = null;
+        pendingDialogRef.current?.resolve(result);
+        pendingDialogRef.current = null;
         setState(prev => ({ ...prev, open: false }));
         inputValueRef.current = '';
         setInputValue('');
@@ -128,8 +137,8 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         return new Promise(resolve => {
             // Resolve any pending dialog to prevent Promise leak when showAlert
             // is called while another dialog is already open (e.g. rapid backend events).
-            resolveRef.current?.(true);
-            resolveRef.current = () => resolve();
+            pendingDialogRef.current?.resolve(dismissResultForMode(pendingDialogRef.current.mode));
+            pendingDialogRef.current = { mode: 'alert', resolve: () => resolve() };
             captureInvokingFocus();
             setPromptInput('');
             setState({ open: true, title: title || '', message, mode: 'alert', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), lightScheme: getCurrentLightScheme() });
@@ -139,8 +148,8 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     const showConfirm = useCallback((message: string, title?: string, options?: ConfirmOptions): Promise<boolean> => {
         return new Promise(resolve => {
             // Resolve any pending dialog (dismiss as "cancel") to prevent Promise leak.
-            resolveRef.current?.(false);
-            resolveRef.current = (value) => resolve(Boolean(value));
+            pendingDialogRef.current?.resolve(dismissResultForMode(pendingDialogRef.current.mode));
+            pendingDialogRef.current = { mode: 'confirm', resolve: (value) => resolve(Boolean(value)) };
             captureInvokingFocus();
             setPromptInput('');
             setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en', theme: getCurrentTheme(), darkScheme: getCurrentDarkScheme(), lightScheme: getCurrentLightScheme(), confirmText: options?.confirmText, cancelText: options?.cancelText, confirmVariant: options?.confirmVariant });
@@ -150,11 +159,11 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     const showPrompt = useCallback((message: string, title?: string, options?: PromptOptions): Promise<string | null> => {
         return new Promise(resolve => {
             // Resolve any pending dialog (dismiss as cancel) to prevent Promise leak.
-            resolveRef.current?.(null);
-            resolveRef.current = (value) => {
+            pendingDialogRef.current?.resolve(dismissResultForMode(pendingDialogRef.current.mode));
+            pendingDialogRef.current = { mode: 'prompt', resolve: (value) => {
                 if (typeof value === 'string') resolve(value);
                 else resolve(null);
-            };
+            } };
             captureInvokingFocus();
             const initial = options?.defaultValue ?? '';
             setPromptInput(initial);
@@ -180,8 +189,9 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     useEffect(() => () => {
         // Promise wrappers normalize this safe dismissal for confirm/prompt;
         // alert callers simply resume without a result.
-        resolveRef.current?.(true);
-        resolveRef.current = null;
+        const pending = pendingDialogRef.current;
+        pendingDialogRef.current = null;
+        pending?.resolve(dismissResultForMode(pending.mode));
         const previousFocus = previousFocusRef.current;
         previousFocusRef.current = null;
         if (previousFocus?.isConnected) previousFocus.focus();
@@ -288,7 +298,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         return () => window.removeEventListener('keydown', onKey, true);
     }, [state.open, state.mode, state.confirmVariant, close]);
 
-    const dismissResult: DialogResult = state.mode === 'alert' ? true : state.mode === 'prompt' ? null : false;
+    const dismissResult = dismissResultForMode(state.mode);
     const dialogApi = useMemo(
         () => ({ showAlert, showConfirm, showPrompt }),
         [showAlert, showConfirm, showPrompt],

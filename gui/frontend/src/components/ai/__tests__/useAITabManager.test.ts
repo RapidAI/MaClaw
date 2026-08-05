@@ -139,6 +139,26 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
                 { numRuns: 50 }
             );
         });
+
+        it("keeps ACP mirrors distinct by owner even when their project path is shared", () => {
+            const { result } = renderHook(() => useAITabManager());
+            const path = "D:/tasks/shared";
+            act(() => {
+                result.current.createProjectTab(path, "First ACP", { sessionKey: "desktop-user:acp:first" });
+            });
+            act(() => {
+                result.current.createProjectTab(path, "Second ACP", { sessionKey: "desktop-user:acp:second" });
+            });
+            act(() => {
+                result.current.createProjectTab(path, "First ACP", { sessionKey: "desktop-user:acp:first" });
+            });
+
+            const mirrors = result.current.tabState.tabs.filter(tab => tab.sessionKey?.startsWith("desktop-user:acp:"));
+            expect(mirrors).toHaveLength(2);
+            expect(mirrors[0].id).not.toBe(mirrors[1].id);
+            expect(mirrors.map(tab => tab.sessionKey)).toEqual(["desktop-user:acp:first", "desktop-user:acp:second"]);
+            expect(CreateProjectTabSession).not.toHaveBeenCalled();
+        });
     });
 
     /**
@@ -372,6 +392,34 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         });
     });
 
+    it("keeps backend-restored project tabs in their persisted creation order", async () => {
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-first", type: "project", title: "First", projectPath: "D:/tasks/first", lastActiveAt: 1, archived: false },
+            { id: "proj-second", type: "project", title: "Second", projectPath: "D:/tasks/second", lastActiveAt: 999, archived: false },
+            { id: "proj-third", type: "project", title: "Third", projectPath: "D:/tasks/third", lastActiveAt: 500, archived: false },
+        ] as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        await waitFor(() => {
+            expect(result.current.getTabs().filter(tab => tab.type === "project").map(tab => tab.id)).toEqual([
+                "proj-first",
+                "proj-second",
+                "proj-third",
+            ]);
+        });
+
+        act(() => {
+            result.current.activateTab("proj-third");
+            result.current.activateTab("proj-first");
+        });
+        expect(result.current.getTabs().filter(tab => tab.type === "project").map(tab => tab.id)).toEqual([
+            "proj-first",
+            "proj-second",
+            "proj-third",
+        ]);
+    });
+
     it("restores remote diagnosis metadata from the backend tab index", async () => {
         vi.mocked(LoadProjectTabIndex).mockResolvedValue([
             {
@@ -449,6 +497,26 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         });
 
         expect(SaveProjectTabConversation).toHaveBeenCalledWith(tab!.id, [injection, realMessage]);
+    });
+
+    it("does not persist one-shot task context cards in project tab conversation history", async () => {
+        vi.useFakeTimers();
+        const taskContext = { id: "task-context-1", role: "system", kind: "taskContext", content: "Current task", timestamp: 1 };
+        const realMessage = { id: "assistant-1", role: "assistant", content: "Ready", timestamp: 2 };
+        const { result } = renderHook(() => useAITabManager());
+
+        let tab: ReturnType<typeof result.current.createProjectTab> = null;
+        act(() => {
+            tab = result.current.createProjectTab("D:/tasks/task-context-save", "Task context save");
+            result.current.saveTabState(tab!.id, { history: [taskContext, realMessage] });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(600);
+            await Promise.resolve();
+        });
+
+        expect(SaveProjectTabConversation).toHaveBeenCalledWith(tab!.id, [realMessage]);
     });
 
     it("cleans transient guide receipts from backend-restored project tab history", async () => {

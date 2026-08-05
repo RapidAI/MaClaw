@@ -39,7 +39,6 @@ import (
 
 const (
 	userDataMigrationPackageVersion       = "maclaw-gui-user-data-migration/v2"
-	userDataMigrationLegacyVersion        = "maclaw-gui-user-data-migration/v1"
 	userDataMigrationConfigSchema         = "corelib.AppConfig/v1"
 	userDataMigrationChunkSize            = int64(4 << 20)
 	userDataMigrationAEADChunkSize        = int64(4 << 20)
@@ -68,7 +67,7 @@ type userDataMigrationStatus struct {
 	Email               string      `json:"email,omitempty"`
 	MachineID           string      `json:"machine_id,omitempty"`
 	MachineName         string      `json:"machine_name,omitempty"`
-	MaxCompressedBytes  int64       `json:"max_compressed_bytes,omitempty"`
+	MaxPackageBytes     int64       `json:"max_package_bytes,omitempty"`
 	CurrentExport       interface{} `json:"current_export,omitempty"`
 	ConfigurationReason string      `json:"configuration_reason,omitempty"`
 }
@@ -159,6 +158,7 @@ type userDataMigrationEncryptedHeader struct {
 	Salt      []byte `json:"salt"`
 	Nonce     []byte `json:"nonce"`
 	PlainHash string `json:"plain_sha256"`
+	PlainSize int64  `json:"plain_size"`
 	Stream    bool   `json:"stream,omitempty"`
 	ChunkSize int64  `json:"chunk_size,omitempty"`
 }
@@ -216,7 +216,7 @@ func (a *App) UserDataMigrationStatus() (userDataMigrationStatus, error) {
 		return status, nil
 	}
 	status.CurrentExport = current
-	status.MaxCompressedBytes = maxBytes
+	status.MaxPackageBytes = maxBytes
 	return status, nil
 }
 
@@ -472,7 +472,7 @@ func (a *App) runUserDataMigrationExport(ctx context.Context, cfg userDataMigrat
 	}
 	defer os.RemoveAll(workDir)
 	progress(0.05, "preparing migration package")
-	plainPath, manifest, err := a.buildUserDataMigrationPackage(ctx, cfg, workDir)
+	plainPath, _, err := a.buildUserDataMigrationPackage(ctx, cfg, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -495,13 +495,10 @@ func (a *App) runUserDataMigrationExport(ctx context.Context, cfg userDataMigrat
 	}
 	chunkCount := int((encryptedSize + userDataMigrationChunkSize - 1) / userDataMigrationChunkSize)
 	createReq := map[string]interface{}{
-		"compressed_size":  plainSize,
 		"encrypted_size":   encryptedSize,
 		"encrypted_sha256": encryptedHash,
-		"plain_sha256":     plainHash,
 		"chunk_size":       userDataMigrationChunkSize,
 		"chunk_count":      chunkCount,
-		"manifest":         manifest,
 	}
 	created, err := a.userDataMigrationHubJSON(ctx, cfg, http.MethodPost, "/api/v1/migration/exports", createReq)
 	if err != nil {
@@ -521,11 +518,9 @@ func (a *App) runUserDataMigrationExport(ctx context.Context, cfg userDataMigrat
 	}
 	progress(1, "export completed")
 	return map[string]interface{}{
-		"export_id":       exportID,
-		"compressed_size": plainSize,
-		"encrypted_size":  encryptedSize,
-		"chunk_count":     chunkCount,
-		"manifest":        manifest,
+		"export_id":      exportID,
+		"encrypted_size": encryptedSize,
+		"chunk_count":    chunkCount,
 	}, nil
 }
 
@@ -575,11 +570,11 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 		progress(1, "import cleanup completed")
 		return map[string]interface{}{"export_id": exportID, "cleanup_retried": true}, nil
 	}
-	chunkCount, chunkSize, encryptedSize, compressedSize, encryptedHash, plainHash, err := userDataMigrationDownloadMetadata(exportMap)
+	chunkCount, chunkSize, encryptedSize, encryptedHash, err := userDataMigrationDownloadMetadata(exportMap)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[onboarding-migration] import_metadata export_id=%s chunks=%d chunk_size=%d encrypted_size=%d compressed_size=%d", exportID, chunkCount, chunkSize, encryptedSize, compressedSize)
+	log.Printf("[onboarding-migration] import_metadata export_id=%s chunks=%d chunk_size=%d encrypted_size=%d", exportID, chunkCount, chunkSize, encryptedSize)
 	encryptedPath := filepath.Join(workDir, "migration.mlawenc")
 	progress(0.12, "downloading encrypted chunks")
 	if err := a.downloadUserDataMigrationChunks(ctx, cfg, exportID, encryptedPath, encryptedSize, chunkSize, chunkCount, progress); err != nil {
@@ -594,13 +589,8 @@ func (a *App) runUserDataMigrationImport(ctx context.Context, cfg userDataMigrat
 	}
 	progress(0.72, "decrypting and verifying package")
 	plainPath := filepath.Join(workDir, "migration.zip")
-	if err := decryptUserDataMigrationFile(encryptedPath, plainPath, password, plainHash, compressedSize); err != nil {
+	if err := decryptUserDataMigrationFile(encryptedPath, plainPath, password, ""); err != nil {
 		return nil, err
-	}
-	if gotPlain, _, err := userDataMigrationFileSHA256(plainPath); err != nil {
-		return nil, err
-	} else if !strings.EqualFold(gotPlain, plainHash) {
-		return nil, fmt.Errorf("decrypted package hash mismatch")
 	}
 	progress(0.82, "restoring local memory and knowledge base")
 	result, err = a.restoreUserDataMigrationPackageWithRetry(ctx, plainPath, workDir, progress)
@@ -667,7 +657,7 @@ func (a *App) dryRunUserDataMigrationImport(ctx context.Context, cfg userDataMig
 	}()
 
 	exportMap, _ := claimResp["export"].(map[string]interface{})
-	chunkCount, chunkSize, encryptedSize, compressedSize, encryptedHash, plainHash, err := userDataMigrationDownloadMetadata(exportMap)
+	chunkCount, chunkSize, encryptedSize, encryptedHash, err := userDataMigrationDownloadMetadata(exportMap)
 	if err != nil {
 		return nil, err
 	}
@@ -686,13 +676,8 @@ func (a *App) dryRunUserDataMigrationImport(ctx context.Context, cfg userDataMig
 
 	progress(0.72, "decrypting and verifying package")
 	plainPath := filepath.Join(workDir, "migration.zip")
-	if err := decryptUserDataMigrationFile(encryptedPath, plainPath, password, plainHash, compressedSize); err != nil {
+	if err := decryptUserDataMigrationFile(encryptedPath, plainPath, password, ""); err != nil {
 		return nil, err
-	}
-	if gotPlain, _, err := userDataMigrationFileSHA256(plainPath); err != nil {
-		return nil, err
-	} else if !strings.EqualFold(gotPlain, plainHash) {
-		return nil, fmt.Errorf("decrypted package hash mismatch")
 	}
 
 	progress(0.82, "validating migration package without restoring")
@@ -708,7 +693,7 @@ func (a *App) validateUserDataMigrationPackageForDryRun(ctx context.Context, zip
 	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "manifest.json"), &manifest, userDataMigrationMaxManifest); err != nil {
 		return nil, err
 	}
-	if manifest.Version != userDataMigrationPackageVersion && manifest.Version != userDataMigrationLegacyVersion {
+	if manifest.Version != userDataMigrationPackageVersion {
 		return nil, fmt.Errorf("unsupported migration package version %q", manifest.Version)
 	}
 	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 || manifest.ExpertBytes < 0 {
@@ -746,29 +731,27 @@ func (a *App) validateUserDataMigrationPackageForDryRun(ctx context.Context, zip
 	}
 	configSections := 0
 	secretCount := 0
-	if manifest.Version == userDataMigrationPackageVersion {
-		if manifest.ConfigSchema != userDataMigrationConfigSchema {
-			return nil, fmt.Errorf("unsupported migration config schema %q", manifest.ConfigSchema)
-		}
-		if manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
-			return nil, fmt.Errorf("migration configuration metadata is invalid")
-		}
-		var incomingConfig map[string]interface{}
-		if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "app_config.json"), &incomingConfig, userDataMigrationMaxConfigJSON); err != nil {
-			return nil, fmt.Errorf("read migration system configuration: %w", err)
-		}
-		if len(incomingConfig) != manifest.ConfigSections {
-			return nil, fmt.Errorf("migration configuration section count mismatch")
-		}
-		if err := validateUserDataMigrationConfigMetadata(payloadDir, manifest, incomingConfig); err != nil {
-			return nil, err
-		}
-		if err := userDataMigrationValidateConfigKeys(incomingConfig); err != nil {
-			return nil, err
-		}
-		configSections = len(incomingConfig)
-		secretCount = len(userDataMigrationSecretPaths(incomingConfig, ""))
+	if manifest.ConfigSchema != userDataMigrationConfigSchema {
+		return nil, fmt.Errorf("unsupported migration config schema %q", manifest.ConfigSchema)
 	}
+	if manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
+		return nil, fmt.Errorf("migration configuration metadata is invalid")
+	}
+	var incomingConfig map[string]interface{}
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "app_config.json"), &incomingConfig, userDataMigrationMaxConfigJSON); err != nil {
+		return nil, fmt.Errorf("read migration system configuration: %w", err)
+	}
+	if len(incomingConfig) != manifest.ConfigSections {
+		return nil, fmt.Errorf("migration configuration section count mismatch")
+	}
+	if err := validateUserDataMigrationConfigMetadata(payloadDir, manifest, incomingConfig); err != nil {
+		return nil, err
+	}
+	if err := userDataMigrationValidateConfigKeys(incomingConfig); err != nil {
+		return nil, err
+	}
+	configSections = len(incomingConfig)
+	secretCount = len(userDataMigrationSecretPaths(incomingConfig, ""))
 	_ = ctx
 	return map[string]interface{}{
 		"dry_run":          true,
@@ -1129,7 +1112,7 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "manifest.json"), &manifest, userDataMigrationMaxManifest); err != nil {
 		return nil, err
 	}
-	if manifest.Version != userDataMigrationPackageVersion && manifest.Version != userDataMigrationLegacyVersion {
+	if manifest.Version != userDataMigrationPackageVersion {
 		return nil, fmt.Errorf("unsupported migration package version %q", manifest.Version)
 	}
 	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 || manifest.ExpertBytes < 0 {
@@ -1156,23 +1139,21 @@ func (a *App) restoreUserDataMigrationPackage(ctx context.Context, zipPath, work
 	if err := a.validateUserDataMigrationKnowledgeSnapshot(knowledgePath); err != nil {
 		return nil, err
 	}
+	if manifest.ConfigSchema != userDataMigrationConfigSchema {
+		return nil, fmt.Errorf("unsupported migration config schema %q", manifest.ConfigSchema)
+	}
+	if manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
+		return nil, fmt.Errorf("migration configuration metadata is invalid")
+	}
 	var incomingConfig map[string]interface{}
-	if manifest.Version == userDataMigrationPackageVersion {
-		if manifest.ConfigSchema != userDataMigrationConfigSchema {
-			return nil, fmt.Errorf("unsupported migration config schema %q", manifest.ConfigSchema)
-		}
-		if manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
-			return nil, fmt.Errorf("migration configuration metadata is invalid")
-		}
-		if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "app_config.json"), &incomingConfig, userDataMigrationMaxConfigJSON); err != nil {
-			return nil, fmt.Errorf("read migration system configuration: %w", err)
-		}
-		if len(incomingConfig) != manifest.ConfigSections {
-			return nil, fmt.Errorf("migration configuration section count mismatch")
-		}
-		if err := validateUserDataMigrationConfigMetadata(payloadDir, manifest, incomingConfig); err != nil {
-			return nil, err
-		}
+	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "app_config.json"), &incomingConfig, userDataMigrationMaxConfigJSON); err != nil {
+		return nil, fmt.Errorf("read migration system configuration: %w", err)
+	}
+	if len(incomingConfig) != manifest.ConfigSections {
+		return nil, fmt.Errorf("migration configuration section count mismatch")
+	}
+	if err := validateUserDataMigrationConfigMetadata(payloadDir, manifest, incomingConfig); err != nil {
+		return nil, err
 	}
 	rollbackKnowledge, err := a.prepareUserDataMigrationKnowledgeRollback(workDir)
 	if err != nil {
@@ -2264,7 +2245,7 @@ func (a *App) uploadUserDataMigrationChunks(ctx context.Context, cfg userDataMig
 		if !a.userDataMigrationChunkUploaded(ctx, cfg, exportID, i, shaHex) {
 			var uploadErr error
 			for attempt := 0; attempt < 3; attempt++ {
-				uploadErr = a.userDataMigrationHubRaw(ctx, cfg, http.MethodPut, fmt.Sprintf("/api/v1/migration/exports/%s/chunks/%d?sha256=%s", exportID, i, shaHex), bytes.NewReader(chunk))
+				uploadErr = a.userDataMigrationHubRaw(ctx, cfg, http.MethodPut, fmt.Sprintf("/api/v1/migration/exports/%s/chunks/%d?sha256=%s", exportID, i, shaHex), bytes.NewReader(chunk), "application/octet-stream")
 				if uploadErr == nil || a.userDataMigrationChunkUploaded(ctx, cfg, exportID, i, shaHex) {
 					uploadErr = nil
 					break
@@ -2373,6 +2354,10 @@ func encryptUserDataMigrationFile(inPath, outPath, password, plainHash string) e
 		return err
 	}
 	defer in.Close()
+	plainInfo, err := in.Stat()
+	if err != nil || plainInfo.Size() <= 0 || plainInfo.Size() > userDataMigrationMaxExpanded {
+		return fmt.Errorf("invalid migration package size")
+	}
 	outFile, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -2389,7 +2374,7 @@ func encryptUserDataMigrationFile(inPath, outPath, password, plainHash string) e
 	if err != nil {
 		return err
 	}
-	header := userDataMigrationEncryptedHeader{Version: userDataMigrationPackageVersion, KDF: "argon2id", Time: 3, MemoryKB: 64 * 1024, Threads: 4, Salt: salt, Nonce: nonce, PlainHash: plainHash, Stream: true, ChunkSize: userDataMigrationAEADChunkSize}
+	header := userDataMigrationEncryptedHeader{Version: userDataMigrationPackageVersion, KDF: "argon2id", Time: 3, MemoryKB: 64 * 1024, Threads: 4, Salt: salt, Nonce: nonce, PlainHash: plainHash, PlainSize: plainInfo.Size(), Stream: true, ChunkSize: userDataMigrationAEADChunkSize}
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
 		return err
@@ -2429,7 +2414,7 @@ func encryptUserDataMigrationFile(inPath, outPath, password, plainHash string) e
 	return outFile.Close()
 }
 
-func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash string, expectedPlainSize ...int64) error {
+func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash string) error {
 	in, err := os.Open(inPath)
 	if err != nil {
 		return err
@@ -2470,7 +2455,13 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	completed := false
+	defer func() {
+		_ = out.Close()
+		if !completed {
+			_ = os.Remove(outPath)
+		}
+	}()
 	h := sha256.New()
 	if !header.Stream {
 		ciphertext, err := io.ReadAll(in)
@@ -2484,13 +2475,17 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 		if _, err := h.Write(plain); err != nil {
 			return err
 		}
-		if len(expectedPlainSize) > 0 && expectedPlainSize[0] > 0 && int64(len(plain)) != expectedPlainSize[0] {
+		if int64(len(plain)) != header.PlainSize {
 			return fmt.Errorf("decrypted package size mismatch")
 		}
 		if _, err := out.Write(plain); err != nil {
 			return err
 		}
-		return finishUserDataMigrationDecryption(out, h, expectedPlainHash, header.PlainHash)
+		if err := finishUserDataMigrationDecryption(out, h, expectedPlainHash, header.PlainHash); err != nil {
+			return err
+		}
+		completed = true
+		return nil
 	}
 	if header.ChunkSize <= 0 || header.ChunkSize > 32<<20 {
 		return fmt.Errorf("unsupported encrypted migration package")
@@ -2520,7 +2515,7 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 			return fmt.Errorf("migration password is incorrect or package is corrupted")
 		}
 		plainBytes += int64(len(plain))
-		if len(expectedPlainSize) > 0 && expectedPlainSize[0] > 0 && plainBytes > expectedPlainSize[0] {
+		if plainBytes > header.PlainSize {
 			return fmt.Errorf("decrypted package size mismatch")
 		}
 		if _, err := h.Write(plain); err != nil {
@@ -2530,17 +2525,24 @@ func decryptUserDataMigrationFile(inPath, outPath, password, expectedPlainHash s
 			return err
 		}
 	}
-	if len(expectedPlainSize) > 0 && expectedPlainSize[0] > 0 && plainBytes != expectedPlainSize[0] {
+	if plainBytes != header.PlainSize {
 		return fmt.Errorf("decrypted package size mismatch")
 	}
-	return finishUserDataMigrationDecryption(out, h, expectedPlainHash, header.PlainHash)
+	if err := finishUserDataMigrationDecryption(out, h, expectedPlainHash, header.PlainHash); err != nil {
+		return err
+	}
+	completed = true
+	return nil
 }
 
 func validateUserDataMigrationEncryptedHeader(header userDataMigrationEncryptedHeader) error {
-	if (header.Version != userDataMigrationPackageVersion && header.Version != userDataMigrationLegacyVersion) || header.KDF != "argon2id" || len(header.Salt) != 16 || len(header.Nonce) != 12 {
+	if header.Version != userDataMigrationPackageVersion || header.KDF != "argon2id" || len(header.Salt) != 16 || len(header.Nonce) != 12 {
 		return fmt.Errorf("unsupported encrypted migration package")
 	}
 	if header.Time == 0 || header.Time > 10 || header.MemoryKB < 1024 || header.MemoryKB > 256*1024 || header.Threads == 0 || header.Threads > 8 {
+		return fmt.Errorf("unsupported encrypted migration package")
+	}
+	if !userDataMigrationValidSHA256(header.PlainHash) || header.PlainSize <= 0 || header.PlainSize > userDataMigrationMaxExpanded {
 		return fmt.Errorf("unsupported encrypted migration package")
 	}
 	return nil
@@ -2583,7 +2585,7 @@ func (a *App) userDataMigrationHubGetCurrent(ctx context.Context, cfg userDataMi
 	if err != nil {
 		return nil, 0, err
 	}
-	return out["export"], int64(userDataMigrationNumberFromMap(out, "max_compressed_bytes")), nil
+	return out["export"], int64(userDataMigrationNumberFromMap(out, "max_package_bytes")), nil
 }
 
 func (a *App) userDataMigrationHubJSON(ctx context.Context, cfg userDataMigrationClientConfig, method, path string, body interface{}) (map[string]interface{}, error) {
@@ -2611,8 +2613,8 @@ func (a *App) userDataMigrationHubJSON(ctx context.Context, cfg userDataMigratio
 	return out, nil
 }
 
-func (a *App) userDataMigrationHubRaw(ctx context.Context, cfg userDataMigrationClientConfig, method, path string, body io.Reader) error {
-	_, err := a.userDataMigrationHubBytes(ctx, cfg, method, path, body)
+func (a *App) userDataMigrationHubRaw(ctx context.Context, cfg userDataMigrationClientConfig, method, path string, body io.Reader, contentType ...string) error {
+	_, err := a.userDataMigrationHubBytes(ctx, cfg, method, path, body, contentType...)
 	return err
 }
 
@@ -2794,9 +2796,12 @@ func validateUserDataMigrationManifestFileStats(manifest userDataMigrationManife
 		}
 		files[clean] = file
 	}
-	required := []string{"memory_entries.json", "knowledge_snapshot.jsonl"}
-	if manifest.Version == userDataMigrationPackageVersion {
-		required = append(required, "config/app_config.json", "config/migration_policy.json", "config/secret_inventory.json")
+	required := []string{
+		"memory_entries.json",
+		"knowledge_snapshot.jsonl",
+		"config/app_config.json",
+		"config/migration_policy.json",
+		"config/secret_inventory.json",
 	}
 	for _, name := range required {
 		if _, ok := files[name]; !ok {
@@ -3245,37 +3250,28 @@ func userDataMigrationWalkJSONValue(decoder *json.Decoder, depth int) error {
 	return nil
 }
 
-func userDataMigrationDownloadMetadata(m map[string]interface{}) (int, int64, int64, int64, string, string, error) {
+func userDataMigrationDownloadMetadata(m map[string]interface{}) (int, int64, int64, string, error) {
 	chunkCount64, ok := userDataMigrationStrictPositiveInt64(m, "chunk_count")
 	if !ok || chunkCount64 > userDataMigrationMaxChunks {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+		return 0, 0, 0, "", fmt.Errorf("invalid migration export metadata")
 	}
 	chunkSize, ok := userDataMigrationStrictPositiveInt64(m, "chunk_size")
 	if !ok || chunkSize < userDataMigrationMinChunkSize || chunkSize > userDataMigrationMaxChunkSize {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+		return 0, 0, 0, "", fmt.Errorf("invalid migration export metadata")
 	}
 	encryptedSize, ok := userDataMigrationStrictPositiveInt64(m, "encrypted_size")
 	if !ok || encryptedSize > userDataMigrationMaxDownload {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
-	}
-	compressedSize, ok := userDataMigrationStrictPositiveInt64(m, "compressed_size")
-	if !ok || compressedSize > userDataMigrationMaxExpanded || compressedSize > encryptedSize {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
-	}
-	maxOverhead := int64(1<<20) + chunkCount64*64
-	if encryptedSize > compressedSize+maxOverhead {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+		return 0, 0, 0, "", fmt.Errorf("invalid migration export metadata")
 	}
 	expectedChunks := (encryptedSize + chunkSize - 1) / chunkSize
 	if expectedChunks != chunkCount64 {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+		return 0, 0, 0, "", fmt.Errorf("invalid migration export metadata")
 	}
 	encryptedHash := strings.TrimSpace(fmt.Sprint(m["encrypted_sha256"]))
-	plainHash := strings.TrimSpace(fmt.Sprint(m["plain_sha256"]))
-	if !userDataMigrationValidSHA256(encryptedHash) || !userDataMigrationValidSHA256(plainHash) {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("invalid migration export metadata")
+	if !userDataMigrationValidSHA256(encryptedHash) {
+		return 0, 0, 0, "", fmt.Errorf("invalid migration export metadata")
 	}
-	return int(chunkCount64), chunkSize, encryptedSize, compressedSize, strings.ToLower(encryptedHash), strings.ToLower(plainHash), nil
+	return int(chunkCount64), chunkSize, encryptedSize, strings.ToLower(encryptedHash), nil
 }
 
 func userDataMigrationStrictPositiveInt64(m map[string]interface{}, key string) (int64, bool) {

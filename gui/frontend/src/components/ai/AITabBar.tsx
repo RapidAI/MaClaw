@@ -18,8 +18,6 @@ export interface AITabBarProps {
     /** Called when user wants to rename a group tab */
     onRenameGroupTab?: (tab: AITab) => void;
     lang?: string;
-    /** Returns the lastActiveAt timestamp for a tab (used for overflow sorting). */
-    getLastActiveAt?: (tabId: string) => number;
     /** Tab ID that is currently recording a skill (if any) */
     recordingTabId?: string | null;
 }
@@ -35,7 +33,7 @@ const OVERFLOW_BUTTON_WIDTH = 50;
  * Shows as many tabs as fit in the available width; overflow tabs are
  * accessible via a more-tabs dropdown.
  */
-export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, lang, getLastActiveAt, recordingTabId }: AITabBarProps) {
+export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, lang, recordingTabId }: AITabBarProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [visibleCount, setVisibleCount] = useState(tabs.length);
     const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -104,14 +102,9 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
 
     const hasOverflow = visibleCount < tabs.length;
     const visibleTabs = computeVisibleTabs(tabs, activeTabId, visibleCount);
-    const overflowTabs = tabs
-        .filter(t => !visibleTabs.includes(t))
-        .sort((a, b) => {
-            // Sort by lastActiveAt descending (most recently active first)
-            const aTime = getLastActiveAt?.(a.id) ?? 0;
-            const bTime = getLastActiveAt?.(b.id) ?? 0;
-            return bTime - aTime;
-        });
+    // Preserve the tab list's creation order in the overflow menu too.
+    // Selecting a tab should never make its perceived position change.
+    const overflowTabs = tabs.filter(t => !visibleTabs.includes(t));
 
     return (
         <div

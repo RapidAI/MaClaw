@@ -359,6 +359,9 @@ type App struct {
 	// very next agent loop without waiting for memory flush + index rebuild.
 	tabWorkingDirOverrides sync.Map
 
+	// ACP conversations need a private owner even when they use one workspace.
+	acpSessionWorkingDirs sync.Map // ACP ownerID -> normalized working directory
+
 	// sessionEventScopeIDs caches userID -> event_scope_id (tab ID) mappings.
 	// Populated when SendAIAssistantMessage receives a request with event_scope_id.
 	// Used by workflow event emission to include the scope ID in all events.
@@ -2099,7 +2102,7 @@ func (a *App) syncIMGatewaysFromConfig() {
 	a.ensureTelegramGateway()
 	a.ensureWeixinGateway()
 	a.ensureLansengerGateway()
-	a.ensureThirdPartyGateway()
+	a.ensureThirdPartyGatewayLocked()
 }
 
 // startup is called when the app starts. The context is saved
@@ -5136,6 +5139,9 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		defaultConfig.SubAgentConcurrency = corelib.DefaultSubAgentConcurrency
 		defaultConfig.NetworkLevel = "full"
 		defaultConfig.SandboxMode = "none"
+		if _, err := a.ensureDefaultHardwareWelcome(&defaultConfig); err != nil {
+			return corelib.AppConfig{}, err
+		}
 		// K18: first-run figurative pet (must not come from UnmarshalJSON seed).
 		corelib.ApplyNewInstallPetDefaults(&defaultConfig)
 		// Defer AtomicWrite until after configMu is released.
@@ -5152,6 +5158,11 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	err = json.Unmarshal(data, &config)
 	if err != nil {
 		return config, err
+	}
+	if changed, err := a.ensureDefaultHardwareWelcome(&config); err != nil {
+		return config, err
+	} else if changed {
+		a.pendingConfigDiskWrite.Store(true)
 	}
 	// Upgrade only the exact historic default. Any other value is a user-defined
 	// role description and must remain untouched.
@@ -5851,6 +5862,13 @@ func (a *App) shouldPreserveHubManagedSecurity(current corelib.AppConfig) bool {
 // This is the inverse of a whitelist: we enumerate the fields the frontend must
 // NOT overwrite (small, stable set managed by backend goroutines), rather than
 // the fields it CAN overwrite (large, grows with every new setting).
+func sameOptionalBool(left, right *bool) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
 func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.AppConfig) {
 	var restored []string
 
@@ -5870,6 +5888,20 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	incoming.RemoteNickname = ondisk.RemoteNickname
 	incoming.RemoteMachineName = ondisk.RemoteMachineName
 	incoming.SkillMarketSessionToken = ondisk.SkillMarketSessionToken
+
+	// Hardware enablement owns a multi-field transport invariant and must only
+	// change through SetHardwareEnabled. Preserve the complete tuple so an older
+	// full-config form cannot silently re-enable local mode or disable its gateway.
+	if incoming.HardwareEnabled != ondisk.HardwareEnabled ||
+		incoming.ThirdPartyGatewayEnabled != ondisk.ThirdPartyGatewayEnabled ||
+		incoming.ThirdPartyGatewayToken != ondisk.ThirdPartyGatewayToken ||
+		!sameOptionalBool(incoming.ThirdPartyGatewayLocalMode, ondisk.ThirdPartyGatewayLocalMode) {
+		restored = append(restored, "hardware_gateway_transport")
+	}
+	incoming.HardwareEnabled = ondisk.HardwareEnabled
+	incoming.ThirdPartyGatewayEnabled = ondisk.ThirdPartyGatewayEnabled
+	incoming.ThirdPartyGatewayToken = ondisk.ThirdPartyGatewayToken
+	incoming.ThirdPartyGatewayLocalMode = ondisk.ThirdPartyGatewayLocalMode
 
 	// ── MaClaw LLM provider state (SaveMaclawLLMProviders, syncHubLLMServiceStatusToConfig) ──
 	if incoming.MaclawLLMCurrentProvider != ondisk.MaclawLLMCurrentProvider {
@@ -7148,6 +7180,16 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, fmt.Errorf("hardware_welcome_text must be at most 80 characters")
 			}
 			cfg.HardwareWelcomeText = strings.TrimSpace(v)
+		case "hardware_welcome_voice_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			voiceID, err := normalizeHardwareWelcomeVoiceID(v)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.HardwareWelcomeVoiceID = voiceID
 		case "hardware_welcome_audio_path":
 			v, err := stringField(key, value)
 			if err != nil {
@@ -7874,6 +7916,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		default:
 			return corelib.AppConfig{}, fmt.Errorf("unsupported config patch field: %s", key)
 		}
+	}
+	if err := validateHardwareGatewayInvariant(cfg); err != nil {
+		return corelib.AppConfig{}, err
 	}
 
 	if a.shouldPreserveHubManagedSecurity(current) {

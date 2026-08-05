@@ -20,32 +20,32 @@ import (
 // configuration changes (plan → simulate → confirm → execute).
 
 type configAgentPlan struct {
-	PlanID         string              `json:"plan_id"`
-	TenantID       string              `json:"tenant_id,omitempty"`
-	Intent         string              `json:"intent"`
-	Summary        string              `json:"summary"`
-	RiskLevel      string              `json:"risk_level"`
-	Assumptions    []string            `json:"assumptions,omitempty"`
-	MissingFields  []string            `json:"missing_fields,omitempty"`
-	Steps          []configAgentStep   `json:"steps"`
-	Simulated      map[string]any      `json:"simulated,omitempty"`
-	ConfirmToken   string              `json:"confirm_token,omitempty"`
-	ExpiresAt      time.Time           `json:"expires_at"`
-	AdminUserID    string              `json:"-"`
-	CreatedAt      time.Time           `json:"created_at"`
-	SourceMessage  string              `json:"source_message,omitempty"`
-	Planner        string              `json:"planner,omitempty"` // rule | llm
+	PlanID        string            `json:"plan_id"`
+	TenantID      string            `json:"tenant_id,omitempty"`
+	Intent        string            `json:"intent"`
+	Summary       string            `json:"summary"`
+	RiskLevel     string            `json:"risk_level"`
+	Assumptions   []string          `json:"assumptions,omitempty"`
+	MissingFields []string          `json:"missing_fields,omitempty"`
+	Steps         []configAgentStep `json:"steps"`
+	Simulated     map[string]any    `json:"simulated,omitempty"`
+	ConfirmToken  string            `json:"confirm_token,omitempty"`
+	ExpiresAt     time.Time         `json:"expires_at"`
+	AdminUserID   string            `json:"-"`
+	CreatedAt     time.Time         `json:"created_at"`
+	SourceMessage string            `json:"source_message,omitempty"`
+	Planner       string            `json:"planner,omitempty"` // rule | llm
 }
 
 type configAgentStep struct {
-	StepID      string         `json:"step_id"`
-	Tool        string         `json:"tool"`
-	Mode        string         `json:"mode"` // read | write | probe
-	Purpose     string         `json:"purpose,omitempty"`
-	Args        map[string]any `json:"args,omitempty"`
-	DependsOn   []string       `json:"depends_on,omitempty"`
-	Optional    bool           `json:"optional,omitempty"`
-	APIPreview  map[string]any `json:"api_preview,omitempty"`
+	StepID     string         `json:"step_id"`
+	Tool       string         `json:"tool"`
+	Mode       string         `json:"mode"` // read | write | probe
+	Purpose    string         `json:"purpose,omitempty"`
+	Args       map[string]any `json:"args,omitempty"`
+	DependsOn  []string       `json:"depends_on,omitempty"`
+	Optional   bool           `json:"optional,omitempty"`
+	APIPreview map[string]any `json:"api_preview,omitempty"`
 }
 
 type configAgentStore struct {
@@ -232,10 +232,10 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			MissingFields: missing,
 			Steps: []configAgentStep{
 				{
-					StepID:  "s1",
-					Tool:    "llm.providers.get",
-					Mode:    "read",
-					Purpose: "Load current provider registry to avoid overwrite",
+					StepID:     "s1",
+					Tool:       "llm.providers.get",
+					Mode:       "read",
+					Purpose:    "Load current provider registry to avoid overwrite",
 					APIPreview: map[string]any{"method": "GET", "path": "/api/admin/llm/providers"},
 				},
 				{
@@ -308,18 +308,18 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			Steps: []configAgentStep{
 				{
 					StepID: "s1", Tool: "system_free.get", Mode: "read",
-					Purpose: "Load current system-free config",
+					Purpose:    "Load current system-free config",
 					APIPreview: map[string]any{"method": "GET", "path": "/api/admin/llm/system-free"},
 				},
 				{
 					StepID: "s2", Tool: "system_free.update", Mode: "write",
 					Purpose: "Set system-free auto route providers",
-					Args: args, DependsOn: []string{"s1"},
+					Args:    args, DependsOn: []string{"s1"},
 					APIPreview: map[string]any{"method": "PUT", "path": "/api/admin/llm/system-free"},
 				},
 				{
 					StepID: "s3", Tool: "system_free.test", Mode: "probe",
-					Purpose: "Verify system-free after change",
+					Purpose:   "Verify system-free after change",
 					DependsOn: []string{"s2"}, Optional: true,
 					APIPreview: map[string]any{"method": "POST", "path": "/api/admin/llm/system-free/test"},
 				},
@@ -351,8 +351,8 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			MissingFields: missing,
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "users.invite.create", Mode: "write",
-				Purpose: "Create pending email invite",
-				Args:    map[string]any{"email": email, "role": role},
+				Purpose:    "Create pending email invite",
+				Args:       map[string]any{"email": email, "role": role},
 				APIPreview: map[string]any{"method": "POST", "path": "/api/admin/invites"},
 			}},
 			Simulated: map[string]any{"email": email, "role": role, "status": "pending"},
@@ -367,7 +367,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			Intent: "users.invite.list", Summary: "List email invites", RiskLevel: "low",
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "users.invite.list", Mode: "read",
-				Purpose: "List invites for current tenant",
+				Purpose:    "List invites for current tenant",
 				APIPreview: map[string]any{"method": "GET", "path": "/api/admin/invites"},
 			}},
 			Planner: "rule",
@@ -399,12 +399,12 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				required = false
 			}
 			return &configAgentPlan{
-				Intent: "invitation_codes.required.update",
-				Summary: fmt.Sprintf("Set invitation_code_required=%v", required),
+				Intent:    "invitation_codes.required.update",
+				Summary:   fmt.Sprintf("Set invitation_code_required=%v", required),
 				RiskLevel: "medium",
 				Steps: []configAgentStep{{
 					StepID: "s1", Tool: "invitation_codes.required.update", Mode: "write",
-					Args: map[string]any{"required": required},
+					Args:       map[string]any{"required": required},
 					APIPreview: defaultAPIPreviewForTool("invitation_codes.required.update"),
 				}},
 				Planner: "rule",
@@ -432,8 +432,8 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			RiskLevel: "medium",
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "invitation_codes.generate", Mode: "write",
-				Purpose: "Generate invitation codes",
-				Args:    map[string]any{"count": count, "validity_days": 0, "vip": false},
+				Purpose:    "Generate invitation codes",
+				Args:       map[string]any{"count": count, "validity_days": 0, "vip": false},
 				APIPreview: map[string]any{"method": "POST", "path": "/api/admin/invitation-codes/generate"},
 			}},
 			Simulated: map[string]any{"count": count},
@@ -457,7 +457,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			RiskLevel: "medium",
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "invitation_codes.export", Mode: "write",
-				Args: map[string]any{"exported": exportedFilter, "vip_only": vipOnly},
+				Args:       map[string]any{"exported": exportedFilter, "vip_only": vipOnly},
 				APIPreview: defaultAPIPreviewForTool("invitation_codes.export"),
 			}},
 			Simulated: map[string]any{"exported": exportedFilter, "vip_only": vipOnly, "note": "marks unexported as exported"},
@@ -504,7 +504,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			RiskLevel: "low", MissingFields: missing,
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "llm.services.diagnose", Mode: "read",
-				Args: map[string]any{"email": email},
+				Args:       map[string]any{"email": email},
 				APIPreview: defaultAPIPreviewForTool("llm.services.diagnose"),
 			}},
 			Planner: "rule",
@@ -548,8 +548,8 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			summaryGroups = "?"
 		}
 		return &configAgentPlan{
-			Intent:  "llm.services.user_unbind",
-			Summary: fmt.Sprintf("Unbind user %s from service group(s) %s", firstNonEmptyStr(email, "?"), summaryGroups),
+			Intent:    "llm.services.user_unbind",
+			Summary:   fmt.Sprintf("Unbind user %s from service group(s) %s", firstNonEmptyStr(email, "?"), summaryGroups),
 			RiskLevel: "medium", MissingFields: missing,
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "llm.services.user_unbind", Mode: "write",
@@ -593,8 +593,8 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			Assumptions:   bindUnknownAssumptions(serviceReg, groupIDs),
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "llm.services.user_bind", Mode: "write",
-				Purpose: "Upsert user binding service_group_ids (merge)",
-				Args:    map[string]any{"email": email, "service_group_ids": groupIDs},
+				Purpose:    "Upsert user binding service_group_ids (merge)",
+				Args:       map[string]any{"email": email, "service_group_ids": groupIDs},
 				APIPreview: map[string]any{"method": "PUT", "path": "/api/admin/llm/services", "note": "merge user_bindings"},
 			}},
 			Simulated: sim,
@@ -670,7 +670,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				Intent: "feishu.config.get", Summary: "Show Feishu/Lark integration config (secret masked)", RiskLevel: "low",
 				Steps: []configAgentStep{{
 					StepID: "s1", Tool: "feishu.config.get", Mode: "read",
-					Purpose: "Load Feishu config",
+					Purpose:    "Load Feishu config",
 					APIPreview: map[string]any{"method": "GET", "path": "/api/admin/feishu/config"},
 				}},
 				Planner: "rule",
@@ -691,8 +691,8 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			RiskLevel: "high", MissingFields: missing,
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "users.blocklist.add", Mode: "write",
-				Purpose: "Add email to blocklist",
-				Args:    map[string]any{"email": email, "reason": strings.TrimSpace(reason)},
+				Purpose:    "Add email to blocklist",
+				Args:       map[string]any{"email": email, "reason": strings.TrimSpace(reason)},
 				APIPreview: map[string]any{"method": "POST", "path": "/api/admin/blocklist"},
 			}},
 			Planner: "rule",
@@ -709,7 +709,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			RiskLevel: "medium", MissingFields: missing,
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "users.blocklist.remove", Mode: "write",
-				Args: map[string]any{"email": email},
+				Args:       map[string]any{"email": email},
 				APIPreview: map[string]any{"method": "DELETE", "path": "/api/admin/blocklist/{email}"},
 			}},
 			Planner: "rule",
@@ -750,7 +750,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			RiskLevel: "high", MissingFields: missing,
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "enrollments.approve", Mode: "write",
-				Args: map[string]any{"id": id, "email": email},
+				Args:       map[string]any{"id": id, "email": email},
 				APIPreview: map[string]any{"method": "POST", "path": "/api/admin/enrollments/approve"},
 			}},
 			Planner: "rule",
@@ -768,7 +768,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			RiskLevel: "high", MissingFields: missing,
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "enrollments.reject", Mode: "write",
-				Args: map[string]any{"id": id, "email": email},
+				Args:       map[string]any{"id": id, "email": email},
 				APIPreview: map[string]any{"method": "POST", "path": "/api/admin/enrollments/reject"},
 			}},
 			Planner: "rule",
@@ -787,7 +787,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			RiskLevel: "medium", MissingFields: missing,
 			Steps: []configAgentStep{{
 				StepID: "s1", Tool: "users.manual_bind", Mode: "write",
-				Args: map[string]any{"email": email},
+				Args:       map[string]any{"email": email},
 				APIPreview: map[string]any{"method": "POST", "path": "/api/admin/users/manual-bind"},
 			}},
 			Planner: "rule",
@@ -812,7 +812,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				MissingFields: missing,
 				Steps: []configAgentStep{{
 					StepID: "s1", Tool: "wecom.config.update", Mode: "write",
-					Args: map[string]any{"enabled": enabled, "bot_id": botID, "secret": secret},
+					Args:       map[string]any{"enabled": enabled, "bot_id": botID, "secret": secret},
 					APIPreview: defaultAPIPreviewForTool("wecom.config.update"),
 				}},
 				Planner: "rule",
@@ -846,7 +846,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				MissingFields: missing,
 				Steps: []configAgentStep{{
 					StepID: "s1", Tool: "dingtalk.config.update", Mode: "write",
-					Args: map[string]any{"enabled": enabled, "client_id": clientID, "client_secret": secret},
+					Args:       map[string]any{"enabled": enabled, "client_id": clientID, "client_secret": secret},
 					APIPreview: defaultAPIPreviewForTool("dingtalk.config.update"),
 				}},
 				Planner: "rule",
@@ -872,7 +872,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				Intent: "openclaw_im.config.update", Summary: "Update OpenClaw IM bridge config", RiskLevel: "medium",
 				Steps: []configAgentStep{{
 					StepID: "s1", Tool: "openclaw_im.config.update", Mode: "write",
-					Args: map[string]any{"enabled": enabled, "webhook_url": url, "secret": secret},
+					Args:       map[string]any{"enabled": enabled, "webhook_url": url, "secret": secret},
 					APIPreview: defaultAPIPreviewForTool("openclaw_im.config.update"),
 				}},
 				Planner: "rule",
@@ -906,7 +906,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				MissingFields: missing,
 				Steps: []configAgentStep{{
 					StepID: "s1", Tool: "qqbot.config.update", Mode: "write",
-					Args: map[string]any{"enabled": enabled, "app_id": appID, "app_secret": secret},
+					Args:       map[string]any{"enabled": enabled, "app_id": appID, "app_secret": secret},
 					APIPreview: defaultAPIPreviewForTool("qqbot.config.update"),
 				}},
 				Planner: "rule",
@@ -992,7 +992,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				RiskLevel: "low", MissingFields: missing,
 				Steps: []configAgentStep{{
 					StepID: "s1", Tool: "mail.sender_name.update", Mode: "write",
-					Args: map[string]any{"from_name": strings.TrimSpace(name)},
+					Args:       map[string]any{"from_name": strings.TrimSpace(name)},
 					APIPreview: defaultAPIPreviewForTool("mail.sender_name.update"),
 				}},
 				Planner: "rule",
@@ -1018,7 +1018,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 				Intent: "smart_route_all.update", Summary: fmt.Sprintf("Set smart_route_all=%v", enabled), RiskLevel: "medium",
 				Steps: []configAgentStep{{
 					StepID: "s1", Tool: "smart_route_all.update", Mode: "write",
-					Args: map[string]any{"enabled": enabled},
+					Args:       map[string]any{"enabled": enabled},
 					APIPreview: defaultAPIPreviewForTool("smart_route_all.update"),
 				}},
 				Planner: "rule",
@@ -1094,7 +1094,7 @@ func rulePlanFromMessage(message, tenantID string, serviceReg *llmservice.Regist
 			args := map[string]any{}
 			missing := []string{}
 			if has {
-				args["max_compressed_bytes"] = maxBytes
+				args["max_package_bytes"] = maxBytes
 				args["max_mb"] = maxMB
 			} else {
 				missing = append(missing, "max_mb")
@@ -1426,14 +1426,14 @@ func simulateUserUnbindDiff(serviceReg *llmservice.Registry, email string, remov
 		}
 	}
 	return map[string]any{
-		"email":                      email,
-		"current_service_group_ids":  current,
+		"email":                       email,
+		"current_service_group_ids":   current,
 		"requested_service_group_ids": removeGroupIDs,
-		"removed_service_group_ids":  removed,
-		"target_service_group_ids":   target,
-		"remove_all":                 removeAll,
-		"unchanged":                  len(removed) == 0,
-		"merge":                      false,
+		"removed_service_group_ids":   removed,
+		"target_service_group_ids":    target,
+		"remove_all":                  removeAll,
+		"unchanged":                   len(removed) == 0,
+		"merge":                       false,
 	}
 }
 
@@ -1479,13 +1479,13 @@ func simulateUserBindDiff(serviceReg *llmservice.Registry, email string, addGrou
 	ordered := append([]string{}, current...)
 	ordered = append(ordered, added...)
 	return map[string]any{
-		"email":                     email,
-		"current_service_group_ids": current,
+		"email":                       email,
+		"current_service_group_ids":   current,
 		"requested_service_group_ids": addGroupIDs,
-		"added_service_group_ids":   added,
-		"target_service_group_ids":  ordered,
-		"unchanged":                 len(added) == 0 && email != "" && len(addGroupIDs) > 0,
-		"merge":                     true,
+		"added_service_group_ids":     added,
+		"target_service_group_ids":    ordered,
+		"unchanged":                   len(added) == 0 && email != "" && len(addGroupIDs) > 0,
+		"merge":                       true,
 	}
 }
 
@@ -1506,7 +1506,6 @@ func extractInviteRole(msg string) string {
 		return ""
 	}
 }
-
 
 func extractMigrationMaxSize(msg string) (maxBytes int64, maxMB int64, ok bool) {
 	// Prefer explicit MB: 200MB / 200 MB / 200兆
@@ -1529,8 +1528,8 @@ func extractMigrationMaxSize(msg string) (maxBytes int64, maxMB int64, ok bool) 
 			return mb * 1024 * 1024, mb, true
 		}
 	}
-	// max_compressed_bytes=...
-	if g := firstMatchGroup(msg, `(?i)max[_ ]?compressed[_ ]?bytes\s*[=:：]?\s*(\d+)`); g != "" {
+	// max_package_bytes=...
+	if g := firstMatchGroup(msg, `(?i)max[_ ]?package[_ ]?bytes\s*[=:：]?\s*(\d+)`); g != "" {
 		if n, err := strconv.ParseInt(g, 10, 64); err == nil && n > 0 {
 			return n, n / (1024 * 1024), true
 		}
@@ -1742,7 +1741,7 @@ func refinePlanWithFollowUp(prev *configAgentPlan, followUp string, serviceReg *
 			}
 		case "migration.settings.update":
 			if maxBytes, maxMB, ok := extractMigrationMaxSize(followUp); ok {
-				args["max_compressed_bytes"] = maxBytes
+				args["max_package_bytes"] = maxBytes
 				args["max_mb"] = maxMB
 			}
 		case "mail.sender_name.update":

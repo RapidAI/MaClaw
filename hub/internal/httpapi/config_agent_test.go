@@ -261,7 +261,7 @@ func TestRulePlanMigrationSettings(t *testing.T) {
 	if set.Steps[0].Args["max_mb"] != int64(200) {
 		t.Fatalf("max_mb = %#v", set.Steps[0].Args)
 	}
-	if set.Steps[0].Args["max_compressed_bytes"] != int64(200*1024*1024) {
+	if set.Steps[0].Args["max_package_bytes"] != int64(200*1024*1024) {
 		t.Fatalf("bytes = %#v", set.Steps[0].Args)
 	}
 	zh := rulePlanFromMessage("把迁移包上限设为 512MB", "t1", nil, nil)
@@ -807,10 +807,10 @@ func TestFilterConfigAgentHistoryItems(t *testing.T) {
 	items = append(items, map[string]any{
 		"action": "config_agent.plan",
 		"payload": map[string]any{
-			"intent":         "users.invite.create",
-			"summary":        "Invite",
-			"session_id":     "sess_xyz",
-			"session_turns":  []any{"invite user", "email bob@corp.test as member"},
+			"intent":        "users.invite.create",
+			"summary":       "Invite",
+			"session_id":    "sess_xyz",
+			"session_turns": []any{"invite user", "email bob@corp.test as member"},
 		},
 	})
 	got = filterConfigAgentHistoryItems(items, "", "bob@corp.test")

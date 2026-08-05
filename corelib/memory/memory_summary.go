@@ -16,6 +16,11 @@ import (
 //
 // ownerID filters entries in multi-tenant mode; empty means show all.
 func (s *Store) FormatMemorySummary(ownerID string) string {
+	return s.FormatMemorySummaryForOwner(ownerID, false)
+}
+
+// FormatMemorySummaryForOwner optionally applies an exact owner boundary.
+func (s *Store) FormatMemorySummaryForOwner(ownerID string, strictOwner bool) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -36,7 +41,10 @@ func (s *Store) FormatMemorySummary(ownerID string) string {
 		if !e.IsActive() {
 			continue
 		}
-		if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+		if strictOwner && (e.OwnerID != ownerID || (e.Boundary != nil && e.Boundary.OwnerID != "" && e.Boundary.OwnerID != ownerID)) {
+			continue
+		}
+		if !strictOwner && ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
 			continue
 		}
 		totalActive++

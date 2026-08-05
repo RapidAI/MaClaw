@@ -600,9 +600,23 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			if err := g.handleDeviceGatewayPairing(ctx, msg); err != nil {
 				return
 			}
-		case "im.device_gateway_reply":
-			if err := g.handleDeviceGatewayReply(ctx, msg); err != nil {
+		case "im.device_gateway_devices_list":
+			if err := g.handleDeviceGatewayDevicesList(ctx, msg); err != nil {
 				return
+			}
+		case "im.device_gateway_device_delete":
+			if err := g.handleDeviceGatewayDeviceDelete(ctx, msg); err != nil {
+				return
+			}
+		case "im.device_gateway_reply":
+			handled, err := g.handleDeviceGatewayReply(ctx, msg)
+			if err != nil {
+				return
+			}
+			if !handled && strings.TrimSpace(msg.RequestID) != "" {
+				if err := writeAck(ctx.Conn, msg.RequestID); err != nil {
+					return
+				}
 			}
 		case "machine.nickname_update":
 			if err := g.handleMachineNicknameUpdate(ctx, msg); err != nil {
@@ -1640,9 +1654,42 @@ func (g *Gateway) handleDeviceGatewayPairing(ctx *ConnContext, msg Envelope) err
 	return writeAck(ctx.Conn, msg.RequestID)
 }
 
-func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) error {
+func (g *Gateway) handleDeviceGatewayDevicesList(ctx *ConnContext, msg Envelope) error {
 	if ctx.Role != "machine" || g.DeviceGateway == nil {
-		return nil
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "FORBIDDEN", "Machine role required")
+	}
+	lister, ok := g.DeviceGateway.(interface {
+		ListMachineDevicesJSON(string) []map[string]any
+	})
+	if !ok {
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware device registry is unavailable")
+	}
+	return ctx.Conn.WriteJSON(map[string]any{"type": "im.device_gateway_devices", "request_id": msg.RequestID, "payload": map[string]any{"devices": lister.ListMachineDevicesJSON(ctx.MachineID)}})
+}
+
+func (g *Gateway) handleDeviceGatewayDeviceDelete(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" || g.DeviceGateway == nil {
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "FORBIDDEN", "Machine role required")
+	}
+	var payload struct {
+		ClientID string `json:"clientId"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil || strings.TrimSpace(payload.ClientID) == "" {
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "clientId is required")
+	}
+	deleter, ok := g.DeviceGateway.(interface{ DeleteMachineDevice(string, string) error })
+	if !ok {
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware device registry is unavailable")
+	}
+	if err := deleter.DeleteMachineDevice(ctx.MachineID, payload.ClientID); err != nil {
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "DEVICE_DELETE_FAILED", err.Error())
+	}
+	return writeAckPayload(ctx.Conn, msg.RequestID, map[string]any{"ok": true, "clientId": strings.TrimSpace(payload.ClientID)})
+}
+
+func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool, error) {
+	if ctx.Role != "machine" || g.DeviceGateway == nil {
+		return false, nil
 	}
 	var payload struct {
 		ClientID       string         `json:"clientId"`
@@ -1650,7 +1697,7 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) error
 		Reply          map[string]any `json:"reply"`
 	}
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil || strings.TrimSpace(payload.ClientID) == "" {
-		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "invalid device gateway reply")
+		return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "invalid device gateway reply")
 	}
 	if ambient, ok := payload.Reply["ambient"].(map[string]any); ok {
 		if updater, ok := g.DeviceGateway.(interface {
@@ -1659,7 +1706,7 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) error
 			updater.UpdateMachineAmbient(ctx.MachineID, ambient)
 		}
 		if payload.ClientID == "*" {
-			return nil
+			return false, nil
 		}
 	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "pet_profile") {
@@ -1671,7 +1718,23 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) error
 			asset, _ := payload.Reply["pet_asset"].(map[string]any)
 			profiler.UpdateMachinePetProfileAsset(ctx.MachineID, petSkin, motionEnabled, asset)
 		}
-		return nil
+		return false, nil
+	}
+	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_enabled") {
+		updater, ok := g.DeviceGateway.(interface {
+			UpdateMachineHardwareEnabled(string, bool) error
+		})
+		if !ok {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware state routing is unavailable")
+		}
+		enabled, ok := payload.Reply["enabled"].(bool)
+		if !ok {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "hardware enabled state is required")
+		}
+		if err := updater.UpdateMachineHardwareEnabled(ctx.MachineID, enabled); err != nil {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+		}
+		return false, nil
 	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_welcome_config") {
 		if updater, ok := g.DeviceGateway.(interface {
@@ -1681,10 +1744,10 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) error
 			audio, _ := payload.Reply["file_data"].(string)
 			replaceAudio, _ := payload.Reply["replace_audio"].(bool)
 			if err := updater.UpdateMachineWelcome(ctx.MachineID, enabled, audio, replaceAudio); err != nil {
-				return writeWSError(ctx.Conn, "INVALID_MESSAGE", err.Error())
+				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
 			}
 		}
-		return nil
+		return false, nil
 	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_config") {
 		if updater, ok := g.DeviceGateway.(interface {
@@ -1692,27 +1755,44 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) error
 		}); ok {
 			extra, _ := payload.Reply["extra"].(map[string]any)
 			if err := updater.UpdateMachineVolume(ctx.MachineID, extra["volume"]); err != nil {
-				return writeWSError(ctx.Conn, "INVALID_MESSAGE", err.Error())
+				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
 			}
 		}
 	}
 	if payload.ClientID == "*" {
+		extra, _ := payload.Reply["extra"].(map[string]any)
+		hardwareAudioPreview, _ := extra["hardware_audio_preview"].(bool)
+		if hardwareAudioPreview {
+			relay, ok := g.DeviceGateway.(interface {
+				EnqueueMachineReplyCount(string, string, map[string]any) int
+			})
+			if !ok {
+				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware preview routing is unavailable")
+			}
+			if relay.EnqueueMachineReplyCount(ctx.MachineID, payload.ConversationID, payload.Reply) == 0 {
+				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "NO_COMPATIBLE_HARDWARE", "no online remote ESP32 supports welcome audio playback")
+			}
+			return false, nil
+		}
 		if relay, ok := g.DeviceGateway.(interface {
 			EnqueueMachineReply(string, string, map[string]any)
 		}); ok {
 			relay.EnqueueMachineReply(ctx.MachineID, payload.ConversationID, payload.Reply)
 		}
-		return nil
+		return false, nil
 	}
 	if relay, ok := g.DeviceGateway.(interface {
-		EnqueueReply(string, string, map[string]any)
+		EnqueueMachineClientReplyCount(string, string, string, map[string]any) int
 	}); ok {
 		if replyType, ok := payload.Reply["reply_type"].(string); ok && strings.TrimSpace(replyType) != "" {
 			payload.Reply["type"] = replyType
 		}
-		relay.EnqueueReply(payload.ClientID, payload.ConversationID, payload.Reply)
+		if relay.EnqueueMachineClientReplyCount(ctx.MachineID, payload.ClientID, payload.ConversationID, payload.Reply) == 0 {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "HARDWARE_NOT_OWNED", "hardware client is not bound to this machine or cannot accept the reply")
+		}
+		return false, nil
 	}
-	return nil
+	return true, writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware reply routing is unavailable")
 }
 
 func (g *Gateway) cleanupConnection(ctx *ConnContext) {
@@ -1802,6 +1882,10 @@ func writeWSJSON(conn *websocket.Conn, v any) error { return conn.WriteJSON(v) }
 
 func writeWSError(conn *websocket.Conn, code, message string) error {
 	return conn.WriteJSON(map[string]any{"type": "error", "payload": map[string]any{"code": code, "message": message, "ts": time.Now().Unix()}})
+}
+
+func writeWSRequestError(conn *websocket.Conn, requestID, code, message string) error {
+	return conn.WriteJSON(map[string]any{"type": "error", "request_id": requestID, "payload": map[string]any{"code": code, "message": message, "ts": time.Now().Unix()}})
 }
 
 func writeAck(conn *websocket.Conn, requestID string) error {

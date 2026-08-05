@@ -23,7 +23,7 @@ type MigrationStatus = {
     email?: string;
     machine_id?: string;
     machine_name?: string;
-    max_compressed_bytes?: number;
+    max_package_bytes?: number;
     current_export?: Record<string, any> | null;
     configuration_reason?: string;
 };
@@ -43,7 +43,6 @@ type MigrationInstance = {
     export_claimed_by_machine_id?: string;
     export_updated_at?: string;
     export_size?: number;
-    export_manifest?: Record<string, any> | null;
 };
 
 type MigrationJob = {
@@ -259,8 +258,7 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                 export_status: String(currentExport?.status || ''),
                 export_claimed_by_machine_id: String(currentExport?.claimed_by_machine_id || ''),
                 export_updated_at: String(currentExport?.updated_at || ''),
-                export_size: Number(currentExport?.compressed_size || 0),
-                export_manifest: currentExport?.manifest && typeof currentExport.manifest === 'object' ? currentExport.manifest : null,
+                export_size: Number(currentExport?.encrypted_size || 0),
             });
         }
         return rows;
@@ -316,7 +314,6 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
     const passwordStrongEnough = (value: string) => Array.from(value).length >= 12 && /\p{L}/u.test(value) && /\p{N}/u.test(value);
     const canExport = ready && !busy && passwordStrongEnough(exportPassword) && exportPassword === exportPasswordConfirm;
     const selectedInstance = importableInstances.find((item) => item.export_id === selectedExportID);
-    const selectedManifest = selectedInstance?.export_manifest && typeof selectedInstance.export_manifest === 'object' ? selectedInstance.export_manifest : null;
     const selectedExportStatus = String(selectedInstance?.export_status || '').toLowerCase();
     const selectedClaimedByCurrentMachine = !!status?.machine_id && selectedInstance?.export_claimed_by_machine_id === status.machine_id;
     const localCleanupPending = job?.kind === 'migration.import'
@@ -325,8 +322,8 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
         && String(job?.result?.export_id || '') === selectedExportID;
     const cleanupRetry = selectedClaimedByCurrentMachine && (cleanupRetryStatuses.has(selectedExportStatus) || localCleanupPending);
     const resumeImport = resumableImportStatuses.has(selectedExportStatus) && !!status?.machine_id && selectedInstance?.export_claimed_by_machine_id === status.machine_id;
-    // Import must accept passwords created by older package versions. Strength
-    // policy is enforced only when creating a new move-out package.
+    // Strength policy applies when creating a package. Move-in only needs the
+    // package's decryption password; validation happens during decryption.
     const canImport = ready && !busy && !!selectedExportID && (cleanupRetry || importPassword.length > 0);
     const jobPercent = normalizeProgress(job?.progress);
     const jobTone = String(job?.status || '').toLowerCase() === 'failed' ? 'failed' : String(job?.status || '').toLowerCase() === 'succeeded' ? 'succeeded' : 'running';
@@ -439,7 +436,7 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                     </div>
                     <div className="migration-kv">
                         <span>{t('Package Limit', '\u8fc1\u79fb\u5305\u4e0a\u9650', '\u9077\u79fb\u5305\u4e0a\u9650')}</span>
-                        <strong>{formatBytes(status?.max_compressed_bytes)}</strong>
+                        <strong>{formatBytes(status?.max_package_bytes)}</strong>
                     </div>
                 </div>
 
@@ -481,7 +478,7 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
                     </button>
                     {currentExport && (
                         <span className="migration-inline-meta">
-                            {t('Current package', '\u5f53\u524d\u8fc1\u79fb\u5305', '\u76ee\u524d\u9077\u79fb\u5305')}: {statusLabel(lang, currentExport.status)} / {formatBytes(Number(currentExport.compressed_size || 0))} / {formatDate(String(currentExport.updated_at || ''))}
+                            {t('Current package', '\u5f53\u524d\u8fc1\u79fb\u5305', '\u76ee\u524d\u9077\u79fb\u5305')}: {statusLabel(lang, currentExport.status)} / {formatBytes(Number(currentExport.encrypted_size || 0))} / {formatDate(String(currentExport.updated_at || ''))}
                         </span>
                     )}
                 </div>
@@ -490,21 +487,6 @@ export const MigrationSettingsPanel = ({ lang, showToastMessage }: MigrationSett
 
             <section className="system-settings-card migration-settings-card">
                 <h4>{t('Move In', '\u8fc1\u5165', '\u9077\u5165')}</h4>
-                {selectedManifest && (
-                    <div className="migration-scope-summary">
-                        <strong>{t('Preflight', '迁入预检', '遷入預檢')}</strong>
-                        <span>{t(
-                            `${resultNumber(selectedManifest.config_section_count)} settings, ${resultNumber(selectedManifest.secret_count)} secrets, and ${resultNumber(selectedManifest.memory_entries)} memories will be restored.`,
-                            `将恢复 ${resultNumber(selectedManifest.config_section_count)} 项系统配置、${resultNumber(selectedManifest.secret_count)} 项密钥、${resultNumber(selectedManifest.memory_entries)} 条记忆、宠物和 AI 专家。`,
-                            `將還原 ${resultNumber(selectedManifest.config_section_count)} 項系統設定、${resultNumber(selectedManifest.secret_count)} 項密鑰、${resultNumber(selectedManifest.memory_entries)} 條記憶、寵物與 AI 專家。`,
-                        )}</span>
-                        <small>{t(
-                            `Package format: ${String(selectedManifest.version || '-')} / config schema: ${String(selectedManifest.config_schema_version || '-')}. Current Hub and machine identity will be preserved.`,
-                            `迁移包格式：${String(selectedManifest.version || '-')}；配置版本：${String(selectedManifest.config_schema_version || '-')}。当前 Hub 与机器身份将被保留。`,
-                            `遷移包格式：${String(selectedManifest.version || '-')}；設定版本：${String(selectedManifest.config_schema_version || '-')}。目前 Hub 與機器身分將被保留。`,
-                        )}</small>
-                    </div>
-                )}
                 <div className="migration-form-grid migration-form-grid--import">
                     <label className="system-settings-field">
                         <span>{t('Source Machine', '\u6765\u6e90\u673a\u5668', '\u4f86\u6e90\u6a5f\u5668')}</span>

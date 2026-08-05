@@ -15,9 +15,24 @@ typedef enum {
     BOARD_INPUT_CONFIGURE,
     BOARD_INPUT_VOLUME_UP,
     BOARD_INPUT_VOLUME_DOWN,
+    // Emitted on the debounced physical down edge. This lets urgent local
+    // surfaces react immediately without waiting for short/double/long
+    // gesture classification. Normal command handling ignores this action.
+    BOARD_INPUT_PRESSED,
 } board_input_action_t;
 
-typedef void (*board_input_cb_t)(board_input_action_t action, void *arg);
+// Physical origin is deliberately independent of gesture semantics. Product
+// features can therefore select the input their enclosure actually exposes
+// without guessing from PRIMARY/SECONDARY/CONFIGURE.
+typedef enum {
+    BOARD_INPUT_SOURCE_UNKNOWN = 0,
+    BOARD_INPUT_SOURCE_TOUCH,
+    BOARD_INPUT_SOURCE_ACTIVATE_KEY,
+    BOARD_INPUT_SOURCE_OTHER_KEY,
+} board_input_source_t;
+
+typedef void (*board_input_cb_t)(board_input_action_t action,
+                                 board_input_source_t source, void *arg);
 // Source-compatible names for board ports that have not yet adopted the
 // hardware-neutral terminology.
 typedef board_input_action_t board_port_button_event_t;
@@ -28,10 +43,22 @@ typedef board_input_cb_t board_port_button_cb_t;
 typedef void (*board_port_wake_word_cb_t)(void *arg);
 
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg);
+// Fangtang uses GPIO0's initial double click exclusively as a boot-time
+// network-transport selector. The board consumes this bounded window before
+// normal application callbacks become active. Other boards return false.
+bool board_port_wait_for_boot_network_toggle(uint32_t window_ms);
+// Re-presents the board-specific boot artwork and keeps it in the foreground
+// until another explicit surface (ready, setup, error, etc.) replaces it.
+void board_port_show_startup_screen(void);
 // Applies a relative output-volume step. Boards without adjustable output may
 // return ESP_ERR_NOT_SUPPORTED. The resulting 0..100 value is optional.
 esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_percent);
+// Applies an absolute 0..100 output-volume value received from MaClaw.
+esp_err_t board_port_set_output_volume(unsigned percent);
 void board_port_set_pet_state(const char *state);
+// Updates the short phase label rendered inside the command-owned thinking
+// surface without replacing that surface or stopping its animation.
+void board_port_set_command_stage(const char *stage);
 // Suppresses every background pet/profile/Wi-Fi/ambient repaint while a
 // foreground command owns the screen. The command code clears it only when a
 // later explicit interaction begins, so the answer remains stable.
@@ -43,6 +70,12 @@ void board_port_set_command_cancel_enabled(bool enabled);
 // Applies the selected MaClaw GUI pet profile. The ESP uses a compact native
 // renderer for supported skins and falls back gracefully for custom packs.
 void board_port_set_pet_profile(const char *skin, bool motion_enabled);
+// Installs negotiated GUI-rendered RGB565LE+A8 standby frames (three bytes per
+// pixel: little-endian RGB565 followed by alpha). The caller retains
+// ownership only for the duration of the call; board ports copy the pixels.
+// Passing no frames clears the remote asset and restores the native skin.
+esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
+                                   size_t width, size_t height, uint32_t frame_ms);
 // Shows the dedicated dynamic meeting-recording surface. Call every second
 // with the elapsed duration while recording; passing active=false restores the
 // selected pet screen.
@@ -63,6 +96,10 @@ void board_port_show_upload_progress(size_t completed_bytes, size_t total_bytes,
 // Shows an assistant reply in a paged reading surface. Boards without page
 // keys advance automatically; boards with volume keys expose manual paging.
 void board_port_show_response(const char *title, const char *text);
+// Shows a display-ready RGB565 image. Pixels are in panel wire byte order and
+// dimensions are bounded by the negotiated 64x64 device capability.
+void board_port_show_response_image(const char *title, const char *caption,
+                                    const uint16_t *pixels, size_t width, size_t height);
 // Moves a paged response surface. Returns false when no response is visible,
 // allowing the caller to retain the keys' normal volume function.
 bool board_port_navigate_response(int page_delta);
@@ -92,11 +129,21 @@ void board_port_set_wifi_status(const char *ssid, bool connected);
 void board_port_set_ambient(const char *time, const char *location, const char *date, const char *weekday,
                             const char *weather_summary, int temperature_c,
                             bool weather_valid, bool weather_stale);
+// Shows whether a locally scheduled alarm exists. Compact boards use this as
+// a small affordance beside the standby calendar; foreground surfaces do not
+// repaint when this state changes.
+void board_port_set_alarm_scheduled(bool scheduled);
+// Dedicated local alarm foreground. EchoEar animates it; compact boards render
+// a reduced surface. Passing active=false restores the ambient pet screen.
+void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_text,
+                                 const char *label, unsigned attempt, unsigned max_attempts);
 
 // Must return a complete PCM WAV buffer allocated with heap_caps_malloc or
 // malloc. Caller owns it and releases it with free(). A 16 kHz/16-bit/mono
 // WAV is the hardware-to-MaClawSrv media contract; the server transcribes it
-// before handing the resulting command to the agent.
+// before handing the resulting command to the agent. A capture that reaches
+// the pre-speech timeout returns ESP_ERR_NOT_FOUND and no WAV, so callers must
+// not submit silence as a command.
 esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len);
 
 // Streaming capture for long meetings. Reads 16 kHz, signed 16-bit mono PCM
@@ -117,7 +164,16 @@ void board_port_pause_wake_word(bool paused);
 
 // Plays PCM WAV returned by MaClawSrv TTS (16 kHz, signed 16-bit mono/stereo).
 esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len);
+// Streaming PCM sink shared by compressed-audio decoders. The caller owns one
+// begin/write/end session; samples must be signed 16-bit PCM at AUDIO_RATE.
+esp_err_t board_port_audio_playback_begin(void);
+esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
+                                          unsigned channels);
+esp_err_t board_port_audio_playback_end(esp_err_t playback_err);
 // Short local acknowledgement used while the network/TTS reply is pending.
 esp_err_t board_port_play_ack_chime(void);
+// Plays one short, interruptible mechanical double-bell burst. The alarm task
+// repeats bursts so user input is observed between them.
+esp_err_t board_port_play_alarm_burst(void);
 // Spoken local acknowledgement: “好的，正在处理。”
 esp_err_t board_port_play_ack_voice(void);

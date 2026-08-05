@@ -7,6 +7,9 @@
 
 static app_ui_model_t s_model;
 static portMUX_TYPE s_model_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_upload_progress_valid;
+static unsigned s_upload_progress_percent;
+static char s_upload_progress_stage[32];
 
 static void stop_recording_if_needed(void) {
     bool was_recording;
@@ -37,6 +40,22 @@ app_ui_model_t app_ui_snapshot(void) {
     return copy;
 }
 
+void app_ui_show_startup_screen(void) {
+    taskENTER_CRITICAL(&s_model_lock);
+    if (s_model.surface == APP_UI_SURFACE_ALARM) {
+        taskEXIT_CRITICAL(&s_model_lock);
+        return;
+    }
+    s_model.surface = APP_UI_SURFACE_STARTUP;
+    s_model.command_display_locked = true;
+    strlcpy(s_model.pet_state, "idle", sizeof(s_model.pet_state));
+    s_upload_progress_valid = false;
+    s_upload_progress_stage[0] = '\0';
+    taskEXIT_CRITICAL(&s_model_lock);
+    board_port_set_command_display_lock(true);
+    board_port_show_startup_screen();
+}
+
 void app_ui_set_pet_state(const char *state) {
     bool recording;
     bool suppress_ambient;
@@ -56,6 +75,10 @@ void app_ui_set_pet_state(const char *state) {
     if (!recording && !suppress_ambient) board_port_set_pet_state(state);
 }
 
+void app_ui_set_command_stage(const char *stage) {
+    board_port_set_command_stage(stage);
+}
+
 void app_ui_set_command_display_lock(bool locked) {
     taskENTER_CRITICAL(&s_model_lock);
     s_model.command_display_locked = locked;
@@ -68,7 +91,17 @@ void app_ui_set_command_cancel_enabled(bool enabled) {
 }
 
 void app_ui_set_pet_profile(const char *skin, bool motion_enabled) {
+    // Board ports already separate model mutation from painting through their
+    // foreground-display guard. Always apply the new profile so the first ready
+    // frame is current; the startup artwork remains pixel-stable while locked.
     board_port_set_pet_profile(skin, motion_enabled);
+}
+
+esp_err_t app_ui_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
+                               size_t width, size_t height, uint32_t frame_ms) {
+    // Install the asset now without painting over startup. Both board ports
+    // defer presentation while the foreground-display guard is active.
+    return board_port_set_pet_asset(frames, frame_count, width, height, frame_ms);
 }
 
 void app_ui_set_recording_mode(bool meeting) {
@@ -156,9 +189,29 @@ void app_ui_show_text(const char *title, const char *text) {
 void app_ui_show_upload_progress(size_t completed_bytes, size_t total_bytes,
                                  const char *stage) {
     stop_recording_if_needed();
+    // Meeting recordings may approach the Hub's 512 MiB quota. Multiplying a
+    // 32-bit size_t by 100 first overflows above ~41 MiB and makes the progress
+    // bar jump backwards. Divide before multiplying and retain the remainder.
+    unsigned percent = 0;
+    if (total_bytes) {
+        size_t whole = completed_bytes / total_bytes;
+        size_t remainder = completed_bytes % total_bytes;
+        percent = whole >= 1 ? 100
+                             : (unsigned)(((uint64_t)remainder * 100u) / total_bytes);
+    }
+    if (percent > 100) percent = 100;
+    const char *visible_stage = stage && stage[0] ? stage : "正在上传";
     taskENTER_CRITICAL(&s_model_lock);
+    bool unchanged = s_model.surface == APP_UI_SURFACE_UPLOAD &&
+                     s_upload_progress_valid &&
+                     s_upload_progress_percent == percent &&
+                     !strcmp(s_upload_progress_stage, visible_stage);
     s_model.surface = APP_UI_SURFACE_UPLOAD;
+    s_upload_progress_valid = true;
+    s_upload_progress_percent = percent;
+    strlcpy(s_upload_progress_stage, visible_stage, sizeof(s_upload_progress_stage));
     taskEXIT_CRITICAL(&s_model_lock);
+    if (unchanged) return;
     board_port_show_upload_progress(completed_bytes, total_bytes, stage);
 }
 
@@ -168,6 +221,15 @@ void app_ui_show_response(const char *title, const char *text) {
     s_model.surface = APP_UI_SURFACE_RESPONSE;
     taskEXIT_CRITICAL(&s_model_lock);
     board_port_show_response(title, text);
+}
+
+void app_ui_show_response_image(const char *title, const char *caption,
+                                const uint16_t *pixels, size_t width, size_t height) {
+    stop_recording_if_needed();
+    taskENTER_CRITICAL(&s_model_lock);
+    s_model.surface = APP_UI_SURFACE_RESPONSE;
+    taskEXIT_CRITICAL(&s_model_lock);
+    board_port_show_response_image(title, caption, pixels, width, height);
 }
 
 bool app_ui_navigate_response(int page_delta) {
@@ -210,6 +272,30 @@ bool app_ui_dismiss_response(void) {
     return response_visible;
 }
 
+void app_ui_restore_standby(void) {
+    taskENTER_CRITICAL(&s_model_lock);
+    s_model.surface = APP_UI_SURFACE_PET;
+    strlcpy(s_model.pet_state, "idle", sizeof(s_model.pet_state));
+    s_model.recording_active = false;
+    s_model.recording_paused = false;
+    s_model.meeting_recording = false;
+    s_model.elapsed_seconds = 0;
+    s_model.audio_level = 0;
+    memset(s_model.audio_history, 0, sizeof(s_model.audio_history));
+    ++s_model.audio_history_revision;
+    s_model.command_display_locked = false;
+    taskEXIT_CRITICAL(&s_model_lock);
+
+    // Publish the HAL transition in ownership order: first remove the command
+    // guards, then paint idle. Both board ports reject stale ambient frames
+    // while the guard is set, so reversing this order would leave the cancel
+    // message visible even though the application model already says PET.
+    board_port_set_command_cancel_enabled(false);
+    board_port_set_command_display_lock(false);
+    board_port_set_recording_mode(false);
+    board_port_set_pet_state("idle");
+}
+
 int app_ui_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
     return board_port_cache_glyph(codepoint, bitmap);
 }
@@ -223,11 +309,23 @@ void app_ui_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
 }
 
 void app_ui_show_ready_prompt(const char *title, const char *text) {
-    stop_recording_if_needed();
     taskENTER_CRITICAL(&s_model_lock);
+    if (s_model.surface == APP_UI_SURFACE_ALARM) {
+        taskEXIT_CRITICAL(&s_model_lock);
+        return;
+    }
+    bool was_recording = s_model.recording_active;
+    s_model.recording_active = false;
+    s_model.recording_paused = false;
+    s_model.audio_level = 0;
+    memset(s_model.audio_history, 0, sizeof(s_model.audio_history));
+    ++s_model.audio_history_revision;
     s_model.surface = APP_UI_SURFACE_PET;
+    s_model.command_display_locked = false;
     strlcpy(s_model.pet_state, "idle", sizeof(s_model.pet_state));
     taskEXIT_CRITICAL(&s_model_lock);
+    if (was_recording) board_port_set_recording_visual(false, false, 0);
+    board_port_set_command_display_lock(false);
     board_port_show_ready_prompt(title, text);
 }
 
@@ -273,4 +371,22 @@ void app_ui_set_ambient(const char *time, const char *location, const char *date
         board_port_set_ambient(time, location, date, weekday, weather_summary,
                                temperature_c, weather_valid, weather_stale);
     }
+}
+
+void app_ui_set_alarm_scheduled(bool scheduled) {
+    taskENTER_CRITICAL(&s_model_lock);
+    s_model.alarm_scheduled = scheduled;
+    taskEXIT_CRITICAL(&s_model_lock);
+    // The board port stores this model state even while a startup or command
+    // foreground owns the LCD, then includes it in the next standby frame.
+    board_port_set_alarm_scheduled(scheduled);
+}
+
+void app_ui_set_alarm_visual(bool active, unsigned frame, const char *time_text,
+                             const char *label, unsigned attempt, unsigned max_attempts) {
+    taskENTER_CRITICAL(&s_model_lock);
+    s_model.surface = active ? APP_UI_SURFACE_ALARM : APP_UI_SURFACE_PET;
+    s_model.command_display_locked = active;
+    taskEXIT_CRITICAL(&s_model_lock);
+    board_port_set_alarm_visual(active, frame, time_text, label, attempt, max_attempts);
 }

@@ -40,6 +40,11 @@ type ProjectRecord struct {
 	// LastActivity is the most recent UpdatedAt across all entries.
 	LastActivity time.Time `json:"last_activity"`
 
+	// CreatedAt is the earliest creation time across all entries belonging to
+	// this project. Unlike LastActivity, it is stable when a task is reopened,
+	// indexed, or receives derived memory updates.
+	CreatedAt time.Time `json:"created_at"`
+
 	// Preview is a short content preview (~150 rune) from the most recently
 	// updated entry.
 	Preview string `json:"preview,omitempty"`
@@ -193,6 +198,17 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 		// Update preview from the most recent entry.
 		rec.Preview = truncateRunes(firstMeaningfulLine(e.Content), 150)
 		changed = true // activity timestamp advanced
+	}
+
+	// Keep a stable project creation time. Older persisted entries may not have
+	// CreatedAt populated, so use their update time as the best available
+	// historical fallback rather than leaving the task without a display time.
+	entryCreatedAt := e.CreatedAt
+	if entryCreatedAt.IsZero() {
+		entryCreatedAt = e.UpdatedAt
+	}
+	if !entryCreatedAt.IsZero() && (rec.CreatedAt.IsZero() || entryCreatedAt.Before(rec.CreatedAt)) {
+		rec.CreatedAt = entryCreatedAt
 	}
 
 	// Merge tags.

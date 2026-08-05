@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -156,6 +157,56 @@ func TestRemoteGatewayClaimsAndRepliesAreTenantScoped(t *testing.T) {
 	inner, _ := payload["payload"].(map[string]any)
 	if payload["tenant_id"] != "tenant_b" || inner["tenant_id"] != "tenant_b" {
 		t.Fatalf("reply tenant payload = outer:%#v inner:%#v", payload["tenant_id"], inner["tenant_id"])
+	}
+}
+
+func TestRemoteGatewayProgressCarriesNonTerminalMetadata(t *testing.T) {
+	sender := &remoteGatewayTestSender{}
+	plugin := NewRemoteGatewayPlugin("thirdparty", sender, tenantEmailTestUsers{}, nil)
+	if ok, reason, _ := plugin.ClaimGatewayForTenant("tenant_a", "machine-a", "user-a"); !ok {
+		t.Fatalf("claim failed: %s", reason)
+	}
+	if err := plugin.SendProgress(WithTenant(context.Background(), "tenant_a"), UserTarget{PlatformUID: "thirdparty:esp32:default"}, "正在处理"); err != nil {
+		t.Fatalf("SendProgress: %v", err)
+	}
+	payload, _ := sender.messages[0]["payload"].(map[string]any)
+	inner, _ := payload["payload"].(map[string]any)
+	if progress, _ := inner["progress"].(bool); !progress {
+		t.Fatalf("progress flag = %#v", inner["progress"])
+	}
+	if final, _ := inner["final"].(bool); final {
+		t.Fatalf("final flag = %#v", inner["final"])
+	}
+	metadata, _ := inner["metadata"].(map[string]any)
+	if metadata["acp_turn"] != "progress" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestRemoteGatewayControlReplyCorrelationReachesIncomingRawPayload(t *testing.T) {
+	sender := &remoteGatewayTestSender{}
+	plugin := NewRemoteGatewayPlugin("thirdparty", sender, tenantEmailTestUsers{}, nil)
+	plugin.mu.Lock()
+	plugin.owners[store.DefaultTenantID] = &gatewayOwner{TenantID: store.DefaultTenantID, MachineID: "machine-1"}
+	plugin.mu.Unlock()
+	received := make(chan IncomingMessage, 1)
+	plugin.ReceiveMessage(func(msg IncomingMessage) { received <- msg })
+	payload, err := json.Marshal(map[string]any{
+		"platform_uid": "thirdparty:pet-a:default",
+		"text":         "/cancel", "message_type": "text", "message_id": "cancel-1",
+		"replyTo": "voice-active-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin.HandleGatewayMessage("machine-1", payload)
+	select {
+	case msg := <-received:
+		if got := incomingControlReplyTo(msg.RawPayload); got != "voice-active-1" {
+			t.Fatalf("control reply correlation=%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("control message was not dispatched")
 	}
 }
 

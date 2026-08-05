@@ -143,16 +143,9 @@ type ThirdPartyPollRequest struct {
 	TimeoutSet bool
 }
 
-type ThirdPartyToolDefinition struct {
-	Name             string            `json:"name"`
-	Description      string            `json:"description,omitempty"`
-	InputSchema      map[string]any    `json:"inputSchema,omitempty"`
-	OutputSchema     map[string]any    `json:"outputSchema,omitempty"`
-	Risk             string            `json:"risk,omitempty"`
-	RequiresApproval bool              `json:"requiresApproval,omitempty"`
-	TimeoutMs        int64             `json:"timeoutMs,omitempty"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
-}
+// ThirdPartyToolDefinition is the wire spelling of the transport-neutral
+// client tool definition used by the agent pipeline.
+type ThirdPartyToolDefinition = agent.ClientToolDefinition
 
 type ThirdPartyToolCall struct {
 	ID               string            `json:"id"`
@@ -232,6 +225,8 @@ type ThirdPartyOutgoingMessage struct {
 	URL              string                     `json:"url,omitempty"`
 	SizeBytes        int64                      `json:"sizeBytes,omitempty"`
 	DurationMs       int64                      `json:"durationMs,omitempty"`
+	Width            int                        `json:"width,omitempty"`
+	Height           int                        `json:"height,omitempty"`
 	Attachments      []ThirdPartyMediaReference `json:"attachments,omitempty"`
 	ToolCall         *ThirdPartyToolCall        `json:"toolCall,omitempty"`
 	ToolPlan         *ThirdPartyToolPlan        `json:"toolPlan,omitempty"`
@@ -251,6 +246,12 @@ type ThirdPartyOutgoingMessage struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 	Extra    map[string]any    `json:"extra,omitempty"`
 }
+
+// ThirdPartyRGB565MIME is the compact, display-ready image encoding used by
+// constrained hardware clients. Each pixel is sent in the panel's wire order
+// (most-significant RGB565 byte first), so an ESP32 can draw it without a
+// second full-image conversion buffer.
+const ThirdPartyRGB565MIME = "application/vnd.maclaw.rgb565be"
 
 type ThirdPartyNormalizeOptions struct {
 	RequireMessageID      bool
@@ -663,10 +664,16 @@ func NormalizeThirdPartyHandshakeRequest(req *ThirdPartyHandshakeRequest) error 
 	if len(req.Tools) > ThirdPartyMaxTools {
 		return fmt.Errorf("tools exceeds %d items", ThirdPartyMaxTools)
 	}
+	seenTools := make(map[string]struct{}, len(req.Tools))
 	for i := range req.Tools {
 		if err := NormalizeThirdPartyToolDefinition(&req.Tools[i], i); err != nil {
 			return err
 		}
+		name := req.Tools[i].Name
+		if _, exists := seenTools[name]; exists {
+			return fmt.Errorf("tools[%d].name %q is duplicated", i, name)
+		}
+		seenTools[name] = struct{}{}
 	}
 	if req.ClientCapabilities != nil {
 		normalized := agent.NormalizeClientCapabilities(req.ClientCapabilities)
@@ -825,6 +832,9 @@ func NormalizeThirdPartyToolCall(call *ThirdPartyToolCall) error {
 	if call.ID == "" {
 		return errors.New("toolCall.id is required")
 	}
+	if call.IdempotencyKey == "" {
+		return errors.New("toolCall.idempotencyKey is required")
+	}
 	if err := validateThirdPartyID("toolCall.id", call.ID); err != nil {
 		return err
 	}
@@ -897,6 +907,9 @@ func NormalizeThirdPartyToolPlanStep(step *ThirdPartyToolPlanStep, index int) er
 	if step.ID == "" {
 		return fmt.Errorf("toolPlan.steps[%d].id is required", index)
 	}
+	if step.IdempotencyKey == "" {
+		return fmt.Errorf("toolPlan.steps[%d].idempotencyKey is required", index)
+	}
 	if err := validateThirdPartyID(fmt.Sprintf("toolPlan.steps[%d].id", index), step.ID); err != nil {
 		return err
 	}
@@ -920,6 +933,27 @@ func NormalizeThirdPartyToolCancel(cancel *ThirdPartyToolCancel) error {
 	if cancel.ToolCallID == "" && cancel.ToolPlanID == "" {
 		return errors.New("toolCancel.toolCallId or toolPlanId is required")
 	}
+	if cancel.ToolCallID != "" && cancel.ToolPlanID != "" {
+		return errors.New("toolCancel.toolCallId and toolPlanId are mutually exclusive")
+	}
+	if cancel.StepID != "" && cancel.ToolPlanID == "" {
+		return errors.New("toolCancel.stepId requires toolPlanId")
+	}
+	if cancel.ToolCallID != "" {
+		if err := validateThirdPartyID("toolCancel.toolCallId", cancel.ToolCallID); err != nil {
+			return err
+		}
+	}
+	if cancel.ToolPlanID != "" {
+		if err := validateThirdPartyID("toolCancel.toolPlanId", cancel.ToolPlanID); err != nil {
+			return err
+		}
+	}
+	if cancel.StepID != "" {
+		if err := validateThirdPartyID("toolCancel.stepId", cancel.StepID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -941,6 +975,15 @@ func NormalizeThirdPartyToolResultRequest(req *ThirdPartyToolResultRequest) erro
 	}
 	if req.ToolCallID == "" && req.ToolPlanID == "" {
 		return errors.New("toolCallId or toolPlanId is required")
+	}
+	if req.ToolCallID != "" && req.ToolPlanID != "" {
+		return errors.New("toolCallId and toolPlanId are mutually exclusive")
+	}
+	if req.StepID != "" && req.ToolPlanID == "" {
+		return errors.New("stepId requires toolPlanId")
+	}
+	if req.ToolPlanID != "" && req.StepID == "" {
+		return errors.New("stepId is required when reporting a toolPlan result")
 	}
 	if req.Status == "" {
 		return errors.New("status must be success, error, rejected, cancelled, or timeout")
@@ -964,6 +1007,12 @@ func NormalizeThirdPartyToolResultRequest(req *ThirdPartyToolResultRequest) erro
 		if err := validateThirdPartyID("stepId", req.StepID); err != nil {
 			return err
 		}
+	}
+	if req.Status == "success" && req.Error != nil {
+		return errors.New("error must be omitted when status is success")
+	}
+	if req.Status != "success" && req.Error == nil && req.Text == "" {
+		return errors.New("error or text is required when status is not success")
 	}
 	if err := validateThirdPartyIdempotencyKey("idempotencyKey", req.IdempotencyKey); err != nil {
 		return err

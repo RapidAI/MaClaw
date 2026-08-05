@@ -781,11 +781,23 @@ export function GetThirdPartyGatewayStatus():Promise<string>;
 
 export function CreateThirdPartyDevicePairing():Promise<Record<string, any>>;
 
-export function GenerateHardwareWelcomeAudio(arg1:string):Promise<string>;
+export function ListThirdPartyHardwareDevices():Promise<Array<Record<string, any>>>;
+
+export function DeleteThirdPartyHardwareDevice(arg1:string):Promise<void>;
+
+export function GenerateHardwareWelcomeAudio(arg1:string,arg2:string):Promise<string>;
 
 export function SelectHardwareWelcomeAudio():Promise<string>;
 
 export function SendHardwareWelcomeAudio():Promise<void>;
+
+export function GetHardwareWelcomeAudioDataURL():Promise<string>;
+
+export function SendHardwareWelcomeAudioRemote():Promise<void>;
+
+export function ResetHardwareWelcomeAudio():Promise<string>;
+
+export function SynthesizeTTSPreview(arg1:string):Promise<string>;
 
 export function SyncHardwareWelcome():Promise<void>;
 
@@ -1988,6 +2000,8 @@ export function SetTabWorkingDir(arg1:string,arg2:string):Promise<void>;
 export function SetTelegramLocalMode(arg1:boolean):Promise<void>;
 
 export function SetThirdPartyGatewayLocalMode(arg1:boolean):Promise<void>;
+
+export function SetHardwareEnabled(arg1:boolean):Promise<string>;
 
 export function SetTrialReflectEnabled(arg1:boolean):Promise<void>;
 

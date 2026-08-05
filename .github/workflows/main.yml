@@ -366,6 +366,51 @@ jobs:
                   build/windows/installer/multiarch.nsi
           if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed: $LASTEXITCODE" }
 
+      - name: Verify NSIS installer leaves system PATH untouched
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installerSource = Get-Content 'build/windows/installer/multiarch.nsi' -Raw
+          # The installer must never read, replace, append to, or remove entries
+          # from either the machine or user PATH. Updating it can destroy existing
+          # entries if the source value is truncated or read from the wrong view.
+          # The only exception is RestoreCorruptedMachinePath: it repairs the
+          # exact legacy state where the entire machine PATH equals $INSTDIR.
+          $repairMatch = [regex]::Match(
+            $installerSource,
+            '(?ms)^Function RestoreCorruptedMachinePath\r?\n.*?^FunctionEnd\r?\n'
+          )
+          if (-not $repairMatch.Success) {
+            throw 'NSIS installer is missing the legacy machine PATH repair function.'
+          }
+          $repairSource = $repairMatch.Value
+          if ($repairSource -notmatch '(?ms)ReadRegStr \$0 HKLM "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" "Path".*?System::Call ''kernel32::lstrcmpi\(t r0, t r1\) i \.r2''.*?StrCmp \$2 0 restorePath_match restorePath_done.*?restorePath_match:.*?WriteRegExpandStr HKLM "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" "Path" "\$\{DEFAULT_MACHINE_PATH\}"') {
+            throw 'Legacy machine PATH repair must only replace an exact $INSTDIR corruption with the defined Windows baseline.'
+          }
+          $initMatch = [regex]::Match(
+            $installerSource,
+            '(?ms)^Function \.onInit\r?\n.*?^FunctionEnd\r?\n'
+          )
+          if (-not $initMatch.Success -or
+              $initMatch.Value -notmatch '(?ms)^\s*installed:.*?ReadRegStr \$R1 HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\\$\{INFO_PRODUCTNAME\}" "InstallLocation".*?Call RestoreCorruptedMachinePath') {
+            throw 'Legacy machine PATH repair must run only after an existing installation is confirmed and its install directory is resolved.'
+          }
+          if ($initMatch.Value -match '(?ms)^\s*appNotRunning:.*?Call RestoreCorruptedMachinePath.*?^\s*SetRegView 64') {
+            throw 'Legacy machine PATH repair must not run before existing-install detection.'
+          }
+          $installerSourceWithoutRepair = $installerSource.Remove($repairMatch.Index, $repairMatch.Length)
+          $pathMutationPatterns = @(
+            '(?im)^\s*(ReadRegStr|WriteReg(?:Expand)?Str|DeleteRegValue)\s+(HKLM|HKCU)\s+"(?:SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment|Environment)"\s+"Path"',
+            '(?im)^\s*(?:nsExec::Exec(?:ToLog|ToStack)?|ExecWait|Exec)\b.*\bsetx(?:\.exe)?\s+Path\b',
+            '(?im)^\s*(?:nsExec::Exec(?:ToLog|ToStack)?|ExecWait|Exec)\b.*\bSetEnvironmentVariable\s*\(\s*["'']Path["'']',
+            '(?im)^\s*(?:nsExec::Exec(?:ToLog|ToStack)?|ExecWait|Exec)\b.*\b(?:reg(?:\.exe)?\s+(?:add|delete)|Set-ItemProperty|New-ItemProperty)\b.*\\Environment\b.*\bPath\b'
+          )
+          foreach ($pattern in $pathMutationPatterns) {
+            if ($installerSourceWithoutRepair -match $pattern) {
+              throw 'NSIS installer must not modify the machine or user PATH environment variable.'
+            }
+          }
+
       - name: Verify NSIS installer includes the VS Code ACP bridge
         shell: pwsh
         run: |
@@ -1805,10 +1850,91 @@ jobs:
             dist/srvdemo_arm64_linux
 
   # ============================================================
+  # ESP32-S3: build and package complete flash images per board profile
+  # ============================================================
+  build-esp32-firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: echoear-2st
+            sdkconfig_defaults: sdkconfig.defaults
+            firmware_name: MaClaw-ESP32S3-EchoEar-2ST-firmware
+          - device: bread-compact
+            sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.bread-compact
+            firmware_name: MaClaw-ESP32S3-Bread-Compact-firmware
+          - device: fangtang-4g
+            sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.fangtang-4g
+            firmware_name: MaClaw-ESP32S3-Fangtang-4G-firmware
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Build ${{ matrix.device }} firmware
+        env:
+          SDKCONFIG_DEFAULTS: ${{ matrix.sdkconfig_defaults }}
+          FIRMWARE_NAME: ${{ matrix.firmware_name }}
+        run: |
+          set -euo pipefail
+          project_dir="$GITHUB_WORKSPACE/esp32s3-maclaw-client"
+          release_dir="$project_dir/release"
+          build_dir="build-release-${{ matrix.device }}"
+          mkdir -p "$release_dir"
+
+          # Keep each board configuration in a fresh, isolated build directory.
+          # merge-bin creates a complete image beginning at flash offset 0x0,
+          # including the bootloader, partition table, application and every
+          # FLASH_IN_PROJECT partition required by this profile.
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/project" \
+            -w /project/esp32s3-maclaw-client \
+            -e SDKCONFIG_DEFAULTS \
+            -e FIRMWARE_NAME \
+            espressif/idf:v6.0.2 \
+            bash -lc '
+              set -euo pipefail
+              build_dir="build-release-${{ matrix.device }}"
+              idf.py -B "$build_dir" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" build
+              idf.py -B "$build_dir" merge-bin -f raw -o "release/${FIRMWARE_NAME}.bin"
+
+              package_dir="release/${FIRMWARE_NAME}"
+              mkdir -p "$package_dir"
+              cp "release/${FIRMWARE_NAME}.bin" "$package_dir/"
+              cp "$build_dir/flasher_args.json" "$package_dir/"
+              cp "$build_dir/project_description.json" "$package_dir/"
+              cat > "$package_dir/README.txt" <<EOF
+              Full flash image for $FIRMWARE_NAME.
+
+              Flash the .bin at offset 0x0, for example:
+                esptool.py --chip esp32s3 write_flash 0x0 ${FIRMWARE_NAME}.bin
+
+              This image is board-specific. Do not flash it to another board profile.
+              EOF
+              cd release
+              zip -qr "${FIRMWARE_NAME}.zip" "${FIRMWARE_NAME}"
+              rm -rf "${FIRMWARE_NAME}"
+            '
+
+          test -s "$release_dir/${FIRMWARE_NAME}.bin"
+          test -s "$release_dir/${FIRMWARE_NAME}.zip"
+
+      - name: Upload ${{ matrix.device }} firmware package
+        uses: actions/upload-artifact@v5
+        with:
+          name: esp32-firmware-${{ matrix.device }}
+          compression-level: 0
+          path: |
+            esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.bin
+            esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.zip
+          if-no-files-found: error
+
+  # ============================================================
   # Release: collect all artifacts and create GitHub Release
   # ============================================================
   release:
-    needs: [build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64]
+    needs: [build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-esp32-firmware]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -1925,6 +2051,9 @@ jobs:
               "TigerProxy-Setup.exe",
               "TigerProxy-Universal.pkg",
               "TigerProxy-x86_64.AppImage",
+              "MaClaw-ESP32S3-EchoEar-2ST-firmware.zip",
+              "MaClaw-ESP32S3-Bread-Compact-firmware.zip",
+              "MaClaw-ESP32S3-Fangtang-4G-firmware.zip",
           ]
 
           print("\n".join(assets))

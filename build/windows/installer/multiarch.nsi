@@ -32,6 +32,11 @@
 !ifndef AUTOSTART_REG_NAME
 !define AUTOSTART_REG_NAME "${INFO_PROJECTNAME}"
 !endif
+; A legacy installer could replace the machine PATH with $INSTDIR when its
+; registry read failed. This is the conservative Windows baseline we can
+; restore when that exact corruption is detected. Existing custom entries
+; cannot be reconstructed once the old installer has overwritten them.
+!define DEFAULT_MACHINE_PATH "%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SystemRoot%\System32\WindowsPowerShell\v1.0\;%SystemRoot%\System32\OpenSSH\"
 
 # Define Wails binaries (passed from command line or hardcoded here for manual build)
 !ifndef ARG_WAILS_AMD64_BINARY
@@ -164,141 +169,48 @@ Function LaunchAsCurrentUser
     ExecShell "" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 FunctionEnd
 
-Function AddInstallDirToMachinePath
-    # Read current system PATH, append $INSTDIR if not already present.
-    # Uses semicolon-delimited entry matching (case-insensitive) to avoid
-    # substring false-positives (e.g. "TigerClaw" vs "TigerClawOld").
+; Restore the machine PATH only when a legacy installer replaced it with this
+; app's install directory. Do not append, remove, or otherwise edit a PATH
+; with any other value: its entries belong to Windows and the user.
+Function RestoreCorruptedMachinePath
+    SetRegView 64
     ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-    # Pre-compute normalized INSTDIR (without trailing backslash)
+    StrCmp $0 "" restorePath_done
+
+    Push $0
+    Call TrimTrailingBackslash
+    Pop $0
     Push $INSTDIR
-    Call TrimBackslash
-    Pop $7
-    StrCmp $0 "" _AddPath_empty
-    # Iterate PATH entries separated by ';', compare case-insensitively
-    StrCpy $1 $0
-    _AddPath_check_loop:
-        # Find next ';'
-        StrCpy $3 0
-        StrLen $4 $1
-        _AddPath_find_semi:
-            IntCmp $3 $4 _AddPath_found_end _AddPath_found_end
-            StrCpy $5 $1 1 $3
-            StrCmp $5 ";" _AddPath_found_semi
-            IntOp $3 $3 + 1
-            Goto _AddPath_find_semi
-        _AddPath_found_semi:
-            StrCpy $2 $1 $3       ; $2 = current entry
-            IntOp $3 $3 + 1
-            StrCpy $1 $1 "" $3    ; $1 = remainder after ';'
-            Goto _AddPath_compare
-        _AddPath_found_end:
-            StrCpy $2 $1          ; $2 = last entry (no trailing ;)
-            StrCpy $1 ""          ; no remainder
-        _AddPath_compare:
-        # Skip empty entries (from consecutive semicolons)
-        StrCmp $2 "" _AddPath_next_entry
-        # Case-insensitive compare (StrCmp is case-insensitive in NSIS)
-        Push $2
-        Call TrimBackslash
-        Pop $6
-        StrCmp $6 $7 _AddPath_already_exists _AddPath_next_entry
-        _AddPath_next_entry:
-        StrCmp $1 "" _AddPath_not_found
-        Goto _AddPath_check_loop
-    _AddPath_not_found:
-    # Not found — append
-    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$0;$INSTDIR"
-    Goto _AddPath_done
-    _AddPath_empty:
-    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$INSTDIR"
-    Goto _AddPath_done
-    _AddPath_already_exists:
-    _AddPath_done:
+    Call TrimTrailingBackslash
+    Pop $1
+    ; Windows path comparison is case-insensitive. This still requires the
+    ; entire stored value to be the install directory; a PATH with any extra
+    ; entry is deliberately left untouched.
+    System::Call 'kernel32::lstrcmpi(t r0, t r1) i .r2'
+    StrCmp $2 0 restorePath_match restorePath_done
+
+    restorePath_match:
+    DetailPrint "Repairing legacy corrupted machine PATH..."
+    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "${DEFAULT_MACHINE_PATH}"
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+    restorePath_done:
 FunctionEnd
 
-; TrimBackslash — remove trailing '\' from string on stack
-Function TrimBackslash
-    Exch $R0
-    Push $R1
-    StrLen $R1 $R0
-    IntCmp $R1 0 _TrimBS_done _TrimBS_done
-    IntOp $R1 $R1 - 1
-    StrCpy $R1 $R0 1 $R1
-    StrCmp $R1 "\" 0 _TrimBS_done
-        StrLen $R1 $R0
-        IntOp $R1 $R1 - 1
-        StrCpy $R0 $R0 $R1
-    _TrimBS_done:
-    Pop $R1
-    Exch $R0
-FunctionEnd
-
-Function un.RemoveInstallDirFromMachinePath
-    # Read current system PATH, rebuild without $INSTDIR entry.
-    # Iterates entries separated by ';', compares case-insensitively with trailing '\' normalization.
-    ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-    StrCmp $0 "" _RemPath_done
-    # Normalize $INSTDIR for comparison
-    Push $INSTDIR
-    Call un.TrimBackslash
-    Pop $7              ; $7 = normalized INSTDIR
-    StrCpy $1 $0       ; $1 = remaining input
-    StrCpy $8 ""       ; $8 = rebuilt PATH (output)
-    _RemPath_loop:
-        StrCmp $1 "" _RemPath_write
-        # Find next ';'
-        StrCpy $3 0
-        StrLen $4 $1
-        _RemPath_find_semi:
-            IntCmp $3 $4 _RemPath_last_entry _RemPath_last_entry
-            StrCpy $5 $1 1 $3
-            StrCmp $5 ";" _RemPath_got_semi
-            IntOp $3 $3 + 1
-            Goto _RemPath_find_semi
-        _RemPath_got_semi:
-            StrCpy $2 $1 $3       ; $2 = current entry
-            IntOp $3 $3 + 1
-            StrCpy $1 $1 "" $3    ; $1 = remainder
-            Goto _RemPath_test
-        _RemPath_last_entry:
-            StrCpy $2 $1
-            StrCpy $1 ""
-        _RemPath_test:
-        # Skip empty entries (from consecutive semicolons)
-        StrCmp $2 "" _RemPath_loop
-        # Compare entry (trimmed) against normalized INSTDIR
-        Push $2
-        Call un.TrimBackslash
-        Pop $6
-        StrCmp $6 $7 _RemPath_loop  ; match → skip this entry
-        # No match → keep entry
-        StrCmp $8 "" 0 +3
-            StrCpy $8 $2
-            Goto _RemPath_loop
-        StrCpy $8 "$8;$2"
-        Goto _RemPath_loop
-    _RemPath_write:
-    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$8"
-    _RemPath_done:
-    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
-FunctionEnd
-
-; un.TrimBackslash — remove trailing '\' from string on stack (uninstaller copy)
-Function un.TrimBackslash
-    Exch $R0
-    Push $R1
-    StrLen $R1 $R0
-    IntCmp $R1 0 _unTrimBS_done _unTrimBS_done
-    IntOp $R1 $R1 - 1
-    StrCpy $R1 $R0 1 $R1
-    StrCmp $R1 "\" 0 _unTrimBS_done
-        StrLen $R1 $R0
-        IntOp $R1 $R1 - 1
-        StrCpy $R0 $R0 $R1
-    _unTrimBS_done:
-    Pop $R1
-    Exch $R0
+; Trim one trailing backslash from the string passed on the stack.
+Function TrimTrailingBackslash
+    Exch $2
+    Push $3
+    StrLen $3 $2
+    IntCmp $3 0 trimTrailingBackslash_done trimTrailingBackslash_done
+    IntOp $3 $3 - 1
+    StrCpy $3 $2 1 $3
+    StrCmp $3 "\" 0 trimTrailingBackslash_done
+        StrLen $3 $2
+        IntOp $3 $3 - 1
+        StrCpy $2 $2 $3
+    trimTrailingBackslash_done:
+    Pop $3
+    Exch $2
 FunctionEnd
 
 Function .onInit
@@ -371,13 +283,25 @@ Function .onInit
     # MaClaw itself is closed. Stop it before replacing the bundled binary.
     ExecWait 'taskkill /F /IM ${ACP_BRIDGE_EXECUTABLE}'
 
-    # Check if already installed
+    # New installers write their registry entries to the 64-bit view. Check it
+    # first, but retain a 32-bit fallback so upgrades can find installers built
+    # before registry-view handling was made explicit.
+    SetRegView 64
+    ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
+    StrCmp $R0 "" 0 installed
+    SetRegView 32
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
     StrCmp $R0 "" notInstalled
+
+    installed:
     # Preserve user's original install directory if they chose a custom path
     ReadRegStr $R1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation"
     StrCmp $R1 "" +2
         StrCpy $INSTDIR $R1
+    # Only repair a legacy PATH after confirming this product is installed and
+    # resolving its actual install directory. This avoids changing a PATH that
+    # merely happens to equal the default directory on a clean machine.
+    Call RestoreCorruptedMachinePath
     MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" IDYES uninstall
     Abort
     
@@ -391,6 +315,8 @@ FunctionEnd
 
 Section
     SetShellVarContext all
+    # Keep all machine-level app registry entries in the same (native) view.
+    SetRegView 64
     SetOutPath $INSTDIR
 
     # Architecture detection and file installation
@@ -424,10 +350,6 @@ Section
     DetailPrint "Enabling Windows Long Path Support..."
     WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
 
-    # Make bundled CLI discoverable by subprocess-based agents.
-    DetailPrint "Adding install directory to machine PATH for ${CLI_EXECUTABLE}..."
-    Call AddInstallDirToMachinePath
-
     # Create Shortcuts
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -451,12 +373,13 @@ Section
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
 
     # Start automatically after Windows sign-in
-    SetRegView 64
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}" "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\" autostart"
 SectionEnd
 
 Section "uninstall"
     SetShellVarContext all
+    # Matches the registry view used by the installer for app-owned entries.
+    SetRegView 64
     
     # Kill app if running
     ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
@@ -472,13 +395,10 @@ Section "uninstall"
     # Remove install dir — use /r to handle any leftover files (logs, crash dumps, etc.)
     RMDir /r "$INSTDIR"
 
-    Call un.RemoveInstallDirFromMachinePath
-
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
 
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}"
-    SetRegView 64
     DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}"
 
     # Ask user if they want to delete user data

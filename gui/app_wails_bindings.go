@@ -1593,6 +1593,7 @@ type AIAssistantSendRequest struct {
 	DismissRecoverableSessionID string                      `json:"dismiss_recoverable_session_id,omitempty"`
 	UIAction                    bool                        `json:"ui_action,omitempty"`
 	ProjectPath                 string                      `json:"project_path,omitempty"`
+	SessionOwnerID              string                      `json:"-"`
 	ExpertID                    string                      `json:"expert_id,omitempty"`
 	EventScopeID                string                      `json:"event_scope_id,omitempty"`
 	IMPlatform                  string                      `json:"im_platform,omitempty"`
@@ -1674,6 +1675,25 @@ func (a *App) reconcileAIAssistantClientHistory(handler *IMMessageHandler, userI
 	}
 	handler.memory.Save(userID, clientEntries)
 	log.Printf("[AI assistant] reconciled desktop conversation history from client transcript: %d->%d", len(existing), len(clientEntries))
+}
+
+// shouldReconcileAIAssistantClientHistory limits client-side history recovery to
+// ordinary typed messages in the local session. Project and expert histories
+// have their own durable owners, so they must never be seeded from a browser
+// transcript that could have been captured while another tab was active.
+// Recovery and card actions also use durable server-side state and must not
+// reconcile a client transcript.
+func shouldReconcileAIAssistantClientHistory(req AIAssistantSendRequest, userID string) bool {
+	if strings.TrimSpace(userID) != desktopUserID {
+		return false
+	}
+	if req.UIAction || req.StartNewTask {
+		return false
+	}
+	return strings.TrimSpace(req.ResumeSlotID) == "" &&
+		strings.TrimSpace(req.DismissSlotID) == "" &&
+		strings.TrimSpace(req.ResumeSessionID) == "" &&
+		strings.TrimSpace(req.DismissRecoverableSessionID) == ""
 }
 
 type AIAssistantBackgroundTaskRequest struct {
@@ -2171,7 +2191,9 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	imHandlerStartedAt := time.Now()
 	handler := hubClient.ensureIMHandler()
 	ensureIMHandlerElapsed = time.Since(imHandlerStartedAt)
-	a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
+	if shouldReconcileAIAssistantClientHistory(req, msg.UserID) {
+		a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
+	}
 	agentLoopStartedAt := time.Now()
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	agentLoopElapsed = time.Since(agentLoopStartedAt)
@@ -2701,6 +2723,9 @@ func normalizeAIAssistantSessionUserID(userID string) (string, error) {
 	// (projectPathFromSessionOwnerID deliberately returns "" for expert ids).
 	if id := expertIDFromUserID(trimmed); id != "" {
 		return expertSessionUserID(id), nil
+	}
+	if isACPAssistantSessionUserID(trimmed) {
+		return trimmed, nil
 	}
 	if ownerID := projectSessionOwnerID(projectPathFromSessionOwnerID(trimmed)); ownerID != desktopUserID {
 		return ownerID, nil

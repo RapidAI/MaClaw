@@ -17,7 +17,7 @@ import (
 )
 
 const defaultHubModelBaseURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release"
-const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf " + asr.DefaultModelFilename + " " + diarization.DefaultCAMPlusFilename + " omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip"
+const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf " + asr.DefaultModelFilename + " " + diarization.DefaultCAMPlusFilename + " omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip"
 const defaultHubModelLockTTL = 24 * time.Hour
 const modelDownloadScriptVersion = "maclaw-model-download-v2"
 

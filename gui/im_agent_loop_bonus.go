@@ -173,7 +173,7 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 			toolResult = ExtractSubAgentContext(toolResult)
 		}
 		if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) && execResult.Outcome == toolOutcomeSucceeded && execResult.FailureKind == toolFailureNone {
-			h.toolRouter.ActivateSessionTool(tc.Function.Name)
+			h.toolRouter.ActivateSessionToolForSession(opts.UserID, tc.Function.Name)
 			log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
 		}
 		if opts.StreamDone {

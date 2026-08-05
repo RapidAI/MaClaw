@@ -558,6 +558,33 @@ describe('useRemotePanel provider sync', () => {
         expect(saveConfigMock).not.toHaveBeenCalled();
     });
 
+    it('persists and confirms the Welcome audio switch', async () => {
+        const confirmed = buildConfig({ hardware_welcome_enabled: true } as any);
+        patchConfigFieldsMock.mockResolvedValue(confirmed);
+        const setConfig = vi.fn();
+        const { result } = renderHook(() => useRemotePanel({
+            config: buildConfig({ hardware_welcome_enabled: false } as any),
+            setConfig,
+            setToolStatuses: vi.fn(),
+            getSelectedProjectForRemote: () => '/workspace',
+            selectedProjectForLaunch: 'p1',
+            navTab: 'settings',
+            translate: (key: string) => key,
+            formatText: (key: string, values?: Record<string, string>) => values ? `${key}:${JSON.stringify(values)}` : key,
+            localizeText: (en: string) => en,
+            showToastMessage: vi.fn(),
+            onDemandInstallingTool: '',
+            setOnDemandInstallingTool: vi.fn(),
+        }));
+
+        await act(async () => {
+            await result.current.saveRemoteConfigField({ hardware_welcome_enabled: true } as any);
+        });
+
+        expect(patchConfigFieldsMock).toHaveBeenCalledWith({ hardware_welcome_enabled: true });
+        expect(setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ hardware_welcome_enabled: true }));
+    });
+
     it('keeps saveRemoteConfigField callers covered by the atomic whitelist', () => {
         const srcDir = join(process.cwd(), 'src');
         const useRemotePanelSource = readFileSync(join(srcDir, 'components/remote/useRemotePanel.ts'), 'utf8');

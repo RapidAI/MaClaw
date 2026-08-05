@@ -366,6 +366,18 @@ func TestBuiltinIMManagementToolsCarryRuntimePlatform(t *testing.T) {
 	}
 }
 
+func TestBuiltinDiscoverToolCarriesRuntimeOwner(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}, registry: NewToolRegistry()}
+	registerBuiltinTools(handler.registry, handler)
+	registered, ok := handler.registry.Get("discover_tool")
+	if !ok || registered == nil || !registered.RuntimePolicyOwnerArg {
+		t.Fatalf("discover_tool runtime owner metadata = %#v", registered)
+	}
+	if !toolAcceptsRuntimePolicyOwnerArg("discover_tool") {
+		t.Fatal("discover_tool must accept the hidden runtime owner in fallback routing")
+	}
+}
+
 func TestOwnerAwareToolEmptyRuntimeOwnerFailsClosedBeforeHandler(t *testing.T) {
 	handler := &IMMessageHandler{registry: NewToolRegistry()}
 	called := false

@@ -101,16 +101,18 @@ type IncomingMessage struct {
 	// ReplyTarget is an optional conversation identifier used after identity
 	// resolution. Remote group gateways keep PlatformUID as the human sender
 	// while sending the final reply back to the group conversation.
-	ReplyTarget        string                    `json:"reply_target,omitempty"`
-	UnifiedUserID      string                    `json:"unified_user_id"`               // Unified internal user ID (populated by IM Adapter)
-	MessageID          string                    `json:"message_id,omitempty"`          // Platform message ID for dedup (optional)
-	MessageType        string                    `json:"message_type"`                  // "text", "image", "file", "audio", "interactive"
-	Text               string                    `json:"text"`                          // Text content
-	Lang               string                    `json:"lang,omitempty"`                // User language ("zh", "en"); empty defaults to "zh"
-	Attachments        []MessageAttachment       `json:"attachments,omitempty"`         // File/image attachments
-	ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"` // Concrete client I/O capabilities
-	RawPayload         json.RawMessage           `json:"raw_payload"`                   // Raw platform message for plugin-specific handling
-	Timestamp          time.Time                 `json:"timestamp"`
+	ReplyTarget        string                       `json:"reply_target,omitempty"`
+	UnifiedUserID      string                       `json:"unified_user_id"`               // Unified internal user ID (populated by IM Adapter)
+	MessageID          string                       `json:"message_id,omitempty"`          // Platform message ID for dedup (optional)
+	MessageType        string                       `json:"message_type"`                  // "text", "image", "file", "audio", "interactive"
+	Text               string                       `json:"text"`                          // Text content
+	Lang               string                       `json:"lang,omitempty"`                // User language ("zh", "en"); empty defaults to "zh"
+	Attachments        []MessageAttachment          `json:"attachments,omitempty"`         // File/image attachments
+	ClientCapabilities *agent.ClientCapabilities    `json:"client_capabilities,omitempty"` // Concrete client I/O capabilities
+	ClientTools        []agent.ClientToolDefinition `json:"client_tools,omitempty"`
+	ClientToolContext  *agent.ClientToolContext     `json:"client_tool_context,omitempty"`
+	RawPayload         json.RawMessage              `json:"raw_payload"` // Raw platform message for plugin-specific handling
+	Timestamp          time.Time                    `json:"timestamp"`
 }
 
 // OutgoingMessage represents a standardized outbound message, converted from GenericResponse.

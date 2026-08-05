@@ -3406,19 +3406,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// two pure-coding turns (no-tool suppression uses TraceEventCount as proxy).
 	header := codingWorkbenchRunHeader(requestKind, planned, len(tasks), runResults)
 	memAfter := h.getStickyCodingWorkbenchMemory(userID)
-	costLine := formatCodingSessionCostLine(memAfter)
 	body := fmt.Sprintf("%s\n项目路径：%s\n\n%s", header, projectPath, report)
 	if inquiry {
 		body = fmt.Sprintf("%s\n项目路径：%s\n只读检查：未修改任何文件。\n\n%s", header, projectPath, report)
-	}
-	if costLine != "" {
-		body = body + "\n\n" + costLine
-	}
-	if m := strings.TrimSpace(memAfter.LastRouteModel); m != "" {
-		body = body + fmt.Sprintf("\n路由: %s", m)
-		if s := strings.TrimSpace(memAfter.LastRouteSource); s != "" {
-			body = body + fmt.Sprintf(" (%s)", s)
-		}
 	}
 	resp := &IMAgentResponse{Text: body}
 	h.applyCodingUsageToResponse(userID, resp, totalInTok, totalOutTok, totalCost)
@@ -3986,17 +3976,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			onToken("\n\n---\n### 计划执行结果\n\n" + streamBody + "\n")
 		}
 	}
-	costLine := formatCodingSessionCostLine(memAfter)
 	text := fmt.Sprintf("%s\nSSH 会话：%s\n远程项目目录：%s\n\n%s", statusText, remoteCtx.SessionID, remoteCtx.ProjectDir, summary)
-	if costLine != "" {
-		text = text + "\n\n" + costLine
-	}
-	if m := strings.TrimSpace(memAfter.LastRouteModel); m != "" {
-		text = text + fmt.Sprintf("\n路由: %s", m)
-		if s := strings.TrimSpace(memAfter.LastRouteSource); s != "" {
-			text = text + fmt.Sprintf(" (%s)", s)
-		}
-	}
 	resp := &IMAgentResponse{
 		Text:            text,
 		TraceEventCount: codingSubAgentActivityTraceCount(totalTools, totalIters),

@@ -63,6 +63,12 @@ type srvThirdPartyClientState struct {
 	SeenOrder          []string
 	Notify             chan struct{}
 	ClientCapabilities agent.ClientCapabilities
+	// Tools is retained with the registration so server-side runtimes can adopt
+	// the same per-client catalog without inventing a process-global registry.
+	// The current agentservice executor does not yet expose a client-tool
+	// dispatcher, so these definitions are intentionally not advertised to its
+	// model until dispatch support exists end to end.
+	Tools []agent.ClientToolDefinition
 }
 
 type srvThirdPartyMediaObject struct {
@@ -136,7 +142,7 @@ func (s *HTTPServer) handleThirdPartyGatewayHandshake(w http.ResponseWriter, r *
 		return
 	}
 	clientID := req.ClientID
-	s.thirdPartyIM.setClientCapabilities(thirdPartyClientKey(tp.Principal, clientID), req.ClientCapabilities)
+	s.thirdPartyIM.setClientRegistration(thirdPartyClientKey(tp.Principal, clientID), req.ClientCapabilities, req.Tools)
 	response := coreim.NewThirdPartyGatewayHandshakeResponse(coreim.ThirdPartyGatewayConfig{
 		RequestID:      newThirdPartyGatewayRequestID(),
 		ChannelID:      "thirdparty:" + clientID,
@@ -861,10 +867,17 @@ func (m *srvThirdPartyGatewayManager) ensureClient(clientKey string) {
 }
 
 func (m *srvThirdPartyGatewayManager) setClientCapabilities(clientKey string, capabilities *agent.ClientCapabilities) {
+	m.setClientRegistration(clientKey, capabilities, nil)
+}
+
+func (m *srvThirdPartyGatewayManager) setClientRegistration(clientKey string, capabilities *agent.ClientCapabilities, tools []agent.ClientToolDefinition) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	state := m.ensureClientLocked(clientKey)
 	state.ClientCapabilities = agent.NormalizeClientCapabilities(capabilities)
+	if tools != nil {
+		state.Tools = append([]agent.ClientToolDefinition(nil), tools...)
+	}
 }
 
 func (m *srvThirdPartyGatewayManager) clientCapabilities(clientKey string) *agent.ClientCapabilities {
@@ -873,6 +886,13 @@ func (m *srvThirdPartyGatewayManager) clientCapabilities(clientKey string) *agen
 	state := m.ensureClientLocked(clientKey)
 	capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
 	return &capabilities
+}
+
+func (m *srvThirdPartyGatewayManager) clientTools(clientKey string) []agent.ClientToolDefinition {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensureClientLocked(clientKey)
+	return append([]agent.ClientToolDefinition(nil), state.Tools...)
 }
 
 func (m *srvThirdPartyGatewayManager) ensureClientLocked(clientKey string) *srvThirdPartyClientState {
@@ -1137,18 +1157,7 @@ func (m *srvThirdPartyGatewayManager) enqueue(p agentservice.Principal, req srvT
 	state.Next++
 	msg.Cursor = strconv.FormatInt(state.Next, 10)
 	state.Messages = append(state.Messages, msg)
-	if len(state.Messages) > srvThirdPartyMaxStoredMsgs {
-		state.Messages = state.Messages[len(state.Messages)-srvThirdPartyMaxStoredMsgs:]
-		live := map[string]bool{}
-		for _, stored := range state.Messages {
-			live[stored.ID] = true
-		}
-		for id := range state.Acked {
-			if !live[id] {
-				delete(state.Acked, id)
-			}
-		}
-	}
+	m.pruneMessagesLocked(state)
 	notify := state.Notify
 	select {
 	case notify <- struct{}{}:
@@ -1249,6 +1258,37 @@ func (m *srvThirdPartyGatewayManager) ack(clientKey string, req srvThirdPartyAck
 			state.Acked[id] = status
 		}
 	}
+	m.pruneMessagesLocked(state)
+}
+
+// pruneMessagesLocked eagerly removes acknowledged entries before enforcing
+// the hard per-client cap. This prevents delivered reply history from evicting
+// an unacknowledged control message while a client is briefly offline. If a
+// client accumulates more than the cap without acknowledging anything, the
+// oldest entries are still discarded: memory remains bounded and the cursor
+// remains monotonic, but such a client must recover durable current state on
+// its next handshake.
+func (m *srvThirdPartyGatewayManager) pruneMessagesLocked(state *srvThirdPartyClientState) {
+	if state == nil || len(state.Messages) == 0 {
+		return
+	}
+	kept := state.Messages[:0]
+	for _, message := range state.Messages {
+		if state.Acked[message.ID] != "" {
+			delete(state.Acked, message.ID)
+			continue
+		}
+		kept = append(kept, message)
+	}
+	if len(kept) > srvThirdPartyMaxStoredMsgs {
+		drop := len(kept) - srvThirdPartyMaxStoredMsgs
+		for _, message := range kept[:drop] {
+			delete(state.Acked, message.ID)
+		}
+		copy(kept, kept[drop:])
+		kept = kept[:srvThirdPartyMaxStoredMsgs]
+	}
+	state.Messages = kept
 }
 
 func normalizeThirdPartyIncomingRequest(req *srvThirdPartyIncomingRequest) error {

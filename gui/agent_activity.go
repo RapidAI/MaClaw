@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -9,6 +9,7 @@ import (
 // AgentActivity represents the current state of an active agent loop.
 type AgentActivity struct {
 	Source      string // "gui" or "im" — which channel started this loop
+	OwnerID     string // assistant session owner; empty only for legacy global activities
 	Task        string // user's original request (truncated)
 	Iteration   int    // current iteration
 	MaxIter     int    // max iterations
@@ -16,7 +17,7 @@ type AgentActivity struct {
 	UpdatedAt   time.Time
 }
 
-func (h *IMMessageHandler) startAgentLoopActivity(platform, userText string, maxIter int) (agentLoopActivityReporter, func(), string) {
+func (h *IMMessageHandler) startAgentLoopActivity(ownerID, platform, userText string, maxIter int) (agentLoopActivityReporter, func(), string) {
 	activitySource := agentActivitySourceForPlatform(platform).String()
 	reportActivity := func(iter, maxI int, summary string) {
 		task := userText
@@ -28,6 +29,7 @@ func (h *IMMessageHandler) startAgentLoopActivity(platform, userText string, max
 		}
 		h.agentActivity.Update(&AgentActivity{
 			Source:      activitySource,
+			OwnerID:     ownerID,
 			Task:        task,
 			Iteration:   iter,
 			MaxIter:     maxI,
@@ -36,20 +38,22 @@ func (h *IMMessageHandler) startAgentLoopActivity(platform, userText string, max
 	}
 	reportActivity(0, maxIter, "")
 	cleanup := func() {
-		h.agentActivity.Clear(activitySource)
+		h.agentActivity.ClearForOwner(activitySource, ownerID)
 	}
-	return reportActivity, cleanup, h.agentActivity.FormatForPrompt(activitySource)
+	// Assistant tasks are session-isolated: activity is retained for UI/status
+	// reporting only and is never copied into another conversation's prompt.
+	return reportActivity, cleanup, ""
 }
 
 // agentActivityTTL — entries older than this are considered expired.
 const agentActivityTTL = 5 * time.Minute
 
 // AgentActivityStore is a process-local, thread-safe store for active agent
-// loops. It allows the GUI AI assistant and IM channels to see each other's
-// active tasks within the same desktop process.
+// loops. Entries are scoped by source and assistant owner so concurrent project
+// tabs cannot overwrite or clear one another's status.
 type AgentActivityStore struct {
 	mu    sync.RWMutex
-	items map[string]*AgentActivity // source → activity (at most one per channel)
+	items map[string]*AgentActivity // source + owner → activity
 }
 
 // NewAgentActivityStore creates a new empty store.
@@ -59,58 +63,39 @@ func NewAgentActivityStore() *AgentActivityStore {
 	return &AgentActivityStore{items: make(map[string]*AgentActivity)}
 }
 
-// Update stores or updates the activity for a source channel.
+func agentActivityKey(source, ownerID string) string {
+	return strings.TrimSpace(source) + "\x00" + strings.TrimSpace(ownerID)
+}
+
+// Update stores or updates an owner-scoped activity.
 func (s *AgentActivityStore) Update(a *AgentActivity) {
+	if s == nil || a == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a.UpdatedAt = time.Now()
-	s.items[a.Source] = a
+	copy := *a
+	copy.UpdatedAt = time.Now()
+	s.items[agentActivityKey(copy.Source, copy.OwnerID)] = &copy
 }
 
 // Clear removes the activity for a source channel (loop finished).
 func (s *AgentActivityStore) Clear(source string) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.items, source)
+	delete(s.items, agentActivityKey(source, ""))
 }
 
-// FormatForPrompt returns a human-readable summary of active tasks from
-// OTHER channels (excluding the given source), for injection into the
-// system prompt. Returns empty string if no cross-channel activity.
-func (s *AgentActivityStore) FormatForPrompt(excludeSource string) string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	cutoff := time.Now().Add(-agentActivityTTL)
-	var lines []string
-	for src, a := range s.items {
-		if src == excludeSource || a.UpdatedAt.Before(cutoff) {
-			continue
-		}
-		label := "IM 通道"
-		switch normalizeAgentActivitySource(a.Source) {
-		case agentActivitySourceGUI:
-			label = "GUI AI 助手"
-		case agentActivitySourceBrowserReplay:
-			label = "浏览器回放"
-		case agentActivitySourceGUIReplay:
-			label = "GUI 桌面回放"
-		}
-		line := fmt.Sprintf("- [%s] 任务: %s", label, a.Task)
-		if a.MaxIter > 0 {
-			line += fmt.Sprintf(" (进度: %d/%d 轮)", a.Iteration, a.MaxIter)
-		}
-		if a.LastSummary != "" {
-			line += " — 最新状态: " + a.LastSummary
-		}
-		lines = append(lines, line)
+// ClearForOwner removes one owner's activity without disturbing concurrent
+// project or IM sessions. Empty owner preserves the old ownerless behavior.
+func (s *AgentActivityStore) ClearForOwner(source, ownerID string) {
+	if s == nil {
+		return
 	}
-	if len(lines) == 0 {
-		return ""
-	}
-	result := "\n\n其他通道正在执行的任务：\n"
-	for _, l := range lines {
-		result += l + "\n"
-	}
-	result += "如果用户询问你在做什么、当前状态等，请基于上述信息回答。\n"
-	return result
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.items, agentActivityKey(source, ownerID))
 }

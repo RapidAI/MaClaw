@@ -622,6 +622,48 @@ This extension should be implemented as a capability-gated contract. A client
 that does not advertise `client_tools` continues to receive normal text and
 media messages only.
 
+The extension is deliberately domain-neutral. Alarm clocks, PLC bridges,
+desktop controls, sensors, and future client-owned functions use the same
+registration, dispatch, acknowledgement, result, cancellation, and security
+lifecycle. Domain-specific fields belong only in each tool's JSON Schema; they
+must not be added as special cases to the gateway envelope.
+
+### Runtime and routing semantics
+
+- The validated `tools` catalog is scoped to the authenticated `clientId` and
+  is replaced atomically by a later handshake from that client.
+- Tool names in one catalog must be unique after protocol normalization; a
+  handshake containing duplicate names is rejected instead of relying on
+  order-dependent shadowing.
+- The catalog travels with the originating user message through local and Hub
+  routing. It is not inserted into a process-global Agent tool registry.
+- Host tools win any name collision. Client integrations should therefore use
+  stable, provider-specific names that satisfy the active LLM provider's
+  function-name rules (letters, digits, `_` and `-` are the portable subset).
+- `tool_call`, `tool_plan`, and `tool_cancel` are protocol-native outgoing
+  messages. A gateway must never coerce them to `text` or filter them by media
+  output capabilities.
+- Client execution is asynchronous. Dispatching a call completes the current
+  Agent tool step; the client's later `tool-result` is the authoritative
+  completion event and may start a continuation turn.
+- Do not hold an outgoing long poll open while synchronously waiting for
+  `tool-result`; constrained clients commonly serialize HTTP requests.
+- Client-local persisted state remains the source of truth. The gateway does
+  not reconstruct that state from conversation text.
+- Delivery `ack` and execution result are separate. For at-least-once delivery,
+  clients should persist an idempotency key or pending result before ACKing a
+  state-changing call.
+- Every executable call and plan step carries a non-empty `idempotencyKey`.
+  Results identify exactly one correlation target: either `toolCallId`, or a
+  `toolPlanId` plus `stepId`. A `stepId` without `toolPlanId`, or a
+  result containing both call and plan IDs, is invalid.
+- Cancellation also identifies exactly one target. `toolCallId` and
+  `toolPlanId` are mutually exclusive, and `stepId` is valid only with
+  `toolPlanId`.
+- A successful result must omit `error`. A non-success result must provide an
+  `error` object or explanatory `text`, so failures cannot be injected into an
+  Agent continuation without an actionable reason.
+
 ### Tool Registration
 
 During `handshake`, the client may advertise tool definitions. Tool names are
@@ -853,9 +895,9 @@ MaClaw may cancel a pending or running operation by sending:
   "conversationId": "line-a",
   "type": "tool_cancel",
   "toolCancel": {
-    "toolCallId": "tc_001",
-    "toolPlanId": "tp_001",
-    "reason": "user_canceled"
+	"toolPlanId": "tp_001",
+	"stepId": "step-2",
+	"reason": "user_canceled"
   }
 }
 ```

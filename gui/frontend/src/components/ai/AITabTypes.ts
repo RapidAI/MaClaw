@@ -36,6 +36,8 @@ export interface AITab {
     role?: string;
     /** Bound project path (required when type="project") */
     projectPath?: string;
+    /** Exact external ACP owner. It is unique even when projectPath is shared. */
+    sessionKey?: string;
     /** AI expert ID (required when type="expert"); title carries the expert name. */
     expertId?: string;
     /** Expert emoji badge (only for type="expert"). */

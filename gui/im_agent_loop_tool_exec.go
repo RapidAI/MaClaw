@@ -439,7 +439,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		if IsSubAgentContext(rawResult) {
 			rawResult = ExtractSubAgentContext(rawResult)
 		}
-		h.pinConditionalToolAfterSuccess(tc.Function.Name, execResult)
+		h.pinConditionalToolAfterSuccess(opts.UserID, tc.Function.Name, execResult)
 		logSlow("post_exec_pre_observation", stageStartedAt, tc)
 
 		// Track files written during workflow agent loops for phase output capture.

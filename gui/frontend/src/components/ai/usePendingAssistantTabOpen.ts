@@ -60,6 +60,48 @@ const textForPendingTabLang = (lang: string | undefined, en: string, zhHans: str
     lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
 );
 
+function newTaskContextMessage(
+    launch: Pick<CodingTaskLaunch, "agentMode" | "remoteHost" | "newTaskContext">,
+    lang?: string,
+) {
+    const context = launch.newTaskContext;
+    if (!context || context.kind !== "new-task") return null;
+    const t = (en: string, zhHans: string, zhHant = zhHans) => textForPendingTabLang(lang, en, zhHans, zhHant);
+    const type = launch.agentMode === "remote_coding_dev"
+        ? t("Remote coding", "\u8fdc\u7a0b\u7f16\u7a0b", "\u9060\u7aef\u7a0b\u5f0f")
+        : launch.agentMode === "coding_dev"
+            ? t("Local coding", "\u672c\u5730\u7f16\u7a0b", "\u672c\u6a5f\u7a0b\u5f0f")
+            : t("Chat", "\u5bf9\u8bdd", "\u5c0d\u8a71");
+    const lines = [
+        `${t("Type", "\u7c7b\u578b", "\u985e\u578b")}\uff1a${type}`,
+        launch.agentMode === "remote_coding_dev" && launch.remoteHost
+            ? `${t("Remote host", "\u8fdc\u7a0b\u4e3b\u673a", "\u9060\u7aef\u4e3b\u6a5f")}\uff1a${launch.remoteHost}`
+            : "",
+        launch.agentMode === "remote_coding_dev" && context.remoteUser
+            ? `${t("User", "\u7528\u6237", "\u4f7f\u7528\u8005")}\uff1a${context.remoteUser}`
+            : "",
+        launch.agentMode === "remote_coding_dev" && context.remotePort
+            ? `${t("Port", "\u7aef\u53e3", "\u9023\u63a5\u57e0")}\uff1a${context.remotePort}`
+            : "",
+        launch.agentMode === "remote_coding_dev" && context.remoteWorkDir
+            ? `${t("Remote working directory", "\u8fdc\u7a0b\u5de5\u4f5c\u76ee\u5f55", "\u9060\u7aef\u5de5\u4f5c\u76ee\u9304")}\uff1a${context.remoteWorkDir}`
+            : context.workingDir
+                ? `${t("Working directory", "\u5de5\u4f5c\u76ee\u5f55", "\u5de5\u4f5c\u76ee\u9304")}\uff1a${context.workingDir}`
+                : `${t("Working directory", "\u5de5\u4f5c\u76ee\u5f55", "\u5de5\u4f5c\u76ee\u9304")}\uff1a${t("Default workspace", "\u9ed8\u8ba4\u5de5\u4f5c\u533a", "\u9810\u8a2d\u5de5\u4f5c\u5340")}`,
+        t(
+            "Task is ready. Enter your request below; this information is not sent to AI.",
+            "\u4efb\u52a1\u5df2\u5c31\u7eea\uff0c\u8bf7\u5728\u4e0b\u65b9\u8f93\u5165\u4efb\u52a1\u547d\u4ee4\u3002\u6b64\u4fe1\u606f\u4e0d\u4f1a\u53d1\u9001\u7ed9 AI\u3002",
+            "\u4efb\u52d9\u5df2\u5c31\u7dd2\uff0c\u8acb\u5728\u4e0b\u65b9\u8f38\u5165\u4efb\u52d9\u547d\u4ee4\u3002\u6b64\u8cc7\u8a0a\u4e0d\u6703\u50b3\u9001\u7d66 AI\u3002",
+        ),
+    ].filter(Boolean);
+    return {
+        id: `task-context-${Date.now()}`,
+        role: "system" as const,
+        kind: "taskContext" as const,
+        content: lines.join("\n"),
+        timestamp: Date.now(),
+    };
+}
 function looksLikeRawDiscussionTitle(value: string): boolean {
     return /^(disc|discussion|consultation|session)[-_][A-Za-z0-9-]+$|^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -227,7 +269,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data and clear pending state synchronously.
         // The guard above prevents re-entry when pending becomes null.
-        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, imPlatform, imTargetUID, imIsGroup } = pendingProjectTabOpen;
+        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, imPlatform, imTargetUID, imIsGroup, newTaskContext } = pendingProjectTabOpen;
         onProjectTabHandledRef.current?.();
 
         // Check if the tab already exists in the tab list BEFORE creating it.
@@ -241,19 +283,40 @@ export function usePendingAssistantTabOpen({
         const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect });
         if (!tab) return;
         const initialState = getTabStateRef.current?.(tab.id);
-        const hasExistingConversation = initialState?.history &&
-            Array.isArray(initialState.history) &&
-            initialState.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
+        const existingHistory = Array.isArray(initialState?.history) ? initialState.history : [];
+        const hasExistingConversation = existingHistory.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
+        // A just-closed tab can retain its local state until persistence catches
+        // up. Keep the creation receipt one-shot when that tab is reopened.
+        const hasExistingTaskContext = existingHistory.some((m) => (
+            isConversationMessage(m) && (m as { kind?: unknown }).kind === "taskContext"
+        ));
+        const taskContext = newTaskContextMessage({ agentMode, remoteHost, newTaskContext }, lang);
+        // A task-management creation opens a prepared workspace for the user's
+        // next deliberate prompt. Keep that invariant even if an upstream event
+        // accidentally carries autoSend: true alongside its local task receipt.
+        const shouldAutoSend = autoSend === true && !newTaskContext;
+        const shouldAddTaskContext = !tabExistedInList && !hasExistingConversation && !hasExistingTaskContext && !!taskContext;
+        const stateAfterTaskContext = shouldAddTaskContext && taskContext
+            ? {
+                ...initialState,
+                history: [...(Array.isArray(initialState?.history) ? initialState.history : []), taskContext],
+                scrollTop: 0,
+                inputText: "",
+                lastActiveAt: Date.now(),
+            }
+            : initialState;
+        if (shouldAddTaskContext) {
+            saveTabStateRef.current?.(tab.id, stateAfterTaskContext || {});
+        }
         // A duplicate/stale event can focus a pre-existing task tab. Do not
         // attach its original IM completion route to that tab: the next manual
         // message would otherwise send an unrelated result back to IM.
-        // Preserve the caller's autoSend contract. IM launches set it to true,
-        // while other callers may intentionally open a remote tab without
-        // submitting an initial prompt.
-        const shouldDeferRemoteInitialSend = autoSend !== false && agentMode === "remote_coding_dev" && !!remoteNeedsReconnect;
-        if (!tabExistedInList && !hasExistingConversation && (imPlatform && imTargetUID || shouldDeferRemoteInitialSend)) {
+        // IM launches can defer their initial prompt until reconnect. A newly
+        // created task never carries a hidden initial prompt to send later.
+        const shouldDeferRemoteInitialSend = shouldAutoSend && agentMode === "remote_coding_dev" && !!remoteNeedsReconnect;
+        if (!newTaskContext && !tabExistedInList && !hasExistingConversation && (imPlatform && imTargetUID || shouldDeferRemoteInitialSend)) {
             saveTabStateRef.current?.(tab.id, {
-                ...initialState,
+                ...stateAfterTaskContext,
                 ...(imPlatform && imTargetUID ? {
                     pendingIMCompletion: {
                         platform: imPlatform,
@@ -269,7 +332,7 @@ export function usePendingAssistantTabOpen({
             projectPath,
             tabId: tab.id,
             taskTitle,
-            autoSend: !!autoSend,
+            autoSend: shouldAutoSend,
             agentMode: agentMode || null,
             remoteHost: remoteHost || null,
             remoteNeedsReconnect: !!remoteNeedsReconnect,
@@ -278,7 +341,7 @@ export function usePendingAssistantTabOpen({
 
         // Async operations use refs — no stale closure, no dependency churn.
         (async () => {
-            if (!autoSend) return;
+            if (!shouldAutoSend) return;
             const send = sendMessageRef.current;
             if (!send) return;
 

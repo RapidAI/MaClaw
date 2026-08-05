@@ -242,8 +242,9 @@ func buildConfirmedResumeEmptyResultFallback(status TraceRunStatus, traceSummary
 
 // IMResponseField is a key-value field in the agent response.
 type IMResponseField struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
+	Label    string `json:"label"`
+	Value    string `json:"value"`
+	Internal bool   `json:"internal,omitempty"`
 }
 
 // IMResponseAction is a suggested action in the agent response.
@@ -398,20 +399,20 @@ func tokenUsageResponseFieldsWithCache(input, output, cacheRead, cacheWrite int)
 	}
 	fields := make([]IMResponseField, 0, 5)
 	if input > 0 {
-		fields = append(fields, IMResponseField{Label: "Input tokens", Value: strconv.Itoa(input)})
+		fields = append(fields, IMResponseField{Label: "Input tokens", Value: strconv.Itoa(input), Internal: true})
 	}
 	if output > 0 {
-		fields = append(fields, IMResponseField{Label: "Output tokens", Value: strconv.Itoa(output)})
+		fields = append(fields, IMResponseField{Label: "Output tokens", Value: strconv.Itoa(output), Internal: true})
 	}
 	total := input + output
 	if total > 0 {
-		fields = append(fields, IMResponseField{Label: "Total tokens", Value: strconv.Itoa(total)})
+		fields = append(fields, IMResponseField{Label: "Total tokens", Value: strconv.Itoa(total), Internal: true})
 	}
 	if cacheRead > 0 {
-		fields = append(fields, IMResponseField{Label: "Cache read tokens", Value: strconv.Itoa(cacheRead)})
+		fields = append(fields, IMResponseField{Label: "Cache read tokens", Value: strconv.Itoa(cacheRead), Internal: true})
 	}
 	if cacheWrite > 0 {
-		fields = append(fields, IMResponseField{Label: "Cache write tokens", Value: strconv.Itoa(cacheWrite)})
+		fields = append(fields, IMResponseField{Label: "Cache write tokens", Value: strconv.Itoa(cacheWrite), Internal: true})
 	}
 	return fields
 }
@@ -456,29 +457,29 @@ func modelRouteResponseFields(d modelRouteDecision) []IMResponseField {
 		return nil
 	}
 	fields := []IMResponseField{
-		{Label: "Route task", Value: firstNonEmpty(d.Task, "-")},
-		{Label: "Route source", Value: firstNonEmpty(d.Source, "-")},
-		{Label: "Route model", Value: firstNonEmpty(d.Model, "-")},
+		{Label: "Route task", Value: firstNonEmpty(d.Task, "-"), Internal: true},
+		{Label: "Route source", Value: firstNonEmpty(d.Source, "-"), Internal: true},
+		{Label: "Route model", Value: firstNonEmpty(d.Model, "-"), Internal: true},
 	}
 	if d.CostTier != "" && (d.CostRouteMode == "shadow" || d.CostRouteMode == "on") {
 		val := d.CostTier
 		if !d.CostRouteApplied {
 			val = d.CostTier + " (shadow)"
 		}
-		fields = append(fields, IMResponseField{Label: "Cost tier", Value: val})
+		fields = append(fields, IMResponseField{Label: "Cost tier", Value: val, Internal: true})
 	}
 	if d.ThinkingPolicy != "" && (d.CostRouteMode == "shadow" || d.CostRouteMode == "on") {
 		val := d.ThinkingPolicy
 		if !d.CostRouteApplied {
 			val = d.ThinkingPolicy + " (shadow)"
 		}
-		fields = append(fields, IMResponseField{Label: "Thinking", Value: val})
+		fields = append(fields, IMResponseField{Label: "Thinking", Value: val, Internal: true})
 	}
 	if d.Escalated {
-		fields = append(fields, IMResponseField{Label: "Route escalated", Value: "yes"})
+		fields = append(fields, IMResponseField{Label: "Route escalated", Value: "yes", Internal: true})
 	}
 	if strings.TrimSpace(d.Reason) != "" {
-		fields = append(fields, IMResponseField{Label: "Route reason", Value: d.Reason})
+		fields = append(fields, IMResponseField{Label: "Route reason", Value: d.Reason, Internal: true})
 	}
 	return fields
 }
@@ -520,5 +521,5 @@ func turnMetaResponseField(d modelRouteDecision, input, output, cacheRead int, e
 	if meta == "" {
 		return nil
 	}
-	return []IMResponseField{{Label: "Turn", Value: meta}}
+	return []IMResponseField{{Label: "Turn", Value: meta, Internal: true}}
 }

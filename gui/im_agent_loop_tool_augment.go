@@ -175,8 +175,10 @@ func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID 
 		}
 	}
 
-	// Check all session-pinned tools against what's currently visible.
-	pinnedMissing := h.toolRouter.SessionPinnedToolsMissing(currentNames)
+	// Check only this owner's session-pinned tools. The router object is shared
+	// by project tabs, so consulting its temporary core-router pin state here
+	// could otherwise add a tool discovered in another conversation.
+	pinnedMissing := h.toolRouter.SessionPinnedToolsMissingForSession(userID, currentNames)
 	if len(pinnedMissing) == 0 {
 		return currentTools, currentBudget
 	}

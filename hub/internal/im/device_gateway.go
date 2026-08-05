@@ -1,6 +1,7 @@
 package im
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,10 +10,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +42,8 @@ type DeviceGateway struct {
 	meetingMinutes       bool
 	voicePairTranscriber func(context.Context, string, string) (string, error)
 	voicePairAttempts    map[string]*deviceVoicePairAttempt
+	codePairAttempts     map[string]*deviceVoicePairAttempt
+	machineSender        MachineMessageSender
 
 	mu       sync.Mutex
 	pairings map[string]devicePairing
@@ -66,6 +76,10 @@ type persistedDeviceCredentials struct {
 // WelcomeAudio is base64 PCM WAV so Hub can play it after a hardware reboot
 // even while the GUI is offline.
 type deviceHardwareConfig struct {
+	// Pointer preserves compatibility with credentials written before the
+	// master switch existed: nil means legacy-enabled until the GUI publishes
+	// its authoritative true/false value on connect.
+	Enabled        *bool  `json:"enabled,omitempty"`
 	WelcomeEnabled bool   `json:"welcomeEnabled,omitempty"`
 	WelcomeAudio   string `json:"welcomeAudio,omitempty"`
 	// Volume is a pointer so zero (mute) remains distinguishable from the
@@ -89,6 +103,8 @@ type deviceVoicePairAttempt struct {
 const (
 	deviceVoicePairAttemptWindow = time.Minute
 	deviceVoicePairAttemptLimit  = 6
+	deviceCodePairAttemptWindow  = time.Minute
+	deviceCodePairAttemptLimit   = 12
 )
 
 // Hardware pairing often includes switching the phone to the device hotspot
@@ -101,7 +117,24 @@ type devicePrincipal struct {
 	TenantID          string
 	UserID            string
 	Pet               devicePetProfile
-	LastWelcomeBootID string `json:"lastWelcomeBootId,omitempty"`
+	LastWelcomeBootID string    `json:"lastWelcomeBootId,omitempty"`
+	ClientName        string    `json:"clientName,omitempty"`
+	ProtocolVersion   string    `json:"protocolVersion,omitempty"`
+	PairedAt          time.Time `json:"pairedAt,omitempty"`
+	LastSeenAt        time.Time `json:"lastSeenAt,omitempty"`
+}
+
+// HardwareDevice is the credential-free view exposed to the owning GUI.
+// Bearer tokens never leave Hub after the one-time pairing exchange.
+type HardwareDevice struct {
+	ClientID        string                    `json:"clientId"`
+	ClientName      string                    `json:"clientName,omitempty"`
+	ProtocolVersion string                    `json:"protocolVersion,omitempty"`
+	PairedAt        time.Time                 `json:"pairedAt,omitempty"`
+	LastSeenAt      time.Time                 `json:"lastSeenAt,omitempty"`
+	Online          bool                      `json:"online"`
+	LastAckStatus   string                    `json:"lastAckStatus,omitempty"`
+	Capabilities    *agent.ClientCapabilities `json:"capabilities,omitempty"`
 }
 
 type deviceAmbientWeather struct {
@@ -134,7 +167,7 @@ type devicePetProfile struct {
 	Asset         *DevicePetAsset `json:"asset,omitempty"`
 }
 
-// DevicePetAsset is GUI-rendered (not user-submitted) RGB565.  Keeping this
+// DevicePetAsset is GUI-rendered (not user-submitted) RGB565+A8. Keeping this
 // with the authenticated device credential lets Hub relay the exact selected
 // desktop pet without needing access to local pet-pack files.
 type DevicePetAsset struct {
@@ -143,10 +176,11 @@ type DevicePetAsset struct {
 	Height   int      `json:"height,omitempty"`
 	Data     string   `json:"data,omitempty"`
 	Frames   []string `json:"frames,omitempty"`
+	FrameMS  int      `json:"frameMs,omitempty"`
 }
 
 // devicePetAssetReference is intentionally small enough for the handshake and
-// poll JSON buffers used by embedded clients. The RGB565 payload itself lives
+// poll JSON buffers used by embedded clients. The RGB565+A8 payload itself lives
 // in the existing authenticated media store and is fetched after TLS setup.
 type devicePetAssetReference struct {
 	Encoding string   `json:"encoding"`
@@ -155,46 +189,81 @@ type devicePetAssetReference struct {
 	URLs     []string `json:"urls"`
 	FrameMS  int      `json:"frameMs,omitempty"`
 	Revision string   `json:"revision"`
+	SHA256   []string `json:"sha256"`
 }
 
 type deviceClientState struct {
-	next         int64
-	messages     []map[string]any
-	acked        map[string]bool
-	ackStatus    map[string]string
-	notify       chan struct{}
-	ambient      map[string]any
-	capabilities agent.ClientCapabilities
+	next          int64
+	messages      []map[string]any
+	acked         map[string]bool
+	ackStatus     map[string]string
+	bootSessionID string
+	activeReplies map[string]struct{}
+	activeOrder   []string
+	notify        chan struct{}
+	ambient       map[string]any
+	capabilities  agent.ClientCapabilities
+	tools         []agent.ClientToolDefinition
+	seenEvents    map[string]struct{}
+	seenOrder     []string
 	// capabilitiesDeclared distinguishes a legacy client that never completed
 	// capability negotiation from a modern client that intentionally declares
 	// a restricted input contract. Before handshake, preserve the historical
 	// text/audio upload behavior; after handshake, enforce the declaration.
 	capabilitiesDeclared bool
+	lastSeenAt           time.Time
+	// lastSeenFlushAt throttles durable presence updates. Live presence remains
+	// exact in memory, while the credential store is refreshed at most once per
+	// interval so a long-polling device does not write settings on every poll.
+	lastSeenFlushAt time.Time
 }
 
 type deviceMedia struct {
-	ClientID       string
-	ID             string
-	Token          string
-	Type           string
-	FileName       string
-	MimeType       string
-	SizeBytes      int64
-	DurationMs     int64
-	Data           []byte
-	Uploaded       bool
-	LastAccessedAt time.Time
+	ClientID            string
+	MachineID           string
+	ID                  string
+	Token               string
+	Type                string
+	FileName            string
+	MimeType            string
+	SizeBytes           int64
+	DurationMs          int64
+	Data                []byte
+	Uploaded            bool
+	Uploading           bool
+	UploadReservedBytes int64
+	LastAccessedAt      time.Time
+	ExpiresAt           time.Time
+	QueueRefs           int
 }
 
 const (
-	deviceGatewayMaxMediaBytes     int64 = 10 * 1024 * 1024
-	deviceGatewayMaxMediaObjects         = 200
-	deviceGatewayMaxQueuedMessages       = 100
-	deviceGatewayMaxAckReceipts          = 100
+	devicePetAssetMaxDimension                        = 256
+	devicePetAssetMaxEncodedFrameBytes                = 270000
+	devicePetAssetMaxFrames                           = 8
+	deviceGatewayMaxMediaBytes                  int64 = 10 * 1024 * 1024
+	deviceGatewayMaxMediaResidentBytes          int64 = 64 * 1024 * 1024
+	deviceGatewayMaxMediaResidentBytesPerClient int64 = 16 * 1024 * 1024
+	deviceGatewayMaxMediaObjects                      = 200
+	deviceGatewayMaxMediaObjectsPerClient             = 64
+	deviceGatewayMaxQueuedMessages                    = 100
+	deviceGatewayMaxAckReceipts                       = 100
+	deviceGatewayMaxSeenEvents                        = 2000
+	deviceGatewayPresenceFlushInterval                = 5 * time.Minute
+	deviceGatewayMediaTTL                             = 24 * time.Hour
+	deviceGatewayQueuedMediaTTL                       = 5 * time.Minute
 )
 
 func NewDeviceGateway(plugin *RemoteGatewayPlugin) *DeviceGateway {
-	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), voicePairAttempts: make(map[string]*deviceVoicePairAttempt)}
+	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), voicePairAttempts: make(map[string]*deviceVoicePairAttempt), codePairAttempts: make(map[string]*deviceVoicePairAttempt)}
+}
+
+// SetMachineMessageSender lets the HTTP-side hardware ACK complete an
+// originating GUI preview request over the existing Hub WebSocket.
+func (g *DeviceGateway) SetMachineMessageSender(sender MachineMessageSender) {
+	g.mu.Lock()
+	g.machineSender = sender
+	g.mu.Unlock()
 }
 
 // NewPersistentDeviceGateway keeps hardware bearer credentials across Hub
@@ -286,6 +355,8 @@ func (g *DeviceGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.handleOutgoing(w, r)
 	case "/api/im-gateway/v1/ack":
 		g.handleAck(w, r)
+	case "/api/im-gateway/v1/tool-result":
+		g.handleToolResult(w, r)
 	case "/api/im-gateway/v1/media/upload-url":
 		g.handleMediaUploadURL(w, r)
 	default:
@@ -359,17 +430,31 @@ func (g *DeviceGateway) handlePair(w http.ResponseWriter, r *http.Request) {
 	if pairCode == "" {
 		pairCode = strings.TrimSpace(req.Code)
 	}
+	if !g.allowCodePairAttempt(devicePairAttemptAddress(r), time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		writeDeviceError(w, http.StatusTooManyRequests, "rate_limited", "too many pairing attempts; retry later")
+		return
+	}
 	g.exchangePairing(w, strings.TrimSpace(req.ClientID), pairCode)
 }
 
 func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCode string) {
+	clientID = coreim.NormalizeThirdPartyID(clientID)
+	if err := coreim.ValidateThirdPartyID("clientId", clientID); err != nil {
+		writeDeviceError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	g.mu.Lock()
 	pairing, ok := g.pairings[pairCode]
-	if ok {
-		delete(g.pairings, pairCode)
-	}
 	g.mu.Unlock()
 	if !ok || !pairing.ExpiresAt.After(time.Now()) {
+		if ok {
+			g.mu.Lock()
+			if current, exists := g.pairings[pairCode]; exists && current.ExpiresAt.Equal(pairing.ExpiresAt) {
+				delete(g.pairings, pairCode)
+			}
+			g.mu.Unlock()
+		}
 		writeDeviceError(w, http.StatusUnauthorized, "invalid_pairing_code", "pairing code is invalid or expired")
 		return
 	}
@@ -380,11 +465,24 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 	}
 	token := hex.EncodeToString(bytes[:])
 	g.mu.Lock()
+	currentPairing, pairingStillAvailable := g.pairings[pairCode]
+	if !pairingStillAvailable || !currentPairing.ExpiresAt.Equal(pairing.ExpiresAt) || currentPairing.MachineID != pairing.MachineID {
+		g.mu.Unlock()
+		writeDeviceError(w, http.StatusUnauthorized, "invalid_pairing_code", "pairing code is invalid or already used")
+		return
+	}
+	for _, principal := range g.tokens {
+		if principal.ClientID == clientID && principal.MachineID != pairing.MachineID {
+			g.mu.Unlock()
+			writeDeviceError(w, http.StatusConflict, "client_id_already_bound", "clientId is already bound to another machine; remove the old binding before pairing again")
+			return
+		}
+	}
 	// A physical client ID identifies one device across the gateway. Re-pairing
-	// it must revoke an earlier credential (including one bound to another
-	// machine) and discard that device's stale queue before issuing the new
-	// bearer. Otherwise an old device could remain authorized after replacement.
-	clientID = strings.TrimSpace(clientID)
+	// it on the same machine must revoke the earlier credential and discard that
+	// device's stale queue before issuing the new bearer. Cross-machine transfer
+	// requires an explicit unlink, preventing a valid pairing code from silently
+	// taking over another GUI's hardware identity.
 	revoked := make(map[string]devicePrincipal)
 	for existingToken, principal := range g.tokens {
 		if principal.ClientID == clientID {
@@ -394,7 +492,14 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 	}
 	previousState := g.clients[clientID]
 	delete(g.clients, clientID)
-	g.tokens[token] = devicePrincipal{ClientID: clientID, MachineID: pairing.MachineID, TenantID: pairing.TenantID, UserID: pairing.UserID, Pet: pairing.Pet}
+	removedMedia := make(map[string]*deviceMedia)
+	for id, media := range g.media {
+		if media.ClientID == clientID {
+			removedMedia[id] = media
+			delete(g.media, id)
+		}
+	}
+	g.tokens[token] = devicePrincipal{ClientID: clientID, MachineID: pairing.MachineID, TenantID: pairing.TenantID, UserID: pairing.UserID, Pet: pairing.Pet, PairedAt: time.Now().UTC()}
 	if err := g.persistTokensLocked(); err != nil {
 		delete(g.tokens, token)
 		for revokedToken, principal := range revoked {
@@ -403,9 +508,18 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 		if previousState != nil {
 			g.clients[clientID] = previousState
 		}
+		for id, media := range removedMedia {
+			g.media[id] = media
+		}
 		g.mu.Unlock()
 		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot persist device credential")
 		return
+	}
+	// Consume the one-time pairing only after its credential is durable. This
+	// lets the physical device retry the same request after a transient store
+	// failure without requiring the owner to generate a new code.
+	if current, exists := g.pairings[pairCode]; exists && current.ExpiresAt.Equal(pairing.ExpiresAt) && current.MachineID == pairing.MachineID {
+		delete(g.pairings, pairCode)
 	}
 	g.mu.Unlock()
 	writeDeviceJSON(w, http.StatusCreated, map[string]any{"ok": true, "gatewayToken": token, "clientId": clientID})
@@ -471,42 +585,59 @@ func (g *DeviceGateway) handleVoicePair(w http.ResponseWriter, r *http.Request) 
 }
 
 func deviceVoicePairAttemptKey(r *http.Request, clientID string) string {
-	host := ""
-	if r != nil {
-		host = strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
-		if comma := strings.IndexByte(host, ','); comma >= 0 {
-			host = strings.TrimSpace(host[:comma])
-		}
-		if host == "" {
-			host = strings.TrimSpace(r.RemoteAddr)
-		}
-	}
-	return host + "\x00" + strings.TrimSpace(clientID)
+	return devicePairAttemptAddress(r) + "\x00" + strings.TrimSpace(clientID)
 }
 
 func (g *DeviceGateway) allowVoicePairAttempt(key string, now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.voicePairAttempts == nil {
-		g.voicePairAttempts = make(map[string]*deviceVoicePairAttempt)
+	return allowDevicePairAttemptLocked(g.voicePairAttempts, key, now, deviceVoicePairAttemptWindow, deviceVoicePairAttemptLimit)
+}
+
+func (g *DeviceGateway) allowCodePairAttempt(key string, now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.codePairAttempts == nil {
+		g.codePairAttempts = make(map[string]*deviceVoicePairAttempt)
 	}
-	if len(g.voicePairAttempts) > 1024 {
-		for candidate, attempt := range g.voicePairAttempts {
-			if attempt == nil || now.Sub(attempt.WindowStart) >= deviceVoicePairAttemptWindow {
-				delete(g.voicePairAttempts, candidate)
+	return allowDevicePairAttemptLocked(g.codePairAttempts, key, now, deviceCodePairAttemptWindow, deviceCodePairAttemptLimit)
+}
+
+func allowDevicePairAttemptLocked(attempts map[string]*deviceVoicePairAttempt, key string, now time.Time, window time.Duration, limit int) bool {
+	if len(attempts) > 1024 {
+		for candidate, attempt := range attempts {
+			if attempt == nil || now.Sub(attempt.WindowStart) >= window {
+				delete(attempts, candidate)
 			}
 		}
 	}
-	attempt := g.voicePairAttempts[key]
-	if attempt == nil || now.Sub(attempt.WindowStart) >= deviceVoicePairAttemptWindow {
-		g.voicePairAttempts[key] = &deviceVoicePairAttempt{WindowStart: now, Count: 1}
+	attempt := attempts[key]
+	if attempt == nil || now.Sub(attempt.WindowStart) >= window {
+		attempts[key] = &deviceVoicePairAttempt{WindowStart: now, Count: 1}
 		return true
 	}
-	if attempt.Count >= deviceVoicePairAttemptLimit {
+	if attempt.Count >= limit {
 		return false
 	}
 	attempt.Count++
 	return true
+}
+
+func devicePairAttemptAddress(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	// RemoteAddr is the only address authenticated by the HTTP connection.
+	// X-Forwarded-For is client-controlled unless the deployment has an explicit
+	// trusted-proxy policy, so using it here would let attackers rotate buckets.
+	host := strings.TrimSpace(r.RemoteAddr)
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	}
+	if host == "" {
+		return "unknown"
+	}
+	return host
 }
 
 func deviceGatewayPairCodeFromTranscript(transcript string) (string, bool) {
@@ -602,6 +733,10 @@ func (g *DeviceGateway) handleHandshake(w http.ResponseWriter, r *http.Request) 
 		writeDeviceError(w, 401, "unauthorized", "missing or invalid bearer token")
 		return
 	}
+	if !g.machineHardwareEnabled(p.MachineID) {
+		writeDeviceError(w, http.StatusServiceUnavailable, "hardware_disabled", "hardware is disabled in MaClaw")
+		return
+	}
 	var req coreim.ThirdPartyHandshakeRequest
 	if !decodeDeviceJSON(w, r, &req) {
 		return
@@ -621,25 +756,46 @@ func (g *DeviceGateway) handleHandshake(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	g.mu.Lock()
+	p.ClientName = strings.TrimSpace(req.ClientName)
+	p.ProtocolVersion = strings.TrimSpace(req.ProtocolVersion)
+	p.LastSeenAt = time.Now().UTC()
+	if err := g.updatePrincipalLocked(p); err != nil {
+		g.mu.Unlock()
+		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot persist device metadata")
+		return
+	}
 	state := g.clientLocked(p.ClientID)
+	state.lastSeenAt = p.LastSeenAt
+	state.lastSeenFlushAt = p.LastSeenAt
 	state.capabilities = capabilities
+	state.tools = append([]agent.ClientToolDefinition(nil), req.Tools...)
 	state.capabilitiesDeclared = req.ClientCapabilities != nil
+	if bootSessionID != "" && state.bootSessionID != bootSessionID {
+		// A cold boot is a new interaction session. Results, progress updates and
+		// tool calls that were queued for the process which just disappeared are
+		// no longer actionable and must not repaint the new standby screen. Drop
+		// the old runtime queue first; durable control state is reconstructed below
+		// from hardware config, Welcome, pet profile and ambient snapshots.
+		g.resetDeviceRuntimeQueueForBootLocked(state)
+		state.bootSessionID = bootSessionID
+	}
 	g.queueHardwareConfigForClientLocked(p, state)
-	g.queueWelcomeForBootLocked(p, bootSessionID, state)
+	startupWelcomeQueued := g.queueWelcomeForBootLocked(p, bootSessionID, state)
 	petProfile := p.Pet
 	var petAsset *devicePetAssetReference
 	if capabilities.Features.PetAsset {
 		petAsset = g.preparePetAssetLocked(p.ClientID, petProfile.Asset,
-			capabilities.Features.PetAnimation && petProfile.MotionEnabled)
+			capabilities.Features.PetAnimation && petProfile.MotionEnabled,
+			capabilities.Features.PetAssetMaxFrames)
 	}
 	meetingRecordings := g.meetingRecordings
 	meetingTranscript := g.meetingTranscript
 	meetingMinutes := g.meetingMinutes
 	g.mu.Unlock()
-	// Never embed RGB565 base64 in the handshake. Even one 128px frame expands
-	// to ~44 KiB and used to exhaust the ESP's memory-sensitive TLS path.
+	// Never embed RGB565+A8 base64 in the handshake. Even one 256px frame expands
+	// to ~66 KiB and can exhaust the ESP's memory-sensitive TLS path.
 	petProfile.Asset = nil
-	response := map[string]any{"ok": true, "mode": "maclaw", "channelId": "thirdparty:" + p.ClientID, "serverTime": time.Now().UnixMilli(), "pet": petProfile, "poll": map[string]int{"timeoutSec": 30, "maxTimeoutSec": 60, "maxBatchSize": 20, "maxLimit": 100}, "limits": map[string]int{"maxBodyBytes": 1048576, "maxMediaBytes": 10485760}}
+	response := map[string]any{"ok": true, "mode": "maclaw", "channelId": "thirdparty:" + p.ClientID, "serverTime": time.Now().UnixMilli(), "pet": petProfile, "startupWelcomeQueued": startupWelcomeQueued, "poll": map[string]int{"timeoutSec": 30, "maxTimeoutSec": 30, "maxBatchSize": 20, "maxLimit": 20}, "limits": map[string]int{"maxBodyBytes": 1048576, "maxMediaBytes": 10485760}}
 	if petAsset != nil {
 		response["petAsset"] = *petAsset
 	}
@@ -657,6 +813,22 @@ func (g *DeviceGateway) handleHandshake(w http.ResponseWriter, r *http.Request) 
 	writeDeviceJSON(w, 200, response)
 }
 
+func (g *DeviceGateway) resetDeviceRuntimeQueueForBootLocked(state *deviceClientState) {
+	if state == nil {
+		return
+	}
+	for _, message := range state.messages {
+		g.releaseDeviceMessageMediaLocked(message)
+	}
+	state.messages = nil
+	// ACK bookkeeping belongs to the discarded queue. Keeping it provides no
+	// replay protection because every new message receives a fresh ID/sequence.
+	state.acked = make(map[string]bool)
+	state.ackStatus = make(map[string]string)
+	state.activeReplies = make(map[string]struct{})
+	state.activeOrder = nil
+}
+
 func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeDeviceError(w, 405, "method_not_allowed", "POST required")
@@ -665,6 +837,10 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 	p, ok := g.principal(r)
 	if !ok {
 		writeDeviceError(w, 401, "unauthorized", "missing or invalid bearer token")
+		return
+	}
+	if !g.machineHardwareEnabled(p.MachineID) {
+		writeDeviceError(w, http.StatusServiceUnavailable, "hardware_disabled", "hardware is disabled in MaClaw")
 		return
 	}
 	var req struct {
@@ -698,6 +874,7 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 	state := g.clientLocked(p.ClientID)
 	capabilities := state.capabilities
 	capabilitiesDeclared := state.capabilitiesDeclared
+	clientTools := append([]agent.ClientToolDefinition(nil), state.tools...)
 	g.mu.Unlock()
 	messageType := normalizeDeviceInputModality(req.Message.Type, req.Message.MimeType)
 	if messageType == "" {
@@ -732,7 +909,18 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	payload, _ := json.Marshal(map[string]any{"tenant_id": p.TenantID, "platform_uid": "thirdparty:" + p.ClientID + ":" + firstDeviceValue(req.ConversationID, "default"), "reply_target": "thirdparty:" + p.ClientID + ":" + firstDeviceValue(req.ConversationID, "default"), "message_id": firstDeviceValue(req.MessageID, req.EventID), "message_type": firstDeviceValue(req.Message.Type, "text"), "text": req.Message.Text, "attachments": attachments, "client_capabilities": capabilities})
+	// Record replay suppression only after the complete request has passed
+	// validation. Otherwise a client that fixes a rejected attachment while
+	// retaining the same eventId (as required for a retry) would receive a
+	// false duplicate success and the corrected message would never reach GUI.
+	if g.markDeviceEvent(p.ClientID, "incoming:"+strings.TrimSpace(req.EventID)) {
+		writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "messageId": req.MessageID, "duplicate": true})
+		return
+	}
+	conversationID := firstDeviceValue(req.ConversationID, "default")
+	messageID := firstDeviceValue(req.MessageID, req.EventID)
+	g.activateDeviceReply(p.ClientID, messageID)
+	payload, _ := json.Marshal(map[string]any{"tenant_id": p.TenantID, "platform_uid": "thirdparty:" + p.ClientID + ":" + conversationID, "reply_target": "thirdparty:" + p.ClientID + ":" + conversationID, "message_id": messageID, "message_type": firstDeviceValue(req.Message.Type, "text"), "text": req.Message.Text, "attachments": attachments, "client_capabilities": capabilities, "client_tools": clientTools, "client_tool_context": agent.ClientToolContext{ClientID: p.ClientID, ConversationID: conversationID, ReplyToMessageID: messageID}})
 	go g.plugin.HandleGatewayMessage(ownerID, payload)
 	writeDeviceJSON(w, 200, map[string]any{"ok": true, "accepted": true, "messageId": req.MessageID, "duplicate": false})
 }
@@ -745,6 +933,10 @@ func (g *DeviceGateway) handleMediaUploadURL(w http.ResponseWriter, r *http.Requ
 	p, ok := g.principal(r)
 	if !ok {
 		writeDeviceError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+		return
+	}
+	if !g.machineHardwareEnabled(p.MachineID) {
+		writeDeviceError(w, http.StatusServiceUnavailable, "hardware_disabled", "hardware is disabled in MaClaw")
 		return
 	}
 	var req struct {
@@ -779,14 +971,19 @@ func (g *DeviceGateway) handleMediaUploadURL(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	baseURL := deviceRequestBaseURL(r)
-	media := &deviceMedia{ClientID: p.ClientID, ID: mediaID, Token: token, Type: firstDeviceValue(req.Type, "file"), FileName: safeDeviceFileName(req.FileName), MimeType: strings.TrimSpace(req.MimeType), SizeBytes: req.SizeBytes, DurationMs: req.DurationMs, LastAccessedAt: time.Now().UTC()}
+	now := time.Now().UTC()
+	media := &deviceMedia{ClientID: p.ClientID, MachineID: p.MachineID, ID: mediaID, Token: token, Type: firstDeviceValue(req.Type, "file"), FileName: safeDeviceFileName(req.FileName), MimeType: strings.TrimSpace(req.MimeType), SizeBytes: req.SizeBytes, DurationMs: req.DurationMs, LastAccessedAt: now, ExpiresAt: now.Add(deviceGatewayMediaTTL)}
 	g.mu.Lock()
-	g.pruneMediaLocked(time.Now().UTC())
+	if !g.ensureMediaCapacityLocked(p.ClientID, 1, 0, "", now) {
+		g.mu.Unlock()
+		writeDeviceError(w, http.StatusServiceUnavailable, "media_capacity_exceeded", "media capacity is temporarily exhausted")
+		return
+	}
 	g.media[mediaID] = media
 	g.mu.Unlock()
 	downloadURL := fmt.Sprintf("%s/api/im-gateway/v1/media/%s?mediaToken=%s", baseURL, mediaID, token)
 	uploadURL := fmt.Sprintf("%s/api/im-gateway/v1/media/%s/upload?mediaToken=%s", baseURL, mediaID, token)
-	writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "media": map[string]any{"id": mediaID, "type": media.Type, "fileName": media.FileName, "mimeType": media.MimeType, "url": downloadURL, "sizeBytes": media.SizeBytes, "durationMs": media.DurationMs}, "upload": map[string]any{"method": http.MethodPut, "url": uploadURL, "contentType": media.MimeType, "maxBytes": deviceGatewayMaxMediaBytes}, "download": map[string]any{"url": downloadURL}, "expiresAt": time.Now().Add(24 * time.Hour).UnixMilli()})
+	writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "media": map[string]any{"id": mediaID, "type": media.Type, "fileName": media.FileName, "mimeType": media.MimeType, "url": downloadURL, "sizeBytes": media.SizeBytes, "durationMs": media.DurationMs}, "upload": map[string]any{"method": http.MethodPut, "url": uploadURL, "contentType": media.MimeType, "maxBytes": deviceGatewayMaxMediaBytes}, "download": map[string]any{"url": downloadURL}, "expiresAt": media.ExpiresAt.UnixMilli()})
 }
 
 func normalizeDeviceInputModality(messageType, mimeType string) string {
@@ -847,6 +1044,10 @@ func (g *DeviceGateway) handleOutgoing(w http.ResponseWriter, r *http.Request) {
 		writeDeviceError(w, 401, "unauthorized", "missing or invalid bearer token")
 		return
 	}
+	if !g.machineHardwareEnabled(p.MachineID) {
+		writeDeviceError(w, http.StatusServiceUnavailable, "hardware_disabled", "hardware is disabled in MaClaw")
+		return
+	}
 	if r.URL.Query().Get("clientId") != p.ClientID {
 		writeDeviceError(w, 403, "forbidden", "clientId does not match credential")
 		return
@@ -858,6 +1059,14 @@ func (g *DeviceGateway) handleOutgoing(w http.ResponseWriter, r *http.Request) {
 	defer deadline.Stop()
 	for {
 		g.mu.Lock()
+		// The master switch can change while this request is waiting on a long
+		// poll. Re-check it under the queue lock so a request that began while
+		// enabled cannot deliver a message after hardware has been disabled.
+		if !g.machineHardwareEnabledLocked(p.MachineID) {
+			g.mu.Unlock()
+			writeDeviceError(w, http.StatusServiceUnavailable, "hardware_disabled", "hardware is disabled in MaClaw")
+			return
+		}
 		state := g.clientLocked(p.ClientID)
 		messages := make([]map[string]any, 0, limit)
 		next := cursor
@@ -872,7 +1081,7 @@ func (g *DeviceGateway) handleOutgoing(w http.ResponseWriter, r *http.Request) {
 				hasMore = true
 				break
 			}
-			messages = append(messages, message)
+			messages = append(messages, cloneDeviceMessage(message))
 			next = seq
 		}
 		notify := state.notify
@@ -917,6 +1126,10 @@ func (g *DeviceGateway) handleAck(w http.ResponseWriter, r *http.Request) {
 		writeDeviceError(w, 401, "unauthorized", "missing or invalid bearer token")
 		return
 	}
+	if !g.machineHardwareEnabled(p.MachineID) {
+		writeDeviceError(w, http.StatusServiceUnavailable, "hardware_disabled", "hardware is disabled in MaClaw")
+		return
+	}
 	var req coreim.ThirdPartyAckRequest
 	if !decodeDeviceJSON(w, r, &req) {
 		return
@@ -938,14 +1151,33 @@ func (g *DeviceGateway) handleAck(w http.ResponseWriter, r *http.Request) {
 			known[id] = struct{}{}
 		}
 	}
+	type previewReceipt struct {
+		MachineID string
+		RequestID string
+		MessageID string
+	}
+	previewReceipts := make([]previewReceipt, 0, len(req.MessageIDs))
 	for _, id := range req.MessageIDs {
 		id = strings.TrimSpace(id)
 		if _, exists := known[id]; exists {
+			for _, message := range state.messages {
+				messageID, _ := message["id"].(string)
+				if messageID != id {
+					continue
+				}
+				extra, _ := message["extra"].(map[string]any)
+				preview, _ := extra["hardware_audio_preview"].(bool)
+				requestID, _ := extra["hardware_audio_preview_request_id"].(string)
+				if preview && strings.TrimSpace(requestID) != "" {
+					previewReceipts = append(previewReceipts, previewReceipt{MachineID: p.MachineID, RequestID: strings.TrimSpace(requestID), MessageID: id})
+				}
+				break
+			}
 			state.acked[id] = true
 			state.ackStatus[id] = status
 		}
 	}
-	pruneDeviceMessagesLocked(state)
+	g.pruneDeviceMessagesLocked(state)
 	// Keep a bounded diagnostic receipt after the queue entry is removed. This
 	// lets Hub distinguish an ESP playback failure from successful delivery
 	// without turning ACK metadata into an unbounded per-device map.
@@ -957,8 +1189,78 @@ func (g *DeviceGateway) handleAck(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	sender := g.machineSender
 	g.mu.Unlock()
+	if sender != nil {
+		for _, receipt := range previewReceipts {
+			_ = sender.SendToMachine(receipt.MachineID, map[string]any{
+				"type":       "im.device_gateway_playback_receipt",
+				"request_id": receipt.RequestID,
+				"payload": map[string]any{
+					"clientId": p.ClientID, "messageId": receipt.MessageID, "status": status,
+				},
+			})
+		}
+	}
 	writeDeviceJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (g *DeviceGateway) handleToolResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeDeviceError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	p, ok := g.principal(r)
+	if !ok {
+		writeDeviceError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+		return
+	}
+	if !g.machineHardwareEnabled(p.MachineID) {
+		writeDeviceError(w, http.StatusServiceUnavailable, "hardware_disabled", "hardware is disabled in MaClaw")
+		return
+	}
+	var req coreim.ThirdPartyToolResultRequest
+	if !decodeDeviceJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.ClientID) != p.ClientID {
+		writeDeviceError(w, http.StatusForbidden, "forbidden", "clientId does not match credential")
+		return
+	}
+	if err := coreim.NormalizeThirdPartyToolResultRequest(&req); err != nil {
+		writeDeviceError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if g.plugin == nil {
+		writeDeviceError(w, http.StatusServiceUnavailable, "unavailable", "GUI relay is unavailable")
+		return
+	}
+	ownerID := g.plugin.GatewayOwnerForTenant(p.TenantID)
+	if ownerID == "" {
+		writeDeviceError(w, http.StatusServiceUnavailable, "gui_offline", "the paired MaClaw GUI is not connected to Hub")
+		return
+	}
+	eventID := coreim.ThirdPartyToolResultEventID(req)
+	if g.markDeviceEvent(p.ClientID, eventID) {
+		writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "duplicate": true})
+		return
+	}
+	conversationID := firstDeviceValue(req.ConversationID, "default")
+	g.mu.Lock()
+	state := g.clientLocked(p.ClientID)
+	capabilities := state.capabilities
+	clientTools := append([]agent.ClientToolDefinition(nil), state.tools...)
+	g.mu.Unlock()
+	g.activateDeviceReply(p.ClientID, eventID)
+	payload, _ := json.Marshal(map[string]any{
+		"tenant_id": p.TenantID, "platform_uid": "thirdparty:" + p.ClientID + ":" + conversationID,
+		"reply_target": "thirdparty:" + p.ClientID + ":" + conversationID,
+		"message_id":   eventID, "message_type": "text",
+		"text": coreim.ThirdPartyToolResultContent(req), "client_capabilities": capabilities,
+		"client_tools": clientTools, "client_tool_context": agent.ClientToolContext{ClientID: p.ClientID, ConversationID: conversationID, ReplyToMessageID: eventID},
+	})
+	go g.plugin.HandleGatewayMessage(ownerID, payload)
+	writeDeviceJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": true, "duplicate": false})
 }
 
 func (g *DeviceGateway) EnqueueReply(clientID, conversationID string, reply map[string]any) {
@@ -968,6 +1270,11 @@ func (g *DeviceGateway) EnqueueReply(clientID, conversationID string, reply map[
 	}
 	g.mu.Lock()
 	state := g.clientLocked(clientID)
+	if !deviceReplyBelongsToCurrentBootLocked(state, reply) {
+		g.mu.Unlock()
+		log.Printf("[device-gateway] stale reply discarded client=%s replyTo=%s bootSessionId=%s", clientID, deviceReplyCorrelationID(reply), state.bootSessionID)
+		return
+	}
 	if !g.prepareOutgoingAudioLocked(clientID, reply, state.capabilities) {
 		g.mu.Unlock()
 		return
@@ -987,8 +1294,7 @@ func (g *DeviceGateway) EnqueueReply(clientID, conversationID string, reply map[
 	reply["seq"] = state.next
 	reply["id"] = fmt.Sprintf("hub_out_%d_%d", time.Now().UnixMilli(), state.next)
 	reply["conversationId"] = firstDeviceValue(conversationID, "default")
-	state.messages = append(state.messages, reply)
-	pruneDeviceMessagesLocked(state)
+	g.queueDeviceMessageLocked(state, reply)
 	old := state.notify
 	state.notify = make(chan struct{})
 	close(old)
@@ -1026,10 +1332,13 @@ func (g *DeviceGateway) prepareOutgoingAudioLocked(clientID string, reply map[st
 	}
 	mimeType := firstDeviceValue(deviceReplyString(reply, "mimeType", "mime_type", "contentType", "content_type"), "audio/wav")
 	fileName := safeDeviceFileName(firstDeviceValue(deviceReplyString(reply, "fileName", "file_name"), "response.wav"))
-	g.pruneMediaLocked(time.Now().UTC())
+	if !g.ensureMediaCapacityLocked(clientID, 1, size, "", time.Now().UTC()) {
+		return false
+	}
+	now := time.Now().UTC()
 	g.media[mediaID] = &deviceMedia{
-		ClientID: clientID, ID: mediaID, Token: token, Type: "audio", FileName: fileName,
-		MimeType: mimeType, SizeBytes: size, Data: data, Uploaded: true, LastAccessedAt: time.Now().UTC(),
+		ClientID: clientID, MachineID: g.machineIDForClientLocked(clientID), ID: mediaID, Token: token, Type: "audio", FileName: fileName,
+		MimeType: mimeType, SizeBytes: size, Data: data, Uploaded: true, LastAccessedAt: now, ExpiresAt: now.Add(deviceGatewayMediaTTL),
 	}
 	reply["url"] = fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", mediaID, token)
 	reply["sizeBytes"] = size
@@ -1039,11 +1348,11 @@ func (g *DeviceGateway) prepareOutgoingAudioLocked(clientID string, reply map[st
 	return true
 }
 
-// preparePetAssetLocked publishes GUI-rendered RGB565 frames through the same
+// preparePetAssetLocked publishes GUI-rendered transparent frames through the same
 // short-lived, same-origin media transport used by server speech.  The caller
 // holds g.mu. Invalid base64 or an unexpected byte count disables the remote
 // asset and leaves the device's native skin renderer as a safe fallback.
-func (g *DeviceGateway) preparePetAssetLocked(clientID string, asset *DevicePetAsset, animated bool) *devicePetAssetReference {
+func (g *DeviceGateway) preparePetAssetLocked(clientID string, asset *DevicePetAsset, animated bool, maxFrames int) *devicePetAssetReference {
 	asset = normalizeDevicePetAsset(asset)
 	if asset == nil {
 		return nil
@@ -1052,8 +1361,23 @@ func (g *DeviceGateway) preparePetAssetLocked(clientID string, asset *DevicePetA
 	if animated && len(asset.Frames) > 0 {
 		encoded = append(encoded, asset.Frames...)
 	}
-	expected := asset.Width * asset.Height * 2
-	if expected <= 0 || expected > 128*128*2 {
+	frameMS := asset.FrameMS
+	if animated {
+		// Missing means the legacy two-frame ESP contract, not unlimited.
+		if maxFrames <= 0 {
+			maxFrames = 2
+		}
+		if maxFrames < len(encoded) {
+			selected := make([]string, 0, maxFrames)
+			for index := 0; index < maxFrames; index++ {
+				selected = append(selected, encoded[index*len(encoded)/maxFrames])
+			}
+			frameMS = asset.FrameMS * len(encoded) / maxFrames
+			encoded = selected
+		}
+	}
+	expected := asset.Width * asset.Height * 3
+	if expected <= 0 || expected > devicePetAssetMaxDimension*devicePetAssetMaxDimension*3 {
 		return nil
 	}
 	frames := make([][]byte, 0, len(encoded))
@@ -1066,42 +1390,89 @@ func (g *DeviceGateway) preparePetAssetLocked(clientID string, asset *DevicePetA
 	}
 	digest := sha256.New()
 	_, _ = digest.Write([]byte(asset.Encoding))
-	_, _ = digest.Write([]byte(fmt.Sprintf("/%d/%d", asset.Width, asset.Height)))
+	_, _ = digest.Write([]byte(fmt.Sprintf("/%d/%d/%d", asset.Width, asset.Height, frameMS)))
 	for _, frame := range frames {
 		_, _ = digest.Write(frame)
 	}
 	revision := hex.EncodeToString(digest.Sum(nil)[:8])
 
-	g.pruneMediaLocked(time.Now().UTC())
-	urls := make([]string, 0, len(frames))
-	for index, frame := range frames {
+	type preparedFrame struct {
+		id    string
+		token string
+		data  []byte
+	}
+	prepared := make([]preparedFrame, 0, len(frames))
+	var totalBytes int64
+	for _, frame := range frames {
 		mediaID, token, err := newDeviceToken(16)
 		if err != nil {
 			return nil
 		}
-		g.media[mediaID] = &deviceMedia{
-			ClientID: clientID, ID: mediaID, Token: token, Type: "pet_asset",
-			FileName: fmt.Sprintf("pet-%s-%d.rgb565le", revision, index),
-			MimeType: "application/vnd.maclaw.rgb565le", SizeBytes: int64(len(frame)),
-			Data: frame, Uploaded: true, LastAccessedAt: time.Now().UTC(),
+		prepared = append(prepared, preparedFrame{id: mediaID, token: token, data: frame})
+		totalBytes += int64(len(frame))
+	}
+	if !g.ensureMediaCapacityLocked(clientID, len(prepared), totalBytes, "", time.Now().UTC()) {
+		return nil
+	}
+	urls := make([]string, 0, len(frames))
+	hashes := make([]string, 0, len(frames))
+	now := time.Now().UTC()
+	for index, frame := range prepared {
+		g.media[frame.id] = &deviceMedia{
+			ClientID: clientID, MachineID: g.machineIDForClientLocked(clientID), ID: frame.id, Token: frame.token, Type: "pet_asset",
+			FileName: fmt.Sprintf("pet-%s-%d.rgb565a8", revision, index),
+			MimeType: "application/vnd.maclaw.rgb565a8", SizeBytes: int64(len(frame.data)),
+			Data: frame.data, Uploaded: true, LastAccessedAt: now, ExpiresAt: now.Add(deviceGatewayMediaTTL),
 		}
-		urls = append(urls, fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", mediaID, token))
+		urls = append(urls, fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", frame.id, frame.token))
+		hash := sha256.Sum256(frame.data)
+		hashes = append(hashes, hex.EncodeToString(hash[:]))
 	}
 	return &devicePetAssetReference{
 		Encoding: asset.Encoding, Width: asset.Width, Height: asset.Height,
-		URLs: urls, FrameMS: 700, Revision: revision,
+		URLs: urls, FrameMS: frameMS, Revision: revision, SHA256: hashes,
 	}
 }
 
 // EnqueueMachineReply broadcasts a GUI-originated device configuration update
 // only to the hardware credentials paired with that GUI machine.
 func (g *DeviceGateway) EnqueueMachineReply(machineID, conversationID string, reply map[string]any) {
+	g.EnqueueMachineReplyCount(machineID, conversationID, reply)
+}
+
+// EnqueueMachineReplyCount broadcasts a GUI-originated reply and reports how
+// many compatible hardware clients actually accepted it. Hardware audio
+// previews intentionally skip stale clients so the GUI can fail fast instead
+// of waiting for a playback receipt from an offline ESP32.
+func (g *DeviceGateway) EnqueueMachineReplyCount(machineID, conversationID string, reply map[string]any) int {
+	return g.enqueueMachineClientReplyCount(machineID, "*", conversationID, reply)
+}
+
+// EnqueueMachineClientReply routes a GUI-originated message to one owned
+// hardware client. The wildcard preserves the legacy broadcast behaviour.
+func (g *DeviceGateway) EnqueueMachineClientReply(machineID, targetClientID, conversationID string, reply map[string]any) {
+	g.enqueueMachineClientReplyCount(machineID, targetClientID, conversationID, reply)
+}
+
+// EnqueueMachineClientReplyCount is the ownership-enforcing variant used by
+// request/response transports. A zero result means the target is not bound to
+// that GUI (or cannot accept the reply), so callers can surface a correlated
+// error instead of silently routing by globally visible client ID.
+func (g *DeviceGateway) EnqueueMachineClientReplyCount(machineID, targetClientID, conversationID string, reply map[string]any) int {
+	return g.enqueueMachineClientReplyCount(machineID, targetClientID, conversationID, reply)
+}
+
+func (g *DeviceGateway) enqueueMachineClientReplyCount(machineID, targetClientID, conversationID string, reply map[string]any) int {
 	machineID = strings.TrimSpace(machineID)
+	targetClientID = strings.TrimSpace(targetClientID)
 	if machineID == "" || reply == nil {
-		return
+		return 0
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if !g.machineHardwareEnabledLocked(machineID) {
+		return 0
+	}
 	replyType, _ := reply["reply_type"].(string)
 	if strings.TrimSpace(replyType) == "" {
 		replyType, _ = reply["type"].(string)
@@ -1112,11 +1483,30 @@ func (g *DeviceGateway) EnqueueMachineReply(machineID, conversationID string, re
 		extra, _ := reply["extra"].(map[string]any)
 		volume, isVolumeConfig = deviceVolume(extra["volume"])
 	}
+	extra, _ := reply["extra"].(map[string]any)
+	isHardwareAudioPreview, _ := extra["hardware_audio_preview"].(bool)
+	queued := 0
+	seenClients := make(map[string]struct{})
 	for _, principal := range g.tokens {
-		if principal.MachineID != machineID {
+		if principal.MachineID != machineID || (targetClientID != "" && targetClientID != "*" && principal.ClientID != targetClientID) {
 			continue
 		}
+		if _, seen := seenClients[principal.ClientID]; seen {
+			continue
+		}
+		seenClients[principal.ClientID] = struct{}{}
 		state := g.clientLocked(principal.ClientID)
+		if !deviceReplyBelongsToCurrentBootLocked(state, reply) {
+			log.Printf("[device-gateway] stale machine reply discarded machine=%s client=%s replyTo=%s bootSessionId=%s", machineID, principal.ClientID, deviceReplyCorrelationID(reply), state.bootSessionID)
+			continue
+		}
+		lastSeen := state.lastSeenAt
+		if lastSeen.IsZero() {
+			lastSeen = principal.LastSeenAt
+		}
+		if isHardwareAudioPreview && (lastSeen.IsZero() || time.Since(lastSeen) > 90*time.Second) {
+			continue
+		}
 		message := make(map[string]any, len(reply)+4)
 		for key, value := range reply {
 			message[key] = value
@@ -1131,6 +1521,7 @@ func (g *DeviceGateway) EnqueueMachineReply(machineID, conversationID string, re
 			continue
 		}
 		if isVolumeConfig && replaceQueuedDeviceVolume(state, volume) {
+			queued++
 			old := state.notify
 			state.notify = make(chan struct{})
 			close(old)
@@ -1140,15 +1531,217 @@ func (g *DeviceGateway) EnqueueMachineReply(machineID, conversationID string, re
 		message["seq"] = state.next
 		message["id"] = fmt.Sprintf("hub_hardware_%d_%d", time.Now().UnixMilli(), state.next)
 		message["conversationId"] = firstDeviceValue(conversationID, "system")
-		state.messages = append(state.messages, message)
-		pruneDeviceMessagesLocked(state)
+		g.queueDeviceMessageLocked(state, message)
+		queued++
 		old := state.notify
 		state.notify = make(chan struct{})
 		close(old)
 	}
+	return queued
+}
+
+// ListMachineDevices returns all durable hardware bindings owned by one GUI.
+func (g *DeviceGateway) ListMachineDevices(machineID string) []HardwareDevice {
+	machineID = strings.TrimSpace(machineID)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	byClient := make(map[string]devicePrincipal)
+	for _, principal := range g.tokens {
+		if principal.MachineID == machineID {
+			byClient[principal.ClientID] = principal
+		}
+	}
+	devices := make([]HardwareDevice, 0, len(byClient))
+	for clientID, principal := range byClient {
+		device := HardwareDevice{ClientID: clientID, ClientName: principal.ClientName, ProtocolVersion: principal.ProtocolVersion, PairedAt: principal.PairedAt, LastSeenAt: principal.LastSeenAt}
+		if state := g.clients[clientID]; state != nil {
+			lastSeen := state.lastSeenAt
+			if lastSeen.IsZero() {
+				lastSeen = principal.LastSeenAt
+			}
+			device.LastSeenAt = lastSeen
+			device.Online = !lastSeen.IsZero() && time.Since(lastSeen) <= 90*time.Second
+			caps := agent.NormalizeClientCapabilities(&state.capabilities)
+			device.Capabilities = &caps
+			var newest int64
+			for _, message := range state.messages {
+				seq, _ := message["seq"].(int64)
+				id, _ := message["id"].(string)
+				if seq >= newest && state.ackStatus[id] != "" {
+					newest = seq
+					device.LastAckStatus = state.ackStatus[id]
+				}
+			}
+		}
+		devices = append(devices, device)
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		if devices[i].Online != devices[j].Online {
+			return devices[i].Online
+		}
+		return devices[i].ClientID < devices[j].ClientID
+	})
+	return devices
+}
+
+func (g *DeviceGateway) ListMachineDevicesJSON(machineID string) []map[string]any {
+	devices := g.ListMachineDevices(machineID)
+	out := make([]map[string]any, 0, len(devices))
+	for _, device := range devices {
+		item := map[string]any{"clientId": device.ClientID, "online": device.Online}
+		if device.ClientName != "" {
+			item["clientName"] = device.ClientName
+		}
+		if device.ProtocolVersion != "" {
+			item["protocolVersion"] = device.ProtocolVersion
+		}
+		if !device.PairedAt.IsZero() {
+			item["pairedAt"] = device.PairedAt
+		}
+		if !device.LastSeenAt.IsZero() {
+			item["lastSeenAt"] = device.LastSeenAt
+		}
+		if device.LastAckStatus != "" {
+			item["lastAckStatus"] = device.LastAckStatus
+		}
+		if device.Capabilities != nil {
+			item["capabilities"] = device.Capabilities
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// DeleteMachineDevice removes every bearer for one owned client and its
+// in-memory queue. A connected ESP receives 401 on its next request.
+func (g *DeviceGateway) DeleteMachineDevice(machineID, clientID string) error {
+	machineID, clientID = strings.TrimSpace(machineID), strings.TrimSpace(clientID)
+	if machineID == "" || clientID == "" {
+		return fmt.Errorf("machine ID and client ID are required")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	revoked := make(map[string]devicePrincipal)
+	for token, principal := range g.tokens {
+		if principal.MachineID == machineID && principal.ClientID == clientID {
+			revoked[token] = principal
+			delete(g.tokens, token)
+		}
+	}
+	if len(revoked) == 0 {
+		return fmt.Errorf("hardware device not found")
+	}
+	previousState := g.clients[clientID]
+	delete(g.clients, clientID)
+	removedMedia := make(map[string]*deviceMedia)
+	for id, media := range g.media {
+		if media.ClientID == clientID {
+			removedMedia[id] = media
+			delete(g.media, id)
+		}
+	}
+	if err := g.persistTokensLocked(); err != nil {
+		for token, principal := range revoked {
+			g.tokens[token] = principal
+		}
+		if previousState != nil {
+			g.clients[clientID] = previousState
+		}
+		for id, media := range removedMedia {
+			g.media[id] = media
+		}
+		return fmt.Errorf("persist hardware deletion: %w", err)
+	}
+	return nil
+}
+
+func (g *DeviceGateway) updatePrincipalLocked(updated devicePrincipal) error {
+	previous := make(map[string]devicePrincipal)
+	for token, principal := range g.tokens {
+		if principal.ClientID == updated.ClientID && principal.MachineID == updated.MachineID {
+			previous[token] = principal
+			g.tokens[token] = updated
+		}
+	}
+	if err := g.persistTokensLocked(); err != nil {
+		for token, principal := range previous {
+			g.tokens[token] = principal
+		}
+		return err
+	}
+	return nil
 }
 
 const deviceGatewayWelcomeMaxBytes = 96 * 1024
+
+func (g *DeviceGateway) machineHardwareEnabled(machineID string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.machineHardwareEnabledLocked(machineID)
+}
+
+func (g *DeviceGateway) machineHardwareEnabledLocked(machineID string) bool {
+	enabled := g.hardware[strings.TrimSpace(machineID)].Enabled
+	return enabled == nil || *enabled
+}
+
+// UpdateMachineHardwareEnabled changes only the master switch. Durable device
+// bindings and subordinate settings are intentionally preserved so re-enabling
+// hardware does not require pairing or configuration again.
+func (g *DeviceGateway) UpdateMachineHardwareEnabled(machineID string, enabled bool) error {
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return fmt.Errorf("machine ID is required")
+	}
+	g.mu.Lock()
+	previous, existed := g.hardware[machineID]
+	config := previous
+	config.Enabled = new(bool)
+	*config.Enabled = enabled
+	g.hardware[machineID] = config
+	err := g.persistTokensLocked()
+	if err != nil {
+		if existed {
+			g.hardware[machineID] = previous
+		} else {
+			delete(g.hardware, machineID)
+		}
+	} else {
+		// Wake outstanding long polls so they observe the new switch state now,
+		// rather than after their normal timeout. This closes the disable race in
+		// which an already-waiting request could otherwise receive a later reply.
+		seenClients := make(map[string]struct{})
+		for _, principal := range g.tokens {
+			if principal.MachineID != machineID {
+				continue
+			}
+			if _, seen := seenClients[principal.ClientID]; seen {
+				continue
+			}
+			seenClients[principal.ClientID] = struct{}{}
+			if state := g.clients[principal.ClientID]; state != nil {
+				old := state.notify
+				state.notify = make(chan struct{})
+				close(old)
+			}
+		}
+	}
+	g.mu.Unlock()
+	return err
+}
+
+// machineIDForClientLocked resolves the durable owner of a globally unique
+// hardware client ID. Callers hold g.mu. An empty result intentionally keeps
+// synthetic legacy media (created without a paired credential) compatible.
+func (g *DeviceGateway) machineIDForClientLocked(clientID string) string {
+	clientID = strings.TrimSpace(clientID)
+	for _, principal := range g.tokens {
+		if principal.ClientID == clientID {
+			return principal.MachineID
+		}
+	}
+	return ""
+}
 
 // UpdateMachineWelcome persists the boot-time greeting chosen in the GUI.
 // replaceAudio makes an empty payload an intentional clear; callers that only
@@ -1166,6 +1759,7 @@ func (g *DeviceGateway) UpdateMachineWelcome(machineID string, enabled bool, aud
 		}
 	}
 	g.mu.Lock()
+	previous, existed := g.hardware[machineID]
 	config := g.hardware[machineID]
 	config.WelcomeEnabled = enabled
 	if replaceAudio {
@@ -1175,6 +1769,13 @@ func (g *DeviceGateway) UpdateMachineWelcome(machineID string, enabled bool, aud
 	}
 	g.hardware[machineID] = config
 	err := g.persistTokensLocked()
+	if err != nil {
+		if existed {
+			g.hardware[machineID] = previous
+		} else {
+			delete(g.hardware, machineID)
+		}
+	}
 	g.mu.Unlock()
 	return err
 }
@@ -1189,10 +1790,18 @@ func (g *DeviceGateway) UpdateMachineVolume(machineID string, value any) error {
 		return fmt.Errorf("invalid hardware volume")
 	}
 	g.mu.Lock()
+	previous, existed := g.hardware[machineID]
 	config := g.hardware[machineID]
 	config.Volume = &volume
 	g.hardware[machineID] = config
 	err := g.persistTokensLocked()
+	if err != nil {
+		if existed {
+			g.hardware[machineID] = previous
+		} else {
+			delete(g.hardware, machineID)
+		}
+	}
 	g.mu.Unlock()
 	return err
 }
@@ -1224,8 +1833,7 @@ func (g *DeviceGateway) queueHardwareConfigForClientLocked(principal devicePrinc
 	message["seq"] = state.next
 	message["id"] = fmt.Sprintf("hub_hardware_config_%d_%d", time.Now().UnixMilli(), state.next)
 	message["conversationId"] = "system"
-	state.messages = append(state.messages, message)
-	pruneDeviceMessagesLocked(state)
+	g.queueDeviceMessageLocked(state, message)
 	old := state.notify
 	state.notify = make(chan struct{})
 	close(old)
@@ -1249,35 +1857,63 @@ func replaceQueuedDeviceVolume(state *deviceClientState, volume int) bool {
 // queueWelcomeForBootLocked emits the greeting only after a freshly booted
 // device finishes its handshake. Its durable boot ID prevents a Hub restart
 // or a capability-refresh handshake from replaying the greeting.
-func (g *DeviceGateway) queueWelcomeForBootLocked(principal devicePrincipal, bootSessionID string, state *deviceClientState) {
+func (g *DeviceGateway) queueWelcomeForBootLocked(principal devicePrincipal, bootSessionID string, state *deviceClientState) bool {
 	if bootSessionID == "" || state == nil {
-		return
+		return false
+	}
+	// A reboot can happen after the speaker finishes but before its ACK reaches
+	// Hub. Remove Welcome transactions from older boots before considering the
+	// current one; otherwise cursor zero delivers the stale greeting first and
+	// the newly queued greeting second. Preview audio has a different ID and is
+	// deliberately unaffected.
+	kept := state.messages[:0]
+	for _, message := range state.messages {
+		messageID, _ := message["id"].(string)
+		queuedBootID, _ := message["bootSessionId"].(string)
+		if strings.HasPrefix(messageID, "hub_welcome_") && queuedBootID != bootSessionID {
+			g.releaseDeviceMessageMediaLocked(message)
+			delete(state.acked, messageID)
+			delete(state.ackStatus, messageID)
+			continue
+		}
+		kept = append(kept, message)
+	}
+	state.messages = kept
+	// A successful queue followed by a lost handshake response must still tell
+	// the reconnecting device to consume the pending greeting before it starts
+	// its wake-word model. The durable boot marker alone cannot distinguish that
+	// case from a greeting which was already acknowledged.
+	for _, message := range state.messages {
+		queuedBootID, _ := message["bootSessionId"].(string)
+		messageID, _ := message["id"].(string)
+		if queuedBootID == bootSessionID && strings.HasPrefix(messageID, "hub_welcome_") {
+			return true
+		}
 	}
 	config := g.hardware[principal.MachineID]
 	if !config.WelcomeEnabled || config.WelcomeAudio == "" || principal.LastWelcomeBootID == bootSessionID {
-		return
+		return false
 	}
 	// principal was resolved just before this mutex was acquired. Check the
 	// durable map as well so two overlapping handshakes cannot both emit the
 	// same boot's greeting.
 	for _, candidate := range g.tokens {
 		if candidate.ClientID == principal.ClientID && candidate.MachineID == principal.MachineID && candidate.LastWelcomeBootID == bootSessionID {
-			return
+			return false
 		}
 	}
 	message := map[string]any{"reply_type": "audio", "type": "audio", "mime_type": "audio/wav", "file_data": config.WelcomeAudio, "bootSessionId": bootSessionID}
 	if !g.prepareOutgoingAudioLocked(principal.ClientID, message, state.capabilities) {
-		return
+		return false
 	}
 	if !adaptDeviceGatewayReply(message, state.capabilities) {
-		return
+		return false
 	}
 	state.next++
 	message["seq"] = state.next
 	message["id"] = fmt.Sprintf("hub_welcome_%d_%d", time.Now().UnixMilli(), state.next)
 	message["conversationId"] = "system"
-	state.messages = append(state.messages, message)
-	pruneDeviceMessagesLocked(state)
+	g.queueDeviceMessageLocked(state, message)
 	old := state.notify
 	state.notify = make(chan struct{})
 	close(old)
@@ -1291,6 +1927,7 @@ func (g *DeviceGateway) queueWelcomeForBootLocked(principal devicePrincipal, boo
 	if err := g.persistTokensLocked(); err != nil {
 		log.Printf("device gateway: persist welcome boot ID for client %q: %v", principal.ClientID, err)
 	}
+	return true
 }
 
 func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapabilities) bool {
@@ -1302,6 +1939,21 @@ func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapa
 	mimeType := deviceReplyString(reply, "mimeType", "mime_type", "contentType", "content_type")
 	sizeBytes := deviceReplyInt64(reply, "sizeBytes", "size_bytes")
 	switch replyType {
+	case "tool_call", "tool_plan", "tool_cancel":
+		raw, err := json.Marshal(reply)
+		if err != nil {
+			return false
+		}
+		var outgoing coreim.ThirdPartyOutgoingMessage
+		if err := json.Unmarshal(raw, &outgoing); err != nil {
+			return false
+		}
+		// Queue ids are assigned after adaptation; use a temporary id solely for
+		// protocol validation and remove it again before enqueueing.
+		if strings.TrimSpace(outgoing.ID) == "" {
+			outgoing.ID = "pending"
+		}
+		return coreim.NormalizeThirdPartyOutgoingMessage(&outgoing) == nil
 	case "hardware_config":
 		extra, _ := reply["extra"].(map[string]any)
 		if extra == nil {
@@ -1309,7 +1961,38 @@ func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapa
 		}
 		return validDeviceVolume(extra["volume"]) && capabilities.Features.VolumeControl
 	case "image":
-		return capabilities.SupportsOutputMIME("image", firstDeviceValue(mimeType, "image/png"))
+		mimeType = firstDeviceValue(mimeType, "image/png")
+		if !capabilities.SupportsOutputMIME("image", mimeType) {
+			return false
+		}
+		if mimeType == coreim.ThirdPartyRGB565MIME {
+			width := int(deviceReplyInt64(reply, "width"))
+			height := int(deviceReplyInt64(reply, "height"))
+			if width < 1 || width > 64 || height < 1 || height > 64 {
+				return false
+			}
+			if capabilities.Output.Image != nil {
+				if capabilities.Output.Image.MaxWidth > 0 && width > capabilities.Output.Image.MaxWidth {
+					return false
+				}
+				if capabilities.Output.Image.MaxHeight > 0 && height > capabilities.Output.Image.MaxHeight {
+					return false
+				}
+			}
+			expectedSize := width * height * 2
+			encoded := strings.TrimSpace(deviceReplyString(reply, "data", "image_data"))
+			if encoded == "" || len(encoded) > base64.StdEncoding.EncodedLen(expectedSize) {
+				return false
+			}
+			data, err := base64.StdEncoding.DecodeString(encoded)
+			declaredSize := deviceReplyInt64(reply, "sizeBytes", "size_bytes")
+			if err != nil || len(data) != expectedSize || declaredSize < 0 || (declaredSize > 0 && declaredSize != int64(expectedSize)) {
+				return false
+			}
+			reply["sizeBytes"] = expectedSize
+			return true
+		}
+		return validateDeviceGatewayEncodedImage(reply, mimeType, capabilities)
 	case "file":
 		return capabilities.SupportsOutputMIME("file", mimeType) && capabilities.SupportsOutputBytes("file", sizeBytes)
 	case "voice", "audio":
@@ -1350,6 +2033,50 @@ func adaptDeviceGatewayReply(reply map[string]any, capabilities agent.ClientCapa
 			}
 		}
 		return strings.TrimSpace(text) != ""
+	}
+}
+
+func validateDeviceGatewayEncodedImage(reply map[string]any, mimeType string, capabilities agent.ClientCapabilities) bool {
+	encoded := strings.TrimSpace(deviceReplyString(reply, "data", "image_data"))
+	if encoded == "" || len(encoded) > base64.StdEncoding.EncodedLen(int(deviceGatewayMaxMediaBytes)) {
+		return false
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(data) == 0 || int64(len(data)) > deviceGatewayMaxMediaBytes {
+		return false
+	}
+	declaredSize := deviceReplyInt64(reply, "sizeBytes", "size_bytes")
+	if declaredSize < 0 || (declaredSize > 0 && declaredSize != int64(len(data))) {
+		return false
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width < 1 || config.Height < 1 || !deviceImageFormatMatchesMIME(format, mimeType) {
+		return false
+	}
+	if capabilities.Output.Image != nil {
+		if capabilities.Output.Image.MaxWidth > 0 && config.Width > capabilities.Output.Image.MaxWidth {
+			return false
+		}
+		if capabilities.Output.Image.MaxHeight > 0 && config.Height > capabilities.Output.Image.MaxHeight {
+			return false
+		}
+	}
+	reply["width"] = config.Width
+	reply["height"] = config.Height
+	reply["sizeBytes"] = len(data)
+	return true
+}
+
+func deviceImageFormatMatchesMIME(format, mimeType string) bool {
+	format = strings.ToLower(strings.TrimSpace(format))
+	mimeType = strings.ToLower(strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0]))
+	switch format {
+	case "jpeg":
+		return mimeType == "image/jpeg" || mimeType == "image/jpg"
+	case "png", "gif":
+		return mimeType == "image/"+format
+	default:
+		return false
 	}
 }
 
@@ -1432,11 +2159,10 @@ func (g *DeviceGateway) UpdateMachineAmbient(machineID string, ambient map[strin
 		state := g.clientLocked(principal.ClientID)
 		state.ambient = normalized
 		state.next++
-		state.messages = append(state.messages, map[string]any{
+		g.queueDeviceMessageLocked(state, map[string]any{
 			"seq": state.next, "id": fmt.Sprintf("hub_ambient_%d_%d", time.Now().UnixMilli(), state.next),
 			"type": "ambient", "conversationId": "system", "ambient": normalized,
 		})
-		pruneDeviceMessagesLocked(state)
 		old := state.notify
 		state.notify = make(chan struct{})
 		close(old)
@@ -1580,7 +2306,8 @@ func (g *DeviceGateway) updateMachinePetProfileAsset(machineID, skin string, mot
 		var assetRef *devicePetAssetReference
 		if state.capabilities.Features.PetAsset {
 			assetRef = g.preparePetAssetLocked(principal.ClientID, profile.Asset,
-				state.capabilities.Features.PetAnimation && profile.MotionEnabled)
+				state.capabilities.Features.PetAnimation && profile.MotionEnabled,
+				state.capabilities.Features.PetAssetMaxFrames)
 		}
 		state.next++
 		message := map[string]any{
@@ -1591,8 +2318,12 @@ func (g *DeviceGateway) updateMachinePetProfileAsset(machineID, skin string, mot
 		if assetRef != nil {
 			message["pet_asset"] = *assetRef
 		}
-		state.messages = append(state.messages, message)
-		pruneDeviceMessagesLocked(state)
+		// Pet profiles are durable latest-wins state. Replace an older pending
+		// profile before queueing so an offline device does not retain multiple
+		// ~100 KiB frame sets. The replacement has a fresh ID/sequence, so an ACK
+		// for a profile fetched just before this update cannot delete the new one.
+		replaceQueuedDevicePetProfileLocked(g, state)
+		g.queueDeviceMessageLocked(state, message)
 		old := state.notify
 		state.notify = make(chan struct{})
 		close(old)
@@ -1606,6 +2337,27 @@ func (g *DeviceGateway) updateMachinePetProfileAsset(machineID, skin string, mot
 	}
 }
 
+func replaceQueuedDevicePetProfileLocked(g *DeviceGateway, state *deviceClientState) bool {
+	if g == nil || state == nil {
+		return false
+	}
+	for index := len(state.messages) - 1; index >= 0; index-- {
+		message := state.messages[index]
+		if deviceReplyString(message, "type", "reply_type") != "pet_profile" {
+			continue
+		}
+		id, _ := message["id"].(string)
+		if id != "" && state.acked[id] {
+			continue
+		}
+		g.releaseDeviceMessageMediaLocked(message)
+		copy(state.messages[index:], state.messages[index+1:])
+		state.messages = state.messages[:len(state.messages)-1]
+		return true
+	}
+	return false
+}
+
 func devicePetProfilesEqual(left, right devicePetProfile) bool {
 	if left.Skin != right.Skin || left.MotionEnabled != right.MotionEnabled {
 		return false
@@ -1617,7 +2369,7 @@ func devicePetAssetsEqual(left, right *DevicePetAsset) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	if left.Encoding != right.Encoding || left.Width != right.Width || left.Height != right.Height || left.Data != right.Data || len(left.Frames) != len(right.Frames) {
+	if left.Encoding != right.Encoding || left.Width != right.Width || left.Height != right.Height || left.FrameMS != right.FrameMS || left.Data != right.Data || len(left.Frames) != len(right.Frames) {
 		return false
 	}
 	for index := range left.Frames {
@@ -1641,15 +2393,19 @@ func normalizeDevicePetProfileAsset(skin string, motionEnabled bool, asset *Devi
 }
 
 func normalizeDevicePetAsset(asset *DevicePetAsset) *DevicePetAsset {
-	if asset == nil || asset.Encoding != "rgb565le" || asset.Width < 32 || asset.Width > 128 || asset.Height < 32 || asset.Height > 128 || len(asset.Data) == 0 || len(asset.Data) > 50000 || len(asset.Frames) > 1 {
+	if asset == nil || asset.Encoding != "rgb565a8" || asset.Width < 32 || asset.Width > devicePetAssetMaxDimension || asset.Height < 32 || asset.Height > devicePetAssetMaxDimension || len(asset.Data) == 0 || len(asset.Data) > devicePetAssetMaxEncodedFrameBytes || len(asset.Frames) > devicePetAssetMaxFrames-1 {
 		return nil
 	}
 	for _, frame := range asset.Frames {
-		if len(frame) == 0 || len(frame) > 50000 {
+		if len(frame) == 0 || len(frame) > devicePetAssetMaxEncodedFrameBytes {
 			return nil
 		}
 	}
 	copy := *asset
+	if copy.FrameMS < 50 || copy.FrameMS > 10000 {
+		copy.FrameMS = 450
+	}
+	copy.Frames = append([]string(nil), asset.Frames...)
 	return &copy
 }
 
@@ -1663,6 +2419,12 @@ func DevicePetAssetFromMap(raw map[string]any) *DevicePetAsset {
 	asset := &DevicePetAsset{}
 	asset.Encoding, _ = raw["encoding"].(string)
 	asset.Data, _ = raw["data"].(string)
+	switch value := raw["frameMs"].(type) {
+	case float64:
+		asset.FrameMS = int(value)
+	case int:
+		asset.FrameMS = value
+	}
 	if frames, ok := raw["frames"].([]any); ok {
 		for _, frame := range frames {
 			if text, ok := frame.(string); ok {
@@ -1694,61 +2456,181 @@ func (g *DeviceGateway) incomingAttachments(clientID string, refs []struct {
 	SizeBytes int64  `json:"sizeBytes"`
 }) ([]MessageAttachment, error) {
 	attachments := make([]MessageAttachment, 0, len(refs))
+	var totalBytes int64
 	for _, ref := range refs {
 		if strings.TrimSpace(ref.ID) == "" {
 			continue
 		}
 		g.mu.Lock()
-		media := g.media[strings.TrimSpace(ref.ID)]
-		if media != nil {
-			media.LastAccessedAt = time.Now().UTC()
+		mediaID := strings.TrimSpace(ref.ID)
+		media := g.media[mediaID]
+		now := time.Now().UTC()
+		if media != nil && deviceMediaExpired(media, now) {
+			delete(g.media, mediaID)
+			media = nil
 		}
-		g.mu.Unlock()
 		if media == nil || !media.Uploaded || media.ClientID != clientID {
+			g.mu.Unlock()
 			return nil, fmt.Errorf("media %s not found", strings.TrimSpace(ref.ID))
 		}
-		attachments = append(attachments, MessageAttachment{Type: firstDeviceValue(ref.Type, media.Type), FileName: firstDeviceValue(ref.FileName, media.FileName), MimeType: firstDeviceValue(ref.MimeType, media.MimeType), Data: encodeDeviceData(media.Data), Size: int64(len(media.Data))})
+		if int64(len(media.Data)) > deviceGatewayMaxMediaResidentBytesPerClient-totalBytes {
+			g.mu.Unlock()
+			return nil, fmt.Errorf("attachments exceed %d bytes", deviceGatewayMaxMediaResidentBytesPerClient)
+		}
+		media.LastAccessedAt = time.Now().UTC()
+		mediaType, fileName, mimeType := media.Type, media.FileName, media.MimeType
+		data := append([]byte(nil), media.Data...)
+		g.mu.Unlock()
+		totalBytes += int64(len(data))
+		attachments = append(attachments, MessageAttachment{Type: firstDeviceValue(ref.Type, mediaType), FileName: firstDeviceValue(ref.FileName, fileName), MimeType: firstDeviceValue(ref.MimeType, mimeType), Data: encodeDeviceData(data), Size: int64(len(data))})
 	}
 	return attachments, nil
 }
 
 func (g *DeviceGateway) storeMediaUpload(r *http.Request, id string) error {
-	g.mu.Lock()
-	media := g.media[strings.TrimSpace(id)]
-	g.mu.Unlock()
-	if media == nil || !deviceMediaTokenOK(r, media.Token) {
-		return fmt.Errorf("media not found")
+	if r == nil || r.Body == nil {
+		return fmt.Errorf("media body is required")
 	}
 	if r.ContentLength > deviceGatewayMaxMediaBytes {
 		return fmt.Errorf("media exceeds %d bytes", deviceGatewayMaxMediaBytes)
 	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, deviceGatewayMaxMediaBytes+1))
+	g.mu.Lock()
+	mediaID := strings.TrimSpace(id)
+	media := g.media[mediaID]
+	if media != nil && deviceMediaExpired(media, time.Now().UTC()) {
+		delete(g.media, mediaID)
+		media = nil
+	}
+	if media == nil || !deviceMediaTokenOK(r, media.Token) {
+		g.mu.Unlock()
+		return fmt.Errorf("media not found")
+	}
+	if media.MachineID != "" && !g.machineHardwareEnabledLocked(media.MachineID) {
+		g.mu.Unlock()
+		return fmt.Errorf("hardware is disabled")
+	}
+	if media.Uploading {
+		g.mu.Unlock()
+		return fmt.Errorf("media upload already in progress")
+	}
+	if media.Uploaded {
+		// Treat a retry after a lost success response as idempotent. Media is
+		// immutable once published, so a bearer cannot silently replace content
+		// already referenced by an incoming message.
+		g.mu.Unlock()
+		return nil
+	}
+	if media.SizeBytes > 0 && r.ContentLength >= 0 && r.ContentLength != media.SizeBytes {
+		g.mu.Unlock()
+		return fmt.Errorf("media size mismatch")
+	}
+	reservation := expectedMediaUploadReservation(media.SizeBytes, r.ContentLength)
+	if !g.ensureMediaCapacityLocked(media.ClientID, 0, reservation, mediaID, time.Now().UTC()) {
+		g.mu.Unlock()
+		return fmt.Errorf("media capacity is temporarily exhausted")
+	}
+	media.Uploading = true
+	media.UploadReservedBytes = reservation
+	expectedSize := media.SizeBytes
+	expectedToken := media.Token
+	g.mu.Unlock()
+	uploadClaimed := true
+	defer func() {
+		if !uploadClaimed {
+			return
+		}
+		g.mu.Lock()
+		if current := g.media[mediaID]; current != nil && current.Token == expectedToken {
+			current.Uploading = false
+			current.UploadReservedBytes = 0
+		}
+		g.mu.Unlock()
+	}()
+	readLimit := expectedMediaUploadReadLimit(expectedSize, r.ContentLength)
+	data, err := io.ReadAll(io.LimitReader(r.Body, readLimit+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > int(deviceGatewayMaxMediaBytes) {
+	if int64(len(data)) > readLimit {
+		if expectedSize > 0 {
+			return fmt.Errorf("media size mismatch")
+		}
 		return fmt.Errorf("media exceeds %d bytes", deviceGatewayMaxMediaBytes)
 	}
-	if media.SizeBytes > 0 && int64(len(data)) != media.SizeBytes {
+	if expectedSize > 0 && int64(len(data)) != expectedSize {
 		return fmt.Errorf("media size mismatch")
 	}
 	g.mu.Lock()
+	media = g.media[mediaID]
+	if media == nil || media.Token != expectedToken {
+		g.mu.Unlock()
+		return fmt.Errorf("media not found")
+	}
+	// The upload body is read outside g.mu. Hardware may be disabled during
+	// that interval, so validate the switch again before publishing the bytes.
+	if media.MachineID != "" && !g.machineHardwareEnabledLocked(media.MachineID) {
+		media.Uploading = false
+		media.UploadReservedBytes = 0
+		g.mu.Unlock()
+		return fmt.Errorf("hardware is disabled")
+	}
+	additionalBytes := int64(len(data) - len(media.Data))
+	if additionalBytes < 0 {
+		additionalBytes = 0
+	}
+	if additionalBytes > media.UploadReservedBytes &&
+		!g.ensureMediaCapacityLocked(media.ClientID, 0, additionalBytes-media.UploadReservedBytes, mediaID, time.Now().UTC()) {
+		g.mu.Unlock()
+		return fmt.Errorf("media capacity is temporarily exhausted")
+	}
 	media.Data = data
 	media.Uploaded = true
+	media.Uploading = false
+	media.UploadReservedBytes = 0
 	media.SizeBytes = int64(len(data))
 	if media.MimeType == "" {
 		media.MimeType = strings.TrimSpace(r.Header.Get("Content-Type"))
 	}
 	media.LastAccessedAt = time.Now().UTC()
+	uploadClaimed = false
 	g.mu.Unlock()
 	return nil
+}
+
+func expectedMediaUploadReservation(expectedSize, contentLength int64) int64 {
+	if expectedSize > 0 {
+		return expectedSize
+	}
+	if contentLength > 0 {
+		return contentLength
+	}
+	// A zero declared size means the final size is unknown. Reserve the maximum
+	// before reading so chunked uploads cannot bypass the aggregate memory cap.
+	return deviceGatewayMaxMediaBytes
+}
+
+func expectedMediaUploadReadLimit(expectedSize, contentLength int64) int64 {
+	if expectedSize > 0 {
+		return expectedSize
+	}
+	if contentLength > 0 && contentLength < deviceGatewayMaxMediaBytes {
+		return contentLength
+	}
+	return deviceGatewayMaxMediaBytes
 }
 
 func (g *DeviceGateway) mediaForDownload(r *http.Request, id string) (*deviceMedia, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	media := g.media[strings.TrimSpace(id)]
+	if media != nil && deviceMediaExpired(media, time.Now().UTC()) {
+		delete(g.media, strings.TrimSpace(id))
+		media = nil
+	}
 	if media == nil || !media.Uploaded || !deviceMediaTokenOK(r, media.Token) {
+		return nil, fmt.Errorf("media not found")
+	}
+	if media.MachineID != "" && !g.machineHardwareEnabledLocked(media.MachineID) {
 		return nil, fmt.Errorf("media not found")
 	}
 	media.LastAccessedAt = time.Now().UTC()
@@ -1759,39 +2641,297 @@ func (g *DeviceGateway) mediaForDownload(r *http.Request, id string) (*deviceMed
 
 func (g *DeviceGateway) pruneMediaLocked(now time.Time) {
 	for id, media := range g.media {
-		if media.LastAccessedAt.Before(now.Add(-24 * time.Hour)) {
+		if !media.Uploading && media.QueueRefs == 0 && deviceMediaExpired(media, now) {
 			delete(g.media, id)
 		}
 	}
-	for len(g.media) > deviceGatewayMaxMediaObjects {
-		var oldestID string
-		var oldest time.Time
-		for id, media := range g.media {
-			if oldestID == "" || media.LastAccessedAt.Before(oldest) {
-				oldestID, oldest = id, media.LastAccessedAt
+	for len(g.media) > deviceGatewayMaxMediaObjects || g.mediaAllocatedBytesLocked("") > deviceGatewayMaxMediaResidentBytes {
+		if !g.evictOldestMediaLocked("", "") {
+			break
+		}
+	}
+}
+
+func deviceMediaExpired(media *deviceMedia, now time.Time) bool {
+	if media == nil {
+		return true
+	}
+	if !media.ExpiresAt.IsZero() {
+		return !media.ExpiresAt.After(now)
+	}
+	return media.LastAccessedAt.Before(now.Add(-deviceGatewayMediaTTL))
+}
+
+func (g *DeviceGateway) mediaResidentBytesLocked(clientID string) int64 {
+	var total int64
+	for _, media := range g.media {
+		if clientID == "" || media.ClientID == clientID {
+			total += int64(len(media.Data))
+		}
+	}
+	return total
+}
+
+func (g *DeviceGateway) mediaAllocatedBytesLocked(clientID string) int64 {
+	var total int64
+	for _, media := range g.media {
+		if clientID == "" || media.ClientID == clientID {
+			total += int64(len(media.Data)) + media.UploadReservedBytes
+		}
+	}
+	return total
+}
+
+func (g *DeviceGateway) mediaObjectCountLocked(clientID string) int {
+	count := 0
+	for _, media := range g.media {
+		if media.ClientID == clientID {
+			count++
+		}
+	}
+	return count
+}
+
+// ensureMediaCapacityLocked applies both global safety limits and per-client
+// quotas. It first reclaims the requesting client's LRU entries, so one noisy
+// ESP32 cannot routinely evict every other device's pending media.
+func (g *DeviceGateway) ensureMediaCapacityLocked(clientID string, addObjects int, addBytes int64, excludeID string, now time.Time) bool {
+	if addObjects < 0 || addBytes < 0 || addObjects > deviceGatewayMaxMediaObjectsPerClient || addBytes > deviceGatewayMaxMediaResidentBytesPerClient {
+		return false
+	}
+	g.pruneMediaLocked(now)
+	for g.mediaObjectCountLocked(clientID)+addObjects > deviceGatewayMaxMediaObjectsPerClient ||
+		g.mediaAllocatedBytesLocked(clientID)+addBytes > deviceGatewayMaxMediaResidentBytesPerClient {
+		if !g.evictOldestMediaLocked(clientID, excludeID) {
+			return false
+		}
+	}
+	for len(g.media)+addObjects > deviceGatewayMaxMediaObjects ||
+		g.mediaAllocatedBytesLocked("")+addBytes > deviceGatewayMaxMediaResidentBytes {
+		if !g.evictOldestMediaLocked(clientID, excludeID) && !g.evictOldestMediaLocked("", excludeID) {
+			return false
+		}
+	}
+	return true
+}
+
+func (g *DeviceGateway) evictOldestMediaLocked(clientID, excludeID string) bool {
+	var oldestID string
+	var oldest time.Time
+	for id, media := range g.media {
+		if id == excludeID || media.Uploading || media.QueueRefs > 0 || (clientID != "" && media.ClientID != clientID) {
+			continue
+		}
+		if oldestID == "" || media.LastAccessedAt.Before(oldest) {
+			oldestID, oldest = id, media.LastAccessedAt
+		}
+	}
+	if oldestID != "" {
+		delete(g.media, oldestID)
+		return true
+	}
+	return false
+}
+
+func (g *DeviceGateway) queueDeviceMessageLocked(state *deviceClientState, message map[string]any) {
+	if state == nil || message == nil {
+		return
+	}
+	for _, mediaID := range deviceMessageMediaIDs(message) {
+		if media := g.media[mediaID]; media != nil {
+			media.QueueRefs++
+			minimumExpiry := time.Now().UTC().Add(deviceGatewayQueuedMediaTTL)
+			if media.ExpiresAt.Before(minimumExpiry) {
+				media.ExpiresAt = minimumExpiry
 			}
 		}
-		delete(g.media, oldestID)
 	}
+	state.messages = append(state.messages, message)
+	g.pruneDeviceMessagesLocked(state)
+}
+
+func (g *DeviceGateway) releaseDeviceMessageMediaLocked(message map[string]any) {
+	for _, mediaID := range deviceMessageMediaIDs(message) {
+		if media := g.media[mediaID]; media != nil && media.QueueRefs > 0 {
+			media.QueueRefs--
+		}
+	}
+}
+
+func deviceMessageMediaIDs(message map[string]any) []string {
+	seen := make(map[string]struct{})
+	addURL := func(raw any) {
+		url, _ := raw.(string)
+		url = strings.TrimSpace(url)
+		path := url
+		if parsed, err := neturl.Parse(url); err == nil {
+			path = parsed.Path
+		}
+		const prefix = "/api/im-gateway/v1/media/"
+		if !strings.HasPrefix(path, prefix) {
+			return
+		}
+		id := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+		if id != "" && !strings.Contains(id, "/") {
+			seen[id] = struct{}{}
+		}
+	}
+	addURL(message["url"])
+	if asset, ok := message["pet_asset"].(devicePetAssetReference); ok {
+		for _, url := range asset.URLs {
+			addURL(url)
+		}
+	} else if asset, ok := message["pet_asset"].(map[string]any); ok {
+		switch urls := asset["urls"].(type) {
+		case []string:
+			for _, url := range urls {
+				addURL(url)
+			}
+		case []any:
+			for _, url := range urls {
+				addURL(url)
+			}
+		}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func cloneDeviceMessage(message map[string]any) map[string]any {
+	if message == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		return nil
+	}
+	var cloned map[string]any
+	if json.Unmarshal(encoded, &cloned) != nil {
+		return nil
+	}
+	return cloned
+}
+
+// activateDeviceReply registers the correlation id before asynchronous Hub/GUI
+// work starts. A cold boot clears this set, so a result produced by the previous
+// process can no longer enter the new process's queue even if it finishes late.
+func (g *DeviceGateway) activateDeviceReply(clientID, replyTo string) {
+	replyTo = strings.TrimSpace(replyTo)
+	if replyTo == "" {
+		return
+	}
+	g.mu.Lock()
+	state := g.clientLocked(strings.TrimSpace(clientID))
+	if state.activeReplies == nil {
+		state.activeReplies = make(map[string]struct{})
+	}
+	if _, exists := state.activeReplies[replyTo]; !exists {
+		state.activeReplies[replyTo] = struct{}{}
+		state.activeOrder = append(state.activeOrder, replyTo)
+		if len(state.activeOrder) > deviceGatewayMaxSeenEvents {
+			drop := len(state.activeOrder) - deviceGatewayMaxSeenEvents
+			for _, old := range state.activeOrder[:drop] {
+				delete(state.activeReplies, old)
+			}
+			state.activeOrder = append([]string(nil), state.activeOrder[drop:]...)
+		}
+	}
+	g.mu.Unlock()
+}
+
+func deviceReplyCorrelationID(reply map[string]any) string {
+	for _, source := range []map[string]any{reply, deviceReplyNestedMap(reply, "metadata"), deviceReplyNestedMap(reply, "extra")} {
+		for _, key := range []string{"replyTo", "replyToMessageId", "source_message_id", "sourceMessageId", "sourceMessageID"} {
+			if value, ok := source[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
+func deviceReplyNestedMap(reply map[string]any, key string) map[string]any {
+	if reply == nil {
+		return nil
+	}
+	if nested, ok := reply[key].(map[string]any); ok {
+		return nested
+	}
+	if nested, ok := reply[key].(map[string]string); ok {
+		result := make(map[string]any, len(nested))
+		for name, value := range nested {
+			result[name] = value
+		}
+		return result
+	}
+	return nil
+}
+
+func deviceReplyBelongsToCurrentBootLocked(state *deviceClientState, reply map[string]any) bool {
+	replyTo := deviceReplyCorrelationID(reply)
+	if replyTo == "" || state == nil || state.bootSessionID == "" {
+		// Unsolicited control-plane messages and legacy clients without a boot id
+		// keep their existing behavior. Correlated command replies are gated once
+		// a modern client has established a boot session.
+		return true
+	}
+	_, ok := state.activeReplies[replyTo]
+	return ok
 }
 
 func (g *DeviceGateway) clientLocked(clientID string) *deviceClientState {
 	state := g.clients[clientID]
 	if state == nil {
-		state = &deviceClientState{acked: make(map[string]bool), ackStatus: make(map[string]string), notify: make(chan struct{})}
+		state = &deviceClientState{acked: make(map[string]bool), ackStatus: make(map[string]string), activeReplies: make(map[string]struct{}), seenEvents: make(map[string]struct{}), notify: make(chan struct{})}
 		g.clients[clientID] = state
-	} else if state.ackStatus == nil {
+	} else {
 		// Older tests and in-memory states can predate delivery-status tracking.
-		state.ackStatus = make(map[string]string)
+		if state.ackStatus == nil {
+			state.ackStatus = make(map[string]string)
+		}
+		if state.seenEvents == nil {
+			state.seenEvents = make(map[string]struct{})
+		}
 	}
 	return state
+}
+
+// markDeviceEvent provides bounded, per-client replay suppression at the HTTP
+// acceptance boundary. It runs before the asynchronous GUI relay so a lost
+// response followed by an ESP retry cannot execute the same incoming request
+// or tool result twice.
+func (g *DeviceGateway) markDeviceEvent(clientID, eventID string) bool {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state := g.clientLocked(clientID)
+	if _, exists := state.seenEvents[eventID]; exists {
+		return true
+	}
+	state.seenEvents[eventID] = struct{}{}
+	state.seenOrder = append(state.seenOrder, eventID)
+	if len(state.seenOrder) > deviceGatewayMaxSeenEvents {
+		drop := len(state.seenOrder) - deviceGatewayMaxSeenEvents
+		for _, old := range state.seenOrder[:drop] {
+			delete(state.seenEvents, old)
+		}
+		copy(state.seenOrder, state.seenOrder[drop:])
+		state.seenOrder = state.seenOrder[:deviceGatewayMaxSeenEvents]
+	}
+	return false
 }
 
 // pruneDeviceMessagesLocked bounds per-device memory and drops acknowledged
 // entries eagerly. The cursor is monotonic, so retaining old acknowledged
 // maps only wastes memory; if an offline device falls over the hard cap it can
 // still recover current durable state through the next handshake.
-func pruneDeviceMessagesLocked(state *deviceClientState) {
+func (g *DeviceGateway) pruneDeviceMessagesLocked(state *deviceClientState) {
 	if state == nil || len(state.messages) == 0 {
 		return
 	}
@@ -1799,6 +2939,7 @@ func pruneDeviceMessagesLocked(state *deviceClientState) {
 	for _, message := range state.messages {
 		id, _ := message["id"].(string)
 		if id != "" && state.acked[id] {
+			g.releaseDeviceMessageMediaLocked(message)
 			delete(state.acked, id)
 			continue
 		}
@@ -1807,6 +2948,7 @@ func pruneDeviceMessagesLocked(state *deviceClientState) {
 	if len(kept) > deviceGatewayMaxQueuedMessages {
 		drop := len(kept) - deviceGatewayMaxQueuedMessages
 		for index := 0; index < drop; index++ {
+			g.releaseDeviceMessageMediaLocked(kept[index])
 			id, _ := kept[index]["id"].(string)
 			delete(state.acked, id)
 			delete(state.ackStatus, id)
@@ -1825,6 +2967,32 @@ func (g *DeviceGateway) principal(r *http.Request) (devicePrincipal, bool) {
 	token := strings.TrimSpace(auth[len("Bearer "):])
 	g.mu.Lock()
 	p, ok := g.tokens[token]
+	if ok {
+		// Every authenticated device request is proof of liveness. Handshake-only
+		// timestamps made a healthy long-polling ESP32 appear offline after 90s,
+		// causing remote audio previews to be rejected until the next reboot.
+		now := time.Now().UTC()
+		state := g.clientLocked(p.ClientID)
+		if state.lastSeenFlushAt.IsZero() && !p.LastSeenAt.IsZero() {
+			state.lastSeenFlushAt = p.LastSeenAt
+		}
+		p.LastSeenAt = now
+		state.lastSeenAt = now
+		for bearer, principal := range g.tokens {
+			if principal.ClientID == p.ClientID && principal.MachineID == p.MachineID {
+				principal.LastSeenAt = p.LastSeenAt
+				g.tokens[bearer] = principal
+			}
+		}
+		if !state.lastSeenFlushAt.IsZero() && now.Sub(state.lastSeenFlushAt) >= deviceGatewayPresenceFlushInterval {
+			// Throttle failed writes as well: availability must not turn a store
+			// outage into one settings write per long poll.
+			state.lastSeenFlushAt = now
+			if err := g.persistTokensLocked(); err != nil {
+				log.Printf("device gateway: persist last-seen for client %q: %v", p.ClientID, err)
+			}
+		}
+	}
 	g.mu.Unlock()
 	return p, ok
 }

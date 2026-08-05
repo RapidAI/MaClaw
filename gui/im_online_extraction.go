@@ -18,6 +18,9 @@ import (
 // extraction pipeline after each agent loop exit. It converts the conversation
 // history to the format expected by OnlineExtractor and runs in a goroutine.
 func (h *IMMessageHandler) triggerOnlineExtraction(userID string, history []agent.ConversationEntry) {
+	if isIsolatedAssistantSessionUserID(userID) {
+		return
+	}
 	if h.memoryStore == nil {
 		return
 	}
@@ -58,6 +61,9 @@ func (h *IMMessageHandler) triggerOnlineExtraction(userID string, history []agen
 // yields to any new user message that arrives before it begins, preventing
 // background LLM calls from competing with the main agent loop for API bandwidth.
 func (h *IMMessageHandler) triggerOnlineExtractionDeferred(userID string, history []agent.ConversationEntry) {
+	if isIsolatedAssistantSessionUserID(userID) {
+		return
+	}
 	if h.memoryStore == nil {
 		return
 	}
@@ -174,6 +180,9 @@ func extractConversationSummary(history []agent.ConversationEntry) string {
 // the context is cancelled, aborting the in-flight LLM call and freeing API
 // bandwidth for the new agent loop.
 func (h *IMMessageHandler) triggerOnlineExtractionWithContext(bgCtx context.Context, userID string, history []agent.ConversationEntry) {
+	if isIsolatedAssistantSessionUserID(userID) {
+		return
+	}
 	if h.memoryStore == nil {
 		return
 	}

@@ -48,6 +48,10 @@ type LoopContext struct {
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned
 	Runtime    RuntimeContext
+	// ClientTools and ClientToolContext are immutable per-turn snapshots. They
+	// keep dynamically declared device tools out of the global tool registry.
+	ClientTools       []agent.ClientToolDefinition
+	ClientToolContext *agent.ClientToolContext
 
 	// codeSessionID scopes source-preview events emitted by nested coding
 	// SubAgents to the same UI code session opened by the workflow runner.

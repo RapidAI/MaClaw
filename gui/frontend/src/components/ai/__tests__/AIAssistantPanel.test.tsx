@@ -522,7 +522,11 @@ describe('AIAssistantPanel property tests', () => {
         const prompt = await waitFor(() => getByTestId('workflow-review-inline-prompt'));
         expect(prompt.textContent || '').toContain('Project Outline is waiting for review');
         fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm & proceed' }));
-        expect(executeAction).toHaveBeenCalledWith('__wf_review__ confirm');
+        expect(executeAction).toHaveBeenCalledWith('__wf_review__ confirm', expect.objectContaining({
+            project_path: 'D:/tasks/workflow-review-project-tab',
+            tabId: projectTabId,
+            recentMessages: expect.any(Array),
+        }));
     });
 
     it('keeps visible input progress while waiting for a workflow form to open', async () => {
@@ -2435,6 +2439,70 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while creating', expect.objectContaining({ project_path: 'D:/tasks/new-agent-prepare' })));
     });
 
+    it('shows a one-shot new-task context card without sending it to the agent', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-local-context',
+                taskTitle: 'New local coding task',
+                initialMessage: 'Do not send this creation payload',
+                autoSend: true,
+                prepareMode: 'new-agent',
+                agentMode: 'coding_dev',
+                newTaskContext: { kind: 'new-task', workingDir: 'D:/work/project' },
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const card = await waitFor(() => getByTestId(/assistant-task-context-/));
+        expect(card.textContent).toContain('CURRENT TASK');
+        expect(card.textContent).toContain('Local coding');
+        expect(card.textContent).toContain('D:/work/project');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+    it('shows a selected working directory for a new chat task without sending it', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-chat-context',
+                taskTitle: 'New task',
+                autoSend: false,
+                newTaskContext: { kind: 'new-task', workingDir: 'D:/work/general' },
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const card = await waitFor(() => getByTestId(/assistant-task-context-/));
+        expect(card.textContent).toContain('Chat');
+        expect(card.textContent).toContain('D:/work/general');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+    it('localizes new-task context cards in Traditional Chinese', async () => {
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hant',
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-remote-context-hant',
+                taskTitle: 'New remote coding task',
+                autoSend: false,
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'ssh.example.test',
+                newTaskContext: { kind: 'new-task', remoteUser: 'deploy', remotePort: 2222, remoteWorkDir: '/srv/project' },
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        const card = await waitFor(() => getByTestId(/assistant-task-context-/));
+        expect(card.textContent).toContain('目前任務資訊');
+        expect(card.textContent).toContain('遠端程式');
+        expect(card.textContent).toContain('連接埠：2222');
+        expect(card.textContent).toContain('遠端工作目錄');
+        expect(card.textContent).toContain('此資訊不會傳送給 AI');
+    });
     it('shows a coding environment banner for coding_dev project tabs', async () => {
         let resolveSession!: () => void;
         createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
@@ -4889,6 +4957,34 @@ describe('AIAssistantPanel property tests', () => {
         expect(clearHistory).not.toHaveBeenCalled();
     });
 
+    it('forgets project-owned transient state before cancelling a cleared project tab', async () => {
+        const projectPath = 'D:/tasks/project-clear-forget-state';
+        const onHandled = vi.fn();
+        const forgottenSessions: string[] = [];
+        const onForget = (event: Event) => {
+            forgottenSessions.push(String((event as CustomEvent).detail?.sessionKey || ''));
+        };
+        window.addEventListener('ai-assistant:forget-session-rounds', onForget);
+
+        const { getByRole, getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Project clear forget state',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByRole('tab', { name: 'Project clear forget state' }));
+        fireEvent.click(getByTitle('New conversation'));
+
+        await waitFor(() => expect(forgottenSessions).toContain(`desktop-user:${projectPath}`));
+        expect(cancelSessionForSessionMock).toHaveBeenCalledWith(`desktop-user:${projectPath}`);
+        window.removeEventListener('ai-assistant:forget-session-rounds', onForget);
+    });
+
     it('does not resurrect cleared project tab history after closing and reopening', async () => {
         const projectPath = 'D:/tasks/project-clear-close-reopen';
         const onHandled = vi.fn();
@@ -5645,6 +5741,21 @@ describe('expert tabs', () => {
         await screen.findByTestId('ai-expert-empty');
         expect(screen.getByTestId('ai-expert-empty').textContent).toContain('Polisher');
         expect(screen.queryByTestId('ai-welcome-container')).toBeNull();
+    });
+
+    it('forgets expert-owned transient state when its tab closes', async () => {
+        const forgottenSessions: string[] = [];
+        const onForget = (event: Event) => {
+            forgottenSessions.push(String((event as CustomEvent).detail?.sessionKey || ''));
+        };
+        window.addEventListener('ai-assistant:forget-session-rounds', onForget);
+
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        fireEvent.click(screen.getByTestId('ai-tab-close-expert-exp-1'));
+
+        await waitFor(() => expect(forgottenSessions).toContain('desktop-user:expert:exp-1'));
+        window.removeEventListener('ai-assistant:forget-session-rounds', onForget);
     });
 
     it('does not resurrect cleared history after tab switches, then persists a fresh re-chat', async () => {

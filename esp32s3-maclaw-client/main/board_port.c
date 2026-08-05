@@ -54,8 +54,19 @@
 #define AUDIO_PA_ENABLE GPIO_NUM_18
 #define ES7210_ADDRESS  0x40
 #define ES8311_ADDRESS  0x18
+#define ES8311_DAC_VOLUME_REG 0x32
+#define OUTPUT_VOLUME_DEFAULT 70
 #define AUDIO_RATE      16000
-#define AUDIO_SECONDS   6
+// End a command after a natural pause instead of a fixed recording window.
+// Thirty seconds leaves room for multi-step requests while keeping the maximum
+// 16 kHz PCM WAV allocation below 1 MiB on the current in-memory upload path.
+#define COMMAND_CAPTURE_MAX_SECONDS 30
+#define COMMAND_CAPTURE_START_TIMEOUT_MS 6000
+#define COMMAND_CAPTURE_SILENCE_MS 1200
+#define COMMAND_CAPTURE_START_CONFIRM_MS 80
+#define COMMAND_CAPTURE_START_LEVEL 55
+#define COMMAND_CAPTURE_SILENCE_LEVEL 30
+#define COMMAND_CAPTURE_PREROLL_MS 300
 #define WAKE_WORD_COMMAND_ID 1
 // Keep one recognizer running in standby. Running Chinese and English models
 // together doubles inference work and makes normal-speed wake-up unreliable.
@@ -63,11 +74,18 @@
 // MultiNet7 Chinese commands use space-separated pinyin syllables without
 // tone digits.  Supplying tone digits makes its command validator reject the
 // phrase, which silently disabled standby wake-up altogether.
-#define WAKE_WORD_CN_PHONETIC "ma ka long"
+// Spaces are token boundaries, not required pauses. Connected delivery often
+// voices the middle consonant or reduces its vowel, so all common paths map to
+// the same command ID and trigger exactly the same interaction.
+static const char *const s_wake_word_cn_phonetics[] = {
+    "ma ka long",
+    "ma ga long",
+    "ma ke long",
+};
 // The default command threshold favours deliberate, slow commands.  A modest
 // reduction preserves a practical false-wake margin while accepting normal
 // conversational delivery of the short product name.
-#define WAKE_WORD_DETECTION_THRESHOLD 0.30f
+#define WAKE_WORD_DETECTION_THRESHOLD 0.24f
 #define WAKE_WORD_COOLDOWN_US (2LL * 1000 * 1000)
 #define WAKE_WORD_INVALID_SAMPLE_ABS 32500
 // MIC1/left is not reliable on the tested EchoEar-2ST: damaged I2S words
@@ -125,12 +143,22 @@ static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_panel_io;
 static board_port_button_cb_t s_on_button;
 static void *s_on_press_arg;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static volatile bool s_boot_network_window_active;
+static volatile bool s_boot_network_toggle_requested;
+#endif
 
 static char s_pet_state[16] = "quiet";
 static char s_pet_skin[32] = "clawmate";
 static bool s_pet_motion_enabled = true;
 static uint8_t s_pet_frame;
 static uint32_t s_pet_motion_tick;
+#define REMOTE_PET_MAX_FRAMES 8
+static uint8_t *s_remote_pet_frames[REMOTE_PET_MAX_FRAMES];
+static size_t s_remote_pet_frame_count;
+static size_t s_remote_pet_width;
+static size_t s_remote_pet_height;
+static uint32_t s_remote_pet_frame_ms = 450;
 static bool s_recording_active;
 static bool s_recording_paused;
 static volatile uint32_t s_recording_elapsed_seconds;
@@ -170,6 +198,11 @@ static bool s_setup_qrcode_visible;
 // line.  The original two-line status buffer remains for short system states;
 // replies use the full lower safe area and advance only after a calm pause.
 static bool s_response_active;
+// Image replies are rendered from transient decoded pixels and intentionally
+// have no text-page backing store. Keep them distinct from paginated replies
+// so a page gesture cannot redraw stale s_response_text over the image.
+static bool s_response_image_active;
+static bool s_alarm_visual_active;
 static unsigned s_response_page;
 static int64_t s_response_next_page_us;
 static char s_response_title[48];
@@ -216,6 +249,8 @@ static i2c_master_dev_handle_t s_touch;
 static i2s_chan_handle_t s_audio_rx;
 static i2s_chan_handle_t s_audio_tx;
 static bool s_audio_ready;
+static TaskHandle_t s_audio_playback_owner;
+static unsigned s_output_volume = OUTPUT_VOLUME_DEFAULT;
 static volatile bool s_command_display_locked;
 static volatile bool s_command_cancel_enabled;
 static volatile uint32_t s_command_gesture_revision;
@@ -227,9 +262,12 @@ static int64_t s_touch_gesture_released_at_us;
 static bool s_recording_is_meeting;
 static SemaphoreHandle_t s_audio_mutex;
 static TaskHandle_t s_wake_word_task;
+static volatile bool s_wake_word_task_starting;
+static volatile bool s_wake_word_ready;
 static board_port_wake_word_cb_t s_on_wake_word;
 static void *s_on_wake_word_arg;
 static volatile bool s_wake_word_paused;
+static volatile bool s_wake_word_pause_acknowledged;
 static volatile bool s_wake_word_stop_requested;
 static portMUX_TYPE s_wake_word_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -330,8 +368,26 @@ static esp_err_t wait_for_lcd_color_transfer(void) {
 
 static esp_err_t draw_bitmap_sync(int x0, int y0, int x1, int y1,
                                   const void *pixels);
+static bool draw_remote_pet(void);
 static unsigned response_page_count(void);
 static void draw_response_page(void);
+
+static void emit_button_input(board_input_action_t action,
+                              board_input_source_t source) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    // GPIO0 double-click has one meaning while the board is booting: select
+    // 4G for this boot. Do not let those contacts leak into the normal voice
+    // / meeting gesture handler.
+    if (s_boot_network_window_active) {
+        if (action == BOARD_INPUT_SECONDARY &&
+            source == BOARD_INPUT_SOURCE_ACTIVATE_KEY) {
+            s_boot_network_toggle_requested = true;
+        }
+        return;
+    }
+#endif
+    if (s_on_button) s_on_button(action, source, s_on_press_arg);
+}
 
 // Every frame present uses the same completion fence. Keeping this in one
 // helper prevents the pet and recording paths from drifting apart, and makes
@@ -379,17 +435,34 @@ static esp_err_t es8311_write(uint8_t reg, uint8_t value) {
     return i2c_master_transmit(s_es8311, bytes, sizeof(bytes), 1000);
 }
 
+static uint8_t es8311_volume_register(unsigned percent) {
+    if (percent == 0) return 0;
+    // ES8311's DAC volume register spans 0x00..0xFF. Match the codec's
+    // documented linear percentage mapping while keeping 100% at 0xFF.
+    return (uint8_t)((percent * 256u / 100u) - 1u);
+}
+
+static esp_err_t es8311_set_output_volume(unsigned percent) {
+    if (percent > 100) return ESP_ERR_INVALID_ARG;
+    return es8311_write(ES8311_DAC_VOLUME_REG, es8311_volume_register(percent));
+}
+
 static esp_err_t es8311_init(void) {
     // EchoEar-2ST uses the ES8311 at 0x18 as I2S slave. This sequence is
     // Espressif's BSP initialization for 16-bit, 16 kHz playback with the
     // ESP32-S3 supplying its 4.096 MHz MCLK.
     static const uint8_t init[][2] = {
         {0x00, 0x1F}, {0x00, 0x00}, {0x00, 0x80},
-        {0x01, 0x3F}, {0x02, 0x00}, {0x03, 0x10}, {0x04, 0x10},
-        {0x05, 0x00}, {0x06, 0x04}, {0x07, 0x00}, {0x08, 0xFF},
+        // 16 kHz / 4.096 MHz MCLK coefficients from the hardware-verified
+        // EchoEar-2ST driver. REG01 bit 6 enables MCLK input and REG06 stores
+        // bclk_div-1, so a physical divider of 4 must be programmed as 0x03.
+        // The previous 0x3F/0x04 pair could leave the DAC clocked incorrectly
+        // while I2S writes still appeared successful, producing silent ACKs.
+        {0x01, 0x7F}, {0x02, 0x00}, {0x03, 0x10}, {0x04, 0x10},
+        {0x05, 0x00}, {0x06, 0x03}, {0x07, 0x00}, {0x08, 0xFF},
         {0x09, 0x0C}, {0x0A, 0x0C}, {0x0D, 0x01}, {0x0E, 0x02},
         {0x12, 0x00}, {0x13, 0x10}, {0x1C, 0x6A}, {0x37, 0x08},
-        {0x31, 0x00}, {0x32, 0xB2},
+        {0x31, 0x00},
     };
     ESP_RETURN_ON_ERROR(es8311_write(init[0][0], init[0][1]), TAG, "ES8311 reset");
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -397,27 +470,70 @@ static esp_err_t es8311_init(void) {
         ESP_RETURN_ON_ERROR(es8311_write(init[i][0], init[i][1]), TAG,
                             "ES8311 reg %02x", init[i][0]);
     }
-    return ESP_OK;
+    return es8311_set_output_volume(s_output_volume);
+}
+
+static void audio_init_rollback(void) {
+    // audio_init() is intentionally retryable: board_port_init() probes audio
+    // early for touch support, and wake startup may retry it later. Leaving a
+    // partly-created I2C bus or I2S channel behind makes every later attempt
+    // fail with "bus already acquired", permanently disabling EchoEar wake.
+    if (s_audio_tx) {
+        (void)i2s_channel_disable(s_audio_tx);
+        (void)i2s_del_channel(s_audio_tx);
+        s_audio_tx = NULL;
+    }
+    if (s_audio_rx) {
+        (void)i2s_channel_disable(s_audio_rx);
+        (void)i2s_del_channel(s_audio_rx);
+        s_audio_rx = NULL;
+    }
+    if (s_touch) {
+        (void)i2c_master_bus_rm_device(s_touch);
+        s_touch = NULL;
+    }
+    if (s_es8311) {
+        (void)i2c_master_bus_rm_device(s_es8311);
+        s_es8311 = NULL;
+    }
+    if (s_es7210) {
+        (void)i2c_master_bus_rm_device(s_es7210);
+        s_es7210 = NULL;
+    }
+    if (s_audio_i2c_bus) {
+        (void)i2c_del_master_bus(s_audio_i2c_bus);
+        s_audio_i2c_bus = NULL;
+    }
+    s_audio_ready = false;
 }
 
 static esp_err_t audio_init(void) {
     if (s_audio_ready) return ESP_OK;
+    // Recover from an earlier partial attempt before claiming the peripherals
+    // again. A successful initialization never enters this path because it
+    // returns above with s_audio_ready set.
+    audio_init_rollback();
+    esp_err_t err = ESP_OK;
     i2c_master_bus_config_t bus_cfg = {
         .i2c_port = I2C_NUM_0, .sda_io_num = AUDIO_I2C_SDA,
         .scl_io_num = AUDIO_I2C_SCL, .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true,
     };
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &s_audio_i2c_bus), TAG, "audio I2C init");
+    err = i2c_new_master_bus(&bus_cfg, &s_audio_i2c_bus);
+    if (err != ESP_OK) goto fail;
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = ES7210_ADDRESS,
         .scl_speed_hz = 100000,
     };
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_audio_i2c_bus, &dev_cfg, &s_es7210), TAG, "ES7210 add");
+    err = i2c_master_bus_add_device(s_audio_i2c_bus, &dev_cfg, &s_es7210);
+    if (err != ESP_OK) goto fail;
     i2c_device_config_t speaker_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = ES8311_ADDRESS,
         .scl_speed_hz = 100000,
     };
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_audio_i2c_bus, &speaker_cfg, &s_es8311), TAG, "ES8311 add");
+    err = i2c_master_bus_add_device(s_audio_i2c_bus, &speaker_cfg, &s_es8311);
+    if (err != ESP_OK) goto fail;
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
     i2c_device_config_t touch_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = CST8XX_ADDRESS,
         .scl_speed_hz = 100000,
@@ -427,6 +543,7 @@ static esp_err_t audio_init(void) {
         ESP_LOGW(TAG, "CST8xx touch add failed: %s", esp_err_to_name(touch_err));
         s_touch = NULL;
     }
+#endif
 
     static const uint8_t init[][2] = {
         {0x00,0xFF},{0x00,0x32},{0x09,0x30},{0x0A,0x30},
@@ -441,13 +558,15 @@ static esp_err_t audio_init(void) {
         {0x06,0x04},{0x4B,0x0F},{0x4C,0x0F},{0x00,0x71},{0x00,0x41},
     };
     for (size_t i = 0; i < sizeof(init) / sizeof(init[0]); ++i) {
-        ESP_RETURN_ON_ERROR(es7210_write(init[i][0], init[i][1]), TAG, "ES7210 reg %02x", init[i][0]);
+        err = es7210_write(init[i][0], init[i][1]);
+        if (err != ESP_OK) goto fail;
     }
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 8;
     chan_cfg.dma_frame_num = 256;
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, NULL, &s_audio_rx), TAG, "I2S RX create");
+    err = i2s_new_channel(&chan_cfg, NULL, &s_audio_rx);
+    if (err != ESP_OK) goto fail;
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
@@ -457,23 +576,36 @@ static esp_err_t audio_init(void) {
             .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
         },
     };
-    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_audio_rx, &std_cfg), TAG, "I2S RX mode");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_audio_rx), TAG, "I2S RX enable");
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_audio_tx, NULL), TAG, "I2S TX create");
+    err = i2s_channel_init_std_mode(s_audio_rx, &std_cfg);
+    if (err != ESP_OK) goto fail;
+    err = i2s_channel_enable(s_audio_rx);
+    if (err != ESP_OK) goto fail;
+    err = i2s_new_channel(&chan_cfg, &s_audio_tx, NULL);
+    if (err != ESP_OK) goto fail;
     std_cfg.gpio_cfg.dout = AUDIO_DOUT;
-    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_audio_tx, &std_cfg), TAG, "I2S TX mode");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_audio_tx), TAG, "I2S TX enable");
+    err = i2s_channel_init_std_mode(s_audio_tx, &std_cfg);
+    if (err != ESP_OK) goto fail;
+    err = i2s_channel_enable(s_audio_tx);
+    if (err != ESP_OK) goto fail;
     gpio_config_t pa_cfg = {
         .pin_bit_mask = 1ULL << AUDIO_PA_ENABLE, .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    ESP_RETURN_ON_ERROR(gpio_config(&pa_cfg), TAG, "speaker PA GPIO");
-    ESP_RETURN_ON_ERROR(gpio_set_level(AUDIO_PA_ENABLE, 0), TAG, "speaker PA off");
-    ESP_RETURN_ON_ERROR(es8311_init(), TAG, "ES8311 init");
+    err = gpio_config(&pa_cfg);
+    if (err != ESP_OK) goto fail;
+    err = gpio_set_level(AUDIO_PA_ENABLE, 0);
+    if (err != ESP_OK) goto fail;
+    err = es8311_init();
+    if (err != ESP_OK) goto fail;
     s_audio_ready = true;
     ESP_LOGI(TAG, "EchoEar audio ready: ES7210 mic + ES8311 speaker at 16kHz");
     return ESP_OK;
+fail:
+    ESP_LOGE(TAG, "EchoEar audio initialization failed: %s; rolling back for retry",
+             esp_err_to_name(err));
+    audio_init_rollback();
+    return err;
 }
 
 static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
@@ -1271,6 +1403,16 @@ static void ragdoll_tail_offsets(uint32_t motion_tick, int *root, int *mid, int 
 }
 
 static uint32_t pet_motion_signature(void) {
+    if (s_remote_pet_frame_count > 1 && s_remote_pet_frame_ms) {
+        uint64_t elapsed_ms = (uint64_t)esp_timer_get_time() / 1000u;
+        uint32_t remote_frame = (uint32_t)((elapsed_ms / s_remote_pet_frame_ms) %
+                                           s_remote_pet_frame_count);
+        uint32_t remote_mix = (uint32_t)(((elapsed_ms % s_remote_pet_frame_ms) * 16u) /
+                                         s_remote_pet_frame_ms);
+        // Include the interpolation phase so duplicate-frame suppression keeps
+        // rendering a smooth transition instead of freezing between keyframes.
+        return 0x80000000u | remote_frame | (remote_mix << 8);
+    }
     uint32_t signature = pet_blink_stage(s_pet_motion_tick);
     // Processing is an active state, not a static acknowledgement. Advance a
     // small three-dot orbit at 320 ms steps so the user can tell that the
@@ -1402,6 +1544,7 @@ static void draw_ragdoll_pet(int bob, uint16_t bg) {
 
 static void draw_pet_frame_contents(bool redraw_background) {
     if (s_display_sleeping) return;
+    if (ambient_visible_for_state() && s_remote_pet_frame_count && draw_remote_pet()) return;
     uint16_t bg = state_color(s_pet_state);
     uint16_t halo_top = rgb565(113, 211, 255);
     uint16_t halo_bottom = rgb565(34, 91, 204);
@@ -1496,10 +1639,12 @@ static void draw_pet_frame(bool redraw_background) {
     // taking the mutex so that this stale pet frame cannot paint over the
     // newer command surface once the transfer ahead of it has completed.
     if (s_display_sleeping || s_recording_active || s_response_active ||
+        s_alarm_visual_active ||
         s_setup_qrcode_visible ||
         (s_command_display_locked && ambient_visible_for_state())) return;
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     if (s_display_sleeping || s_recording_active || s_response_active ||
+        s_alarm_visual_active ||
         s_setup_qrcode_visible ||
         (s_command_display_locked && ambient_visible_for_state())) {
         if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -1535,6 +1680,152 @@ static void draw_pet_frame(bool redraw_background) {
 
 static void draw_pet(void) {
     draw_pet_frame(true);
+}
+
+static bool draw_remote_pet(void) {
+    if (!s_remote_pet_frame_count || !s_remote_pet_width || !s_remote_pet_height) return false;
+    uint64_t elapsed_ms = (uint64_t)esp_timer_get_time() / 1000u;
+    size_t index = 0;
+    size_t next_index = 0;
+    uint32_t mix = 0;
+    if (s_remote_pet_frame_count > 1 && s_remote_pet_frame_ms) {
+        index = (elapsed_ms / s_remote_pet_frame_ms) % s_remote_pet_frame_count;
+        next_index = (index + 1u) % s_remote_pet_frame_count;
+        mix = (uint32_t)((elapsed_ms % s_remote_pet_frame_ms) * 256u /
+                         s_remote_pet_frame_ms);
+    }
+    const uint8_t *source = s_remote_pet_frames[index];
+    const uint8_t *next_source = s_remote_pet_frame_count > 1
+                                     ? s_remote_pet_frames[next_index]
+                                     : source;
+    if (!source) return false;
+    if (!next_source) {
+        next_source = source;
+        mix = 0;
+    }
+    uint16_t bg = state_color(s_pet_state);
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, bg);
+    int target_w = (int)s_remote_pet_width;
+    int target_h = (int)s_remote_pet_height;
+    int left = (LCD_WIDTH - target_w) / 2;
+    int top = 72 + (220 - target_h) / 2;
+    for (int y = 0; y < target_h; ++y) {
+        for (int x = 0; x < target_w; ++x) {
+            size_t source_index = ((size_t)y * s_remote_pet_width + (size_t)x) * 3u;
+            uint16_t first_pet = (uint16_t)source[source_index] |
+                                 (uint16_t)((uint16_t)source[source_index + 1] << 8);
+            uint16_t second_pet = (uint16_t)next_source[source_index] |
+                                  (uint16_t)((uint16_t)next_source[source_index + 1] << 8);
+            uint32_t inverse_mix = 256u - mix;
+            uint32_t first_alpha = source[source_index + 2];
+            uint32_t second_alpha = next_source[source_index + 2];
+            uint8_t alpha = (uint8_t)((first_alpha * inverse_mix +
+                                       second_alpha * mix + 128u) >> 8);
+            uint16_t background_wire = s_render_target
+                ? s_render_target[(size_t)(top + y) * LCD_WIDTH + left + x]
+                : bg;
+            uint16_t background = (uint16_t)((background_wire << 8) | (background_wire >> 8));
+            if (alpha == 0) {
+                s_line[x] = background_wire;
+            } else {
+                // Interpolate premultiplied color, then composite once. Straight
+                // RGB interpolation lets the arbitrary RGB stored in a fully
+                // transparent pixel darken a moving antialiased edge.
+                uint32_t premul_r = ((((first_pet >> 11) & 0x1fu) * first_alpha * inverse_mix) +
+                                     (((second_pet >> 11) & 0x1fu) * second_alpha * mix) + 128u) >> 8;
+                uint32_t premul_g = ((((first_pet >> 5) & 0x3fu) * first_alpha * inverse_mix) +
+                                     (((second_pet >> 5) & 0x3fu) * second_alpha * mix) + 128u) >> 8;
+                uint32_t premul_b = (((first_pet & 0x1fu) * first_alpha * inverse_mix) +
+                                     ((second_pet & 0x1fu) * second_alpha * mix) + 128u) >> 8;
+                uint32_t inv = 255u - alpha;
+                uint32_t br = (background >> 11) & 0x1fu, bgc = (background >> 5) & 0x3fu, bb = background & 0x1fu;
+                uint16_t blended = (uint16_t)((((premul_r + br * inv + 127u) / 255u) << 11) |
+                                              (((premul_g + bgc * inv + 127u) / 255u) << 5) |
+                                              ((premul_b + bb * inv + 127u) / 255u));
+                s_line[x] = (uint16_t)((blended << 8) | (blended >> 8));
+            }
+        }
+        if (s_render_target) {
+            memcpy(s_render_target + (size_t)(top + y) * LCD_WIDTH + left,
+                   s_line, (size_t)target_w * sizeof(uint16_t));
+        } else if (draw_bitmap_sync(left, top + y, left + target_w, top + y + 1, s_line) != ESP_OK) return false;
+    }
+    if (ambient_visible_for_state()) draw_clock_calendar(bg);
+    return true;
+}
+
+static bool remote_pet_target_size(size_t width, size_t height,
+                                   size_t *out_width, size_t *out_height) {
+    if (!width || !height || !out_width || !out_height) return false;
+    size_t target_width = 220u;
+    size_t target_height = target_width * height / width;
+    if (target_height > 220u) {
+        target_height = 220u;
+        target_width = target_height * width / height;
+    }
+    if (!target_width || !target_height) return false;
+    *out_width = target_width;
+    *out_height = target_height;
+    return true;
+}
+
+static void scale_remote_pet_frame(const uint8_t *source, size_t source_width,
+                                   size_t source_height, uint8_t *destination,
+                                   size_t target_width, size_t target_height) {
+    if (source_width == target_width && source_height == target_height) {
+        memcpy(destination, source, source_width * source_height * 3u);
+        return;
+    }
+    for (size_t y = 0; y < target_height; ++y) {
+        uint32_t source_y_fp = target_height > 1
+                                   ? (uint32_t)(y * (source_height - 1u) * 256u /
+                                                (target_height - 1u))
+                                   : 0;
+        size_t y0 = source_y_fp >> 8;
+        size_t y1 = y0 + 1u < source_height ? y0 + 1u : y0;
+        uint32_t fy = source_y_fp & 0xffu;
+        for (size_t x = 0; x < target_width; ++x) {
+            uint32_t source_x_fp = target_width > 1
+                                       ? (uint32_t)(x * (source_width - 1u) * 256u /
+                                                    (target_width - 1u))
+                                       : 0;
+            size_t x0 = source_x_fp >> 8;
+            size_t x1 = x0 + 1u < source_width ? x0 + 1u : x0;
+            uint32_t fx = source_x_fp & 0xffu;
+            uint32_t weights[4] = {
+                (256u - fx) * (256u - fy), fx * (256u - fy),
+                (256u - fx) * fy, fx * fy,
+            };
+            size_t indexes[4] = {
+                (y0 * source_width + x0) * 3u, (y0 * source_width + x1) * 3u,
+                (y1 * source_width + x0) * 3u, (y1 * source_width + x1) * 3u,
+            };
+            uint32_t alpha_sum = 0, red_sum = 0, green_sum = 0, blue_sum = 0;
+            for (size_t sample = 0; sample < 4; ++sample) {
+                size_t index = indexes[sample];
+                uint16_t pixel = (uint16_t)source[index] |
+                                 (uint16_t)((uint16_t)source[index + 1] << 8);
+                uint32_t alpha = source[index + 2];
+                uint32_t weight = weights[sample];
+                alpha_sum += alpha * weight;
+                red_sum += ((pixel >> 11) & 0x1fu) * alpha * weight;
+                green_sum += ((pixel >> 5) & 0x3fu) * alpha * weight;
+                blue_sum += (pixel & 0x1fu) * alpha * weight;
+            }
+            uint32_t alpha = (alpha_sum + 32768u) >> 16;
+            uint32_t red = 0, green = 0, blue = 0;
+            if (alpha) {
+                red = (((red_sum + 32768u) >> 16) + alpha / 2u) / alpha;
+                green = (((green_sum + 32768u) >> 16) + alpha / 2u) / alpha;
+                blue = (((blue_sum + 32768u) >> 16) + alpha / 2u) / alpha;
+            }
+            uint16_t pixel = (uint16_t)((red << 11) | (green << 5) | blue);
+            size_t destination_index = (y * target_width + x) * 3u;
+            destination[destination_index] = (uint8_t)pixel;
+            destination[destination_index + 1] = (uint8_t)(pixel >> 8);
+            destination[destination_index + 2] = (uint8_t)alpha;
+        }
+    }
 }
 
 static void draw_recording_visual(void) {
@@ -1730,13 +2021,22 @@ static void button_task(void *arg) {
     // EchoEar-2ST exposes BOOT on ESP-IDF GPIO0. The separately labelled
     // PWR/FUNCTION key in Zephyr's gpio1 bank is the board power-control key
     // and does not provide a dependable application GPIO while running.
-    // Treat a panel tap as the normal interaction gesture as well, matching
-    // the vendor user guide; both inputs feed the same short/double/long logic.
+    // A panel tap and BOOT still share gesture classification, but the source
+    // remains attached to every callback so enclosure-specific features never
+    // mistake the BOOT GPIO for a touch.
     bool button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
     bool panel_pressed = false;
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
     touch_read(&panel_pressed, NULL);
+#endif
     bool pressed = button_pressed || panel_pressed;
-    bool gesture_from_touch = panel_pressed;
+    board_input_source_t gesture_source =
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        BOARD_INPUT_SOURCE_ACTIVATE_KEY;
+#else
+        panel_pressed ? BOARD_INPUT_SOURCE_TOUCH : BOARD_INPUT_SOURCE_OTHER_KEY;
+#endif
+    board_input_source_t pending_source = BOARD_INPUT_SOURCE_UNKNOWN;
     int64_t pressed_at_us = pressed ? esp_timer_get_time() : 0;
     int64_t released_at_us = 0;
     bool long_sent = false;
@@ -1749,7 +2049,9 @@ static void button_task(void *arg) {
         bool now_button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
         bool now_panel_pressed = false;
         uint8_t now_touch_gesture = 0;
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
         touch_read(&now_panel_pressed, &now_touch_gesture);
+#endif
         bool now_pressed = now_button_pressed || now_panel_pressed;
         int64_t now_us = esp_timer_get_time();
         if (command_gesture_revision != s_command_gesture_revision) {
@@ -1759,7 +2061,13 @@ static void button_task(void *arg) {
             // half of a later cancel double tap.
             command_gesture_revision = s_command_gesture_revision;
             pressed = now_pressed;
-            gesture_from_touch = now_panel_pressed;
+            gesture_source =
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                BOARD_INPUT_SOURCE_ACTIVATE_KEY;
+#else
+                now_panel_pressed ? BOARD_INPUT_SOURCE_TOUCH : BOARD_INPUT_SOURCE_OTHER_KEY;
+#endif
+            pending_source = BOARD_INPUT_SOURCE_UNKNOWN;
             pressed_at_us = now_pressed ? now_us : 0;
             released_at_us = 0;
             long_sent = false;
@@ -1795,13 +2103,24 @@ static void button_task(void *arg) {
             s_touch_gesture_consumed = true;
             s_touch_gesture_released_at_us = 0;
             ESP_LOGI(TAG, "button gesture: double (CST816)");
-            if (s_on_button) s_on_button(BOARD_BUTTON_DOUBLE, s_on_press_arg);
+            if (s_on_button) {
+                // Some CST816 revisions report the native gesture in the same
+                // scan as the first observable contact. Emit the physical edge
+                // here too so latency-sensitive touch surfaces never wait for
+                // a later debounced state transition.
+                s_on_button(BOARD_INPUT_PRESSED, BOARD_INPUT_SOURCE_TOUCH,
+                            s_on_press_arg);
+                s_on_button(BOARD_BUTTON_DOUBLE, BOARD_INPUT_SOURCE_TOUCH,
+                            s_on_press_arg);
+            }
         }
         if (now_pressed != pressed) {
             vTaskDelay(pdMS_TO_TICKS(25));
             now_button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
             now_touch_gesture = 0;
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
             touch_read(&now_panel_pressed, &now_touch_gesture);
+#endif
             now_pressed = now_button_pressed || now_panel_pressed;
             if (now_pressed != pressed) {
                 // Use the time after the contact has passed debounce. The old
@@ -1812,35 +2131,49 @@ static void button_task(void *arg) {
                 if (pressed) {
                     pressed_at_us = now_us;
                     long_sent = false;
-                    gesture_from_touch = now_panel_pressed;
+                    gesture_source =
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                        BOARD_INPUT_SOURCE_ACTIVATE_KEY;
+#else
+                        now_panel_pressed ? BOARD_INPUT_SOURCE_TOUCH : BOARD_INPUT_SOURCE_OTHER_KEY;
+#endif
                     if (now_touch_gesture != 0x0B) native_double_sent = false;
                     ESP_LOGI(TAG, "button/touch down");
+                    if (now_touch_gesture != 0x0B) {
+                        emit_button_input(BOARD_INPUT_PRESSED, gesture_source);
+                    }
                 } else {
                     uint32_t held_ms = pressed_at_us > 0
                                            ? (uint32_t)((now_us - pressed_at_us) / 1000)
                                            : 0;
                     ESP_LOGI(TAG, "button/touch up: held=%lu ms", (unsigned long)held_ms);
                     uint32_t minimum_tap_ms =
-                        (gesture_from_touch && s_command_cancel_enabled) ? 15 : 30;
+                        (gesture_source == BOARD_INPUT_SOURCE_TOUCH &&
+                         s_command_cancel_enabled) ? 15 : 30;
                     if (!long_sent && held_ms >= minimum_tap_ms) {
                         int64_t since_previous_us = now_us - released_at_us;
                         int64_t double_window_us =
-                            (gesture_from_touch && s_command_cancel_enabled) ? 1300000 : 650000;
+                            (gesture_source == BOARD_INPUT_SOURCE_TOUCH &&
+                             s_command_cancel_enabled) ? 1300000 : 650000;
                         if (!native_double_sent && short_pending &&
-                            ((!gesture_from_touch && since_previous_us <= double_window_us) ||
-                             (gesture_from_touch && since_previous_us >= 100000 &&
+                            pending_source == gesture_source &&
+                            ((gesture_source != BOARD_INPUT_SOURCE_TOUCH &&
+                              since_previous_us <= double_window_us) ||
+                             (gesture_source == BOARD_INPUT_SOURCE_TOUCH &&
+                              since_previous_us >= 100000 &&
                               since_previous_us <= double_window_us))) {
                             short_pending = false;
                             native_double_sent = true;
-                            if (gesture_from_touch) {
+                            if (gesture_source == BOARD_INPUT_SOURCE_TOUCH) {
                                 s_touch_gesture_consumed = true;
                                 s_touch_gesture_released_at_us = 0;
                             }
                             ESP_LOGI(TAG, "button gesture: double (%s timing gap=%lld ms)",
-                                     gesture_from_touch ? "touch" : "button",
+                                     gesture_source == BOARD_INPUT_SOURCE_TOUCH ? "touch" : "button",
                                      (long long)(since_previous_us / 1000));
-                            if (s_on_button) s_on_button(BOARD_BUTTON_DOUBLE, s_on_press_arg);
-                        } else if (gesture_from_touch && s_command_cancel_enabled &&
+                            emit_button_input(BOARD_BUTTON_DOUBLE, gesture_source);
+                        } else if (gesture_source == BOARD_INPUT_SOURCE_TOUCH &&
+                                   s_command_cancel_enabled &&
                                    short_pending && since_previous_us < 100000) {
                             // CST816 can report a second contact about 100 ms
                             // after one physical tap. Keep the original release
@@ -1854,6 +2187,7 @@ static void button_task(void *arg) {
                             // still belong to one tap, so keep only one pending
                             // short event instead of promoting an echo to double.
                             short_pending = true;
+                            pending_source = gesture_source;
                             released_at_us = now_us;
                         }
                     }
@@ -1865,14 +2199,15 @@ static void button_task(void *arg) {
             long_sent = true;
             short_pending = false;
             ESP_LOGI(TAG, "button gesture: long");
-            if (s_on_button) s_on_button(BOARD_BUTTON_LONG, s_on_press_arg);
+            emit_button_input(BOARD_BUTTON_LONG, gesture_source);
         }
         int64_t pending_window_us = s_command_cancel_enabled ? 1300000 : 650000;
         if (!pressed && short_pending && !s_touch_gesture_consumed &&
             now_us - released_at_us > pending_window_us) {
             short_pending = false;
             ESP_LOGI(TAG, "button gesture: short");
-            if (s_on_button) s_on_button(BOARD_BUTTON_SHORT, s_on_press_arg);
+            emit_button_input(BOARD_BUTTON_SHORT, pending_source);
+            pending_source = BOARD_INPUT_SOURCE_UNKNOWN;
         }
         vTaskDelay(pdMS_TO_TICKS(15));
     }
@@ -1880,6 +2215,10 @@ static void button_task(void *arg) {
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     s_on_button = on_button;
     s_on_press_arg = arg;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    s_boot_network_window_active = true;
+    s_boot_network_toggle_requested = false;
+#endif
     s_lcd_mutex = xSemaphoreCreateRecursiveMutex();
     if (!s_lcd_mutex) return ESP_ERR_NO_MEM;
     s_audio_mutex = xSemaphoreCreateMutex();
@@ -1974,10 +2313,71 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     return ESP_OK;
 }
 
+bool board_port_wait_for_boot_network_toggle(uint32_t window_ms) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    int64_t deadline_us = esp_timer_get_time() + (int64_t)window_ms * 1000;
+    while (!s_boot_network_toggle_requested && esp_timer_get_time() < deadline_us) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    bool toggle = s_boot_network_toggle_requested;
+    s_boot_network_window_active = false;
+    s_boot_network_toggle_requested = false;
+    ESP_LOGI(TAG, "Fangtang boot network choice: %s",
+             toggle ? "4G selected" : "Wi-Fi selected");
+    return toggle;
+#else
+    (void)window_ms;
+    return false;
+#endif
+}
+
+void board_port_show_startup_screen(void) {
+    if (!s_panel || !s_lcd_mutex) return;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
+    if (s_alarm_visual_active) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
+    s_command_display_locked = true;
+    s_response_active = false;
+    // draw_pet() intentionally refuses to paint while the display lock is set.
+    // Paint this explicit boot frame directly under the LCD mutex instead.
+    uint16_t *frame = s_framebuffers[s_next_framebuffer];
+    if (frame) s_render_target = frame;
+    draw_pet_frame_contents(true);
+    s_render_target = NULL;
+    if (frame) {
+        if (present_frame_sync(frame) == ESP_OK) {
+            s_next_framebuffer ^= 1u;
+            ++s_presented_frames;
+        }
+    }
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
 esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_percent) {
-    (void)delta_percent;
-    if (out_percent) *out_percent = 0;
-    return ESP_ERR_NOT_SUPPORTED;
+    int next = (int)s_output_volume + delta_percent;
+    if (next < 0) next = 0;
+    if (next > 100) next = 100;
+    esp_err_t err = board_port_set_output_volume((unsigned)next);
+    if (out_percent) *out_percent = s_output_volume;
+    return err;
+}
+
+esp_err_t board_port_set_output_volume(unsigned percent) {
+    if (percent > 100) return ESP_ERR_INVALID_ARG;
+    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = audio_init();
+    if (err == ESP_OK) err = es8311_set_output_volume(percent);
+    if (err == ESP_OK) {
+        s_output_volume = percent;
+        ESP_LOGI(TAG, "speaker output volume: %u%% (ES8311 reg32=0x%02x)",
+                 percent, es8311_volume_register(percent));
+    }
+    xSemaphoreGive(s_audio_mutex);
+    return err;
 }
 
 void board_port_set_pet_state(const char *state) {
@@ -2014,6 +2414,12 @@ void board_port_set_pet_state(const char *state) {
     if (!s_recording_active) draw_pet();
 }
 
+void board_port_set_command_stage(const char *stage) {
+    // The standalone board's pet renderer has no separate stage row. Keep the
+    // shared application API harmless here; Bread Compact renders the label.
+    (void)stage;
+}
+
 void board_port_set_command_display_lock(bool locked) {
     s_command_display_locked = locked;
     if (locked) s_ready_prompt_expires_us = 0;
@@ -2027,7 +2433,6 @@ void board_port_set_command_cancel_enabled(bool enabled) {
 }
 
 void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
-	if (s_command_display_locked) return;
 	const char *next_skin = (skin && skin[0]) ? skin : s_pet_skin;
 	char normalized_skin[sizeof(s_pet_skin)];
 	strlcpy(normalized_skin, next_skin, sizeof(normalized_skin));
@@ -2051,7 +2456,48 @@ void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
     s_pet_motion_enabled = true;
 	ESP_LOGI(TAG, "pet profile: skin=%s remote_motion=%s native_motion=enabled",
 			 normalized_skin, motion_enabled ? "enabled" : "disabled");
-    if (!s_recording_active) draw_pet();
+	if (!s_recording_active && !s_command_display_locked) draw_pet();
+}
+
+esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
+                                   size_t width, size_t height, uint32_t frame_ms) {
+    if (frame_count > REMOTE_PET_MAX_FRAMES) return ESP_ERR_INVALID_ARG;
+    size_t bytes = 0;
+    size_t target_width = 0, target_height = 0;
+    if (frame_count) {
+        if (!frames || width < 1 || height < 1 || width > 256 || height > 256) return ESP_ERR_INVALID_ARG;
+        if (width > SIZE_MAX / height || width * height > SIZE_MAX / 3u) return ESP_ERR_INVALID_SIZE;
+        if (!remote_pet_target_size(width, height, &target_width, &target_height)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        bytes = target_width * target_height * 3u;
+    }
+    uint8_t *copies[REMOTE_PET_MAX_FRAMES] = {0};
+    for (size_t i = 0; i < frame_count; ++i) {
+        if (!frames[i]) goto no_mem;
+        copies[i] = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!copies[i]) copies[i] = malloc(bytes);
+        if (!copies[i]) goto no_mem;
+        scale_remote_pet_frame(frames[i], width, height, copies[i],
+                               target_width, target_height);
+    }
+    if (s_lcd_mutex) xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < REMOTE_PET_MAX_FRAMES; ++i) { free(s_remote_pet_frames[i]); s_remote_pet_frames[i] = copies[i]; }
+    s_remote_pet_frame_count = frame_count;
+    s_remote_pet_width = frame_count ? target_width : 0;
+    s_remote_pet_height = frame_count ? target_height : 0;
+    s_remote_pet_frame_ms = frame_ms ? frame_ms : 450;
+    bool show = !s_command_display_locked && !s_recording_active && ambient_visible_for_state();
+    // Compose through the normal double-buffered path for both install and
+    // clear. Direct scan-line drawing here exposed a partially updated pet,
+    // and clearing otherwise left the removed asset visible until a later
+    // animation/clock tick happened to repaint the idle screen.
+    if (show) draw_pet();
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+    return ESP_OK;
+no_mem:
+    for (size_t i = 0; i < REMOTE_PET_MAX_FRAMES; ++i) free(copies[i]);
+    return ESP_ERR_NO_MEM;
 }
 
 void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds) {
@@ -2360,7 +2806,15 @@ void board_port_set_ambient(const char *time, const char *location, const char *
     }
 }
 
+void board_port_set_alarm_scheduled(bool scheduled) {
+    // The current standalone board's ambient clock uses a curved composition
+    // with no compact calendar row. Keep its rendering unchanged while sharing
+    // the UI model and alarm lifecycle with Bread Compact.
+    (void)scheduled;
+}
+
 void board_port_show_ready_prompt(const char *title, const char *text) {
+    if (s_alarm_visual_active) return;
     // The ready state uses the current GUI-configured pet as its background;
     // only the brief action hint is transient.
     s_display_sleeping = false;
@@ -2391,6 +2845,10 @@ esp_err_t board_port_audio_stream_start(void) {
     // and foreground network/UI work can delay its mutex release. Allow a
     // bounded settling window so a valid double tap does not intermittently
     // fail before capture has even started.
+    for (unsigned i = 0;
+         s_wake_word_task && !s_wake_word_pause_acknowledged && i < 40; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
         ESP_LOGE(TAG, "meeting microphone mutex timeout");
         board_port_pause_wake_word(false);
@@ -2447,6 +2905,7 @@ void board_port_audio_stream_stop(void) {
 
 void board_port_pause_wake_word(bool paused) {
     s_wake_word_paused = paused;
+    if (!paused) s_wake_word_pause_acknowledged = false;
 }
 
 static bool response_break(uint32_t cp) {
@@ -2582,6 +3041,7 @@ void board_port_show_response(const char *title, const char *text) {
     // Publish the new response atomically with its automatic-page deadline.
     // The animation task reads these fields without taking the LCD mutex.
     s_response_active = false;
+    s_response_image_active = false;
     s_response_next_page_us = 0;
     s_response_page = 0;
     strlcpy(s_response_title, title && title[0] ? title : "码卡龙", sizeof(s_response_title));
@@ -2596,12 +3056,111 @@ void board_port_show_response(const char *title, const char *text) {
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
+void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_text,
+                                 const char *label, unsigned attempt, unsigned max_attempts) {
+    if (!active) {
+        s_alarm_visual_active = false;
+        board_port_set_command_display_lock(false);
+        board_port_set_pet_state("idle");
+        return;
+    }
+    if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
+    s_command_display_locked = true;
+    s_response_active = false;
+    s_alarm_visual_active = true;
+    const uint16_t bg = rgb565(9, 23, 38);
+    const uint16_t panel = rgb565(17, 43, 64);
+    const uint16_t steel = rgb565(78, 159, 194);
+    const uint16_t amber = rgb565(235, 177, 74);
+    const uint16_t white = rgb565(241, 248, 252);
+    const uint16_t muted = rgb565(145, 177, 197);
+    int sway = (frame & 1u) ? 5 : -5;
+    uint16_t *composed = s_framebuffers[s_next_framebuffer];
+    if (composed) s_render_target = composed;
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, bg);
+    fill_rect(26, 22, LCD_WIDTH - 26, 82, panel);
+    draw_text24(72, 40, "闹钟响铃", white, panel);
+    // Restrained mechanical twin-bell silhouette. Alternating horizontal
+    // offset conveys ringing without flashing the whole display.
+    int cx = LCD_WIDTH / 2 + sway;
+    fill_circle(cx, 183, 70, steel);
+    fill_circle(cx, 183, 57, panel);
+    fill_circle(cx - 65, 112, 29, amber);
+    fill_circle(cx + 65, 112, 29, amber);
+    fill_rect(cx - 78, 134, cx - 50, 142, amber);
+    fill_rect(cx + 50, 134, cx + 78, 142, amber);
+    fill_rect(cx - 5, 96, cx + 5, 116, amber);
+    fill_circle(cx, 92, 8, amber);
+    fill_rect(cx - 34, 244, cx - 20, 265, steel);
+    fill_rect(cx + 20, 244, cx + 34, 265, steel);
+    draw_text24(63, 164, time_text && time_text[0] ? time_text + 11 : "--:--", white, panel);
+    if (label && label[0]) draw_text24(72, 276, label, white, bg);
+    char hint[48];
+    snprintf(hint, sizeof(hint), "轻触停止  %u/%u", attempt, max_attempts);
+    draw_text24(58, 318, hint, muted, bg);
+    s_render_target = NULL;
+    if (composed) {
+        esp_err_t draw_err = present_frame_sync(composed);
+        if (draw_err == ESP_OK) {
+            s_next_framebuffer ^= 1u;
+            ++s_presented_frames;
+        } else {
+            ESP_LOGE(TAG, "alarm frame present failed: %s", esp_err_to_name(draw_err));
+        }
+    }
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
+void board_port_show_response_image(const char *title, const char *caption,
+                                    const uint16_t *pixels, size_t width, size_t height) {
+    if (!pixels || width < 1 || width > 64 || height < 1 || height > 64) return;
+    if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
+    s_ready_prompt_expires_us = 0;
+    strlcpy(s_pet_state, "speaking", sizeof(s_pet_state));
+    s_idle_pet_visible = false;
+    s_display_sleeping = false;
+    s_response_active = true;
+    s_response_image_active = true;
+    s_response_page = 0;
+    s_response_next_page_us = 0;
+    uint16_t bg = rgb565(8, 17, 28), header = rgb565(14, 31, 47);
+    uint16_t accent = rgb565(76, 168, 207), ink = rgb565(244, 248, 251);
+    uint16_t muted = rgb565(174, 198, 215);
+    uint16_t *frame = s_framebuffers[s_next_framebuffer];
+    if (frame) s_render_target = frame;
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, bg);
+    fill_rect(0, 0, LCD_WIDTH, 76, header);
+    fill_rect(RESPONSE_TEXT_X, 28, RESPONSE_TEXT_X + 4, 52, accent);
+    draw_text24(RESPONSE_TEXT_X + 14, 28, title && title[0] ? title : "码卡龙", ink, header);
+    int image_x = (LCD_WIDTH - (int)width) / 2;
+    int image_y = 112;
+    // Copy into the off-screen frame when double buffering is active. Drawing
+    // directly to the panel here would be immediately covered by the following
+    // full-frame present, leaving only the background visible.
+    draw_or_compose_bitmap(image_x, image_y,
+        image_x + (int)width, image_y + (int)height, pixels, false);
+    if (caption && caption[0]) draw_text24(RESPONSE_TEXT_X, 205, caption, muted, bg);
+    draw_text24(RESPONSE_TEXT_X, 310, "轻触返回", muted, bg);
+    s_render_target = NULL;
+    if (frame && present_frame_sync(frame) == ESP_OK) {
+        s_next_framebuffer ^= 1u;
+        ++s_presented_frames;
+    }
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
 bool board_port_navigate_response(int page_delta) {
     if (page_delta == 0) return false;
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
     if (!s_response_active) {
         if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
         return false;
+    }
+    if (s_response_image_active) {
+        // The gesture belongs to the visible response, but an image reply has
+        // no alternate page and its decoded pixel buffer is no longer retained.
+        if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+        return true;
     }
     unsigned pages = response_page_count();
     if (pages < 2) {
@@ -2624,6 +3183,10 @@ bool board_port_navigate_response(int page_delta) {
 
 static void wake_word_task(void *arg) {
     (void)arg;
+    /* start_wake_word publishes the created handle before this task may own
+     * and later clear it. This closes the early model-failure race. */
+    while (s_wake_word_task_starting) vTaskDelay(1);
+    s_wake_word_ready = false;
     srmodel_list_t *models = esp_srmodel_init("model");
     if (!models) {
         ESP_LOGE(TAG, "offline wake disabled: cannot load ESP-SR model partition");
@@ -2649,7 +3212,12 @@ static void wake_word_task(void *arg) {
         goto finish;
     }
     esp_err_t command_err = esp_mn_commands_alloc(multinet, model_data);
-    if (command_err == ESP_OK) command_err = esp_mn_commands_add(WAKE_WORD_COMMAND_ID, WAKE_WORD_CN_PHONETIC);
+    for (size_t i = 0;
+         command_err == ESP_OK && i < sizeof(s_wake_word_cn_phonetics) / sizeof(s_wake_word_cn_phonetics[0]);
+         ++i) {
+        command_err = esp_mn_commands_add(WAKE_WORD_COMMAND_ID,
+                                          s_wake_word_cn_phonetics[i]);
+    }
     esp_mn_error_t *command_errors = command_err == ESP_OK ? esp_mn_commands_update() : NULL;
     if (command_err != ESP_OK || command_errors != NULL) {
         ESP_LOGE(TAG, "offline wake disabled: word '%s' is not accepted (err=%s, rejected=%d)",
@@ -2687,8 +3255,11 @@ static void wake_word_task(void *arg) {
         goto finish;
     }
 
-    ESP_LOGI(TAG, "offline wake listening: model=%s word='%s' threshold=%.2f rate=%d chunk=%d",
+    s_wake_word_ready = true;
+    ESP_LOGI(TAG,
+             "offline wake listening: model=%s phrase='%s' variants=%u threshold=%.2f rate=%d chunk=%d",
              model_name, WAKE_WORD_CN_LABEL,
+             (unsigned)(sizeof(s_wake_word_cn_phonetics) / sizeof(s_wake_word_cn_phonetics[0])),
              (double)WAKE_WORD_DETECTION_THRESHOLD, sample_rate, chunk_samples);
     multinet->print_active_speech_commands(model_data);
     bool model_was_paused = false;
@@ -2701,10 +3272,12 @@ static void wake_word_task(void *arg) {
                 multinet->clean(model_data);
                 model_was_paused = true;
             }
+            s_wake_word_pause_acknowledged = true;
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
         model_was_paused = false;
+        s_wake_word_pause_acknowledged = false;
         if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
             continue;
         }
@@ -2775,8 +3348,9 @@ static void wake_word_task(void *arg) {
         int64_t now_us = esp_timer_get_time();
         if (now_us - last_detection_us >= WAKE_WORD_COOLDOWN_US) {
             last_detection_us = now_us;
-            ESP_LOGI(TAG, "offline wake word detected: %s (prob=%.3f)",
-                     WAKE_WORD_CN_LABEL, (double)result->prob[0]);
+            ESP_LOGI(TAG, "offline wake word detected: %s phrase=%d text='%s' raw='%s' (prob=%.3f)",
+                     WAKE_WORD_CN_LABEL, result->phrase_id[0], result->string,
+                     result->raw_string, (double)result->prob[0]);
             board_port_wake_word_cb_t callback = s_on_wake_word;
             void *callback_arg = s_on_wake_word_arg;
             multinet->clean(model_data);
@@ -2795,6 +3369,9 @@ static void wake_word_task(void *arg) {
 finish:
     taskENTER_CRITICAL(&s_wake_word_lock);
     s_wake_word_stop_requested = false;
+    s_wake_word_paused = false;
+    s_wake_word_pause_acknowledged = false;
+    s_wake_word_ready = false;
     s_wake_word_task = NULL;
     taskEXIT_CRITICAL(&s_wake_word_lock);
     vTaskDelete(NULL);
@@ -2802,19 +3379,41 @@ finish:
 
 esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t on_wake, void *arg) {
     if (!on_wake) return ESP_ERR_INVALID_ARG;
-    ESP_RETURN_ON_ERROR(audio_init(), TAG, "offline wake microphone init failed");
-    // Reserve the slot before creating the task. Otherwise two callers can
-    // both observe NULL and instantiate process-global MultiNet state twice.
-    TaskHandle_t caller = xTaskGetCurrentTaskHandle();
-    taskENTER_CRITICAL(&s_wake_word_lock);
-    if (s_wake_word_task) {
-        taskEXIT_CRITICAL(&s_wake_word_lock);
-        return ESP_ERR_INVALID_STATE;
+    if (!s_audio_mutex ||
+        xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
-    s_wake_word_task = caller;
+    esp_err_t audio_err = audio_init();
+    xSemaphoreGive(s_audio_mutex);
+    if (audio_err != ESP_OK) {
+        ESP_LOGE(TAG, "offline wake microphone init failed: %s",
+                 esp_err_to_name(audio_err));
+        return audio_err;
+    }
+    taskENTER_CRITICAL(&s_wake_word_lock);
+    if (s_wake_word_task || s_wake_word_task_starting) {
+        bool starting = s_wake_word_task_starting;
+        bool ready = s_wake_word_ready;
+        taskEXIT_CRITICAL(&s_wake_word_lock);
+        /* Do not equate an allocated task with a ready recognizer. A restart
+         * request can arrive while MultiNet is still loading; wait for its
+         * explicit readiness signal and propagate timeout/failure accurately. */
+        for (unsigned i = 0; i < 400 && (s_wake_word_task || starting) && !ready; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(25));
+            taskENTER_CRITICAL(&s_wake_word_lock);
+            starting = s_wake_word_task_starting;
+            ready = s_wake_word_ready;
+            taskEXIT_CRITICAL(&s_wake_word_lock);
+        }
+        if (ready) return ESP_OK;
+        return (s_wake_word_task || starting) ? ESP_ERR_TIMEOUT : ESP_FAIL;
+    }
+    s_wake_word_task_starting = true;
     s_on_wake_word = on_wake;
     s_on_wake_word_arg = arg;
     s_wake_word_paused = false;
+    s_wake_word_pause_acknowledged = false;
+    s_wake_word_ready = false;
     s_wake_word_stop_requested = false;
     taskEXIT_CRITICAL(&s_wake_word_lock);
     TaskHandle_t task = NULL;
@@ -2822,20 +3421,34 @@ esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t on_wake, void *ar
                                                  10240, NULL, 4, &task, 1);
     taskENTER_CRITICAL(&s_wake_word_lock);
     if (created != pdPASS) {
-        s_wake_word_task = NULL;
+        s_wake_word_task_starting = false;
         s_on_wake_word = NULL;
         s_on_wake_word_arg = NULL;
         taskEXIT_CRITICAL(&s_wake_word_lock);
         return ESP_ERR_NO_MEM;
     }
     s_wake_word_task = task;
+    s_wake_word_task_starting = false;
     taskEXIT_CRITICAL(&s_wake_word_lock);
-    return ESP_OK;
+    for (unsigned i = 0;
+         i < 400 && s_wake_word_task && !s_wake_word_ready; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+    if (s_wake_word_ready) {
+        ESP_LOGI(TAG, "offline wake task ready");
+        return ESP_OK;
+    }
+    if (!s_wake_word_task) {
+        ESP_LOGW(TAG, "offline wake task exited during model initialization");
+        return ESP_FAIL;
+    }
+    ESP_LOGW(TAG, "offline wake model initialization timed out");
+    return ESP_ERR_TIMEOUT;
 }
 
 esp_err_t board_port_stop_wake_word(void) {
     taskENTER_CRITICAL(&s_wake_word_lock);
-    if (!s_wake_word_task) {
+    if (!s_wake_word_task && !s_wake_word_task_starting) {
         taskEXIT_CRITICAL(&s_wake_word_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -2847,14 +3460,16 @@ esp_err_t board_port_stop_wake_word(void) {
     // Model creation itself can take about two seconds on ESP32-S3. This call
     // is used only while entering a provisioning portal, so wait long enough
     // for initialization, one detect chunk, and deterministic model cleanup.
-    for (unsigned i = 0; i < 200 && s_wake_word_task; ++i) {
+    for (unsigned i = 0;
+         i < 240 && (s_wake_word_task || s_wake_word_task_starting); ++i) {
         vTaskDelay(pdMS_TO_TICKS(25));
     }
-    if (s_wake_word_task) return ESP_ERR_TIMEOUT;
+    if (s_wake_word_task || s_wake_word_task_starting) return ESP_ERR_TIMEOUT;
     taskENTER_CRITICAL(&s_wake_word_lock);
     s_on_wake_word = NULL;
     s_on_wake_word_arg = NULL;
     taskEXIT_CRITICAL(&s_wake_word_lock);
+    ESP_LOGI(TAG, "offline wake task stopped cleanly");
     return ESP_OK;
 }
 
@@ -2863,6 +3478,13 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     if (out_len) *out_len = 0;
     if (!out_wav || !out_len) return ESP_ERR_INVALID_ARG;
     board_port_pause_wake_word(true);
+    // MultiNet reads from this I2S RX channel in the background. It must
+    // acknowledge the pause before foreground capture takes the mutex, or it
+    // can consume the first command frame in the hand-off window.
+    for (unsigned i = 0;
+         s_wake_word_task && !s_wake_word_pause_acknowledged && i < 40; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
         board_port_pause_wake_word(false);
         return ESP_ERR_TIMEOUT;
@@ -2875,9 +3497,15 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     }
     recording_pcm_reset("command");
 
-    const size_t mono_samples = AUDIO_RATE * AUDIO_SECONDS;
-    const size_t wav_len = 44 + mono_samples * sizeof(int16_t);
-    uint8_t *wav = heap_caps_malloc(wav_len, MALLOC_CAP_8BIT);
+    const size_t max_samples = AUDIO_RATE * COMMAND_CAPTURE_MAX_SECONDS;
+    const size_t start_timeout_samples =
+        AUDIO_RATE * COMMAND_CAPTURE_START_TIMEOUT_MS / 1000;
+    const size_t silence_samples = AUDIO_RATE * COMMAND_CAPTURE_SILENCE_MS / 1000;
+    const size_t start_confirm_samples =
+        AUDIO_RATE * COMMAND_CAPTURE_START_CONFIRM_MS / 1000;
+    const size_t preroll_samples = AUDIO_RATE * COMMAND_CAPTURE_PREROLL_MS / 1000;
+    const size_t wav_capacity = 44 + max_samples * sizeof(int16_t);
+    uint8_t *wav = heap_caps_malloc(wav_capacity, MALLOC_CAP_8BIT);
     if (!wav) {
         xSemaphoreGive(s_audio_mutex);
         board_port_pause_wake_word(false);
@@ -2885,7 +3513,7 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     }
     memset(wav, 0, 44);
     memcpy(wav, "RIFF", 4);
-    uint32_t riff_size = (uint32_t)wav_len - 8;
+    uint32_t riff_size = (uint32_t)wav_capacity - 8;
     memcpy(wav + 4, &riff_size, 4);
     memcpy(wav + 8, "WAVEfmt ", 8);
     uint32_t fmt_size = 16; uint16_t pcm = 1, channels = 1, bits = 16;
@@ -2894,15 +3522,19 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     memcpy(wav + 22, &channels, 2); memcpy(wav + 24, &rate, 4);
     memcpy(wav + 28, &byte_rate, 4); memcpy(wav + 32, &align, 2);
     memcpy(wav + 34, &bits, 2); memcpy(wav + 36, "data", 4);
-    uint32_t data_size = (uint32_t)(mono_samples * 2);
+    uint32_t data_size = (uint32_t)(max_samples * 2);
     memcpy(wav + 40, &data_size, 4);
 
     int16_t stereo[512];
     int16_t *mono = (int16_t *)(wav + 44);
     size_t written_samples = 0;
+    size_t voiced_samples = 0;
+    size_t silence_samples_seen = 0;
+    size_t speech_start_sample = 0;
+    bool speech_started = false;
     int32_t peak = 0;
     uint16_t smoothed_level = 0;
-    while (written_samples < mono_samples) {
+    while (written_samples < max_samples) {
         size_t received = 0;
         esp_err_t err = i2s_channel_read(s_audio_rx, stereo, sizeof(stereo), &received, pdMS_TO_TICKS(1000));
         if (err != ESP_OK) {
@@ -2912,7 +3544,13 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
             return err;
         }
         size_t frames = received / (sizeof(int16_t) * 2);
-        if (frames > mono_samples - written_samples) frames = mono_samples - written_samples;
+        if (frames == 0) {
+            // A successful I2S read may still return no complete stereo frame.
+            // Do not feed the VAD state or pointer arithmetic with an empty
+            // chunk; simply keep waiting within the existing time bounds.
+            continue;
+        }
+        if (frames > max_samples - written_samples) frames = max_samples - written_samples;
         int32_t chunk_peak = recording_pcm_process(stereo, frames,
                                                    &mono[written_samples]);
         written_samples += frames;
@@ -2926,14 +3564,57 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
                              ? (uint16_t)((smoothed_level + raw_level * 3) / 4)
                              : (uint16_t)((smoothed_level * 7 + raw_level) / 8);
         board_port_set_audio_level(smoothed_level,
-                                   (uint32_t)(written_samples / AUDIO_RATE));
+                                    (uint32_t)(written_samples / AUDIO_RATE));
         recording_wave_push_pcm(&mono[written_samples - frames], frames);
+        // Hysteresis ignores short loud clicks before speech, then allows
+        // natural intra-word dips without treating them as the command end.
+        if (!speech_started) {
+            voiced_samples = raw_level >= COMMAND_CAPTURE_START_LEVEL
+                                 ? voiced_samples + frames
+                                 : 0;
+            if (voiced_samples >= start_confirm_samples) {
+                speech_started = true;
+                silence_samples_seen = 0;
+                speech_start_sample = written_samples - voiced_samples;
+                ESP_LOGI(TAG, "command speech started after %u ms",
+                         (unsigned)(written_samples * 1000 / AUDIO_RATE));
+            } else if (written_samples >= start_timeout_samples) {
+                ESP_LOGI(TAG, "command capture timed out waiting for speech");
+                free(wav);
+                xSemaphoreGive(s_audio_mutex);
+                board_port_pause_wake_word(false);
+                return ESP_ERR_NOT_FOUND;
+            }
+        } else {
+            silence_samples_seen = raw_level <= COMMAND_CAPTURE_SILENCE_LEVEL
+                                       ? silence_samples_seen + frames
+                                       : 0;
+            if (silence_samples_seen >= silence_samples) {
+                ESP_LOGI(TAG, "command capture ended after %u ms of silence",
+                         COMMAND_CAPTURE_SILENCE_MS);
+                break;
+            }
+        }
     }
-    ESP_LOGI(TAG, "captured %u mono samples, peak=%ld", (unsigned)written_samples, (long)peak);
-    *out_wav = wav;
-    *out_len = wav_len;
+    const size_t trim_start = speech_start_sample > preroll_samples
+                                  ? speech_start_sample - preroll_samples
+                                  : 0;
+    const size_t captured_samples = written_samples - trim_start;
+    if (trim_start > 0) {
+        memmove(mono, mono + trim_start, captured_samples * sizeof(*mono));
+    }
+    ESP_LOGI(TAG, "captured %u mono samples (trimmed %u ms), peak=%ld",
+             (unsigned)captured_samples,
+             (unsigned)(trim_start * 1000 / AUDIO_RATE), (long)peak);
+    const size_t wav_len = 44 + captured_samples * sizeof(*mono);
+    riff_size = (uint32_t)wav_len - 8;
+    memcpy(wav + 4, &riff_size, sizeof(riff_size));
+    data_size = (uint32_t)(captured_samples * sizeof(*mono));
+    memcpy(wav + 40, &data_size, sizeof(data_size));
     xSemaphoreGive(s_audio_mutex);
     board_port_pause_wake_word(false);
+    *out_wav = wav;
+    *out_len = wav_len;
     return ESP_OK;
 }
 
@@ -2951,7 +3632,9 @@ esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len) {
         if (chunk_len > wav_len - offset) return ESP_ERR_INVALID_SIZE;
         if (memcmp(chunk, "fmt ", 4) == 0) { fmt = wav + offset; fmt_len = chunk_len; }
         if (memcmp(chunk, "data", 4) == 0) { data = wav + offset; data_len = chunk_len; }
-        offset += chunk_len + (chunk_len & 1u);
+        size_t padded = (size_t)chunk_len + (chunk_len & 1u);
+        if (padded > wav_len - offset) return ESP_ERR_INVALID_SIZE;
+        offset += padded;
     }
     if (!fmt || fmt_len < 16 || !data || !data_len) return ESP_ERR_INVALID_ARG;
     uint16_t format = (uint16_t)fmt[0] | ((uint16_t)fmt[1] << 8);
@@ -2964,40 +3647,99 @@ esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len) {
                  format, (unsigned long)rate, bits, channels);
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
-    board_port_pause_wake_word(true);
-    esp_err_t err = audio_init();
-    if (err == ESP_OK) err = gpio_set_level(AUDIO_PA_ENABLE, 1);
-    int16_t stereo[512];
-    for (size_t offset = 0; err == ESP_OK && offset < data_len;) {
-        size_t frames = (data_len - offset) / (channels * sizeof(int16_t));
-        if (frames > 256) frames = 256;
-        if (frames == 0) break;
-        const int16_t *source = (const int16_t *)(data + offset);
-        for (size_t i = 0; i < frames; ++i) {
-            int16_t sample = source[i * channels];
-            stereo[i * 2] = sample;
-            stereo[i * 2 + 1] = channels == 2 ? source[i * 2 + 1] : sample;
-        }
-        size_t written = 0;
-        err = i2s_channel_write(s_audio_tx, stereo, frames * 2 * sizeof(int16_t),
-                                &written, pdMS_TO_TICKS(1000));
-        if (written != frames * 2 * sizeof(int16_t) && err == ESP_OK) err = ESP_ERR_TIMEOUT;
-        offset += frames * channels * sizeof(int16_t);
+    size_t frame_bytes = channels * sizeof(int16_t);
+    if (data_len % frame_bytes != 0) return ESP_ERR_INVALID_SIZE;
+    esp_err_t err = board_port_audio_playback_begin();
+    if (err == ESP_OK) {
+        err = board_port_audio_playback_write((const int16_t *)data,
+                                              data_len / frame_bytes,
+                                              channels);
+        err = board_port_audio_playback_end(err);
     }
-    vTaskDelay(pdMS_TO_TICKS(30));
-    (void)gpio_set_level(AUDIO_PA_ENABLE, 0);
-    xSemaphoreGive(s_audio_mutex);
-    board_port_pause_wake_word(false);
     return err;
 }
 
-esp_err_t board_port_play_ack_chime(void) {
-    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+esp_err_t board_port_audio_playback_begin(void) {
+    if (!s_audio_mutex) return ESP_ERR_INVALID_STATE;
+    // Pause recognition before competing for the shared I2S lock. MultiNet may
+    // already be inside a bounded microphone read; waiting for its explicit
+    // acknowledgement lets it release the bus and clean its detector state
+    // before speaker DMA starts. This prevents playback from racing a resumed
+    // recognizer and improves wake reliability after a response finishes.
     board_port_pause_wake_word(true);
+    for (unsigned i = 0;
+         s_wake_word_task && !s_wake_word_pause_acknowledged && i < 60; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        board_port_pause_wake_word(false);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_audio_playback_owner) {
+        xSemaphoreGive(s_audio_mutex);
+        board_port_pause_wake_word(false);
+        return ESP_ERR_INVALID_STATE;
+    }
     esp_err_t err = audio_init();
+    if (err == ESP_OK && s_output_volume == 0) err = ESP_ERR_INVALID_STATE;
     if (err == ESP_OK) err = gpio_set_level(AUDIO_PA_ENABLE, 1);
+    // Let the external amplifier leave shutdown before the first PCM frames.
+    if (err == ESP_OK) vTaskDelay(pdMS_TO_TICKS(10));
+    if (err == ESP_OK) {
+        s_audio_playback_owner = xTaskGetCurrentTaskHandle();
+    } else {
+        xSemaphoreGive(s_audio_mutex);
+        board_port_pause_wake_word(false);
+    }
+    return err;
+}
+
+esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
+                                          unsigned channels) {
+    if (s_audio_playback_owner != xTaskGetCurrentTaskHandle()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!pcm || frames == 0 || (channels != 1 && channels != 2)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     int16_t stereo[512];
+    size_t offset = 0;
+    while (offset < frames) {
+        size_t count = frames - offset;
+        if (count > 256) count = 256;
+        for (size_t i = 0; i < count; ++i) {
+            int16_t left = pcm[(offset + i) * channels];
+            int16_t right = channels == 2 ? pcm[(offset + i) * 2 + 1] : left;
+            stereo[i * 2] = left;
+            stereo[i * 2 + 1] = right;
+        }
+        size_t written = 0;
+        size_t expected = count * 2 * sizeof(int16_t);
+        esp_err_t err = i2s_channel_write(s_audio_tx, stereo, expected, &written,
+                                          pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) return err;
+        if (written != expected) return ESP_ERR_TIMEOUT;
+        offset += count;
+    }
+    return ESP_OK;
+}
+
+esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
+    if (s_audio_playback_owner != xTaskGetCurrentTaskHandle()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+    esp_err_t pa_err = gpio_set_level(AUDIO_PA_ENABLE, 0);
+    s_audio_playback_owner = NULL;
+    xSemaphoreGive(s_audio_mutex);
+    board_port_pause_wake_word(false);
+    return playback_err != ESP_OK ? playback_err : pa_err;
+}
+
+esp_err_t board_port_play_ack_chime(void) {
+    esp_err_t err = board_port_audio_playback_begin();
+    if (err != ESP_OK) return err;
+    int16_t mono[256];
     // A short two-note acknowledgement: distinct enough to hear, soft enough
     // not to be confused with an alarm. The waveform is generated locally so
     // the board can confirm receipt before network TTS is available.
@@ -3007,21 +3749,36 @@ esp_err_t board_port_play_ack_chime(void) {
             int frames = (AUDIO_RATE / 7 - frame) > 256 ? 256 : (AUDIO_RATE / 7 - frame);
             for (int i = 0; i < frames; ++i) {
                 int phase = (frame + i) % (half_period * 2);
-                int16_t sample = phase < half_period ? 2600 : -2600;
-                stereo[i * 2] = sample;
-                stereo[i * 2 + 1] = sample;
+                mono[i] = phase < half_period ? 2600 : -2600;
             }
-            size_t written = 0;
-            err = i2s_channel_write(s_audio_tx, stereo, frames * 2 * sizeof(int16_t),
-                                    &written, pdMS_TO_TICKS(1000));
-            if (written != (size_t)frames * 2 * sizeof(int16_t) && err == ESP_OK) err = ESP_ERR_TIMEOUT;
+            err = board_port_audio_playback_write(mono, (size_t)frames, 1);
         }
     }
-    vTaskDelay(pdMS_TO_TICKS(30));
-    (void)gpio_set_level(AUDIO_PA_ENABLE, 0);
-    xSemaphoreGive(s_audio_mutex);
-    board_port_pause_wake_word(false);
-    return err;
+    return board_port_audio_playback_end(err);
+}
+
+esp_err_t board_port_play_alarm_burst(void) {
+    esp_err_t err = board_port_audio_playback_begin();
+    if (err != ESP_OK) return err;
+    int16_t mono[256];
+    // Alternating ~1.7/2.1 kHz square waves with a decaying envelope mimic the
+    // bright impact and chatter of a traditional twin-bell mechanism.
+    for (int strike = 0; strike < 3 && err == ESP_OK; ++strike) {
+        int half_period = strike & 1 ? 4 : 5;
+        for (int frame = 0; frame < AUDIO_RATE / 12; frame += 256) {
+            int frames = AUDIO_RATE / 12 - frame;
+            if (frames > 256) frames = 256;
+            for (int i = 0; i < frames; ++i) {
+                int position = frame + i;
+                int envelope = 8200 - position * 5;
+                if (envelope < 1400) envelope = 1400;
+                int16_t sample = ((position / half_period) & 1) ? envelope : -envelope;
+                mono[i] = sample;
+            }
+            err = board_port_audio_playback_write(mono, (size_t)frames, 1);
+        }
+    }
+    return board_port_audio_playback_end(err);
 }
 
 esp_err_t board_port_play_ack_voice(void) {

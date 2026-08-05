@@ -12,7 +12,8 @@ EchoEar-2ST  ⇄  HTTPS / Hub  ⇄  MaClaw GUI  ⇄  Agent / IM / Mobile 文稿�
 
 - 芯片/模组：ESP32-S3-R8 / EchoEar-2ST。
 - 显示：ST77916 圆屏，触摸为 CST816。
-- 音频：ES8311 + I2S，16 kHz、16-bit、单声道 PCM WAV。
+- 音频：ES8311 + I2S；支持 16 kHz、16-bit PCM WAV，以及板端解码 MP3
+  （8–48 kHz、单/双声道，播放时转换为 16 kHz I2S PCM）。
 - [`main/board_port.c`](main/board_port.c) 已实现 LCD、触摸、麦克风、扬声器、背光休眠和本地宠物动画，不再是待适配的空壳。
 - 设备只有电源键可稳定用于供电控制，日常交互以触摸屏为主；BOOT/GPIO0 仅作为辅助输入。
 
@@ -63,7 +64,8 @@ Hub 生成的六码短码完成绑定，避免把旧 Hub 的持久 Token 发往�
 - 输入：文本、`audio/wav`（16 kHz、单声道）；
 - 输出：纯文本、纯音频、音频+文本；
 - 文本：中文、纯文本、最多 240 个字符；
-- 音频：`audio/wav`，inline 上限 8 KiB，同源 URL 下载上限 256 KiB；
+- 音频：`audio/wav`、`audio/mpeg`/`audio/mp3`，支持 inline 或同源 URL，
+  单个音频下载上限 512 KiB；
 - 功能：宠物状态、GUI RGB565 宠物资产、本地 skin 回退、环境显示、会议录音、音量控制。握手分别声明 `petAsset:true` 和 `petAnimation:true`；固件通过同源短期 URL 下载最多两帧 128×128 RGB565LE 到 PSRAM，不把大块 base64 塞进 TLS 握手。
 
 小音频可直接放在下行 JSON 中。较大音频由 Hub/GUI 写入媒体对象存储，下发同源相对 URL。ESP 只允许下载 `/api/im-gateway/v1/media/`，避免把持久 Bearer Token 发往任意域名。下载或播放失败时不 ACK、不推进 cursor，由服务端重试。
@@ -115,7 +117,7 @@ C:\Users\ma139\.espressif\python_env\idf6.0_py3.14_env\Scripts\python.exe `
   write-flash 0x10000 build-gateway-fix\maclaw_esp32s3_client.bin
 ```
 
-不要为普通功能更新刷写 bootloader、partition table、NVS、`srmodels` 或 `storage`。仓库中的 [`tools/flash-app-on-com3.ps1`](tools/flash-app-on-com3.ps1) 会先校验 COM3 的 Espressif VID/PID 和固件 SHA256，再只刷 `0x10000`。
+不要为普通功能更新刷写 bootloader、partition table、NVS、`srmodels` 或 `storage`。仓库中的 [`tools/flash-app-on-com3.ps1`](tools/flash-app-on-com3.ps1) 会先校验 COM3 的 Espressif VID/PID 和固件 SHA256，再只刷 `0x10000`。首次升级到包含 MP3 的版本需要完整刷写一次，因为 app 分区已扩至 `0x3a0000`，`model`/`storage` 的起始地址相应后移；之后仍可恢复只刷 app。
 
 ## 实机回归检查
 

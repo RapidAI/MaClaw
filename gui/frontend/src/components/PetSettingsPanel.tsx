@@ -14,9 +14,8 @@ import {
     ExportPetPackZip,
     GetPetStoreAccount,
     CanPublishPetStorePack,
-    SubmitPetStorePack,
+	SubmitPetStorePack,
 	WithdrawPetStorePack,
-	RefreshDeviceAmbientWeather,
 } from '../../wailsjs/go/main/App';
 import { buildHubPetPackHelpURL } from '../utils/hubCredits';
 import {
@@ -64,7 +63,7 @@ function formatUnknownError(err: unknown): string {
     return String(err ?? 'unknown error');
 }
 type PetPreviewState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'done' | 'alert';
-type DebouncedFieldKey = 'pet-size' | 'ambient-city';
+type DebouncedFieldKey = 'pet-size';
 type SaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type PetToggleKey =
     | 'pet_motion_enabled'
@@ -322,9 +321,6 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     const [installBusy, setInstallBusy] = useState(false);
     const [installError, setInstallError] = useState('');
 	const [installNotice, setInstallNotice] = useState('');
-	const [ambientRefreshState, setAmbientRefreshState] = useState<'idle' | 'refreshing' | 'done' | 'error'>('idle');
-	const [ambientCityDraft, setAmbientCityDraft] = useState(() => String(config.pet_ambient_city || ''));
-	const [detectedAmbientCity, setDetectedAmbientCity] = useState<string | null>(null);
     const [stageImage, setStageImage] = useState('');
     const [packRuntimeInfo, setPackRuntimeInfo] = useState<main.PetPackRuntimeInfo | null>(null);
     const [systemReducedMotion, setSystemReducedMotion] = useState(false);
@@ -347,8 +343,6 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     const savedTimerRef = useRef<number | undefined>(undefined);
     const installNoticeTimerRef = useRef<number | undefined>(undefined);
     const mountedRef = useRef(true);
-    const ambientRefreshRequestRef = useRef(0);
-	const pendingAmbientCityRef = useRef<string | null>(null);
     const saveSeqRef = useRef(0);
     const pendingPatchRef = useRef<Record<string, unknown>>({});
     const petSize = clampPetSize(config.pet_size || defaultPetSize);
@@ -365,7 +359,6 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     const ttsReady = !!config.tts_enabled;
     const petEnabled = !!config.pet_enabled;
 	const quietMode = !!config.pet_quiet_mode;
-	const ambientCity = config.pet_ambient_city || '';
     const voiceReady = asrReady && ttsReady;
     const selectedSkinOption = getPetSkinOption(selectedSkin, packOptions);
     // Any locally installed Zip can be the user's custom pack. The native
@@ -406,20 +399,6 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
     useEffect(() => {
         latestConfigRef.current = config;
     }, [config]);
-
-    // Keep typing responsive while its debounced config save is pending. A
-    // delayed parent render can otherwise replace the field with a stale,
-    // shorter value and make it seem as though only one character can stick.
-    useEffect(() => {
-        if (pendingAmbientCityRef.current === ambientCity) {
-            pendingAmbientCityRef.current = null;
-            return;
-        }
-        setAmbientCityDraft(ambientCity);
-        ambientRefreshRequestRef.current += 1;
-        if (ambientCity) setDetectedAmbientCity(null);
-        setAmbientRefreshState('idle');
-    }, [ambientCity]);
 
     useEffect(() => {
         if (typeof window.matchMedia !== 'function') return;
@@ -805,34 +784,6 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
         persistPetConfig({ ...pendingPatchRef.current }, next);
 	}, [setConfig, clearPendingSaveTimers, persistPetConfig]);
 
-    const refreshAmbientWeather = useCallback(async () => {
-		const requestID = ++ambientRefreshRequestRef.current;
-		setDetectedAmbientCity(null);
-		setAmbientRefreshState('refreshing');
-		// Flush a just-edited manual city before refreshing. Otherwise the
-		// hardware can receive weather for the previous city while the field
-		// already shows the new one.
-		if (pendingPatchRef.current.pet_ambient_city !== undefined) {
-			clearPendingSaveTimers();
-			const saved = await persistPetConfig({ ...pendingPatchRef.current }, latestConfigRef.current);
-			if (!mountedRef.current || requestID !== ambientRefreshRequestRef.current) return;
-			if (!saved) {
-				setAmbientRefreshState('error');
-				return;
-			}
-		}
-		try {
-			const resolvedCity = String(await RefreshDeviceAmbientWeather() || '').trim();
-			if (!mountedRef.current || requestID !== ambientRefreshRequestRef.current) return;
-			if (!ambientCityDraft.trim()) setDetectedAmbientCity(resolvedCity || null);
-			setAmbientRefreshState('done');
-		} catch (error) {
-			if (!mountedRef.current || requestID !== ambientRefreshRequestRef.current) return;
-			console.error('[PetSettingsPanel] RefreshDeviceAmbientWeather failed:', error);
-			setAmbientRefreshState('error');
-		}
-	}, [ambientCityDraft, clearPendingSaveTimers, persistPetConfig]);
-
     const sharePetPack = useCallback((pack: PetSkinOption) => {
         if (pack.id !== selectedSkin) {
             updatePetConfig({ pet_skin: pack.id, pet_variant: 'default' });
@@ -1195,38 +1146,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     </div>
                 </section>
 
-                <section className="pet-config-card">
-					<div className="pet-form-section">
-						<div className="pet-section-heading pet-section-heading--inline">
-							<label className="form-label" htmlFor="pet-ambient-city">{text(lang, '硬件天气城市', '硬體天氣城市', 'Hardware weather city')}</label>
-							<span>{text(lang, '留空时按电脑当前网络位置自动识别', '留空時按電腦目前網路位置自動辨識', 'Leave blank to detect from the desktop network')}</span>
-						</div>
-						<div className="pet-ambient-city-row">
-							<input
-				id="pet-ambient-city"
-				className="form-input"
-				value={ambientCityDraft !== '' ? ambientCityDraft : (detectedAmbientCity || '')}
-				disabled={ambientRefreshState === 'refreshing'}
-				maxLength={32}
-								placeholder={text(lang, '例如：上海', '例如：上海', 'e.g. Shanghai')}
-								onChange={(event) => {
-									const nextCity = event.target.value;
-									ambientRefreshRequestRef.current += 1;
-									setAmbientRefreshState('idle');
-									setDetectedAmbientCity(null);
-									setAmbientCityDraft(nextCity);
-									pendingAmbientCityRef.current = nextCity;
-									updatePetConfig({ pet_ambient_city: nextCity }, 'ambient-city');
-								}}
-							/>
-							<button type="button" className="btn-secondary" disabled={ambientRefreshState === 'refreshing'} onClick={() => void refreshAmbientWeather()}>
-								{ambientRefreshState === 'refreshing' ? text(lang, '查询中…', '查詢中…', 'Checking…') : text(lang, '立即同步', '立即同步', 'Sync now')}
-							</button>
-						</div>
-						{ambientRefreshState === 'done' ? <span className="pet-install-notice" role="status">{text(lang, '天气已推送到硬件', '天氣已推送到硬體', 'Weather sent to hardware')}</span> : null}
-						{ambientRefreshState === 'error' ? <span className="pet-install-error" role="alert">{text(lang, '天气同步失败，请检查 Hub 与网络连接', '天氣同步失敗，請檢查 Hub 與網路連線', 'Weather sync failed; check Hub and network')}</span> : null}
-					</div>
-
+				<section className="pet-config-card">
 					<div className="pet-form-section">
                         <div className="pet-section-heading">
                             <strong>{text(lang, '\u5f62\u8c61', '\u5f62\u8c61', 'Skin')}</strong>

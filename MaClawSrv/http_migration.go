@@ -34,6 +34,11 @@ const (
 	migrationAEADChunkSize  = int64(4 << 20)
 	migrationMagic          = "MLMIG01"
 	migrationHubResolveWait = 8 * time.Second
+	migrationMaxDownload    = int64(2) << 30
+	migrationMaxExpanded    = int64(4) << 30
+	migrationMaxZipFiles    = 200000
+	migrationMaxManifest    = int64(16) << 20
+	migrationMaxMemoryJSON  = int64(256) << 20
 )
 
 type migrationStatusResponse struct {
@@ -43,7 +48,7 @@ type migrationStatusResponse struct {
 	UserID              string      `json:"user_id,omitempty"`
 	MachineID           string      `json:"machine_id,omitempty"`
 	MachineName         string      `json:"machine_name,omitempty"`
-	MaxCompressedBytes  int64       `json:"max_compressed_bytes,omitempty"`
+	MaxPackageBytes     int64       `json:"max_package_bytes,omitempty"`
 	CurrentExport       interface{} `json:"current_export,omitempty"`
 	ConfigurationReason string      `json:"configuration_reason,omitempty"`
 }
@@ -77,6 +82,7 @@ type encryptedMigrationHeader struct {
 	Salt      []byte `json:"salt"`
 	Nonce     []byte `json:"nonce"`
 	PlainHash string `json:"plain_sha256"`
+	PlainSize int64  `json:"plain_size"`
 	Stream    bool   `json:"stream,omitempty"`
 	ChunkSize int64  `json:"chunk_size,omitempty"`
 }
@@ -92,7 +98,7 @@ func (s *HTTPServer) handleMigrationStatus(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, migrationStatusResponse{Configured: true, HubURL: cfg.HubURL, TenantID: p.TenantID, UserID: p.UserID, MachineID: cfg.MachineID, MachineName: cfg.MachineName, ConfigurationReason: err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, migrationStatusResponse{Configured: true, HubURL: cfg.HubURL, TenantID: p.TenantID, UserID: p.UserID, MachineID: cfg.MachineID, MachineName: cfg.MachineName, MaxCompressedBytes: maxBytes, CurrentExport: current})
+	writeJSON(w, http.StatusOK, migrationStatusResponse{Configured: true, HubURL: cfg.HubURL, TenantID: p.TenantID, UserID: p.UserID, MachineID: cfg.MachineID, MachineName: cfg.MachineName, MaxPackageBytes: maxBytes, CurrentExport: current})
 }
 
 func (s *HTTPServer) handleMigrationInstances(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -253,7 +259,7 @@ func (s *HTTPServer) runMigrationExport(ctx context.Context, p agentservice.Prin
 	}
 	defer os.RemoveAll(workDir)
 	progress(0.05, "preparing migration package")
-	plainPath, manifest, err := s.buildMigrationPackage(ctx, p, cfg, workDir)
+	plainPath, _, err := s.buildMigrationPackage(ctx, p, cfg, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -277,13 +283,10 @@ func (s *HTTPServer) runMigrationExport(ctx context.Context, p agentservice.Prin
 	}
 	chunkCount := int((encryptedSize + migrationChunkSize - 1) / migrationChunkSize)
 	createReq := map[string]interface{}{
-		"compressed_size":  plainSize,
 		"encrypted_size":   encryptedSize,
 		"encrypted_sha256": encryptedHash,
-		"plain_sha256":     plainHash,
 		"chunk_size":       migrationChunkSize,
 		"chunk_count":      chunkCount,
-		"manifest":         manifest,
 	}
 	created, err := s.migrationHubJSON(ctx, cfg, http.MethodPost, "/api/v1/migration/exports", createReq)
 	if err != nil {
@@ -302,7 +305,7 @@ func (s *HTTPServer) runMigrationExport(ctx context.Context, p agentservice.Prin
 		return nil, err
 	}
 	progress(1, "export completed")
-	return map[string]interface{}{"export_id": exportID, "compressed_size": plainSize, "encrypted_size": encryptedSize, "chunk_count": chunkCount, "manifest": manifest}, nil
+	return map[string]interface{}{"export_id": exportID, "encrypted_size": encryptedSize, "chunk_count": chunkCount}, nil
 }
 
 func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Principal, cfg migrationClientConfig, exportID, password string, progress func(float64, string)) (result map[string]interface{}, err error) {
@@ -350,8 +353,7 @@ func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Prin
 	chunkSize := int64(numberFromMap(exportMap, "chunk_size"))
 	encryptedSize := int64(numberFromMap(exportMap, "encrypted_size"))
 	encryptedHash := strings.TrimSpace(fmt.Sprint(exportMap["encrypted_sha256"]))
-	plainHash := strings.TrimSpace(fmt.Sprint(exportMap["plain_sha256"]))
-	if chunkCount <= 0 || chunkSize <= 0 || encryptedSize <= 0 || encryptedHash == "" || plainHash == "" {
+	if chunkCount <= 0 || chunkCount > 8192 || chunkSize < 256<<10 || chunkSize > 8<<20 || encryptedSize <= 0 || encryptedSize > migrationMaxDownload || int64(chunkCount) != (encryptedSize+chunkSize-1)/chunkSize || !validMigrationSHA256(encryptedHash) {
 		return nil, fmt.Errorf("invalid migration export metadata")
 	}
 	encryptedPath := filepath.Join(workDir, "migration.mlawenc")
@@ -368,13 +370,8 @@ func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Prin
 	}
 	progress(0.72, "decrypting and verifying package")
 	plainPath := filepath.Join(workDir, "migration.zip")
-	if err := decryptMigrationFile(encryptedPath, plainPath, password, plainHash); err != nil {
+	if err := decryptMigrationFile(encryptedPath, plainPath, password, ""); err != nil {
 		return nil, err
-	}
-	if gotPlain, _, err := fileSHA256(plainPath); err != nil {
-		return nil, err
-	} else if !strings.EqualFold(gotPlain, plainHash) {
-		return nil, fmt.Errorf("decrypted package hash mismatch")
 	}
 	progress(0.82, "restoring local memory and knowledge base")
 	result, err = s.restoreMigrationPackage(ctx, p, plainPath, workDir)
@@ -489,7 +486,7 @@ func (s *HTTPServer) restoreMigrationPackage(ctx context.Context, p agentservice
 		return nil, err
 	}
 	var manifest migrationManifest
-	if err := readJSONFile(filepath.Join(payloadDir, "manifest.json"), &manifest); err != nil {
+	if err := readJSONFileLimited(filepath.Join(payloadDir, "manifest.json"), &manifest, migrationMaxManifest); err != nil {
 		return nil, err
 	}
 	if manifest.Version != migrationPackageVersion {
@@ -499,7 +496,7 @@ func (s *HTTPServer) restoreMigrationPackage(ctx context.Context, p agentservice
 		return nil, err
 	}
 	var mem agentservice.UserMemorySnapshot
-	if err := readJSONFile(filepath.Join(payloadDir, "memory_snapshot.json"), &mem); err != nil {
+	if err := readJSONFileLimited(filepath.Join(payloadDir, "memory_snapshot.json"), &mem, migrationMaxMemoryJSON); err != nil {
 		return nil, err
 	}
 	memResult, err := s.svc.ImportUserMemorySnapshot(ctx, p, mem)
@@ -555,7 +552,7 @@ func (s *HTTPServer) uploadMigrationChunks(ctx context.Context, cfg migrationCli
 		if !s.migrationChunkUploaded(ctx, cfg, exportID, i, shaHex) {
 			var uploadErr error
 			for attempt := 0; attempt < 3; attempt++ {
-				uploadErr = s.migrationHubRaw(ctx, cfg, http.MethodPut, fmt.Sprintf("/api/v1/migration/exports/%s/chunks/%d?sha256=%s", exportID, i, shaHex), bytes.NewReader(chunk))
+				uploadErr = s.migrationHubRaw(ctx, cfg, http.MethodPut, fmt.Sprintf("/api/v1/migration/exports/%s/chunks/%d?sha256=%s", exportID, i, shaHex), bytes.NewReader(chunk), "application/octet-stream")
 				if uploadErr == nil || s.migrationChunkUploaded(ctx, cfg, exportID, i, shaHex) {
 					uploadErr = nil
 					break
@@ -588,18 +585,24 @@ func (s *HTTPServer) downloadMigrationChunks(ctx context.Context, cfg migrationC
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	for i := 0; i < chunkCount; i++ {
-		data, err := s.migrationHubBytes(ctx, cfg, http.MethodGet, fmt.Sprintf("/api/v1/migration/imports/%s/chunks/%d", exportID, i), nil)
-		if err != nil {
-			return err
+	completed := false
+	defer func() {
+		_ = out.Close()
+		if !completed {
+			_ = os.Remove(path)
 		}
+	}()
+	for i := 0; i < chunkCount; i++ {
 		expectedSize := chunkSize
 		if remaining := size - int64(i)*chunkSize; remaining < expectedSize {
 			expectedSize = remaining
 		}
-		if expectedSize <= 0 || int64(len(data)) != expectedSize {
+		if expectedSize <= 0 {
 			return fmt.Errorf("downloaded migration chunk %d size mismatch", i)
+		}
+		data, err := s.migrationHubBytesLimited(ctx, cfg, http.MethodGet, fmt.Sprintf("/api/v1/migration/imports/%s/chunks/%d", exportID, i), nil, expectedSize)
+		if err != nil {
+			return err
 		}
 		if _, err := out.Write(data); err != nil {
 			return err
@@ -611,6 +614,10 @@ func (s *HTTPServer) downloadMigrationChunks(ctx context.Context, cfg migrationC
 	} else if st.Size() != size {
 		return fmt.Errorf("downloaded package size mismatch")
 	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	completed = true
 	return nil
 }
 
@@ -620,6 +627,10 @@ func encryptMigrationFile(inPath, outPath, password, plainHash string) error {
 		return err
 	}
 	defer in.Close()
+	plainInfo, err := in.Stat()
+	if err != nil || plainInfo.Size() <= 0 || plainInfo.Size() > migrationMaxExpanded {
+		return fmt.Errorf("invalid migration package size")
+	}
 	outFile, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -636,7 +647,7 @@ func encryptMigrationFile(inPath, outPath, password, plainHash string) error {
 	if err != nil {
 		return err
 	}
-	header := encryptedMigrationHeader{Version: migrationPackageVersion, KDF: "argon2id", Time: 3, MemoryKB: 64 * 1024, Threads: 4, Salt: salt, Nonce: nonce, PlainHash: plainHash, Stream: true, ChunkSize: migrationAEADChunkSize}
+	header := encryptedMigrationHeader{Version: migrationPackageVersion, KDF: "argon2id", Time: 3, MemoryKB: 64 * 1024, Threads: 4, Salt: salt, Nonce: nonce, PlainHash: plainHash, PlainSize: plainInfo.Size(), Stream: true, ChunkSize: migrationAEADChunkSize}
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
 		return err
@@ -698,12 +709,13 @@ func decryptMigrationFile(inPath, outPath, password, expectedPlainHash string) e
 		return fmt.Errorf("invalid encrypted migration header")
 	}
 	var header encryptedMigrationHeader
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
+	if err := decodeMigrationStrictJSON(headerJSON, &header); err != nil {
 		return err
 	}
 	if err := validateEncryptedMigrationHeader(header); err != nil {
 		return err
 	}
+	expectedPlainSize := header.PlainSize
 	key := argon2.IDKey([]byte(password), header.Salt, header.Time, header.MemoryKB, header.Threads, 32)
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -717,10 +729,17 @@ func decryptMigrationFile(inPath, outPath, password, expectedPlainHash string) e
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	completed := false
+	defer func() {
+		_ = out.Close()
+		if !completed {
+			_ = os.Remove(outPath)
+		}
+	}()
 	h := sha256.New()
+	var written int64
 	if !header.Stream {
-		ciphertext, err := io.ReadAll(in)
+		ciphertext, err := io.ReadAll(io.LimitReader(in, expectedPlainSize+int64(gcm.Overhead())+1))
 		if err != nil {
 			return err
 		}
@@ -734,7 +753,15 @@ func decryptMigrationFile(inPath, outPath, password, expectedPlainHash string) e
 		if _, err := out.Write(plain); err != nil {
 			return err
 		}
-		return finishDecryptedMigration(out, h, expectedPlainHash, header.PlainHash)
+		written = int64(len(plain))
+		if written != expectedPlainSize {
+			return fmt.Errorf("decrypted package size mismatch")
+		}
+		if err := finishDecryptedMigration(out, h, expectedPlainHash, header.PlainHash); err != nil {
+			return err
+		}
+		completed = true
+		return nil
 	}
 	if header.ChunkSize <= 0 || header.ChunkSize > 32<<20 {
 		return fmt.Errorf("unsupported encrypted migration package")
@@ -768,8 +795,19 @@ func decryptMigrationFile(inPath, outPath, password, expectedPlainHash string) e
 		if _, err := out.Write(plain); err != nil {
 			return err
 		}
+		written += int64(len(plain))
+		if written > expectedPlainSize {
+			return fmt.Errorf("decrypted package size mismatch")
+		}
 	}
-	return finishDecryptedMigration(out, h, expectedPlainHash, header.PlainHash)
+	if written != expectedPlainSize {
+		return fmt.Errorf("decrypted package size mismatch")
+	}
+	if err := finishDecryptedMigration(out, h, expectedPlainHash, header.PlainHash); err != nil {
+		return err
+	}
+	completed = true
+	return nil
 }
 
 func validateEncryptedMigrationHeader(header encryptedMigrationHeader) error {
@@ -777,6 +815,9 @@ func validateEncryptedMigrationHeader(header encryptedMigrationHeader) error {
 		return fmt.Errorf("unsupported encrypted migration package")
 	}
 	if header.Time == 0 || header.Time > 10 || header.MemoryKB < 1024 || header.MemoryKB > 256*1024 || header.Threads == 0 || header.Threads > 8 {
+		return fmt.Errorf("unsupported encrypted migration package")
+	}
+	if !validMigrationSHA256(header.PlainHash) || header.PlainSize <= 0 || header.PlainSize > migrationMaxExpanded {
 		return fmt.Errorf("unsupported encrypted migration package")
 	}
 	return nil
@@ -821,7 +862,7 @@ func (s *HTTPServer) migrationHubGetCurrent(ctx context.Context, cfg migrationCl
 	if err != nil {
 		return nil, 0, err
 	}
-	return out["export"], int64(numberFromMap(out, "max_compressed_bytes")), nil
+	return out["export"], int64(numberFromMap(out, "max_package_bytes")), nil
 }
 
 func (s *HTTPServer) migrationHubJSON(ctx context.Context, cfg migrationClientConfig, method, path string, body interface{}) (map[string]interface{}, error) {
@@ -839,8 +880,8 @@ func (s *HTTPServer) migrationHubJSON(ctx context.Context, cfg migrationClientCo
 	}
 	var out map[string]interface{}
 	if len(data) > 0 {
-		if err := json.Unmarshal(data, &out); err != nil {
-			return nil, err
+		if err := decodeMigrationJSON(data, &out); err != nil {
+			return nil, fmt.Errorf("invalid Hub migration JSON response: %w", err)
 		}
 	}
 	if out == nil {
@@ -849,12 +890,102 @@ func (s *HTTPServer) migrationHubJSON(ctx context.Context, cfg migrationClientCo
 	return out, nil
 }
 
-func (s *HTTPServer) migrationHubRaw(ctx context.Context, cfg migrationClientConfig, method, path string, body io.Reader) error {
-	_, err := s.migrationHubBytes(ctx, cfg, method, path, body)
+func decodeMigrationJSON(data []byte, value interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("response must contain one JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func decodeMigrationStrictJSON(data []byte, value interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := walkMigrationJSONValue(decoder, 0); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("migration JSON contains trailing data")
+		}
+		return err
+	}
+	decoder = json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("migration JSON must contain one value")
+	}
+	return nil
+}
+
+func walkMigrationJSONValue(decoder *json.Decoder, depth int) error {
+	if depth > 64 {
+		return fmt.Errorf("migration JSON nesting is too deep")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("migration JSON object key must be a string")
+			}
+			folded := strings.ToLower(key)
+			if _, exists := seen[folded]; exists {
+				return fmt.Errorf("migration JSON contains duplicate field %q", key)
+			}
+			seen[folded] = struct{}{}
+			if err := walkMigrationJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			if err := walkMigrationJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	default:
+		return fmt.Errorf("invalid migration JSON delimiter")
+	}
+}
+
+func (s *HTTPServer) migrationHubRaw(ctx context.Context, cfg migrationClientConfig, method, path string, body io.Reader, contentType ...string) error {
+	_, err := s.migrationHubBytes(ctx, cfg, method, path, body, contentType...)
 	return err
 }
 
 func (s *HTTPServer) migrationHubBytes(ctx context.Context, cfg migrationClientConfig, method, path string, body io.Reader, contentType ...string) ([]byte, error) {
+	return s.migrationHubBytesLimited(ctx, cfg, method, path, body, 32<<20, contentType...)
+}
+
+func (s *HTTPServer) migrationHubBytesLimited(ctx context.Context, cfg migrationClientConfig, method, path string, body io.Reader, maxBytes int64, contentType ...string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, cfg.HubURL+path, body)
 	if err != nil {
 		return nil, err
@@ -874,9 +1005,18 @@ func (s *HTTPServer) migrationHubBytes(ctx context.Context, cfg migrationClientC
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if maxBytes < 1 {
+		maxBytes = 1
+	}
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if readErr != nil {
+		return nil, readErr
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("Hub migration API %s %s returned %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("Hub migration API %s %s response exceeds %d bytes", method, path, maxBytes)
 	}
 	return data, nil
 }
@@ -898,8 +1038,11 @@ func fileSHA256(path string) (string, int64, error) {
 func digestDir(root string) ([]migrationFileDigest, error) {
 	var out []migrationFileDigest
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Base(path) == "manifest.json" {
+		if err != nil || d.IsDir() {
 			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("migration package contains unsupported symlink: %s", path)
 		}
 		sha, size, err := fileSHA256(path)
 		if err != nil {
@@ -909,18 +1052,34 @@ func digestDir(root string) ([]migrationFileDigest, error) {
 		if err != nil {
 			return err
 		}
-		out = append(out, migrationFileDigest{Path: filepath.ToSlash(rel), Bytes: size, SHA256: sha})
+		rel = filepath.ToSlash(rel)
+		if rel == "manifest.json" {
+			return nil
+		}
+		out = append(out, migrationFileDigest{Path: rel, Bytes: size, SHA256: sha})
 		return nil
 	})
 	return out, err
 }
 
 func verifyFileDigests(root string, files []migrationFileDigest) error {
+	if len(files) == 0 || len(files) > migrationMaxZipFiles {
+		return fmt.Errorf("invalid migration manifest file list")
+	}
+	seen := make(map[string]struct{}, len(files))
 	for _, file := range files {
+		if file.Bytes < 0 || !validMigrationSHA256(file.SHA256) {
+			return fmt.Errorf("invalid migration manifest file: %s", file.Path)
+		}
 		path, err := safeJoin(root, file.Path)
 		if err != nil {
 			return err
 		}
+		key := strings.ToLower(filepath.Clean(path))
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate migration manifest file: %s", file.Path)
+		}
+		seen[key] = struct{}{}
 		sha, size, err := fileSHA256(path)
 		if err != nil {
 			return err
@@ -929,7 +1088,52 @@ func verifyFileDigests(root string, files []migrationFileDigest) error {
 			return fmt.Errorf("migration file hash mismatch: %s", file.Path)
 		}
 	}
+	actual := make(map[string]string, len(files))
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("migration package contains unsupported symlink: %s", path)
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "manifest.json" {
+			return nil
+		}
+		if !canonicalMigrationRelativePath(rel) {
+			return fmt.Errorf("invalid migration package file: %s", rel)
+		}
+		key := strings.ToLower(filepath.Clean(path))
+		actual[key] = rel
+		return nil
+	}); err != nil {
+		return err
+	}
+	if len(actual) != len(seen) {
+		return fmt.Errorf("migration manifest file set does not match package contents")
+	}
+	for key, rel := range actual {
+		if _, ok := seen[key]; !ok {
+			return fmt.Errorf("migration package contains undeclared file: %s", rel)
+		}
+	}
 	return nil
+}
+
+func validMigrationSHA256(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func zipDir(root, zipPath string) error {
@@ -993,11 +1197,31 @@ func unzipToDir(zipPath, dest string) error {
 		return err
 	}
 	defer zr.Close()
+	if len(zr.File) > migrationMaxZipFiles {
+		return fmt.Errorf("migration package contains too many files")
+	}
+	var expandedBytes uint64
+	seen := make(map[string]struct{}, len(zr.File))
 	for _, f := range zr.File {
+		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
+		}
+		cleanName := filepath.ToSlash(filepath.Clean(strings.TrimSuffix(f.Name, "/")))
+		if !canonicalMigrationRelativePath(cleanName) {
+			return fmt.Errorf("zip contains invalid entry path: %s", f.Name)
+		}
+		key := strings.ToLower(cleanName)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("zip contains duplicate entry: %s", f.Name)
+		}
+		seen[key] = struct{}{}
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		outPath, err := safeJoin(dest, f.Name)
+		if f.UncompressedSize64 > uint64(migrationMaxExpanded)-expandedBytes {
+			return fmt.Errorf("migration package expands beyond %d bytes", migrationMaxExpanded)
+		}
+		outPath, err := safeJoin(dest, cleanName)
 		if err != nil {
 			return err
 		}
@@ -1013,12 +1237,17 @@ func unzipToDir(zipPath, dest string) error {
 			rc.Close()
 			return err
 		}
-		_, copyErr := io.Copy(out, rc)
+		limited := &io.LimitedReader{R: rc, N: int64(f.UncompressedSize64) + 1}
+		n, copyErr := io.Copy(out, limited)
 		closeErr := out.Close()
 		rcErr := rc.Close()
 		if copyErr != nil {
 			return copyErr
 		}
+		if uint64(n) != f.UncompressedSize64 {
+			return fmt.Errorf("zip entry size mismatch: %s", f.Name)
+		}
+		expandedBytes += uint64(n)
 		if closeErr != nil {
 			return closeErr
 		}
@@ -1036,8 +1265,14 @@ func copyDirInto(destRoot, srcRoot, destName string) (int64, error) {
 		return 0, err
 	}
 	err = filepath.WalkDir(srcRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("migration package contains unsupported symlink: %s", path)
+		}
+		if d.IsDir() {
+			return nil
 		}
 		rel, err := filepath.Rel(srcRoot, path)
 		if err != nil {
@@ -1120,11 +1355,14 @@ func knowledgeAssetDirSelected(name string, sourceSet map[string]struct{}) bool 
 }
 
 func safeJoin(root, name string) (string, error) {
+	if !canonicalMigrationRelativePath(filepath.ToSlash(name)) {
+		return "", fmt.Errorf("unsafe path %q", name)
+	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return "", err
 	}
-	out := filepath.Join(rootAbs, filepath.FromSlash(strings.TrimLeft(strings.ReplaceAll(name, "\\", "/"), "/")))
+	out := filepath.Join(rootAbs, filepath.FromSlash(name))
 	outAbs, err := filepath.Abs(out)
 	if err != nil {
 		return "", err
@@ -1133,6 +1371,32 @@ func safeJoin(root, name string) (string, error) {
 		return "", fmt.Errorf("unsafe path %q", name)
 	}
 	return outAbs, nil
+}
+
+func canonicalMigrationRelativePath(name string) bool {
+	if name == "" || strings.TrimSpace(name) != name || strings.Contains(name, "\\") || strings.HasPrefix(name, "/") || filepath.IsAbs(filepath.FromSlash(name)) {
+		return false
+	}
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(name)))
+	if clean == "." || clean != name || clean == ".." || strings.HasPrefix(clean, "../") {
+		return false
+	}
+	for _, segment := range strings.Split(clean, "/") {
+		if segment == "" || strings.Contains(segment, ":") || strings.HasSuffix(segment, ".") || strings.HasSuffix(segment, " ") {
+			return false
+		}
+		for _, r := range segment {
+			if r < 0x20 {
+				return false
+			}
+		}
+		base := strings.ToUpper(strings.SplitN(segment, ".", 2)[0])
+		if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+			(len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func writeJSONFile(path string, v interface{}) error {
@@ -1152,6 +1416,28 @@ func readJSONFile(path string, v interface{}) error {
 		return err
 	}
 	return json.Unmarshal(data, v)
+}
+
+func readJSONFileLimited(path string, v interface{}, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return fmt.Errorf("invalid JSON size limit")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > maxBytes {
+		return fmt.Errorf("migration JSON exceeds %d bytes: %s", maxBytes, filepath.Base(path))
+	}
+	if err := decodeMigrationStrictJSON(data, v); err != nil {
+		return fmt.Errorf("invalid migration JSON %s: %w", filepath.Base(path), err)
+	}
+	return nil
 }
 
 func randomBytes(n int) []byte {

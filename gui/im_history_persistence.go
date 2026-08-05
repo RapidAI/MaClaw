@@ -15,7 +15,7 @@ import (
 )
 
 func (h *IMMessageHandler) extractSessionStartMemoryAsync(userID string, entries []agent.ConversationEntry) {
-	if h == nil || h.sessionStartExtractor == nil || len(entries) < 6 {
+	if h == nil || h.sessionStartExtractor == nil || len(entries) < 6 || isIsolatedAssistantSessionUserID(userID) {
 		return
 	}
 	msgs := make([]memory.ConversationMessage, 0, len(entries))
@@ -84,7 +84,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	var droppedTexts []droppedText
 	var memorySinkCollector func(string, []string)
 
-	if willCompact && h.memoryStore != nil {
+	if willCompact && h.memoryStore != nil && !isIsolatedAssistantSessionUserID(userID) {
 		memorySinkCollector = func(content string, tags []string) {
 			droppedTexts = append(droppedTexts, droppedText{Content: content, Tags: tags})
 		}
@@ -100,7 +100,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// Index compacted entries for cross-page recall (Requirement 7).
 	// When entries are removed by trimming, index them in the PageIndex so
 	// the Recall Engine can still find file paths, decisions, etc.
-	if len(trimmed) < len(history) && h.memoryStore != nil {
+	if len(trimmed) < len(history) && h.memoryStore != nil && !isIsolatedAssistantSessionUserID(userID) {
 		if pi := h.memoryStore.PageIdx(); pi != nil {
 			removedEntries := computeRemovedEntries(history, trimmed)
 			if len(removedEntries) > 0 {
@@ -284,6 +284,10 @@ func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, 
 	stageStartedAt := time.Now()
 	h.persistSessionTranscriptAsync(userID, history)
 	log.Printf("[post-conversation] stage=transcript user=%s request_id=%q duration=%s cancelled=%v", userID, requestID, time.Since(stageStartedAt).Round(time.Millisecond), bgCtx.Err() != nil)
+	if isIsolatedAssistantSessionUserID(userID) {
+		log.Printf("[post-conversation] skip shared-memory persistence for isolated session user=%s request_id=%q", userID, requestID)
+		return
+	}
 	if h.app != nil && !h.app.waitForForegroundAgentIdle(bgCtx, "post-conversation-llm", userID) {
 		return
 	}

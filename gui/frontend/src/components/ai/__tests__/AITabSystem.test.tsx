@@ -156,6 +156,82 @@ describe('useAITabManager', () => {
         await waitFor(() => expect(createExpertTab).toHaveBeenCalledTimes(1));
     });
 
+    it('does not duplicate a new-task context card after a closed project tab reopens', async () => {
+        const tab = { id: 'proj-new-task', type: 'project' } as AITab;
+        let history: any[] = [];
+        const saveTabState = vi.fn((_tabId: string, state: { history?: any[] }) => {
+            if (state.history) history = state.history;
+        });
+        const onHandled = vi.fn();
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(() => tab),
+                getTabState: vi.fn(() => ({ history, scrollTop: 0, inputText: '' })),
+                saveTabState,
+                hasProjectTab: vi.fn(() => false),
+                pendingProjectTabOpen: pending as any,
+                onPendingProjectTabOpenHandled: onHandled,
+            }),
+            { initialProps: { pending: null as any } },
+        );
+        const launch = {
+            projectPath: 'D:/tasks/new-task',
+            taskTitle: 'New task',
+            autoSend: false,
+            newTaskContext: { kind: 'new-task' as const },
+        };
+
+        rerender({ pending: launch });
+        await waitFor(() => expect(history.filter(message => message.kind === 'taskContext')).toHaveLength(1));
+        rerender({ pending: null });
+        rerender({ pending: { ...launch } });
+        await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(2));
+        expect(history.filter(message => message.kind === 'taskContext')).toHaveLength(1);
+    });
+
+    it('does not attach deferred send or IM delivery state to a new task', async () => {
+        const tab = { id: 'proj-new-task-delivery', type: 'project' } as AITab;
+        let state: any = { history: [], scrollTop: 0, inputText: '' };
+        const saveTabState = vi.fn((_tabId: string, next: any) => {
+            state = { ...state, ...next };
+        });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(() => tab),
+                getTabState: vi.fn(() => state),
+                saveTabState,
+                hasProjectTab: vi.fn(() => false),
+                sendMessage,
+                pendingProjectTabOpen: pending,
+                onPendingProjectTabOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as any } },
+        );
+
+        rerender({
+            pending: {
+                projectPath: 'D:/tasks/new-task-delivery',
+                taskTitle: 'New task',
+                initialMessage: 'must remain local',
+                autoSend: true,
+                agentMode: 'remote_coding_dev',
+                remoteNeedsReconnect: true,
+                imPlatform: 'slack',
+                imTargetUID: 'user-1',
+                newTaskContext: { kind: 'new-task' },
+            },
+        });
+
+        await waitFor(() => expect(state.history.some((message: any) => message.kind === 'taskContext')).toBe(true));
+        expect(state.pendingIMCompletion).toBeUndefined();
+        expect(state.pendingRemoteInitialMessage).toBeUndefined();
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
     describe('initial state', () => {
         it('starts with only the local tab active', () => {
             const { result } = renderHook(() => useAITabManager());

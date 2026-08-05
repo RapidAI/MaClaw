@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // CancelCurrentSession cancels the currently running chat session.
@@ -557,6 +559,13 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	}
 	if strings.TrimSpace(loopCtx.Lang) == "" {
 		loopCtx.Lang = msg.Lang
+	}
+	loopCtx.ClientTools = append([]agent.ClientToolDefinition(nil), msg.ClientTools...)
+	if msg.ClientToolContext != nil {
+		copyContext := *msg.ClientToolContext
+		loopCtx.ClientToolContext = &copyContext
+	} else {
+		loopCtx.ClientToolContext = nil
 	}
 	if h.traceService != nil && loopCtx.RunID == "" {
 		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, msg.Text, msg.Platform, msg.UserID, h.traceProjectPath())

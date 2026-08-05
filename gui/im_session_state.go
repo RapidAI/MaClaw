@@ -79,7 +79,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	// (e.g. ssh, browser) so the new conversation starts with a clean tool
 	// list determined solely by the user's first message.
 	if h.toolRouter != nil {
-		h.toolRouter.ResetSession()
+		h.toolRouter.ResetSessionForSession(userID)
 	}
 
 	// Steering file context (per-user partitioned).

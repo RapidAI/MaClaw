@@ -294,6 +294,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	gateway.RegisterIMGatewayPlugin(lansengerPlugin)
 	gateway.RegisterIMGatewayPlugin(thirdPartyPlugin)
 	deviceGateway := im.NewPersistentDeviceGateway(thirdPartyPlugin, st.System)
+	deviceGateway.SetMachineMessageSender(deviceService)
 	deviceGateway.SetVoicePairTranscriber(httpapi.TranscribeHardwarePairingWAV)
 	httpapi.SetHardwareMeetingResultNotifier(deviceGateway)
 	deviceGateway.SetMeetingRecordingHandler(httpapi.HardwareMeetingRecordingsHandler(deviceGateway))

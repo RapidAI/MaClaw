@@ -46,6 +46,45 @@ func TestProjectIndex_ReplacePrefixedTags(t *testing.T) {
 	}
 }
 
+func TestProjectIndex_TracksEarliestProjectCreationTime(t *testing.T) {
+	pi := NewProjectIndex()
+	created := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	updated := created.Add(48 * time.Hour)
+	projectPath := `D:\work\tasks\creation-time`
+
+	pi.Rebuild([]Entry{
+		{
+			ID:        "first",
+			Content:   "# Creation time task",
+			Category:  CategoryTaskArtifact,
+			Tags:      []string{projectPath},
+			SourceURL: filepath.Join(projectPath, "task.md"),
+			CreatedAt: created,
+			UpdatedAt: created,
+		},
+		{
+			ID:        "later",
+			Content:   "Task was updated later",
+			Category:  CategoryProjectKnowledge,
+			Tags:      []string{projectPath},
+			SourceURL: filepath.Join(projectPath, "notes.md"),
+			CreatedAt: updated,
+			UpdatedAt: updated,
+		},
+	})
+
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		t.Fatal("project record missing")
+	}
+	if !rec.CreatedAt.Equal(created) {
+		t.Fatalf("CreatedAt = %s, want earliest entry time %s", rec.CreatedAt, created)
+	}
+	if !rec.LastActivity.Equal(updated) {
+		t.Fatalf("LastActivity = %s, want %s", rec.LastActivity, updated)
+	}
+}
+
 func TestProjectIndex_Rebuild(t *testing.T) {
 	pi := NewProjectIndex()
 

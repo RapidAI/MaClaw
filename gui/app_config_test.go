@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -25,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/user"
 )
 
@@ -101,6 +104,28 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temp files remain: %v", matches)
+	}
+}
+
+func TestPreserveBackendOwnedFieldsKeepsHardwareGatewayInvariant(t *testing.T) {
+	hubMode := false
+	localMode := true
+	ondisk := corelib.AppConfig{
+		HardwareEnabled:            true,
+		ThirdPartyGatewayEnabled:   true,
+		ThirdPartyGatewayToken:     "confirmed-token",
+		ThirdPartyGatewayLocalMode: &hubMode,
+	}
+	incoming := ondisk
+	incoming.HardwareEnabled = false
+	incoming.ThirdPartyGatewayEnabled = false
+	incoming.ThirdPartyGatewayToken = "stale-token"
+	incoming.ThirdPartyGatewayLocalMode = &localMode
+
+	preserveBackendOwnedFields(&incoming, &ondisk)
+
+	if !incoming.HardwareEnabled || !incoming.ThirdPartyGatewayEnabled || incoming.ThirdPartyGatewayToken != "confirmed-token" || incoming.IsThirdPartyGatewayLocalMode() {
+		t.Fatalf("hardware gateway transport was not preserved: %#v", incoming)
 	}
 }
 
@@ -877,6 +902,7 @@ func TestGetSettingsTabConfigFiltersByTab(t *testing.T) {
 		cfg.DefaultProxyPort = "7890"
 		cfg.PetEnabled = true
 		cfg.PetSkin = "clawmate"
+		cfg.PetAmbientCity = "Shanghai"
 		cfg.SecurityPolicyMode = "standard"
 		cfg.RemoteMachineID = "machine-1"
 		cfg.RemoteHeartbeatSec = 30
@@ -936,6 +962,17 @@ func TestGetSettingsTabConfigFiltersByTab(t *testing.T) {
 	}
 	if pet["pet_skin"] != "clawmate" {
 		t.Fatalf("pet_skin = %#v", pet["pet_skin"])
+	}
+	if _, hasWeatherCity := pet["pet_ambient_city"]; hasWeatherCity {
+		t.Fatalf("pet DTO must not include hardware weather city: %#v", pet)
+	}
+
+	im, err := app.GetSettingsTabConfig("im")
+	if err != nil {
+		t.Fatalf("im DTO: %v", err)
+	}
+	if im["pet_ambient_city"] != "Shanghai" {
+		t.Fatalf("im pet_ambient_city = %#v", im["pet_ambient_city"])
 	}
 
 	// Self-loading tabs return empty maps without leaking unrelated config.
@@ -2084,6 +2121,61 @@ func TestPatchConfigFieldsUpdatesHardwareConfiguration(t *testing.T) {
 	}
 }
 
+func TestPatchConfigRejectsHardwareGatewayInvariantViolations(t *testing.T) {
+	tests := []struct {
+		name  string
+		patch func(*corelib.AppConfig)
+		want  string
+	}{
+		{
+			name: "disabled gateway",
+			patch: func(cfg *corelib.AppConfig) {
+				cfg.HardwareEnabled = true
+				cfg.ThirdPartyGatewayEnabled = false
+				cfg.SetThirdPartyGatewayLocal(false)
+				cfg.ThirdPartyGatewayToken = "token"
+			},
+			want: "turning off third-party access",
+		},
+		{
+			name: "local mode",
+			patch: func(cfg *corelib.AppConfig) {
+				cfg.HardwareEnabled = true
+				cfg.ThirdPartyGatewayEnabled = true
+				cfg.SetThirdPartyGatewayLocal(true)
+				cfg.ThirdPartyGatewayToken = "token"
+			},
+			want: "Hub mode",
+		},
+		{
+			name: "missing token",
+			patch: func(cfg *corelib.AppConfig) {
+				cfg.HardwareEnabled = true
+				cfg.ThirdPartyGatewayEnabled = true
+				cfg.SetThirdPartyGatewayLocal(false)
+				cfg.ThirdPartyGatewayToken = ""
+			},
+			want: "gateway token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := &App{testHomeDir: t.TempDir()}
+			if err := app.PatchConfig(tt.patch); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("PatchConfig error=%v, want %q", err, tt.want)
+			}
+			cfg, err := app.LoadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.HardwareEnabled {
+				t.Fatalf("rejected patch was published: %#v", cfg)
+			}
+		})
+	}
+}
+
 func TestPatchConfigFieldsIMOwnerProactiveTargets(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -3228,6 +3320,244 @@ func TestHardwareWelcomeConfigChangedOnlyTracksHubConfigFields(t *testing.T) {
 	}
 }
 
+func TestPrepareHardwareWelcomeWAVRejectsMalformedAndEmptyAudio(t *testing.T) {
+	if _, err := prepareHardwareWelcomeWAV([]byte("RIFF\x00\x00\x00\x00WAVE")); err == nil {
+		t.Fatal("header-only WAV must be rejected")
+	}
+
+	malformed := make([]byte, 52)
+	copy(malformed[0:4], "RIFF")
+	copy(malformed[8:12], "WAVE")
+	copy(malformed[12:16], "fmt ")
+	// Claim a fmt chunk larger than the remaining file.
+	malformed[16] = 0xff
+	if _, err := prepareHardwareWelcomeWAV(malformed); err == nil {
+		t.Fatal("truncated WAV chunk must be rejected")
+	}
+}
+
+func TestEmbeddedHardwareWelcomeWAVIsESP32Ready(t *testing.T) {
+	prepared, err := prepareHardwareWelcomeWAV(defaultHardwareWelcomeWAV)
+	if err != nil {
+		t.Fatalf("prepare embedded welcome WAV: %v", err)
+	}
+	if !bytes.Equal(prepared, defaultHardwareWelcomeWAV) {
+		t.Fatal("embedded welcome WAV must already be normalized to the ESP32 format")
+	}
+	if len(prepared) > hardwareWelcomeMaxWAVBytes {
+		t.Fatalf("embedded welcome WAV is %d bytes, limit is %d", len(prepared), hardwareWelcomeMaxWAVBytes)
+	}
+}
+
+func TestEnsureDefaultHardwareWelcomeInstallsOnceAndPreservesSelection(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	cfg := corelib.AppConfigDefaults()
+
+	changed, err := app.ensureDefaultHardwareWelcome(&cfg)
+	if err != nil {
+		t.Fatalf("install embedded welcome WAV: %v", err)
+	}
+	if !changed || cfg.HardwareWelcomeAudioPath != app.hardwareWelcomePath() {
+		t.Fatalf("embedded welcome path=%q changed=%v", cfg.HardwareWelcomeAudioPath, changed)
+	}
+	installed, err := os.ReadFile(cfg.HardwareWelcomeAudioPath)
+	if err != nil {
+		t.Fatalf("read installed welcome WAV: %v", err)
+	}
+	if !bytes.Equal(installed, defaultHardwareWelcomeWAV) {
+		t.Fatal("installed welcome WAV differs from embedded asset")
+	}
+
+	changed, err = app.ensureDefaultHardwareWelcome(&cfg)
+	if err != nil || changed {
+		t.Fatalf("second install changed=%v err=%v", changed, err)
+	}
+	cfg.HardwareWelcomeAudioPath = "C:/custom/welcome.wav"
+	changed, err = app.ensureDefaultHardwareWelcome(&cfg)
+	if err != nil || changed || cfg.HardwareWelcomeAudioPath != "C:/custom/welcome.wav" {
+		t.Fatalf("custom selection was not preserved: changed=%v path=%q err=%v", changed, cfg.HardwareWelcomeAudioPath, err)
+	}
+}
+
+func TestResetHardwareWelcomeAudioRestoresEmbeddedRecording(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HardwareWelcomeText = "Custom greeting"
+		cfg.HardwareWelcomeVoiceID = tts.DefaultEnglishTTSVoiceID
+		cfg.HardwareWelcomeAudioPath = "C:/custom/greeting.wav"
+	}); err != nil {
+		t.Fatalf("seed custom welcome: %v", err)
+	}
+
+	path, err := app.ResetHardwareWelcomeAudio()
+	if err != nil {
+		t.Fatalf("reset hardware welcome audio: %v", err)
+	}
+	if path != app.hardwareWelcomePath() {
+		t.Fatalf("reset path=%q, want %q", path, app.hardwareWelcomePath())
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read reset welcome WAV: %v", err)
+	}
+	if !bytes.Equal(got, defaultHardwareWelcomeWAV) {
+		t.Fatal("reset welcome WAV differs from embedded recording")
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if cfg.HardwareWelcomeText != corelib.AppConfigDefaults().HardwareWelcomeText || cfg.HardwareWelcomeVoiceID != tts.EnglishFemaleTTSVoiceID || cfg.HardwareWelcomeAudioPath != path {
+		t.Fatalf("reset config text=%q voice=%q path=%q", cfg.HardwareWelcomeText, cfg.HardwareWelcomeVoiceID, cfg.HardwareWelcomeAudioPath)
+	}
+}
+
+func TestNormalizeHardwareWelcomeVoiceID(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty defaults to sweet female", want: tts.EnglishFemaleTTSVoiceID},
+		{name: "sweet female", input: tts.EnglishFemaleTTSVoiceID, want: tts.EnglishFemaleTTSVoiceID},
+		{name: "natural male", input: tts.DefaultEnglishTTSVoiceID, want: tts.DefaultEnglishTTSVoiceID},
+		{name: "unknown", input: "af_unknown", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeHardwareWelcomeVoiceID(tt.input)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("normalizeHardwareWelcomeVoiceID(%q)=(%q, %v), want (%q, error=%v)", tt.input, got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPrepareHardwareWelcomeWAVAcceptsESP32PCM(t *testing.T) {
+	pcm := []byte{0x00, 0x00, 0x40, 0x00}
+	wav := make([]byte, 44+len(pcm))
+	copy(wav[0:4], "RIFF")
+	wav[4] = byte(len(wav) - 8)
+	copy(wav[8:12], "WAVE")
+	copy(wav[12:16], "fmt ")
+	wav[16] = 16
+	wav[20] = 1                   // PCM
+	wav[22] = 1                   // mono
+	wav[24], wav[25] = 0x80, 0x3e // 16000 Hz
+	wav[28], wav[29] = 0x00, 0x7d // 32000 byte/s
+	wav[32] = 2
+	wav[34] = 16
+	copy(wav[36:40], "data")
+	wav[40] = byte(len(pcm))
+	copy(wav[44:], pcm)
+
+	prepared, err := prepareHardwareWelcomeWAV(wav)
+	if err != nil {
+		t.Fatalf("prepare valid ESP32 WAV: %v", err)
+	}
+	if !bytes.Equal(prepared, wav) {
+		t.Fatal("already compatible WAV should not be rewritten")
+	}
+}
+
+func TestPrepareHardwareWelcomeWAVRejectsSilentPCM(t *testing.T) {
+	pcm := make([]byte, 320)
+	wav := make([]byte, 44+len(pcm))
+	copy(wav[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(wav[4:8], uint32(len(wav)-8))
+	copy(wav[8:12], "WAVE")
+	copy(wav[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(wav[16:20], 16)
+	binary.LittleEndian.PutUint16(wav[20:22], 1)
+	binary.LittleEndian.PutUint16(wav[22:24], 1)
+	binary.LittleEndian.PutUint32(wav[24:28], 16000)
+	binary.LittleEndian.PutUint32(wav[28:32], 32000)
+	binary.LittleEndian.PutUint16(wav[32:34], 2)
+	binary.LittleEndian.PutUint16(wav[34:36], 16)
+	copy(wav[36:40], "data")
+	binary.LittleEndian.PutUint32(wav[40:44], uint32(len(pcm)))
+	if _, err := prepareHardwareWelcomeWAV(wav); err == nil || !strings.Contains(err.Error(), "silent") {
+		t.Fatalf("silent welcome error=%v", err)
+	}
+}
+
+func TestRemoteHardwareWelcomeAudioRejectsMutedVolume(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HardwareEnabled = true
+		cfg.ThirdPartyGatewayEnabled = true
+		cfg.ThirdPartyGatewayToken = "gateway-token"
+		cfg.SetThirdPartyGatewayLocal(false)
+		cfg.HardwareVolume = 0
+		cfg.HardwareWelcomeAudioPath = "missing.wav"
+	}); err != nil {
+		t.Fatalf("seed hardware config: %v", err)
+	}
+	if err := app.SendHardwareWelcomeAudioRemote(); err == nil || !strings.Contains(err.Error(), "muted") {
+		t.Fatalf("muted welcome preview error=%v", err)
+	}
+}
+
+func TestHardwareWelcomeLocalPreviewDataURLAndRemoteRoute(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	pcm := []byte{0, 0, 0x40, 0}
+	wav := make([]byte, 44+len(pcm))
+	copy(wav[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(wav[4:8], uint32(len(wav)-8))
+	copy(wav[8:12], "WAVE")
+	copy(wav[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(wav[16:20], 16)
+	binary.LittleEndian.PutUint16(wav[20:22], 1)
+	binary.LittleEndian.PutUint16(wav[22:24], 1)
+	binary.LittleEndian.PutUint32(wav[24:28], 16000)
+	binary.LittleEndian.PutUint32(wav[28:32], 32000)
+	binary.LittleEndian.PutUint16(wav[32:34], 2)
+	binary.LittleEndian.PutUint16(wav[34:36], 16)
+	copy(wav[36:40], "data")
+	binary.LittleEndian.PutUint32(wav[40:44], uint32(len(pcm)))
+	copy(wav[44:], pcm)
+	path := filepath.Join(tmpHome, "welcome.wav")
+	if err := os.WriteFile(path, wav, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HardwareVolume = 70
+		cfg.HardwareWelcomeAudioPath = path
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dataURL, err := app.GetHardwareWelcomeAudioDataURL()
+	if err != nil {
+		t.Fatalf("local preview data URL: %v", err)
+	}
+	if !strings.HasPrefix(dataURL, "data:audio/wav;base64,") {
+		t.Fatalf("local preview data URL=%q", dataURL)
+	}
+	if err := app.SendHardwareWelcomeAudioRemote(); err == nil || !strings.Contains(err.Error(), "hardware is disabled") {
+		t.Fatalf("disabled remote route error=%v", err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HardwareEnabled = true
+		cfg.ThirdPartyGatewayEnabled = true
+		cfg.ThirdPartyGatewayToken = "gateway-token"
+		cfg.SetThirdPartyGatewayLocal(false)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SendHardwareWelcomeAudioRemote(); err == nil || !strings.Contains(err.Error(), "Hub is not connected") {
+		t.Fatalf("remote route error=%v", err)
+	}
+}
+
 func TestHardwareVolumeChangedOnlyTracksVolume(t *testing.T) {
 	base := corelib.AppConfig{HardwareVolume: 70, HardwareWelcomeEnabled: true}
 
@@ -3248,15 +3578,15 @@ func TestDevicePetRGB565PreservesOpaqueAndAlphaColors(t *testing.T) {
 	source := image.NewNRGBA(image.Rect(0, 0, 1, 1))
 	source.SetNRGBA(0, 0, color.NRGBA{R: 255, G: 0, B: 0, A: 255})
 	pixels := devicePetRGB565(source)
-	if len(pixels) < 2 || pixels[0] != 0x00 || pixels[1] != 0xf8 {
-		t.Fatalf("opaque red RGB565=%#v, want little-endian 0xf800", pixels[:2])
+	if len(pixels) < 3 || pixels[0] != 0x00 || pixels[1] != 0xf8 || pixels[2] != 0xff {
+		t.Fatalf("opaque red RGB565A8=%#v, want little-endian 0xf800 with full alpha", pixels[:3])
 	}
 
 	source.SetNRGBA(0, 0, color.NRGBA{R: 255, G: 255, B: 255, A: 128})
 	pixels = devicePetRGB565(source)
 	value := uint16(pixels[0]) | uint16(pixels[1])<<8
-	if value == 0 || value == 0xffff {
-		t.Fatalf("half-transparent white should blend with pet background, got %#04x", value)
+	if value != 0xffff || pixels[2] != 128 {
+		t.Fatalf("half-transparent white RGB565A8=%#04x alpha=%d", value, pixels[2])
 	}
 }
 

@@ -141,3 +141,44 @@ func TestPinyinRuleRejectsInvalidIndex(t *testing.T) {
 	}()
 	_ = pinyinRule("\u7761\u89c9", 2, "jiao4")
 }
+
+func TestKokoroMixedLanguageGreetingPronunciations(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "lowercase welcome", text: "hello maclaw", want: "hɛˈloʊ mɑː klɔː"},
+		{name: "product casing and punctuation", text: "Hello, MaClaw!", want: "hɛˈloʊ, mɑː klɔː!"},
+		{name: "case insensitive", text: "HELLO MACLAW", want: "hɛˈloʊ mɑː klɔː"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := KokoroTextToPhonemes(tt.text); got != tt.want {
+				t.Fatalf("KokoroTextToPhonemes(%q) = %q, want %q", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKokoroPronunciationLexiconDoesNotRewriteLongerWords(t *testing.T) {
+	const input = "maclawful shelloworld"
+	got := KokoroTextToPhonemes(input)
+	if got == input {
+		t.Fatalf("KokoroTextToPhonemes(%q) did not apply English G2P", input)
+	}
+	if strings.Contains(got, "mɑː klɔː") {
+		t.Fatalf("KokoroTextToPhonemes(%q) = %q, longer word matched MaClaw alias", input, got)
+	}
+}
+
+func TestKokoroGeneralEnglishG2P(t *testing.T) {
+	got := KokoroTextToPhonemes("Hello world, this is natural English.")
+	if strings.Contains(strings.ToLower(got), "hello") || strings.Contains(strings.ToLower(got), "world") {
+		t.Fatalf("English spelling leaked into Kokoro phonemes: %q", got)
+	}
+	if !strings.HasPrefix(got, "hɛˈloʊ ") {
+		t.Fatalf("English hello phonemes = %q", got)
+	}
+}

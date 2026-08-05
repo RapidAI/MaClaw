@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { isProjectTabOpen, SidebarTaskManagement, taskActivityLabel, workflowStatusForTask } from '../SidebarTaskManagement';
+import { isProjectTabOpen, SidebarTaskManagement, taskCreationLabel, workflowStatusForTask } from '../SidebarTaskManagement';
 import type { ComponentProps } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -79,18 +79,18 @@ describe('isProjectTabOpen', () => {
 });
 
 describe('SidebarTaskManagement', () => {
-    it('shows the real workflow status and recent activity rather than a generic workflow badge', () => {
+    it('shows the real workflow status and a stable task creation time rather than activity time', () => {
         renderTaskManagement({
             tasks: [{
                 ...baseProject,
                 active_workflow: { type: 'coding', phase: 'quality_review', pending_review: true },
-                last_activity: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+                created_at: '2026-01-01T00:00:00.000Z',
             }],
         });
 
         expect(screen.getByTestId('task-workflow-status').textContent).toBe('Review needed · Quality Review');
         expect(screen.getByLabelText('Task status: Review needed · Quality Review')).toBeTruthy();
-        expect(screen.getByTestId('task-last-activity').textContent).toBe('Updated 5m ago');
+        expect(screen.getByTestId('task-created-at').textContent).toMatch(/^Created 2026-01-01 /);
         expect(screen.queryByText('Stage output')).toBeNull();
     });
 
@@ -99,8 +99,8 @@ describe('SidebarTaskManagement', () => {
             label: 'Needs attention', detail: 'Implement', tone: 'danger',
         });
         expect(workflowStatusForTask(undefined, 'en')).toBeNull();
-        expect(taskActivityLabel('2026-01-01T00:00:00.000Z', 'en', Date.parse('2026-01-01T02:00:00.000Z'))).toBe('Updated 2h ago');
-        expect(taskActivityLabel('not-a-date', 'en')).toBe('');
+        expect(taskCreationLabel('2026-01-01T00:00:00.000Z', 'en')).toMatch(/^Created 2026-01-01 /);
+        expect(taskCreationLabel('not-a-date', 'en')).toBe('');
     });
 
     it('keeps completed and cancelled workflow snapshots distinct', () => {
@@ -525,10 +525,11 @@ describe('SidebarTaskManagement', () => {
         renderTaskManagement({ createTask });
 
         fireEvent.click(screen.getByTitle('Create task'));
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: '  New   research   task  ' } });
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        expect(screen.queryByLabelText('Task command')).toBeNull();
+        expect(screen.getByTestId('task-create-guidance')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
-        expect(createTask).toHaveBeenCalledWith('New research task');
+        expect(createTask).toHaveBeenCalledWith('New task');
     });
 
     it('exposes local and remote coding modes in the create dialog footer', () => {
@@ -542,7 +543,7 @@ describe('SidebarTaskManagement', () => {
         expect(remoteToggle).toBeTruthy();
         expect(codingToggle.getAttribute('aria-pressed')).toBe('false');
         expect(remoteToggle.getAttribute('aria-pressed')).toBe('false');
-        expect(codingToggle.closest('.modal-footer')).toBeTruthy();
+        expect(codingToggle.closest('[role=group]')).toBeTruthy();
     });
 
     it('creates a coding development task when the coding option is selected', () => {
@@ -550,11 +551,10 @@ describe('SidebarTaskManagement', () => {
         renderTaskManagement({ createTask });
 
         fireEvent.click(screen.getByTitle('Create task'));
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Implement login page' } });
         fireEvent.click(screen.getByRole('button', { name: 'Coding' }));
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
-        expect(createTask).toHaveBeenCalledWith('Implement login page', undefined, 'coding_dev');
+        expect(createTask).toHaveBeenCalledWith('New local coding task', undefined, 'coding_dev');
     });
 
     it('opens create dialog prefilled from welcome coding-task event (local)', async () => {
@@ -575,20 +575,14 @@ describe('SidebarTaskManagement', () => {
             }));
         });
 
-        const commandInput = await screen.findByLabelText('Task command') as HTMLTextAreaElement;
-        expect(commandInput.value).toContain('按需求实现功能');
+        await screen.findByTestId('task-create-guidance');
         expect(screen.getByRole('heading', { name: 'Create local coding task' })).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Coding' }).getAttribute('aria-pressed')).toBe('true');
         expect(screen.getByRole('button', { name: 'Remote' }).getAttribute('aria-pressed')).toBe('false');
         // Prefers last coding task workdir
         expect(screen.getByTitle('D:/work/coding-project')).toBeTruthy();
 
-        // Local coding: focus the command box for review (no [placeholder] selection).
-        await waitFor(() => {
-            expect(document.activeElement).toBe(commandInput);
-        });
-
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
         await waitFor(() => {
             expect(createTask).toHaveBeenCalledWith(
                 '按需求实现功能\n需求描述：审核流程',
@@ -752,17 +746,17 @@ describe('SidebarTaskManagement', () => {
         });
 
         expect(await screen.findByRole('dialog', { name: 'Create local coding task' })).toBeTruthy();
-        expect((screen.getByLabelText('Task command') as HTMLTextAreaElement).value).toBe('Second task');
+        expect(screen.getByTestId('task-create-guidance')).toBeTruthy();
         // No second auto-create while the first is in flight.
         expect(createTask).toHaveBeenCalledTimes(1);
         // Controls reflect the in-flight create, then unlock when it settles.
-        expect((screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole('button', { name: 'Create & open' }) as HTMLButtonElement).disabled).toBe(true);
         await act(async () => {
             resolveCreate();
             await Promise.resolve();
         });
         await waitFor(() => {
-            expect((screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement).disabled).toBe(false);
+            expect((screen.getByRole('button', { name: 'Create & open' }) as HTMLButtonElement).disabled).toBe(false);
         });
     });
 
@@ -793,7 +787,7 @@ describe('SidebarTaskManagement', () => {
         });
 
         expect(screen.getByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
-        expect((screen.getByLabelText('Task command') as HTMLTextAreaElement).value).toBe('Second remote task');
+        expect(screen.getByTestId('task-create-guidance')).toBeTruthy();
     });
 
     it('does not leak a stale create failure into a newer forced dialog', async () => {
@@ -824,7 +818,7 @@ describe('SidebarTaskManagement', () => {
         });
 
         expect(screen.getByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
-        expect((screen.getByLabelText('Task command') as HTMLTextAreaElement).value).toBe('Second remote task');
+        expect(screen.getByTestId('task-create-guidance')).toBeTruthy();
         expect(screen.queryByTestId('create-task-error')).toBeNull();
         consoleError.mockRestore();
     });
@@ -853,8 +847,7 @@ describe('SidebarTaskManagement', () => {
             }));
         });
 
-        const commandInput = await screen.findByLabelText('Task command') as HTMLTextAreaElement;
-        expect(commandInput.value).toContain('排查修复线上故障');
+        await screen.findByTestId('task-create-guidance');
         expect(screen.getByRole('heading', { name: 'Create remote coding task' })).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Remote' }).getAttribute('aria-pressed')).toBe('true');
         expect(screen.getByTestId('remote-coding-fields')).toBeTruthy();
@@ -880,7 +873,7 @@ describe('SidebarTaskManagement', () => {
             }));
         });
 
-        await screen.findByLabelText('Task command');
+        await screen.findByTestId('task-create-guidance');
         await waitFor(() => {
             expect(document.activeElement).toBe(screen.getByLabelText('Host / domain'));
         });
@@ -894,16 +887,14 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
         expect(screen.getByTestId('remote-coding-fields')).toBeTruthy();
         expect(screen.queryByLabelText('Choose working folder')).toBeNull();
-
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Fix remote auth bug' } });
         fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.8' } });
         fireEvent.change(screen.getByLabelText('Port'), { target: { value: '22' } });
         fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ubuntu' } });
         fireEvent.change(screen.getByLabelText('Password'), { target: { value: 's3cret' } });
         fireEvent.change(screen.getByLabelText('Remote work directory'), { target: { value: '/home/ubuntu/app' } });
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
-        expect(createTask).toHaveBeenCalledWith('Fix remote auth bug', undefined, 'remote_coding_dev', {
+        expect(createTask).toHaveBeenCalledWith('New remote coding task', undefined, 'remote_coding_dev', {
             host: '10.0.0.8',
             port: 22,
             user: 'ubuntu',
@@ -921,12 +912,11 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
         fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Fix remote auth bug' } });
         fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.8' } });
         fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ubuntu' } });
         fireEvent.change(screen.getByLabelText('Password'), { target: { value: 's3cret' } });
         fireEvent.change(screen.getByLabelText('Remote work directory'), { target: { value: '/home/ubuntu/app' } });
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
         expect(await screen.findByTestId('task-autocreate-progress')).toBeTruthy();
         expect(screen.queryByRole('dialog', { name: 'Create remote coding task' })).toBeNull();
@@ -969,12 +959,46 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
         fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Incomplete remote' } });
 
-        const ok = screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement;
+        const ok = screen.getByRole('button', { name: 'Create & open' }) as HTMLButtonElement;
         expect(ok.disabled).toBe(true);
         fireEvent.click(ok);
         expect(createTask).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid remote SSH port instead of silently using the default port', async () => {
+        const createTask = vi.fn();
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
+        fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.8' } });
+        fireEvent.change(screen.getByLabelText('Port'), { target: { value: '22abc' } });
+        fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ubuntu' } });
+        fireEvent.change(screen.getByLabelText('Password'), { target: { value: 's3cret' } });
+        fireEvent.change(screen.getByLabelText('Remote work directory'), { target: { value: '/home/ubuntu/app' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+
+        expect(createTask).not.toHaveBeenCalled();
+        expect((await screen.findByTestId('create-task-error')).textContent).toContain('Port must be a whole number from 1 to 65535.');
+    });
+
+    it('does not auto-create a welcome remote task with an invalid SSH port', async () => {
+        const createTask = vi.fn();
+        renderTaskManagement({ createTask });
+
+        window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+            detail: {
+                mode: 'remote_coding_dev',
+                name: 'Deploy the service',
+                autoCreate: true,
+                remote: { host: '10.0.0.8', port: 70000, user: 'ubuntu', password: 's3cret', workDir: '/srv/app' },
+            },
+        }));
+
+        expect(await screen.findByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
+        expect(createTask).not.toHaveBeenCalled();
+        expect(screen.getByTestId('create-task-error').textContent).toContain('Port must be a whole number from 1 to 65535.');
     });
 
     it('surfaces createTask failures for remote coding', async () => {
@@ -983,17 +1007,16 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
         fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Remote fail' } });
         fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.1' } });
         fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'root' } });
         fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'bad' } });
         fireEvent.change(screen.getByLabelText('Remote work directory'), { target: { value: '/tmp' } });
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
         await waitFor(() => expect(screen.getByTestId('create-task-error').textContent).toContain('无法连接到远程服务器'));
         // Dialog stays open on failure; title reflects remote coding mode.
         expect(screen.getByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
-        expect((screen.getByLabelText('Task command') as HTMLTextAreaElement).value).toBe('Remote fail');
+        expect(screen.getByTestId('task-create-guidance')).toBeTruthy();
         expect((screen.getByLabelText('Host / domain') as HTMLInputElement).value).toBe('10.0.0.1');
         expect((screen.getByLabelText('Username') as HTMLInputElement).value).toBe('root');
         expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('bad');
@@ -1011,12 +1034,10 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(screen.getByTitle('Create task'));
         fireEvent.click(screen.getByRole('button', { name: 'Choose working folder' }));
         await waitFor(() => expect(screen.getByText('D:/work/selected-folder')).toBeTruthy());
-
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Build feature' } });
         fireEvent.click(screen.getByLabelText('Coding'));
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
-        expect(createTask).toHaveBeenCalledWith('Build feature', 'D:/work/selected-folder', 'coding_dev');
+        expect(createTask).toHaveBeenCalledWith('New local coding task', 'D:/work/selected-folder', 'coding_dev');
     });
 
     it('passes the selected working folder when creating a task', async () => {
@@ -1029,11 +1050,9 @@ describe('SidebarTaskManagement', () => {
 
         expect(SelectWorkingDir).toHaveBeenCalledTimes(1);
         await waitFor(() => expect(screen.getByText('D:/work/selected-folder')).toBeTruthy());
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Run local task' } });
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
-
-        expect(createTask).toHaveBeenCalledWith('Run local task', 'D:/work/selected-folder');
+        expect(createTask).toHaveBeenCalledWith('New task', 'D:/work/selected-folder');
     });
 
     it('shows a coding task icon and pure-coding badge for coding_dev tags', () => {
@@ -1207,7 +1226,7 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
 
-        expect(screen.getByLabelText('Task command').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
+        expect(screen.getByRole('dialog').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
     });
 
     it('falls back to the app theme when the portaled create dialog has no theme prop', () => {
@@ -1219,7 +1238,7 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
 
-        expect(screen.getByLabelText('Task command').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
+        expect(screen.getByRole('dialog').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
     });
 
     it('carries the selected dark scheme into the portaled create dialog', () => {
@@ -1232,7 +1251,7 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
 
-        expect(screen.getByLabelText('Task command').closest('.modal-backdrop')?.getAttribute('data-ai-dark-scheme')).toBe('graphite');
+        expect(screen.getByRole('dialog').closest('.modal-backdrop')?.getAttribute('data-ai-dark-scheme')).toBe('graphite');
     });
 
     it('portals the create dialog outside the sidebar container so the backdrop covers the window', () => {
@@ -1240,7 +1259,7 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
 
-        const backdrop = screen.getByLabelText('Task command').closest('.modal-backdrop');
+        const backdrop = screen.getByRole('dialog').closest('.modal-backdrop');
         expect(backdrop).toBeTruthy();
         expect(backdrop?.parentElement).toBe(document.body);
         expect(container.contains(backdrop)).toBe(false);
@@ -1251,7 +1270,7 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
 
-        const backdrop = screen.getByLabelText('Task command').closest('.modal-backdrop') as HTMLElement;
+        const backdrop = screen.getByRole('dialog').closest('.modal-backdrop') as HTMLElement;
         expect(Number(backdrop.style.zIndex)).toBeGreaterThan(99999);
     });
 
@@ -1284,32 +1303,33 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(screen.getByTitle('Create task'));
         fireEvent.keyDown(screen.getByRole('button', { name: 'Cancel' }), { key: 'Escape' });
 
-        expect(screen.queryByLabelText('Task command')).toBeNull();
+        expect(screen.queryByRole('dialog')).toBeNull();
     });
 
     it('does not close the create dialog when a backdrop click starts inside the dialog', () => {
         renderTaskManagement();
 
         fireEvent.click(screen.getByTitle('Create task'));
-        const input = screen.getByLabelText('Task command');
+        const input = screen.getByRole('dialog');
         const backdrop = input.closest('.modal-backdrop') as HTMLElement;
         const dialog = input.closest('.modal-content') as HTMLElement;
 
         fireEvent.mouseDown(dialog);
         fireEvent.click(backdrop);
 
-        expect(screen.getByLabelText('Task command')).toBeTruthy();
+        expect(screen.getByRole('dialog')).toBeTruthy();
     });
 
-    it('limits very long task names before creating', () => {
+    it('creates a default-titled task without a command field', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
         fireEvent.click(screen.getByTitle('Create task'));
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'a'.repeat(2100) } });
-        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        expect(screen.queryByLabelText('Task command')).toBeNull();
+        expect(screen.getByTestId('task-create-guidance')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
-        expect(createTask).toHaveBeenCalledWith('a'.repeat(2000));
+        expect(createTask).toHaveBeenCalledWith('New task');
     });
 
     it('ignores duplicate create clicks while the task is being created', async () => {
@@ -1321,8 +1341,7 @@ describe('SidebarTaskManagement', () => {
 
         const createButton = screen.getByTitle('Create task');
         fireEvent.click(createButton);
-        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'New research task' } });
-        const submitButton = screen.getByRole('button', { name: 'OK' });
+        const submitButton = screen.getByRole('button', { name: 'Create & open' });
         fireEvent.click(submitButton);
         fireEvent.click(submitButton);
 

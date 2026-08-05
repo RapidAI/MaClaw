@@ -1068,6 +1068,9 @@ func TestUserDataMigrationEncryptionRequiresPasswordAndPlainHash(t *testing.T) {
 	if err := decryptUserDataMigrationFile(encryptedPath, filepath.Join(dir, "wrong-password.zip"), "wrong-password", plainHash); err == nil || !strings.Contains(err.Error(), "password") {
 		t.Fatalf("expected wrong password error, got %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "wrong-password.zip")); !os.IsNotExist(err) {
+		t.Fatalf("failed decryption left a plaintext file: %v", err)
+	}
 	if err := decryptUserDataMigrationFile(encryptedPath, filepath.Join(dir, "wrong-hash.zip"), "correct-password", strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
 		t.Fatalf("expected hash mismatch error, got %v", err)
 	}
@@ -1085,13 +1088,13 @@ func TestUserDataMigrationEncryptionRequiresPasswordAndPlainHash(t *testing.T) {
 	}
 }
 
-func TestUserDataMigrationEncryptedHeaderAcceptsLegacyV1(t *testing.T) {
+func TestUserDataMigrationEncryptedHeaderRejectsUnsupportedVersion(t *testing.T) {
 	header := userDataMigrationEncryptedHeader{
-		Version: userDataMigrationLegacyVersion, KDF: "argon2id", Time: 3,
+		Version: "maclaw-gui-user-data-migration/v1", KDF: "argon2id", Time: 3,
 		MemoryKB: 64 * 1024, Threads: 4, Salt: make([]byte, 16), Nonce: make([]byte, 12),
 	}
-	if err := validateUserDataMigrationEncryptedHeader(header); err != nil {
-		t.Fatalf("legacy v1 encrypted package should remain importable: %v", err)
+	if err := validateUserDataMigrationEncryptedHeader(header); err == nil {
+		t.Fatal("unsupported encrypted package version was accepted")
 	}
 }
 
@@ -1335,20 +1338,19 @@ func TestUserDataMigrationCanonicalPathsRejectWindowsAliases(t *testing.T) {
 func TestUserDataMigrationDownloadMetadataIsStrict(t *testing.T) {
 	valid := map[string]interface{}{
 		"chunk_count": float64(1), "chunk_size": float64(userDataMigrationChunkSize),
-		"encrypted_size": float64(42), "compressed_size": float64(21), "encrypted_sha256": strings.Repeat("a", 64), "plain_sha256": strings.Repeat("b", 64),
+		"encrypted_size": float64(42), "encrypted_sha256": strings.Repeat("a", 64),
 	}
-	if _, _, _, _, _, _, err := userDataMigrationDownloadMetadata(valid); err != nil {
+	if _, _, _, _, err := userDataMigrationDownloadMetadata(valid); err != nil {
 		t.Fatalf("valid metadata rejected: %v", err)
 	}
 	invalid := []map[string]interface{}{
-		{"chunk_count": 1.5, "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64(42), "compressed_size": float64(21), "encrypted_sha256": strings.Repeat("a", 64), "plain_sha256": strings.Repeat("b", 64)},
-		{"chunk_count": float64(2), "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64(42), "compressed_size": float64(21), "encrypted_sha256": strings.Repeat("a", 64), "plain_sha256": strings.Repeat("b", 64)},
-		{"chunk_count": float64(1), "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64(42), "compressed_size": float64(21), "encrypted_sha256": "bad", "plain_sha256": strings.Repeat("b", 64)},
-		{"chunk_count": float64(1), "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64(42), "compressed_size": float64(43), "encrypted_sha256": strings.Repeat("a", 64), "plain_sha256": strings.Repeat("b", 64)},
-		{"chunk_count": float64(1), "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64((1 << 20) + 66), "compressed_size": float64(1), "encrypted_sha256": strings.Repeat("a", 64), "plain_sha256": strings.Repeat("b", 64)},
+		{"chunk_count": 1.5, "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64(42), "encrypted_sha256": strings.Repeat("a", 64)},
+		{"chunk_count": float64(2), "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64(42), "encrypted_sha256": strings.Repeat("a", 64)},
+		{"chunk_count": float64(1), "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64(42), "encrypted_sha256": "bad"},
+		{"chunk_count": float64(1), "chunk_size": float64(userDataMigrationChunkSize), "encrypted_size": float64(userDataMigrationMaxDownload + 1), "encrypted_sha256": strings.Repeat("a", 64)},
 	}
 	for _, metadata := range invalid {
-		if _, _, _, _, _, _, err := userDataMigrationDownloadMetadata(metadata); err == nil {
+		if _, _, _, _, err := userDataMigrationDownloadMetadata(metadata); err == nil {
 			t.Fatalf("invalid metadata accepted: %#v", metadata)
 		}
 	}
@@ -1360,7 +1362,7 @@ func TestUserDataMigrationDecryptRejectsDeclaredPlainSizeMismatch(t *testing.T) 
 	if err := os.WriteFile(plainPath, []byte("plain migration package"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	hash, size, err := userDataMigrationFileSHA256(plainPath)
+	hash, _, err := userDataMigrationFileSHA256(plainPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1368,15 +1370,39 @@ func TestUserDataMigrationDecryptRejectsDeclaredPlainSizeMismatch(t *testing.T) 
 	if err := encryptUserDataMigrationFile(plainPath, encryptedPath, "correct-password", hash); err != nil {
 		t.Fatal(err)
 	}
-	if err := decryptUserDataMigrationFile(encryptedPath, filepath.Join(dir, "out.zip"), "correct-password", hash, size+1); err == nil || !strings.Contains(err.Error(), "size mismatch") {
-		t.Fatalf("expected declared plain size mismatch, got %v", err)
+	data, err := os.ReadFile(encryptedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var headerLen uint32
+	headerOffset := len(userDataMigrationMagic)
+	if err := binary.Read(bytes.NewReader(data[headerOffset:]), binary.BigEndian, &headerLen); err != nil {
+		t.Fatal(err)
+	}
+	headerStart := headerOffset + 4
+	headerEnd := headerStart + int(headerLen)
+	var header userDataMigrationEncryptedHeader
+	if err := json.Unmarshal(data[headerStart:headerEnd], &header); err != nil {
+		t.Fatal(err)
+	}
+	header.PlainSize++
+	mutatedHeader, err := json.Marshal(header)
+	if err != nil || len(mutatedHeader) != int(headerLen) {
+		t.Fatalf("mutate header err=%v old=%d new=%d", err, headerLen, len(mutatedHeader))
+	}
+	copy(data[headerStart:headerEnd], mutatedHeader)
+	if err := os.WriteFile(encryptedPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := decryptUserDataMigrationFile(encryptedPath, filepath.Join(dir, "out.zip"), "correct-password", ""); err == nil {
+		t.Fatal("tampered declared plain size was accepted")
 	}
 }
 
 func TestUserDataMigrationDecryptRejectsAmbiguousEncryptedHeader(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ambiguous.enc")
-	header := `{"version":"` + userDataMigrationPackageVersion + `","Version":"shadow","kdf":"argon2id","time":3,"memory_kb":65536,"threads":4,"salt":"AAAAAAAAAAAAAAAAAAAAAA==","nonce":"AAAAAAAAAAAAAAAA","plain_sha256":"` + strings.Repeat("a", 64) + `"}`
+	header := `{"version":"` + userDataMigrationPackageVersion + `","Version":"shadow","kdf":"argon2id","time":3,"memory_kb":65536,"threads":4,"salt":"AAAAAAAAAAAAAAAAAAAAAA==","nonce":"AAAAAAAAAAAAAAAA","plain_sha256":"` + strings.Repeat("a", 64) + `","plain_size":1}`
 	var raw bytes.Buffer
 	raw.WriteString(userDataMigrationMagic)
 	if err := binary.Write(&raw, binary.BigEndian, uint32(len(header))); err != nil {
@@ -1913,7 +1939,7 @@ func TestUserDataMigrationImportSucceedsWhenHubCleanupFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build package: %v", err)
 	}
-	plainHash, plainSize, err := userDataMigrationFileSHA256(plainPath)
+	plainHash, _, err := userDataMigrationFileSHA256(plainPath)
 	if err != nil {
 		t.Fatalf("hash plain package: %v", err)
 	}
@@ -1941,9 +1967,7 @@ func TestUserDataMigrationImportSucceedsWhenHubCleanupFails(t *testing.T) {
 					"chunk_count":      1,
 					"chunk_size":       userDataMigrationChunkSize,
 					"encrypted_size":   encryptedSize,
-					"compressed_size":  plainSize,
 					"encrypted_sha256": encryptedHash,
-					"plain_sha256":     plainHash,
 				},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/migration/imports/mig-source/chunks/0":

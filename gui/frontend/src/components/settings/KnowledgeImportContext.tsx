@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { KnowledgeImportJobStatus } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { openSettingsTab } from '../../utils/settingsNavigation';
 import {
     KnowledgeImportFloatingBar,
     isKnowledgeImportJobActive,
@@ -91,7 +92,7 @@ export function KnowledgeImportProvider({ children }: { children: ReactNode }) {
             /* ignore private mode */
         }
         // Reuse the existing settings-navigation bus; open Knowledge tab.
-        window.dispatchEvent(new CustomEvent('maclaw:open-settings', { detail: { tab: 'knowledge' } }));
+        openSettingsTab('knowledge');
         window.dispatchEvent(new CustomEvent(KNOWLEDGE_IMPORT_EXPAND_EVENT));
     }, []);
 

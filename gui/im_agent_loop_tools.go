@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -31,12 +32,12 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	}
 	// ACP Mode B: skip route-intent rewrite + full UIC (often 5s+ tree timeout).
 	skipHeavy := isACPProgrammingRequestID(requestID)
-	baseTools := h.routeToolsWithOptions(userText, allTools, skipHeavy)
+	baseTools := h.routeToolsForUser(userID, userText, allTools, skipHeavy)
 	tools := baseTools
 
 	var browserSessionPinned bool
 	if h.toolRouter != nil {
-		browserSessionPinned = h.toolRouter.IsSessionPinned("browser")
+		browserSessionPinned = h.toolRouter.IsSessionPinnedForSession(userID, "browser")
 	}
 	BrowserDiagCP1_Route(userText, tools, browserSessionPinned)
 
@@ -112,6 +113,22 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		readerOwnerID = policyOwnerID
 	}
 	tools = h.ensureToolResultReader(readerOwnerID, tools, allTools)
+	// Client-implemented tools are scoped to the originating turn and appended
+	// after host routing/policy filters. They never enter the global registry and
+	// therefore cannot leak to another client or be dropped by intent routing.
+	tools = appendClientToolsForAgent(tools, ctx)
+
+	// ESP32 hardware replies are synthesized automatically by the gateway after
+	// the terminal text has reached the result page. Exposing tts here lets the
+	// model play speech early and then add narration such as "播报完毕" to its
+	// final answer. Remove both host- and client-declared variants, including the
+	// recovery catalog used by later loop iterations.
+	platform := ""
+	if ctx != nil {
+		platform = ctx.Platform
+	}
+	tools = filterToolsForHardwareAutoSpeech(tools, platform)
+	baseTools = filterToolsForHardwareAutoSpeech(baseTools, platform)
 
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
 	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)
@@ -124,6 +141,73 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		BrowserBeforeWF:  browserBeforeWF,
 		BrowserPinned:    browserSessionPinned,
 	}
+}
+
+func filterToolsForHardwareAutoSpeech(tools []map[string]interface{}, platform string) []map[string]interface{} {
+	if !isThirdPartyVoicePlatform(platform) || len(tools) == 0 {
+		return tools
+	}
+	filtered := make([]map[string]interface{}, 0, len(tools))
+	for _, def := range tools {
+		if strings.EqualFold(strings.TrimSpace(tool.ExtractToolName(def)), "tts") {
+			continue
+		}
+		filtered = append(filtered, def)
+	}
+	return filtered
+}
+
+func appendClientToolsForAgent(tools []map[string]interface{}, ctx *LoopContext) []map[string]interface{} {
+	if ctx == nil || ctx.ClientToolContext == nil || len(ctx.ClientTools) == 0 {
+		return tools
+	}
+	seen := make(map[string]bool, len(tools))
+	for _, def := range tools {
+		if name := tool.ExtractToolName(def); name != "" {
+			seen[name] = true
+		}
+	}
+	for _, clientTool := range ctx.ClientTools {
+		name := strings.TrimSpace(clientTool.Name)
+		if name == "" || seen[name] {
+			continue // host tools always win a name collision
+		}
+		parameters := cloneClientToolSchema(clientTool.InputSchema)
+		tools = append(tools, map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name": name, "description": strings.TrimSpace(clientTool.Description), "parameters": parameters,
+			},
+		})
+		seen[name] = true
+	}
+	return tools
+}
+
+func cloneClientToolSchema(schema map[string]any) map[string]any {
+	if len(schema) == 0 {
+		return map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	copySchema := make(map[string]any, len(schema))
+	for key, value := range schema {
+		copySchema[key] = value
+	}
+	if _, ok := copySchema["type"]; !ok {
+		copySchema["type"] = "object"
+	}
+	return copySchema
+}
+
+func clientToolForLoop(ctx *LoopContext, name string) (agent.ClientToolDefinition, bool) {
+	if ctx == nil || ctx.ClientToolContext == nil {
+		return agent.ClientToolDefinition{}, false
+	}
+	for _, candidate := range ctx.ClientTools {
+		if strings.TrimSpace(candidate.Name) == strings.TrimSpace(name) {
+			return candidate, true
+		}
+	}
+	return agent.ClientToolDefinition{}, false
 }
 
 func containsAgentLoopToolNamed(tools []map[string]interface{}, name string) bool {

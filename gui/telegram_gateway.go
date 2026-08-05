@@ -625,9 +625,17 @@ type GatewayReplyPayload struct {
 	ChatType       string               `json:"chat_type,omitempty"`
 	// SourceMessageID / SenderID correlate Lansenger group decorations when
 	// hub replies complete out of FIFO order for the same group.
-	SourceMessageID string         `json:"source_message_id,omitempty"`
-	SenderID        string         `json:"sender_id,omitempty"`
-	Extra           map[string]any `json:"extra,omitempty"`
+	SourceMessageID string `json:"source_message_id,omitempty"`
+	SenderID        string `json:"sender_id,omitempty"`
+	// Progress/final metadata is part of the third-party hardware turn
+	// protocol. Preserve it when Hub relays a gateway reply; otherwise an
+	// intermediate status line is indistinguishable from the terminal answer
+	// and can trigger TTS plus an early result transition.
+	Progress bool           `json:"progress,omitempty"`
+	Final    bool           `json:"final,omitempty"`
+	Complete bool           `json:"complete,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	Extra    map[string]any `json:"extra,omitempty"`
 }
 
 // HandleGatewayReply dispatches a reply from Hub to the Telegram API.

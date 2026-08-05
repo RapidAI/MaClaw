@@ -382,14 +382,15 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	cfg := startState.Config
 	telemetry.Route = startState.RouteDecision
 
-	// Multimodal user payload (text / image blocks / file path annotations).
-	// Use runtime SendProgress so intermediate status styling matches the legacy loop.
+	// prepareAgentLoopStartState has already staged attachments and completed
+	// local voice ASR. Reuse that exact payload: rebuilding it here used to run
+	// WAV conversion, ASR and optional remote transcript correction a second
+	// time before the first Agent request.
 	progressOut := runtimeState.SendProgress
 	if progressOut == nil {
 		progressOut = onProgress
 	}
-	allowLocalAttachmentStaging := ctx == nil || ctx.LansengerGroupPermissions == nil
-	userContent := buildUserContentWithLocalStaging(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, progressOut, allowLocalAttachmentStaging)
+	userContent := startState.UserContent
 
 	cb := &sharedAgentLoopCallbacks{
 		handler:      h,

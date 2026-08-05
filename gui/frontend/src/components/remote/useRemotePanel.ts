@@ -92,7 +92,18 @@ const atomicPatchFields = new Set([
     'thirdparty_gateway_token',
     'thirdparty_gateway_host',
     'thirdparty_gateway_port',
+    'hardware_welcome_enabled',
+    'hardware_welcome_text',
+    'hardware_welcome_voice_id',
+    'hardware_welcome_audio_path',
+    'hardware_volume',
+    'pet_ambient_city',
 ]);
+
+export const supportsAtomicRemoteConfigPatch = (patch: Record<string, unknown>): boolean => {
+    const keys = Object.keys(patch);
+    return keys.length > 0 && keys.every((key) => atomicPatchFields.has(key));
+};
 
 const isRemovedRemoteToolName = (tool?: string | null): boolean => (
     removedRemoteToolNames.has((tool || "").trim().toLowerCase())
@@ -582,7 +593,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
 
 const saveRemoteConfigField = async (patch: Partial<corelib.AppConfig>) => {
         const patchKeys = Object.keys(patch as Record<string, unknown>);
-        if (patchKeys.length > 0 && patchKeys.every((key) => atomicPatchFields.has(key))) {
+        if (supportsAtomicRemoteConfigPatch(patch as Record<string, unknown>)) {
             const pendingLaunchMode = getPendingDefaultLaunchMode?.() || null;
             const patchWithLaunchMode = pendingLaunchMode && !patchKeys.includes('default_launch_mode')
                 ? { ...patch, default_launch_mode: pendingLaunchMode }

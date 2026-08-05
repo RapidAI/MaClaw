@@ -58,6 +58,10 @@ type IMMessageHandler struct {
 	// Unified tool registry and dynamic builder (Phase 1 upgrade).
 	registry    *ToolRegistry
 	toolBuilder *DynamicToolBuilder
+	// clientToolDispatcher delegates a per-message dynamic tool call to the
+	// originating third-party client. The dispatcher must return quickly; the
+	// authoritative result arrives asynchronously through tool-result.
+	clientToolDispatcher func(context.Context, agent.ClientToolContext, agent.ClientToolDefinition, string, map[string]any) error
 
 	// Injectable dependency for search_and_install_skill execution. The default
 	// implementation uses SkillMarket; tests can replace the dependency without
@@ -926,13 +930,17 @@ func (h *IMMessageHandler) filterInactiveDeferredTools(tools []map[string]interf
 // sensitive tools such as ssh and browser automation are not exposed by a
 // missing router setup.
 func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
-	return h.routeToolsWithOptions(userMessage, allTools, false)
+	return h.routeToolsForUser("", userMessage, allTools, false)
 }
 
 // routeToolsWithOptions is like routeTools. When skipHeavySemantic is true
 // (ACP Mode B), skip route-intent LLM rewrite and full UIC fusion — those
 // alone often cost 5–8s before the main agent LLM starts.
 func (h *IMMessageHandler) routeToolsWithOptions(userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
+	return h.routeToolsForUser("", userMessage, allTools, skipHeavySemantic)
+}
+
+func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
 	h.toolsMu.RLock()
 	router := h.toolRouter
 	h.toolsMu.RUnlock()
@@ -979,7 +987,7 @@ func (h *IMMessageHandler) routeToolsWithOptions(userMessage string, allTools []
 		Intent:                routeIntent,
 		SkipUnifiedClassifier: skipHeavySemantic,
 	}
-	routed := router.RouteWithOptions(userMessage, allTools, routeOpts)
+	routed := router.RouteForSession(userID, userMessage, allTools, routeOpts)
 	if isIMManagementRequest(userMessage) {
 		routed = ensureIMManagementToolsRouted(routed, allTools, userMessage)
 	}

@@ -5,7 +5,6 @@ export type OnboardingMigrationPackage = {
     sourceMachineName: string;
     updatedAt: string;
     size: number;
-    manifest: Record<string, unknown> | null;
 };
 
 const objectValue = (value: unknown): Record<string, any> | null => (
@@ -27,9 +26,8 @@ export function findOnboardingMigrationPackage(
             machine_id: current.source_machine_id,
             machine_name: current.source_machine_name,
             export_updated_at: current.updated_at,
-            export_size: current.compressed_size,
+            export_size: current.encrypted_size,
             export_claimed_by_machine_id: current.claimed_by_machine_id,
-            export_manifest: current.manifest,
             has_export: true,
         });
     }
@@ -54,7 +52,6 @@ export function findOnboardingMigrationPackage(
         sourceMachineName: String(candidate.machine_name || candidate.instance_name || candidate.machine_id || "").trim(),
         updatedAt: String(candidate.export_updated_at || "").trim(),
         size: Math.max(0, Number(candidate.export_size || 0) || 0),
-        manifest: objectValue(candidate.export_manifest),
     };
 }
 

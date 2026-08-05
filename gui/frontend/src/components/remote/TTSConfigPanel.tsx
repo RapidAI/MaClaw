@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { GetTTSEnabled, SetTTSEnabled, GetTTSVoiceID, SetTTSVoiceID, CheckTTSModel, DownloadTTSModel } from "../../../wailsjs/go/main/App";
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { GetTTSEnabled, SetTTSEnabled, GetTTSVoiceID, SetTTSVoiceID, CheckTTSModel, DownloadTTSModel, SynthesizeTTSPreview } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { ModelStatusBox } from "./ModelStatusBox";
 
@@ -10,6 +10,8 @@ const ttsVoiceOptions = [
     { id: 'zf_xiaoxiao', label: 'zf_xiaoxiao', zh: '晓晓，中文女声' },
     { id: 'zm_yunxi', label: 'zm_yunxi', zh: '云希，中文男声' },
     { id: 'zm_yunyang', label: 'zm_yunyang', zh: '云扬，中文男声' },
+    { id: 'am_adam', label: 'Adam · American English', zh: 'Adam · 美式英语男声' },
+    { id: 'af_heart', label: 'Heart · Sweet American English', zh: 'Heart · 甜美美式英语女声' },
 ];
 
 export function TTSConfigPanel({ lang }: Props) {
@@ -25,6 +27,16 @@ export function TTSConfigPanel({ lang }: Props) {
     const [total, setTotal] = useState(0);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
+    const [previewText, setPreviewText] = useState('Hello! Welcome to MaClaw. How can I help you today?');
+    const [previewing, setPreviewing] = useState(false);
+    const mountedRef = useRef(true);
+    const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+    const previewCleanupRef = useRef<(() => void) | null>(null);
+
+    useEffect(() => () => {
+        mountedRef.current = false;
+        previewCleanupRef.current?.();
+    }, []);
 
     useEffect(() => {
         (async () => {
@@ -97,6 +109,47 @@ export function TTSConfigPanel({ lang }: Props) {
         }
     };
 
+    const previewVoice = async () => {
+        if (!previewText.trim() || previewing) return;
+        setPreviewing(true); setError('');
+        try {
+            const source = await SynthesizeTTSPreview(previewText.trim());
+            const audio = new Audio(source);
+            previewAudioRef.current = audio;
+            await new Promise<void>((resolve, reject) => {
+                let settled = false;
+                const finish = (error?: Error) => {
+                    if (settled) return;
+                    settled = true;
+                    audio.onended = null;
+                    audio.onerror = null;
+                    if (previewAudioRef.current === audio) previewAudioRef.current = null;
+                    if (previewCleanupRef.current === cleanup) previewCleanupRef.current = null;
+                    error ? reject(error) : resolve();
+                };
+                const cleanup = () => {
+                    audio.pause();
+                    finish();
+                };
+                previewCleanupRef.current = cleanup;
+                audio.onended = () => finish();
+                audio.onerror = () => finish(new Error(t('Audio playback failed.', '音频播放失败。', '音訊播放失敗。')));
+                try {
+                    const playback = audio.play();
+                    if (playback && typeof playback.catch === 'function') {
+                        playback.catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
+                    }
+                } catch (error) {
+                    finish(error instanceof Error ? error : new Error(String(error)));
+                }
+            });
+        } catch (e: any) {
+            if (mountedRef.current) setError(e?.message || String(e));
+        } finally {
+            if (mountedRef.current) setPreviewing(false);
+        }
+    };
+
     if (loading) return <div className="model-config-loading">{t('Loading...', '加载中...', '載入中...')}</div>;
 
     const accentColor = 'var(--theme-primary, #2f6fbc)';
@@ -137,6 +190,15 @@ export function TTSConfigPanel({ lang }: Props) {
                     'TTS 使用本地 Kokoro-82M q8 模型進行語音播報。模型和音色檔案會優先從 GitHub 下載，無法存取時從 Hub 回退下載。'
                 )}
             </p>
+            <div className="model-config-inline-field">
+                <label htmlFor='tts-preview-text' className="model-config-inline-label">
+                    {t('Voice preview', '音色试听', '音色試聽')}
+                </label>
+                <input id='tts-preview-text' value={previewText} maxLength={200} onChange={e => setPreviewText(e.target.value)} className="model-config-select" />
+                <button type='button' onClick={previewVoice} disabled={downloading || previewing || !previewText.trim()}>
+                    {previewing ? t('Generating...', '生成中…', '生成中…') : t('Preview', '试听', '試聽')}
+                </button>
+            </div>
             {enabled && (
                 <ModelStatusBox
                     exists={modelExists} downloading={downloading} size={modelSize}

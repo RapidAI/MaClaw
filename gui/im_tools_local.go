@@ -258,6 +258,16 @@ func (h *IMMessageHandler) projectTabWorkDir() string {
 }
 
 func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
+	if isACPAssistantSessionUserID(ownerID) {
+		if h != nil && h.app != nil {
+			if dir := strings.TrimSpace(h.app.EffectiveWorkingDirForOwner(ownerID)); dir != "" {
+				return dir
+			}
+		}
+		// ACP owners are isolation boundaries. Do not silently fall back to the
+		// desktop workspace if their explicit session/new cwd is unavailable.
+		return ""
+	}
 	rawProjectPath := projectPathFromUserID(ownerID)
 	if rawProjectPath == "" {
 		return ""

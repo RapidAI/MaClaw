@@ -290,7 +290,7 @@ func (s *GroupDiscussionHistoryStore) CacheSummaries(ctx context.Context, summar
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO group_discussion_summaries (discussion_id, local_relation, readonly, status, topic, question, result_summary, participant_ids_json, message_count, answer_count, expected_answer_count, ready_to_summarize, readiness_reason, created_at, updated_at, hub_updated_at, last_synced_at, sync_state, last_error, attachment_local_root, summary_json)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', '', ?, ?)
 ON CONFLICT(discussion_id) DO UPDATE SET
-    local_relation=excluded.local_relation, readonly=excluded.readonly, status=excluded.status, topic=excluded.topic, question=excluded.question, result_summary=excluded.result_summary, participant_ids_json=excluded.participant_ids_json, message_count=excluded.message_count, answer_count=excluded.answer_count, expected_answer_count=excluded.expected_answer_count, ready_to_summarize=excluded.ready_to_summarize, readiness_reason=excluded.readiness_reason, created_at=excluded.created_at, updated_at=excluded.updated_at, hub_updated_at=excluded.hub_updated_at, last_synced_at=excluded.last_synced_at, sync_state='synced', last_error='', attachment_local_root=excluded.attachment_local_root, summary_json=excluded.summary_json`)
+	local_relation=excluded.local_relation, readonly=excluded.readonly, status=excluded.status, topic=excluded.topic, question=excluded.question, result_summary=excluded.result_summary, participant_ids_json=excluded.participant_ids_json, message_count=excluded.message_count, answer_count=excluded.answer_count, expected_answer_count=excluded.expected_answer_count, ready_to_summarize=excluded.ready_to_summarize, readiness_reason=excluded.readiness_reason, created_at=CASE WHEN excluded.created_at <> '' THEN excluded.created_at ELSE group_discussion_summaries.created_at END, updated_at=excluded.updated_at, hub_updated_at=excluded.hub_updated_at, last_synced_at=excluded.last_synced_at, sync_state='synced', last_error='', attachment_local_root=excluded.attachment_local_root, summary_json=excluded.summary_json`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -339,6 +339,9 @@ func preserveCachedSummaryAccessMetadataTx(ctx context.Context, tx *sql.Tx, inco
 	incoming.Role = firstNonEmptyGroupString(incoming.Role, cached.Role)
 	incoming.LocalRelation = firstNonEmptyGroupString(incoming.LocalRelation, cached.LocalRelation, localRelationFromHistoryRole(cached.Role))
 	incoming.Status = firstNonEmptyGroupString(incoming.Status, cached.Status)
+	if incoming.CreatedAt.IsZero() {
+		incoming.CreatedAt = cached.CreatedAt
+	}
 	return incoming
 }
 
@@ -428,7 +431,7 @@ func (s *GroupDiscussionHistoryStore) CachedSummaries(ctx context.Context, inclu
 	if !includeHidden {
 		where = " WHERE local_visibility <> 'hidden'"
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT summary_json FROM group_discussion_summaries`+where+` ORDER BY updated_at DESC, last_synced_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT summary_json FROM group_discussion_summaries`+where+` ORDER BY created_at ASC, discussion_id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +454,7 @@ func (s *GroupDiscussionHistoryStore) HiddenSummaries(ctx context.Context) ([]a2
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT summary_json FROM group_discussion_summaries WHERE local_visibility = 'hidden' ORDER BY updated_at DESC, last_synced_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT summary_json FROM group_discussion_summaries WHERE local_visibility = 'hidden' ORDER BY created_at ASC, discussion_id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -948,7 +951,7 @@ func filterGroupDiscussionSummariesByRole(summaries []a2a.HubDiscussionSummary, 
 func mergeGroupDiscussionSummaries(live, cached []a2a.HubDiscussionSummary, role string) []a2a.HubDiscussionSummary {
 	cached = filterGroupDiscussionSummariesByRole(cached, role)
 	if len(cached) == 0 {
-		return sortGroupDiscussionSummariesByUpdated(deduplicateDiscussionsByFingerprint(live))
+		return sortGroupDiscussionSummariesByCreated(deduplicateDiscussionsByFingerprint(live))
 	}
 	seen := make(map[string]struct{}, len(live)+len(cached))
 	// Track topic+participant fingerprints to detect semantic duplicates —
@@ -988,7 +991,7 @@ func mergeGroupDiscussionSummaries(live, cached []a2a.HubDiscussionSummary, role
 		}
 		out = append(out, normalizeHistorySummaryForCache(summary))
 	}
-	return sortGroupDiscussionSummariesByUpdated(out)
+	return sortGroupDiscussionSummariesByCreated(out)
 }
 
 // deduplicateDiscussionsByFingerprint removes semantic duplicates from a single
@@ -1032,29 +1035,35 @@ func discussionSummaryFingerprint(s a2a.HubDiscussionSummary) string {
 	return topic + "\x00" + strings.Join(ids, ",")
 }
 
-func sortGroupDiscussionSummariesByUpdated(summaries []a2a.HubDiscussionSummary) []a2a.HubDiscussionSummary {
+// sortGroupDiscussionSummariesByCreated keeps history placement stable. A
+// discussion may receive messages, be renamed, or be refreshed at any time;
+// none of those updates should make it jump to a different position.
+func sortGroupDiscussionSummariesByCreated(summaries []a2a.HubDiscussionSummary) []a2a.HubDiscussionSummary {
 	sort.SliceStable(summaries, func(i, j int) bool {
-		left := groupDiscussionSummarySortTime(summaries[i])
-		right := groupDiscussionSummarySortTime(summaries[j])
+		left := groupDiscussionSummaryCreatedSortTime(summaries[i])
+		right := groupDiscussionSummaryCreatedSortTime(summaries[j])
 		if left.IsZero() && right.IsZero() {
-			return false
+			return strings.TrimSpace(summaries[i].ID) < strings.TrimSpace(summaries[j].ID)
 		}
 		if left.IsZero() {
-			return false
-		}
-		if right.IsZero() {
 			return true
 		}
-		return left.After(right)
+		if right.IsZero() {
+			return false
+		}
+		if !left.Equal(right) {
+			return left.Before(right)
+		}
+		return strings.TrimSpace(summaries[i].ID) < strings.TrimSpace(summaries[j].ID)
 	})
 	return summaries
 }
 
-func groupDiscussionSummarySortTime(summary a2a.HubDiscussionSummary) time.Time {
-	if !summary.UpdatedAt.IsZero() {
-		return summary.UpdatedAt
+func groupDiscussionSummaryCreatedSortTime(summary a2a.HubDiscussionSummary) time.Time {
+	if !summary.CreatedAt.IsZero() {
+		return summary.CreatedAt
 	}
-	return summary.CreatedAt
+	return summary.UpdatedAt
 }
 
 func boolToInt(v bool) int {

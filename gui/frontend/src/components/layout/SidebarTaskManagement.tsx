@@ -28,6 +28,7 @@ export type TaskManagementItem = {
     preview?: string;
     tags?: string[];
     working_dir?: string;
+    created_at?: string;
     last_activity?: string;
     pinned?: boolean;
     has_output?: boolean;
@@ -168,20 +169,14 @@ export function workflowStatusForTask(
     return { label: textForLang(lang, 'In progress', '进行中', '進行中'), detail, tone: 'info' };
 }
 
-export function taskActivityLabel(value: string | undefined, lang: string, now = Date.now()): string {
+/** Stable, explicit creation timestamp for a user-managed task. */
+export function taskCreationLabel(value: string | undefined, lang: string): string {
     const timestamp = Date.parse(value || '');
     if (!Number.isFinite(timestamp)) return '';
-    const seconds = Math.max(0, Math.round((now - timestamp) / 1000));
-    if (seconds < 60) return textForLang(lang, 'Updated just now', '刚刚更新', '剛剛更新');
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return textForLang(lang, `Updated ${minutes}m ago`, `${minutes} 分钟前更新`, `${minutes} 分鐘前更新`);
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return textForLang(lang, `Updated ${hours}h ago`, `${hours} 小时前更新`, `${hours} 小時前更新`);
-    const days = Math.floor(hours / 24);
-    if (days < 7) return textForLang(lang, `Updated ${days}d ago`, `${days} 天前更新`, `${days} 天前更新`);
     const date = new Date(timestamp);
-    const dateText = Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
-    return dateText ? textForLang(lang, `Updated ${dateText}`, `${dateText} 更新`, `${dateText} 更新`) : '';
+    const pad = (part: number) => String(part).padStart(2, '0');
+    const dateText = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return textForLang(lang, `Created ${dateText}`, `创建于 ${dateText}`, `建立於 ${dateText}`);
 }
 
 const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind; lang: string; maintenance?: boolean }) => {
@@ -427,8 +422,6 @@ const getPortalLightScheme = () => (
     document.getElementById('App')?.getAttribute('data-ai-light-scheme') || undefined
 );
 
-const TASK_COMMAND_INPUT_ID = 'task-management-name-input';
-
 const normalizeTaskCommandInput = (value?: string | null) => {
     // Preserve newlines (multi-line task commands), only collapse horizontal whitespace per line
     const lines = (value || '').split('\n').map(line => line.trim().replace(/[ \t]+/g, ' '));
@@ -436,6 +429,21 @@ const normalizeTaskCommandInput = (value?: string | null) => {
     const trimmed = lines.join('\n').trim().replace(/\n{3,}/g, '\n\n');
     // Limit characters (UTF-16 code units, consistent with HTML maxLength)
     return trimmed.slice(0, CODING_TASK_COMMAND_MAX_LEN);
+};
+
+/** An empty port means the conventional SSH port; malformed input must not silently become 22. */
+const parseRemotePort = (value: string): number | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return 22;
+    if (!/^\d+$/.test(trimmed)) return null;
+    const port = Number(trimmed);
+    return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+};
+
+const generatedTaskTitle = (lang: string, mode: '' | 'coding_dev' | 'remote_coding_dev') => {
+    if (mode === 'coding_dev') return textForLang(lang, 'New local coding task', '新建本地编程任务', '新建本機程式任務');
+    if (mode === 'remote_coding_dev') return textForLang(lang, 'New remote coding task', '新建远程编程任务', '新建遠端程式任務');
+    return textForLang(lang, 'New task', '新建任务', '新建任務');
 };
 
 
@@ -619,11 +627,7 @@ export const SidebarTaskManagement = ({
                 (document.getElementById('task-remote-host') as HTMLInputElement | null)?.focus();
                 return;
             }
-            if (mode === 'coding_dev') {
-                // Keep command focused for review of the filled task text.
-                const el = document.getElementById(TASK_COMMAND_INPUT_ID) as HTMLTextAreaElement | null;
-                el?.focus();
-            }
+            (document.getElementById('task-working-directory') as HTMLButtonElement | null)?.focus();
         }, 0);
     };
 
@@ -706,10 +710,17 @@ export const SidebarTaskManagement = ({
                                 if (!remote?.host?.trim() || !remote?.user?.trim() || !remote?.password || !remote?.workDir?.trim()) {
                                     throw new Error('remote env incomplete');
                                 }
-                                const portNum = Number(remote.port) || 22;
+                                const portNum = remote.port == null
+                                    ? 22
+                                    : Number.isInteger(remote.port) && remote.port > 0 && remote.port < 65536
+                                        ? remote.port
+                                        : null;
+                                if (portNum == null) {
+                                    throw new Error(textForLang(lang, 'Port must be a whole number from 1 to 65535.', '端口必须是 1 到 65535 之间的整数。', '連接埠必須是 1 到 65535 之間的整數。'));
+                                }
                                 await createTask(taskName, undefined, 'remote_coding_dev', {
                                     host: remote.host.trim(),
-                                    port: portNum > 0 && portNum < 65536 ? portNum : 22,
+                                    port: portNum,
                                     user: remote.user.trim(),
                                     password: remote.password,
                                     workDir: remote.workDir.trim(),
@@ -911,12 +922,18 @@ export const SidebarTaskManagement = ({
 
     const submitCreateTask = async () => {
         if (creatingTaskRef.current) return;
-        const taskName = normalizeTaskCommandInput(newTaskName);
-        if (!taskName) return;
+        // A task-management creation establishes an environment, not an agent
+        // instruction. Welcome flows may still supply a title, otherwise use a
+        // localized generated title for the durable task record.
+        const taskName = normalizeTaskCommandInput(newTaskName) || generatedTaskTitle(lang, newTaskMode);
         const isRemoteCreate = newTaskMode === 'remote_coding_dev';
         if (isRemoteCreate) {
             if (!remoteHost.trim() || !remoteUser.trim() || !remotePassword || !remoteWorkDir.trim()) {
                 setCreateError(textForLang(lang, 'Please fill host, username, password, and remote work directory.', '请填写主机、用户名、密码和远程工作目录。', '請填寫主機、使用者名稱、密碼和遠端工作目錄。'));
+                return;
+            }
+            if (parseRemotePort(remotePort) == null) {
+                setCreateError(textForLang(lang, 'Port must be a whole number from 1 to 65535.', '端口必须是 1 到 65535 之间的整数。', '連接埠必須是 1 到 65535 之間的整數。'));
                 return;
             }
         }
@@ -936,10 +953,11 @@ export const SidebarTaskManagement = ({
         try {
             const workingDir = newTaskWorkingDir.trim();
             if (isRemoteCreate) {
-                const portNum = Number.parseInt(remotePort.trim() || '22', 10);
+                const portNum = parseRemotePort(remotePort);
+                if (portNum == null) return;
                 await createTask(taskName, undefined, 'remote_coding_dev', {
                     host: remoteHost.trim(),
-                    port: Number.isFinite(portNum) && portNum > 0 && portNum < 65536 ? portNum : 22,
+                    port: portNum,
                     user: remoteUser.trim(),
                     password: remotePassword,
                     workDir: remoteWorkDir.trim(),
@@ -1089,9 +1107,9 @@ export const SidebarTaskManagement = ({
             const codingBadge = pureCodingBadgeLabel(proj, lang);
             const pureCoding = isPureCodingTask(proj);
             const workflowStatus = workflowStatusForTask(proj.active_workflow, lang);
-            const activityLabel = taskActivityLabel(proj.last_activity, lang);
+            const createdAtLabel = taskCreationLabel(proj.created_at, lang);
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'}>
-                <div onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${workflowStatus ? '\n' + [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · ') : ''}${codingBadge ? '\n' + codingBadge : ''}${activityLabel ? '\n' + activityLabel : ''}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                <div onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${workflowStatus ? '\n' + [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · ') : ''}${codingBadge ? '\n' + codingBadge : ''}${createdAtLabel ? '\n' + createdAtLabel : ''}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />
                     <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
                         {(workflowStatus || codingBadge || proj.pinned) && (
@@ -1129,7 +1147,7 @@ export const SidebarTaskManagement = ({
                         )}
                         {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
                         <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{openingTaskPath === proj.project_path ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...') : (proj.preview || proj.project_path)}</span>
-                        {openingTaskPath !== proj.project_path && activityLabel && <span data-testid="task-last-activity" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{activityLabel}</span>}
+                        {openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{createdAtLabel}</span>}
                         {openingTaskPath === proj.project_path && <span aria-label={textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
                     </span>
                     <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); void openSceneDetail(proj.project_path, proj.name); }} disabled={sceneDetailLoading && sceneDetailPath === proj.project_path} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: sceneDetailLoading && sceneDetailPath === proj.project_path ? 0.4 : 0.78, cursor: 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>
@@ -1169,33 +1187,33 @@ export const SidebarTaskManagement = ({
                         </h3>
                         <button type="button" className="btn-close" onClick={closeCreateDialog} disabled={creatingTask}>X</button>
                     </div>
-                    <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }} htmlFor="task-management-name-input">
-                            {textForLang(lang, 'Task command', '任务命令', '任務命令')}
-                        </label>
-                        <textarea
-                            id={TASK_COMMAND_INPUT_ID}
-                            autoFocus
-                            value={newTaskName}
-                            onChange={e => setNewTaskName(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void submitCreateTask(); } }}
-                            placeholder={textForLang(lang, 'Describe the task you want to perform (Ctrl+Enter to submit)', '描述你想要执行的任务（Ctrl+Enter 提交）', '描述你想要執行的任務（Ctrl+Enter 提交）')}
-                            disabled={creatingTask}
-                            maxLength={CODING_TASK_COMMAND_MAX_LEN}
-                            rows={newTaskMode === 'remote_coding_dev' || newTaskMode === 'coding_dev' ? 7 : 6}
-                            style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '8px 10px', outline: 'none', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5, minHeight: '80px', maxHeight: '280px', transition: 'border-color 0.15s, box-shadow 0.15s' }}
-                            onFocus={e => { e.currentTarget.style.borderColor = 'var(--theme-primary)'; e.currentTarget.style.boxShadow = '0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent)'; }}
-                            onBlur={e => { e.currentTarget.style.borderColor = ''; e.currentTarget.style.boxShadow = ''; }}
-                        />
+                    <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <div data-testid="task-create-guidance" style={{ padding: '9px 10px', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 6%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', lineHeight: 1.5 }}>
+                            {textForLang(lang, 'Set up the task environment now. Once it opens, enter your request directly in the AI assistant.', '先设置任务环境；创建后请直接在 AI 助手中输入任务命令。', '先設定任務環境；建立後請直接在 AI 助手中輸入任務命令。')}
+                        </div>
+                        <div>
+                            <div style={{ marginBottom: '6px', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>{textForLang(lang, 'Task type', '任务类型', '任務類型')}</div>
+                            <div role="group" aria-label={textForLang(lang, 'Task type', '任务类型', '任務類型')} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '6px' }}>
+                                {([
+                                    { id: '', label: textForLang(lang, 'Chat', '对话', '對話'), detail: textForLang(lang, 'General assistant', '通用助手', '通用助手') },
+                                    { id: 'coding_dev' as const, label: textForLang(lang, 'Coding', '本地编程', '本機程式'), detail: textForLang(lang, 'Local workspace', '本地工作目录', '本機工作目錄') },
+                                    { id: 'remote_coding_dev' as const, label: textForLang(lang, 'Remote', '远程编程', '遠端程式'), detail: textForLang(lang, 'SSH workspace', 'SSH 工作目录', 'SSH 工作目錄') },
+                                ] as const).map(opt => {
+                                    const active = newTaskMode === opt.id;
+                                    return <button key={`create-type-${opt.id || 'chat'}`} type="button" id={opt.id === 'coding_dev' ? 'task-management-coding-mode' : (opt.id === 'remote_coding_dev' ? 'task-management-remote-coding-mode' : 'task-management-chat-mode')} aria-pressed={active} aria-label={opt.label} title={opt.detail} disabled={creatingTask} onClick={() => { if (newTaskMode === opt.id) return; setNewTaskMode(opt.id); if (opt.id !== 'remote_coding_dev') setRemoteSafety(undefined); setCreateError(''); applyEnvDefaultsForMode(opt.id, false); }} style={{ minWidth: 0, minHeight: '58px', border: active ? '1px solid color-mix(in srgb, var(--theme-primary) 58%, var(--theme-border))' : '1px solid var(--theme-border)', borderRadius: '8px', padding: '7px 8px', textAlign: 'left', cursor: creatingTask ? 'default' : 'pointer', color: active ? 'var(--theme-primary)' : 'var(--theme-text-primary)', background: active ? 'color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface))' : 'var(--theme-surface-muted)', opacity: creatingTask ? 0.55 : 1 }}><span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.74rem', fontWeight: 700 }}>{opt.label}</span><span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '3px', color: active ? 'var(--theme-primary)' : 'var(--theme-text-muted)', fontSize: '0.64rem', opacity: active ? 0.88 : 1 }}>{opt.detail}</span></button>;
+                                })}
+                            </div>
+                        </div>
                         {newTaskMode !== 'remote_coding_dev' && (
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', minHeight: '30px', paddingTop: '2px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--theme-border)', background: 'var(--theme-surface-muted)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
                                     <ProjectSearchIcon name="desktop" size={14} />
-                                    {textForLang(lang, 'Task directory', '\u4efb\u52a1\u76ee\u5f55', '\u4efb\u52d9\u76ee\u9304')}
+                                    {textForLang(lang, 'Working directory', '\u5de5\u4f5c\u76ee\u5f55', '\u5de5\u4f5c\u76ee\u9304')}
                                 </span>
                                 <button
                                     type="button"
+                                    id="task-working-directory"
                                     onClick={() => { void selectWorkingDir(); }}
                                     disabled={creatingTask || selectingWorkingDir}
                                     aria-label={textForLang(lang, 'Choose working folder', '\u9009\u62e9\u5de5\u4f5c\u6587\u4ef6\u5939', '\u9078\u64c7\u5de5\u4f5c\u8cc7\u6599\u593e')}
@@ -1217,11 +1235,6 @@ export const SidebarTaskManagement = ({
                                     >×</button>
                                 )}
                             </div>
-                            {newTaskName.length > Math.floor(CODING_TASK_COMMAND_MAX_LEN * 0.8) && (
-                                <span style={{ flexShrink: 0, fontSize: '0.66rem', color: newTaskName.length >= CODING_TASK_COMMAND_MAX_LEN ? 'var(--theme-danger, #ef4444)' : 'var(--theme-text-muted)', textAlign: 'right' }}>
-                                    {newTaskName.length} / {CODING_TASK_COMMAND_MAX_LEN}
-                                </span>
-                            )}
                         </div>
                         )}
                         {newTaskMode === 'remote_coding_dev' && (
@@ -1264,49 +1277,7 @@ export const SidebarTaskManagement = ({
                             {createError}
                         </div>
                     )}
-                    <div className="modal-footer" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                        <div role="group" aria-label={textForLang(lang, 'Task mode', '任务模式', '任務模式')} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginRight: 'auto', flexWrap: 'wrap', padding: '2px', borderRadius: '8px', background: 'color-mix(in srgb, var(--theme-text-muted) 8%, transparent)' }}>
-                            {([
-                                { id: '', label: textForLang(lang, 'Chat', '对话', '對話'), title: textForLang(lang, 'Ordinary task chat', '普通对话任务', '普通對話任務') },
-                                { id: 'coding_dev' as const, label: textForLang(lang, 'Coding', '本地编程', '本機程式'), title: textForLang(lang, 'Local pure coding environment', '本地纯血编程环境', '本機純血程式開發環境') },
-                                { id: 'remote_coding_dev' as const, label: textForLang(lang, 'Remote', '远程编程', '遠端程式'), title: textForLang(lang, 'Remote pure coding over SSH', '远程纯血编程环境（SSH）', '遠端純血程式開發環境（SSH）') },
-                            ] as const).map(opt => {
-                                const active = newTaskMode === opt.id;
-                                return (
-                                    <button
-                                        key={opt.id || 'chat'}
-                                        type="button"
-                                        id={opt.id === 'coding_dev' ? 'task-management-coding-mode' : (opt.id === 'remote_coding_dev' ? 'task-management-remote-coding-mode' : 'task-management-chat-mode')}
-                                        aria-pressed={active}
-                                        aria-label={opt.label}
-                                        title={opt.title}
-                                        disabled={creatingTask}
-                                        onClick={() => {
-                                            if (newTaskMode === opt.id) return;
-                                            setNewTaskMode(opt.id);
-                                            if (opt.id !== 'remote_coding_dev') setRemoteSafety(undefined);
-                                            setCreateError('');
-                                            // Switching mode mid-dialog: fill blanks from last coding/remote task.
-                                            applyEnvDefaultsForMode(opt.id, false);
-                                        }}
-                                        style={{
-                                            border: 'none',
-                                            borderRadius: '6px',
-                                            padding: '4px 10px',
-                                            fontSize: '0.72rem',
-                                            fontWeight: active ? 700 : 500,
-                                            cursor: creatingTask ? 'default' : 'pointer',
-                                            color: active ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
-                                            background: active ? 'color-mix(in srgb, var(--theme-primary) 14%, var(--theme-surface, transparent))' : 'transparent',
-                                            boxShadow: active ? 'inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 35%, transparent)' : 'none',
-                                            opacity: creatingTask ? 0.55 : 1,
-                                        }}
-                                    >
-                                        {opt.label}
-                                    </button>
-                                );
-                            })}
-                        </div>
+                    <div className="modal-footer" style={{ justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                             <button type="button" className="btn-secondary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={closeCreateDialog} disabled={creatingTask}>
                                 {textForLang(lang, 'Cancel', '取消', '取消')}
@@ -1317,11 +1288,10 @@ export const SidebarTaskManagement = ({
                                 style={{ fontSize: '0.78rem', padding: '4px 14px' }}
                                 disabled={
                                     creatingTask
-                                    || !newTaskName.trim()
                                     || (newTaskMode === 'remote_coding_dev' && (!remoteHost.trim() || !remoteUser.trim() || !remotePassword || !remoteWorkDir.trim()))
                                 }
                             >
-                                {textForLang(lang, 'OK', '确定', '確定')}
+                                {textForLang(lang, 'Create & open', '创建并打开', '建立並開啟')}
                             </button>
                         </div>
                     </div>
@@ -1451,7 +1421,7 @@ export const SidebarTaskManagement = ({
                             </div>
                         )}
                     </div>
-                    <div className="modal-footer" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <div className="modal-footer" style={{ justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                         <button
                             type="button"
                             data-testid="edit-remote-test-ssh"

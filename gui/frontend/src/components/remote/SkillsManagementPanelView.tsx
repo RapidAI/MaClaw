@@ -14,6 +14,7 @@ import { displayHubVersion, executionClassBadgeStyle, formatDate, formatDownload
 import { colors, remoteCardStyle, remoteCodeBlockStyle, remoteEmptyStateStyle, remoteErrorStateStyle, remoteInfoPanelStyle, remoteLoadingStateStyle, remoteStatusBadgeStyle, remoteTableCellStyle, remoteTableContainerStyle, remoteTableHeaderCellStyle, remoteTagStyle } from './styles';
 import { AddExternalSkillDir, ApplySkillMaintenanceAction, BatchSetNLSkillStatus, CheckHubSkillUpdates, CreateNLSkill, DeleteNLSkill, DiagnoseSkillFiles, ExportLearnedSkillsZip, ExportTextFile, GetExperienceAuditHealth, GetHubRecommendations, GetSkillEvolutionStatus, ImportLearnedSkillsZip, ImportNLSkillZip, InstallMixedSkill, ListExperienceAudit, ListExternalSkillDirsDetailed, ListNLSkills, ListSkillEvolutionAudit, ListSkillMaintenanceDrafts, ListSkillYAMLBackups, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, RemoveExternalSkillDir, RenameNLSkill, ResolveCriticalConfirm, RestoreSkillYAMLBackup, SearchMixedSkills, SelectProjectDir, SetNLSkillStatus, TriggerSkillOptimize, TriggerSkillSelfRepair, UpdateHubSkill, UpdateNLSkill, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
+import { openSettingsTab } from '../../utils/settingsNavigation';
 
 function localizeSkillInstallRiskLevel(level: string, localizeText: (en: string, zhHans: string, zhHant: string) => string): string {
     const normalized = level.trim().toLowerCase();
@@ -3578,7 +3579,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 className="btn-secondary"
                                 style={{ fontSize: "0.72rem", padding: "2px 10px" }}
                                 onClick={() => {
-                                    window.dispatchEvent(new CustomEvent("maclaw:open-settings", { detail: { tab: "general" } }));
+                                    openSettingsTab('general');
                                 }}
                             >
                                 {localizeText(

@@ -228,11 +228,11 @@ func redactToolCallMap(m map[string]interface{}, toolCallID, redactedID string) 
 	return true
 }
 
-func (h *IMMessageHandler) pinConditionalToolAfterSuccess(toolName string, execResult toolExecutionResult) {
+func (h *IMMessageHandler) pinConditionalToolAfterSuccess(userID, toolName string, execResult toolExecutionResult) {
 	if h == nil || h.toolRouter == nil || execResult.Outcome != toolOutcomeSucceeded || execResult.FailureKind != toolFailureNone || !tool.ShouldPinConditionalTool(toolName) {
 		return
 	}
-	h.toolRouter.ActivateSessionTool(toolName)
+	h.toolRouter.ActivateSessionToolForSession(userID, toolName)
 	log.Printf("[ToolPin] session-pinned conditional tool %q", toolName)
 }
 

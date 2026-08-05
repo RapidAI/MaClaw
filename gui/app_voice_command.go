@@ -28,6 +28,28 @@ const (
 	imASRMinBudgetToStart    = 2 * time.Second  // don't start a clip with less remaining budget
 )
 
+// Short, already-usable transcripts are normally clearer than an additional
+// remote LLM correction pass. This keeps common hardware commands (weather,
+// alarms, music, simple actions) on the local ASR fast path.
+func shouldSkipASRLLMCorrection(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	runes := []rune(text)
+	if len(runes) <= 2 {
+		return false // very short fragments are the most likely ASR mistakes
+	}
+	for _, r := range runes {
+		if r == utf8.RuneError || r == '\ufffd' {
+			return false
+		}
+	}
+	// Intentional IM utterances up to this length are typically commands. The
+	// Agent can understand ordinary wording without a separate network rewrite.
+	return len(runes) <= 48
+}
+
 // Localized IM ASR progress strings (package-level to avoid per-call map alloc).
 var (
 	imVoiceASRProgressEN = map[string]string{
@@ -353,6 +375,11 @@ func (a *App) transcribeIMVoiceAttachment(wavData []byte, onProgress func(string
 	}
 
 	asrElapsed := time.Since(start)
+	if shouldSkipASRLLMCorrection(text) {
+		log.Printf("[IM] voice ASR ok (skip correction, concise transcript) elapsed=%s text=%q",
+			asrElapsed, truncateRunes(text, 80))
+		return text
+	}
 	// If ASR already took long, skip LLM correction for snappier replies.
 	if asrElapsed > imASRSkipCorrectionAfter {
 		log.Printf("[IM] voice ASR ok (skip correction, asr slow) elapsed=%s text=%q",

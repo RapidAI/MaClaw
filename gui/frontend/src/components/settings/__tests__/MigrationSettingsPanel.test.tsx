@@ -27,7 +27,7 @@ const baseStatus = {
     user_id: 'user-a',
     machine_id: 'machine-current',
     machine_name: 'Current Workstation',
-    max_compressed_bytes: 100 * 1024 * 1024,
+    max_package_bytes: 100 * 1024 * 1024,
 };
 
 const migrationInstance = (status: string, claimedBy = '') => ({
@@ -40,13 +40,6 @@ const migrationInstance = (status: string, claimedBy = '') => ({
     export_claimed_by_machine_id: claimedBy,
     export_size: 2048,
     export_updated_at: '2026-06-20T12:00:00Z',
-    export_manifest: {
-        version: 'maclaw-gui-user-data-migration/v2',
-        config_schema_version: 'corelib.AppConfig/v1',
-        config_section_count: 24,
-        secret_count: 5,
-        memory_entries: 18,
-    },
 });
 
 const renderMigrationPanel = async (instances: unknown[]) => {
@@ -70,7 +63,7 @@ afterEach(() => {
 });
 
 describe('MigrationSettingsPanel', () => {
-    it('requires a strong password for new move-out packages but keeps legacy import passwords usable', async () => {
+    it('requires a strong move-out password without applying creation policy to move-in', async () => {
         await renderMigrationPanel([migrationInstance('ready')]);
 
         fireEvent.change(screen.getAllByLabelText('Password')[0], { target: { value: 'weak1' } });
@@ -102,9 +95,6 @@ describe('MigrationSettingsPanel', () => {
 
     it('starts a normal move-in for a ready package after password entry', async () => {
         await renderMigrationPanel([migrationInstance('ready')]);
-
-        expect(screen.getByText('Preflight')).toBeTruthy();
-        expect(screen.getByText(/24 settings, 5 secrets, and 18 memories/)).toBeTruthy();
 
         fireEvent.change(importPasswordInput(), { target: { value: 'secret-pass-2026' } });
         const button = screen.getByRole('button', { name: 'Start Move In' }) as HTMLButtonElement;

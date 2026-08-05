@@ -12,7 +12,119 @@ choice MACLAW_BOARD
 
     config MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
         bool "Bread Compact Wi-Fi LCD (ST7789 + direct I2S audio)"
+
+    config MACLAW_BOARD_FANGTANG_4G
+        bool "无名星智 4G / Fangtang 4G (ESP32-S3 dual-network)"
 endchoice
+
+config MACLAW_PRODUCT_ID
+    string "Stable product identifier"
+    default "maclaw-clawmate"
+    help
+        Machine-readable product family. Keep stable across firmware releases.
+
+config MACLAW_BOARD_ID
+    string "Stable board identifier"
+    default "bread-compact-wifi-lcd-v1" if MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
+    default "echoear-2st-r8" if MACLAW_BOARD_ECHOEAR_2ST
+    default "fangtang-4g-v1" if MACLAW_BOARD_FANGTANG_4G
+    help
+        Machine-readable physical PCB/display/audio configuration. Change only
+        when hardware compatibility changes, not for firmware releases.
+
+config MACLAW_HW_REV
+    string "Hardware revision"
+    default "1"
+
+config MACLAW_LAYOUT_ID
+    string "Flash partition layout identifier"
+    default "maclaw-s3-16m-factory-v2"
+    help
+        Declares the expected partition schema. The host flasher must still
+        verify the real partition table read from flash before trusting this.
+
+config MACLAW_COMPAT_ID
+    string "Firmware compatibility identifier"
+    default "maclaw-clawmate:bread-compact-wifi-lcd-v1:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
+    default "maclaw-clawmate:echoear-2st-r8:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_ECHOEAR_2ST
+    default "maclaw-clawmate:fangtang-4g-v1:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_FANGTANG_4G
+    help
+        Compact allow-list key used by the flasher after independent chip and
+        partition-table verification.
+
+config MACLAW_FIRMWARE_DISPLAY_NAME
+    string "Human-readable firmware name"
+    default "ClawMate / Bread Compact Wi-Fi LCD" if MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
+    default "ClawMate / EchoEar-2ST R8" if MACLAW_BOARD_ECHOEAR_2ST
+    default "ClawMate / 无名星智 4G" if MACLAW_BOARD_FANGTANG_4G
+
+if MACLAW_BOARD_FANGTANG_4G
+
+config MACLAW_FANGTANG_MODEM_UART_PORT
+    int "4G modem UART controller"
+    range 0 2
+    default 1
+    help
+        UART controller attached to the Cat.1/4G module. Native USB serial
+        uses USB Serial/JTAG and does not consume this UART.
+
+config MACLAW_FANGTANG_MODEM_UART_TX_GPIO
+    int "ESP32 TX GPIO to 4G modem RX"
+    default 12
+    help
+        The 无名星智 ML307 board routes ESP32 GPIO12 to the modem RX.
+
+config MACLAW_FANGTANG_MODEM_UART_RX_GPIO
+    int "ESP32 RX GPIO from 4G modem TX"
+    default 11
+    help
+        The 无名星智 ML307 board routes ESP32 GPIO11 from the modem TX.
+
+config MACLAW_FANGTANG_MODEM_UART_BAUD
+    int "4G modem UART baud rate"
+    default 921600
+
+config MACLAW_FANGTANG_MODEM_APN
+    string "Cellular APN"
+    default ""
+    help
+        Leave empty when the SIM/operator accepts the modem's default PDP
+        context; otherwise set the carrier APN.
+
+config MACLAW_FANGTANG_MODEM_POWER_GPIO
+    int "Optional 4G modem power-enable GPIO"
+    default 21
+    help
+        无名星智 ML307 board requires GPIO21 high before modem detection.
+
+config MACLAW_FANGTANG_MODEM_POWER_ACTIVE_LEVEL
+    int "4G modem power-enable active level"
+    range 0 1
+    default 1
+    depends on MACLAW_FANGTANG_MODEM_POWER_GPIO >= 0
+
+config MACLAW_FANGTANG_MODEM_GUARD_GPIO
+    int "4G modem companion-control GPIO"
+    default 45
+    help
+        无名星智 ML307 board initializes GPIO45 as a pulldown output at low
+        level before using the modem. Set to -1 only for a revised PCB that
+        lacks this companion-control signal.
+
+config MACLAW_FANGTANG_MODEM_GUARD_LEVEL
+    int "4G modem companion-control level"
+    range 0 1
+    default 0
+    depends on MACLAW_FANGTANG_MODEM_GUARD_GPIO >= 0
+
+config MACLAW_FANGTANG_DEFAULT_4G
+    bool "Use 4G when no network choice has been saved"
+    default y
+    help
+        Mirrors the original ML307 board firmware. A GPIO0 double-click in
+        the startup selection window toggles and persists the choice.
+
+endif
 
 config MACLAW_WIFI_SSID
     string "Wi-Fi SSID"

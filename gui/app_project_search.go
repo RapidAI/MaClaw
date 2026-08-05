@@ -104,7 +104,7 @@ func projectPathFromSessionOwnerID(ownerID string) string {
 	rest := strings.TrimPrefix(ownerID, desktopUserID+":")
 	// Expert sessions ("desktop-user:expert:<id>") carry an expert id, not a
 	// project path — never let downstream code treat it as a directory.
-	if strings.HasPrefix(rest, "expert:") {
+	if strings.HasPrefix(rest, "expert:") || strings.HasPrefix(rest, "acp:") {
 		return ""
 	}
 	return normalizeProjectSessionPath(rest)
@@ -121,6 +121,7 @@ type ProjectSearchResult struct {
 	ActiveWorkflow  *ProjectWorkflowState   `json:"active_workflow,omitempty"`
 	Preview         string                  `json:"preview"`       // Short content preview (~150 chars)
 	Tags            []string                `json:"tags"`          // Union of all entry tags
+	CreatedAt       string                  `json:"created_at"`    // RFC3339 task creation timestamp
 	LastActivity    string                  `json:"last_activity"` // RFC3339 formatted timestamp
 	EntryCount      int                     `json:"entry_count"`   // Number of memory entries
 	HasOutput       bool                    `json:"has_output"`    // Whether the task has tangible output
@@ -350,6 +351,7 @@ func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectReco
 		WorkflowType: rec.WorkflowType,
 		Preview:      rec.Preview,
 		Tags:         rec.Tags,
+		CreatedAt:    rec.CreatedAt.Format(time.RFC3339),
 		LastActivity: rec.LastActivity.Format(time.RFC3339),
 		EntryCount:   rec.EntryCount,
 		HasOutput:    rec.HasOutput,
@@ -3161,12 +3163,12 @@ func (a *App) createTaskRecordWithWorkingDir(taskName, taskContent string, extra
 
 	pi := a.memoryStore.ProjectIndex()
 	if pi == nil {
-		return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+		return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, CreatedAt: now.Format(time.RFC3339), LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 	}
 	if rec := pi.Get(taskDir); rec != nil {
 		return projectRecordToSearchResult(pi, *rec)
 	}
-	return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+	return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, CreatedAt: now.Format(time.RFC3339), LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 }
 
 func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath string) {
@@ -3664,6 +3666,17 @@ func (a *App) DeleteTask(projectPath string) error {
 		// Adapters retain project-scoped document bridge state independently of
 		// the workflow store, so a deleted task must not keep one alive.
 		handler.workflowV2Adapters.Delete(ownerID)
+	}
+	// The project owner is also the key for frozen prompt snapshots, event
+	// routing, and other process-local state. Clear it even if the IM handler
+	// has not been initialized, so a newly-created task at the same path cannot
+	// inherit a deleted task's transient context.
+	if handler != nil {
+		handler.frozenMemorySnapshots.Delete(ownerID)
+		handler.snapshotInitialized.Delete(ownerID)
+		handler.snapshotWarmInflight.Delete(ownerID)
+		handler.snapshotEpoch.Delete(ownerID)
+		handler.proactiveRecallInFlight.Delete(ownerID)
 	}
 	// clearPerUserSessionState only cancels workflows and is unavailable when
 	// the message handler has not been initialized. Delete the durable workflow
@@ -4468,6 +4481,13 @@ func (a *App) syncActiveWorkflowWorkingDir(ownerID, dir string) {
 // used here: it is a separate "configured project" concept and diverging from
 // the top-bar working directory is the root cause of agents listing the wrong tree.
 func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
+	if isACPAssistantSessionUserID(ownerID) && a != nil {
+		if dir, ok := a.acpSessionWorkingDirs.Load(ownerID); ok {
+			if workingDir, ok := dir.(string); ok && strings.TrimSpace(workingDir) != "" {
+				return normalizeProjectSessionPath(workingDir)
+			}
+		}
+	}
 	if projectPath := projectPathFromSessionOwnerID(ownerID); projectPath != "" {
 		if a != nil {
 			if dir := strings.TrimSpace(a.recentTaskExecutionProjectPath(projectPath)); dir != "" {
@@ -4682,7 +4702,8 @@ const maxRestoredTabs = 5
 
 // LoadProjectTabIndex returns the saved tab index for frontend restoration
 // on app startup. Returns at most maxRestoredTabs non-archived entries,
-// sorted by LastActiveAt descending (most recent first).
+// in their persisted creation order. Activity timestamps are retained for
+// cleanup only and must never change the order shown in the tab bar.
 // This is a Wails binding method.
 func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 	persist := a.ensureProjectTabSessionPersist()
@@ -4695,7 +4716,7 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 		return []TabIndexEntry{}
 	}
 
-	// Filter non-archived entries and sort by LastActiveAt descending.
+	// Filter non-archived entries while retaining the persisted index order.
 	var active []TabIndexEntry
 	var projectIndex *memory.ProjectIndex
 	a.ensureMemoryStore()
@@ -4721,11 +4742,6 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 	if len(active) == 0 {
 		return []TabIndexEntry{}
 	}
-
-	// Sort: most recently active first (standard library sort).
-	sort.Slice(active, func(i, j int) bool {
-		return active[i].LastActiveAt > active[j].LastActiveAt
-	})
 
 	// Return at most maxRestoredTabs.
 	if len(active) > maxRestoredTabs {

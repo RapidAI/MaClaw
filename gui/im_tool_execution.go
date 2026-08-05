@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
@@ -203,6 +204,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		}
 	}
 	if result.Text == "" {
+		if clientTool, ok := clientToolForLoop(opts.Context, tc.Function.Name); ok {
+			result = h.dispatchClientToolCall(opts.Context, clientTool, tc.ID, tc.Function.Arguments)
+		}
+	}
+	if result.Text == "" {
 		execCtx := context.Background()
 		if opts.Context != nil {
 			var cancel context.CancelFunc
@@ -244,6 +250,25 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		})
 	}
 	return result
+}
+
+func (h *IMMessageHandler) dispatchClientToolCall(loop *LoopContext, definition agent.ClientToolDefinition, callID, argumentsJSON string) toolExecutionResult {
+	name := strings.TrimSpace(definition.Name)
+	if h == nil || h.clientToolDispatcher == nil || loop == nil || loop.ClientToolContext == nil {
+		return toolExecutionResult{Text: "[system rejected] client tool dispatcher is unavailable", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	arguments := map[string]any{}
+	if strings.TrimSpace(argumentsJSON) != "" {
+		if err := json.Unmarshal([]byte(argumentsJSON), &arguments); err != nil {
+			return toolExecutionResult{Text: "[system rejected] invalid client tool arguments: " + err.Error(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		}
+	}
+	ctx, cancel := loop.Context()
+	defer cancel()
+	if err := h.clientToolDispatcher(ctx, *loop.ClientToolContext, definition, strings.TrimSpace(callID), arguments); err != nil {
+		return toolExecutionResult{Text: "Client tool dispatch failed: " + err.Error(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed}
+	}
+	return toolExecutionResult{Text: "Client tool request dispatched. The client will report the authoritative result asynchronously.", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeSucceeded, FailureKind: toolFailureNone}
 }
 
 func normalizeAgentLoopToolArgumentsJSON(argsJSON string) string {
@@ -1124,7 +1149,7 @@ func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 		"read_file", "read_tool_result", "write_file", "edit_file", "edit_lines", "list_directory", "send_file", "send_to_im",
 		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
-		"group_discussion", "screenshot", "call_mcp_tool",
+		"group_discussion", "screenshot", "call_mcp_tool", "discover_tool",
 		"browser", "browser_session_start", "browser_connect", "ssh", "tts", "asr":
 		return true
 	default:

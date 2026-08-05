@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as AppAPI from '../../../wailsjs/go/main/App';
 import { DialogProvider } from '../CustomDialog';
 import { ExpertMarketDialog } from '../ExpertMarketDialog';
+import { OPEN_SETTINGS_EVENT } from '../../utils/settingsNavigation';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
     GetExpertMarketAccount: vi.fn(),
@@ -32,6 +33,27 @@ describe('ExpertMarketDialog', () => {
         vi.mocked(AppAPI.InstallExpertMarketListing).mockResolvedValue({ expert: { id: 'pkgexp-owned' } } as any);
     });
     afterEach(() => cleanup());
+
+    it('opens Settings > Asset Management from the credits balance', () => {
+        const onClose = vi.fn();
+        const listener = vi.fn();
+        const trigger = document.createElement('button');
+        document.body.appendChild(trigger);
+        trigger.focus();
+        window.addEventListener(OPEN_SETTINGS_EVENT, listener, { once: true });
+        const view = render(<DialogProvider><ExpertMarketDialog lang="en" onClose={onClose} /></DialogProvider>);
+
+        const assetButton = screen.getByRole('button', { name: 'Asset Management' });
+        assetButton.focus();
+        fireEvent.click(assetButton);
+        view.unmount();
+
+        expect(onClose).toHaveBeenCalledTimes(1);
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({ tab: 'assetManagement' });
+        expect(document.activeElement).not.toBe(trigger);
+        trigger.remove();
+    });
 
     it('uses the catalogue entitlement flag to offer install without another purchase', async () => {
         render(<DialogProvider><ExpertMarketDialog lang="en" onClose={vi.fn()} /></DialogProvider>);

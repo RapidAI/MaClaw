@@ -228,6 +228,17 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		// --- Staged Recall: use StagedRecallPipeline when PartialResultsEnabled ---
 		if opts.PartialResultsEnabled {
 			recalled = s.proactiveRecallStaged(query, opts, budgetResult)
+			// The staged pipeline intentionally enforces exact ownership. Add the
+			// sole sanctioned cross-session input afterwards: final, explicitly
+			// archived experience. This preserves strict isolation without losing
+			// the user's requested accumulated experience.
+			if opts.Recall.StrictOwner && opts.Recall.AllowArchivedExperience {
+				maxEntries := opts.Recall.MaxEntries
+				if maxEntries <= 0 {
+					maxEntries = defaultMaxEntries
+				}
+				recalled = appendUniquePromptEntries(recalled, s.archivedExperienceEntries(query, opts.Recall, max(0, maxEntries-len(recalled)))...)
+			}
 		} else {
 			// Default path: policy-driven retrieval.
 			decision := decideProactivePromptRetrieval(query, opts)
@@ -251,7 +262,7 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 				recalled = append(recalled, pageEntries...)
 			}
 		}
-		recalled = filterEntriesForOwner(recalled, opts.Recall.OwnerID, opts.Recall.StrictOwner)
+		recalled = filterEntriesForProactiveOwner(recalled, opts.Recall)
 
 		// For staged recall path, format the recalled entries now.
 		if opts.PartialResultsEnabled && len(recalled) > 0 {
@@ -277,6 +288,38 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		b.WriteString(FormatDerivedFactsForPrompt(s.LastDerivedFacts(), limit))
 	}
 	return b.String(), recalled
+}
+
+func appendUniquePromptEntries(entries []Entry, extra ...Entry) []Entry {
+	seen := make(map[string]struct{}, len(entries)+len(extra))
+	for _, entry := range entries {
+		if entry.ID != "" {
+			seen[entry.ID] = struct{}{}
+		}
+	}
+	for _, entry := range extra {
+		if entry.ID != "" {
+			if _, ok := seen[entry.ID]; ok {
+				continue
+			}
+			seen[entry.ID] = struct{}{}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func filterEntriesForProactiveOwner(entries []Entry, opts ProactiveRecallOptions) []Entry {
+	if !opts.StrictOwner || len(entries) == 0 {
+		return entries
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if proactiveOwnerAllowed(entry, opts) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 // ---------------------------------------------------------------------------

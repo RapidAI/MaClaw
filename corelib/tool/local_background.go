@@ -255,9 +255,6 @@ func (m *LocalBackgroundTaskManager) Check(taskID string, tailLines int) (*Local
 func localBackgroundTaskOwnerMatches(taskOwnerID, filterOwnerID string) bool {
 	taskOwnerID = strings.TrimSpace(taskOwnerID)
 	filterOwnerID = strings.TrimSpace(filterOwnerID)
-	if filterOwnerID == "" || taskOwnerID == "" {
-		return true
-	}
 	return taskOwnerID == filterOwnerID
 }
 
@@ -394,9 +391,6 @@ func (m *LocalBackgroundTaskManager) ListForOwner(ownerID string) []*LocalBackgr
 		return nil
 	}
 	tasks := m.List()
-	if strings.TrimSpace(ownerID) == "" {
-		return tasks
-	}
 	filtered := make([]*LocalBackgroundTask, 0, len(tasks))
 	for _, task := range tasks {
 		if localBackgroundTaskOwnerMatches(task.OwnerID, ownerID) {

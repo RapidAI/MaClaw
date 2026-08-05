@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,15 +23,15 @@ import (
 )
 
 const (
-	migrationSettingMaxCompressedBytes = "migration_max_compressed_bytes"
-	migrationDefaultMaxCompressedBytes = int64(100 * 1024 * 1024)
-	migrationMinCompressedBytes        = int64(100 * 1024 * 1024)
-	migrationMaxCompressedBytes        = int64(1024 * 1024 * 1024)
-	migrationMinUploadChunkSize        = int64(256 * 1024)
-	migrationMaxUploadChunkSize        = int64(8 * 1024 * 1024)
-	migrationMaxUploadChunks           = 8192
-	migrationMaxCreateBodyBytes        = int64(18 << 20)
-	migrationClaimLease                = 2 * time.Hour
+	migrationSettingMaxPackageBytes = "migration_max_package_bytes"
+	migrationDefaultMaxPackageBytes = int64(100 * 1024 * 1024)
+	migrationMinPackageBytes        = int64(100 * 1024 * 1024)
+	migrationMaxPackageBytes        = int64(1024 * 1024 * 1024)
+	migrationMinUploadChunkSize     = int64(256 * 1024)
+	migrationMaxUploadChunkSize     = int64(8 * 1024 * 1024)
+	migrationMaxUploadChunks        = 8192
+	migrationMaxCreateBodyBytes     = int64(64 << 10)
+	migrationClaimLease             = 2 * time.Hour
 )
 
 var errMigrationExportNotReady = errors.New("migration export is not ready")
@@ -65,13 +64,10 @@ type migrationExportRow struct {
 	SourceMachineID    string
 	SourceMachineName  string
 	Status             string
-	CompressedSize     int64
 	EncryptedSize      int64
 	EncryptedSHA256    string
-	PlainSHA256        string
 	ChunkSize          int64
 	ChunkCount         int
-	ManifestJSON       string
 	ClaimedByMachineID string
 	ClaimedAt          sql.NullString
 	ClaimExpiresAt     sql.NullString
@@ -79,39 +75,6 @@ type migrationExportRow struct {
 	UpdatedAt          string
 	ImportedAt         sql.NullString
 	DeletedAt          sql.NullString
-}
-
-type migrationPublicManifest struct {
-	Version          string                              `json:"version"`
-	CreatedAt        time.Time                           `json:"created_at"`
-	TenantID         string                              `json:"tenant_id,omitempty"`
-	TenantName       string                              `json:"tenant_name,omitempty"`
-	UserID           string                              `json:"user_id,omitempty"`
-	Email            string                              `json:"email,omitempty"`
-	MachineID        string                              `json:"machine_id,omitempty"`
-	MachineName      string                              `json:"machine_name,omitempty"`
-	MemoryEntries    int                                 `json:"memory_entries"`
-	KnowledgeBytes   int64                               `json:"knowledge_bytes"`
-	AssetBytes       int64                               `json:"asset_bytes"`
-	PetPackBytes     int64                               `json:"pet_pack_bytes"`
-	PetPacksIncluded bool                                `json:"pet_packs_included,omitempty"`
-	ConfigSchema     string                              `json:"config_schema_version,omitempty"`
-	ConfigSections   int                                 `json:"config_section_count,omitempty"`
-	SecretCount      int                                 `json:"secret_count,omitempty"`
-	ExcludedConfig   []string                            `json:"excluded_config_paths,omitempty"`
-	Files            []migrationPublicManifestFileDigest `json:"files"`
-	Meta             *migrationPublicManifestMeta        `json:"meta,omitempty"`
-}
-
-type migrationPublicManifestFileDigest struct {
-	Path   string `json:"path"`
-	Bytes  int64  `json:"bytes"`
-	SHA256 string `json:"sha256"`
-}
-
-type migrationPublicManifestMeta struct {
-	Host     string   `json:"host,omitempty"`
-	Contains []string `json:"contains,omitempty"`
 }
 
 func NewMigrationAPI(db *sql.DB, rootDir string, identity *auth.IdentityService, machines migrationMachineLister, system store.SystemSettingsRepository) *migrationAPI {
@@ -207,15 +170,14 @@ func (api *migrationAPI) handleInstances(w http.ResponseWriter, r *http.Request)
 			item["export_id"] = current.ID
 			item["export_status"] = current.Status
 			item["export_updated_at"] = current.UpdatedAt
-			item["export_size"] = current.CompressedSize
+			item["export_size"] = current.EncryptedSize
 			item["export_claimed_by_machine_id"] = current.ClaimedByMachineID
-			item["export_manifest"] = json.RawMessage(firstMigrationString(current.ManifestJSON, "{}"))
 		} else {
 			item["has_export"] = false
 		}
 		items = append(items, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"instances": items, "max_compressed_bytes": api.maxCompressedBytes(r.Context(), p.TenantID)})
+	writeJSON(w, http.StatusOK, map[string]any{"instances": items, "max_package_bytes": api.maxPackageBytes(r.Context(), p.TenantID)})
 }
 
 func (api *migrationAPI) handleCurrentExport(w http.ResponseWriter, r *http.Request) {
@@ -223,7 +185,7 @@ func (api *migrationAPI) handleCurrentExport(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"export": exportDTO(api.currentExport(r.Context(), p.TenantID, p.UserID)), "max_compressed_bytes": api.maxCompressedBytes(r.Context(), p.TenantID)})
+	writeJSON(w, http.StatusOK, map[string]any{"export": exportDTO(api.currentExport(r.Context(), p.TenantID, p.UserID)), "max_package_bytes": api.maxPackageBytes(r.Context(), p.TenantID)})
 }
 
 func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Request) {
@@ -232,31 +194,29 @@ func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req struct {
-		CompressedSize  int64           `json:"compressed_size"`
-		EncryptedSize   int64           `json:"encrypted_size"`
-		EncryptedSHA256 string          `json:"encrypted_sha256"`
-		PlainSHA256     string          `json:"plain_sha256"`
-		ChunkSize       int64           `json:"chunk_size"`
-		ChunkCount      int             `json:"chunk_count"`
-		Manifest        json.RawMessage `json:"manifest"`
+		EncryptedSize   int64  `json:"encrypted_size"`
+		EncryptedSHA256 string `json:"encrypted_sha256"`
+		ChunkSize       int64  `json:"chunk_size"`
+		ChunkCount      int    `json:"chunk_count"`
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, migrationMaxCreateBodyBytes))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 		return
 	}
-	if err := validateMigrationJSONStructure(body); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
-		return
-	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 		return
 	}
-	if req.CompressedSize <= 0 || req.EncryptedSize <= 0 || req.EncryptedSize < req.CompressedSize || req.ChunkSize <= 0 || req.ChunkCount <= 0 || !validSHA256(req.EncryptedSHA256) || !validSHA256(req.PlainSHA256) {
-		writeError(w, http.StatusBadRequest, "INVALID_INPUT", "size, hashes, chunk_size and chunk_count are required")
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "request must contain one JSON object")
+		return
+	}
+	if req.EncryptedSize <= 0 || req.EncryptedSize > migrationMaxPackageBytes || req.ChunkSize <= 0 || req.ChunkCount <= 0 || !validSHA256(req.EncryptedSHA256) {
+		writeError(w, http.StatusBadRequest, "INVALID_INPUT", "encrypted_size, encrypted_sha256, chunk_size and chunk_count are required")
 		return
 	}
 	expectedChunks := req.EncryptedSize / req.ChunkSize
@@ -267,21 +227,9 @@ func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "INVALID_CHUNKS", "chunk_size and chunk_count do not match encrypted_size")
 		return
 	}
-	limit := api.maxCompressedBytes(r.Context(), p.TenantID)
-	if req.CompressedSize > limit || req.EncryptedSize > req.CompressedSize+migrationMaxEncryptedOverhead(req.ChunkCount) {
-		writeError(w, http.StatusRequestEntityTooLarge, "MIGRATION_TOO_LARGE", fmt.Sprintf("compressed migration package exceeds %d bytes or encrypted package overhead is invalid", limit))
-		return
-	}
-	manifest := strings.TrimSpace(string(req.Manifest))
-	if manifest == "" {
-		manifest = "{}"
-	}
-	if err := validateMigrationPublicManifest(req.Manifest); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_MANIFEST", err.Error())
-		return
-	}
-	if err := validateMigrationPublicManifestIdentity(req.Manifest, p); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_MANIFEST_IDENTITY", err.Error())
+	limit := api.maxPackageBytes(r.Context(), p.TenantID)
+	if req.EncryptedSize > limit {
+		writeError(w, http.StatusRequestEntityTooLarge, "MIGRATION_TOO_LARGE", fmt.Sprintf("encrypted migration package exceeds %d bytes", limit))
 		return
 	}
 	now := time.Now().UTC()
@@ -301,7 +249,7 @@ func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Reque
 	if _, err := tx.ExecContext(r.Context(), `UPDATE user_data_migration_exports
 		SET status = 'replaced', updated_at = ?
 		WHERE tenant_id = ? AND user_id = ? AND (
-			status IN ('uploading','ready','failed','aborted','imported','deleting')
+			status IN ('uploading','finalizing','ready','failed','aborted','imported','deleting')
 			OR (status = 'importing' AND claim_expires_at IS NOT NULL AND claim_expires_at < ?)
 		)`, nowText, p.TenantID, p.UserID, nowText); err != nil {
 		writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
@@ -314,9 +262,9 @@ func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	_, err = tx.ExecContext(r.Context(), `INSERT INTO user_data_migration_exports
-		(id, tenant_id, user_id, source_machine_id, source_machine_name, status, compressed_size, encrypted_size, encrypted_sha256, plain_sha256, chunk_size, chunk_count, manifest_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 'uploading', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		exportID, p.TenantID, p.UserID, p.MachineID, firstMigrationString(p.MachineName, p.MachineID), req.CompressedSize, req.EncryptedSize, strings.ToLower(req.EncryptedSHA256), strings.ToLower(req.PlainSHA256), req.ChunkSize, req.ChunkCount, manifest, nowText, nowText)
+		(id, tenant_id, user_id, source_machine_id, source_machine_name, status, encrypted_size, encrypted_sha256, chunk_size, chunk_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'uploading', ?, ?, ?, ?, ?, ?)`,
+		exportID, p.TenantID, p.UserID, p.MachineID, firstMigrationString(p.MachineName, p.MachineID), req.EncryptedSize, strings.ToLower(req.EncryptedSHA256), req.ChunkSize, req.ChunkCount, nowText, nowText)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
 		return
@@ -329,7 +277,7 @@ func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Reque
 		_ = os.RemoveAll(api.exportDir(p.TenantID, p.UserID, id))
 	}
 	_ = os.MkdirAll(api.exportDir(p.TenantID, p.UserID, exportID), 0o700)
-	writeJSON(w, http.StatusOK, map[string]any{"export_id": exportID, "status": "uploading", "max_compressed_bytes": limit})
+	writeJSON(w, http.StatusOK, map[string]any{"export_id": exportID, "status": "uploading", "max_package_bytes": limit})
 }
 
 func (api *migrationAPI) handleChunkStatus(w http.ResponseWriter, r *http.Request) {
@@ -399,19 +347,100 @@ func (api *migrationAPI) handlePutChunk(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
 		return
 	}
-	if err := os.WriteFile(api.chunkPath(row.TenantID, row.UserID, row.ID, idx), body, 0o600); err != nil {
+	chunkDir := api.chunksDir(row.TenantID, row.UserID, row.ID)
+	tempFile, err := os.CreateTemp(chunkDir, fmt.Sprintf(".%06d-*.part", idx))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+		return
+	}
+	tempPath := tempFile.Name()
+	finalPath := api.chunkPath(row.TenantID, row.UserID, row.ID, idx)
+	backupPath := ""
+	finalInstalled := false
+	committed := false
+	defer func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+		if !committed {
+			if finalInstalled {
+				_ = os.Remove(finalPath)
+			}
+			if backupPath != "" {
+				_ = os.Rename(backupPath, finalPath)
+			}
+		} else if backupPath != "" {
+			_ = os.Remove(backupPath)
+		}
+	}()
+	if err := tempFile.Chmod(0o600); err != nil {
+		writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+		return
+	}
+	if _, err := tempFile.Write(body); err != nil {
+		writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+		return
+	}
+	if err := tempFile.Close(); err != nil {
 		writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = api.db.ExecContext(r.Context(), `INSERT INTO user_data_migration_chunks (export_id, tenant_id, user_id, chunk_index, size, sha256, uploaded_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(export_id, chunk_index) DO UPDATE SET size = excluded.size, sha256 = excluded.sha256, uploaded_at = excluded.uploaded_at`,
-		row.ID, p.TenantID, p.UserID, idx, len(body), got, now)
+	tx, err := api.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 		return
 	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), `INSERT INTO user_data_migration_chunks (export_id, tenant_id, user_id, chunk_index, size, sha256, uploaded_at)
+		SELECT ?, ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (
+			SELECT 1 FROM user_data_migration_exports
+			WHERE id = ? AND tenant_id = ? AND user_id = ? AND source_machine_id = ? AND status = 'uploading'
+		)
+		ON CONFLICT(export_id, chunk_index) DO UPDATE SET size = excluded.size, sha256 = excluded.sha256, uploaded_at = excluded.uploaded_at`,
+		row.ID, p.TenantID, p.UserID, idx, len(body), got, now,
+		row.ID, p.TenantID, p.UserID, p.MachineID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+		return
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		writeError(w, http.StatusConflict, "INVALID_STATUS", "export is no longer uploading")
+		return
+	}
+	if _, err := os.Stat(finalPath); err == nil {
+		backupFile, err := os.CreateTemp(chunkDir, fmt.Sprintf(".%06d-backup-*.part", idx))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+			return
+		}
+		backupPath = backupFile.Name()
+		if err := backupFile.Close(); err != nil {
+			writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+			return
+		}
+		if err := os.Remove(backupPath); err != nil {
+			writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+			return
+		}
+		if err := os.Rename(finalPath, backupPath); err != nil {
+			writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+			return
+		}
+	} else if !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+		return
+	}
+	if err := os.Rename(tempPath, finalPath); err != nil {
+		writeError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
+		return
+	}
+	finalInstalled = true
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+		return
+	}
+	committed = true
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sha256": got, "size": len(body)})
 }
 
@@ -424,13 +453,33 @@ func (api *migrationAPI) handleCompleteUpload(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusForbidden, "SOURCE_MACHINE_REQUIRED", "only the source machine can complete this export")
 		return
 	}
-	if row.Status != "uploading" {
+	if row.Status == "ready" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "ready"})
+		return
+	}
+	if row.Status != "uploading" && row.Status != "finalizing" {
 		writeError(w, http.StatusConflict, "INVALID_STATUS", "export is not uploading")
 		return
 	}
-	limit := api.maxCompressedBytes(r.Context(), row.TenantID)
-	if row.CompressedSize > limit || row.EncryptedSize > row.CompressedSize+migrationMaxEncryptedOverhead(row.ChunkCount) {
-		writeError(w, http.StatusRequestEntityTooLarge, "MIGRATION_TOO_LARGE", fmt.Sprintf("compressed migration package exceeds %d bytes or encrypted package overhead is invalid", limit))
+	if row.Status == "uploading" {
+		now := time.Now().UTC().Format(time.RFC3339)
+		result, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'finalizing', updated_at = ?
+			WHERE id = ? AND tenant_id = ? AND user_id = ? AND source_machine_id = ? AND status = 'uploading'`,
+			now, row.ID, p.TenantID, p.UserID, p.MachineID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "COMPLETE_FAILED", err.Error())
+			return
+		}
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			writeError(w, http.StatusConflict, "INVALID_STATUS", "export is no longer uploading")
+			return
+		}
+		row.Status = "finalizing"
+	}
+	limit := api.maxPackageBytes(r.Context(), row.TenantID)
+	if row.EncryptedSize > limit {
+		_, _ = api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'uploading', updated_at = ? WHERE id = ? AND status = 'finalizing'`, time.Now().UTC().Format(time.RFC3339), row.ID)
+		writeError(w, http.StatusRequestEntityTooLarge, "MIGRATION_TOO_LARGE", fmt.Sprintf("encrypted migration package exceeds %d bytes", limit))
 		return
 	}
 	hash := sha256.New()
@@ -438,6 +487,7 @@ func (api *migrationAPI) handleCompleteUpload(w http.ResponseWriter, r *http.Req
 	for i := 0; i < row.ChunkCount; i++ {
 		data, err := os.ReadFile(api.chunkPath(row.TenantID, row.UserID, row.ID, i))
 		if err != nil {
+			_, _ = api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'uploading', updated_at = ? WHERE id = ? AND status = 'finalizing'`, time.Now().UTC().Format(time.RFC3339), row.ID)
 			writeError(w, http.StatusConflict, "MISSING_CHUNK", fmt.Sprintf("missing chunk %d", i))
 			return
 		}
@@ -445,19 +495,32 @@ func (api *migrationAPI) handleCompleteUpload(w http.ResponseWriter, r *http.Req
 		total += int64(len(data))
 	}
 	if total != row.EncryptedSize {
+		_, _ = api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'uploading', updated_at = ? WHERE id = ? AND status = 'finalizing'`, time.Now().UTC().Format(time.RFC3339), row.ID)
 		writeError(w, http.StatusBadRequest, "SIZE_MISMATCH", "encrypted package size mismatch")
 		return
 	}
 	got := hex.EncodeToString(hash.Sum(nil))
 	if got != row.EncryptedSHA256 {
-		_, _ = api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'failed', updated_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), row.ID)
+		_, _ = api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'uploading', updated_at = ? WHERE id = ? AND status = 'finalizing'`, time.Now().UTC().Format(time.RFC3339), row.ID)
 		writeError(w, http.StatusBadRequest, "HASH_MISMATCH", "encrypted package sha256 mismatch")
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'ready', updated_at = ? WHERE id = ?`, now, row.ID)
+	result, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'ready', updated_at = ?
+		WHERE id = ? AND tenant_id = ? AND user_id = ? AND source_machine_id = ? AND status = 'finalizing'`,
+		now, row.ID, p.TenantID, p.UserID, p.MachineID)
 	if err != nil {
+		_, _ = api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'uploading', updated_at = ? WHERE id = ? AND status = 'finalizing'`, time.Now().UTC().Format(time.RFC3339), row.ID)
 		writeError(w, http.StatusInternalServerError, "COMPLETE_FAILED", err.Error())
+		return
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		current, lookupErr := api.getExport(r.Context(), p.TenantID, p.UserID, row.ID)
+		if lookupErr == nil && current != nil && current.SourceMachineID == p.MachineID && current.Status == "ready" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "ready"})
+			return
+		}
+		writeError(w, http.StatusConflict, "INVALID_STATUS", "export is no longer finalizing")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "ready"})
@@ -542,6 +605,10 @@ func (api *migrationAPI) handleGetChunk(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, "INVALID_STATUS", "export is not downloadable")
 		return
 	}
+	if migrationClaimExpired(row, time.Now().UTC()) {
+		writeError(w, http.StatusConflict, "CLAIM_EXPIRED", "migration import claim has expired")
+		return
+	}
 	http.ServeFile(w, r, api.chunkPath(row.TenantID, row.UserID, row.ID, idx))
 }
 
@@ -552,6 +619,10 @@ func (api *migrationAPI) handleCompleteImport(w http.ResponseWriter, r *http.Req
 	}
 	if row.ClaimedByMachineID != p.MachineID {
 		writeError(w, http.StatusConflict, "INVALID_STATUS", "export is not claimed by this machine")
+		return
+	}
+	if row.Status == "importing" && migrationClaimExpired(row, time.Now().UTC()) {
+		writeError(w, http.StatusConflict, "CLAIM_EXPIRED", "migration import claim has expired")
 		return
 	}
 	if row.Status == "deleted" {
@@ -568,13 +639,27 @@ func (api *migrationAPI) handleCompleteImport(w http.ResponseWriter, r *http.Req
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if row.Status == "importing" {
-		if _, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'imported', imported_at = ?, updated_at = ? WHERE id = ?`, now, now, row.ID); err != nil {
+		result, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'imported', imported_at = ?, updated_at = ?
+			WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'importing' AND claimed_by_machine_id = ? AND claim_expires_at > ?`,
+			now, now, row.ID, p.TenantID, p.UserID, p.MachineID, now)
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, "COMPLETE_FAILED", err.Error())
 			return
 		}
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			writeError(w, http.StatusConflict, "CLAIM_EXPIRED", "migration import claim has expired")
+			return
+		}
 	}
-	if _, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'deleting', updated_at = ? WHERE id = ?`, now, row.ID); err != nil {
+	result, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'deleting', updated_at = ?
+		WHERE id = ? AND tenant_id = ? AND user_id = ? AND claimed_by_machine_id = ? AND status IN ('imported','deleting')`,
+		now, row.ID, p.TenantID, p.UserID, p.MachineID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "COMPLETE_FAILED", err.Error())
+		return
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		writeError(w, http.StatusConflict, "INVALID_STATUS", "export is no longer completable by this machine")
 		return
 	}
 	deleteErr := os.RemoveAll(api.exportDir(row.TenantID, row.UserID, row.ID))
@@ -602,10 +687,18 @@ func (api *migrationAPI) handleAbortImport(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusConflict, "INVALID_STATUS", "export is not claimed by this machine")
 		return
 	}
+	if migrationClaimExpired(row, time.Now().UTC()) {
+		writeError(w, http.StatusConflict, "CLAIM_EXPIRED", "migration import claim has expired")
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'ready', claimed_by_machine_id = '', claimed_at = NULL, claim_expires_at = NULL, updated_at = ? WHERE id = ?`, now, row.ID)
+	result, err := api.db.ExecContext(r.Context(), `UPDATE user_data_migration_exports SET status = 'ready', claimed_by_machine_id = '', claimed_at = NULL, claim_expires_at = NULL, updated_at = ? WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = 'importing' AND claimed_by_machine_id = ? AND claim_expires_at > ?`, now, row.ID, p.TenantID, p.UserID, p.MachineID, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ABORT_FAILED", err.Error())
+		return
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		writeError(w, http.StatusConflict, "CLAIM_EXPIRED", "migration import claim has expired")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "ready"})
@@ -615,22 +708,28 @@ func (api *migrationAPI) handleAdminSettings(w http.ResponseWriter, r *http.Requ
 	tenantID := RequestTenantID(r)
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"max_compressed_bytes": api.maxCompressedBytes(r.Context(), tenantID), "min_bytes": migrationMinCompressedBytes, "max_bytes": migrationMaxCompressedBytes})
+		writeJSON(w, http.StatusOK, map[string]any{"max_package_bytes": api.maxPackageBytes(r.Context(), tenantID), "min_bytes": migrationMinPackageBytes, "max_bytes": migrationMaxPackageBytes})
 	case http.MethodPut:
 		var req struct {
-			MaxCompressedBytes int64 `json:"max_compressed_bytes"`
+			MaxPackageBytes int64 `json:"max_package_bytes"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 			return
 		}
-		value := clampMigrationLimit(req.MaxCompressedBytes)
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "request must contain one JSON object")
+			return
+		}
+		value := clampMigrationLimit(req.MaxPackageBytes)
 		data, _ := json.Marshal(map[string]int64{"value": value})
-		if err := scopedSystemSettingsForTenant(tenantID, api.system).Set(r.Context(), migrationSettingMaxCompressedBytes, string(data)); err != nil {
+		if err := scopedSystemSettingsForTenant(tenantID, api.system).Set(r.Context(), migrationSettingMaxPackageBytes, string(data)); err != nil {
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"max_compressed_bytes": value, "min_bytes": migrationMinCompressedBytes, "max_bytes": migrationMaxCompressedBytes})
+		writeJSON(w, http.StatusOK, map[string]any{"max_package_bytes": value, "min_bytes": migrationMinPackageBytes, "max_bytes": migrationMaxPackageBytes})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or PUT")
 	}
@@ -664,21 +763,21 @@ func (api *migrationAPI) requireExportChunkAccess(w http.ResponseWriter, r *http
 }
 
 func (api *migrationAPI) getExport(ctx context.Context, tenantID, userID, exportID string) (*migrationExportRow, error) {
-	row := api.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, source_machine_id, source_machine_name, status, compressed_size, encrypted_size, encrypted_sha256, plain_sha256, chunk_size, chunk_count, manifest_json, claimed_by_machine_id, claimed_at, claim_expires_at, created_at, updated_at, imported_at, deleted_at
+	row := api.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, source_machine_id, source_machine_name, status, encrypted_size, encrypted_sha256, chunk_size, chunk_count, claimed_by_machine_id, claimed_at, claim_expires_at, created_at, updated_at, imported_at, deleted_at
 		FROM user_data_migration_exports WHERE id = ? AND tenant_id = ? AND user_id = ?`, exportID, tenantID, userID)
 	return scanMigrationExport(row)
 }
 
 func (api *migrationAPI) currentExport(ctx context.Context, tenantID, userID string) *migrationExportRow {
-	row := api.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, source_machine_id, source_machine_name, status, compressed_size, encrypted_size, encrypted_sha256, plain_sha256, chunk_size, chunk_count, manifest_json, claimed_by_machine_id, claimed_at, claim_expires_at, created_at, updated_at, imported_at, deleted_at
-		FROM user_data_migration_exports WHERE tenant_id = ? AND user_id = ? AND status IN ('uploading','ready','importing','imported','failed','deleting') ORDER BY updated_at DESC LIMIT 1`, tenantID, userID)
+	row := api.db.QueryRowContext(ctx, `SELECT id, tenant_id, user_id, source_machine_id, source_machine_name, status, encrypted_size, encrypted_sha256, chunk_size, chunk_count, claimed_by_machine_id, claimed_at, claim_expires_at, created_at, updated_at, imported_at, deleted_at
+		FROM user_data_migration_exports WHERE tenant_id = ? AND user_id = ? AND status IN ('uploading','finalizing','ready','importing','imported','failed','deleting') ORDER BY updated_at DESC LIMIT 1`, tenantID, userID)
 	out, _ := scanMigrationExport(row)
 	return out
 }
 
 func scanMigrationExport(row *sql.Row) (*migrationExportRow, error) {
 	var e migrationExportRow
-	err := row.Scan(&e.ID, &e.TenantID, &e.UserID, &e.SourceMachineID, &e.SourceMachineName, &e.Status, &e.CompressedSize, &e.EncryptedSize, &e.EncryptedSHA256, &e.PlainSHA256, &e.ChunkSize, &e.ChunkCount, &e.ManifestJSON, &e.ClaimedByMachineID, &e.ClaimedAt, &e.ClaimExpiresAt, &e.CreatedAt, &e.UpdatedAt, &e.ImportedAt, &e.DeletedAt)
+	err := row.Scan(&e.ID, &e.TenantID, &e.UserID, &e.SourceMachineID, &e.SourceMachineName, &e.Status, &e.EncryptedSize, &e.EncryptedSHA256, &e.ChunkSize, &e.ChunkCount, &e.ClaimedByMachineID, &e.ClaimedAt, &e.ClaimExpiresAt, &e.CreatedAt, &e.UpdatedAt, &e.ImportedAt, &e.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -691,7 +790,7 @@ func scanMigrationExport(row *sql.Row) (*migrationExportRow, error) {
 func visibleMigrationIDsTx(ctx context.Context, tx *sql.Tx, tenantID, userID, nowText string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM user_data_migration_exports
 		WHERE tenant_id = ? AND user_id = ? AND (
-			status IN ('uploading','ready','failed','aborted','imported','deleting')
+			status IN ('uploading','finalizing','ready','failed','aborted','imported','deleting')
 			OR (status = 'importing' AND claim_expires_at IS NOT NULL AND claim_expires_at < ?)
 		)`, tenantID, userID, nowText)
 	if err != nil {
@@ -720,53 +819,40 @@ func exportDTO(e *migrationExportRow) map[string]any {
 		"source_machine_name":   e.SourceMachineName,
 		"claimed_by_machine_id": e.ClaimedByMachineID,
 		"status":                e.Status,
-		"compressed_size":       e.CompressedSize,
 		"encrypted_size":        e.EncryptedSize,
 		"encrypted_sha256":      e.EncryptedSHA256,
-		"plain_sha256":          e.PlainSHA256,
 		"chunk_size":            e.ChunkSize,
 		"chunk_count":           e.ChunkCount,
-		"manifest":              json.RawMessage(firstMigrationString(e.ManifestJSON, "{}")),
 		"created_at":            e.CreatedAt,
 		"updated_at":            e.UpdatedAt,
 	}
 }
 
-func (api *migrationAPI) maxCompressedBytes(ctx context.Context, tenantID string) int64 {
+func (api *migrationAPI) maxPackageBytes(ctx context.Context, tenantID string) int64 {
 	if api == nil || api.system == nil {
-		return migrationDefaultMaxCompressedBytes
+		return migrationDefaultMaxPackageBytes
 	}
-	raw, err := scopedSystemSettingsForTenant(tenantID, api.system).Get(ctx, migrationSettingMaxCompressedBytes)
+	raw, err := scopedSystemSettingsForTenant(tenantID, api.system).Get(ctx, migrationSettingMaxPackageBytes)
 	if err != nil || strings.TrimSpace(raw) == "" {
-		return migrationDefaultMaxCompressedBytes
+		return migrationDefaultMaxPackageBytes
 	}
 	var payload struct {
 		Value int64 `json:"value"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return migrationDefaultMaxCompressedBytes
+		return migrationDefaultMaxPackageBytes
 	}
 	return clampMigrationLimit(payload.Value)
 }
 
 func clampMigrationLimit(v int64) int64 {
-	if v < migrationMinCompressedBytes {
-		return migrationMinCompressedBytes
+	if v < migrationMinPackageBytes {
+		return migrationMinPackageBytes
 	}
-	if v > migrationMaxCompressedBytes {
-		return migrationMaxCompressedBytes
+	if v > migrationMaxPackageBytes {
+		return migrationMaxPackageBytes
 	}
 	return v
-}
-
-func migrationMaxEncryptedOverhead(chunkCount int) int64 {
-	if chunkCount < 1 {
-		chunkCount = 1
-	}
-	if chunkCount > migrationMaxUploadChunks {
-		chunkCount = migrationMaxUploadChunks
-	}
-	return int64(1<<20) + int64(chunkCount)*64
 }
 
 func (api *migrationAPI) machineName(ctx context.Context, tenantID, userID, machineID string) string {
@@ -805,194 +891,6 @@ func validSHA256(v string) bool {
 	return err == nil
 }
 
-func validateMigrationPublicManifest(raw json.RawMessage) error {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return nil
-	}
-	if err := validateMigrationJSONStructure(raw); err != nil {
-		return err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var manifest migrationPublicManifest
-	if err := decoder.Decode(&manifest); err != nil {
-		return fmt.Errorf("manifest must match the public migration schema")
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF {
-		return fmt.Errorf("manifest must contain one JSON object")
-	}
-	if manifest.MemoryEntries < 0 || manifest.KnowledgeBytes < 0 || manifest.AssetBytes < 0 || manifest.PetPackBytes < 0 || manifest.ConfigSections < 0 || manifest.SecretCount < 0 {
-		return fmt.Errorf("manifest contains invalid counts")
-	}
-	if !manifest.PetPacksIncluded && manifest.PetPackBytes != 0 {
-		return fmt.Errorf("manifest pet-pack bytes require pet_packs_included")
-	}
-	seen := make(map[string]struct{}, len(manifest.Files))
-	var petPackBytes int64
-	petPackFileCount := 0
-	for _, file := range manifest.Files {
-		clean, key, err := canonicalMigrationManifestPath(file.Path)
-		if err != nil || file.Bytes < 0 || !validSHA256(file.SHA256) {
-			return fmt.Errorf("manifest contains invalid file metadata")
-		}
-		if key == "manifest.json" {
-			return fmt.Errorf("manifest must not list itself")
-		}
-		if key == "pet_packs" {
-			return fmt.Errorf("manifest pet-pack root must be a directory")
-		}
-		if _, exists := seen[key]; exists {
-			return fmt.Errorf("manifest contains duplicate file path: %s", clean)
-		}
-		seen[key] = struct{}{}
-		if strings.HasPrefix(key, "pet_packs/") {
-			if file.Bytes > int64(^uint64(0)>>1)-petPackBytes {
-				return fmt.Errorf("manifest pet-pack byte count overflow")
-			}
-			petPackBytes += file.Bytes
-			petPackFileCount++
-		}
-	}
-	if petPackBytes != manifest.PetPackBytes {
-		return fmt.Errorf("manifest pet-pack byte count mismatch")
-	}
-	if !manifest.PetPacksIncluded && petPackFileCount != 0 {
-		return fmt.Errorf("manifest contains pet-pack files without declaring them")
-	}
-	return nil
-}
-
-func validateMigrationPublicManifestIdentity(raw json.RawMessage, principal *migrationPrincipal) error {
-	if len(bytes.TrimSpace(raw)) == 0 || principal == nil {
-		return nil
-	}
-	var manifest migrationPublicManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return fmt.Errorf("manifest identity is invalid")
-	}
-	checks := []struct {
-		name string
-		got  string
-		want string
-	}{
-		{name: "tenant_id", got: strings.TrimSpace(manifest.TenantID), want: store.NormalizeTenantID(principal.TenantID)},
-		{name: "user_id", got: strings.TrimSpace(manifest.UserID), want: strings.TrimSpace(principal.UserID)},
-		{name: "machine_id", got: strings.TrimSpace(manifest.MachineID), want: strings.TrimSpace(principal.MachineID)},
-	}
-	for _, check := range checks {
-		// Older packages may omit identity metadata. When present, it must be
-		// bound to the authenticated uploader rather than trusted client input.
-		got := check.got
-		if check.name == "tenant_id" && got != "" {
-			got = store.NormalizeTenantID(got)
-		}
-		if got != "" && got != check.want {
-			return fmt.Errorf("manifest %s does not match authenticated source", check.name)
-		}
-	}
-	return nil
-}
-
-func validateMigrationJSONStructure(raw []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	if err := walkMigrationJSONValue(decoder, 0); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return fmt.Errorf("manifest must contain one JSON object")
-	}
-	return nil
-}
-
-func walkMigrationJSONValue(decoder *json.Decoder, depth int) error {
-	if depth > 128 {
-		return fmt.Errorf("manifest JSON nesting exceeds 128 levels")
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return fmt.Errorf("manifest must contain valid JSON")
-	}
-	delim, ok := token.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delim {
-	case '{':
-		seen := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return fmt.Errorf("manifest must contain valid JSON")
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return fmt.Errorf("manifest must contain valid JSON")
-			}
-			identity := strings.ToLower(key)
-			if _, exists := seen[identity]; exists {
-				return fmt.Errorf("manifest contains duplicate field %q", key)
-			}
-			seen[identity] = struct{}{}
-			if err := walkMigrationJSONValue(decoder, depth+1); err != nil {
-				return err
-			}
-		}
-	case '[':
-		for decoder.More() {
-			if err := walkMigrationJSONValue(decoder, depth+1); err != nil {
-				return err
-			}
-		}
-	default:
-		return fmt.Errorf("manifest must contain valid JSON")
-	}
-	closing, err := decoder.Token()
-	if err != nil {
-		return fmt.Errorf("manifest must contain valid JSON")
-	}
-	want := json.Delim('}')
-	if delim == '[' {
-		want = ']'
-	}
-	if closing != want {
-		return fmt.Errorf("manifest must contain valid JSON")
-	}
-	return nil
-}
-
-func canonicalMigrationManifestPath(name string) (string, string, error) {
-	if name == "" || strings.TrimSpace(name) != name || strings.Contains(name, "\\") || strings.ContainsRune(name, 0) || strings.HasPrefix(name, "/") {
-		return "", "", fmt.Errorf("path must be canonical and relative")
-	}
-	clean := pathpkg.Clean(name)
-	if clean == "." || clean != name || clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", "", fmt.Errorf("path must be canonical and relative")
-	}
-	if !portableMigrationManifestPathSegments(clean) {
-		return "", "", fmt.Errorf("path contains a segment unsupported on Windows")
-	}
-	return clean, strings.ToLower(clean), nil
-}
-
-func portableMigrationManifestPathSegments(name string) bool {
-	for _, segment := range strings.Split(name, "/") {
-		if segment == "" || strings.Contains(segment, ":") || strings.HasSuffix(segment, ".") || strings.HasSuffix(segment, " ") {
-			return false
-		}
-		for _, r := range segment {
-			if r < 0x20 {
-				return false
-			}
-		}
-		base := strings.ToUpper(strings.SplitN(segment, ".", 2)[0])
-		if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
-			(len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9') {
-			return false
-		}
-	}
-	return true
-}
-
 func migrationExpectedChunkSize(row *migrationExportRow, idx int) int64 {
 	if row == nil || idx < 0 || idx >= row.ChunkCount || row.ChunkSize <= 0 || row.EncryptedSize <= 0 {
 		return 0
@@ -1023,11 +921,10 @@ func newMigrationID(prefix string) string {
 
 func safeMigrationSegment(v string) string {
 	v = strings.TrimSpace(v)
-	if v == "" {
-		return "_"
-	}
-	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "..", "_")
-	return replacer.Replace(v)
+	sum := sha256.Sum256([]byte(v))
+	// Storage keys are opaque and collision-resistant. Keeping raw tenant/user IDs
+	// out of filesystem paths also avoids platform-specific reserved-name issues.
+	return hex.EncodeToString(sum[:])
 }
 
 func firstMigrationString(values ...string) string {
@@ -1042,4 +939,8 @@ func firstMigrationString(values ...string) string {
 func parseMigrationTime(raw string) time.Time {
 	t, _ := time.Parse(time.RFC3339, strings.TrimSpace(raw))
 	return t
+}
+
+func migrationClaimExpired(row *migrationExportRow, now time.Time) bool {
+	return row == nil || !row.ClaimExpiresAt.Valid || !parseMigrationTime(row.ClaimExpiresAt.String).After(now)
 }

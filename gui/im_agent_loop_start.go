@@ -49,6 +49,7 @@ type agentLoopStartState struct {
 	ReportActivity                func(int, int, string)
 	Conversation                  []interface{}
 	History                       []agent.ConversationEntry
+	UserContent                   interface{}
 	ConversationStartedAt         time.Time
 	EffectiveMax                  int
 	ChatFinalizeGrace             int
@@ -82,7 +83,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	cleanupFns = append(cleanupFns, recorderBundle.Cleanup)
 	visibleArtifacts := &pendingVisibleArtifacts{}
 
-	reportActivity, cleanupActivity, crossChannelPrompt := h.startAgentLoopActivity(opts.Platform, opts.UserText, configStart.MaxIterations)
+	reportActivity, cleanupActivity, crossChannelPrompt := h.startAgentLoopActivity(opts.UserID, opts.Platform, opts.UserText, configStart.MaxIterations)
 	cleanupFns = append(cleanupFns, cleanupActivity)
 	systemPrompt := opts.SystemPrompt
 	if extra := crossChannelPrompt; extra != "" {
@@ -128,6 +129,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		ReportActivity:                reportActivity,
 		Conversation:                  conversationStart.Conversation,
 		History:                       conversationStart.History,
+		UserContent:                   conversationStart.UserContent,
 		ConversationStartedAt:         conversationStart.StartedAt,
 		EffectiveMax:                  limits.EffectiveMax,
 		ChatFinalizeGrace:             limits.ChatFinalizeGrace,

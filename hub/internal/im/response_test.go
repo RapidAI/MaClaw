@@ -11,7 +11,9 @@ func TestFormatStatusIconMark(t *testing.T) {
 		{"error", "[ERR]"},
 		{"warning", "[!!]"},
 		{"busy", "[..]"},
-		{"info", "[i]"},
+		{"info", ""},
+		{"[i]", ""},
+		{"[I]", ""},
 		{"offline", "[--]"},
 		{"[OK]", "[OK]"},
 		{"", ""},
@@ -59,6 +61,27 @@ func TestFormatCardFallbackPrefersExplicitFallback(t *testing.T) {
 	}
 }
 
+func TestExplicitFallbackStripsOnlyLeadingInfoMark(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"[i] Notice", "Notice"},
+		{"[I]\nNotice", "Notice"},
+		{"[i]", ""},
+		{"[I/O] status", "[I/O] status"},
+		{"prefix [i] content", "prefix [i] content"},
+	}
+	for _, tc := range cases {
+		r := &GenericResponse{FallbackText: tc.in}
+		if got := r.ToFallbackText(); got != tc.want {
+			t.Fatalf("ToFallbackText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if got := FormatCardFallback(r.ToOutgoingMessage()); got != tc.want {
+			t.Fatalf("FormatCardFallback(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestFormatCardFallbackBuildsFromFields(t *testing.T) {
 	card := OutgoingMessage{
 		StatusIcon: "warning",
@@ -103,12 +126,29 @@ func TestToOutgoingMessageCleansBodyForAllChannels(t *testing.T) {
 	if out.StatusIcon != "info" {
 		t.Fatalf("StatusIcon should stay semantic, got %q", out.StatusIcon)
 	}
-	if !containsStr(out.FallbackText, "[i] Notice") {
-		t.Fatalf("FallbackText missing ASCII mark: %q", out.FallbackText)
+	if out.FallbackText != "Notice\nBody text\nK: V" {
+		t.Fatalf("FallbackText should not expose the info marker: %q", out.FallbackText)
 	}
 	// Fallback must match a direct ToFallbackText (single normalize path).
 	if out.FallbackText != r.ToFallbackText() {
 		t.Fatalf("ToOutgoingMessage FallbackText diverged from ToFallbackText:\n%q\nvs\n%q", out.FallbackText, r.ToFallbackText())
+	}
+}
+
+func TestGenericResponseNeverRendersInternalFields(t *testing.T) {
+	r := &GenericResponse{
+		Body: "answer",
+		Fields: []ResponseField{
+			{Label: "Result", Value: "ok"},
+			{Label: "Route model", Value: "private", Internal: true},
+		},
+	}
+	if got := r.ToFallbackText(); got != "answer\nResult: ok" {
+		t.Fatalf("ToFallbackText() = %q, want internal field removed", got)
+	}
+	out := r.ToOutgoingMessage()
+	if len(out.Fields) != 1 || out.Fields[0].Label != "Result" || out.FallbackText != "answer\nResult: ok" {
+		t.Fatalf("ToOutgoingMessage() exposed internal fields: %#v", out)
 	}
 }
 

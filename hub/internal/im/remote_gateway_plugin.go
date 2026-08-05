@@ -144,6 +144,20 @@ func (p *RemoteGatewayPlugin) SendText(ctx context.Context, target UserTarget, t
 	})
 }
 
+// SendProgress preserves the non-terminal nature of an Agent status update.
+// Plain SendText is reserved for completed answers; collapsing both onto the
+// same envelope made hardware clients speak "处理中" and close the turn before
+// the actual LLM response arrived.
+func (p *RemoteGatewayPlugin) SendProgress(ctx context.Context, target UserTarget, text string) error {
+	return p.sendToGatewayOwner(ctx, "text", map[string]any{
+		"platform_uid": target.PlatformUID,
+		"text":         text,
+		"progress":     true,
+		"final":        false,
+		"metadata":     map[string]any{"acp_turn": "progress"},
+	})
+}
+
 // SuppressGroupIMDetail reports whether process/status messages should remain
 // internal.  Lansenger groups must never receive agent progress, regardless
 // of any user-level progress visibility setting.  Normal replies continue to
@@ -415,16 +429,20 @@ func (p *RemoteGatewayPlugin) GatewayOwnerForTenant(tenantID string) string {
 // It converts the payload to IncomingMessage and dispatches to the IM Adapter.
 func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload json.RawMessage) {
 	var msg struct {
-		PlatformUID        string                    `json:"platform_uid"`
-		TenantID           string                    `json:"tenant_id"`
-		Text               string                    `json:"text"`
-		MessageType        string                    `json:"message_type"`
-		MessageID          string                    `json:"message_id"`
-		ChatType           string                    `json:"chat_type,omitempty"`
-		ReplyTarget        string                    `json:"reply_target,omitempty"`
-		ContextToken       string                    `json:"context_token"`
-		Attachments        []MessageAttachment       `json:"attachments,omitempty"`
-		ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"`
+		PlatformUID        string                       `json:"platform_uid"`
+		TenantID           string                       `json:"tenant_id"`
+		Text               string                       `json:"text"`
+		MessageType        string                       `json:"message_type"`
+		MessageID          string                       `json:"message_id"`
+		ReplyTo            string                       `json:"replyTo,omitempty"`
+		ReplyToMessageID   string                       `json:"replyToMessageId,omitempty"`
+		ChatType           string                       `json:"chat_type,omitempty"`
+		ReplyTarget        string                       `json:"reply_target,omitempty"`
+		ContextToken       string                       `json:"context_token"`
+		Attachments        []MessageAttachment          `json:"attachments,omitempty"`
+		ClientCapabilities *agent.ClientCapabilities    `json:"client_capabilities,omitempty"`
+		ClientTools        []agent.ClientToolDefinition `json:"client_tools,omitempty"`
+		ClientToolContext  *agent.ClientToolContext     `json:"client_tool_context,omitempty"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		log.Printf("[remote-gw/%s] parse gateway_message failed: %v", p.platform, err)
@@ -432,6 +450,10 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 	}
 	tenantID := normalizeRemoteTenantID(msg.TenantID)
 	replyTarget := remoteGatewayReplyTarget(msg.PlatformUID, msg.ReplyTarget, msg.ChatType)
+	controlReplyTo := strings.TrimSpace(msg.ReplyTo)
+	if controlReplyTo == "" {
+		controlReplyTo = strings.TrimSpace(msg.ReplyToMessageID)
+	}
 
 	p.mu.RLock()
 	owner := p.ownerForTenantLocked(tenantID)
@@ -528,6 +550,16 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		msgType = "text"
 	}
 
+	rawPayload := payload
+	if controlReplyTo != "" {
+		var enriched map[string]any
+		if json.Unmarshal(payload, &enriched) == nil {
+			enriched["control_reply_to"] = controlReplyTo
+			if encoded, err := json.Marshal(enriched); err == nil {
+				rawPayload = encoded
+			}
+		}
+	}
 	handler(IncomingMessage{
 		TenantID:           tenantID,
 		PlatformName:       p.platform,
@@ -538,7 +570,9 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		Text:               msg.Text,
 		Attachments:        msg.Attachments,
 		ClientCapabilities: msg.ClientCapabilities,
-		RawPayload:         payload,
+		ClientTools:        msg.ClientTools,
+		ClientToolContext:  msg.ClientToolContext,
+		RawPayload:         rawPayload,
 		Timestamp:          time.Now(),
 	})
 }

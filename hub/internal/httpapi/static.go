@@ -203,12 +203,18 @@ func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix stri
 		registerRootFaviconRoute(mux, staticDir)
 	}
 
-	mux.HandleFunc("GET "+routePrefix, func(w http.ResponseWriter, r *http.Request) {
+	serve := func(w http.ResponseWriter, r *http.Request) {
+		if routePrefix == "/connector" {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+		}
 		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
-	})
-	mux.HandleFunc("GET "+routePrefix+"/{rest...}", func(w http.ResponseWriter, r *http.Request) {
-		serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
-	})
+	}
+	mux.HandleFunc("GET "+routePrefix, serve)
+	mux.HandleFunc("GET "+routePrefix+"/{rest...}", serve)
 }
 
 func resolveStaticDir(staticDir string) string {

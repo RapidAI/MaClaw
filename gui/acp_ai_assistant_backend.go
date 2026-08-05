@@ -64,9 +64,16 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	projectPath := normalizeProjectSessionPath(req.ProjectPath)
 	req.ProjectPath = projectPath
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+	if sessionOwnerID := strings.TrimSpace(req.SessionOwnerID); sessionOwnerID != "" {
+		if !isACPAssistantSessionUserID(sessionOwnerID) {
+			return nil, fmt.Errorf("invalid ACP session owner: %q", sessionOwnerID)
+		}
+		userID = sessionOwnerID
+		a.bindACPAssistantSessionWorkingDir(userID, projectPath)
+	}
 
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
-		a.cancelProjectTaskLoop(projectPath)
+		a.stopAIAssistantOwnerRuntime(userID)
 		return nil, fmt.Errorf("project task is closed: %s", projectPath)
 	}
 
@@ -139,9 +146,7 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 			if _, err := a.CancelAIAssistantSessionForSession(userID); err != nil {
 				log.Printf("[acp-mode-b] cancel session: %v", err)
 			}
-			if projectPath != "" {
-				a.cancelProjectTaskLoop(projectPath)
-			}
+			a.stopAIAssistantOwnerRuntime(userID)
 		case <-done:
 		}
 	}()
@@ -156,7 +161,12 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 	if handler == nil {
 		return nil, fmt.Errorf("AI assistant handler not ready")
 	}
-	a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
+	// ACP programming runs in a project-owned session. Apply the same guard as
+	// the desktop binding: its browser/bridge transcript must never replenish a
+	// project session with context captured from a different conversation.
+	if shouldReconcileAIAssistantClientHistory(req, msg.UserID) {
+		a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
+	}
 
 	workDir := ""
 	if projectPath != "" {

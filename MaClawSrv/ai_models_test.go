@@ -494,7 +494,7 @@ func TestSrvAIModelManagerUnzipsTTSVoicesAtomically(t *testing.T) {
 		t.Fatalf("create zip: %v", err)
 	}
 	zw := zip.NewWriter(file)
-	for _, voiceID := range []string{"zm_yunxi", "zm_yunyang", "zf_xiaoxiao", "zf_xiaoyi"} {
+	for _, voiceID := range tts.RequiredTTSVoiceIDs {
 		w, err := zw.Create("nested/" + voiceID + ".koro")
 		if err != nil {
 			t.Fatalf("create zip entry: %v", err)

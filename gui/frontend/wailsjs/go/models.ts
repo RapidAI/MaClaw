@@ -2323,8 +2323,10 @@ export namespace corelib {
 	    thirdparty_gateway_host?: string;
 	    thirdparty_gateway_port?: number;
 	    thirdparty_gateway_local_mode?: boolean;
+	    hardware_enabled?: boolean;
 	    hardware_welcome_enabled?: boolean;
 	    hardware_welcome_text?: string;
+	    hardware_welcome_voice_id?: string;
 	    hardware_welcome_audio_path?: string;
 	    hardware_volume?: number;
 	    acp_host_enabled?: boolean;
@@ -2584,8 +2586,10 @@ export namespace corelib {
 	        this.thirdparty_gateway_host = source["thirdparty_gateway_host"];
 	        this.thirdparty_gateway_port = source["thirdparty_gateway_port"];
 	        this.thirdparty_gateway_local_mode = source["thirdparty_gateway_local_mode"];
+	        this.hardware_enabled = source["hardware_enabled"];
 	        this.hardware_welcome_enabled = source["hardware_welcome_enabled"];
 	        this.hardware_welcome_text = source["hardware_welcome_text"];
+	        this.hardware_welcome_voice_id = source["hardware_welcome_voice_id"];
 	        this.hardware_welcome_audio_path = source["hardware_welcome_audio_path"];
 	        this.hardware_volume = source["hardware_volume"];
 	        this.acp_host_enabled = source["acp_host_enabled"];
@@ -14805,6 +14809,7 @@ export namespace main {
 	    active_workflow?: ProjectWorkflowState;
 	    preview: string;
 	    tags: string[];
+	    created_at: string;
 	    last_activity: string;
 	    entry_count: number;
 	    has_output: boolean;
@@ -14827,6 +14832,7 @@ export namespace main {
 	        this.active_workflow = this.convertValues(source["active_workflow"], ProjectWorkflowState);
 	        this.preview = source["preview"];
 	        this.tags = source["tags"];
+	        this.created_at = source["created_at"];
 	        this.last_activity = source["last_activity"];
 	        this.entry_count = source["entry_count"];
 	        this.has_output = source["has_output"];

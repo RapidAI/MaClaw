@@ -219,4 +219,25 @@ describe('isHistoryDiscussionReadOnly', () => {
         expect(screen.getByText('Overflow case')).toBeTruthy();
         expect(screen.getByText('Read-only')).toBeTruthy();
     });
+
+    it('keeps overflow tabs in their creation order after an activation', async () => {
+        render(createElement(AITabBar, {
+            tabs: [
+                { id: 'local', type: 'local', title: 'AI', closable: false },
+                { id: 'first', type: 've', title: 'First', closable: true },
+                { id: 'second', type: 've', title: 'Second', closable: true },
+                { id: 'third', type: 've', title: 'Third', closable: true },
+            ] as any,
+            activeTabId: 'second',
+            theme,
+            onActivate: () => {},
+            onClose: () => {},
+            lang: 'en',
+        }));
+
+        fireEvent.click(await screen.findByTestId('ai-tab-overflow-btn'));
+        const labels = Array.from(screen.getByTestId('ai-tab-overflow-dropdown').querySelectorAll('span:nth-child(2)'))
+            .map(node => node.textContent);
+        expect(labels).toEqual(['First', 'Third']);
+    });
 });

@@ -108,7 +108,7 @@ func (s *ArchiveService) Archive(ctx context.Context, req ArchiveRequest) (*Arch
 	}
 
 	// --- Step 1: Collect project entries ---
-	entries := s.collectProjectEntries(req.ProjectPath)
+	entries := s.collectProjectEntries(req.ProjectPath, projectSessionOwnerID(req.ProjectPath))
 
 	// --- Step 2: Attempt LLM experience extraction ---
 	var experienceSummary string
@@ -160,9 +160,10 @@ func (s *ArchiveService) Archive(ctx context.Context, req ArchiveRequest) (*Arch
 	}, nil
 }
 
-// collectProjectEntries gathers all task_artifact and project_knowledge entries
-// whose tags contain the given project path.
-func (s *ArchiveService) collectProjectEntries(projectPath string) []memory.Entry {
+// collectProjectEntries gathers only one project's owner-scoped task artifacts
+// and knowledge. Archive extraction must never distill another active tab's
+// content merely because it happens to use a matching path tag.
+func (s *ArchiveService) collectProjectEntries(projectPath, ownerID string) []memory.Entry {
 	if s.memoryStore == nil {
 		return nil
 	}
@@ -178,6 +179,9 @@ func (s *ArchiveService) collectProjectEntries(projectPath string) []memory.Entr
 
 	for i := range allEntries {
 		e := &allEntries[i]
+		if strings.TrimSpace(ownerID) != "" && e.OwnerID != ownerID {
+			continue
+		}
 		// Only collect task_artifact and project_knowledge categories.
 		cat := memory.MapToCanonical(e.Category)
 		if cat != memory.CategoryTaskArtifact && cat != memory.CategoryProjectKnowledge {

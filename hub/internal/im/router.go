@@ -167,6 +167,8 @@ type MessageRouter struct {
 	// the current message being routed. Key: userID.
 	pendingMessageTypes       map[string]string
 	pendingClientCapabilities map[string]*agent.ClientCapabilities
+	pendingClientTools        map[string][]agent.ClientToolDefinition
+	pendingClientToolContexts map[string]*agent.ClientToolContext
 
 	// discussions tracks active /discuss sessions per user. Protected by mu.
 	discussions map[string]*DiscussionState
@@ -184,6 +186,8 @@ func NewMessageRouter(devices DeviceFinder) *MessageRouter {
 		pendingAttachments:        make(map[string][]MessageAttachment),
 		pendingMessageTypes:       make(map[string]string),
 		pendingClientCapabilities: make(map[string]*agent.ClientCapabilities),
+		pendingClientTools:        make(map[string][]agent.ClientToolDefinition),
+		pendingClientToolContexts: make(map[string]*agent.ClientToolContext),
 		discussions:               make(map[string]*DiscussionState),
 		llmSem:                    NewLLMSemaphore(DefaultMaxConcurrent),
 		llmSemGUI:                 NewLLMSemaphore(DefaultMaxConcurrentGUI),
@@ -264,6 +268,31 @@ func (r *MessageRouter) popClientCapabilities(ctx context.Context, userID string
 	delete(r.pendingClientCapabilities, key)
 	r.mu.Unlock()
 	return capabilities
+}
+
+func (r *MessageRouter) StashClientToolsForTenant(tenantID, userID string, tools []agent.ClientToolDefinition, toolContext *agent.ClientToolContext) {
+	key := tenantUserRuntimeKey(tenantID, userID)
+	r.mu.Lock()
+	if len(tools) == 0 || toolContext == nil {
+		delete(r.pendingClientTools, key)
+		delete(r.pendingClientToolContexts, key)
+	} else {
+		r.pendingClientTools[key] = append([]agent.ClientToolDefinition(nil), tools...)
+		copyContext := *toolContext
+		r.pendingClientToolContexts[key] = &copyContext
+	}
+	r.mu.Unlock()
+}
+
+func (r *MessageRouter) popClientTools(ctx context.Context, userID string) ([]agent.ClientToolDefinition, *agent.ClientToolContext) {
+	key := routerRuntimeKey(ctx, userID)
+	r.mu.Lock()
+	tools := r.pendingClientTools[key]
+	toolContext := r.pendingClientToolContexts[key]
+	delete(r.pendingClientTools, key)
+	delete(r.pendingClientToolContexts, key)
+	r.mu.Unlock()
+	return tools, toolContext
 }
 
 // LLMSemaphore returns the shared LLM concurrency semaphore so that
@@ -644,6 +673,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 		attachments = r.popAttachments(ctx, userID)
 	}
 	clientCapabilities := r.popClientCapabilities(ctx, userID)
+	clientTools, clientToolContext := r.popClientTools(ctx, userID)
 	wsMsg := map[string]interface{}{
 		"type":       "im.user_message",
 		"request_id": requestID,
@@ -661,6 +691,15 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 	}
 	if clientCapabilities != nil {
 		wsMsg["payload"].(map[string]interface{})["client_capabilities"] = clientCapabilities
+	}
+	if len(clientTools) > 0 {
+		wsMsg["payload"].(map[string]interface{})["client_tools"] = clientTools
+	}
+	// ClientToolContext is also the transport-neutral identity of a concrete
+	// hardware surface. Preserve it even when that client declares no tools so
+	// the desktop can retain its audio/display capabilities for the final reply.
+	if clientToolContext != nil {
+		wsMsg["payload"].(map[string]interface{})["client_tool_context"] = clientToolContext
 	}
 	if launch := startMenuTaskFromContext(ctx); launch != nil {
 		wsMsg["payload"].(map[string]interface{})["start_menu"] = startMenuTaskPayload(launch)

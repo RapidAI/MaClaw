@@ -300,7 +300,10 @@ func (a *App) ensureGatewayForACPBridge(res *VSCodeACPLaunchResult) error {
 			c.ThirdPartyGatewayToken = token
 			c.ThirdPartyGatewayHost = host
 			c.ThirdPartyGatewayPort = port
-			if c.ThirdPartyGatewayLocalMode == nil {
+			// Hardware owns Hub mode while enabled. The ACP bridge may fill in
+			// transport defaults, but must never silently switch that shared gateway
+			// back to local mode.
+			if c.ThirdPartyGatewayLocalMode == nil && !c.HardwareEnabled {
 				c.SetThirdPartyGatewayLocal(true)
 			}
 		}); err != nil {

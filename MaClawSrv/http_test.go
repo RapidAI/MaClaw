@@ -7702,8 +7702,52 @@ func TestThirdPartyGatewayManagerBoundsState(t *testing.T) {
 	_, missingAcked := state.Acked["missing"]
 	_, liveAcked := state.Acked[fmt.Sprintf("out-%d", srvThirdPartyMaxStoredMsgs+9)]
 	manager.mu.Unlock()
-	if messageLen != srvThirdPartyMaxStoredMsgs || ackLen != 1 || oldAcked || missingAcked || !liveAcked {
+	if messageLen != srvThirdPartyMaxStoredMsgs-1 || ackLen != 0 || oldAcked || missingAcked || liveAcked {
 		t.Fatalf("message/ack state not bounded: messages=%d ack=%d old=%v missing=%v live=%v", messageLen, ackLen, oldAcked, missingAcked, liveAcked)
+	}
+}
+
+func TestThirdPartyGatewayPrunesAckedHistoryBeforePendingMessages(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	clientKey := thirdPartyClientKey(principal, "client-a")
+	req := srvThirdPartyIncomingRequest{ClientID: "client-a", ConversationID: "room-1"}
+
+	// The pending control entry is deliberately oldest. Without eager ACK
+	// pruning, the first newly enqueued message would evict it even though many
+	// newer history entries have already been delivered.
+	manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: "pending-control", Type: "text", Text: "pending control"})
+	for i := 0; i < srvThirdPartyMaxStoredMsgs-1; i++ {
+		manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: fmt.Sprintf("history-%d", i), Type: "text", Text: "delivered"})
+	}
+	acked := make([]string, 0, srvThirdPartyMaxAckIDs)
+	for i := 0; i < srvThirdPartyMaxAckIDs; i++ {
+		acked = append(acked, fmt.Sprintf("history-%d", i))
+	}
+	manager.ack(clientKey, srvThirdPartyAckRequest{ClientID: "client-a", MessageIDs: acked})
+
+	for i := 0; i < srvThirdPartyMaxAckIDs; i++ {
+		manager.enqueue(principal, req, srvThirdPartyOutgoingMessage{ID: fmt.Sprintf("new-%d", i), Type: "text", Text: "new"})
+	}
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	state := manager.clients[clientKey]
+	if len(state.Messages) != srvThirdPartyMaxStoredMsgs {
+		t.Fatalf("messages = %d, want %d", len(state.Messages), srvThirdPartyMaxStoredMsgs)
+	}
+	if len(state.Acked) != 0 {
+		t.Fatalf("acked receipts retained after pruning: %d", len(state.Acked))
+	}
+	foundPending := false
+	for _, message := range state.Messages {
+		if message.ID == "pending-control" {
+			foundPending = true
+			break
+		}
+	}
+	if !foundPending {
+		t.Fatal("unacknowledged control message was evicted by acknowledged history")
 	}
 }
 

@@ -635,6 +635,43 @@ func TestLoadProjectTabIndexRestoresRemoteDiagnosisMetadata(t *testing.T) {
 	}
 }
 
+func TestLoadProjectTabIndexPreservesCreationOrderDespiteActivity(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	paths := []string{}
+	for _, title := range []string{"First task", "Second task", "Third task"} {
+		task := app.CreateRecentTask(title)
+		if task.ProjectPath == "" {
+			t.Fatalf("CreateRecentTask(%q) returned empty project path", title)
+		}
+		paths = append(paths, task.ProjectPath)
+		if msg := app.CreateProjectTabSession("proj-"+strings.ToLower(strings.Split(title, " ")[0]), task.ProjectPath); msg == "" {
+			t.Fatalf("CreateProjectTabSession(%q) returned empty message", title)
+		}
+	}
+
+	persist := app.ensureProjectTabSessionPersist()
+	index, err := persist.LoadIndex()
+	if err != nil {
+		t.Fatalf("LoadIndex: %v", err)
+	}
+	for i := range index.Tabs {
+		index.Tabs[i].LastActiveAt = int64(1000 - i*100)
+	}
+	if err := persist.SaveIndex(index); err != nil {
+		t.Fatalf("SaveIndex: %v", err)
+	}
+
+	got := app.LoadProjectTabIndex()
+	if len(got) != len(paths) {
+		t.Fatalf("LoadProjectTabIndex = %+v, want %d entries", got, len(paths))
+	}
+	for i, entry := range got {
+		if entry.ProjectPath != paths[i] {
+			t.Fatalf("entry %d project path = %q, want creation-order path %q", i, entry.ProjectPath, paths[i])
+		}
+	}
+}
+
 func TestCreateRemoteCodingTaskConcurrentCallsReuseOneProject(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	const callers = 8

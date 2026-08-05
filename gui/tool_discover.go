@@ -13,9 +13,25 @@ import (
 // toolDiscoverTool searches for matching tools and unlocks deferred tools that
 // are explicitly selected through discovery.
 func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string {
+	// Runtime execution injects the owner into args for this tool. Consume it
+	// before discovery so a shared handler never consults the last-started loop
+	// when two assistant sessions are active concurrently. Direct callers that
+	// predate runtime-owner propagation retain the legacy fallback below.
+	if ownerID, hasOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args); hasOwner {
+		return h.toolDiscoverToolForOwner(ownerID, args)
+	}
+	ownerID, _ := h.currentRuntimePolicyOwnerState()
+	return h.toolDiscoverToolForOwner(ownerID, args)
+}
+
+// toolDiscoverToolForOwner performs discovery for one explicitly identified
+// assistant owner. An empty owner is only for legacy/direct callers; live
+// agent-loop calls are required to pass the owner through tool runtime args.
+func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[string]interface{}) string {
 	if h == nil {
 		return "Tool registry not available."
 	}
+	ownerID = strings.TrimSpace(ownerID)
 	need, _ := args["need"].(string)
 	if need == "" {
 		return "Missing 'need' parameter. Describe what capability you need."
@@ -99,7 +115,7 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	}
 	// Expert session: drop matches outside the expert allow-list so discovery
 	// neither leaks unauthorized tool names nor activates them below.
-	if ownerID, ok := h.currentRuntimePolicyOwnerState(); ok {
+	if ownerID != "" {
 		if def := expertDefForUserID(ownerID); def != nil && len(def.Tools) > 0 {
 			ranked = filterDiscoveredToolsForExpert(ranked, mcpMatches, def)
 		}
@@ -107,7 +123,7 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 	// Group discovery is subject to the same policy as execution. Otherwise the
 	// result can disclose local capabilities or session-pin a tool that should
 	// never be offered in a group conversation.
-	if ownerID, ok := h.currentRuntimePolicyOwnerState(); ok {
+	if ownerID != "" {
 		if loopCtx := h.runtimeLoopContextForOwner(ownerID); loopCtx != nil && loopCtx.LansengerGroupPermissions != nil {
 			ranked = filterDiscoveredToolsForLansengerGroup(ranked, mcpMatches, *loopCtx.LansengerGroupPermissions)
 		}
@@ -154,7 +170,10 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 				continue
 			}
 			if tool.ShouldPinConditionalTool(item.name) {
-				h.toolRouter.ActivateSessionTool(item.name)
+				// Live agent loops always have an owner and must only affect their
+				// own pin set. The fallback bucket exists solely for old direct
+				// callers and is never consulted by owner-scoped routing.
+				h.toolRouter.ActivateSessionToolForSession(ownerID, item.name)
 				activatedConditional[item.name] = true
 			}
 		}

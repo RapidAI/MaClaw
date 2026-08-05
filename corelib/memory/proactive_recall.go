@@ -14,13 +14,16 @@ type ProactiveRecallOptions struct {
 	ProjectPath string
 	OwnerID     string
 	// StrictOwner excludes legacy shared entries from an isolated prompt.
-	StrictOwner        bool
-	StrictProject      bool
-	MaxEntries         int
-	EntityLimit        int
-	IncludeUserProfile bool
-	EventContext       lifecycle.EventContext
-	Provider           lifecycle.Provider
+	StrictOwner bool
+	// AllowArchivedExperience permits only explicitly distilled archive output
+	// to cross a strict owner boundary. It never admits raw/session memories.
+	AllowArchivedExperience bool
+	StrictProject           bool
+	MaxEntries              int
+	EntityLimit             int
+	IncludeUserProfile      bool
+	EventContext            lifecycle.EventContext
+	Provider                lifecycle.Provider
 }
 
 // RecallProactive builds the shared proactive recall set for system prompts.
@@ -66,13 +69,51 @@ func (s *Store) RecallProactiveCandidatesWithDecision(decision lifecycle.Retriev
 	provider := s.proactiveExperienceProvider(opts)
 	candidates, err := provider.SearchExperience(context.Background(), lifecycle.Query{Text: query, Types: decision.Types, Boundary: decision.Boundary, Limit: poolLimit})
 	if err != nil || len(candidates) == 0 {
-		return nil
+		return s.archivedExperienceCandidates(query, decision, opts, poolLimit)
 	}
 	candidates = s.filterProactiveCandidates(candidates, opts)
+	if opts.StrictOwner && opts.AllowArchivedExperience && len(candidates) < maxEntries {
+		candidates = append(candidates, s.archivedExperienceCandidates(query, decision, opts, poolLimit-len(candidates))...)
+	}
 	decision.Budget.MaxEntries = maxEntries
 	selected := lifecycle.SelectBalancedCandidates(candidates, decision)
 	s.recordCandidateExperienceEvent(lifecycle.EventExperienceRetrieved, "provider:"+string(decision.Mode), query, selected, 0, opts.EventContext)
 	return selected
+}
+
+func (s *Store) archivedExperienceCandidates(query string, decision lifecycle.RetrievalDecision, opts ProactiveRecallOptions, limit int) []lifecycle.Candidate {
+	if s == nil || !opts.StrictOwner || !opts.AllowArchivedExperience || limit <= 0 {
+		return nil
+	}
+	entries := s.archivedExperienceEntries(query, opts, limit)
+	candidates := make([]lifecycle.Candidate, 0, len(entries))
+	for i, entry := range entries {
+		if !isArchivedExperienceEntry(entry) {
+			continue
+		}
+		candidate, ok := buildProactiveRecallCandidate(entry, i, len(entries), decision)
+		if !ok || !lifecycleEntryTypeAllowed(candidate.candidate.Entry.EntryType, decision.Types) {
+			continue
+		}
+		candidate.candidate.Reason = "archived_experience"
+		candidates = append(candidates, candidate.candidate)
+		if len(candidates) >= limit {
+			break
+		}
+	}
+	return candidates
+}
+
+func (s *Store) archivedExperienceEntries(query string, opts ProactiveRecallOptions, limit int) []Entry {
+	if s == nil || !opts.StrictOwner || !opts.AllowArchivedExperience || limit <= 0 {
+		return nil
+	}
+	entries := s.recallDynamicCore(query, CategoryProjectKnowledge, opts.ProjectPath, opts.StrictProject)
+	entries = filterEntriesForProactiveOwner(entries, opts)
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries
 }
 
 func (s *Store) proactiveExperienceProvider(opts ProactiveRecallOptions) lifecycle.Provider {
@@ -125,6 +166,13 @@ func (s *Store) filterProactiveCandidates(candidates []lifecycle.Candidate, opts
 	filtered := candidates[:0]
 	for _, candidate := range candidates {
 		entry, ok := entries[candidate.Entry.ID]
+		// Strict sessions must be able to verify every candidate against the
+		// local store. An external provider's candidate has no trustworthy
+		// owner metadata here, so admitting it would let provider state bypass
+		// the conversation boundary.
+		if opts.StrictOwner && !ok {
+			continue
+		}
 		if ok && (shouldSkipProactiveRecallEntry(entry, opts) || !proactiveOwnerAllowed(entry, opts)) {
 			continue
 		}
@@ -148,7 +196,10 @@ func (s *Store) entriesForExperienceCandidates(candidates []lifecycle.Candidate)
 }
 
 func (s *Store) entriesForExperienceCandidatesWithOptions(candidates []lifecycle.Candidate, opts ProactiveRecallOptions) []Entry {
-	return filterEntriesForOwner(s.entriesForExperienceCandidates(candidates), opts.OwnerID, opts.StrictOwner)
+	// A strict owner normally sees only its own entries, with the deliberate
+	// exception of a final archived experience. Do not reapply the generic
+	// owner filter here: it would silently drop that explicitly allowed result.
+	return filterEntriesForProactiveOwner(s.entriesForExperienceCandidates(candidates), opts)
 }
 
 func (s *Store) filterExperienceCandidatesForOptions(candidates []lifecycle.Candidate, opts ProactiveRecallOptions) []lifecycle.Candidate {
@@ -238,5 +289,23 @@ func shouldSkipProactiveRecallEntry(entry Entry, opts ProactiveRecallOptions) bo
 }
 
 func proactiveOwnerAllowed(entry Entry, opts ProactiveRecallOptions) bool {
-	return len(filterEntriesForOwner([]Entry{entry}, opts.OwnerID, opts.StrictOwner)) == 1
+	if len(filterEntriesForOwner([]Entry{entry}, opts.OwnerID, opts.StrictOwner)) == 1 {
+		return true
+	}
+	return opts.StrictOwner && opts.AllowArchivedExperience && isArchivedExperienceEntry(entry)
+}
+
+func isArchivedExperienceEntry(entry Entry) bool {
+	if MapToCanonical(entry.Category) != CategoryProjectKnowledge || entry.Scope != ScopeGlobal {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(entry.SourceType), "archived_experience") {
+		return false
+	}
+	for _, tag := range entry.Tags {
+		if strings.EqualFold(strings.TrimSpace(tag), "archived_experience") {
+			return true
+		}
+	}
+	return false
 }

@@ -271,6 +271,19 @@ func TestProfessionalStylesheetsServedByStaticRoutes(t *testing.T) {
 			if body := rec.Body.String(); body != "body{color:#172033}" {
 				t.Fatalf("css body = %q", body)
 			}
+			if tc.name == "connector" {
+				for header, want := range map[string]string{
+					"Cache-Control":           "no-cache, no-store, must-revalidate",
+					"Content-Security-Policy": "frame-ancestors 'none'",
+					"Referrer-Policy":         "no-referrer",
+					"X-Content-Type-Options":  "nosniff",
+					"X-Frame-Options":         "DENY",
+				} {
+					if got := rec.Header().Get(header); !strings.Contains(got, want) {
+						t.Fatalf("%s = %q, want to contain %q", header, got, want)
+					}
+				}
+			}
 		})
 	}
 }
@@ -781,29 +794,13 @@ func TestConnectorPageDocumentsServerOwnedMediaProtocol(t *testing.T) {
 	content := string(body)
 	for _, want := range []string{
 		`/media/upload-url`,
-		`server_media_upload`,
-		`server_media_download`,
-		`maxDirectBytes`,
 		`maxBodyBytes`,
 		`maxMediaBytes`,
 		`mediaToken`,
-		`message.id`,
 		`attachments[].id`,
-		`message.fileName`,
-		`does not replace <code>id</code>, <code>data</code>, or server <code>url</code>`,
-		`Client Tool Execution Extension`,
-		`client_tools`,
-		`tool_call`,
-		`tool_plan`,
-		`POST /tool-result`,
-		`resultId`,
-		`idempotencyKey`,
-		`requiresApproval`,
-		`"risk": "write"`,
-		`success</code>, <code>error</code>, <code>rejected</code>, <code>cancelled</code>, or <code>timeout`,
 		`replyToMessageId`,
 		`nextCursor`,
-		`The client must not provide its own download URL for the server to fetch.`,
+		`Do not inline base64 in hardware messages or ask Hub to fetch an arbitrary external URL.`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("connector page missing protocol contract %q", want)
@@ -816,6 +813,8 @@ func TestConnectorPageDocumentsServerOwnedMediaProtocol(t *testing.T) {
 		`"replyToEventId":`,
 		`riskLevel`,
 		`stopOnError`,
+		`server_media_upload`,
+		`POST /tool-result`,
 	} {
 		if strings.Contains(content, stale) {
 			t.Fatalf("connector page still contains stale protocol field %q", stale)
@@ -830,13 +829,97 @@ func TestConnectorPageDocumentsServerOwnedMediaProtocol(t *testing.T) {
 	cssContent := string(css)
 	for _, want := range []string{
 		`body{margin:0`,
-		`main{max-width:1040px;margin:0 auto`,
+		`main{width:min(100% - 40px,1040px);margin:0 auto`,
 		`.lang-panel{display:none}`,
 		`.lang-panel.active{display:block}`,
-		`pre{white-space:pre-wrap;word-break:break-word}`,
+		`pre{max-width:920px`,
+		`overflow:auto`,
+		`white-space:pre`,
 	} {
 		if !strings.Contains(cssContent, want) {
 			t.Fatalf("connector css missing contract %q", want)
+		}
+	}
+}
+
+func TestConnectorPageMatchesESP32DeviceGatewayProtocol(t *testing.T) {
+	indexPath := filepath.Join("..", "..", "web", "connector", "index.html")
+	body, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read connector index: %v", err)
+	}
+	content := string(body)
+	if strings.Contains(content, `<script>`) || !strings.Contains(content, `<script src="/connector/connector.js" defer></script>`) {
+		t.Fatal("connector page must load its behavior from the CSP-compatible external script")
+	}
+	for _, want := range []string{
+		`第三方硬件接入协议`,
+		`Third-Party Hardware Protocol`,
+		`/api/device-gateway/v1/pair`,
+		`"pairCode": "123456"`,
+		`"protocolVersion": "1.1"`,
+		`"clientCapabilities": {`,
+		`"bootSessionId":`,
+		`"meetingRecorder": true`,
+		`"volumeControl": true`,
+		`"maxDownloadBytes": 98304`,
+		`maxTimeoutSec`,
+		`maxLimit`,
+		`/api/device-gateway/v1/meeting-recordings`,
+		`X-Chunk-SHA256`,
+		`"status": "delivered"`,
+		`<code>delivered</code>、<code>read</code> 或 <code>failed</code>`,
+		`<code>progress: true</code>`,
+		`<code>metadata.acp_turn</code>`,
+		`<code>hardware_config</code>`,
+		`<code>meeting_result</code>`,
+		`<code>alarm_create</code>`,
+		`<code>alarm_clear_all</code>`,
+		`<code>alarm_clear</code>`,
+		`<code>alarm_list</code>`,
+		`POST /api/im-gateway/v1/tool-result`,
+		`<code>toolCall.idempotencyKey</code>`,
+		`最近 8 个修改状态的工具调用结果写入 NVS`,
+		`最多 16 个闹钟`,
+		`固定轮换槽`,
+		`<code>alarm_list</code> 不进入缓存，可安全重执行`,
+		`最多 63 个 ASCII 字符`,
+		`the eight most recent state-changing tool-call results in NVS`,
+		`Read-only <code>alarm_list</code> calls are not cached and are safe to execute again`,
+		`at most 63 ASCII characters`,
+		`the current ESP32 does not execute those message types`,
+		`10 MiB`,
+		`96 KiB`,
+		`512 MiB`,
+		`16,777`,
+		`30 天`,
+		`当前 ESP32 仅在 RAM 中维护游标`,
+		`<code>/incoming</code> 不是持久幂等接口`,
+		`约 10 秒的进程内尽力去重`,
+		`Hub 重启或超过窗口后重发仍可能再次处理`,
+		`<code>duplicate</code> 当前通常为 <code>false</code>`,
+		`<code>/incoming</code> is not durably idempotent`,
+		`best-effort, in-memory deduplication by <code>messageId</code> for about 10 seconds`,
+		`The current ESP32 makes at most three voice-submission attempts.`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("connector page missing ESP32 protocol contract %q", want)
+		}
+	}
+	for _, stale := range []string{
+		`MaClaw Third-Party Software Access Protocol v1`,
+		`Default endpoint http://127.0.0.1:18777/api/im-gateway/v1`,
+		`currently 50 MiB for both MaClawSrv and MaClaw GUI`,
+		`maxTimeoutSec</code>：60`,
+		`maxLimit</code>：100`,
+		`Token、游标和会议恢复信息写入持久存储`,
+		`重试 <code>/incoming</code> 时复用相同的 <code>eventId</code>/<code>messageId</code>`,
+		`Keep the same idempotency ID and retry with backoff.`,
+		`最近 8 个工具结果写入 NVS`,
+		`the eight most recent tool results are persisted in NVS`,
+	} {
+		if strings.Contains(content, stale) {
+			t.Fatalf("connector page still presents stale software-gateway contract %q", stale)
 		}
 	}
 }

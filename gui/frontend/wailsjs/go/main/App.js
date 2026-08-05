@@ -1526,8 +1526,16 @@ export function CreateThirdPartyDevicePairing() {
   return window['go']['main']['App']['CreateThirdPartyDevicePairing']();
 }
 
-export function GenerateHardwareWelcomeAudio(arg1) {
-  return window['go']['main']['App']['GenerateHardwareWelcomeAudio'](arg1);
+export function ListThirdPartyHardwareDevices() {
+  return window['go']['main']['App']['ListThirdPartyHardwareDevices']();
+}
+
+export function DeleteThirdPartyHardwareDevice(arg1) {
+  return window['go']['main']['App']['DeleteThirdPartyHardwareDevice'](arg1);
+}
+
+export function GenerateHardwareWelcomeAudio(arg1, arg2) {
+  return window['go']['main']['App']['GenerateHardwareWelcomeAudio'](arg1, arg2);
 }
 
 export function SelectHardwareWelcomeAudio() {
@@ -1536,6 +1544,22 @@ export function SelectHardwareWelcomeAudio() {
 
 export function SendHardwareWelcomeAudio() {
   return window['go']['main']['App']['SendHardwareWelcomeAudio']();
+}
+
+export function GetHardwareWelcomeAudioDataURL() {
+  return window['go']['main']['App']['GetHardwareWelcomeAudioDataURL']();
+}
+
+export function SendHardwareWelcomeAudioRemote() {
+  return window['go']['main']['App']['SendHardwareWelcomeAudioRemote']();
+}
+
+export function ResetHardwareWelcomeAudio() {
+  return window['go']['main']['App']['ResetHardwareWelcomeAudio']();
+}
+
+export function SynthesizeTTSPreview(arg1) {
+  return window['go']['main']['App']['SynthesizeTTSPreview'](arg1);
 }
 
 export function SyncHardwareWelcome() {
@@ -3944,6 +3968,10 @@ export function SetTelegramLocalMode(arg1) {
 
 export function SetThirdPartyGatewayLocalMode(arg1) {
   return window['go']['main']['App']['SetThirdPartyGatewayLocalMode'](arg1);
+}
+
+export function SetHardwareEnabled(arg1) {
+  return window['go']['main']['App']['SetHardwareEnabled'](arg1);
 }
 
 export function SetTrialReflectEnabled(arg1) {

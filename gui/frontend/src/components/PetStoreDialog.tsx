@@ -10,6 +10,7 @@ import {
     WithdrawPetStorePack,
 } from '../../wailsjs/go/main/App';
 import { useDialog } from './CustomDialog';
+import { openSettingsTab } from '../utils/settingsNavigation';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type StorePack = Record<string, any>;
@@ -91,6 +92,14 @@ const shiftReportDateValue = (dateValue: string, period: ReportPeriod, offset: n
 export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => void }) {
     const { showAlert, showConfirm } = useDialog();
     const [query, setQuery] = useState('');
+    const restoreFocusOnCloseRef = useRef(true);
+
+    const openAssetManagement = () => {
+        // The destination settings tab owns focus after navigation.
+        restoreFocusOnCloseRef.current = false;
+        openSettingsTab('assetManagement');
+        onClose();
+    };
     const [submittedQuery, setSubmittedQuery] = useState('');
     const [sort, setSort] = useState('published');
     const [order, setOrder] = useState<'asc' | 'desc'>('desc');
@@ -267,7 +276,7 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
         });
         return () => {
             window.cancelAnimationFrame(focusFrame);
-            if (previousFocus?.isConnected) previousFocus.focus();
+            if (restoreFocusOnCloseRef.current && previousFocus?.isConnected) previousFocus.focus();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -449,7 +458,7 @@ export function PetStoreDialog({ lang, onClose }: { lang: Lang; onClose: () => v
                         <nav className="pet-store-pagination" aria-label={t(lang, '分页', 'Pagination')}><button type="button" disabled={page <= 1} onClick={() => setPage(v => v - 1)}>{t(lang, '上一页', 'Previous')}</button><span>{page} / {totalPages} · {t(lang, '每页 20 个', '20 per page')}</span><button type="button" disabled={page >= totalPages} onClick={() => setPage(v => v + 1)}>{t(lang, '下一页', 'Next')}</button></nav>
                     </main>
                     <aside className={`pet-store-account ${accountOpen ? 'is-open' : ''}`} aria-label={t(lang, '我的市场', 'My market')}>
-                        <div className="pet-store-account-head"><div><strong>{userContact || t(lang, '用户中心', 'Your account')}</strong><span>{accountLoading ? t(lang, '正在更新账户…', 'Updating account…') : t(lang, '当前可用余额', 'Available balance')}</span></div><b>{account ? `${number(account.credits)} ` : '— '}<small>Credits</small></b></div>
+                        <div className="pet-store-account-head"><div><strong>{userContact || t(lang, '用户中心', 'Your account')}</strong><span>{accountLoading ? t(lang, '正在更新账户…', 'Updating account…') : t(lang, '当前可用余额', 'Available balance')}</span></div><div className="pet-store-account-assets"><b>{account ? `${number(account.credits)} ` : '— '}<small>Credits</small></b><button type="button" onClick={openAssetManagement}>{t(lang, '资产管理', 'Asset Management')}</button></div></div>
                         <section className="pet-store-report" aria-busy={reportLoading}>
                             <div className="pet-store-report-title"><h3>{t(lang, '我的市场', 'My market')}</h3><button type="button" onClick={() => void loadReport()}>{t(lang, '刷新', 'Refresh')}</button></div>
                             <div className="pet-store-report-controls" role="group" aria-label={t(lang, '报表周期', 'Report period')}>

@@ -91,6 +91,9 @@ var outputToolActions = map[string]map[string]bool{
 // but does NOT determine the index key (inferProjectPath picks the first
 // path-like tag, which is the standalone path).
 func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.ConversationEntry) {
+	if isIsolatedAssistantSessionUserID(userID) {
+		return
+	}
 	if h.memoryStore == nil || len(history) == 0 {
 		return
 	}

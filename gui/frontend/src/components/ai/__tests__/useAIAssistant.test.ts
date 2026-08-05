@@ -673,6 +673,58 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.selectedFilePaths).toEqual(['/tmp/project.png']);
     });
 
+    it('keeps a file picker result with the session that opened the picker', async () => {
+        const picker = deferred<string[]>();
+        (SelectAIAssistantFiles as any).mockImplementationOnce(() => picker.promise);
+
+        const projectSession = 'desktop-user:D:/tasks/picker-owner';
+        const { result } = renderAssistantHook();
+
+        act(() => {
+            setActiveSessionKey(projectSession);
+        });
+        let browsePromise!: Promise<void>;
+        act(() => {
+            browsePromise = result.current.browseFile();
+        });
+
+        act(() => {
+            setActiveSessionKey('desktop-user');
+        });
+        await act(async () => {
+            picker.resolve(['/tmp/owned-by-project.txt']);
+            await browsePromise;
+        });
+        expect(result.current.selectedFilePaths).toEqual([]);
+
+        act(() => {
+            setActiveSessionKey(projectSession);
+        });
+        expect(result.current.selectedFilePaths).toEqual(['/tmp/owned-by-project.txt']);
+    });
+
+    it('does not restore a file picker result after its session is forgotten', async () => {
+        const picker = deferred<string[]>();
+        (SelectAIAssistantFiles as any).mockImplementationOnce(() => picker.promise);
+
+        const projectSession = 'desktop-user:D:/tasks/forgotten-picker';
+        const { result } = renderAssistantHook();
+        act(() => {
+            setActiveSessionKey(projectSession);
+        });
+        let browsePromise!: Promise<void>;
+        act(() => {
+            browsePromise = result.current.browseFile();
+            forgetAIAssistantSessionRounds(projectSession);
+        });
+
+        await act(async () => {
+            picker.resolve(['/tmp/should-not-return.txt']);
+            await browsePromise;
+        });
+        expect(result.current.selectedFilePaths).toEqual([]);
+    });
+
     it('clears selected files when a project session is forgotten', async () => {
         (SelectAIAssistantFiles as any).mockResolvedValueOnce(['/tmp/project.png']);
 
@@ -5803,6 +5855,23 @@ describe('useAIAssistant property tests', () => {
         expect(request.project_path).toBe('D:/tasks/beijing-weather');
         expect(request.recent_messages?.map((m: any) => m.content)).toEqual(['北京天气', '北京天气旧结果']);
         expect(request.recent_messages?.map((m: any) => m.content)).not.toContain('南京本地天气结果');
+    });
+
+    it('never falls back to local history for a project recovery action', async () => {
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
+            { id: 'local-user', role: 'user', content: '本地任务读取 C:/local/private-file.txt', timestamp: 1 },
+            { id: 'local-assistant', role: 'assistant', content: '本地任务已暂停', timestamp: 2 },
+        ]));
+        const { result } = renderAssistantHook({ activeSessionKey: 'desktop-user:D:/tasks/isolated' });
+
+        await act(async () => {
+            await result.current.executeAction('__resume_unfinished__ slot-isolated');
+        });
+
+        const request = parseSentRequest(0) as any;
+        expect(request.project_path).toBe('D:/tasks/isolated');
+        expect(request.resume_slot_id).toBe('slot-isolated');
+        expect(request.recent_messages).toBeUndefined();
     });
 
     it('does not send completed project messages as local recent context', async () => {

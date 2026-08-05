@@ -1,4 +1,4 @@
-import type { AIAssistantInitStatus, CancelAIAssistantResult, ChatMessage } from "./useAIAssistant";
+import type { AIAssistantInitStatus, CancelAIAssistantResult, ChatMessage, AIAssistantActionRouteOptions } from "./useAIAssistant";
 import type { AgentView } from "./agentViewTypes";
 export type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./groupDiscussionTypes";
 import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
@@ -70,7 +70,7 @@ export interface AIAssistantPanelHookActions {
     clearHistory: () => Promise<void>;
     recordSubmittedPrompt: (text: string) => void;
     setDraftInputValue: (text: string) => void;
-    executeAction: (command: string) => Promise<boolean | undefined | void>;
+    executeAction: (command: string, routeOptions?: AIAssistantActionRouteOptions) => Promise<boolean | undefined | void>;
     refreshNews: () => void;
     cancelSession: () => Promise<CancelAIAssistantResult>;
     submitAgentView: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;

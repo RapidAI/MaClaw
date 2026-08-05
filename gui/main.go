@@ -504,6 +504,7 @@ func isImportantLogLine(line string) bool {
 	// agents land files under working_directory only when these paths are wired correctly.
 	keywords := []string{"error", "err=", "failed", "fatal", "panic", "warn", "warning",
 		"[skill-runner]", "[skill-scanner]", "[lansenger]",
+		"[thirdparty-mgr]", "[tts-auto]",
 		"-lifecycle]",
 		"[download_file]", "download_file=builtin", "effective_wd=", "configured_wd=",
 		"workdir ready", "inject workdir",

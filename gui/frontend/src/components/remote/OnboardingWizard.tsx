@@ -983,16 +983,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 setMigrationDecisionPending(false);
                 return false;
             }
-            const signedInUserID = String((status as any)?.user_id || "").trim();
-            const signedInEmail = normalizeEmailVerificationTarget(String((status as any)?.email || ""));
-            const manifestUserID = String(candidate.manifest?.user_id || "").trim();
-            const manifestEmail = normalizeEmailVerificationTarget(String(candidate.manifest?.email || ""));
-            if ((manifestUserID && signedInUserID && manifestUserID !== signedInUserID)
-                || (manifestEmail && signedInEmail && manifestEmail !== signedInEmail)) {
-                onboardingDiagnostic("migration.package_identity_mismatch", { export_id: candidate.exportId, has_manifest_user_id: !!manifestUserID, has_manifest_email: !!manifestEmail }, "warn");
-                setMigrationDecisionPending(false);
-                return false;
-            }
             setMigrationPackage(candidate);
             setMigrationPromptDismissed(false);
             onboardingDiagnostic("migration.discovery_completed", { elapsed_ms: Math.round(performance.now() - discoveryStartedAt), package_found: true, export_id: candidate.exportId, status: candidate.status, size: candidate.size, source_machine_id: candidate.sourceMachineId });

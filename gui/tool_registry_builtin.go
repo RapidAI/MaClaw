@@ -38,6 +38,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			Required:          required,
 			Source:            "builtin",
 			ExecutionContract: defaultExplicitExecutionContractMetadata(name),
+			// discover_tool can activate conditional tools. It must receive the
+			// current owner so its activation cannot use shared last-loop state.
+			RuntimePolicyOwnerArg: name == "discover_tool",
 			// Keep platform-aware IM tools on the originating channel. This must
 			// live in registry metadata as well as the legacy fallback allowlist:
 			// registry lookups otherwise suppress runtime-platform injection.

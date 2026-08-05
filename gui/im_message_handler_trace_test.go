@@ -486,11 +486,11 @@ func TestRunAgentLoop_EstimatesTokenUsageWhenStreamOmitsUsage(t *testing.T) {
 func TestTokenUsageResponseFieldsWithCacheIncludesCacheCounters(t *testing.T) {
 	fields := tokenUsageResponseFieldsWithCache(100, 25, 80, 12)
 	want := []IMResponseField{
-		{Label: "Input tokens", Value: "100"},
-		{Label: "Output tokens", Value: "25"},
-		{Label: "Total tokens", Value: "125"},
-		{Label: "Cache read tokens", Value: "80"},
-		{Label: "Cache write tokens", Value: "12"},
+		{Label: "Input tokens", Value: "100", Internal: true},
+		{Label: "Output tokens", Value: "25", Internal: true},
+		{Label: "Total tokens", Value: "125", Internal: true},
+		{Label: "Cache read tokens", Value: "80", Internal: true},
+		{Label: "Cache write tokens", Value: "12", Internal: true},
 	}
 	if len(fields) != len(want) {
 		t.Fatalf("fields len = %d, want %d: %+v", len(fields), len(want), fields)

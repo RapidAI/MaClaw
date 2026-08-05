@@ -1,0 +1,80 @@
+package firmware
+
+import (
+	"archive/zip"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestVerifyArchive(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "ok.clawfw")
+	contents := []byte("firmware bytes")
+	sum := sha256.Sum256(contents)
+	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s"}]}`, len(contents), hex.EncodeToString(sum[:]))
+	makeZip(t, archive, map[string]string{"manifest.json": manifest, "images/app.bin": string(contents)})
+	v, err := Verify(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Manifest.PackageID != "bread-v1" || v.ArchiveSHA256 == "" {
+		t.Fatalf("unexpected: %#v", v)
+	}
+}
+func TestVerifyReleaseRequiresValidSignature(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "signed.clawfw")
+	contents := []byte("firmware bytes")
+	sum := sha256.Sum256(contents)
+	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s"}]}`, len(contents), hex.EncodeToString(sum[:]))
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(manifest)))
+	makeZip(t, archive, map[string]string{"manifest.json": manifest, "manifest.sig": fmt.Sprintf(`{"algorithm":"ed25519","keyId":"test","signature":"%s"}`, signature), "images/app.bin": string(contents)})
+	if _, err := VerifyRelease(archive, TrustStore{"test": pub}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyRelease(archive, TrustStore{}); err == nil {
+		t.Fatal("expected untrusted key rejection")
+	}
+}
+func TestVerifyRejectsTraversalAndUnlisted(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "bad.clawfw")
+	makeZip(t, archive, map[string]string{"manifest.json": `{"schemaVersion":1,"packageId":"p","files":[{"path":"x.bin","size":1,"sha256":"sha256:00"}]}`, "../x.bin": "x"})
+	if _, err := Verify(archive); err == nil {
+		t.Fatal("expected traversal rejection")
+	}
+}
+func makeZip(t *testing.T, name string, entries map[string]string) {
+	t.Helper()
+	f, err := os.Create(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z := zip.NewWriter(f)
+	for n, v := range entries {
+		w, err := z.Create(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = w.Write([]byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

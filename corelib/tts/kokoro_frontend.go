@@ -6,9 +6,8 @@ import (
 )
 
 // KokoroTextToPhonemes converts ordinary text to the phoneme string expected by
-// Kokoro. The Mandarin path reuses the existing pinyin table and maps pinyin to
-// Kokoro's IPA-like symbols. Latin words are kept as graphemes, matching the
-// Chinese Kokoro frontend behavior for mixed-language text.
+// Kokoro. Mandarin uses the existing pinyin table; Latin words use the English
+// frontend so an English Kokoro voice receives phonemes rather than spelling.
 func KokoroTextToPhonemes(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -33,7 +32,7 @@ func KokoroTextToPhonemes(text string) string {
 			if b.Len() > 0 {
 				b.WriteRune(' ')
 			}
-			b.WriteString(word)
+			b.WriteString(kokoroEnglishWordToPhonemes(word))
 			i = j
 		case unicode.IsDigit(r):
 			if b.Len() > 0 {
@@ -53,6 +52,23 @@ func KokoroTextToPhonemes(text string) string {
 		}
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// kokoroEnglishWordToPhonemes applies brand aliases before the general English
+// G2P. The G2P fallback covers arbitrary words; aliases are only for names whose
+// intended pronunciation cannot be inferred reliably from spelling.
+func kokoroEnglishWordToPhonemes(word string) string {
+	switch strings.ToLower(word) {
+	case "maclaw":
+		// MaClaw: "Ma" + "Claw", not the visually similar surname McClaw.
+		return "mɑː klɔː"
+	default:
+		phs := englishWordToPhonemes(word)
+		if len(phs) == 0 {
+			return word
+		}
+		return strings.Join(phs, "")
+	}
 }
 
 func kokoroChineseRuneToPhonemes(r rune) string {
@@ -239,14 +255,6 @@ func kokoroTone(tone byte) string {
 		return "\u2198"
 	}
 	return ""
-}
-
-func kokoroEnglishWordToPhonemes(word string) string {
-	phs := englishWordToPhonemes(word)
-	if len(phs) == 0 {
-		return word
-	}
-	return strings.Join(phs, "")
 }
 
 func kokoroDigitToPhonemes(r rune) string {

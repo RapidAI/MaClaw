@@ -60,9 +60,24 @@ function ReplacementLauncher({ onFirstResult, onSecondResult }: {
     );
 }
 
+function ConfirmThenAlertLauncher({ onConfirmResult }: { onConfirmResult: (confirmed: boolean) => void }) {
+    const { showAlert, showConfirm } = useDialog();
+    return (
+        <>
+            <button onClick={() => { void showConfirm('destructive confirmation').then(onConfirmResult); }}>open-destructive</button>
+            <button onClick={() => { void showAlert('backend notice'); }}>open-notice</button>
+        </>
+    );
+}
+
 function PendingPromptLauncher({ onResult }: { onResult: (value: string | null) => void }) {
     const { showPrompt } = useDialog();
     return <button onClick={() => { void showPrompt('pending prompt').then(onResult); }}>open-pending</button>;
+}
+
+function PendingConfirmLauncher({ onResult }: { onResult: (confirmed: boolean) => void }) {
+    const { showConfirm } = useDialog();
+    return <button onClick={() => { void showConfirm('pending confirm').then(onResult); }}>open-pending-confirm</button>;
 }
 
 function FollowUpLauncher({ onFirstResult, onSecondResult }: {
@@ -286,6 +301,22 @@ describe('CustomDialog', () => {
         await waitFor(() => expect(document.activeElement).toBe(firstTrigger));
     });
 
+    it('safely cancels a confirmation when an alert replaces it', async () => {
+        const onConfirmResult = vi.fn();
+        render(
+            <DialogProvider>
+                <ConfirmThenAlertLauncher onConfirmResult={onConfirmResult} />
+            </DialogProvider>,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'open-destructive' }));
+        await screen.findByText('destructive confirmation');
+        fireEvent.click(screen.getByRole('button', { name: 'open-notice' }));
+
+        expect(await screen.findByText('backend notice')).toBeTruthy();
+        await waitFor(() => expect(onConfirmResult).toHaveBeenCalledWith(false));
+    });
+
     it('keeps the original focus target when a resolved dialog immediately opens a follow-up', async () => {
         const onFirstResult = vi.fn();
         const onSecondResult = vi.fn();
@@ -320,6 +351,21 @@ describe('CustomDialog', () => {
         view.unmount();
 
         await waitFor(() => expect(onResult).toHaveBeenCalledWith(null));
+    });
+
+    it('does not confirm a destructive action when the provider unmounts', async () => {
+        const onResult = vi.fn();
+        const view = render(
+            <DialogProvider>
+                <PendingConfirmLauncher onResult={onResult} />
+            </DialogProvider>,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'open-pending-confirm' }));
+        await screen.findByText('pending confirm');
+        view.unmount();
+
+        await waitFor(() => expect(onResult).toHaveBeenCalledWith(false));
     });
 
     it('keeps focus inside the dialog when another control tries to receive it', async () => {

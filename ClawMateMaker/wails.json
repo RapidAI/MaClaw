@@ -1,0 +1,11 @@
+{
+  "name": "ClawMateMaker",
+  "outputfilename": "ClawMateMaker",
+  "frontend:dir": "frontend",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {"name": "ClawMate"},
+  "info": {"companyName": "ClawMate", "productName": "ClawMate Maker", "productVersion": "0.1.0-dev"}
+}

@@ -27,6 +27,14 @@ type UserMessage struct {
 	// platform used to transport the message.
 	ClientCapabilities *ClientCapabilities `json:"client_capabilities,omitempty"`
 
+	// ClientTools is the per-client tool catalog declared by the originating
+	// third-party client. These tools are executed by that client rather than by
+	// the MaClaw host and therefore must stay scoped to this message/session.
+	ClientTools []ClientToolDefinition `json:"client_tools,omitempty"`
+	// ClientToolContext identifies the client-side execution target. It is
+	// transport-neutral routing data and contains no credentials.
+	ClientToolContext *ClientToolContext `json:"client_tool_context,omitempty"`
+
 	// IsBackground indicates this is a background task (scheduled, auto-picked).
 	IsBackground bool `json:"is_background,omitempty"`
 
@@ -72,6 +80,28 @@ type UserMessage struct {
 	// when the context is done (e.g. scheduler timeout or shutdown).
 	// Not serialized — only used for in-process signaling.
 	CancelCtx context.Context `json:"-"`
+}
+
+// ClientToolDefinition describes an untrusted tool implemented by a connected
+// client. Hosts validate and expose it only for messages from that client.
+type ClientToolDefinition struct {
+	Name             string            `json:"name"`
+	Description      string            `json:"description,omitempty"`
+	InputSchema      map[string]any    `json:"inputSchema,omitempty"`
+	OutputSchema     map[string]any    `json:"outputSchema,omitempty"`
+	Risk             string            `json:"risk,omitempty"`
+	RequiresApproval bool              `json:"requiresApproval,omitempty"`
+	TimeoutMs        int64             `json:"timeoutMs,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
+}
+
+// ClientToolContext routes a client tool call back to its declaring client.
+type ClientToolContext struct {
+	ClientID       string `json:"client_id"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	// ReplyToMessageID binds tool lifecycle messages to the command that owns
+	// the current hardware turn. It is optional for non-hardware clients.
+	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
 }
 
 // StartMenuLaunch contains non-sensitive task metadata carried with a

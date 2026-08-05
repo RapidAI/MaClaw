@@ -486,9 +486,10 @@ func TestThirdPartyToolProtocolValidation(t *testing.T) {
 		ID:   "tool-message-1",
 		Type: "tool_call",
 		ToolCall: &ThirdPartyToolCall{
-			ID:        " call-1 ",
-			Name:      "demo.get_time",
-			Arguments: map[string]any{"timezone": "Asia/Shanghai"},
+			ID:             " call-1 ",
+			Name:           "demo.get_time",
+			IdempotencyKey: "call-1",
+			Arguments:      map[string]any{"timezone": "Asia/Shanghai"},
 		},
 	}
 	if err := NormalizeThirdPartyOutgoingMessage(&msg); err != nil {
@@ -496,6 +497,19 @@ func TestThirdPartyToolProtocolValidation(t *testing.T) {
 	}
 	if msg.ToolCall.ID != "call-1" || msg.ToolCall.Risk != "read" {
 		t.Fatalf("unexpected normalized tool call: %#v", msg.ToolCall)
+	}
+}
+
+func TestThirdPartyHandshakeRejectsDuplicateToolNamesAfterNormalization(t *testing.T) {
+	hs := ThirdPartyHandshakeRequest{
+		ClientID: "demo-client",
+		Tools: []ThirdPartyToolDefinition{
+			{Name: "demo.echo"},
+			{Name: " demo.echo "},
+		},
+	}
+	if err := NormalizeThirdPartyHandshakeRequest(&hs); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("expected duplicate tool error, got %v", err)
 	}
 }
 
@@ -536,6 +550,58 @@ func TestThirdPartyToolResultRejectsUnstableIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestThirdPartyToolCancelRejectsAmbiguousCorrelation(t *testing.T) {
+	cancel := ThirdPartyToolCancel{ToolCallID: "call-1", ToolPlanID: "plan-1"}
+	if err := NormalizeThirdPartyToolCancel(&cancel); err == nil {
+		t.Fatal("expected mutually exclusive cancellation targets to fail")
+	}
+	cancel = ThirdPartyToolCancel{ToolCallID: "call-1", StepID: "step-1"}
+	if err := NormalizeThirdPartyToolCancel(&cancel); err == nil {
+		t.Fatal("expected stepId without toolPlanId to fail")
+	}
+}
+
+func TestThirdPartyToolResultRejectsAmbiguousCorrelationAndStatusPayload(t *testing.T) {
+	tests := []struct {
+		name string
+		req  ThirdPartyToolResultRequest
+		want string
+	}{
+		{
+			name: "call and plan",
+			req:  ThirdPartyToolResultRequest{ClientID: "demo", ToolCallID: "call-1", ToolPlanID: "plan-1", Status: "success"},
+			want: "mutually exclusive",
+		},
+		{
+			name: "orphan step",
+			req:  ThirdPartyToolResultRequest{ClientID: "demo", ToolCallID: "call-1", StepID: "step-1", Status: "success"},
+			want: "stepId requires",
+		},
+		{
+			name: "plan without step",
+			req:  ThirdPartyToolResultRequest{ClientID: "demo", ToolPlanID: "plan-1", Status: "success"},
+			want: "stepId is required",
+		},
+		{
+			name: "success with error",
+			req:  ThirdPartyToolResultRequest{ClientID: "demo", ToolCallID: "call-1", Status: "success", Error: &ThirdPartyToolError{Message: "bad"}},
+			want: "must be omitted",
+		},
+		{
+			name: "empty failure",
+			req:  ThirdPartyToolResultRequest{ClientID: "demo", ToolCallID: "call-1", Status: "error"},
+			want: "error or text",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := NormalizeThirdPartyToolResultRequest(&tt.req); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
 func TestThirdPartyToolCallRejectsUnstableIdempotencyKey(t *testing.T) {
 	msg := ThirdPartyOutgoingMessage{
 		ID:   "tool-message-1",
@@ -556,9 +622,10 @@ func TestThirdPartyToolPlanRejectsUnknownDependency(t *testing.T) {
 		ID:   "plan-1",
 		Mode: "dag",
 		Steps: []ThirdPartyToolPlanStep{{
-			ID:        "step-1",
-			Tool:      "demo.echo",
-			DependsOn: []string{"missing-step"},
+			ID:             "step-1",
+			Tool:           "demo.echo",
+			IdempotencyKey: "plan-1:step-1",
+			DependsOn:      []string{"missing-step"},
 		}},
 	}
 	if err := NormalizeThirdPartyToolPlan(&plan); err == nil || !strings.Contains(err.Error(), "unknown step") {
@@ -571,8 +638,8 @@ func TestThirdPartyToolPlanRejectsDependencyCycle(t *testing.T) {
 		ID:   "plan-1",
 		Mode: "dag",
 		Steps: []ThirdPartyToolPlanStep{
-			{ID: "step-1", Tool: "demo.echo", DependsOn: []string{"step-2"}},
-			{ID: "step-2", Tool: "demo.echo", DependsOn: []string{"step-1"}},
+			{ID: "step-1", Tool: "demo.echo", IdempotencyKey: "plan-1:step-1", DependsOn: []string{"step-2"}},
+			{ID: "step-2", Tool: "demo.echo", IdempotencyKey: "plan-1:step-2", DependsOn: []string{"step-1"}},
 		},
 	}
 	if err := NormalizeThirdPartyToolPlan(&plan); err == nil || !strings.Contains(err.Error(), "cycle") {
@@ -584,7 +651,7 @@ func TestThirdPartyToolPlanRejectsUnknownMode(t *testing.T) {
 	plan := ThirdPartyToolPlan{
 		ID:    "plan-1",
 		Mode:  "surprise",
-		Steps: []ThirdPartyToolPlanStep{{ID: "step-1", Tool: "demo.echo"}},
+		Steps: []ThirdPartyToolPlanStep{{ID: "step-1", Tool: "demo.echo", IdempotencyKey: "plan-1:step-1"}},
 	}
 	if err := NormalizeThirdPartyToolPlan(&plan); err == nil || !strings.Contains(err.Error(), "toolPlan.mode") {
 		t.Fatalf("expected mode validation error, got %v", err)
@@ -594,7 +661,7 @@ func TestThirdPartyToolPlanRejectsUnknownMode(t *testing.T) {
 func TestThirdPartyToolPlanDefaultsEmptyModeToSequential(t *testing.T) {
 	plan := ThirdPartyToolPlan{
 		ID:    "plan-1",
-		Steps: []ThirdPartyToolPlanStep{{ID: "step-1", Tool: "demo.echo"}},
+		Steps: []ThirdPartyToolPlanStep{{ID: "step-1", Tool: "demo.echo", IdempotencyKey: "plan-1:step-1"}},
 	}
 	if err := NormalizeThirdPartyToolPlan(&plan); err != nil {
 		t.Fatalf("NormalizeThirdPartyToolPlan: %v", err)

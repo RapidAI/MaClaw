@@ -7,6 +7,19 @@
  */
 export type CodingTaskAgentMode = "coding_dev" | "remote_coding_dev";
 
+/**
+ * Local-only presentation data for a newly created task. It is shown in the
+ * assistant tab as a status card and is never submitted as an agent message.
+ */
+export interface NewTaskContext {
+    kind: "new-task";
+    workingDir?: string;
+    remoteWorkDir?: string;
+    remoteUser?: string;
+    /** SSH port is safe display metadata; credentials never belong here. */
+    remotePort?: number;
+}
+
 export interface CodingTaskLaunch {
     projectPath: string;
     taskTitle: string;
@@ -22,6 +35,8 @@ export interface CodingTaskLaunch {
     imPlatform?: string;
     imTargetUID?: string;
     imIsGroup?: boolean;
+    /** One-shot local context shown after a task-management creation. */
+    newTaskContext?: NewTaskContext;
 }
 
 /** Coerce untrusted Wails/event payloads into the one safe launch contract. */
@@ -33,6 +48,20 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         ? rawMode
         : undefined;
     const remoteHost = String(input?.remoteHost || "").trim() || undefined;
+    const rawContext = input?.newTaskContext;
+    const parsedRemotePort = Number(rawContext?.remotePort);
+    const remotePort = Number.isInteger(parsedRemotePort) && parsedRemotePort > 0 && parsedRemotePort < 65536
+        ? parsedRemotePort
+        : undefined;
+    const newTaskContext = rawContext?.kind === "new-task"
+        ? {
+            kind: "new-task" as const,
+            workingDir: String(rawContext.workingDir || "").trim() || undefined,
+            remoteWorkDir: String(rawContext.remoteWorkDir || "").trim() || undefined,
+            remoteUser: String(rawContext.remoteUser || "").trim() || undefined,
+            remotePort,
+        }
+        : undefined;
     return {
         projectPath,
         taskTitle: String(input?.taskTitle || "").trim() || projectPath,
@@ -49,5 +78,6 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         imPlatform: String(input?.imPlatform || "").trim() || undefined,
         imTargetUID: String(input?.imTargetUID || "").trim() || undefined,
         imIsGroup: input?.imIsGroup === true,
+        newTaskContext,
     };
 }

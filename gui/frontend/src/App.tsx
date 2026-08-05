@@ -90,6 +90,7 @@ import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId } from './config/settingsTabs';
+import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
@@ -567,7 +568,7 @@ function App() {
     }, [openExpertTabIDs, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
-    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
+    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; created_at?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
     const taskItemsRef = useRef(taskItems);
     taskItemsRef.current = taskItems;
     // A ListTasks response can complete after a task was just created locally.
@@ -875,8 +876,8 @@ function App() {
             setNavTabNow('settings');
             selectSettingsTab(tab);
         };
-        window.addEventListener('maclaw:open-settings', openSettings);
-        return () => window.removeEventListener('maclaw:open-settings', openSettings);
+        window.addEventListener(OPEN_SETTINGS_EVENT, openSettings);
+        return () => window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
     }, [setNavTabNow, selectSettingsTab, veNavigationAvailable]);
     const openMISDataSettings = useCallback(() => {
         setNavTabNow('settings');
@@ -2838,6 +2839,9 @@ function App() {
             let remoteHost: string | undefined;
             let remoteSafety: 'diagnosis' | undefined;
             const localWorkDir = (workingDir || '').trim();
+            const remotePort = Number.isInteger(remote?.port) && (remote?.port || 0) > 0 && (remote?.port || 0) < 65536
+                ? remote!.port
+                : 22;
 
             if (mode === 'remote_coding_dev') {
                 if (!remote?.host?.trim() || !remote?.user?.trim() || !remote?.password || !remote?.workDir?.trim()) {
@@ -2854,7 +2858,7 @@ function App() {
                     remoteHost,
                     remote.user.trim(),
                     remote.workDir.trim(),
-                    remote.port || 22,
+                    remotePort,
                 );
                 if (!created?.project_path) {
                     throw new Error('创建远程编程任务失败');
@@ -2871,7 +2875,7 @@ function App() {
                         remote.user.trim(),
                         remote.password,
                         remote.workDir.trim(),
-                        remote.port || 22,
+                        remotePort,
                     );
                 } catch (prepareError) {
                     // The task may be a reused remote-project record. Keep it on
@@ -2887,7 +2891,7 @@ function App() {
                         remoteHost,
                         remote.user.trim(),
                         remote.password,
-                        remote.port || 22,
+                        remotePort,
                         remote.workDir.trim(),
                     );
                 }
@@ -2924,12 +2928,21 @@ function App() {
             openCodingTask({
                 projectPath: created.project_path,
                 taskTitle: created.name || taskName.split('\n')[0]?.trim() || taskName,
-                initialMessage: taskName,
                 prepareMode: 'new-agent',
-                autoSend: true,
+                // Creating a task prepares its environment only. The user's
+                // first request is entered deliberately in the assistant tab.
+                autoSend: false,
                 agentMode,
                 remoteHost,
                 remoteSafety,
+                newTaskContext: {
+                    kind: 'new-task',
+                    // Chat tasks may also be created against a chosen folder.
+                    workingDir: mode !== 'remote_coding_dev' ? localWorkDir : undefined,
+                    remoteWorkDir: mode === 'remote_coding_dev' ? remote?.workDir.trim() : undefined,
+                    remoteUser: mode === 'remote_coding_dev' ? remote?.user.trim() : undefined,
+                    remotePort: mode === 'remote_coding_dev' ? remotePort : undefined,
+                },
             });
         } catch (error) {
             console.error("CreateTask failed:", error);

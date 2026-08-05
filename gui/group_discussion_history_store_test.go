@@ -68,6 +68,41 @@ func TestGroupDiscussionHistoryStoreCachesSummariesAndHideState(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionHistoryStoreKeepsCreationOrderAfterUpdates(t *testing.T) {
+	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("NewGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	firstCreated := time.Now().UTC().Add(-time.Hour)
+	secondCreated := firstCreated.Add(time.Minute)
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{
+		{ID: "first", Topic: "First", CreatedAt: firstCreated, UpdatedAt: firstCreated},
+		{ID: "second", Topic: "Second", CreatedAt: secondCreated, UpdatedAt: secondCreated},
+	}, nil); err != nil {
+		t.Fatalf("CacheSummaries initial: %v", err)
+	}
+
+	// A later message refreshes the first discussion, but must not move it below
+	// the newer second discussion in the history sidebar.
+	if err := store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{
+		// Hub refreshes can omit CreatedAt. The store must retain the original
+		// value rather than make this row jump due to its newer UpdatedAt.
+		{ID: "first", Topic: "First updated", UpdatedAt: time.Now().UTC()},
+	}, nil); err != nil {
+		t.Fatalf("CacheSummaries update: %v", err)
+	}
+	got, err := store.CachedSummaries(ctx, false)
+	if err != nil {
+		t.Fatalf("CachedSummaries: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "first" || got[1].ID != "second" {
+		t.Fatalf("creation order changed after update: %+v", got)
+	}
+}
+
 func TestGroupDiscussionHistoryStoreCacheSummariesNormalizesRelationAndReadonly(t *testing.T) {
 	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {

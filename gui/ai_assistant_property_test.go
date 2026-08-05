@@ -306,6 +306,45 @@ func TestAIAssistantClientHistoryReconciliationSkipsDivergentHistory(t *testing.
 	}
 }
 
+func TestAIAssistantClientHistoryReconciliationSkipsRecoveryAndUIActions(t *testing.T) {
+	tests := []struct {
+		name   string
+		req    AIAssistantSendRequest
+		userID string
+	}{
+		{name: "ordinary local message", req: AIAssistantSendRequest{Text: "continue"}, userID: desktopUserID},
+		{name: "ordinary project message", req: AIAssistantSendRequest{Text: "continue"}, userID: desktopUserID + ":D:/tasks/isolated"},
+		{name: "ordinary expert message", req: AIAssistantSendRequest{Text: "continue"}, userID: desktopUserID + ":expert:reviewer"},
+		{name: "ui action", req: AIAssistantSendRequest{Text: "continue", UIAction: true}, userID: desktopUserID},
+		{name: "unfinished recovery", req: AIAssistantSendRequest{Text: "continue", ResumeSlotID: "slot-1"}, userID: desktopUserID},
+		{name: "unfinished dismissal", req: AIAssistantSendRequest{Text: "continue", DismissSlotID: "slot-1"}, userID: desktopUserID},
+		{name: "new task", req: AIAssistantSendRequest{Text: "continue", StartNewTask: true}, userID: desktopUserID},
+		{name: "session recovery", req: AIAssistantSendRequest{Text: "continue", ResumeSessionID: "session-1"}, userID: desktopUserID},
+		{name: "session dismissal", req: AIAssistantSendRequest{Text: "continue", DismissRecoverableSessionID: "session-1"}, userID: desktopUserID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldReconcileAIAssistantClientHistory(tt.req, tt.userID)
+			want := tt.name == "ordinary local message"
+			if got != want {
+				t.Fatalf("shouldReconcileAIAssistantClientHistory(%+v) = %v, want %v", tt.req, got, want)
+			}
+		})
+	}
+}
+
+func TestAIAssistantClientHistoryReconciliationPolicyAlsoProtectsACPProjectSessions(t *testing.T) {
+	req := AIAssistantSendRequest{
+		Text:           "continue implementation",
+		ProjectPath:    `D:\work\isolated-project`,
+		RecentMessages: []AIAssistantContextMessage{{Role: "user", Content: "C:/other-session/private-file.txt"}},
+	}
+	projectUserID := desktopAIAssistantUserIDForProjectPath(req.ProjectPath)
+	if shouldReconcileAIAssistantClientHistory(req, projectUserID) {
+		t.Fatal("ACP project session must not reconcile client transcript")
+	}
+}
+
 func TestAIAssistantClientHistorySanitizesAdjacentAssistantDuplicates(t *testing.T) {
 	clientHistory := []AIAssistantContextMessage{
 		{Role: "user", Content: "weather"},

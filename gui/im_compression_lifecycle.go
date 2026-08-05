@@ -8,7 +8,7 @@ import (
 )
 
 func (h *IMMessageHandler) persistCompressionSummaryOnExit(userID string, summary *string) {
-	if h == nil || h.memoryStore == nil || summary == nil || *summary == "" {
+	if h == nil || h.memoryStore == nil || summary == nil || *summary == "" || isIsolatedAssistantSessionUserID(userID) {
 		return
 	}
 	memoryStore := h.memoryStore

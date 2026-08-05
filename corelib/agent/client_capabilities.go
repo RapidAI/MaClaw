@@ -67,10 +67,11 @@ type ClientFeatureCapabilities struct {
 	// exact GUI-rendered frame but choose not to animate it.  Treating the two
 	// as one flag made capable ESP clients either receive no asset at all or
 	// have to overstate their animation support.
-	PetAsset        bool `json:"petAsset,omitempty"`
-	AmbientDisplay  bool `json:"ambientDisplay,omitempty"`
-	MeetingRecorder bool `json:"meetingRecorder,omitempty"`
-	VolumeControl   bool `json:"volumeControl,omitempty"`
+	PetAsset          bool `json:"petAsset,omitempty"`
+	PetAssetMaxFrames int  `json:"petAssetMaxFrames,omitempty"`
+	AmbientDisplay    bool `json:"ambientDisplay,omitempty"`
+	MeetingRecorder   bool `json:"meetingRecorder,omitempty"`
+	VolumeControl     bool `json:"volumeControl,omitempty"`
 }
 
 const (
@@ -91,6 +92,10 @@ func NormalizeClientCapabilities(in *ClientCapabilities) ClientCapabilities {
 	var out ClientCapabilities
 	if in != nil {
 		out = *in
+	}
+	out.Features.PetAssetMaxFrames = clampInt(out.Features.PetAssetMaxFrames, 0, 8)
+	if !out.Features.PetAsset || !out.Features.PetAnimation {
+		out.Features.PetAssetMaxFrames = 0
 	}
 	out.Input.Modalities = normalizeModalities(out.Input.Modalities)
 	out.Output.Modalities = normalizeModalities(out.Output.Modalities)

@@ -61,6 +61,10 @@ type IMAuditStore struct {
 	writeCh   chan IMAuditMessage // async write channel
 	done      chan struct{}       // signals writer goroutine exit
 	closing   chan struct{}
+	stateMu   sync.Mutex
+	stateCond *sync.Cond
+	accepted  uint64 // messages accepted by the queue
+	processed uint64 // accepted messages attempted by the writer
 	cleanupWG sync.WaitGroup
 	closeOnce sync.Once
 	closeErr  error
@@ -77,10 +81,22 @@ func NewIMAuditStore(dbPath string) (*IMAuditStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("im audit store: open db: %w", err)
 	}
+	// A single connection keeps connection-scoped PRAGMAs deterministic and
+	// matches the store's serialized write/maintenance model. Audit operations
+	// are short; serial access also prevents connection-specific lock surprises.
+	db.SetMaxOpenConns(1)
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("im audit store: set WAL: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("im audit store: set busy timeout: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("im audit store: set synchronous mode: %w", err)
 	}
 
 	if err := createIMAuditSchema(db); err != nil {
@@ -94,6 +110,7 @@ func NewIMAuditStore(dbPath string) (*IMAuditStore, error) {
 		done:    make(chan struct{}),
 		closing: make(chan struct{}),
 	}
+	store.stateCond = sync.NewCond(&store.stateMu)
 
 	// Background writer goroutine — drains writeCh and batches INSERTs.
 	go store.writeLoop()
@@ -118,6 +135,7 @@ CREATE TABLE IF NOT EXISTS im_audit_messages (
 CREATE INDEX IF NOT EXISTS idx_im_audit_ts ON im_audit_messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_im_audit_platform ON im_audit_messages(platform);
 CREATE INDEX IF NOT EXISTS idx_im_audit_user ON im_audit_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_im_audit_platform_user ON im_audit_messages(platform, user_id);
 `
 	if _, err := db.Exec(schema); err != nil {
 		return err
@@ -159,8 +177,9 @@ CREATE INDEX IF NOT EXISTS idx_im_audit_user ON im_audit_messages(user_id);
 
 // Write enqueues an audit message for async persistence.
 // Non-blocking: if the channel is full, the message is dropped (logged).
-// Platform is normalized at write time (e.g. "weixin_local" → "weixin")
-// so all read paths use simple equality matching with zero mapping logic.
+// Platform is normalized at write time (e.g. "weixin_local" → "weixin").
+// Third-party client suffixes are retained so records remain attributable to
+// a particular gateway/device.
 func (s *IMAuditStore) Write(msg IMAuditMessage) {
 	s.enqueue(msg, false)
 }
@@ -193,6 +212,7 @@ func (s *IMAuditStore) enqueue(msg IMAuditMessage, critical bool) bool {
 		case <-s.closing:
 			return false
 		case s.writeCh <- msg:
+			s.markAccepted()
 			return true
 		case <-timer.C:
 			log.Printf("[im-audit] critical write queue timeout for user=%s", msg.UserID)
@@ -203,11 +223,18 @@ func (s *IMAuditStore) enqueue(msg IMAuditMessage, critical bool) bool {
 	case <-s.closing:
 		return false
 	case s.writeCh <- msg:
+		s.markAccepted()
 		return true
 	default:
 		log.Printf("[im-audit] write channel full, dropping message for user=%s", msg.UserID)
 		return false
 	}
+}
+
+func (s *IMAuditStore) markAccepted() {
+	s.stateMu.Lock()
+	s.accepted++
+	s.stateMu.Unlock()
 }
 
 // writeLoop is the background goroutine that drains writeCh and writes to SQLite.
@@ -236,46 +263,94 @@ func (s *IMAuditStore) writeLoop() {
 			}
 		}
 
-		s.mu.Lock()
-		if len(batch) == 1 {
-			_, err := s.db.Exec(
-				`INSERT INTO im_audit_messages (timestamp, user_id, platform, role, content, attachment_path, attachment_name, attachment_media_type, attachment_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				batch[0].Timestamp, batch[0].UserID, batch[0].Platform, batch[0].Role, batch[0].Content,
-				batch[0].AttachmentPath, batch[0].AttachmentName, batch[0].AttachmentMediaType, batch[0].AttachmentSize,
-			)
-			if err != nil {
-				log.Printf("[im-audit] write error: %v", err)
-			}
-		} else {
-			tx, err := s.db.Begin()
-			if err != nil {
-				log.Printf("[im-audit] begin tx error: %v", err)
-				s.mu.Unlock()
-				continue
-			}
-			stmt, err := tx.Prepare(`INSERT INTO im_audit_messages (timestamp, user_id, platform, role, content, attachment_path, attachment_name, attachment_media_type, attachment_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			if err != nil {
-				log.Printf("[im-audit] prepare error: %v", err)
-				tx.Rollback()
-				s.mu.Unlock()
-				continue
-			}
-			for _, m := range batch {
-				if _, err := stmt.Exec(m.Timestamp, m.UserID, m.Platform, m.Role, m.Content, m.AttachmentPath, m.AttachmentName, m.AttachmentMediaType, m.AttachmentSize); err != nil {
-					log.Printf("[im-audit] batch insert error: %v", err)
-				}
-			}
-			stmt.Close()
-			if err := tx.Commit(); err != nil {
-				log.Printf("[im-audit] commit error: %v", err)
-			}
-		}
-		s.mu.Unlock()
+		s.processBatch(batch)
 	}
+}
+
+func (s *IMAuditStore) processBatch(batch []IMAuditMessage) {
+	// Every dequeued message must cross the flush barrier, even when SQLite
+	// rejects the batch. Otherwise all later history reads can wait forever.
+	defer s.markProcessed(len(batch))
+	if err := s.persistBatch(batch); err != nil {
+		log.Printf("[im-audit] persist batch (%d messages): %v", len(batch), err)
+	}
+}
+
+func (s *IMAuditStore) markProcessed(count int) {
+	s.stateMu.Lock()
+	s.processed += uint64(count)
+	s.stateCond.Broadcast()
+	s.stateMu.Unlock()
+}
+
+func (s *IMAuditStore) persistBatch(batch []IMAuditMessage) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	const insertSQL = `INSERT INTO im_audit_messages (timestamp, user_id, platform, role, content, attachment_path, attachment_name, attachment_media_type, attachment_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if len(batch) == 1 {
+		m := batch[0]
+		_, err := s.db.Exec(insertSQL, m.Timestamp, m.UserID, m.Platform, m.Role, m.Content, m.AttachmentPath, m.AttachmentName, m.AttachmentMediaType, m.AttachmentSize)
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	stmt, err := tx.Prepare(insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert: %w", err)
+	}
+	for _, m := range batch {
+		if _, err := stmt.Exec(m.Timestamp, m.UserID, m.Platform, m.Role, m.Content, m.AttachmentPath, m.AttachmentName, m.AttachmentMediaType, m.AttachmentSize); err != nil {
+			_ = stmt.Close()
+			return fmt.Errorf("insert message: %w", err)
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		return fmt.Errorf("close insert statement: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// flush waits until all messages accepted before this call have been written.
+// Query-like operations use the barrier so opening/refreshing chat history
+// immediately after a reply cannot temporarily omit the latest exchange.
+func (s *IMAuditStore) flush() {
+	if s == nil {
+		return
+	}
+	// Exclude enqueues just long enough to capture a stable target. The writer
+	// continues draining concurrently, so this does not serialize DB I/O.
+	s.enqueueMu.Lock()
+	s.stateMu.Lock()
+	target := s.accepted
+	s.enqueueMu.Unlock()
+	for s.processed < target {
+		s.stateCond.Wait()
+	}
+	s.stateMu.Unlock()
 }
 
 // Query returns paginated messages matching the filters.
 func (s *IMAuditStore) Query(platform, userID, keyword string, page int) (*IMAuditQueryResult, error) {
+	s.flush()
 	if page < 1 {
 		page = 1
 	}
@@ -283,10 +358,17 @@ func (s *IMAuditStore) Query(platform, userID, keyword string, page int) (*IMAud
 
 	where, args := buildIMAuditWhere(platform, userID, keyword)
 
-	// Count total.
+	// Count and fetch from one snapshot so concurrent audit writes cannot make
+	// the reported total disagree with the returned page.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("im audit: begin query: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var total int
 	countSQL := "SELECT COUNT(*) FROM im_audit_messages" + where
-	if err := s.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
+	if err := tx.QueryRow(countSQL, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("im audit: count: %w", err)
 	}
 
@@ -297,19 +379,28 @@ func (s *IMAuditStore) Query(platform, userID, keyword string, page int) (*IMAud
 	copy(queryArgs, args)
 	queryArgs = append(queryArgs, imAuditPageSize, offset)
 
-	rows, err := s.db.Query(querySQL, queryArgs...)
+	rows, err := tx.Query(querySQL, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("im audit: query: %w", err)
 	}
-	defer rows.Close()
-
 	var messages []IMAuditMessage
 	for rows.Next() {
 		var m IMAuditMessage
 		if err := rows.Scan(&m.ID, &m.Timestamp, &m.UserID, &m.Platform, &m.Role, &m.Content, &m.AttachmentPath, &m.AttachmentName, &m.AttachmentMediaType, &m.AttachmentSize); err != nil {
+			_ = rows.Close()
 			return nil, fmt.Errorf("im audit: scan: %w", err)
 		}
 		messages = append(messages, m)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("im audit: rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("im audit: close rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("im audit: commit query: %w", err)
 	}
 	if messages == nil {
 		messages = []IMAuditMessage{}
@@ -320,7 +411,7 @@ func (s *IMAuditStore) Query(platform, userID, keyword string, page int) (*IMAud
 		Total:    total,
 		Page:     page,
 		PageSize: imAuditPageSize,
-	}, rows.Err()
+	}, nil
 }
 
 // DeleteBefore removes messages older than the given number of days.
@@ -335,6 +426,7 @@ func (s *IMAuditStore) DeleteBeforeWithAttachmentPaths(days int) (int64, []strin
 	if days <= 0 {
 		return 0, nil, fmt.Errorf("im audit: retention days must be positive")
 	}
+	s.flush()
 	threshold := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -374,6 +466,7 @@ func (s *IMAuditStore) DeleteBeforeWithAttachmentPaths(days int) (int64, []strin
 }
 
 func (s *IMAuditStore) AllAttachmentPaths() ([]string, error) {
+	s.flush()
 	rows, err := s.db.Query(`SELECT attachment_path FROM im_audit_messages WHERE attachment_path <> ''`)
 	if err != nil {
 		return nil, err
@@ -392,12 +485,14 @@ func (s *IMAuditStore) AllAttachmentPaths() ([]string, error) {
 
 // ListUsers returns distinct user IDs for the given platform.
 func (s *IMAuditStore) ListUsers(platform string) ([]string, error) {
+	s.flush()
 	var rows *sql.Rows
 	var err error
 	platformKind := normalizeIMAuditPlatformKind(platform)
 	if platformKind.IsThirdParty() {
 		rows, err = s.db.Query(
-			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform LIKE ? ORDER BY user_id`, imAuditPlatformThirdParty.String()+":%")
+			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform = ? OR platform GLOB ? ORDER BY user_id`,
+			imAuditPlatformThirdParty.String(), imAuditPlatformThirdParty.String()+":*")
 	} else if platformKind != imAuditPlatformUnknown {
 		rows, err = s.db.Query(
 			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform = ? ORDER BY user_id`, platformKind.String())
@@ -429,6 +524,7 @@ func (s *IMAuditStore) ListUsers(platform string) ([]string, error) {
 
 // Stats returns per-platform message counts.
 func (s *IMAuditStore) Stats() (*IMAuditStats, error) {
+	s.flush()
 	rows, err := s.db.Query(
 		`SELECT platform, COUNT(*) FROM im_audit_messages GROUP BY platform`)
 	if err != nil {
@@ -463,6 +559,7 @@ func (s *IMAuditStore) Stats() (*IMAuditStats, error) {
 
 // ExportCSV exports matching messages to a CSV file and returns the file path.
 func (s *IMAuditStore) ExportCSV(platform, userID, keyword, outputDir string) (string, error) {
+	s.flush()
 	where, args := buildIMAuditWhere(platform, userID, keyword)
 	querySQL := "SELECT timestamp, user_id, platform, role, content, attachment_name, attachment_media_type, attachment_size, attachment_path FROM im_audit_messages" + where +
 		" ORDER BY timestamp ASC, id ASC"
@@ -608,15 +705,19 @@ func (s *IMAuditStore) Close() error {
 }
 
 // buildIMAuditWhere constructs the WHERE clause and args for query/export.
-// Platform values are already normalized at write time, so simple equality works.
+// Platform values are normalized at write time. Third-party records may be the
+// bare Hub platform or a client-specific local gateway value.
 func buildIMAuditWhere(platform, userID, keyword string) (string, []interface{}) {
 	var conditions []string
 	var args []interface{}
 
 	platformKind := normalizeIMAuditPlatformKind(platform)
 	if platformKind.IsThirdParty() {
-		conditions = append(conditions, "platform LIKE ?")
-		args = append(args, imAuditPlatformThirdParty.String()+":%")
+		// GLOB's literal prefix is indexable by SQLite. LIKE is case-insensitive
+		// by default and caused a full table scan despite idx_im_audit_platform.
+		// Stored third-party platforms are already normalized to lower case.
+		conditions = append(conditions, "(platform = ? OR platform GLOB ?)")
+		args = append(args, imAuditPlatformThirdParty.String(), imAuditPlatformThirdParty.String()+":*")
 	} else if platformKind != imAuditPlatformUnknown {
 		conditions = append(conditions, "platform = ?")
 		args = append(args, platformKind.String())
@@ -640,18 +741,21 @@ func buildIMAuditWhere(platform, userID, keyword string) (string, []interface{})
 }
 
 // normalizeIMAuditPlatform maps gateway-specific platform strings to canonical
-// names used in the audit database. This is the SINGLE normalization point —
-// all read paths (Query, ListUsers, Stats, ExportCSV) use simple equality
-// matching against these canonical names.
+// names used in the audit database. This is the SINGLE write normalization
+// point. Third-party suffixes are significant provenance and must not be
+// collapsed into the family name.
 //
 // Adding a new IM gateway only requires adding one line here.
 func normalizeIMAuditPlatform(platform string) string {
-	if kind := normalizeIMAuditPlatformKind(platform); kind != imAuditPlatformUnknown {
+	trimmed := strings.ToLower(strings.TrimSpace(platform))
+	if kind := normalizeIMAuditPlatformKind(trimmed); kind.IsThirdParty() {
+		return trimmed
+	} else if kind != imAuditPlatformUnknown {
 		return kind.String()
 	}
-	if platform != "" {
+	if strings.TrimSpace(platform) != "" {
 		// Already canonical, or unknown — store as-is.
-		return platform
+		return strings.TrimSpace(platform)
 	}
 	return ""
 }

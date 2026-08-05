@@ -92,6 +92,7 @@ func createStoreWithProjectEntries(t testing.TB, projectPath string, numEntries 
 			Content:   fmt.Sprintf("Project entry %d for testing", i),
 			Category:  cat,
 			Scope:     memory.ScopeProject,
+			OwnerID:   projectSessionOwnerID(projectPath),
 			Tags:      []string{projectPath, fmt.Sprintf("tag_%d", i)},
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),

@@ -91,6 +91,9 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	if clientContext := buildClientCapabilityPrompt(msg.ClientCapabilities); clientContext != "" {
 		systemPrompt += "\n\n" + clientContext
 	}
+	if clientToolContext := buildClientToolPrompt(msg.ClientTools, loopCtx); clientToolContext != "" {
+		systemPrompt += "\n\n" + clientToolContext
+	}
 
 	// During V2 workflow agent loops, skip the desktop/IM workflow doc delivery
 	// overrides. The phase prompt already contains precise output instructions
@@ -151,11 +154,46 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) strin
 		b.WriteString(clientContext)
 		b.WriteByte('\n')
 	}
+	if clientToolContext := buildClientToolPrompt(msg.ClientTools, nil); clientToolContext != "" {
+		b.WriteString(clientToolContext)
+		b.WriteByte('\n')
+	}
 	return b.String()
 }
 
 func buildClientCapabilityPrompt(capabilities *agent.ClientCapabilities) string {
 	return agent.BuildClientCapabilityPrompt(capabilities)
+}
+
+// buildClientToolPrompt makes device-local actions explicit to the model. Tool
+// schemas alone are not enough: otherwise a model can answer "already set"
+// without making a call, or prefer a host scheduler when both are available.
+func buildClientToolPrompt(clientTools []agent.ClientToolDefinition, loopCtx *LoopContext) string {
+	if len(clientTools) == 0 {
+		return ""
+	}
+	available := make(map[string]bool, len(clientTools))
+	for _, definition := range clientTools {
+		if name := strings.TrimSpace(definition.Name); name != "" {
+			available[name] = true
+		}
+	}
+	if !available["alarm_create"] && !available["alarm_clear"] && !available["alarm_clear_all"] && !available["alarm_list"] {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("Device-local alarm contract (mandatory):\n")
+	b.WriteString("- The alarm_* tools in this turn run on the current ESP32 device, not on the computer or MaClaw GUI.\n")
+	b.WriteString("- For a spoken request to set, cancel, or list an alarm on this device, use the matching alarm_* tool. Never claim an alarm was set, cancelled, or listed unless you called that tool.\n")
+	if available["alarm_create"] {
+		b.WriteString("- For \"设置闹钟\" / \"几分钟后叫我\" and similar requests, call alarm_create. Resolve the spoken time to a future absolute triggerAtEpochMs (Unix milliseconds) and include a short label when useful.\n")
+	}
+	b.WriteString("- Do not create a host/GUI scheduled task for an ordinary device alarm. Use a host schedule only when the user explicitly asks for a computer/MaClaw task or a task that must run while this device is offline.\n")
+	if loopCtx != nil && loopCtx.ClientToolContext != nil && strings.TrimSpace(loopCtx.ClientToolContext.ClientID) != "" {
+		fmt.Fprintf(&b, "- Tool calls are routed to the current device (%s); report a dispatch as a device request, and treat its later tool_result as authoritative.\n", strings.TrimSpace(loopCtx.ClientToolContext.ClientID))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMessage ...string) string {
@@ -715,7 +753,7 @@ func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFir
 	if h.memoryStore == nil {
 		return
 	}
-	strictOwner := isLansengerGroupConversationUserID(userID)
+	strictOwner := isIsolatedAssistantSessionUserID(userID)
 	opts := corememory.StaticUserMemoryPromptOptions("\n"+corememory.PromptSectionUserMemory, isFirstTurn && !strictOwner, corememory.BuildIMMemoryGuidePrompt())
 	opts.UserFacts.OwnerID = userID
 	opts.UserFacts.StrictOwner = strictOwner
@@ -731,7 +769,9 @@ func isLansengerGroupConversationUserID(userID string) bool {
 // the plain "desktop-user" constant without a colon suffix.
 func isProjectTabUserID(userID string) bool {
 	const prefix = desktopUserID + ":"
-	return strings.HasPrefix(userID, prefix) && len(userID) > len(prefix)
+	return strings.HasPrefix(userID, prefix) && len(userID) > len(prefix) &&
+		!strings.HasPrefix(userID, expertSessionUserIDPrefix) &&
+		!isACPAssistantSessionUserID(userID)
 }
 
 // appendProactiveRecall performs per-message proactive recall and appends
@@ -775,7 +815,11 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 
 	opts := corememory.IMProactivePromptOptions(projectPath, strictProject)
 	opts.Recall.OwnerID = userID
-	opts.Recall.StrictOwner = isLansengerGroupConversationUserID(userID)
+	// Active project, expert, and group conversations have an exact owner
+	// boundary. The core memory layer may still admit an explicitly archived
+	// global experience; no ordinary/shared/raw memory crosses this boundary.
+	opts.Recall.StrictOwner = isIsolatedAssistantSessionUserID(userID)
+	opts.Recall.AllowArchivedExperience = isIsolatedAssistantSessionUserID(userID)
 	opts.EventContext = firstLifecycleEventContext(eventContext)
 	opts.Recall.Provider = h.proactiveExperienceProviderForUser(userID)
 	promptContext, relevant, ok := h.proactiveContextForPromptWithBudget(msg, opts, userID, projectPath, strictProject)

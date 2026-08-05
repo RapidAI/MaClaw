@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, messageBelongsToSession, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "../aiAssistantPanelSessionUtils";
+import { buildProjectTabRecentMessages, chatHistoriesEquivalent, isACPAssistantSessionKey, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -37,5 +37,12 @@ describe("aiAssistantPanelSessionUtils", () => {
     it("matches legacy slash variants to the normalized session", () => {
         const message = { id: "m1", role: "assistant", content: "ok", sessionKey: "desktop-user:d:\\workprj\\task\\" } as ChatMessage;
         expect(messageBelongsToSession(message, "desktop-user:D:/workprj/task")).toBe(true);
+    });
+
+    it("keeps ACP owners opaque and outside path-based routing", () => {
+        const owner = "desktop-user:acp:acp_gui_session_42";
+        expect(isACPAssistantSessionKey(owner)).toBe(true);
+        expect(normalizeAssistantSessionKey(owner)).toBe(owner);
+        expect(projectPathFromSessionKey(owner)).toBe("");
     });
 });

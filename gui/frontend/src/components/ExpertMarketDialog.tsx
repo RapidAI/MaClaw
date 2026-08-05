@@ -8,6 +8,7 @@ import {
     WithdrawExpertMarketListing,
 } from '../../wailsjs/go/main/App';
 import { useDialog } from './CustomDialog';
+import { openSettingsTab } from '../utils/settingsNavigation';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type Listing = Record<string, any>;
@@ -63,6 +64,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     const submissionOverridesRef = useRef<Record<string, string>>({});
     const confirmingRef = useRef('');
     const mountedRef = useRef(true);
+    const restoreFocusOnCloseRef = useRef(true);
     closeRef.current = onClose;
 
     const purchases = useMemo(() => Array.isArray(account?.purchases) ? account.purchases as Listing[] : [], [account]);
@@ -70,6 +72,13 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         const status = submissionOverrides[String(entry.id || '')];
         return status ? { ...entry, status } : entry;
     }), [account, submissionOverrides]);
+
+    const openAssetManagement = () => {
+        // The destination settings tab owns focus after navigation.
+        restoreFocusOnCloseRef.current = false;
+        openSettingsTab('assetManagement');
+        onClose();
+    };
     const uploadPageCount = Math.max(1, Math.ceil(uploads.length / LIBRARY_PAGE_SIZE));
     const currentUploadsPage = Math.min(uploadsPage, uploadPageCount);
     // Account reconciliation can reduce the number of submissions while the
@@ -200,7 +209,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
         return () => {
             window.clearTimeout(focusTimer);
             window.removeEventListener('keydown', onKeyDown, true);
-            if (previousFocus?.isConnected) previousFocus.focus();
+            if (restoreFocusOnCloseRef.current && previousFocus?.isConnected) previousFocus.focus();
         };
     }, []);
 
@@ -334,11 +343,16 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
     return <div className="expert-market-overlay" role="presentation">
         <section ref={dialogRef} className="expert-market-shell" role="dialog" aria-modal="true" aria-label={t(lang, 'AI 专家市场', 'AI Expert Market')}>
             <header className="expert-market-header"><div><h2>{t(lang, 'AI 专家市场', 'AI Expert Market')}</h2><p>{t(lang, '发现、获取并安装经过审核的 AI 专家。', 'Discover, get, and install reviewed AI experts.')}</p></div><button className="expert-market-close" type="button" aria-label={t(lang, '关闭', 'Close')} onClick={onClose}>×</button></header>
-            <nav className="expert-market-tabs" role="tablist" aria-label={t(lang, '专家市场导航', 'Expert market navigation')}>
-                <button ref={marketTabRef} id="expert-market-tab-market" role="tab" type="button" tabIndex={tab === 'market' ? 0 : -1} aria-selected={tab === 'market'} aria-controls="expert-market-panel-market" className={tab === 'market' ? 'active' : ''} onClick={() => selectTab('market')} onKeyDown={event => handleTabKeyDown(event, 'market')}>{t(lang, '探索市场', 'Explore')}</button>
-                <button ref={libraryTabRef} id="expert-market-tab-library" role="tab" type="button" tabIndex={tab === 'library' ? 0 : -1} aria-selected={tab === 'library'} aria-controls="expert-market-panel-library" className={tab === 'library' ? 'active' : ''} onClick={() => selectTab('library')} onKeyDown={event => handleTabKeyDown(event, 'library')}>{t(lang, '我的库', 'My library')}</button>
-                <span className="expert-market-balance">{t(lang, '余额', 'Balance')} <strong>{accountLoading && !account ? '—' : `${number(account?.credits)} Credits`}</strong></span>
-            </nav>
+            <div className="expert-market-tabs">
+                <div className="expert-market-tablist" role="tablist" aria-label={t(lang, '专家市场导航', 'Expert market navigation')}>
+                    <button ref={marketTabRef} id="expert-market-tab-market" role="tab" type="button" tabIndex={tab === 'market' ? 0 : -1} aria-selected={tab === 'market'} aria-controls="expert-market-panel-market" className={tab === 'market' ? 'active' : ''} onClick={() => selectTab('market')} onKeyDown={event => handleTabKeyDown(event, 'market')}>{t(lang, '探索市场', 'Explore')}</button>
+                    <button ref={libraryTabRef} id="expert-market-tab-library" role="tab" type="button" tabIndex={tab === 'library' ? 0 : -1} aria-selected={tab === 'library'} aria-controls="expert-market-panel-library" className={tab === 'library' ? 'active' : ''} onClick={() => selectTab('library')} onKeyDown={event => handleTabKeyDown(event, 'library')}>{t(lang, '我的库', 'My library')}</button>
+                </div>
+                <div className="expert-market-account-actions">
+                    <span className="expert-market-balance">{t(lang, '余额', 'Balance')} <strong>{accountLoading && !account ? '—' : `${number(account?.credits)} Credits`}</strong></span>
+                    <button className="expert-market-assets-button" type="button" onClick={openAssetManagement}>{t(lang, '资产管理', 'Asset Management')}</button>
+                </div>
+            </div>
             {tab === 'market' ? <main id="expert-market-panel-market" className="expert-market-body" role="tabpanel" aria-labelledby="expert-market-tab-market">
                 <div className="expert-market-toolbar"><input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') setSubmittedQuery(query); }} placeholder={t(lang, '搜索专家或任务', 'Search experts or tasks')} aria-label={t(lang, '搜索专家', 'Search experts')} /><select value={sort} onChange={event => setSort(event.target.value)} aria-label={t(lang, '排序', 'Sort')}><option value="published">{t(lang, '最新发布', 'Newest')}</option><option value="downloads">{t(lang, '下载最多', 'Most downloads')}</option><option value="sales">{t(lang, '销售最高', 'Top sales')}</option></select><button type="button" onClick={() => setSubmittedQuery(query)}>{t(lang, '搜索', 'Search')}</button></div>
                 {error ? <div className="expert-market-message" role="alert">{error}<button type="button" onClick={() => void loadCatalogue()}>{t(lang, '重试', 'Retry')}</button></div> : null}

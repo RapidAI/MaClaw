@@ -275,8 +275,10 @@ type AppConfig struct {
 	// Hardware settings delivered to paired third-party clients such as the
 	// Macaron ESP32. The audio itself lives in the application data directory;
 	// the config only keeps its stable local path.
+	HardwareEnabled          bool   `json:"hardware_enabled,omitempty"`
 	HardwareWelcomeEnabled   bool   `json:"hardware_welcome_enabled,omitempty"`
 	HardwareWelcomeText      string `json:"hardware_welcome_text,omitempty"`
+	HardwareWelcomeVoiceID   string `json:"hardware_welcome_voice_id,omitempty"`
 	HardwareWelcomeAudioPath string `json:"hardware_welcome_audio_path,omitempty"`
 	HardwareVolume           int    `json:"hardware_volume,omitempty"`
 	// ACP Mode B: GUI hosts industry ACP so VS Code programming agents use the
@@ -1035,8 +1037,12 @@ func AppConfigDefaults() AppConfig {
 		MaclawRoleDescription: DefaultMaclawRoleDescription,
 		ShowAssistantEntry:    true,
 		// ShowAppEntry left nil: absent/nil means enabled (default-on).
-		ShowCodex:                  true,
-		HardwareWelcomeText:        "Hello, Maclaw",
+		ShowCodex:           true,
+		HardwareWelcomeText: "Hello, Maclaw",
+		// Keep configuration defaults independent of the TTS runtime package;
+		// corelib/tts already depends on corelib model packages and importing it
+		// here would create a package cycle. This is the stable Kokoro voice ID.
+		HardwareWelcomeVoiceID:     "af_heart",
 		HardwareVolume:             70,
 		ShowOpenCode:               true,
 		ShowCodeBuddy:              true,

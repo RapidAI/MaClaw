@@ -115,7 +115,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Export Kokoro PyTorch assets into pure-Go .koro tensor files.")
     ap.add_argument("--snapshot", required=True, help="Path to the Hugging Face Kokoro snapshot directory")
     ap.add_argument("--out", required=True, help="Output directory for Go-readable assets")
-    ap.add_argument("--voices", default="zm_yunxi,zm_yunyang,zf_xiaoxiao,zf_xiaoyi", help="Comma-separated voice names to export")
+    ap.add_argument("--voices", default="zm_yunxi,zm_yunyang,zf_xiaoxiao,zf_xiaoyi,am_adam,af_heart", help="Comma-separated voice names to export")
     ap.add_argument("--mixed-q8", action="store_true", help="Write model weights as typed v2 .koro with selected large weights quantized row-wise to int8")
     args = ap.parse_args()
 

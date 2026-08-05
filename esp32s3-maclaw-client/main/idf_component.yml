@@ -16,9 +16,18 @@ dependencies:
   #   public: true
   espressif/cjson: ^1.7.19
   espressif/esp_lcd_st77916: '*'
+  # NV3023 controller used by the single-key 无名星智 0.85-inch ML307 board.
+  78/esp_lcd_nv3023: ~1.0.0
   # Render the standard Wi-Fi QR code while the provisioning SoftAP is active.
   espressif/qrcode: ^0.2.0
   # Offline, always-listening command recognition. MultiNet is used as a
   # train-free custom detector for the wake words "码卡龙" and "Maclaw".
   espressif/esp-sr:
     version: ^2.4.7
+  # Official ESP32-S3-optimized MP3 frame parser/decoder. Only the MP3
+  # decoder is registered by the application, so unused codecs stay out of
+  # the final image.
+  espressif/esp_audio_codec: ^2.6.1
+  # Generic PPP-over-UART transport for the Fangtang dual-network board.
+  # The board profile deliberately does not assume a modem module model.
+  espressif/esp_modem: ^2.1.0

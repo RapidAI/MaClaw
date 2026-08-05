@@ -38,6 +38,7 @@ export function projectSessionKey(projectPath?: string | null): string {
 
 /** Session key prefix shared by all expert conversations: desktop-user:expert:<id>. */
 const EXPERT_SESSION_KEY_PREFIX = "desktop-user:expert:";
+const ACP_SESSION_KEY_PREFIX = "desktop-user:acp:";
 
 /** Session key for an expert tab conversation. Aligns with the backend userID (ExpertID branch). */
 export function expertSessionKey(expertId?: string | null): string {
@@ -47,6 +48,10 @@ export function expertSessionKey(expertId?: string | null): string {
 
 export function isExpertSessionKey(sessionKey?: string | null): boolean {
     return typeof sessionKey === "string" && sessionKey.trim().startsWith(EXPERT_SESSION_KEY_PREFIX);
+}
+
+export function isACPAssistantSessionKey(sessionKey?: string | null): boolean {
+    return typeof sessionKey === "string" && sessionKey.trim().startsWith(ACP_SESSION_KEY_PREFIX);
 }
 
 /** Reverse of expertSessionKey: extract the expert id, or "" for non-expert keys. */
@@ -61,7 +66,7 @@ export function projectPathFromSessionKey(sessionKey?: string | null): string {
     if (!key.startsWith(prefix)) return "";
     // Expert session keys carry no project path — never hand "expert:<id>" to
     // path-based routing (it would be mistaken for a real project path).
-    if (isExpertSessionKey(key)) return "";
+    if (isExpertSessionKey(key) || isACPAssistantSessionKey(key)) return "";
     return normalizeProjectSessionPath(key.slice(prefix.length));
 }
 
@@ -129,6 +134,9 @@ export function normalizeAssistantSessionKey(sessionKey?: string | null): string
     if (!key) return "";
     const prefix = "desktop-user:";
     if (!key.startsWith(prefix)) return key;
+	// Expert and ACP owners are opaque identifiers, not project paths. Normalizing
+	// them as paths changes their identity and can merge separate sessions.
+    if (isExpertSessionKey(key) || isACPAssistantSessionKey(key)) return key;
     const path = normalizeProjectSessionPath(key.slice(prefix.length));
     return path ? `${prefix}${path}` : "desktop-user";
 }

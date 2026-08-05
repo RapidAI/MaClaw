@@ -117,3 +117,16 @@ func TestHasASRSpeechContent(t *testing.T) {
 		t.Fatal("letters/digits should count as speech content")
 	}
 }
+
+func TestShouldSkipASRLLMCorrection(t *testing.T) {
+	for _, text := range []string{"北京天气。", "设置今天十一点的闹钟", "马上帮我找一个图片发我。", "play music"} {
+		if !shouldSkipASRLLMCorrection(text) {
+			t.Fatalf("concise transcript should stay on local fast path: %q", text)
+		}
+	}
+	for _, text := range []string{"I.", "啊", strings.Repeat("较长语音内容", 12)} {
+		if shouldSkipASRLLMCorrection(text) {
+			t.Fatalf("ambiguous/long transcript should remain eligible for correction: %q", text)
+		}
+	}
+}

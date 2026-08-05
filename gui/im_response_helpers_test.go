@@ -13,6 +13,9 @@ func TestTurnMetaResponseField_Compact(t *testing.T) {
 	if len(fields) != 1 || fields[0].Label != "Turn" {
 		t.Fatalf("fields=%+v", fields)
 	}
+	if !fields[0].Internal {
+		t.Fatalf("Turn field must be marked internal: %+v", fields[0])
+	}
 	v := fields[0].Value
 	for _, part := range []string{"fast", "aux", "m-flash", "in=1.2k", "out=340", "cache=50", "~¥0.0123", "prompt=light(-3.8k)"} {
 		if !strings.Contains(v, part) {
@@ -74,6 +77,9 @@ func TestTurnMetaResponseField_CostTierShadow(t *testing.T) {
 	found := false
 	for _, f := range routeFields {
 		if f.Label == "Cost tier" && strings.Contains(f.Value, "c0") {
+			if !f.Internal {
+				t.Fatalf("cost tier field must be marked internal: %+v", f)
+			}
 			found = true
 		}
 	}

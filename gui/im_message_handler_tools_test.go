@@ -817,14 +817,57 @@ func TestDetectAvailableToolExecutionPromise(t *testing.T) {
 func TestPinConditionalToolAfterSuccessRequiresSucceededOutcome(t *testing.T) {
 	h := &IMMessageHandler{toolRouter: NewToolRouter(NewToolDefinitionGenerator(nil, nil))}
 
-	h.pinConditionalToolAfterSuccess("ssh", toolExecutionResult{Outcome: toolOutcomeUncertain, FailureKind: toolFailureNone})
+	h.pinConditionalToolAfterSuccess("", "ssh", toolExecutionResult{Outcome: toolOutcomeUncertain, FailureKind: toolFailureNone})
 	if h.toolRouter.IsSessionPinned("ssh") {
 		t.Fatal("uncertain outcome should not session-pin ssh")
 	}
 
-	h.pinConditionalToolAfterSuccess("ssh", toolExecutionResult{Outcome: toolOutcomeSucceeded, FailureKind: toolFailureNone})
+	h.pinConditionalToolAfterSuccess("", "ssh", toolExecutionResult{Outcome: toolOutcomeSucceeded, FailureKind: toolFailureNone})
 	if !h.toolRouter.IsSessionPinned("ssh") {
 		t.Fatal("succeeded outcome should session-pin ssh")
+	}
+}
+
+func TestConditionalToolPinsAreScopedToAssistantOwner(t *testing.T) {
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, nil))
+	h := &IMMessageHandler{toolRouter: router}
+	result := toolExecutionResult{Outcome: toolOutcomeSucceeded, FailureKind: toolFailureNone}
+	h.pinConditionalToolAfterSuccess("desktop-user:D:/tasks/one", "ssh", result)
+
+	if !router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
+		t.Fatal("owner that used ssh should retain its pin")
+	}
+	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/two", "ssh") {
+		t.Fatal("second project session inherited ssh pin from first project")
+	}
+
+	h.clearPerUserSessionState("desktop-user:D:/tasks/one")
+	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
+		t.Fatal("clearing a project session must remove only its tool pins")
+	}
+}
+
+func TestRouteForSessionAndPinAugmentAreScopedToAssistantOwner(t *testing.T) {
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, nil))
+	ownerA := "desktop-user:D:/tasks/one"
+	ownerB := "desktop-user:D:/tasks/two"
+	router.ActivateSessionToolForSession(ownerA, "ssh")
+	tools := []map[string]interface{}{
+		toolDef("ssh", "remote shell", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+	}
+
+	if !toolListContainsName(router.RouteForSession(ownerA, "continue", tools, coretool.RouteOptions{SkipUnifiedClassifier: true}), "ssh") {
+		t.Fatal("owner A should retain its ssh pin on a later unrelated message")
+	}
+	if toolListContainsName(router.RouteForSession(ownerB, "continue", tools, coretool.RouteOptions{SkipUnifiedClassifier: true}), "ssh") {
+		t.Fatal("owner B must not receive owner A's ssh pin during routing")
+	}
+	if got := router.SessionPinnedToolsMissingForSession(ownerB, map[string]bool{}); len(got) != 0 {
+		t.Fatalf("owner B missing session pins = %v, want none", got)
+	}
+	if got := router.SessionPinnedToolsMissingForSession(ownerA, map[string]bool{}); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("owner A missing session pins = %v, want ssh", got)
 	}
 }
 
@@ -844,6 +887,63 @@ func TestDiscoverToolSessionPinsConditionalTool(t *testing.T) {
 	}
 	if !strings.Contains(out, "activated") {
 		t.Fatal("discover output should show ssh as activated")
+	}
+}
+
+func TestDiscoverToolPinsConditionalToolForExplicitOwner(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "ssh", Description: "SSH remote server access", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+		t.Fatalf("Register ssh: %v", err)
+	}
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, nil))
+	h := &IMMessageHandler{registry: registry, toolRouter: router}
+
+	out := h.toolDiscoverToolForOwner("desktop-user:D:/tasks/one", map[string]interface{}{"need": "ssh remote server"})
+	if !strings.Contains(out, "ssh") {
+		t.Fatalf("discover output should mention ssh, got %q", out)
+	}
+	if !router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
+		t.Fatal("discover_tool should pin ssh for the requesting owner")
+	}
+	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/two", "ssh") {
+		t.Fatal("discover_tool leaked an owner-scoped ssh pin into a second project")
+	}
+}
+
+func TestDiscoverToolRuntimeOwnerDoesNotUseLastStartedLoop(t *testing.T) {
+	registry := NewToolRegistry()
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, nil))
+	// Simulate project B being the last loop started. The tool call below is
+	// explicitly for project A and must not consult this global compatibility
+	// pointer when it pins a discovered conditional tool.
+	h := &IMMessageHandler{
+		registry:       registry,
+		toolRouter:     router,
+		currentLoopCtx: &LoopContext{Runtime: RuntimeContext{RequestID: "project-b", PolicyOwnerID: "desktop-user:D:/tasks/two"}},
+	}
+	if err := registry.Register(RegisteredTool{Name: "ssh", Description: "SSH remote server access", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+		t.Fatalf("Register ssh: %v", err)
+	}
+	if err := registry.Register(RegisteredTool{
+		Name:                  "discover_tool",
+		Description:           "discover tools",
+		Category:              ToolCategoryBuiltin,
+		Status:                RegToolAvailable,
+		RuntimePolicyOwnerArg: true,
+		Handler:               h.toolDiscoverTool,
+	}); err != nil {
+		t.Fatalf("Register discover_tool: %v", err)
+	}
+
+	result := h.executeToolDetailedWithRuntimeState("desktop-user:D:/tasks/one", true, "", "discover_tool", `{"need":"ssh remote server"}`, "", nil)
+	if result.Outcome != toolOutcomeSucceeded {
+		t.Fatalf("discover result = %+v, want success", result)
+	}
+	if !router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
+		t.Fatal("runtime owner should receive the discovered ssh pin")
+	}
+	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/two", "ssh") {
+		t.Fatal("discover_tool used the last-started session instead of runtime owner")
 	}
 }
 

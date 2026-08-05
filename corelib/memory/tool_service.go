@@ -16,7 +16,10 @@ type ToolOptions struct {
 	// It is for isolated surfaces such as group conversations; the zero value
 	// preserves the desktop and private-chat shared-memory behavior.
 	StrictOwner bool
-	AfterWrite  func()
+	// AllowArchivedExperience permits only completed archived experience to be
+	// returned across a strict owner boundary.
+	AllowArchivedExperience bool
+	AfterWrite              func()
 
 	// LoopID identifies the current agent loop execution for scroll session
 	// scoping. Hosts set this field; corelib manages the session lifecycle.
@@ -203,6 +206,9 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 	action := NormalizeMemoryToolAction(rawAction)
 	switch action {
 	case MemoryToolActionThemes:
+		if opts.StrictOwner {
+			return "memory themes are unavailable in this isolated conversation"
+		}
 		evidence := toolBoolArg(args, "evidence", false)
 		evidenceLimit := 0
 		if evidence {
@@ -222,9 +228,15 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		return FormatMemoryThemesResultForTool(result, themeOpts)
 
 	case MemoryToolActionScenes:
+		if opts.StrictOwner {
+			return "memory scenes are unavailable in this isolated conversation"
+		}
 		return FormatSceneIndexForTool(store.SceneIndex(toolIntArg(args, "limit", 10)))
 
 	case MemoryToolActionTrace:
+		if opts.StrictOwner {
+			return "memory recall trace is unavailable in this isolated conversation"
+		}
 		formatted := FormatRecallTraceForTool(store.LastRecallTrace())
 		if formatted == "" {
 			return "No recall trace available."
@@ -232,14 +244,23 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		return formatted
 
 	case MemoryToolActionCandidates:
+		if opts.StrictOwner {
+			return "memory candidates are unavailable in this isolated conversation"
+		}
 		result := store.MemoryCandidatesForTool(context.Background(), toolStringArg(args, "keyword"), toolIntArg(args, "limit", 20), false)
 		return FormatMemoryCandidatesResultForTool(result)
 
 	case MemoryToolActionDerived:
+		if opts.StrictOwner {
+			return "derived memory inspection is unavailable in this isolated conversation"
+		}
 		projectPath := firstNonEmptyMemoryToolString(opts.ProjectPath, toolStringArg(args, "project_path"), toolStringArg(args, "project"))
 		return FormatDerivedMemoryAuditsForTool(store.DerivedMemoryAudits(projectPath, opts.OwnerID, toolIntArg(args, "limit", 50)))
 
 	case MemoryToolActionDerivedSurgery:
+		if opts.StrictOwner {
+			return "derived memory surgery is unavailable in this isolated conversation"
+		}
 		id := toolStringArg(args, "id")
 		if id == "" {
 			return "missing id parameter"
@@ -297,7 +318,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			if err != nil {
 				return err.Error()
 			}
-			result.Entries = filterEntriesForOwner(result.Entries, opts.OwnerID, opts.StrictOwner)
+			result.Entries = filterEntriesForToolOwner(result.Entries, opts)
 			return formatPaginatedResultForTool(store, query, result, debug)
 		}
 
@@ -306,7 +327,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			start := time.Now()
 			exhaustiveResult := store.RecallExhaustive(query, category, projectPath, opts.OwnerID)
 			if exhaustiveResult != nil {
-				exhaustiveResult.Entries = filterEntriesForOwner(exhaustiveResult.Entries, opts.OwnerID, opts.StrictOwner)
+				exhaustiveResult.Entries = filterEntriesForToolOwner(exhaustiveResult.Entries, opts)
 				store.logRecallIfEnabled("tool:exhaustive", query, category, projectPath, []string{opts.OwnerID}, start, exhaustiveResult.Entries)
 			}
 			return formatExhaustiveResultForTool(store, query, exhaustiveResult, debug)
@@ -327,7 +348,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			if err != nil {
 				return err.Error()
 			}
-			result.Entries = filterEntriesForOwner(result.Entries, opts.OwnerID, opts.StrictOwner)
+			result.Entries = filterEntriesForToolOwner(result.Entries, opts)
 			return formatScrollResultForTool(store, query, result, debug)
 		}
 
@@ -344,7 +365,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			if paginator := store.Paginator(); paginator != nil {
 				result, err := paginator.FirstPage(store, query, category, projectPath, opts.OwnerID)
 				if err == nil && result != nil {
-					result.Entries = filterEntriesForOwner(result.Entries, opts.OwnerID, opts.StrictOwner)
+					result.Entries = filterEntriesForToolOwner(result.Entries, opts)
 					if len(result.Entries) > 0 {
 						return formatPaginatedResultForTool(store, query, result, debug)
 					}
@@ -362,7 +383,10 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		if err != nil {
 			return err.Error()
 		}
-		recall.Entries = filterEntriesForOwner(recall.Entries, opts.OwnerID, opts.StrictOwner)
+		recall.Entries = filterEntriesForToolOwner(recall.Entries, opts)
+		if opts.StrictOwner && opts.AllowArchivedExperience {
+			recall.Entries = appendUniqueToolEntries(recall.Entries, store.archivedExperienceEntriesForTool(query, category, projectPath, limitParam)...)
+		}
 		return FormatRecallResultForTool(store, query, recall, debug, true)
 
 	case MemoryToolActionSave:
@@ -397,6 +421,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 
 	case MemoryToolActionList:
 		entries := store.List(Category(toolStringArg(args, "category")), toolStringArg(args, "keyword"))
+		entries = filterEntriesForToolOwner(entries, opts)
 		if len(entries) == 0 {
 			return "No matching memories found."
 		}
@@ -416,6 +441,15 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		if id == "" {
 			return "missing id parameter"
 		}
+		// Archived experience is deliberately shared as read-only distilled
+		// knowledge. A session that did not create it must never be able to
+		// mutate or erase another session's final experience.
+		if opts.StrictOwner && store.entryIsArchivedExperience(id) {
+			return "archived experience is read-only in this isolated conversation"
+		}
+		if opts.StrictOwner && !store.entryVisibleToToolOwner(id, opts) {
+			return "memory not found in this isolated conversation"
+		}
 		if err := store.Delete(id); err != nil {
 			return fmt.Sprintf("delete memory failed: %s", err.Error())
 		}
@@ -425,11 +459,90 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		return fmt.Sprintf("Memory deleted: %s", id)
 
 	case MemoryToolActionSummary:
-		return store.FormatMemorySummary(opts.OwnerID)
+		return store.FormatMemorySummaryForOwner(opts.OwnerID, opts.StrictOwner)
 
 	default:
 		return fmt.Sprintf("unknown memory action: %s (use save/recall/summary/candidates/derived/derived_surgery/themes/scenes/trace/delete/list)", rawAction)
 	}
+}
+
+func filterEntriesForToolOwner(entries []Entry, opts ToolOptions) []Entry {
+	if !opts.StrictOwner || len(entries) == 0 {
+		return entries
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if len(filterEntriesForOwner([]Entry{entry}, opts.OwnerID, true)) == 1 ||
+			(opts.AllowArchivedExperience && isArchivedExperienceEntry(entry)) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func (s *Store) entryVisibleToToolOwner(id string, opts ToolOptions) bool {
+	if s == nil || strings.TrimSpace(id) == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.entries {
+		if entry.ID != id {
+			continue
+		}
+		return len(filterEntriesForToolOwner([]Entry{entry}, opts)) == 1
+	}
+	return false
+}
+
+func (s *Store) entryIsArchivedExperience(id string) bool {
+	if s == nil || strings.TrimSpace(id) == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.entries {
+		if entry.ID == id {
+			return isArchivedExperienceEntry(entry)
+		}
+	}
+	return false
+}
+
+func (s *Store) archivedExperienceEntriesForTool(query string, category Category, projectPath string, limit int) []Entry {
+	if s == nil || (category != "" && MapToCanonical(category) != CategoryProjectKnowledge) {
+		return nil
+	}
+	entries := s.recallDynamicCore(query, CategoryProjectKnowledge, projectPath, projectPath != "")
+	filtered := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if isArchivedExperienceEntry(entry) {
+			filtered = append(filtered, entry)
+			if limit > 0 && len(filtered) >= limit {
+				break
+			}
+		}
+	}
+	return filtered
+}
+
+func appendUniqueToolEntries(entries []Entry, extra ...Entry) []Entry {
+	seen := make(map[string]struct{}, len(entries)+len(extra))
+	for _, entry := range entries {
+		if entry.ID != "" {
+			seen[entry.ID] = struct{}{}
+		}
+	}
+	for _, entry := range extra {
+		if entry.ID != "" {
+			if _, ok := seen[entry.ID]; ok {
+				continue
+			}
+			seen[entry.ID] = struct{}{}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 func FormatRecallResultForTool(store *Store, query string, recall ToolRecallResult, debug bool, touch bool) string {

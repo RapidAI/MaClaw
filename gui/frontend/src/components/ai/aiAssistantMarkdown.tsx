@@ -1479,6 +1479,16 @@ export function renderMessage(
                 </div>
             );
         case "system":
+            if (msg.kind === "taskContext") {
+                return (
+                    <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
+                        <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: `color-mix(in srgb, ${t.sendBtnBg} 8%, ${t.fieldBg})`, border: `1px solid color-mix(in srgb, ${t.sendBtnBorder} 44%, ${t.fieldBorder})`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "anywhere" }}>
+                            <div style={{ marginBottom: 3, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{lang === "en" ? "CURRENT TASK" : lang === "zh-Hant" ? "目前任務資訊" : "当前任务信息"}</div>
+                            {renderContentWithCodeBlocks(msg.content, t)}
+                        </div>
+                    </div>
+                );
+            }
             return (
                 <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
                     <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "anywhere" }}>

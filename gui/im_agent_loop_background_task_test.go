@@ -271,8 +271,8 @@ func TestAuthorizeLocalBackgroundTaskOwnerRejectsDifferentOwner(t *testing.T) {
 	if err := authorizeLocalBackgroundTaskOwner(mgr, task.TaskID, "owner-b"); err == nil || !strings.Contains(err.Error(), "another runtime owner") {
 		t.Fatalf("different owner should be rejected, got %v", err)
 	}
-	if err := authorizeLocalBackgroundTaskOwner(mgr, task.TaskID, ""); err != nil {
-		t.Fatalf("blank owner should preserve legacy access: %v", err)
+	if err := authorizeLocalBackgroundTaskOwner(mgr, task.TaskID, ""); err == nil || !strings.Contains(err.Error(), "another runtime owner") {
+		t.Fatalf("blank owner must not access another owner's task, got %v", err)
 	}
 }
 

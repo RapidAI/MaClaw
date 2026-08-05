@@ -51,10 +51,27 @@ func TestLocalBackgroundTaskManagerOwnerAuthorization(t *testing.T) {
 	if _, err := mgr.CheckForOwner(task.TaskID, 10, "owner-b"); err == nil {
 		t.Fatal("CheckForOwner should reject different owner")
 	}
+	if err := mgr.AuthorizeTaskOwner(task.TaskID, ""); err == nil {
+		t.Fatal("ownerless caller must not access an owner-scoped task")
+	}
 	if got := mgr.ListForOwner("owner-b"); len(got) != 0 {
 		t.Fatalf("ListForOwner owner-b = %#v, want empty", got)
 	}
 	if got := mgr.ListForOwner("owner-a"); len(got) != 1 || got[0].TaskID != task.TaskID {
 		t.Fatalf("ListForOwner owner-a = %#v", got)
+	}
+	if got := mgr.ListForOwner(""); len(got) != 0 {
+		t.Fatalf("ListForOwner empty owner = %#v, want no owner-scoped tasks", got)
+	}
+
+	legacy, err := mgr.SubmitWithOwner(command, "", "command", "")
+	if err != nil {
+		t.Fatalf("SubmitWithOwner legacy task: %v", err)
+	}
+	if err := mgr.AuthorizeTaskOwner(legacy.TaskID, "owner-a"); err == nil {
+		t.Fatal("owner-scoped caller must not access an ownerless task")
+	}
+	if got := mgr.ListForOwner(""); len(got) != 1 || got[0].TaskID != legacy.TaskID {
+		t.Fatalf("ListForOwner empty owner = %#v, want only ownerless task", got)
 	}
 }

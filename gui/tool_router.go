@@ -1,6 +1,9 @@
 package main
 
 import (
+	"strings"
+	"sync"
+
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -15,13 +18,20 @@ type ToolRouter struct {
 	generator *ToolDefinitionGenerator
 	hubClient *SkillHubClient
 	registry  *ToolRegistry
+
+	// sessionPinned keeps conditional-tool affinity per assistant owner. The
+	// underlying core router has a process-wide pin set, so it cannot be used
+	// directly when project, expert, and local conversations run concurrently.
+	pinsMu        sync.RWMutex
+	sessionPinned map[string]map[string]bool
 }
 
 // NewToolRouter creates a new ToolRouter.
 func NewToolRouter(generator *ToolDefinitionGenerator) *ToolRouter {
 	return &ToolRouter{
-		inner:     tool.NewRouter(nil),
-		generator: generator,
+		inner:         tool.NewRouter(nil),
+		generator:     generator,
+		sessionPinned: make(map[string]map[string]bool),
 	}
 }
 
@@ -44,11 +54,48 @@ func (r *ToolRouter) SetHubClient(client *SkillHubClient) {
 
 // Route delegates to corelib/tool.Router.Route.
 func (r *ToolRouter) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	// Legacy ownerless callers use the fallback pin bucket. Serialize them with
+	// owner-scoped routes so they cannot observe the core router's temporary
+	// per-owner pin state.
+	r.pinsMu.Lock()
+	defer r.pinsMu.Unlock()
 	return r.inner.Route(userMessage, allTools)
 }
 
 // RouteWithOptions delegates to corelib/tool.Router.RouteWithOptions.
 func (r *ToolRouter) RouteWithOptions(userMessage string, allTools []map[string]interface{}, opts tool.RouteOptions) []map[string]interface{} {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	r.pinsMu.Lock()
+	defer r.pinsMu.Unlock()
+	return r.inner.RouteWithOptions(userMessage, allTools, opts)
+}
+
+// RouteForSession applies only this conversation's conditional tool pins for
+// the duration of routing. The core router is retained for scoring, while the
+// lock prevents a concurrent conversation from observing another owner's pins.
+func (r *ToolRouter) RouteForSession(sessionID, userMessage string, allTools []map[string]interface{}, opts tool.RouteOptions) []map[string]interface{} {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return r.RouteWithOptions(userMessage, allTools, opts)
+	}
+	r.pinsMu.Lock()
+	defer r.pinsMu.Unlock()
+	r.inner.ResetSession()
+	// Do not leave a project's pins in the shared core-router instance after
+	// routing. All owner pins live in sessionPinned; the core map is a guarded
+	// transient compatibility bridge only.
+	defer r.inner.ResetSession()
+	for name := range r.sessionPinned[sessionID] {
+		r.inner.ActivateSessionTool(name)
+	}
 	return r.inner.RouteWithOptions(userMessage, allTools, opts)
 }
 
@@ -105,25 +152,116 @@ func (r *ToolRouter) RefreshSkillIndex() {
 
 // ActivateSessionTool delegates to corelib/tool.Router.ActivateSessionTool.
 func (r *ToolRouter) ActivateSessionTool(name string) {
+	if r == nil || r.inner == nil {
+		return
+	}
+	r.pinsMu.Lock()
+	defer r.pinsMu.Unlock()
 	r.inner.ActivateSessionTool(name)
+}
+
+func (r *ToolRouter) ActivateSessionToolForSession(sessionID, name string) {
+	if r == nil || !tool.ShouldPinConditionalTool(name) {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		r.ActivateSessionTool(name)
+		return
+	}
+	r.pinsMu.Lock()
+	defer r.pinsMu.Unlock()
+	if r.sessionPinned == nil {
+		r.sessionPinned = make(map[string]map[string]bool)
+	}
+	if r.sessionPinned[sessionID] == nil {
+		r.sessionPinned[sessionID] = make(map[string]bool)
+	}
+	r.sessionPinned[sessionID][name] = true
 }
 
 // IsSessionPinned returns true if the tool was session-pinned (via
 // ActivateSessionTool). Used by routeTools to avoid removing ssh from
 // the tool list when it was previously used in this session.
 func (r *ToolRouter) IsSessionPinned(name string) bool {
+	if r == nil || r.inner == nil {
+		return false
+	}
+	r.pinsMu.RLock()
+	defer r.pinsMu.RUnlock()
 	return r.inner.IsSessionPinned(name)
 }
 
+func (r *ToolRouter) IsSessionPinnedForSession(sessionID, name string) bool {
+	if r == nil {
+		return false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return r.IsSessionPinned(name)
+	}
+	r.pinsMu.RLock()
+	defer r.pinsMu.RUnlock()
+	return r.sessionPinned[sessionID][name]
+}
+
 // SessionPinnedToolsMissing returns session-pinned tool names that are NOT
-// in the provided currentNames set.
+// in the provided currentNames set. It is the legacy fallback bucket only;
+// owner-scoped agent loops must use SessionPinnedToolsMissingForSession.
 func (r *ToolRouter) SessionPinnedToolsMissing(currentNames map[string]bool) []string {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	r.pinsMu.RLock()
+	defer r.pinsMu.RUnlock()
 	return r.inner.SessionPinnedToolsMissing(currentNames)
+}
+
+// SessionPinnedToolsMissingForSession returns just one assistant owner's pins
+// that are absent from the current tool list. Keeping this lookup in the
+// adapter avoids exposing the core router's temporary routing state to a
+// different concurrent session.
+func (r *ToolRouter) SessionPinnedToolsMissingForSession(sessionID string, currentNames map[string]bool) []string {
+	if r == nil {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return r.SessionPinnedToolsMissing(currentNames)
+	}
+	r.pinsMu.RLock()
+	defer r.pinsMu.RUnlock()
+	missing := make([]string, 0, len(r.sessionPinned[sessionID]))
+	for name := range r.sessionPinned[sessionID] {
+		if !currentNames[name] {
+			missing = append(missing, name)
+		}
+	}
+	return missing
 }
 
 // ResetSession delegates to corelib/tool.Router.ResetSession.
 func (r *ToolRouter) ResetSession() {
+	if r == nil || r.inner == nil {
+		return
+	}
+	r.pinsMu.Lock()
+	defer r.pinsMu.Unlock()
 	r.inner.ResetSession()
+}
+
+func (r *ToolRouter) ResetSessionForSession(sessionID string) {
+	if r == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		r.ResetSession()
+		return
+	}
+	r.pinsMu.Lock()
+	delete(r.sessionPinned, sessionID)
+	r.pinsMu.Unlock()
 }
 
 // WarmupDeferredEmbeddings delegates to corelib/tool.Router.WarmupDeferredEmbeddings.

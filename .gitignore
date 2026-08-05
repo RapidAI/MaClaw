@@ -177,6 +177,7 @@ gui/testdata/rapid/
 __pycache__/
 *.m4a
 *.wav
+!gui/hello-maclaw.wav
 tts_eval/
 build/iworker_services_deploy/
 hub/internal/httpapi/data/ve-files/

@@ -1886,10 +1886,11 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		ProjectPath: projectPath,
 		ContextHint: h.buildMemoryContextHintForUser(ownerID),
 		OwnerID:     ownerID,
-		// The authoritative group flag lives on the loop context. Keep the
-		// owner-pattern fallback for direct handlers and focused unit tests.
-		StrictOwner: h.isLansengerGroupMemoryOwner(ownerID),
-		LoopID:      h.currentLoopIDForUser(ownerID),
+		// Project, expert, and group conversations are isolated. A completed
+		// archived experience is the sole deliberate cross-session exception.
+		StrictOwner:             isIsolatedAssistantSessionUserID(ownerID) || h.isLansengerGroupMemoryOwner(ownerID),
+		AllowArchivedExperience: isIsolatedAssistantSessionUserID(ownerID),
+		LoopID:                  h.currentLoopIDForUser(ownerID),
 		AfterWrite: func() {
 			if h.app != nil {
 				h.app.triggerMemoryPipelineSoon(45 * time.Second)

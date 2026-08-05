@@ -1,6 +1,5 @@
 /** @vitest-environment jsdom */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { corelib, main } from '../../../wailsjs/go/models';
 import { PetSettingsPanel } from '../PetSettingsPanel';
@@ -22,7 +21,6 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     SubmitPetStorePack: vi.fn().mockResolvedValue({ id: 'pet_listing' }),
     WithdrawPetStorePack: vi.fn().mockResolvedValue(undefined),
 	ExportPetPackZip: vi.fn().mockResolvedValue('C:/tmp/creator-pet.zip'),
-	RefreshDeviceAmbientWeather: vi.fn().mockResolvedValue(''),
 }));
 
 vi.mock('../../../wailsjs/runtime', () => ({
@@ -35,7 +33,7 @@ vi.mock('../../../wailsjs/runtime', () => ({
 const mockListPetPacks = (packs: unknown[]) =>
     vi.mocked(AppAPI.ListPetPacks).mockResolvedValue(packs as never);
 
-function renderPetSettings(lang: string, overrides: Partial<corelib.AppConfig & { pet_ambient_city?: string }> = {}) {
+function renderPetSettings(lang: string, overrides: Partial<corelib.AppConfig> = {}) {
     const config = new corelib.AppConfig({
         pet_enabled: true,
         pet_skin: 'clawmate',
@@ -48,10 +46,6 @@ function renderPetSettings(lang: string, overrides: Partial<corelib.AppConfig & 
         pet_file_drop_enabled: true,
         ...overrides,
     });
-    if (overrides.pet_ambient_city !== undefined) {
-        (config as corelib.AppConfig & { pet_ambient_city?: string }).pet_ambient_city = overrides.pet_ambient_city;
-    }
-
     return render(
         <DialogProvider>
             <PetSettingsPanel
@@ -61,25 +55,6 @@ function renderPetSettings(lang: string, overrides: Partial<corelib.AppConfig & 
                 patchConfig={vi.fn().mockResolvedValue(undefined)}
             />
         </DialogProvider>,
-    );
-}
-
-function ControlledPetSettings() {
-    const [config, setConfig] = useState(() => new corelib.AppConfig({
-        pet_enabled: true,
-        pet_skin: 'clawmate',
-        pet_size: 88,
-    }));
-
-    return (
-        <DialogProvider>
-            <PetSettingsPanel
-                config={config}
-                lang="en"
-                setConfig={(next) => setConfig(next)}
-                patchConfig={vi.fn().mockResolvedValue(undefined)}
-            />
-        </DialogProvider>
     );
 }
 
@@ -207,222 +182,6 @@ describe('PetSettingsPanel localization', () => {
         await waitFor(() => {
             expect(AppAPI.OpenPetPacksDir).toHaveBeenCalled();
         });
-    });
-
-    it('fills the city field after an automatic weather-location sync', async () => {
-        const patchConfig = vi.fn().mockResolvedValue(undefined);
-		const setConfig = vi.fn();
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather).mockResolvedValue('Shanghai');
-        const config = new corelib.AppConfig({ pet_enabled: true, pet_skin: 'clawmate' });
-
-        await act(async () => {
-            render(
-                <DialogProvider>
-                    <PetSettingsPanel config={config} lang="en" setConfig={setConfig} patchConfig={patchConfig} />
-                </DialogProvider>,
-            );
-        });
-
-        await act(async () => {
-            fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
-        });
-
-        await waitFor(() => {
-            expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', 'Shanghai');
-            expect(patchConfig).not.toHaveBeenCalled();
-            expect(setConfig).not.toHaveBeenCalled();
-        });
-    });
-
-    it('keeps every typed city character as the parent applies each config update', async () => {
-        await act(async () => { render(<ControlledPetSettings />); });
-        const city = screen.getByLabelText('Hardware weather city');
-
-        await act(async () => {
-            fireEvent.change(city, { target: { value: 'B' } });
-            fireEvent.change(city, { target: { value: 'Be' } });
-            fireEvent.change(city, { target: { value: 'Beijing' } });
-        });
-
-        expect(city).toHaveProperty('value', 'Beijing');
-    });
-
-    it('retains the ambient city when AppConfig is cloned by the generated binding', () => {
-        const cityConfig = new corelib.AppConfig({ pet_ambient_city: 'Beijing' });
-        expect(cityConfig.pet_ambient_city).toBe('Beijing');
-        expect(new corelib.AppConfig({ ...cityConfig }).pet_ambient_city).toBe('Beijing');
-    });
-
-    it('keeps a manually cleared city blank instead of showing an earlier detected city', async () => {
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather).mockResolvedValue('Shanghai');
-        await act(async () => { render(<ControlledPetSettings />); });
-        const city = screen.getByLabelText('Hardware weather city');
-        const sync = screen.getByRole('button', { name: 'Sync now' });
-
-        await act(async () => { fireEvent.click(sync); });
-        await waitFor(() => expect(city).toHaveProperty('value', 'Shanghai'));
-
-        await act(async () => { fireEvent.change(city, { target: { value: '' } }); });
-        expect(city).toHaveProperty('value', '');
-    });
-
-    it('does not cancel a sync when the parent acknowledges the city draft', async () => {
-        let resolveCity!: (city: string) => void;
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather).mockImplementationOnce(() => new Promise<string>((resolve) => {
-            resolveCity = resolve;
-        }));
-        await act(async () => { render(<ControlledPetSettings />); });
-
-        const city = screen.getByLabelText('Hardware weather city');
-        const sync = screen.getByRole('button', { name: 'Sync now' });
-        await act(async () => {
-            fireEvent.change(city, { target: { value: 'Beijing' } });
-            fireEvent.click(sync);
-        });
-        expect(sync).toHaveProperty('disabled', true);
-
-        await act(async () => { resolveCity('Beijing'); });
-        await waitFor(() => expect(screen.getByText('Weather sent to hardware')).toBeTruthy());
-    });
-
-    it('saves a newly typed manual city before syncing weather', async () => {
-        let saveCity!: () => void;
-        const patchConfig = vi.fn().mockResolvedValue(undefined);
-        patchConfig.mockImplementationOnce(() => new Promise<void>((resolve) => { saveCity = resolve; }));
-        const config = new corelib.AppConfig({ pet_enabled: true, pet_skin: 'clawmate' });
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather).mockResolvedValue('Beijing');
-        await act(async () => {
-            render(
-                <DialogProvider>
-                    <PetSettingsPanel config={config} lang="en" setConfig={vi.fn()} patchConfig={patchConfig} />
-                </DialogProvider>,
-            );
-        });
-
-        await act(async () => {
-            fireEvent.change(screen.getByLabelText('Hardware weather city'), { target: { value: 'Beijing' } });
-            fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
-        });
-
-        expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('disabled', true);
-        expect(AppAPI.RefreshDeviceAmbientWeather).not.toHaveBeenCalled();
-        await act(async () => { saveCity(); });
-        await waitFor(() => expect(patchConfig).toHaveBeenCalledWith(expect.objectContaining({ pet_ambient_city: 'Beijing' })));
-        await waitFor(() => expect(AppAPI.RefreshDeviceAmbientWeather).toHaveBeenCalled());
-    });
-
-    it('keeps a manually configured city when weather sync returns a resolved location', async () => {
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather).mockResolvedValue('Shanghai');
-        await act(async () => { renderPetSettings('en', { pet_ambient_city: 'Beijing' }); });
-
-        await act(async () => {
-            fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
-        });
-
-        await waitFor(() => {
-            expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', 'Beijing');
-        });
-    });
-
-    it('does not retain a stale detected city when a later sync has no location', async () => {
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather)
-            .mockResolvedValueOnce('Shanghai')
-            .mockResolvedValueOnce('');
-        await act(async () => { renderPetSettings('en'); });
-
-        const sync = screen.getByRole('button', { name: 'Sync now' });
-        await act(async () => { fireEvent.click(sync); });
-        await waitFor(() => expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', 'Shanghai'));
-
-        await act(async () => { fireEvent.click(sync); });
-        await waitFor(() => expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', ''));
-    });
-
-    it('clears an earlier automatic city while the next sync is still in progress', async () => {
-        let resolveCity!: (city: string) => void;
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather)
-            .mockResolvedValueOnce('Shanghai')
-            .mockImplementationOnce(() => new Promise<string>((resolve) => {
-                resolveCity = resolve;
-            }));
-        await act(async () => { renderPetSettings('en'); });
-
-        const sync = screen.getByRole('button', { name: 'Sync now' });
-        await act(async () => { fireEvent.click(sync); });
-        await waitFor(() => expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', 'Shanghai'));
-
-        await act(async () => { fireEvent.click(sync); });
-        expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', '');
-        expect(sync).toHaveProperty('disabled', true);
-
-        await act(async () => { resolveCity('Shenzhen'); });
-        await waitFor(() => expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', 'Shenzhen'));
-    });
-
-    it('cancels an earlier lookup when a manual city arrives from a parent update', async () => {
-        let resolveCity!: (city: string) => void;
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather).mockImplementationOnce(() => new Promise<string>((resolve) => {
-            resolveCity = resolve;
-        }));
-        const patchConfig = vi.fn().mockResolvedValue(undefined);
-        const initialConfig = new corelib.AppConfig({ pet_enabled: true, pet_skin: 'clawmate' });
-        const manualConfig = new corelib.AppConfig({ pet_enabled: true, pet_skin: 'clawmate' });
-        (manualConfig as corelib.AppConfig & { pet_ambient_city?: string }).pet_ambient_city = 'Beijing';
-        const { rerender } = render(
-            <DialogProvider>
-                <PetSettingsPanel config={initialConfig} lang="en" setConfig={vi.fn()} patchConfig={patchConfig} />
-            </DialogProvider>,
-        );
-
-        const sync = screen.getByRole('button', { name: 'Sync now' });
-        await act(async () => { fireEvent.click(sync); });
-        expect(sync).toHaveProperty('disabled', true);
-
-        await act(async () => {
-            rerender(
-                <DialogProvider>
-                    <PetSettingsPanel config={manualConfig} lang="en" setConfig={vi.fn()} patchConfig={patchConfig} />
-                </DialogProvider>,
-            );
-        });
-        await waitFor(() => expect(sync).toHaveProperty('disabled', false));
-
-        await act(async () => { resolveCity('Shanghai'); });
-        expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', 'Beijing');
-        expect(screen.queryByText('Weather sent to hardware')).toBeNull();
-    });
-
-    it('does not restore an automatic city after a parent clears the manual city during sync', async () => {
-        let resolveCity!: (city: string) => void;
-        vi.mocked(AppAPI.RefreshDeviceAmbientWeather).mockImplementationOnce(() => new Promise<string>((resolve) => {
-            resolveCity = resolve;
-        }));
-        const patchConfig = vi.fn().mockResolvedValue(undefined);
-        const manualConfig = new corelib.AppConfig({ pet_enabled: true, pet_skin: 'clawmate' });
-        (manualConfig as corelib.AppConfig & { pet_ambient_city?: string }).pet_ambient_city = 'Beijing';
-        const blankConfig = new corelib.AppConfig({ pet_enabled: true, pet_skin: 'clawmate' });
-        const { rerender } = render(
-            <DialogProvider>
-                <PetSettingsPanel config={manualConfig} lang="en" setConfig={vi.fn()} patchConfig={patchConfig} />
-            </DialogProvider>,
-        );
-
-        const sync = screen.getByRole('button', { name: 'Sync now' });
-        await act(async () => { fireEvent.click(sync); });
-        expect(sync).toHaveProperty('disabled', true);
-
-        await act(async () => {
-            rerender(
-                <DialogProvider>
-                    <PetSettingsPanel config={blankConfig} lang="en" setConfig={vi.fn()} patchConfig={patchConfig} />
-                </DialogProvider>,
-            );
-        });
-        await waitFor(() => expect(sync).toHaveProperty('disabled', false));
-
-        await act(async () => { resolveCity('Shanghai'); });
-        expect(screen.getByLabelText('Hardware weather city')).toHaveProperty('value', '');
-        expect(screen.queryByText('Weather sent to hardware')).toBeNull();
     });
 
     it('opens the Pet Store from the header action', async () => {

@@ -1,4 +1,18 @@
 dependencies:
+  78/esp_lcd_nv3023:
+    component_hash: 2d1c227ae9c8d7303c0be9b2f2b45e595169a2ccb3055aad93b5f1600110b236
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.1
   espressif/cjson:
     component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
     dependencies:
@@ -61,6 +75,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.4.7
+  espressif/esp_audio_codec:
+    component_hash: 694d210da7a148dfb43b1b08581404b7093ec33c5e566a8cf721397b44e791c7
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.6.1
   espressif/esp_lcd_st77916:
     component_hash: c0a565af3ea85a9d9f1e79b0e4d0829378db319bc4dab4939eca44361b3c5a1b
     dependencies:
@@ -75,6 +99,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.0.2
+  espressif/esp_modem:
+    component_hash: 06abed971065e9cb88039e011fd85ec1412c7416d3a3d84541a7a432e8d3f94d
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.1.0
   espressif/qrcode:
     component_hash: 31e70991ce22f28d73a4386417fc9c0993f61e1aab1832474fd9e3db8da9dcbd
     dependencies: []
@@ -87,11 +121,14 @@ dependencies:
       type: idf
     version: 6.0.2
 direct_dependencies:
+- 78/esp_lcd_nv3023
 - espressif/cjson
 - espressif/esp-sr
+- espressif/esp_audio_codec
 - espressif/esp_lcd_st77916
+- espressif/esp_modem
 - espressif/qrcode
 - idf
-manifest_hash: d0248ca675c8328b4cf8783ecec9d02580aa189c3d4d8f9b87b9532f45157e7e
+manifest_hash: b63409055fd6a330f380443e8d5f79a22bc3e314172d5083f5e61b8031a58d39
 target: esp32s3
 version: 3.0.0

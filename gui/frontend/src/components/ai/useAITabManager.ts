@@ -55,6 +55,8 @@ export interface CreateProjectTabOptions {
     remoteSafety?: "diagnosis";
     /** Remote pure-coding: SSH session expired / not yet connected. */
     remoteNeedsReconnect?: boolean;
+    /** External ACP session identity; switches project-path tab identity to this key. */
+    sessionKey?: string;
 }
 
 export interface CreateVETabOptions {
@@ -203,8 +205,6 @@ export interface UseAITabManagerResult {
     saveTabState: (tabId: string, state: Partial<AITabState>) => void;
     /** Get saved state for a tab */
     getTabState: (tabId: string) => AITabState | undefined;
-    /** Get the lastActiveAt timestamp for a tab (for overflow sorting) */
-    getLastActiveAt: (tabId: string) => number;
     /** Check whether a project tab with the given path already exists */
     hasProjectTab: (projectPath: string) => boolean;
     /** Get the current tab list (reads from ref, always fresh) */
@@ -223,6 +223,10 @@ const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
 const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
 const VE_TABS_STORAGE_KEY = "ai_assistant_ve_tabs";
 
+function isACPMirrorTab(tab: AITab): boolean {
+    return typeof tab.sessionKey === "string" && tab.sessionKey.trim().startsWith("desktop-user:acp:");
+}
+
 /** Maximum number of messages to persist per tab (keep localStorage bounded). */
 const MAX_PERSISTED_HISTORY_PER_TAB = 50;
 
@@ -234,7 +238,9 @@ function persistableProjectHistory(history: unknown[]): unknown[] {
         .filter((message) => {
             if (!message || typeof message !== "object") return false;
             const kind = (message as { kind?: unknown }).kind;
-            return kind !== "guideReceipt" && kind !== "guideRejection";
+            // Task-context cards are intentionally one-shot local UI. They
+            // must not become agent context or reappear after a restart.
+            return kind !== "guideReceipt" && kind !== "guideRejection" && kind !== "taskContext";
         })
         .slice(-MAX_PERSISTED_HISTORY_PER_TAB);
 }
@@ -242,7 +248,7 @@ function persistableProjectHistory(history: unknown[]): unknown[] {
 /** Persist project/expert tab conversation histories to localStorage. Debounced externally. */
 function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AITab[]) {
     try {
-        const projectTabs = tabs.filter(t => (t.type === "project" && t.projectPath) || (t.type === "expert" && t.expertId));
+        const projectTabs = tabs.filter(t => ((t.type === "project" && t.projectPath && !isACPMirrorTab(t)) || (t.type === "expert" && t.expertId)));
         const projectTabIds = new Set(projectTabs.map(t => t.id));
         const serialized: Record<string, unknown[]> = {};
 
@@ -305,7 +311,7 @@ function loadPersistedProjectTabHistories(): Record<string, unknown[]> {
 /** Persist project and expert tabs to localStorage for cross-session recovery. */
 function persistProjectTabs(tabs: AITab[]) {
     try {
-        const projectTabs = tabs.filter(t => (t.type === "project" && t.projectPath) || (t.type === "expert" && t.expertId));
+        const projectTabs = tabs.filter(t => ((t.type === "project" && t.projectPath && !isACPMirrorTab(t)) || (t.type === "expert" && t.expertId)));
         const serialized = projectTabs.map(t => t.type === "expert"
             ? {
                 id: t.id,
@@ -346,7 +352,7 @@ function loadPersistedProjectTabs(): AITab[] {
         const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string }>;
         if (!Array.isArray(parsed)) return [];
         return parsed
-            .filter(t => t.id && (t.projectPath || (t.type === "expert" && t.expertId)))
+            .filter(t => t.id && !String(t.id).startsWith("acp-") && (t.projectPath || (t.type === "expert" && t.expertId)))
             .map(t => {
                 if (t.type === "expert") {
                     const expertId = String(t.expertId || "").trim();
@@ -536,6 +542,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             setTabState(prev => {
                 const reconciledTabs = prev.tabs.filter(t =>
                     t.type !== "project"
+                    || isACPMirrorTab(t)
                     || !t.projectPath
                     || backendActiveProjectPaths.has(normalizeProjectSessionPath(t.projectPath))
                     || !restoredProjectPathsRef.current.has(normalizeProjectSessionPath(t.projectPath))
@@ -544,7 +551,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 // Merge backend tabs with existing tabs (localStorage may have already restored some).
                 const existingIds = new Set(reconciledTabs.map(t => t.id));
                 const existingPaths = new Set(
-                    reconciledTabs.filter(t => t.type === "project" && t.projectPath).map(t => normalizeProjectSessionPath(t.projectPath))
+                    reconciledTabs.filter(t => t.type === "project" && !isACPMirrorTab(t) && t.projectPath).map(t => normalizeProjectSessionPath(t.projectPath))
                 );
                 const backendTitlesByPath = new Map<string, string>();
                 const backendTitlesById = new Map<string, string>();
@@ -561,7 +568,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 }
                 let titleChanged = false;
                 const updatedReconciledTabs = reconciledTabs.map(tab => {
-                    if (tab.type !== "project" || !tab.projectPath) return tab;
+                    if (tab.type !== "project" || isACPMirrorTab(tab) || !tab.projectPath) return tab;
                     const normalizedPath = normalizeProjectSessionPath(tab.projectPath);
                     const backendTitle = backendTitlesByPath.get(normalizedPath) || backendTitlesById.get(tab.id) || "";
                     const backendEntry = backendEntriesByPath.get(normalizedPath) || backendEntriesById.get(tab.id);
@@ -743,7 +750,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
             persistVETabs(tabStateRef.current.tabs, tabStatesRef.current);
             // Also flush to backend session files for reliability
-            const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && t.projectPath) || t.type === "expert");
+            const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && t.projectPath && !isACPMirrorTab(t)) || t.type === "expert");
             for (const tab of projectTabs) {
                 const state = tabStatesRef.current.get(tab.id);
                 if (state && Array.isArray(state.history) && state.history.length > 0) {
@@ -774,7 +781,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // Expert tabs share the backend session-file persistence (keyed by tab id;
         // SaveProjectTabConversation/LoadProjectTabConversation tolerate tab ids
         // that were never registered via CreateProjectTabSession).
-        const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project" || t.type === "expert");
+        const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && !isACPMirrorTab(t)) || t.type === "expert");
         for (const tab of projectTabs) {
             LoadProjectTabConversation(tab.id).then(conversation => {
                 if (!conversation || !Array.isArray(conversation) || conversation.length === 0) return;
@@ -977,7 +984,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // Check for duplicate: if a tab with same projectPath exists, activate it.
         // When resuming a pure coding task, always re-apply agentMode/remoteHost from
         // the open request so a stale tab without coding mode is restored correctly.
-        const existing = prev.tabs.find(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === projectPath);
+        const sessionKey = String(options?.sessionKey || "").trim();
+        const existing = sessionKey
+            ? prev.tabs.find(t => t.type === "project" && t.sessionKey === sessionKey)
+            : prev.tabs.find(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === projectPath);
         if (existing) {
             const nextAgentMode = options?.agentMode ?? existing.agentMode;
             const nextRemoteHost = options?.remoteHost ?? existing.remoteHost;
@@ -1008,7 +1018,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         }
 
         // Generate deterministic tab ID from projectPath
-        const tabId = `proj-${simpleHash(projectPath)}`;
+        const tabId = sessionKey ? `acp-${simpleHash(sessionKey)}` : `proj-${simpleHash(projectPath)}`;
 
         // Create tab with type="project"
         const newTab: AITab = {
@@ -1016,6 +1026,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             type: "project",
             title: sanitizeProjectTabTitle(taskTitle, projectPath),
             projectPath,
+            sessionKey: sessionKey || undefined,
             agentMode: options?.agentMode,
             remoteHost: options?.remoteHost,
             remoteSafety: options?.remoteSafety,
@@ -1029,7 +1040,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // removed from the tab list during backend reconciliation, and now is
         // being re-opened from task management). Only set empty history if there is
         // truly no prior state for this tabId.
-        const existingHydratedState = tabStatesRef.current.get(tabId);
+        const existingHydratedState = sessionKey ? undefined : tabStatesRef.current.get(tabId);
         if (!existingHydratedState || !Array.isArray(existingHydratedState.history) || existingHydratedState.history.length === 0) {
             tabStatesRef.current.set(tabId, {
                 history: [],
@@ -1052,9 +1063,18 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // If this deterministic tab id was closed moments ago, serialize the
         // create after close so a late close cannot archive a reopened task.
         const pendingClose = pendingProjectTabCloseByIDRef.current.get(tabId);
-        const register = () => CreateProjectTabSession(tabId, projectPath)
-            .then(() => options?.onSessionReady?.(newTab))
-            .catch(() => {});
+        const register = () => {
+            // ACP already owns an isolated server-side session. Do not register
+            // its UI mirror as a path-owned project session, which would
+            // recreate path-based shared history/cancellation state.
+            if (sessionKey) {
+                options?.onSessionReady?.(newTab);
+                return Promise.resolve();
+            }
+            return CreateProjectTabSession(tabId, projectPath)
+                .then(() => options?.onSessionReady?.(newTab))
+                .catch(() => {});
+        };
         if (pendingClose) pendingClose.finally(register);
         else void register();
 
@@ -1136,7 +1156,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             if (!tab || !tab.closable) return prev;
 
             // For project tabs, call backend to persist session state.
-            if (tab.type === "project") {
+            if (tab.type === "project" && !tab.sessionKey) {
                 const closePromise = Promise.resolve()
                     .then(() => CloseProjectTabSession(tabId))
                     .catch(() => {})
@@ -1244,7 +1264,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             // 2. Backend session file (reliable, survives process kill) — only dirty tabs
             const dirtyIds = dirtyTabIdsRef.current;
             if (dirtyIds.size > 0) {
-                const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && t.projectPath || t.type === "expert") && dirtyIds.has(t.id));
+                const projectTabs = tabStateRef.current.tabs.filter(t => (((t.type === "project" && t.projectPath && !isACPMirrorTab(t)) || t.type === "expert") && dirtyIds.has(t.id)));
                 for (const tab of projectTabs) {
                     const state = tabStatesRef.current.get(tab.id);
                     if (state && Array.isArray(state.history) && state.history.length > 0) {
@@ -1271,8 +1291,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // Persist the cleared state so it doesn't resurrect after restart
         dirtyTabIdsRef.current.add(tabId);
         scheduleHistoryPersist();
-        // Also clear backend session file immediately (don't wait for debounce)
-        SaveProjectTabConversation(tabId, []).catch(() => {});
+        // Also clear backend session file immediately (don't wait for debounce).
+        // ACP mirrors are not desktop-owned session files.
+        const tab = tabStateRef.current.tabs.find(item => item.id === tabId);
+        if (!tab || !isACPMirrorTab(tab)) SaveProjectTabConversation(tabId, []).catch(() => {});
     }, [scheduleHistoryPersist, updateTabState]);
 
     const saveTabState = useCallback((tabId: string, state: Partial<AITabState>) => {
@@ -1286,7 +1308,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         };
         tabStatesRef.current.set(tabId, { ...existing, ...state });
         // Debounce-persist history for project/expert tabs
-        if (openTab && (openTab.type === "project" || openTab.type === "expert") && state.history) {
+        if (openTab && ((openTab.type === "project" && !isACPMirrorTab(openTab)) || openTab.type === "expert") && state.history) {
             dirtyTabIdsRef.current.add(tabId);
             scheduleHistoryPersist();
         }
@@ -1299,10 +1321,6 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
     const getTabState = useCallback((tabId: string): AITabState | undefined => {
         return tabStatesRef.current.get(tabId);
-    }, []);
-
-    const getLastActiveAt = useCallback((tabId: string): number => {
-        return tabStatesRef.current.get(tabId)?.lastActiveAt ?? 0;
     }, []);
 
     const hasProjectTab = useCallback((projectPath: string): boolean => {
@@ -1384,7 +1402,6 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         clearTabConversation,
         saveTabState,
         getTabState,
-        getLastActiveAt,
         getTabs,
         hasProjectTab,
         upgradeVETabToGroup,

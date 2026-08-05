@@ -39,6 +39,33 @@ describe("normalizeCodingTaskLaunch", () => {
         })?.remoteSafety).toBeUndefined();
     });
 
+    it("keeps only trimmed, display-safe new-task context", () => {
+        expect(normalizeCodingTaskLaunch({
+            projectPath: " D:/tasks/new ",
+            taskTitle: " New task ",
+            agentMode: "remote_coding_dev",
+            newTaskContext: {
+                kind: "new-task",
+                workingDir: " D:/local-workspace ",
+                remoteWorkDir: " /srv/project ",
+                remoteUser: " deploy ",
+                remotePort: 2222,
+            },
+        })?.newTaskContext).toEqual({
+            kind: "new-task",
+            workingDir: "D:/local-workspace",
+            remoteWorkDir: "/srv/project",
+            remoteUser: "deploy",
+            remotePort: 2222,
+        });
+    });
+    it("drops unsafe remote port values from new-task context", () => {
+        expect(normalizeCodingTaskLaunch({
+            projectPath: "D:/tasks/new",
+            taskTitle: "New task",
+            newTaskContext: { kind: "new-task", remotePort: 70000 },
+        })?.newTaskContext?.remotePort).toBeUndefined();
+    });
     it("rejects an empty project path", () => {
         expect(normalizeCodingTaskLaunch({ taskTitle: "No path" })).toBeNull();
     });

@@ -17,12 +17,20 @@ import (
 const (
 	defaultTTSUnloadDelay = 5 * time.Minute
 	TTSModelFilename      = "kokoro-v1_0.koro"
-	TTSVoiceZipFilename   = "kokoro_82m_selected_voices_koro.zip"
-	TTSAssetDirName       = "kokoro_82m"
-	DefaultTTSVoiceID     = "zf_xiaoyi"
+	// Keep the voice pack filename versioned. Existing installations can retain
+	// the original four-voice ZIP, so reusing that filename would make the
+	// downloader treat an incomplete cached pack as current.
+	TTSVoiceZipFilename      = "kokoro_82m_selected_voices_koro_v2.zip"
+	TTSAssetDirName          = "kokoro_82m"
+	DefaultTTSVoiceID        = "zf_xiaoyi"
+	DefaultEnglishTTSVoiceID = "am_adam"
+	EnglishFemaleTTSVoiceID  = "af_heart"
 )
 
-var SupportedTTSVoiceIDs = []string{"zm_yunxi", "zm_yunyang", "zf_xiaoxiao", "zf_xiaoyi"}
+var SupportedTTSVoiceIDs = []string{"zm_yunxi", "zm_yunyang", "zf_xiaoxiao", "zf_xiaoyi", DefaultEnglishTTSVoiceID, EnglishFemaleTTSVoiceID}
+
+// RequiredTTSVoiceIDs is the complete voice pack needed by the application.
+var RequiredTTSVoiceIDs = append([]string{}, SupportedTTSVoiceIDs...)
 
 // Manager provides lazy-loaded, auto-unloading TTS.
 // Call SynthesizeText; model loads on first use, unloads after idle.
@@ -100,10 +108,17 @@ func (mgr *Manager) Loaded() bool {
 
 // SynthesizeText loads model on demand, synthesizes text to WAV bytes.
 func (mgr *Manager) SynthesizeText(text string) ([]byte, error) {
+	return mgr.SynthesizeTextAtSpeed(text, 1)
+}
+
+// SynthesizeTextAtSpeed is SynthesizeText with an explicit Kokoro duration
+// multiplier. Values below 1 speak more slowly and are useful for short device
+// prompts where intelligibility matters more than throughput.
+func (mgr *Manager) SynthesizeTextAtSpeed(text string, speed float32) ([]byte, error) {
 	if mgr == nil {
 		return nil, fmt.Errorf("tts: manager not available")
 	}
-	pcm, sampleRate, err := mgr.SynthesizeAudio(text)
+	pcm, sampleRate, err := mgr.SynthesizeAudioAtSpeed(text, speed)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +131,11 @@ func (mgr *Manager) SynthesizeText(text string) ([]byte, error) {
 
 // SynthesizeAudio loads model on demand, synthesizes text to float32 PCM.
 func (mgr *Manager) SynthesizeAudio(text string) ([]float32, int, error) {
+	return mgr.SynthesizeAudioAtSpeed(text, 1)
+}
+
+// SynthesizeAudioAtSpeed synthesizes text using an explicit Kokoro speed.
+func (mgr *Manager) SynthesizeAudioAtSpeed(text string, speed float32) ([]float32, int, error) {
 	if mgr == nil {
 		return nil, 0, fmt.Errorf("tts: manager not available")
 	}
@@ -123,7 +143,7 @@ func (mgr *Manager) SynthesizeAudio(text string) ([]float32, int, error) {
 	if phonemes == "" {
 		return nil, 0, fmt.Errorf("tts: text produced no Kokoro phonemes")
 	}
-	return mgr.SynthesizeKokoroPhonemes(phonemes, 1)
+	return mgr.SynthesizeKokoroPhonemes(phonemes, speed)
 }
 
 func (mgr *Manager) SynthesizeKokoroPhonemes(phonemes string, speed float32) ([]float32, int, error) {

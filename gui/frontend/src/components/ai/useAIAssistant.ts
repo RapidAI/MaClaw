@@ -127,7 +127,7 @@ interface AIAssistantSendResult {
     Reasoning?: string;
 }
 
-interface AIAssistantContextMessage {
+export interface AIAssistantContextMessage {
     role: 'user' | 'assistant';
     content: string;
 }
@@ -155,6 +155,9 @@ interface SendMessageOptions {
 	 im_target_uid?: string;
 	 im_task_title?: string;
 }
+
+/** Explicit session context for an action-button dispatch. */
+export type AIAssistantActionRouteOptions = Pick<SendMessageOptions, 'project_path' | 'expert_id' | 'tabId' | 'recentMessages'>;
 
 type ShowConfirm = (
     message: string,
@@ -414,7 +417,7 @@ export interface ChatMessage {
     // Legacy receipt kinds remain parseable so stale local history does not
     // break after upgrade. guideInjection marks a user bubble that steered the
     // running turn rather than starting an independent turn.
-    kind?: 'news' | 'trace' | 'guideReceipt' | 'guideRejection' | 'guideInjection';
+    kind?: 'news' | 'trace' | 'taskContext' | 'guideReceipt' | 'guideRejection' | 'guideInjection';
     content: string;
     /** Reasoning/thinking content from reasoning models (displayed as collapsed gray text). */
     reasoning?: string;
@@ -2816,6 +2819,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const progressTailBySessionRef = useRef<Map<string, string>>(new Map());
     const activeProgressSessionKeyRef = useRef(normalizeRuntimeSessionKey(options?.activeSessionKey || getActiveSessionKey()));
     const selectedFilePathsBySessionRef = useRef<Map<string, string[]>>(new Map());
+    // File selection is asynchronous. Track explicit attachment mutations so a
+    // picker result that returns after clear/forget cannot restore stale files.
+    const selectedFilesRevisionBySessionRef = useRef<Map<string, number>>(new Map());
     const activeSelectedFilesSessionKeyRef = useRef(normalizeRuntimeSessionKey(options?.activeSessionKey || getActiveSessionKey()));
     const streamTokenBuffersByRequestRef = useRef<Map<string, StreamTokenBuffer>>(new Map());
     const streamAppendStatesByMessageRef = useRef<Map<string, StreamAppendState>>(new Map());
@@ -3183,9 +3189,22 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
     }, [setInitStatusState]);
 
+    const selectedFilesRevision = useCallback((sessionKey: string) => (
+        selectedFilesRevisionBySessionRef.current.get(normalizeRuntimeSessionKey(sessionKey)) || 0
+    ), []);
+
+    const bumpSelectedFilesRevision = useCallback((sessionKey: string) => {
+        const normalizedSessionKey = normalizeRuntimeSessionKey(sessionKey);
+        selectedFilesRevisionBySessionRef.current.set(
+            normalizedSessionKey,
+            selectedFilesRevision(normalizedSessionKey) + 1,
+        );
+    }, [selectedFilesRevision]);
+
     const setSelectedFiles = useCallback((nextPaths: string[], sessionKey?: string) => {
         const normalizedSessionKey = normalizeRuntimeSessionKey(sessionKey || activeSelectedFilesSessionKeyRef.current);
         const normalized = nextPaths.map(normalizeSelectedFilePath).filter(Boolean);
+        bumpSelectedFilesRevision(normalizedSessionKey);
         if (normalized.length > 0) {
             selectedFilePathsBySessionRef.current.set(normalizedSessionKey, normalized);
         } else {
@@ -3195,12 +3214,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             setSelectedFilePaths(normalized);
         }
         return normalized;
-    }, []);
+    }, [bumpSelectedFilesRevision]);
 
     const addSelectedFiles = useCallback((newPaths: string[], sessionKey?: string) => {
         const normalizedSessionKey = normalizeRuntimeSessionKey(sessionKey || activeSelectedFilesSessionKeyRef.current);
         const normalized = newPaths.map(normalizeSelectedFilePath).filter(Boolean);
         if (normalized.length === 0) return;
+        bumpSelectedFilesRevision(normalizedSessionKey);
         const current = selectedFilePathsBySessionRef.current.get(normalizedSessionKey) || [];
         const existing = new Set(current);
         const next = [...current, ...normalized.filter(p => !existing.has(p))];
@@ -3208,10 +3228,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (activeSelectedFilesSessionKeyRef.current === normalizedSessionKey) {
             setSelectedFilePaths(next);
         }
-    }, []);
+    }, [bumpSelectedFilesRevision]);
 
     const removeSelectedFile = useCallback((filePath: string) => {
         const normalizedSessionKey = activeSelectedFilesSessionKeyRef.current;
+        bumpSelectedFilesRevision(normalizedSessionKey);
         const current = selectedFilePathsBySessionRef.current.get(normalizedSessionKey) || [];
         const next = current.filter(path => path !== filePath);
         if (next.length > 0) {
@@ -3220,7 +3241,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             selectedFilePathsBySessionRef.current.delete(normalizedSessionKey);
         }
         setSelectedFilePaths(next);
-    }, []);
+    }, [bumpSelectedFilesRevision]);
 
     const setRoundState = useCallback((next: ActiveRound) => {
         const current = activeRoundRef.current;
@@ -3640,6 +3661,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             setPendingTask(nextTask);
         }
         clearTransientProgress(normalizedSessionKey);
+        bumpSelectedFilesRevision(normalizedSessionKey);
         selectedFilePathsBySessionRef.current.delete(normalizedSessionKey);
         if (activeSelectedFilesSessionKeyRef.current === normalizedSessionKey) {
             setSelectedFilePaths([]);
@@ -3660,7 +3682,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             resetStreamTokenBuffer(currentRound.requestId);
             resetActiveRound(currentRound.generation + 1);
         }
-    }, [bumpSessionResetEpoch, clearTransientProgress, notifyForegroundIdle, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
+    }, [bumpSelectedFilesRevision, bumpSessionResetEpoch, clearTransientProgress, notifyForegroundIdle, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
     const queueStreamToken = useCallback((round: ActiveRound, text: string) => {
         if (!round.assistantMessageId || !text) return;
@@ -4208,9 +4230,15 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         const approvalMessage = options?.markConfirmationRunning === true;
         const contextStartIndex = resolveContextStartIndex(latestMessagesRef.current, contextBoundaryMessageIDRef.current);
+        // The hook-level transcript belongs only to the local session. A project
+        // or expert send must provide its own scoped context; falling back to the
+        // local transcript here would let an action button import another
+        // session's attached-file paths into this session.
         const recentMessages = Array.isArray(options?.recentMessages)
             ? options.recentMessages
-            : buildClientContextMessages(latestMessagesRef.current, contextStartIndex);
+            : sessionKey === 'desktop-user'
+                ? buildClientContextMessages(latestMessagesRef.current, contextStartIndex)
+                : [];
 
         clearTransientProgress(sessionKey);
         const nextRound = {
@@ -4530,17 +4558,20 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
     const browseFile = useCallback(async () => {
         const sessionKey = activeSelectedFilesSessionKeyRef.current;
+        const revision = selectedFilesRevision(sessionKey);
         try {
             const selected = await SelectAIAssistantFiles();
             if (!selected || selected.length === 0) return; // User cancelled or no files selected
             const validPaths = selected.filter(p => p && p.trim());
-            if (validPaths.length > 0) {
+            // Do not resurrect a picker result after its originating session was
+            // cleared or forgotten while the native dialog was open.
+            if (validPaths.length > 0 && selectedFilesRevision(sessionKey) === revision) {
                 addSelectedFiles(validPaths, sessionKey);
             }
         } catch (err) {
             console.error('Failed to select files:', err);
         }
-    }, [addSelectedFiles]);
+    }, [addSelectedFiles, selectedFilesRevision]);
 
     const clearSelectedFile = useCallback(() => {
         setSelectedFiles([]);
@@ -4604,7 +4635,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         setSubmittedPrompts(prev => appendSubmittedPrompt(prev, prompt));
     }, []);
 
-    const executeAction = useCallback(async (command: string) => {
+    const executeAction = useCallback(async (
+        command: string,
+        routeOptions?: AIAssistantActionRouteOptions,
+    ) => {
+        const sendActionMessage = (text: string, options: SendMessageOptions): Promise<boolean> =>
+            sendMessage(text, { ...options, ...routeOptions });
         // Handle critical-risk skill installation confirmation responses.
         const criticalConfirmMatch = command.match(/^__resolve_critical_confirm__\s+(\S+)\s+(confirm|reject)(?:\s+(\S+))?$/);
         if (criticalConfirmMatch) {
@@ -4631,7 +4667,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const executionConfirmMatch = command.match(/^__confirm_execution__\s+(\S+)$/);
         if (executionConfirmMatch) {
             const action = findLatestConfirmationAction(latestMessagesRef.current, command);
-            return sendMessage(command, {
+            return sendActionMessage(command, {
                 uiAction: true,
                 displayText: localizedExecutionActionText(command, action?.label, uiLang),
                 markConfirmationRunning: true,
@@ -4640,14 +4676,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const executionCancelMatch = command.match(/^__cancel_execution__\s+(\S+)$/);
         if (executionCancelMatch) {
             const action = findLatestConfirmationAction(latestMessagesRef.current, command);
-            return sendMessage(command, {
+            return sendActionMessage(command, {
                 uiAction: true,
                 displayText: localizedExecutionActionText(command, action?.label, uiLang),
             });
         }
         const legacyConfirmationAction = findLatestConfirmationAction(latestMessagesRef.current, command);
         if (isConfirmationApprovalAction(legacyConfirmationAction)) {
-            return sendMessage(command, { uiAction: true, displayText: legacyConfirmationAction?.label || command, markConfirmationRunning: true });
+            return sendActionMessage(command, { uiAction: true, displayText: legacyConfirmationAction?.label || command, markConfirmationRunning: true });
         }
         const traceMatch = command.match(/^__view_trace__\s+(\S+)$/);
         if (traceMatch) {
@@ -4666,7 +4702,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const slotID = resumeMatch[1]?.trim() || '';
             setMessages(prev => markUnfinishedSlotResumed(removeActionCommandFromMessages(prev, command), slotID));
             const resumeText = localizeText(uiLang, "Continue previous unfinished task", "\u7ee7\u7eed\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u7e7c\u7e8c\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9");
-            return sendMessage(resumeText, {
+            return sendActionMessage(resumeText, {
                 resumeSlotID: slotID,
                 uiAction: true,
                 displayText: resumeText,
@@ -4678,7 +4714,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (command === '__start_new_task__') {
             setMessages(prev => removeActionCommandFromMessages(prev, command));
             const startNewText = localizeText(uiLang, "Start a new task", "\u5f00\u59cb\u4e00\u4e2a\u65b0\u4efb\u52a1", "\u958b\u59cb\u4e00\u500b\u65b0\u4efb\u52d9");
-            return sendMessage(startNewText, {
+            return sendActionMessage(startNewText, {
                 startNewTask: true,
                 uiAction: true,
                 displayText: startNewText,
@@ -4688,7 +4724,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (dismissMatch) {
             setMessages(prev => removeActionCommandFromMessages(prev, command));
             const dismissText = localizeText(uiLang, "Dismiss previous unfinished task", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9");
-            return sendMessage(dismissText, {
+            return sendActionMessage(dismissText, {
                 dismissSlotID: dismissMatch[1]?.trim() || '',
                 startNewTask: true,
                 uiAction: true,
@@ -4699,7 +4735,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (resumeSessionMatch) {
             setMessages(prev => removeActionCommandFromMessages(prev, command));
             const resumeSessionText = localizeText(uiLang, "Resume session", "\u6062\u590d\u4f1a\u8bdd", "\u6062\u5fa9\u6703\u8a71");
-            return sendMessage(resumeSessionText, {
+            return sendActionMessage(resumeSessionText, {
                 resumeSessionID: resumeSessionMatch[1]?.trim() || '',
                 uiAction: true,
                 displayText: resumeSessionText,
@@ -4709,7 +4745,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (dismissSessionMatch) {
             setMessages(prev => removeActionCommandFromMessages(prev, command));
             const dismissSessionText = localizeText(uiLang, "Dismiss session", "\u5ffd\u7565\u4f1a\u8bdd", "\u5ffd\u7565\u6703\u8a71");
-            return sendMessage(dismissSessionText, {
+            return sendActionMessage(dismissSessionText, {
                 dismissRecoverableSessionID: dismissSessionMatch[1]?.trim() || '',
                 uiAction: true,
                 displayText: dismissSessionText,
@@ -4724,7 +4760,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 keep_only: localizeText(uiLang, "Keep audio only", "不做处理", "不做處理"),
             };
             setMessages(prev => disableActionsForCommand(prev, command));
-            return sendMessage(command, { uiAction: true, displayText: displayLabels[action] || command });
+            return sendActionMessage(command, { uiAction: true, displayText: displayLabels[action] || command });
         }
         const workflowReviewMatch = command.match(/^__wf_review__\s+(\S+)$/);
         if (workflowReviewMatch) {
@@ -4758,7 +4794,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 }
                 setMessages(prev => disableActionsForCommand(prev, command));
                 const displayText = localizeText(uiLang, "Abort workflow", "中止工作流", "中止工作流");
-                return sendMessage(command, { uiAction: true, displayText });
+                return sendActionMessage(command, { uiAction: true, displayText });
             }
 
             // "confirm": send to backend for fast-path processing
@@ -4766,7 +4802,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 confirm: localizeText(uiLang, "Confirm and proceed", "确认并推进", "確認並推進"),
             };
             setMessages(prev => disableActionsForCommand(prev, command));
-            return sendMessage(command, { uiAction: true, displayText: displayLabels[action] || command });
+            return sendActionMessage(command, { uiAction: true, displayText: displayLabels[action] || command });
         }
         const workflowChoiceMatch = command.match(/^__workflow_choice__\s+(complex|simple|coding_subagent|remote_coding_subagent|skip|direct|alt_\S+)\s+(\S+)$/);
         if (workflowChoiceMatch) {
@@ -4788,7 +4824,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // Remove ALL actions from the message (not just the clicked one)
             // because these are mutually exclusive choice buttons.
             setMessages(prev => disableActionsForCommand(prev, command));
-            return sendMessage(command, { uiAction: true, displayText });
+            return sendActionMessage(command, { uiAction: true, displayText });
         }
         // Persistently disable action buttons after click. Component-local
         // firedIndex state may be lost on re-render; removing actions from the
@@ -4797,7 +4833,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // Remove ALL actions from the containing message — action buttons are
         // one-shot (mutually exclusive choices or single confirm/cancel).
         setMessages(prev => disableActionsForCommand(prev, command));
-        return sendMessage(command, { uiAction: true });
+        return sendActionMessage(command, { uiAction: true });
     }, [activeSessionKeyForEvents, sendMessage, showConfirm, uiLang]);
 
     useEffect(() => {

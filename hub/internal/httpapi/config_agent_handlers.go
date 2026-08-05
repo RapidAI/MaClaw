@@ -123,10 +123,10 @@ func ConfigAgentPlanHandler(deps ConfigAgentDeps) http.HandlerFunc {
 					"Unbind user alice@example.com from system-free",
 					"Bind user alice@example.com to system-free and coding-basic",
 				},
-				"session_id":     sessionID,
-				"session_turns":  priorTurns,
-				"planner_tried":  planner,
-				"system_free":    llmservice.EvaluateSystemFreeStatus(serviceReg, configuredProviderIDSet(providerReg)),
+				"session_id":    sessionID,
+				"session_turns": priorTurns,
+				"planner_tried": planner,
+				"system_free":   llmservice.EvaluateSystemFreeStatus(serviceReg, configuredProviderIDSet(providerReg)),
 			})
 			return
 		}
@@ -196,8 +196,8 @@ func ConfigAgentPlanHandler(deps ConfigAgentDeps) http.HandlerFunc {
 			"summary": plan.Summary, "risk_level": plan.RiskLevel,
 			"missing_fields": plan.MissingFields, "step_count": len(plan.Steps),
 			"source_message": plan.SourceMessage, "session_id": sessionID,
-			"session_turns":  sessionTurns,
-			"plan":           resp, // sanitized snapshot for history replay
+			"session_turns": sessionTurns,
+			"plan":          resp, // sanitized snapshot for history replay
 		})
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":                 true,
@@ -1444,7 +1444,6 @@ func ConfigAgentHistoryHandler(audit store.AdminAuditRepository) http.HandlerFun
 	}
 }
 
-
 func filterConfigAgentHistoryItems(items []map[string]any, intentQ, q string) []map[string]any {
 	intentQ = strings.ToLower(strings.TrimSpace(intentQ))
 	q = strings.ToLower(strings.TrimSpace(q))
@@ -2062,7 +2061,6 @@ func execRegistrationAuthUpdate(r *http.Request, system store.SystemSettingsRepo
 	return cfg, nil
 }
 
-
 func execFeishuAutoEnrollGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {
 	scoped := scopedSystemSettingsForRequest(r, system)
 	return feishu.LoadAutoEnrollSetting(r.Context(), scoped), nil
@@ -2186,8 +2184,8 @@ func execInvitationCodesList(r *http.Request, deps ConfigAgentDeps, args map[str
 
 func execMigrationSettingsGet(r *http.Request, system store.SystemSettingsRepository) (any, error) {
 	scoped := scopedSystemSettingsForRequest(r, system)
-	raw, err := scoped.Get(r.Context(), migrationSettingMaxCompressedBytes)
-	value := migrationDefaultMaxCompressedBytes
+	raw, err := scoped.Get(r.Context(), migrationSettingMaxPackageBytes)
+	value := migrationDefaultMaxPackageBytes
 	if err == nil && strings.TrimSpace(raw) != "" {
 		var payload struct {
 			Value int64 `json:"value"`
@@ -2198,19 +2196,19 @@ func execMigrationSettingsGet(r *http.Request, system store.SystemSettingsReposi
 	}
 	value = clampMigrationLimit(value)
 	return map[string]any{
-		"max_compressed_bytes": value,
-		"max_mb":               value / (1024 * 1024),
-		"min_bytes":            migrationMinCompressedBytes,
-		"max_bytes":            migrationMaxCompressedBytes,
-		"min_mb":               migrationMinCompressedBytes / (1024 * 1024),
-		"max_mb_limit":         migrationMaxCompressedBytes / (1024 * 1024),
+		"max_package_bytes": value,
+		"max_mb":            value / (1024 * 1024),
+		"min_bytes":         migrationMinPackageBytes,
+		"max_bytes":         migrationMaxPackageBytes,
+		"min_mb":            migrationMinPackageBytes / (1024 * 1024),
+		"max_mb_limit":      migrationMaxPackageBytes / (1024 * 1024),
 	}, nil
 }
 
 func execMigrationSettingsUpdate(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
 	bytesVal, ok := parseMigrationMaxBytesArgs(args)
 	if !ok {
-		return nil, fmt.Errorf("max_compressed_bytes or max_mb required")
+		return nil, fmt.Errorf("max_package_bytes or max_mb required")
 	}
 	value := clampMigrationLimit(bytesVal)
 	data, err := json.Marshal(map[string]int64{"value": value})
@@ -2218,14 +2216,14 @@ func execMigrationSettingsUpdate(r *http.Request, system store.SystemSettingsRep
 		return nil, err
 	}
 	scoped := scopedSystemSettingsForRequest(r, system)
-	if err := scoped.Set(r.Context(), migrationSettingMaxCompressedBytes, string(data)); err != nil {
+	if err := scoped.Set(r.Context(), migrationSettingMaxPackageBytes, string(data)); err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"max_compressed_bytes": value,
-		"max_mb":               value / (1024 * 1024),
-		"min_bytes":            migrationMinCompressedBytes,
-		"max_bytes":            migrationMaxCompressedBytes,
+		"max_package_bytes": value,
+		"max_mb":            value / (1024 * 1024),
+		"min_bytes":         migrationMinPackageBytes,
+		"max_bytes":         migrationMaxPackageBytes,
 	}, nil
 }
 
@@ -2233,7 +2231,7 @@ func parseMigrationMaxBytesArgs(args map[string]any) (int64, bool) {
 	if args == nil {
 		return 0, false
 	}
-	if v, ok := args["max_compressed_bytes"]; ok && v != nil {
+	if v, ok := args["max_package_bytes"]; ok && v != nil {
 		if n, ok2 := toInt64(v); ok2 && n > 0 {
 			return n, true
 		}
@@ -2283,7 +2281,6 @@ func toInt64(v any) (int64, bool) {
 	}
 	return 0, false
 }
-
 
 func execContentAuditConfigUpdate(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
 	cfg := im.ContentAuditDynamicConfig{}
@@ -2559,4 +2556,3 @@ func sanitizePlanSteps(steps []configAgentStep) []configAgentStep {
 	}
 	return out
 }
-

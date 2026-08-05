@@ -35,6 +35,37 @@ const (
 	acpHostAgentName     = "maclaw-gui-ai-assistant"
 )
 
+const acpAssistantSessionOwnerPrefix = desktopUserID + ":acp:"
+
+// ACP session identity must not be derived from cwd: several independent
+// editor conversations can use the same workspace.
+func acpAssistantSessionOwnerID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	return acpAssistantSessionOwnerPrefix + sessionID
+}
+
+func isACPAssistantSessionUserID(userID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(userID), acpAssistantSessionOwnerPrefix)
+}
+
+func (a *App) bindACPAssistantSessionWorkingDir(ownerID, workingDir string) {
+	if a == nil || !isACPAssistantSessionUserID(ownerID) {
+		return
+	}
+	if workingDir = normalizeProjectSessionPath(workingDir); workingDir != "" {
+		a.acpSessionWorkingDirs.Store(ownerID, workingDir)
+	}
+}
+
+func (a *App) stopAIAssistantOwnerRuntime(ownerID string) {
+	if a != nil && a.localMCPManager != nil {
+		a.localMCPManager.StopOwner(ownerID)
+	}
+}
+
 // acpHostEndpoint is written to <MaclawBaseDir>/acp/endpoint.json for discovery.
 type acpHostEndpoint struct {
 	URL       string `json:"url"`
@@ -639,7 +670,8 @@ func (s *acpHostSession) onSessionNew(raw json.RawMessage) (any, *acpagent.RPCEr
 		cwd = corelib.EffectiveWorkspaceDir()
 	}
 	id := "acp_gui_" + randomHexID(10)
-	userID := desktopAIAssistantUserIDForProjectPath(normalizeProjectSessionPath(cwd))
+	userID := acpAssistantSessionOwnerID(id)
+	s.app.bindACPAssistantSessionWorkingDir(userID, cwd)
 	s.mu.Lock()
 	s.sessions[id] = &acpHostAgentSession{
 		ID:      id,
@@ -670,9 +702,7 @@ func (s *acpHostSession) onSessionCancel(raw json.RawMessage) {
 	}
 	if sess != nil && s.app != nil {
 		_, _ = s.app.CancelAIAssistantSessionForSession(sess.UserID)
-		if sess.Cwd != "" {
-			s.app.cancelProjectTaskLoop(sess.Cwd)
-		}
+		s.app.stopAIAssistantOwnerRuntime(sess.UserID)
 	}
 }
 
@@ -875,10 +905,11 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 	defer globalACPWriteSnaps.clearRequest(requestID)
 
 	resp, err := s.app.RunAIAssistantProgrammingPrompt(ctx, AIAssistantSendRequest{
-		Text:        text,
-		ProjectPath: sess.Cwd,
-		RequestID:   requestID,
-		Lang:        s.app.CurrentLanguage,
+		Text:           text,
+		ProjectPath:    sess.Cwd,
+		SessionOwnerID: sess.UserID,
+		RequestID:      requestID,
+		Lang:           s.app.CurrentLanguage,
 	}, AIAssistantExternalCallbacks{
 		OnToken:     onToken,
 		OnProgress:  onProgress,
@@ -946,6 +977,7 @@ func (a *App) mirrorACPToGUI(role, text, requestID, sessionKey, projectPath stri
 		"text":         text,
 		"request_id":   requestID,
 		"session_key":  uiSession,
+		"acp_session":  isACPAssistantSessionUserID(uiSession),
 		"project_path": projectPath,
 	})
 	if err != nil {

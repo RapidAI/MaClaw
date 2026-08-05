@@ -34,6 +34,8 @@ type IMTask struct {
 	Text               string
 	Attachments        []MessageAttachment
 	ClientCapabilities *agent.ClientCapabilities
+	ClientTools        []agent.ClientToolDefinition
+	ClientToolContext  *agent.ClientToolContext
 	// StartMenu describes a confirmed /startmenu launch. The desktop client uses
 	// it to create a task record and open a dedicated AI assistant tab before
 	// executing the prompt.

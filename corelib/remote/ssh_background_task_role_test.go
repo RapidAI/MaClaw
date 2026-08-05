@@ -56,8 +56,8 @@ func TestSSHBackgroundTaskManagerDuplicateDetectionRespectsOwner(t *testing.T) {
 	if got := mgr.findDuplicateActiveTaskForOwner("docker build .", "owner-b"); got != nil {
 		t.Fatalf("different owner should not match duplicate, got %#v", got)
 	}
-	if got := mgr.findDuplicateActiveTaskForOwner("docker build .", ""); got == nil || got.TaskID != "bg_owner_a" {
-		t.Fatalf("legacy empty owner should see existing duplicate, got %#v", got)
+	if got := mgr.findDuplicateActiveTaskForOwner("docker build .", ""); got != nil {
+		t.Fatalf("ownerless caller must not reuse another owner's task, got %#v", got)
 	}
 }
 
@@ -81,11 +81,14 @@ func TestSSHBackgroundTaskManagerOwnerAuthorization(t *testing.T) {
 	if err := mgr.AuthorizeTaskOwner("bg_owner_a", "owner-b"); err == nil || !strings.Contains(err.Error(), "another runtime owner") {
 		t.Fatalf("different owner should be rejected, got %v", err)
 	}
-	if err := mgr.AuthorizeTaskOwner("bg_owner_a", ""); err != nil {
-		t.Fatalf("empty owner should preserve legacy access: %v", err)
+	if err := mgr.AuthorizeTaskOwner("bg_owner_a", ""); err == nil || !strings.Contains(err.Error(), "another runtime owner") {
+		t.Fatalf("ownerless caller must not access owner-scoped task, got %v", err)
 	}
-	if err := mgr.AuthorizeTaskOwner("bg_legacy", "owner-b"); err != nil {
-		t.Fatalf("ownerless legacy task should remain accessible: %v", err)
+	if err := mgr.AuthorizeTaskOwner("bg_legacy", "owner-b"); err == nil || !strings.Contains(err.Error(), "another runtime owner") {
+		t.Fatalf("owner-scoped caller must not access ownerless task, got %v", err)
+	}
+	if err := mgr.AuthorizeTaskOwner("bg_legacy", ""); err != nil {
+		t.Fatalf("ownerless caller should retain access to ownerless task: %v", err)
 	}
 	if err := mgr.AuthorizeTaskOwner("missing", "owner-a"); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("missing task should fail, got %v", err)
@@ -103,11 +106,11 @@ func TestSSHBackgroundTaskManagerListTasksForOwnerFiltersAndKeepsLegacy(t *testi
 	for _, task := range tasks {
 		ids[task.TaskID] = true
 	}
-	if !ids["bg_owner_a"] || !ids["bg_legacy"] || ids["bg_owner_b"] || len(tasks) != 2 {
+	if !ids["bg_owner_a"] || ids["bg_legacy"] || ids["bg_owner_b"] || len(tasks) != 1 {
 		t.Fatalf("filtered tasks = %#v", tasks)
 	}
-	if got := mgr.ListTasksForOwner(""); len(got) != 3 {
-		t.Fatalf("empty owner should see all legacy tasks, got %d", len(got))
+	if got := mgr.ListTasksForOwner(""); len(got) != 1 || got[0].TaskID != "bg_legacy" {
+		t.Fatalf("ownerless caller should only see ownerless tasks, got %#v", got)
 	}
 }
 

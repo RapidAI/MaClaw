@@ -80,11 +80,11 @@ func (h *IMMessageHandler) applyCodingUsageToResponse(userID string, resp *IMAge
 		mem := h.getStickyCodingWorkbenchMemory(userID)
 		if mem.SessionInputTokens > 0 || mem.SessionOutputTokens > 0 || mem.SessionEstCostRMB > 0 {
 			resp.Fields = append(resp.Fields,
-				IMResponseField{Label: "session_tokens", Value: fmt.Sprintf("in=%d out=%d total=%d", mem.SessionInputTokens, mem.SessionOutputTokens, mem.SessionInputTokens+mem.SessionOutputTokens)},
+				IMResponseField{Label: "session_tokens", Value: fmt.Sprintf("in=%d out=%d total=%d", mem.SessionInputTokens, mem.SessionOutputTokens, mem.SessionInputTokens+mem.SessionOutputTokens), Internal: true},
 			)
 			if mem.SessionEstCostRMB > 0 {
 				resp.Fields = append(resp.Fields,
-					IMResponseField{Label: "session_est_cost_rmb", Value: fmt.Sprintf("%.4f", mem.SessionEstCostRMB)},
+					IMResponseField{Label: "session_est_cost_rmb", Value: fmt.Sprintf("%.4f", mem.SessionEstCostRMB), Internal: true},
 				)
 			}
 		}

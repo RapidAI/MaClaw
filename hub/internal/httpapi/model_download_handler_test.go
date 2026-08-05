@@ -50,8 +50,8 @@ func TestModelDownloadHandlerServesKokoroArtifacts(t *testing.T) {
 		t.Fatalf("mkdir models dir: %v", err)
 	}
 	for name, body := range map[string]string{
-		"kokoro-v1_0.koro":                    "kokoro-model",
-		"kokoro_82m_selected_voices_koro.zip": "kokoro-voices",
+		"kokoro-v1_0.koro":                       "kokoro-model",
+		"kokoro_82m_selected_voices_koro_v2.zip": "kokoro-voices",
 	} {
 		if err := os.WriteFile(filepath.Join(modelsDir, name), []byte(body), 0644); err != nil {
 			t.Fatalf("write %s: %v", name, err)

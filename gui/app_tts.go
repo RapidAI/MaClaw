@@ -251,12 +251,28 @@ func kokoroVoicesReady(voiceDir string) bool {
 	if voiceDir == "" {
 		return false
 	}
-	for _, voiceID := range tts.SupportedTTSVoiceIDs {
+	for _, voiceID := range tts.RequiredTTSVoiceIDs {
 		if !fileExistsLocal(filepath.Join(voiceDir, voiceID+".koro")) {
 			return false
 		}
 	}
 	return true
+}
+
+func ensureKokoroEnglishVoice(voiceDir, voiceID string) (string, error) {
+	if strings.TrimSpace(voiceDir) == "" {
+		return "", fmt.Errorf("TTS voice directory is unavailable")
+	}
+	var err error
+	voiceID, err = normalizeHardwareWelcomeVoiceID(voiceID)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(voiceDir, voiceID+".koro")
+	if !fileExistsLocal(path) {
+		return "", fmt.Errorf("English TTS voice %s is not installed; update or re-download the TTS voice pack", voiceID)
+	}
+	return voiceID, nil
 }
 
 func unzipKokoroVoices(zipPath, voiceDir string) error {
@@ -390,6 +406,7 @@ func (a *App) speakPlainTextAsync(input string) {
 		fmt.Printf("[tts] on-demand asset preparation failed: %v\n", err)
 		return
 	}
+	// Recreate lazily if another settings path unloaded the selected voice.
 	if a.ttsManager == nil {
 		a.initTTSManager()
 		if a.ttsManager == nil {
@@ -407,6 +424,38 @@ func (a *App) speakPlainTextAsync(input string) {
 		return
 	}
 	a.emitEvent("tts:audio", base64EncodeWAV(wav))
+}
+
+// SynthesizeTTSPreview generates a bounded WAV for settings-quality checks.
+// It uses the currently selected voice, including the native English voice.
+func (a *App) SynthesizeTTSPreview(text string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", fmt.Errorf("preview text cannot be empty")
+	}
+	if len([]rune(text)) > 200 {
+		return "", fmt.Errorf("preview text must be at most 200 characters")
+	}
+	ttsSpeakMu.Lock()
+	defer ttsSpeakMu.Unlock()
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	if err := a.ensureTTSAssetsForUse(cfg.RemoteHubURL, true); err != nil {
+		return "", err
+	}
+	if a.ttsManager == nil {
+		a.initTTSManager()
+	}
+	if a.ttsManager == nil {
+		return "", fmt.Errorf("TTS is unavailable after preparing its assets")
+	}
+	wav, err := a.ttsManager.SynthesizeText(text)
+	if err != nil {
+		return "", err
+	}
+	return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(wav), nil
 }
 
 func (a *App) speakTextAsync(input string) {

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as AppAPI from '../../../wailsjs/go/main/App';
 import { DialogProvider } from '../CustomDialog';
 import { PetStoreDialog } from '../PetStoreDialog';
+import { OPEN_SETTINGS_EVENT } from '../../utils/settingsNavigation';
 
 const account = { credits: 25, user: { email: 'reader@example.test' }, uploads: [], purchases: [] };
 const report = { paid_summary: { sales_amount: 0, sales_count: 0, paid_pack_count: 0 }, previous_paid_summary: { sales_amount: 0, sales_count: 0 }, paid_packs: [], free_download_packs: [] };
@@ -42,6 +43,27 @@ describe('PetStoreDialog', () => {
         vi.mocked(AppAPI.ListPetStorePacks).mockResolvedValue({ packs: [pack], total_pages: 1 });
     });
     afterEach(() => cleanup());
+
+    it('opens Settings > Asset Management from the credits balance', () => {
+        const onClose = vi.fn();
+        const listener = vi.fn();
+        const trigger = document.createElement('button');
+        document.body.appendChild(trigger);
+        trigger.focus();
+        window.addEventListener(OPEN_SETTINGS_EVENT, listener, { once: true });
+        const view = render(<DialogProvider><PetStoreDialog lang="en" onClose={onClose} /></DialogProvider>);
+
+        const assetButton = screen.getByRole('button', { name: 'Asset Management' });
+        assetButton.focus();
+        fireEvent.click(assetButton);
+        view.unmount();
+
+        expect(onClose).toHaveBeenCalledTimes(1);
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({ tab: 'assetManagement' });
+        expect(document.activeElement).not.toBe(trigger);
+        trigger.remove();
+    });
 
     it('keeps the market open when Escape dismisses its purchase confirmation', async () => {
         const onClose = vi.fn();

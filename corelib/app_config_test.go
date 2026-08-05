@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"pgregory.net/rapid"
 )
 
@@ -189,8 +190,8 @@ func TestAppConfigHardwareDefaultsSurviveLegacyUnmarshal(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"thirdparty_gateway_enabled":true}`), &cfg); err != nil {
 		t.Fatalf("unmarshal legacy config: %v", err)
 	}
-	if cfg.HardwareWelcomeText != "Hello, Maclaw" || cfg.HardwareVolume != 70 {
-		t.Fatalf("hardware defaults=%#v, want welcome text and 70%% volume", cfg)
+	if cfg.HardwareWelcomeText != "Hello, Maclaw" || cfg.HardwareWelcomeVoiceID != tts.EnglishFemaleTTSVoiceID || cfg.HardwareVolume != 70 {
+		t.Fatalf("hardware defaults=%#v, want welcome text, sweet female voice and 70%% volume", cfg)
 	}
 
 	if err := json.Unmarshal([]byte(`{"hardware_volume":0}`), &cfg); err != nil {
