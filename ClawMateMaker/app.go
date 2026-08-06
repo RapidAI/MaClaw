@@ -46,7 +46,34 @@ func (a *App) ListSupportedBoards() []catalog.BoardProfile { return catalog.Prof
 
 // GetLatestFirmware discovers the latest official release and downloads only its allow-listed asset.
 func (a *App) GetLatestFirmware(boardID string) (catalog.DownloadedRelease, error) {
-	return catalog.NewClient(a.firmwareCachePath()).DownloadLatest(context.Background(), boardID)
+	result, err := catalog.NewClient(a.firmwareCachePath()).DownloadLatest(context.Background(), boardID, a.emitLog)
+	if err != nil {
+		return result, err
+	}
+	if _, err := firmware.VerifyRelease(result.Path, releaseTrustStore()); err != nil {
+		return result, fmt.Errorf("official firmware signature verification: %w", err)
+	}
+	result.InstallStatus = "verified_ready"
+	result.SafetyNote = "Release signature verified. Confirm the physical board before installation."
+	return result, nil
+}
+
+// FlashFirmware keeps user-controlled strings out of the flash command line.
+// The downloaded package has already been checked, and FlashJob repeats every
+// compatibility and signature check immediately before the irreversible write.
+func (a *App) FlashFirmware(port, boardID, packagePath string) (jobs.FlashResult, error) {
+	profile, err := catalog.Profile(boardID)
+	if err != nil {
+		return jobs.FlashResult{}, err
+	}
+	if port == "" || packagePath == "" {
+		return jobs.FlashResult{}, fmt.Errorf("port and package path are required")
+	}
+	job, err := jobs.NewFlashJob(a.logsPath(), jobs.FlashRequest{Port: port, PackagePath: packagePath, Trust: releaseTrustStore(), ExpectedChip: "esp32-s3", ExpectedFlashBytes: 16 * 1024 * 1024, BoardID: profile.FirmwareBoardID}, a.emitLog)
+	if err != nil {
+		return jobs.FlashResult{}, err
+	}
+	return job.Run(context.Background())
 }
 
 // ProbeDevice only executes read-only ROM commands. It never erases, writes or resets into a write mode.

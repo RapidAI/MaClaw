@@ -5643,6 +5643,16 @@ static void deferred_setup_task(void *arg) {
     vTaskDelete(NULL);
 }
 
+// Alarm ringing is a local safety-critical foreground owner. The scheduler
+// invokes this from its own task immediately before it begins an attempt.
+// Keep it lock-free: each board audio HAL observes the request at its next
+// bounded PCM write, releases its current transaction, and lets the alarm
+// acquire audio without business logic knowing the physical codec or display.
+static void on_alarm_ring_start(void *arg) {
+    (void)arg;
+    board_port_request_audio_playback_stop();
+}
+
 static void on_user_input(board_input_action_t action, board_input_source_t source,
                           void *arg) {
     (void)arg;
@@ -7279,6 +7289,7 @@ void app_main(void) {
     // alarms remain local/offline functionality while station or ML307
     // recovery continues in the background.
     ESP_ERROR_CHECK(alarm_manager_init());
+    alarm_manager_set_ring_callback(on_alarm_ring_start, NULL);
     // From this point onward a late Wi-Fi DHCP event may safely start the Hub
     // transaction.  This is deliberately after alarm initialization: starting
     // TLS from IP_EVENT_STA_GOT_IP during esp_wifi_start() recreated the same

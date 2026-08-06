@@ -6,7 +6,7 @@ import (
 )
 
 func TestOfficialProfileAssetNames(t *testing.T) {
-	want := map[string]string{"echoear-2st": "MaClaw-ESP32S3-EchoEar-2ST-firmware.zip", "bread-compact": "MaClaw-ESP32S3-Bread-Compact-firmware.zip", "fangtang-4g": "MaClaw-ESP32S3-Fangtang-4G-firmware.zip"}
+	want := map[string]string{"echoear-2st": "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw", "bread-compact": "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw", "fangtang-4g": "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw"}
 	for _, p := range Profiles() {
 		if want[p.ID] != p.AssetName {
 			t.Fatalf("%s asset = %q", p.ID, p.AssetName)

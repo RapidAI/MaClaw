@@ -58,7 +58,13 @@ func (t Tool) RunReadOnly(ctx context.Context, port string, action string) (Resu
 	if action != "chip_id" && action != "flash_id" && action != "get-security-info" {
 		return Result{}, fmt.Errorf("unsupported read-only action: %s", action)
 	}
-	args := []string{"--port", port, "--baud", "115200", action}
+	// esptool 5 renamed these verbs. Keep the application-level operation names
+	// stable so an older signed sidecar can still be used while new sidecars do
+	// not emit deprecation noise into the diagnostic stream.
+	verb := action
+	if action == "chip_id" { verb = "chip-id" }
+	if action == "flash_id" { verb = "flash-id" }
+	args := []string{"--port", port, "--baud", "115200", verb}
 	return t.run(ctx, args)
 }
 

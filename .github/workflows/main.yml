@@ -1,4 +1,4 @@
-name: Release Build
+﻿name: Release Build
 
 on:
   push:
@@ -65,7 +65,7 @@ jobs:
           if ($brand -ne "") {
             # Brand display name mapping
             $appNames = @{ "qianxin" = "TigerClaw"; "metastaff" = "MetaStaff" }
-            $displayNames = @{ "qianxin" = "TigerClaw"; "metastaff" = "智员 MetaStaff" }
+            $displayNames = @{ "qianxin" = "TigerClaw"; "metastaff" = "鏅哄憳 MetaStaff" }
             $iconIcoPaths = @{ "qianxin" = "assets/tigerclaw.ico"; "metastaff" = "build/windows/icon.ico" }
             $iconPngPaths = @{ "qianxin" = "assets/qianxin.png"; "metastaff" = "build/appicon.png" }
             $appName = if ($appNames.ContainsKey($brand)) { $appNames[$brand] } else { $brand }
@@ -250,7 +250,7 @@ jobs:
           # binary must be checked instead of validating amd64 alone.
           node scripts/verify-frontend-welcome.mjs --binary "dist/${outName}_amd64.exe"
 
-          # --- arm64 (no CGO, NoopEmbedder — cross-compile CGO not supported) ---
+          # --- arm64 (no CGO, NoopEmbedder 鈥?cross-compile CGO not supported) ---
           & $goversioninfo -64 -arm -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_arm64.syso build/windows/versioninfo.json.tmp
           $env:GOARCH='arm64'; $env:CGO_ENABLED='0'
           go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_arm64.exe" ./gui/
@@ -880,7 +880,7 @@ jobs:
             # Brand display name mapping (case instead of declare -A for macOS bash 3.x compat)
             case "$BRAND" in
               qianxin) DISPLAY_NAME="TigerClaw"; ICON_PNG="assets/qianxin.png" ;;
-              metastaff) BRAND_FILE_NAME="MetaStaff"; DISPLAY_NAME="智员 MetaStaff"; ICON_PNG="build/appicon.png" ;;
+              metastaff) BRAND_FILE_NAME="MetaStaff"; DISPLAY_NAME="鏅哄憳 MetaStaff"; ICON_PNG="build/appicon.png" ;;
               *)       DISPLAY_NAME="$BRAND"; ICON_PNG="assets/${BRAND}.png" ;;
             esac
             [ -n "$BRAND_FILE_NAME" ] || BRAND_FILE_NAME="$DISPLAY_NAME"
@@ -1387,7 +1387,7 @@ jobs:
             BRAND_FILE_NAME=""
             case "$BRAND" in
               qianxin) DISPLAY_NAME="TigerClaw"; ICON_PNG="assets/qianxin.png" ;;
-              metastaff) BRAND_FILE_NAME="MetaStaff"; DISPLAY_NAME="智员 MetaStaff"; ICON_PNG="build/appicon.png" ;;
+              metastaff) BRAND_FILE_NAME="MetaStaff"; DISPLAY_NAME="鏅哄憳 MetaStaff"; ICON_PNG="build/appicon.png" ;;
               *)       DISPLAY_NAME="$BRAND"; ICON_PNG="assets/${BRAND}.png" ;;
             esac
             [ -n "$BRAND_FILE_NAME" ] || BRAND_FILE_NAME="$DISPLAY_NAME"
@@ -1490,7 +1490,7 @@ jobs:
           cp "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_amd64_linux"
           node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_amd64_linux"
 
-      - name: Build TUI & maclaw-tool & maclaw-cli (linux, pure Go 鈥?only on newest runner)
+      - name: Build TUI & maclaw-tool & maclaw-cli (linux, pure Go 閳?only on newest runner)
         if: env.BUILD_PURE_GO == 'true'
         run: |
           LDFLAGS="-s -w -X main.version=${VERSION}"
@@ -1581,8 +1581,8 @@ jobs:
             echo ""
             echo "Note: This AppImage is built for Ubuntu ${UBUNTU_VER}."
             echo "For other Ubuntu versions, download the matching AppImage:"
-            echo "  Ubuntu 22.04 鈫?*-u2204.AppImage (webkit2gtk-4.0)"
-            echo "  Ubuntu 24.04/26.04 鈫?*-u2404.AppImage (webkit2gtk-4.1)"
+            echo "  Ubuntu 22.04 閳?*-u2204.AppImage (webkit2gtk-4.0)"
+            echo "  Ubuntu 24.04/26.04 閳?*-u2404.AppImage (webkit2gtk-4.1)"
             echo ""
 
             if command -v zenity &>/dev/null; then
@@ -1664,7 +1664,7 @@ jobs:
             BRAND_FILE_NAME=""
             case "$BRAND" in
               qianxin) DISPLAY_NAME="TigerClaw"; ICON_PNG="assets/qianxin.png" ;;
-              metastaff) BRAND_FILE_NAME="MetaStaff"; DISPLAY_NAME="智员 MetaStaff"; ICON_PNG="build/appicon.png" ;;
+              metastaff) BRAND_FILE_NAME="MetaStaff"; DISPLAY_NAME="鏅哄憳 MetaStaff"; ICON_PNG="build/appicon.png" ;;
               *)       DISPLAY_NAME="$BRAND"; ICON_PNG="assets/${BRAND}.png" ;;
             esac
             [ -n "$BRAND_FILE_NAME" ] || BRAND_FILE_NAME="$DISPLAY_NAME"
@@ -1810,8 +1810,8 @@ jobs:
             echo ""
             echo "Note: This AppImage is built for Ubuntu ${UBUNTU_VER}."
             echo "For other Ubuntu versions, download the matching AppImage:"
-            echo "  Ubuntu 22.04 鈫?*-u2204.AppImage (webkit2gtk-4.0)"
-            echo "  Ubuntu 24.04/26.04 鈫?*-u2404.AppImage (webkit2gtk-4.1)"
+            echo "  Ubuntu 22.04 閳?*-u2204.AppImage (webkit2gtk-4.0)"
+            echo "  Ubuntu 24.04/26.04 閳?*-u2404.AppImage (webkit2gtk-4.1)"
             echo ""
 
             if command -v zenity &>/dev/null; then
@@ -1859,12 +1859,15 @@ jobs:
       matrix:
         include:
           - device: echoear-2st
+            firmware_board: echoear-2st-r8
             sdkconfig_defaults: sdkconfig.defaults
             firmware_name: MaClaw-ESP32S3-EchoEar-2ST-firmware
           - device: bread-compact
+            firmware_board: bread-compact-wifi-lcd-v1
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.bread-compact
             firmware_name: MaClaw-ESP32S3-Bread-Compact-firmware
           - device: fangtang-4g
+            firmware_board: fangtang-4g-v1
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.fangtang-4g
             firmware_name: MaClaw-ESP32S3-Fangtang-4G-firmware
     steps:
@@ -1876,6 +1879,8 @@ jobs:
         env:
           SDKCONFIG_DEFAULTS: ${{ matrix.sdkconfig_defaults }}
           FIRMWARE_NAME: ${{ matrix.firmware_name }}
+          CLAWMATE_FIRMWARE_SIGNING_KEY: ${{ secrets.CLAWMATE_FIRMWARE_SIGNING_KEY }}
+          CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
         run: |
           set -euo pipefail
           project_dir="$GITHUB_WORKSPACE/esp32s3-maclaw-client"
@@ -1917,8 +1922,27 @@ jobs:
               rm -rf "${FIRMWARE_NAME}"
             '
 
+          # The user-facing flasher accepts only signed .clawfw archives. The
+          # signing key is a protected release secret and never becomes an
+          # artifact or is printed in CI output.
+          test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY"
+          test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
+          (
+            cd ClawMateMaker
+            go run ./tools/fwpack \
+              --board '${{ matrix.device }}' \
+              --firmware-board '${{ matrix.firmware_board }}' \
+              --release '${{ github.ref_name }}' \
+              --image "$release_dir/${FIRMWARE_NAME}.bin" \
+              --partition-table "$project_dir/$build_dir/partition_table/partition-table.bin" \
+              --project-description "$project_dir/$build_dir/project_description.json" \
+              --output "$release_dir/${FIRMWARE_NAME}.clawfw" \
+              --key-id "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
+          )
+
           test -s "$release_dir/${FIRMWARE_NAME}.bin"
           test -s "$release_dir/${FIRMWARE_NAME}.zip"
+          test -s "$release_dir/${FIRMWARE_NAME}.clawfw"
 
       - name: Upload ${{ matrix.device }} firmware package
         uses: actions/upload-artifact@v5
@@ -1928,6 +1952,7 @@ jobs:
           path: |
             esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.bin
             esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.zip
+            esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.clawfw
           if-no-files-found: error
 
   # ============================================================
@@ -2054,6 +2079,9 @@ jobs:
               "MaClaw-ESP32S3-EchoEar-2ST-firmware.zip",
               "MaClaw-ESP32S3-Bread-Compact-firmware.zip",
               "MaClaw-ESP32S3-Fangtang-4G-firmware.zip",
+              "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw",
+              "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw",
+              "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw",
           ]
 
           print("\n".join(assets))
@@ -2118,7 +2146,7 @@ jobs:
           npm install -g wrangler@latest
           wrangler --version
           echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
-          # Determine asset prefix based on release channel (stable 鈫?latest/, beta 鈫?beta/)
+          # Determine asset prefix based on release channel (stable 閳?latest/, beta 閳?beta/)
           ASSET_PREFIX="latest"
           if [ "${RELEASE_CHANNEL}" = "beta" ]; then
             ASSET_PREFIX="beta"

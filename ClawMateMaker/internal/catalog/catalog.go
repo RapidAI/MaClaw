@@ -12,16 +12,17 @@ import (
 const Repository = "RapidAI/CodeClaw"
 
 type BoardProfile struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	AssetName string `json:"assetName"`
-	Chip      string `json:"chip"`
+	ID              string `json:"id"`
+	FirmwareBoardID string `json:"firmwareBoardId"`
+	Name            string `json:"name"`
+	AssetName       string `json:"assetName"`
+	Chip            string `json:"chip"`
 }
 
 var officialProfiles = []BoardProfile{
-	{ID: "echoear-2st", Name: "EchoEar 2ST", AssetName: "MaClaw-ESP32S3-EchoEar-2ST-firmware.zip", Chip: "ESP32-S3"},
-	{ID: "bread-compact", Name: "Bread Compact", AssetName: "MaClaw-ESP32S3-Bread-Compact-firmware.zip", Chip: "ESP32-S3"},
-	{ID: "fangtang-4g", Name: "Fangtang 4G", AssetName: "MaClaw-ESP32S3-Fangtang-4G-firmware.zip", Chip: "ESP32-S3"},
+	{ID: "echoear-2st", FirmwareBoardID: "echoear-2st-r8", Name: "EchoEar 2ST", AssetName: "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw", Chip: "ESP32-S3"},
+	{ID: "bread-compact", FirmwareBoardID: "bread-compact-wifi-lcd-v1", Name: "Bread Compact", AssetName: "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw", Chip: "ESP32-S3"},
+	{ID: "fangtang-4g", FirmwareBoardID: "fangtang-4g-v1", Name: "Fangtang 4G", AssetName: "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw", Chip: "ESP32-S3"},
 }
 
 func Profiles() []BoardProfile {

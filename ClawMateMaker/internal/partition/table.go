@@ -105,3 +105,26 @@ func Find(entries []Entry, label string) (Entry, bool) {
 	}
 	return Entry{}, false
 }
+
+// Encode creates the 4 KiB ESP-IDF partition-table binary consumed by the ROM
+// flasher and parsed above. It is used by deterministic CI package tests;
+// production packages use ESP-IDF's generated table.
+func Encode(entries []Entry) ([]byte, error) {
+	if len(entries) == 0 || len(entries) > 95 {
+		return nil, errors.New("invalid partition entry count")
+	}
+	raw := bytes.Repeat([]byte{0xff}, 4096)
+	for i, e := range entries {
+		if e.Label == "" || len(e.Label) > 15 || e.Size == 0 {
+			return nil, fmt.Errorf("invalid entry %d", i)
+		}
+		off := i * EntrySize
+		binary.LittleEndian.PutUint16(raw[off:], Magic)
+		raw[off+2], raw[off+3] = e.Type, e.Subtype
+		binary.LittleEndian.PutUint32(raw[off+4:], e.Offset)
+		binary.LittleEndian.PutUint32(raw[off+8:], e.Size)
+		copy(raw[off+12:off+28], []byte(e.Label))
+		binary.LittleEndian.PutUint32(raw[off+28:], e.Flags)
+	}
+	return raw, nil
+}

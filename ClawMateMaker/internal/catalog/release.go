@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"clawmatemaker/internal/logging"
 )
 
 const latestReleaseURL = "https://api.github.com/repos/" + Repository + "/releases/latest"
@@ -54,7 +56,7 @@ func NewClient(cacheDir string) *Client {
 	return &Client{cacheDir: cacheDir, http: &http.Client{Timeout: 90 * time.Second}, apiURL: latestReleaseURL}
 }
 
-func (c *Client) DownloadLatest(ctx context.Context, boardID string) (DownloadedRelease, error) {
+func (c *Client) DownloadLatest(ctx context.Context, boardID string, emit func(logging.Event)) (DownloadedRelease, error) {
 	profile, err := Profile(boardID)
 	if err != nil {
 		return DownloadedRelease{}, err
@@ -62,6 +64,7 @@ func (c *Client) DownloadLatest(ctx context.Context, boardID string) (Downloaded
 	if c == nil || c.http == nil {
 		return DownloadedRelease{}, errors.New("release client is unavailable")
 	}
+	emitEvent(emit, logging.Info, "RELEASE_DISCOVERY_STARTED", "Discovering latest official firmware release.", map[string]any{"boardId": boardID})
 	apiURL := c.apiURL
 	if apiURL == "" {
 		apiURL = latestReleaseURL
@@ -100,6 +103,7 @@ func (c *Client) DownloadLatest(ctx context.Context, boardID string) (Downloaded
 	if asset == nil {
 		return DownloadedRelease{}, fmt.Errorf("release %s does not include official asset %s", release.TagName, profile.AssetName)
 	}
+	emitEvent(emit, logging.Info, "RELEASE_ASSET_SELECTED", "Selected exact allow-listed firmware asset.", map[string]any{"boardId": boardID, "asset": asset.Name, "release": release.TagName, "bytes": asset.Size})
 	if asset.Size <= 0 || asset.Size > maxAssetBytes {
 		return DownloadedRelease{}, fmt.Errorf("release asset size %d is outside permitted bounds", asset.Size)
 	}
@@ -118,7 +122,15 @@ func (c *Client) DownloadLatest(ctx context.Context, boardID string) (Downloaded
 	if asset.Digest != "" && !strings.EqualFold(asset.Digest, "sha256:"+sum) {
 		return DownloadedRelease{}, errors.New("GitHub release digest does not match downloaded asset")
 	}
-	return DownloadedRelease{BoardID: profile.ID, BoardName: profile.Name, ReleaseTag: release.TagName, PublishedAt: release.PublishedAt.UTC().Format(time.RFC3339), AssetName: profile.AssetName, Path: destination, Size: size, SHA256: "sha256:" + sum, GitHubDigest: asset.Digest, InstallStatus: "downloaded_not_installable", SafetyNote: "This Workflow ZIP is not a signed .clawfw package. It was downloaded for inspection only and cannot be installed by the secure flasher."}, nil
+	emitEvent(emit, logging.Info, "RELEASE_DOWNLOAD_COMPLETED", "Firmware downloaded and SHA-256 computed.", map[string]any{"boardId": boardID, "asset": asset.Name, "release": release.TagName, "bytes": size, "sha256": "sha256:" + sum})
+	return DownloadedRelease{BoardID: profile.ID, BoardName: profile.Name, ReleaseTag: release.TagName, PublishedAt: release.PublishedAt.UTC().Format(time.RFC3339), AssetName: profile.AssetName, Path: destination, Size: size, SHA256: "sha256:" + sum, GitHubDigest: asset.Digest, InstallStatus: "downloaded_unverified", SafetyNote: "Download complete. Firmware signature and hardware compatibility must be verified before installation."}, nil
+}
+
+func emitEvent(emit func(logging.Event), severity logging.Severity, code, detail string, fields map[string]any) {
+	if emit == nil {
+		return
+	}
+	emit(logging.Event{Timestamp: time.Now().UTC(), Severity: severity, Stage: "download", Component: "catalog", Code: code, MessageKey: "catalog." + strings.ToLower(code), Detail: detail, Fields: logging.SafeFields(fields)})
 }
 func (c *Client) download(ctx context.Context, rawURL, destination string, expectedSize int64) (string, int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)

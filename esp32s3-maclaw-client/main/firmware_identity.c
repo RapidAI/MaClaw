@@ -13,7 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define IDENTITY_PROTOCOL_VERSION 1
+#define IDENTITY_PROTOCOL_VERSION 2
 #define IDENTITY_QUERY_PREFIX "CLAWMATE_QUERY "
 #define IDENTITY_EVENT_PREFIX "CLAWMATE_EVT "
 #define IDENTITY_LINE_CAPACITY 512
@@ -66,20 +66,31 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
     if (nonce) cJSON_AddStringToObject(root, "nonce", nonce);
     cJSON_AddStringToObject(root, "display_name", CONFIG_MACLAW_FIRMWARE_DISPLAY_NAME);
     cJSON_AddStringToObject(root, "product_id", CONFIG_MACLAW_PRODUCT_ID);
-    cJSON_AddStringToObject(root, "board_id", CONFIG_MACLAW_BOARD_ID);
+    // A running application can report its intended board configuration, but
+    // the desktop flasher must still verify ROM/manufacturing evidence before
+    // treating this as a physical hardware identity.
+    cJSON_AddStringToObject(root, "firmware_target_board_id", CONFIG_MACLAW_BOARD_ID);
     cJSON_AddStringToObject(root, "hw_rev", CONFIG_MACLAW_HW_REV);
     cJSON_AddStringToObject(root, "layout_id", CONFIG_MACLAW_LAYOUT_ID);
     cJSON_AddStringToObject(root, "compat_id", CONFIG_MACLAW_COMPAT_ID);
     cJSON_AddStringToObject(root, "project_name", app->project_name);
-    cJSON_AddStringToObject(root, "firmware_version", app->version);
+    cJSON_AddNumberToObject(root, "release_sequence", 0);
+    cJSON_AddStringToObject(root, "app_version", app->version);
     cJSON_AddStringToObject(root, "idf_version", app->idf_ver);
     cJSON_AddStringToObject(root, "app_elf_sha256", elf_sha256);
     cJSON_AddStringToObject(root, "chip", chip_name(chip.model));
     cJSON_AddNumberToObject(root, "chip_revision", chip.revision);
     cJSON_AddNumberToObject(root, "flash_size_bytes", flash_size);
     cJSON_AddNumberToObject(root, "psram_size_bytes", esp_psram_get_size());
-    cJSON_AddBoolToObject(root, "local_ready", s_local_ready);
-    cJSON_AddBoolToObject(root, "service_ready", s_service_ready);
+    cJSON *self_test = cJSON_AddObjectToObject(root, "self_test");
+    if (!self_test) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddStringToObject(self_test, "flash", "ok");
+    cJSON_AddStringToObject(self_test, "psram", esp_psram_get_size() > 0 ? "ok" : "unavailable");
+    cJSON_AddStringToObject(self_test, "local_ready", s_local_ready ? "ok" : "pending");
+    cJSON_AddBoolToObject(root, "ready", s_local_ready);
     return root;
 }
 
@@ -108,7 +119,7 @@ static void handle_query_line(char *line) {
     const char *nonce = cJSON_IsString(nonce_item) ? nonce_item->valuestring : NULL;
     if (type && nonce_is_valid(nonce)) {
         if (strcmp(type, "IDENTIFY") == 0) emit_event("IDENTITY", nonce);
-        else if (strcmp(type, "BOOT_STATUS") == 0) emit_event("BOOT_OK", nonce);
+        else if (strcmp(type, "BOOT_STATUS") == 0) emit_event("BOOT_STATUS", nonce);
         else if (strcmp(type, "SERVICE_STATUS") == 0) emit_event("SERVICE_STATUS", nonce);
     }
     cJSON_Delete(query);
@@ -145,6 +156,8 @@ static void identity_query_task(void *arg) {
 }
 
 esp_err_t firmware_identity_start(void) {
+    // Broadcasts remain diagnostic only. The host accepts only a query-bound,
+    // nonce-bearing BOOT_STATUS response as post-flash success evidence.
     emit_event("IDENTITY", NULL);
 #if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
     BaseType_t created = xTaskCreate(identity_query_task, "firmware_identity", 4096,
@@ -156,7 +169,7 @@ esp_err_t firmware_identity_start(void) {
 
 void firmware_identity_set_local_ready(bool ready) {
     s_local_ready = ready;
-    if (ready) emit_event("BOOT_OK", NULL);
+    if (ready) emit_event("BOOT_STATUS", NULL);
 }
 
 void firmware_identity_set_service_ready(bool ready) {

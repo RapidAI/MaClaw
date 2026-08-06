@@ -156,6 +156,9 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 		return j.fail(&result, "SECURITY_STATE_UNSUPPORTED", errors.New("security state is non-baseline or could not be safely determined"))
 	}
 	for _, f := range verified.Manifest.Files {
+		if f.Region == "metadata" {
+			continue
+		}
 		if f.Offset == nil || f.Region == "" {
 			return j.fail(&result, "PACKAGE_MANIFEST_INCOMPLETE", fmt.Errorf("image %s has no write offset or region", f.Path))
 		}
@@ -182,6 +185,9 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	}
 	images := make([]flash.WriteImage, 0, len(verified.Manifest.Files))
 	for _, spec := range verified.Manifest.Files {
+		if spec.Region == "metadata" {
+			continue
+		}
 		if verified.Manifest.Mode == "app-only" && spec.Region != "app" {
 			return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("app-only package contains non-app region %s", spec.Region))
 		}
