@@ -1,14 +1,16 @@
 //go:build ignore
 
 // check_wails_bindings.go — Build-time verification that frontend-referenced
-// Wails bindings exist in the generated App.js file.
+// Wails bindings exist in the generated App.js file and have a matching native
+// App method.
 //
 // Usage (from project root):
 //   go run scripts/check_wails_bindings.go
 //
-// Strategy: Instead of scanning ALL exported Go methods (which includes many
-// internal-only methods), this script scans the FRONTEND source code for
-// references to wailsApp methods, then verifies each one exists in App.js.
+// Strategy: scan the FRONTEND source code for dynamic wailsApp references and
+// verify each one exists in App.js. Then compare every App.js export with the
+// native *App methods in gui. That second check catches stale generated wrappers
+// that would otherwise resolve to undefined at runtime.
 //
 // This catches the exact class of bug that caused the "功能不可用" error:
 // frontend code references a Go binding that doesn't exist in the generated file.
@@ -38,6 +40,7 @@ var falsePositives = map[string]bool{
 
 // jsExportRe matches JS binding exports: export function MethodName(...)
 var jsExportRe = regexp.MustCompile(`^export function (\w+)\(`)
+var goAppMethodRe = regexp.MustCompile(`^func \(a \*App\) ([A-Z]\w+)\(`)
 
 func main() {
 	frontendSrcDir := filepath.Join("gui", "frontend", "src")
@@ -102,6 +105,31 @@ func main() {
 	}
 	f.Close()
 
+	// 2b. Do not infer this from TypeScript declarations: they are generated
+	// alongside App.js and cannot expose a stale native binding.
+	nativeMethods := map[string]bool{}
+	err = filepath.Walk("gui", func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || filepath.Ext(path) != ".go" {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			if m := goAppMethodRe.FindStringSubmatch(scanner.Text()); m != nil {
+				nativeMethods[m[1]] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: cannot walk gui Go sources: %v\n", err)
+		os.Exit(1)
+	}
+
 	// 3. Find frontend dynamic references that are missing from binding file
 	var missing []string
 	for name, source := range frontendRefs {
@@ -110,19 +138,23 @@ func main() {
 		}
 	}
 
+	for name := range jsMethods {
+		if !nativeMethods[name] {
+			missing = append(missing, fmt.Sprintf("  %s  (exported by App.js but missing from native *App methods)", name))
+		}
+	}
+
 	if len(missing) == 0 {
-		fmt.Printf("OK: all %d dynamically-referenced bindings exist in App.js.\n", len(frontendRefs))
-		os.Exit(0)
+		fmt.Printf("OK: %d dynamic frontend references and %d generated App.js bindings have native App methods.\n", len(frontendRefs), len(jsMethods))
+		return
 	}
 
 	sort.Strings(missing)
-	fmt.Fprintf(os.Stderr, "BINDING DRIFT: %d dynamically-referenced method(s) missing from %s:\n\n",
-		len(missing), bindingFile)
+	fmt.Fprintf(os.Stderr, "BINDING DRIFT: %d method(s) are missing a generated or native binding:\n\n", len(missing))
 	for _, m := range missing {
 		fmt.Fprintln(os.Stderr, m)
 	}
-	fmt.Fprintf(os.Stderr, "\nThese methods are called via (mod as any).X in frontend code but\n")
-	fmt.Fprintf(os.Stderr, "have no export in the generated binding file. They will be undefined at runtime.\n")
-	fmt.Fprintf(os.Stderr, "\nFix: add the missing bindings to App.js and App.d.ts.\n")
+	fmt.Fprintf(os.Stderr, "\nA frontend call needs both a generated App.js export and a native Go *App method.\n")
+	fmt.Fprintf(os.Stderr, "Otherwise it will be undefined at runtime. Regenerate bindings or restore the method.\n")
 	os.Exit(1)
 }

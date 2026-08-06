@@ -281,6 +281,10 @@ type AppConfig struct {
 	HardwareWelcomeVoiceID   string `json:"hardware_welcome_voice_id,omitempty"`
 	HardwareWelcomeAudioPath string `json:"hardware_welcome_audio_path,omitempty"`
 	HardwareVolume           int    `json:"hardware_volume,omitempty"`
+	// HardwareAllowCustomPets lets each Hub-bound hardware binding select its
+	// own pet. It is deliberately opt-in: the default behavior is to mirror the
+	// pet chosen in the desktop's system pet settings on every device.
+	HardwareAllowCustomPets bool `json:"hardware_allow_custom_pets,omitempty"`
 	// ACP Mode B: GUI hosts industry ACP so VS Code programming agents use the
 	// desktop AI assistant. Nil means default enabled. Port 0 = ephemeral bind.
 	AcpHostEnabled *bool `json:"acp_host_enabled,omitempty"`

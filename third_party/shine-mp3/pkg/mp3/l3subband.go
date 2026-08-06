@@ -2,7 +2,6 @@ package mp3
 
 import (
 	"math"
-	"unsafe"
 )
 
 // subbandInitialize calculates the analysis filterbank coefficients and rounds to the  9th decimal
@@ -53,12 +52,12 @@ func (enc *Encoder) subbandInitialize() {
 // coefficients The windowed samples #z# is filtered by the digital filter matrix #filter# to produce the subband
 // samples #s#. This done by first selectively picking out values from the windowed samples, and then
 // multiplying them by the filter matrix, producing 32 subband samples.
-func (enc *Encoder) windowFilterSubband(buffer **int16, s *[32]int32, ch int64, stride int64) {
+func (enc *Encoder) windowFilterSubband(buffer *[]int16, s *[32]int32, ch int64, stride int64) {
 	var (
 		y   [64]int32
 		i   int64
 		j   int64
-		ptr *int16 = *buffer
+		pcm []int16 = *buffer
 	)
 	for i = 32; func() int64 {
 		p := &i
@@ -66,10 +65,14 @@ func (enc *Encoder) windowFilterSubband(buffer **int16, s *[32]int32, ch int64, 
 		*p--
 		return x
 	}() != 0; {
-		enc.subband.X[ch][i+enc.subband.Off[ch]] = int32(int64(int32(*ptr)) << 16)
-		ptr = (*int16)(unsafe.Add(unsafe.Pointer(ptr), unsafe.Sizeof(int16(0))*uintptr(stride)))
+		enc.subband.X[ch][i+enc.subband.Off[ch]] = int32(int64(int32(pcm[0])) << 16)
+		if len(pcm) > int(stride) {
+			pcm = pcm[stride:]
+		} else {
+			pcm = pcm[:0]
+		}
 	}
-	*buffer = ptr
+	*buffer = pcm
 	for i = 64; func() int64 {
 		p := &i
 		x := *p

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuth, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportCodexAuth, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartXAIOAuth, TestMaclawLLM, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
+import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuthURL, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportCodexAuth, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartXAIOAuth, TestMaclawLLM, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
-import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { BrowserOpenURL, ClipboardSetText, EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, hubCreditGrants, hubOfficialStatus, inputStyle, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
@@ -50,6 +50,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [dlgDirty, setDlgDirty] = useState(false);
     const [dlgTested, setDlgTested] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
+    const [xaiOAuthURL, setXaiOAuthURL] = useState("");
+    const xaiOAuthURLRef = useRef("");
+    const xaiOAuthActiveRef = useRef(false);
+    const xaiOAuthAttemptRef = useRef(0);
     const [codegenModels, setCodegenModels] = useState<{id: string; name: string}[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [providerModels, setProviderModels] = useState<{id: string; name: string}[]>([]);
@@ -63,6 +67,55 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+
+    const setActiveXaiOAuthURL = useCallback((authorizationURL: string) => {
+        xaiOAuthURLRef.current = authorizationURL;
+        setXaiOAuthURL(authorizationURL);
+    }, []);
+
+    const clearActiveXaiOAuthURL = useCallback(() => {
+        xaiOAuthActiveRef.current = false;
+        xaiOAuthURLRef.current = "";
+        setXaiOAuthURL("");
+    }, []);
+
+    const cancelActiveXaiOAuth = useCallback(() => {
+        // Invalidate both a fully prepared session and a StartXAIOAuth call
+        // that is still resolving through the Wails bridge.
+        xaiOAuthAttemptRef.current += 1;
+        if (xaiOAuthURLRef.current) void CancelXAIOAuthURL(xaiOAuthURLRef.current);
+        setOauthBusy(false);
+        clearActiveXaiOAuthURL();
+    }, [clearActiveXaiOAuthURL]);
+
+    const copyXaiOAuthURL = useCallback(async () => {
+        if (!xaiOAuthURL) return;
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(xaiOAuthURL);
+                return;
+            }
+        } catch {
+            // Wails' clipboard bridge is the fallback for restricted WebViews.
+        }
+        ClipboardSetText(xaiOAuthURL);
+    }, [xaiOAuthURL]);
+
+    const openXaiOAuthURL = useCallback((authorizationURL: string) => {
+        try {
+            BrowserOpenURL(authorizationURL);
+        } catch {
+            // The OAuth callback is still listening, so retain the manual
+            // recovery controls instead of abandoning the active session.
+            setDlgTestResult({
+                ok: false,
+                msg: t(
+                    "Couldn't open the browser automatically. Use the link below.",
+                    "无法自动打开浏览器，请使用下方链接继续登录。",
+                ),
+            });
+        }
+    }, [t]);
 
     const loadHubServiceStatus = useCallback(async () => {
         const statusSeq = ++hubStatusSeqRef.current;
@@ -112,10 +165,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     }, [t, thinkingMode]);
 
     const handleOAuthLogin = useCallback(async () => {
+        const xaiAttempt = ++xaiOAuthAttemptRef.current;
+        const providerName = (dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined) || "OpenAI";
         setOauthBusy(true);
         setDlgTestResult(null);
+        clearActiveXaiOAuthURL();
         try {
-            const providerName = (dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined) || "OpenAI";
             let loginMessage = "";
 
             if (providerName === "Anthropic") {
@@ -144,7 +199,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 });
                 loginMessage = await WaitGitHubCopilotOAuth();
             } else if (providerName === "xAI-Grok") {
-                loginMessage = await StartXAIOAuth();
+                const authorizationURL = await StartXAIOAuth();
+                if (xaiAttempt !== xaiOAuthAttemptRef.current) return;
+                // Keep this correlation key in a ref before the browser opens:
+                // xAI may redirect back quickly, before React commits state.
+                xaiOAuthActiveRef.current = true;
+                setActiveXaiOAuthURL(authorizationURL);
+                openXaiOAuthURL(authorizationURL);
+                return;
             } else {
                 loginMessage = await StartOpenAIOAuth();
             }
@@ -168,11 +230,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 setTimeout(() => setDlgOpen(false), 1200);
             }
         } catch (e) {
+            if (providerName === "xAI-Grok" && xaiAttempt !== xaiOAuthAttemptRef.current) return;
             setDlgTestResult({ ok: false, msg: String(e) });
         } finally {
-            setOauthBusy(false);
+            if (providerName !== "xAI-Grok") setOauthBusy(false);
         }
-    }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, showPrompt]);
+    }, [clearActiveXaiOAuthURL, t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, openXaiOAuthURL, setActiveXaiOAuthURL, showPrompt]);
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
@@ -383,6 +446,37 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const dlgNeedsOAuthLogin = !!dlgProvider &&
         (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
         !dlgProvider.key;
+
+    useEffect(() => {
+        const cleanup = EventsOn("xai-oauth-complete", async (payload: { ok?: boolean; message?: string; error?: string; authorization_url?: string } = {}) => {
+            // Do not rely on state captured by this effect: a quick loopback
+            // callback can arrive before React has committed oauthBusy/provider.
+            if (!xaiOAuthActiveRef.current || payload.authorization_url !== xaiOAuthURLRef.current) return;
+            setOauthBusy(false);
+            clearActiveXaiOAuthURL();
+            if (!payload.ok) {
+                setDlgTestResult({ ok: false, msg: payload.error || t("xAI OAuth login failed", "xAI OAuth 登录失败") });
+                return;
+            }
+            try {
+                const data = await GetMaclawLLMProviders();
+                if (data?.providers) {
+                    const fresh = data.providers.map((p: LLMProvider) => ({ ...p }));
+                    setDlgProviders(fresh);
+                    setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
+                    setCurrentName(data.current || NONE_PROVIDER);
+                    setDlgDirty(false);
+                    onStatusChange?.(true, true);
+                    onProviderChanged?.();
+                }
+                setDlgTestResult({ ok: true, msg: payload.message || t("xAI OAuth login successful", "xAI OAuth 登录成功") });
+                setTimeout(() => setDlgOpen(false), 1200);
+            } catch (error) {
+                setDlgTestResult({ ok: false, msg: String(error) });
+            }
+        });
+        return () => { if (typeof cleanup === "function") cleanup(); else EventsOff("xai-oauth-complete"); };
+    }, [clearActiveXaiOAuthURL, onProviderChanged, onStatusChange, t]);
 
     const handleFetchProviderModels = useCallback(async () => {
         if (!dlgProvider || !dlgProvider.url) return;
@@ -1250,10 +1344,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             {oauthBusy && (
                                                 <button aria-label={t("Cancel OAuth login", "取消 OAuth 登录")} onClick={() => {
                                                     const name = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
-                                                    if (name === "GitHub Copilot") CancelGitHubCopilotOAuth();
-                                                    else if (name === "xAI-Grok") CancelXAIOAuth();
-                                                    else CancelOpenAIOAuth();
-                                                    setOauthBusy(false);
+                                                    if (name === "GitHub Copilot") {
+                                                        CancelGitHubCopilotOAuth();
+                                                        setOauthBusy(false);
+                                                    } else if (name === "xAI-Grok") {
+                                                        cancelActiveXaiOAuth();
+                                                    } else {
+                                                        CancelOpenAIOAuth();
+                                                        setOauthBusy(false);
+                                                    }
                                                 }} style={{
                                                     width: "100%", padding: "8px 0", fontSize: "0.76rem",
                                                     cursor: "pointer", marginTop: 6,
@@ -1263,7 +1362,25 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                                     {t("Cancel", "取消")}
                                                 </button>
                                             )}
-                                            {dlgTestResult && !dlgTestResult.ok && !oauthBusy && (
+                                            {oauthBusy && dlgProvider.name === "xAI-Grok" && xaiOAuthURL && (
+                                                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                                                    <button onClick={() => openXaiOAuthURL(xaiOAuthURL)} style={{
+                                                        flex: 1, padding: "8px 0", fontSize: "0.76rem", cursor: "pointer",
+                                                        background: "transparent", color: colors.primary,
+                                                        border: `1px solid ${colors.primary}`, borderRadius: 4,
+                                                    }}>
+                                                        {t("Open browser again", "再次打开浏览器")}
+                                                    </button>
+                                                    <button onClick={() => void copyXaiOAuthURL()} style={{
+                                                        flex: 1, padding: "8px 0", fontSize: "0.76rem", cursor: "pointer",
+                                                        background: "transparent", color: colors.textMuted,
+                                                        border: `1px solid ${colors.border}`, borderRadius: 4,
+                                                    }}>
+                                                        {t("Copy sign-in link", "复制登录链接")}
+                                                    </button>
+                                                </div>
+                                            )}
+                                            {dlgProvider.name === "OpenAI" && dlgTestResult && !dlgTestResult.ok && !oauthBusy && (
                                                 <button onClick={async () => {
                                                     try {
                                                         const msg = await ImportCodexAuth();

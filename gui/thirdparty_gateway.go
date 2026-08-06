@@ -26,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
 const (
@@ -47,16 +48,21 @@ const (
 type thirdPartyGatewayManager struct {
 	app *App
 
-	mu           sync.Mutex
-	server       *http.Server
-	listener     net.Listener
-	status       gatewayConnectionStatus
-	lastBindKey  string
-	localHandler *IMMessageHandler
-	clients      map[string]*thirdPartyClientState
-	notifyCh     chan struct{}
-	media        map[string]*thirdPartyMediaObject
-	pairings     map[string]thirdPartyDevicePairing
+	mu          sync.Mutex
+	server      *http.Server
+	listener    net.Listener
+	status      gatewayConnectionStatus
+	lastBindKey string
+	// localHandler remains for legacy embedding activation probes. Requests use
+	// localHandlers, which owns a runtime per physical hardware binding.
+	localHandler  *IMMessageHandler
+	localHandlers *hardwareAgentRuntimeRegistry
+	clients       map[string]*thirdPartyClientState
+	notifyCh      chan struct{}
+	media         map[string]*thirdPartyMediaObject
+	pairings      map[string]thirdPartyDevicePairing
+	speechMu      sync.Mutex
+	speechTurns   map[string]*deviceSpeechTurn
 	// Per-IP sliding-window attempts for the voice pairing endpoint. Each
 	// request costs a full local ASR inference, so an unauthenticated LAN
 	// caller must not be able to spin the CPU with WAV uploads.
@@ -80,7 +86,20 @@ func (m *thirdPartyGatewayManager) currentLocalHandler() *IMMessageHandler {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.localHandler
+	if m.localHandlers == nil {
+		return nil
+	}
+	return m.localHandlers.onlyHandler()
+}
+
+func (m *thirdPartyGatewayManager) localHardwareHandlers() []*IMMessageHandler {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	runtimes := m.localHandlers
+	m.mu.Unlock()
+	return runtimes.handlers()
 }
 
 type thirdPartyClientState struct {
@@ -89,7 +108,15 @@ type thirdPartyClientState struct {
 	SeenEvents         map[string]string
 	Acked              map[string]string
 	ClientCapabilities agent.ClientCapabilities
+	ClientTools        []agent.ClientToolDefinition
 	LastWelcomeBootID  string
+}
+
+type deviceSpeechTurn struct {
+	cancel   context.CancelFunc
+	replyTo  string
+	expected int
+	queued   int
 }
 
 type thirdPartyMediaObject struct {
@@ -107,6 +134,30 @@ type thirdPartyMediaObject struct {
 	LastAccessedAt time.Time
 }
 
+func responseDeviceFileAudioCount(resp *IMAgentResponse, capabilities agent.ClientCapabilities) int {
+	if resp == nil {
+		return 0
+	}
+	count := 0
+	if resp.FileData != "" {
+		kind, mimeType := classifyDeviceResponseFile(resp.FileName, resp.FileMimeType)
+		if data, err := base64.StdEncoding.DecodeString(resp.FileData); kind == deviceResponseFileAudio && err == nil && clientCanPlayDeviceAudio(capabilities, mimeType, int64(len(data))) {
+			count++
+		}
+	}
+	paths := append([]string(nil), resp.LocalFilePaths...)
+	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
+		paths = append(paths, resp.LocalFilePath)
+	}
+	for _, path := range paths {
+		kind, mimeType := classifyDeviceResponseFile(path, mime.TypeByExtension(filepath.Ext(path)))
+		if info, err := os.Stat(path); kind == deviceResponseFileAudio && err == nil && info.Mode().IsRegular() && clientCanPlayDeviceAudio(capabilities, mimeType, info.Size()) {
+			count++
+		}
+	}
+	return count
+}
+
 type thirdPartyHandshakeRequest = coreim.ThirdPartyHandshakeRequest
 type thirdPartyUserRef = coreim.ThirdPartyUserRef
 type thirdPartyMessagePayload = coreim.ThirdPartyMessagePayload
@@ -117,12 +168,13 @@ type thirdPartyOutgoingMessage = coreim.ThirdPartyOutgoingMessage
 
 func newThirdPartyGatewayManager(app *App) *thirdPartyGatewayManager {
 	return &thirdPartyGatewayManager{
-		app:      app,
-		status:   gatewayConnectionStatusDisconnected,
-		clients:  make(map[string]*thirdPartyClientState),
-		notifyCh: make(chan struct{}),
-		media:    make(map[string]*thirdPartyMediaObject),
-		pairings: make(map[string]thirdPartyDevicePairing),
+		app:         app,
+		status:      gatewayConnectionStatusDisconnected,
+		clients:     make(map[string]*thirdPartyClientState),
+		notifyCh:    make(chan struct{}),
+		media:       make(map[string]*thirdPartyMediaObject),
+		pairings:    make(map[string]thirdPartyDevicePairing),
+		speechTurns: make(map[string]*deviceSpeechTurn),
 	}
 }
 
@@ -150,10 +202,12 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 		m.listener = nil
 		m.lastBindKey = ""
 		m.status = gatewayConnectionStatusDisconnected
-		lh := m.localHandler
-		m.localHandler = nil
+		lh := m.localHandlers
+		m.localHandlers = nil
 		m.mu.Unlock()
-		_ = lh // shared App conversation memory remains alive
+		if lh != nil {
+			lh.stopAll()
+		}
 		if server != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = server.Shutdown(ctx)
@@ -167,6 +221,16 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	}
 	if m.server != nil && m.lastBindKey == bindKey {
 		m.mu.Unlock()
+		// The listener may have survived a Hub reconnect or a local/Hub-mode
+		// switch. Reconcile its remote claim even when no socket restart is
+		// required; otherwise Hub can retain a stale route indefinitely.
+		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+			if cfg.IsThirdPartyGatewayLocalMode() {
+				_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformThirdParty)
+			} else {
+				_ = hubClient.SendIMGatewayClaim(imGatewayPlatformThirdParty)
+			}
+		}
 		return
 	}
 	oldServer := m.server
@@ -237,23 +301,66 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	}()
 }
 
-func (m *thirdPartyGatewayManager) Stop() {
+// stop closes the local listener. A full stop releases the Hub claim; a
+// restart deliberately preserves it so paired hardware has no routing gap.
+func (m *thirdPartyGatewayManager) stop(unclaim bool) {
+	m.cancelDeviceSpeechTurns()
 	m.mu.Lock()
 	server := m.server
 	m.server = nil
 	m.listener = nil
 	m.status = gatewayConnectionStatusDisconnected
 	m.lastBindKey = ""
-	lh := m.localHandler
-	m.localHandler = nil
+	lh := m.localHandlers
+	m.localHandlers = nil
 	m.mu.Unlock()
-	_ = lh // shared App conversation memory remains alive
+	if lh != nil {
+		lh.stopAll()
+	}
 	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = server.Shutdown(ctx)
 		cancel()
 	}
+	if unclaim && m.app != nil {
+		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformThirdParty)
+		}
+	}
 	m.emitStatusEvent()
+}
+
+func (m *thirdPartyGatewayManager) Stop() { m.stop(true) }
+
+func (m *thirdPartyGatewayManager) stopForRestart() { m.stop(false) }
+
+func (m *thirdPartyGatewayManager) cancelDeviceSpeechTurns() {
+	if m == nil {
+		return
+	}
+	m.speechMu.Lock()
+	turns := m.speechTurns
+	m.speechTurns = make(map[string]*deviceSpeechTurn)
+	m.speechMu.Unlock()
+	for _, turn := range turns {
+		if turn != nil && turn.cancel != nil {
+			turn.cancel()
+		}
+	}
+}
+
+func (m *thirdPartyGatewayManager) cancelDeviceSpeechTurn(clientID, conversationID string) {
+	if m == nil {
+		return
+	}
+	turnKey := clientID + "\x00" + conversationID
+	m.speechMu.Lock()
+	turn := m.speechTurns[turnKey]
+	delete(m.speechTurns, turnKey)
+	m.speechMu.Unlock()
+	if turn != nil && turn.cancel != nil {
+		turn.cancel()
+	}
 }
 
 func (m *thirdPartyGatewayManager) Status() string {
@@ -268,8 +375,12 @@ func (m *thirdPartyGatewayManager) emitStatusEvent() {
 
 func (m *thirdPartyGatewayManager) resetLocalHandler() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.localHandler = nil
+	registry := m.localHandlers
+	m.localHandlers = nil
+	m.mu.Unlock()
+	if registry != nil {
+		registry.stopAll()
+	}
 }
 
 func (m *thirdPartyGatewayManager) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +410,7 @@ func (m *thirdPartyGatewayManager) handleHandshake(w http.ResponseWriter, r *htt
 		return
 	}
 	m.setClientCapabilities(req.ClientID, req.ClientCapabilities)
+	m.setClientTools(req.ClientID, req.Tools)
 	response := coreim.NewThirdPartyGatewayHandshakeResponse(coreim.ThirdPartyGatewayConfig{
 		RequestID:      newGatewayRequestID(),
 		ChannelID:      thirdPartyPlatform(req.ClientID),
@@ -311,9 +423,9 @@ func (m *thirdPartyGatewayManager) handleHandshake(w http.ResponseWriter, r *htt
 		MaxPollLimit:   thirdPartyMaxLimit,
 	})
 	response.CapabilitiesAccepted = req.ClientCapabilities
-	// The local gateway can render the selected desktop pack directly.  Ship a
-	// compact RGB565 idle frame so the ESP shows the same pet, not an ID-based
-	// approximation.
+	// The local gateway can render the selected desktop pack directly. Publish
+	// transparent high-resolution frames through media URLs so the ESP shows the
+	// same animated pet without embedding megabytes of base64 in the handshake.
 	data, _ := json.Marshal(response)
 	var payload map[string]any
 	_ = json.Unmarshal(data, &payload)
@@ -327,7 +439,8 @@ func (m *thirdPartyGatewayManager) handleHandshake(w http.ResponseWriter, r *htt
 				// this call site instead of inside the helper.
 				m.mu.Lock()
 				ref := m.preparePetAssetLocked(req.ClientID, asset,
-					req.ClientCapabilities.Features.PetAnimation && profile["motionEnabled"] == true)
+					req.ClientCapabilities.Features.PetAnimation && profile["motionEnabled"] == true,
+					req.ClientCapabilities.Features.PetAssetMaxFrames)
 				m.mu.Unlock()
 				if ref != nil {
 					payload["petAsset"] = ref
@@ -857,6 +970,9 @@ func (m *thirdPartyGatewayManager) authorize(r *http.Request) bool {
 }
 
 func (m *thirdPartyGatewayManager) effectiveMode() string {
+	if m == nil || m.app == nil {
+		return "local"
+	}
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		return "local"
@@ -884,6 +1000,20 @@ func (m *thirdPartyGatewayManager) setClientCapabilities(clientID string, capabi
 	defer m.mu.Unlock()
 	state := m.ensureClientLocked(clientID)
 	state.ClientCapabilities = agent.NormalizeClientCapabilities(capabilities)
+}
+
+func (m *thirdPartyGatewayManager) setClientTools(clientID string, tools []agent.ClientToolDefinition) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensureClientLocked(clientID)
+	state.ClientTools = append([]agent.ClientToolDefinition(nil), tools...)
+}
+
+func (m *thirdPartyGatewayManager) clientTools(clientID string) []agent.ClientToolDefinition {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.ensureClientLocked(clientID)
+	return append([]agent.ClientToolDefinition(nil), state.ClientTools...)
 }
 
 func (m *thirdPartyGatewayManager) clientCapabilities(clientID string) agent.ClientCapabilities {
@@ -1070,16 +1200,41 @@ func (m *thirdPartyGatewayManager) prepareOutgoingAudioLocked(clientID string, m
 	return true
 }
 
-func (m *thirdPartyGatewayManager) preparePetAssetLocked(clientID string, asset devicePetAsset, animated bool) map[string]any {
-	if asset.Encoding != "rgb565le" || asset.Width < 32 || asset.Width > 128 ||
-		asset.Height < 32 || asset.Height > 128 || asset.Data == "" {
+func (m *thirdPartyGatewayManager) preparePetAssetLocked(clientID string, asset devicePetAsset, animated bool, maxFrames int) map[string]any {
+	if asset.Encoding != "rgb565a8" || asset.Width < 32 || asset.Width > devicePetAssetWidth ||
+		asset.Height < 32 || asset.Height > devicePetAssetHeight || asset.Data == "" {
 		return nil
 	}
 	encoded := []string{asset.Data}
 	if animated && len(asset.Frames) > 0 {
-		encoded = append(encoded, asset.Frames[0])
+		encoded = append(encoded, asset.Frames...)
 	}
-	expected := asset.Width * asset.Height * 2
+	if len(encoded) > devicePetFrameCount {
+		encoded = encoded[:devicePetFrameCount]
+	}
+	frameMS := asset.FrameMS
+	if frameMS < 50 || frameMS > 10000 {
+		frameMS = devicePetFrameMS
+	}
+	if animated {
+		// A missing limit is the legacy two-frame contract, not unlimited.
+		// Evenly sample longer loops and stretch the cadence so their authored
+		// cycle duration is preserved on memory-constrained clients.
+		if maxFrames <= 0 {
+			maxFrames = 2
+		} else if maxFrames > devicePetFrameCount {
+			maxFrames = devicePetFrameCount
+		}
+		if maxFrames < len(encoded) {
+			selected := make([]string, 0, maxFrames)
+			for index := 0; index < maxFrames; index++ {
+				selected = append(selected, encoded[index*len(encoded)/maxFrames])
+			}
+			frameMS = frameMS * len(encoded) / maxFrames
+			encoded = selected
+		}
+	}
+	expected := asset.Width * asset.Height * 3
 	frames := make([][]byte, 0, len(encoded))
 	for _, text := range encoded {
 		frame, err := base64.StdEncoding.DecodeString(text)
@@ -1089,11 +1244,14 @@ func (m *thirdPartyGatewayManager) preparePetAssetLocked(clientID string, asset 
 		frames = append(frames, frame)
 	}
 	digest := sha256.New()
+	_, _ = digest.Write([]byte(asset.Encoding))
+	_, _ = digest.Write([]byte(fmt.Sprintf("/%d/%d/%d", asset.Width, asset.Height, frameMS)))
 	for _, frame := range frames {
 		_, _ = digest.Write(frame)
 	}
 	revision := hex.EncodeToString(digest.Sum(nil)[:8])
 	urls := make([]string, 0, len(frames))
+	hashes := make([]string, 0, len(frames))
 	for index, frame := range frames {
 		id, err := randomThirdPartyMediaToken()
 		if err != nil {
@@ -1106,14 +1264,16 @@ func (m *thirdPartyGatewayManager) preparePetAssetLocked(clientID string, asset 
 		m.pruneMediaLocked(time.Now().UTC())
 		m.media[id] = &thirdPartyMediaObject{
 			ClientID: clientID, ID: id, Token: token, Type: "pet_asset",
-			FileName: fmt.Sprintf("pet-%s-%d.rgb565le", revision, index),
-			MimeType: "application/vnd.maclaw.rgb565le", SizeBytes: int64(len(frame)),
+			FileName: fmt.Sprintf("pet-%s-%d.rgb565a8", revision, index),
+			MimeType: "application/vnd.maclaw.rgb565a8", SizeBytes: int64(len(frame)),
 			Data: frame, Uploaded: true, CreatedAt: time.Now().UTC(), LastAccessedAt: time.Now().UTC(),
 		}
 		urls = append(urls, fmt.Sprintf("/api/im-gateway/v1/media/%s?mediaToken=%s", id, token))
+		hash := sha256.Sum256(frame)
+		hashes = append(hashes, hex.EncodeToString(hash[:]))
 	}
 	return map[string]any{"encoding": asset.Encoding, "width": asset.Width, "height": asset.Height,
-		"urls": urls, "frameMs": 700, "revision": revision}
+		"urls": urls, "frameMs": frameMS, "revision": revision, "sha256": hashes}
 }
 
 // broadcastHardwareConfig sends a small settings message to every paired
@@ -1175,7 +1335,9 @@ func (m *thirdPartyGatewayManager) broadcastPetProfile(profile map[string]any) {
 		capabilities := agent.NormalizeClientCapabilities(&state.ClientCapabilities)
 		if capabilities.Features.PetAsset {
 			if asset, ok := profile["asset"].(devicePetAsset); ok && (asset.Data != "" || len(asset.Frames) > 0) {
-				if ref := m.preparePetAssetLocked(clientID, asset, capabilities.Features.PetAnimation && motionEnabled != nil && *motionEnabled); ref != nil {
+				if ref := m.preparePetAssetLocked(clientID, asset,
+					capabilities.Features.PetAnimation && motionEnabled != nil && *motionEnabled,
+					capabilities.Features.PetAssetMaxFrames); ref != nil {
 					petExtra = map[string]any{"pet_asset": ref}
 				}
 			}
@@ -1256,17 +1418,18 @@ func replaceQueuedThirdPartyVolume(state *thirdPartyClientState, volume int) boo
 
 // replaceQueuedThirdPartyPetProfile keeps one pending latest-wins pet_profile
 // message per client: while a device is offline, repeated skin changes would
-// otherwise pile up N messages whose pet_asset payload runs ~85KB each. The
-// newest queued, still-unacked pet_profile is rewritten in place. The acked
+// otherwise pile up stale asset references and make it replay every selection.
+// The newest queued, still-unacked pet_profile is moved to the queue tail with
+// a fresh ID and sequence. A device may already have fetched its former
+// sequence even though the ACK is still in flight; retaining that sequence
+// makes the replacement invisible to its next cursor poll. Refreshing the
+// identity guarantees that the latest selection is fetched. The acked
 // check is defensive: pruneThirdPartyMessagesLocked drops acked entries on
 // every ack, so the branch is unreachable in production — but if an acked
 // message ever lingered, rewriting it would silently drop the update because
 // messagesAfter never resends acked entries. A nil motionEnabled or
 // hasSkin == false means the caller omitted that key, so the queued value is
-// preserved rather than reset to the zero value. Note the inherent
-// latest-wins race: if the device has already fetched the old value and its
-// ack is still in flight, this rewrite lands under the pending ack and gets
-// pruned away — the same accepted trade-off as replaceQueuedThirdPartyVolume.
+// preserved rather than reset to the zero value.
 func replaceQueuedThirdPartyPetProfile(state *thirdPartyClientState, skin string, hasSkin bool, motionEnabled *bool, extra map[string]any) bool {
 	if state == nil {
 		return false
@@ -1283,6 +1446,14 @@ func replaceQueuedThirdPartyPetProfile(state *thirdPartyClientState, skin string
 			message.PetMotionEnabled = motionEnabled
 		}
 		message.Extra = extra
+		now := time.Now().UnixMilli()
+		message.ID = fmt.Sprintf("mc_pet_%d_%06d", now, state.NextSeq)
+		message.Seq = state.NextSeq
+		message.CreatedAt = now
+		state.NextSeq++
+		updated := *message
+		state.Messages = append(state.Messages[:index], state.Messages[index+1:]...)
+		state.Messages = append(state.Messages, updated)
 		return true
 	}
 	return false
@@ -1374,6 +1545,17 @@ func adaptGUIThirdPartyOutgoingMessage(msg *thirdPartyOutgoingMessage, capabilit
 	if msg == nil {
 		return false
 	}
+	// Protocol control frames carry no user-facing modality. They must bypass
+	// the text fallback or an empty speech_end frame is silently discarded and
+	// the ESP32 keeps waiting for TTS parts that will never arrive.
+	if strings.EqualFold(strings.TrimSpace(msg.Type), "speech_end") {
+		return true
+	}
+	// Client tools are protocol control messages, not user-facing output. They
+	// must not be coerced into an empty text reply by modality negotiation.
+	if strings.EqualFold(strings.TrimSpace(msg.Type), "tool_call") {
+		return msg.ToolCall != nil && coreim.NormalizeThirdPartyToolCall(msg.ToolCall) == nil
+	}
 	switch normalizeThirdPartyGatewayMessageKind(msg.Type) {
 	case thirdPartyGatewayMessageImage:
 		return capabilities.SupportsOutputMIME("image", outgoingThirdPartyMIME(*msg))
@@ -1432,6 +1614,11 @@ func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest
 	started := time.Now()
 	log.Printf("[thirdparty-mgr] processing start client=%s event=%s maclawID=%s type=%s",
 		req.ClientID, req.EventID, maclawID, req.Message.Type)
+	// A new command owns this device/conversation from acceptance onward. Stop
+	// synthesizing an older answer immediately instead of waiting until the new
+	// result is ready; otherwise stale parts can continue playing during the new
+	// command's thinking/processing surface.
+	m.cancelDeviceSpeechTurn(req.ClientID, req.ConversationID)
 	if isPassthroughSlashText(req.Message.Text) {
 		log.Printf("[thirdparty-mgr] routing passthrough command locally: client=%s conversation=%s", req.ClientID, req.ConversationID)
 		m.handleLocalMessage(req, maclawID)
@@ -1445,24 +1632,7 @@ func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest
 	if !cfg.IsThirdPartyGatewayLocalMode() {
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
-			payload := map[string]any{
-				"platform_uid":    thirdPartySessionUserID(req.ClientID, req.ConversationID),
-				"text":            req.Message.Text,
-				"message_type":    req.Message.Type,
-				"client_id":       req.ClientID,
-				"conversation_id": req.ConversationID,
-				// The HTTP acceptance response exposes maclawID as the canonical
-				// correlation key. Preserve it across the Hub relay so the ESP32
-				// waits for the same id that the final answer carries.
-				"message_id":          maclawID,
-				"event_id":            req.EventID,
-				"user_id":             req.User.ID,
-				"user_name":           req.User.Name,
-				"client_capabilities": m.clientCapabilities(req.ClientID),
-			}
-			if req.Extra != nil {
-				payload["extra"] = req.Extra
-			}
+			payload := m.hubGatewayPayload(req, maclawID)
 			if err := hubClient.SendIMGatewayMessage(imGatewayPlatformThirdParty, payload); err == nil {
 				log.Printf("[thirdparty-mgr] forwarded to Hub client=%s maclawID=%s elapsed=%s",
 					req.ClientID, maclawID, time.Since(started).Round(time.Millisecond))
@@ -1476,6 +1646,44 @@ func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest
 		req.ClientID, maclawID, time.Since(started).Round(time.Millisecond))
 }
 
+// hubGatewayPayload preserves the full hardware identity and declared client
+// tool surface across the local-gateway -> Hub relay. The Hub's remote gateway
+// understands client_tool_context (not the legacy client_id fields), so omitting
+// it made Hub-mode device tools silently disappear even though local mode worked.
+func (m *thirdPartyGatewayManager) hubGatewayPayload(req thirdPartyIncomingRequest, maclawID string) map[string]any {
+	clientID := normalizeThirdPartyID(req.ClientID)
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if conversationID == "" {
+		conversationID = "default"
+	}
+	payload := map[string]any{
+		"platform_uid":    thirdPartySessionUserID(clientID, conversationID),
+		"text":            req.Message.Text,
+		"message_type":    req.Message.Type,
+		"client_id":       clientID,
+		"conversation_id": conversationID,
+		// ClientToolContext is the canonical transport-neutral binding. It must
+		// accompany every turn, including a tool-result, so the GUI can route a
+		// follow-up client tool call to this exact device and conversation.
+		"client_tool_context": agent.ClientToolContext{
+			ClientID: clientID, ConversationID: conversationID, ReplyToMessageID: maclawID,
+		},
+		// The HTTP acceptance response exposes maclawID as the canonical
+		// correlation key. Preserve it across the Hub relay so the ESP32 waits
+		// for the same id that the final answer carries.
+		"message_id":          maclawID,
+		"event_id":            req.EventID,
+		"user_id":             req.User.ID,
+		"user_name":           req.User.Name,
+		"client_capabilities": m.clientCapabilities(clientID),
+		"client_tools":        m.clientTools(clientID),
+	}
+	if req.Extra != nil {
+		payload["extra"] = req.Extra
+	}
+	return payload
+}
+
 func (m *thirdPartyGatewayManager) enqueueError(req thirdPartyIncomingRequest, replyTo, code, text string) {
 	m.enqueue(req.ClientID, thirdPartyOutgoingMessage{
 		ConversationID:   req.ConversationID,
@@ -1487,84 +1695,49 @@ func (m *thirdPartyGatewayManager) enqueueError(req thirdPartyIncomingRequest, r
 	})
 }
 
-func (m *thirdPartyGatewayManager) ensureLocalHandler() *IMMessageHandler {
+func (m *thirdPartyGatewayManager) ensureLocalHandler(clientID string) (*IMMessageHandler, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.localHandler != nil {
-		return m.localHandler
+	if m.localHandlers == nil {
+		m.localHandlers = newHardwareAgentRuntimeRegistry(m.app, m.app.remoteSessions, m.app.configureHardwareAgent)
 	}
+	runtimes := m.localHandlers
+	m.mu.Unlock()
+	handler, err := runtimes.handler(clientID)
+	if err == nil && handler != nil {
+		// Keep local device tools inside the originating hardware runtime. The
+		// target comes from the immutable per-turn ClientToolContext, so a tool
+		// registered by one device can never be emitted to another device queue.
+		handler.clientToolDispatcher = m.dispatchLocalClientTool
+	}
+	return handler, err
+}
 
-	a := m.app
-	a.ensureInteractionInfra()
-	if a.memoryStore == nil {
-		a.ensureMemoryStore()
+func (m *thirdPartyGatewayManager) dispatchLocalClientTool(_ context.Context, target agent.ClientToolContext, definition agent.ClientToolDefinition, callID string, arguments map[string]any) error {
+	if m == nil {
+		return fmt.Errorf("third-party gateway is not configured")
 	}
-	if a.contextResolver == nil {
-		a.ensureContextResolver()
+	clientID := normalizeThirdPartyID(target.ClientID)
+	if clientID == "" {
+		return fmt.Errorf("client tool target is missing client ID")
 	}
-	if a.sessionPrecheck == nil {
-		a.ensureSessionPrecheck()
+	if callID == "" {
+		callID = "ct_" + randomHexID(12)
 	}
-
-	h := NewIMMessageHandler(a, a.remoteSessions)
-	if a.capabilityGapDetector == nil {
-		a.ensureCapabilityGapDetector()
+	call := &coreim.ThirdPartyToolCall{
+		ID: callID, Name: definition.Name, Arguments: arguments, Risk: definition.Risk,
+		RequiresApproval: definition.RequiresApproval, TimeoutMs: definition.TimeoutMs,
+		IdempotencyKey: callID, Metadata: definition.Metadata,
 	}
-	if a.capabilityGapDetector != nil {
-		h.SetCapabilityGapDetector(a.capabilityGapDetector)
+	if err := coreim.NormalizeThirdPartyToolCall(call); err != nil {
+		return err
 	}
-	if a.toolDefGenerator != nil {
-		h.SetToolDefGenerator(a.toolDefGenerator)
-	}
-	if a.toolRouter != nil {
-		h.SetToolRouter(a.toolRouter)
-	}
-	if a.usageTracker != nil {
-		h.SetUsageTracker(a.usageTracker)
-	}
-	if a.memoryStore != nil {
-		h.SetMemoryStore(a.memoryStore)
-	}
-	h.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())
-	if a.configManager != nil {
-		h.SetConfigManager(a.configManager)
-	}
-	if a.templateManager != nil {
-		h.SetTemplateManager(a.templateManager)
-	}
-	if a.scheduledTaskManager != nil {
-		h.SetScheduledTaskManager(a.scheduledTaskManager)
-	}
-	if a.contextResolver != nil {
-		h.SetContextResolver(a.contextResolver)
-	}
-	if a.sessionPrecheck != nil {
-		h.SetSessionPrecheck(a.sessionPrecheck)
-	}
-	a.ensureStartupFeedback()
-	if a.startupFeedback != nil {
-		h.SetStartupFeedback(a.startupFeedback)
-	}
-	if a.securityFirewall == nil {
-		a.ensureSecurityFirewall()
-	}
-	if a.securityFirewall != nil {
-		h.SetSecurityFirewall(a.securityFirewall)
-	}
-	// Hardware requests may ask the Agent to send a generated file to a separate
-	// IM group/user. Wire the same structured sender used by the desktop handler;
-	// the ESP remains an input/display endpoint and never executes the send.
-	h.SetStructuredIMFileSender(func(req agent.IMFileDeliveryRequest) error {
-		return a.forwardDesktopFileToIMRequest(a.hubClient(), req)
+	m.enqueue(clientID, thirdPartyOutgoingMessage{
+		ConversationID:   strings.TrimSpace(target.ConversationID),
+		ReplyToMessageID: strings.TrimSpace(target.ReplyToMessageID),
+		Type:             "tool_call",
+		ToolCall:         call,
 	})
-	a.ensureConversationArchiver()
-	if a.conversationArchiver != nil {
-		h.memory.Archiver = a.conversationArchiver
-	}
-
-	m.localHandler = h
-	log.Printf("[thirdparty-mgr] local IMMessageHandler created")
-	return h
+	return nil
 }
 
 func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequest, maclawID string) {
@@ -1623,7 +1796,11 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		return
 	}
 
-	handler := m.ensureLocalHandler()
+	handler, err := m.ensureLocalHandler(req.ClientID)
+	if err != nil {
+		m.enqueueError(req, maclawID, "agent_runtime_error", err.Error())
+		return
+	}
 	progressFilter := newIMProgressVisibilityFilter(m.app)
 	var lastProgress time.Time
 	var lastProgressText string
@@ -1657,6 +1834,12 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		Lang:               appUILang(m.app),
 		Attachments:        attachments,
 		ClientCapabilities: pointerToClientCapabilities(m.clientCapabilities(req.ClientID)),
+		ClientTools:        m.clientTools(req.ClientID),
+		ClientToolContext: &agent.ClientToolContext{
+			ClientID:         req.ClientID,
+			ConversationID:   req.ConversationID,
+			ReplyToMessageID: maclawID,
+		},
 	}, onProgress)
 	log.Printf("[thirdparty-mgr] agent returned client=%s maclawID=%s deferred=%t hasResponse=%t elapsed=%s",
 		req.ClientID, maclawID, resp != nil && resp.Deferred, resp != nil,
@@ -1668,28 +1851,55 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 }
 
 func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID, replyTo string, resp *IMAgentResponse) {
+	if resp == nil {
+		return
+	}
+	response := *resp
+	response.Actions = append([]IMResponseAction(nil), resp.Actions...)
+	response.Text = cleanDeviceReplyText(response.Text)
+	resp = &response
 	capabilities := m.clientCapabilities(clientID)
-	selected := agent.SelectClientOutputCombination(capabilities, agentResponseModalities(resp, capabilities)...)
-	allow := func(modality string) bool { return containsString(selected, modality) }
-	// Hardware clients display the result text as well as playing the ordered
-	// audio stream, even when their declared preference selects audio first.
-	allowText := allow("text") || (containsString(selected, "audio") && capabilities.SupportsOutput("text"))
-	messages := make([]thirdPartyOutgoingMessage, 0, len(resp.VoiceParts)+4)
-	// Voice goes first: ESP32 firmware treats an incoming text message as the
-	// end of the current command, so a voice reply arriving after the text
-	// would be dropped as an unrelated message.
-	voiceParts := validThirdPartyVoiceParts(resp.VoiceParts, capabilities)
-	if len(voiceParts) > 0 && allow("audio") && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback {
-		for index, part := range voiceParts {
-			audioMetadata := map[string]string{
-				"voice_part_index": strconv.Itoa(index + 1),
-				"voice_part_total": strconv.Itoa(len(voiceParts)),
-			}
-			messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: part.MimeType, FileName: part.FileName, Data: part.Data, Metadata: audioMetadata})
+	resultAudioParts := responseDeviceFileAudioCount(resp, capabilities)
+	deferredSpeechParts := 0
+	var deferredSpeechChunks []string
+	// A hardware reply must expose its final result surface before synthesis.
+	// Plan semantic parts cheaply from the cleaned text, enqueue the armed text
+	// immediately, then synthesize/publish each MP3 part in order. This avoids
+	// holding the ESP32 on "remote processing" for the whole TTS duration.
+	if len(resp.VoiceParts) == 0 && resp.VoiceData == "" && resultAudioParts == 0 && resp.Text != "" &&
+		capabilities.SupportsOutput("text") && clientCanSynthesizeDeviceSpeech(m, capabilities) {
+		parts := tts.PrepareSpeechChunks(resp.Text, 0, deviceVoiceChunkRunes)
+		if len(parts) > 0 {
+			deferredSpeechParts = len(parts)
+			deferredSpeechChunks = parts
 		}
 	}
+	responseModalities := agentResponseModalities(resp, capabilities)
+	selected := agent.SelectClientOutputCombination(capabilities, responseModalities...)
+	// A concrete result audio file is the authoritative audio representation of
+	// the reply. Keep it paired with its result text even when a legacy client
+	// advertises only singleton combinations; this is the same hardware-specific
+	// result-before-playback contract used for deferred TTS.
+	if resultAudioParts > 0 && containsString(responseModalities, "audio") {
+		selected = appendUniqueString(selected, "audio")
+		if resp.Text != "" && capabilities.SupportsOutput("text") {
+			selected = appendUniqueString(selected, "text")
+		}
+	}
+	allow := func(modality string) bool { return containsString(selected, modality) }
+	allowAudio := allow("audio") || deferredSpeechParts > 0
+	// Hardware clients display the result text as well as playing the ordered
+	// audio stream, even when their declared preference selects audio first.
+	allowText := allow("text") || (allowAudio && capabilities.SupportsOutput("text"))
+	messages := make([]thirdPartyOutgoingMessage, 0, len(resp.VoiceParts)+4)
+	// Queue terminal text first. It switches the ESP32 to the result page and
+	// arms the exact number of correlated speech parts accepted afterwards.
+	voiceParts := validThirdPartyVoiceParts(resp.VoiceParts, capabilities)
 	if resp.Text != "" && allowText {
-		text := textutil.StripMarkdown(resp.Text)
+		// The ESP32 result page and its spoken reply must carry the same user
+		// content. Route/model diagnostics and the legacy [i] marker belong only
+		// in the desktop detail view, never in the hardware-facing answer.
+		text := textutil.StripMarkdown(tts.StripInternalResponseMetadata(resp.Text))
 		if len(resp.Actions) > 0 {
 			text = strings.TrimSpace(text)
 			if text != "" {
@@ -1700,13 +1910,31 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 				text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 			}
 		}
-		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text})
+		metadata := map[string]string{"acp_turn": "final"}
+		if speechParts := deferredSpeechParts + len(voiceParts) + resultAudioParts; speechParts > 0 && allowAudio {
+			metadata["speech_parts_pending"] = strconv.Itoa(speechParts)
+		}
+		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: metadata})
 	} else if len(resp.Actions) > 0 && allowText {
 		text := "Please reply with an option:"
 		for i, action := range resp.Actions {
 			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 		}
-		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text})
+		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: map[string]string{"acp_turn": "final"}})
+	} else if resultAudioParts > 0 && allowText {
+		messages = append(messages, thirdPartyOutgoingMessage{
+			ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: "音频已就绪",
+			Metadata: map[string]string{"acp_turn": "final", "speech_parts_pending": strconv.Itoa(resultAudioParts)},
+		})
+	}
+	if len(voiceParts) > 0 && allowAudio && capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback {
+		for index, part := range voiceParts {
+			audioMetadata := map[string]string{
+				"speech_part":  strconv.Itoa(index + 1),
+				"speech_parts": strconv.Itoa(len(voiceParts)),
+			}
+			messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: part.MimeType, FileName: part.FileName, Data: part.Data, Metadata: audioMetadata})
+		}
 	}
 	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 && allowText {
 		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "error", Error: "agent_error", Text: textutil.StripMarkdown(resp.Error)})
@@ -1714,10 +1942,33 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 	if resp.ImageKey != "" && allow("image") && capabilities.SupportsOutputMIME("image", "image/png") {
 		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image", ContentType: "image/png", FileName: "image.png", Data: resp.ImageKey})
 	}
-	if resp.FileData != "" && allow("file") && capabilities.SupportsOutputMIME("file", resp.FileMimeType) {
+	if resp.FileData != "" {
 		decoded, decodeErr := base64.StdEncoding.DecodeString(resp.FileData)
-		if decodeErr == nil && capabilities.SupportsOutputBytes("file", int64(len(decoded))) {
-			messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: resp.FileMimeType, FileName: resp.FileName, Data: resp.FileData, SizeBytes: int64(len(decoded))})
+		if decodeErr == nil {
+			kind, contentType := classifyDeviceResponseFile(resp.FileName, resp.FileMimeType)
+			switch kind {
+			case deviceResponseFileImage:
+				if allow("image") && clientSupportsAgentImage(capabilities) {
+					prepared, err := prepareDeviceResponseImage(resp.FileData, capabilities)
+					if err != nil {
+						log.Printf("[thirdparty-mgr] prepare result image %s error: %v", resp.FileName, err)
+					} else {
+						messages = append(messages, thirdPartyOutgoingMessage{
+							ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image",
+							ContentType: prepared.MIMEType, MimeType: prepared.MIMEType, FileName: prepared.FileName,
+							Data: prepared.Data, SizeBytes: prepared.Size, Width: prepared.Width, Height: prepared.Height,
+						})
+					}
+				}
+			case deviceResponseFileAudio:
+				if allowAudio && clientCanPlayDeviceAudio(capabilities, contentType, int64(len(decoded))) {
+					messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: contentType, MimeType: contentType, FileName: resp.FileName, Data: resp.FileData, SizeBytes: int64(len(decoded))})
+				}
+			default:
+				if allow("file") && capabilities.SupportsOutputMIME("file", contentType) && capabilities.SupportsOutputBytes("file", int64(len(decoded))) {
+					messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: contentType, FileName: resp.FileName, Data: resp.FileData, SizeBytes: int64(len(decoded))})
+				}
+			}
 		}
 	}
 	paths := resp.LocalFilePaths
@@ -1725,39 +1976,174 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		paths = append([]string{resp.LocalFilePath}, paths...)
 	}
 	for _, p := range paths {
-		if !allow("file") || !capabilities.SupportsOutput("file") {
-			break
-		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			log.Printf("[thirdparty-mgr] read local file %s error: %v", p, err)
 			continue
 		}
 		name := filepath.Base(p)
-		ct := mime.TypeByExtension(filepath.Ext(name))
-		if ct == "" {
-			ct = "application/octet-stream"
+		kind, ct := classifyDeviceResponseFile(name, mime.TypeByExtension(filepath.Ext(name)))
+		switch kind {
+		case deviceResponseFileImage:
+			if allow("image") && clientSupportsAgentImage(capabilities) {
+				prepared, err := prepareDeviceResponseImage(base64.StdEncoding.EncodeToString(data), capabilities)
+				if err != nil {
+					log.Printf("[thirdparty-mgr] prepare local result image %s error: %v", p, err)
+				} else {
+					messages = append(messages, thirdPartyOutgoingMessage{
+						ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image",
+						ContentType: prepared.MIMEType, MimeType: prepared.MIMEType, FileName: prepared.FileName,
+						Data: prepared.Data, SizeBytes: prepared.Size, Width: prepared.Width, Height: prepared.Height,
+					})
+				}
+			}
+		case deviceResponseFileAudio:
+			if allowAudio && clientCanPlayDeviceAudio(capabilities, ct, int64(len(data))) {
+				messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: ct, MimeType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), SizeBytes: int64(len(data))})
+			}
+		default:
+			if allow("file") && capabilities.SupportsOutputMIME("file", ct) && capabilities.SupportsOutputBytes("file", int64(len(data))) {
+				messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), SizeBytes: int64(len(data))})
+			}
 		}
-
-		if !capabilities.SupportsOutputMIME("file", ct) || !capabilities.SupportsOutputBytes("file", int64(len(data))) {
-			continue
-		}
-		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), SizeBytes: int64(len(data))})
 	}
 	// Publish the complete logical response in one lock scope so polling cannot
 	// observe a premature terminal marker between its constituent messages.
-	if queued := m.enqueueBatch(clientID, messages, true); len(queued) == 0 && capabilities.SupportsOutput("text") {
+	speechTransaction := deferredSpeechParts+len(voiceParts)+resultAudioParts > 0
+	queued := m.enqueueBatch(clientID, messages, !speechTransaction)
+	if len(queued) == 0 && capabilities.SupportsOutput("text") {
 		m.enqueue(clientID, thirdPartyOutgoingMessage{
 			ConversationID: conversationID, ReplyToMessageID: replyTo,
 			Type: "text", Text: "(no output)", Metadata: map[string]string{"acp_turn": "final"},
 		})
+		return
 	}
+	if len(deferredSpeechChunks) > 0 {
+		m.cancelDeviceSpeechTurn(clientID, conversationID)
+		go m.streamDeviceSpeechAfterResult(clientID, conversationID, replyTo, deferredSpeechChunks)
+	}
+}
+
+func appendUniqueString(values []string, value string) []string {
+	if containsString(values, value) {
+		return values
+	}
+	return append(values, value)
+}
+
+func clientCanSynthesizeDeviceSpeech(m *thirdPartyGatewayManager, capabilities agent.ClientCapabilities) bool {
+	if m == nil || m.app == nil || m.app.ttsManager == nil || capabilities.Output.Audio == nil || !capabilities.Output.Audio.Playback {
+		return false
+	}
+	if !capabilities.SupportsOutputMIME("audio", "audio/mpeg") {
+		return false
+	}
+	cfg, err := m.app.LoadConfig()
+	return err == nil && cfg.TTSEnabled
+}
+
+func (m *thirdPartyGatewayManager) streamDeviceSpeechAfterResult(clientID, conversationID, replyTo string, parts []string) {
+	turnKey := clientID + "\x00" + conversationID
+	ctx, cancel := context.WithCancel(context.Background())
+	turn := &deviceSpeechTurn{cancel: cancel, replyTo: replyTo, expected: len(parts)}
+	m.speechMu.Lock()
+	if previous := m.speechTurns[turnKey]; previous != nil {
+		previous.cancel()
+	}
+	m.speechTurns[turnKey] = turn
+	m.speechMu.Unlock()
+	defer func() {
+		cancel()
+		m.speechMu.Lock()
+		if m.speechTurns[turnKey] == turn {
+			delete(m.speechTurns, turnKey)
+		}
+		m.speechMu.Unlock()
+	}()
+	started := time.Now()
+	ok := streamPreparedDeviceVoicePayload(m.app.ttsManager, parts, thirdPartyPlatform(clientID), func(part IMVoicePart, index, total int) bool {
+		if ctx.Err() != nil {
+			return false
+		}
+		queued := m.enqueue(clientID, thirdPartyOutgoingMessage{
+			ConversationID: conversationID, ReplyToMessageID: replyTo,
+			Type: "voice", ContentType: part.MimeType, FileName: part.FileName, Data: part.Data,
+			Metadata: map[string]string{
+				"speech_part": strconv.Itoa(index), "speech_parts": strconv.Itoa(total),
+				"voice_part_index": strconv.Itoa(index), "voice_part_total": strconv.Itoa(total),
+			},
+		})
+		if queued.ID != "" {
+			m.speechMu.Lock()
+			if m.speechTurns[turnKey] == turn {
+				turn.queued = index
+			}
+			m.speechMu.Unlock()
+		}
+		return queued.ID != ""
+	})
+	m.speechMu.Lock()
+	queuedParts := turn.queued
+	m.speechMu.Unlock()
+	if !ok && queuedParts < turn.expected {
+		m.enqueue(clientID, thirdPartyOutgoingMessage{
+			ConversationID: conversationID, ReplyToMessageID: replyTo,
+			Type:  "speech_end",
+			Extra: map[string]any{"speech_parts_expected": turn.expected, "speech_parts_sent": queuedParts},
+		})
+	}
+	log.Printf("[thirdparty-mgr] post-result speech finished client=%s replyTo=%s parts=%d ok=%t elapsed=%s",
+		clientID, replyTo, len(parts), ok, time.Since(started).Round(time.Millisecond))
 }
 
 // validThirdPartyVoiceParts performs the inexpensive checks that enqueue would
 // otherwise apply one part at a time. Filtering first is important because the
 // final ACP marker belongs on the last deliverable part, not necessarily the
 // last element of the untrusted response slice.
+type deviceResponseFileKind int
+
+const (
+	deviceResponseFileGeneric deviceResponseFileKind = iota
+	deviceResponseFileImage
+	deviceResponseFileAudio
+)
+
+func classifyDeviceResponseFile(fileName, contentType string) (deviceResponseFileKind, string) {
+	contentType = strings.TrimSpace(strings.ToLower(contentType))
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(fileName)))
+	if contentType == "" {
+		contentType = strings.ToLower(mime.TypeByExtension(ext))
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if mediaType, _, ok := strings.Cut(contentType, ";"); ok {
+		contentType = strings.TrimSpace(mediaType)
+	}
+	switch {
+	case strings.HasPrefix(contentType, "image/") || ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif":
+		if !strings.HasPrefix(contentType, "image/") {
+			contentType = strings.ToLower(mime.TypeByExtension(ext))
+		}
+		return deviceResponseFileImage, contentType
+	case strings.HasPrefix(contentType, "audio/") || ext == ".mp3" || ext == ".wav":
+		if ext == ".mp3" && !strings.HasPrefix(contentType, "audio/") {
+			contentType = "audio/mpeg"
+		} else if ext == ".wav" && !strings.HasPrefix(contentType, "audio/") {
+			contentType = "audio/wav"
+		}
+		return deviceResponseFileAudio, contentType
+	default:
+		return deviceResponseFileGeneric, contentType
+	}
+}
+
+func clientCanPlayDeviceAudio(capabilities agent.ClientCapabilities, contentType string, sizeBytes int64) bool {
+	return capabilities.Output.Audio != nil && capabilities.Output.Audio.Playback &&
+		capabilities.SupportsOutputMIME("audio", contentType) &&
+		(capabilities.SupportsOutputAudioDelivery("inline", sizeBytes) || capabilities.SupportsOutputAudioDelivery("url", sizeBytes))
+}
+
 func validThirdPartyVoiceParts(parts []IMVoicePart, capabilities agent.ClientCapabilities) []IMVoicePart {
 	if capabilities.Output.Audio == nil || !capabilities.Output.Audio.Playback {
 		return nil
@@ -1788,13 +2174,29 @@ func agentResponseModalities(resp *IMAgentResponse, capabilities agent.ClientCap
 	if resp.Text != "" || resp.Error != "" || len(resp.Actions) > 0 {
 		modalities = append(modalities, "text")
 	}
-	if resp.ImageKey != "" && capabilities.SupportsOutputMIME("image", "image/png") {
+	// ImageKey is source image data, not necessarily the client's wire MIME.
+	// ESP32 advertises display-ready RGB565 only; prepareDeviceResponseImage
+	// performs that conversion later, so modality selection must retain the
+	// image whenever the client supports either native PNG or RGB565 output.
+	if resp.ImageKey != "" && clientSupportsAgentImage(capabilities) {
 		modalities = append(modalities, "image")
 	}
 	filePresent := false
-	if resp.FileData != "" && capabilities.SupportsOutputMIME("file", resp.FileMimeType) {
-		if decoded, err := base64.StdEncoding.DecodeString(resp.FileData); err == nil && capabilities.SupportsOutputBytes("file", int64(len(decoded))) {
-			filePresent = true
+	if resp.FileData != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(resp.FileData); err == nil {
+			kind, contentType := classifyDeviceResponseFile(resp.FileName, resp.FileMimeType)
+			switch kind {
+			case deviceResponseFileImage:
+				if clientSupportsAgentImage(capabilities) {
+					modalities = append(modalities, "image")
+				}
+			case deviceResponseFileAudio:
+				if clientCanPlayDeviceAudio(capabilities, contentType, int64(len(decoded))) {
+					modalities = append(modalities, "audio")
+				}
+			default:
+				filePresent = capabilities.SupportsOutputMIME("file", contentType) && capabilities.SupportsOutputBytes("file", int64(len(decoded)))
+			}
 		}
 	}
 	paths := resp.LocalFilePaths
@@ -1806,11 +2208,22 @@ func agentResponseModalities(resp *IMAgentResponse, capabilities agent.ClientCap
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		mimeType := mime.TypeByExtension(filepath.Ext(path))
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
+		kind, mimeType := classifyDeviceResponseFile(path, mime.TypeByExtension(filepath.Ext(path)))
+		switch kind {
+		case deviceResponseFileImage:
+			if clientSupportsAgentImage(capabilities) {
+				modalities = append(modalities, "image")
+			}
+		case deviceResponseFileAudio:
+			if clientCanPlayDeviceAudio(capabilities, mimeType, info.Size()) {
+				modalities = append(modalities, "audio")
+			}
+		default:
+			if capabilities.SupportsOutputMIME("file", mimeType) && capabilities.SupportsOutputBytes("file", info.Size()) {
+				filePresent = true
+			}
 		}
-		if capabilities.SupportsOutputMIME("file", mimeType) && capabilities.SupportsOutputBytes("file", info.Size()) {
+		if filePresent {
 			filePresent = true
 			break
 		}
@@ -1832,6 +2245,38 @@ func pointerToClientCapabilities(capabilities agent.ClientCapabilities) *agent.C
 	return &capabilities
 }
 
+func gatewayReplyIsFinal(reply GatewayReplyPayload) bool {
+	if gatewayReplyIsExplicitlyFinal(reply) {
+		return true
+	}
+	return !reply.Progress
+}
+
+func gatewayReplyIsExplicitlyFinal(reply GatewayReplyPayload) bool {
+	if reply.Final || reply.Complete {
+		return true
+	}
+	for _, source := range []map[string]any{reply.Metadata, reply.Extra} {
+		if source == nil {
+			continue
+		}
+		for _, key := range []string{"final", "complete", "completed"} {
+			if value, ok := source[key].(bool); ok && value {
+				return true
+			}
+		}
+		for _, key := range []string{"acp_turn", "turn"} {
+			if value, ok := source[key].(string); ok {
+				switch strings.ToLower(strings.TrimSpace(value)) {
+				case "final", "complete", "completed", "done", "end", "terminal":
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 	started := time.Now()
 	clientID, conversationID := parseThirdPartyReplyTarget(reply)
@@ -1842,6 +2287,13 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 	if m.effectiveMode() == "hub" {
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
 			if err := hubClient.SendDeviceGatewayReply(clientID, conversationID, reply); err == nil {
+				// Direct-Hub speech is intentionally held until the terminal text
+				// has crossed this exact GUI -> Hub queue boundary. Otherwise the
+				// shorter direct audio path can overtake Hub's result relay and play
+				// while the ESP32 still shows "远端处理中".
+				if normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String()) == thirdPartyGatewayMessageText && gatewayReplyIsFinal(reply) {
+					hubClient.startHubDeviceSpeechAfterResult(clientID, conversationID, thirdPartyReplyCorrelation(reply))
+				}
 				return
 			}
 		}
@@ -1855,6 +2307,11 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		FileName:         reply.FileName,
 		ContentType:      reply.MimeType,
 		Metadata:         map[string]string{},
+	}
+	for _, key := range []string{"speech_parts_pending", "speech_part", "speech_parts"} {
+		if value, ok := reply.Metadata[key]; ok {
+			msg.Metadata[key] = strings.TrimSpace(fmt.Sprint(value))
+		}
 	}
 	log.Printf("[thirdparty-mgr] Hub reply received client=%s sourceMessageID=%s correlatedReplyTo=%s type=%s",
 		clientID, reply.SourceMessageID, msg.ReplyToMessageID, reply.ReplyType.String())
@@ -1872,13 +2329,17 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		msg.Metadata["voice_part_total"] = strconv.Itoa(reply.VoicePartTotal)
 	}
 	// A streamed voice part is presentation, not command completion, when a
-	// final text frame follows. Voice-only responses explicitly mark their
-	// last part terminal; all other deferred reply types remain terminal.
-	if replyKind != thirdPartyGatewayMessageVoice || reply.VoicePartFinal {
+	// final text frame follows. Explicit terminal metadata wins for voice-only
+	// responses; all other deferred reply types remain terminal.
+	if replyKind != thirdPartyGatewayMessageVoice || reply.VoicePartFinal ||
+		(reply.VoicePartIndex == 0 && reply.VoicePartTotal == 0 && gatewayReplyIsFinal(reply)) {
 		msg.Metadata["acp_turn"] = "final"
 	}
 	capabilities := m.clientCapabilities(clientID)
 	switch {
+	case strings.EqualFold(strings.TrimSpace(reply.ReplyType.String()), "speech_end"):
+		// Protocol control frame: retain the type and correlation. Coercing this
+		// to text would leave the ESP32 waiting for audio parts that cannot arrive.
 	case replyKind == thirdPartyGatewayMessageImage && capabilities.SupportsOutput("image"):
 		msg.Data = reply.ImageData
 		if msg.ContentType == "" {
@@ -2318,8 +2779,9 @@ func thirdPartySessionUserID(clientID, conversationID string) string {
 	return "thirdparty:" + normalizeThirdPartyID(clientID) + ":" + strings.TrimSpace(conversationID)
 }
 
-// App integration.
-func (a *App) ensureThirdPartyGateway() {
+// App integration. Callers already holding imGatewaySyncMu use the locked
+// variant to avoid racing a gateway restart with configuration changes.
+func (a *App) ensureThirdPartyGatewayLocked() {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return
@@ -2336,19 +2798,54 @@ func (a *App) ensureThirdPartyGateway() {
 	a.thirdPartyGateway.SyncFromConfig()
 }
 
-func (a *App) GetThirdPartyGatewayStatus() string {
+func (a *App) ensureThirdPartyGateway() {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+	a.ensureThirdPartyGatewayLocked()
+}
+
+func (a *App) thirdPartyGatewayStatusLocked() string {
 	if a.thirdPartyGateway == nil {
 		return gatewayConnectionStatusDisconnected.String()
 	}
 	return a.thirdPartyGateway.Status()
 }
 
-func (a *App) RestartThirdPartyGateway() string {
-	a.ensureThirdPartyGateway()
-	if a.thirdPartyGateway == nil {
-		return gatewayConnectionStatusDisconnected.String()
+func (a *App) GetThirdPartyGatewayStatus() string {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+	return a.thirdPartyGatewayStatusLocked()
+}
+
+// restartThirdPartyGatewayLocked refreshes the gateway while the caller holds
+// imGatewaySyncMu. Keeping this variant separate prevents a hardware-setting
+// change from interleaving with a concurrent gateway restart.
+func (a *App) restartThirdPartyGatewayLocked() string {
+	// SyncFromConfig correctly leaves a healthy identical listener alone. This
+	// endpoint is explicitly a restart, so tear it down first.
+	wasConnected := a.thirdPartyGatewayStatusLocked() == gatewayConnectionStatusConnected.String()
+	if a.thirdPartyGateway != nil {
+		a.thirdPartyGateway.stopForRestart()
 	}
-	return a.thirdPartyGateway.Status()
+	a.ensureThirdPartyGatewayLocked()
+	status := a.thirdPartyGatewayStatusLocked()
+	// Windows can retain a just-closed listener briefly. Retry only after a
+	// healthy listener was stopped; a genuinely occupied port still fails fast.
+	for attempt := 0; wasConnected && status == gatewayConnectionStatusError.String() && attempt < 4; attempt++ {
+		time.Sleep(20 * time.Millisecond)
+		if a.thirdPartyGateway != nil {
+			a.thirdPartyGateway.stopForRestart()
+		}
+		a.ensureThirdPartyGatewayLocked()
+		status = a.thirdPartyGatewayStatusLocked()
+	}
+	return status
+}
+
+func (a *App) RestartThirdPartyGateway() string {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+	return a.restartThirdPartyGatewayLocked()
 }
 
 // SendHardwareVolume persists and immediately sends the requested speaker
@@ -2356,6 +2853,11 @@ func (a *App) RestartThirdPartyGateway() string {
 func (a *App) SendHardwareVolume(volume int) error {
 	if volume < 0 || volume > 100 {
 		return fmt.Errorf("hardware volume must be between 0 and 100")
+	}
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+	if _, err := a.requireHardwareEnabled(); err != nil {
+		return err
 	}
 	if _, err := a.PatchConfigFields(map[string]interface{}{"hardware_volume": volume}); err != nil {
 		return err
@@ -2369,17 +2871,256 @@ func (a *App) SendHardwareVolume(volume int) error {
 	return nil
 }
 
+// SendHardwareDeviceVolume updates only one Hub-bound ESP32. The old global
+// setting remains a default for newly paired hardware and local gateway mode;
+// this method deliberately never broadcasts a binding-specific choice.
+func (a *App) SendHardwareDeviceVolume(clientID string, volume int) error {
+	if volume < 0 || volume > 100 {
+		return fmt.Errorf("hardware volume must be between 0 and 100")
+	}
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+	cfg, err := a.requireHardwareEnabled()
+	if err != nil {
+		return err
+	}
+	if cfg.IsThirdPartyGatewayLocalMode() {
+		return fmt.Errorf("per-device volume is managed by Hub mode")
+	}
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		return fmt.Errorf("Hub is not connected")
+	}
+	return hub.SendDeviceGatewayHardwareConfigForClient(clientID, map[string]any{"volume": volume})
+}
+
+// SendHardwareDevicePetProfile changes only one Hub-bound ESP32's rendered
+// pet. The explicit feature gate preserves the default shared system-pet
+// behavior and prevents stale UI clients from creating accidental overrides.
+func (a *App) SendHardwareDevicePetProfile(clientID, skin string) error {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+	cfg, err := a.requireHardwareEnabled()
+	if err != nil {
+		return err
+	}
+	if !cfg.HardwareAllowCustomPets {
+		return fmt.Errorf("enable individual hardware pets before selecting a device pet")
+	}
+	if cfg.IsThirdPartyGatewayLocalMode() {
+		return fmt.Errorf("per-device pets are managed by Hub mode")
+	}
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		return fmt.Errorf("Hub is not connected")
+	}
+	profile := a.devicePetProfileForSkin(cfg, skin)
+	return hub.SendDeviceGatewayPetProfileForClient(clientID, profile)
+}
+
+// SetHardwareAllowCustomPets commits the local preference and Hub's matching
+// authorization gate as one user-visible operation. On a Hub failure, the
+// local config is restored so the selector never claims a capability Hub will
+// reject.
+func (a *App) SetHardwareAllowCustomPets(enabled bool) error {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+	cfg, err := a.requireHardwareEnabled()
+	if err != nil {
+		return err
+	}
+	if cfg.IsThirdPartyGatewayLocalMode() {
+		return fmt.Errorf("individual hardware pets are managed by Hub mode")
+	}
+	if cfg.HardwareAllowCustomPets == enabled {
+		return nil
+	}
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		return fmt.Errorf("Hub is not connected")
+	}
+	if err := hub.SendDeviceGatewayAllowCustomPets(enabled); err != nil {
+		return err
+	}
+	if _, err := a.PatchConfigFields(map[string]interface{}{"hardware_allow_custom_pets": enabled}); err != nil {
+		rollbackErr := hub.SendDeviceGatewayAllowCustomPets(cfg.HardwareAllowCustomPets)
+		if rollbackErr != nil {
+			return fmt.Errorf("save individual hardware pets setting: %v; Hub rollback failed: %w", err, rollbackErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *App) requireHardwareEnabled() (corelib.AppConfig, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.AppConfig{}, err
+	}
+	if !cfg.HardwareEnabled {
+		return corelib.AppConfig{}, fmt.Errorf("hardware is disabled; enable hardware first")
+	}
+	return cfg, nil
+}
+
+func randomThirdPartyGatewayToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate third-party gateway token: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func validateHardwareGatewayInvariant(cfg corelib.AppConfig) error {
+	if !cfg.HardwareEnabled {
+		return nil
+	}
+	if !cfg.ThirdPartyGatewayEnabled {
+		return fmt.Errorf("disable hardware before turning off third-party access")
+	}
+	if cfg.IsThirdPartyGatewayLocalMode() {
+		return fmt.Errorf("hardware requires third-party access to use Hub mode")
+	}
+	if strings.TrimSpace(cfg.ThirdPartyGatewayToken) == "" {
+		return fmt.Errorf("hardware requires a third-party gateway token")
+	}
+	return nil
+}
+
+// syncEnabledHardwareStateToHub publishes all hardware state that must survive
+// a GUI reconnect. Hub owns the durable device registry and rejects device
+// traffic until this master switch is enabled.
+func (a *App) syncEnabledHardwareStateToHub() error {
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		// A Hub-mode listener alone is not enough: paired ESP32s authenticate and
+		// route through Hub, which rejects their traffic until the master switch
+		// is acknowledged. Do not report hardware as enabled until that durable
+		// control-plane state is actually reachable.
+		return fmt.Errorf("Hub is not connected; connect to Hub before enabling hardware")
+	}
+	if err := hub.SendDeviceGatewayHardwareEnabled(true); err != nil {
+		return fmt.Errorf("enable hardware relay: %w", err)
+	}
+	if err := a.SyncHardwareWelcome(); err != nil {
+		log.Printf("[device-welcome] hardware enable sync failed: %v", err)
+	}
+	if err := a.SyncHardwareVolume(); err != nil {
+		log.Printf("[device-volume] hardware enable sync failed: %v", err)
+	}
+	if cfg, err := a.LoadConfig(); err != nil {
+		log.Printf("[device-pet] load custom-pet permission for sync failed: %v", err)
+	} else if err := hub.SendDeviceGatewayAllowCustomPets(cfg.HardwareAllowCustomPets); err != nil {
+		log.Printf("[device-pet] custom-pet permission sync failed: %v", err)
+	}
+	return nil
+}
+
+// SetHardwareEnabled manages the hardware switch together with its required
+// Hub-mode gateway settings. It is intentionally not a generic config patch:
+// changing only one field would leave a locally enabled device gateway in an
+// invalid transport state.
+func (a *App) SetHardwareEnabled(enabled bool) (string, error) {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+
+	previous, err := a.LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	if !enabled {
+		if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+			cfg.HardwareEnabled = false
+		}); err != nil {
+			return "", err
+		}
+		if hub := a.hubClient(); hub != nil && hub.IsConnected() {
+			if err := hub.SendDeviceGatewayHardwareEnabled(false); err != nil {
+				rollbackErr := a.PatchConfig(func(cfg *corelib.AppConfig) {
+					cfg.HardwareEnabled = previous.HardwareEnabled
+				})
+				if rollbackErr != nil {
+					return a.thirdPartyGatewayStatusLocked(), fmt.Errorf("disable hardware relay failed (%v) and restoring hardware state also failed: %w", err, rollbackErr)
+				}
+				return a.thirdPartyGatewayStatusLocked(), fmt.Errorf("disable hardware relay failed; hardware state was restored: %w", err)
+			}
+		}
+		return a.thirdPartyGatewayStatusLocked(), nil
+	}
+
+	if strings.TrimSpace(previous.RemoteMachineID) == "" {
+		return "", fmt.Errorf("please register to Hub before enabling hardware")
+	}
+	if previous.HardwareEnabled && previous.ThirdPartyGatewayEnabled && !previous.IsThirdPartyGatewayLocalMode() && strings.TrimSpace(previous.ThirdPartyGatewayToken) != "" {
+		status := a.restartThirdPartyGatewayLocked()
+		if status != gatewayConnectionStatusConnected.String() {
+			return status, fmt.Errorf("restart third-party access failed while restoring enabled hardware")
+		}
+		if err := a.syncEnabledHardwareStateToHub(); err != nil {
+			return status, fmt.Errorf("%w; local hardware remains enabled and will resync after Hub reconnect", err)
+		}
+		return status, nil
+	}
+
+	token := strings.TrimSpace(previous.ThirdPartyGatewayToken)
+	if token == "" {
+		token, err = randomThirdPartyGatewayToken()
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HardwareEnabled = true
+		cfg.ThirdPartyGatewayEnabled = true
+		cfg.ThirdPartyGatewayToken = token
+		cfg.SetThirdPartyGatewayLocal(false)
+	}); err != nil {
+		return "", err
+	}
+
+	status := a.restartThirdPartyGatewayLocked()
+	var relayErr error
+	if status == gatewayConnectionStatusConnected.String() {
+		if relayErr = a.syncEnabledHardwareStateToHub(); relayErr == nil {
+			return status, nil
+		} else {
+			log.Printf("[device-hardware] enable relay failed, restoring settings: %v", relayErr)
+		}
+	}
+	rollbackErr := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.HardwareEnabled = previous.HardwareEnabled
+		cfg.ThirdPartyGatewayEnabled = previous.ThirdPartyGatewayEnabled
+		cfg.ThirdPartyGatewayToken = previous.ThirdPartyGatewayToken
+		cfg.ThirdPartyGatewayLocalMode = previous.ThirdPartyGatewayLocalMode
+	})
+	if rollbackErr != nil {
+		return status, fmt.Errorf("restart third-party access failed and restoring hardware settings also failed: %w", rollbackErr)
+	}
+	if previous.ThirdPartyGatewayEnabled && strings.TrimSpace(previous.ThirdPartyGatewayToken) != "" {
+		a.restartThirdPartyGatewayLocked()
+	} else if a.thirdPartyGateway != nil {
+		a.thirdPartyGateway.Stop()
+	}
+	if status == gatewayConnectionStatusConnected.String() {
+		return status, fmt.Errorf("enable hardware relay failed; hardware settings were restored: %w", relayErr)
+	}
+	return status, fmt.Errorf("restart third-party access failed; hardware settings were restored")
+}
+
 // CreateThirdPartyDevicePairing produces a six-digit, thirty-minute bootstrap
 // credential for a LAN device. The bearer itself never needs to be typed on
 // the ESP32.
 func (a *App) CreateThirdPartyDevicePairing() (map[string]any, error) {
-	a.ensureThirdPartyGateway()
-	if a.thirdPartyGateway == nil {
-		return nil, fmt.Errorf("enable third-party access before pairing a device")
-	}
-	cfg, err := a.LoadConfig()
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+
+	cfg, err := a.requireHardwareEnabled()
 	if err != nil {
 		return nil, err
+	}
+	a.ensureThirdPartyGatewayLocked()
+	if a.thirdPartyGateway == nil {
+		return nil, fmt.Errorf("enable third-party access before pairing a device")
 	}
 	token := strings.TrimSpace(cfg.ThirdPartyGatewayToken)
 	if !cfg.ThirdPartyGatewayEnabled || token == "" {
@@ -2457,6 +3198,54 @@ func (a *App) CreateThirdPartyDevicePairing() (map[string]any, error) {
 	}
 }
 
+// ListThirdPartyHardwareDevices returns the Hub-owned bindings for this GUI.
+// A local gateway has no durable device registry, so it deliberately returns
+// an empty list instead of attempting a Hub request.
+func (a *App) ListThirdPartyHardwareDevices() ([]HardwareDeviceBinding, error) {
+	bindings, err := a.ListThirdPartyHardwareDeviceBindings()
+	return bindings.Devices, err
+}
+
+// ListThirdPartyHardwareDeviceBindings returns Hub-owned bindings together
+// with the fixed five-device capacity for this GUI.
+func (a *App) ListThirdPartyHardwareDeviceBindings() (HardwareDeviceBindings, error) {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+
+	cfg, err := a.requireHardwareEnabled()
+	if err != nil {
+		return HardwareDeviceBindings{}, err
+	}
+	if cfg.IsThirdPartyGatewayLocalMode() {
+		return HardwareDeviceBindings{Devices: []HardwareDeviceBinding{}, MaxDevices: 5}, nil
+	}
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		return HardwareDeviceBindings{}, fmt.Errorf("Hub is not connected")
+	}
+	return hub.ListHardwareDeviceBindings()
+}
+
+// DeleteThirdPartyHardwareDevice removes a durable Hub-owned hardware
+// binding. The Hub remains the authority for ownership and credentials.
+func (a *App) DeleteThirdPartyHardwareDevice(clientID string) error {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+
+	cfg, err := a.requireHardwareEnabled()
+	if err != nil {
+		return err
+	}
+	if cfg.IsThirdPartyGatewayLocalMode() {
+		return fmt.Errorf("durable hardware bindings are managed by Hub mode")
+	}
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		return fmt.Errorf("Hub is not connected")
+	}
+	return hub.DeleteHardwareDevice(clientID)
+}
+
 func (m *thirdPartyGatewayManager) removeRemotePairingReservation(code string) {
 	if m == nil || code == "" {
 		return
@@ -2469,6 +3258,13 @@ func (m *thirdPartyGatewayManager) removeRemotePairingReservation(code string) {
 }
 
 func (a *App) StopThirdPartyGateway() {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+	// Hardware owns this transport while it is enabled. A stale Wails stop
+	// request must not silently leave the persisted hardware state invalid.
+	if cfg, err := a.LoadConfig(); err == nil && cfg.HardwareEnabled {
+		return
+	}
 	if a.thirdPartyGateway != nil {
 		a.thirdPartyGateway.Stop()
 	}
@@ -2483,12 +3279,18 @@ func (a *App) GetThirdPartyGatewayLocalMode() bool {
 }
 
 func (a *App) SetThirdPartyGatewayLocalMode(enabled bool) error {
+	a.imGatewaySyncMu.Lock()
+	defer a.imGatewaySyncMu.Unlock()
+
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return err
 	}
 	if !enabled && cfg.RemoteMachineID == "" {
 		return fmt.Errorf("please register to Hub before enabling Hub mode")
+	}
+	if enabled && cfg.HardwareEnabled {
+		return fmt.Errorf("disable hardware before switching third-party access to local mode")
 	}
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.SetThirdPartyGatewayLocal(enabled)
@@ -2498,10 +3300,9 @@ func (a *App) SetThirdPartyGatewayLocalMode(enabled bool) error {
 	if a.thirdPartyGateway != nil {
 		a.thirdPartyGateway.resetLocalHandler()
 	}
-	if !enabled {
-		if hubClient := a.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayClaim(imGatewayPlatformThirdParty)
-		}
-	}
+	// Reconcile the running listener with the new transport mode immediately.
+	// SyncFromConfig emits the matching Hub claim/unclaim even when its listener
+	// is already healthy, so no stale route remains until a later reconnect.
+	a.ensureThirdPartyGatewayLocked()
 	return nil
 }

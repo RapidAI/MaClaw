@@ -61,11 +61,7 @@ type PendingIMRequest struct {
 	// LastActivity tracks the most recent progress or creation time.
 	// Used by cleanupExpired to avoid premature reaping of requests
 	// that are being kept alive by progress updates.
-	lastActivity time.Time
-
-	// VoiceParts is assembled from bounded im.agent_voice_part frames. The
-	// final im.agent_response contains text/metadata only and consumes this
-	// stream atomically when every expected part has arrived.
+	lastActivity    time.Time
 	voiceParts      map[int]VoicePart
 	voicePartsTotal int
 	voicePartsBytes int
@@ -1032,27 +1028,19 @@ func (r *MessageRouter) HandleAgentResponse(requestID string, resp *AgentRespons
 	r.mu.Lock()
 	pending, ok := r.pendingReqs[requestID]
 	if ok && resp != nil && len(resp.VoiceParts) == 0 && pending.voicePartsTotal > 0 {
-		if pending.voicePartsBad || len(pending.voiceParts) != pending.voicePartsTotal {
-			log.Printf("[MessageRouter] incomplete voice stream request_id=%s received=%d expected=%d; delivering text only", requestID, len(pending.voiceParts), pending.voicePartsTotal)
-		} else {
+		if !pending.voicePartsBad && len(pending.voiceParts) == pending.voicePartsTotal {
 			resp.VoiceParts = make([]VoicePart, pending.voicePartsTotal)
-			complete := true
-			for index := 0; index < pending.voicePartsTotal; index++ {
+			for index := range resp.VoiceParts {
 				part, exists := pending.voiceParts[index]
 				if !exists {
-					complete = false
+					resp.VoiceParts = nil
 					break
 				}
 				resp.VoiceParts[index] = part
 			}
-			if !complete {
-				resp.VoiceParts = nil
-				log.Printf("[MessageRouter] voice stream has an index gap request_id=%s; delivering text only", requestID)
-			}
 		}
 	}
 	if ok && resp != nil && pending.voicePartsBad {
-		log.Printf("[MessageRouter] discarded poisoned voice stream request_id=%s; delivering text only", requestID)
 		resp.VoiceParts = nil
 		resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
 	}
@@ -1071,37 +1059,24 @@ func (r *MessageRouter) HandleAgentResponse(requestID string, resp *AgentRespons
 	}
 }
 
-// HandleAgentVoicePart stores one ordered hardware voice segment. It never
-// completes a request by itself; the following im.agent_response is the
-// transaction commit and ensures the device receives either all voice parts
-// or the complete text-only result.
 func (r *MessageRouter) HandleAgentVoicePart(requestID string, frame AgentVoicePart) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	pending, ok := r.pendingReqs[requestID]
 	if !ok {
-		log.Printf("[MessageRouter] received voice part for unknown request_id=%s", requestID)
 		return
 	}
 	pending.lastActivity = time.Now()
 	data := strings.TrimSpace(frame.Part.Data)
-	decoded, decodeErr := base64.StdEncoding.DecodeString(data)
+	decoded, err := base64.StdEncoding.DecodeString(data)
 	if frame.Total <= 0 || frame.Total > 512 || frame.Index < 0 || frame.Index >= frame.Total ||
 		data == "" || strings.TrimSpace(frame.Part.FileName) == "" || strings.TrimSpace(frame.Part.MimeType) == "" ||
-		decodeErr != nil || len(decoded) == 0 || len(decoded) > 256*1024 {
+		err != nil || len(decoded) == 0 || len(decoded) > 256*1024 {
 		pending.voicePartsBad = true
-		log.Printf("[MessageRouter] rejected invalid voice part request_id=%s index=%d total=%d", requestID, frame.Index, frame.Total)
 		return
 	}
 	if pending.voicePartsTotal != 0 && pending.voicePartsTotal != frame.Total {
 		pending.voicePartsBad = true
-		log.Printf("[MessageRouter] rejected inconsistent voice total request_id=%s got=%d want=%d", requestID, frame.Total, pending.voicePartsTotal)
-		return
-	}
-	_, duplicate := pending.voiceParts[frame.Index]
-	if !duplicate && pending.voicePartsBytes+len(decoded) > 64*1024*1024 {
-		pending.voicePartsBad = true
-		log.Printf("[MessageRouter] rejected oversized aggregate voice stream request_id=%s bytes>%d", requestID, 64*1024*1024)
 		return
 	}
 	if pending.voiceParts == nil {
@@ -1109,24 +1084,21 @@ func (r *MessageRouter) HandleAgentVoicePart(requestID string, frame AgentVoiceP
 		pending.voicePartsTotal = frame.Total
 	}
 	if previous, duplicate := pending.voiceParts[frame.Index]; duplicate {
-		if previous.Data != frame.Part.Data || previous.FileName != frame.Part.FileName || previous.MimeType != frame.Part.MimeType {
+		if previous != frame.Part {
 			pending.voicePartsBad = true
-			log.Printf("[MessageRouter] rejected conflicting duplicate voice part request_id=%s index=%d", requestID, frame.Index)
 		}
+		return
+	}
+	if pending.voicePartsBytes+len(decoded) > 64*1024*1024 {
+		pending.voicePartsBad = true
 		return
 	}
 	pending.voiceParts[frame.Index] = frame.Part
 	pending.voicePartsBytes += len(decoded)
-	// A long response may start streaming near the normal agent deadline. Wake
-	// the existing progress path so its live timer is reset, not just the
-	// background cleanup timestamp.
-	if pending.ProgressCh != nil {
-		select {
-		case pending.ProgressCh <- progressHeartbeat:
-		default:
-		}
+	select {
+	case pending.ProgressCh <- progressHeartbeat:
+	default:
 	}
-	log.Printf("[MessageRouter] buffered voice part request_id=%s part=%d/%d base64_bytes=%d", requestID, frame.Index+1, frame.Total, len(frame.Part.Data))
 }
 
 // HandleAgentProgress is called when the Hub receives an "im.agent_progress"

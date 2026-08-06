@@ -14,9 +14,11 @@ const FetchProviderModelsMock = vi.fn();
 const CreateMobileLLMDesktopQRSessionMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const BrowserOpenURLMock = vi.fn();
+const EventsOnMock = vi.fn();
+let xaiOAuthEventHandler: ((payload: Record<string, unknown>) => unknown) | undefined;
 const StartOpenAIOAuthMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
-const CancelXAIOAuthMock = vi.fn();
+const CancelXAIOAuthURLMock = vi.fn();
 const GetMoAConfigMock = vi.fn();
 const SaveMoAConfigMock = vi.fn();
 
@@ -34,7 +36,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetSubAgentConcurrency: vi.fn(),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
-    CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
+    CancelXAIOAuthURL: (...args: unknown[]) => CancelXAIOAuthURLMock(...args),
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
     FetchCodeGenModels: vi.fn(),
@@ -48,9 +50,16 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
-    EventsOn: vi.fn(() => vi.fn()),
+    EventsOn: (...args: unknown[]) => {
+        EventsOnMock(...args);
+        if (args[0] === 'xai-oauth-complete' && typeof args[1] === 'function') {
+            xaiOAuthEventHandler = args[1] as (payload: Record<string, unknown>) => unknown;
+        }
+        return vi.fn();
+    },
     EventsOff: vi.fn(),
     BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
+    ClipboardSetText: vi.fn(),
 }));
 
 vi.mock('../../providerLogos', () => ({ PROVIDER_LOGOS: {} }));
@@ -70,6 +79,7 @@ import { hubOfficialStatus } from '../LLMConfigPanelShared';
 describe('LLMConfigPanel test-and-save flow', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        xaiOAuthEventHandler = undefined;
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
                 { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
@@ -532,7 +542,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             ],
             current: 'xAI-Grok',
         });
-        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth logged in');
+        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
@@ -815,7 +825,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
             ],
             current: 'xAI-Grok',
         });
-        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth logged in');
+        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
@@ -826,10 +836,100 @@ describe('LLMConfigPanel test-and-save flow', () => {
             expect(StartXAIOAuthMock).toHaveBeenCalledTimes(1);
         });
         expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
+        expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://auth.x.ai/authorize?state=test');
     });
 
-    it('cancels an in-progress xAI OAuth flow through its dedicated binding', async () => {
-        StartXAIOAuthMock.mockImplementation(() => new Promise<string>(() => {}));
+    it('keeps the xAI OAuth recovery controls available when opening the browser fails', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+            current: 'xAI-Grok',
+        });
+        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
+        BrowserOpenURLMock.mockImplementation(() => { throw new Error('browser bridge unavailable'); });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
+
+        expect((await screen.findByRole('alert')).textContent).toMatch(/Couldn't open the browser automatically/);
+        expect(screen.getByRole('button', { name: 'Open browser again' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Copy sign-in link' })).toBeTruthy();
+    });
+
+    it('ignores a completion event from a superseded xAI OAuth session', async () => {
+        const onStatusChange = vi.fn();
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+            current: 'xAI-Grok',
+        });
+        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=current');
+
+        render(<LLMConfigPanel lang="en" onStatusChange={onStatusChange} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
+        await waitFor(() => expect(xaiOAuthEventHandler).toBeTypeOf('function'));
+
+        await act(async () => {
+            await xaiOAuthEventHandler?.({ ok: true, authorization_url: 'https://auth.x.ai/authorize?state=stale' });
+        });
+        expect(screen.getByRole('button', { name: 'Cancel OAuth login' })).toBeTruthy();
+        expect(onStatusChange).not.toHaveBeenCalled();
+
+        await act(async () => {
+            await xaiOAuthEventHandler?.({ ok: true, authorization_url: 'https://auth.x.ai/authorize?state=current' });
+        });
+        await waitFor(() => expect(onStatusChange).toHaveBeenCalledWith(true, true));
+    });
+
+    it('does not offer Codex CLI import after xAI OAuth fails', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+            current: 'xAI-Grok',
+        });
+        StartXAIOAuthMock.mockRejectedValue(new Error('xAI OAuth failed'));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
+
+        expect((await screen.findByRole('alert')).textContent).toMatch(/Connection failed, not saved/);
+        expect(screen.queryByRole('button', { name: /Import from Codex CLI/i })).toBeNull();
+    });
+
+    it('cancels only its own in-progress xAI OAuth flow through the dedicated binding', async () => {
+        const authorizationURL = 'https://auth.x.ai/authorize?state=owned-by-panel';
+        StartXAIOAuthMock.mockResolvedValue(authorizationURL);
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+            current: 'xAI-Grok',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
+        await waitFor(() => expect(BrowserOpenURLMock).toHaveBeenCalledWith(authorizationURL));
+        fireEvent.click(await screen.findByRole('button', { name: 'Cancel OAuth login' }));
+
+        expect(CancelXAIOAuthURLMock).toHaveBeenCalledWith(authorizationURL);
+    });
+
+    it('ignores an xAI authorization URL that resolves after the user cancels', async () => {
+        let resolveAuthorizationURL: ((value: string) => void) | undefined;
+        StartXAIOAuthMock.mockImplementation(() => new Promise<string>((resolve) => {
+            resolveAuthorizationURL = resolve;
+        }));
         GetMaclawLLMProvidersMock.mockResolvedValue({
             providers: [
                 { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
@@ -842,8 +942,10 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Cancel OAuth login' }));
+        await act(async () => resolveAuthorizationURL?.('https://auth.x.ai/authorize?state=late'));
 
-        expect(CancelXAIOAuthMock).toHaveBeenCalledTimes(1);
+        expect(BrowserOpenURLMock).not.toHaveBeenCalledWith('https://auth.x.ai/authorize?state=late');
+        expect(CancelXAIOAuthURLMock).not.toHaveBeenCalled();
     });
 
     it('does not save an unsigned xAI OAuth provider', async () => {

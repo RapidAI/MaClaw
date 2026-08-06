@@ -224,6 +224,66 @@ func TestTaskDispatcher_PerTenantIsolation(t *testing.T) {
 	close(release)
 }
 
+func TestTaskDispatcher_HardwareDispatchKeysAreIndependentAndFIFO(t *testing.T) {
+	started := make(chan string, 3)
+	release := make(chan struct{})
+	completed := make(chan string, 3)
+
+	d := NewIMTaskDispatcher(3,
+		func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
+			started <- task.Text
+			<-release
+			completed <- task.Text
+			return &GenericResponse{StatusCode: 200, Body: task.Text}, nil
+		},
+		func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse) {
+		},
+	)
+	defer d.Shutdown()
+
+	// Same owner, distinct ESP32 lanes: a1 and b2 may execute together.
+	d.Enqueue(&IMTask{TenantID: "tenant-a", UserID: "owner", DispatchKey: "hardware:a1", Text: "a1-first"})
+	d.Enqueue(&IMTask{TenantID: "tenant-a", UserID: "owner", DispatchKey: "hardware:a1", Text: "a1-second"})
+	d.Enqueue(&IMTask{TenantID: "tenant-a", UserID: "owner", DispatchKey: "hardware:b2", Text: "b2-first"})
+
+	seen := map[string]bool{}
+	deadline := time.After(time.Second)
+	for len(seen) < 2 {
+		select {
+		case text := <-started:
+			seen[text] = true
+		case <-deadline:
+			t.Fatalf("expected independent lanes to start a1-first and b2-first, got %#v", seen)
+		}
+	}
+	if !seen["a1-first"] || !seen["b2-first"] || seen["a1-second"] {
+		t.Fatalf("unexpected first tasks for hardware lanes: %#v", seen)
+	}
+
+	close(release)
+	order := make([]string, 0, 3)
+	for len(order) < 3 {
+		select {
+		case text := <-completed:
+			order = append(order, text)
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for queued hardware tasks; completed=%v", order)
+		}
+	}
+	firstA, secondA := -1, -1
+	for i, text := range order {
+		if text == "a1-first" {
+			firstA = i
+		}
+		if text == "a1-second" {
+			secondA = i
+		}
+	}
+	if firstA == -1 || secondA == -1 || firstA >= secondA {
+		t.Fatalf("same hardware lane did not stay FIFO: %v", order)
+	}
+}
+
 func TestTaskDispatcher_Stats(t *testing.T) {
 	executor := func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
 		time.Sleep(100 * time.Millisecond)

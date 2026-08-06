@@ -230,6 +230,10 @@ export function CancelXAIOAuth() {
   return window['go']['main']['App']['CancelXAIOAuth']();
 }
 
+export function CancelXAIOAuthURL(arg1) {
+  return window['go']['main']['App']['CancelXAIOAuthURL'](arg1);
+}
+
 export function CaptureRemoteScreenshot(arg1) {
   return window['go']['main']['App']['CaptureRemoteScreenshot'](arg1);
 }
@@ -1530,6 +1534,10 @@ export function ListThirdPartyHardwareDevices() {
   return window['go']['main']['App']['ListThirdPartyHardwareDevices']();
 }
 
+export function ListThirdPartyHardwareDeviceBindings() {
+  return window['go']['main']['App']['ListThirdPartyHardwareDeviceBindings']();
+}
+
 export function DeleteThirdPartyHardwareDevice(arg1) {
   return window['go']['main']['App']['DeleteThirdPartyHardwareDevice'](arg1);
 }
@@ -1550,8 +1558,8 @@ export function GetHardwareWelcomeAudioDataURL() {
   return window['go']['main']['App']['GetHardwareWelcomeAudioDataURL']();
 }
 
-export function SendHardwareWelcomeAudioRemote() {
-  return window['go']['main']['App']['SendHardwareWelcomeAudioRemote']();
+export function SendHardwareWelcomeAudioRemote(arg1) {
+	return window['go']['main']['App']['SendHardwareWelcomeAudioRemote'](arg1);
 }
 
 export function ResetHardwareWelcomeAudio() {
@@ -1568,6 +1576,18 @@ export function SyncHardwareWelcome() {
 
 export function SendHardwareVolume(arg1) {
   return window['go']['main']['App']['SendHardwareVolume'](arg1);
+}
+
+export function SendHardwareDeviceVolume(arg1, arg2) {
+  return window['go']['main']['App']['SendHardwareDeviceVolume'](arg1, arg2);
+}
+
+export function SendHardwareDevicePetProfile(arg1, arg2) {
+  return window['go']['main']['App']['SendHardwareDevicePetProfile'](arg1, arg2);
+}
+
+export function SetHardwareAllowCustomPets(arg1) {
+  return window['go']['main']['App']['SetHardwareAllowCustomPets'](arg1);
 }
 
 export function GetToolCacheStatus() {

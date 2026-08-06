@@ -76,7 +76,7 @@ func encodeManualChunking(enc *Encoder, data []int16) ([]byte, error) {
 			copy(padded, chunk)
 			chunk = padded
 		}
-		frame, written := enc.encodeBufferInterleaved(&chunk[0])
+		frame, written := enc.encodeBufferInterleaved(chunk)
 		if err := binary.Write(&out, binary.LittleEndian, frame[:written]); err != nil {
 			return nil, err
 		}
@@ -105,7 +105,7 @@ func TestWriteProducesContiguousFrameStream(t *testing.T) {
 				if enc == nil {
 					t.Fatalf("NewEncoder(%d, %d) = nil", sampleRate, channels)
 				}
-				data := testPCMInput(sampleRate/2 * channels) // ~0.5 s
+				data := testPCMInput(sampleRate / 2 * channels) // ~0.5 s
 				var out bytes.Buffer
 				if err := enc.Write(&out, data); err != nil {
 					t.Fatalf("Write: %v", err)
@@ -154,11 +154,11 @@ func TestNewEncoderSelectsRepresentableBitrate(t *testing.T) {
 	for _, tc := range []struct {
 		sampleRate, channels, wantBitrate int
 	}{
-		{16000, 1, 112},  // 128k would need 4504 bits/granule (> 4095)
-		{16000, 2, 128},  // stereo splits the budget across channels
-		{44100, 2, 128},  // MPEG-I: two granules per frame
-		{8000, 1, 56},    // MPEG-2.5 mono: 64k already overflows
-		{11025, 1, 64},   // 80k overflows: (835*8-104)/1 = 6576 > 4095... 64k fits
+		{16000, 1, 112}, // 128k would need 4504 bits/granule (> 4095)
+		{16000, 2, 128}, // stereo splits the budget across channels
+		{44100, 2, 128}, // MPEG-I: two granules per frame
+		{8000, 1, 56},   // MPEG-2.5 mono: 64k already overflows
+		{11025, 1, 64},  // 80k overflows: (835*8-104)/1 = 6576 > 4095... 64k fits
 	} {
 		enc := NewEncoder(tc.sampleRate, tc.channels)
 		if enc == nil {
@@ -179,8 +179,8 @@ func walkMP3FrameStream(t *testing.T, mp3 []byte, wantSampleRate, wantBitrate in
 	mpeg1Bitrates := [16]int{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0}
 	lsfBitrates := [16]int{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0}
 	sampleRatesByVersion := [4][3]int{
-		{11025, 12000, 8000}, // MPEG-2.5
-		{},                   // reserved
+		{11025, 12000, 8000},  // MPEG-2.5
+		{},                    // reserved
 		{22050, 24000, 16000}, // MPEG-II
 		{44100, 48000, 32000}, // MPEG-I
 	}

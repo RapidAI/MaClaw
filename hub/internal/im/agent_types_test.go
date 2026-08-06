@@ -25,6 +25,13 @@ func TestAgentResponseToGenericResponseHidesLLMTelemetry(t *testing.T) {
 	}
 }
 
+func TestAgentResponseCarriesDeferredVoiceCount(t *testing.T) {
+	response := (&AgentResponse{Text: "完整结果", PendingVoiceParts: 3}).ToGenericResponse()
+	if response.PendingVoiceParts != 3 {
+		t.Fatalf("pending voice parts=%d, want 3", response.PendingVoiceParts)
+	}
+}
+
 func TestFilterOutInternalLLMTelemetryFieldsMatchesLabelsCaseInsensitively(t *testing.T) {
 	fields := filterOutInternalLLMTelemetryFields([]ResponseField{
 		{Label: " ROUTE SOURCE ", Value: "primary"},

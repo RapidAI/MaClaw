@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/gorilla/websocket"
 )
 
@@ -58,6 +62,31 @@ func TestRemoteHubClientListsAndDeletesHardwareBindings(t *testing.T) {
 	_ = client.conn.Close()
 	client.conn = nil
 	client.mu.Unlock()
+}
+
+func TestRemoteHubClientConnectionLossStopsHardwareAgents(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	// Inject a bare isolated registry so this lifecycle test does not start the
+	// App-wide background memory services that production configuration wires.
+	registry := newHardwareAgentRuntimeRegistry(app, nil, nil)
+	client := &RemoteHubClient{app: app, hardwareAgents: registry}
+	handler, err := registry.handler("pet-alpha")
+	if err != nil {
+		t.Fatalf("create hardware runtime: %v", err)
+	}
+	loop := NewLoopContext("active hardware task", 1, nil)
+	handler.setSessionLoopCtx("thirdparty:pet-alpha:default", loop)
+
+	client.handleConnectionLoss(errors.New("test connection loss"))
+	if !loop.IsCancelled() {
+		t.Fatal("connection loss did not cancel the hardware runtime loop")
+	}
+	client.imHandlerMu.Lock()
+	runtimes := client.hardwareAgents
+	client.imHandlerMu.Unlock()
+	if runtimes != nil {
+		t.Fatal("connection loss retained hardware runtime registry")
+	}
 }
 
 func TestRemoteHubClientHardwareRequestsPropagateCorrelatedErrors(t *testing.T) {
@@ -473,11 +502,15 @@ func TestRemoteHubClientHardwareReplyWaitsForMatchingAck(t *testing.T) {
 				_ = conn.WriteJSON(map[string]any{"type": "ack", "request_id": msg["request_id"], "payload": map[string]any{"ok": true}})
 			case "im.device_gateway_reply":
 				requestID, _ := msg["request_id"].(string)
-				if !strings.HasPrefix(requestID, "device-hardware-") {
+				if !strings.HasPrefix(requestID, "device-hardware-") || strings.HasPrefix(requestID, "device-hardware-state-") {
 					_ = conn.WriteJSON(map[string]any{"type": "ack", "request_id": requestID, "payload": map[string]any{"ok": true}})
 					continue
 				}
 				payload, _ := msg["payload"].(map[string]any)
+				if payload["clientId"] != "pet-preview" {
+					t.Errorf("hardware preview clientId=%#v, want %q", payload["clientId"], "pet-preview")
+					return
+				}
 				reply, _ := payload["reply"].(map[string]any)
 				extra, _ := reply["extra"].(map[string]any)
 				if extra["hardware_audio_preview"] != true || extra["hardware_audio_preview_request_id"] != requestID {
@@ -507,7 +540,7 @@ func TestRemoteHubClientHardwareReplyWaitsForMatchingAck(t *testing.T) {
 	defer func() { _ = client.Disconnect() }()
 	result := make(chan error, 1)
 	go func() {
-		result <- client.SendDeviceGatewayHardwareReplyConfirmed(map[string]any{"reply_type": "audio", "file_data": "d2F2"})
+		result <- client.SendDeviceGatewayHardwareReplyConfirmed("pet-preview", map[string]any{"reply_type": "audio", "file_data": "d2F2"})
 	}()
 	select {
 	case <-ackSeen:
@@ -967,6 +1000,109 @@ func TestSendDeviceGatewayTextReplyMarksTerminalTurn(t *testing.T) {
 	}
 	if metadata["acp_turn"] != "final" {
 		t.Fatalf("terminal metadata=%#v", metadata)
+	}
+}
+
+func TestSendDeviceGatewaySpeechEndPreservesControlType(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	messageCh := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var message map[string]any
+		if conn.ReadJSON(&message) == nil {
+			messageCh <- message
+		}
+	}))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client := &RemoteHubClient{conn: conn, connected: true, machineID: "gui-a"}
+	if err := client.sendDeviceSpeechEnd("pet-a", "default", "mc_in_1", 3, 1); err != nil {
+		t.Fatal(err)
+	}
+	message := <-messageCh
+	payload, _ := message["payload"].(map[string]any)
+	reply, _ := payload["reply"].(map[string]any)
+	if reply["reply_type"] != "speech_end" || reply["type"] != "speech_end" || reply["replyTo"] != "mc_in_1" {
+		t.Fatalf("speech_end payload=%#v", reply)
+	}
+}
+
+func TestPrepareHubDeviceSpeechArmsResultBeforeSynthesis(t *testing.T) {
+	localMode := false
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{
+		ThirdPartyGatewayLocalMode: &localMode, TTSEnabled: true,
+	}, ttsManager: &tts.Manager{}}
+	app.thirdPartyGateway = newThirdPartyGatewayManager(app)
+	app.thirdPartyGateway.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
+		Audio: &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/mpeg"}, Playback: true, DeliveryModes: []string{"inline"}, MaxInlineBytes: 512 << 10},
+	}})
+	client := NewRemoteHubClient(app, nil)
+	message := IMUserMessage{Platform: "thirdparty:pet", ClientToolContext: &agent.ClientToolContext{
+		ClientID: "pet", ConversationID: "default", ReplyToMessageID: "mc_in_1",
+	}}
+	resp := &IMAgentResponse{Text: "这是完整结果，应先显示结果页面，再开始语音合成。"}
+	armed := client.prepareHubDeviceSpeech(message, "im-request", resp)
+	if !armed || resp.PendingVoiceParts <= 0 || len(resp.VoiceParts) != 0 {
+		t.Fatalf("deferred hub speech not armed: armed=%t response=%#v", armed, resp)
+	}
+	turnKey := "pet\x00default"
+	client.hubSpeechMu.Lock()
+	turn := client.hubSpeechTurns[turnKey]
+	startedBeforeResult := turn != nil && turn.started
+	client.hubSpeechMu.Unlock()
+	if startedBeforeResult {
+		t.Fatal("hub speech started before the terminal result crossed the device reply queue")
+	}
+	client.cancelAllHubDeviceSpeech()
+}
+
+func TestPrepareHubDeviceSpeechUsesAttachedAudioInsteadOfSyntheticTTS(t *testing.T) {
+	localMode := false
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{
+		ThirdPartyGatewayLocalMode: &localMode, TTSEnabled: true,
+	}, ttsManager: &tts.Manager{}}
+	app.thirdPartyGateway = newThirdPartyGatewayManager(app)
+	app.thirdPartyGateway.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
+		Audio: &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/mpeg"}, Playback: true, DeliveryModes: []string{"inline"}, MaxInlineBytes: 512 << 10},
+	}})
+	client := NewRemoteHubClient(app, nil)
+	message := IMUserMessage{Platform: "thirdparty:pet", ClientToolContext: &agent.ClientToolContext{
+		ClientID: "pet", ConversationID: "default", ReplyToMessageID: "mc_in_audio",
+	}}
+	resp := &IMAgentResponse{
+		Text: "音频结果说明", FileData: base64.StdEncoding.EncodeToString([]byte("mp3")),
+		FileName: "answer.mp3", FileMimeType: "audio/mpeg",
+	}
+	if client.prepareHubDeviceSpeech(message, "im-request", resp) {
+		t.Fatal("attached audio incorrectly armed a duplicate synthetic TTS turn")
+	}
+	if resp.PendingVoiceParts != 0 || len(client.hubSpeechTurns) != 0 {
+		t.Fatalf("duplicate speech state: pending=%d turns=%d", resp.PendingVoiceParts, len(client.hubSpeechTurns))
+	}
+}
+
+func TestStartHubDeviceSpeechRejectsMismatchedResult(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &RemoteHubClient{hubSpeechTurns: map[string]*hubDeviceSpeechTurn{
+		"pet\x00default": {ctx: ctx, cancel: cancel, replyTo: "mc_in_1", parts: []string{"结果"}, expected: 1},
+	}}
+	client.startHubDeviceSpeechAfterResult("pet", "default", "another-turn")
+	client.hubSpeechMu.Lock()
+	started := client.hubSpeechTurns["pet\x00default"].started
+	client.hubSpeechMu.Unlock()
+	if started {
+		t.Fatal("mismatched terminal result started a stale speech turn")
 	}
 }
 

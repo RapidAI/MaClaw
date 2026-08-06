@@ -6,6 +6,9 @@
 #include <string.h>
 
 #include "driver/gpio.h"
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+#include "esp_adc/adc_oneshot.h"
+#endif
 #include "driver/i2s_std.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
@@ -13,14 +16,75 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+#include "esp_lcd_nv3023.h"
+#endif
 #include "esp_log.h"
+#include "esp_mn_models.h"
+#include "esp_mn_speech_commands.h"
 #include "nvs.h"
 #include "esp_timer.h"
+#include "model_path.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #define LCD_HOST SPI3_HOST
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+// 无名星智 0.85-inch single-key ML307 variant. These are taken from its
+// original board source; in particular GPIO11/12 stay exclusively for ML307.
+#define LCD_WIDTH 240
+#define LCD_HEIGHT 240
+#define LCD_Y_OFFSET 80
+#define LCD_MOSI GPIO_NUM_10
+#define LCD_CLK GPIO_NUM_9
+#define LCD_DC GPIO_NUM_8
+#define LCD_RST GPIO_NUM_18
+#define LCD_CS GPIO_NUM_14
+#define LCD_BACKLIGHT GPIO_NUM_13
+#define BUTTON_ACTIVATE GPIO_NUM_0
+#define FANGTANG_CHARGE_STATUS_GPIO ((gpio_num_t)CONFIG_MACLAW_FANGTANG_CHARGE_STATUS_GPIO)
+#define MIC_WS GPIO_NUM_4
+#define MIC_BCLK GPIO_NUM_5
+#define MIC_DIN GPIO_NUM_6
+#define SPK_DOUT GPIO_NUM_7
+#define SPK_BCLK GPIO_NUM_15
+#define SPK_WS GPIO_NUM_16
+
+/* The stock firmware configures this NV3023 with COLMOD=0x65, while its
+ * registered panel format and every draw buffer remain 16-bit RGB565. The
+ * assembled Fangtang panel additionally needs RGB MADCTL order, INVON and an
+ * explicit IDMOFF to render the full RGB565 range with natural polarity. */
+static const nv3023_lcd_init_cmd_t s_fangtang_nv3023_init_cmds[] = {
+    {0xff, (const uint8_t[]){0xa5}, 1, 0}, {0x3e, (const uint8_t[]){0x09}, 1, 0},
+    {0x3a, (const uint8_t[]){0x65}, 1, 0}, {0x82, (const uint8_t[]){0x00}, 1, 0},
+    {0x98, (const uint8_t[]){0x00}, 1, 0}, {0x63, (const uint8_t[]){0x0f}, 1, 0},
+    {0x64, (const uint8_t[]){0x0f}, 1, 0}, {0xb4, (const uint8_t[]){0x34}, 1, 0},
+    {0xb5, (const uint8_t[]){0x30}, 1, 0}, {0x83, (const uint8_t[]){0x03}, 1, 0},
+    {0x86, (const uint8_t[]){0x04}, 1, 0}, {0x87, (const uint8_t[]){0x16}, 1, 0},
+    {0x88, (const uint8_t[]){0x0a}, 1, 0}, {0x89, (const uint8_t[]){0x27}, 1, 0},
+    {0x93, (const uint8_t[]){0x63}, 1, 0}, {0x96, (const uint8_t[]){0x81}, 1, 0},
+    {0xc3, (const uint8_t[]){0x10}, 1, 0}, {0xe6, (const uint8_t[]){0x00}, 1, 0},
+    {0x99, (const uint8_t[]){0x01}, 1, 0}, {0x70, (const uint8_t[]){0x09}, 1, 0},
+    {0x71, (const uint8_t[]){0x1d}, 1, 0}, {0x72, (const uint8_t[]){0x14}, 1, 0},
+    {0x73, (const uint8_t[]){0x0a}, 1, 0}, {0x74, (const uint8_t[]){0x11}, 1, 0},
+    {0x75, (const uint8_t[]){0x16}, 1, 0}, {0x76, (const uint8_t[]){0x38}, 1, 0},
+    {0x77, (const uint8_t[]){0x0b}, 1, 0}, {0x78, (const uint8_t[]){0x08}, 1, 0},
+    {0x79, (const uint8_t[]){0x3e}, 1, 0}, {0x7a, (const uint8_t[]){0x07}, 1, 0},
+    {0x7b, (const uint8_t[]){0x0d}, 1, 0}, {0x7c, (const uint8_t[]){0x16}, 1, 0},
+    {0x7d, (const uint8_t[]){0x0f}, 1, 0}, {0x7e, (const uint8_t[]){0x14}, 1, 0},
+    {0x7f, (const uint8_t[]){0x05}, 1, 0}, {0xa0, (const uint8_t[]){0x04}, 1, 0},
+    {0xa1, (const uint8_t[]){0x28}, 1, 0}, {0xa2, (const uint8_t[]){0x0c}, 1, 0},
+    {0xa3, (const uint8_t[]){0x11}, 1, 0}, {0xa4, (const uint8_t[]){0x0b}, 1, 0},
+    {0xa5, (const uint8_t[]){0x23}, 1, 0}, {0xa6, (const uint8_t[]){0x45}, 1, 0},
+    {0xa7, (const uint8_t[]){0x07}, 1, 0}, {0xa8, (const uint8_t[]){0x0a}, 1, 0},
+    {0xa9, (const uint8_t[]){0x3b}, 1, 0}, {0xaa, (const uint8_t[]){0x0d}, 1, 0},
+    {0xab, (const uint8_t[]){0x18}, 1, 0}, {0xac, (const uint8_t[]){0x14}, 1, 0},
+    {0xad, (const uint8_t[]){0x0f}, 1, 0}, {0xae, (const uint8_t[]){0x19}, 1, 0},
+    {0xaf, (const uint8_t[]){0x08}, 1, 0}, {0xff, (const uint8_t[]){0x00}, 1, 0},
+    {0x11, NULL, 0, 120}, {0x29, NULL, 0, 10},
+};
+#else
 #define LCD_WIDTH 240
 #define LCD_HEIGHT 320
 /* This assembled S3 unit uses a 240x320 ST7789 panel. The S3 carrier routes
@@ -36,20 +100,80 @@
 #define BUTTON_BOOT GPIO_NUM_0
 #define BUTTON_ACTIVATE GPIO_NUM_0
 #define BUTTON_VOLUME_UP GPIO_NUM_38
+// Factory images name GPIO39 as the second user key. GPIO37 is reserved by
+// the octal-PSRAM interface and must not be repurposed as an input.
 #define BUTTON_VOLUME_DOWN GPIO_NUM_39
-// Some 1.54-inch Bread Compact assemblies route the second side key using
-// the Zhengchen carrier mapping instead of the generic expansion header.
-#define BUTTON_VOLUME_DOWN_ALT GPIO_NUM_10
 #define MIC_WS GPIO_NUM_4
 #define MIC_BCLK GPIO_NUM_5
 #define MIC_DIN GPIO_NUM_6
 #define SPK_DOUT GPIO_NUM_7
 #define SPK_BCLK GPIO_NUM_15
 #define SPK_WS GPIO_NUM_16
+#endif
 #define AUDIO_RATE 16000
-#define AUDIO_SECONDS 6
+// A command should finish at a natural pause rather than after a fixed window.
+// Keep an upper bound so a noisy microphone cannot retain the command buffer
+// indefinitely. Thirty seconds remains below 1 MiB for 16 kHz PCM, while
+// allowing multi-step commands. Levels are normalized 0..1000 by read_mono.
+#define COMMAND_CAPTURE_MAX_SECONDS 30
+#define COMMAND_CAPTURE_START_TIMEOUT_MS 6000
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+// The Fangtang's compact single microphone has occasional one-frame spikes.
+// Require a little more sustained energy before accepting speech, and give a
+// spoken multi-step command a longer natural pause before finalising it.  The
+// Fangtang's MEMS microphone can produce isolated high-amplitude samples even
+// in a quiet room. Command completion therefore uses mean signal energy plus
+// an adaptive idle floor, rather than the peak level used to recognise speech
+// onset.
+#define COMMAND_CAPTURE_SILENCE_MS 1500
+#define COMMAND_CAPTURE_START_CONFIRM_MS 160
+#define COMMAND_CAPTURE_START_LEVEL 75
+#define COMMAND_CAPTURE_SILENCE_FLOOR 55
+#define COMMAND_CAPTURE_SILENCE_MARGIN 35
+#define COMMAND_CAPTURE_SILENCE_CEILING 180
+#else
+#define COMMAND_CAPTURE_SILENCE_MS 1200
+#define COMMAND_CAPTURE_START_CONFIRM_MS 80
+#define COMMAND_CAPTURE_START_LEVEL 55
+#define COMMAND_CAPTURE_SILENCE_FLOOR 20
+#define COMMAND_CAPTURE_SILENCE_MARGIN 15
+#define COMMAND_CAPTURE_SILENCE_CEILING 90
+#endif
+#define COMMAND_CAPTURE_PREROLL_MS 300
+#define WAKE_WORD_COMMAND_ID 1
+#define WAKE_WORD_LABEL "ma ka long"
+// Spaces delimit MultiNet pinyin tokens; callers do not need to pause between
+// them. Natural connected speech can voice the middle consonant or reduce its
+// vowel, so register those common acoustic paths under the same wake command.
+static const char *const s_wake_word_phonetics[] = {
+    "ma ka long",
+    "ma ga long",
+    "ma ke long",
+};
+#define WAKE_WORD_DETECTION_THRESHOLD 0.24f
+#define WAKE_WORD_COOLDOWN_US (2LL * 1000 * 1000)
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+/* The real panel exposes a 240x240 viewport at GRAM rows 80..319. One-row
+ * transfers exactly match the independently verified display test. */
+#define LCD_STRIPE_ROWS 1
+#else
 #define LCD_STRIPE_ROWS 16
+#endif
 #define THINKING_MOUTH_FRAME_MS 420
+#define REMOTE_PET_RENDER_FRAME_MS 80
+#define REMOTE_PET_DEFAULT_KEYFRAME_MS 450
+#define AMBIENT_WEATHER_TEXT_Y 66
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+// Fangtang has only two compact status rows. Give the selected pet every row
+// below them on the 240x240 viewport; a square 256px source becomes 178x178.
+#define AMBIENT_PET_TOP 62
+#define AMBIENT_PET_MAX_WIDTH 220
+#else
+#define AMBIENT_PET_TOP 94
+#define AMBIENT_PET_MAX_WIDTH 224
+#endif
+#define AMBIENT_PET_MAX_HEIGHT (LCD_HEIGHT - AMBIENT_PET_TOP)
+#define AMBIENT_NATIVE_PET_SCALE 93
 #define LCD_FRAME_PIXELS ((size_t)LCD_WIDTH * LCD_HEIGHT)
 #define LCD_FRAME_BYTES (LCD_FRAME_PIXELS * sizeof(uint16_t))
 
@@ -58,7 +182,22 @@ static board_port_button_cb_t s_button_cb;
 static void *s_button_arg;
 static board_port_wake_word_cb_t s_wake_cb;
 static void *s_wake_arg;
+static TaskHandle_t s_wake_task;
+static volatile bool s_wake_task_starting;
+static volatile bool s_wake_ready;
+static volatile bool s_wake_stop_requested;
+static portMUX_TYPE s_wake_lock = portMUX_INITIALIZER_UNLOCKED;
 static esp_lcd_panel_handle_t s_panel;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static esp_lcd_panel_io_handle_t s_panel_io;
+static volatile bool s_boot_network_window_active;
+static volatile bool s_boot_network_toggle_requested;
+static adc_oneshot_unit_handle_t s_battery_adc;
+static unsigned s_battery_level;
+static bool s_battery_level_valid;
+static bool s_battery_charging;
+static portMUX_TYPE s_power_status_lock = portMUX_INITIALIZER_UNLOCKED;
+#endif
 static i2s_chan_handle_t s_rx;
 static i2s_chan_handle_t s_tx;
 static SemaphoreHandle_t s_audio_mutex;
@@ -69,20 +208,37 @@ static uint16_t *s_render_target;
 static uint16_t *s_present_staging;
 static unsigned s_front_frame;
 static bool s_front_frame_valid;
+static bool s_direct_draw_warning_logged;
 static bool s_audio_ready;
-static bool s_speaker_enabled;
+static TaskHandle_t s_audio_playback_owner;
 static bool s_audio_stream_owned;
 static unsigned s_thinking_mouth_frame;
 static bool s_thinking_surface_visible;
 static bool s_recording_mode;
 static bool s_recording_active;
+static volatile bool s_command_capture_active;
+static volatile bool s_command_capture_stop_requested;
 static bool s_foreground_surface;
+static bool s_alarm_visual_active;
 static bool s_recording_paused;
 static uint32_t s_recording_elapsed;
 static uint16_t s_recording_levels[24];
 static uint16_t s_recording_smoothed_level;
-static bool s_wake_paused;
+static volatile bool s_wake_paused;
+static volatile bool s_wake_pause_acknowledged;
 static char s_state[16] = "idle";
+static char s_command_stage[32] = "正在处理";
+static char s_pet_skin[32] = "clawmate";
+#define REMOTE_PET_MAX_FRAMES 8
+static uint8_t *s_remote_pet_frames[REMOTE_PET_MAX_FRAMES];
+static size_t s_remote_pet_frame_count, s_remote_pet_width, s_remote_pet_height;
+static uint32_t s_remote_pet_frame_ms = REMOTE_PET_DEFAULT_KEYFRAME_MS;
+static uint64_t s_remote_pet_animation_elapsed_ms;
+static TaskHandle_t s_remote_pet_animation_task;
+static TaskHandle_t s_thinking_mouth_task;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static int64_t s_fangtang_thinking_next_frame_us;
+#endif
 static char s_wifi_ssid[33];
 static char s_ambient_time[16];
 static char s_ambient_location[24];
@@ -92,14 +248,39 @@ static char s_ambient_weather[32];
 static int s_ambient_temperature;
 static bool s_ambient_weather_valid;
 static bool s_ambient_weather_stale;
+static bool s_alarm_scheduled;
 static bool s_wifi_connected;
 static bool s_gateway_ready;
+static bool s_network_transport_cellular;
 static unsigned s_output_volume = 70;
 
 #define RESPONSE_TEXT_CAPACITY 2048
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+#define RESPONSE_LINES_PER_PAGE 5
+#define RESPONSE_TEXT_X 12
+#define RESPONSE_TEXT_Y 54
+#define RESPONSE_LINE_HEIGHT 30
+#define RESPONSE_FOOTER_Y 208
+#define RESPONSE_AUTO_PAGE_INTERVAL_US (6LL * 1000 * 1000)
+#define FANGTANG_HEADER_H 46
+#define FANGTANG_SUGAR_WIDTH 188
+#define FANGTANG_SUGAR_HEIGHT 164
+#else
 #define RESPONSE_LINES_PER_PAGE 6
+#define RESPONSE_TEXT_X 16
+#define RESPONSE_TEXT_Y 78
+#define RESPONSE_LINE_HEIGHT 32
+#define RESPONSE_FOOTER_Y 276
+#endif
+#define RESPONSE_TEXT_WIDTH (LCD_WIDTH - RESPONSE_TEXT_X * 2)
 static bool s_response_active;
+// Image pixels are not retained after the synchronous present. Track the
+// surface kind so page buttons cannot replace it with stale text state.
+static bool s_response_image_active;
 static unsigned s_response_page;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static int64_t s_response_next_page_us;
+#endif
 static char s_response_title[64];
 static char s_response_text[RESPONSE_TEXT_CAPACITY];
 
@@ -118,7 +299,6 @@ static compact_dynamic_glyph_t s_dynamic_glyphs[DYNAMIC_GLYPH_CACHE_CAPACITY];
 static uint32_t s_dynamic_glyph_clock;
 static portMUX_TYPE s_glyph_lock = portMUX_INITIALIZER_UNLOCKED;
 
-#define UI_GATEWAY_READY_KEY "ui_ready"
 
 static uint16_t state_color(const char *state);
 static void present_composed_frame(void);
@@ -127,22 +307,36 @@ static void draw_text24_clipped(int x, int y, const char *text,
 static void draw_text24_centered(int y, const char *text,
                                  uint16_t fg, uint16_t bg, int max_glyphs);
 static void fill_rect_solid(int x, int y, int width, int height, uint16_t fill);
+static bool draw_remote_pet_frame(uint16_t bg);
+static void show_state_screen(const char *state);
 
-static void persist_gateway_ready(bool ready) {
-    nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READWRITE, &nvs) != ESP_OK) return;
-    if (nvs_set_u8(nvs, UI_GATEWAY_READY_KEY, ready ? 1 : 0) == ESP_OK) (void)nvs_commit(nvs);
-    nvs_close(nvs);
+static void draw_alarm_indicator(int x, int y, uint16_t fg) {
+    // A 14 px outline clock deliberately stays quieter than the 24 px
+    // calendar text. It is pixel-drawn here to avoid consuming a CJK glyph
+    // slot or changing the compact font's alignment.
+    fill_rect_solid(x + 4, y, 6, 1, fg);
+    fill_rect_solid(x + 2, y + 1, 2, 1, fg);
+    fill_rect_solid(x + 10, y + 1, 2, 1, fg);
+    fill_rect_solid(x + 1, y + 3, 1, 8, fg);
+    fill_rect_solid(x + 12, y + 3, 1, 8, fg);
+    fill_rect_solid(x + 2, y + 11, 2, 1, fg);
+    fill_rect_solid(x + 10, y + 11, 2, 1, fg);
+    fill_rect_solid(x + 4, y + 12, 6, 1, fg);
+    fill_rect_solid(x + 6, y + 3, 1, 5, fg);
+    fill_rect_solid(x + 6, y + 7, 4, 1, fg);
+    fill_rect_solid(x + 3, y - 2, 2, 2, fg);
+    fill_rect_solid(x + 9, y - 2, 2, 2, fg);
 }
 
-static bool load_gateway_ready(void) {
-    nvs_handle_t nvs;
-    uint8_t ready = 0;
-    if (nvs_open("maclaw", NVS_READONLY, &nvs) != ESP_OK) return false;
-    (void)nvs_get_u8(nvs, UI_GATEWAY_READY_KEY, &ready);
-    nvs_close(nvs);
-    return ready != 0;
-}
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+extern const uint8_t _binary_bread_compact_splash_rgb565_start[];
+extern const uint8_t _binary_bread_compact_splash_rgb565_end[];
+#else
+extern const uint8_t _binary_fangtang_sugar_rgb565_start[];
+extern const uint8_t _binary_fangtang_sugar_rgb565_end[];
+extern const uint8_t _binary_fangtang_sugar_a8_start[];
+extern const uint8_t _binary_fangtang_sugar_a8_end[];
+#endif
 
 static bool lcd_color_transfer_done(esp_lcd_panel_io_handle_t io,
                                     esp_lcd_panel_io_event_data_t *event,
@@ -154,7 +348,40 @@ static bool lcd_color_transfer_done(esp_lcd_panel_io_handle_t io,
     return task_woken == pdTRUE;
 }
 
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static esp_err_t fangtang_draw_bitmap_rows(int x0, int y0, int x1, int y1,
+                                           const uint16_t *pixels) {
+    if (!s_panel_io || !pixels || x0 < 0 || y0 < 0 || x1 > LCD_WIDTH ||
+        y1 > LCD_HEIGHT || x1 <= x0 || y1 <= y0) return ESP_ERR_INVALID_ARG;
+    const uint8_t columns[] = {
+        (uint8_t)(x0 >> 8), (uint8_t)x0,
+        (uint8_t)((x1 - 1) >> 8), (uint8_t)(x1 - 1),
+    };
+    const int width = x1 - x0;
+    for (int y = y0; y < y1; ++y) {
+        const int gram_y = LCD_Y_OFFSET + y;
+        const uint8_t rows[] = {
+            (uint8_t)(gram_y >> 8), (uint8_t)gram_y,
+            (uint8_t)(gram_y >> 8), (uint8_t)gram_y,
+        };
+        esp_err_t err = esp_lcd_panel_io_tx_param(s_panel_io, 0x2a,
+                                                   columns, sizeof(columns));
+        if (err != ESP_OK) return err;
+        err = esp_lcd_panel_io_tx_param(s_panel_io, 0x2b, rows, sizeof(rows));
+        if (err != ESP_OK) return err;
+        err = esp_lcd_panel_io_tx_color(
+            s_panel_io, 0x2c, pixels + (size_t)(y - y0) * width,
+            (size_t)width * sizeof(uint16_t));
+        if (err != ESP_OK) return err;
+    }
+    return ESP_OK;
+}
+#endif
+
 static esp_err_t panel_draw_bitmap_sync(int x0, int y0, int x1, int y1, const void *pixels) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    return fangtang_draw_bitmap_rows(x0, y0, x1, y1, pixels);
+#endif
     while (xSemaphoreTake(s_lcd_transfer_done, 0) == pdTRUE) {}
     esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x1, y1, pixels);
     if (err != ESP_OK) return err;
@@ -163,7 +390,9 @@ static esp_err_t panel_draw_bitmap_sync(int x0, int y0, int x1, int y1, const vo
 }
 
 static esp_err_t draw_bitmap_sync(int x0, int y0, int x1, int y1, const void *pixels) {
-    if (!s_render_target) return panel_draw_bitmap_sync(x0, y0, x1, y1, pixels);
+    if (!s_render_target) {
+        return panel_draw_bitmap_sync(x0, y0, x1, y1, pixels);
+    }
     if (!pixels || x0 < 0 || y0 < 0 || x1 > LCD_WIDTH || y1 > LCD_HEIGHT ||
         x1 <= x0 || y1 <= y0) return ESP_ERR_INVALID_ARG;
     int width = x1 - x0;
@@ -184,7 +413,10 @@ static bool begin_composed_frame(void) {
 
 static bool begin_screen_frame(void) {
     if (begin_composed_frame()) return true;
-    ESP_LOGW(TAG, "LCD framebuffer unavailable; drawing screen directly");
+    if (!s_direct_draw_warning_logged) {
+        ESP_LOGW(TAG, "LCD framebuffer unavailable; drawing screen directly");
+        s_direct_draw_warning_logged = true;
+    }
     return false;
 }
 
@@ -197,11 +429,15 @@ static void present_composed_frame(void) {
     unsigned back = s_front_frame ^ 1u;
     uint16_t *next = s_framebuffers[back];
     uint16_t *previous = s_framebuffers[s_front_frame];
+    bool presentation_ok = true;
     s_render_target = NULL;
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
     for (int y = 0; y < LCD_HEIGHT; y += LCD_STRIPE_ROWS) {
         int rows = LCD_HEIGHT - y < LCD_STRIPE_ROWS ? LCD_HEIGHT - y : LCD_STRIPE_ROWS;
         int first_changed = -1;
         int last_changed = -1;
+        int left_changed = LCD_WIDTH;
+        int right_changed = -1;
         for (int row = 0; row < rows; ++row) {
             const uint16_t *next_row = next + (size_t)(y + row) * LCD_WIDTH;
             const uint16_t *old_row = previous + (size_t)(y + row) * LCD_WIDTH;
@@ -209,19 +445,49 @@ static void present_composed_frame(void) {
                 memcmp(next_row, old_row, LCD_WIDTH * sizeof(uint16_t)) != 0) {
                 if (first_changed < 0) first_changed = row;
                 last_changed = row;
+                if (!s_front_frame_valid) {
+                    left_changed = 0;
+                    right_changed = LCD_WIDTH - 1;
+                    continue;
+                }
+                int left = 0;
+                while (left < LCD_WIDTH && next_row[left] == old_row[left]) ++left;
+                int right = LCD_WIDTH - 1;
+                while (right > left && next_row[right] == old_row[right]) --right;
+                if (left < left_changed) left_changed = left;
+                if (right > right_changed) right_changed = right;
             }
         }
         if (first_changed < 0) continue;
         int changed_rows = last_changed - first_changed + 1;
-        size_t bytes = (size_t)LCD_WIDTH * changed_rows * sizeof(uint16_t);
-        memcpy(s_present_staging,
-               next + (size_t)(y + first_changed) * LCD_WIDTH, bytes);
-        ESP_ERROR_CHECK_WITHOUT_ABORT(panel_draw_bitmap_sync(
-            0, y + first_changed, LCD_WIDTH, y + first_changed + changed_rows,
-            s_present_staging));
+        int changed_width = right_changed - left_changed + 1;
+        for (int row = 0; row < changed_rows; ++row) {
+            memcpy(s_present_staging + (size_t)row * changed_width,
+                   next + (size_t)(y + first_changed + row) * LCD_WIDTH + left_changed,
+                   (size_t)changed_width * sizeof(uint16_t));
+        }
+        esp_err_t err = panel_draw_bitmap_sync(
+            left_changed, y + first_changed, right_changed + 1,
+            y + first_changed + changed_rows,
+            s_present_staging);
+        if (err != ESP_OK) {
+            presentation_ok = false;
+            ESP_LOGE(TAG, "LCD frame transfer failed at y=%d: %s",
+                     y + first_changed, esp_err_to_name(err));
+        }
     }
+#else
+    esp_err_t err = panel_draw_bitmap_sync(0, 0, LCD_WIDTH, LCD_HEIGHT, next);
+    if (err != ESP_OK) {
+        presentation_ok = false;
+        ESP_LOGE(TAG, "LCD full-frame transfer failed: %s",
+                 esp_err_to_name(err));
+    }
+#endif
     s_front_frame = back;
-    s_front_frame_valid = true;
+    // A failed stripe leaves the panel contents out of sync with both buffers.
+    // Force the next presentation to refresh every row and repair the screen.
+    s_front_frame_valid = presentation_ok;
 }
 
 static uint16_t color(uint8_t r, uint8_t g, uint8_t b) {
@@ -235,14 +501,20 @@ static void fill_screen(uint16_t c) {
         for (size_t i = 0; i < LCD_FRAME_PIXELS; ++i) s_render_target[i] = c;
         return;
     }
-    uint16_t *line = heap_caps_malloc(LCD_WIDTH * 16 * sizeof(uint16_t), MALLOC_CAP_DMA);
+    uint16_t *line = s_present_staging;
+    bool temporary_line = false;
+    if (!line) {
+        line = heap_caps_malloc((size_t)LCD_WIDTH * LCD_STRIPE_ROWS * sizeof(uint16_t),
+                                MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        temporary_line = line != NULL;
+    }
     if (!line) return;
-    for (size_t i = 0; i < LCD_WIDTH * 16; ++i) line[i] = c;
-    for (int y = 0; y < LCD_HEIGHT; y += 16) {
-        int y2 = y + 16 < LCD_HEIGHT ? y + 16 : LCD_HEIGHT;
+    for (size_t i = 0; i < (size_t)LCD_WIDTH * LCD_STRIPE_ROWS; ++i) line[i] = c;
+    for (int y = 0; y < LCD_HEIGHT; y += LCD_STRIPE_ROWS) {
+        int y2 = y + LCD_STRIPE_ROWS < LCD_HEIGHT ? y + LCD_STRIPE_ROWS : LCD_HEIGHT;
         draw_bitmap_sync(0, y, LCD_WIDTH, y2, line);
     }
-    heap_caps_free(line);
+    if (temporary_line) heap_caps_free(line);
 }
 
 static const uint8_t *glyph5x7(char c) {
@@ -282,9 +554,10 @@ static const uint8_t *glyph5x7(char c) {
     return question;
 }
 
-static void draw_ascii_at(int x0, int y, const char *text, uint16_t fg, uint16_t bg) {
+static void draw_ascii_scaled_at(int x0, int y, const char *text, int scale,
+                                 uint16_t fg, uint16_t bg) {
     if (!text || !*text) return;
-    const int scale = 3;
+    if (scale < 1 || scale > 3) return;
     size_t len = strlen(text);
     if (len > 12) len = 12;
     int width = (int)len * 6 * scale;
@@ -307,6 +580,50 @@ static void draw_ascii_at(int x0, int y, const char *text, uint16_t fg, uint16_t
     if (x0 + width > LCD_WIDTH) x0 = LCD_WIDTH - width;
     draw_bitmap_sync(x0, y, x0 + width, y + 7 * scale, bitmap);
     heap_caps_free(bitmap);
+}
+
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static int fangtang_network_label_width(bool cellular) {
+    const char *label = cellular ? "4G" : "WIFI";
+    const int scale = cellular ? 1 : 2;
+    return ((int)strlen(label) * 6 - 1) * scale;
+}
+
+static void draw_fangtang_network_label(int x, int y, bool cellular,
+                                        uint16_t fg, uint16_t bg) {
+    // Paint directly into the composed framebuffer. The generic ASCII helper
+    // allocates a temporary DMA bitmap; on the Fangtang idle screen that
+    // allocation can fail after the much larger sugar bitmap allocation,
+    // leaving only the signal icon visible. These tiny fixed labels need no
+    // allocation and are guaranteed to be part of the final full-frame flush.
+    const char *label = cellular ? "4G" : "WIFI";
+    // The cellular suffix is deliberately smaller and one row higher than
+    // the Wi-Fi word. This matches the compact signal bars without competing
+    // with the calendar. WIFI stays at 2x because the physical 0.85-inch
+    // panel made a 1x word look like part of the radio-wave icon.
+    const int scale = cellular ? 1 : 2;
+    const int width = fangtang_network_label_width(cellular);
+    const int height = 7 * scale;
+
+    // Give the word its own quiet field. Besides improving contrast, clearing
+    // this exact rectangle guarantees that stale pixels from the preceding
+    // one-second idle frame cannot visually merge with the letters.
+    fill_rect_solid(x - 2, y - 2, width + 4, height + 4, bg);
+    for (size_t ch = 0; label[ch]; ++ch) {
+        const uint8_t *glyph = glyph5x7(label[ch]);
+        for (int gx = 0; gx < 5; ++gx) {
+            for (int gy = 0; gy < 7; ++gy) {
+                if (!(glyph[gx] & (1u << gy))) continue;
+                fill_rect_solid(x + (int)ch * 6 * scale + gx * scale,
+                                y + gy * scale, scale, scale, fg);
+            }
+        }
+    }
+}
+#endif
+
+static void draw_ascii_at(int x0, int y, const char *text, uint16_t fg, uint16_t bg) {
+    draw_ascii_scaled_at(x0, y, text, 3, fg, bg);
 }
 
 static void draw_ascii_centered(int y, const char *text, uint16_t fg, uint16_t bg) {
@@ -369,23 +686,142 @@ static bool dynamic_glyph_copy(uint32_t codepoint, uint8_t bitmap[DYNAMIC_GLYPH_
 
 static bool glyph24_pixel(uint32_t codepoint, const uint32_t *rows,
                           const uint8_t *dynamic, int row, int col) {
-    if (rows) return (rows[row] & (1u << (23 - col))) != 0;
-    if (dynamic) return (dynamic[row * 3 + col / 8] & (1u << (7 - col % 8))) != 0;
+	int source_row = row;
+	// Simplified-Chinese horizontal typography places comma/period at the lower
+	// left of the ideographic cell. The host font rasterizer can produce a
+	// vertical-layout bitmap whose punctuation ink starts at the cell top.
+	// Move only those two marks down; clipping naturally keeps them in 24 px.
+	if (codepoint == 0x3002 || codepoint == 0xFF0C) source_row -= 14; // 。 ，
+	if (source_row < 0 || source_row >= 24) return false;
+    if (rows) return (rows[source_row] & (1u << (23 - col))) != 0;
+    if (dynamic) return (dynamic[source_row * 3 + col / 8] & (1u << (7 - col % 8))) != 0;
     return codepoint < 0x80 && row < 14 && col < 10 &&
            (glyph5x7((char)codepoint)[col / 2] & (1u << (row / 2)));
 }
 
 static int text24_advance(uint32_t codepoint) {
-    // Measure and render Latin with one source of truth. Hand-grouping narrow
-    // and wide letters still made mixed-case prose look uneven and caused the
-    // wrapper to disagree with what was actually painted.
-    if (codepoint >= 0x20 && codepoint <= 0x7E)
-        return s_maclaw_ascii24_advance[codepoint - 0x20];
-    return 25;
+    if (codepoint == ' ') return 7;
+    return codepoint < 0x80 ? 11 : 25;
 }
 
 static bool response_break(uint32_t codepoint) {
     return codepoint == '\n' || codepoint == '\r';
+}
+
+// Formatting controls can legitimately arrive at the front of copied/model
+// text (BOM, bidi isolates, zero-width marks and emoji variation selectors),
+// but they have no visible meaning on this fixed left-to-right LCD. The compact
+// fallback font renders them as question marks, so consume them without width.
+static bool response_invisible_format(uint32_t codepoint) {
+    return codepoint == 0xFEFF || codepoint == 0x200B || codepoint == 0x200C ||
+           codepoint == 0x200D || codepoint == 0x200E || codepoint == 0x200F ||
+           codepoint == 0xFE0E || codepoint == 0xFE0F ||
+           (codepoint >= 0x202A && codepoint <= 0x202E) ||
+           (codepoint >= 0x2060 && codepoint <= 0x2069);
+}
+
+static bool response_leading_decoration(uint32_t codepoint) {
+    // Emoji, pictographs, dingbats and enclosed-symbol decorations are useful
+    // in rich chat, but this compact bitmap font cannot represent them. At the
+    // start of an answer they otherwise become a row such as "?I?" before the
+    // actual content. Keep ASCII and ordinary language punctuation untouched.
+    return response_invisible_format(codepoint) ||
+           (codepoint >= 0x2190 && codepoint <= 0x21FF) ||
+           (codepoint >= 0x2300 && codepoint <= 0x27FF) ||
+           (codepoint >= 0x2B00 && codepoint <= 0x2BFF) ||
+           (codepoint >= 0x1F000 && codepoint <= 0x1FAFF);
+}
+
+static const char *response_visible_start(const char *text) {
+    const char *cursor = text ? text : "";
+    while (*cursor) {
+        // Old Hub builds prefixed normal informational responses with "[i]".
+        // Strip only that complete, boundary-delimited marker. Do not hide
+        // legitimate result text such as "[I/O] status" or an inline "[i]".
+        if (cursor[0] == '[' && (cursor[1] == 'i' || cursor[1] == 'I') &&
+            cursor[2] == ']' &&
+            (cursor[3] == '\0' || cursor[3] == ' ' || cursor[3] == '\t' ||
+             cursor[3] == '\r' || cursor[3] == '\n')) {
+            cursor += 3;
+            continue;
+        }
+        // Desktop-only route/model diagnostics can be present in replies from
+        // older GUI builds. Drop only a leading metadata line; ordinary answer
+        // text containing these words later remains untouched.
+        static const char *const internal_prefixes[] = {
+            "route task:", "route source:", "route model:",
+            "route reason:", "route escalated:", "cost tier:",
+            "input tokens:", "output tokens:", "total tokens:",
+            "cache read tokens:", "cache write tokens:",
+        };
+        bool internal_line = false;
+        for (size_t i = 0; i < sizeof(internal_prefixes) / sizeof(internal_prefixes[0]); ++i) {
+            size_t prefix_len = strlen(internal_prefixes[i]);
+            if (!strncasecmp(cursor, internal_prefixes[i], prefix_len)) {
+                internal_line = true;
+                break;
+            }
+        }
+        if (internal_line) {
+            const char *next_line = strchr(cursor, '\n');
+            if (!next_line) return cursor + strlen(cursor);
+            cursor = next_line + 1;
+            continue;
+        }
+        const char *before = cursor;
+        uint32_t cp = utf8_next(&cursor);
+        if (cp == ' ' || cp == '\t' || response_break(cp) ||
+            response_leading_decoration(cp)) {
+            continue;
+        }
+        return before;
+    }
+    return cursor;
+}
+
+static bool response_closing_punctuation(uint32_t codepoint) {
+    switch (codepoint) {
+        case 0x3001: // 、
+        case 0x3002: // 。
+        case 0xFF0C: // ，
+        case 0xFF0E: // ．
+        case 0xFF01: // ！
+        case 0xFF1A: // ：
+        case 0xFF1B: // ；
+        case 0xFF1F: // ？
+        case 0xFF09: // ）
+        case 0x3009: // 〉
+        case 0x300B: // 》
+        case 0x300D: // 」
+        case 0x300F: // 』
+        case 0x3011: // 】
+        case 0x3015: // 〕
+        case 0x3017: // 〗
+        case 0x3019: // 〙
+        case 0x301B: // 〛
+        case 0x2026: // …
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool response_opening_punctuation(uint32_t codepoint) {
+    switch (codepoint) {
+        case 0xFF08: // （
+        case 0x3008: // 〈
+        case 0x300A: // 《
+        case 0x300C: // 「
+        case 0x300E: // 『
+        case 0x3010: // 【
+        case 0x3014: // 〔
+        case 0x3016: // 〖
+        case 0x3018: // 〘
+        case 0x301A: // 〚
+            return true;
+        default:
+            return false;
+    }
 }
 
 // Returns the byte after one panel-width line. The line width uses the exact
@@ -397,6 +833,10 @@ static const char *response_next_line(const char *cursor, char *line, size_t lin
     if (!cursor) return cursor;
     int width = 0;
     size_t used = 0;
+    const char *last_before = NULL;
+    size_t last_used = 0;
+    int last_width = 0;
+    uint32_t last_cp = 0;
     while (*cursor) {
         const char *before = cursor;
         uint32_t cp = utf8_next(&cursor);
@@ -404,9 +844,29 @@ static const char *response_next_line(const char *cursor, char *line, size_t lin
             while (*cursor == '\n' || *cursor == '\r') ++cursor;
             break;
         }
+        if (response_invisible_format(cp)) continue;
         int advance = text24_advance(cp);
-        if (width + advance > LCD_WIDTH - 28 && used > 0) {
-            cursor = before;
+        if (width + advance > RESPONSE_TEXT_WIDTH && used > 0) {
+            if (response_closing_punctuation(cp)) {
+                // A small optical overhang is preferable to starting a line
+                // with punctuation. The renderer clips safely at the margin.
+                size_t bytes = (size_t)(cursor - before);
+                if (used + bytes < line_size) {
+                    memcpy(line + used, before, bytes);
+                    used += bytes;
+                    width += advance;
+                } else {
+                    cursor = before;
+                }
+            } else {
+                cursor = before;
+                // Never strand an opening bracket at the end of a line.
+                if (response_opening_punctuation(last_cp) && last_before && last_used > 0) {
+                    cursor = last_before;
+                    used = last_used;
+                    width = last_width;
+                }
+            }
             break;
         }
         size_t bytes = (size_t)(cursor - before);
@@ -414,6 +874,10 @@ static const char *response_next_line(const char *cursor, char *line, size_t lin
             cursor = before;
             break;
         }
+        last_before = before;
+        last_used = used;
+        last_width = width;
+        last_cp = cp;
         memcpy(line + used, before, bytes);
         used += bytes;
         width += advance;
@@ -454,11 +918,35 @@ static void draw_response_page(void) {
     const uint16_t muted = color(145, 172, 191);
     bool composed = begin_screen_frame();
     fill_screen(bg);
-    fill_rect_solid(0, 0, LCD_WIDTH, 60, header);
-    fill_rect_solid(14, 18, 18, 42, accent);
-    draw_text24_clipped(28, 18, s_response_title[0] ? s_response_title : "处理结果",
+    fill_rect_solid(0, 0, LCD_WIDTH,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                    FANGTANG_HEADER_H,
+#else
+                    60,
+#endif
+                    header);
+    fill_rect_solid(RESPONSE_TEXT_X,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                    5, 3, 20,
+#else
+                    19, 4, 23,
+#endif
+                    accent);
+    draw_text24_clipped(RESPONSE_TEXT_X +
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                        12, 10,
+#else
+                        14, 18,
+#endif
+                        s_response_title[0] ? s_response_title : "处理结果",
                         title, header, 8);
-    fill_rect_solid(14, 59, LCD_WIDTH - 14, 1, color(31, 62, 82));
+    fill_rect_solid(RESPONSE_TEXT_X,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                    FANGTANG_HEADER_H - 1,
+#else
+                    59,
+#endif
+                    RESPONSE_TEXT_WIDTH, 1, color(31, 62, 82));
 
     const char *cursor = s_response_text;
     unsigned skip = s_response_page * RESPONSE_LINES_PER_PAGE;
@@ -466,22 +954,40 @@ static void draw_response_page(void) {
     while (*cursor && skip--) cursor = response_next_line(cursor, line, sizeof(line));
     for (int row = 0; row < RESPONSE_LINES_PER_PAGE && *cursor; ++row) {
         cursor = response_next_line(cursor, line, sizeof(line));
-        // response_next_line() already clips by the actual pixel width.  The
-        // former ten-glyph cap silently discarded the rest of longer Latin
-        // lines (for example "ROUTE SOURCE" became "ROUTE SOUR").
-        draw_text24_clipped(14, 72 + row * 33, line, body, bg, 32);
+        draw_text24_clipped(RESPONSE_TEXT_X, RESPONSE_TEXT_Y + row * RESPONSE_LINE_HEIGHT,
+                            line, body, bg, 24);
     }
 
     unsigned pages = response_page_count();
     char indicator[16];
-    snprintf(indicator, sizeof(indicator), "%u / %u", s_response_page + 1, pages);
-    fill_rect_solid(0, 278, LCD_WIDTH, 42, footer);
-    draw_text24_clipped(14, 287, pages > 1 ? "音量翻页" : "激活键返回",
-                        muted, footer, 4);
+    snprintf(indicator, sizeof(indicator), "%u/%u", s_response_page + 1, pages);
+    fill_rect_solid(0, RESPONSE_FOOTER_Y, LCD_WIDTH,
+                    LCD_HEIGHT - RESPONSE_FOOTER_Y, footer);
+    draw_text24_clipped(RESPONSE_TEXT_X,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                        214,
+#else
+                        287,
+#endif
+                        pages > 1 ?
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                            "自动翻页" :
+#else
+                            "音量键翻页" :
+#endif
+                            "激活键返回",
+                        muted, footer, 5);
     // The old centered page number occupied the same horizontal band as the
     // Chinese hint. Anchor it at the right edge in the compact ASCII renderer.
-    const int indicator_width = (int)strlen(indicator) * 18;
-    draw_ascii_at(LCD_WIDTH - 12 - indicator_width, 289, indicator, accent, footer);
+    const int indicator_width = (int)strlen(indicator) *
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                                12;
+    draw_ascii_at(LCD_WIDTH - RESPONSE_TEXT_X - indicator_width, 216,
+#else
+                                18;
+    draw_ascii_at(LCD_WIDTH - RESPONSE_TEXT_X - indicator_width, 289,
+#endif
+                  indicator, accent, footer);
     finish_screen_frame(composed);
 }
 
@@ -739,10 +1245,730 @@ static void draw_robot_face_at(const char *state, int offset_x, int offset_y,
     heap_caps_free(bitmap);
 }
 
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static float fangtang_edge(float px, float py, float ax, float ay, float bx, float by) {
+    return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+}
+
+static bool fangtang_triangle(float px, float py,
+                              float ax, float ay, float bx, float by,
+                              float cx, float cy) {
+    float ab = fangtang_edge(px, py, ax, ay, bx, by);
+    float bc = fangtang_edge(px, py, bx, by, cx, cy);
+    float ca = fangtang_edge(px, py, cx, cy, ax, ay);
+    return (ab >= 0 && bc >= 0 && ca >= 0) ||
+           (ab <= 0 && bc <= 0 && ca <= 0);
+}
+
+static float fangtang_segment_distance_sq(float px, float py,
+                                           float ax, float ay,
+                                           float bx, float by) {
+    float dx = bx - ax;
+    float dy = by - ay;
+    float length_sq = dx * dx + dy * dy;
+    float t = length_sq > 0.0f
+                  ? ((px - ax) * dx + (py - ay) * dy) / length_sq
+                  : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float sx = ax + t * dx;
+    float sy = ay + t * dy;
+    dx = px - sx;
+    dy = py - sy;
+    return dx * dx + dy * dy;
+}
+
+static uint32_t fangtang_texture_hash(unsigned x, unsigned y) {
+    uint32_t value = x * 0x45d9f3bu ^ y * 0x119de1f3u ^ 0x9e3779b9u;
+    value ^= value >> 16;
+    value *= 0x45d9f3bu;
+    value ^= value >> 16;
+    return value;
+}
+
+// Fangtang has its own visual identity. Bread Compact keeps the robot head;
+// this single-key board uses a concrete, granulated sugar cube on every
+// startup, ambient and interaction surface. RGB + INVON + IDMOFF is corrected
+// by panel initialisation, so all colours here remain canonical RGB565.
+static void draw_fangtang_cube_at(const char *state, int offset_x, int offset_y,
+                                  int scale_percent, uint16_t bg) {
+    const int native_width = 140;
+    const int native_height = 130;
+    const int width = (native_width * scale_percent + 99) / 100;
+    const int height = (native_height * scale_percent + 99) / 100;
+    const bool listening = !strcmp(state, "listening");
+    const bool thinking = !strcmp(state, "thinking");
+    const bool speaking = !strcmp(state, "speaking");
+    const bool alert = !strcmp(state, "alert");
+    const bool done = !strcmp(state, "done");
+    const uint8_t accent_r = alert ? 255 : thinking ? 181 : done ? 88 : 70;
+    const uint8_t accent_g = alert ? 91 : thinking ? 152 : done ? 232 : 213;
+    const uint8_t accent_b = alert ? 82 : thinking ? 255 : done ? 158 : 246;
+    size_t bitmap_bytes = (size_t)width * height * sizeof(uint16_t);
+    uint16_t *bitmap = NULL;
+    if (s_render_target) {
+        bitmap = heap_caps_malloc(bitmap_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!bitmap) bitmap = heap_caps_malloc(bitmap_bytes, MALLOC_CAP_DMA);
+    if (!bitmap) {
+        ESP_LOGE(TAG, "Fangtang cube allocation failed: %u bytes", (unsigned)bitmap_bytes);
+        return;
+    }
+
+    // Native cube vertices: top diamond A-B-C-D and two side faces D-C-F-E / C-B-G-F.
+    const float ax = 70, ay = 7, bx = 128, by = 38;
+    const float cx = 70, cy = 69, dx = 12, dy = 38;
+    const float ex = 12, ey = 91, fx = 70, fy = 122, gx = 128, gy = 91;
+    for (int py = 0; py < height; ++py) {
+        float y = ((float)py + 0.5f) * 100.0f / scale_percent;
+        for (int px = 0; px < width; ++px) {
+            float x = ((float)px + 0.5f) * 100.0f / scale_percent;
+            uint16_t pixel = bg;
+
+            // A restrained floor shadow anchors the mark without turning it
+            // into another character or mascot.
+            float shadow_x = (x - 70.0f) / 53.0f;
+            float shadow_y = (y - 121.0f) / 8.0f;
+            float shadow_d2 = shadow_x * shadow_x + shadow_y * shadow_y;
+            if (shadow_d2 < 1.0f) {
+                unsigned shadow = (unsigned)(34.0f + (1.0f - shadow_d2) * 42.0f);
+                pixel = robot_rgb_mix(18, 24, 38, 72, 78, 84, shadow);
+            }
+
+            bool top = fangtang_triangle(x, y, ax, ay, bx, by, cx, cy) ||
+                       fangtang_triangle(x, y, ax, ay, cx, cy, dx, dy);
+            bool left = fangtang_triangle(x, y, dx, dy, cx, cy, fx, fy) ||
+                        fangtang_triangle(x, y, dx, dy, fx, fy, ex, ey);
+            bool right = fangtang_triangle(x, y, cx, cy, bx, by, gx, gy) ||
+                         fangtang_triangle(x, y, cx, cy, gx, gy, fx, fy);
+            if (top) {
+                unsigned shade = (unsigned)(248 - y * 10 / 69);
+                pixel = color((uint8_t)shade, (uint8_t)(shade - 2),
+                              (uint8_t)(shade - 12));
+            } else if (left) {
+                unsigned shade = (unsigned)(230 - (y - 38) * 20 / 84);
+                pixel = color((uint8_t)shade, (uint8_t)(shade - 4),
+                              (uint8_t)(shade - 16));
+            } else if (right) {
+                unsigned shade = (unsigned)(213 - (y - 38) * 18 / 84);
+                pixel = color((uint8_t)shade, (uint8_t)(shade - 4),
+                              (uint8_t)(shade - 13));
+            }
+
+            // Fixed micro-granules and occasional pinholes make the faces read
+            // as compressed sugar at 240x240. The texture is deterministic, so
+            // state animation never causes the cube surface itself to shimmer.
+            if (top || left || right) {
+                uint32_t grain = fangtang_texture_hash((unsigned)(x * 3.0f),
+                                                       (unsigned)(y * 3.0f));
+                if ((grain & 0x3fu) == 0u) {
+                    unsigned pore = 164u + ((grain >> 8) & 0x0fu);
+                    pixel = color((uint8_t)pore, (uint8_t)pore,
+                                  (uint8_t)(pore - 5u));
+                } else if ((grain & 0x1fu) == 1u) {
+                    unsigned crystal = 248u + ((grain >> 8) & 0x03u);
+                    pixel = color((uint8_t)crystal, (uint8_t)crystal,
+                                  (uint8_t)(crystal - 4u));
+                }
+            }
+
+            // Fine neutral seams preserve the three-dimensional silhouette
+            // without turning the sugar cube into a dark metal box.
+            float seam = fangtang_segment_distance_sq(x, y, ax, ay, bx, by);
+            float d2 = fangtang_segment_distance_sq(x, y, bx, by, gx, gy);
+            if (d2 < seam) seam = d2;
+            d2 = fangtang_segment_distance_sq(x, y, gx, gy, fx, fy);
+            if (d2 < seam) seam = d2;
+            d2 = fangtang_segment_distance_sq(x, y, fx, fy, ex, ey);
+            if (d2 < seam) seam = d2;
+            d2 = fangtang_segment_distance_sq(x, y, ex, ey, dx, dy);
+            if (d2 < seam) seam = d2;
+            d2 = fangtang_segment_distance_sq(x, y, dx, dy, ax, ay);
+            if (d2 < seam) seam = d2;
+            d2 = fangtang_segment_distance_sq(x, y, dx, dy, cx, cy);
+            if (d2 < seam) seam = d2;
+            d2 = fangtang_segment_distance_sq(x, y, cx, cy, bx, by);
+            if (d2 < seam) seam = d2;
+            d2 = fangtang_segment_distance_sq(x, y, cx, cy, fx, fy);
+            if (d2 < seam) seam = d2;
+            if ((top || left || right) && seam < 2.3f) {
+                unsigned edge = seam < 0.55f ? 174u : 204u;
+                pixel = color((uint8_t)edge, (uint8_t)(edge - 3u),
+                              (uint8_t)(edge - 10u));
+            }
+
+            // Larger irregular pores on the top plane reinforce the compressed
+            // sugar texture. Only the active thinking pore uses a state colour.
+            const float crystal_x[7] = {42, 55, 68, 82, 96, 61, 84};
+            const float crystal_y[7] = {37, 27, 18, 27, 38, 44, 47};
+            for (int i = 0; i < 7 && top; ++i) {
+                float qx = x - crystal_x[i], qy = y - crystal_y[i];
+                float radius = 1.4f + (float)(i % 3) * 0.45f;
+                if (qx * qx + qy * qy < radius * radius) {
+                    pixel = i == (s_thinking_mouth_frame % 7) && thinking
+                                ? color(accent_r, accent_g, accent_b)
+                                : color(188, 185, 174);
+                }
+            }
+
+            // A small non-character status glyph lives on the front faces.
+            if (left || right) {
+                if (alert && x > 67 && x < 73 && y > 78 && y < 101) {
+                    pixel = color(accent_r, accent_g, accent_b);
+                } else if (done) {
+                    float check_a = fangtang_segment_distance_sq(x, y, 51, 87, 64, 99);
+                    float check_b = fangtang_segment_distance_sq(x, y, 64, 99, 91, 75);
+                    if (check_a < 3.0f || check_b < 3.0f)
+                        pixel = color(accent_r, accent_g, accent_b);
+                } else if (listening || speaking) {
+                    int bar = (int)((x - 48) / 11);
+                    if (bar >= 0 && bar < 5) {
+                        int bar_height = speaking ? 9 + ((bar + s_thinking_mouth_frame) % 3) * 6
+                                                  : 8 + (bar % 2) * 5;
+                        if (fabsf(x - (52 + bar * 11)) < 2.3f &&
+                            y > 91 - bar_height / 2 && y < 91 + bar_height / 2)
+                            pixel = color(accent_r, accent_g, accent_b);
+                    }
+                } else if (thinking) {
+                    const float dot_x[3] = {55, 70, 85};
+                    for (int i = 0; i < 3; ++i) {
+                        float qx = x - dot_x[i], qy = y - 91;
+                        float radius = i == s_thinking_mouth_frame ? 4.0f : 2.4f;
+                        if (qx * qx + qy * qy < radius * radius)
+                            pixel = color(accent_r, accent_g, accent_b);
+                    }
+                }
+            }
+            bitmap[(size_t)py * width + px] = pixel;
+        }
+    }
+    draw_bitmap_sync(offset_x, offset_y, offset_x + width, offset_y + height, bitmap);
+    heap_caps_free(bitmap);
+}
+
+static bool draw_fangtang_sugar_at(int offset_x, int offset_y, int scale_percent,
+                                   uint16_t bg) {
+    const size_t source_pixels = (size_t)FANGTANG_SUGAR_WIDTH * FANGTANG_SUGAR_HEIGHT;
+    const size_t rgb_bytes = (size_t)(_binary_fangtang_sugar_rgb565_end -
+                                      _binary_fangtang_sugar_rgb565_start);
+    const size_t alpha_bytes = (size_t)(_binary_fangtang_sugar_a8_end -
+                                        _binary_fangtang_sugar_a8_start);
+    if (rgb_bytes != source_pixels * sizeof(uint16_t) || alpha_bytes != source_pixels) {
+        ESP_LOGE(TAG, "invalid Fangtang sugar artwork: rgb=%u alpha=%u",
+                 (unsigned)rgb_bytes, (unsigned)alpha_bytes);
+        return false;
+    }
+
+    const int width = (FANGTANG_SUGAR_WIDTH * scale_percent + 99) / 100;
+    const int height = (FANGTANG_SUGAR_HEIGHT * scale_percent + 99) / 100;
+    if (width <= 0 || height <= 0 || offset_x < 0 || offset_y < 0 ||
+        offset_x + width > LCD_WIDTH || offset_y + height > LCD_HEIGHT) {
+        return false;
+    }
+
+    const uint16_t *source = (const uint16_t *)_binary_fangtang_sugar_rgb565_start;
+    const uint8_t *alpha = _binary_fangtang_sugar_a8_start;
+    const size_t output_bytes = (size_t)width * height * sizeof(uint16_t);
+    uint16_t *bitmap = s_render_target
+                           ? heap_caps_malloc(output_bytes,
+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+                           : NULL;
+    if (!bitmap) bitmap = heap_caps_malloc(output_bytes, MALLOC_CAP_DMA);
+    if (!bitmap) {
+        ESP_LOGE(TAG, "Fangtang sugar allocation failed: %u bytes",
+                 (unsigned)output_bytes);
+        return false;
+    }
+
+    const uint16_t bg_native = (uint16_t)((bg << 8) | (bg >> 8));
+    const uint8_t bg_r = (uint8_t)((bg_native >> 11) * 255 / 31);
+    const uint8_t bg_g = (uint8_t)(((bg_native >> 5) & 0x3f) * 255 / 63);
+    const uint8_t bg_b = (uint8_t)((bg_native & 0x1f) * 255 / 31);
+    for (int y = 0; y < height; ++y) {
+        int source_y = y * FANGTANG_SUGAR_HEIGHT / height;
+        for (int x = 0; x < width; ++x) {
+            int source_x = x * FANGTANG_SUGAR_WIDTH / width;
+            size_t source_index = (size_t)source_y * FANGTANG_SUGAR_WIDTH + source_x;
+            uint8_t a = alpha[source_index];
+            if (a == 0) {
+                bitmap[(size_t)y * width + x] = bg;
+                continue;
+            }
+
+            /* The embedded file already stores canonical RGB565 in esp_lcd's
+             * wire byte order. Decode once for alpha blending, exactly as the
+             * ordinary color() path does for the background. */
+            uint16_t fg_native = (uint16_t)((source[source_index] << 8) |
+                                            (source[source_index] >> 8));
+            uint8_t fg_r = (uint8_t)((fg_native >> 11) * 255 / 31);
+            uint8_t fg_g = (uint8_t)(((fg_native >> 5) & 0x3f) * 255 / 63);
+            uint8_t fg_b = (uint8_t)((fg_native & 0x1f) * 255 / 31);
+            uint8_t r = (uint8_t)(((unsigned)fg_r * a +
+                                   (unsigned)bg_r * (255u - a) + 127u) / 255u);
+            uint8_t g = (uint8_t)(((unsigned)fg_g * a +
+                                   (unsigned)bg_g * (255u - a) + 127u) / 255u);
+            uint8_t b = (uint8_t)(((unsigned)fg_b * a +
+                                   (unsigned)bg_b * (255u - a) + 127u) / 255u);
+            bitmap[(size_t)y * width + x] = color(r, g, b);
+        }
+    }
+
+    draw_bitmap_sync(offset_x, offset_y, offset_x + width, offset_y + height, bitmap);
+    heap_caps_free(bitmap);
+    return true;
+}
+
+static void draw_fangtang_activity_indicator(const char *state, int center_x,
+                                              int center_y, uint16_t bg) {
+    const uint16_t active = !strcmp(state, "thinking") ? color(196, 169, 255) :
+                            !strcmp(state, "listening") ? color(96, 220, 255) :
+                            !strcmp(state, "speaking") ? color(104, 240, 170) :
+                            color(220, 225, 230);
+    if (!strcmp(state, "thinking")) {
+        for (int i = 0; i < 3; ++i) {
+            const int radius = i == (int)s_thinking_mouth_frame ? 4 : 2;
+            const int dot_x = center_x + (i - 1) * 15;
+            for (int y = -4; y <= 4; ++y) {
+                for (int x = -4; x <= 4; ++x) {
+                    if (x * x + y * y <= radius * radius) {
+                        fill_rect_solid(dot_x + x, center_y + y, 1, 1, active);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if (!strcmp(state, "listening") || !strcmp(state, "speaking")) {
+        for (int i = 0; i < 5; ++i) {
+            int height = !strcmp(state, "speaking")
+                             ? 5 + ((i + (int)s_thinking_mouth_frame) % 3) * 4
+                             : 5 + (i % 2) * 4;
+            fill_rect_solid(center_x - 22 + i * 10, center_y - height / 2,
+                            3, height, active);
+        }
+        return;
+    }
+    fill_rect_solid(center_x - 14, center_y - 1, 28, 2, bg);
+}
+
+static void draw_fangtang_thinking_frame(void) {
+    const int left = LCD_WIDTH / 2 - 22;
+    const int top = 145;
+    const int width = 45;
+    const int height = 11;
+    const uint16_t bg = state_color("thinking");
+    const uint16_t active = color(196, 169, 255);
+
+    /* Patch only the activity strip. Fangtang presents complete frames for
+     * ordinary page transitions because its proven NV3023 path is row-wise,
+     * but a three-dot tick must not resend all 57,600 pixels while HTTP voice
+     * upload and the Hub poller are active. Keep the front framebuffer in sync
+     * so the next composed transaction-stage draw cannot restore stale dots. */
+    if (!s_present_staging || width > LCD_WIDTH) return;
+    uint16_t *front = s_front_frame_valid ? s_framebuffers[s_front_frame] : NULL;
+    for (int row = 0; row < height; ++row) {
+        for (int x = 0; x < width; ++x) s_present_staging[x] = bg;
+        for (int dot = 0; dot < 3; ++dot) {
+            const int radius = dot == (int)s_thinking_mouth_frame ? 4 : 2;
+            const int center_x = 22 + (dot - 1) * 15;
+            const int dy = row - 5;
+            for (int dx = -4; dx <= 4; ++dx) {
+                int px = center_x + dx;
+                if (px >= 0 && px < width &&
+                    dx * dx + dy * dy <= radius * radius) {
+                    s_present_staging[px] = active;
+                }
+            }
+        }
+        esp_err_t err = panel_draw_bitmap_sync(
+            left, top + row, left + width, top + row + 1, s_present_staging);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Fangtang thinking row %d update failed: %s",
+                     row, esp_err_to_name(err));
+            s_front_frame_valid = false;
+            return;
+        }
+        if (front) {
+            memcpy(front + (size_t)(top + row) * LCD_WIDTH + left,
+                   s_present_staging, (size_t)width * sizeof(uint16_t));
+        }
+    }
+}
+#endif
+
+static inline uint16_t remote_pet_panel_rgb565(uint16_t pixel) {
+    /* Hub/GUI frames and this renderer are canonical RGB565. Fangtang now uses
+     * RGB MADCTL order just like the media, so no per-pet color conversion is
+     * needed. The compositor still performs the one required wire byte swap. */
+    return pixel;
+}
+
+static inline uint16_t composite_remote_pet_pixel(const uint8_t *source,
+                                                  size_t source_index,
+                                                  uint16_t background) {
+    uint16_t pet = (uint16_t)source[source_index] |
+                   (uint16_t)((uint16_t)source[source_index + 1] << 8);
+    pet = remote_pet_panel_rgb565(pet);
+    uint8_t alpha = source[source_index + 2];
+    if (alpha == 255) return (uint16_t)((pet << 8) | (pet >> 8));
+    if (alpha == 0) return (uint16_t)((background << 8) | (background >> 8));
+
+    uint32_t inv = 255u - alpha;
+    uint32_t pr = (pet >> 11) & 0x1fu;
+    uint32_t pg = (pet >> 5) & 0x3fu;
+    uint32_t pb = pet & 0x1fu;
+    uint32_t br = (background >> 11) & 0x1fu;
+    uint32_t bgc = (background >> 5) & 0x3fu;
+    uint32_t bb = background & 0x1fu;
+    uint16_t blended =
+        (uint16_t)((((pr * alpha + br * inv + 127u) / 255u) << 11) |
+                   (((pg * alpha + bgc * inv + 127u) / 255u) << 5) |
+                   ((pb * alpha + bb * inv + 127u) / 255u));
+    return (uint16_t)((blended << 8) | (blended >> 8));
+}
+
+static bool response_internal_metadata_line(const char *start, const char *end) {
+    while (start < end && (*start == ' ' || *start == '\t')) ++start;
+    // Accept presentation markers left behind by Markdown conversion, but only
+    // at a physical line boundary. This keeps ordinary prose containing the
+    // same words intact.
+    bool advanced = true;
+    while (advanced && start < end) {
+        advanced = false;
+        if (*start == '>' || *start == '`' || *start == '*') {
+            ++start;
+            advanced = true;
+        } else if (*start == '-' && start + 1 < end && start[1] == ' ') {
+            start += 2;
+            advanced = true;
+        }
+        while (start < end && (*start == ' ' || *start == '\t')) ++start;
+    }
+    static const char *const prefixes[] = {
+        "route task:", "route source:", "route model:",
+        "route reason:", "route escalated:", "cost tier:",
+        "input tokens:", "output tokens:", "total tokens:",
+        "cache read tokens:", "cache write tokens:",
+        "no aux/route",
+    };
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        size_t prefix_len = strlen(prefixes[i]);
+        if ((size_t)(end - start) >= prefix_len &&
+            !strncasecmp(start, prefixes[i], prefix_len)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void response_copy_without_internal_metadata(char *dst, size_t dst_size,
+                                                     const char *text) {
+    if (!dst || dst_size == 0) return;
+    dst[0] = '\0';
+    const char *cursor = text ? text : "";
+    size_t used = 0;
+    bool first_content = true;
+    while (*cursor && used + 1 < dst_size) {
+        const char *line = cursor;
+        const char *line_end = strchr(line, '\n');
+        if (!line_end) line_end = line + strlen(line);
+        const char *content = line;
+        while (content < line_end && (*content == ' ' || *content == '\t' || *content == '\r')) ++content;
+        if (first_content && line_end - content >= 3 && content[0] == '[' &&
+            (content[1] == 'i' || content[1] == 'I') && content[2] == ']' &&
+            (content + 3 == line_end || content[3] == ' ' || content[3] == '\t' || content[3] == '\r')) {
+            content += 3;
+            while (content < line_end && (*content == ' ' || *content == '\t')) ++content;
+        }
+        const char *trimmed_end = line_end;
+        while (trimmed_end > content && (trimmed_end[-1] == ' ' || trimmed_end[-1] == '\t' || trimmed_end[-1] == '\r')) --trimmed_end;
+        bool empty = content == trimmed_end;
+        if (!empty && !response_internal_metadata_line(content, trimmed_end)) {
+            size_t bytes = (size_t)(line_end - content);
+            if (bytes > dst_size - used - 1) bytes = dst_size - used - 1;
+            memcpy(dst + used, content, bytes);
+            used += bytes;
+            first_content = false;
+            if (*line_end == '\n' && used + 1 < dst_size) dst[used++] = '\n';
+        } else if (empty && used > 0 && dst[used - 1] != '\n' && used + 1 < dst_size) {
+            dst[used++] = '\n';
+        }
+        cursor = *line_end == '\n' ? line_end + 1 : line_end;
+    }
+    while (used > 0 && (dst[used - 1] == '\n' || dst[used - 1] == '\r' ||
+                        dst[used - 1] == ' ' || dst[used - 1] == '\t')) --used;
+    dst[used] = '\0';
+    const char *visible = response_visible_start(dst);
+    if (visible != dst) memmove(dst, visible, strlen(visible) + 1);
+}
+
+static inline uint16_t composite_remote_pet_sample(const uint8_t *source,
+                                                   size_t source_index,
+                                                   bool valid,
+                                                   uint16_t background) {
+    if (!valid) return (uint16_t)((background << 8) | (background >> 8));
+    return composite_remote_pet_pixel(source, source_index, background);
+}
+
+static inline uint16_t composite_interpolated_remote_pet_samples(
+    const uint8_t *first_source, const uint8_t *second_source,
+    size_t first_index, size_t second_index,
+    bool first_valid, bool second_valid,
+    uint16_t background, uint32_t mix) {
+    if (!mix || first_source == second_source) {
+        return composite_remote_pet_sample(first_source, first_index, first_valid,
+                                           background);
+    }
+    if (mix >= 256u) {
+        return composite_remote_pet_sample(second_source, second_index, second_valid,
+                                           background);
+    }
+    uint32_t inverse = 256u - mix;
+    uint32_t first_alpha = first_valid ? first_source[first_index + 2] : 0u;
+    uint32_t second_alpha = second_valid ? second_source[second_index + 2] : 0u;
+
+    uint16_t first = first_valid
+                         ? (uint16_t)first_source[first_index] |
+                               (uint16_t)((uint16_t)first_source[first_index + 1] << 8)
+                         : 0;
+    uint16_t second = second_valid
+                          ? (uint16_t)second_source[second_index] |
+                                (uint16_t)((uint16_t)second_source[second_index + 1] << 8)
+                          : 0;
+    if (first_valid) first = remote_pet_panel_rgb565(first);
+    if (second_valid) second = remote_pet_panel_rgb565(second);
+    uint32_t alpha = (first_alpha * inverse + second_alpha * mix + 128u) >> 8;
+    if (!alpha) return (uint16_t)((background << 8) | (background >> 8));
+    // Interpolate premultiplied color so a transparent pixel's unused RGB
+    // cannot create a dark fringe while the silhouette moves between frames.
+    uint32_t premul_red = ((((first >> 11) & 0x1fu) * first_alpha * inverse) +
+                           (((second >> 11) & 0x1fu) * second_alpha * mix) +
+                           128u) >> 8;
+    uint32_t premul_green = ((((first >> 5) & 0x3fu) * first_alpha * inverse) +
+                             (((second >> 5) & 0x3fu) * second_alpha * mix) +
+                             128u) >> 8;
+    uint32_t premul_blue = (((first & 0x1fu) * first_alpha * inverse) +
+                            ((second & 0x1fu) * second_alpha * mix) +
+                            128u) >> 8;
+    uint32_t background_red = (background >> 11) & 0x1fu;
+    uint32_t background_green = (background >> 5) & 0x3fu;
+    uint32_t background_blue = background & 0x1fu;
+    uint32_t inverse_alpha = 255u - alpha;
+    uint16_t blended = (uint16_t)((((premul_red + background_red * inverse_alpha + 127u) /
+                                    255u) << 11) |
+                                  (((premul_green + background_green * inverse_alpha + 127u) /
+                                    255u) << 5) |
+                                  ((premul_blue + background_blue * inverse_alpha + 127u) /
+                                   255u));
+    return (uint16_t)((blended << 8) | (blended >> 8));
+}
+
+static int remote_pet_q8_nearest(int32_t value) {
+    return value >= 0 ? (int)((value + 128) / 256)
+                      : -(int)((-value + 128) / 256);
+}
+
+static bool remote_pet_sample_index(int32_t x_q8, int32_t y_q8,
+                                    size_t *source_index) {
+    int x = remote_pet_q8_nearest(x_q8);
+    int y = remote_pet_q8_nearest(y_q8);
+    if (x < 0 || y < 0 || x >= (int)s_remote_pet_width ||
+        y >= (int)s_remote_pet_height) {
+        *source_index = 0;
+        return false;
+    }
+    *source_index = ((size_t)y * s_remote_pet_width + (size_t)x) * 3u;
+    return true;
+}
+
+static bool remote_pet_target_size(size_t width, size_t height,
+                                   size_t *out_width, size_t *out_height) {
+    if (!width || !height || !out_width || !out_height) return false;
+    size_t target_width = AMBIENT_PET_MAX_WIDTH;
+    size_t target_height = target_width * height / width;
+    if (target_height > AMBIENT_PET_MAX_HEIGHT) {
+        target_height = AMBIENT_PET_MAX_HEIGHT;
+        target_width = target_height * width / height;
+    }
+    if (!target_width || !target_height || target_width > AMBIENT_PET_MAX_WIDTH ||
+        target_height > AMBIENT_PET_MAX_HEIGHT) return false;
+    *out_width = target_width;
+    *out_height = target_height;
+    return true;
+}
+
+static void scale_remote_pet_frame(const uint8_t *source, size_t source_width,
+                                   size_t source_height, uint8_t *destination,
+                                   size_t target_width, size_t target_height) {
+    if (source_width == target_width && source_height == target_height) {
+        memcpy(destination, source, source_width * source_height * 3u);
+        return;
+    }
+    for (size_t y = 0; y < target_height; ++y) {
+        uint32_t source_y_fp = target_height > 1
+                                   ? (uint32_t)(y * (source_height - 1u) * 256u /
+                                                (target_height - 1u))
+                                   : 0;
+        size_t y0 = source_y_fp >> 8;
+        size_t y1 = y0 + 1u < source_height ? y0 + 1u : y0;
+        uint32_t fy = source_y_fp & 0xffu;
+        for (size_t x = 0; x < target_width; ++x) {
+            uint32_t source_x_fp = target_width > 1
+                                       ? (uint32_t)(x * (source_width - 1u) * 256u /
+                                                    (target_width - 1u))
+                                       : 0;
+            size_t x0 = source_x_fp >> 8;
+            size_t x1 = x0 + 1u < source_width ? x0 + 1u : x0;
+            uint32_t fx = source_x_fp & 0xffu;
+            uint32_t weights[4] = {
+                (256u - fx) * (256u - fy), fx * (256u - fy),
+                (256u - fx) * fy, fx * fy,
+            };
+            size_t indexes[4] = {
+                (y0 * source_width + x0) * 3u,
+                (y0 * source_width + x1) * 3u,
+                (y1 * source_width + x0) * 3u,
+                (y1 * source_width + x1) * 3u,
+            };
+            uint32_t alpha_sum = 0, red_sum = 0, green_sum = 0, blue_sum = 0;
+            for (size_t sample = 0; sample < 4; ++sample) {
+                size_t index = indexes[sample];
+                uint16_t pixel = (uint16_t)source[index] |
+                                 (uint16_t)((uint16_t)source[index + 1] << 8);
+                uint32_t alpha = source[index + 2];
+                uint32_t weight = weights[sample];
+                alpha_sum += alpha * weight;
+                red_sum += ((pixel >> 11) & 0x1fu) * alpha * weight;
+                green_sum += ((pixel >> 5) & 0x3fu) * alpha * weight;
+                blue_sum += (pixel & 0x1fu) * alpha * weight;
+            }
+            uint32_t alpha = (alpha_sum + 32768u) >> 16;
+            uint32_t red = 0, green = 0, blue = 0;
+            if (alpha) {
+                red = (((red_sum + 32768u) >> 16) + alpha / 2u) / alpha;
+                green = (((green_sum + 32768u) >> 16) + alpha / 2u) / alpha;
+                blue = (((blue_sum + 32768u) >> 16) + alpha / 2u) / alpha;
+            }
+            uint16_t pixel = (uint16_t)((red << 11) | (green << 5) | blue);
+            size_t destination_index = (y * target_width + x) * 3u;
+            destination[destination_index] = (uint8_t)pixel;
+            destination[destination_index + 1] = (uint8_t)(pixel >> 8);
+            destination[destination_index + 2] = (uint8_t)alpha;
+        }
+        /* Eight high-resolution frames are scaled during startup immediately
+         * after Wi-Fi obtains an address.  Let the idle task run regularly so
+         * this CPU-heavy bilinear pass cannot starve the task watchdog. */
+        if ((y & 7u) == 7u) vTaskDelay(1);
+    }
+}
+
+static bool draw_remote_pet_frame(uint16_t bg) {
+    if (!s_remote_pet_frame_count || !s_remote_pet_frames[0] ||
+        !s_remote_pet_width || !s_remote_pet_height) return false;
+
+    /* Advance from presented animation ticks, not wall-clock time. TLS, flash
+     * GC, or a full-screen transition can delay one render substantially; a
+     * wall-clock phase then skips across several poses on the next tick and is
+     * perceived as a jump. The animation task advances this phase exactly once
+     * per displayed tick, so load can slow motion slightly but never teleport
+     * the character. Ordinary UI redraws reuse the current pose. */
+    uint64_t elapsed_ms = s_remote_pet_animation_elapsed_ms;
+    size_t index = 0;
+    size_t next_index = 0;
+    uint32_t mix = 0;
+    if (s_remote_pet_frame_count > 1 && s_remote_pet_frame_ms) {
+        index = (elapsed_ms / s_remote_pet_frame_ms) % s_remote_pet_frame_count;
+        next_index = (index + 1u) % s_remote_pet_frame_count;
+        mix = (uint32_t)((elapsed_ms % s_remote_pet_frame_ms) * 256u /
+                         s_remote_pet_frame_ms);
+    }
+    const uint8_t *source = s_remote_pet_frames[index];
+    const uint8_t *next_source = s_remote_pet_frame_count > 1
+                                     ? s_remote_pet_frames[next_index]
+                                     : source;
+    if (!source) return false;
+    if (!next_source) {
+        next_source = source;
+        mix = 0;
+    }
+
+    // Frames are pre-scaled once when installed. The animation hot path only
+    // composites them, avoiding nearest-neighbour resampling on every tick.
+    int target_w = (int)s_remote_pet_width;
+    int target_h = (int)s_remote_pet_height;
+    if (target_w < 1 || target_h < 1 || target_w > AMBIENT_PET_MAX_WIDTH ||
+        target_h > AMBIENT_PET_MAX_HEIGHT) return false;
+    int left = (LCD_WIDTH - target_w) / 2;
+    int top = AMBIENT_PET_TOP + (AMBIENT_PET_MAX_HEIGHT - target_h) / 2;
+    if (left < 0 || top < 0 || left + target_w > LCD_WIDTH ||
+        top + target_h > LCD_HEIGHT) return false;
+    uint16_t background = (uint16_t)((bg << 8) | (bg >> 8));
+    /* Every exported pose already uses the same 256x256 authored canvas. Keep
+     * that canvas fixed for the whole loop. Alpha-centroid compensation reacts
+     * to a moving claw, ear, or eye as if the complete character translated,
+     * which shifts the body between ticks and leaves a visible LCD trail. */
+    // Compose directly into the back buffer. The old path allocated and freed
+    // a full scaled bitmap for every animation frame, fragmenting PSRAM and
+    // adding an avoidable full-frame copy every 700 ms.
+    if (s_render_target) {
+        for (int y = 0; y < target_h; ++y) {
+            uint16_t *destination = s_render_target +
+                                    (size_t)(top + y) * LCD_WIDTH + left;
+            for (int x = 0; x < target_w; ++x) {
+                size_t first_index = 0, second_index = 0;
+                bool first_valid = remote_pet_sample_index(
+                    (int32_t)x * 256,
+                    (int32_t)y * 256, &first_index);
+                bool second_valid = remote_pet_sample_index(
+                    (int32_t)x * 256,
+                    (int32_t)y * 256, &second_index);
+                destination[x] = composite_interpolated_remote_pet_samples(
+                    source, next_source, first_index, second_index,
+                    first_valid, second_valid, background, mix);
+            }
+        }
+        return true;
+    }
+
+    // Direct-draw fallback is only used when the double framebuffer could not
+    // be allocated. Reuse the persistent DMA staging area in 16-row bands
+    // instead of allocating another bitmap or issuing 150 one-row transfers.
+    if (!s_present_staging) return false;
+    for (int band_y = 0; band_y < target_h; band_y += LCD_STRIPE_ROWS) {
+        int rows = target_h - band_y < LCD_STRIPE_ROWS
+                       ? target_h - band_y : LCD_STRIPE_ROWS;
+        for (int row = 0; row < rows; ++row) {
+            int y = band_y + row;
+            uint16_t *destination = s_present_staging + (size_t)row * target_w;
+            for (int x = 0; x < target_w; ++x) {
+                size_t first_index = 0, second_index = 0;
+                bool first_valid = remote_pet_sample_index(
+                    (int32_t)x * 256,
+                    (int32_t)y * 256, &first_index);
+                bool second_valid = remote_pet_sample_index(
+                    (int32_t)x * 256,
+                    (int32_t)y * 256, &second_index);
+                destination[x] = composite_interpolated_remote_pet_samples(
+                    source, next_source, first_index, second_index,
+                    first_valid, second_valid, background, mix);
+            }
+        }
+        if (panel_draw_bitmap_sync(left, top + band_y, left + target_w,
+                                   top + band_y + rows,
+                                   s_present_staging) != ESP_OK) return false;
+    }
+    return true;
+}
+
 /* Animate only the small glass-mouth region. Repainting the complete 240x320
  * framebuffer for three dots wastes SPI bandwidth and can make the otherwise
  * double-buffered thinking page appear to pulse under TLS load. */
 static void draw_thinking_mouth_frame(void) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    /* Fangtang has no robot mouth. Patch only its compact activity strip. */
+    draw_fangtang_thinking_frame();
+    return;
+#else
     const int source_left = 99;
     const int source_top = 137;
     const int source_width = 42;
@@ -794,6 +2020,7 @@ static void draw_thinking_mouth_frame(void) {
                    bitmap + (size_t)row * width, (size_t)width * sizeof(uint16_t));
         }
     }
+#endif
 }
 
 static void thinking_mouth_task(void *arg) {
@@ -802,6 +2029,10 @@ static void thinking_mouth_task(void *arg) {
     while (true) {
         vTaskDelayUntil(&next_frame, pdMS_TO_TICKS(THINKING_MOUTH_FRAME_MS));
         xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+        // Re-check every terminal ownership flag while holding the same LCD
+        // lock used by full-screen transitions.  A final response can arrive
+        // exactly when this periodic task wakes; this guard guarantees the
+        // three-dot marquee stops before the result surface is committed.
         if (s_thinking_surface_visible && !s_recording_active &&
             !s_response_active && s_foreground_surface &&
             !strcmp(s_state, "thinking")) {
@@ -818,17 +2049,125 @@ static void show_state_screen(const char *state) {
     bool composed = begin_screen_frame();
     fill_screen(bg);
     bool ambient = !strcmp(state, "idle") || !strcmp(state, "quiet");
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     if (ambient) {
-        draw_ascii_centered(8, s_ambient_time[0] ? s_ambient_time : "--:--:--",
-                            color(240, 248, 255), bg);
+        const char *clock_text = s_ambient_time[0] ? s_ambient_time : "--:--:--";
+        // Row one is a single balanced status line. Keep the Chinese status
+        // immediately beside the clock instead of spending an entire row on it.
+        const char *network_text = s_gateway_ready ? "在线" : "等待";
+        size_t clock_len = strlen(clock_text);
+        int network_width = text24_width(network_text, 2);
+        int first_row_width = (int)clock_len * 18 + 8 + network_width;
+        int first_row_x = (LCD_WIDTH - first_row_width) / 2;
+        if (first_row_x < 2) first_row_x = 2;
+        draw_ascii_at(first_row_x, 6, clock_text, color(240, 248, 255), bg);
+        draw_text24_clipped(first_row_x + (int)clock_len * 18 + 8, 4, network_text,
+                            s_gateway_ready ? color(91, 224, 149) : color(245, 184, 75),
+                            bg, 2);
+
+        // The second and final information row is date + weekday. Everything
+        // below it belongs to the Fangtang mark.
         char calendar[64];
         snprintf(calendar, sizeof(calendar), "%s %s", s_ambient_date, s_ambient_weekday);
-        draw_text24_centered(38, calendar, color(166, 194, 216), bg, 10);
-        // Keep a clean 66-pixel header for clock/calendar. The previous face
-        // started at y=45 after scaling, so its antenna painted through the
-        // calendar row. This compact version starts below the header.
-        draw_robot_face_at(state, 54, 60, 55, bg);
-        draw_text24_centered(188, "码卡龙已就绪", color(242, 249, 255), bg, 8);
+        const int calendar_width = text24_width(calendar, 9);
+        // Both transports are rendered as icon + explicit small text. Reserve
+        // each mark's real painted width before centring the complete row.
+        // WIFI uses 4 glyphs x 12 px = 48 px after its 22 px icon offset.
+        // The final 2 px are spacing rather than painted pixels, so reserve
+        // the exact 68 px extent and keep the centred row from drifting left.
+        const int transport_width = s_network_transport_cellular ? 38 : 68;
+        // Leave a clearly visible pause after the calendar before the compact
+        // radio mark. On this dense 240 px row, five pixels made the first
+        // signal bar read like another date glyph.
+        const int calendar_gap = 9;
+        int calendar_x = (LCD_WIDTH - calendar_width - calendar_gap - transport_width) / 2;
+        if (calendar_x < 2) calendar_x = 2;
+        draw_text24_clipped(calendar_x, 32, calendar, color(166, 194, 216), bg, 9);
+        const int icon_x = calendar_x + calendar_width + calendar_gap;
+        const uint16_t icon_color = s_gateway_ready ? color(91, 224, 149)
+                                                     : color(166, 194, 216);
+        if (s_network_transport_cellular) {
+            // Compact signal bars followed by a literal 4G label stay legible
+            // on this 240 px panel and do not depend on an extra font glyph.
+            fill_rect_solid(icon_x, 48, 2, 4, icon_color);
+            fill_rect_solid(icon_x + 4, 45, 2, 7, icon_color);
+            fill_rect_solid(icon_x + 8, 42, 2, 10, icon_color);
+            // The smaller label paints rows 37..43, above the sugar artwork.
+            draw_fangtang_network_label(icon_x + 14, 37, true, icon_color, bg);
+        } else {
+            // Three nested arcs and a dot form the familiar Wi-Fi icon.
+            for (int y = 40; y <= 50; ++y) {
+                for (int x = 0; x < 18; ++x) {
+                    float dx = (float)x - 8.5f;
+                    float dy = (float)y - 52.0f;
+                    float radius = sqrtf(dx * dx + dy * dy);
+                    bool upper = dy < 0.0f;
+                    if (upper && ((radius > 8.0f && radius < 9.5f) ||
+                                  (radius > 5.0f && radius < 6.5f) ||
+                                  (radius > 2.1f && radius < 3.4f))) {
+                        fill_rect_solid(icon_x + x, y, 1, 1, icon_color);
+                    }
+                }
+            }
+            fill_rect_solid(icon_x + 8, 51, 3, 2, icon_color);
+            // The former Wi-Fi branch drew only the radio waves. Keep an
+            // explicit label so the selected uplink is unambiguous at a glance.
+            draw_fangtang_network_label(icon_x + 22, 39, false,
+                                         color(240, 248, 255), bg);
+        }
+
+        // The sugar cube is the product/startup mark, not the standby pet.
+        // Once Hub supplies the selected pet, reuse the same transparent,
+        // animated asset pipeline as Bread Compact in the Fangtang-sized area.
+        // Keep the sugar only as a bounded loading/offline fallback.
+        if (!draw_remote_pet_frame(bg) && !draw_fangtang_sugar_at(26, 68, 100, bg)) {
+            draw_fangtang_cube_at(state, 36, 70, 120, bg);
+        }
+    } else {
+        const char *label = !strcmp(state, "listening") ? "正在听取" :
+                            !strcmp(state, "thinking") ? s_command_stage :
+                            !strcmp(state, "speaking") ? "正在回复" :
+                            !strcmp(state, "alert") ? "请注意" :
+                            !strcmp(state, "done") ? "处理完成" : "方糖";
+        if (!draw_fangtang_sugar_at(43, 4, 82, bg)) {
+            draw_fangtang_cube_at(state, 57, 5, 90, bg);
+        }
+        draw_fangtang_activity_indicator(state, LCD_WIDTH / 2, 150, bg);
+        draw_text24_centered(166, label, color(248, 252, 255), bg, 8);
+        draw_text24_centered(207,
+                             !strcmp(state, "thinking") ? "双击激活键可取消" : "请稍候",
+                             color(145, 220, 235), bg, 8);
+    }
+#else
+    if (ambient) {
+        const char *clock_text = s_ambient_time[0] ? s_ambient_time : "--:--:--";
+        const char *connection_text = s_gateway_ready ? "在线" :
+                                      (s_wifi_connected ? "服务中" : "联网中");
+        const uint16_t connection_color = s_gateway_ready
+                                              ? color(91, 224, 149)
+                                              : color(245, 184, 75);
+        size_t clock_glyphs = strlen(clock_text);
+        if (clock_glyphs > 12) clock_glyphs = 12;
+        int clock_width = (int)clock_glyphs * 18;
+        int connection_width = text24_width(connection_text, 3);
+        int first_row_x = (LCD_WIDTH - clock_width - 8 - connection_width) / 2;
+        if (first_row_x < 4) first_row_x = 4;
+        draw_ascii_at(first_row_x, 8, clock_text, color(240, 248, 255), bg);
+        draw_text24_clipped(first_row_x + clock_width + 8, 6, connection_text,
+                            connection_color, bg, 3);
+        char calendar[64];
+        snprintf(calendar, sizeof(calendar), "%s %s", s_ambient_date, s_ambient_weekday);
+        const uint16_t calendar_color = color(166, 194, 216);
+        if (s_alarm_scheduled) {
+            const int icon_width = 14;
+            const int calendar_width = text24_width(calendar, 10);
+            const int group_x = (LCD_WIDTH - icon_width - 5 - calendar_width) / 2;
+            draw_alarm_indicator(group_x, 43, calendar_color);
+            draw_text24_clipped(group_x + icon_width + 5, 38, calendar,
+                                calendar_color, bg, 10);
+        } else {
+            draw_text24_centered(38, calendar, calendar_color, bg, 10);
+        }
         char weather[96];
         if (s_ambient_weather_valid) {
             snprintf(weather, sizeof(weather), "%s %s %dC%s", s_ambient_location,
@@ -837,22 +2176,74 @@ static void show_state_screen(const char *state) {
         } else {
             snprintf(weather, sizeof(weather), "%s 天气同步中", s_ambient_location);
         }
-        draw_text24_centered(226, weather, color(121, 210, 224), bg, 10);
-        draw_text24_centered(278, s_gateway_ready ? "在线" :
-                             (s_wifi_connected ? "服务连接中" : "网络连接中"),
-                             s_gateway_ready ? color(91, 224, 149) : color(245, 184, 75), bg, 9);
+        draw_text24_centered(AMBIENT_WEATHER_TEXT_Y, weather,
+                             color(121, 210, 224), bg, 10);
+
+        // Everything below the three compact information rows belongs to the
+        // pet. There is deliberately no ready/tagline row or bottom status
+        // row: connection state lives beside the clock and weather lives
+        // immediately below the calendar.
+        if (!draw_remote_pet_frame(bg)) {
+            const int native_width = (240 * AMBIENT_NATIVE_PET_SCALE + 99) / 100;
+            const int native_height = (210 * AMBIENT_NATIVE_PET_SCALE + 99) / 100;
+            draw_robot_face_at(
+                state,
+                (LCD_WIDTH - native_width) / 2,
+                AMBIENT_PET_TOP + (AMBIENT_PET_MAX_HEIGHT - native_height) / 2,
+                AMBIENT_NATIVE_PET_SCALE,
+                bg);
+        }
     } else {
         const char *label = !strcmp(state, "listening") ? "正在听取" :
-                            !strcmp(state, "thinking") ? "正在思考" :
+                            !strcmp(state, "thinking") ? s_command_stage :
                             !strcmp(state, "speaking") ? "正在回复" :
                             !strcmp(state, "alert") ? "请注意" :
                             !strcmp(state, "done") ? "处理完成" : "码卡龙";
         draw_robot_face_at(state, 10, 0, 92, bg);
         draw_text24_centered(226, label, color(255, 255, 255), bg, 8);
-        draw_text24_centered(274, "请稍候", color(145, 220, 235), bg, 8);
+        draw_text24_centered(274,
+                             !strcmp(state, "thinking") ? "双击激活键可取消" : "请稍候",
+                             color(145, 220, 235), bg, 10);
     }
+    #endif
     finish_screen_frame(composed);
     s_thinking_surface_visible = !ambient && !strcmp(state, "thinking");
+}
+
+static void ensure_thinking_mouth_task(void) {
+    if (s_thinking_mouth_task) return;
+    TaskHandle_t task = NULL;
+    if (xTaskCreate(thinking_mouth_task, "bread_thinking_mouth", 3072,
+                    NULL, 2, &task) == pdPASS) {
+        s_thinking_mouth_task = task;
+    } else {
+        ESP_LOGW(TAG, "thinking mouth animation disabled: cannot create task");
+    }
+}
+
+static bool show_remote_pet_animation_frame(void) {
+    if (!s_front_frame_valid || !begin_composed_frame()) return false;
+
+    /* Preserve the already rendered clock, calendar and text rows, but rebuild
+     * the complete pet rectangle from its flat background on every tick. A
+     * back buffer can be more than one pose old after another full-screen draw;
+     * copying it and only painting the new silhouette leaves those old opaque
+     * pixels behind. Clearing before compositing makes the result independent
+     * of buffer history and lets the changed-row presenter erase departed
+     * claws/ears on the panel. */
+    memcpy(s_render_target, s_framebuffers[s_front_frame], LCD_FRAME_BYTES);
+    uint16_t bg = state_color(s_state);
+    fill_rect_solid((LCD_WIDTH - AMBIENT_PET_MAX_WIDTH) / 2,
+                    AMBIENT_PET_TOP,
+                    AMBIENT_PET_MAX_WIDTH,
+                    AMBIENT_PET_MAX_HEIGHT,
+                    bg);
+    if (!draw_remote_pet_frame(bg)) {
+        s_render_target = NULL;
+        return false;
+    }
+    finish_screen_frame(true);
+    return true;
 }
 
 static void show_status(const char *title, const char *line) {
@@ -860,6 +2251,16 @@ static void show_status(const char *title, const char *line) {
     uint16_t bg = state_color(s_state);
     bool composed = begin_screen_frame();
     fill_screen(bg);
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    if (!draw_fangtang_sugar_at(60, 0, 64, bg)) {
+        draw_fangtang_cube_at(s_state, 70, 2, 72, bg);
+    }
+    draw_text24_centered(112, title && title[0] ? title : "方糖",
+                         color(248, 252, 255), bg, 9);
+    draw_text24_centered(154, line && line[0] ? line : "设备就绪",
+                         color(121, 210, 224), bg, 9);
+    draw_text24_centered(208, "请使用激活键", color(157, 184, 205), bg, 8);
+#else
     // Message/ready surfaces use the same visual identity as the reusable pet
     // states. Keeping the face here avoids the old bare "MACLAW / READY" page
     // while still leaving two calm, high-contrast rows for status copy.
@@ -869,44 +2270,112 @@ static void show_status(const char *title, const char *line) {
     draw_text24_centered(236, line && line[0] ? line : "设备已就绪",
                          color(121, 210, 224), bg, 10);
     draw_text24_centered(280, "请使用激活键", color(157, 184, 205), bg, 8);
+    #endif
     finish_screen_frame(composed);
 }
 
-static void show_thinking_status(const char *title, const char *line) {
-    uint16_t bg = state_color("thinking");
+static void lcd_startup_screen(void) {
+    if (!s_panel) return;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    // Keep a dedicated product splash visible throughout handshake and Welcome
+    // playback. The ready path replaces it with the clock/weekday standby page
+    // only after Welcome has finished.
+    const uint16_t bg = state_color("idle");
     bool composed = begin_screen_frame();
     fill_screen(bg);
-    // Keep the same robot geometry as show_state_screen("thinking") because
-    // draw_thinking_mouth_frame() deliberately updates only this small,
-    // fixed-position mouth region between full-screen refreshes.
-    draw_robot_face_at("thinking", 10, 0, 92, bg);
-    draw_text24_centered(226, title && title[0] ? title : "远端处理中",
-                         color(255, 255, 255), bg, 8);
-    draw_text24_centered(274, line && line[0] ? line : "双击激活键可取消",
-                         color(145, 220, 235), bg, 8);
+    if (!draw_fangtang_sugar_at(26, 8, 100, bg)) {
+        draw_fangtang_cube_at("startup", 25, 3, 136, bg);
+    }
+    draw_text24_centered(207, "MaClaw Mate", color(244, 249, 253), bg, 11);
     finish_screen_frame(composed);
-    s_thinking_surface_visible = true;
+    return;
+#else
+    const size_t expected_bytes = LCD_FRAME_BYTES;
+    const size_t asset_bytes = (size_t)(_binary_bread_compact_splash_rgb565_end -
+                                        _binary_bread_compact_splash_rgb565_start);
+    if (asset_bytes != expected_bytes) {
+        ESP_LOGE(TAG, "invalid startup artwork: %u bytes (expected %u)",
+                 (unsigned)asset_bytes, (unsigned)expected_bytes);
+        fill_screen(state_color("idle"));
+        return;
+    }
+
+    // Present directly in DMA-sized bands. Avoid copying this immutable
+    // 150 KiB full-screen asset through PSRAM/double buffering at boot.
+    const uint16_t *pixels = (const uint16_t *)_binary_bread_compact_splash_rgb565_start;
+    for (int y = 0; y < LCD_HEIGHT; y += LCD_STRIPE_ROWS) {
+        int y2 = y + LCD_STRIPE_ROWS < LCD_HEIGHT ? y + LCD_STRIPE_ROWS : LCD_HEIGHT;
+        ESP_ERROR_CHECK_WITHOUT_ABORT(draw_bitmap_sync(
+            0, y, LCD_WIDTH, y2, pixels + (size_t)y * LCD_WIDTH));
+    }
+#endif
 }
 
-static void lcd_startup_pattern(void) {
-    if (!s_panel) return;
-    const uint16_t bars[] = {
-        color(255, 0, 0), color(0, 255, 0), color(0, 80, 255),
-        color(255, 255, 255), color(0, 0, 0), color(255, 190, 0),
-    };
-    const int bar_height = LCD_HEIGHT / (int)(sizeof(bars) / sizeof(bars[0]));
-    uint16_t *line = heap_caps_malloc(LCD_WIDTH * 16 * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!line) return;
-    for (size_t bar = 0; bar < sizeof(bars) / sizeof(bars[0]); ++bar) {
-        for (size_t i = 0; i < LCD_WIDTH * 16; ++i) line[i] = bars[bar];
-        int y_start = (int)bar * bar_height;
-        int y_end = bar + 1 == sizeof(bars) / sizeof(bars[0]) ? LCD_HEIGHT : y_start + bar_height;
-        for (int y = y_start; y < y_end; y += 16) {
-            int y2 = y + 16 < y_end ? y + 16 : y_end;
-            draw_bitmap_sync(0, y, LCD_WIDTH, y2, line);
+static void remote_pet_animation_task(void *arg) {
+    (void)arg;
+    uint64_t rendered_tick = UINT64_MAX;
+    while (true) {
+        /* Schedule from the completed presentation. If TLS or SPI makes one
+         * frame late, vTaskDelayUntil would run catch-up frames back-to-back;
+         * that uneven burst cadence looks like both a jump and panel ghosting. */
+        vTaskDelay(pdMS_TO_TICKS(REMOTE_PET_RENDER_FRAME_MS));
+        xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        if (s_response_active && !s_response_image_active && s_response_next_page_us > 0 &&
+            esp_timer_get_time() >= s_response_next_page_us) {
+            unsigned pages = response_page_count();
+            if (s_response_page + 1 < pages) {
+                ++s_response_page;
+                s_response_next_page_us = esp_timer_get_time() + RESPONSE_AUTO_PAGE_INTERVAL_US;
+                draw_response_page();
+            } else {
+                s_response_next_page_us = 0;
+            }
         }
+        // Reuse this always-resident timer on the single-key board, but preserve
+        // the Bread cadence instead of advancing on every 80 ms pet tick.
+        if (s_thinking_surface_visible && !s_recording_active &&
+            !s_response_active && s_foreground_surface &&
+            !strcmp(s_state, "thinking") &&
+            esp_timer_get_time() >= s_fangtang_thinking_next_frame_us) {
+            s_thinking_mouth_frame = (s_thinking_mouth_frame + 1) % 3;
+            s_fangtang_thinking_next_frame_us = esp_timer_get_time() +
+                (int64_t)THINKING_MOUTH_FRAME_MS * 1000;
+            draw_fangtang_thinking_frame();
+        }
+#endif
+        bool ambient = !strcmp(s_state, "idle") || !strcmp(s_state, "quiet");
+        if (s_remote_pet_frame_count > 1 && s_remote_pet_frame_ms && ambient &&
+            !s_foreground_surface && !s_recording_active && !s_alarm_visual_active) {
+            uint64_t current_tick = ((uint64_t)esp_timer_get_time() / 1000u) /
+                                    REMOTE_PET_RENDER_FRAME_MS;
+            if (current_tick != rendered_tick) {
+                uint64_t loop_ms = (uint64_t)s_remote_pet_frame_ms *
+                                   s_remote_pet_frame_count;
+                s_remote_pet_animation_elapsed_ms += REMOTE_PET_RENDER_FRAME_MS;
+                if (loop_ms) s_remote_pet_animation_elapsed_ms %= loop_ms;
+                if (!show_remote_pet_animation_frame()) show_state_screen(s_state);
+                rendered_tick = current_tick;
+            }
+        } else {
+            rendered_tick = UINT64_MAX;
+        }
+        xSemaphoreGiveRecursive(s_lcd_mutex);
     }
-    heap_caps_free(line);
+}
+
+static void ensure_remote_pet_animation_task(void) {
+    if (s_remote_pet_animation_task) return;
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+    if (s_remote_pet_frame_count < 2) return;
+#endif
+    TaskHandle_t task = NULL;
+    if (xTaskCreate(remote_pet_animation_task, "bread_pet_animation", 3072,
+                    NULL, 2, &task) == pdPASS) {
+        s_remote_pet_animation_task = task;
+    } else {
+        ESP_LOGW(TAG, "remote pet animation disabled: cannot create task");
+    }
 }
 
 static uint16_t state_color(const char *state) {
@@ -946,19 +2415,106 @@ static esp_err_t audio_init(void) {
                      .dout = SPK_DOUT, .din = I2S_GPIO_UNUSED, .invert_flags = {0}},
     };
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx, &speaker), TAG, "speaker mode");
-    /* Keep BCLK/WS running for the direct-I2S amplifier. Repeatedly enabling
-     * and disabling TX made some Bread Compact amplifiers miss an entire short
-     * playback while their serial input was waking. auto_clear_after_cb above
-     * makes every completed descriptor silence, so an enabled idle channel no
-     * longer repeats the final tone. */
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "speaker enable");
-    s_speaker_enabled = true;
+    /* Keep TX stopped while it is idle. Leaving the channel enabled after a
+     * short chime lets some direct-I2S amplifiers continue reproducing the
+     * final DMA descriptor, which sounds like a tone that never ends. Each
+     * playback owns an explicit enable/write/disable cycle below. */
     s_audio_ready = true;
-    ESP_LOGI(TAG, "Bread Compact direct-I2S audio ready (continuous clocks, silent idle)");
+    ESP_LOGI(TAG, "Bread Compact direct-I2S audio ready");
     return ESP_OK;
 }
 
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static unsigned fangtang_battery_percent_from_adc(int adc) {
+    static const struct {
+        int adc;
+        unsigned percent;
+    } levels[] = {
+        {1970, 0}, {2062, 20}, {2154, 40},
+        {2246, 60}, {2338, 80}, {2430, 100},
+    };
+    if (adc <= levels[0].adc) return 0;
+    if (adc >= levels[5].adc) return 100;
+    for (size_t i = 0; i + 1 < sizeof(levels) / sizeof(levels[0]); ++i) {
+        if (adc < levels[i + 1].adc) {
+            int span = levels[i + 1].adc - levels[i].adc;
+            int offset = adc - levels[i].adc;
+            return levels[i].percent +
+                   (unsigned)(offset * (int)(levels[i + 1].percent - levels[i].percent) /
+                              span);
+        }
+    }
+    return 100;
+}
+
+static void fangtang_power_task(void *arg) {
+    (void)arg;
+    int samples[3] = {0};
+    unsigned sample_count = 0;
+    unsigned sample_next = 0;
+    unsigned ticks = 0;
+    while (true) {
+        bool charging = gpio_get_level(FANGTANG_CHARGE_STATUS_GPIO) != 0;
+        bool sample_due = sample_count < 3 || (++ticks % 60) == 0;
+        if (sample_due && s_battery_adc) {
+            int raw = 0;
+            if (adc_oneshot_read(s_battery_adc,
+                                 (adc_channel_t)CONFIG_MACLAW_FANGTANG_BATTERY_ADC_CHANNEL,
+                                 &raw) == ESP_OK) {
+                samples[sample_next] = raw;
+                sample_next = (sample_next + 1) % 3;
+                if (sample_count < 3) ++sample_count;
+                int total = 0;
+                for (unsigned i = 0; i < sample_count; ++i) total += samples[i];
+                int average = total / (int)sample_count;
+                unsigned level = fangtang_battery_percent_from_adc(average);
+                taskENTER_CRITICAL(&s_power_status_lock);
+                s_battery_level = level;
+                s_battery_level_valid = true;
+                s_battery_charging = charging;
+                taskEXIT_CRITICAL(&s_power_status_lock);
+                ESP_LOGI(TAG, "Fangtang power: adc=%d average=%d battery=%u%% charging=%s",
+                         raw, average, level, charging ? "yes" : "no");
+            }
+        } else {
+            taskENTER_CRITICAL(&s_power_status_lock);
+            s_battery_charging = charging;
+            taskEXIT_CRITICAL(&s_power_status_lock);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+static esp_err_t fangtang_power_init(void) {
+    gpio_config_t charge = {
+        .pin_bit_mask = 1ULL << FANGTANG_CHARGE_STATUS_GPIO,
+        .mode = GPIO_MODE_INPUT,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&charge), TAG, "charge status GPIO");
+    adc_oneshot_unit_init_cfg_t adc_cfg = {
+        .unit_id = CONFIG_MACLAW_FANGTANG_BATTERY_ADC_UNIT == 1
+                       ? ADC_UNIT_1 : ADC_UNIT_2,
+        .ulp_mode = ADC_ULP_MODE_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(adc_oneshot_new_unit(&adc_cfg, &s_battery_adc),
+                        TAG, "battery ADC unit");
+    adc_oneshot_chan_cfg_t channel_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    ESP_RETURN_ON_ERROR(adc_oneshot_config_channel(
+                            s_battery_adc,
+                            (adc_channel_t)CONFIG_MACLAW_FANGTANG_BATTERY_ADC_CHANNEL,
+                            &channel_cfg),
+                        TAG, "battery ADC channel");
+    return xTaskCreate(fangtang_power_task, "fangtang_power", 3072,
+                       NULL, 1, NULL) == pdPASS
+               ? ESP_OK : ESP_ERR_NO_MEM;
+}
+#endif
+
 static esp_err_t read_mono(int16_t *mono, size_t capacity, size_t *read, uint16_t *level) {
+    if (!mono || capacity == 0) return ESP_ERR_INVALID_ARG;
     int32_t raw[512];
     size_t bytes = 0;
     ESP_RETURN_ON_ERROR(i2s_channel_read(s_rx, raw, sizeof(raw), &bytes, pdMS_TO_TICKS(1000)), TAG, "mic read");
@@ -976,37 +2532,32 @@ static esp_err_t read_mono(int16_t *mono, size_t capacity, size_t *read, uint16_
     return ESP_OK;
 }
 
+static uint16_t command_capture_mean_level(const int16_t *samples, size_t count);
+
 static void button_task(void *arg) {
     (void)arg;
     bool previous = gpio_get_level(BUTTON_ACTIVATE) != 0;
-    bool volume_up_stable = gpio_get_level(BUTTON_VOLUME_UP) != 0;
-    bool volume_down_stable = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
-    bool volume_down_alt_stable = gpio_get_level(BUTTON_VOLUME_DOWN_ALT) != 0;
-    // The two side keys are not guaranteed to share the same electrical
-    // polarity on Bread Compact revisions. Treat each settled boot level as
-    // its own released state so GPIO38 and GPIO39 both dispatch a press edge.
-    const bool volume_up_idle = volume_up_stable;
-    const bool volume_down_idle = volume_down_stable;
-    const bool volume_down_alt_idle = volume_down_alt_stable;
-    bool volume_up_candidate = volume_up_stable;
-    bool volume_down_candidate = volume_down_stable;
-    bool volume_down_alt_candidate = volume_down_alt_stable;
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+    bool volume_up_raw = gpio_get_level(BUTTON_VOLUME_UP) != 0;
+    bool volume_down_raw = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
+    bool volume_up_stable = volume_up_raw;
+    bool volume_down_stable = volume_down_raw;
     int64_t volume_up_changed_at = 0;
     int64_t volume_down_changed_at = 0;
-    int64_t volume_down_alt_changed_at = 0;
+#endif
     int64_t pressed_at = 0;
     int64_t short_pending_at = 0;
     bool long_sent = false;
-    ESP_LOGI(TAG,
-             "side key idle levels: volume_up(GPIO%d)=%d volume_down(GPIO%d)=%d alt(GPIO%d)=%d",
-             BUTTON_VOLUME_UP, volume_up_idle, BUTTON_VOLUME_DOWN, volume_down_idle,
-             BUTTON_VOLUME_DOWN_ALT, volume_down_alt_idle);
     while (true) {
         int64_t now = esp_timer_get_time();
         bool released = gpio_get_level(BUTTON_ACTIVATE) != 0;
         if (previous && !released) {
             pressed_at = now;
             long_sent = false;
+            if (s_button_cb) {
+                s_button_cb(BOARD_INPUT_PRESSED, BOARD_INPUT_SOURCE_ACTIVATE_KEY,
+                            s_button_arg);
+            }
         }
         /* Fire while the key is still held. Waiting for release made a valid
          * long press look unresponsive and also allowed contact bounce on the
@@ -1015,7 +2566,10 @@ static void button_task(void *arg) {
             long_sent = true;
             short_pending_at = 0;
             ESP_LOGI(TAG, "activate long hold detected");
-            if (s_button_cb) s_button_cb(BOARD_BUTTON_LONG, s_button_arg);
+            if (s_button_cb) {
+                s_button_cb(BOARD_BUTTON_LONG, BOARD_INPUT_SOURCE_ACTIVATE_KEY,
+                            s_button_arg);
+            }
         }
         if (!previous && released && pressed_at) {
             int64_t duration = now - pressed_at;
@@ -1023,7 +2577,16 @@ static void button_task(void *arg) {
                 short_pending_at = 0;
             } else if (short_pending_at && now - short_pending_at <= 500000) {
                 short_pending_at = 0;
-                if (s_button_cb) s_button_cb(BOARD_BUTTON_DOUBLE, s_button_arg);
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                if (s_boot_network_window_active) {
+                    s_boot_network_toggle_requested = true;
+                    ESP_LOGI(TAG, "GPIO0 startup double click: network toggle requested");
+                } else
+#endif
+                if (s_button_cb) {
+                    s_button_cb(BOARD_BUTTON_DOUBLE, BOARD_INPUT_SOURCE_ACTIVATE_KEY,
+                                s_button_arg);
+                }
             } else {
                 short_pending_at = now;
             }
@@ -1032,57 +2595,57 @@ static void button_task(void *arg) {
         previous = released;
         if (short_pending_at && now - short_pending_at > 500000) {
             short_pending_at = 0;
-            if (s_button_cb) s_button_cb(BOARD_BUTTON_SHORT, s_button_arg);
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+            if (s_boot_network_window_active) {
+                // A single click inside the startup selector window is consumed.
+            } else
+#endif
+            if (s_button_cb) {
+                s_button_cb(BOARD_BUTTON_SHORT, BOARD_INPUT_SOURCE_ACTIVATE_KEY,
+                            s_button_arg);
+            }
         }
 
-        bool volume_up_level = gpio_get_level(BUTTON_VOLUME_UP) != 0;
-        if (volume_up_level != volume_up_candidate) {
-            volume_up_candidate = volume_up_level;
+ #if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+        bool volume_up_released = gpio_get_level(BUTTON_VOLUME_UP) != 0;
+        if (volume_up_released != volume_up_raw) {
+            volume_up_raw = volume_up_released;
             volume_up_changed_at = now;
         }
-        if (volume_up_stable != volume_up_candidate && volume_up_changed_at &&
+        if (volume_up_stable != volume_up_raw && volume_up_changed_at &&
             now - volume_up_changed_at >= 30000) {
-            volume_up_stable = volume_up_candidate;
-            // Dispatch on the debounced press edge. Waiting for release made
-            // short taps easy to lose when one 20 ms scan landed inside the
-            // contact bounce window, which left paging apparently inert.
-            if (volume_up_stable != volume_up_idle) {
-                ESP_LOGI(TAG, "volume up key pressed (GPIO%d level=%d idle=%d)",
-                         BUTTON_VOLUME_UP, volume_up_stable, volume_up_idle);
-                if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_UP, s_button_arg);
+            volume_up_stable = volume_up_raw;
+            ESP_LOGI(TAG, "volume up key GPIO%d level=%d",
+                     BUTTON_VOLUME_UP, volume_up_stable ? 1 : 0);
+            if (volume_up_stable) {
+                ESP_LOGI(TAG, "volume up key released (GPIO%d)", BUTTON_VOLUME_UP);
+                if (s_button_cb) {
+                    s_button_cb(BOARD_INPUT_VOLUME_UP, BOARD_INPUT_SOURCE_OTHER_KEY,
+                                s_button_arg);
+                }
             }
         }
 
-        bool volume_down_level = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
-        if (volume_down_level != volume_down_candidate) {
-            volume_down_candidate = volume_down_level;
+        bool volume_down_released = gpio_get_level(BUTTON_VOLUME_DOWN) != 0;
+        if (volume_down_released != volume_down_raw) {
+            volume_down_raw = volume_down_released;
             volume_down_changed_at = now;
         }
-        if (volume_down_stable != volume_down_candidate && volume_down_changed_at &&
+        if (volume_down_stable != volume_down_raw && volume_down_changed_at &&
             now - volume_down_changed_at >= 30000) {
-            volume_down_stable = volume_down_candidate;
-            if (volume_down_stable != volume_down_idle) {
-                ESP_LOGI(TAG, "volume down key pressed (GPIO%d level=%d idle=%d)",
-                         BUTTON_VOLUME_DOWN, volume_down_stable, volume_down_idle);
-                if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_DOWN, s_button_arg);
+            volume_down_stable = volume_down_raw;
+            ESP_LOGI(TAG, "volume down key GPIO%d level=%d",
+                     BUTTON_VOLUME_DOWN, volume_down_stable ? 1 : 0);
+            if (volume_down_stable) {
+                ESP_LOGI(TAG, "volume down key released (GPIO%d)", BUTTON_VOLUME_DOWN);
+                if (s_button_cb) {
+                    s_button_cb(BOARD_INPUT_VOLUME_DOWN, BOARD_INPUT_SOURCE_OTHER_KEY,
+                                s_button_arg);
+                }
             }
         }
+#endif
 
-        bool volume_down_alt_level = gpio_get_level(BUTTON_VOLUME_DOWN_ALT) != 0;
-        if (volume_down_alt_level != volume_down_alt_candidate) {
-            volume_down_alt_candidate = volume_down_alt_level;
-            volume_down_alt_changed_at = now;
-        }
-        if (volume_down_alt_stable != volume_down_alt_candidate &&
-            volume_down_alt_changed_at && now - volume_down_alt_changed_at >= 30000) {
-            volume_down_alt_stable = volume_down_alt_candidate;
-            if (volume_down_alt_stable != volume_down_alt_idle) {
-                ESP_LOGI(TAG, "volume down key pressed (alternate GPIO%d level=%d idle=%d)",
-                         BUTTON_VOLUME_DOWN_ALT, volume_down_alt_stable,
-                         volume_down_alt_idle);
-                if (s_button_cb) s_button_cb(BOARD_INPUT_VOLUME_DOWN, s_button_arg);
-            }
-        }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
@@ -1090,7 +2653,9 @@ static void button_task(void *arg) {
 esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     s_button_cb = cb;
     s_button_arg = arg;
-    s_gateway_ready = load_gateway_ready();
+    // Hub reachability is session state. Never restore a previous boot's
+    // ONLINE bit: the current handshake/poll must prove it again.
+    s_gateway_ready = false;
     s_audio_mutex = xSemaphoreCreateMutex();
     if (!s_audio_mutex) return ESP_ERR_NO_MEM;
     s_lcd_mutex = xSemaphoreCreateRecursiveMutex();
@@ -1103,21 +2668,59 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     spi_bus_config_t bus = {.mosi_io_num = LCD_MOSI, .miso_io_num = GPIO_NUM_NC,
                             .sclk_io_num = LCD_CLK, .quadwp_io_num = GPIO_NUM_NC,
                             .quadhd_io_num = GPIO_NUM_NC,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                            .max_transfer_sz = LCD_WIDTH * sizeof(uint16_t)};
+#else
                             .max_transfer_sz = LCD_WIDTH * 16 * sizeof(uint16_t)};
+#endif
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
     esp_lcd_panel_io_handle_t io = NULL;
     esp_lcd_panel_io_spi_config_t io_cfg = {.cs_gpio_num = LCD_CS, .dc_gpio_num = LCD_DC,
-        .spi_mode = 3, .pclk_hz = 20 * 1000 * 1000, .trans_queue_depth = 10,
-        .lcd_cmd_bits = 8, .lcd_param_bits = 8,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        .spi_mode = 0, .pclk_hz = 40 * 1000 * 1000,
+#else
+        .spi_mode = 3, .pclk_hz = 20 * 1000 * 1000,
+#endif
+        .trans_queue_depth = 10, .lcd_cmd_bits = 8, .lcd_param_bits = 8,
         .on_color_trans_done = lcd_color_transfer_done, .user_ctx = s_lcd_transfer_done};
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(LCD_HOST, &io_cfg, &io));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    s_panel_io = io;
+#endif
     esp_lcd_panel_dev_config_t panel_cfg = {.reset_gpio_num = LCD_RST,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16,
+        .vendor_config = &(nv3023_vendor_config_t){
+            .init_cmds = s_fangtang_nv3023_init_cmds,
+            .init_cmds_size = sizeof(s_fangtang_nv3023_init_cmds) / sizeof(s_fangtang_nv3023_init_cmds[0]),
+        }};
+#else
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16};
+#endif
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    ESP_ERROR_CHECK(esp_lcd_new_panel_nv3023(io, &panel_cfg, &s_panel));
+#else
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io, &panel_cfg, &s_panel));
+#endif
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, false));
+    // The module is mounted 180 degrees in the enclosure. Both axes must be
+    // mirrored; Y-only makes every glyph and line read right-to-left.
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, true));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
+    // NV3023A resets into its 8-color idle mode. Exit it explicitly so the
+    // RGB565 framebuffer is displayed with the full 262K-color output depth.
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(io, 0x38, NULL, 0));
+#else
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
+#endif
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    ESP_LOGI(TAG, "NV3023 viewport ready: 240x240, GRAM Y=%d..%d",
+             LCD_Y_OFFSET, LCD_Y_OFFSET + LCD_HEIGHT - 1);
+#endif
     ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 1));
     for (size_t i = 0; i < 2; ++i) {
         s_framebuffers[i] = heap_caps_malloc(LCD_FRAME_BYTES,
@@ -1131,59 +2734,122 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     s_present_staging = heap_caps_malloc(
         (size_t)LCD_WIDTH * LCD_STRIPE_ROWS * sizeof(uint16_t),
         MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!s_framebuffers[0] || !s_framebuffers[1] || !s_present_staging) {
+    if (!s_framebuffers[0] || !s_framebuffers[1] || !s_present_staging
+    ) {
         for (size_t i = 0; i < 2; ++i) {
             if (s_framebuffers[i]) heap_caps_free(s_framebuffers[i]);
             s_framebuffers[i] = NULL;
         }
-        if (s_present_staging) heap_caps_free(s_present_staging);
-        s_present_staging = NULL;
-        ESP_LOGW(TAG, "LCD double buffering disabled: insufficient memory");
+        ESP_LOGW(TAG, "LCD double buffering disabled: insufficient memory%s",
+                 s_present_staging ? "; DMA stripe fallback retained" : "");
     } else {
         ESP_LOGI(TAG, "LCD double buffering ready: %u bytes PSRAM + %u bytes DMA",
                  (unsigned)(LCD_FRAME_BYTES * 2),
                  (unsigned)(LCD_WIDTH * LCD_STRIPE_ROWS * sizeof(uint16_t)));
     }
-    lcd_startup_pattern();
-    vTaskDelay(pdMS_TO_TICKS(1500));
-    fill_screen(state_color("idle"));
-    gpio_config_t button = {.pin_bit_mask = (1ULL << BUTTON_ACTIVATE) |
-                                            (1ULL << BUTTON_VOLUME_UP) |
-                                            (1ULL << BUTTON_VOLUME_DOWN_ALT),
+    lcd_startup_screen();
+    // Do not clear the board-specific artwork on a fixed timer. Application startup
+    // owns the transition now and keeps this screen visible through handshake
+    // and Welcome playback; the ready surface replaces it explicitly.
+    gpio_config_t button = {.pin_bit_mask = (1ULL << BUTTON_ACTIVATE)
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+                                             | (1ULL << BUTTON_VOLUME_UP)
+                                             | (1ULL << BUTTON_VOLUME_DOWN)
+#endif
+                                            ,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE};
     ESP_ERROR_CHECK(gpio_config(&button));
-    // GPIO38 is active-low on this Bread Compact revision, while GPIO39 is
-    // active-high. Configuring both with the same pull-up held GPIO39 at its
-    // pressed level permanently, so its scanner could never observe an edge.
-    // Keep the board-specific electrical bias here; the application still
-    // receives the same hardware-independent VOLUME_DOWN action.
-    gpio_config_t volume_down_button = {
-        .pin_bit_mask = 1ULL << BUTTON_VOLUME_DOWN,
-        .mode = GPIO_MODE_INPUT,
-        .pull_down_en = GPIO_PULLDOWN_ENABLE,
-    };
-    ESP_ERROR_CHECK(gpio_config(&volume_down_button));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    ESP_LOGI(TAG, "button GPIO idle level: activate=%d", gpio_get_level(BUTTON_ACTIVATE));
+#else
+    ESP_LOGI(TAG, "button GPIO idle levels: activate=%d volume_up=%d volume_down=%d",
+             gpio_get_level(BUTTON_ACTIVATE), gpio_get_level(BUTTON_VOLUME_UP),
+             gpio_get_level(BUTTON_VOLUME_DOWN));
+#endif
     ESP_RETURN_ON_ERROR(audio_init(), TAG, "audio init");
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    ESP_RETURN_ON_ERROR(fangtang_power_init(), TAG, "power monitor init");
+#endif
     if (xTaskCreate(button_task, "bread_button", 3072, NULL, 4, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    // This task also owns the six-second response page timer on the single-key
+    // board, so it must run even when no animated pet pack is installed.
+    ensure_remote_pet_animation_task();
+#endif
     // The mouth animation is decorative state feedback. Give its floating-point
     // renderer enough stack headroom, but never make the essential buttons,
     // display, microphone, or speaker unavailable if this task cannot start.
-    if (xTaskCreate(thinking_mouth_task, "bread_thinking", 3072, NULL, 2, NULL) != pdPASS) {
-        ESP_LOGW(TAG, "thinking mouth animation disabled: cannot create task");
-    }
+    /* The compact LCD repaints thinking dots from state transitions. Avoid an
+     * always-resident decorative task during Wi-Fi's memory-intensive startup. */
+    /* Remote assets are optional and their animation task is started only when
+     * a frame pack is actually installed. Keeping an always-idle task alive at
+     * boot wastes an internal task stack while Wi-Fi allocates scan buffers. */
     return ESP_OK;
 }
 
+bool board_port_wait_for_boot_network_toggle(uint32_t window_ms) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    s_boot_network_toggle_requested = false;
+    s_boot_network_window_active = true;
+    const int64_t deadline = esp_timer_get_time() + (int64_t)window_ms * 1000;
+    ESP_LOGI(TAG, "GPIO0 startup network selector active for %u ms",
+             (unsigned)window_ms);
+    while (esp_timer_get_time() < deadline && !s_boot_network_toggle_requested) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    s_boot_network_window_active = false;
+    bool requested = s_boot_network_toggle_requested;
+    s_boot_network_toggle_requested = false;
+    ESP_LOGI(TAG, "GPIO0 startup network selector closed: %s",
+             requested ? "toggle" : "unchanged");
+    return requested;
+#else
+    (void)window_ms;
+    return false;
+#endif
+}
+
+void board_port_show_startup_screen(void) {
+    if (!s_panel || !s_lcd_mutex) return;
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    if (s_alarm_visual_active) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
+    s_response_active = false;
+    s_recording_active = false;
+    s_foreground_surface = true;
+    lcd_startup_screen();
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
 esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_percent) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    (void)delta_percent;
+    (void)out_percent;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
     int next = (int)s_output_volume + delta_percent;
     if (next < 0) next = 0;
     if (next > 100) next = 100;
     s_output_volume = (unsigned)next;
     if (out_percent) *out_percent = s_output_volume;
     return ESP_OK;
+#endif
+}
+
+esp_err_t board_port_set_output_volume(unsigned percent) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    (void)percent;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (percent > 100) return ESP_ERR_INVALID_ARG;
+    s_output_volume = percent;
+    return ESP_OK;
+#endif
 }
 
 void board_port_set_pet_state(const char *state) {
@@ -1197,7 +2863,15 @@ void board_port_set_pet_state(const char *state) {
         return;
     }
     strlcpy(s_state, next_state, sizeof(s_state));
-    if (!strcmp(next_state, "thinking")) s_thinking_mouth_frame = 0;
+    if (!strcmp(next_state, "thinking")) {
+        s_thinking_mouth_frame = 0;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        s_fangtang_thinking_next_frame_us = esp_timer_get_time() +
+            (int64_t)THINKING_MOUTH_FRAME_MS * 1000;
+#else
+        ensure_thinking_mouth_task();
+#endif
+    }
     if (!s_recording_active) {
         s_response_active = false;
         s_foreground_surface = !ambient;
@@ -1205,9 +2879,82 @@ void board_port_set_pet_state(const char *state) {
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_set_command_display_lock(bool locked) {s_foreground_surface = locked;}
+void board_port_set_command_stage(const char *stage) {
+    const char *next_stage = stage && stage[0] ? stage : "正在处理";
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    bool changed = strcmp(s_command_stage, next_stage) != 0;
+    if (changed) strlcpy(s_command_stage, next_stage, sizeof(s_command_stage));
+    // Redraw only on a real phase transition. Reasserting the long-running
+    // remote stage is therefore free and never replaces the animated surface.
+    if (changed && s_thinking_surface_visible && !s_recording_active &&
+        !s_response_active && s_foreground_surface && !strcmp(s_state, "thinking")) {
+        show_state_screen(s_state);
+    }
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+void board_port_set_command_display_lock(bool locked) {
+    if (s_lcd_mutex) xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    s_foreground_surface = locked;
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+}
 void board_port_set_command_cancel_enabled(bool enabled) {(void)enabled;}
-void board_port_set_pet_profile(const char *skin, bool motion_enabled) {(void)skin;(void)motion_enabled;}
+void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
+    (void)motion_enabled;
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    bool changed = skin && skin[0] && strcmp(s_pet_skin, skin) != 0;
+    if (changed) strlcpy(s_pet_skin, skin, sizeof(s_pet_skin));
+    if (changed && !s_foreground_surface && !s_recording_active) {
+        show_state_screen(s_state);
+    }
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
+                                   size_t width, size_t height, uint32_t frame_ms) {
+    if (frame_count > REMOTE_PET_MAX_FRAMES) return ESP_ERR_INVALID_ARG;
+    size_t bytes = 0;
+    size_t target_width = 0, target_height = 0;
+    if (frame_count) {
+        if (!frames || width < 1 || height < 1 || width > 256 || height > 256) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (width > SIZE_MAX / height || width * height > SIZE_MAX / 3u) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        if (!remote_pet_target_size(width, height, &target_width, &target_height)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        bytes = target_width * target_height * 3u;
+    }
+    uint8_t *copies[REMOTE_PET_MAX_FRAMES] = {0};
+    for (size_t i = 0; i < frame_count; ++i) {
+        if (!frames[i]) {
+            for (size_t j = 0; j < i; ++j) free(copies[j]);
+            return ESP_ERR_INVALID_ARG;
+        }
+        copies[i] = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!copies[i]) copies[i] = malloc(bytes);
+        if (!copies[i]) {
+            for (size_t j = 0; j < i; ++j) free(copies[j]);
+            return ESP_ERR_NO_MEM;
+        }
+        scale_remote_pet_frame(frames[i], width, height, copies[i],
+                               target_width, target_height);
+    }
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < REMOTE_PET_MAX_FRAMES; ++i) {
+        free(s_remote_pet_frames[i]);
+        s_remote_pet_frames[i] = copies[i];
+    }
+    s_remote_pet_frame_count = frame_count;
+    s_remote_pet_width = frame_count ? target_width : 0;
+    s_remote_pet_height = frame_count ? target_height : 0;
+    s_remote_pet_frame_ms = frame_ms ? frame_ms : REMOTE_PET_DEFAULT_KEYFRAME_MS;
+    s_remote_pet_animation_elapsed_ms = 0;
+    ensure_remote_pet_animation_task();
+    if (!s_foreground_surface && !s_recording_active) show_state_screen(s_state);
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    return ESP_OK;
+}
 void board_port_set_recording_mode(bool meeting) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     s_recording_mode = meeting;
@@ -1245,6 +2992,18 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed)
     uint16_t muted = color(91,118,138);
     bool composed = begin_screen_frame();
     fill_screen(bg);
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    // Fangtang's panel is 240x240. Keep every recording affordance inside the
+    // visible viewport instead of inheriting Bread Compact's 240x320 rows.
+    fill_rect_solid(16, 8, 208, 4, accent);
+    fill_rect_solid(16, 232, 208, 4, accent);
+    fill_rect_solid(28, 23, 18, 18, accent);
+    fill_rect_solid(33, 28, 8, 8, color(255,235,238));
+    draw_text24_clipped(56, 20, paused ? "已暂停" : "正在听取",
+                        color(245,250,255), bg, 7);
+    draw_text24_centered(52, s_recording_mode ? "会议录音" : "语音指令",
+                         paused ? color(244,178,58) : cyan, bg, 8);
+#else
     fill_rect_solid(16, 16, 208, 4, accent);
     fill_rect_solid(16, 300, 208, 4, accent);
     fill_rect_solid(28, 43, 20, 20, accent);
@@ -1253,23 +3012,47 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed)
                         color(245,250,255), bg, 7);
     draw_text24_centered(78, s_recording_mode ? "会议录音" : "语音指令",
                          paused ? color(244,178,58) : cyan, bg, 8);
+#endif
     char timer[16];
     snprintf(timer, sizeof(timer), "%02lu:%02lu", (unsigned long)(elapsed / 60), (unsigned long)(elapsed % 60));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    draw_ascii_centered(82, timer, color(255,255,255), bg);
+    fill_rect_solid(20, 114, 200, 1, muted);
+#else
     draw_ascii_centered(112, timer, color(255,255,255), bg);
     fill_rect_solid(20, 158, 200, 1, muted);
+#endif
     for (int column = 0; column < 24; ++column) {
         uint16_t level = paused ? 0 : s_recording_levels[column];
         if (level > 1000) level = 1000;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        int half = 2 + (int)(level * 32u / 1000u);
+        int center_y = 158;
+#else
         int half = 2 + (int)(level * 42u / 1000u);
+#endif
         int x = 22 + column * 8;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        fill_rect_solid(x, center_y - half, 5, half * 2 + 1,
+                        paused ? muted : cyan);
+#else
         fill_rect_solid(x, 205 - half, 5, half * 2 + 1, paused ? muted : cyan);
+#endif
     }
     char level_label[20];
     snprintf(level_label, sizeof(level_label), "MIC %u%%",
              (unsigned)(s_recording_smoothed_level / 10u));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    // Keep a full text-row gap above the 24 px instruction at y=211.
+    // The former y=195 baseline overlapped visibly on the 240 px panel.
+    draw_ascii_centered(184, level_label, paused ? muted : cyan, bg);
+    draw_text24_centered(211, s_recording_mode ? "按激活键停止" : "说完后自动处理",
+                         color(163,188,207), bg, 8);
+#else
     draw_ascii_centered(226, level_label, paused ? muted : cyan, bg);
     draw_text24_centered(260, s_recording_mode ? "按激活键停止保存" : "说完后自动处理",
                          color(163,188,207), bg, 9);
+#endif
     finish_screen_frame(composed);
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
@@ -1292,20 +3075,39 @@ void board_port_set_audio_level(uint16_t level, uint32_t elapsed) {
     if (composed) {
         memcpy(s_render_target, s_framebuffers[s_front_frame], LCD_FRAME_BYTES);
     }
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    fill_rect_solid(18, 116, 204, 94, bg);
+    fill_rect_solid(20, 158, 200, 1, muted);
+#else
     fill_rect_solid(18, 160, 204, 90, bg);
     fill_rect_solid(20, 205, 200, 1, muted);
+#endif
     for (int column = 0; column < 24; ++column) {
         uint16_t history_level = s_recording_paused ? 0 : s_recording_levels[column];
         if (history_level > 1000) history_level = 1000;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        int half = 2 + (int)(history_level * 32u / 1000u);
+        int center_y = 158;
+#else
         int half = 2 + (int)(history_level * 42u / 1000u);
+#endif
         int x = 22 + column * 8;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        fill_rect_solid(x, center_y - half, 5, half * 2 + 1,
+                        s_recording_paused ? muted : cyan);
+#else
         fill_rect_solid(x, 205 - half, 5, half * 2 + 1,
                         s_recording_paused ? muted : cyan);
+#endif
     }
     char level_label[20];
     snprintf(level_label, sizeof(level_label), "MIC %u%%",
              (unsigned)(s_recording_smoothed_level / 10u));
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    draw_ascii_centered(184, level_label, s_recording_paused ? muted : cyan, bg);
+#else
     draw_ascii_centered(226, level_label, s_recording_paused ? muted : cyan, bg);
+#endif
     finish_screen_frame(composed);
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
@@ -1326,17 +3128,6 @@ void board_port_show_text(const char *title, const char *text) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
         return;
     }
-    // The interaction worker refreshes this message periodically while the
-    // remote Agent is still running. Treat it as the live thinking surface,
-    // not as a static message page; the latter disables the mouth animator.
-    if (title && !strcmp(title, "远端处理中")) {
-        strlcpy(s_state, "thinking", sizeof(s_state));
-        s_thinking_mouth_frame = 0;
-        show_thinking_status(title, text);
-        ESP_LOGI(TAG, "remote processing surface refreshed; mouth animation active");
-        xSemaphoreGiveRecursive(s_lcd_mutex);
-        return;
-    }
     bool ready = title && text &&
                  (!strcmp(title, "MACLAW") || !strcmp(title, "码卡龙")) &&
                  (!strcmp(text, "READY") || !strcmp(text, "Ready") ||
@@ -1354,20 +3145,38 @@ void board_port_show_upload_progress(size_t done, size_t total, const char *stag
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     s_thinking_surface_visible = false;
     uint16_t bg = color(9,35,64);
-    unsigned percent = total ? (unsigned)(done * 100 / total) : 0;
+    // Avoid 32-bit size_t overflow for long recordings: done * 100 can wrap
+    // well below the advertised 512 MiB meeting quota.
+    unsigned percent = 0;
+    if (total) {
+        size_t whole = done / total;
+        size_t remainder = done % total;
+        percent = whole >= 1 ? 100
+                             : (unsigned)(((uint64_t)remainder * 100u) / total);
+    }
+    if (percent > 100) percent = 100;
+    const char *visible_stage = stage && stage[0] ? stage : "正在上传";
     s_response_active = false;
     s_foreground_surface = true;
     bool composed = begin_screen_frame();
     fill_screen(bg);
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    draw_text24_centered(24, "会议录音", color(255,255,255), bg, 8);
+    draw_text24_centered(62, visible_stage, color(170,215,235), bg, 9);
+    draw_progress_bar(24, 108, 192, 18, percent, color(28,80,111), color(72,205,220));
+    char label[16]; snprintf(label, sizeof(label), "%u%%", percent);
+    draw_ascii_centered(138, label, color(255,255,255), bg);
+    draw_text24_centered(190, "上传中，请勿断电", color(150,195,215), bg, 9);
+#else
     draw_text24_centered(66, "会议录音", color(255,255,255), bg, 8);
-    draw_text24_centered(112, stage && stage[0] ? stage : "正在上传", color(170,215,235), bg, 9);
+    draw_text24_centered(112, visible_stage, color(170,215,235), bg, 9);
     draw_progress_bar(24, 184, 192, 18, percent, color(28,80,111), color(72,205,220));
-    char label[16]; snprintf(label, sizeof(label), "%u%%", percent > 100 ? 100 : percent);
+    char label[16]; snprintf(label, sizeof(label), "%u%%", percent);
     draw_ascii_centered(226, label, color(255,255,255), bg);
-    /* Keep the comma with the continuation line. A comma stranded after
-     * “上传中” reads like broken Chinese punctuation on the compact panel. */
-    draw_text24_centered(260, "上传中", color(150,195,215), bg, 9);
-    draw_text24_centered(290, "，请勿断电", color(150,195,215), bg, 9);
+    // Eight full-width glyphs fit within the 240 px panel. Keep this warning
+    // as one semantic line so punctuation can never be stranded at line start.
+    draw_text24_centered(272, "上传中，请勿断电", color(150,195,215), bg, 9);
+#endif
     finish_screen_frame(composed);
     ESP_LOGI(TAG,"upload %u/%u %s",(unsigned)done,(unsigned)total,stage?stage:"");
     xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -1377,11 +3186,182 @@ void board_port_show_response(const char *title, const char *text) {
     s_thinking_surface_visible = false;
     s_foreground_surface = true;
     s_response_active = true;
+    s_response_image_active = false;
     s_response_page = 0;
     strlcpy(s_response_title, title && title[0] ? title : "码卡龙", sizeof(s_response_title));
-    strlcpy(s_response_text, text && text[0] ? text : "没有收到文字回复", sizeof(s_response_text));
+    response_copy_without_internal_metadata(s_response_text, sizeof(s_response_text), text);
+    if (!s_response_text[0]) {
+        strlcpy(s_response_text, "没有收到文字回复", sizeof(s_response_text));
+    }
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    s_response_next_page_us = response_page_count() > 1
+                                  ? esp_timer_get_time() + RESPONSE_AUTO_PAGE_INTERVAL_US
+                                  : 0;
+#endif
     draw_response_page();
     ESP_LOGI(TAG, "response pages=%u: %s", response_page_count(), s_response_text);
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
+void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_text,
+                                 const char *label, unsigned attempt, unsigned max_attempts) {
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    if (!active) {
+        s_alarm_visual_active = false;
+        s_foreground_surface = false;
+        strlcpy(s_state, "idle", sizeof(s_state));
+        show_state_screen(s_state);
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
+    // Bread has no animated alarm geometry. Avoid repainting an identical
+    // 240x320 frame after every sound burst; only a changed attempt needs new
+    // text. This removes sustained LCD/SPI work from the one-minute ring path.
+    static unsigned rendered_attempt;
+    if (s_alarm_visual_active && rendered_attempt == attempt) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
+    (void)frame;
+    s_alarm_visual_active = true;
+    rendered_attempt = attempt;
+    s_foreground_surface = true;
+    s_response_active = false;
+    uint16_t bg = color(9, 23, 38), accent = color(235, 177, 74);
+    bool composed = begin_screen_frame();
+    fill_screen(bg);
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    fill_rect_solid(16, 8, 208, 4, accent);
+    draw_text24_centered(27, "闹钟响铃", color(244, 249, 252), bg, 8);
+    draw_ascii_centered(69, time_text && strlen(time_text) >= 16 ? time_text + 11 : "--:--", accent, bg);
+    if (label && label[0]) draw_text24_centered(112, label, color(221, 234, 242), bg, 9);
+    char attempt_text[28];
+    snprintf(attempt_text, sizeof(attempt_text), "%u / %u", attempt, max_attempts);
+    draw_ascii_centered(157, attempt_text, color(145, 177, 197), bg);
+    draw_text24_centered(199, "按激活键停止", color(145, 177, 197), bg, 8);
+#else
+    fill_rect_solid(16, 18, 208, 4, accent);
+    draw_text24_centered(48, "闹钟响铃", color(244, 249, 252), bg, 8);
+    draw_ascii_centered(105, time_text && strlen(time_text) >= 16 ? time_text + 11 : "--:--", accent, bg);
+    if (label && label[0]) draw_text24_centered(176, label, color(221, 234, 242), bg, 9);
+    char attempt_text[28];
+    snprintf(attempt_text, sizeof(attempt_text), "%u / %u", attempt, max_attempts);
+    draw_ascii_centered(230, attempt_text, color(145, 177, 197), bg);
+    draw_text24_centered(278, "按激活键停止", color(145, 177, 197), bg, 8);
+#endif
+    finish_screen_frame(composed);
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
+void board_port_show_response_image(const char *title, const char *caption,
+                                    const uint16_t *pixels, size_t width, size_t height) {
+    if (!pixels || width < 1 || width > 64 || height < 1 || height > 64) return;
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    s_thinking_surface_visible = false;
+    s_foreground_surface = true;
+    s_response_active = true;
+    s_response_image_active = true;
+    s_response_page = 0;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    s_response_next_page_us = 0;
+#endif
+    uint16_t bg = color(8, 17, 28), header = color(14, 31, 47);
+    uint16_t accent = color(76, 168, 207), ink = color(244, 248, 251);
+    uint16_t muted = color(174, 198, 215);
+    bool composed = begin_screen_frame();
+    fill_screen(bg);
+    const int image_header_h =
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        FANGTANG_HEADER_H;
+#else
+        60;
+#endif
+    fill_rect_solid(0, 0, LCD_WIDTH, image_header_h, header);
+    fill_rect_solid(RESPONSE_TEXT_X,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                    10, 4, 24,
+#else
+                    19, 4, 23,
+#endif
+                    accent);
+    draw_text24_clipped(RESPONSE_TEXT_X + 14,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                        10,
+#else
+                        18,
+#endif
+                        title && title[0] ? title : "码卡龙", ink, header, 8);
+    fill_rect_solid(RESPONSE_TEXT_X, image_header_h - 1, RESPONSE_TEXT_WIDTH, 1,
+                    color(31, 62, 82));
+
+    // Scale small gateway thumbnails to a useful reading size with nearest-
+    // neighbour sampling. It preserves icons, QR-like art and screenshots and
+    // avoids wasting most of this compact display on empty background.
+    int content_top = image_header_h + 8;
+    int content_bottom = caption && caption[0]
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                             ? 172
+#else
+                             ? 222
+#endif
+                             : RESPONSE_FOOTER_Y;
+    int available_h = content_bottom - content_top;
+    int max_w = 176;
+    int scale_x = max_w / (int)width;
+    int scale_y = available_h / (int)height;
+    int image_scale = scale_x < scale_y ? scale_x : scale_y;
+    if (image_scale < 1) image_scale = 1;
+    if (image_scale > 3) image_scale = 3;
+    int shown_w = (int)width * image_scale;
+    int shown_h = (int)height * image_scale;
+    uint16_t *scaled = NULL;
+    const uint16_t *shown_pixels = pixels;
+    if (image_scale > 1) {
+        scaled = heap_caps_malloc((size_t)shown_w * shown_h * sizeof(uint16_t),
+                                  MALLOC_CAP_DMA);
+        if (scaled) {
+            for (int y = 0; y < shown_h; ++y) {
+                for (int x = 0; x < shown_w; ++x) {
+                    scaled[(size_t)y * shown_w + x] =
+                        pixels[(size_t)(y / image_scale) * width + (x / image_scale)];
+                }
+            }
+            shown_pixels = scaled;
+        } else {
+            shown_w = (int)width;
+            shown_h = (int)height;
+        }
+    }
+    int image_x = (LCD_WIDTH - shown_w) / 2;
+    int image_y = content_top + (content_bottom - content_top - shown_h) / 2;
+    /* Gateway response images are application/vnd.maclaw.rgb565be: each
+     * uint16_t loaded by the little-endian ESP32 already contains the two wire
+     * bytes in the order required by esp_lcd (for example red f8 00 loads as
+     * 0x00f8). Scaling therefore copies uint16_t values verbatim. Do not apply
+     * the pet RGB565LE conversion here; that would swap response-image colours. */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(draw_bitmap_sync(image_x, image_y,
+        image_x + shown_w, image_y + shown_h, shown_pixels));
+    heap_caps_free(scaled);
+    if (caption && caption[0]) {
+        draw_text24_centered(
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+            178,
+#else
+            238,
+#endif
+            caption, muted, bg, 8);
+    }
+    fill_rect_solid(0, RESPONSE_FOOTER_Y, LCD_WIDTH,
+                    LCD_HEIGHT - RESPONSE_FOOTER_Y, color(11, 24, 38));
+    draw_text24_clipped(RESPONSE_TEXT_X,
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                        214,
+#else
+                        287,
+#endif
+                        "激活键返回", muted,
+                        color(11, 24, 38), 5);
+    finish_screen_frame(composed);
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
@@ -1391,18 +3371,31 @@ bool board_port_navigate_response(int page_delta) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
         return false;
     }
+    if (s_response_image_active) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return true;
+    }
     unsigned pages = response_page_count();
     if (pages > 1) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        // This board has no physical paging keys. Only its timed response
+        // renderer advances pages after the initial boot network-selection
+        // window has elapsed.
+        (void)page_delta;
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return true;
+#else
         int next = (int)s_response_page + page_delta;
-        // Wrap at both ends so every press produces visible feedback instead
-        // of being silently swallowed on the first or last page.
+        // The physical reading keys are most useful when they never appear to
+        // stop responding at an edge: previous on page 1 wraps to the final
+        // page, while next on the final page wraps to page 1.
         if (next < 0) next = (int)pages - 1;
         if (next >= (int)pages) next = 0;
         if ((unsigned)next != s_response_page) {
             s_response_page = (unsigned)next;
             draw_response_page();
-            ESP_LOGI(TAG, "response page changed: %u/%u", s_response_page + 1, pages);
         }
+#endif
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
     return true;
@@ -1454,17 +3447,15 @@ void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
 }
 void board_port_show_ready_prompt(const char *title, const char *text) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    if (s_alarm_visual_active) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return;
+    }
     s_wifi_connected = true;
     s_gateway_ready = true;
     s_response_active = false;
-    persist_gateway_ready(true);
     strlcpy(s_state, "idle", sizeof(s_state));
     s_foreground_surface = false;
-    show_state_screen(s_state);
-    /* Guard against a queued idle/ambient repaint produced just before the
-     * successful handshake. Re-assert the ready footer after that older draw
-     * has drained from the LCD task. */
-    vTaskDelay(pdMS_TO_TICKS(120));
     show_state_screen(s_state);
     ESP_LOGI(TAG, "ready: %s | %s", title ? title : "", text ? text : "");
     xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -1480,6 +3471,21 @@ void board_port_set_wifi_status(const char *ssid, bool connected) {
     if (!s_recording_active && !s_foreground_surface &&
         (!strcmp(s_state, "idle") || !strcmp(s_state, "quiet"))) show_state_screen(s_state);
     ESP_LOGI(TAG,"wifi %s %s",ssid?ssid:"",connected?"on":"off");
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+void board_port_set_service_ready(bool ready) {
+    if (!s_lcd_mutex) {
+        s_gateway_ready = ready;
+        return;
+    }
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    bool changed = s_gateway_ready != ready;
+    s_gateway_ready = ready;
+    if (changed && !s_recording_active && !s_foreground_surface &&
+        !s_alarm_visual_active &&
+        (!strcmp(s_state, "idle") || !strcmp(s_state, "quiet"))) {
+        show_state_screen(s_state);
+    }
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 void board_port_set_ambient(const char *time, const char *location, const char *date, const char *weekday,
@@ -1498,8 +3504,28 @@ void board_port_set_ambient(const char *time, const char *location, const char *
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
+void board_port_set_alarm_scheduled(bool scheduled) {
+    if (!s_lcd_mutex) return;
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    if (s_alarm_scheduled != scheduled) {
+        s_alarm_scheduled = scheduled;
+        const bool ambient = !strcmp(s_state, "idle") || !strcmp(s_state, "quiet");
+        if (ambient && !s_foreground_surface && !s_recording_active && !s_alarm_visual_active) {
+            show_state_screen(s_state);
+        }
+    }
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
 esp_err_t board_port_audio_stream_start(void) {
     board_port_pause_wake_word(true);
+    /* Pause is asynchronous. Let the recognizer finish its current I2S read
+     * and explicitly acknowledge the pause before foreground capture begins,
+     * otherwise it can consume the first command samples after the mutex is
+     * released between chunks. */
+    for (unsigned i = 0; s_wake_task && !s_wake_pause_acknowledged && i < 40; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     if (xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
         board_port_pause_wake_word(false);
         return ESP_ERR_TIMEOUT;
@@ -1524,50 +3550,487 @@ void board_port_audio_stream_stop(void) {
     }
     board_port_pause_wake_word(false);
 }
-void board_port_pause_wake_word(bool paused) {s_wake_paused = paused;}
-esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t cb, void *arg) {s_wake_cb=cb;s_wake_arg=arg;(void)s_wake_cb;(void)s_wake_arg;return ESP_OK;}
-esp_err_t board_port_stop_wake_word(void) {s_wake_cb=NULL;s_wake_arg=NULL;return ESP_OK;}
+
+void board_port_pause_wake_word(bool paused) {
+    s_wake_paused = paused;
+    if (!paused) s_wake_pause_acknowledged = false;
+}
+
+static void wake_word_task(void *arg) {
+    (void)arg;
+    /* start_wake_word publishes the task handle immediately after creation.
+     * Waiting here closes the small create/early-exit race on model failures. */
+    while (s_wake_task_starting) vTaskDelay(1);
+
+    s_wake_ready = false;
+    srmodel_list_t *models = esp_srmodel_init("model");
+    if (!models) {
+        ESP_LOGE(TAG, "offline wake disabled: cannot load ESP-SR model partition");
+        goto finish;
+    }
+    char *model_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_CHINESE);
+    if (!model_name) {
+        ESP_LOGE(TAG, "offline wake disabled: Chinese MultiNet model not found");
+        esp_srmodel_deinit(models);
+        goto finish;
+    }
+    esp_mn_iface_t *multinet = esp_mn_handle_from_name(model_name);
+    if (!multinet) {
+        ESP_LOGE(TAG, "offline wake disabled: unsupported model %s", model_name);
+        esp_srmodel_deinit(models);
+        goto finish;
+    }
+    model_iface_data_t *model_data = multinet->create(model_name, 4000);
+    if (!model_data) {
+        ESP_LOGE(TAG, "offline wake disabled: cannot create model %s", model_name);
+        esp_srmodel_deinit(models);
+        goto finish;
+    }
+
+    esp_err_t command_err = esp_mn_commands_alloc(multinet, model_data);
+    for (size_t i = 0;
+         command_err == ESP_OK && i < sizeof(s_wake_word_phonetics) / sizeof(s_wake_word_phonetics[0]);
+         ++i) {
+        command_err = esp_mn_commands_add(WAKE_WORD_COMMAND_ID,
+                                          s_wake_word_phonetics[i]);
+    }
+    esp_mn_error_t *command_errors = command_err == ESP_OK ? esp_mn_commands_update() : NULL;
+    if (command_err != ESP_OK || command_errors != NULL) {
+        ESP_LOGE(TAG,
+                 "offline wake disabled: word '%s' variants rejected (err=%s, rejected=%d)",
+                 WAKE_WORD_LABEL, esp_err_to_name(command_err),
+                 command_errors ? command_errors->num : 0);
+        multinet->destroy(model_data);
+        esp_srmodel_deinit(models);
+        goto finish;
+    }
+    if (multinet->set_det_threshold) {
+        int threshold_err = multinet->set_det_threshold(
+            model_data, WAKE_WORD_DETECTION_THRESHOLD);
+        if (threshold_err != 0) {
+            ESP_LOGW(TAG, "offline wake threshold %.2f was not applied: %d",
+                     (double)WAKE_WORD_DETECTION_THRESHOLD, threshold_err);
+        }
+    }
+
+    const int chunk_samples = multinet->get_samp_chunksize(model_data);
+    const int sample_rate = multinet->get_samp_rate(model_data);
+    if (chunk_samples <= 0 || sample_rate != AUDIO_RATE) {
+        ESP_LOGE(TAG, "offline wake disabled: model format is %d Hz / %d samples",
+                 sample_rate, chunk_samples);
+        multinet->destroy(model_data);
+        esp_srmodel_deinit(models);
+        goto finish;
+    }
+    int16_t *mono = heap_caps_malloc((size_t)chunk_samples * sizeof(*mono),
+                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    int32_t *raw = heap_caps_malloc((size_t)chunk_samples * sizeof(*raw),
+                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!mono || !raw) {
+        ESP_LOGE(TAG, "offline wake disabled: no memory for %d-sample buffers",
+                 chunk_samples);
+        heap_caps_free(mono);
+        heap_caps_free(raw);
+        multinet->destroy(model_data);
+        esp_srmodel_deinit(models);
+        goto finish;
+    }
+
+    s_wake_ready = true;
+    ESP_LOGI(TAG,
+             "offline wake listening: model=%s phrase='%s' variants=%u threshold=%.2f rate=%d chunk=%d",
+             model_name, WAKE_WORD_LABEL,
+             (unsigned)(sizeof(s_wake_word_phonetics) / sizeof(s_wake_word_phonetics[0])),
+             (double)WAKE_WORD_DETECTION_THRESHOLD, sample_rate, chunk_samples);
+    multinet->print_active_speech_commands(model_data);
+
+    bool model_was_paused = false;
+    int64_t last_detection_us = 0;
+    int64_t last_audio_diagnostic_us = 0;
+    while (!s_wake_stop_requested) {
+        if (s_wake_paused) {
+            if (!model_was_paused) {
+                multinet->clean(model_data);
+                model_was_paused = true;
+            }
+            s_wake_pause_acknowledged = true;
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        model_was_paused = false;
+        s_wake_pause_acknowledged = false;
+        if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+            continue;
+        }
+        size_t received = 0;
+        esp_err_t read_err = i2s_channel_read(
+            s_rx, raw, (size_t)chunk_samples * sizeof(*raw), &received,
+            pdMS_TO_TICKS(250));
+        xSemaphoreGive(s_audio_mutex);
+        if (read_err != ESP_OK) {
+            if (read_err != ESP_ERR_TIMEOUT) {
+                ESP_LOGW(TAG, "offline wake microphone read failed: %s",
+                         esp_err_to_name(read_err));
+            }
+            continue;
+        }
+
+        size_t samples = received / sizeof(*raw);
+        int32_t peak = 0;
+        uint64_t energy = 0;
+        for (int i = 0; i < chunk_samples; ++i) {
+            int16_t sample = i < (int)samples ? (int16_t)(raw[i] >> 14) : 0;
+            mono[i] = sample;
+            int32_t magnitude = sample < 0 ? -(int32_t)sample : sample;
+            if (magnitude > peak) peak = magnitude;
+            energy += (uint32_t)magnitude;
+        }
+        int64_t diagnostic_now_us = esp_timer_get_time();
+        if (diagnostic_now_us - last_audio_diagnostic_us >= 2000000) {
+            last_audio_diagnostic_us = diagnostic_now_us;
+            ESP_LOGI(TAG, "offline wake mic: samples=%u peak=%ld mean=%lu shift=14",
+                     (unsigned)samples, (long)peak,
+                     (unsigned long)(energy / (uint32_t)chunk_samples));
+        }
+
+        esp_mn_state_t state = multinet->detect(model_data, mono);
+        vTaskDelay(1);
+        if (state == ESP_MN_STATE_TIMEOUT) {
+            multinet->clean(model_data);
+            continue;
+        }
+        if (state != ESP_MN_STATE_DETECTED) continue;
+        esp_mn_results_t *result = multinet->get_results(model_data);
+        if (!result || result->num == 0 ||
+            result->command_id[0] != WAKE_WORD_COMMAND_ID) {
+            continue;
+        }
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - last_detection_us < WAKE_WORD_COOLDOWN_US) {
+            multinet->clean(model_data);
+            continue;
+        }
+        last_detection_us = now_us;
+        ESP_LOGI(TAG, "offline wake word detected: %s phrase=%d text='%s' raw='%s' (prob=%.3f)",
+                 WAKE_WORD_LABEL, result->phrase_id[0], result->string,
+                 result->raw_string, (double)result->prob[0]);
+        board_port_wake_word_cb_t callback = s_wake_cb;
+        void *callback_arg = s_wake_arg;
+        multinet->clean(model_data);
+        if (callback) callback(callback_arg);
+    }
+
+    heap_caps_free(mono);
+    heap_caps_free(raw);
+    multinet->destroy(model_data);
+    esp_srmodel_deinit(models);
+    ESP_LOGI(TAG, "offline wake stopped and model memory released");
+
+finish:
+    taskENTER_CRITICAL(&s_wake_lock);
+    s_wake_stop_requested = false;
+    s_wake_paused = false;
+    s_wake_pause_acknowledged = false;
+    s_wake_ready = false;
+    s_wake_task = NULL;
+    taskEXIT_CRITICAL(&s_wake_lock);
+    vTaskDelete(NULL);
+}
+
+esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t cb, void *arg) {
+    if (!cb) return ESP_ERR_INVALID_ARG;
+    if (!s_audio_mutex ||
+        xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t audio_err = audio_init();
+    xSemaphoreGive(s_audio_mutex);
+    if (audio_err != ESP_OK) {
+        ESP_LOGE(TAG, "offline wake microphone init failed: %s",
+                 esp_err_to_name(audio_err));
+        return audio_err;
+    }
+
+    taskENTER_CRITICAL(&s_wake_lock);
+    if (s_wake_task || s_wake_task_starting) {
+        bool starting = s_wake_task_starting;
+        bool ready = s_wake_ready;
+        taskEXIT_CRITICAL(&s_wake_lock);
+        /* A duplicate start may race asynchronous model initialization. Wait
+         * for the actual ready flag instead of treating task allocation as a
+         * working recognizer. This lets the application supervisor retry a
+         * failed/timed-out model without reporting a false success. */
+        for (unsigned i = 0; i < 400 && (s_wake_task || starting) && !ready; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(25));
+            taskENTER_CRITICAL(&s_wake_lock);
+            starting = s_wake_task_starting;
+            ready = s_wake_ready;
+            taskEXIT_CRITICAL(&s_wake_lock);
+        }
+        if (ready) return ESP_OK;
+        return (s_wake_task || starting) ? ESP_ERR_TIMEOUT : ESP_FAIL;
+    }
+    s_wake_task_starting = true;
+    s_wake_cb = cb;
+    s_wake_arg = arg;
+    s_wake_paused = false;
+    s_wake_pause_acknowledged = false;
+    s_wake_ready = false;
+    s_wake_stop_requested = false;
+    taskEXIT_CRITICAL(&s_wake_lock);
+
+    TaskHandle_t task = NULL;
+    BaseType_t created = xTaskCreatePinnedToCore(
+        wake_word_task, "maclaw_offline_wake", 10240, NULL, 4, &task, 1);
+    taskENTER_CRITICAL(&s_wake_lock);
+    if (created != pdPASS) {
+        s_wake_task_starting = false;
+        s_wake_cb = NULL;
+        s_wake_arg = NULL;
+        taskEXIT_CRITICAL(&s_wake_lock);
+        return ESP_ERR_NO_MEM;
+    }
+    s_wake_task = task;
+    s_wake_task_starting = false;
+    taskEXIT_CRITICAL(&s_wake_lock);
+    /* Task creation only proves that a stack was allocated. MultiNet model
+     * creation happens asynchronously and can still fail after a command has
+     * fragmented internal RAM. Report success only after inference is ready,
+     * so the application restart supervisor can retry a real init failure. */
+    for (unsigned i = 0; i < 400 && s_wake_task && !s_wake_ready; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+    if (s_wake_ready) {
+        ESP_LOGI(TAG, "offline wake task ready");
+        return ESP_OK;
+    }
+    if (!s_wake_task) {
+        ESP_LOGW(TAG, "offline wake task exited during model initialization");
+        return ESP_FAIL;
+    }
+    ESP_LOGW(TAG, "offline wake model initialization timed out");
+    return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t board_port_stop_wake_word(void) {
+    taskENTER_CRITICAL(&s_wake_lock);
+    if (!s_wake_task && !s_wake_task_starting) {
+        taskEXIT_CRITICAL(&s_wake_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_wake_paused = true;
+    s_wake_stop_requested = true;
+    taskEXIT_CRITICAL(&s_wake_lock);
+
+    for (unsigned i = 0; i < 240 && (s_wake_task || s_wake_task_starting); ++i) {
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+    if (s_wake_task || s_wake_task_starting) return ESP_ERR_TIMEOUT;
+    taskENTER_CRITICAL(&s_wake_lock);
+    s_wake_cb = NULL;
+    s_wake_arg = NULL;
+    taskEXIT_CRITICAL(&s_wake_lock);
+    ESP_LOGI(TAG, "offline wake task stopped cleanly");
+    return ESP_OK;
+}
 
 esp_err_t board_port_capture_wav(uint8_t **out, size_t *out_len) {
     if (!out || !out_len) return ESP_ERR_INVALID_ARG;
     *out=NULL;*out_len=0;
-    if (xSemaphoreTake(s_audio_mutex,pdMS_TO_TICKS(1500))!=pdTRUE) return ESP_ERR_TIMEOUT;
-    size_t samples=AUDIO_RATE*AUDIO_SECONDS, len=44+samples*2;
+    // Standby MultiNet owns the same I2S RX channel. Wait for its current
+    // read to finish before taking the mutex, otherwise its next inference
+    // chunk can steal the beginning of the command.
+    board_port_pause_wake_word(true);
+    for (unsigned i = 0; s_wake_task && !s_wake_pause_acknowledged && i < 40; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (!s_audio_mutex || xSemaphoreTake(s_audio_mutex,pdMS_TO_TICKS(1500))!=pdTRUE) {
+        board_port_pause_wake_word(false);
+        return ESP_ERR_TIMEOUT;
+    }
+    const size_t max_samples = AUDIO_RATE * COMMAND_CAPTURE_MAX_SECONDS;
+    const size_t start_timeout_samples =
+        AUDIO_RATE * COMMAND_CAPTURE_START_TIMEOUT_MS / 1000;
+    const size_t silence_samples = AUDIO_RATE * COMMAND_CAPTURE_SILENCE_MS / 1000;
+    const size_t start_confirm_samples =
+        AUDIO_RATE * COMMAND_CAPTURE_START_CONFIRM_MS / 1000;
+    const size_t preroll_samples = AUDIO_RATE * COMMAND_CAPTURE_PREROLL_MS / 1000;
+    size_t len=44+max_samples*2;
     uint8_t *wav=heap_caps_malloc(len,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if(!wav){xSemaphoreGive(s_audio_mutex);return ESP_ERR_NO_MEM;}
+    if(!wav){xSemaphoreGive(s_audio_mutex);board_port_pause_wake_word(false);return ESP_ERR_NO_MEM;}
     memset(wav,0,44);memcpy(wav,"RIFF",4);uint32_t v=len-8;memcpy(wav+4,&v,4);memcpy(wav+8,"WAVEfmt ",8);
     v=16;memcpy(wav+16,&v,4);uint16_t s=1;memcpy(wav+20,&s,2);memcpy(wav+22,&s,2);v=AUDIO_RATE;memcpy(wav+24,&v,4);
-    v=AUDIO_RATE*2;memcpy(wav+28,&v,4);s=2;memcpy(wav+32,&s,2);s=16;memcpy(wav+34,&s,2);memcpy(wav+36,"data",4);v=samples*2;memcpy(wav+40,&v,4);
+    v=AUDIO_RATE*2;memcpy(wav+28,&v,4);s=2;memcpy(wav+32,&s,2);s=16;memcpy(wav+34,&s,2);memcpy(wav+36,"data",4);v=max_samples*2;memcpy(wav+40,&v,4);
     int16_t *pcm = (int16_t *)(wav + 44);
     size_t done = 0;
+    size_t voiced = 0;
+    size_t silence = 0;
+    size_t speech_start_sample = 0;
+    bool speech_started = false;
     uint16_t smoothed_level = 0;
+    uint16_t idle_level = 0;
     uint32_t last_ui_second = UINT32_MAX;
-    while (done < samples) {
+    s_command_capture_active = true;
+    while (done < max_samples) {
         size_t got = 0;
         uint16_t level = 0;
-        esp_err_t err = read_mono(pcm + done, samples - done, &got, &level);
+        esp_err_t err = read_mono(pcm + done, max_samples - done, &got, &level);
         if (err != ESP_OK) {
+            s_command_capture_active = false;
             free(wav);
             xSemaphoreGive(s_audio_mutex);
+            board_port_pause_wake_word(false);
             return err;
         }
         if (got == 0) continue;
         done += got;
+        const uint16_t mean_level = command_capture_mean_level(pcm + done - got, got);
         smoothed_level = level > smoothed_level
                              ? (uint16_t)((smoothed_level + level * 3u) / 4u)
                              : (uint16_t)((smoothed_level * 7u + level) / 8u);
         uint32_t elapsed = (uint32_t)(done / AUDIO_RATE);
-        // The normal six-second command capture is synchronous, unlike the
-        // meeting stream. Feed the same shared recording UI from this loop so
-        // its timer and waveform remain live on every supported board.
+        // Command capture is synchronous, unlike the meeting stream. Feed the
+        // same shared recording UI from this loop so its timer and waveform
+        // remain live on every supported board.
         board_port_push_recording_pcm(pcm + done - got, got);
         board_port_set_audio_level(smoothed_level, elapsed);
         if (elapsed != last_ui_second) {
             board_port_set_recording_visual(true, false, elapsed);
             last_ui_second = elapsed;
         }
+        // Require a short run of voiced frames to reject clicks, then end only
+        // after a longer quiet interval. Hysteresis keeps ordinary soft
+        // consonants and brief between-word pauses from ending the command.
+        if (!speech_started) {
+            // Learn the local microphone floor while waiting for speech.  The
+            // minimum keeps a spoken preamble from raising the floor.
+            if (idle_level == 0 || mean_level < idle_level) idle_level = mean_level;
+            voiced = level >= COMMAND_CAPTURE_START_LEVEL ? voiced + got : 0;
+            if (voiced >= start_confirm_samples) {
+                speech_started = true;
+                silence = 0;
+                speech_start_sample = done - voiced;
+                ESP_LOGI(TAG, "command speech started after %u ms", (unsigned)(done * 1000 / AUDIO_RATE));
+            } else if (done >= start_timeout_samples) {
+                ESP_LOGI(TAG, "command capture timed out waiting for speech");
+                s_command_capture_active = false;
+                free(wav);
+                xSemaphoreGive(s_audio_mutex);
+                board_port_pause_wake_word(false);
+                return ESP_ERR_NOT_FOUND;
+            }
+        } else {
+            uint16_t silence_level = idle_level + COMMAND_CAPTURE_SILENCE_MARGIN;
+            if (silence_level < COMMAND_CAPTURE_SILENCE_FLOOR) {
+                silence_level = COMMAND_CAPTURE_SILENCE_FLOOR;
+            }
+            if (silence_level > COMMAND_CAPTURE_SILENCE_CEILING) {
+                silence_level = COMMAND_CAPTURE_SILENCE_CEILING;
+            }
+            silence = mean_level <= silence_level ? silence + got : 0;
+            if (silence >= silence_samples) {
+                ESP_LOGI(TAG,
+                         "command capture ended after %u ms of silence (mean=%u threshold=%u)",
+                         COMMAND_CAPTURE_SILENCE_MS, mean_level, silence_level);
+                break;
+            }
+        }
+        if (s_command_capture_stop_requested) {
+            ESP_LOGI(TAG, "command capture manually stopped: speech=%s elapsed=%ums",
+                     speech_started ? "yes" : "no",
+                     (unsigned)(done * 1000 / AUDIO_RATE));
+            break;
+        }
     }
-    xSemaphoreGive(s_audio_mutex);*out=wav;*out_len=len;return ESP_OK;
+    s_command_capture_active = false;
+    if (!speech_started) {
+        free(wav);
+        xSemaphoreGive(s_audio_mutex);
+        board_port_pause_wake_word(false);
+        return ESP_ERR_NOT_FOUND;
+    }
+    const size_t trim_start = speech_start_sample > preroll_samples
+                                  ? speech_start_sample - preroll_samples
+                                  : 0;
+    const size_t captured_samples = done - trim_start;
+    if (trim_start > 0) {
+        memmove(pcm, pcm + trim_start, captured_samples * sizeof(*pcm));
+    }
+    ESP_LOGI(TAG, "captured %u mono samples (trimmed %u ms)",
+             (unsigned)captured_samples,
+             (unsigned)(trim_start * 1000 / AUDIO_RATE));
+    const size_t actual_len = 44 + captured_samples * sizeof(*pcm);
+    v = (uint32_t)(actual_len - 8); memcpy(wav + 4, &v, sizeof(v));
+    v = (uint32_t)(captured_samples * sizeof(*pcm)); memcpy(wav + 40, &v, sizeof(v));
+    xSemaphoreGive(s_audio_mutex);
+    board_port_pause_wake_word(false);
+    *out=wav;
+    *out_len=actual_len;
+    return ESP_OK;
+}
+
+// Peak level is useful for promptly noticing the beginning of speech, but is
+// a poor silence detector on small MEMS microphones: one click in a 32 ms I2S
+// block makes the whole block appear loud. Fangtang's microphone can also have
+// a sizeable DC offset, so measure mean deviation from the block's DC level.
+// Keep its 0..1000 scale compatible with the peak level from read_mono().
+static uint16_t command_capture_mean_level(const int16_t *samples, size_t count) {
+    if (!samples || count == 0) return 0;
+    int64_t sum = 0;
+    for (size_t i = 0; i < count; ++i) {
+        sum += samples[i];
+    }
+    const int32_t dc = (int32_t)(sum / (int64_t)count);
+    uint64_t deviation_sum = 0;
+    for (size_t i = 0; i < count; ++i) {
+        int32_t deviation = (int32_t)samples[i] - dc;
+        deviation_sum += (uint32_t)(deviation < 0 ? -deviation : deviation);
+    }
+    uint32_t mean_deviation = (uint32_t)(deviation_sum / count);
+    return mean_deviation >= 12000 ? 1000
+                                   : (uint16_t)(mean_deviation * 1000 / 12000);
+}
+
+void board_port_set_network_transport(bool cellular) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    if (!s_lcd_mutex) {
+        s_network_transport_cellular = cellular;
+        return;
+    }
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    bool changed = s_network_transport_cellular != cellular;
+    s_network_transport_cellular = cellular;
+    if (changed && !s_recording_active && !s_foreground_surface &&
+        (!strcmp(s_state, "idle") || !strcmp(s_state, "quiet"))) {
+        show_state_screen(s_state);
+    }
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+#else
+    (void)cellular;
+#endif
+}
+
+bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    taskENTER_CRITICAL(&s_power_status_lock);
+    bool valid = s_battery_level_valid;
+    if (level_percent) *level_percent = s_battery_level;
+    if (charging) *charging = s_battery_charging;
+    taskEXIT_CRITICAL(&s_power_status_lock);
+    return valid;
+#else
+    (void)level_percent;
+    (void)charging;
+    return false;
+#endif
+}
+
+void board_port_request_capture_stop(void) {
+    if (s_command_capture_active) s_command_capture_stop_requested = true;
+}
+
+void board_port_reset_capture_stop(void) {
+    s_command_capture_stop_requested = false;
 }
 
 static esp_err_t write_stereo(const int16_t *source, size_t frames, unsigned channels) {
@@ -1593,23 +4056,22 @@ static esp_err_t write_stereo(const int16_t *source, size_t frames, unsigned cha
 }
 
 static esp_err_t speaker_play_begin(void) {
-    if (!s_audio_ready || !s_tx || !s_speaker_enabled) return ESP_ERR_INVALID_STATE;
-    return ESP_OK;
+    return i2s_channel_enable(s_tx);
 }
 
 static esp_err_t speaker_play_end(esp_err_t playback_err) {
+    /* Give the final descriptor time to leave DMA, followed by a short zero
+     * tail. Disabling immediately after i2s_channel_write only proves that the
+     * bytes were queued, not that the speaker consumed them. */
+    vTaskDelay(pdMS_TO_TICKS(20));
+    int16_t silence[128] = {0};
+    esp_err_t silence_err = write_stereo(silence, 128, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    esp_err_t stop_err = i2s_channel_disable(s_tx);
+    if (stop_err != ESP_OK) ESP_LOGW(TAG, "speaker stop failed: %s", esp_err_to_name(stop_err));
     if (playback_err != ESP_OK) return playback_err;
-    /* Queue at least one complete DMA ring of silence. i2s_channel_write can
-     * return while the last speech descriptor is still queued; filling a full
-     * ring forces that descriptor onto the wire before this call returns and
-     * leaves all reusable buffers silent. Keep TX enabled so the amplifier
-     * remains locked and ready for the next prompt. */
-    int16_t silence[256] = {0};
-    for (unsigned block = 0; block < 8; ++block) {
-        esp_err_t err = write_stereo(silence, 256, 1);
-        if (err != ESP_OK) return err;
-    }
-    return ESP_OK;
+    if (silence_err != ESP_OK) return silence_err;
+    return stop_err;
 }
 
 esp_err_t board_port_play_wav(const uint8_t *wav, size_t len) {
@@ -1651,50 +4113,93 @@ esp_err_t board_port_play_wav(const uint8_t *wav, size_t len) {
     }
     size_t frame_bytes = channels * sizeof(int16_t);
     if (audio_size % frame_bytes != 0) return ESP_ERR_INVALID_SIZE;
-    size_t frames = audio_size / frame_bytes;
-    const int16_t *samples = (const int16_t *)audio_data;
-    int32_t peak = 0;
-    uint64_t square_sum = 0;
-    size_t sample_count = frames * channels;
-    for (size_t i = 0; i < sample_count; ++i) {
-        int32_t sample = samples[i];
-        int32_t magnitude = sample < 0 ? -sample : sample;
-        if (magnitude > peak) peak = magnitude;
-        square_sum += (uint64_t)((int64_t)sample * sample);
-    }
-    unsigned rms = sample_count
-                       ? (unsigned)sqrt((double)square_sum / (double)sample_count)
-                       : 0;
-    ESP_LOGI(TAG,
-             "WAV playback start: %u Hz %u-bit %u ch frames=%u duration=%ums peak=%ld rms=%u volume=%u%%",
-             (unsigned)rate, (unsigned)bits, (unsigned)channels, (unsigned)frames,
-             (unsigned)((frames * 1000u) / rate), (long)peak, rms, s_output_volume);
-    if (xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
-    int64_t started_at = esp_timer_get_time();
-    esp_err_t err = speaker_play_begin();
+    esp_err_t err = board_port_audio_playback_begin();
     if (err == ESP_OK) {
-        err = write_stereo(samples, frames, channels);
-        err = speaker_play_end(err);
+        err = board_port_audio_playback_write((const int16_t *)audio_data,
+                                              audio_size / frame_bytes, channels);
+        err = board_port_audio_playback_end(err);
     }
+    return err;
+}
+
+esp_err_t board_port_audio_playback_begin(void) {
+    if (!s_audio_mutex) return ESP_ERR_INVALID_STATE;
+    // Give MultiNet time to leave its current microphone read and acknowledge
+    // the pause before speaker playback takes the shared I2S mutex. Acquiring
+    // the mutex first leaves a race where the recognizer cannot acknowledge
+    // until after playback and may resume with stale detector state.
+    board_port_pause_wake_word(true);
+    for (unsigned i = 0; s_wake_task && !s_wake_pause_acknowledged && i < 60; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        board_port_pause_wake_word(false);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_audio_playback_owner) {
+        xSemaphoreGive(s_audio_mutex);
+        board_port_pause_wake_word(false);
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = audio_init();
+    if (err == ESP_OK && s_output_volume == 0) err = ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK) err = speaker_play_begin();
+    if (err == ESP_OK) {
+        s_audio_playback_owner = xTaskGetCurrentTaskHandle();
+    } else {
+        xSemaphoreGive(s_audio_mutex);
+        board_port_pause_wake_word(false);
+    }
+    return err;
+}
+
+esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
+                                          unsigned channels) {
+    if (s_audio_playback_owner != xTaskGetCurrentTaskHandle()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!pcm || frames == 0 || (channels != 1 && channels != 2)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return write_stereo(pcm, frames, channels);
+}
+
+esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
+    if (s_audio_playback_owner != xTaskGetCurrentTaskHandle()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = speaker_play_end(playback_err);
+    s_audio_playback_owner = NULL;
     xSemaphoreGive(s_audio_mutex);
-    ESP_LOGI(TAG, "WAV playback end: result=%s elapsed=%lldms",
-             esp_err_to_name(err), (long long)((esp_timer_get_time() - started_at) / 1000));
+    board_port_pause_wake_word(false);
     return err;
 }
 esp_err_t board_port_play_ack_chime(void) {
-    if (xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    esp_err_t err = board_port_audio_playback_begin();
+    if (err != ESP_OK) return err;
     int16_t mono[256];
-    esp_err_t err = speaker_play_begin();
-    if (err == ESP_OK) {
-        for (int block = 0; block < 10 && err == ESP_OK; ++block) {
-            for (int i = 0; i < 256; ++i) {
-                mono[i] = sinf(2 * 3.14159265f * 660 * (block * 256 + i) / AUDIO_RATE) * 9000;
-            }
-            err = write_stereo(mono, 256, 1);
+    for (int block = 0; block < 10 && err == ESP_OK; ++block) {
+        for (int i = 0; i < 256; ++i) {
+            mono[i] = sinf(2 * 3.14159265f * 660 * (block * 256 + i) / AUDIO_RATE) * 3500;
         }
-        err = speaker_play_end(err);
+        err = board_port_audio_playback_write(mono, 256, 1);
     }
-    xSemaphoreGive(s_audio_mutex);
-    return err;
+    return board_port_audio_playback_end(err);
+}
+esp_err_t board_port_play_alarm_burst(void) {
+    int16_t mono[256];
+    esp_err_t err = board_port_audio_playback_begin();
+    if (err != ESP_OK) return err;
+    for (int strike = 0; strike < 3 && err == ESP_OK; ++strike) {
+        float hz = strike & 1 ? 2050.0f : 1700.0f;
+        for (int block = 0; block < 5 && err == ESP_OK; ++block) {
+            float amplitude = 7600.0f - block * 1100.0f;
+            for (int i = 0; i < 256; ++i) {
+                mono[i] = (int16_t)(sinf(2.0f * 3.14159265f * hz * (block * 256 + i) / AUDIO_RATE) * amplitude);
+            }
+            err = board_port_audio_playback_write(mono, 256, 1);
+        }
+    }
+    return board_port_audio_playback_end(err);
 }
 esp_err_t board_port_play_ack_voice(void) {return board_port_play_ack_chime();}

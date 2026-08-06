@@ -118,6 +118,7 @@ void app_ui_set_recording_mode(bool meeting) {
 void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds) {
     char next_pet[sizeof(s_model.pet_state)];
     bool meeting;
+    bool command_locked;
     taskENTER_CRITICAL(&s_model_lock);
     s_model.recording_active = active;
     s_model.recording_paused = active && paused;
@@ -127,7 +128,13 @@ void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seco
         memset(s_model.audio_history, 0, sizeof(s_model.audio_history));
         ++s_model.audio_history_revision;
     }
-    s_model.surface = active ? APP_UI_SURFACE_RECORDING : APP_UI_SURFACE_PET;
+    // Ending capture is only an intermediate step in a voice command.  Keep
+    // the shared model on its foreground surface while the worker swaps the
+    // waveform for "uploading/thinking" or a result; otherwise a delayed
+    // app_ui_set_pet_state() can publish an ambient frame in that gap.
+    command_locked = s_model.command_display_locked;
+    if (active) s_model.surface = APP_UI_SURFACE_RECORDING;
+    else if (!command_locked) s_model.surface = APP_UI_SURFACE_PET;
     meeting = s_model.meeting_recording;
     strlcpy(next_pet, s_model.pet_state, sizeof(next_pet));
     taskEXIT_CRITICAL(&s_model_lock);
@@ -136,7 +143,7 @@ void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seco
     // single shared transition even when different tasks updated the UI.
     board_port_set_recording_mode(meeting);
     board_port_set_recording_visual(active, paused, elapsed_seconds);
-    if (!active) board_port_set_pet_state(next_pet);
+    if (!active && !command_locked) board_port_set_pet_state(next_pet);
 }
 
 void app_ui_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
@@ -239,10 +246,11 @@ bool app_ui_navigate_response(int page_delta) {
                        !s_model.recording_active;
     taskEXIT_CRITICAL(&s_model_lock);
     if (response_visible && board_port_navigate_response(page_delta)) return true;
-#if CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
-    // On the physical-key board the HAL is the source of truth for a reply
-    // that is visibly on the LCD. This fallback also covers a late model-only
-    // state update that raced the outgoing-result draw.
+#if CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD || CONFIG_MACLAW_BOARD_FANGTANG_4G
+    // The compact LCD HAL is the source of truth for a reply that is visibly
+    // on the panel. Bread uses this for its physical page keys; Fangtang also
+    // needs it so its always-running six-second pager survives a late
+    // model-only state update that raced the outgoing-result draw.
     return board_port_navigate_response(page_delta);
 #else
     return false;
@@ -338,19 +346,29 @@ bool app_ui_wake_from_idle(void) {
 }
 
 void app_ui_set_wifi_status(const char *ssid, bool connected) {
-    bool render;
     taskENTER_CRITICAL(&s_model_lock);
     s_model.wifi_connected = connected;
-    render = s_model.surface == APP_UI_SURFACE_PET && !s_model.recording_active &&
-             !s_model.command_display_locked;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (render) board_port_set_wifi_status(ssid, connected);
+    // Forward every state transition.  The board port deliberately defers the
+    // cosmetic repaint while a response, recording, setup QR, or alarm owns
+    // the screen, but must retain the transport state for the next standby
+    // composition (the same ownership contract used for service readiness).
+    board_port_set_wifi_status(ssid, connected);
+}
+
+void app_ui_set_service_ready(bool ready) {
+    taskENTER_CRITICAL(&s_model_lock);
+    s_model.service_ready = ready;
+    taskEXIT_CRITICAL(&s_model_lock);
+    // Always forward the model mutation. The board port defers repainting when
+    // a command/setup/alarm owns the display, but must still remember an outage
+    // that occurred behind that foreground surface.
+    board_port_set_service_ready(ready);
 }
 
 void app_ui_set_ambient(const char *time, const char *location, const char *date,
                         const char *weekday, const char *weather_summary,
                         int temperature_c, bool weather_valid, bool weather_stale) {
-    bool render;
     taskENTER_CRITICAL(&s_model_lock);
     strlcpy(s_model.ambient_time, time ? time : "", sizeof(s_model.ambient_time));
     strlcpy(s_model.ambient_location, location ? location : "", sizeof(s_model.ambient_location));
@@ -361,16 +379,13 @@ void app_ui_set_ambient(const char *time, const char *location, const char *date
     s_model.ambient_temperature_c = temperature_c;
     s_model.ambient_weather_valid = weather_valid;
     s_model.ambient_weather_stale = weather_stale;
-    render = s_model.surface == APP_UI_SURFACE_PET && !s_model.recording_active &&
-             !s_model.command_display_locked;
     taskEXIT_CRITICAL(&s_model_lock);
-    // Ambient data belongs to the shared model, but only the background pet
-    // surface may paint it. Foreground recording/upload/reply/setup surfaces
-    // keep exclusive ownership until their state transition completes.
-    if (render) {
-        board_port_set_ambient(time, location, date, weekday, weather_summary,
-                               temperature_c, weather_valid, weather_stale);
-    }
+    // Always forward the model mutation.  The EchoEar board port has the same
+    // foreground guard as Bread Compact and stores an update received behind a
+    // result/upload/setup screen for the first restored standby frame.  Dropping
+    // it here used to leave date/weather stale until the next server tick.
+    board_port_set_ambient(time, location, date, weekday, weather_summary,
+                           temperature_c, weather_valid, weather_stale);
 }
 
 void app_ui_set_alarm_scheduled(bool scheduled) {
@@ -385,8 +400,18 @@ void app_ui_set_alarm_scheduled(bool scheduled) {
 void app_ui_set_alarm_visual(bool active, unsigned frame, const char *time_text,
                              const char *label, unsigned attempt, unsigned max_attempts) {
     taskENTER_CRITICAL(&s_model_lock);
+    // An alarm is an interruption, not a new command result.  When it ends,
+    // both board ports must return to the same ambient-pet state regardless of
+    // which foreground surface had been visible before it rang.  Clearing the
+    // stale upload cache also ensures the next meeting starts with a fresh
+    // progress frame rather than being suppressed as "unchanged".
     s_model.surface = active ? APP_UI_SURFACE_ALARM : APP_UI_SURFACE_PET;
     s_model.command_display_locked = active;
+    if (!active) {
+        strlcpy(s_model.pet_state, "idle", sizeof(s_model.pet_state));
+        s_upload_progress_valid = false;
+        s_upload_progress_stage[0] = '\0';
+    }
     taskEXIT_CRITICAL(&s_model_lock);
     board_port_set_alarm_visual(active, frame, time_text, label, attempt, max_attempts);
 }

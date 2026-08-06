@@ -1,24 +1,29 @@
-# ESP32 统一硬件抽象层与双板业务对齐开发计划
+# MaClaw AgentOS 开发计划（ESP32 统一业务与硬件抽象）
 
 ## 1. 文档信息
 
 - 状态：待实施
-- 日期：2026-08-05
-- 评审轮次：第十三轮全面架构审查（在前十二轮基础上，进一步补齐故障域与服务重启事务、端到端 deadline、可回滚数据迁移、用户可理解降级反馈、core dump 隐私和需求—证据追踪）
+- 日期：2026-08-06
+- 系统名称：MaClaw AgentOS
+- 评审轮次：第十五轮全面架构审查（在前十四轮基础上，正式纳入 Fangtang-4G，并将 Bread Compact 唯一功能母版、三硬件全功能等价和 Fangtang 独立适配设为发布门禁）
 - 适用工程：`esp32s3-maclaw-client`
-- 首批支持硬件：Bread Compact、EchoEar-2ST
-- 业务行为基线：以 Bread Compact 当前已经验证的处理方式为基线，将其提炼为唯一的共享业务实现；EchoEar-2ST 对齐同一业务行为，同时保留圆形屏幕的现有显示效果和硬件特性。
+- 首批正式支持硬件：Bread Compact、EchoEar-2ST、Fangtang-4G
+- 稳定 profile ID：`bread-compact-wifi-lcd-v1`、`echoear-2st-r8`、`fangtang-4g-v1`
+- 唯一功能与业务行为基线：Bread Compact 当前已经验证的完整功能集合及处理方式。EchoEar-2ST 与 Fangtang-4G 必须逐项对齐 Bread Compact；除通过硬件适配表达的屏幕、输入、音频、连接与电源差异外，不得自行定义另一套功能或业务行为。
+- 发布目标：三种硬件的用户可见业务功能完全一致。硬件差异只能影响交互映射、布局、性能预算、反馈通道和连接实现，不能形成三套业务、删减功能或长期 capability 缺口。
+- 基线继承规则：所有当前及未来进入 MaClaw AgentOS 正式支持集合的硬件，都必须实现完整 Bread Compact 功能母版；不设置按硬件删减功能的“精简版”正式 profile。无法以适配或替代入口承载全部公共功能的硬件，只能停留在实验/Fake 状态或先修订硬件，不能进入正式支持集合。
 
 ## 2. 背景与目标
 
-当前工程已经具备统一 `board_port_*` 函数名和初步的 `app_ui_model_t`，但硬件访问、输入手势、音频会话、产品交互策略和显示状态仍集中在两个大型板级实现中：
+当前工程已经具备统一 `board_port_*` 函数名和初步的 `app_ui_model_t`，并已在 Kconfig 中正式列出三款硬件，但硬件访问、输入手势、音频会话、产品交互策略和显示状态仍集中在两个大型板级实现中：
 
 - `main/board_port.c`：EchoEar-2ST 的 ST77916、CST816、ES7210/ES8311、输入及圆屏渲染实现。
-- `main/board_port_bread_compact.c`：Bread Compact 的 ST7789、实体按键、直连 I2S 音频及矩形屏渲染实现。
+- `main/board_port_bread_compact.c`：同时承载 Bread Compact 与 Fangtang-4G。Bread 使用 240×320 ST7789、激活键/音量键和直连 I2S；Fangtang 使用带 80 行 GRAM 偏移的 240×240 NV3023 viewport、单激活键、直连 I2S、充电/电池采样及专用方糖界面。文件内部已有大量 `CONFIG_MACLAW_BOARD_FANGTANG_4G` 分支，应拆为共享驱动构件与两个独立 profile/adapter，而不是继续把 Fangtang 当 Bread 变体。
+- `main/ml307_transport.cpp` 与 `main/main.c`：Fangtang-4G 额外提供 ML307 蜂窝传输、Wi-Fi/4G 启动选择和恢复路径；网络传输差异目前仍渗入 Gateway HTTP、会议上传、时间同步和启动编排。
 - `main/main.c`：仍存在根据具体板型选择闹钟解除输入的条件编译。
 - `main/app_ui.c`：仍存在 Bread Compact 回复翻页特判。
 - `main/board_port.c`：EchoEar 当前 idle timeout 仅关闭 panel/backlight，仍不是系统 LIGHT/DEEP_SLEEP；GPIO0 与 GPIO42 仍由轮询输入任务读取。
-- `main/Kconfig.projbuild` 与 `sdkconfig.defaults`：已有 DFS/tickless idle 和 battery ADC 配置说明，但在 `main/*.c` 中尚未发现对应 `esp_pm_configure`、ADC 采样、LIGHT/DEEP_SLEEP 或 wake-source 调用；当前双板验证 sdkconfig 的 PM 也处于关闭状态，不能把 Kconfig 文案或链接了 `esp_adc` component 视为已交付能力。
+- `main/Kconfig.projbuild` 与各 profile sdkconfig：已有 DFS/tickless idle、Fangtang battery ADC/charge GPIO 等配置；Fangtang 电池采样已有板级实现，但尚未形成统一 Battery Policy，三硬件也尚无完整的 `esp_pm_configure`、LIGHT/DEEP_SLEEP 与 wake-source 业务闭环。不能把 Kconfig 文案、ADC 读数或链接 component 直接视为已发布的电源能力。
 - `main/app_main()`：NVS 遇到 `ESP_ERR_NVS_NO_FREE_PAGES` 或 `ESP_ERR_NVS_NEW_VERSION_FOUND` 时会直接执行 `nvs_flash_erase()`，可能同时清除 Wi-Fi、配对 token、闹钟、会议恢复和未来 schedule，必须改为保数据的恢复流程。
 - `main/gateway_poll_task()` 与 Hub `device_gateway.go`：设备依赖长期 `/outgoing` 轮询；Hub 以最近认证请求后的 90 秒窗口判断在线，未 ACK 消息只保存在有上限的 Hub 内存队列中。当前没有 sleep/offline presence 协议，Hub 重启或离线积压超过上限时不能保证所有待发消息保留。
 - `board_port*.c`：离线 MultiNet 唤醒词任务持续读取 I2S 并运行推理；现有 Kconfig 也明确说明 always-on listening 与 light sleep 冲突。因此“语音唤醒可用”和“允许 LIGHT/DEEP_SLEEP”必须作为互斥产品策略治理，不能由板级任务自行决定。
@@ -26,17 +31,31 @@
 - `main/is_valid_gateway_url()`：当前允许 `http://` 且仅做前缀/空格校验；企业 Wi-Fi 表单还允许 `ca_mode=none`。发布策略必须默认强制 HTTPS、规范化 origin、禁止凭据跨 origin，并把关闭 CA 校验限制为受控诊断模式。
 - `main/firmware_identity.c`：当前通过 USB Serial/JTAG 常驻任务解析 `CLAWMATE_QUERY`，回报 board/layout/compat ID、固件版本、ELF SHA256 与 readiness；任务使用永久循环且缺少统一 stop/join，身份协议版本与 Gateway/HAL/NVS 版本也尚未形成兼容矩阵。该通道必须收归 Diagnostic/Manufacturing Platform Service，不能成为绕过 Task Registry、安全脱敏或板型兼容校验的例外。
 - `main/main.c`：仍有大量跨任务 `static`/`volatile` 状态和任务句柄，例如 interaction/meeting/cancel/welcome/HTTP 状态；`volatile` 只能影响编译器访问，不能提供多核原子性、内存序或复合状态一致性。迁移必须把每组状态归入单写者 Service/事件队列或明确 atomic/critical-section 契约，不能把现有全局变量原样搬进新目录。
-- `main/CMakeLists.txt`：目前按板型只切换一个 `board_port` 源文件，但所有显示、codec、ESP-SR、ADC 等组件仍无条件进入同一个 `REQUIRES` 集合，Bread 固件也可能携带 EchoEar 依赖。构建拆分必须以每 profile 源/组件/资源 manifest 为唯一输入，同时产生锁定依赖和可审计 artifact provenance。
+- `main/CMakeLists.txt`：EchoEar 选择 `board_port.c`，Bread/Fangtang 共同选择 `board_port_bread_compact.c`，仅 Fangtang追加 ML307 component/source 和方糖资源；但显示、codec、ESP-SR、ADC 等许多组件仍无条件进入同一个 `REQUIRES` 集合。构建拆分必须以三个 profile 的 source/component/resource manifest 为唯一输入，同时产生锁定依赖和可审计 artifact provenance。
 
-这意味着当前接口虽然同名，但业务仍然知道部分硬件差异；增加第三种硬件时，容易复制整个 `board_port`，继而复制业务状态和修复。
+### 2.1 当前三硬件支持矩阵
+
+下表只描述当前源码已经存在的硬件支持，不代表重构完成后的最终能力。所有“当前缺口”必须进入迁移台账，并以 Bread Compact 功能母版为终态验收。
+
+| 硬件 | 当前显示 | 当前输入 | 当前音频 | 当前连接 | 当前电源/传感 | 主要待整改点 |
+|---|---|---|---|---|---|---|
+| Bread Compact | 240×320 ST7789 SPI 矩形屏；独立启动图；回复分页 | GPIO0 激活键，音量上/下键 | direct-I2S 麦克风与扬声器，16 kHz，软件音量 | Wi-Fi STA/AP/EAP | 未发现有效 battery telemetry；当前没有完整 LIGHT/DEEP_SLEEP | 作为唯一功能母版；其板级业务状态迁出，Display/Input/Audio/Power 分层 |
+| EchoEar-2ST | 360×360 ST77916 QSPI 圆屏；圆形安全区和动画 | CST816 触屏、GPIO0/BOOT 候选键 | ES7210 capture + ES8311 playback/codec 音量，16 kHz | Wi-Fi STA/AP/EAP | 当前 idle 主要关 panel/backlight；GPIO42 touch IRQ 仅是 light/display wake 候选 | 全部业务逐项对齐 Bread；保留圆屏；输入/codec/wake 仅做适配，不保留业务分叉 |
+| Fangtang-4G | 240×240 NV3023 SPI viewport，GRAM Y offset=80；方糖视觉；5 行回复自动翻页 | GPIO0 单激活键；启动窗口双击切换网络 | direct-I2S 麦克风与扬声器，16 kHz；当前音量设置返回 `ESP_ERR_NOT_SUPPORTED` | Wi-Fi + ML307 双传输；当前有专用 HTTP、恢复、会议上传和时间路径 | battery ADC、charge GPIO 已有采样；ML307 power/guard；尚无统一 Battery/Power/Sleep Service | 从 Bread 共同 board port 拆出独立 profile；补齐音量和替代入口；ML307 收口 Connectivity；完整对齐 Bread 功能 |
+
+当前 Kconfig、稳定 board ID 与 CMake 已能选择三款硬件，因此 Fangtang-4G 不是“未来演示用第三板”，而是 MaClaw AgentOS 首批正式交付 profile。第四个 Fake/Reference profile 只用于证明抽象的可扩展性，不计入三硬件功能一致性的替代证据。
+
+这意味着当前接口虽然同名，但业务仍然知道部分硬件差异；Fangtang-4G 已经以大量条件分支接入，证明继续复制或复用整个 `board_port` 会同步复制业务状态、网络特判和修复风险。
 
 本计划的目标是建立稳定的硬件抽象层（HAL），使业务代码只有一份，并且只能依赖 HAL 和共享服务：
 
-1. Bread Compact 与 EchoEar-2ST 使用同一套业务状态机和交互规则。
+1. Bread Compact、EchoEar-2ST 与 Fangtang-4G 使用同一套业务状态机和交互规则。
 2. 业务代码不接触 GPIO、触摸控制器、LCD 控制器、codec、I2S 接线或具体板型宏。
-3. 输入差异、音频差异、屏幕显示差异和可选能力全部封装在 HAL/板级适配中。
+3. 输入、音频、屏幕、连接、电源等实现差异以及非公共物理增强全部封装在 HAL/板级适配中；Bread 公共业务能力不属于可选项。
 4. EchoEar-2ST 保留 360×360 圆屏安全区、现有布局、动画及 ST77916 QSPI 提交策略。
-5. 新增硬件时，只新增板型描述和 HAL 实现，不复制或修改业务流程。
+5. Fangtang-4G 保留 240×240 小屏、单键、方糖视觉、Wi-Fi/ML307 双传输和电池/充电状态；这些差异由独立 profile、Renderer、Input、Connectivity 与 Power adapter 表达。
+6. 三种硬件发布相同的业务能力集合，其验收清单以 Bread Compact 已有及本计划纳入的目标能力为准：语音指令、离线唤醒词、文字/图片/音频回复、取消、会议录音与续传、配网配对、待机环境信息、闹钟、音量、指定时间休眠和硬件输入唤醒。
+7. 后续新增硬件时，只新增板型描述和 HAL/平台适配，不复制或修改业务流程。
 
 本文把面向共享业务服务的 `Device API` 视为设备能力抽象的公开表面，把面向驱动实现的 `*_hal_ops_t` 视为板级 HAL 的内部 SPI（Service Provider Interface）。因此“业务只调用硬件抽象层”具体落实为：业务状态机不调用 ESP-IDF、文件系统、网络或板级函数；会议、指令录音等共享业务 Service 只调用通用 Device/Platform API，再由它们调用 HAL SPI 或 ESP-IDF 平台实现。`Device API` 不能出现“会议”“六秒指令”“闹钟”等具体业务用例，否则只是把业务耦合换了一个文件名。
 
@@ -46,7 +65,27 @@
 
 ### 3.1 唯一业务实现
 
-语音指令、会议录音、回复、取消、配网、闹钟、唤醒词监督和界面状态转换必须各自只有一个共享实现。Bread Compact 和 EchoEar-2ST 不得维护不同版本的业务处理函数。
+语音指令、会议录音、回复、取消、配网、闹钟、唤醒词监督和界面状态转换必须各自只有一个共享实现。Bread Compact、EchoEar-2ST 和 Fangtang-4G 不得维护不同版本的业务处理函数。
+
+### 3.1.1 三硬件功能等价是发布门禁
+
+“统一业务”不是只共用函数，也不是允许某个正式 profile 永久返回 `NOT_SUPPORTED`。首批三款正式硬件必须对外发布同一业务 capability 集合、同一状态机、同一错误语义、同一持久化/恢复保证和同一 Gateway tool 集合：
+
+- 物理控件不同，通过 Input Binding 提供相同业务 intent；不能因为没有独立音量键、触屏或多按键而缺少对应业务功能。
+- 屏幕形状/大小不同，通过 Renderer 的分页、滚动、裁切和安全区适配完整呈现相同信息；不能静默省略回复、进度、闹钟、错误或配置状态。
+- 音频链路不同，通过 codec/direct-I2S adapter 实现相同 capture/playback/volume 契约；某板当前缺少音量实现属于待补差距，不是最终 capability=false 的合理状态。
+- Wi-Fi 与 ML307 的传输实现可以不同，但 Command、Meeting、Alarm、Gateway、配对和时间语义保持一致；切换 transport 不产生新的业务分叉。
+- 若实机证明某项业务受不可改变的硬件物理限制，必须在发布前增加可用的替代交互/反馈适配或修订硬件；不能以降级 profile 进入“三硬件功能完全一致”的正式发布集合。
+
+可选的硬件增强（例如 Fangtang 电池/充电状态、蜂窝网络图标、EchoEar 触屏手势）允许额外呈现，但不能改变共享业务结果，也不能成为另一硬件执行核心流程的前置条件。
+
+### 3.1.2 Bread Compact 是唯一验收基线
+
+- 功能清单以 Bread Compact 为母版，先冻结 `feature_id`、用户入口、状态转换、结果、取消/超时、持久化、重启恢复、前景恢复和错误反馈。
+- EchoEar-2ST、Fangtang-4G 的每个 `feature_id` 必须关联同一共享 Service 和一条硬件适配记录，逐项证明行为等价。
+- 三硬件测试采用同一份业务用例和期望 trace；只允许在输入源、scene geometry、分页方式、音频/网络 driver trace 和功耗预算上使用 profile-specific expectation。
+- EchoEar 或 Fangtang 当前已有、但 Bread Compact 尚未具备的产品能力，必须先评审是否纳入 Bread Compact/AgentOS 公共基线。纳入后由三硬件一起实现；未纳入时只能作为不影响公共流程的硬件 telemetry/展示增强，不能演化为板型专属业务。
+- 任何“暂不支持”“后续补齐”只允许存在于迁移中的内部 build，不允许进入 MaClaw AgentOS 三硬件正式完成定义。
 
 ### 3.2 依赖方向单向
 
@@ -80,7 +119,7 @@ HAL 和板级实现不得反向调用业务状态机。板级回调只能发布�
 
 ### 3.4 能力驱动，不按板型分支
 
-可选能力通过 `board_capabilities_t` 表达。业务层只判断能力是否存在，不能判断设备叫什么。无能力时内部 HAL 可以返回平台错误，但通用 Device/Platform Service 必须映射为稳定的 `DEVICE_STATUS_NOT_SUPPORTED`，共享服务提供明确降级路径。
+硬件描述与运行健康通过 `board_capabilities_t`/effective capability 表达。业务层只判断本次 operation 依赖是否健康，不能判断设备叫什么。这里的“能力驱动”不得与三硬件功能等价冲突：Bread 功能母版中的正式能力在三个静态 profile 中均为必选；`DEVICE_STATUS_NOT_SUPPORTED` 只允许用于第四 Fake/Reference profile、未来尚未进入正式支持集合的硬件，或明确不属于公共基线的物理增强。三款正式硬件运行中发生临时故障时返回稳定的 unavailable/degraded reason 并走恢复策略，不能把实现缺失伪装成动态 capability 收缩。
 
 ### 3.5 显示差异是一等适配能力
 
@@ -187,6 +226,22 @@ Boot、stop、故障域 restart、sleep prepare、配置生效、配网和会议
 
 每项架构要求、profile capability、runtime budget 和 Phase 退出条件必须具有稳定 requirement ID，并关联 owner、实现 artifact、测试 ID、目标 profile、firmware/artifact digest、证据 URI/hash 和结论。测试未运行、证据缺失或仅有另一固件 digest 的结果均不等于通过。临时 waiver 必须记录批准人、理由、影响、补偿控制和到期日；过期 waiver 自动使门禁失败，不能靠文档勾选替代 CI/HIL 证据。
 
+### 3.28 服务重启后必须从权威状态重新收敛
+
+故障域恢复不能以“task 已重新创建”作为完成条件。每个 Service 必须声明 authoritative state、可丢弃 ephemeral state、durable checkpoint、依赖的 config/capability revision 和 restart reconciliation 函数。重启时禁止序列化或复活 mutex、task handle、callback context、DMA pointer、旧 operation、临时 UI snapshot 等运行时对象；依赖恢复后，Service 从 Configuration/Persistence/Capability 等唯一事实来源重新读取不可变快照，以幂等方式恢复订阅、计划任务、当前 UI 与设备期望状态。只有 reconciliation 完成并验证 observed state 与 desired state 一致后才能重新开放 admission；无法判断外部副作用结果时保持 `UNKNOWN_OUTCOME`，不得通过“重放全部命令”猜测恢复。
+
+### 3.29 复位与上电瞬间也必须满足电气安全
+
+每个 profile 必须提供 electrical-safety manifest，逐项声明高风险 GPIO/电源轨/功放 mute/背光/reset/chip-select 的 ROM reset 默认态、外部上下拉、有效电平、strapping 约束、允许驱动阶段、上电/掉电顺序、RTC hold 和最大毛刺窗口。最早期 board-safe port 在任何器件 probe、日志外设复用或通用 HAL init 前只应用已验证的安全状态；profile 未确认时保持高阻、功放静音、背光/高功率负载关闭。软件无法控制 ROM/bootloader 窗口的安全性必须由硬件上下拉或电源门控保证，不能把 `app_main()` 之后写 GPIO 当作上电无毛刺证明。WDT、brownout、panic、deep-sleep entry/wake 和烧录模式都必须纳入同一安全状态矩阵。
+
+### 3.30 动态时钟和资源压力必须由统一策略治理
+
+DFS、tickless、modem/light sleep 会改变 CPU/APB 时钟、timer、外设吞吐和 ISR latency。每个外设/Service 必须声明 clock-domain dependency、允许频率范围、PM lock owner、切频前后 barrier、需要重新计算的 baud/divider/timeout 和稳定时间；Audio sample clock、LCD QSPI/DMA、I2C/touch、UART/diagnostic 与单调时间必须在所有已发布频点验证。Resource Pressure Service 将 internal heap/largest block、DMA pool、queue、stack、storage 和 thermal/battery 信号归并为 `NORMAL → PRESSURE → CRITICAL`，按确定优先级拒绝新低价值工作、降低动画/图片/telemetry、释放 cache，同时为 cancel/alarm/wake、录音收尾和 Storage commit 保留 emergency reserve。压力降载不得由各板私自改变业务状态，也不能通过无限重启暂时掩盖泄漏。
+
+### 3.31 HIL 证据本身必须可验证和可复测
+
+HIL evidence 除 firmware/profile digest 外，还必须记录 board serial/hw revision、fixture ID/version、测量仪器与校准有效期、供电/温度/网络条件、测试脚本 revision、原始数据 hash、重复次数和不确定度。Golden screenshot/audio/power baseline 的创建或更新必须有独立批准与差异说明，禁止测试失败时自动覆盖 golden。Flaky case 只能隔离并设 owner/期限，不能重跑到通过后丢弃失败样本；release 结论采用预先声明的样本量、容差和统计规则，证据包签名或写入不可变存储以防事后替换。
+
 ## 4. 目标目录结构
 
 ```text
@@ -202,10 +257,14 @@ esp32s3-maclaw-client/main/
     boot_coordinator.h
     task_registry.c
     task_registry.h
+    service_supervisor.c
+    service_supervisor.h
     resource_service.c
     resource_service.h
     memory_service.c
     memory_service.h
+    resource_pressure_service.c
+    resource_pressure_service.h
     device_api.c
     device_api.h
     device_event_queue.c
@@ -278,6 +337,7 @@ esp32s3-maclaw-client/main/
     entropy_port.h
     diagnostic_api.h
     diagnostic_port.h
+    board_safe_port.h
     esp_idf/
       storage_esp_vfs.c
       connectivity_esp_wifi.c
@@ -285,6 +345,7 @@ esp32s3-maclaw-client/main/
       clock_esp_time.c
       entropy_esp_random.c
       diagnostic_usb_serial_jtag.c
+      board_safe_early.c
   hal/
     board_hal.h
     board_capabilities.h
@@ -318,11 +379,21 @@ esp32s3-maclaw-client/main/
       display_echoear_st77916_round.c
       power_echoear.c
       wake_echoear.c
+    fangtang_4g/
+      board_profile.c
+      board_resources.c
+      input_fangtang_single_key.c
+      audio_fangtang_i2s.c
+      display_fangtang_nv3023.c
+      connectivity_fangtang_ml307.c
+      sensor_fangtang_battery.c
+      power_fangtang.c
+      wake_fangtang.c
 ```
 
-迁移期保留 `board_port.h/.c` 作为兼容 facade；所有调用完成切换后再删除 facade，避免一次性重写造成难以定位的双板回归。
+迁移期保留 `board_port.h/.c` 作为兼容 facade；所有调用完成切换后再删除 facade，避免一次性重写造成难以定位的三硬件回归。Bread 与 Fangtang 可以复用经过明确边界提取的 direct-I2S、字体或绘图 primitive，但必须拥有独立 profile、资源表、Renderer 和输入/连接适配；禁止继续用一个大型 `board_port_bread_compact.c` 配合板型宏承载两块产品板。
 
-Facade 只做参数/错误/事件格式转换，不保存新的业务状态、不创建任务、不拥有硬件资源。每个 facade API 建立迁移台账：legacy owner、新 owner、切换 build flag、允许 shadow 的纯函数、禁止 shadow 的副作用、状态 handoff、双板验证证据和删除截止 Phase。新旧实现不能在同一 release build 中由远端动态任选；需要回退时只允许使用签名 build manifest 或物理授权的诊断策略，并在切换前 quiesce、drain callback/DMA、失效旧 handle/generation，再把唯一 ownership 交给另一侧。
+Facade 只做参数/错误/事件格式转换，不保存新的业务状态、不创建任务、不拥有硬件资源。每个 facade API 建立迁移台账：legacy owner、新 owner、切换 build flag、允许 shadow 的纯函数、禁止 shadow 的副作用、状态 handoff、三硬件验证证据和删除截止 Phase。新旧实现不能在同一 release build 中由远端动态任选；需要回退时只允许使用签名 build manifest 或物理授权的诊断策略，并在切换前 quiesce、drain callback/DMA、失效旧 handle/generation，再把唯一 ownership 交给另一侧。
 
 Shadow 模式仅比较无副作用的标准化输出，例如输入 gesture classification、capability projection、UI layout decision、配置校验或协议 JSON；输出携带相同 trace input ID，但 shadow 结果不得发布 Device Event、写 NVS/文件、发网络请求、驱动屏幕/音频或影响 health。差分允许列表必须注明浮点/时间/动画等容差，超过阈值只记录有界诊断并由人工/CI 决定切换，不自动在设备上来回 flip。
 
@@ -418,6 +489,8 @@ typedef struct {
 
 板级启动顺序固定为：最小早期启动上下文（读取 reset/wake cause，不驱动高风险 GPIO）→ 校验 profile → 初始化 Resource Manager → 初始化各 HAL → 初始化共享 Service → 启动 Display Task → 启动 Input/Audio/Wake 后台任务 → 开放事件入口。停止时严格逆序执行。
 
+在读取/验证完整 profile 前，只能调用极小的 `board_safe_early_init()`：依据随 artifact 固化并可由安全 identity 选择的 electrical-safety manifest，把功放 mute、背光/高功率电源、panel/codec reset 和冲突 chip-select 置于硬件已证明的安全状态。该路径不能 probe I2C/SPI 器件、分配 heap、启动 task 或依赖 NVS；未知 board revision 时只允许公共安全交集。manifest 必须区分 ROM reset/bootloader/app/deep-sleep/下载模式各阶段，并明确哪些 pin 的安全必须由外部上下拉或 load switch 保证。进入 panic/WDT/brownout 前若尚有执行机会，只执行 IRAM/internal-memory 可达的最小 fail-safe；不能承诺的软件动作不得替代原理图级安全证明。
+
 Resource Manager 至少登记：GPIO ownership、I2C/SPI host、I2S channel、panel/codec device handle、DMA/PSRAM buffer、PM lock、电源轨和相关 mutex。借用者不能删除总线或设备；只有 Resource Manager 能在所有借用者停止后销毁资源。
 
 共享总线错误恢复必须由 Resource Manager/Bus Service 编排，不能由某个子 HAL 私自 reset：记录总线 generation 和 borrower epoch，先阻止新事务、取消/等待在途操作、将受影响 Input/Audio/Display health 一次性收缩，再按 profile 允许的电气流程执行 controller reset、SDA/SCL stuck 检测/clock recovery、器件电源重置和重新 probe。恢复成功后重新创建借用 handle 并经过组件自检/readiness barrier；旧 generation handle 确定性失效。若线路仍被拉低、恢复次数超预算或 reset 会影响安全关键器件，保持 DEGRADED/SAFE_MODE，不反复切换总线电源。
@@ -436,6 +509,8 @@ Task Registry 是生命周期契约的一部分：创建任务前登记 owner/st
 
 Resource/Service manifest 还必须给每个组件分配 `fault_domain_id`，至少区分 shared-I2C、audio、display、network 和 storage domain，并标明哪些 component 可独立重启、哪些必须随共享 owner 一起 quiesce。故障域重启由 Boot Coordinator/Service Supervisor 发起，执行 `RUNNING → QUIESCING → STOPPED → REINITIALIZING → SELF_TEST → READY`：先关闭 admission，冻结新 handle，取消或等待在途 operation 与 callback drain，再递增 domain/resource generation、逆序停止、重建并自检。重启导致的 operation 终态必须显式分类为 `CANCELLED`、`RETRYABLE`、`INTEGRITY_DAMAGED` 或 `UNKNOWN_OUTCOME`；存在外部副作用且 outcome 未知时不得自动重试。只有 readiness 与健康滞回满足后才能恢复 capability；重启失败或 task 无法 join 时隔离整个 fault domain，不释放仍可能被访问的资源，也不允许旧 generation handle/callback 在恢复后复活。
 
+每个可重启 Service 还必须登记 restart reconciliation contract：authoritative source、durable/ephemeral 字段、最后确认 revision、依赖 readiness 和 observed-state probe。重建对象后从 Configuration/Persistence/Capability/领域 owner 获取新快照，幂等恢复订阅、timer、UI desired scene 和硬件期望配置；禁止 memcpy 旧 service context 或恢复锁、队列、task handle、driver pointer。reconciliation 发现 durable state 与硬件 observed state 不一致时按领域规则继续、补偿或保持降级，并记录差异；只有新 generation 的 subscriber 全部登记、旧 subscription 已 tombstone 且 desired/observed state 对齐后才能进入 READY。
+
 ### 5.3 Boot Coordinator、板型识别与运行模式
 
 Boot Coordinator 负责 profile 校验、依赖拓扑、readiness 和启动失败策略：
@@ -447,7 +522,7 @@ RESET
   → REQUIRED_SERVICES_READY
   → DEVICE_READY
   → ONLINE
-       ↘ DEGRADED（可选能力缺失，核心功能可用）
+       ↘ DEGRADED（已实现必选能力临时故障，或非公共物理增强不可用；不掩盖正式实现缺口）
        ↘ SAFE_MODE（板型/分区/关键资源不安全）
 ```
 
@@ -718,6 +793,8 @@ Power HAL 至少区分 `set_backlight/panel_power`、PM policy/lock、`enter_lig
 
 Power HAL 必须与 Display/Audio/Wake Service 协调：DMA 未完成、会议录音、TTS 播放或唤醒模型运行时不能擅自关闭依赖时钟；DFS/APB lock 的获取和释放由资源所有者负责。
 
+Clock/PM manifest 必须逐组件声明 CPU/APB/XTAL/RTC/I2S source 依赖、最低/最高频点、允许的 sleep state、PM lock 类型/owner 和频率变化处理。切频事务在新操作 admission 前建立 barrier，等待敏感 DMA/transaction 的安全边界；切换后由对应 port 重新验证或配置 I2C timeout/baud、LCD QSPI clock、UART/diagnostic baud、软件 timer 与 codec/I2S 时钟，再开放队列。使用独立音频时钟源时仍要验证与单调时钟的 ppm/correlation；使用 APB 派生时钟时 capture/playback 持正确 lock。任何频点组合未通过 HIL 时从 effective power capability 移除，不能靠“驱动通常会自动适配”发布。
+
 电池 ADC、充电状态和温度等只作为可选 telemetry capability 扩展，不把某块板的分压比或 GPIO 写进共享业务。首版只定义版本化 sensor/power snapshot 扩展点；没有可靠原理图、校准参数和实机验证时保持关闭。低电量/棕断策略必须先请求 Storage/Persistence checkpoint 并给出有界超时，不能在文件更新中途直接深睡。
 
 低电量保护必须是共享 `battery_policy_service`，而不是 ADC 驱动中的百分比 `if`：电压/电量估算需使用 profile 校准参数、ADC 校准结果、充放电状态、滞回、连续样本与异常值过滤，温度补偿只在传感器可信时启用。策略至少分为提醒、限制高功耗、低功耗保护和棕断紧急路径；低压时减少联网/背光/扬声器峰值，停止新录音或升级类写入，仅允许一次有界的关键 checkpoint，避免因反复写 flash 加速掉电损坏。
@@ -736,7 +813,7 @@ ACTIVE
   → DEEP_SLEEP（RTC 域保留，唤醒后按一次新 boot 恢复）
 ```
 
-状态选择由共享 `power_service` 根据 schedule、idle、业务 lease、板级能力和唤醒能力决定；Power HAL 只执行板级时钟、电源轨、背光和 ESP sleep 操作，不判断“夜间”“会议中”或“是否应该睡”。首版若某 profile 尚未验证 light sleep，可只实现 `DISPLAY_OFF + DEEP_SLEEP`；内部 Power HAL 返回平台“不支持”错误，再由 Power Service 映射为 `DEVICE_STATUS_NOT_SUPPORTED`，不得把未验证模式声明为可用。`CONFIG_MACLAW_POWER_SAVE`、`CONFIG_PM_ENABLE`、tickless idle 和 DFS 只是编译前提，不是 capability；必须在启动时确认 `esp_pm_configure` 与相关锁初始化成功后才能加入 effective capabilities。现有 Kconfig battery ADC 文案同样不等于实现存在，直到 ADC port、校准、低电量状态机和实机门禁完成前保持关闭。
+状态选择由共享 `power_service` 根据 schedule、idle、业务 lease、板级能力和唤醒能力决定；Power HAL 只执行板级时钟、电源轨、背光和 ESP sleep 操作，不判断“夜间”“会议中”或“是否应该睡”。三硬件必须具备相同的指定时间/idle 休眠与可恢复唤醒业务；具体允许的最深睡眠状态可因 wake 电路不同而不同。若某 profile 未验证 light/deep sleep，Power Service 应选择已验证的较浅状态并保持相同用户结果，不能取消休眠计划或漏掉闹钟；对具体未实现的物理 depth，内部 Power HAL 可返回平台“不支持”并由 Power Service 安全改选，不能把它解释成公共 `sleep.schedule` 功能不支持。`CONFIG_MACLAW_POWER_SAVE`、`CONFIG_PM_ENABLE`、tickless idle 和 DFS 只是编译前提，不是 capability；必须在启动时确认 `esp_pm_configure` 与相关锁初始化成功后才能加入 effective capabilities。现有 Kconfig battery ADC 文案同样不等于实现存在，直到 ADC port、校准、低电量状态机和实机门禁完成前保持关闭。
 
 Always-on wake word 是显式功耗约束：当前 MultiNet 任务持续读取 I2S/执行推理，持有“最多进入 MODEM_SLEEP/DISPLAY_OFF”的 power lease。进入 LIGHT/DEEP_SLEEP 前必须停止并 join 唤醒词任务、释放模型/I2S/PM lock；恢复后由 `wake_word_service` 在 Audio/Clock 已就绪时重新加载。若用户选择“始终语音唤醒”，Power Service 只能使用与实机验证相容的较浅状态；若 schedule/低电量选择深睡，UI 和 effective capability 必须明确休眠期间语音唤醒不可用。产品若要求 deep sleep 下语音唤醒，需要 ULP 可行性证明或外部低功耗语音芯片/唤醒电路，不能把当前 ESP-SR 任务标为支持。
 
@@ -800,6 +877,7 @@ Wake HAL 只负责配置/解析 wake source；真正的 `enter_light_sleep()` / 
 
 - Bread Compact：优先验证 GPIO0 激活键作为 RTC GPIO/ext0/ext1 或 GPIO light-sleep wake source；音量键是否参与唤醒由 profile 和原理图验证决定。
 - EchoEar-2ST：GPIO0/BOOT 可作为候选硬件唤醒源；CST816 的 `TOUCH_IRQ` 为 GPIO42。按 ESP32-S3 引脚能力，GPIO42 不是 deep-sleep RTC IO，当前 PCB 上触屏唤醒应定位为 `DISPLAY_OFF/LIGHT_SLEEP` 能力，不能声明触屏直接唤醒 DEEP_SLEEP。DEEP_SLEEP 使用 GPIO0/BOOT 或 RTC timer；若产品必须支持触屏 deep-sleep wake，需要把 touch IRQ 改接 RTC-capable GPIO，或增加外部 wake/power-latch 电路并形成新 board revision。
+- Fangtang-4G：GPIO0 单激活键是用户硬件唤醒候选；RTC timer 是闹钟、Sleep Schedule 和低电量复检的必选候选。ML307 电源使能/guard、UART、LCD offset、充电状态 GPIO 和 battery ADC 在 sleep 前后的电平、保持、重新探测与恢复顺序必须由 profile 实测。存在有效闹钟、蜂窝事务或无法验证的充电唤醒路径时，Power Service 限制睡眠深度，不得把“4G 模块仍上电”误报为 ESP32 已进入完整低功耗状态。
 - 触屏唤醒不是普通 touch gesture。Wake HAL 只报告 `WAKE_CAUSE_TOUCH`，恢复 I2C/touch controller 并 drain 唤醒 contact；Input Service 在 guard window 内默认消费这个 contact，仅点亮/唤醒设备，避免一次触摸同时启动录音。是否允许“唤醒即执行”必须作为显式共享策略配置。
 - deep sleep 唤醒等价于重启：Boot Coordinator 必须在初始化 GPIO/I2C/LCD 前读取并缓存 wake cause，再按正常生命周期恢复。light sleep 则走对称 suspend/resume，不重复创建任务和总线。
 - 配置唤醒 GPIO 前校验 RTC/GPIO 能力、有效电平、上下拉、外设供电域和冲突；进入睡眠前清除已处于有效电平的 stale interrupt，避免立即唤醒循环。
@@ -812,6 +890,7 @@ Wake HAL 只负责配置/解析 wake source；真正的 `enter_light_sleep()` / 
 |---|---|---|---|
 | Bread Compact | GPIO0 激活键 | GPIO0；音量键待验证 | GPIO0 RTC wake + RTC timer |
 | EchoEar-2ST 当前 PCB | CST816 touch、GPIO0/BOOT | GPIO42 touch IRQ、GPIO0/BOOT | GPIO0 RTC wake + RTC timer；不支持 GPIO42 touch |
+| Fangtang-4G v1 | GPIO0 单激活键 | GPIO0 待实机验证；ML307/充电源组合需单独验证 | GPIO0 RTC wake + RTC timer 待实机验证；charger attach 是否可唤醒不得预设 |
 | EchoEar 后续板修订 | 同上 | 同上 | 仅当 touch IRQ 改接 RTC-capable GPIO/外部电路后声明 touch |
 
 构建 manifest 记录的不是单个 `supports_touch_wakeup` 布尔值，而是 `sleep_depth × wake_source` 矩阵及 active level、pull、hold、供电域和最小脉宽。Capability Service 只公布已通过实机测试的组合。
@@ -898,7 +977,7 @@ Gateway handshake/消息/tool arguments、配网 form、URL、JSON、base64、�
 
 ### 5.11 能力投影、运行时健康与网关协议
 
-内部能力表必须成为握手 `clientCapabilities` 的唯一硬件事实来源，禁止继续固定声明所有硬件都支持音频播放、图片、会议和音量控制。
+内部能力表必须成为握手 `clientCapabilities` 的唯一硬件事实来源，禁止脱离实现与自检结果硬编码声明。与此同时，音频播放、图片、会议、音量等 Bread 公共功能是三款正式 profile 的发布必选项：若任一 profile 无实现或自检长期失败，应阻断该 profile/整套三硬件发布，而不是从握手中隐藏后继续宣称功能对齐。
 
 ```text
 board_capabilities（静态硬件）
@@ -911,7 +990,7 @@ device_capabilities（本机真实能力）
 protocol clientCapabilities（协议格式、大小、功能）
 ```
 
-静态 `board_capabilities_t` 不可变；`device_health_t` 和 `effective_capabilities_t` 随初始化、存储挂载、故障和恢复变化。共享 Capability Service 负责生成握手 JSON，并处理 `capabilitiesAccepted`：未被 Hub 接受或运行时不可用的能力在当前会话关闭或降级。当前协议通过普通 handshake 完成 capability refresh：冷启动 handshake 携带新的 `bootSessionId`，运行时 refresh 明确省略该字段，Hub 因而不会创建新的启动欢迎事务。因此运行时能力变化先影响本地调度，再按限流策略执行不带 boot ID 的 refresh handshake。不得假设存在尚未定义的“会话内即时 capability update”消息，也不得把 capability refresh 误判为新开机并重放启动欢迎。测试必须覆盖无显示、无扬声器、无音量、无唤醒词、存储不可用和不同图片尺寸的 Fake HAL。
+静态 `board_capabilities_t` 不可变；`device_health_t` 和 `effective_capabilities_t` 随初始化、存储挂载、故障和恢复变化。共享 Capability Service 负责生成握手 JSON，并处理 `capabilitiesAccepted`：Hub 未接受或已实现能力运行时暂不可用时，当前会话按契约暂停、恢复或降级反馈；这不改变三款正式 profile 静态公共业务集合必须一致的门禁。当前协议通过普通 handshake 完成 capability refresh：冷启动 handshake 携带新的 `bootSessionId`，运行时 refresh 明确省略该字段，Hub 因而不会创建新的启动欢迎事务。因此运行时能力变化先影响本地调度，再按限流策略执行不带 boot ID 的 refresh handshake。不得假设存在尚未定义的“会话内即时 capability update”消息，也不得把 capability refresh 误判为新开机并重放启动欢迎。无显示、无扬声器、无音量、无唤醒词等缺失组合仅由 Fake/Reference 或未来非正式 profile 测试；三款正式硬件只测试临时故障、恢复和替代反馈，不把这些缺失固化为产品能力差异。
 
 为避免命名混淆，固定三层快照：`effective_device_capabilities`（本机真实可用）、`hub_accepted_capabilities`（Hub 对协议格式/版本的接受）和 `negotiated_session_capabilities`（两者求交并叠加当前认证授权）。Hub 回显不能写回静态 profile/health；本地安全策略可随时进一步收缩协商结果。每次冷启动、重连、重新认证、Hub origin 切换或 protocol/tool-schema 变化递增 `negotiation_epoch`，消息与工具调用同时携带 epoch；旧 epoch 到达时明确拒绝或按只读兼容策略处理。
 
@@ -934,6 +1013,8 @@ Capability Service 只发布不可变、带 `revision` 的完整快照；profile
 - 固件、IRAM/DRAM 和嵌入资源相对基线的最大增长量。
 - 配网 AP/HTTP/DNS、TLS handshake/upload、MultiNet load/unload 和全屏 DMA 同时/切换时的 phase-specific memory watermark、largest block 与临时 reservation。
 - 每个关键 task 的最大无让出执行时间、heartbeat 周期、允许 WDT margin 和 stop/join deadline。
+
+Resource Pressure Service 是所有运行时资源水位的唯一聚合者：按 profile 阈值和滞回归并 internal heap/largest block、DMA/对象 pool、queue reservation、task stack、Storage 空间以及 thermal/battery 为 `NORMAL/PRESSURE/CRITICAL`。进入 PRESSURE 时停止预取、限制图片/动态字形/非关键动画和 telemetry，收缩网络/媒体并发；进入 CRITICAL 时拒绝新的配网、TTS、图片解码和非必要上传，但保留 cancel/alarm/wake/mute、当前录音安全收尾、故障反馈、Storage/Persistence commit 与诊断摘要的预留资源。降载动作由 capability/policy revision 驱动且可逆，板级 HAL 只报告资源事实，不决定会议、回复或网络业务；达到恢复滞回并验证 largest block/pool 后才逐级开放，禁止 OOM→整机重启成为常态资源管理策略。
 
 全局锁规则：不持锁调用 callback、网络、NVS、全屏 render、任务 stop 或其他 Service；定义并静态记录 App State → Power Transition → Persistence → Resource → Audio/Display 的允许获取关系，原则上避免嵌套持锁。Power Service 只读取 lease snapshot，不能持 power mutex 等待 owner stop 或 storage flush。任务必须注册 owner 和停止方式，禁止未登记的匿名任务；创建 API 与删除 API、内部/PSRAM 栈类型必须匹配。网络/TLS、音频推理和 LCD DMA 的 core affinity 变更必须经实机 WDT/实时性验证。
 
@@ -998,6 +1079,8 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 
 所有 Phase 使用统一 requirements/evidence registry。最小字段为 requirement ID、owner、implementation artifact、test ID、target/profile、evidence URI/hash、firmware/artifact digest、实测 budget/baseline、pass/fail/waiver、waiver owner/expiry。CI、主机测试与 HIL 生成不可变 evidence bundle，Phase exit 和 release manifest 只引用匹配当前源码与固件 digest 的证据；缺失、过期或目标 profile 不匹配均视为未通过。
 
+HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探针接线版本、仪器型号与校准到期日、供电电压/限流、温度、网络条件、测试脚本/runner revision、原始 trace/截图/音频/功耗数据 hash、重复次数和测量不确定度。每类门禁预先声明 sample count、容差、warm-up 和统计规则；重跑必须保留全部 attempt。Golden 更新作为独立审查提交，关联旧/新差异、原因和批准者，测试 runner 不得自动接受新截图或功耗基线。Flaky 测试只能带 owner、issue 和到期日临时隔离，不能以“最终一次通过”覆盖之前失败；release evidence bundle 需要签名或不可变归档。
+
 ### 5.16 硬件自检与量产测试模式
 
 启动自检分为安全只读探测和需用户/工装确认的主动测试：
@@ -1022,24 +1105,57 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 - Gateway token、Wi-Fi/EAP 密码、私有 CA 和 provisioning secret 定义独立 secret 类型：禁止普通 getter 返回裸指针，使用最小作用域 copy/handle，RAM 使用后清零，crash dump/日志/HTTP error 统一脱敏。普通 NVS 明文只可作为明确记录的过渡风险；量产安全基线应评审 NVS encryption、Flash Encryption、Secure Boot、密钥烧录/轮换/吊销和返修流程，并形成按产品批次可验证的 security manifest。
 - 配对、重新配置、恢复出厂、时间未可信时的 TLS、证书轮换和设备转移都必须有 threat model 与失败策略；不能用“设备在局域网”假设攻击者可信。
 
-## 6. 双板统一业务行为
+## 6. 三硬件统一业务行为
+
+### 6.1 Bread Compact 功能母版与三硬件等价矩阵
+
+以下矩阵是正式发布的最小共同功能集。`EchoEar-2ST` 和 `Fangtang-4G` 两列都表示必须达到的最终结果，不是可选 capability；“适配差异”只说明实现入口，不降低功能与恢复保证。
+
+| `feature_id` | Bread Compact 功能母版 | EchoEar-2ST 对齐要求 | Fangtang-4G 对齐要求 | 等价验收 |
+|---|---|---|---|---|
+| `voice.command` | 激活键/唤醒词开始录音，支持提前停止、无语音提示、上传与幂等提交 | 触屏/唤醒词进入同一 Command Service | 单键/唤醒词进入同一 Command Service；Wi-Fi/ML307 不改变语义 | intent、状态、终态和远端事件 trace 一致 |
+| `voice.wake_word` | 离线“码卡龙”，与 capture/playback/meeting 互斥并自动恢复 | codec 音频适配后行为一致 | direct-I2S 与 ML307 并发预算下行为一致 | 唤醒、拒绝、暂停、重载 trace 一致 |
+| `command.cancel` | 处理中双击取消；录音阶段消费双击；迟到结果隔离 | 触屏双击映射相同 intent | 单键双击映射相同 intent | 取消结果、generation 和 gesture drain 一致 |
+| `reply.text` | 文字回复、分页、显式保留、首次激活只关闭回复 | 圆屏分页/自动导航完整显示同一内容 | 240×240 五行分页/自动导航完整显示同一内容 | 内容、页状态、关闭行为一致 |
+| `reply.image` | 图片与 caption | 圆屏 safe mask 适配，不丢 caption/状态 | 小屏缩放适配，不丢 caption/状态 | scene 字段和终态一致 |
+| `reply.audio` | WAV/MP3/TTS 播放及 correlation | ES8311 adapter 实现同一播放契约 | direct-I2S adapter 实现同一播放契约 | 支持格式、取消/打断和结果一致 |
+| `audio.volume` | 音量键调整，回复页优先翻页；支持远端音量设置 | 无独立音量键时提供远端/触控菜单入口，codec 音量生效 | 无独立音量键时提供远端/菜单入口，并补齐当前 `NOT_SUPPORTED` 实现 | 用户可达、0–100 语义、持久化和播放增益一致 |
+| `meeting.record` | 双击开始、有效手势停止、16 kHz/16-bit/mono WAV | 触屏映射，codec capture 契约一致 | 单键映射，direct-I2S capture 契约一致 | WAV、时长、停止和错误语义一致 |
+| `meeting.recovery` | 分块上传、SHA256、NVS cursor、断网/重启续传、确认后删文件 | Wi-Fi 恢复路径一致 | Wi-Fi/ML307 两种 transport 均遵守同一 durable operation | 断电/断网注入结果一致 |
+| `provisioning.pairing` | 配网、配对、重新配置事务和配对恢复 | 圆屏二维码/触屏提示适配 | 小屏二维码/单键及 Wi-Fi/4G 选择适配 | 凭据事务、取消、超时和恢复一致 |
+| `ambient.status` | 时间、日期、星期、地点、天气、Wi-Fi/Hub、宠物状态/素材 | 圆屏完整呈现 | 小屏分页/紧凑呈现；另可显示蜂窝/电池增强 | 必选 scene 字段、刷新和前景保护一致 |
+| `alarm.local` | create/list/clear、离线调度、scheduled 标记、响铃、解除、重启恢复 | 圆屏动画/触屏解除 | 小屏页面/单键解除；ML307 离线不影响本地调度 | tool、NVS、时间、终态和抢占恢复一致 |
+| `sleep.schedule` | 指定时间/idle 休眠、alarm deadline、timer/硬件唤醒 | 按圆屏/BOOT/touch 实测 wake matrix 实现相同用户功能 | 按单键/timer 与 ML307 电源恢复实现相同用户功能 | schedule、阻塞规则、wake 后业务状态一致 |
+| `lifecycle.recovery` | OTA、计划重启、崩溃、恢复出厂与 durable operation 协调 | 相同 Service/schema 契约 | 相同 Service/schema 契约，另恢复 ML307 observed state | 数据保留/清理、幂等和 reconciliation 一致 |
+
+功能等价判定规则：
+
+1. 三硬件对相同 `feature_id` 使用同一个领域 Service、事件 schema、状态机和测试用例。
+2. 三硬件握手发布相同的正式业务 capability 和 tool 集合；硬件 descriptor 可以不同。
+3. 相同业务输入必须得到相同业务结果。耗时允许落在各 profile 已批准预算内，但不能改变超时、重试、取消或持久化语义。
+4. 没有相同物理控件时必须提供可发现、可操作的替代入口；不能删除功能或永久返回 `NOT_SUPPORTED`。
+5. 小屏可以分页、圆屏可以重排、蜂窝网络可以使用不同 transport，但所有必选信息和操作必须可达。
+6. 任一正式 profile 未通过矩阵中的一项，MaClaw AgentOS 三硬件对齐即未完成；不能用 capability 隐藏失败后宣称整体完成。
+
+### 6.2 场景输入映射
 
 业务状态转换完全一致，物理输入映射可以不同：
 
-| 业务场景 | 共享业务结果 | Bread Compact 映射 | EchoEar-2ST 映射 |
-|---|---|---|---|
-| 待机激活 | 开始一次语音指令 | 激活键单击 | 圆屏单击 |
-| 回复可见时激活 | 关闭回复并回到待机；本次不录音 | 激活键单击 | 圆屏单击 |
-| 待机次级操作 | 开始会议录音 | 激活键双击 | 圆屏双击 |
-| 指令录音中次级操作 | 消费事件，不启动会议 | 激活键双击 | 圆屏双击 |
-| 远端处理中次级操作 | 请求取消当前指令 | 激活键双击 | 圆屏双击 |
-| 会议录音中有效操作 | 停止、保存并进入上传 | 激活键完成手势 | 圆屏有效点击 |
-| DISPLAY_OFF 唤醒 | 只恢复显示并消费本次唤醒接触；后续新手势才执行业务 | 激活键按下 | 圆屏触摸或 BOOT 键 |
-| LIGHT/DEEP_SLEEP 唤醒 | 产生 `DEVICE_EVENT_WAKE`，按 override 策略保持唤醒，不直接录音 | 已验证 GPIO0；timer | LIGHT：CST816/GPIO42 或 GPIO0；DEEP：GPIO0 或 timer |
-| 重新配置 | 持久化配置请求并重启进入 AP | 激活键长按 | BOOT 键长按 |
-| 闹钟响铃 | 立即解除，并消费该次完整手势 | 激活键按下沿 | 圆屏按下沿 |
-| 回复翻页 | 上一页/下一页 | 音量上下键 | 自动翻页；后续可映射滑动 |
-| 普通界面音量键 | 调整输出音量 | 音量上下键 | 无实体键，走远端音量设置 |
+| 业务场景 | 共享业务结果 | Bread Compact 映射 | EchoEar-2ST 映射 | Fangtang-4G 映射 |
+|---|---|---|---|---|
+| 待机激活 | 开始一次语音指令 | 激活键单击 | 圆屏单击 | 单激活键单击 |
+| 回复可见时激活 | 关闭回复并回到待机；本次不录音 | 激活键单击 | 圆屏单击 | 单激活键单击 |
+| 待机次级操作 | 开始会议录音 | 激活键双击 | 圆屏双击 | 单激活键双击；启动网络选择窗口内由系统 binding 消费 |
+| 指令录音中次级操作 | 消费事件，不启动会议 | 激活键双击 | 圆屏双击 | 单激活键双击 |
+| 远端处理中次级操作 | 请求取消当前指令 | 激活键双击 | 圆屏双击 | 单激活键双击 |
+| 会议录音中有效操作 | 停止、保存并进入上传 | 激活键完成手势 | 圆屏有效点击 | 单激活键完成手势 |
+| DISPLAY_OFF 唤醒 | 只恢复显示并消费本次唤醒接触；后续新手势才执行业务 | 激活键按下 | 圆屏触摸或 BOOT 键 | 单激活键按下 |
+| LIGHT/DEEP_SLEEP 唤醒 | 产生 `DEVICE_EVENT_WAKE`，按 override 策略保持唤醒，不直接录音 | GPIO0；timer | LIGHT：CST816/GPIO42 或 GPIO0；DEEP：GPIO0 或 timer | GPIO0 与 timer 均须实机验证；蜂窝/充电源按 capability 矩阵 |
+| 重新配置 | 持久化配置请求并重启进入配置流程 | 激活键长按 | BOOT 键长按 | 单激活键长按；网络传输选择是独立系统意图 |
+| 闹钟响铃 | 立即解除，并消费该次完整手势 | 激活键按下沿 | 圆屏按下沿 | 单激活键按下沿 |
+| 回复翻页 | 上一页/下一页或设备自动翻页 | 音量上下键 | 自动翻页；后续可映射滑动 | 5 行小屏自动翻页；不占用单键业务手势 |
+| 普通界面音量 | 调整输出音量 | 音量上下键 | 无实体音量键，走远端/触控菜单设置 | 无实体音量键，走远端/菜单设置；实施中补齐当前 board port 的音量实现，正式发布不得为 false |
+| 网络传输选择 | 切换 Connectivity policy，不改变 Command/Meeting 业务语义 | 固定 Wi-Fi | 固定 Wi-Fi | 启动窗口单键切换 Wi-Fi/ML307，持久化选择并显示当前 transport |
 
 上表是行为契约。不得在 `main.c` 中为板型重新实现分支；映射差异由 Input Service 的板型映射数据或 HAL 标准事件表达。
 
@@ -1049,29 +1165,29 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 
 任务：
 
-1. 记录 Bread Compact 与 EchoEar-2ST 当前构建配置、固件大小、启动日志和可用内存。
+1. 记录 Bread Compact、EchoEar-2ST 与 Fangtang-4G 当前构建配置、固件大小、启动日志和可用内存。
 2. 按第 6 节逐项录制/记录实体设备行为。
 3. 保存 EchoEar 圆屏各 surface 的基准照片：待机、聆听、思考、回复、录音、上传、配网二维码、闹钟。
 4. 为共享交互状态机建立主机侧纯 C 测试夹具，允许注入输入事件和设备能力。
 5. 记录现有任务、优先级、栈、core affinity、mutex/锁顺序、I2C/SPI/I2S ownership、DMA buffer 和 NVS key。
-6. 保存双板当前 `clientCapabilities`、Hub 回显和降级行为。
+6. 保存三硬件当前 `clientCapabilities`、Hub 回显和功能缺口；以 Bread Compact capability/行为为基准制定 EchoEar/Fangtang 补齐台账。
 7. 记录 interaction generation、取消 worker、reply correlation 和迟到消息过滤的完整事件 trace。
 8. 记录 partition layout、NVS schema、storage 非空保护、烧录保留策略和当前无 OTA 槽的事实。
 9. 测量输入/取消延迟、音频 deadline、显示耗时、内部 heap/largest block、PSRAM、任务栈和固件大小。
 10. 为每个 profile 生成首版 `runtime_budget`；预算值不得留 `TBD`。建议初值以稳定实机最差值加安全余量制定，并在评审记录中注明样本和计算方法。
 11. 盘点 `main.c` 中直接 SPIFFS/`FILE *`、Wi-Fi/HTTP、设备身份、会议恢复和固定握手 JSON 的调用点，形成迁移清单与目标 owner。
 12. 对当前 `/storage/meeting.wav`、NVS 恢复游标、WAV header 修复和 chunk 提交顺序做断电基线测试。
-13. 记录双板当前熄屏行为、静态/峰值功耗、可用 RTC/GPIO/timer wake source、电平保持和 touch controller 供电状态，特别验证 Bread GPIO0、EchoEar GPIO0 与 GPIO42。
+13. 记录三硬件当前熄屏行为、静态/峰值功耗、可用 RTC/GPIO/timer wake source、电平保持和外设供电状态，特别验证 Bread GPIO0、EchoEar GPIO0/GPIO42，以及 Fangtang GPIO0、ML307/charger/battery 相关电源域。
 14. 建立“配置不等于实现”清单，确认 `MACLAW_POWER_SAVE`、PM/tickless、battery ADC、light/deep sleep 当前每项的源码实现、构建状态和实机证据，未实现项不得进入基线 capability。
 15. 盘点全部 `ESP_ERROR_CHECK`、永久 task/timer/ISR/event handler 和 GPIO0 strapping 使用，形成错误分级表、Task Registry 与睡眠/停止影响清单。
 16. 记录当前 `app_main()` NVS 自动擦除路径及所有受影响 namespace/key，制作非破坏恢复测试镜像；未完成备份前不得用损坏样本做实机擦除试验。
 17. 记录 Gateway 30 秒长轮询、90 秒在线窗口、队列/媒体上限、ACK/cursor 和 Hub 重启行为，按消息类别标注 latest-wins、transient 或必须 durable。
-18. 测量双板 MultiNet always-on listening 的功耗、I2S/任务/模型占用及 stop/join 时间；核对 battery/charger 电路、ADC 校准条件与可用于 charger wake 的真实引脚。
+18. 测量三硬件 MultiNet always-on listening 的功耗、I2S/任务/模型占用及 stop/join 时间；核对各 profile 的 battery/charger 电路、ADC 校准条件与可用于 charger wake 的真实引脚。
 19. 对当前开放 SoftAP、`nopass` QR、本地 HTTP 表单、AP+STA 恢复模式、pair code、Hub URL 与 EAP `ca_mode=none` 建立 threat model 和抓包基线，记录凭据在 RAM/NVS/log/crash dump 的完整数据流。
 20. 记录所有跨模块 ops/descriptor 的大小、字段偏移、枚举值与版本，形成 HAL ABI golden manifest；盘点 DMA/internal/PSRAM 分配点及 flash cache-disabled 可达路径。
 21. 为关键 task 建立 WDT/heartbeat 基线：最大无让出时间、正常阻塞点、最坏 TLS/显示/推理/存储时长和 reset reason 诊断可见性。
-22. 冻结双板显示/输入/音频结构化能力：logical coordinate、rotation/mirror/safe mask、touch transform、pixel format/color order、DMA stripe，以及 PCM format/frame alignment/channel map。
-23. 盘点双板麦克风物理 mute、独立 LED/状态灯、触觉和安全反馈电路；没有硬件能力时明确 capability 为 false，不用屏幕动画冒充物理隐私指示。
+22. 冻结三硬件显示/输入/音频结构化能力：logical coordinate、rotation/mirror/safe mask/panel offset、touch transform、pixel format/color order、DMA stripe，以及 PCM format/frame alignment/channel map。
+23. 盘点三硬件麦克风物理 mute、独立 LED/状态灯、触觉和安全反馈电路；没有硬件能力时通过替代反馈满足共同业务契约，不用屏幕动画冒充物理隐私指示。
 24. 记录 USB Serial/JTAG identity 查询任务、line/body 上限、固件/ELF digest、`product/board/hw/layout/compat` 字段和 BOOT/SERVICE readiness 语义，纳入 Task Registry 与有线烧录兼容基线。
 25. 盘点所有安全随机值的生成点和启动时序，确认硬件 RNG/DRBG 强随机就绪条件、reseed、失败处理及不得使用 MAC/时间戳替代的门禁。
 26. 冻结 Gateway protocol major/minor、capability/tool/media descriptor 版本与 Hub accepted 行为，记录冷启动、重连、换 Hub 和重新认证时的 session/negotiation correlation。
@@ -1089,16 +1205,20 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 38. 测量 Boot、stop、restart、sleep prepare、configuration apply、provisioning 和 meeting finalize 的端到端耗时，冻结父子 deadline 分配与 cleanup reserve 基线。
 39. 盘点每个 NVS/Storage/credential/calibration schema 的 reader/writer version window、不可逆点、空间/写放大和旧固件回滚风险。
 40. 冻结用户降级 reason/反馈矩阵、生产 core dump 配置与敏感内存数据流，并建立 requirement→test→HIL evidence registry 基线。
+41. 建立三硬件 electrical-safety manifest，实测 reset/bootloader/WDT/brownout/deep-sleep/下载模式下功放、背光、电源轨、reset/CS、Fangtang modem power/guard 与 strapping pin 的默认电平和毛刺窗口。
+42. 盘点每个可重启 Service 的 authoritative/durable/ephemeral state、subscription/timer、desired/observed probe 和 reconciliation 规则，禁止旧 runtime context 直接复活。
+43. 冻结 DFS/PM 各频点下 CPU/APB/I2S/LCD/I2C/UART/timer 的 clock-domain 与 lock 基线，并定义 NORMAL/PRESSURE/CRITICAL 资源压力阈值和 emergency reserve。
+44. 登记 HIL fixture、仪器校准、环境、重复样本、容差、golden 审批和 flaky quarantine 基线，旧证据缺元数据时不得直接沿用 release 结论。
 
-退出条件：双板基准、事件 trace、数据版本和可量化预算齐全，所有后续回归都有可比较对象。
+退出条件：三硬件基准、Bread 功能母版、对齐差距、事件 trace、数据版本和可量化预算齐全，所有后续回归都有可比较对象。
 
 ### Phase 1：建立 HAL 生命周期、Resource Manager 和板型注册
 
 任务：
 
 1. 新建 `hal/` 接口、生命周期契约、API 版本和 `board_capabilities_t`。
-2. 新建 Bread 与 EchoEar `board_profile.c`、`board_resources.c`。
-3. 将 EchoEar 共享 I2C、SPI/I2S、DMA 和 PM lock 的所有权收归 Resource Manager。
+2. 分别新建 Bread、EchoEar 与 Fangtang 的 `board_profile.c`、`board_resources.c`；稳定 profile ID 与第 1 节一致，禁止让 Fangtang 继续复用 Bread profile 或以编译宏伪装成 Bread revision。
+3. 将三硬件的 I2C、SPI/I2S、DMA、显示总线、ML307 电源域和 PM lock 所有权收归 Resource Manager；EchoEar 共享 I2C、Fangtang modem/显示/音频资源均须声明 borrower、冲突和恢复顺序。
 4. 增加 Boot Coordinator、依赖拓扑、readiness barrier、DEGRADED/SAFE_MODE。
 5. 增加 board/profile/revision/target/flash/PSRAM/partition 校验和安全的硬件签名探测。
 6. 修改 CMake/Kconfig，使每个构建仅选择并链接一个 board profile。
@@ -1116,8 +1236,10 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 18. 建立集中 schema registry 并生成 Device Event/tool/status C 定义、协议 schema、测试向量；已发布 ID 只废弃不复用。
 19. 实现 Service Supervisor 与 fault-domain restart transaction，统一 admission close、operation/callback drain、generation 失效、重新自检、能力滞回恢复和失败隔离。
 20. 在生命周期 API 内部统一使用绝对单调 deadline，向所有 init/stop/restart 子步骤传播剩余预算并预留有界 cleanup reserve。
+21. 为每个 restartable Service 实现从 authoritative snapshot 到 desired/observed state 的幂等 reconciliation，重建 subscription/timer 且禁止恢复旧 task/lock/queue/driver context。
+22. 实现极小 `board_safe_early_init()` 和 profile electrical-safety 校验；未知 revision 只应用三硬件/修订版公共安全交集。
 
-退出条件：两个板型均能编译；profile 能准确报告能力；板型错配不会驱动高风险输出；任意初始化故障点均不遗留任务、句柄或内存。
+退出条件：三个正式 profile 均能编译；profile 能准确报告能力；板型错配不会驱动高风险输出；任意初始化故障点均不遗留任务、句柄或内存。
 
 ### Phase 2：建立 Device API、事件队列和统一业务意图
 
@@ -1129,7 +1251,7 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 4. 定义 `device_operation_context_t`、generation、取消 token、单终态提交和 reply correlation。
 5. 定义 opaque handle 的 type/generation、幂等 close、callback registration token 与 unregister/drain 契约。
 6. 将录音、播放等长操作改为 worker/service 异步执行，不阻塞 App Interaction Task。
-7. 从两个 `board_port` 抽出 Input HAL。
+7. 从现有两个 `board_port` 及其中的 Fangtang 条件分支抽出三个独立 Input HAL/profile binding；公共 Input Service 不感知这些实现来自两个旧文件还是三个新 profile。
 8. 保留 EchoEar CST816 的原生双击、重复 contact 排除和释放 drain 逻辑。
 9. 新建共享 `input_service`，实现第 6 节全部业务意图映射。
 10. 将 `on_user_input()` 改为 `on_app_intent()`，只处理业务意图。
@@ -1142,7 +1264,7 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 17. 建立 Configuration Service，统一配置来源、优先级、immutable revision snapshot、observer apply/rollback 和非法远端覆盖门禁。
 18. 为 touch/panel/audio/battery 等校准定义 provenance、硬件 revision 绑定、完整性、原子 revision 提交和回滚契约。
 
-退出条件：共享业务层不存在输入来源或板型判断；双板输入行为符合第 6 节；所有异步副作用均受有效 operation generation 约束。
+退出条件：共享业务层不存在输入来源或板型判断；三硬件输入行为符合第 6 节并覆盖相同业务 intent；所有异步副作用均受有效 operation generation 约束。
 
 ### Phase 3：建立完整 UI 模型、数据所有权和 Display Task
 
@@ -1172,7 +1294,7 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 
 退出条件：Bread Compact 视觉和行为与 Phase 0 基线一致；旧 Bread 显示入口不再承载 UI 状态。
 
-### Phase 5：抽取 EchoEar 圆屏 Display HAL
+### Phase 5：抽取 EchoEar 圆屏与 Fangtang 小屏 Display HAL
 
 任务：
 
@@ -1181,8 +1303,11 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 3. Renderer 仅消费共享 UI snapshot，不决定业务状态。
 4. 对照 Phase 0 图片验证像素布局和动画节奏，不将 Bread 矩形坐标移植到圆屏。
 5. 在 facade seam 完成圆屏场景的只读布局差分、QSPI/DMA drain 和 generation handoff；任一时刻仅一个 Renderer/Display HAL 驱动 ST77916。
+6. 将 Fangtang NV3023 初始化、240×240 logical viewport、GRAM Y offset=80、stripe/DMA 提交迁入独立 Display HAL，禁止继续由 Bread board port 条件编译驱动。
+7. 将方糖紧凑布局、五行回复分页、网络/电池增强状态与全部公共 Scene 绘制迁入 Fangtang Renderer；所有 Bread 功能母版必选字段和操作入口可达，同时保留方糖视觉。
+8. 为 NV3023 panel offset、裁剪边界、自动翻页、DMA drain 和 display generation handoff 建立 golden/HIL，任何 legacy/new 阶段均只有一个显示 owner。
 
-退出条件：EchoEar 圆屏所有界面无明显视觉退化，无旧界面覆盖前景界面的竞态。
+退出条件：EchoEar 圆屏与 Fangtang 240×240 小屏的全部公共 Scene 均完整可达并通过各自 golden；两者保留原显示形态，无旧界面覆盖前景界面的竞态；Fangtang 显示不再依赖 Bread board port。
 
 ### Phase 6：抽取 Audio HAL 和共享 Audio Service
 
@@ -1190,14 +1315,15 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 
 1. 抽取 Bread 直连 I2S Audio HAL。
 2. 抽取 EchoEar ES7210/ES8311 Audio HAL及采样调理。
-3. `audio_service` 只统一通用 capture/playback 会话和音频所有权；固定时长/WAV 封装迁入 `command_capture_service`，会议状态和恢复迁入 `meeting_service`。
-4. 将 MultiNet 生命周期和恢复监督迁入共享 `wake_word_service`。
-5. 确认音频播放期间、录音期间和配网期间的麦克风所有权切换没有死锁。
-6. 为 Audio Service 建立显式状态机、唯一锁顺序、超时回滚和诊断快照。
-7. 增加实际 sample-clock、DMA timestamp/sequence、ppm drift、gap/overrun/underrun 和录音完整性契约；WAV 时长以提交样本数为主。
-8. 音频切换仅在 IDLE/quiescent point 进行，先停止 wake/capture/playback 并 drain DMA；shadow 只比较 PCM 统计/意图，不允许 legacy/new 同时打开 I2S/codec、录音文件或播放路径。
+3. 抽取 Fangtang 直连 I2S Audio HAL，并实现统一 0–100 音量、持久化和实际播放增益；删除当前 `ESP_ERR_NOT_SUPPORTED` 终态。
+4. `audio_service` 只统一通用 capture/playback/volume 会话和音频所有权；固定时长/WAV 封装迁入 `command_capture_service`，会议状态和恢复迁入 `meeting_service`。
+5. 将 MultiNet 生命周期和恢复监督迁入共享 `wake_word_service`。
+6. 确认音频播放期间、录音期间和配网期间的麦克风所有权切换没有死锁。
+7. 为 Audio Service 建立显式状态机、唯一锁顺序、超时回滚和诊断快照。
+8. 增加实际 sample-clock、DMA timestamp/sequence、ppm drift、gap/overrun/underrun 和录音完整性契约；WAV 时长以提交样本数为主。
+9. 音频切换仅在 IDLE/quiescent point 进行，先停止 wake/capture/playback 并 drain DMA；shadow 只比较 PCM 统计/意图，不允许 legacy/new 同时打开 I2S/codec、录音文件或播放路径。
 
-退出条件：两个板型不再复制 capture/playback/唤醒词状态机；会议和指令录音只复用通用音频 API，不出现在 Device/HAL 接口名中；双板音频通过实机验证。
+退出条件：三个 profile 不再复制 capture/playback/唤醒词状态机；会议和指令录音只复用通用音频 API，不出现在 Device/HAL 接口名中；三硬件音频与音量功能通过实机验证。
 
 ### Phase 7：平台边界、电源调度、能力投影和构建依赖收口
 
@@ -1239,7 +1365,7 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 1. 建立 Power Service、power lease 和 `ACTIVE/DISPLAY_OFF/MODEM_SLEEP/LIGHT_SLEEP/DEEP_SLEEP` 状态机。
 2. 建立领域层 Sleep Schedule Service，支持一次性/周期时间窗、跨午夜、工作日、时区/DST、规则优先级、半开边界、手动唤醒 override 和下一闹钟抢占计划唤醒。
 3. 实现 `PREPARE → COMMIT` 休眠事务与逆序回滚，协调 Display DMA、Audio/Wake、Connectivity、Storage/Persistence 和 Alarm。
-4. 分别为 Bread 按键、EchoEar BOOT/触屏以及 RTC timer 完成板级 wake source 适配；触屏方案无法在 deep sleep 保持时，profile 明确降级为按键+timer 或 light sleep。
+4. 分别为 Bread 按键、EchoEar BOOT/触屏、Fangtang 单键以及 RTC timer 完成板级 wake source 适配；触屏方案无法在 deep sleep 保持时，EchoEar 明确使用 BOOT+timer 或限制到 light sleep，Fangtang 同时验证 GPIO0 strapping、ML307/显示电源恢复与 charger 观测，不把未经验证的 charger attach 声明为 wake source。
 5. 将现有 EchoEar idle panel-off 行为重命名/迁移为 `DISPLAY_OFF`，避免与系统休眠混淆。
 6. 接入 ESP-IDF PM 初始化与 effective capability 投影；Kconfig/PM/tickless/DFS/ADC 只有实现成功并通过自检后才对外生效。
 7. 为 Power transition 增加唯一序列化状态机、COMMIT 前二次校验、短窗口不入深睡和诊断写放大保护。
@@ -1249,7 +1375,7 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 11. 将 always-on Wake Word 纳入 power lease；验证停机/join/模型释放和 resume，不兼容的 sleep depth 必须拒绝或明确关闭语音唤醒。
 12. 建立 Battery Policy，包含校准、滞回、负载限制、一次性低压 checkpoint、charger/power-good/RTC 复检唤醒以及无可恢复源时拒绝 DEEP_SLEEP。
 
-7B 退出条件：指定时间休眠、低电量保护和 timer/硬件唤醒通过双板实机验证；唤醒 contact 不误触发业务；语音唤醒与各 sleep depth 的互斥关系可见且可验证；所有发布的深睡组合都有确定恢复路径。
+7B 退出条件：指定时间休眠、低电量保护和 timer/硬件唤醒通过三硬件实机验证；唤醒 contact 不误触发业务；语音唤醒与各 sleep depth 的互斥关系可见且可验证；所有发布的深睡组合都有确定恢复路径。
 
 #### Phase 7C：Gateway 休眠语义、领域工具与能力投影
 
@@ -1260,21 +1386,21 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 3. 定义下行消息 durability/TTL/容量/ACK/跨 boot 语义；latest-wins 状态在 handshake 重建，关键 tool/command 在 Hub 具备 durable queue 前不得宣称离线必达。
 4. deep sleep 新 session 隔离旧 generation、cursor、pending reply/tool result；light sleep 保持 session 并通过 resume barrier 恢复。
 5. 将设备工具改为 Gateway 通用 dispatcher + 领域注册表，新增 capability-gated 的 Sleep Schedule 工具，统一 schema、idempotency、deadline 和风险策略。
-6. 从 `board_capabilities + firmware_features + device_health + Hub accepted` 生成设备能力与工具集合，完成健康收缩和省略 `bootSessionId` 的运行时 refresh handshake。
+6. 从 `board_capabilities + firmware_features + device_health + Hub accepted` 生成设备能力与工具集合，完成健康收缩和省略 `bootSessionId` 的运行时 refresh handshake；三款正式 profile 的 Bread 公共业务 capability/tool 静态集合必须相同，差异只允许出现在硬件 descriptor、实现参数、临时运行健康及非公共物理增强中。
 7. 将 capability 输出改为 immutable/versioned snapshot，operation 绑定 revision，并定义运行中能力收缩时的完成/降级/取消策略。
 8. 固化 effective/Hub accepted/negotiated 三层能力、`negotiation_epoch` 与 protocol/tool/media descriptor 版本协商；换 Hub、重连和重新认证不得复用旧授权快照。
 9. 为每项 runtime health 增加失败/恢复滞回、最短保持、cooldown 和重新自检门禁；安全故障立即收缩，普通瞬时错误不产生 capability flapping。
 
 7C 退出条件：协议声明、工具集合与真实设备能力一致；休眠时无悬挂长轮询或伪 ACK；Hub 重启、队列超限、跨 boot 迟到消息的降级语义有测试和明确产品承诺。
 
-### Phase 8：自检、量产模式和第三硬件适配验证
+### Phase 8：自检、量产模式、三硬件对齐与第四异构 profile 验证
 
 任务：
 
 1. 实现安全只读启动自检和受控量产主动测试模式。
 2. 增加 Null/Fake Board HAL，仅用于主机测试或编译验证。
 3. 用无显示、无扬声器、存储失败、时钟未同步和板型错配等 Fake profile 验证降级/安全模式及独立反馈通道。
-4. 用一个刻意异构的最小第三 profile 完成接入演练，例如“无显示 + 触摸输入 + 无扬声器 + LittleFS/无持久存储”组合，证明抽象不是只适合两块相似 ESP32 板。
+4. 将 Fangtang-4G 作为第三个正式 profile 完成全功能对齐，拆除其对 Bread 大型 board port 的条件分支依赖；再用一个刻意异构的最小第四 Fake/Reference profile 完成接入演练，例如“无显示 + 触摸输入 + 无扬声器 + LittleFS/无持久存储”组合，证明抽象不只适合三块现有 ESP32 产品板。
 5. 编写“新增硬件适配清单”、profile/build manifest、runtime budget 和 HAL 模板。
 6. 验证量产 build flavor、物理/签名授权、超时退出和 release 默认关闭主动测试。
 7. 使用 ABI 兼容测试验证 ops 尾部扩展、旧 `struct_size`、未知版本、缺失必选函数和 capability/函数不一致都安全失败。
@@ -1284,25 +1410,27 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 11. 用带硬件 mute/独立录音 LED 和无此能力的 Fake profile 验证 Privacy/Feedback Service；新增硬件仅实现标准 feedback/privacy HAL 即获得统一业务行为。
 12. 用屏幕、LED、音频、触觉和无显示 Fake profile 验证统一 `degradation_reason_t` 的映射、去重、限流、恢复通知和底层错误隐藏。
 13. 验证生产 core dump 的加密/禁用策略、敏感 buffer 排除/清零、认证导出、容量/retention、恢复出厂/设备转移清理和低电量非阻塞行为。
+14. 建立 HIL fixture/instrument manifest 与 evidence signer，验证校准过期、环境越界、样本不足、自动 golden 更新和 flaky 重跑均不能产生 release pass。
 
-退出条件：自检失败会收缩能力或进入安全模式；异构第三 profile 不修改 `app/`、`domain/` 或已有共享 `services/` 即可通过共享测试。
+退出条件：三款正式硬件全部达到 Bread Compact 功能基线；自检失败会进入安全模式或明确阻止正式发布；异构第四 Fake/Reference profile 不修改 `app/`、`domain/` 或已有共享 `services/` 即可通过适用的共享测试。
 
 ### Phase 9：删除兼容层并完成发布硬化
 
 任务：
 
 1. 删除已无调用的 `board_port_*` facade、宏映射和重复状态。
-2. 运行架构扫描、双板完整 HIL、长稳测试、断电/重启恢复和资源预算门禁。
+2. 运行架构扫描、三硬件完整 HIL、Bread 基线一致性测试、长稳测试、断电/重启恢复和资源预算门禁。
 3. 验证生产烧录脚本的板型校验、分区保留和 manifest 输出。
 4. 完成安全审查：日志脱敏、凭据边界、量产模式退出、调试入口和发布配置。
 5. 更新 README、构建命令、迁移/回滚手册、架构检查脚本和目录说明。
 6. 更新有线烧录工具：写入前校验签名 artifact manifest 与设备 identity/compat/layout，写后用 flash transaction ID、boot session、实际 digest 和分层 readiness 确认成功。
 7. 输出版本兼容矩阵、发布证据包和残余风险清单；无 OTA 时明确有线升级/回滚边界，未来 OTA 仍需独立设计评审。
 8. 生成每 profile SBOM、许可证/CVE、依赖 hash、toolchain/sdkconfig/partition/resource provenance 和 clean-build 可复现报告，签名后纳入 artifact manifest。
-9. 删除 facade 前证明迁移台账所有调用点为零、shadow 差分达标、旧任务/全局状态/NVS writer 不再存活，并完成双板回退窗口关闭评审。
+9. 删除 facade 前证明迁移台账所有调用点为零、shadow 差分达标、旧任务/全局状态/NVS writer 不再存活，并完成三硬件回退窗口关闭评审。
 10. 生成 requirement→implementation→test→evidence 追踪矩阵和每 profile evidence bundle；校验证据 digest 对应本次 release artifact，清零缺失证据和过期 waiver。
+11. 对 reset/bootloader/WDT/brownout/deep-sleep/下载模式电气安全、DFS 全频点和资源压力降载运行三硬件 HIL，并归档原始签名证据。
 
-退出条件：双板发布门禁全部通过；新增板型无需修改 `app/`、`domain/` 或已有共享 `services/`；只需实现 profile、manifest、必要 HAL 与平台 port 即可完成编译和业务测试。
+退出条件：三硬件发布门禁和 Bread 功能对齐矩阵全部通过；新增板型无需修改 `app/`、`domain/` 或已有共享 `services/`；只需实现 profile、manifest、必要 HAL 与平台 port 即可完成编译和业务测试。
 
 ## 8. 测试与验收
 
@@ -1310,7 +1438,7 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 
 必须新增以下测试：
 
-1. 输入事件到业务意图的映射测试，覆盖 Bread 和 EchoEar profile。
+1. 输入事件到业务意图的映射测试，覆盖 Bread、EchoEar 和 Fangtang 三个正式 profile。
 2. 交互状态机测试：待机、录音、处理、取消、会议、上传、回复、闹钟和配网。
 3. UI surface 优先级、前景所有权和恢复测试。
 4. 回复分页和关闭测试。
@@ -1352,7 +1480,7 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 40. 按键/触屏实机唤醒测试：deep/light sleep 能力分别验证；恢复 contact 被 guard/drain 消费，不会同时启动录音、会议或取消。
 41. `PREPARE → COMMIT` 每一步故障注入：Display DMA、Wake Word、Wi-Fi、Storage/NVS、wake-source 配置失败均可逆序恢复 ACTIVE，无任务/锁/总线泄漏。
 42. deep-sleep 新 boot 与 light-sleep resume 测试：wake cause、boot session、operation generation、UI revision 和任务生命周期无混用。
-43. 功耗门禁：双板分别测量 ACTIVE、DISPLAY_OFF、MODEM_SLEEP、LIGHT_SLEEP、DEEP_SLEEP 电流和唤醒延迟，仅对已验证状态发布 capability。
+43. 功耗门禁：三硬件分别测量 ACTIVE、DISPLAY_OFF、MODEM_SLEEP、LIGHT_SLEEP、DEEP_SLEEP 电流和唤醒延迟；Fangtang 另区分 Wi-Fi/ML307 及 modem 电源状态，仅对已验证状态发布 capability。
 44. RTC timer 漂移测试：不同温度/时长下测量偏差、boot lead 和 drift guard；闹钟唤醒不得晚于验收容差，时间可信度不足时明确降级。
 45. 配置/实现一致性测试：分别组合 `MACLAW_POWER_SAVE`、PM、tickless、DFS 和 battery ADC，确认缺前提、初始化失败或无实现时 capability 为 false 且不会调用空路径。
 46. Schedule 规则裁决测试：重叠一次性/周期规则、半开边界、同优先级 revision、用户 override、显式 disable、schema 降级和不支持 depth 的拒绝/降级。
@@ -1413,8 +1541,20 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 101. 并发内存模型测试：跨 core/task/ISR flag 与多字段 snapshot 在高频交错、generation 回绕和 stop/restart 下保持一致；新增 `volatile` 不作为同步，atomic/critical section/队列契约与 manifest 一致。
 102. 优先级反转测试：低优先级 task 持 mutex 时 Audio/Input/Display 高优先级竞争的最大阻塞有界；mutex priority inheritance 生效，binary semaphore 不充当互斥，critical section 中无 driver/log/loop/callback。
 103. Schema registry 测试：event/tool/status 显式 ID、生成 C/schema/vector 一致，unknown/deprecated/tombstone 行为正确；重排源码或新增板型不会改变已发布数值，删除 ID 不被复用。
-104. 可复现构建测试：隔离 clean workspace 使用锁定 IDF/toolchain/dependencies/sdkconfig/resources 构建双板，功能内容 digest 符合 reproducibility 规则；SBOM、许可证、CVE、component hash 与签名 provenance 完整。
+104. 可复现构建测试：隔离 clean workspace 使用锁定 IDF/toolchain/dependencies/sdkconfig/resources 构建三硬件，功能内容 digest 符合 reproducibility 规则；SBOM、许可证、CVE、component hash 与签名 provenance 完整。
 105. 供应链负向测试：dependencies.lock 漂移、组件 hash/来源变化、未审查生成字体/模型、未知许可证、高危 CVE 或本地缓存污染均阻止 release artifact 签名。
+106. Fault-domain restart 测试：shared-I2C/audio/display/network/storage 在各生命周期阶段故障、borrower 卡死和 callback 迟到时，统一关闭 admission、drain、递增 generation、自检并恢复；旧 handle 不复活，无法 join 时隔离整个 domain 且不释放在用资源。
+107. Restart operation outcome 测试：读操作、幂等写、外部 ACK、文件 commit 和音频 capture 在重启中分别得到 `CANCELLED/RETRYABLE/INTEGRITY_DAMAGED/UNKNOWN_OUTCOME`，未知外部副作用不自动重试或重复提交。
+108. 端到端 deadline 测试：Boot、stop、restart、sleep prepare、configuration apply、provisioning 和 meeting finalize 的子步骤只消费父 deadline 剩余预算；嵌套重试不会重置 timeout，cleanup reserve 有界且最慢 phase 可诊断。
+109. Schema expand/contract 测试：NVS、Storage 大对象、credential 和 calibration 的 stage/validate/commit/cleanup 任一点断电、空间不足、低电量与写放大超限均保留旧 generation；reader/writer version window 与有线降级阻止不安全回滚。
+110. Degradation feedback 测试：麦克风、扬声器、存储、网络、时间与 sleep/wake 故障通过统一 reason 映射至屏幕/LED/音频/触觉或无屏路径；底层错误不泄漏，提示风暴受限，恢复只在 readiness/滞回通过后通知。
+111. Core dump 生命周期测试：release 加密/禁用策略与 eFuse/build 一致，secret/PCM/表单 buffer 不可导出，认证、审计、容量/retention、恢复出厂/转移清理和低电量/启动非阻塞符合策略。
+112. Evidence traceability 测试：每个 requirement 的 implementation/test/profile/evidence/digest/budget 完整且对应当前 artifact；缺失证据、错误 firmware digest、目标 profile 不匹配或 waiver 过期均使 Phase/release 门禁失败。
+113. Restart reconciliation 测试：Display/Audio/Gateway/Alarm/Power 在各 phase 重启后只从 authoritative config/persistence/capability revision 重建，subscription/timer 各一份，desired/observed state 收敛；旧 mutex/task/queue/pointer/UI snapshot 不被复制或复活。
+114. Electrical reset-safety HIL：上电、外部 reset、软件 reset、panic/WDT、brownout、deep-sleep enter/wake、持续按住 strap 和下载模式下采集功放/背光/电源轨/reset/CS 波形；未知 profile/revision 保持安全交集且毛刺不超过硬件预算。
+115. DFS/clock-domain HIL：所有发布 CPU/APB 频点与 modem/light sleep 切换中持续验证音频 sample clock/序列、LCD QSPI/DMA、I2C/touch timeout、UART/diagnostic baud、timer/deadline 和 PM lock 泄漏；未验证组合不进入 capability。
+116. Resource pressure 测试：制造 internal largest-block、DMA pool、queue、stack、storage、thermal/battery PRESSURE/CRITICAL，验证确定性降载与滞回恢复；关键控制、录音收尾和 commit emergency reserve 可用，无业务层板型分支或 OOM 重启循环。
+117. HIL evidence integrity 测试：board/fixture/instrument/calibration/environment/script/raw-data/sample metadata 缺失或越界、证据 hash/签名不匹配、样本不足、自动 golden 覆盖、只保留最后一次 pass 与过期 flaky quarantine 均阻止 release。
 
 ### 8.2 双配置构建门禁
 
@@ -1429,19 +1569,22 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 
 ### 8.3 实机验收矩阵
 
-双板均需验证：
+三硬件均需验证：
 
+- 使用同一 Bread Compact `feature_id` 测试集，三硬件的业务状态、终态、Gateway tool/capability、错误语义和恢复保证完全一致；profile-specific 差异仅限物理输入、布局、driver/transport trace 和资源预算。
 - 冷启动、联网、断线重连、配对和重新配置。
 - 唤醒词、单次录音、上传、远端回复和 TTS 播放。
 - 会议开始、停止、上传、失败保留及重启续传。
 - 处理中双击取消，且录音阶段双击不会误启动会议。
 - 回复关闭和分页行为。
+- 音量调整在三硬件均有可操作入口并实际影响播放；Fangtang 不再返回 `ESP_ERR_NOT_SUPPORTED`，EchoEar/Fangtang 无独立音量键时使用统一远端/菜单入口。
 - 闹钟响铃、立即解除和手势消费。
 - 音频播放结束无重复尾音，录音无通道错误。
 - 配网二维码不被后台宠物/天气重绘覆盖。
 - 前景回复不被迟到的 idle、天气或 Wi-Fi 更新覆盖。
 - 连续运行、任务栈水位、堆内存和 LCD DMA 稳定性。
 - 初始化失败或服务重启后无孤儿任务、锁、总线和 DMA buffer。
+- fault-domain restart 后配置、订阅、timer、UI desired scene 与硬件 observed state 重新收敛，旧 operation/runtime context 不复活。
 - 快速切换录音、回复、闹钟、配网时无 WDT、死锁或晚到画面。
 - 重启后配对、会议续传、天气、闹钟和用户配置按 schema 正确恢复。
 - 对外能力声明与实机能力一致，Hub 不会向不支持的设备投递不可消费内容。
@@ -1456,10 +1599,13 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 - 屏幕、输入或音频任一故障时，SAFE_MODE 仍有独立可诊断反馈路径。
 - 克隆 NVS、恢复出厂配置和重新配网不会造成多台设备共享同一 device ID。
 - 配置的休眠时间窗到达后，设备在无阻塞 lease 时进入 profile 支持的目标深度，并在下一唤醒边界或更早闹钟准时恢复。
-- Bread 可由已验证实体键唤醒；EchoEar 可由 BOOT 键从 deep sleep 唤醒，并可由 GPIO42/CST816 从 DISPLAY_OFF 或经验证的 light sleep 唤醒；当前 PCB 不声称触屏可唤醒 deep sleep。
+- Bread 可由已验证实体键唤醒；EchoEar 可由 BOOT 键从 deep sleep 唤醒，并可由 GPIO42/CST816 从 DISPLAY_OFF 或经验证的 light sleep 唤醒；Fangtang 由 GPIO0/timer 唤醒且正确恢复 ML307、LCD、电池/充电观测状态。未实测来源不得写入 capability。
 - 休眠窗口内手动唤醒后 obey override，不立即反复入睡；一次唤醒 contact 不会兼作开始录音/会议的输入。
 - 所有 wake source 配置失败时拒绝 deep sleep，设备不会进入只能断电恢复的状态。
 - PM/DFS/tickless/battery ADC 仅在实际初始化和自检成功时生效，关闭 Kconfig 或注入初始化失败不会留下虚假能力或半初始化资源。
+- 上电/reset/WDT/brownout/deep-sleep/下载模式全过程中，功放、背光、电源轨和冲突 GPIO 满足 electrical-safety manifest，无软件接管前毛刺风险。
+- 所有发布 DFS/APB 频点及切换组合下，音频时钟、LCD DMA、触摸/I2C、诊断 UART 和 deadline 保持在 profile budget，PM lock 无泄漏。
+- internal heap/DMA pool/queue/stack/storage/thermal 压力下按统一策略有序降载，关键控制、录音收尾和 commit reserve 不被普通工作耗尽。
 - 多个休眠来源同时触发时只执行一个 transition；更早闹钟或新关键业务在 COMMIT 前能取消休眠。
 - 短时间窗不会导致频繁 deep-sleep 重启，连续立即唤醒达到阈值后 schedule 自动熔断并保持可诊断状态。
 - 闹钟和休眠计划共享 RTC timer 时不会互相覆盖；更早闹钟始终取得优先权，清除后恢复下一计划 deadline。
@@ -1475,18 +1621,19 @@ DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch
 - 重新配置失败保留原连接和 token；恢复出厂使用独立确认并能在任意掉电点幂等完成，不误删应保全的会议数据或克隆设备身份。
 - Release 拒绝 HTTP Hub 和关闭 CA 校验；URL 规范化、hostname/SNI、私有 CA 与可信时间失败均不会静默降级或把 token 发往不同 origin。
 - 高压力 TLS/显示/MultiNet/NVS 场景下，DMA/internal/PSRAM 内存类别和 cache-disabled 约束无违规；WDT 诊断能指出 owner/phase 且不会靠放宽超时掩盖卡死。
-- 双板和异构 Fake profile 的 display/touch logical coordinate、rotation/safe mask 与 PCM format/frame contract 一致，EchoEar 圆屏显示和触摸命中均无退化。
+- 三硬件和异构 Fake profile 的 display/touch logical coordinate、rotation/safe mask/panel offset 与 PCM format/frame contract 一致，EchoEar 圆屏显示/触摸命中及 Fangtang 240×240 viewport/80 行 offset 均无退化。
 - 硬件 mute/录音指示（若 profile 存在）与真实 capture 生命周期严格一致；无该硬件的板不虚假声明，业务逻辑不出现 LED/mute GPIO 分支。
 - 高负载事件风暴下 cancel/alarm/wake/mute 的关键 reservation、sequence 和 sticky overflow 行为可验证，普通 telemetry 不会造成关键控制丢失或 App Interaction Task 饥饿。
 - Hub 重连、重新认证或切换 origin 后生成新 negotiation epoch；旧会话工具/能力不能获得新授权，协议 major 不兼容时设备保持本地安全可用并给出恢复提示。
 - 安全随机源未就绪/故障时不生成配网、配对、boot/operation 安全标识或发送生产凭据；恢复后生成值无跨 boot/批次碰撞。
 - 有线烧录前后 identity/compat/layout/artifact digest 与 transaction correlation 一致；错误板型、错误分区和未签名 artifact 不会进入写入阶段。
+- HIL 结果可追溯到具体设备、fixture、校准有效仪器、环境、脚本和原始数据；golden 变更与 flaky 隔离均有独立审批、期限和完整 attempt 历史。
 - I2C 等共享总线卡死恢复不会只重置单个子 HAL；所有 borrower 同步降级、旧 handle 失效并在 reprobe/readiness 后统一恢复，无恢复风暴或 capability 抖动。
 - 配置和校准更新在任意掉电/observer apply 失败点保持完整 revision；远端配置无法越过硬件、安全或隐私下限，错误硬件校准不会生效。
 - 长会议录音的样本数、WAV header、上传时长和单调计时在 profile ppm/gap 预算内；超限不会静默宣称录音完整。
 - facade 切换与回退时每个副作用始终只有一个 owner；shadow 只读比较，旧任务/handle/global writer 在 ownership handoff 后全部失效。
 - 多核/ISR 压力下 interaction、cancel、meeting、welcome、HTTP 等迁移状态无基于 `volatile` 的数据竞态、ABA 或多字段撕裂，优先级反转在预算内。
-- 双板 release artifact 可从锁定输入 clean build 重现，并附带匹配的 SBOM、许可证/CVE、component/resource hash 和签名 provenance。
+- 三硬件 release artifact 可从锁定输入 clean build 重现，并附带匹配的 SBOM、许可证/CVE、component/resource hash 和签名 provenance。
 
 EchoEar 额外验证：
 
@@ -1502,17 +1649,26 @@ Bread 额外验证：
 - 音量键普通界面调音量、回复界面翻页。
 - 直连 I2S 播放停止后不重复最后一个 DMA block。
 
+Fangtang 额外验证：
+
+- 240×240 NV3023 viewport 与 GRAM Y offset=80 在启动、待机、回复、会议、闹钟、配网和错误页均无纵向错位、旧行残留或越界提交。
+- 单键短/双/长按及启动网络选择窗口无事件穿透；窗口外手势严格产生与 Bread 相同的业务 intent。
+- 五行回复自动分页完整、可读且不会因没有音量键而丢失页面；图片/caption、进度和错误必选字段均可达。
+- 软件/远端音量 0–100 实际作用于 direct-I2S 输出并持久化，当前 `ESP_ERR_NOT_SUPPORTED` 路径清零。
+- Wi-Fi/ML307 切换、断线恢复、Gateway poll、语音上传、会议分块上传、tool result 与时间同步不改变业务幂等、deadline、cursor 或恢复语义。
+- battery ADC 与 charge GPIO 经过校准、滤波和 Battery Policy；ML307 power/guard/UART 在 boot、sleep、wake、WDT、brownout 和切换失败时满足 electrical-safety/lifecycle 契约。
+
 ## 9. 代码审查门槛
 
 完成 Phase 9 时必须达到：
 
 1. `main.c` 和共享 `app/domain/services` 中 `CONFIG_MACLAW_BOARD_*` 命中数为 0。
 2. 共享业务代码引用 GPIO/I2C/I2S/SPI/LCD/触摸/codec 驱动符号的命中数为 0。
-3. Bread 和 EchoEar 的业务状态机实现数量为 1。
+3. Bread、EchoEar 和 Fangtang 的业务状态机实现数量为 1。
 4. 通用 capture/playback、指令 WAV、会议领域状态机和唤醒词监督的共享实现数量各为 1，且职责边界互不倒置。
 5. 板级目录只包含硬件驱动、信号调理、物理事件产生和具体屏幕渲染。
 6. 新增 Fake HAL 不需要修改任何业务源文件。
-7. 两个实机验收矩阵全部通过，EchoEar 圆屏显示无功能性退化。
+7. 三个实机验收矩阵全部通过；EchoEar 圆屏、Bread 240×320 与 Fangtang 240×240/Y offset=80 显示均无功能性退化或公共 Scene 字段缺失。
 8. 业务目录只 include Device/Platform 公共 API，不直接引用任何 `*_hal_ops_t`、`*_port.h`、`board_hal_get()`、ESP-IDF 驱动或具体存储/网络实现。
 9. 只有 Display Task 调用 panel/Renderer；只有 App Interaction Task 调用交互状态机。
 10. HAL 全部实现完整生命周期，故障注入证明部分初始化可逆序回滚。
@@ -1538,7 +1694,7 @@ Bread 额外验证：
 30. SAFE_MODE 的反馈通道不依赖已判故障组件，且在所有 profile 上有可执行的诊断路径。
 31. 断电一致性测试覆盖音频、恢复 metadata、chunk cursor、远端确认和本地删除的每个提交点。
 32. Identity 根不依赖可克隆普通 NVS；boot session 和 operation ID 的唯一性在重启/克隆场景通过测试。
-33. 第三 profile 使用与双板不同的能力组合，接入时 `app/`、`domain/` 和共享 `services/` 的业务实现零修改。
+33. Fangtang 第三正式 profile 完整对齐 Bread 功能且共享业务零分叉；第四 Fake/Reference profile 使用与三硬件不同的能力组合，接入时 `app/`、`domain/` 和共享 `services/` 的业务实现零修改。
 34. 屏幕熄灭与系统 sleep 状态在命名、状态和实现上分离；板级 Renderer 不自行决定 LIGHT/DEEP_SLEEP。
 35. 指定时间休眠由共享 Sleep Schedule Service 实现，具备可信时间、跨午夜、DST、闹钟 deadline 合并和 revision 防迟到机制。
 36. 所有深层休眠均通过 power lease 与 `PREPARE → COMMIT` 事务；会议、上传、闹钟、配网和持久化不会被非事务性截断。
@@ -1599,6 +1755,17 @@ Bread 额外验证：
 91. lock manifest 证明实时高优先级路径没有无界优先级反转；mutex 使用 priority inheritance，binary semaphore/critical section 用途正确且持有时间满足 budget。
 92. event/tool/status schema registry 使用稳定显式 ID、版本与 tombstone并生成代码/测试；已发布编号不因重排、删除或新硬件复用。
 93. 每 profile release artifact 具有锁定 toolchain/IDF/dependency/resource 输入、SBOM、许可证/CVE、digest 和签名 provenance，并通过 clean-build reproducibility 门禁。
+94. 每个 Service/共享资源具有 fault domain；restart 完整执行 quiesce/stop/reinitialize/self-test/readiness，旧 generation 与迟到 callback 不可复活，shared owner 故障不只重启单个 borrower。
+95. Boot、stop、restart、sleep prepare、config apply、provisioning 和 meeting finalize 传播同一绝对 deadline；分层 timeout 不累加突破总预算，cleanup reserve 和超时隔离策略可验证。
+96. NVS/Storage/credential/calibration 迁移采用可恢复 stage/validate/commit/cleanup 与 reader/writer version window；不可逆点不会破坏已承诺的有线回滚或静默丢失旧数据。
+97. 用户降级反馈使用稳定 reason，经 profile Feedback adapter 映射到现有输出；不显示板型/驱动错误，具备风暴抑制、无屏路径和 readiness 后恢复通知。
+98. 生产 core dump 的启用、加密、敏感区排除、认证导出、容量/retention 与恢复出厂/转移清理均有门禁，dump 不阻塞启动、低电量或覆盖用户数据。
+99. Phase/release 的 requirement→implementation→test→profile→evidence→artifact digest 可追踪；无证据不算通过，waiver 有 owner、补偿控制和有效期且过期自动失败。
+100. restartable Service 具有 authoritative/durable/ephemeral state 与 reconciliation 契约；恢复后 subscription/timer/desired hardware state 唯一且 observed state 已收敛，不复制旧 runtime context。
+101. 每 profile electrical-safety manifest 覆盖 ROM reset、bootloader、app、WDT/brownout、deep sleep 和下载模式；软件介入前的高风险输出由硬件默认态保证，未知 revision 不驱动非公共安全输出。
+102. DFS/PM 的 clock-domain、频率范围、lock owner、切换 barrier 和 peripheral reconfiguration 可执行；每个发布频点的 Audio/Display/Input/Diagnostic/time 行为具有 HIL 证据。
+103. Resource Pressure Service 统一聚合资源水位并按 NORMAL/PRESSURE/CRITICAL 降载；关键控制、数据收尾和持久化具有 emergency reserve，板级 HAL 不复制业务降级策略。
+104. HIL 证据含设备/fixture/仪器校准/环境/脚本/原始数据/样本与不确定度并防篡改；golden 更新独立审批，flaky 重跑不抹除失败历史。
 
 可在 CI/本地加入架构检查脚本，对共享目录执行禁止符号扫描，防止后续把硬件特判重新带回业务层。
 
@@ -1606,7 +1773,7 @@ Bread 额外验证：
 
 ### 10.1 大文件拆分引发行为回归
 
-控制：采用 facade 渐进迁移；一次只替换一个子系统；每阶段同时构建和验证双板，不直接整文件重写。
+控制：采用 facade 渐进迁移；一次只替换一个子系统；每阶段同时构建和验证三硬件，不直接整文件重写。
 
 ### 10.2 EchoEar 圆屏显示退化
 
@@ -1626,7 +1793,7 @@ Bread 额外验证：
 
 ### 10.6 能力降级被误当错误
 
-控制：清晰区分必选能力和可选能力；内部 HAL 返回平台“不支持”错误，Device/Platform Service 统一映射为 `DEVICE_STATUS_NOT_SUPPORTED`；共享服务定义用户可理解的降级行为。
+控制：清晰区分 Bread 公共必选功能、非公共物理增强和 Fake/尚未正式支持硬件的可选能力。三款正式 profile 不得对 Bread 功能母版返回 `DEVICE_STATUS_NOT_SUPPORTED`；实现缺失是发布阻断缺陷。`DEVICE_STATUS_NOT_SUPPORTED` 仅用于 Fake/Reference、未来尚未进入正式集合的 profile 或明确不属于公共基线的物理增强。正式硬件的临时驱动/器件故障应返回稳定的 unavailable/degraded reason，由共享服务执行恢复、替代反馈或安全拒绝，不能伪装成静态不支持。
 
 ### 10.7 部分初始化导致资源泄漏
 
@@ -1946,11 +2113,59 @@ Bread 额外验证：
 
 ### 10.86 开发机缓存掩盖不可复现或受污染构建
 
-控制：CI 在隔离 clean workspace/cache 策略下重建双板并比较规范化内容 digest；未锁依赖、未知本地组件、未提交生成物和高危供应链告警不允许签名，发布证据关联具体构建环境。
+控制：CI 在隔离 clean workspace/cache 策略下重建三硬件并比较规范化内容 digest；未锁依赖、未知本地组件、未提交生成物和高危供应链告警不允许签名，发布证据关联具体构建环境。
+
+### 10.87 单组件重启破坏共享故障域
+
+控制：fault-domain manifest 声明 shared owner、borrower 和传播边界；共享 I2C/电源轨/时钟故障统一 quiesce 同域组件，按 profile 流程恢复并整体重新自检，禁止只重启一个 borrower 后继续使用旧资源。
+
+### 10.88 重启后旧 operation、handle 或 callback 复活
+
+控制：重启关闭 admission 并 drain callback，在释放/重建前递增 domain/resource generation；完成事件校验 boot/operation/domain generation。无法 join 时保留并隔离资源，禁止复用地址或自动重试 unknown-outcome 副作用。
+
+### 10.89 分层 timeout 累加突破端到端 deadline
+
+控制：所有长事务使用绝对单调 deadline 并传播 remaining budget；重试、排队和子调用共用父预算，预留 bounded cleanup reserve。deadline miss 输出关键路径与最慢 phase，不能靠扩大每层 timeout 通过。
+
+### 10.90 不可逆 schema migration 阻断固件回滚
+
+控制：采用 expand/contract、reader/writer version window 和双 generation journal；不可逆提交前验证备份/兼容 reader 或显式关闭回滚。有线工具检查 firmware-data 兼容矩阵，掉电/低空间时保持旧 generation 可读。
+
+### 10.91 降级状态缺少用户可理解反馈
+
+控制：统一 `degradation_reason_t`，由 Feedback Service 按 profile 映射到现有屏幕、LED、音频或触觉；隐藏板型和底层错误，按 reason/generation 去重限流，并在 readiness 滞回恢复后再通知。
+
+### 10.92 Core dump 泄漏 secret/录音或耗尽 Flash
+
+控制：release 默认采用经验证加密 dump 或禁用完整 dump；排除/清零敏感 buffer，限制 retention/容量和认证导出，绑定 firmware/boot digest。恢复出厂/转移清理，低电量与 boot 不等待 dump，分区不能侵占用户数据。
+
+### 10.93 缺失证据或过期 waiver 被误判为通过
+
+控制：集中 evidence registry 把 requirement、owner、实现、test、profile、firmware digest 和证据 hash 绑定；CI/HIL 未产出匹配证据即失败。waiver 记录批准人、补偿控制和 expiry，到期自动阻断 release。
+
+### 10.94 Service 重启后运行但状态未收敛
+
+控制：为每个 Service 区分 authoritative/durable/ephemeral state 并实现幂等 reconciliation；只从新 revision 快照恢复 subscription、timer 和 desired state，禁止复制旧 runtime context。observed state 未对齐或 external outcome 未知时保持降级。
+
+### 10.95 软件初始化前高风险 GPIO 已产生毛刺
+
+控制：electrical-safety manifest 覆盖 ROM/bootloader/reset/WDT/brownout/deep-sleep/下载模式默认态；最早期 safe init 仅应用已验证安全交集。软件不可控窗口由外部上下拉、mute 或电源门控保证，并用示波器 HIL 验证。
+
+### 10.96 DFS/APB 切频破坏音频、显示、输入或诊断
+
+控制：clock/PM manifest 声明频率、时钟源、lock、barrier 和重配置；切频在 transaction 安全点执行，所有发布频点实测 sample clock、QSPI/DMA、I2C timeout、UART baud 与 deadline。失败组合关闭 capability。
+
+### 10.97 资源压力下各组件无序抢占并触发重启循环
+
+控制：Resource Pressure Service 统一水位、滞回、admission 和降载顺序，预留关键控制/收尾/commit 资源；板级只报告资源事实。OOM、queue 满或存储紧张不得各自触发无限 retry/reboot。
+
+### 10.98 HIL 或 golden 证据不可复现、可被选择性覆盖
+
+控制：证据绑定 board/fixture/仪器校准/环境/脚本/原始数据/样本和不确定度并签名归档；golden 更新独立审批，所有重跑 attempt 保留。样本不足、仪器过期或 flaky quarantine 过期自动阻断 release。
 
 ## 11. 提交与回滚策略
 
-每个 Phase 独立提交，并保证提交点上两块板均能构建。推荐提交边界：
+每个 Phase 独立提交，并保证提交点上三款正式硬件均能构建。推荐提交边界：
 
 1. HAL 接口与 profile，不改变行为。
 2. 生命周期、Resource Manager 和失败回滚。
@@ -1964,21 +2179,29 @@ Bread 额外验证：
 10. Phase 7C：Gateway quiesce、离线队列/跨 session 语义、领域工具注册与能力投影。
 11. Event envelope/关键 reservation、Entropy、Diagnostic identity 与有线烧录兼容闭环。
 12. Composition/concurrency/lock/schema registry、facade cutover/shadow 与可回退迁移闭环。
-13. 自检、量产模式、HAL ABI/内存/WDT 门禁、Fake HAL 和第三 profile 演练。
-14. facade 删除、可复现构建/SBOM/供应链门禁、发布硬化、兼容矩阵和文档。
+13. Fault-domain supervisor、端到端 deadline、restart reconciliation、持久化 expand/contract migration 与降级反馈闭环。
+14. 电气安全、DFS/clock-domain、资源压力、自检、量产、HAL ABI/内存/WDT/core-dump 门禁、Fake HAL、Fangtang 第三正式 profile 和第四异构 profile 演练。
+15. facade 删除、可复现构建/SBOM/供应链/HIL evidence 门禁、发布硬化、兼容矩阵和文档。
 
 若某阶段实机失败，只回滚该阶段，不把未验证的后续拆分叠加到问题之上。任何临时兼容分支必须标明删除 Phase，禁止成为永久板型特判。
 
-## 12. 新硬件接入完成定义
+## 12. 正式硬件接入完成定义
 
-未来新增硬件时只允许执行以下工作：
+Fangtang-4G 当前必须按本节完成独立正式 profile 接入；未来新增硬件进入 MaClaw AgentOS 正式支持集合时也执行同一清单。仅用于测试的 Fake/Reference profile 可以按其测试目的声明物理能力缺失，但不能替代三款正式硬件的 Bread 功能等价证据。
+
+正式硬件接入首先满足两个前置条件：
+
+1. 实现第 6.1 节全部 Bread 功能母版，正式业务 capability/tool 集合不得缺项。
+2. 若缺少同类物理控件或反馈器件，提供可发现的替代入口/呈现；若物理限制确实无法承载公共功能，则在修订硬件前不能进入正式支持集合。
+
+除此之外只允许执行以下适配工作：
 
 1. 在 Kconfig/CMake 增加板型选择和源文件集合。
 2. 新建 `boards/<new_board>/board_profile.c`、Resource Manager 和 build manifest。
-3. 按硬件实际能力实现 Input、Audio、Display、Power HAL；需要不同存储/连接/身份后端时实现对应 Platform port；无能力的可选接口明确返回不支持。
+3. 按硬件实际能力实现 Input、Audio、Display、Power HAL；需要不同存储/连接/身份后端时实现对应 Platform port；仅非公共基线的可选物理增强可返回不支持。
 4. 将物理控件映射为标准输入事件。
 5. 用已有共享业务状态机测试和 UI 场景测试验证。
-6. 运行双配置/多配置构建与新硬件实机验收。
+6. 运行全部正式 profile 的多配置构建、Bread 功能矩阵和新硬件实机验收。
 7. 确认生成的 `clientCapabilities` 与硬件/固件实际能力一致。
 8. 通过生命周期故障注入、事件队列和数据所有权测试。
 9. 声明 board revision、build manifest、partition layout 和 runtime budget，并通过错配保护。
@@ -2012,6 +2235,17 @@ Bread 额外验证：
 37. 将所有跨 task/core/ISR 状态加入 concurrency manifest；新板代码不得用 `volatile` 代替 queue/mutex/atomic/critical section，也不得用 binary semaphore 冒充共享状态 mutex。
 38. 新 event/tool/status/source ID 必须从集中 schema registry 分配并生成代码/测试，禁止板级 enum 自动编号或复用 deprecated ID。
 39. 新 profile 的组件与生成资源进入锁定依赖、SBOM、许可证/CVE 和 artifact provenance；仅本地缓存可构建但 clean CI 无法重现不算接入完成。
+40. 声明 fault-domain membership、shared owner/borrower、可独立重启性、restart deadline、generation 失效和 operation outcome；新板不能用私有 task delete/recreate 绕过统一 Service Supervisor。
+41. 为 Boot/stop/restart/sleep/config/provisioning 的 profile 特定步骤声明子预算与 cleanup reserve，但只能消费共享父 deadline，不能创建无限全局 timeout。
+42. 声明 NVS/Storage/calibration 的 reader/writer version window、expand/contract 迁移、空间/写放大和旧固件回滚边界；板级校准不得做无 journal 的就地不可逆改写。
+43. 为所有可降级 capability 提供标准 reason 到 profile Feedback HAL/Renderer 的映射及无显示 fallback；反馈适配不得包含业务状态机或暴露 controller/GPIO 错误。
+44. 声明 core dump 支持、Flash Encryption、敏感内存排除、分区容量/retention 和认证导出策略；未验证的新 profile 默认不启用生产完整 dump。
+45. 提供当前 profile 与 release artifact digest 匹配的 requirement/test/HIL evidence bundle；复制另一硬件的证据或长期 waiver 不算接入完成。
+46. 提供 electrical-safety manifest 与 reset/bootloader/WDT/brownout/deep-sleep/下载模式波形证据；高风险输出在软件接管前必须由硬件默认态保证。
+47. 声明所有 clock-domain/DFS 频点、PM lock owner、切换 barrier 和外设重配置，并通过 Audio/Display/Input/Diagnostic/time HIL；未验证频点保持关闭。
+48. 接入共享 Resource Pressure Service，声明 profile 水位、降载能力和 emergency reserve；新增 HAL 只报告资源事实，不实现板型专属业务降级或 OOM 重启策略。
+49. 对 profile 特有可重启 Service/port 声明 authoritative/durable/ephemeral state 与 reconciliation probe；禁止以保存整个 runtime context 实现恢复。
+50. HIL evidence 记录 board/fixture/仪器校准/环境/脚本/原始数据/样本/不确定度并签名；golden 更新与 flaky quarantine 遵循共享审批和过期门禁。
 
 以下行为不属于硬件接入，原则上禁止：
 
@@ -2060,5 +2294,16 @@ Bread 额外验证：
 - 使用 `volatile` 作为跨核/task/ISR 同步，依赖多个裸全局字段形成一致 snapshot，或用 binary semaphore 替代需要优先级继承的 mutex。
 - 由板级代码自行分配 event/tool/status 数值、复用已废弃 ID，或手写与集中 schema registry 不一致的协议定义。
 - 引入未锁版本/来源/hash 的组件或字体/模型生成物，不生成 SBOM/许可证/CVE/provenance，或只因开发机缓存能够链接就发布。
+- 由单个 borrower 私自重启共享 fault domain、在 restart 后继续使用旧 generation handle，或让 unknown-outcome 副作用自动重复执行。
+- 在 Boot/stop/restart/sleep/config/provisioning 子层重新开始完整 timeout，使总 deadline 失效，或 deadline 到期后继续产生后台副作用。
+- 就地不可逆改写 NVS/Storage/calibration 后仍宣称旧固件可回滚，或在 migration 未验证/未 commit 时清理旧 generation。
+- 把底层 driver/GPIO/板型错误直接展示给用户、让每个 HAL 自行定义降级文案，或用重复提示风暴代替标准 Feedback Service。
+- 在未加密或未认证条件下导出生产 core dump、让 dump 包含 secret/录音 buffer、占满用户分区，或阻塞低电量与启动恢复。
+- 将缺失测试、错误 artifact digest、过期 waiver 或另一 profile 的 HIL 结果登记为当前硬件通过证据。
+- 从旧 Service context 恢复 task/lock/queue/driver pointer，或 task 重建后未对齐 authoritative desired/observed state 就恢复 capability。
+- 只测 `app_main()` 后 GPIO 电平就宣称上电安全，忽略 ROM/bootloader/reset/brownout/下载模式毛刺和外部上下拉要求。
+- 启用未经全频点验证的 DFS/PM，让 Audio/LCD/I2C/UART 各自猜测时钟变化，或用永久 PM lock 假装支持动态节能。
+- 在板级 OOM/queue/storage 回调中自行停止会议、删除数据或重启整机，绕过统一 Resource Pressure policy 和 emergency reserve。
+- 测试失败时自动更新 golden、只保留最后一次通过的 HIL attempt，或使用仪器校准过期/环境不明/样本不足的证据发布。
 
 当一块新硬件仅通过新增 board profile、manifest、budget、HAL/Renderer 以及确有必要的平台 port 文件即可运行现有业务，且 `app/`、`domain/` 和已有共享 Service 的业务实现无修改时，才算真正完成硬件抽象目标。若新硬件引入全新的产品能力，应先以版本化 capability extension 和通用 Service 契约独立评审，不能借“适配硬件”把板型分支带回业务层。

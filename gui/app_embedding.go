@@ -822,6 +822,9 @@ func (a *App) wireEmbedderToIMHandlers(emb embedding.Embedder, wireTools bool) {
 	wire(a.imHandler)
 	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
 		wire(a.remoteSessions.hubClient.currentIMHandler())
+		for _, handler := range a.remoteSessions.hubClient.hardwareAgentHandlers() {
+			wire(handler)
+		}
 	}
 	// Local gateway handlers own their own per-user loop locks and must receive
 	// the same relevance runtime. Without this, only desktop/Hub messages get
@@ -841,6 +844,9 @@ func (a *App) wireEmbedderToIMHandlers(emb embedding.Embedder, wireTools bool) {
 	}
 	if a.thirdPartyGateway != nil {
 		wire(a.thirdPartyGateway.currentLocalHandler())
+		for _, handler := range a.thirdPartyGateway.localHardwareHandlers() {
+			wire(handler)
+		}
 	}
 }
 

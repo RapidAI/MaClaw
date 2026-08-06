@@ -67,6 +67,41 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	return taskText, nil
 }
 
+// cancelAllSessionsForShutdown is a non-blocking lifecycle cancellation used
+// when an isolated hardware runtime is removed. Waiting here would make an
+// unbind/Hub-disconnect depend on a stuck model or tool request; each loop
+// already observes LoopContext cancellation and releases its own resources.
+func (h *IMMessageHandler) cancelAllSessionsForShutdown() {
+	if h == nil {
+		return
+	}
+	h.sessionLoops.Range(func(_, value any) bool {
+		state, ok := value.(*sessionLoopState)
+		if !ok || state == nil {
+			return true
+		}
+		state.stateMu.RLock()
+		ctx := state.loopCtx
+		state.stateMu.RUnlock()
+		if ctx != nil {
+			ctx.Cancel()
+		}
+		return true
+	})
+	h.activeBtwSubAgents.Range(func(_, value any) bool {
+		if subAgent, ok := value.(*BtwSubAgent); ok && subAgent != nil {
+			subAgent.Cancel()
+		}
+		return true
+	})
+	h.activeLoopCallbacksByOwner.Range(func(_, value any) bool {
+		if callbacks, ok := value.(*guiLoopCommandCallbacks); ok && callbacks != nil {
+			callbacks.Cancel()
+		}
+		return true
+	})
+}
+
 func (h *IMMessageHandler) legacyLoopSnapshot() (*LoopContext, string, string) {
 	if h == nil {
 		return nil, "", ""

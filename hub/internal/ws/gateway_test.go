@@ -1375,9 +1375,17 @@ func (g *deviceGatewayReplyCapture) UpdateMachineVolume(_ string, volume any) er
 	g.volume = volume
 	return nil
 }
+func (g *deviceGatewayReplyCapture) UpdateMachineDeviceVolume(_ string, clientID string, volume any) error {
+	g.volumeUpdates++
+	g.volume = map[string]any{"clientId": clientID, "volume": volume}
+	return nil
+}
 func (g *deviceGatewayReplyCapture) UpdateMachineHardwareEnabled(_ string, enabled bool) error {
 	g.hardwareState = &enabled
 	return nil
+}
+func (g *deviceGatewayReplyCapture) MachineHardwareBindingStateJSON(string) map[string]any {
+	return map[string]any{"maxDevices": 5, "boundCount": len(g.devices)}
 }
 func (g *deviceGatewayReplyCapture) ListMachineDevicesJSON(string) []map[string]any { return g.devices }
 func (g *deviceGatewayReplyCapture) DeleteMachineDevice(_, clientID string) error {
@@ -1553,6 +1561,26 @@ func TestHandleDeviceGatewayVolumeUpdateIsDurableAndRelayed(t *testing.T) {
 	}
 }
 
+func TestHandleDeviceGatewayPerDeviceVolumeUpdateIsDurableAndTargeted(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{}
+	gateway := &Gateway{DeviceGateway: capture}
+	ctx := &ConnContext{Role: "machine", MachineID: "gui-a"}
+	payload, _ := json.Marshal(map[string]any{
+		"clientId": "esp32-a", "conversationId": "system",
+		"reply": map[string]any{"reply_type": "hardware_config", "extra": map[string]any{"volume": 42}},
+	})
+	if _, err := gateway.handleDeviceGatewayReply(ctx, Envelope{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	update, ok := capture.volume.(map[string]any)
+	if capture.volumeUpdates != 1 || !ok || update["clientId"] != "esp32-a" || update["volume"] != float64(42) {
+		t.Fatalf("per-device volume update=%#v", capture.volume)
+	}
+	if len(capture.replies) != 0 {
+		t.Fatalf("per-device volume was relayed twice: %#v", capture.replies)
+	}
+}
+
 func TestGatewayDeviceGatewayReplyReturnsRequestAck(t *testing.T) {
 	capture := &deviceGatewayReplyCapture{queueCount: 1}
 	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, &testSessionService{})
@@ -1622,6 +1650,26 @@ func TestGatewayHardwarePreviewFailsFastWithoutCompatibleDevice(t *testing.T) {
 	payload, _ := response["payload"].(map[string]any)
 	if response["type"] != "error" || response["request_id"] != "offline-preview-1" || payload["code"] != "NO_COMPATIBLE_HARDWARE" {
 		t.Fatalf("offline preview response=%#v", response)
+	}
+}
+
+func TestHandleDeviceGatewaySelectedPreviewQueuesOnlyItsOwnedTarget(t *testing.T) {
+	capture := &deviceGatewayReplyCapture{targetCount: 1}
+	gateway := &Gateway{DeviceGateway: capture}
+	ctx := &ConnContext{Role: "machine", MachineID: "gui-a"}
+	payload, _ := json.Marshal(map[string]any{
+		"clientId": "esp32-a", "conversationId": "system",
+		"reply": map[string]any{
+			"reply_type": "audio", "mime_type": "audio/wav", "file_data": "d2F2",
+			"extra": map[string]any{"hardware_audio_preview": true},
+		},
+	})
+	handled, err := gateway.handleDeviceGatewayReply(ctx, Envelope{Payload: payload})
+	if err != nil || handled {
+		t.Fatalf("selected preview handled=%v err=%v", handled, err)
+	}
+	if capture.targetMachine != "gui-a" || capture.targetClient != "esp32-a" || len(capture.replies) != 1 {
+		t.Fatalf("selected preview route=%q/%q replies=%#v", capture.targetMachine, capture.targetClient, capture.replies)
 	}
 }
 

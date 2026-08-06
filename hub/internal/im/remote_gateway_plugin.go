@@ -144,6 +144,19 @@ func (p *RemoteGatewayPlugin) SendText(ctx context.Context, target UserTarget, t
 	})
 }
 
+func (p *RemoteGatewayPlugin) SendTextWithPendingVoiceParts(ctx context.Context, target UserTarget, text string, pendingParts int) error {
+	metadata := map[string]any{"acp_turn": "final"}
+	if pendingParts > 0 {
+		metadata["speech_parts_pending"] = pendingParts
+	}
+	return p.sendToGatewayOwner(ctx, "text", map[string]any{
+		"platform_uid": target.PlatformUID,
+		"text":         text,
+		"final":        true,
+		"metadata":     metadata,
+	})
+}
+
 // SendProgress preserves the non-terminal nature of an Agent status update.
 // Plain SendText is reserved for completed answers; collapsing both onto the
 // same envelope made hardware clients speak "处理中" and close the turn before
@@ -210,15 +223,21 @@ func (p *RemoteGatewayPlugin) SendVoice(ctx context.Context, target UserTarget, 
 	})
 }
 
-func (p *RemoteGatewayPlugin) SendVoicePart(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string, index, total int, terminal bool) error {
+func (p *RemoteGatewayPlugin) SendVoicePart(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string, index, total int, final bool) error {
 	return p.sendToGatewayOwner(ctx, "voice", map[string]any{
-		"platform_uid":     target.PlatformUID,
-		"file_data":        voiceData,
-		"file_name":        fileName,
-		"mime_type":        mimeType,
-		"voice_part_index": index,
-		"voice_part_total": total,
-		"voice_part_final": terminal,
+		"platform_uid": target.PlatformUID,
+		"file_data":    voiceData, "file_name": fileName, "mime_type": mimeType,
+		"voice_part_index": index, "voice_part_total": total, "voice_part_final": final,
+	})
+}
+
+func (p *RemoteGatewayPlugin) SendPendingVoiceEnd(ctx context.Context, target UserTarget, expectedParts, sentParts int) error {
+	return p.sendToGatewayOwner(ctx, "speech_end", map[string]any{
+		"platform_uid": target.PlatformUID,
+		"extra": map[string]any{
+			"speech_parts_expected": expectedParts,
+			"speech_parts_sent":     sentParts,
+		},
 	})
 }
 

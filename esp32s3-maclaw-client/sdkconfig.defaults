@@ -1,4 +1,8 @@
 CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+# ESP32-S3 Wi-Fi-only builds do not need the coexistence component.  Leaving
+# its implicit default enabled triggers an ESP-IDF 6.0.2 timer-ISR race after
+# AP association on EchoEar, causing a reset loop.
+CONFIG_ESP_COEX_ENABLED=n
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y

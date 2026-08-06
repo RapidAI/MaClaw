@@ -3482,7 +3482,7 @@ func TestPrepareHardwareWelcomeWAVRejectsSilentPCM(t *testing.T) {
 	}
 }
 
-func TestRemoteHardwareWelcomeAudioRejectsMutedVolume(t *testing.T) {
+func TestRemoteHardwareWelcomeAudioUsesTheSelectedDeviceVolume(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -3497,8 +3497,8 @@ func TestRemoteHardwareWelcomeAudioRejectsMutedVolume(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed hardware config: %v", err)
 	}
-	if err := app.SendHardwareWelcomeAudioRemote(); err == nil || !strings.Contains(err.Error(), "muted") {
-		t.Fatalf("muted welcome preview error=%v", err)
+	if err := app.SendHardwareWelcomeAudioRemote("test-client"); err == nil || !strings.Contains(err.Error(), "read welcome audio") {
+		t.Fatalf("preview should continue past the legacy machine volume: %v", err)
 	}
 }
 
@@ -3542,7 +3542,7 @@ func TestHardwareWelcomeLocalPreviewDataURLAndRemoteRoute(t *testing.T) {
 	if !strings.HasPrefix(dataURL, "data:audio/wav;base64,") {
 		t.Fatalf("local preview data URL=%q", dataURL)
 	}
-	if err := app.SendHardwareWelcomeAudioRemote(); err == nil || !strings.Contains(err.Error(), "hardware is disabled") {
+	if err := app.SendHardwareWelcomeAudioRemote("test-client"); err == nil || !strings.Contains(err.Error(), "hardware is disabled") {
 		t.Fatalf("disabled remote route error=%v", err)
 	}
 	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
@@ -3553,7 +3553,7 @@ func TestHardwareWelcomeLocalPreviewDataURLAndRemoteRoute(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.SendHardwareWelcomeAudioRemote(); err == nil || !strings.Contains(err.Error(), "Hub is not connected") {
+	if err := app.SendHardwareWelcomeAudioRemote("test-client"); err == nil || !strings.Contains(err.Error(), "Hub is not connected") {
 		t.Fatalf("remote route error=%v", err)
 	}
 }

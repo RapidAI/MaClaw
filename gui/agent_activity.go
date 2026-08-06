@@ -99,3 +99,14 @@ func (s *AgentActivityStore) ClearForOwner(source, ownerID string) {
 	defer s.mu.Unlock()
 	delete(s.items, agentActivityKey(source, ownerID))
 }
+
+// ClearAll drops every activity in this store. Hardware runtimes own a private
+// store, so teardown can safely clear it without touching any other device.
+func (s *AgentActivityStore) ClearAll() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.items = make(map[string]*AgentActivity)
+	s.mu.Unlock()
+}

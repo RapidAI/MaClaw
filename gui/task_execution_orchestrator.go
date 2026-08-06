@@ -71,6 +71,17 @@ func (r *TaskOrchestratorRegistry) Remove(userID string) {
 	delete(r.orchestrators, userID)
 }
 
+// Clear drops all owner-scoped orchestrators. It is used by a hardware Agent
+// runtime at teardown; the registry itself is private to that one device.
+func (r *TaskOrchestratorRegistry) Clear() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.orchestrators = make(map[string]*TaskExecutionOrchestrator)
+	r.mu.Unlock()
+}
+
 // TaskExecStatus represents the execution status of a single task.
 type TaskExecStatus string
 

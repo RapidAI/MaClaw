@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/browser"
@@ -189,10 +190,23 @@ func BuildAuthURL(cfg Config, codeChallenge, redirectURI, state string) string {
 	return cfg.AuthEndpoint + "?" + params.Encode()
 }
 
-// RunXAIOAuthFlowCtx executes Grok Build's OIDC authorization-code flow with
-// PKCE. It uses a dynamic 127.0.0.1 loopback callback and validates state
-// before exchanging the authorization code.
-func RunXAIOAuthFlowCtx(ctx context.Context) (*TokenResult, error) {
+// XAIAuthSession is a prepared Grok Build OAuth flow. Desktop GUIs open its
+// AuthorizationURL through their own system-browser integration, which is more
+// reliable than a background process trying to launch a browser on managed PCs.
+type XAIAuthSession struct {
+	cfg              Config
+	callbackServer   *CallbackServer
+	codeVerifier     string
+	redirectURI      string
+	state            string
+	authorizationURL string
+	closeOnce        sync.Once
+}
+
+// PrepareXAIOAuthFlowCtx prepares a loopback OAuth callback and returns the
+// URL to open. Call WaitForCompletionCtx after the URL has been opened, then
+// Close when the flow is no longer needed.
+func PrepareXAIOAuthFlowCtx(ctx context.Context) (*XAIAuthSession, error) {
 	cfg := XAIConfig()
 	discovery, err := DiscoverOIDCEndpoints(ctx, XAIOAuthIssuer)
 	if err != nil {
@@ -209,26 +223,68 @@ func RunXAIOAuthFlowCtx(ctx context.Context) (*TokenResult, error) {
 	if err := callbackServer.Start(cfg.CallbackPath); err != nil {
 		return nil, fmt.Errorf("xai oauth: start callback server: %w", err)
 	}
-	defer callbackServer.Stop()
 
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", callbackServer.Port(), cfg.CallbackPath)
 	state := generateState()
-	authURL := BuildAuthURL(cfg, GenerateCodeChallenge(verifier), redirectURI, state)
-	if err := browser.OpenURL(authURL); err != nil {
-		return nil, fmt.Errorf("xai oauth: open browser: %w", err)
+	return &XAIAuthSession{
+		cfg:              cfg,
+		callbackServer:   callbackServer,
+		codeVerifier:     verifier,
+		redirectURI:      redirectURI,
+		state:            state,
+		authorizationURL: BuildAuthURL(cfg, GenerateCodeChallenge(verifier), redirectURI, state),
+	}, nil
+}
+
+// AuthorizationURL returns the xAI authorization page for this flow.
+func (s *XAIAuthSession) AuthorizationURL() string {
+	if s == nil {
+		return ""
 	}
-	code, returnedState, err := callbackServer.WaitForCallbackCtx(ctx)
+	return s.authorizationURL
+}
+
+// WaitForCompletionCtx waits for the browser callback, validates state, and
+// exchanges the authorization code for tokens.
+func (s *XAIAuthSession) WaitForCompletionCtx(ctx context.Context) (*TokenResult, error) {
+	if s == nil || s.callbackServer == nil {
+		return nil, fmt.Errorf("xai oauth: session is not initialized")
+	}
+	code, returnedState, err := s.callbackServer.WaitForCallbackCtx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("xai oauth: %w", err)
 	}
-	if returnedState != state {
+	if returnedState != s.state {
 		return nil, fmt.Errorf("xai oauth: state mismatch")
 	}
-	result, err := ExchangeCodeCtx(ctx, cfg, code, verifier, redirectURI)
+	result, err := ExchangeCodeCtx(ctx, s.cfg, code, s.codeVerifier, s.redirectURI)
 	if err != nil {
 		return nil, fmt.Errorf("xai oauth: %w", err)
 	}
 	return result, nil
+}
+
+// Close releases the loopback callback listener. It is safe to call more than
+// once, including concurrently with cancellation.
+func (s *XAIAuthSession) Close() {
+	if s == nil || s.callbackServer == nil {
+		return
+	}
+	s.closeOnce.Do(func() { s.callbackServer.Stop() })
+}
+
+// RunXAIOAuthFlowCtx preserves the CLI/headless convenience flow. Desktop GUIs
+// should use PrepareXAIOAuthFlowCtx so the GUI runtime opens the browser.
+func RunXAIOAuthFlowCtx(ctx context.Context) (*TokenResult, error) {
+	session, err := PrepareXAIOAuthFlowCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+	if err := browser.OpenURL(session.AuthorizationURL()); err != nil {
+		return nil, fmt.Errorf("xai oauth: open browser: %w", err)
+	}
+	return session.WaitForCompletionCtx(ctx)
 }
 
 // tokenResponse 是 OpenAI token endpoint 的 JSON 响应结构。

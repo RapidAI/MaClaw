@@ -67,6 +67,14 @@ type deviceCredentialStore interface {
 
 const deviceGatewayCredentialsKey = "device_gateway_credentials_v1"
 
+const (
+	// Hardware binding capacity is fixed for every GUI. Keep this constant at
+	// the protocol boundary so no client can create a sixth device by bypassing
+	// the GUI.
+	defaultMachineHardwareMaxDevices = maxMachineHardwareDevices
+	maxMachineHardwareDevices        = 5
+)
+
 type persistedDeviceCredentials struct {
 	Tokens          map[string]devicePrincipal      `json:"tokens"`
 	MachineHardware map[string]deviceHardwareConfig `json:"machineHardware,omitempty"`
@@ -83,8 +91,17 @@ type deviceHardwareConfig struct {
 	WelcomeEnabled bool   `json:"welcomeEnabled,omitempty"`
 	WelcomeAudio   string `json:"welcomeAudio,omitempty"`
 	// Volume is a pointer so zero (mute) remains distinguishable from the
-	// legacy "not configured" state.
+	// legacy "not configured" state. It remains the default for bindings that
+	// have not selected their own level yet.
 	Volume *int `json:"volume,omitempty"`
+	// DeviceVolumes stores the explicit speaker level for an individual bound
+	// ESP32. Keeping it with Hub-owned binding state makes the setting survive
+	// desktop restarts and avoids broadcasting one device's change to others.
+	DeviceVolumes map[string]int `json:"deviceVolumes,omitempty"`
+	// AllowCustomPets is false by default. Hub enforces it as the authority for
+	// per-device profile writes rather than trusting the desktop UI to hide the
+	// selector.
+	AllowCustomPets bool `json:"allowCustomPets,omitempty"`
 }
 
 type devicePairing struct {
@@ -134,7 +151,16 @@ type HardwareDevice struct {
 	LastSeenAt      time.Time                 `json:"lastSeenAt,omitempty"`
 	Online          bool                      `json:"online"`
 	LastAckStatus   string                    `json:"lastAckStatus,omitempty"`
+	Volume          *int                      `json:"volume,omitempty"`
+	PetSkin         string                    `json:"petSkin,omitempty"`
 	Capabilities    *agent.ClientCapabilities `json:"capabilities,omitempty"`
+}
+
+// MachineHardwareBindingState is the credential-free capacity view exposed to
+// the owning GUI. Hub is the authority because it owns durable credentials.
+type MachineHardwareBindingState struct {
+	MaxDevices int `json:"maxDevices"`
+	BoundCount int `json:"boundCount"`
 }
 
 type deviceAmbientWeather struct {
@@ -301,7 +327,7 @@ func (g *DeviceGateway) persistTokensLocked() error {
 	}
 	copyHardware := make(map[string]deviceHardwareConfig, len(g.hardware))
 	for machineID, config := range g.hardware {
-		copyHardware[machineID] = config
+		copyHardware[machineID] = cloneDeviceHardwareConfig(config)
 	}
 	raw, err := json.Marshal(persistedDeviceCredentials{Tokens: copyTokens, MachineHardware: copyHardware})
 	if err != nil {
@@ -477,6 +503,15 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 			writeDeviceError(w, http.StatusConflict, "client_id_already_bound", "clientId is already bound to another machine; remove the old binding before pairing again")
 			return
 		}
+	}
+	// Re-pairing an existing client stays available at capacity. A sixth physical
+	// device is refused before issuing a bearer, even if several pairing codes
+	// are outstanding. The user must unbind a device before binding another.
+	if !g.machineOwnsClientLocked(pairing.MachineID, clientID) && g.machineBoundClientCountLocked(pairing.MachineID) >= g.machineHardwareMaxDevicesLocked(pairing.MachineID) {
+		maxDevices := g.machineHardwareMaxDevicesLocked(pairing.MachineID)
+		g.mu.Unlock()
+		writeDeviceError(w, http.StatusConflict, "hardware_device_limit_reached", fmt.Sprintf("hardware binding limit reached (%d devices); remove a bound device before binding a new one", maxDevices))
+		return
 	}
 	// A physical client ID identifies one device across the gateway. Re-pairing
 	// it on the same machine must revoke the earlier credential and discard that
@@ -1553,7 +1588,10 @@ func (g *DeviceGateway) ListMachineDevices(machineID string) []HardwareDevice {
 	}
 	devices := make([]HardwareDevice, 0, len(byClient))
 	for clientID, principal := range byClient {
-		device := HardwareDevice{ClientID: clientID, ClientName: principal.ClientName, ProtocolVersion: principal.ProtocolVersion, PairedAt: principal.PairedAt, LastSeenAt: principal.LastSeenAt}
+		device := HardwareDevice{ClientID: clientID, ClientName: principal.ClientName, ProtocolVersion: principal.ProtocolVersion, PairedAt: principal.PairedAt, LastSeenAt: principal.LastSeenAt, PetSkin: principal.Pet.Skin}
+		if volume, ok := g.hardwareVolumeForClientLocked(machineID, clientID); ok {
+			device.Volume = &volume
+		}
 		if state := g.clients[clientID]; state != nil {
 			lastSeen := state.lastSeenAt
 			if lastSeen.IsZero() {
@@ -1604,12 +1642,187 @@ func (g *DeviceGateway) ListMachineDevicesJSON(machineID string) []map[string]an
 		if device.LastAckStatus != "" {
 			item["lastAckStatus"] = device.LastAckStatus
 		}
+		if device.Volume != nil {
+			item["volume"] = *device.Volume
+		}
+		if device.PetSkin != "" {
+			item["petSkin"] = device.PetSkin
+		}
 		if device.Capabilities != nil {
 			item["capabilities"] = device.Capabilities
 		}
 		out = append(out, item)
 	}
 	return out
+}
+
+// MigrateMachineHardwareBindings upgrades bindings created before the desktop
+// had a stable machine ID. Migration is deliberately narrow: the target must
+// not own any bindings yet, every candidate must be named explicitly by the
+// desktop, and each moved credential must match the authenticated tenant and
+// user. This prevents a user's separate GUI installations from ever seeing or
+// controlling one another's hardware.
+func (g *DeviceGateway) MigrateMachineHardwareBindings(machineID, tenantID, userID string, legacyMachineIDs []string) error {
+	machineID = strings.TrimSpace(machineID)
+	tenantID = normalizeRemoteTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	if machineID == "" || userID == "" || len(legacyMachineIDs) == 0 {
+		return nil
+	}
+	legacy := make(map[string]struct{}, len(legacyMachineIDs))
+	for _, candidate := range legacyMachineIDs {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" && candidate != machineID {
+			legacy[candidate] = struct{}{}
+		}
+	}
+	if len(legacy) == 0 {
+		return nil
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// Once a current machine owns a device, its ownership is authoritative.
+	// Do not merge a legacy candidate into an active, independent binding set.
+	if g.machineBoundClientCountLocked(machineID) != 0 {
+		return nil
+	}
+	previousTokens := make(map[string]devicePrincipal)
+	migratedLegacyMachines := make(map[string]struct{})
+	migratedClientIDs := make(map[string]struct{})
+	for token, principal := range g.tokens {
+		if _, ok := legacy[principal.MachineID]; !ok || normalizeRemoteTenantID(principal.TenantID) != tenantID || strings.TrimSpace(principal.UserID) != userID {
+			continue
+		}
+		previousTokens[token] = principal
+		migratedLegacyMachines[principal.MachineID] = struct{}{}
+		migratedClientIDs[principal.ClientID] = struct{}{}
+		principal.MachineID = machineID
+		g.tokens[token] = principal
+	}
+	if len(previousTokens) == 0 {
+		return nil
+	}
+	// Media is transient, but its machine ID is still an authorization boundary:
+	// downloads are rejected when that machine disables hardware.  Keep every
+	// live object belonging to a migrated device under the new owner as well,
+	// otherwise a pre-migration URL could keep consulting the legacy switch.
+	previousMediaMachineIDs := make(map[string]string)
+	for mediaID, media := range g.media {
+		if media == nil {
+			continue
+		}
+		if _, moved := migratedClientIDs[media.ClientID]; !moved {
+			continue
+		}
+		if _, legacyOwner := legacy[media.MachineID]; !legacyOwner {
+			continue
+		}
+		previousMediaMachineIDs[mediaID] = media.MachineID
+		media.MachineID = machineID
+	}
+	previousHardware, targetHardwareExisted := g.hardware[machineID]
+	previousHardware = cloneDeviceHardwareConfig(previousHardware)
+	removedHardware := make(map[string]deviceHardwareConfig)
+	// A migrated binding can carry durable per-device volumes.  Preserve an
+	// already-created current-machine configuration, but merge only the moved
+	// clients' per-device values into it.  Other legacy machine-level defaults
+	// must not overwrite current GUI settings.
+	currentHardware := cloneDeviceHardwareConfig(previousHardware)
+	currentHardwareExisted := targetHardwareExisted
+	for legacyMachineID := range migratedLegacyMachines {
+		legacyHardware, ok := g.hardware[legacyMachineID]
+		if !ok {
+			continue
+		}
+		// Do not move machine-wide state from a legacy owner that still has
+		// another binding. That state may belong to a separate user/session
+		// despite a malformed historical machine ID.
+		legacyHasRemainingBindings := g.machineBoundClientCountLocked(legacyMachineID) != 0
+		if !currentHardwareExisted {
+			if !legacyHasRemainingBindings {
+				currentHardware = cloneDeviceHardwareConfig(legacyHardware)
+				currentHardwareExisted = true
+			}
+		} else if len(legacyHardware.DeviceVolumes) > 0 {
+			if currentHardware.DeviceVolumes == nil {
+				currentHardware.DeviceVolumes = make(map[string]int)
+			}
+			for clientID, volume := range legacyHardware.DeviceVolumes {
+				if _, moved := migratedClientIDs[clientID]; moved {
+					if _, alreadyConfigured := currentHardware.DeviceVolumes[clientID]; !alreadyConfigured {
+						currentHardware.DeviceVolumes[clientID] = volume
+					}
+				}
+			}
+		}
+		if !legacyHasRemainingBindings {
+			removedHardware[legacyMachineID] = legacyHardware
+			delete(g.hardware, legacyMachineID)
+		}
+	}
+	if currentHardwareExisted {
+		g.hardware[machineID] = currentHardware
+	}
+	if err := g.persistTokensLocked(); err != nil {
+		for token, principal := range previousTokens {
+			g.tokens[token] = principal
+		}
+		for mediaID, previousMachineID := range previousMediaMachineIDs {
+			if media := g.media[mediaID]; media != nil {
+				media.MachineID = previousMachineID
+			}
+		}
+		if targetHardwareExisted {
+			g.hardware[machineID] = previousHardware
+		} else {
+			delete(g.hardware, machineID)
+		}
+		for legacyMachineID, config := range removedHardware {
+			g.hardware[legacyMachineID] = config
+		}
+		return fmt.Errorf("persist legacy hardware binding migration: %w", err)
+	}
+	return nil
+}
+
+// MachineHardwareBindingState returns the current durable binding capacity.
+func (g *DeviceGateway) MachineHardwareBindingState(machineID string) MachineHardwareBindingState {
+	machineID = strings.TrimSpace(machineID)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return MachineHardwareBindingState{
+		MaxDevices: g.machineHardwareMaxDevicesLocked(machineID),
+		BoundCount: g.machineBoundClientCountLocked(machineID),
+	}
+}
+
+func (g *DeviceGateway) MachineHardwareBindingStateJSON(machineID string) map[string]any {
+	state := g.MachineHardwareBindingState(machineID)
+	return map[string]any{"maxDevices": state.MaxDevices, "boundCount": state.BoundCount}
+}
+
+func (g *DeviceGateway) machineHardwareMaxDevicesLocked(machineID string) int {
+	return defaultMachineHardwareMaxDevices
+}
+
+func (g *DeviceGateway) machineBoundClientCountLocked(machineID string) int {
+	clients := make(map[string]struct{})
+	for _, principal := range g.tokens {
+		if principal.MachineID == machineID && strings.TrimSpace(principal.ClientID) != "" {
+			clients[principal.ClientID] = struct{}{}
+		}
+	}
+	return len(clients)
+}
+
+func (g *DeviceGateway) machineOwnsClientLocked(machineID, clientID string) bool {
+	for _, principal := range g.tokens {
+		if principal.MachineID == machineID && principal.ClientID == clientID {
+			return true
+		}
+	}
+	return false
 }
 
 // DeleteMachineDevice removes every bearer for one owned client and its
@@ -1640,6 +1853,16 @@ func (g *DeviceGateway) DeleteMachineDevice(machineID, clientID string) error {
 			delete(g.media, id)
 		}
 	}
+	previousHardware, hardwareExisted := g.hardware[machineID]
+	previousHardware = cloneDeviceHardwareConfig(previousHardware)
+	if config, ok := g.hardware[machineID]; ok && config.DeviceVolumes != nil {
+		config = cloneDeviceHardwareConfig(config)
+		delete(config.DeviceVolumes, clientID)
+		if len(config.DeviceVolumes) == 0 {
+			config.DeviceVolumes = nil
+		}
+		g.hardware[machineID] = config
+	}
 	if err := g.persistTokensLocked(); err != nil {
 		for token, principal := range revoked {
 			g.tokens[token] = principal
@@ -1649,6 +1872,9 @@ func (g *DeviceGateway) DeleteMachineDevice(machineID, clientID string) error {
 		}
 		for id, media := range removedMedia {
 			g.media[id] = media
+		}
+		if hardwareExisted {
+			g.hardware[machineID] = previousHardware
 		}
 		return fmt.Errorf("persist hardware deletion: %w", err)
 	}
@@ -1760,7 +1986,8 @@ func (g *DeviceGateway) UpdateMachineWelcome(machineID string, enabled bool, aud
 	}
 	g.mu.Lock()
 	previous, existed := g.hardware[machineID]
-	config := g.hardware[machineID]
+	previous = cloneDeviceHardwareConfig(previous)
+	config := cloneDeviceHardwareConfig(g.hardware[machineID])
 	config.WelcomeEnabled = enabled
 	if replaceAudio {
 		config.WelcomeAudio = audioBase64
@@ -1780,9 +2007,9 @@ func (g *DeviceGateway) UpdateMachineWelcome(machineID string, enabled bool, aud
 	return err
 }
 
-// UpdateMachineVolume makes the requested speaker level durable for a GUI
-// machine. This lets a device that pairs or reconnects later receive the
-// current level during its handshake, not only while it happened to be online.
+// UpdateMachineVolume changes the legacy machine default speaker level. It is
+// retained for compatibility and is used only by bindings without an explicit
+// per-device level.
 func (g *DeviceGateway) UpdateMachineVolume(machineID string, value any) error {
 	machineID = strings.TrimSpace(machineID)
 	volume, ok := deviceVolume(value)
@@ -1806,6 +2033,90 @@ func (g *DeviceGateway) UpdateMachineVolume(machineID string, value any) error {
 	return err
 }
 
+// UpdateMachineDeviceVolume makes one bound ESP32's speaker level durable.
+// It verifies ownership before persisting so a machine cannot reserve settings
+// for an arbitrary globally-visible client ID.
+func (g *DeviceGateway) UpdateMachineDeviceVolume(machineID, clientID string, value any) error {
+	machineID, clientID = strings.TrimSpace(machineID), strings.TrimSpace(clientID)
+	volume, ok := deviceVolume(value)
+	if machineID == "" || clientID == "" || !ok {
+		return fmt.Errorf("invalid hardware device volume")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	owned := false
+	for _, principal := range g.tokens {
+		if principal.MachineID == machineID && principal.ClientID == clientID {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		return fmt.Errorf("hardware device not found")
+	}
+	previous, existed := g.hardware[machineID]
+	previous = cloneDeviceHardwareConfig(previous)
+	config := cloneDeviceHardwareConfig(g.hardware[machineID])
+	if config.DeviceVolumes == nil {
+		config.DeviceVolumes = make(map[string]int)
+	}
+	config.DeviceVolumes[clientID] = volume
+	g.hardware[machineID] = config
+	if err := g.persistTokensLocked(); err != nil {
+		if existed {
+			g.hardware[machineID] = previous
+		} else {
+			delete(g.hardware, machineID)
+		}
+		return err
+	}
+	// A connected device receives the change right away. For an offline binding
+	// we intentionally do not create a synthetic client state: its first
+	// capability handshake picks up the durable value below.
+	if state := g.clients[clientID]; state != nil {
+		if capabilities := agent.NormalizeClientCapabilities(&state.capabilities); capabilities.Features.VolumeControl {
+			if replaceQueuedDeviceVolume(state, volume) {
+				return nil
+			}
+			message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": map[string]any{"volume": volume}}
+			state.next++
+			message["seq"] = state.next
+			message["id"] = fmt.Sprintf("hub_hardware_config_%d_%d", time.Now().UnixMilli(), state.next)
+			message["conversationId"] = "system"
+			g.queueDeviceMessageLocked(state, message)
+			old := state.notify
+			state.notify = make(chan struct{})
+			close(old)
+		}
+	}
+	return nil
+}
+
+func cloneDeviceHardwareConfig(config deviceHardwareConfig) deviceHardwareConfig {
+	if config.DeviceVolumes == nil {
+		return config
+	}
+	volumes := config.DeviceVolumes
+	config.DeviceVolumes = make(map[string]int, len(volumes))
+	for clientID, volume := range volumes {
+		config.DeviceVolumes[clientID] = volume
+	}
+	return config
+}
+
+func (g *DeviceGateway) hardwareVolumeForClientLocked(machineID, clientID string) (int, bool) {
+	config := g.hardware[machineID]
+	if config.DeviceVolumes != nil {
+		if volume, ok := config.DeviceVolumes[clientID]; ok {
+			return volume, true
+		}
+	}
+	if config.Volume != nil {
+		return *config.Volume, true
+	}
+	return 0, false
+}
+
 // queueHardwareConfigForClientLocked places durable, lightweight settings
 // ahead of boot-time media. At present this is the speaker volume; keeping it
 // in the handshake path also covers a device paired after the desktop setting
@@ -1814,18 +2125,18 @@ func (g *DeviceGateway) queueHardwareConfigForClientLocked(principal devicePrinc
 	if state == nil {
 		return
 	}
-	config := g.hardware[principal.MachineID]
-	if config.Volume == nil {
+	volume, ok := g.hardwareVolumeForClientLocked(principal.MachineID, principal.ClientID)
+	if !ok {
 		return
 	}
 	// A reconnect or rapid slider movement can arrive before the ESP ACKs the
 	// prior setting. Coalesce into its pending control message so the device
 	// always receives the latest level without filling the queue with stale
 	// values that could later overwrite the user's last choice.
-	if replaceQueuedDeviceVolume(state, *config.Volume) {
+	if replaceQueuedDeviceVolume(state, volume) {
 		return
 	}
-	message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": map[string]any{"volume": *config.Volume}}
+	message := map[string]any{"reply_type": "hardware_config", "type": "hardware_config", "extra": map[string]any{"volume": volume}}
 	if !adaptDeviceGatewayReply(message, state.capabilities) {
 		return
 	}
@@ -2268,6 +2579,94 @@ func (g *DeviceGateway) UpdateMachinePetProfile(machineID, skin string, motionEn
 
 func (g *DeviceGateway) UpdateMachinePetProfileAsset(machineID, skin string, motionEnabled bool, asset map[string]any) {
 	g.updateMachinePetProfileAsset(machineID, skin, motionEnabled, DevicePetAssetFromMap(asset))
+}
+
+// UpdateMachineDevicePetProfileAsset persists and queues an independent pet
+// for one owned hardware binding. Unlike the wildcard update, it does not
+// alter other devices or pending pairings.
+func (g *DeviceGateway) UpdateMachineDevicePetProfileAsset(machineID, clientID, skin string, motionEnabled bool, asset map[string]any) error {
+	machineID, clientID = strings.TrimSpace(machineID), strings.TrimSpace(clientID)
+	if machineID == "" || clientID == "" {
+		return fmt.Errorf("machine ID and hardware client ID are required")
+	}
+	profile := normalizeDevicePetProfileAsset(skin, motionEnabled, DevicePetAssetFromMap(asset))
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.hardware[machineID].AllowCustomPets {
+		return fmt.Errorf("individual hardware pets are disabled")
+	}
+	owned := false
+	changed := false
+	previous := make(map[string]devicePrincipal)
+	for token, principal := range g.tokens {
+		if principal.MachineID != machineID || principal.ClientID != clientID {
+			continue
+		}
+		owned = true
+		if devicePetProfilesEqual(principal.Pet, profile) {
+			continue
+		}
+		previous[token] = principal
+		principal.Pet = profile
+		g.tokens[token] = principal
+		changed = true
+	}
+	if !owned {
+		return fmt.Errorf("hardware device not found")
+	}
+	if changed {
+		if err := g.persistTokensLocked(); err != nil {
+			for token, principal := range previous {
+				g.tokens[token] = principal
+			}
+			return fmt.Errorf("persist hardware pet profile: %w", err)
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if state := g.clients[clientID]; state != nil {
+		var assetRef *devicePetAssetReference
+		if state.capabilities.Features.PetAsset {
+			assetRef = g.preparePetAssetLocked(clientID, profile.Asset, state.capabilities.Features.PetAnimation && profile.MotionEnabled, state.capabilities.Features.PetAssetMaxFrames)
+		}
+		state.next++
+		message := map[string]any{"seq": state.next, "id": fmt.Sprintf("hub_pet_%d_%d", time.Now().UnixMilli(), state.next), "type": "pet_profile", "conversationId": "system", "pet_skin": profile.Skin, "pet_motion_enabled": profile.MotionEnabled}
+		if assetRef != nil {
+			message["pet_asset"] = *assetRef
+		}
+		replaceQueuedDevicePetProfileLocked(g, state)
+		g.queueDeviceMessageLocked(state, message)
+		old := state.notify
+		state.notify = make(chan struct{})
+		close(old)
+	}
+	return nil
+}
+
+// UpdateMachineAllowCustomPets persists the machine-level permission that
+// gates independent device profiles. The desktop may use it for presentation,
+// but Hub owns the actual authorization boundary.
+func (g *DeviceGateway) UpdateMachineAllowCustomPets(machineID string, enabled bool) error {
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return fmt.Errorf("machine ID is required")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	previous, existed := g.hardware[machineID]
+	config := cloneDeviceHardwareConfig(previous)
+	config.AllowCustomPets = enabled
+	g.hardware[machineID] = config
+	if err := g.persistTokensLocked(); err != nil {
+		if existed {
+			g.hardware[machineID] = previous
+		} else {
+			delete(g.hardware, machineID)
+		}
+		return err
+	}
+	return nil
 }
 
 func (g *DeviceGateway) updateMachinePetProfileAsset(machineID, skin string, motionEnabled bool, asset *DevicePetAsset) {

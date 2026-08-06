@@ -54,12 +54,25 @@ type VoiceSender interface {
 	SendVoice(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string) error
 }
 
-// VoicePartSender is an optional extension for transports that preserve an
-// ordered hardware playback stream. Terminal is true only when this part is
-// the final message of the whole response; when text follows, every voice part
-// is non-terminal and the text frame closes the turn.
+// VoicePartSender preserves multipart ordering and terminal semantics for
+// hardware gateways while ordinary IM plugins continue using VoiceSender.
 type VoicePartSender interface {
-	SendVoicePart(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string, index, total int, terminal bool) error
+	SendVoicePart(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string, index, total int, final bool) error
+}
+
+// PendingVoiceTextSender lets a constrained hardware gateway publish the
+// terminal result surface before the correlated audio parts. The pending count
+// arms the device to accept those post-terminal parts instead of treating them
+// as an unrelated late reply.
+type PendingVoiceTextSender interface {
+	SendTextWithPendingVoiceParts(ctx context.Context, target UserTarget, text string, pendingParts int) error
+}
+
+// PendingVoiceEndSender closes a result-first speech transaction when fewer
+// audio parts than advertised can be delivered. Hardware clients can stop
+// waiting immediately instead of relying on their recovery timeout.
+type PendingVoiceEndSender interface {
+	SendPendingVoiceEnd(ctx context.Context, target UserTarget, expectedParts, sentParts int) error
 }
 
 // TargetCapabilityResolver is implemented by gateways whose individual

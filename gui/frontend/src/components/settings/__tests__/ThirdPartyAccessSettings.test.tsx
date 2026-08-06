@@ -9,13 +9,17 @@ const appMocks = vi.hoisted(() => ({
     generateHardwareWelcomeAudio: vi.fn(),
     getHardwareWelcomeAudioDataURL: vi.fn(),
 	refreshDeviceAmbientWeather: vi.fn(),
-	    listHardware: vi.fn(),
+	    listHardwareBindings: vi.fn(),
     loadConfig: vi.fn(),
 	resetHardwareWelcomeAudio: vi.fn(),
 	    restartThirdPartyGateway: vi.fn(),
 	    sendHardwareWelcomeAudioRemote: vi.fn(),
-	    sendHardwareVolume: vi.fn(),
+	    sendHardwareDeviceVolume: vi.fn(),
+	    sendHardwareDevicePetProfile: vi.fn(),
+	    listPetPacks: vi.fn(),
+	    getPetPackPreviewDataURL: vi.fn(),
 	    setHardwareEnabled: vi.fn(),
+	    setHardwareAllowCustomPets: vi.fn(),
 	    setThirdPartyGatewayLocalMode: vi.fn(),
 	    stopThirdPartyGateway: vi.fn(),
 }));
@@ -25,15 +29,19 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     DeleteThirdPartyHardwareDevice: appMocks.deleteHardware,
     GenerateHardwareWelcomeAudio: appMocks.generateHardwareWelcomeAudio,
     GetHardwareWelcomeAudioDataURL: appMocks.getHardwareWelcomeAudioDataURL,
+	GetPetPackPreviewDataURL: appMocks.getPetPackPreviewDataURL,
     RefreshDeviceAmbientWeather: appMocks.refreshDeviceAmbientWeather,
     LoadConfig: appMocks.loadConfig,
-    ListThirdPartyHardwareDevices: appMocks.listHardware,
+	ListThirdPartyHardwareDeviceBindings: appMocks.listHardwareBindings,
+	ListPetPacks: appMocks.listPetPacks,
 	ResetHardwareWelcomeAudio: appMocks.resetHardwareWelcomeAudio,
 	    RestartThirdPartyGateway: appMocks.restartThirdPartyGateway,
     SelectHardwareWelcomeAudio: vi.fn(),
-    SendHardwareVolume: appMocks.sendHardwareVolume,
-    SendHardwareWelcomeAudioRemote: appMocks.sendHardwareWelcomeAudioRemote,
-    SetHardwareEnabled: appMocks.setHardwareEnabled,
+	SendHardwareDeviceVolume: appMocks.sendHardwareDeviceVolume,
+	SendHardwareDevicePetProfile: appMocks.sendHardwareDevicePetProfile,
+	    SendHardwareWelcomeAudioRemote: appMocks.sendHardwareWelcomeAudioRemote,
+	    SetHardwareEnabled: appMocks.setHardwareEnabled,
+	    SetHardwareAllowCustomPets: appMocks.setHardwareAllowCustomPets,
 	    SetThirdPartyGatewayLocalMode: appMocks.setThirdPartyGatewayLocalMode,
 	    StopThirdPartyGateway: appMocks.stopThirdPartyGateway,
 }));
@@ -80,14 +88,21 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
         appMocks.generateHardwareWelcomeAudio.mockReset();
 		appMocks.refreshDeviceAmbientWeather.mockReset();
 		appMocks.refreshDeviceAmbientWeather.mockResolvedValue('');
-        appMocks.listHardware.mockReset();
-	        appMocks.listHardware.mockResolvedValue([]);
+	        appMocks.listHardwareBindings.mockReset();
+	        appMocks.listHardwareBindings.mockResolvedValue({ devices: [], maxDevices: 5, boundCount: 0 });
 	        appMocks.restartThirdPartyGateway.mockReset();
-	        appMocks.setHardwareEnabled.mockReset();
+	    appMocks.setHardwareEnabled.mockReset();
 	        appMocks.setThirdPartyGatewayLocalMode.mockReset();
 	        appMocks.stopThirdPartyGateway.mockReset();
         appMocks.sendHardwareWelcomeAudioRemote.mockReset();
-        appMocks.sendHardwareVolume.mockReset();
+		appMocks.sendHardwareDeviceVolume.mockReset();
+		appMocks.sendHardwareDevicePetProfile.mockReset();
+		appMocks.setHardwareAllowCustomPets.mockReset();
+		appMocks.setHardwareAllowCustomPets.mockResolvedValue(undefined);
+		appMocks.listPetPacks.mockReset();
+		appMocks.listPetPacks.mockResolvedValue([]);
+		appMocks.getPetPackPreviewDataURL.mockReset();
+		appMocks.getPetPackPreviewDataURL.mockResolvedValue('');
         appMocks.loadConfig.mockReset();
 		appMocks.resetHardwareWelcomeAudio.mockReset();
     });
@@ -200,41 +215,116 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
         expect(screen.getByRole('alert').textContent).toContain('Weather sync failed');
     });
 
-    it('sends the latest volume after the slider changes without relying on pointerup', async () => {
-        vi.useFakeTimers();
-        appMocks.sendHardwareVolume.mockResolvedValue(undefined);
-        appMocks.loadConfig.mockResolvedValue({
-            thirdparty_gateway_enabled: true,
-            thirdparty_gateway_local_mode: false,
-            hardware_enabled: true,
-            hardware_volume: 82,
+    it('sends the latest volume to only the changed device without relying on pointerup', async () => {
+        appMocks.sendHardwareDeviceVolume.mockResolvedValue(undefined);
+		appMocks.listHardwareBindings.mockResolvedValue({ devices: [{ clientId: 'device-a', clientName: 'Desk' }, { clientId: 'device-b', clientName: 'Kitchen' }], maxDevices: 5, boundCount: 2 });
+        renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
+
+		const slider = await screen.findByRole('slider', { name: 'Volume Desk' });
+        fireEvent.input(slider, { target: { value: '81' } });
+        fireEvent.input(slider, { target: { value: '82' } });
+		await waitFor(() => expect(appMocks.sendHardwareDeviceVolume).toHaveBeenCalledWith('device-a', 82));
+		expect(appMocks.sendHardwareDeviceVolume).toHaveBeenCalledTimes(1);
+		expect(screen.getByRole('slider', { name: 'Volume Kitchen' })).toHaveProperty('value', '70');
+    });
+
+	it('restores only the changed device volume when its durable update fails', async () => {
+		appMocks.listHardwareBindings.mockResolvedValue({ devices: [
+			{ clientId: 'device-a', clientName: 'Desk', volume: 31 },
+			{ clientId: 'device-b', clientName: 'Kitchen', volume: 74 },
+		], maxDevices: 5, boundCount: 2 });
+		appMocks.sendHardwareDeviceVolume.mockRejectedValue(new Error('Hub is not connected'));
+		renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
+
+		const desk = await screen.findByRole('slider', { name: 'Volume Desk' });
+		fireEvent.pointerDown(desk);
+		fireEvent.input(desk, { target: { value: '82' } });
+		await waitFor(() => expect(appMocks.sendHardwareDeviceVolume).toHaveBeenCalledWith('device-a', 82));
+		await waitFor(() => expect(screen.getByRole('slider', { name: 'Volume Desk' })).toHaveProperty('value', '31'));
+		expect(screen.getByRole('slider', { name: 'Volume Kitchen' })).toHaveProperty('value', '74');
+	});
+
+	it('uses the system pet by default and exposes isolated pet selectors only when enabled', async () => {
+		appMocks.listHardwareBindings.mockResolvedValue({ devices: [{ clientId: 'device-a', clientName: 'Desk', petSkin: 'clawmate' }], maxDevices: 5, boundCount: 1 });
+		appMocks.listPetPacks.mockResolvedValue([{ id: 'clawmate', name: 'ClawMate' }, { id: 'focus-claw', name: 'Focus Claw' }]);
+		const props = renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true, pet_skin: 'clawmate' });
+
+		expect(await screen.findByText('Desk')).toBeTruthy();
+		expect(screen.queryByRole('combobox', { name: 'Pet Desk' })).toBeNull();
+		fireEvent.click(screen.getByRole('checkbox', { name: 'Allow individual pets' }));
+		await waitFor(() => expect(appMocks.setHardwareAllowCustomPets).toHaveBeenCalledWith(true));
+
+		props.rerenderSettings({ config: { ...props.config, hardware_allow_custom_pets: true } });
+		const pet = await screen.findByRole('combobox', { name: 'Pet Desk' });
+		fireEvent.change(pet, { target: { value: 'focus-claw' } });
+		await waitFor(() => expect(appMocks.sendHardwareDevicePetProfile).toHaveBeenCalledWith('device-a', 'focus-claw'));
+	});
+
+	it('uses the installed pack preview and does not block another device while a pet update is in flight', async () => {
+		let resolveDesk!: () => void;
+		appMocks.listHardwareBindings.mockResolvedValue({ devices: [
+			{ clientId: 'device-a', clientName: 'Desk', petSkin: 'clawmate' },
+			{ clientId: 'device-b', clientName: 'Kitchen', petSkin: 'focus-claw' },
+		], maxDevices: 5, boundCount: 2 });
+		appMocks.listPetPacks.mockResolvedValue([{ id: 'clawmate', name: 'ClawMate' }, { id: 'focus-claw', name: 'Focus Claw' }]);
+		appMocks.getPetPackPreviewDataURL.mockImplementation((id: string) => Promise.resolve(id === 'focus-claw' ? 'data:image/png;base64,preview' : ''));
+		appMocks.sendHardwareDevicePetProfile.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveDesk = resolve; })).mockResolvedValue(undefined);
+		renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true, hardware_allow_custom_pets: true });
+
+		const desk = await screen.findByRole('combobox', { name: 'Pet Desk' });
+		const kitchen = screen.getByRole('combobox', { name: 'Pet Kitchen' });
+		await waitFor(() => expect(appMocks.getPetPackPreviewDataURL).toHaveBeenCalledWith('focus-claw'));
+		fireEvent.change(desk, { target: { value: 'focus-claw' } });
+		expect((desk as HTMLSelectElement).disabled).toBe(true);
+		expect((kitchen as HTMLSelectElement).disabled).toBe(false);
+		fireEvent.change(kitchen, { target: { value: 'clawmate' } });
+		await waitFor(() => expect(appMocks.sendHardwareDevicePetProfile).toHaveBeenCalledWith('device-b', 'clawmate'));
+		resolveDesk();
+	});
+
+    it('shows the fixed five-device binding limit without a limit-setting control', async () => {
+        appMocks.listHardwareBindings.mockResolvedValue({
+            devices: [{ clientId: 'device-a', clientName: 'Desk' }, { clientId: 'device-b', clientName: 'Kitchen' }],
+            maxDevices: 5,
+            boundCount: 2,
         });
         renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
 
-        const slider = screen.getByRole('slider', { name: /Volume/ });
-        fireEvent.input(slider, { target: { value: '81' } });
-        fireEvent.input(slider, { target: { value: '82' } });
-        await act(async () => { await vi.advanceTimersByTimeAsync(120); });
 
-        expect(appMocks.sendHardwareVolume).toHaveBeenCalledTimes(1);
-        expect(appMocks.sendHardwareVolume).toHaveBeenCalledWith(82);
+        const limit = await screen.findByText('2 / 5');
+        expect(limit.parentElement?.textContent).toMatch(/up to 2 \/ 5 devices/i);
+        expect(screen.queryByText(/remove a device before binding a new one/i)).toBeNull();
+        expect(screen.queryByRole('combobox', { name: 'Independent hardware limit' })).toBeNull();
+    });
+
+    it('shows the unbind instruction when all five hardware bindings are occupied', async () => {
+        appMocks.listHardwareBindings.mockResolvedValue({ devices: [
+            { clientId: 'device-a', clientName: 'Desk' }, { clientId: 'device-b', clientName: 'Kitchen' },
+            { clientId: 'device-c', clientName: 'Hall' }, { clientId: 'device-d', clientName: 'Study' },
+            { clientId: 'device-e', clientName: 'Bedroom' },
+        ], maxDevices: 5, boundCount: 5 });
+        renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
+
+        expect(await screen.findByText('5 / 5')).toBeTruthy();
+        expect(screen.getByText(/remove a device before binding a new one/i)).toBeTruthy();
     });
 
     it('flushes a release value that arrives while an earlier volume write is still running', async () => {
         let finishFirstWrite!: () => void;
-        appMocks.sendHardwareVolume
+        appMocks.sendHardwareDeviceVolume
             .mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirstWrite = resolve; }))
             .mockResolvedValue(undefined);
+		appMocks.listHardwareBindings.mockResolvedValue({ devices: [{ clientId: 'device-a', clientName: 'Desk' }], maxDevices: 5, boundCount: 1 });
         renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
-        const slider = screen.getByRole('slider', { name: /Volume/ });
+		const slider = await screen.findByRole('slider', { name: 'Volume Desk' });
 
         fireEvent.pointerUp(slider, { target: { value: '40' } });
-        await waitFor(() => expect(appMocks.sendHardwareVolume).toHaveBeenCalledWith(40));
+		await waitFor(() => expect(appMocks.sendHardwareDeviceVolume).toHaveBeenCalledWith('device-a', 40));
         fireEvent.pointerUp(slider, { target: { value: '73' } });
         finishFirstWrite();
 
-        await waitFor(() => expect(appMocks.sendHardwareVolume).toHaveBeenLastCalledWith(73));
-        expect(appMocks.sendHardwareVolume).toHaveBeenCalledTimes(2);
+		await waitFor(() => expect(appMocks.sendHardwareDeviceVolume).toHaveBeenLastCalledWith('device-a', 73));
+		expect(appMocks.sendHardwareDeviceVolume).toHaveBeenCalledTimes(2);
     });
 
     it('enables hardware through the atomic backend operation and reflects Hub mode', async () => {
@@ -270,12 +360,12 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
         expect((screen.getByDisplayValue('18777') as HTMLInputElement).disabled).toBe(true);
     });
 
-	    it('keeps hardware controls disabled until hardware is enabled', () => {
+    it('keeps hardware controls disabled until hardware is enabled', () => {
         renderSettings({ thirdparty_gateway_enabled: true, hardware_enabled: false });
         expect((screen.getByRole('button', { name: 'Get code' }) as HTMLButtonElement).disabled).toBe(true);
-        expect((screen.getByRole('slider', { name: /Volume/ }) as HTMLInputElement).disabled).toBe(true);
-	        expect((screen.getByRole('button', { name: 'Test remote hardware' }) as HTMLButtonElement).disabled).toBe(true);
-	    });
+		expect(screen.queryByRole('slider', { name: /Volume/ })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Test remote hardware' })).toBeNull();
+    });
 
     it('allows Welcome setup and local generation before hardware is enabled', () => {
         renderSettings({ thirdparty_gateway_enabled: false, hardware_enabled: false });
@@ -472,26 +562,28 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
         expect(props.showToastMessage).not.toHaveBeenCalledWith('Local GUI playback completed.');
     });
 
-    it('keeps remote hardware testing on the Hub path', async () => {
-        appMocks.sendHardwareWelcomeAudioRemote.mockResolvedValue(undefined);
-        const props = renderSettings({
-            thirdparty_gateway_enabled: true,
-            thirdparty_gateway_local_mode: false,
-            hardware_enabled: true,
-            hardware_welcome_audio_path: 'C:/welcome.wav',
-        });
+	    it('sends remote playback only to the selected bound hardware', async () => {
+	        appMocks.sendHardwareWelcomeAudioRemote.mockResolvedValue(undefined);
+	        appMocks.listHardwareBindings.mockResolvedValue({ devices: [{ clientId: 'esp32s3-a1', clientName: 'Desk Pet', online: true }], maxDevices: 5, boundCount: 1 });
+	        const props = renderSettings({
+	            thirdparty_gateway_enabled: true,
+	            thirdparty_gateway_local_mode: false,
+	            hardware_enabled: true,
+	            hardware_welcome_audio_path: 'C:/welcome.wav',
+	        });
 
-        fireEvent.click(screen.getByRole('button', { name: 'Test remote hardware' }));
+	        fireEvent.click(await screen.findByRole('button', { name: 'Play remotely Desk Pet' }));
 
-        await waitFor(() => expect(appMocks.sendHardwareWelcomeAudioRemote).toHaveBeenCalledTimes(1));
+	        await waitFor(() => expect(appMocks.sendHardwareWelcomeAudioRemote).toHaveBeenCalledWith('esp32s3-a1'));
         // The GUI source may be prefetched, but the remote button must never
         // create or play a desktop Audio element.
         expect(appMocks.getHardwareWelcomeAudioDataURL).toHaveBeenCalledTimes(1);
-        expect(props.showToastMessage).toHaveBeenCalledWith('Remote ESP32 confirmed playback.');
+	        expect(props.showToastMessage).toHaveBeenCalledWith('Desk Pet confirmed playback.');
     });
 
     it('shows an actionable Chinese error when no compatible remote ESP32 is online', async () => {
         appMocks.sendHardwareWelcomeAudioRemote.mockRejectedValue(new Error('Hub rejected request (NO_COMPATIBLE_HARDWARE): no online remote ESP32 supports welcome audio playback'));
+        appMocks.listHardwareBindings.mockResolvedValue({ devices: [{ clientId: 'esp32s3-a1', clientName: 'Desk Pet', online: true }], maxDevices: 5, boundCount: 1 });
         const props = renderSettings({
             thirdparty_gateway_enabled: true,
             thirdparty_gateway_local_mode: false,
@@ -499,17 +591,18 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
             hardware_welcome_audio_path: 'C:/welcome.wav',
         }, { lang: 'zh-Hans' });
 
-        fireEvent.click(screen.getByRole('button', { name: '远程硬件测试' }));
+        fireEvent.click(await screen.findByRole('button', { name: '远程播放 Desk Pet' }));
 
+        await waitFor(() => expect(appMocks.sendHardwareWelcomeAudioRemote).toHaveBeenCalledWith('esp32s3-a1'));
         await waitFor(() => expect(props.showToastMessage).toHaveBeenCalledWith(expect.stringContaining('没有在线且支持欢迎音频播放')));
         expect(props.showToastMessage).toHaveBeenCalledWith(expect.stringContaining('检查设备联网、配对状态和固件能力'));
     });
 
     it('lists independent clients and removes one binding', async () => {
-        appMocks.listHardware.mockResolvedValue([
+        appMocks.listHardwareBindings.mockResolvedValue({ devices: [
             { clientId: 'esp32s3-a1', clientName: 'Desk Pet', protocolVersion: '1.1', online: true },
             { clientId: 'esp32s3-b2', clientName: 'Kitchen Pet', protocolVersion: '1.1', online: false },
-        ]);
+        ], maxDevices: 5, boundCount: 2 });
         appMocks.deleteHardware.mockResolvedValue(undefined);
         renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
 
@@ -523,10 +616,68 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
         await waitFor(() => expect(screen.queryByText('Desk Pet')).toBeNull());
     });
 
+    it('cancels a pending volume write when that device is unbound', async () => {
+        appMocks.listHardwareBindings.mockResolvedValue({ devices: [
+            { clientId: 'esp32s3-volume-remove', clientName: 'Volume Pet', online: true, volume: 42 },
+        ], maxDevices: 5, boundCount: 1 });
+        appMocks.deleteHardware.mockResolvedValue(undefined);
+        appMocks.sendHardwareDeviceVolume.mockResolvedValue(undefined);
+        renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
+
+        const slider = await screen.findByRole('slider', { name: 'Volume Volume Pet' });
+        fireEvent.input(slider, { target: { value: '87' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Remove Volume Pet' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+
+        await waitFor(() => expect(appMocks.deleteHardware).toHaveBeenCalledWith('esp32s3-volume-remove'));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(appMocks.sendHardwareDeviceVolume).not.toHaveBeenCalled();
+    });
+
+    it('keeps the per-device playback and removal actions in one action group', async () => {
+        appMocks.listHardwareBindings.mockResolvedValue({ devices: [
+            { clientId: 'esp32s3-actions', clientName: 'Action Pet', online: true },
+        ], maxDevices: 5, boundCount: 2 });
+        renderSettings({
+            thirdparty_gateway_enabled: true,
+            thirdparty_gateway_local_mode: false,
+            hardware_enabled: true,
+            hardware_welcome_audio_path: 'C:/welcome.wav',
+        });
+
+        await screen.findByText('Action Pet');
+        const playback = screen.getByRole('button', { name: 'Play remotely Action Pet' });
+        const removal = screen.getByRole('button', { name: 'Remove Action Pet' });
+        const volume = screen.getByRole('slider', { name: 'Volume Action Pet' });
+        expect(playback.parentElement).toBe(removal.parentElement);
+        expect(volume.closest('.im-settings-hardware__device-actions')).toBe(playback.parentElement);
+        expect(playback.parentElement?.classList.contains('im-settings-hardware__device-actions')).toBe(true);
+    });
+
+    it('uses the same scoped action group when the device name is long', async () => {
+        const longName = 'ESP32-S3 living-room hardware with a deliberately long device name';
+        appMocks.listHardwareBindings.mockResolvedValue({ devices: [
+            { clientId: 'esp32s3-long', clientName: longName, online: true },
+        ], maxDevices: 5, boundCount: 2 });
+        renderSettings({
+            thirdparty_gateway_enabled: true,
+            thirdparty_gateway_local_mode: false,
+            hardware_enabled: true,
+            hardware_welcome_audio_path: 'C:/welcome.wav',
+        });
+
+        await screen.findByText(longName);
+        const playback = screen.getByRole('button', { name: `Play remotely ${longName}` });
+        const removal = screen.getByRole('button', { name: `Remove ${longName}` });
+        expect(playback.parentElement).toBe(removal.parentElement);
+        expect(playback.parentElement?.classList.contains('im-settings-hardware__device-actions')).toBe(true);
+        expect(playback.closest('.im-settings-hardware__device')?.querySelector('.im-settings-hardware__device-details')).not.toBeNull();
+    });
+
     it('loads and removes hardware under React StrictMode', async () => {
-        appMocks.listHardware.mockResolvedValue([
+        appMocks.listHardwareBindings.mockResolvedValue({ devices: [
             { clientId: 'esp32s3-strict', clientName: 'Strict Pet', online: true },
-        ]);
+        ], maxDevices: 5, boundCount: 1 });
         appMocks.deleteHardware.mockResolvedValue(undefined);
         const config = {
             thirdparty_gateway_enabled: true,
@@ -561,28 +712,28 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
     });
 
     it('does not restore an unbound device when an older list request finishes late', async () => {
-        let finishRefresh!: (devices: unknown[]) => void;
-        appMocks.listHardware
-            .mockResolvedValueOnce([{ clientId: 'esp32s3-race', clientName: 'Race Pet', online: true }])
+        let finishRefresh!: (bindings: unknown) => void;
+        appMocks.listHardwareBindings
+            .mockResolvedValueOnce({ devices: [{ clientId: 'esp32s3-race', clientName: 'Race Pet', online: true }], maxDevices: 5, boundCount: 1 })
             .mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
         appMocks.deleteHardware.mockResolvedValue(undefined);
         renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
 
         expect(await screen.findByText('Race Pet')).toBeTruthy();
         fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-        await waitFor(() => expect(appMocks.listHardware).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(appMocks.listHardwareBindings).toHaveBeenCalledTimes(2));
         fireEvent.click(screen.getByRole('button', { name: 'Remove Race Pet' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
         await waitFor(() => expect(appMocks.deleteHardware).toHaveBeenCalledWith('esp32s3-race'));
 
-        finishRefresh([{ clientId: 'esp32s3-race', clientName: 'Race Pet', online: true }]);
+        finishRefresh({ devices: [{ clientId: 'esp32s3-race', clientName: 'Race Pet', online: true }], maxDevices: 5, boundCount: 1 });
         await act(async () => { await Promise.resolve(); });
         expect(screen.queryByText('Race Pet')).toBeNull();
         expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false);
     });
 
     it('keeps the binding when the custom removal dialog is cancelled', async () => {
-        appMocks.listHardware.mockResolvedValue([{ clientId: 'esp32s3-stay', clientName: 'Stay Pet', online: true }]);
+	        appMocks.listHardwareBindings.mockResolvedValue({ devices: [{ clientId: 'esp32s3-stay', clientName: 'Stay Pet', online: true }], maxDevices: 5, boundCount: 1 });
         renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
 
         expect(await screen.findByText('Stay Pet')).toBeTruthy();
@@ -594,9 +745,9 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
     });
 
     it('shows a retry state instead of a false empty state when listing fails', async () => {
-        appMocks.listHardware.mockRejectedValueOnce(new Error('hub unavailable')).mockResolvedValueOnce([
+	        appMocks.listHardwareBindings.mockRejectedValueOnce(new Error('hub unavailable')).mockResolvedValueOnce({ devices: [
             { clientId: 'esp32s3-retry', clientName: 'Recovered Pet', online: true },
-        ]);
+        ], maxDevices: 5, boundCount: 1 });
         const props = renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
 
         expect((await screen.findByRole('alert')).textContent).toContain('Could not load hardware');
@@ -609,9 +760,9 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
 
     it('ignores errors from an obsolete hardware-list request', async () => {
         let failFirst!: (error: Error) => void;
-        appMocks.listHardware
+        appMocks.listHardwareBindings
             .mockImplementationOnce(() => new Promise((_, reject) => { failFirst = reject; }))
-            .mockResolvedValueOnce([{ clientId: 'esp32s3-current', clientName: 'Current Pet', online: true }]);
+            .mockResolvedValueOnce({ devices: [{ clientId: 'esp32s3-current', clientName: 'Current Pet', online: true }], maxDevices: 5, boundCount: 1 });
         const props = renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
 
         props.rerenderSettings({ thirdPartyGatewayStatus: 'connected' });
@@ -624,7 +775,7 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
     });
 
     it('keeps a device visible when unlinking fails', async () => {
-        appMocks.listHardware.mockResolvedValue([{ clientId: 'esp32s3-safe', clientName: 'Safe Pet', online: false }]);
+        appMocks.listHardwareBindings.mockResolvedValue({ devices: [{ clientId: 'esp32s3-safe', clientName: 'Safe Pet', online: false }], maxDevices: 5, boundCount: 1 });
         appMocks.deleteHardware.mockRejectedValue(new Error('delete failed'));
         const props = renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
 

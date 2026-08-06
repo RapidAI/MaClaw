@@ -359,13 +359,6 @@ func (a *App) loadHardwareWelcomeWAV() ([]byte, error) {
 }
 
 func (a *App) hardwareWelcomePreviewPayload() (map[string]any, error) {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return nil, err
-	}
-	if cfg.HardwareVolume == 0 {
-		return nil, fmt.Errorf("hardware volume is muted; increase it before testing")
-	}
 	wav, err := a.loadHardwareWelcomeWAV()
 	if err != nil {
 		return nil, err
@@ -392,30 +385,31 @@ func (a *App) GetHardwareWelcomeAudioDataURL() (string, error) {
 	return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(wav), nil
 }
 
-// SendHardwareWelcomeAudioRemote always previews through Hub. It never falls
-// back to the local gateway, so the two GUI test buttons diagnose distinct
-// delivery paths instead of silently exercising whichever route is available.
-func (a *App) SendHardwareWelcomeAudioRemote() error {
+// SendHardwareWelcomeAudioRemote plays the configured welcome WAV on one
+// specific Hub-bound ESP32. Keeping the client ID explicit prevents a manual
+// preview from being broadcast to every paired device.
+func (a *App) SendHardwareWelcomeAudioRemote(clientID string) error {
 	a.imGatewaySyncMu.Lock()
 	defer a.imGatewaySyncMu.Unlock()
 	if _, err := a.requireHardwareEnabled(); err != nil {
 		return err
+	}
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return fmt.Errorf("hardware client ID is required")
 	}
 	payload, err := a.hardwareWelcomePreviewPayload()
 	if err != nil {
 		return err
 	}
 	if hub := a.hubClient(); hub != nil && hub.IsConnected() {
-		return hub.SendDeviceGatewayHardwareReplyConfirmed(payload)
+		return hub.SendDeviceGatewayHardwareReplyConfirmed(clientID, payload)
 	}
-	return fmt.Errorf("Hub is not connected; connect MaClaw to Hub and ensure the remote ESP32 is online")
+	return fmt.Errorf("Hub is not connected; connect MaClaw to Hub and ensure the selected remote ESP32 is online")
 }
 
 // SendHardwareWelcomeAudio preserves the existing mode-aware API for older
 // frontends while the settings UI exposes explicit local and remote previews.
 func (a *App) SendHardwareWelcomeAudio() error {
-	if hub := a.hubClient(); hub != nil && hub.IsConnected() {
-		return a.SendHardwareWelcomeAudioRemote()
-	}
-	return fmt.Errorf("Hub is not connected; use local preview in the GUI or connect Hub for remote ESP32 playback")
+	return fmt.Errorf("select a bound ESP32 and use its remote playback button")
 }

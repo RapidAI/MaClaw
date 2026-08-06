@@ -327,6 +327,38 @@ func TestHubCancelSessionTargetsPayloadUser(t *testing.T) {
 	}
 }
 
+func TestHubCancelSessionTargetsOnlyOwningHardwareRuntime(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	runtimes := newHardwareAgentRuntimeRegistry(app, nil, nil)
+	t.Cleanup(runtimes.stopAll)
+	hardware, err := runtimes.handler("pet-alpha")
+	if err != nil {
+		t.Fatalf("create hardware runtime: %v", err)
+	}
+	hardwareUserID := thirdPartySessionUserID("pet-alpha", "default")
+	hardwareLoop := NewLoopContext("hardware task", 3, nil)
+	desktopLoop := NewLoopContext("desktop task", 3, nil)
+	hardware.setSessionLoopCtx(hardwareUserID, hardwareLoop)
+	desktop := &IMMessageHandler{}
+	desktop.setSessionLoopCtx(hardwareUserID, desktopLoop)
+	go func() { <-hardwareLoop.CancelC; hardwareLoop.Done() }()
+	go func() { <-desktopLoop.CancelC; desktopLoop.Done() }()
+
+	payload, err := json.Marshal(map[string]string{"user_id": hardwareUserID})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	client := &RemoteHubClient{imHandler: desktop, hardwareAgents: runtimes}
+	client.handleIMCancelSession(inboundHubEnvelope{Payload: payload})
+
+	if !hardwareLoop.IsCancelled() {
+		t.Fatal("hub cancel must cancel the owning hardware runtime")
+	}
+	if desktopLoop.IsCancelled() {
+		t.Fatal("hardware cancel must not fall through to the desktop Agent")
+	}
+}
+
 func TestHubCancelSessionWithoutPayloadDoesNotCancelGlobalLoop(t *testing.T) {
 	otherLoop := NewLoopContext("chat", 3, nil)
 	h := &IMMessageHandler{}

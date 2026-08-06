@@ -270,6 +270,7 @@ static void alarm_task(void *arg) {
 }
 
 esp_err_t alarm_manager_init(void) {
+    if (s_lock || s_task) return ESP_ERR_INVALID_STATE;
     s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
     nvs_handle_t nvs;
@@ -324,7 +325,14 @@ esp_err_t alarm_manager_init(void) {
     }
     esp_err_t task_err = xTaskCreate(alarm_task, "maclaw_alarm", 5120, NULL, 7, &s_task) == pdPASS
                              ? ESP_OK : ESP_ERR_NO_MEM;
-    if (task_err == ESP_OK) publish_scheduled_state();
+    if (task_err == ESP_OK) {
+        publish_scheduled_state();
+        ESP_LOGI(TAG, "alarm scheduler ready: queued=%u active=%s",
+                 (unsigned)s_store.count, s_store.active_valid ? "yes" : "no");
+    } else {
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
+    }
     return task_err;
 }
 

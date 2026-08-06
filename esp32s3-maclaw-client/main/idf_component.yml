@@ -28,6 +28,11 @@ dependencies:
   # decoder is registered by the application, so unused codecs stay out of
   # the final image.
   espressif/esp_audio_codec: ^2.6.1
-  # Generic PPP-over-UART transport for the Fangtang dual-network board.
-  # The board profile deliberately does not assume a modem module model.
-  espressif/esp_modem: ^2.1.0
+  # The ML307 exposes its own HTTP/HTTPS/TCP stack over AT commands; it is not
+  # a standards-compatible PPP dial-up modem. This is the component used by
+  # the original xingzhi-cube-0.85tft-ml307 firmware.
+  78/esp-ml307: ~3.6.6
+  # esp-ml307 exposes uart_uhci.h from its public at_uart.h but currently
+  # declares uart-uhci as private.  Depend on it directly so consumers of
+  # AtModem receive the required public include path.
+  78/uart-uhci: ~0.3.2

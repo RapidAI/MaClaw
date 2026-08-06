@@ -1,4 +1,26 @@
 dependencies:
+  78/esp-ml307:
+    component_hash: 5443836acc5bb9478d9d93c8178cd52a0a53be13470e006656d751e96cf33f9c
+    dependencies:
+    - name: 78/uart-uhci
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: target not in [esp32]
+      version: ^0.3.2
+    - matches:
+      - if: idf_version >=6.0
+      name: espressif/mqtt
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.0.0
+    - name: idf
+      require: private
+      version: '>=5.5.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 3.6.6
   78/esp_lcd_nv3023:
     component_hash: 2d1c227ae9c8d7303c0be9b2f2b45e595169a2ccb3055aad93b5f1600110b236
     dependencies:
@@ -13,6 +35,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.0.1
+  78/uart-uhci:
+    component_hash: efc6cbf8e6bc7724bfd4fcc58c4aec64636093b857526cc8d4dc17321f4b17cf
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.5.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.3.2
   espressif/cjson:
     component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
     dependencies:
@@ -99,16 +131,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.0.2
-  espressif/esp_modem:
-    component_hash: 06abed971065e9cb88039e011fd85ec1412c7416d3a3d84541a7a432e8d3f94d
+  espressif/mqtt:
+    component_hash: fb18bc3b65aa8c94693a9811ffc322cca8a65d92d5ec84983d3e385080e3969c
     dependencies:
     - name: idf
       require: private
-      version: '>=4.1'
+      version: '>=5.3'
     source:
-      registry_url: https://components.espressif.com/
+      registry_url: https://components.espressif.com
       type: service
-    version: 2.1.0
+    version: 1.1.0
   espressif/qrcode:
     component_hash: 31e70991ce22f28d73a4386417fc9c0993f61e1aab1832474fd9e3db8da9dcbd
     dependencies: []
@@ -121,14 +153,15 @@ dependencies:
       type: idf
     version: 6.0.2
 direct_dependencies:
+- 78/esp-ml307
 - 78/esp_lcd_nv3023
+- 78/uart-uhci
 - espressif/cjson
 - espressif/esp-sr
 - espressif/esp_audio_codec
 - espressif/esp_lcd_st77916
-- espressif/esp_modem
 - espressif/qrcode
 - idf
-manifest_hash: b63409055fd6a330f380443e8d5f79a22bc3e314172d5083f5e61b8031a58d39
+manifest_hash: a3e8a3f80e8f9d75c70eca393214d1fb29bfe27fd54de79bd0764a38fc851144
 target: esp32s3
 version: 3.0.0

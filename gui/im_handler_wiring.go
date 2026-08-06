@@ -516,6 +516,20 @@ type IMMessageHandler struct {
 
 // NewIMMessageHandler creates a new handler.
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
+	var conversationMemory *agent.ConversationMemory
+	var confirmationStore *aiConfirmationStore
+	if app != nil {
+		conversationMemory = app.ensureConversationMemory()
+		confirmationStore = app.ensureAIConfirmationStore()
+	}
+	return newIMMessageHandler(app, manager, conversationMemory, confirmationStore)
+}
+
+// newIMMessageHandler builds an IM handler with caller-owned state stores.
+// The public constructor supplies the App-wide stores. Hardware runtimes pass
+// their private stores instead, so construction never briefly attaches a
+// device runtime to desktop conversation or confirmation state.
+func newIMMessageHandler(app *App, manager *RemoteSessionManager, conversationMemory *agent.ConversationMemory, confirmationStore *aiConfirmationStore) *IMMessageHandler {
 	handlerStart := time.Now()
 	// Response-header timeout: how long to wait for the FIRST byte from the
 	// LLM API after sending the request. This is NOT the total streaming
@@ -564,11 +578,14 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	chatClient := &http.Client{Transport: chatTransport}
 	taskClient := &http.Client{Transport: taskTransport}
 
+	if conversationMemory == nil {
+		conversationMemory = agent.NewConversationMemory()
+	}
 	h := &IMMessageHandler{
 		app:               app,
 		manager:           manager,
-		memory:            app.ensureConversationMemory(),
-		confirmationStore: app.ensureAIConfirmationStore(),
+		memory:            conversationMemory,
+		confirmationStore: confirmationStore,
 		client:            chatClient,
 		taskClient:        taskClient,
 		agentActivity:     NewAgentActivityStore(),

@@ -105,8 +105,79 @@ var (
 	emojiRe      = regexp.MustCompile(`[\x{1F300}-\x{1F9FF}\x{2600}-\x{27BF}\x{FE00}-\x{FE0F}\x{200D}\x{20E3}\x{E0020}-\x{E007F}]+`)
 )
 
+var internalResponsePrefixes = []string{
+	"route task:",
+	"route source:",
+	"route model:",
+	"route reason:",
+	"route escalated:",
+	"cost tier:",
+	"input tokens:",
+	"output tokens:",
+	"total tokens:",
+	"cache read tokens:",
+	"cache write tokens:",
+	"no aux/route — stayed on primary",
+	"no aux/route - stayed on primary",
+	"no aux/route: stayed on primary",
+}
+
+func isInternalResponseMetadataLine(line string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(line, "\r")))
+	// Diagnostics sometimes retain Markdown presentation markers. Only accept
+	// line-leading markers so ordinary prose containing these words is preserved.
+	for {
+		before := normalized
+		normalized = strings.TrimSpace(strings.TrimPrefix(normalized, ">"))
+		normalized = strings.TrimSpace(strings.TrimPrefix(normalized, "- "))
+		normalized = strings.TrimSpace(strings.TrimPrefix(normalized, "* "))
+		normalized = strings.Trim(normalized, "`*_ ")
+		if normalized == before {
+			break
+		}
+	}
+	for _, prefix := range internalResponsePrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// StripInternalResponseMetadata removes transport/UI diagnostics wherever they
+// are useful in the desktop detail view but are not part of an assistant's
+// answer. Hardware clients use the returned text for both their result page and
+// TTS, keeping the two output channels consistent.
+func StripInternalResponseMetadata(text string) string {
+	text = strings.TrimPrefix(strings.ReplaceAll(text, "\r\n", "\n"), "\ufeff")
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	firstContent := true
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if firstContent && len(trimmed) >= 3 && strings.EqualFold(trimmed[:3], "[i]") &&
+			(len(trimmed) == 3 || trimmed[3] == ' ' || trimmed[3] == '\t') {
+			line = strings.TrimSpace(trimmed[3:])
+			trimmed = strings.TrimSpace(line)
+		}
+		if trimmed == "" {
+			if len(kept) > 0 && kept[len(kept)-1] != "" {
+				kept = append(kept, "")
+			}
+			continue
+		}
+		if isInternalResponseMetadataLine(line) {
+			continue
+		}
+		firstContent = false
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
 // cleanForSpeech removes Markdown formatting, code blocks, URLs, and file paths.
 func cleanForSpeech(text string) string {
+	text = StripInternalResponseMetadata(text)
 	text = codeBlockRe.ReplaceAllString(text, " ")
 	text = strings.ReplaceAll(text, "`", "")
 	text = headerRe.ReplaceAllString(text, "")

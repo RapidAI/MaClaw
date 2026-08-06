@@ -13,13 +13,28 @@ set(MACLAW_COMPONENT_REQUIRES
     mbedtls spi_flash esp_psram espressif__esp_lcd_st77916 78__esp_lcd_nv3023 espressif__qrcode
     espressif__esp-sr espressif__esp_audio_codec)
 if(CONFIG_MACLAW_BOARD_FANGTANG_4G)
-    list(APPEND MACLAW_COMPONENT_REQUIRES espressif__esp_modem)
+    list(APPEND MACLAW_COMPONENT_REQUIRES 78__esp-ml307)
+    list(APPEND MACLAW_BOARD_SRCS "ml307_transport.cpp")
+endif()
+
+set(MACLAW_EMBED_FILES)
+if(CONFIG_MACLAW_BOARD_FANGTANG_4G)
+    # A material sugar cube needs more tonal and crystal detail than the
+    # procedural status renderer can carry at 188x164. Keep the physical
+    # RGB565 artwork and its alpha mask isolated to the Fangtang image.
+    list(APPEND MACLAW_EMBED_FILES "fangtang_sugar.rgb565" "fangtang_sugar.a8")
+endif()
+if(CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD)
+    # The 240x320 robot splash is board-specific and costs 150 KiB. Fangtang
+    # renders its own 240x240 sugar-cube startup surface, while EchoEar has an
+    # independent round-panel renderer; neither image should carry this asset.
+    list(APPEND MACLAW_EMBED_FILES "bread_compact_splash.rgb565")
 endif()
 
 idf_component_register(
-    SRCS "main.c" "app_ui.c" "alarm_manager.c" "mp3_player.c" "firmware_identity.c" "${BOARD_PORT_SOURCE}"
+    SRCS "main.c" "app_ui.c" "alarm_manager.c" "mp3_player.c" "firmware_identity.c" "${BOARD_PORT_SOURCE}" ${MACLAW_BOARD_SRCS}
     INCLUDE_DIRS "."
-    EMBED_FILES "bread_compact_splash.rgb565"
+    EMBED_FILES ${MACLAW_EMBED_FILES}
     REQUIRES ${MACLAW_COMPONENT_REQUIRES}
 )
 

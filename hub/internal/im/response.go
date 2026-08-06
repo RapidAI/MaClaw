@@ -11,22 +11,37 @@ import (
 // can be converted to OutgoingMessage for any IM plugin, or degraded
 // to plain text for platforms with limited capabilities.
 type GenericResponse struct {
-	StatusCode    int              // Status code: 200 success, 400 bad request, 404 not found, 500 internal error
-	StatusIcon    string           // Semantic status token: ok|error|warning|busy|info|offline (never emoji)
-	Title         string           // Response title
-	Body          string           // Response body (supports Markdown)
-	Fields        []ResponseField  // Structured field list
-	Actions       []ResponseAction // Action button definitions
-	FallbackText  string           // Explicit plain text fallback (optional override)
-	ImageKey      string           // Base64 image data or image key for IM delivery (optional)
-	ImageCaption  string           // Caption for the image (optional)
-	FileData      string           // Base64-encoded file data for IM delivery (optional)
-	FileName      string           // File display name (optional)
-	FileMimeType  string           // File MIME type (optional)
-	VoiceData     string           // Base64-encoded voice audio for IM delivery (optional, OGG Opus or WAV)
-	VoiceFileName string           // Voice file name, e.g. "voice.ogg" (optional)
-	VoiceMimeType string           // Voice MIME type, e.g. "audio/ogg" (optional)
-	VoiceParts    []VoicePart      // Ordered bounded audio segments for hardware delivery
+	StatusCode        int              // Status code: 200 success, 400 bad request, 404 not found, 500 internal error
+	StatusIcon        string           // Semantic status token: ok|error|warning|busy|info|offline (never emoji)
+	Title             string           // Response title
+	Body              string           // Response body (supports Markdown)
+	Fields            []ResponseField  // Structured field list
+	Actions           []ResponseAction // Action button definitions
+	FallbackText      string           // Explicit plain text fallback (optional override)
+	ImageKey          string           // Base64 image data or image key for IM delivery (optional)
+	ImageCaption      string           // Caption for the image (optional)
+	FileData          string           // Base64-encoded file data for IM delivery (optional)
+	FileName          string           // File display name (optional)
+	FileMimeType      string           // File MIME type (optional)
+	VoiceData         string           // Base64-encoded voice audio for IM delivery (optional, OGG Opus or WAV)
+	VoiceFileName     string           // Voice file name, e.g. "voice.ogg" (optional)
+	VoiceMimeType     string           // Voice MIME type, e.g. "audio/ogg" (optional)
+	VoiceParts        []VoicePart      // Ordered bounded audio segments for hardware delivery
+	PendingVoiceParts int              // Deferred speech parts expected after terminal text
+}
+
+// VoicePart is one independently deliverable segment of a hardware voice
+// response. Each part stays within the receiving device's transport limit.
+type VoicePart struct {
+	Data     string `json:"data"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+}
+
+type AgentVoicePart struct {
+	Index int       `json:"index"`
+	Total int       `json:"total"`
+	Part  VoicePart `json:"part"`
 }
 
 // FormatStatusIconMark maps semantic StatusIcon tokens to short ASCII marks
@@ -41,8 +56,8 @@ func FormatStatusIconMark(icon string) string {
 		return "[!!]"
 	case "busy", "pending", "running", "processing":
 		return "[..]"
-	case "info":
-		return "[i]"
+	case "info", "[i]":
+		return ""
 	case "offline":
 		return "[--]"
 	default:
@@ -55,11 +70,28 @@ func FormatStatusIconMark(icon string) string {
 	}
 }
 
+// stripLeadingInfoMark removes the legacy informational transport marker from
+// explicit fallbacks without touching ordinary content such as "[I/O]".
+func stripLeadingInfoMark(text string) string {
+	if len(text) < 3 || !strings.EqualFold(text[:3], "[i]") {
+		return text
+	}
+	if len(text) > 3 {
+		switch text[3] {
+		case ' ', '\t', '\r', '\n':
+		default:
+			return text
+		}
+	}
+	return strings.TrimLeft(text[3:], " \t\r\n")
+}
+
 // ResponseField represents a structured key-value field in a response.
 type ResponseField struct {
 	Label    string // Field label
 	Value    string // Field value (plain text)
 	RichText string // Rich text representation (optional, for platforms that support it)
+	Internal bool   // Internal telemetry; never render on end-user channels
 }
 
 // ResponseAction represents an interactive action button in a response.
@@ -81,12 +113,15 @@ func (r *GenericResponse) displayNormalized() displayNormalizedParts {
 	if r == nil {
 		return displayNormalizedParts{}
 	}
-	fields := make([]MessageField, len(r.Fields))
-	for i, f := range r.Fields {
-		fields[i] = MessageField{
+	fields := make([]MessageField, 0, len(r.Fields))
+	for _, f := range r.Fields {
+		if f.Internal {
+			continue
+		}
+		fields = append(fields, MessageField{
 			Label: f.Label,
 			Value: textutil.PrepareChatBodyForDisplay(f.Value),
-		}
+		})
 	}
 	return displayNormalizedParts{
 		title:  textutil.PrepareChatBodyForDisplay(r.Title),
@@ -159,7 +194,7 @@ func (r *GenericResponse) ToOutgoingMessage() OutgoingMessage {
 	fallback := r.FallbackText
 	if fallback != "" {
 		// Explicit override still gets line-leading pictograph strip (display policy).
-		fallback = textutil.PrepareChatBodyForDisplay(fallback)
+		fallback = stripLeadingInfoMark(textutil.PrepareChatBodyForDisplay(fallback))
 	} else {
 		// Build from the same normalized parts — no second Prepare pass.
 		fallback = formatFallbackFromParts(r.StatusIcon, parts.title, parts.body, parts.fields)
@@ -185,7 +220,7 @@ func (r *GenericResponse) ToFallbackText() string {
 		return ""
 	}
 	if r.FallbackText != "" {
-		return textutil.PrepareChatBodyForDisplay(r.FallbackText)
+		return stripLeadingInfoMark(textutil.PrepareChatBodyForDisplay(r.FallbackText))
 	}
 	parts := r.displayNormalized()
 	return formatFallbackFromParts(r.StatusIcon, parts.title, parts.body, parts.fields)
@@ -197,7 +232,7 @@ func (r *GenericResponse) ToFallbackText() string {
 // if the card was constructed without going through ToOutgoingMessage.
 func FormatCardFallback(card OutgoingMessage) string {
 	if card.FallbackText != "" {
-		return textutil.PrepareChatBodyForDisplay(card.FallbackText)
+		return stripLeadingInfoMark(textutil.PrepareChatBodyForDisplay(card.FallbackText))
 	}
 	return formatFallbackFromParts(
 		card.StatusIcon,

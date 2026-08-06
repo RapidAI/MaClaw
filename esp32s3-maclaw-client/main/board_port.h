@@ -121,6 +121,15 @@ bool board_port_wake_from_idle(void);
 // Draws a compact Wi-Fi indicator in the pet status area without repainting the
 // full screen. Use an empty SSID to clear it.
 void board_port_set_wifi_status(const char *ssid, bool connected);
+// Updates authenticated MaClaw Hub reachability independently from the
+// selected radio transport. Compact standby screens use this for ONLINE/WAIT;
+// boards without that status row retain it as a no-op.
+void board_port_set_service_ready(bool ready);
+
+// Optional local power telemetry. Boards without a monitored battery return
+// false; Fangtang reports its original ADC2/channel-6 level and GPIO38 charge
+// input without exposing those board-specific details to application code.
+bool board_port_get_power_status(unsigned *level_percent, bool *charging);
 // Adds calm, glanceable context to the ready pet surface. `time` is the local
 // clock in "HH:MM:SS" format, `location` comes from the weather payload,
 // `date` is a compact local date such as "08/02", `weekday` is localized by
@@ -129,6 +138,9 @@ void board_port_set_wifi_status(const char *ssid, bool connected);
 void board_port_set_ambient(const char *time, const char *location, const char *date, const char *weekday,
                             const char *weather_summary, int temperature_c,
                             bool weather_valid, bool weather_stale);
+// Fangtang exposes the selected uplink beside the standby calendar. Other
+// boards ignore this hint and retain their established ambient layouts.
+void board_port_set_network_transport(bool cellular);
 // Shows whether a locally scheduled alarm exists. Compact boards use this as
 // a small affordance beside the standby calendar; foreground surfaces do not
 // repaint when this state changes.
@@ -145,6 +157,12 @@ void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_t
 // the pre-speech timeout returns ESP_ERR_NOT_FOUND and no WAV, so callers must
 // not submit silence as a command.
 esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len);
+// Ends an active one-shot command capture at the next audio frame boundary.
+// If speech has already started, capture_wav returns the accumulated WAV;
+// otherwise it returns ESP_ERR_NOT_FOUND. Safe to call from the input task.
+void board_port_request_capture_stop(void);
+// Clears a stop request before publishing a new command-recording phase.
+void board_port_reset_capture_stop(void);
 
 // Streaming capture for long meetings. Reads 16 kHz, signed 16-bit mono PCM
 // into caller-owned memory without buffering the full recording in RAM.

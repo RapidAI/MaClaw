@@ -622,6 +622,9 @@ type mockOrderVoicePlugin struct {
 	mockPlugin
 	calls         []string
 	partTerminals []bool
+	pendingParts  []int
+	voiceFailAt   int
+	speechEnds    [][2]int
 }
 
 func (m *mockOrderVoicePlugin) SendText(_ context.Context, _ UserTarget, text string) error {
@@ -642,12 +645,32 @@ func (m *mockOrderVoicePlugin) SendVoice(_ context.Context, _ UserTarget, voiceD
 func (m *mockOrderVoicePlugin) SendVoicePart(_ context.Context, _ UserTarget, voiceData, _, _ string, index, total int, terminal bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.voiceFailAt == index {
+		return fmt.Errorf("voice part %d failed", index)
+	}
 	m.calls = append(m.calls, "voice:"+voiceData)
 	m.partTerminals = append(m.partTerminals, terminal)
 	return nil
 }
 
-func TestSendResponseSendsThirdPartyVoiceBeforeText(t *testing.T) {
+func (m *mockOrderVoicePlugin) SendPendingVoiceEnd(_ context.Context, _ UserTarget, expectedParts, sentParts int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "speech_end")
+	m.speechEnds = append(m.speechEnds, [2]int{expectedParts, sentParts})
+	return nil
+}
+
+func (m *mockOrderVoicePlugin) SendTextWithPendingVoiceParts(_ context.Context, _ UserTarget, text string, pendingParts int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "text")
+	m.sentTexts = append(m.sentTexts, text)
+	m.pendingParts = append(m.pendingParts, pendingParts)
+	return nil
+}
+
+func TestSendResponseSendsThirdPartyResultBeforeVoice(t *testing.T) {
 	plugin := &mockOrderVoicePlugin{mockPlugin: mockPlugin{
 		name: "thirdparty",
 		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
@@ -659,12 +682,32 @@ func TestSendResponseSendsThirdPartyVoiceBeforeText(t *testing.T) {
 		VoiceFileName: "reply.wav",
 		VoiceMimeType: "audio/wav",
 	})
-	if len(plugin.calls) != 2 || plugin.calls[0] != "voice:dm9pY2U=" || plugin.calls[1] != "text" {
-		t.Fatalf("delivery order = %v, want [voice:data text]", plugin.calls)
+	if len(plugin.calls) != 2 || plugin.calls[0] != "text" || plugin.calls[1] != "voice:dm9pY2U=" {
+		t.Fatalf("delivery order = %v, want [text voice:data]", plugin.calls)
+	}
+	if len(plugin.pendingParts) != 1 || plugin.pendingParts[0] != 1 {
+		t.Fatalf("pending voice parts = %v, want [1]", plugin.pendingParts)
 	}
 }
 
-func TestSendResponseSendsAllThirdPartyVoicePartsBeforeText(t *testing.T) {
+func TestSendResponseArmsDeferredThirdPartyVoiceWithoutAudioPayload(t *testing.T) {
+	plugin := &mockOrderVoicePlugin{mockPlugin: mockPlugin{
+		name: "thirdparty",
+		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
+	}}
+	adapter := &Adapter{}
+	adapter.sendResponse(context.Background(), plugin, UserTarget{PlatformUID: "dev-1"}, &GenericResponse{
+		Body: "完整结果", PendingVoiceParts: 3,
+	})
+	if got := strings.Join(plugin.calls, ","); got != "text" {
+		t.Fatalf("delivery calls=%q, want text only", got)
+	}
+	if len(plugin.pendingParts) != 1 || plugin.pendingParts[0] != 3 {
+		t.Fatalf("pending voice parts=%v, want [3]", plugin.pendingParts)
+	}
+}
+
+func TestSendResponseSendsAllThirdPartyVoicePartsAfterResult(t *testing.T) {
 	plugin := &mockOrderVoicePlugin{mockPlugin: mockPlugin{
 		name: "thirdparty",
 		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
@@ -677,11 +720,35 @@ func TestSendResponseSendsAllThirdPartyVoicePartsBeforeText(t *testing.T) {
 			{Data: "part-2", FileName: "reply-2.wav", MimeType: "audio/wav"},
 		},
 	})
-	if got := strings.Join(plugin.calls, ","); got != "voice:part-1,voice:part-2,text" {
+	if got := strings.Join(plugin.calls, ","); got != "text,voice:part-1,voice:part-2" {
 		t.Fatalf("delivery order = %v", plugin.calls)
+	}
+	if len(plugin.pendingParts) != 1 || plugin.pendingParts[0] != 2 {
+		t.Fatalf("pending voice parts = %v, want [2]", plugin.pendingParts)
 	}
 	if len(plugin.partTerminals) != 2 || plugin.partTerminals[0] || plugin.partTerminals[1] {
 		t.Fatalf("voice terminal markers = %v, want both false because final text follows", plugin.partTerminals)
+	}
+}
+
+func TestSendResponseClosesPendingThirdPartyVoiceAfterPartFailure(t *testing.T) {
+	plugin := &mockOrderVoicePlugin{mockPlugin: mockPlugin{
+		name: "thirdparty",
+		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
+	}, voiceFailAt: 2}
+	(&Adapter{}).sendResponse(context.Background(), plugin, UserTarget{PlatformUID: "pet-1"}, &GenericResponse{
+		Body: "完整结果",
+		VoiceParts: []VoicePart{
+			{Data: "part-1", FileName: "reply-1.wav", MimeType: "audio/wav"},
+			{Data: "part-2", FileName: "reply-2.wav", MimeType: "audio/wav"},
+			{Data: "part-3", FileName: "reply-3.wav", MimeType: "audio/wav"},
+		},
+	})
+	if got := strings.Join(plugin.calls, ","); got != "text,voice:part-1,speech_end" {
+		t.Fatalf("delivery calls = %q", got)
+	}
+	if len(plugin.speechEnds) != 1 || plugin.speechEnds[0] != [2]int{3, 1} {
+		t.Fatalf("speech end = %#v, want expected=3 sent=1", plugin.speechEnds)
 	}
 }
 
@@ -700,16 +767,17 @@ func TestSendResponseMarksOnlyLastVoicePartTerminalWithoutText(t *testing.T) {
 			{Data: "part-2", FileName: "reply-2.wav", MimeType: "audio/wav"},
 		},
 	})
-	if got := strings.Join(plugin.calls, ","); got != "voice:part-1,voice:part-2" {
+	if got := strings.Join(plugin.calls, ","); got != "text,voice:part-1,voice:part-2" {
 		t.Fatalf("delivery order = %v", plugin.calls)
 	}
-	if len(plugin.partTerminals) != 2 || plugin.partTerminals[0] || !plugin.partTerminals[1] {
-		t.Fatalf("voice terminal markers = %v, want [false true]", plugin.partTerminals)
+	if len(plugin.pendingParts) != 1 || plugin.pendingParts[0] != 2 {
+		t.Fatalf("pending voice parts = %v, want [2]", plugin.pendingParts)
 	}
-	for _, call := range plugin.calls {
-		if call == "text" {
-			t.Fatalf("voice-only response emitted synthetic status text: %v", plugin.calls)
-		}
+	if len(plugin.partTerminals) != 2 || plugin.partTerminals[0] || plugin.partTerminals[1] {
+		t.Fatalf("voice terminal markers = %v, want [false false] because result text closes the turn", plugin.partTerminals)
+	}
+	if len(plugin.sentTexts) != 1 || plugin.sentTexts[0] != "音频已就绪" {
+		t.Fatalf("voice-only response result surface = %v", plugin.sentTexts)
 	}
 }
 
@@ -746,7 +814,7 @@ func TestAgentResponseCarriesOrderedVoicePartsToGenericResponse(t *testing.T) {
 	}
 }
 
-func TestDeliverSingleResponseSendsThirdPartyVoiceBeforeText(t *testing.T) {
+func TestDeliverSingleResponseSendsThirdPartyResultBeforeVoice(t *testing.T) {
 	plugin := &mockOrderVoicePlugin{mockPlugin: mockPlugin{
 		name: "thirdparty",
 		caps: CapabilityDeclaration{SupportsVoice: true, SupportsFile: true, SupportsMarkdown: false},
@@ -758,8 +826,11 @@ func TestDeliverSingleResponseSendsThirdPartyVoiceBeforeText(t *testing.T) {
 		VoiceFileName: "reply.wav",
 		VoiceMimeType: "audio/wav",
 	})
-	if len(plugin.calls) != 2 || plugin.calls[0] != "voice:dm9pY2U=" || plugin.calls[1] != "text" {
-		t.Fatalf("delivery order = %v, want [voice:data text]", plugin.calls)
+	if len(plugin.calls) != 2 || plugin.calls[0] != "text" || plugin.calls[1] != "voice:dm9pY2U=" {
+		t.Fatalf("delivery order = %v, want [text voice:data]", plugin.calls)
+	}
+	if len(plugin.pendingParts) != 1 || plugin.pendingParts[0] != 1 {
+		t.Fatalf("pending voice parts = %v, want [1]", plugin.pendingParts)
 	}
 }
 

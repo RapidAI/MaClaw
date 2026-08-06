@@ -158,42 +158,44 @@ type App struct {
 	toolDefGenerator  *ToolDefinitionGenerator
 	toolRouter        *ToolRouter
 
-	unifiedClassifier       *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
-	classifierOnce          sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
-	embeddingActivated      atomic.Bool                     // ensures activateEmbedderAsync runs at most once
-	intentEmbeddingActive   atomic.Bool                     // ensures UIC-only embedding activation runs at most once
-	embeddingMu             sync.Mutex
-	intentEmbedder          embedding.Embedder // local model held for UIC and reused when vector search is enabled
-	intentEmbedderPath      string             // absolute/loader-provided path for the shared local embedding runtime
-	usageTracker            *tool.UsageTracker
-	goalContinuation        *GoalContinuationEngine
-	experienceEvents        *lifecycle.EventTrail
-	experienceSink          lifecycle.EventSink
-	experienceExtractor     *ExperienceExtractor
-	llmEndpointFailuresOnce sync.Once
-	llmEndpointFailures     *llmEndpointFailureGate
-	orchestrator            *Orchestrator
-	sharedContext           *SharedContextStore
-	toolSelector            *ToolSelector
-	skillHubClient          *SkillHubClient
-	capabilityGapDetector   *CapabilityGapDetector
-	agentRegistry           *agent.AgentRegistry
-	agentRegistryOnce       sync.Once
-	ohModules               openhumanModules
-	lastModelRouteMu        sync.RWMutex
-	lastModelRoute          modelRouteDecision // last turn routing decision (debug/settings)
-	stopHubTicker           chan struct{}      // signals the 24h recommendation refresh goroutine to stop
-	hubUpdCache             *hubUpdateCache
-	hubCenterCache          *remote.HubCenterSelectionCache // shared cache from corelib/remote
-	hubCenterPersister      *guiHubCenterPersister          // persister for HubCenter URL config
-	oauthMu                 sync.Mutex
-	oauthCancel             context.CancelFunc
-	oauthGeneration         uint64
-	credentialStore         *oauth.FileCredentialStore  // independent OAuth credential storage (credentials.json)
-	anthropicOAuthParams    *oauth.AnthropicOAuthParams // in-progress Anthropic OAuth params
-	copilotDeviceCode       string                      // in-progress GitHub Copilot device code
-	copilotPollInterval     int                         // Copilot device code poll interval
-	copilotPollCtx          context.Context             // Copilot device code polling context
+	unifiedClassifier        *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
+	classifierOnce           sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
+	embeddingActivated       atomic.Bool                     // ensures activateEmbedderAsync runs at most once
+	intentEmbeddingActive    atomic.Bool                     // ensures UIC-only embedding activation runs at most once
+	embeddingMu              sync.Mutex
+	intentEmbedder           embedding.Embedder // local model held for UIC and reused when vector search is enabled
+	intentEmbedderPath       string             // absolute/loader-provided path for the shared local embedding runtime
+	usageTracker             *tool.UsageTracker
+	goalContinuation         *GoalContinuationEngine
+	experienceEvents         *lifecycle.EventTrail
+	experienceSink           lifecycle.EventSink
+	experienceExtractor      *ExperienceExtractor
+	llmEndpointFailuresOnce  sync.Once
+	llmEndpointFailures      *llmEndpointFailureGate
+	orchestrator             *Orchestrator
+	sharedContext            *SharedContextStore
+	toolSelector             *ToolSelector
+	skillHubClient           *SkillHubClient
+	capabilityGapDetector    *CapabilityGapDetector
+	agentRegistry            *agent.AgentRegistry
+	agentRegistryOnce        sync.Once
+	ohModules                openhumanModules
+	lastModelRouteMu         sync.RWMutex
+	lastModelRoute           modelRouteDecision // last turn routing decision (debug/settings)
+	stopHubTicker            chan struct{}      // signals the 24h recommendation refresh goroutine to stop
+	hubUpdCache              *hubUpdateCache
+	hubCenterCache           *remote.HubCenterSelectionCache // shared cache from corelib/remote
+	hubCenterPersister       *guiHubCenterPersister          // persister for HubCenter URL config
+	oauthMu                  sync.Mutex
+	oauthCancel              context.CancelFunc
+	oauthGeneration          uint64
+	xaiOAuthSession          *oauth.XAIAuthSession
+	xaiOAuthAuthorizationURL string
+	credentialStore          *oauth.FileCredentialStore  // independent OAuth credential storage (credentials.json)
+	anthropicOAuthParams     *oauth.AnthropicOAuthParams // in-progress Anthropic OAuth params
+	copilotDeviceCode        string                      // in-progress GitHub Copilot device code
+	copilotPollInterval      int                         // Copilot device code poll interval
+	copilotPollCtx           context.Context             // Copilot device code polling context
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex
@@ -6062,6 +6064,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	motionChanged := floatingMotionChanged(oldConfig, config)
 	soundChanged := floatingSoundChanged(oldConfig, config)
 	devicePetChanged := !oldConfigLoaded || devicePetProfileChanged(oldConfig, config)
+	hardwareCustomPetsDisabled := oldConfig.HardwareAllowCustomPets && !config.HardwareAllowCustomPets
 	hardwareWelcomeChanged := !oldConfigLoaded || hardwareWelcomeConfigChanged(oldConfig, config)
 	hardwareVolumeChanged := !oldConfigLoaded || hardwareVolumeChanged(oldConfig, config)
 	hubClient := (*RemoteHubClient)(nil)
@@ -6123,7 +6126,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 			}
 		}(config)
 	}
-	if devicePetChanged && a.thirdPartyGateway != nil {
+	if (devicePetChanged && !config.HardwareAllowCustomPets || hardwareCustomPetsDisabled) && a.thirdPartyGateway != nil {
 		// Local Gateway mode has no Hub relay; broadcast to paired devices
 		// directly so they follow the same settings change in real time. Runs
 		// outside the hubClient guard because local mode may have no Hub client.
@@ -6154,7 +6157,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 				}
 				client.SyncLaunchProjects()
 			}
-		}(hubClient, config, devicePetChanged, hardwareWelcomeChanged, hardwareVolumeChanged)
+		}(hubClient, config, (devicePetChanged && !config.HardwareAllowCustomPets) || hardwareCustomPetsDisabled, hardwareWelcomeChanged, hardwareVolumeChanged)
 	}
 	log.Printf("[config] SaveConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
@@ -7205,6 +7208,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, fmt.Errorf("hardware_volume must be between 0 and 100")
 			}
 			cfg.HardwareVolume = v
+		case "hardware_allow_custom_pets":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.HardwareAllowCustomPets = v
 		case "acp_host_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7948,6 +7957,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	motionChanged := petChanged && floatingMotionChanged(current, cfg)
 	soundChanged := petChanged && floatingSoundChanged(current, cfg)
 	devicePetChanged := devicePetProfileChanged(current, cfg)
+	hardwareCustomPetsDisabled := current.HardwareAllowCustomPets && !cfg.HardwareAllowCustomPets
 	hardwareWelcomeChanged := hardwareWelcomeConfigChanged(current, cfg)
 	hardwareVolumeChanged := hardwareVolumeChanged(current, cfg)
 	// Unified epilogue: publish → unlock → post-unlock drains → persist.
@@ -8059,7 +8069,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 		}(cfg)
 	}
-	if devicePetChanged && a.ctx != nil {
+	if (devicePetChanged && !cfg.HardwareAllowCustomPets || hardwareCustomPetsDisabled) && a.ctx != nil {
 		// Propagate the active GUI pet immediately. Previously the Hub profile was
 		// refreshed only when the GUI happened to send a gateway reply, so changing
 		// packs while the ESP was idle had no observable effect.

@@ -2,7 +2,8 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom';
 import { colors, radius } from './styles';
 import { QRCodeSVG } from 'qrcode.react';
-import { ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelOpenAIOAuth, CancelXAIOAuth, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartXAIOAuth, TestMaclawLLM, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
+import { BrowserOpenURL, ClipboardSetText, EventsOff, EventsOn } from '../../../wailsjs/runtime';
+import { ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelOpenAIOAuth, CancelXAIOAuthURL, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartXAIOAuth, TestMaclawLLM, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
@@ -174,6 +175,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
+    const [xaiOAuthURL, setXaiOAuthURL] = useState("");
+    const xaiOAuthURLRef = useRef("");
+    const xaiOAuthActiveRef = useRef(false);
+    const xaiOAuthAttemptRef = useRef(0);
     const [codegenModels, setCodegenModels] = useState<{ id: string; name: string }[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [maclawModel, setMaclawModel] = useState("");        // MaClaw Agent 使用的模型
@@ -419,6 +424,25 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         return () => { CancelCodeGenSSOPolling().catch(() => {}); };
     }, []);
 
+    const cancelActiveXaiOAuth = useCallback(() => {
+        // Cancel even while StartXAIOAuth is still resolving. Otherwise a
+        // late URL response can reopen the browser after the user cancelled.
+        xaiOAuthAttemptRef.current += 1;
+        xaiOAuthActiveRef.current = false;
+        if (xaiOAuthURLRef.current) void CancelXAIOAuthURL(xaiOAuthURLRef.current);
+        setOauthBusy(false);
+        xaiOAuthURLRef.current = "";
+        setXaiOAuthURL("");
+    }, []);
+
+    useEffect(() => () => {
+        xaiOAuthAttemptRef.current += 1;
+        xaiOAuthActiveRef.current = false;
+        const authorizationURL = xaiOAuthURLRef.current;
+        xaiOAuthURLRef.current = "";
+        if (authorizationURL) void CancelXAIOAuthURL(authorizationURL);
+    }, []);
+
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
@@ -431,12 +455,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     if (!regBusy) setShowConfirm(false);
                     return;
                 }
+                cancelActiveXaiOAuth();
                 onClose();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [migrationPackage, migrationPromptDismissed, onClose, regBusy, showConfirm, showOfflineModeNotice]);
+    }, [cancelActiveXaiOAuth, migrationPackage, migrationPromptDismissed, onClose, regBusy, showConfirm, showOfflineModeNotice]);
 
     useEffect(() => {
         const allDone = isOnboardingComplete(onboardingFlow, { regDone: effectiveRegDone, llmDone, wxCompleted });
@@ -448,6 +473,35 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     }, [onboardingFlow, effectiveRegDone, llmDone, wxCompleted, migrationDecisionPending, migrationPackage, onClose, onSaveField]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
+
+    const copyXaiOAuthURL = useCallback(async () => {
+        if (!xaiOAuthURL) return;
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(xaiOAuthURL);
+                return;
+            }
+        } catch {
+            // Wails' clipboard bridge is the fallback for restricted WebViews.
+        }
+        ClipboardSetText(xaiOAuthURL);
+    }, [xaiOAuthURL]);
+
+    const openXaiOAuthURL = useCallback((authorizationURL: string) => {
+        try {
+            BrowserOpenURL(authorizationURL);
+        } catch {
+            // The loopback OAuth session remains active, so expose its link
+            // for a manual browser launch instead of abandoning it.
+            setLlmResult({
+                ok: false,
+                msg: t(
+                    "无法自动打开浏览器，请使用下方链接继续登录。",
+                    "Couldn't open the browser automatically. Use the link below.",
+                ),
+            });
+        }
+    }, [t]);
     const migrationStatus = migrationJobStatus(migrationJob?.status);
     const migrationImportSucceeded = migrationStatus === "succeeded";
     const migrationJobFailed = migrationStatus === "failed";
@@ -649,21 +703,54 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     const handleOAuthLogin = async () => {
         if (!selectedProvider) return;
+        const xaiAttempt = ++xaiOAuthAttemptRef.current;
         setOauthBusy(true);
         setLlmResult(null);
+        xaiOAuthURLRef.current = "";
+        setXaiOAuthURL("");
         try {
-            const msg = selectedProvider.name === "xAI-Grok"
-                ? await StartXAIOAuth()
-                : await StartOpenAIOAuth();
+            if (selectedProvider.name === "xAI-Grok") {
+                const authorizationURL = await StartXAIOAuth();
+                if (xaiAttempt !== xaiOAuthAttemptRef.current) return;
+                xaiOAuthActiveRef.current = true;
+                // Preserve correlation before browser launch; the callback can
+                // complete before React has committed the URL state update.
+                xaiOAuthURLRef.current = authorizationURL;
+                setXaiOAuthURL(authorizationURL);
+                openXaiOAuthURL(authorizationURL);
+                return;
+            }
+            const msg = await StartOpenAIOAuth();
             setLlmResult({ ok: true, msg: msg || "OAuth 登录成功" });
             setLlmDone(true);
             onLLMConfigured();
         } catch (e) {
+            if (selectedProvider.name === "xAI-Grok" && xaiAttempt !== xaiOAuthAttemptRef.current) return;
             setLlmResult({ ok: false, msg: String(e) });
         } finally {
-            setOauthBusy(false);
+            if (selectedProvider.name !== "xAI-Grok") setOauthBusy(false);
         }
     };
+
+    useEffect(() => {
+        const cleanup = EventsOn("xai-oauth-complete", (payload: { ok?: boolean; message?: string; error?: string; authorization_url?: string } = {}) => {
+            // A loopback callback may arrive before this effect has observed
+            // the oauthBusy state update, so correlate via synchronous refs.
+            if (!xaiOAuthActiveRef.current || payload.authorization_url !== xaiOAuthURLRef.current) return;
+            xaiOAuthActiveRef.current = false;
+            setOauthBusy(false);
+            xaiOAuthURLRef.current = "";
+            setXaiOAuthURL("");
+            if (!payload.ok) {
+                setLlmResult({ ok: false, msg: payload.error || t("xAI OAuth 登录失败", "xAI OAuth login failed") });
+                return;
+            }
+            setLlmResult({ ok: true, msg: payload.message || t("xAI OAuth 登录成功", "xAI OAuth login successful") });
+            setLlmDone(true);
+            onLLMConfigured();
+        });
+        return () => { if (typeof cleanup === "function") cleanup(); else EventsOff("xai-oauth-complete"); };
+    }, [onLLMConfigured, t]);
 
     // ── TigerClaw SSO Login + 自动注册 Hub（内嵌扫码流程）──
     const handleEmbeddedSSOLogin = async () => {
@@ -1412,7 +1499,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     borderBottom: "1px solid var(--theme-border)",
                 }}>
                     <button aria-label={t("关闭", "Close")} onClick={() => {
-                        if (!migrationPackage || migrationPromptDismissed) onClose();
+                        if (!migrationPackage || migrationPromptDismissed) {
+                            cancelActiveXaiOAuth();
+                            onClose();
+                        }
                     }} disabled={!!migrationPackage && !migrationPromptDismissed} style={{
                         position: "absolute", top: 12, right: 14, border: "none",
                         background: "transparent", cursor: "pointer", fontSize: "1.25rem",
@@ -1828,14 +1918,26 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                             </button>
                                             {oauthBusy && (
                                                 <button onClick={() => {
-                                                    if (selectedProvider.name === "xAI-Grok") CancelXAIOAuth();
-                                                    else CancelOpenAIOAuth();
-                                                    setOauthBusy(false);
+                                                    if (selectedProvider.name === "xAI-Grok") cancelActiveXaiOAuth();
+                                                    else {
+                                                        CancelOpenAIOAuth();
+                                                        setOauthBusy(false);
+                                                    }
                                                 }} style={{
                                                     ...wizardGhostButtonBlockStyle, color: colors.textMuted,
                                                 }}>
                                                     {t("取消", "Cancel")}
                                                 </button>
+                                            )}
+                                            {oauthBusy && selectedProvider.name === "xAI-Grok" && xaiOAuthURL && (
+                                                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                                                    <button onClick={() => openXaiOAuthURL(xaiOAuthURL)} style={{ ...wizardGhostButtonStyle, flex: 1 }}>
+                                                        {t("再次打开浏览器", "Open browser again")}
+                                                    </button>
+                                                    <button onClick={() => void copyXaiOAuthURL()} style={{ ...wizardGhostButtonStyle, flex: 1 }}>
+                                                        {t("复制登录链接", "Copy sign-in link")}
+                                                    </button>
+                                                </div>
                                             )}
                                         </>
                                     ) : (
@@ -2026,7 +2128,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     padding: "14px 20px 16px", borderTop: `1px solid ${colors.border}`, flexShrink: 0,
                 }}>
                     <button
-                        onClick={() => setStep(s => getPrevStep(s))}
+                        onClick={() => {
+                            cancelActiveXaiOAuth();
+                            setStep(s => getPrevStep(s));
+                        }}
                         disabled={!canPrev}
                         style={{
                             ...wizardGhostButtonStyle,
@@ -2060,6 +2165,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             <button
                                 onClick={() => {
                                     onSaveField({ onboarding_done: true });
+                                    cancelActiveXaiOAuth();
                                     onClose();
                                 }}
                                 disabled={!lastStepCompleted}
@@ -2074,7 +2180,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         </div>
                     ) : (
                         <button
-                            onClick={() => setStep(s => getNextStep(s))}
+                            onClick={() => {
+                                cancelActiveXaiOAuth();
+                                setStep(s => getNextStep(s));
+                            }}
                             disabled={!canNext}
                             style={{
                                 ...(canNext ? wizardPrimaryButtonStyle : wizardDisabledButtonStyle),

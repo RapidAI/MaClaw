@@ -725,10 +725,19 @@ func (a *App) beginOAuthFlow(timeout time.Duration) (context.Context, func(), fu
 	if a.oauthCancel != nil {
 		a.oauthCancel()
 	}
+	// An xAI flow owns a loopback listener. Context cancellation unblocks its
+	// waiter, but closing the listener here releases the port immediately when a
+	// user switches providers or starts over.
+	previousXAISession := a.xaiOAuthSession
+	a.xaiOAuthSession = nil
+	a.xaiOAuthAuthorizationURL = ""
 	a.oauthGeneration++
 	generation := a.oauthGeneration
 	a.oauthCancel = cancel
 	a.oauthMu.Unlock()
+	if previousXAISession != nil {
+		previousXAISession.Close()
+	}
 
 	finish := func() {
 		cancel()
@@ -758,11 +767,17 @@ func (a *App) beginOAuthFlow(timeout time.Duration) (context.Context, func(), fu
 // cancelOAuthFlow cancels the active browser OAuth flow, if any.
 func (a *App) cancelOAuthFlow() {
 	a.oauthMu.Lock()
-	defer a.oauthMu.Unlock()
 	a.oauthGeneration++
 	if a.oauthCancel != nil {
 		a.oauthCancel()
 		a.oauthCancel = nil
+	}
+	session := a.xaiOAuthSession
+	a.xaiOAuthSession = nil
+	a.xaiOAuthAuthorizationURL = ""
+	a.oauthMu.Unlock()
+	if session != nil {
+		session.Close()
 	}
 }
 
@@ -813,52 +828,96 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 	return a.oauthLoginSuccessMessage("OpenAI", "OpenAI OAuth 登录成功")
 }
 
-// StartXAIOAuth starts Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
-// flow. It updates only the managed xAI-Grok provider on success.
+// StartXAIOAuth prepares Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
+// flow and returns its authorization URL. The frontend opens this through the
+// Wails runtime, which is more reliable than a background process launching a
+// browser on managed Windows devices.
 func (a *App) StartXAIOAuth() (string, error) {
 	ctx, finish, claimResult := a.beginOAuthFlow(300 * time.Second)
-	defer finish()
-
-	result, err := oauth.RunXAIOAuthFlowCtx(ctx)
+	session, err := oauth.PrepareXAIOAuthFlowCtx(ctx)
 	if err != nil {
+		finish()
 		return "", fmt.Errorf("xAI OAuth 登录失败: %w", err)
 	}
-	if err := claimResult(func() error {
-		data := a.GetMaclawLLMProviders()
-		defaults := defaultMaclawLLMProviders()
-		var defaultXAI *corelib.MaclawLLMProvider
-		for i := range defaults {
-			if defaults[i].Name == "xAI-Grok" {
-				defaultXAI = &defaults[i]
-				break
-			}
-		}
-		for i, p := range data.Providers {
-			if p.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
-				continue
-			}
-			data.Providers[i] = oauth.ApplyTokenResult(p, result)
-			if defaultXAI != nil {
-				// OAuth login always returns this managed provider to the current
-				// Grok Build defaults, avoiding stale API-key-era request settings.
-				data.Providers[i].URL = defaultXAI.URL
-				data.Providers[i].Model = defaultXAI.Model
-				data.Providers[i].Protocol = defaultXAI.Protocol
-				data.Providers[i].AuthType = defaultXAI.AuthType
-				data.Providers[i].WireAPI = defaultXAI.WireAPI
-				data.Providers[i].ContextLength = defaultXAI.ContextLength
-			}
-			if err := a.SaveMaclawLLMProviders(data.Providers, "xAI-Grok"); err != nil {
-				return fmt.Errorf("保存 xAI OAuth 配置失败: %w", err)
-			}
-			a.saveOAuthResultToStore("xAI-Grok", result)
-			return nil
-		}
-		return fmt.Errorf("未找到 xAI-Grok provider")
-	}); err != nil {
-		return "", err
+	authorizationURL := session.AuthorizationURL()
+	a.oauthMu.Lock()
+	if a.oauthCancel == nil || ctx.Err() != nil {
+		a.oauthMu.Unlock()
+		session.Close()
+		finish()
+		return "", fmt.Errorf("xAI OAuth 登录已取消或被新的登录请求替代")
 	}
-	return a.oauthLoginSuccessMessage("xAI-Grok", "xAI-Grok OAuth 登录成功")
+	a.xaiOAuthSession = session
+	a.xaiOAuthAuthorizationURL = authorizationURL
+	a.oauthMu.Unlock()
+
+	go func() {
+		defer finish()
+		defer func() {
+			a.oauthMu.Lock()
+			if a.xaiOAuthSession == session {
+				a.xaiOAuthSession = nil
+				a.xaiOAuthAuthorizationURL = ""
+			}
+			a.oauthMu.Unlock()
+			session.Close()
+		}()
+
+		result, err := session.WaitForCompletionCtx(ctx)
+		if err != nil {
+			log.Printf("[OAuth] xAI authorization did not complete: %v", err)
+			if ctx.Err() != nil {
+				// Cancellation is already reflected in the initiating UI. Do not
+				// emit a stale failure that could overwrite a newer login attempt.
+				return
+			}
+			a.emitEvent("xai-oauth-complete", map[string]interface{}{"ok": false, "error": err.Error(), "authorization_url": authorizationURL})
+			return
+		}
+		if err := claimResult(func() error {
+			data := a.GetMaclawLLMProviders()
+			defaults := defaultMaclawLLMProviders()
+			var defaultXAI *corelib.MaclawLLMProvider
+			for i := range defaults {
+				if defaults[i].Name == "xAI-Grok" {
+					defaultXAI = &defaults[i]
+					break
+				}
+			}
+			for i, p := range data.Providers {
+				if p.Name != "xAI-Grok" || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+					continue
+				}
+				data.Providers[i] = oauth.ApplyTokenResult(p, result)
+				if defaultXAI != nil {
+					data.Providers[i].URL = defaultXAI.URL
+					data.Providers[i].Model = defaultXAI.Model
+					data.Providers[i].Protocol = defaultXAI.Protocol
+					data.Providers[i].AuthType = defaultXAI.AuthType
+					data.Providers[i].WireAPI = defaultXAI.WireAPI
+					data.Providers[i].ContextLength = defaultXAI.ContextLength
+				}
+				if err := a.SaveMaclawLLMProviders(data.Providers, "xAI-Grok"); err != nil {
+					return fmt.Errorf("保存 xAI OAuth 配置失败: %w", err)
+				}
+				a.saveOAuthResultToStore("xAI-Grok", result)
+				return nil
+			}
+			return fmt.Errorf("未找到 xAI-Grok provider")
+		}); err != nil {
+			log.Printf("[OAuth] xAI authorization result was not saved: %v", err)
+			a.emitEvent("xai-oauth-complete", map[string]interface{}{"ok": false, "error": err.Error(), "authorization_url": authorizationURL})
+			return
+		}
+		message, err := a.oauthLoginSuccessMessage("xAI-Grok", "xAI-Grok OAuth 登录成功")
+		if err != nil {
+			log.Printf("[OAuth] xAI post-login check failed: %v", err)
+			message = "xAI-Grok OAuth 登录成功"
+		}
+		a.emitEvent("xai-oauth-complete", map[string]interface{}{"ok": true, "message": message, "authorization_url": authorizationURL})
+	}()
+
+	return authorizationURL, nil
 }
 
 // oauthLoginSuccessMessage verifies that the newly saved OAuth credentials can
@@ -907,11 +966,32 @@ func (a *App) CancelOpenAIOAuth() {
 	a.cancelOAuthFlow()
 }
 
-// CancelXAIOAuth cancels the in-progress xAI OAuth flow. OAuth flows share a
-// single active callback listener, but exposing a provider-specific method
-// keeps the GUI action and generated Wails API unambiguous.
+// CancelXAIOAuthURL cancels the in-progress xAI OAuth flow only when the
+// caller still owns the returned authorization URL. That prevents an older UI
+// surface being closed from cancelling a newer xAI flow started elsewhere.
+func (a *App) CancelXAIOAuthURL(authorizationURL string) bool {
+	a.oauthMu.Lock()
+	if authorizationURL == "" || a.xaiOAuthSession == nil || a.xaiOAuthAuthorizationURL != authorizationURL {
+		a.oauthMu.Unlock()
+		return false
+	}
+	a.oauthGeneration++
+	if a.oauthCancel != nil {
+		a.oauthCancel()
+		a.oauthCancel = nil
+	}
+	session := a.xaiOAuthSession
+	a.xaiOAuthSession = nil
+	a.xaiOAuthAuthorizationURL = ""
+	a.oauthMu.Unlock()
+	session.Close()
+	return true
+}
+
+// CancelXAIOAuth cancels any in-progress xAI OAuth flow. It remains for
+// backward compatibility; GUI callers should use CancelXAIOAuthURL.
 func (a *App) CancelXAIOAuth() {
-	a.CancelOpenAIOAuth()
+	a.cancelOAuthFlow()
 }
 
 // ImportCodexAuth imports credentials from Codex CLI's ~/.codex/auth.json.

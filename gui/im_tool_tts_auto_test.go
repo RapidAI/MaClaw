@@ -212,6 +212,14 @@ func TestIsThirdPartyVoicePlatform(t *testing.T) {
 	}
 }
 
+func TestCleanDeviceReplyTextStripsInternalMetadataAnywhere(t *testing.T) {
+	input := "北京：轻霾，注意补水。\nRoute task: vision\nNO AUX/ROUTE — STAYED ON PRIMARY..."
+	want := "北京：轻霾，注意补水。"
+	if got := cleanDeviceReplyText(input); got != want {
+		t.Fatalf("cleanDeviceReplyText() = %q, want %q", got, want)
+	}
+}
+
 func TestAttachDeviceVoicePayloadAttaches16kHzWAV(t *testing.T) {
 	longText := "**你好**，这是给硬件宠物的回复。" + strings.Repeat("这是一段很长的回复内容，", 30)
 	synth := &fakeDeviceSynthesizer{wav: buildDeviceTestWAV(24000, 24000)} // 1s of 24kHz silence

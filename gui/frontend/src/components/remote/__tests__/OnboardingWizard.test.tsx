@@ -19,7 +19,7 @@ const TestMaclawLLMMock = vi.fn();
 const ProbeRemoteHubMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
-const CancelXAIOAuthMock = vi.fn();
+const CancelXAIOAuthURLMock = vi.fn();
 const StartCodeGenSSOMock = vi.fn();
 const StartCodeGenSSOEmbeddedMock = vi.fn();
 const WaitCodeGenSSOResultMock = vi.fn();
@@ -33,6 +33,9 @@ const UserDataMigrationInstancesMock = vi.fn();
 const UserDataMigrationStatusMock = vi.fn();
 const StartUserDataMigrationImportMock = vi.fn();
 const GetUserDataMigrationJobMock = vi.fn();
+const BrowserOpenURLMock = vi.fn();
+const EventsOnMock = vi.fn();
+let xaiOAuthEventHandler: ((payload: Record<string, unknown>) => unknown) | undefined;
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
@@ -48,7 +51,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ProbeRemoteHub: (...args: unknown[]) => ProbeRemoteHubMock(...args),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
-    CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
+    CancelXAIOAuthURL: (...args: unknown[]) => CancelXAIOAuthURLMock(...args),
     StartCodeGenSSO: (...args: unknown[]) => StartCodeGenSSOMock(...args),
     StartCodeGenSSOEmbedded: (...args: unknown[]) => StartCodeGenSSOEmbeddedMock(...args),
     WaitCodeGenSSOResult: (...args: unknown[]) => WaitCodeGenSSOResultMock(...args),
@@ -68,6 +71,19 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetUserDataMigrationJob: (...args: unknown[]) => GetUserDataMigrationJobMock(...args),
 }));
 
+vi.mock('../../../../wailsjs/runtime', () => ({
+    BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
+    EventsOn: (...args: unknown[]) => {
+        EventsOnMock(...args);
+        if (args[0] === 'xai-oauth-complete' && typeof args[1] === 'function') {
+            xaiOAuthEventHandler = args[1] as (payload: Record<string, unknown>) => unknown;
+        }
+        return vi.fn();
+    },
+    EventsOff: vi.fn(),
+    ClipboardSetText: vi.fn(),
+}));
+
 import { OnboardingWizard } from '../OnboardingWizard';
 
 describe('OnboardingWizard registration', () => {
@@ -84,6 +100,7 @@ describe('OnboardingWizard registration', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        xaiOAuthEventHandler = undefined;
         baseProps = {
             lang: 'en',
             hubUrl: 'http://hub.example.com',
@@ -1210,7 +1227,7 @@ describe('OnboardingWizard registration', () => {
                 { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
             ],
         });
-        StartXAIOAuthMock.mockResolvedValue('xAI-Grok OAuth logged in');
+        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
 
         render(<OnboardingWizard {...baseProps} />);
 
@@ -1231,7 +1248,73 @@ describe('OnboardingWizard registration', () => {
             expect(StartXAIOAuthMock).toHaveBeenCalledTimes(1);
         });
         expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
-        expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+        expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://auth.x.ai/authorize?state=test');
+        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
+    });
+
+    it('keeps the xAI OAuth recovery controls available when opening the browser fails during onboarding', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+        });
+        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=test');
+        BrowserOpenURLMock.mockImplementation(() => { throw new Error('browser bridge unavailable'); });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        await continueRegistrationIdentity();
+        fireEvent.click(screen.getByLabelText(/Free trial/));
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        await confirmEmailRegistration();
+        await waitFor(() => {
+            expect(screen.getByText(/Registration successful/)).toBeTruthy();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        fireEvent.click(await screen.findByRole('button', { name: 'xAI-Grok' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with xAI' }));
+
+        await waitFor(() => {
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://auth.x.ai/authorize?state=test');
+        });
+        expect((await screen.findByText(/Couldn't open the browser automatically/)).textContent).toMatch(/Use the link below/);
+        expect(screen.getByRole('button', { name: 'Open browser again' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Copy sign-in link' })).toBeTruthy();
+    });
+
+    it('ignores a completion event from a superseded xAI OAuth session during onboarding', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: '', model: 'grok-4.5', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+        });
+        StartXAIOAuthMock.mockResolvedValue('https://auth.x.ai/authorize?state=current');
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        await continueRegistrationIdentity();
+        fireEvent.click(screen.getByLabelText(/Free trial/));
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        await confirmEmailRegistration();
+        await waitFor(() => expect(screen.getByText(/Registration successful/)).toBeTruthy());
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'xAI-Grok' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with xAI' }));
+        await waitFor(() => expect(xaiOAuthEventHandler).toBeTypeOf('function'));
+
+        await act(async () => {
+            await xaiOAuthEventHandler?.({ ok: true, authorization_url: 'https://auth.x.ai/authorize?state=stale' });
+        });
+        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+
+        await act(async () => {
+            await xaiOAuthEventHandler?.({ ok: true, authorization_url: 'https://auth.x.ai/authorize?state=current' });
+        });
+        await waitFor(() => expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1));
     });
 
     it('does not save when llm detection fails in step 3', async () => {

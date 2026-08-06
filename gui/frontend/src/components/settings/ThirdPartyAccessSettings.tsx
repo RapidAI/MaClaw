@@ -5,13 +5,17 @@ import {
     DeleteThirdPartyHardwareDevice,
     GenerateHardwareWelcomeAudio,
     GetHardwareWelcomeAudioDataURL,
-    ListThirdPartyHardwareDevices,
+	GetPetPackPreviewDataURL,
+	ListThirdPartyHardwareDeviceBindings,
     LoadConfig,
     ResetHardwareWelcomeAudio,
     RefreshDeviceAmbientWeather,
     RestartThirdPartyGateway,
+    ListPetPacks,
     SelectHardwareWelcomeAudio,
-    SendHardwareVolume,
+	SendHardwareDevicePetProfile,
+	SetHardwareAllowCustomPets,
+	SendHardwareDeviceVolume,
     SendHardwareWelcomeAudioRemote,
     SetHardwareEnabled,
     SetThirdPartyGatewayLocalMode,
@@ -19,6 +23,7 @@ import {
 } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { useDialog } from '../CustomDialog';
+import { getPetSkinOption, packInfoToSkinOption, petSkinOptions, type PetSkinOption } from '../petSkins';
 import { channelModeLabel, textForLang, watchLabel } from './imSettingsShared';
 import { WelcomeResetButton } from './WelcomeResetButton';
 
@@ -42,9 +47,19 @@ type HardwareDevice = {
     pairedAt?: string;
     lastSeenAt?: string;
     online?: boolean;
+	volume?: number;
+	petSkin?: string;
 };
 
-type WelcomeAction = 'generate' | 'import' | 'reset' | 'preview-local' | 'preview-remote';
+type HardwareDeviceBindings = {
+	devices?: HardwareDevice[];
+	maxDevices?: number;
+	boundCount?: number;
+};
+
+const hardwareBindingLimit = 5;
+
+type WelcomeAction = 'generate' | 'import' | 'reset' | 'preview-local';
 
 const gatewayStatusLabel = (status: string, lang: string) => ({
     connected: lang === 'en' ? 'Running' : '已启动',
@@ -95,7 +110,11 @@ export const ThirdPartyAccessSettings = ({
     const [devices, setDevices] = useState<HardwareDevice[]>([]);
     const [devicesLoading, setDevicesLoading] = useState(false);
     const [devicesError, setDevicesError] = useState('');
-    const [deletingClientId, setDeletingClientId] = useState<string | null>(null);
+	const [boundDeviceCount, setBoundDeviceCount] = useState(0);
+	const [deletingClientId, setDeletingClientId] = useState<string | null>(null);
+	const [petOptions, setPetOptions] = useState<PetSkinOption[]>(petSkinOptions);
+	const [savingPetClientIds, setSavingPetClientIds] = useState<Set<string>>(() => new Set());
+	const [previewingClientId, setPreviewingClientId] = useState<string | null>(null);
     const [ambientCityDraft, setAmbientCityDraft] = useState(() => String((config as any)?.pet_ambient_city || ''));
     const [detectedAmbientCity, setDetectedAmbientCity] = useState<string | null>(null);
     const [ambientRefreshState, setAmbientRefreshState] = useState<'idle' | 'refreshing' | 'done' | 'error'>('idle');
@@ -108,10 +127,11 @@ export const ThirdPartyAccessSettings = ({
     const refreshDevicesRef = useRef<() => Promise<void>>(async () => undefined);
     const showToastMessageRef = useRef(showToastMessage);
     const previewRunRef = useRef(0);
-    const volumeSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const pendingVolumeRef = useRef<number | null>(null);
-    const volumeSendInFlightRef = useRef(false);
-    const volumeFlushPendingRef = useRef(false);
+	const volumeSendTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+	const pendingVolumesRef = useRef(new Map<string, number>());
+	const volumeSendsInFlightRef = useRef(new Set<string>());
+	const volumeFlushPendingRef = useRef(new Set<string>());
+	const deviceVolumeBeforeEditRef = useRef(new Map<string, number>());
     const ambientRefreshRequestRef = useRef(0);
     const ambientSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingAmbientCityRef = useRef<string | null>(null);
@@ -133,7 +153,9 @@ export const ThirdPartyAccessSettings = ({
     // Welcome content can be prepared and previewed locally before hardware is
     // enabled. Only transport-dependent controls use hardwareControlsDisabled.
     const welcomeEditingDisabled = settingsBusy;
-    const volume = Number((config as any)?.hardware_volume ?? 70);
+	const defaultVolume = Number((config as any)?.hardware_volume ?? 70);
+	const allowCustomHardwarePets = Boolean((config as any)?.hardware_allow_custom_pets);
+	const hardwareBindingAtCapacity = boundDeviceCount >= hardwareBindingLimit;
     const welcomeAudioPath = String((config as any)?.hardware_welcome_audio_path || '').trim();
 
     useEffect(() => {
@@ -163,6 +185,7 @@ export const ThirdPartyAccessSettings = ({
         const requestID = ++devicesRequestRef.current;
         if (thirdPartyGatewayLocalMode || !hardwareEnabled) {
             setDevices([]);
+			setBoundDeviceCount(0);
             setDevicesError('');
             setDevicesLoading(false);
             return;
@@ -170,8 +193,12 @@ export const ThirdPartyAccessSettings = ({
         setDevicesLoading(true);
         setDevicesError('');
         try {
-            const next = (await ListThirdPartyHardwareDevices() as HardwareDevice[]) || [];
-            if (mountedRef.current && requestID === devicesRequestRef.current) setDevices(next);
+			const bindings = await ListThirdPartyHardwareDeviceBindings() as HardwareDeviceBindings;
+			const next = bindings?.devices || [];
+			if (mountedRef.current && requestID === devicesRequestRef.current) {
+				setDevices(next);
+				setBoundDeviceCount(Math.max(0, Number(bindings?.boundCount ?? next.length)));
+			}
         } catch (err: any) {
             const message = err?.message || String(err);
             if (mountedRef.current && requestID === devicesRequestRef.current) {
@@ -185,6 +212,27 @@ export const ThirdPartyAccessSettings = ({
     refreshDevicesRef.current = refreshDevices;
 
     useEffect(() => { void refreshDevicesRef.current(); }, [hardwareEnabled, thirdPartyGatewayLocalMode, thirdPartyGatewayStatus]);
+	useEffect(() => {
+		let cancelled = false;
+		void ListPetPacks()
+			.then(async (packs) => {
+				if (!Array.isArray(packs) || packs.length === 0) return;
+				const options = packs.map((pack) => packInfoToSkinOption(pack as unknown as Record<string, unknown>, lang));
+				if (cancelled) return;
+				setPetOptions(options);
+				const withPreviews = await Promise.all(options.map(async (option) => {
+					try {
+						const preview = await GetPetPackPreviewDataURL(option.id);
+						return preview?.startsWith('data:image/') ? { ...option, image: preview, hasPreview: true } : option;
+					} catch {
+						return option;
+					}
+				}));
+				if (!cancelled) setPetOptions(withPreviews);
+			})
+			.catch(() => undefined);
+		return () => { cancelled = true; };
+	}, [lang]);
     useEffect(() => {
         // React StrictMode runs an effect setup/cleanup/setup cycle in development.
         // Restore the guard during setup so the live second mount is not mistaken
@@ -194,7 +242,8 @@ export const ThirdPartyAccessSettings = ({
             mountedRef.current = false;
             devicesRequestRef.current += 1;
             previewRunRef.current += 1;
-            if (volumeSendTimerRef.current !== null) clearTimeout(volumeSendTimerRef.current);
+			volumeSendTimersRef.current.forEach((timer) => clearTimeout(timer));
+			volumeSendTimersRef.current.clear();
             if (ambientSaveTimerRef.current !== null) clearTimeout(ambientSaveTimerRef.current);
             if (pendingAmbientCityRef.current !== null) {
                 const city = pendingAmbientCityRef.current;
@@ -209,8 +258,9 @@ export const ThirdPartyAccessSettings = ({
                         .catch(() => undefined);
                 }
             }
-            pendingVolumeRef.current = null;
-            volumeFlushPendingRef.current = false;
+			pendingVolumesRef.current.clear();
+			volumeFlushPendingRef.current.clear();
+			deviceVolumeBeforeEditRef.current.clear();
             localPreviewCleanupRef.current?.();
         };
     }, []);
@@ -279,54 +329,115 @@ export const ThirdPartyAccessSettings = ({
         });
     };
 
-    const sendVolume = useCallback(async (value: number) => {
-        if (volumeSendTimerRef.current !== null) {
-            clearTimeout(volumeSendTimerRef.current);
-            volumeSendTimerRef.current = null;
-        }
-        pendingVolumeRef.current = Math.max(0, Math.min(100, Math.round(value)));
-        if (volumeSendInFlightRef.current) return;
+	const sendDeviceVolume = useCallback(async (clientId: string, value: number) => {
+		const timer = volumeSendTimersRef.current.get(clientId);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			volumeSendTimersRef.current.delete(clientId);
+		}
+		pendingVolumesRef.current.set(clientId, Math.max(0, Math.min(100, Math.round(value))));
+		if (volumeSendsInFlightRef.current.has(clientId)) return;
 
-        volumeSendInFlightRef.current = true;
-        try {
-            while (pendingVolumeRef.current !== null) {
-                const next = pendingVolumeRef.current;
-                pendingVolumeRef.current = null;
-                try {
-                    await SendHardwareVolume(next);
-                } catch (err: any) {
-                    pendingVolumeRef.current = null;
-                    showToastMessageRef.current(err?.message || String(err));
-                    await refreshConfig().catch(() => undefined);
-                    break;
-                }
-            }
-        } finally {
-            volumeSendInFlightRef.current = false;
-            if (volumeFlushPendingRef.current && pendingVolumeRef.current !== null && mountedRef.current) {
-                volumeFlushPendingRef.current = false;
-                void sendVolume(pendingVolumeRef.current);
-            }
-        }
-    }, [setConfig]);
+		volumeSendsInFlightRef.current.add(clientId);
+		try {
+			while (pendingVolumesRef.current.has(clientId)) {
+				const next = pendingVolumesRef.current.get(clientId)!;
+				pendingVolumesRef.current.delete(clientId);
+				try {
+					await SendHardwareDeviceVolume(clientId, next);
+					deviceVolumeBeforeEditRef.current.delete(clientId);
+				} catch (err: any) {
+					pendingVolumesRef.current.delete(clientId);
+					const previous = deviceVolumeBeforeEditRef.current.get(clientId);
+					deviceVolumeBeforeEditRef.current.delete(clientId);
+					if (previous !== undefined && mountedRef.current) {
+						setDevices((current) => current.map((item) => item.clientId === clientId ? { ...item, volume: previous } : item));
+					}
+					showToastMessageRef.current(err?.message || String(err));
+					await refreshDevicesRef.current().catch(() => undefined);
+					break;
+				}
+			}
+		} finally {
+			volumeSendsInFlightRef.current.delete(clientId);
+			if (volumeFlushPendingRef.current.delete(clientId) && pendingVolumesRef.current.has(clientId) && mountedRef.current) {
+				void sendDeviceVolume(clientId, pendingVolumesRef.current.get(clientId)!);
+			}
+		}
+	}, []);
 
-    const scheduleVolume = useCallback((value: number, immediate = false) => {
-        const next = Math.max(0, Math.min(100, Math.round(value)));
-        pendingVolumeRef.current = next;
-        if (volumeSendTimerRef.current !== null) {
-            clearTimeout(volumeSendTimerRef.current);
-            volumeSendTimerRef.current = null;
-        }
-        if (immediate) {
-            if (volumeSendInFlightRef.current) volumeFlushPendingRef.current = true;
-            void sendVolume(next);
-            return;
-        }
-        volumeSendTimerRef.current = setTimeout(() => {
-            volumeSendTimerRef.current = null;
-            void sendVolume(pendingVolumeRef.current ?? next);
-        }, 100);
-    }, [sendVolume]);
+	const rememberDeviceVolumeBeforeEdit = useCallback((clientId: string) => {
+		if (deviceVolumeBeforeEditRef.current.has(clientId)) return;
+		setDevices((current) => {
+			const currentDevice = current.find((item) => item.clientId === clientId);
+			if (currentDevice) {
+				deviceVolumeBeforeEditRef.current.set(clientId, Math.max(0, Math.min(100, Math.round(Number(currentDevice.volume ?? defaultVolume)))));
+			}
+			return current;
+		});
+	}, [defaultVolume]);
+
+	const scheduleDeviceVolume = useCallback((clientId: string, value: number, immediate = false) => {
+		const next = Math.max(0, Math.min(100, Math.round(value)));
+		pendingVolumesRef.current.set(clientId, next);
+		const timer = volumeSendTimersRef.current.get(clientId);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			volumeSendTimersRef.current.delete(clientId);
+		}
+		if (immediate) {
+			if (volumeSendsInFlightRef.current.has(clientId)) volumeFlushPendingRef.current.add(clientId);
+			void sendDeviceVolume(clientId, next);
+			return;
+		}
+		volumeSendTimersRef.current.set(clientId, setTimeout(() => {
+			volumeSendTimersRef.current.delete(clientId);
+			void sendDeviceVolume(clientId, pendingVolumesRef.current.get(clientId) ?? next);
+		}, 100));
+	}, [sendDeviceVolume]);
+
+	const discardPendingDeviceVolume = useCallback((clientId: string) => {
+		const timer = volumeSendTimersRef.current.get(clientId);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			volumeSendTimersRef.current.delete(clientId);
+		}
+		pendingVolumesRef.current.delete(clientId);
+		volumeFlushPendingRef.current.delete(clientId);
+		deviceVolumeBeforeEditRef.current.delete(clientId);
+	}, []);
+
+	const setDevicePet = async (device: HardwareDevice, skin: string) => {
+		const previous = device.petSkin || String((config as any)?.pet_skin || 'clawmate');
+		setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, petSkin: skin } : item));
+		setSavingPetClientIds((current) => new Set(current).add(device.clientId));
+		try {
+			await SendHardwareDevicePetProfile(device.clientId, skin);
+			showToastMessage(isZh ? `${device.clientName || device.clientId} 的宠物已更新。` : `Pet updated for ${device.clientName || device.clientId}.`);
+		} catch (err: any) {
+			setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, petSkin: previous } : item));
+			showToastMessage(err?.message || String(err));
+		} finally {
+			if (mountedRef.current) setSavingPetClientIds((current) => {
+				const next = new Set(current);
+				next.delete(device.clientId);
+				return next;
+			});
+		}
+	};
+
+	const changeAllowCustomHardwarePets = async (enabled: boolean) => {
+		setBusy(true);
+		try {
+			await SetHardwareAllowCustomPets(enabled);
+			setConfig((current: any) => current ? { ...current, hardware_allow_custom_pets: enabled } : current);
+			if (!enabled) await refreshDevicesRef.current();
+		} catch (err: any) {
+			showToastMessage(err?.message || String(err));
+		} finally {
+			if (mountedRef.current) setBusy(false);
+		}
+	};
 
     const runWelcomeAction = async (action: WelcomeAction, operation: () => Promise<any>) => {
         setBusy(true);
@@ -340,6 +451,19 @@ export const ThirdPartyAccessSettings = ({
             }
         }
     };
+
+	const previewRemoteHardware = async (device: HardwareDevice) => {
+		if (!device.online) return;
+		setPreviewingClientId(device.clientId);
+		try {
+			await SendHardwareWelcomeAudioRemote(device.clientId);
+			showToastMessage(isZh ? `${device.clientName || device.clientId} 已确认播放完成。` : `${device.clientName || device.clientId} confirmed playback.`);
+		} catch (err: any) {
+			showToastMessage(welcomePreviewErrorMessage(err, isZh));
+		} finally {
+			if (mountedRef.current) setPreviewingClientId(null);
+		}
+	};
 
     const setWelcomeEnabled = async (next: boolean) => {
         setBusy(true);
@@ -625,6 +749,17 @@ export const ThirdPartyAccessSettings = ({
             <p className="im-settings-hardware__mode-note">
                 {isZh ? '启用后将自动切换为多机模式，并重新启动第三方接入。' : 'Enabling switches third-party access to Hub mode and restarts the gateway.'}
             </p>
+			<label className="im-settings-toggle im-settings-hardware__custom-pets">
+				<input
+					type="checkbox"
+					aria-label={isZh ? '允许个性宠物' : 'Allow individual pets'}
+					disabled={settingsBusy}
+					checked={allowCustomHardwarePets}
+					onChange={(event) => void changeAllowCustomHardwarePets(event.target.checked)}
+				/>
+				<span>{isZh ? '允许个性宠物' : 'Allow individual pets'}</span>
+				<small>{isZh ? '开启后可为每台硬件单独选择宠物；关闭时全部跟随系统宠物设置。' : 'When enabled, each device can use its own pet. Otherwise all devices follow the system pet setting.'}</small>
+			</label>
 
             <div className="im-settings-hardware__weather">
                 <div>
@@ -677,6 +812,12 @@ export const ThirdPartyAccessSettings = ({
                         <strong>{isZh ? '接入硬件' : 'Connected hardware'}</strong>
                         <span>{isZh ? '每台 ESP32 使用独立身份与 Token。解绑后设备须重新配对。' : 'Each ESP32 has its own identity and token. Removed devices must pair again.'}</span>
                     </div>
+					<span className="im-settings-hardware__device-limit" data-at-capacity={hardwareBindingAtCapacity}>
+						{isZh ? '最多绑定' : 'Up to'} <strong>{boundDeviceCount} / {hardwareBindingLimit}</strong>
+						{isZh
+							? (hardwareBindingAtCapacity ? ' 台；已满额，请先解绑再绑定新设备。' : ' 台。')
+							: (hardwareBindingAtCapacity ? '; limit reached — remove a device before binding a new one.' : ' devices.')}
+					</span>
                     <button type="button" className="im-settings-button" disabled={devicesLoading || hardwareControlsDisabled} onClick={() => void refreshDevices()}>
                         {devicesLoading ? (isZh ? '刷新中…' : 'Refreshing…') : (isZh ? '刷新' : 'Refresh')}
                     </button>
@@ -698,9 +839,13 @@ export const ThirdPartyAccessSettings = ({
                                 const name = device.clientName || device.clientId;
                                 const parsedLastSeen = device.lastSeenAt ? new Date(device.lastSeenAt) : null;
                                 const lastSeen = parsedLastSeen && !Number.isNaN(parsedLastSeen.getTime()) ? parsedLastSeen.toLocaleString() : '';
+								const deviceVolume = Math.max(0, Math.min(100, Math.round(Number(device.volume ?? defaultVolume))));
+								const devicePetSkin = device.petSkin || String((config as any)?.pet_skin || 'clawmate');
+								const devicePet = getPetSkinOption(devicePetSkin, petOptions);
+								const availablePetOptions = petOptions.some((pet) => pet.id === devicePetSkin) ? petOptions : [devicePet, ...petOptions];
                                 return <div className="im-settings-hardware__device" key={device.clientId}>
                                     <span className="im-settings-hardware__device-status" data-online={Boolean(device.online)} aria-hidden="true" />
-                                    <div>
+                                    <div className="im-settings-hardware__device-details">
                                         <strong title={name}>{name}</strong>
                                         <code title={device.clientId}>{device.clientId}</code>
                                         <small>
@@ -708,20 +853,49 @@ export const ThirdPartyAccessSettings = ({
                                             {device.protocolVersion ? ` · v${device.protocolVersion}` : ''}
                                         </small>
                                     </div>
-                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${isZh ? '解绑' : 'Remove'} ${name}`} disabled={deletingClientId !== null} onClick={async () => {
+									<div className="im-settings-hardware__device-actions">
+										{allowCustomHardwarePets && <label className="im-settings-hardware__device-pet" title={devicePet.label}>
+											<span className="im-settings-hardware__device-pet-preview"><img src={devicePet.image} alt="" /></span>
+											<span>{isZh ? '宠物' : 'Pet'}</span>
+											<select
+												aria-label={`${isZh ? '宠物' : 'Pet'} ${name}`}
+												value={devicePetSkin}
+												disabled={hardwareControlsDisabled || deletingClientId === device.clientId || savingPetClientIds.has(device.clientId)}
+												onChange={(event) => void setDevicePet(device, event.target.value)}
+											>
+												{availablePetOptions.map((pet) => <option key={pet.id} value={pet.id}>{pet.label}</option>)}
+											</select>
+										</label>}
+										<div className="im-settings-hardware__device-volume">
+										<label htmlFor={`hardware-volume-${device.clientId}`}>{isZh ? '音量' : 'Volume'} <strong>{deviceVolume}%</strong></label>
+										<input id={`hardware-volume-${device.clientId}`} aria-label={`${isZh ? '音量' : 'Volume'} ${name}`} type="range" min={0} max={100} step={1} value={deviceVolume} disabled={hardwareControlsDisabled || deletingClientId === device.clientId} onPointerDown={() => rememberDeviceVolumeBeforeEdit(device.clientId)} onKeyDown={(event) => {
+											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) rememberDeviceVolumeBeforeEdit(device.clientId);
+										}} onChange={(event) => {
+											const next = Number(event.target.value);
+											setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, volume: next } : item));
+											scheduleDeviceVolume(device.clientId, next);
+										}} onPointerUp={(event) => scheduleDeviceVolume(device.clientId, Number((event.target as HTMLInputElement).value), true)} onKeyUp={(event) => {
+											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) scheduleDeviceVolume(device.clientId, Number((event.target as HTMLInputElement).value), true);
+										}} />
+										<small>{device.online ? (isZh ? '调整后仅发送到此设备。' : 'Changes apply only to this device.') : (isZh ? '设备离线；设置会在下次连接时生效。' : 'Offline; applied when this device reconnects.')}</small>
+									</div>
+	                                        <button type="button" className="im-settings-button im-settings-button--primary" aria-label={`${isZh ? '远程播放' : 'Play remotely'} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientId !== null || previewingClientId !== null} title={!device.online ? (isZh ? '设备离线，无法远程播放。' : 'This device is offline.') : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientId === device.clientId ? (isZh ? '播放中…' : 'Playing…') : (isZh ? '远程播放' : 'Play remotely')}</button>
+	                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${isZh ? '解绑' : 'Remove'} ${name}`} disabled={deletingClientId !== null || previewingClientId !== null} onClick={async () => {
                                         const confirmed = await showConfirm(
                                             isZh ? `解绑后，${name} 的 Token 将立即失效；如需再次使用，必须重新配对。` : `${name}'s token will be revoked immediately. The device must pair again before it can reconnect.`,
                                             isZh ? '解绑硬件？' : 'Remove hardware?',
                                             { confirmText: isZh ? '解绑' : 'Remove', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' },
                                         );
-                                        if (!confirmed || !mountedRef.current) return;
-                                        setDeletingClientId(device.clientId);
-                                        try {
+	                                        if (!confirmed || !mountedRef.current) return;
+	                                        setDeletingClientId(device.clientId);
+	                                        try {
+							discardPendingDeviceVolume(device.clientId);
                                             await DeleteThirdPartyHardwareDevice(device.clientId);
                                             if (mountedRef.current) {
                                                 devicesRequestRef.current += 1;
                                                 setDevicesLoading(false);
                                                 setDevices((current) => current.filter((item) => item.clientId !== device.clientId));
+												setBoundDeviceCount((count) => Math.max(0, count - 1));
                                                 showToastMessage(isZh ? '硬件已解绑。' : 'Hardware removed.');
                                             }
                                         } catch (err: any) {
@@ -729,15 +903,10 @@ export const ThirdPartyAccessSettings = ({
                                         } finally {
                                             if (mountedRef.current) setDeletingClientId(null);
                                         }
-                                    }}>{deletingClientId === device.clientId ? (isZh ? '解绑中…' : 'Removing…') : (isZh ? '解绑' : 'Remove')}</button>
+	                                    }}>{deletingClientId === device.clientId ? (isZh ? '解绑中…' : 'Removing…') : (isZh ? '解绑' : 'Remove')}</button>
+	                                    </div>
                                 </div>;
                             })}</div>}
-            </div>
-
-            <div className="im-settings-hardware__volume">
-                <label htmlFor="hardware-volume">{isZh ? '音量' : 'Volume'} <strong>{volume}%</strong></label>
-                <input id="hardware-volume" type="range" min={0} max={100} step={1} value={volume} disabled={hardwareControlsDisabled} onChange={(e) => { const next = Number(e.target.value); setConfig((current: any) => current ? { ...current, hardware_volume: next } : current); scheduleVolume(next); }} onPointerUp={(e) => scheduleVolume(Number((e.target as HTMLInputElement).value), true)} onKeyUp={(e) => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) scheduleVolume(Number((e.target as HTMLInputElement).value), true); }} />
-                <small>{isZh ? '松开滑块后立即通过协议下发到已配对硬件。' : 'Sent to paired hardware when you release the slider.'}</small>
             </div>
 
             <div className="im-settings-hardware__welcome" aria-busy={welcomeAction !== null}>
@@ -794,17 +963,9 @@ export const ThirdPartyAccessSettings = ({
                             showToastMessage(welcomePreviewErrorMessage(err, isZh));
                         }
                     })}>{welcomeAction === 'preview-local' ? (isZh ? 'GUI 播放中…' : 'Playing in GUI…') : (isZh ? 'GUI 本地试听' : 'Preview in GUI')}</button>
-                    <button type="button" className="im-settings-button im-settings-button--primary" disabled={hardwareControlsDisabled || !welcomeAudioPath} onClick={() => void runWelcomeAction('preview-remote', async () => {
-                        try {
-                            await SendHardwareWelcomeAudioRemote();
-                            showToastMessage(isZh ? '远程 ESP32 已确认播放完成。' : 'Remote ESP32 confirmed playback.');
-                        } catch (err: any) {
-                            showToastMessage(welcomePreviewErrorMessage(err, isZh));
-                        }
-                    })}>{welcomeAction === 'preview-remote' ? (isZh ? '等待远程播放…' : 'Waiting for remote hardware…') : (isZh ? '远程硬件测试' : 'Test remote hardware')}</button>
-                </div>
+	                </div>
                 {welcomeAudioPath && <small className="im-settings-hardware__audio-status">{isZh ? '已准备硬件 WAV：' : 'Hardware WAV ready: '}{welcomeAudioPath.split(/[\\/]/).pop()}</small>}
-                <small className="im-settings-hardware__preview-note">{isZh ? 'GUI 本地试听用于检查生成质量；远程硬件测试经 Hub 下发，并须等 ESP32 返回“播放完成”。' : 'GUI preview checks generated audio quality; remote hardware testing sends through Hub and requires an ESP32 playback receipt.'}</small>
+	                <small className="im-settings-hardware__preview-note">{isZh ? 'GUI 本地试听用于检查生成质量；请在上方对应的已绑定硬件旁点击“远程播放”，仅向该 ESP32 下发并等待“播放完成”确认。' : 'GUI preview checks generated audio quality. Use the remote-play button beside a bound device to send only to that ESP32 and wait for its playback receipt.'}</small>
             </div>
         </div>
     </section>;

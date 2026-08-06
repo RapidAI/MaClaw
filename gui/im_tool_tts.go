@@ -2,10 +2,8 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
@@ -38,14 +36,8 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 		platform = h.runtimePlatformForOwnerOrCurrent(ownerID, hasRuntimeOwner)
 	}
 
-	// Hardware speech is the complete result channel, so do not apply the IM
-	// long-form soft cap here. Other channels retain the existing safety cap.
-	maxRunes := tts.MaxLongFormSpeechRunes
-	if isThirdPartyVoicePlatform(platform) {
-		maxRunes = 0
-	}
-	// Single clean + semantic chunk (avoids CapSpeechText+Split double-clean).
-	chunks := tts.PrepareSpeechChunks(text, maxRunes, 0)
+	// Single clean + soft cap + semantic chunk (avoids CapSpeechText+Split double-clean).
+	chunks := tts.PrepareSpeechChunks(text, tts.MaxLongFormSpeechRunes, 0)
 	if len(chunks) == 0 {
 		return "文本清理后为空，无法合成语音"
 	}
@@ -78,24 +70,6 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 			return "Voice message is being generated and will play shortly."
 		}
 		return fmt.Sprintf("长文已按语义分成 %d 段，正在依次朗读。", len(chunks))
-	}
-
-	// Hardware clients use the same ordered, bounded voice_parts protocol for
-	// explicit TTS as for automatic reply speech. Preserve the requested text
-	// itself here; otherwise the later auto-TTS pass may speak only the tool's
-	// status sentence instead of the content the user asked to hear.
-	if isThirdPartyVoicePlatform(platform) {
-		voiceResp := &IMAgentResponse{Text: strings.Join(chunks, "\n")}
-		attachDeviceVoicePayload(h.app.ttsManager, voiceResp, platform)
-		if len(voiceResp.VoiceParts) == 0 {
-			return "语音合成失败：未生成可供设备播放的音频分段"
-		}
-		encoded, marshalErr := json.Marshal(voiceResp.VoiceParts)
-		if marshalErr != nil {
-			return fmt.Sprintf("语音分段编码失败: %v", marshalErr)
-		}
-		log.Printf("[tts-tool] hardware voice parts=%d json_bytes=%d", len(voiceResp.VoiceParts), len(encoded))
-		return fmt.Sprintf("[voice_base64|voice-parts.json|%s]%s", deviceVoicePartsArtifactMIME, base64.StdEncoding.EncodeToString(encoded))
 	}
 
 	// IM channels: reuse pre-split parts (no second SplitSpeechChunks pass).

@@ -5,6 +5,8 @@ import (
 	"image"
 	"image/color"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/gui/petpack"
 )
 
 func TestDevicePetRGB565A8PreservesTransparency(t *testing.T) {
@@ -75,4 +77,132 @@ func TestEnsureDevicePetMotionFramesAddsDistinctSecondFrame(t *testing.T) {
 	if bytes.Equal(first, second) {
 		t.Fatal("generated motion frame is identical to the source frame")
 	}
+}
+
+func TestDevicePetSyntheticMotionKeepsBottomAnchor(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 32, 32))
+	for y := 8; y < 32; y++ {
+		for x := 6; x < 26; x++ {
+			source.SetNRGBA(x, y, color.NRGBA{R: 80, G: 180, B: 240, A: 255})
+		}
+	}
+	motion := devicePetMotionFrame(source)
+	for x := 0; x < motion.Bounds().Dx(); x++ {
+		if _, _, _, alpha := motion.At(x, motion.Bounds().Dy()-1).RGBA(); alpha != 0 {
+			return
+		}
+	}
+	t.Fatal("synthetic breathing moved the pet's bottom anchor off its baseline")
+}
+
+func TestEnsureDevicePetMotionFramesTurnsStaticSequenceIntoClosedLoop(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 32, 32))
+	for y := 6; y < 30; y++ {
+		for x := 4; x < 28; x++ {
+			source.SetNRGBA(x, y, color.NRGBA{R: 60, G: 170, B: 240, A: 255})
+		}
+	}
+	static := make([]image.Image, devicePetFrameCount)
+	for index := range static {
+		static[index] = source
+	}
+	frames := ensureDevicePetMotionFrames(static)
+	if len(frames) != devicePetFrameCount {
+		t.Fatalf("motion frames=%d want=%d", len(frames), devicePetFrameCount)
+	}
+	distinct := 0
+	first := devicePetRGB565A8(frames[0])
+	for _, frame := range frames[1:] {
+		if !bytes.Equal(first, devicePetRGB565A8(frame)) {
+			distinct++
+		}
+	}
+	if distinct < devicePetFrameCount/2 {
+		t.Fatalf("synthetic loop has only %d distinct motion phases", distinct)
+	}
+	if delta := perceptualDevicePetFrameDelta(frames[len(frames)-1], frames[0]); delta == 0 {
+		t.Fatal("synthetic loop freezes on its wrap segment")
+	}
+}
+
+func TestEnsureDevicePetMotionFramesPreservesAuthoredInitialHold(t *testing.T) {
+	first := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	second := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	second.SetNRGBA(4, 4, color.NRGBA{R: 255, A: 255})
+	frames := []image.Image{first, first, second}
+	got := ensureDevicePetMotionFrames(frames)
+	if got[1] != first {
+		t.Fatal("an authored initial hold was replaced by synthetic motion")
+	}
+}
+
+func TestDevicePetCharacterFramesUseDeterministicIdleLoop(t *testing.T) {
+	reg := petpack.NewRegistry(t.TempDir(), petpack.BundledFS())
+	if err := reg.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	frames := devicePetRenderedFrames(reg, petpack.DefaultPackID, petpack.VariantDefault)
+	if len(frames) != devicePetFrameCount {
+		t.Fatalf("rendered frames=%d want=%d", len(frames), devicePetFrameCount)
+	}
+	resolved, err := reg.Resolve(petpack.DefaultPackID, petpack.VariantDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig, err := petpack.NewRigRenderer(resolved)
+	if err != nil || rig == nil {
+		t.Fatalf("create deterministic rig renderer: renderer=%v err=%v", rig, err)
+	}
+	for index, frame := range frames {
+		want := rig.Render(petpack.StateIdle, index*devicePetFrameMS, devicePetAssetWidth)
+		if want == nil {
+			t.Fatalf("expected idle-loop frame %d", index)
+		}
+		if gotPixels, wantPixels := devicePetRGB565A8(frame), devicePetRGB565A8(want); !bytes.Equal(gotPixels, wantPixels) {
+			t.Fatalf("frame %d contains performance-director transition or non-looping layers", index)
+		}
+	}
+
+	// A closed device loop includes the wrap from the final sample back to the
+	// first. Guard against accidentally sampling a character entry/exit again:
+	// that produces a wrap delta far larger than any authored adjacent segment
+	// and is perceived as a periodic jump on the LCD.
+	deltas := make([]uint64, len(frames))
+	var adjacentMax uint64
+	for index := range frames {
+		deltas[index] = perceptualDevicePetFrameDelta(frames[index], frames[(index+1)%len(frames)])
+		if index+1 < len(frames) && deltas[index] > adjacentMax {
+			adjacentMax = deltas[index]
+		}
+	}
+	if adjacentMax == 0 {
+		t.Fatal("idle loop has no visible motion")
+	}
+	if wrap := deltas[len(deltas)-1]; wrap > adjacentMax+adjacentMax/4 {
+		t.Fatalf("idle loop wrap delta=%d exceeds adjacent max=%d by more than 25%% (all deltas=%v)", wrap, adjacentMax, deltas)
+	}
+}
+
+func perceptualDevicePetFrameDelta(first, second image.Image) uint64 {
+	if first == nil || second == nil || first.Bounds().Size() != second.Bounds().Size() {
+		return ^uint64(0)
+	}
+	abs := func(a, b uint32) uint64 {
+		if a > b {
+			return uint64(a - b)
+		}
+		return uint64(b - a)
+	}
+	var delta uint64
+	firstBounds, secondBounds := first.Bounds(), second.Bounds()
+	for y := 0; y < firstBounds.Dy(); y++ {
+		for x := 0; x < firstBounds.Dx(); x++ {
+			fr, fg, fb, fa := first.At(firstBounds.Min.X+x, firstBounds.Min.Y+y).RGBA()
+			sr, sg, sb, sa := second.At(secondBounds.Min.X+x, secondBounds.Min.Y+y).RGBA()
+			// RGBA channels are premultiplied, matching what reaches the LCD after
+			// compositing and ignoring meaningless RGB beneath fully clear pixels.
+			delta += abs(fr, sr) + abs(fg, sg) + abs(fb, sb) + abs(fa, sa)
+		}
+	}
+	return delta
 }

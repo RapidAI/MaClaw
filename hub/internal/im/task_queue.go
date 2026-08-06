@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,9 +24,14 @@ var taskIDCounter atomic.Uint64
 
 // IMTask represents a single queued message that needs device routing.
 type IMTask struct {
-	ID                 uint64
-	TenantID           string
-	UserID             string
+	ID       uint64
+	TenantID string
+	UserID   string
+	// DispatchKey optionally selects an execution lane while UserID remains the
+	// authoritative identity used for permissions, audit records, and delivery.
+	// Hardware uses this to keep each bound device FIFO without making devices
+	// owned by the same person wait on one another.
+	DispatchKey        string
 	PlatformName       string
 	PlatformUID        string
 	ReplyTarget        string
@@ -197,7 +203,7 @@ func (d *IMTaskDispatcher) Enqueue(task *IMTask) *GenericResponse {
 	task.ID = taskIDCounter.Add(1)
 	task.TenantID = normalizeTenantID(task.TenantID)
 	task.EnqueuedAt = time.Now()
-	queueKey := tenantUserRuntimeKey(task.TenantID, task.UserID)
+	queueKey := taskRuntimeQueueKey(task)
 
 	d.mu.Lock()
 	q, exists := d.queues[queueKey]
@@ -243,7 +249,19 @@ func (d *IMTaskDispatcher) Stats(userID string) TaskQueueStats {
 }
 
 func (d *IMTaskDispatcher) StatsForTenant(tenantID, userID string) TaskQueueStats {
-	queueKey := tenantUserRuntimeKey(tenantID, userID)
+	return d.statsForQueueKey(tenantUserRuntimeKey(tenantID, userID))
+}
+
+// StatsForTask returns queue statistics for the execution lane selected for a
+// task. Callers should use it after Enqueue when the task has a DispatchKey.
+func (d *IMTaskDispatcher) StatsForTask(task *IMTask) TaskQueueStats {
+	if task == nil {
+		return TaskQueueStats{Capacity: d.capacity}
+	}
+	return d.statsForQueueKey(taskRuntimeQueueKey(task))
+}
+
+func (d *IMTaskDispatcher) statsForQueueKey(queueKey string) TaskQueueStats {
 	d.mu.Lock()
 	q, exists := d.queues[queueKey]
 	d.mu.Unlock()
@@ -251,6 +269,16 @@ func (d *IMTaskDispatcher) StatsForTenant(tenantID, userID string) TaskQueueStat
 		return TaskQueueStats{Capacity: d.capacity}
 	}
 	return q.stats()
+}
+
+func taskRuntimeQueueKey(task *IMTask) string {
+	if task == nil {
+		return tenantUserRuntimeKey("", "")
+	}
+	if dispatchKey := strings.TrimSpace(task.DispatchKey); dispatchKey != "" {
+		return tenantUserRuntimeKey(task.TenantID, "dispatch:"+dispatchKey)
+	}
+	return tenantUserRuntimeKey(task.TenantID, task.UserID)
 }
 
 // runWorker is the per-user worker goroutine. It processes tasks sequentially

@@ -3,9 +3,11 @@ package im
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,6 +123,25 @@ func resolveIdentity(ctx context.Context, resolver IdentityResolver, platformNam
 
 func normalizeIncomingTenantID(tenantID string) string {
 	return normalizeTenantID(tenantID)
+}
+
+// hardwareDispatchKey derives an execution lane from the Hub-issued hardware
+// identity: thirdparty:<clientId>:<conversationId>. The user identity is
+// intentionally not changed; this only prevents separate ESP32 bindings from
+// serializing their agent work behind the same owner's queue.
+func hardwareDispatchKey(platformName, platformUID string) string {
+	if !strings.EqualFold(strings.TrimSpace(platformName), "thirdparty") {
+		return ""
+	}
+	parts := strings.Split(strings.TrimSpace(platformUID), ":")
+	if len(parts) < 3 || !strings.EqualFold(parts[0], "thirdparty") {
+		return ""
+	}
+	clientID := strings.TrimSpace(parts[1])
+	if clientID == "" {
+		return ""
+	}
+	return "hardware:" + clientID
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,6 +1059,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		task := &IMTask{
 			TenantID:           tenantID,
 			UserID:             unifiedID,
+			DispatchKey:        hardwareDispatchKey(msg.PlatformName, msg.PlatformUID),
 			PlatformName:       msg.PlatformName,
 			PlatformUID:        msg.PlatformUID,
 			ReplyTarget:        msg.ReplyTarget,
@@ -1056,7 +1078,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if queueResp.StatusCode == 429 || queueResp.StatusCode != 202 {
 			// 429 = queue full, non-202 = error — user needs to know.
 			a.sendResponse(ctx, plugin, target, queueResp)
-		} else if stats := a.taskDispatcher.StatsForTenant(tenantID, unifiedID); stats.Pending > 0 {
+		} else if stats := a.taskDispatcher.StatsForTask(task); stats.Pending > 0 {
 			// Task is queued behind others — tell the user their position.
 			a.sendResponse(ctx, plugin, target, queueResp)
 		}
@@ -1099,6 +1121,26 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 
 	// 6. Format and deliver response
 	a.sendResponse(ctx, plugin, target, routeResp)
+}
+
+func incomingControlReplyTo(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload struct {
+		ControlReplyTo   string `json:"control_reply_to"`
+		ReplyTo          string `json:"replyTo"`
+		ReplyToMessageID string `json:"replyToMessageId"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	for _, value := range []string{payload.ControlReplyTo, payload.ReplyTo, payload.ReplyToMessageID} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func startMenuReplyTarget(msg IncomingMessage) string {
@@ -1187,7 +1229,7 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 	voiceDelivered := false
 	defer func() {
 		if !voiceDelivered {
-			a.sendVoiceResponse(ctx, plugin, target, resp)
+			a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, targetCaps)
 		}
 	}()
 
@@ -1221,7 +1263,12 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		voiceDelivered = true
 		return
 	}
-	_ = targetCaps // retained from the early pass used to protect audit inputs
+	targetCaps = caps
+	// Deferred hardware speech has no audio payload in this response. Keep the
+	// defer from attempting an empty voice send after the terminal text is armed.
+	if responsePendingVoiceParts(resp) > 0 && !responseHasVoice(resp) {
+		voiceDelivered = true
+	}
 	if shouldSendVoiceAsPrimary(plugin.Name()) && responseHasVoice(resp) {
 		if a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps) {
 			voiceDelivered = true
@@ -1229,18 +1276,6 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 			return
 		}
 	}
-	// Voice-first platforms (ESP32 pets): the device firmware ends the current
-	// command when a text message arrives, so the voice reply must reach the
-	// device before the text or it is dropped as an unrelated message.
-	if shouldSendVoiceBeforeText(plugin.Name()) && responseHasVoice(resp) {
-		a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
-		// Mark voice as handled even when the send failed: the deferred retry
-		// above would run after the text, when the device has already ended
-		// the command and would discard the audio — and a future ack-based
-		// send would risk playing it twice.
-		voiceDelivered = true
-	}
-
 	// If the response contains an image, send it first via SendImage.
 	if resp.ImageKey != "" && caps.SupportsImage {
 		caption := resp.ImageCaption
@@ -1311,7 +1346,13 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 	if caps.MaxTextLength > 0 && len(text) > caps.MaxTextLength {
 		text = truncateAtLine(text, caps.MaxTextLength)
 	}
-	if !responseHasTextContent(resp) && responseHasVoice(resp) {
+	pendingVoiceParts := responsePendingVoiceParts(resp)
+	if !responseHasTextContent(resp) && pendingVoiceParts > 0 {
+		if pendingSender, ok := plugin.(PendingVoiceTextSender); ok && plugin.Name() == "thirdparty" {
+			if err := pendingSender.SendTextWithPendingVoiceParts(ctx, target, "音频已就绪", pendingVoiceParts); err != nil {
+				log.Printf("[IM Adapter] SendTextWithPendingVoiceParts failed for %s: %v", plugin.Name(), err)
+			}
+		}
 		return
 	}
 
@@ -1326,7 +1367,13 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		}
 	}
 
-	if err := plugin.SendText(ctx, target, text); err != nil {
+	var err error
+	if pendingSender, ok := plugin.(PendingVoiceTextSender); ok && plugin.Name() == "thirdparty" && pendingVoiceParts > 0 {
+		err = pendingSender.SendTextWithPendingVoiceParts(ctx, target, text, pendingVoiceParts)
+	} else {
+		err = plugin.SendText(ctx, target, text)
+	}
+	if err != nil {
 		log.Printf("[IM Adapter] SendText failed for %s (uid=%s): %v", plugin.Name(), target.PlatformUID, err)
 	}
 }
@@ -1354,20 +1401,6 @@ func shouldSendVoiceAsPrimary(platform string) bool {
 	}
 }
 
-// shouldSendVoiceBeforeText reports whether the voice reply must be delivered
-// before the text instead of after it (the default deferred order). Third-party
-// hardware pets terminate the current command on text arrival; voice sent after
-// text would never be played. Unlike shouldSendVoiceAsPrimary, the text reply
-// is still sent.
-func shouldSendVoiceBeforeText(platform string) bool {
-	switch platform {
-	case "thirdparty":
-		return true
-	default:
-		return false
-	}
-}
-
 func (a *Adapter) sendVoiceResponse(ctx context.Context, plugin IMPlugin, target UserTarget, resp *GenericResponse) bool {
 	return a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, effectiveCapabilitiesForTarget(ctx, plugin, target))
 }
@@ -1376,6 +1409,17 @@ func (a *Adapter) sendVoiceResponseWithCapabilities(ctx context.Context, plugin 
 	parts := responseVoiceParts(resp)
 	if len(parts) == 0 {
 		return false
+	}
+	sentParts := 0
+	closePendingVoice := func() {
+		if plugin.Name() != "thirdparty" || sentParts >= len(parts) {
+			return
+		}
+		if closer, ok := plugin.(PendingVoiceEndSender); ok {
+			if err := closer.SendPendingVoiceEnd(ctx, target, len(parts), sentParts); err != nil {
+				log.Printf("[IM Adapter] SendPendingVoiceEnd failed for %s sent=%d/%d: %v", plugin.Name(), sentParts, len(parts), err)
+			}
+		}
 	}
 	// Target-specific hardware contracts include the accepted codec and per-part
 	// transport size. Validate again at the final send boundary so malformed or
@@ -1390,6 +1434,7 @@ func (a *Adapter) sendVoiceResponseWithCapabilities(ctx context.Context, plugin 
 					(!client.SupportsOutputAudioDelivery("inline", int64(len(decoded))) &&
 						!client.SupportsOutputAudioDelivery("url", int64(len(decoded)))) {
 					log.Printf("[IM Adapter] rejected incompatible voice part for %s part=%d/%d mime=%s", plugin.Name(), index+1, len(parts), part.MimeType)
+					closePendingVoice()
 					return false
 				}
 			}
@@ -1403,7 +1448,10 @@ func (a *Adapter) sendVoiceResponseWithCapabilities(ctx context.Context, plugin 
 			// to the third-party hardware protocol. Other IM gateways must retain
 			// their ordinary native voice-message behavior.
 			preservesParts = preservesParts && plugin.Name() == "thirdparty" && len(resp.VoiceParts) > 0
-			voiceIsTerminal := !responseHasNonVoiceContent(resp)
+			// Third-party voice-only responses receive a small result surface
+			// immediately before playback, so their audio parts are presentation
+			// frames and must not terminate the already-armed transaction.
+			voiceIsTerminal := !responseHasNonVoiceContent(resp) && plugin.Name() != "thirdparty"
 			for i, part := range parts {
 				var err error
 				if preservesParts {
@@ -1413,8 +1461,10 @@ func (a *Adapter) sendVoiceResponseWithCapabilities(ctx context.Context, plugin 
 				}
 				if err != nil {
 					log.Printf("[IM Adapter] SendVoice failed for %s part=%d/%d: %v", plugin.Name(), i+1, len(parts), err)
+					closePendingVoice()
 					return false
 				}
+				sentParts++
 			}
 			return true
 		}
@@ -1423,8 +1473,10 @@ func (a *Adapter) sendVoiceResponseWithCapabilities(ctx context.Context, plugin 
 		for i, part := range parts {
 			if err := plugin.SendFile(ctx, target, part.Data, part.FileName, part.MimeType); err != nil {
 				log.Printf("[IM Adapter] SendFile (voice fallback) failed for %s part=%d/%d: %v", plugin.Name(), i+1, len(parts), err)
+				closePendingVoice()
 				return false
 			}
+			sentParts++
 		}
 		return true
 	}
@@ -1433,6 +1485,19 @@ func (a *Adapter) sendVoiceResponseWithCapabilities(ctx context.Context, plugin 
 
 func responseHasVoice(resp *GenericResponse) bool {
 	return len(responseVoiceParts(resp)) > 0
+}
+
+func responsePendingVoiceParts(resp *GenericResponse) int {
+	if resp == nil {
+		return 0
+	}
+	if parts := responseVoiceParts(resp); len(parts) > 0 {
+		return len(parts)
+	}
+	if resp.PendingVoiceParts > 0 {
+		return resp.PendingVoiceParts
+	}
+	return 0
 }
 
 func responseVoiceParts(resp *GenericResponse) []VoicePart {
@@ -1493,22 +1558,15 @@ func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, ta
 			return
 		}
 	}
-	// Voice-first platforms: see shouldSendVoiceBeforeText. The deferred
-	// sender below would otherwise deliver voice after the text, which ESP32
-	// firmware discards.
 	voiceDelivered := false
-	if shouldSendVoiceBeforeText(plugin.Name()) && responseHasVoice(resp) {
-		a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
-		// Same rationale as sendResponse: a failed first attempt must not be
-		// retried by the deferred sender after the text, so mark the voice as
-		// handled regardless of the send result.
-		voiceDelivered = true
-	}
 	defer func() {
 		if !voiceDelivered {
 			a.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, caps)
 		}
 	}()
+	if responsePendingVoiceParts(resp) > 0 && !responseHasVoice(resp) {
+		voiceDelivered = true
+	}
 
 	out := resp.ToOutgoingMessage()
 
@@ -1529,7 +1587,15 @@ func (a *Adapter) deliverSingleResponse(ctx context.Context, plugin IMPlugin, ta
 	if caps.MaxTextLength > 0 && len(text) > caps.MaxTextLength {
 		text = truncateAtLine(text, caps.MaxTextLength)
 	}
-	if !responseHasTextContent(resp) && responseHasVoice(resp) {
+	pendingVoiceParts := responsePendingVoiceParts(resp)
+	if !responseHasTextContent(resp) && pendingVoiceParts > 0 {
+		if pendingSender, ok := plugin.(PendingVoiceTextSender); ok && plugin.Name() == "thirdparty" {
+			_ = pendingSender.SendTextWithPendingVoiceParts(ctx, target, "音频已就绪", pendingVoiceParts)
+		}
+		return
+	}
+	if pendingSender, ok := plugin.(PendingVoiceTextSender); ok && plugin.Name() == "thirdparty" && pendingVoiceParts > 0 {
+		_ = pendingSender.SendTextWithPendingVoiceParts(ctx, target, text, pendingVoiceParts)
 		return
 	}
 	_ = plugin.SendText(ctx, target, text)
@@ -1599,11 +1665,17 @@ func adaptResponseForTarget(ctx context.Context, plugin IMPlugin, target UserTar
 	}
 	client = agent.NormalizeClientCapabilities(&client)
 	resp := *original
+	// Agent-produced MP3/WAV artifacts use the generic FileData fields, but a
+	// hardware player advertises them as the audio modality and commonly does
+	// not advertise arbitrary file output. Promote a compatible audio artifact
+	// before capability selection so it reaches SendVoice instead of being
+	// discarded by the generic-file fence.
+	promoteResponseAudioFile(&resp, client)
 	textPresent := responseHasTextContent(&resp)
 	textSupported := client.SupportsOutput("text")
 	imagePresent := resp.ImageKey != "" && caps.SupportsImage
-	filePresent := resp.FileData != "" && resp.FileName != "" && caps.SupportsFile
-	voicePresent := responseHasVoice(&resp) && caps.SupportsVoice
+	filePresent := responseFileSupportedByClient(&resp, client, caps)
+	voicePresent := responsePendingVoiceParts(&resp) > 0 && caps.SupportsVoice
 	if !textSupported {
 		clearResponseText(&resp)
 		textPresent = false
@@ -1617,6 +1689,7 @@ func adaptResponseForTarget(ctx context.Context, plugin IMPlugin, target UserTar
 	if !voicePresent {
 		resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
 		resp.VoiceParts = nil
+		resp.PendingVoiceParts = 0
 	}
 	present := make([]string, 0, 4)
 	if textPresent {
@@ -1648,9 +1721,72 @@ func adaptResponseForTarget(ctx context.Context, plugin IMPlugin, target UserTar
 		if !containsModality(chosen, "audio") {
 			resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
 			resp.VoiceParts = nil
+			resp.PendingVoiceParts = 0
 		}
 	}
 	return &resp, caps, true
+}
+
+func promoteResponseAudioFile(resp *GenericResponse, client agent.ClientCapabilities) bool {
+	if resp == nil || resp.FileData == "" || resp.FileName == "" || !client.SupportsOutput("audio") {
+		return false
+	}
+	mimeType, ok := responseAudioFileMIME(resp.FileName, resp.FileMimeType)
+	if !ok {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(resp.FileData))
+	if err != nil || len(decoded) == 0 || !client.SupportsOutputMIME("audio", mimeType) ||
+		(!client.SupportsOutputAudioDelivery("inline", int64(len(decoded))) &&
+			!client.SupportsOutputAudioDelivery("url", int64(len(decoded)))) {
+		return false
+	}
+
+	part := VoicePart{Data: resp.FileData, FileName: resp.FileName, MimeType: mimeType}
+	switch {
+	case len(resp.VoiceParts) > 0:
+		resp.VoiceParts = append(append([]VoicePart(nil), resp.VoiceParts...), part)
+	case resp.VoiceData != "" && resp.VoiceFileName != "":
+		resp.VoiceParts = []VoicePart{
+			{Data: resp.VoiceData, FileName: resp.VoiceFileName, MimeType: resp.VoiceMimeType},
+			part,
+		}
+		resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
+	default:
+		resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = part.Data, part.FileName, part.MimeType
+	}
+	// A concrete audio artifact replaces any speculative deferred-TTS count.
+	// Keeping both would arm more parts than Hub will actually deliver.
+	resp.PendingVoiceParts = 0
+	resp.FileData, resp.FileName, resp.FileMimeType = "", "", ""
+	return true
+}
+
+func responseAudioFileMIME(fileName, declared string) (string, bool) {
+	mimeType := strings.ToLower(strings.TrimSpace(strings.SplitN(declared, ";", 2)[0]))
+	if strings.HasPrefix(mimeType, "audio/") {
+		return mimeType, true
+	}
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))) {
+	case ".mp3":
+		return "audio/mpeg", true
+	case ".wav", ".wave":
+		return "audio/wav", true
+	default:
+		return "", false
+	}
+}
+
+func responseFileSupportedByClient(resp *GenericResponse, client agent.ClientCapabilities, caps CapabilityDeclaration) bool {
+	if resp == nil || resp.FileData == "" || resp.FileName == "" || !caps.SupportsFile {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(resp.FileData))
+	if err != nil || len(decoded) == 0 {
+		return false
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(strings.SplitN(resp.FileMimeType, ";", 2)[0]))
+	return client.SupportsOutputMIME("file", mimeType) && client.SupportsOutputBytes("file", int64(len(decoded)))
 }
 
 func clearResponseText(resp *GenericResponse) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1096,6 +1097,39 @@ func TestOAuthFlowReplacementKeepsNewestCancellationHandle(t *testing.T) {
 	}
 	if err := claimThird(nil); err == nil {
 		t.Fatal("cancelled OAuth flow claimed a result")
+	}
+}
+
+func TestCancelXAIOAuthURLOnlyCancelsMatchingSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	app := &App{
+		oauthCancel:              cancel,
+		xaiOAuthSession:          &oauth.XAIAuthSession{},
+		xaiOAuthAuthorizationURL: "https://auth.x.ai/authorize?state=current",
+	}
+
+	if app.CancelXAIOAuthURL("https://auth.x.ai/authorize?state=stale") {
+		t.Fatal("mismatched xAI authorization URL cancelled the active session")
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("mismatched xAI authorization URL cancelled the active context")
+	default:
+	}
+	if app.xaiOAuthSession == nil {
+		t.Fatal("mismatched xAI authorization URL cleared the active session")
+	}
+
+	if !app.CancelXAIOAuthURL("https://auth.x.ai/authorize?state=current") {
+		t.Fatal("matching xAI authorization URL did not cancel the active session")
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("matching xAI authorization URL did not cancel the active context")
+	}
+	if app.xaiOAuthSession != nil || app.xaiOAuthAuthorizationURL != "" || app.oauthCancel != nil {
+		t.Fatal("matching xAI authorization URL did not release active OAuth state")
 	}
 }
 

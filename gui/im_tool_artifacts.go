@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -410,21 +408,6 @@ func fileArtifactReadyStatus(lang string, onIMChannel bool, savedPaths []string)
 
 func attachVoiceArtifact(resp *IMAgentResponse, voiceData, voiceFileName, voiceMimeType string) {
 	if resp == nil || voiceData == "" {
-		return
-	}
-	if voiceMimeType == deviceVoicePartsArtifactMIME {
-		encoded, err := base64.StdEncoding.DecodeString(voiceData)
-		if err != nil {
-			log.Printf("[voice-artifact] decode hardware voice parts failed: %v", err)
-			return
-		}
-		var parts []IMVoicePart
-		if err := json.Unmarshal(encoded, &parts); err != nil {
-			log.Printf("[voice-artifact] parse hardware voice parts failed: %v", err)
-			return
-		}
-		resp.VoiceParts = parts
-		resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
 		return
 	}
 	resp.VoiceData = voiceData

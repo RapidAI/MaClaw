@@ -30,6 +30,7 @@ typedef struct {
     uint16_t audio_history[24];
     uint32_t audio_history_revision;
     bool wifi_connected;
+    bool service_ready;
     bool command_display_locked;
     char ambient_time[16];
     char ambient_location[24];
@@ -81,6 +82,7 @@ void app_ui_show_ready_prompt(const char *title, const char *text);
 void app_ui_cancel_ready_prompt(void);
 bool app_ui_wake_from_idle(void);
 void app_ui_set_wifi_status(const char *ssid, bool connected);
+void app_ui_set_service_ready(bool ready);
 void app_ui_set_ambient(const char *time, const char *location, const char *date,
                         const char *weekday, const char *weather_summary,
                         int temperature_c, bool weather_valid, bool weather_stale);

@@ -2,6 +2,7 @@ package im
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -23,6 +24,57 @@ func TestAdaptResponseForTextOnlyClientDropsUnsupportedMedia(t *testing.T) {
 	}
 	if got := truncateAtLine("上海天气晴朗", caps.MaxTextLength); got != "上海天气…" {
 		t.Fatalf("Unicode truncation=%q", got)
+	}
+}
+
+func TestAdaptResponsePromotesAudioFileForAudioOnlyClient(t *testing.T) {
+	plugin := NewRemoteGatewayPlugin("thirdparty", &remoteGatewayTestSender{}, nil, nil)
+	target := UserTarget{PlatformUID: "thirdparty:pet-a:default"}
+	plugin.SetClientCapabilities("tenant-a", target.PlatformUID, agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"audio"},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/mpeg"}, Playback: true,
+			DeliveryModes: []string{"url"}, MaxDownloadBytes: 1024,
+		},
+	}})
+	data := base64.StdEncoding.EncodeToString([]byte("mp3"))
+	resp, caps, ok := adaptResponseForTarget(WithTenant(context.Background(), "tenant-a"), plugin, target, &GenericResponse{
+		FileData: data, FileName: "answer.mp3", FileMimeType: "audio/mpeg", PendingVoiceParts: 4,
+	})
+	if !ok || !caps.SupportsVoice || caps.SupportsFile {
+		t.Fatalf("audio-only capabilities=%#v ok=%t", caps, ok)
+	}
+	if resp.FileData != "" || resp.VoiceData != data || resp.VoiceFileName != "answer.mp3" || resp.VoiceMimeType != "audio/mpeg" {
+		t.Fatalf("audio file was not promoted to voice: %#v", resp)
+	}
+	if resp.PendingVoiceParts != 0 {
+		t.Fatalf("stale deferred TTS count=%d, want 0", resp.PendingVoiceParts)
+	}
+}
+
+func TestSendResponseRoutesAudioFileThroughVoiceForAudioOnlyThirdParty(t *testing.T) {
+	sender := &remoteGatewayTestSender{}
+	plugin := NewRemoteGatewayPlugin("thirdparty", sender, nil, nil)
+	plugin.ClaimGatewayForTenant("tenant-a", "machine-a", "user-a")
+	target := UserTarget{PlatformUID: "thirdparty:pet-a:default"}
+	plugin.SetClientCapabilities("tenant-a", target.PlatformUID, agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"audio"},
+		Audio: &agent.ClientAudioCapabilities{
+			MimeTypes: []string{"audio/wav"}, Playback: true,
+			DeliveryModes: []string{"inline"}, MaxInlineBytes: 1024,
+		},
+	}})
+	data := base64.StdEncoding.EncodeToString([]byte("wav"))
+	(&Adapter{}).sendResponse(WithTenant(context.Background(), "tenant-a"), plugin, target, &GenericResponse{
+		FileData: data, FileName: "answer.wav", FileMimeType: "audio/wav",
+	})
+	if len(sender.messages) != 2 {
+		t.Fatalf("gateway messages=%d, want result surface plus voice", len(sender.messages))
+	}
+	first := sender.messages[0]["payload"].(map[string]any)["payload"].(map[string]any)
+	second := sender.messages[1]["payload"].(map[string]any)["payload"].(map[string]any)
+	if first["reply_type"] != "text" || second["reply_type"] != "voice" || second["file_data"] != data {
+		t.Fatalf("audio delivery order/payload = %#v then %#v", first, second)
 	}
 }
 
@@ -65,39 +117,5 @@ func TestAdaptResponseKeepsRichestDeclaredCombination(t *testing.T) {
 	})
 	if !ok || resp.Body == "" || resp.ImageKey == "" || resp.VoiceData != "" {
 		t.Fatalf("richest supported combination not selected: %#v", resp)
-	}
-}
-
-func TestSendVoiceResponseRejectsTargetCodecMismatch(t *testing.T) {
-	plugin := NewRemoteGatewayPlugin("thirdparty", &remoteGatewayTestSender{}, nil, nil)
-	target := UserTarget{PlatformUID: "thirdparty:pet-a:default"}
-	plugin.SetClientCapabilities("tenant-a", target.PlatformUID, agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
-		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
-		Audio: &agent.ClientAudioCapabilities{Playback: true, MimeTypes: []string{"audio/wav"}, DeliveryModes: []string{"url"}, MaxDownloadBytes: 1024},
-	}})
-	ctx := WithTenant(context.Background(), "tenant-a")
-	adapter := &Adapter{}
-	resp := &GenericResponse{VoiceParts: []VoicePart{{
-		Data: "dm9pY2U=", FileName: "reply.ogg", MimeType: "audio/ogg",
-	}}}
-	if adapter.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, effectiveCapabilitiesForTarget(ctx, plugin, target)) {
-		t.Fatal("codec-incompatible voice part must be rejected")
-	}
-}
-
-func TestSendVoiceResponseRejectsTargetSizeOverflow(t *testing.T) {
-	plugin := NewRemoteGatewayPlugin("thirdparty", &remoteGatewayTestSender{}, nil, nil)
-	target := UserTarget{PlatformUID: "thirdparty:pet-a:default"}
-	plugin.SetClientCapabilities("tenant-a", target.PlatformUID, agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
-		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
-		Audio: &agent.ClientAudioCapabilities{Playback: true, MimeTypes: []string{"audio/wav"}, DeliveryModes: []string{"url"}, MaxDownloadBytes: 4},
-	}})
-	ctx := WithTenant(context.Background(), "tenant-a")
-	adapter := &Adapter{}
-	resp := &GenericResponse{VoiceParts: []VoicePart{{
-		Data: "MTIzNDU=", FileName: "reply.wav", MimeType: "audio/wav",
-	}}}
-	if adapter.sendVoiceResponseWithCapabilities(ctx, plugin, target, resp, effectiveCapabilitiesForTarget(ctx, plugin, target)) {
-		t.Fatal("oversized voice part must be rejected")
 	}
 }

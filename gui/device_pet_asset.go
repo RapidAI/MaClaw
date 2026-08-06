@@ -80,20 +80,20 @@ func devicePetRenderedFrames(reg *petpack.Registry, packID, variant string) []im
 	frames := make([]image.Image, 0, devicePetFrameCount)
 	switch resolved.Renderer {
 	case petpack.RendererCharacter:
-		renderer, renderErr := petpack.NewCharacterRenderer(resolved)
+		// Device assets must be a deterministic closed loop. RenderState drives the
+		// desktop performance director, whose entry transition and behavior changes
+		// are intentionally non-periodic.
+		// Sampling that timeline into eight frames creates a discontinuity when the
+		// device wraps back to frame zero. Render the rig's idle loop directly so
+		// every 450 ms segment, including last-to-first, advances the same authored
+		// 3.6 s cycle.
+		renderer, renderErr := petpack.NewRigRenderer(resolved)
 		if renderErr != nil || renderer == nil {
 			return nil
 		}
-		// Match the PC renderer's continuously advancing clock. Two widely spaced
-		// keyframes made articulated motion collapse into a mechanical crossfade.
-		// Prime the state machine at time zero, then discard the authored entry
-		// transition and sample the complete idle loop.
-		_ = renderer.RenderState(petpack.StateIdle, 0, devicePetAssetWidth)
 		for index := 0; index < devicePetFrameCount; index++ {
-			// Skip the authored entry transition and sample one complete 3.6 s
-			// breathing loop so the last-to-first device segment is continuous.
-			elapsed := int64(500 + index*devicePetFrameMS)
-			if rendered := renderer.RenderState(petpack.StateIdle, elapsed, devicePetAssetWidth); rendered != nil {
+			elapsed := index * devicePetFrameMS
+			if rendered := renderer.Render(petpack.StateIdle, elapsed, devicePetAssetWidth); rendered != nil {
 				frames = append(frames, rendered)
 			}
 		}
@@ -138,15 +138,33 @@ func ensureDevicePetMotionFrames(frames []image.Image) []image.Image {
 		}
 		return sequence
 	}
-	first := devicePetRGB565A8(frames[0])
-	second := devicePetRGB565A8(frames[1])
-	if len(first) > 0 && bytes.Equal(first, second) {
-		frames[1] = devicePetMotionFrame(frames[0])
+	// Some static/native packs return the same raster for every requested phase.
+	// Replacing only frame 1 with a synthetic pose creates a single bump followed
+	// by six frozen segments. Generate the same closed breathing loop used by a
+	// true one-frame asset only when the complete sequence is actually static.
+	if allDevicePetFramesEqual(frames) {
+		return ensureDevicePetMotionFrames([]image.Image{frames[0]})
 	}
 	if len(frames) > devicePetFrameCount {
 		frames = frames[:devicePetFrameCount]
 	}
 	return frames
+}
+
+func allDevicePetFramesEqual(frames []image.Image) bool {
+	if len(frames) < 2 || frames[0] == nil {
+		return false
+	}
+	first := devicePetRGB565A8(frames[0])
+	if len(first) == 0 {
+		return false
+	}
+	for _, frame := range frames[1:] {
+		if frame == nil || !bytes.Equal(first, devicePetRGB565A8(frame)) {
+			return false
+		}
+	}
+	return true
 }
 
 func blendDevicePetFrames(first, second image.Image, mix float64) image.Image {
@@ -196,7 +214,10 @@ func devicePetMotionFrame(source image.Image) image.Image {
 	if lift < 1 {
 		lift = 1
 	}
-	destination := image.Rect(inset, 0, width-inset, height-lift)
+	// Keep the feet/bottom of the authored canvas fixed. Scaling toward the top
+	// made the whole silhouette lift and settle on every synthetic breath,
+	// which looked like vertical jitter rather than breathing on the device.
+	destination := image.Rect(inset, lift, width-inset, height)
 	if destination.Dx() < 1 || destination.Dy() < 1 {
 		draw.Draw(frame, frame.Bounds(), source, bounds.Min, draw.Over)
 		return frame
@@ -256,6 +277,19 @@ func devicePetRGB565(src image.Image) []byte {
 func (a *App) devicePetProfileForConfig(cfg corelib.AppConfig) map[string]any {
 	motionEnabled := cfg.PetMotionEnabled == nil || *cfg.PetMotionEnabled
 	return map[string]any{"skin": cfg.PetSkin, "motionEnabled": motionEnabled, "asset": a.devicePetAssetForConfig(cfg)}
+}
+
+// devicePetProfileForSkin keeps the desktop motion preference but renders the
+// requested installed pack. Hardware custom-pet selection intentionally does
+// not alter the desktop's own pet configuration.
+func (a *App) devicePetProfileForSkin(cfg corelib.AppConfig, skin string) map[string]any {
+	reg := petpack.EnsureGlobal()
+	if reg == nil {
+		return a.devicePetProfileForConfig(cfg)
+	}
+	cfg.PetSkin = petpack.SanitizeSkinID(skin, true, reg.Allowlist())
+	cfg.PetVariant = petpack.VariantDefault
+	return a.devicePetProfileForConfig(cfg)
 }
 
 // devicePetProfileChanged reports whether a config update changes anything

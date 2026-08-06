@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
 func TestThirdPartyGatewayEnqueueEnforcesClientCapabilities(t *testing.T) {
@@ -28,6 +32,31 @@ func TestThirdPartyGatewayEnqueueEnforcesClientCapabilities(t *testing.T) {
 	m.mu.Unlock()
 	if len(messages) != 1 || messages[0].Type != "text" || messages[0].Text != "12345" {
 		t.Fatalf("adapted messages=%#v", messages)
+	}
+}
+
+func TestThirdPartyGatewayHubPayloadPreservesOwningClientTools(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientTools("PET-alpha", []agent.ClientToolDefinition{{
+		Name: "set_volume", InputSchema: map[string]any{"type": "object"},
+	}})
+	payload := m.hubGatewayPayload(thirdPartyIncomingRequest{
+		ClientID: "PET-alpha", ConversationID: "living-room", EventID: "event-1",
+		Message: thirdPartyMessagePayload{Type: "text", Text: "turn it up"},
+	}, "message-1")
+	context, ok := payload["client_tool_context"].(agent.ClientToolContext)
+	if !ok {
+		t.Fatalf("client_tool_context = %#v", payload["client_tool_context"])
+	}
+	if context.ClientID != normalizeThirdPartyID("PET-alpha") || context.ConversationID != "living-room" || context.ReplyToMessageID != "message-1" {
+		t.Fatalf("client tool context = %#v", context)
+	}
+	tools, ok := payload["client_tools"].([]agent.ClientToolDefinition)
+	if !ok || len(tools) != 1 || tools[0].Name != "set_volume" {
+		t.Fatalf("client tools = %#v", payload["client_tools"])
+	}
+	if payload["platform_uid"] != thirdPartySessionUserID(normalizeThirdPartyID("PET-alpha"), "living-room") {
+		t.Fatalf("platform UID = %#v", payload["platform_uid"])
 	}
 }
 
@@ -72,9 +101,9 @@ func TestThirdPartyGatewayAgentResponseAllowsDeclaredMultimodalCombination(t *te
 	}
 }
 
-func TestThirdPartyGatewayAgentResponseEnqueuesVoiceBeforeText(t *testing.T) {
-	// ESP32 firmware ends the current command when a text message arrives, so
-	// the voice reply must be queued first or it is dropped as unrelated.
+func TestThirdPartyGatewayAgentResponseEnqueuesTextBeforeVoice(t *testing.T) {
+	// The terminal text switches ESP32 to the result page and arms the exact
+	// correlated speech count; playback must only begin after that transition.
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
 		Modalities:   []string{"text", "audio"},
@@ -95,15 +124,18 @@ func TestThirdPartyGatewayAgentResponseEnqueuesVoiceBeforeText(t *testing.T) {
 	m.mu.Lock()
 	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
 	m.mu.Unlock()
-	if len(messages) != 3 || messages[0].Type != "voice" || messages[1].Type != "voice" || messages[2].Type != "text" {
-		t.Fatalf("all voice parts must be enqueued before text: %#v", messages)
+	if len(messages) != 3 || messages[0].Type != "text" || messages[1].Type != "voice" || messages[2].Type != "voice" {
+		t.Fatalf("terminal text must be enqueued before all voice parts: %#v", messages)
 	}
 	for _, message := range messages {
 		if message.ReplyToMessageID != "in-1" {
 			t.Fatalf("all messages must reply to the same command: %#v", messages)
 		}
 	}
-	if messages[0].FileName != "reply-1.wav" || messages[1].FileName != "reply-2.wav" {
+	if messages[0].Metadata["acp_turn"] != "final" || messages[0].Metadata["speech_parts_pending"] != "2" {
+		t.Fatalf("result frame did not arm speech transaction: %#v", messages[0])
+	}
+	if messages[1].FileName != "reply-1.wav" || messages[2].FileName != "reply-2.wav" {
 		t.Fatalf("voice part order was not preserved: %#v", messages)
 	}
 }
@@ -130,10 +162,29 @@ func TestThirdPartyGatewayAgentResponseKeepsTextWhenAudioCombinationWins(t *test
 	m.mu.Lock()
 	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
 	m.mu.Unlock()
-	if len(messages) != 2 || messages[0].Type != "voice" || messages[1].Type != "text" {
+	if len(messages) != 2 || messages[0].Type != "text" || messages[1].Type != "voice" {
 		t.Fatalf("text must be kept alongside voice: %#v", messages)
 	}
 }
+
+func TestAgentResponseModalitiesClassifiesHardwareMediaWithoutFileSupport(t *testing.T) {
+	capabilities := agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "image", "audio"},
+		Text:       &agent.ClientTextCapabilities{},
+		Image:      &agent.ClientImageCapabilities{MimeTypes: []string{"image/png"}},
+		Audio: &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/mpeg"}, Playback: true,
+			DeliveryModes: []string{"inline"}, MaxInlineBytes: 8192},
+	}}
+	imageResp := &IMAgentResponse{FileData: base64.StdEncoding.EncodeToString([]byte("png")), FileName: "result.png", FileMimeType: "image/png"}
+	if got := agentResponseModalities(imageResp, capabilities); !containsString(got, "image") {
+		t.Fatalf("PNG modalities = %v, want image", got)
+	}
+	audioResp := &IMAgentResponse{FileData: base64.StdEncoding.EncodeToString([]byte("mp3")), FileName: "result.mp3", FileMimeType: "audio/mpeg"}
+	if got := agentResponseModalities(audioResp, capabilities); !containsString(got, "audio") {
+		t.Fatalf("MP3 modalities = %v, want audio", got)
+	}
+}
+
 func TestThirdPartyGatewayEnqueuePreservesHardwareFeatureMessages(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("pet", &agent.ClientCapabilities{
@@ -180,7 +231,7 @@ func TestThirdPartyGatewayHubReplyCorrelation(t *testing.T) {
 	}
 }
 
-func TestThirdPartyGatewayHubVoiceUsesAudioCapability(t *testing.T) {
+func TestThirdPartyGatewayLegacyHubVoiceUsesAudioCapability(t *testing.T) {
 	localMode := true
 	app := &App{configCacheValid: true, configCache: corelib.AppConfig{ThirdPartyGatewayLocalMode: &localMode}}
 	m := newThirdPartyGatewayManager(app)
@@ -220,6 +271,151 @@ func TestThirdPartyGatewayHubVoiceUsesAudioCapability(t *testing.T) {
 	}
 }
 
+func TestThirdPartyGatewayHubResultArmsVoiceBeforeParts(t *testing.T) {
+	localMode := true
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{ThirdPartyGatewayLocalMode: &localMode}}
+	m := newThirdPartyGatewayManager(app)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
+		Audio: &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/wav"}, Playback: true, DeliveryModes: []string{"inline"}, MaxInlineBytes: 8192},
+	}})
+	m.HandleGatewayReply(GatewayReplyPayload{
+		ReplyType: gatewayReplyTypeText, PlatformUID: "thirdparty:pet:default", Text: "完整结果", SourceMessageID: "in-1",
+		Metadata: map[string]any{"acp_turn": "final", "speech_parts_pending": 2},
+	})
+	m.HandleGatewayReply(GatewayReplyPayload{
+		ReplyType: gatewayReplyTypeVoice, PlatformUID: "thirdparty:pet:default", FileData: base64.StdEncoding.EncodeToString([]byte("wav-1")), MimeType: "audio/wav", VoicePartIndex: 1, VoicePartTotal: 2, SourceMessageID: "in-1",
+	})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 2 || messages[0].Type != "text" || messages[0].Metadata["speech_parts_pending"] != "2" || messages[1].Type != "voice" {
+		t.Fatalf("result/voice transaction = %#v", messages)
+	}
+}
+
+func TestThirdPartyGatewayPreservesHubSpeechEndControlFrame(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.mu.Lock()
+	m.clients["pet"] = &thirdPartyClientState{}
+	m.mu.Unlock()
+	m.HandleGatewayReply(GatewayReplyPayload{
+		ReplyType: gatewayReplyTypeKind("speech_end"), PlatformUID: "thirdparty:pet:default",
+		SourceMessageID: "in-1", Extra: map[string]any{"speech_parts_expected": 3, "speech_parts_sent": 1},
+	})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 1 || messages[0].Type != "speech_end" || messages[0].ReplyToMessageID != "in-1" {
+		t.Fatalf("speech end control frame = %#v", messages)
+	}
+}
+
+func TestThirdPartyGatewayLocalResultIsQueuedBeforeDeferredSpeech(t *testing.T) {
+	localMode := true
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{
+		ThirdPartyGatewayLocalMode: &localMode, TTSEnabled: true,
+	}}
+	// A non-nil manager is enough to prove that enqueueAgentResponse takes the
+	// deferred-speech path. Synthesis runs asynchronously and is intentionally
+	// not awaited by this ordering test.
+	app.ttsManager = &tts.Manager{}
+	m := newThirdPartyGatewayManager(app)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text", "audio"}, Text: &agent.ClientTextCapabilities{},
+		Audio: &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/mpeg"}, Playback: true, DeliveryModes: []string{"inline"}, MaxInlineBytes: 512 << 10},
+	}})
+	m.enqueueAgentResponse("pet", "default", "in-local", &IMAgentResponse{Text: "这是需要先显示再播报的完整结果。"})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) < 1 || messages[0].Type != "text" || messages[0].Metadata["acp_turn"] != "final" || messages[0].Metadata["speech_parts_pending"] == "" {
+		t.Fatalf("first local result frame = %#v", messages)
+	}
+}
+
+func TestThirdPartyGatewayDeferredSpeechKeepsResultMedia(t *testing.T) {
+	localMode := true
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{
+		ThirdPartyGatewayLocalMode: &localMode, TTSEnabled: true,
+	}}
+	app.ttsManager = &tts.Manager{}
+	m := newThirdPartyGatewayManager(app)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities:   []string{"text", "image", "audio"},
+		Combinations: [][]string{{"text", "image", "audio"}},
+		Text:         &agent.ClientTextCapabilities{},
+		Image:        &agent.ClientImageCapabilities{MimeTypes: []string{"image/png"}, MaxWidth: 320, MaxHeight: 240},
+		Audio:        &agent.ClientAudioCapabilities{MimeTypes: []string{"audio/mpeg"}, Playback: true, DeliveryModes: []string{"inline"}, MaxInlineBytes: 512 << 10},
+	}})
+	m.enqueueAgentResponse("pet", "default", "in-media", &IMAgentResponse{
+		Text:     "先显示完整结果，再播放已有音频并播报。",
+		FileData: base64.StdEncoding.EncodeToString([]byte("mp3")), FileName: "existing.mp3", FileMimeType: "audio/mpeg",
+	})
+	m.cancelDeviceSpeechTurns()
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) < 2 || messages[0].Type != "text" || messages[1].Type != "voice" {
+		t.Fatalf("deferred speech dropped result media: %#v", messages)
+	}
+	if messages[0].Metadata["speech_parts_pending"] == "" {
+		t.Fatalf("result did not arm deferred speech: %#v", messages[0])
+	}
+	if messages[0].Metadata["speech_parts_pending"] != "1" {
+		t.Fatalf("attached audio should replace synthetic TTS, pending=%q", messages[0].Metadata["speech_parts_pending"])
+	}
+}
+
+func TestAgentResponseModalitiesKeepsSourceImageForRGB565Client(t *testing.T) {
+	capabilities := agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"image"},
+		Image: &agent.ClientImageCapabilities{
+			MimeTypes: []string{coreim.ThirdPartyRGB565MIME}, MaxWidth: 64, MaxHeight: 64,
+		},
+	}}
+	modalities := agentResponseModalities(&IMAgentResponse{ImageKey: "source-image"}, capabilities)
+	if !containsString(modalities, "image") {
+		t.Fatalf("RGB565 client lost convertible source image: %v", modalities)
+	}
+}
+
+func TestThirdPartyGatewayConvertsResultImageForRGB565Client(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"image"},
+		Image: &agent.ClientImageCapabilities{
+			MimeTypes: []string{coreim.ThirdPartyRGB565MIME}, MaxWidth: 64, MaxHeight: 64,
+		},
+	}})
+	source := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	source.Set(0, 0, color.NRGBA{R: 255, A: 255})
+	source.Set(1, 0, color.NRGBA{G: 255, A: 255})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	m.enqueueAgentResponse("pet", "default", "in-image", &IMAgentResponse{
+		FileData: base64.StdEncoding.EncodeToString(encoded.Bytes()), FileName: "result.png", FileMimeType: "image/png",
+	})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 1 || messages[0].Type != "image" || messages[0].MimeType != coreim.ThirdPartyRGB565MIME || messages[0].Width != 2 || messages[0].Height != 1 {
+		t.Fatalf("converted result image=%#v", messages)
+	}
+}
+
+func TestThirdPartyGatewaySpeechEndBypassesTextCapabilityAdaptation(t *testing.T) {
+	msg := thirdPartyOutgoingMessage{Type: "speech_end", ReplyToMessageID: "in-1", Extra: map[string]any{"speech_parts_sent": 1}}
+	if !adaptGUIThirdPartyOutgoingMessage(&msg, agent.ClientCapabilities{}) {
+		t.Fatal("speech_end control frame was dropped")
+	}
+	if msg.Type != "speech_end" {
+		t.Fatalf("speech_end type was coerced to %q", msg.Type)
+	}
+}
+
 func TestThirdPartyGatewayVoiceBeforeTextHasSingleTerminalMessage(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("pet", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
@@ -237,10 +433,10 @@ func TestThirdPartyGatewayVoiceBeforeTextHasSingleTerminalMessage(t *testing.T) 
 	m.mu.Lock()
 	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["pet"].Messages...)
 	m.mu.Unlock()
-	if len(messages) != 2 || messages[0].Type != "voice" || messages[1].Type != "text" {
+	if len(messages) != 2 || messages[0].Type != "text" || messages[1].Type != "voice" {
 		t.Fatalf("voice/text ordering=%#v", messages)
 	}
-	if messages[0].Metadata["acp_turn"] == "final" || messages[1].Metadata["acp_turn"] != "final" {
+	if messages[0].Metadata["acp_turn"] != "final" || messages[0].Metadata["speech_parts_pending"] != "1" || messages[1].Metadata["acp_turn"] == "final" {
 		t.Fatalf("terminal markers=%#v", messages)
 	}
 }
@@ -344,11 +540,10 @@ func TestThirdPartyGatewayBroadcastPetProfile(t *testing.T) {
 	profile := map[string]any{
 		"skin":          "tiger",
 		"motionEnabled": false,
-		// The broadcast path validates the asset before publishing it as a
-		// media-URL reference, so the fixture must be a well-formed rgb565le
-		// frame (width*height*2 bytes after base64 decode).
-		"asset": devicePetAsset{Encoding: "rgb565le", Width: 128, Height: 128,
-			Data: base64.StdEncoding.EncodeToString(make([]byte, 128*128*2))},
+		// The broadcast path validates the transparent high-resolution asset
+		// before publishing it as a media-URL reference.
+		"asset": devicePetAsset{Encoding: "rgb565a8", Width: 256, Height: 256,
+			Data: base64.StdEncoding.EncodeToString(make([]byte, 256*256*3))},
 	}
 	m.broadcastPetProfile(profile)
 	for _, clientID := range []string{"animated-device", "plain-device"} {
@@ -389,15 +584,23 @@ func TestThirdPartyGatewayBroadcastPetProfile(t *testing.T) {
 func TestThirdPartyGatewayBroadcastPetProfileKeepsLatestValue(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("animated-device", &agent.ClientCapabilities{Features: agent.ClientFeatureCapabilities{PetAnimation: true, PetAsset: true}})
-	asset := devicePetAsset{Encoding: "rgb565le", Width: 128, Height: 128,
-		Data: base64.StdEncoding.EncodeToString(make([]byte, 128*128*2))}
+	asset := devicePetAsset{Encoding: "rgb565a8", Width: 256, Height: 256,
+		Data: base64.StdEncoding.EncodeToString(make([]byte, 256*256*3))}
 	profiles := []map[string]any{
 		{"skin": "tiger", "motionEnabled": true, "asset": asset},
 		{"skin": "panda", "motionEnabled": false, "asset": asset},
 		{"skin": "fox", "motionEnabled": true, "asset": asset},
 	}
-	for _, profile := range profiles {
+	var firstID string
+	var firstSeq int64
+	for index, profile := range profiles {
 		m.broadcastPetProfile(profile)
+		if index == 0 {
+			m.mu.Lock()
+			firstID = m.clients["animated-device"].Messages[0].ID
+			firstSeq = m.clients["animated-device"].Messages[0].Seq
+			m.mu.Unlock()
+		}
 	}
 	m.mu.Lock()
 	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["animated-device"].Messages...)
@@ -412,8 +615,89 @@ func TestThirdPartyGatewayBroadcastPetProfileKeepsLatestValue(t *testing.T) {
 	if msg.PetMotionEnabled == nil || !*msg.PetMotionEnabled {
 		t.Fatalf("coalesced pet_motion_enabled=%v", msg.PetMotionEnabled)
 	}
+	if msg.ID == firstID || msg.Seq <= firstSeq {
+		t.Fatalf("latest pet selection reused a possibly delivered identity: first=%s/%d latest=%s/%d",
+			firstID, firstSeq, msg.ID, msg.Seq)
+	}
 	if ref, ok := msg.Extra["pet_asset"].(map[string]any); !ok || ref["revision"] == "" {
 		t.Fatalf("coalesced message lost pet_asset: %#v", msg.Extra)
+	}
+}
+
+func TestThirdPartyGatewayPetAssetKeepsAllAnimationFramesAndCadence(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	frame := func(value byte) string {
+		pixels := make([]byte, 32*32*3)
+		for index := range pixels {
+			pixels[index] = value
+		}
+		return base64.StdEncoding.EncodeToString(pixels)
+	}
+	asset := devicePetAsset{
+		Encoding: "rgb565a8", Width: 32, Height: 32, FrameMS: 450,
+		Data: frame(1), Frames: []string{frame(2), frame(3), frame(4)},
+	}
+	m.mu.Lock()
+	ref := m.preparePetAssetLocked("animated-device", asset, true, 8)
+	m.mu.Unlock()
+	if ref == nil {
+		t.Fatal("transparent animated pet asset was rejected")
+	}
+	urls, ok := ref["urls"].([]string)
+	if !ok || len(urls) != 4 {
+		t.Fatalf("pet asset urls=%#v, want all 4 frames", ref["urls"])
+	}
+	if ref["frameMs"] != 450 {
+		t.Fatalf("pet asset frameMs=%v want=450", ref["frameMs"])
+	}
+	if ref["encoding"] != "rgb565a8" {
+		t.Fatalf("pet asset encoding=%v", ref["encoding"])
+	}
+	hashes, ok := ref["sha256"].([]string)
+	if !ok || len(hashes) != len(urls) {
+		t.Fatalf("pet asset sha256=%#v, want one hash per frame", ref["sha256"])
+	}
+	for index, hash := range hashes {
+		if len(hash) != 64 {
+			t.Fatalf("pet asset sha256[%d]=%q", index, hash)
+		}
+	}
+}
+
+func TestThirdPartyGatewayPetAssetDownsamplesLegacyAnimationAndPreservesDuration(t *testing.T) {
+	frame := func(value byte) string {
+		pixels := make([]byte, 32*32*3)
+		for index := range pixels {
+			pixels[index] = value
+		}
+		return base64.StdEncoding.EncodeToString(pixels)
+	}
+	asset := devicePetAsset{
+		Encoding: "rgb565a8", Width: 32, Height: 32, FrameMS: 450,
+		Data: frame(1), Frames: []string{
+			frame(2), frame(3), frame(4), frame(5), frame(6), frame(7), frame(8),
+		},
+	}
+	m := newThirdPartyGatewayManager(nil)
+	m.mu.Lock()
+	ref := m.preparePetAssetLocked("legacy-device", asset, true, 0)
+	m.mu.Unlock()
+	if ref == nil {
+		t.Fatal("legacy pet asset was rejected")
+	}
+	urls, ok := ref["urls"].([]string)
+	if !ok || len(urls) != 2 {
+		t.Fatalf("legacy pet asset urls=%#v, want 2 evenly sampled frames", ref["urls"])
+	}
+	if ref["frameMs"] != 1800 {
+		t.Fatalf("legacy pet asset frameMs=%v want=1800", ref["frameMs"])
+	}
+	hashes, ok := ref["sha256"].([]string)
+	if !ok || len(hashes) != len(urls) {
+		t.Fatalf("legacy pet asset sha256=%#v, want one hash per frame", ref["sha256"])
+	}
+	if hashes[0] == hashes[1] {
+		t.Fatalf("legacy downsampling selected duplicate frames: %#v", hashes)
 	}
 }
 

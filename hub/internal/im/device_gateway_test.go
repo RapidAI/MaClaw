@@ -641,6 +641,150 @@ func TestDeviceGatewayListsMultipleBindingsAndDeleteRevokesOnlyTarget(t *testing
 	}
 }
 
+func TestDeviceGatewayMigratesExplicitLegacyMachineBindings(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RegisterPairing("legacy-client", "tenant-a", "user-a", "610101"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "legacy-pet", "pairCode": "610101"})
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+	if err := gateway.UpdateMachineDeviceVolume("legacy-client", "legacy-pet", 37); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.MigrateMachineHardwareBindings("machine-current", "tenant-a", "user-a", []string{"legacy-client"}); err != nil {
+		t.Fatal(err)
+	}
+	if old := gateway.ListMachineDevices("legacy-client"); len(old) != 0 {
+		t.Fatalf("legacy owner still lists devices: %#v", old)
+	}
+	devices := gateway.ListMachineDevices("machine-current")
+	if len(devices) != 1 || devices[0].ClientID != "legacy-pet" || devices[0].Volume == nil || *devices[0].Volume != 37 {
+		t.Fatalf("migrated devices=%#v", devices)
+	}
+	restarted := NewPersistentDeviceGateway(nil, store)
+	if got := restarted.ListMachineDevices("machine-current"); len(got) != 1 || got[0].ClientID != "legacy-pet" || got[0].Volume == nil || *got[0].Volume != 37 {
+		t.Fatalf("persisted migrated devices=%#v", got)
+	}
+}
+
+func TestDeviceGatewayMigrationMovesLiveDeviceMediaToCurrentMachine(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("legacy-client", "tenant-a", "user-a", "610106"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "legacy-media-pet", "pairCode": "610106"})
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+
+	gateway.mu.Lock()
+	gateway.media["legacy-media"] = &deviceMedia{
+		ID: "legacy-media", ClientID: "legacy-media-pet", MachineID: "legacy-client", Token: "media-token",
+		Data: []byte("media"), Uploaded: true, LastAccessedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	gateway.mu.Unlock()
+	if err := gateway.MigrateMachineHardwareBindings("machine-current", "tenant-a", "user-a", []string{"legacy-client"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := gateway.media["legacy-media"].MachineID; got != "machine-current" {
+		t.Fatalf("migrated media owner=%q, want machine-current", got)
+	}
+	if err := gateway.UpdateMachineHardwareEnabled("legacy-client", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gateway.mediaForDownload(httptest.NewRequest(http.MethodGet, "/api/im-gateway/v1/media/legacy-media?mediaToken=media-token", nil), "legacy-media"); err != nil {
+		t.Fatalf("media incorrectly remained gated by legacy hardware: %v", err)
+	}
+	if err := gateway.UpdateMachineHardwareEnabled("machine-current", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gateway.mediaForDownload(httptest.NewRequest(http.MethodGet, "/api/im-gateway/v1/media/legacy-media?mediaToken=media-token", nil), "legacy-media"); err == nil {
+		t.Fatal("media was not gated by current hardware")
+	}
+}
+
+func TestDeviceGatewayDoesNotMigrateAnotherOwnerOrMergeActiveMachine(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	pair := func(machineID, tenantID, userID, code, clientID string) {
+		if err := gateway.RegisterPairing(machineID, tenantID, userID, code); err != nil {
+			t.Fatal(err)
+		}
+		response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "pairCode": code})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("pair %s status=%d", clientID, response.Code)
+		}
+	}
+	pair("legacy-other-user", "tenant-a", "user-b", "610102", "other-user-pet")
+	pair("legacy-same-user", "tenant-a", "user-a", "610103", "same-user-pet")
+	pair("machine-current", "tenant-a", "user-a", "610104", "current-pet")
+	if err := gateway.MigrateMachineHardwareBindings("machine-current", "tenant-a", "user-a", []string{"legacy-other-user", "legacy-same-user"}); err != nil {
+		t.Fatal(err)
+	}
+	devices := gateway.ListMachineDevices("machine-current")
+	if len(devices) != 1 || devices[0].ClientID != "current-pet" {
+		t.Fatalf("active machine was merged: %#v", devices)
+	}
+	if got := gateway.ListMachineDevices("legacy-other-user"); len(got) != 1 || got[0].ClientID != "other-user-pet" {
+		t.Fatalf("different owner migrated: %#v", got)
+	}
+	if got := gateway.ListMachineDevices("legacy-same-user"); len(got) != 1 || got[0].ClientID != "same-user-pet" {
+		t.Fatalf("legacy binding unexpectedly moved: %#v", got)
+	}
+}
+
+func TestDeviceGatewayMigrationMergesOnlyMovedDeviceVolumesIntoCurrentConfig(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	pair := func(machineID, code, clientID string) {
+		if err := gateway.RegisterPairing(machineID, "tenant-a", "user-a", code); err != nil {
+			t.Fatal(err)
+		}
+		response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "pairCode": code})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("pair %s status=%d body=%s", clientID, response.Code, response.Body.String())
+		}
+	}
+	pair("legacy-client", "610105", "legacy-pet")
+	if err := gateway.UpdateMachineDeviceVolume("legacy-client", "legacy-pet", 37); err != nil {
+		t.Fatal(err)
+	}
+	// An empty current machine may already have durable settings from the GUI.
+	// Those settings remain authoritative while the old device volume moves.
+	if err := gateway.UpdateMachineAllowCustomPets("machine-current", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.MigrateMachineHardwareBindings("machine-current", "tenant-a", "user-a", []string{"legacy-client"}); err != nil {
+		t.Fatal(err)
+	}
+	devices := gateway.ListMachineDevices("machine-current")
+	volumes := map[string]int{}
+	for _, device := range devices {
+		if device.Volume != nil {
+			volumes[device.ClientID] = *device.Volume
+		}
+	}
+	if len(devices) != 1 || volumes["legacy-pet"] != 37 || !gateway.hardware["machine-current"].AllowCustomPets {
+		t.Fatalf("merged devices=%#v volumes=%#v", devices, volumes)
+	}
+	if _, ok := gateway.hardware["legacy-client"]; ok {
+		t.Fatalf("orphaned legacy hardware config=%#v", gateway.hardware["legacy-client"])
+	}
+	restarted := NewPersistentDeviceGateway(nil, store)
+	devices = restarted.ListMachineDevices("machine-current")
+	volumes = map[string]int{}
+	for _, device := range devices {
+		if device.Volume != nil {
+			volumes[device.ClientID] = *device.Volume
+		}
+	}
+	if len(devices) != 1 || volumes["legacy-pet"] != 37 || !restarted.hardware["machine-current"].AllowCustomPets {
+		t.Fatalf("persisted merged devices=%#v volumes=%#v", devices, volumes)
+	}
+}
+
 func TestDeviceGatewayDeleteRollsBackWhenPersistenceFails(t *testing.T) {
 	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
 	gateway := NewPersistentDeviceGateway(nil, store)
@@ -975,6 +1119,35 @@ func TestDeviceGatewayPairingValidatesClientIDBeforeConsumingCode(t *testing.T) 
 	valid := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-valid", "pairCode": "610009"})
 	if valid.Code != http.StatusCreated {
 		t.Fatalf("valid retry status=%d body=%s", valid.Code, valid.Body.String())
+	}
+}
+
+func TestDeviceGatewayPairingRejectsSixthDeviceUntilOneIsRemoved(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	pair := func(clientID, code string) *httptest.ResponseRecorder {
+		if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", code); err != nil {
+			t.Fatal(err)
+		}
+		return deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "pairCode": code})
+	}
+	for i := 1; i <= 5; i++ {
+		response := pair(fmt.Sprintf("pet-%d", i), fmt.Sprintf("%06d", 620000+i))
+		if response.Code != http.StatusCreated {
+			t.Fatalf("pair device %d status=%d body=%s", i, response.Code, response.Body.String())
+		}
+	}
+	sixth := pair("pet-6", "620006")
+	if sixth.Code != http.StatusConflict || !strings.Contains(sixth.Body.String(), "hardware_device_limit_reached") || !strings.Contains(sixth.Body.String(), "remove a bound device") {
+		t.Fatalf("sixth device status=%d body=%s", sixth.Code, sixth.Body.String())
+	}
+	if got := gateway.MachineHardwareBindingState("gui-a"); got.MaxDevices != 5 || got.BoundCount != 5 {
+		t.Fatalf("binding state after rejection=%+v", got)
+	}
+	if err := gateway.DeleteMachineDevice("gui-a", "pet-3"); err != nil {
+		t.Fatal(err)
+	}
+	if response := pair("pet-6", "620007"); response.Code != http.StatusCreated {
+		t.Fatalf("pair after removal status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -2046,7 +2219,7 @@ func TestDeviceGatewayVolumePersistsAndSyncsOnHandshake(t *testing.T) {
 	var pairBody map[string]any
 	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
 	token, _ := pairBody["gatewayToken"].(string)
-	capabilities := map[string]any{"features": map[string]any{"volumeControl": true}}
+	capabilities := map[string]any{"output": map[string]any{"modalities": []string{"text"}}, "features": map[string]any{"volumeControl": true}}
 	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "pet-volume-persist", "capabilities": capabilities})
 	if handshake.Code != http.StatusOK {
 		t.Fatalf("handshake status=%d body=%s", handshake.Code, handshake.Body.String())
@@ -2077,6 +2250,99 @@ func TestDeviceGatewayVolumePersistsAndSyncsOnHandshake(t *testing.T) {
 	extra, _ = body.Messages[0]["extra"].(map[string]any)
 	if extra["volume"] != float64(0) {
 		t.Fatalf("restart persisted volume=%#v, want mute", extra)
+	}
+}
+
+func TestDeviceGatewayDeviceVolumeIsIndependentAndPersists(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445574"); err != nil {
+		t.Fatal(err)
+	}
+	pair := func(clientID string) string {
+		response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "code": "445574"})
+		if response.Code == http.StatusUnauthorized {
+			// Pairing codes are single-use, so reserve a fresh one for the second device.
+			if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445575"); err != nil {
+				t.Fatal(err)
+			}
+			response = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "code": "445575"})
+		}
+		if response.Code != http.StatusCreated {
+			t.Fatalf("pair %s status=%d body=%s", clientID, response.Code, response.Body.String())
+		}
+		var body map[string]any
+		_ = json.NewDecoder(response.Body).Decode(&body)
+		token, _ := body["gatewayToken"].(string)
+		return token
+	}
+	tokenA := pair("volume-a")
+	tokenB := pair("volume-b")
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", tokenA, map[string]any{"clientId": "volume-a"})
+	_ = deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", tokenB, map[string]any{"clientId": "volume-b"})
+	if err := gateway.UpdateMachineDeviceVolume("gui-a", "volume-a", 21); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.UpdateMachineDeviceVolume("gui-a", "volume-b", 83); err != nil {
+		t.Fatal(err)
+	}
+	devices := gateway.ListMachineDevices("gui-a")
+	byClient := make(map[string]*int, len(devices))
+	for _, device := range devices {
+		byClient[device.ClientID] = device.Volume
+	}
+	if len(devices) != 2 || byClient["volume-a"] == nil || *byClient["volume-a"] != 21 || byClient["volume-b"] == nil || *byClient["volume-b"] != 83 {
+		t.Fatalf("listed volumes=%#v", devices)
+	}
+	restarted := NewPersistentDeviceGateway(nil, store)
+	devices = restarted.ListMachineDevices("gui-a")
+	byClient = make(map[string]*int, len(devices))
+	for _, device := range devices {
+		byClient[device.ClientID] = device.Volume
+	}
+	if len(devices) != 2 || byClient["volume-a"] == nil || *byClient["volume-a"] != 21 || byClient["volume-b"] == nil || *byClient["volume-b"] != 83 {
+		t.Fatalf("persisted listed volumes=%#v", devices)
+	}
+}
+
+func TestDeviceGatewayDevicePetIsIndependentAndPersists(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.UpdateMachineAllowCustomPets("gui-a", true); err != nil {
+		t.Fatal(err)
+	}
+	for index, code := range []string{"445576", "445577"} {
+		if err := gateway.RegisterPairingWithPetProfile("gui-a", "tenant-a", "user-a", code, "clawmate", true); err != nil {
+			t.Fatal(err)
+		}
+		clientID := []string{"pet-a", "pet-b"}[index]
+		response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": clientID, "code": code})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("pair %s status=%d body=%s", clientID, response.Code, response.Body.String())
+		}
+	}
+	if err := gateway.UpdateMachineDevicePetProfileAsset("gui-a", "pet-a", "focus-claw", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	devices := gateway.ListMachineDevices("gui-a")
+	byClient := map[string]string{}
+	for _, device := range devices {
+		byClient[device.ClientID] = device.PetSkin
+	}
+	if byClient["pet-a"] != "focus-claw" || byClient["pet-b"] != "clawmate" {
+		t.Fatalf("independent device pets=%#v", byClient)
+	}
+	restarted := NewPersistentDeviceGateway(nil, store)
+	devices = restarted.ListMachineDevices("gui-a")
+	byClient = map[string]string{}
+	for _, device := range devices {
+		byClient[device.ClientID] = device.PetSkin
+	}
+	if byClient["pet-a"] != "focus-claw" || byClient["pet-b"] != "clawmate" {
+		t.Fatalf("persisted device pets=%#v", byClient)
+	}
+	if err := gateway.UpdateMachineDevicePetProfileAsset("gui-b", "pet-a", "other", true, nil); err == nil {
+		t.Fatal("cross-machine device pet update succeeded")
 	}
 }
 

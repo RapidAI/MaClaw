@@ -1,12 +1,12 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,9 +14,11 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/gorilla/websocket"
 )
@@ -43,17 +45,18 @@ type RemoteHubClient struct {
 	app     *App
 	manager *RemoteSessionManager
 
-	mu             sync.Mutex
-	conn           *websocket.Conn
-	hubURL         string
-	machineID      string
-	machineToken   string
-	connected      bool
-	lastError      string
-	dial           func(urlStr string) (*websocket.Conn, error)
-	reconnectCh    chan struct{}
-	reconnecting   atomic.Bool
-	allowReconnect atomic.Bool
+	mu               sync.Mutex
+	conn             *websocket.Conn
+	hubURL           string
+	machineID        string
+	machineToken     string
+	legacyMachineIDs []string
+	connected        bool
+	lastError        string
+	dial             func(urlStr string) (*websocket.Conn, error)
+	reconnectCh      chan struct{}
+	reconnecting     atomic.Bool
+	allowReconnect   atomic.Bool
 
 	// Completion notices from IM /startmenu must survive a transient Hub
 	// disconnect. Keep a small in-memory FIFO and flush it after reconnect.
@@ -63,6 +66,12 @@ type RemoteHubClient struct {
 	proactiveMu       sync.Mutex
 	pendingProactive  []pendingIMProactiveMessage
 	flushingProactive atomic.Bool
+
+	// Deferred hardware speech is keyed by the concrete client/conversation.
+	// A newer result cancels synthesis for the older turn before it can enqueue
+	// stale audio behind the new result page.
+	hubSpeechMu    sync.Mutex
+	hubSpeechTurns map[string]*hubDeviceSpeechTurn
 
 	// reconnectImmediate is set to true when the Hub sends a close(1001)
 	// "going away" frame, indicating a planned shutdown (e.g., redeployment).
@@ -86,6 +95,9 @@ type RemoteHubClient struct {
 	imHandlerMu        sync.Mutex
 	imHandler          *IMMessageHandler
 	configureIMHandler func(*IMMessageHandler)
+	// Every paired ESP32 receives an isolated Agent runtime. The desktop and
+	// non-hardware IM channels continue to use imHandler above.
+	hardwareAgents *hardwareAgentRuntimeRegistry
 
 	// Digital employee discussion handler for pushed Hub discussion messages.
 	veHandlerMu            sync.Mutex
@@ -103,6 +115,13 @@ type RemoteHubClient struct {
 	// Adaptive poll state for mobile digital-employee / backend task loops.
 	mobileTaskPollState *mobileTaskPollState
 
+	// requestWaiters turns selected WebSocket writes into Hub-confirmed
+	// operations. Physical hardware playback has a separate waiter because the
+	// Hub acceptance ACK arrives before the ESP32 playback receipt.
+	requestWaiters    sync.Map // request ID -> chan error
+	playbackWaiters   sync.Map // request ID -> chan error
+	deviceListWaiters sync.Map // request ID -> chan device list result
+
 	// IO relay for multi-device session roaming cleanup on disconnect.
 	ioRelay *SessionIORelay
 }
@@ -111,6 +130,43 @@ type pendingIMProactiveMessage struct {
 	text        string
 	platform    string
 	platformUID string
+}
+
+type hubDeviceSpeechTurn struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	replyTo  string
+	parts    []string
+	expected int
+	queued   int
+	started  bool
+}
+
+type HardwareDeviceBinding struct {
+	ClientID        string    `json:"clientId"`
+	ClientName      string    `json:"clientName,omitempty"`
+	ProtocolVersion string    `json:"protocolVersion,omitempty"`
+	PairedAt        time.Time `json:"pairedAt,omitempty"`
+	LastSeenAt      time.Time `json:"lastSeenAt,omitempty"`
+	Online          bool      `json:"online"`
+	LastAckStatus   string    `json:"lastAckStatus,omitempty"`
+	Volume          *int      `json:"volume,omitempty"`
+	PetSkin         string    `json:"petSkin,omitempty"`
+}
+
+type hardwareDeviceListResult struct {
+	Devices    []HardwareDeviceBinding
+	MaxDevices int
+	BoundCount int
+	Err        error
+}
+
+// HardwareDeviceBindings describes the Hub-owned hardware bindings and their
+// fixed Hub-owned capacity (five devices per GUI).
+type HardwareDeviceBindings struct {
+	Devices    []HardwareDeviceBinding
+	MaxDevices int
+	BoundCount int
 }
 
 type veDetailRefreshState struct {
@@ -150,6 +206,7 @@ func NewRemoteHubClient(app *App, manager *RemoteSessionManager) *RemoteHubClien
 		previewStopCh:    make(chan struct{}),
 		lastSummary:      make(map[string]string),
 		pendingProactive: make([]pendingIMProactiveMessage, 0),
+		hubSpeechTurns:   make(map[string]*hubDeviceSpeechTurn),
 	}
 }
 
@@ -178,7 +235,75 @@ func (c *RemoteHubClient) ensureIMHandler() *IMMessageHandler {
 	if c.configureIMHandler != nil {
 		c.configureIMHandler(h)
 	}
+	h.clientToolDispatcher = c.dispatchHubClientTool
 	return h
+}
+
+func (c *RemoteHubClient) hardwareAgentHandler(clientID string) (*IMMessageHandler, error) {
+	if c == nil {
+		return nil, fmt.Errorf("hardware agent runtime is not configured")
+	}
+	c.imHandlerMu.Lock()
+	if c.hardwareAgents == nil {
+		var configure func(*IMMessageHandler)
+		if c.app != nil {
+			configure = c.app.configureHardwareAgent
+		}
+		c.hardwareAgents = newHardwareAgentRuntimeRegistry(c.app, c.manager, configure)
+	}
+	runtimes := c.hardwareAgents
+	c.imHandlerMu.Unlock()
+	handler, err := runtimes.handler(clientID)
+	if err == nil && handler != nil {
+		// The registry owns the isolated runtime but not the Hub transport.
+		// Bind this handler to the same client-tool relay as the primary Hub
+		// handler, so a device-local tool call stays addressed to its own client.
+		handler.clientToolDispatcher = c.dispatchHubClientTool
+	}
+	return handler, err
+}
+
+func (c *RemoteHubClient) removeHardwareAgent(clientID string) {
+	if c == nil {
+		return
+	}
+	c.imHandlerMu.Lock()
+	runtimes := c.hardwareAgents
+	c.imHandlerMu.Unlock()
+	if runtimes != nil {
+		runtimes.remove(clientID)
+	}
+}
+
+func (c *RemoteHubClient) stopHardwareAgents() {
+	if c == nil {
+		return
+	}
+	c.imHandlerMu.Lock()
+	runtimes := c.hardwareAgents
+	c.hardwareAgents = nil
+	c.imHandlerMu.Unlock()
+	if runtimes != nil {
+		runtimes.stopAll()
+	}
+}
+
+func (c *RemoteHubClient) dispatchHubClientTool(_ context.Context, target agent.ClientToolContext, definition agent.ClientToolDefinition, callID string, arguments map[string]any) error {
+	if callID == "" {
+		callID = "ct_" + randomHexID(12)
+	}
+	call := &coreim.ThirdPartyToolCall{
+		ID: callID, Name: definition.Name, Arguments: arguments, Risk: definition.Risk,
+		RequiresApproval: definition.RequiresApproval, TimeoutMs: definition.TimeoutMs,
+		IdempotencyKey: callID, Metadata: definition.Metadata,
+	}
+	if err := coreim.NormalizeThirdPartyToolCall(call); err != nil {
+		return err
+	}
+	return c.SendDeviceGatewayToolMessage(target.ClientID, target.ConversationID, map[string]any{
+		"reply_type": "tool_call", "type": "tool_call", "toolCall": call,
+		"replyTo": target.ReplyToMessageID, "replyToMessageId": target.ReplyToMessageID,
+	})
 }
 
 // currentIMHandler returns the Hub handler safely while it may be created by
@@ -190,6 +315,37 @@ func (c *RemoteHubClient) currentIMHandler() *IMMessageHandler {
 	c.imHandlerMu.Lock()
 	defer c.imHandlerMu.Unlock()
 	return c.imHandler
+}
+
+func (c *RemoteHubClient) hardwareAgentHandlers() []*IMMessageHandler {
+	if c == nil {
+		return nil
+	}
+	c.imHandlerMu.Lock()
+	runtimes := c.hardwareAgents
+	c.imHandlerMu.Unlock()
+	return runtimes.handlers()
+}
+
+// existingHardwareAgentHandler selects a previously-created hardware runtime
+// without constructing one. Control messages must stay within an existing
+// hardware boundary and must not revive an Agent after its device was unbound.
+func (c *RemoteHubClient) existingHardwareAgentHandler(clientID string) *IMMessageHandler {
+	if c == nil {
+		return nil
+	}
+	c.imHandlerMu.Lock()
+	runtimes := c.hardwareAgents
+	c.imHandlerMu.Unlock()
+	return runtimes.existingHandler(clientID)
+}
+
+func thirdPartyClientIDFromSessionUserID(userID string) string {
+	parts := strings.SplitN(strings.TrimSpace(userID), ":", 3)
+	if len(parts) != 3 || !strings.EqualFold(strings.TrimSpace(parts[0]), "thirdparty") {
+		return ""
+	}
+	return normalizeThirdPartyID(parts[1])
 }
 
 func defaultHubDial(urlStr string) (*websocket.Conn, error) {
@@ -229,6 +385,7 @@ func (c *RemoteHubClient) applyConfig(cfg corelib.AppConfig) error {
 	c.hubURL = strings.TrimRight(cfg.RemoteHubURL, "/")
 	c.machineID = cfg.RemoteMachineID
 	c.machineToken = cfg.RemoteMachineToken
+	c.legacyMachineIDs = legacyHardwareMachineIDs(cfg)
 
 	if c.hubURL == "" {
 		return fmt.Errorf("remote hub url is empty")
@@ -237,6 +394,19 @@ func (c *RemoteHubClient) applyConfig(cfg corelib.AppConfig) error {
 		return fmt.Errorf("remote machine identity is incomplete")
 	}
 	return nil
+}
+
+// legacyHardwareMachineIDs identifies only the pre-machine credential that
+// this same desktop installation used before durable machine IDs were
+// introduced. It must never expand to all machines owned by a user: those can
+// be separate live GUIs with their own isolated hardware bindings.
+func legacyHardwareMachineIDs(cfg corelib.AppConfig) []string {
+	current := strings.TrimSpace(cfg.RemoteMachineID)
+	legacy := strings.TrimSpace(cfg.RemoteClientID)
+	if legacy == "" || legacy == current {
+		return nil
+	}
+	return []string{legacy}
 }
 
 func (c *RemoteHubClient) Connect() error {
@@ -275,8 +445,7 @@ func (c *RemoteHubClient) Connect() error {
 	go c.app.PullUnreadNotifications()
 	go c.app.refreshDeviceAmbientWeatherOnce()
 	go c.syncDeviceGatewayPetProfile()
-	go c.syncDeviceGatewayWelcome()
-	go c.syncDeviceGatewayVolume()
+	go c.syncDeviceGatewayHardwareState()
 
 	log.Printf("[onboarding] RemoteHubClient.Connect total=%s", time.Since(start))
 
@@ -659,8 +828,7 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	go c.app.PullUnreadNotifications()
 	go c.app.refreshDeviceAmbientWeatherOnce()
 	go c.syncDeviceGatewayPetProfile()
-	go c.syncDeviceGatewayWelcome()
-	go c.syncDeviceGatewayVolume()
+	go c.syncDeviceGatewayHardwareState()
 
 	log.Printf("[asyncHubConnect] ConnectAuthOnly total=%s", time.Since(start))
 
@@ -1293,6 +1461,10 @@ func (c *RemoteHubClient) readLoop() {
 		switch normalizeHubInboundMessageType(msg.Type) {
 		case hubInboundMessageError:
 			c.storeHubError(msg.Payload)
+			err := hubRequestError(msg.Payload)
+			c.completeHubRequest(msg.RequestID, err)
+			c.completeHubPlaybackRequest(msg.RequestID, err)
+			c.completeHardwareDeviceList(msg.RequestID, nil, 0, 0, err)
 		case hubInboundMessageSessionStart:
 			// Run in a goroutine to avoid blocking the read loop during
 			// potentially slow session creation (e.g. full-disk scans).
@@ -1325,8 +1497,148 @@ func (c *RemoteHubClient) readLoop() {
 		case hubInboundMessageVEEvent:
 			c.handleVEEvent(msg)
 		case hubInboundMessageAck:
+			c.completeHubRequest(msg.RequestID, nil)
 			c.handleAck(msg)
+		case hubInboundMessageDeviceGatewayPlaybackReceipt:
+			c.handleDeviceGatewayPlaybackReceipt(msg)
+		case hubInboundMessageDeviceGatewayDevices:
+			c.handleDeviceGatewayDevices(msg)
 		}
+	}
+}
+
+func (c *RemoteHubClient) completeHubRequest(requestID string, err error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	waiter, ok := c.requestWaiters.LoadAndDelete(requestID)
+	if !ok {
+		return
+	}
+	ch, ok := waiter.(chan error)
+	if !ok {
+		log.Printf("[hub-client] invalid request waiter type for %s", requestID)
+		return
+	}
+	select {
+	case ch <- err:
+	default:
+	}
+}
+
+func hubRequestError(payload json.RawMessage) error {
+	var body struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(payload, &body) == nil {
+		message := strings.TrimSpace(body.Message)
+		code := strings.TrimSpace(body.Code)
+		if message != "" {
+			if code != "" {
+				return fmt.Errorf("Hub rejected request (%s): %s", code, message)
+			}
+			return fmt.Errorf("Hub rejected request: %s", message)
+		}
+	}
+	return fmt.Errorf("Hub rejected request: %s", truncateLogPayload(payload))
+}
+
+func (c *RemoteHubClient) failHubRequests(err error) {
+	if err == nil {
+		err = fmt.Errorf("Hub connection closed before request confirmation")
+	}
+	c.requestWaiters.Range(func(key, _ any) bool {
+		requestID, _ := key.(string)
+		c.completeHubRequest(requestID, err)
+		return true
+	})
+}
+
+func (c *RemoteHubClient) completeHubPlaybackRequest(requestID string, err error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	waiter, ok := c.playbackWaiters.LoadAndDelete(requestID)
+	if !ok {
+		return
+	}
+	ch, ok := waiter.(chan error)
+	if !ok {
+		log.Printf("[hub-client] invalid playback waiter type for %s", requestID)
+		return
+	}
+	select {
+	case ch <- err:
+	default:
+	}
+}
+
+func (c *RemoteHubClient) failHubPlaybackRequests(err error) {
+	if err == nil {
+		err = fmt.Errorf("Hub connection closed before ESP32 playback confirmation")
+	}
+	c.playbackWaiters.Range(func(key, value any) bool {
+		requestID, _ := key.(string)
+		c.completeHubPlaybackRequest(requestID, err)
+		return true
+	})
+}
+
+func (c *RemoteHubClient) failHardwareDeviceLists(err error) {
+	c.deviceListWaiters.Range(func(key, _ any) bool {
+		requestID, _ := key.(string)
+		c.completeHardwareDeviceList(requestID, nil, 0, 0, err)
+		return true
+	})
+}
+
+func (c *RemoteHubClient) handleDeviceGatewayPlaybackReceipt(msg inboundHubEnvelope) {
+	var payload struct {
+		ClientID string `json:"clientId"`
+		Status   string `json:"status"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		c.completeHubPlaybackRequest(msg.RequestID, fmt.Errorf("invalid ESP32 playback receipt: %w", err))
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(payload.Status))
+	if status == "delivered" || status == "read" {
+		c.completeHubPlaybackRequest(msg.RequestID, nil)
+		return
+	}
+	c.completeHubPlaybackRequest(msg.RequestID, fmt.Errorf("ESP32 reported audio playback failed (device %s)", strings.TrimSpace(payload.ClientID)))
+}
+
+func (c *RemoteHubClient) handleDeviceGatewayDevices(msg inboundHubEnvelope) {
+	var payload struct {
+		Devices    []HardwareDeviceBinding `json:"devices"`
+		MaxDevices int                     `json:"maxDevices"`
+		BoundCount int                     `json:"boundCount"`
+	}
+	err := json.Unmarshal(msg.Payload, &payload)
+	c.completeHardwareDeviceList(msg.RequestID, payload.Devices, payload.MaxDevices, payload.BoundCount, err)
+}
+
+func (c *RemoteHubClient) completeHardwareDeviceList(requestID string, devices []HardwareDeviceBinding, maxDevices, boundCount int, err error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	waiter, ok := c.deviceListWaiters.LoadAndDelete(requestID)
+	if !ok {
+		return
+	}
+	ch, ok := waiter.(chan hardwareDeviceListResult)
+	if !ok {
+		log.Printf("[hub-client] invalid hardware list waiter type for %s", requestID)
+		return
+	}
+	select {
+	case ch <- hardwareDeviceListResult{Devices: devices, MaxDevices: maxDevices, BoundCount: boundCount, Err: err}:
+	default:
 	}
 }
 
@@ -1470,10 +1782,23 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 		c.setLastError(fmt.Sprintf("im.user_message parse error: %s", err.Error()))
 		return
 	}
+	c.rememberHubThirdPartyClientCapabilities(payload)
+	// Preserve the Hub transport family before audit normalization expands it to
+	// a device-qualified platform name ("thirdparty:<client>"). Runtime
+	// selection must use the transport family, not that audit-only identity.
+	isThirdPartyHardware := normalizeIMGatewayPlatformKind(payload.Platform) == imGatewayPlatformThirdParty
 
 	requestID := msg.RequestID
 	payload.RequestID = requestID
+	// New direct-Hub input supersedes any deferred synthesis from the preceding
+	// answer on the same physical surface. Cancel at request receipt, not when
+	// the next result finally arrives, so old audio cannot leak into processing.
+	c.cancelHubDeviceSpeech(payload)
 	go func() {
+		// Hub gateways use the family platform name ("thirdparty") while the
+		// platform UID retains the ESP32 client/conversation. Recover the local
+		// provenance before auditing so Hub-mode history is grouped per device.
+		payload.Platform, payload.UserID = normalizeHubThirdPartyAuditIdentity(payload.Platform, payload.UserID)
 		// Create a progress callback that sends intermediate updates to Hub.
 		// Hub will relay these to the user via IM and reset the response timeout.
 		progressFilter := newIMProgressVisibilityFilter(c.app)
@@ -1486,7 +1811,29 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 				c.app.log(fmt.Sprintf("[im-progress] send error for request=%s: %s", requestID, err.Error()))
 			}
 		}
-		handler := c.ensureIMHandler()
+		// A Hub third-party delivery represents one concrete ESP32 binding.
+		// Route only those deliveries to a device runtime; normal Hub IM channels
+		// continue to use the desktop/Hub handler and retain their existing state.
+		var handler *IMMessageHandler
+		var handlerErr error
+		if isThirdPartyHardware {
+			clientID := ""
+			if payload.ClientToolContext != nil {
+				clientID = strings.TrimSpace(payload.ClientToolContext.ClientID)
+			}
+			if clientID == "" {
+				handlerErr = fmt.Errorf("third-party hardware message is missing client ID")
+			} else {
+				handler, handlerErr = c.hardwareAgentHandler(clientID)
+			}
+		} else {
+			handler = c.ensureIMHandler()
+		}
+		if handlerErr != nil {
+			c.setLastError(handlerErr.Error())
+			_ = c.sendIMAgentResponse(requestID, &IMAgentResponse{Error: handlerErr.Error()})
+			return
+		}
 		if handler == nil {
 			c.setLastError("im handler not initialized")
 			return
@@ -1571,10 +1918,202 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 				resp.ImageKey = ds
 			}
 		}
+		c.prepareHubDeviceSpeech(payload, requestID, resp)
 		if err := c.sendIMAgentResponse(requestID, resp); err != nil {
 			c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
+			c.cancelHubDeviceSpeech(payload)
+			return
 		}
 	}()
+}
+
+// prepareHubDeviceSpeech plans a direct-Hub ESP32 response without blocking on
+// Kokoro or MP3 work. Synthesis is deliberately not started here: the Agent
+// response still has to travel Hub -> GUI -> Hub before it reaches the device
+// queue, while speech uses the direct GUI -> Hub path. Starting both here lets
+// audio overtake the result surface. startHubDeviceSpeechAfterResult is called
+// only after that terminal text frame has been written back to Hub.
+func (c *RemoteHubClient) prepareHubDeviceSpeech(message IMUserMessage, requestID string, resp *IMAgentResponse) bool {
+	if c == nil || c.app == nil || c.app.thirdPartyGateway == nil || resp == nil ||
+		resp.Deferred || resp.Error != "" || len(resp.VoiceParts) > 0 || resp.VoiceData != "" ||
+		message.ClientToolContext == nil || !isThirdPartyVoicePlatform(message.Platform) {
+		return false
+	}
+	clientID := strings.TrimSpace(message.ClientToolContext.ClientID)
+	conversationID := strings.TrimSpace(message.ClientToolContext.ConversationID)
+	replyTo := strings.TrimSpace(message.ClientToolContext.ReplyToMessageID)
+	if clientID == "" || strings.TrimSpace(resp.Text) == "" {
+		return false
+	}
+	resp.Text = cleanDeviceReplyText(resp.Text)
+	capabilities := c.app.thirdPartyGateway.clientCapabilities(clientID)
+	// A returned MP3/WAV is already the result's audio representation. Hub will
+	// promote it from FileData to the voice channel; synthesizing the text as
+	// well would play two audio versions for one answer.
+	if responseDeviceFileAudioCount(resp, capabilities) > 0 {
+		return false
+	}
+	parts := tts.PrepareSpeechChunks(resp.Text, 0, deviceVoiceChunkRunes)
+	if len(parts) == 0 || !clientCanSynthesizeDeviceSpeech(c.app.thirdPartyGateway, capabilities) {
+		return false
+	}
+	if replyTo == "" {
+		replyTo = strings.TrimSpace(requestID)
+	}
+	resp.PendingVoiceParts = len(parts)
+	turnKey := clientID + "\x00" + conversationID
+	ctx, cancel := context.WithCancel(context.Background())
+	turn := &hubDeviceSpeechTurn{
+		ctx: ctx, cancel: cancel, replyTo: replyTo,
+		parts: append([]string(nil), parts...), expected: len(parts),
+	}
+	c.hubSpeechMu.Lock()
+	if c.hubSpeechTurns == nil {
+		c.hubSpeechTurns = make(map[string]*hubDeviceSpeechTurn)
+	}
+	if previous := c.hubSpeechTurns[turnKey]; previous != nil {
+		previous.cancel()
+	}
+	c.hubSpeechTurns[turnKey] = turn
+	c.hubSpeechMu.Unlock()
+	return true
+}
+
+// startHubDeviceSpeechAfterResult is the ordering barrier for direct-Hub
+// hardware replies. SendDeviceGatewayReply has already written the terminal
+// text frame to the same GUI -> Hub WebSocket before this method is called, so
+// every subsequently streamed voice frame is enqueued after the result page.
+func (c *RemoteHubClient) startHubDeviceSpeechAfterResult(clientID, conversationID, replyTo string) {
+	if c == nil {
+		return
+	}
+	clientID = strings.TrimSpace(clientID)
+	conversationID = strings.TrimSpace(conversationID)
+	replyTo = strings.TrimSpace(replyTo)
+	turnKey := clientID + "\x00" + conversationID
+	c.hubSpeechMu.Lock()
+	turn := c.hubSpeechTurns[turnKey]
+	if turn == nil || turn.started || (replyTo != "" && turn.replyTo != "" && replyTo != turn.replyTo) {
+		c.hubSpeechMu.Unlock()
+		return
+	}
+	turn.started = true
+	ctx := turn.ctx
+	parts := append([]string(nil), turn.parts...)
+	c.hubSpeechMu.Unlock()
+	go c.streamHubDeviceSpeech(ctx, turnKey, clientID, conversationID, turn, parts)
+}
+
+func (c *RemoteHubClient) cancelHubDeviceSpeech(message IMUserMessage) {
+	if c == nil || message.ClientToolContext == nil {
+		return
+	}
+	turnKey := strings.TrimSpace(message.ClientToolContext.ClientID) + "\x00" + strings.TrimSpace(message.ClientToolContext.ConversationID)
+	c.hubSpeechMu.Lock()
+	if turn := c.hubSpeechTurns[turnKey]; turn != nil {
+		turn.cancel()
+		delete(c.hubSpeechTurns, turnKey)
+	}
+	c.hubSpeechMu.Unlock()
+}
+
+func (c *RemoteHubClient) cancelAllHubDeviceSpeech() {
+	if c == nil {
+		return
+	}
+	c.hubSpeechMu.Lock()
+	turns := c.hubSpeechTurns
+	c.hubSpeechTurns = make(map[string]*hubDeviceSpeechTurn)
+	c.hubSpeechMu.Unlock()
+	for _, turn := range turns {
+		if turn != nil {
+			turn.cancel()
+		}
+	}
+}
+
+func (c *RemoteHubClient) streamHubDeviceSpeech(ctx context.Context, turnKey, clientID, conversationID string, turn *hubDeviceSpeechTurn, parts []string) {
+	defer func() {
+		turn.cancel()
+		c.hubSpeechMu.Lock()
+		if c.hubSpeechTurns[turnKey] == turn {
+			delete(c.hubSpeechTurns, turnKey)
+		}
+		c.hubSpeechMu.Unlock()
+	}()
+	started := time.Now()
+	ok := streamPreparedDeviceVoicePayload(c.app.ttsManager, parts, thirdPartyPlatform(clientID), func(part IMVoicePart, index, total int) bool {
+		if ctx.Err() != nil {
+			return false
+		}
+		reply := GatewayReplyPayload{
+			ReplyType: gatewayReplyTypeVoice, FileData: part.Data, FileName: part.FileName, MimeType: part.MimeType,
+			SourceMessageID: turn.replyTo, VoicePartIndex: index, VoicePartTotal: total,
+			Metadata: map[string]any{"speech_part": index, "speech_parts": total},
+		}
+		if err := c.SendDeviceGatewayReply(clientID, conversationID, reply); err != nil {
+			log.Printf("[hub-client] deferred device speech send failed client=%s part=%d/%d: %v", clientID, index, total, err)
+			return false
+		}
+		c.hubSpeechMu.Lock()
+		if c.hubSpeechTurns[turnKey] == turn {
+			turn.queued = index
+		}
+		c.hubSpeechMu.Unlock()
+		return true
+	})
+	c.hubSpeechMu.Lock()
+	queued := turn.queued
+	c.hubSpeechMu.Unlock()
+	if !ok && ctx.Err() == nil && queued < turn.expected {
+		_ = c.sendDeviceSpeechEnd(clientID, conversationID, turn.replyTo, turn.expected, queued)
+	}
+	log.Printf("[hub-client] deferred device speech finished client=%s replyTo=%s parts=%d ok=%t elapsed=%s",
+		clientID, turn.replyTo, len(parts), ok, time.Since(started).Round(time.Millisecond))
+}
+
+func (c *RemoteHubClient) sendDeviceSpeechEnd(clientID, conversationID, replyTo string, expected, sent int) error {
+	return c.SendDeviceGatewayToolMessage(clientID, conversationID, map[string]any{
+		"reply_type": "speech_end", "type": "speech_end", "replyTo": replyTo, "replyToMessageId": replyTo,
+		"extra": map[string]any{"speech_parts_expected": expected, "speech_parts_sent": sent},
+	})
+}
+
+// rememberHubThirdPartyClientCapabilities bridges the direct-Hub hardware
+// route into the local gateway's delivery registry. The ESP handshakes with
+// Hub, not this GUI, so without this copy the final gateway reply is treated as
+// text-only locally and the complete TTS stream is skipped even though Hub
+// forwarded the concrete device capabilities with im.user_message.
+func (c *RemoteHubClient) rememberHubThirdPartyClientCapabilities(message IMUserMessage) {
+	if c == nil || c.app == nil || c.app.thirdPartyGateway == nil ||
+		message.ClientCapabilities == nil || message.ClientToolContext == nil ||
+		!strings.EqualFold(strings.TrimSpace(message.Platform), "thirdparty") {
+		return
+	}
+	clientID := strings.TrimSpace(message.ClientToolContext.ClientID)
+	if clientID == "" {
+		return
+	}
+	c.app.thirdPartyGateway.setClientCapabilities(clientID, message.ClientCapabilities)
+	capabilities := c.app.thirdPartyGateway.clientCapabilities(clientID)
+	audio := capabilities.Output.Audio
+	log.Printf("[hub-client] remembered thirdparty device capabilities client=%s audio=%t playback=%t mp3=%t replyTo=%s",
+		clientID, audio != nil, audio != nil && audio.Playback,
+		capabilities.SupportsOutputMIME("audio", "audio/mpeg"),
+		strings.TrimSpace(message.ClientToolContext.ReplyToMessageID))
+}
+
+func normalizeHubThirdPartyAuditIdentity(platform, userID string) (string, string) {
+	platform = strings.TrimSpace(platform)
+	userID = strings.TrimSpace(userID)
+	if !strings.EqualFold(platform, imAuditPlatformThirdParty.String()) || !strings.HasPrefix(strings.ToLower(userID), imAuditPlatformThirdParty.String()+":") {
+		return platform, userID
+	}
+	parts := strings.SplitN(userID, ":", 3)
+	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+		return platform, userID
+	}
+	return normalizeIMAuditPlatform(thirdPartyPlatform(parts[1])), userID
 }
 
 func startMenuCreatedReply(launch *agent.StartMenuLaunch) string {
@@ -1645,15 +2184,42 @@ func (c *RemoteHubClient) openStartMenuTask(message IMUserMessage) error {
 // currently running agent loop so the user can start a new task.
 func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
 	log.Printf("[hub-client] im.cancel_session received")
-	if handler := c.currentIMHandler(); handler != nil {
-		var payload struct {
-			UserID string `json:"user_id"`
+	var payload struct {
+		UserID         string `json:"user_id"`
+		ClientID       string `json:"clientId"`
+		ClientIDLegacy string `json:"client_id"`
+		ConversationID string `json:"conversationId"`
+	}
+	if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &payload) != nil {
+		log.Printf("[hub-client] im.cancel_session ignored: missing or invalid payload")
+		return
+	}
+	userID := strings.TrimSpace(payload.UserID)
+	clientID := normalizeThirdPartyID(payload.ClientID)
+	if clientID == "" {
+		clientID = normalizeThirdPartyID(payload.ClientIDLegacy)
+	}
+	if clientID == "" {
+		clientID = thirdPartyClientIDFromSessionUserID(userID)
+	}
+	if clientID != "" {
+		if userID == "" {
+			userID = thirdPartySessionUserID(clientID, payload.ConversationID)
 		}
-		if len(msg.Payload) > 0 && json.Unmarshal(msg.Payload, &payload) == nil && strings.TrimSpace(payload.UserID) != "" {
-			_, _ = handler.CancelSessionForUser(payload.UserID)
+		handler := c.existingHardwareAgentHandler(clientID)
+		if handler == nil {
+			log.Printf("[hub-client] im.cancel_session ignored: hardware runtime not found client=%s", clientID)
 			return
 		}
+		_, _ = handler.CancelSessionForUser(userID)
+		return
+	}
+	if userID == "" {
 		log.Printf("[hub-client] im.cancel_session ignored: missing user_id payload")
+		return
+	}
+	if handler := c.currentIMHandler(); handler != nil {
+		_, _ = handler.CancelSessionForUser(userID)
 	}
 }
 
@@ -1780,10 +2346,14 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			FileData:        reply.FileData,
 			FileName:        reply.FileName,
 			MimeType:        reply.MimeType,
+			SourceMessageID: reply.SourceMessageID,
+			Progress:        reply.Progress,
+			Final:           reply.Final,
+			Complete:        reply.Complete,
+			Metadata:        reply.Metadata,
 			VoicePartIndex:  reply.VoicePartIndex,
 			VoicePartTotal:  reply.VoicePartTotal,
 			VoicePartFinal:  reply.VoicePartFinal,
-			SourceMessageID: reply.SourceMessageID,
 			Extra:           reply.Extra,
 		})
 	}
@@ -1828,45 +2398,26 @@ func (c *RemoteHubClient) handleNicknameAssigned(msg inboundHubEnvelope) {
 
 // sendIMAgentResponse sends the Agent's reply back to Hub.
 func (c *RemoteHubClient) sendIMAgentResponse(requestID string, resp *IMAgentResponse) error {
+	if resp != nil {
+		log.Printf("[hub-client] im.agent_response sending request=%s text_runes=%d voice=%t voice_parts=%d error=%t deferred=%t",
+			requestID, len([]rune(resp.Text)), resp.VoiceData != "", len(resp.VoiceParts), resp.Error != "", resp.Deferred)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
 		return nil
 	}
 
-	// Hardware WAV replies can contain many independently playable parts. Send
-	// one bounded frame at a time, then commit with the text response. This keeps
-	// WebSocket memory/latency bounded and lets Hub reject incomplete streams.
-	voiceParts := append([]IMVoicePart(nil), resp.VoiceParts...)
-	if len(voiceParts) > 0 {
-		for index, part := range voiceParts {
-			partMsg := HubEnvelope{
-				Type: "im.agent_voice_part", RequestID: requestID,
-				TS: time.Now().Unix(), MachineID: c.machineID,
-				Payload: map[string]interface{}{"index": index, "total": len(voiceParts), "part": part},
-			}
-			if err := c.conn.WriteJSON(partMsg); err != nil {
-				return fmt.Errorf("send voice part %d/%d: %w", index+1, len(voiceParts), err)
-			}
-			log.Printf("[hub-client] sent agent voice part request_id=%s part=%d/%d base64_bytes=%d", requestID, index+1, len(voiceParts), len(part.Data))
-		}
-	}
-	responseCopy := *resp
-	responseCopy.VoiceParts = nil
 	msg := HubEnvelope{
 		Type:      "im.agent_response",
 		RequestID: requestID,
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
 		Payload: map[string]interface{}{
-			"response": &responseCopy,
+			"response": resp,
 		},
 	}
-	if err := c.conn.WriteJSON(msg); err != nil {
-		return err
-	}
-	log.Printf("[hub-client] sent agent response request_id=%s text_chars=%d voice_parts=%d", requestID, len([]rune(resp.Text)), len(voiceParts))
-	return nil
+	return c.conn.WriteJSON(msg)
 }
 
 // sendIMAgentProgress sends an intermediate progress update to Hub while the
@@ -2149,34 +2700,134 @@ func (c *RemoteHubClient) SendDeviceGatewayPairing(pairCode string) error {
 	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_pairing", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"pairCode": pairCode, "petSkin": profile["skin"], "motionEnabled": profile["motionEnabled"], "petAsset": profile["asset"]}})
 }
 
-func (c *RemoteHubClient) SendDeviceGatewayReply(clientID, conversationID string, reply GatewayReplyPayload) error {
+func (c *RemoteHubClient) ListHardwareDeviceBindings() (HardwareDeviceBindings, error) {
+	requestID := "device-list-" + randomHexID(12)
+	waiter := make(chan hardwareDeviceListResult, 1)
+	c.deviceListWaiters.Store(requestID, waiter)
+	defer c.deviceListWaiters.Delete(requestID)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
+		return HardwareDeviceBindings{}, fmt.Errorf("Hub not connected")
+	}
+	legacyMachineIDs := append([]string(nil), c.legacyMachineIDs...)
+	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_devices_list", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"legacyMachineIds": legacyMachineIDs}})
+	c.mu.Unlock()
+	if err != nil {
+		return HardwareDeviceBindings{}, err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-waiter:
+		if result.Err != nil {
+			return HardwareDeviceBindings{}, result.Err
+		}
+		return HardwareDeviceBindings{Devices: result.Devices, MaxDevices: result.MaxDevices, BoundCount: result.BoundCount}, nil
+	case <-timer.C:
+		return HardwareDeviceBindings{}, fmt.Errorf("timed out waiting for Hub hardware list")
+	}
+}
+
+func (c *RemoteHubClient) ListHardwareDevices() ([]HardwareDeviceBinding, error) {
+	bindings, err := c.ListHardwareDeviceBindings()
+	return bindings.Devices, err
+}
+
+func (c *RemoteHubClient) DeleteHardwareDevice(clientID string) error {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return fmt.Errorf("hardware client ID is required")
+	}
+	requestID := "device-delete-" + randomHexID(12)
+	waiter := make(chan error, 1)
+	c.requestWaiters.Store(requestID, waiter)
+	defer c.requestWaiters.Delete(requestID)
+	c.mu.Lock()
+	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("Hub not connected")
 	}
+	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_device_delete", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": clientID}})
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-waiter:
+		if err == nil {
+			c.removeHardwareAgent(clientID)
+		}
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for Hub hardware deletion")
+	}
+}
+
+func (c *RemoteHubClient) SendDeviceGatewayReply(clientID, conversationID string, reply GatewayReplyPayload) error {
 	// Pet profile synchronization has its own settings event and reconnect path.
 	// Rendering and attaching RGB565 frames to every assistant reply wasted CPU
 	// and added roughly 90 KiB to otherwise small text messages.
 	payload := map[string]any{"reply_type": reply.ReplyType.String(), "text": reply.Text, "caption": reply.Caption, "image_data": reply.ImageData, "file_data": reply.FileData, "file_name": reply.FileName, "mime_type": reply.MimeType, "extra": reply.Extra}
+	metadata := make(map[string]any, len(reply.Metadata)+1)
+	for key, value := range reply.Metadata {
+		metadata[key] = value
+	}
 	if reply.VoicePartIndex > 0 {
 		payload["voice_part_index"] = reply.VoicePartIndex
 	}
 	if reply.VoicePartTotal > 0 {
 		payload["voice_part_total"] = reply.VoicePartTotal
 	}
-	metadata := map[string]string{}
-	if reply.VoicePartIndex > 0 {
-		metadata["voice_part_index"] = strconv.Itoa(reply.VoicePartIndex)
+	if reply.VoicePartFinal {
+		payload["voice_part_final"] = true
 	}
-	if reply.VoicePartTotal > 0 {
-		metadata["voice_part_total"] = strconv.Itoa(reply.VoicePartTotal)
-	}
-	if normalizeGatewayReplyTypeKind(reply.ReplyType) != gatewayReplyTypeVoice || reply.VoicePartFinal {
-		metadata["acp_turn"] = "final"
+	// Terminal classification must survive the GUI -> Hub relay.  Older Hub
+	// producers sometimes left progress=true on their final envelope; making the
+	// terminal turn explicit here lets constrained clients prefer completion and
+	// prevents a finished answer from remaining behind a processing surface.
+	if normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String()) != thirdPartyGatewayMessageVoice {
+		if reply.Progress && !gatewayReplyIsFinal(reply) {
+			payload["progress"] = true
+			metadata["acp_turn"] = "progress"
+		} else {
+			payload["progress"] = false
+			payload["final"] = true
+			metadata["acp_turn"] = "final"
+		}
 	}
 	if len(metadata) > 0 {
 		payload["metadata"] = metadata
+	}
+	if normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String()) == thirdPartyGatewayMessageImage {
+		imageCaption := deviceResponseImageCaption(reply.Caption, reply.Text)
+		payload["caption"] = imageCaption
+		// Device image capabilities were supplied with the originating request.
+		// Convert before the Hub relay so Hub only stores a bounded display-ready
+		// payload instead of an unrestricted source image.
+		if c.app != nil && c.app.thirdPartyGateway != nil {
+			capabilities := c.app.thirdPartyGateway.clientCapabilities(clientID)
+			if !capabilities.SupportsOutput("image") {
+				return fmt.Errorf("device does not support image output")
+			}
+			prepared, err := prepareDeviceResponseImage(reply.ImageData, capabilities)
+			if err != nil {
+				return fmt.Errorf("prepare device image: %w", err)
+			}
+			payload["image_data"], payload["mime_type"] = prepared.Data, prepared.MIMEType
+			payload["data"] = prepared.Data
+			payload["file_name"], payload["sizeBytes"] = prepared.FileName, prepared.Size
+			payload["width"], payload["height"] = prepared.Width, prepared.Height
+		} else {
+			return fmt.Errorf("device image capabilities are unavailable")
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return fmt.Errorf("Hub not connected")
 	}
 	if sourceID := thirdPartyReplyCorrelation(reply); sourceID != "" {
 		// Carry both protocol spellings while deployed clients converge. The
@@ -2184,10 +2835,29 @@ func (c *RemoteHubClient) SendDeviceGatewayReply(clientID, conversationID string
 		payload["replyTo"] = sourceID
 		payload["replyToMessageId"] = sourceID
 	}
-	if glyphs := deviceGlyphsForText(reply.Text, reply.Caption); len(glyphs) > 0 {
+	glyphText := reply.Text
+	glyphCaption := reply.Caption
+	if normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String()) == thirdPartyGatewayMessageImage {
+		glyphText = ""
+		glyphCaption, _ = payload["caption"].(string)
+	}
+	if glyphs := deviceGlyphsForText(glyphText, glyphCaption); len(glyphs) > 0 {
 		payload["glyphs"] = glyphs
 	}
 	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": clientID, "conversationId": conversationID, "reply": payload}})
+}
+
+// SendDeviceGatewayToolMessage relays a protocol-native client tool lifecycle
+// message without coercing it through the text/media reply shape.
+func (c *RemoteHubClient) SendDeviceGatewayToolMessage(clientID, conversationID string, reply map[string]any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return fmt.Errorf("Hub not connected")
+	}
+	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+		"clientId": clientID, "conversationId": firstNonEmpty(conversationID, "default"), "reply": reply,
+	}})
 }
 
 // SendDeviceGatewayPetProfile pushes a settings-only profile change. Pet
@@ -2209,11 +2879,152 @@ func (c *RemoteHubClient) SendDeviceGatewayPetProfile(cfg corelib.AppConfig) err
 	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
 }
 
+// SendDeviceGatewayPetProfileForClient sends an isolated pet-profile update
+// to exactly one hardware binding. Hub validates the ownership boundary and
+// persists the selected profile for reconnects.
+func (c *RemoteHubClient) SendDeviceGatewayPetProfileForClient(clientID string, profile map[string]any) error {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return fmt.Errorf("hardware client ID is required")
+	}
+	requestID := "device-pet-" + randomHexID(12)
+	waiter := make(chan error, 1)
+	c.requestWaiters.Store(requestID, waiter)
+	defer c.requestWaiters.Delete(requestID)
+	c.mu.Lock()
+	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("Hub not connected")
+	}
+	reply := map[string]any{
+		"reply_type": "pet_profile", "pet_skin": profile["skin"],
+		"pet_motion_enabled": profile["motionEnabled"], "pet_asset": profile["asset"],
+	}
+	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+		"clientId": clientID, "conversationId": "system", "reply": reply,
+	}})
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for Hub hardware pet confirmation")
+	}
+}
+
 // SendDeviceGatewayHardwareConfig relays hardware-only settings to every
 // device paired with this GUI. Hub retains the client-to-machine ownership
 // boundary and fans the message out to matching device queues.
 func (c *RemoteHubClient) SendDeviceGatewayHardwareConfig(extra map[string]any) error {
 	return c.SendDeviceGatewayHardwareReply(map[string]any{"reply_type": "hardware_config", "extra": extra})
+}
+
+// SendDeviceGatewayHardwareConfigForClient sends a settings-only command to
+// one owned ESP32. Per-device volume controls must never use the wildcard
+// broadcast path.
+func (c *RemoteHubClient) SendDeviceGatewayHardwareConfigForClient(clientID string, extra map[string]any) error {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return fmt.Errorf("hardware client ID is required")
+	}
+	requestID := "device-volume-" + randomHexID(12)
+	waiter := make(chan error, 1)
+	c.requestWaiters.Store(requestID, waiter)
+	defer c.requestWaiters.Delete(requestID)
+	c.mu.Lock()
+	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("Hub not connected")
+	}
+	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+		"clientId": clientID, "conversationId": "system",
+		"reply": map[string]any{"reply_type": "hardware_config", "extra": extra},
+	}})
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for Hub hardware volume confirmation")
+	}
+}
+
+// SendDeviceGatewayHardwareEnabled publishes the durable master switch used by
+// Hub's public ESP32 endpoint. Device credentials remain paired while disabled,
+// but Hub rejects their traffic until the desktop enables hardware again.
+func (c *RemoteHubClient) SendDeviceGatewayHardwareEnabled(enabled bool) error {
+	requestID := "device-hardware-state-" + randomHexID(12)
+	waiter := make(chan error, 1)
+	c.requestWaiters.Store(requestID, waiter)
+	defer c.requestWaiters.Delete(requestID)
+
+	c.mu.Lock()
+	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("Hub not connected")
+	}
+	err := c.conn.WriteJSON(HubEnvelope{
+		Type:      "im.device_gateway_reply",
+		RequestID: requestID,
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload: map[string]any{
+			"clientId": "*", "conversationId": "system",
+			"reply": map[string]any{"reply_type": "hardware_enabled", "enabled": enabled},
+		},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for Hub hardware state confirmation")
+	}
+}
+
+// SendDeviceGatewayAllowCustomPets updates Hub's durable authorization gate
+// for independent device-pet profiles.
+func (c *RemoteHubClient) SendDeviceGatewayAllowCustomPets(enabled bool) error {
+	requestID := "device-custom-pets-" + randomHexID(12)
+	waiter := make(chan error, 1)
+	c.requestWaiters.Store(requestID, waiter)
+	defer c.requestWaiters.Delete(requestID)
+	c.mu.Lock()
+	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("Hub not connected")
+	}
+	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+		"clientId": "*", "conversationId": "system", "reply": map[string]any{"reply_type": "hardware_custom_pets", "enabled": enabled},
+	}})
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for Hub custom-pet setting confirmation")
+	}
 }
 
 func (c *RemoteHubClient) SendDeviceGatewayHardwareReply(reply map[string]any) error {
@@ -2228,6 +3039,73 @@ func (c *RemoteHubClient) SendDeviceGatewayHardwareReply(reply map[string]any) e
 	}})
 }
 
+// SendDeviceGatewayHardwareReplyConfirmed sends an audio preview to one
+// concrete client and waits until that ESP32 acknowledges physical playback.
+// Hub's earlier protocol ACK only confirms queue acceptance.
+func (c *RemoteHubClient) SendDeviceGatewayHardwareReplyConfirmed(clientID string, reply map[string]any) error {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return fmt.Errorf("hardware client ID is required")
+	}
+	requestID := "device-hardware-" + randomHexID(12)
+	waiter := make(chan error, 1)
+	acceptance := make(chan error, 1)
+	c.playbackWaiters.Store(requestID, waiter)
+	c.requestWaiters.Store(requestID, acceptance)
+	defer c.playbackWaiters.Delete(requestID)
+	defer c.requestWaiters.Delete(requestID)
+
+	confirmedReply := make(map[string]any, len(reply))
+	for key, value := range reply {
+		confirmedReply[key] = value
+	}
+	extra := make(map[string]any)
+	if existing, ok := reply["extra"].(map[string]any); ok {
+		for key, value := range existing {
+			extra[key] = value
+		}
+	}
+	extra["hardware_audio_preview"] = true
+	extra["hardware_audio_preview_request_id"] = requestID
+	confirmedReply["extra"] = extra
+
+	c.mu.Lock()
+	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("Hub not connected")
+	}
+	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+		"clientId": clientID, "conversationId": "system", "reply": confirmedReply,
+	}})
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	// First require Hub to accept and queue the request. This produces a fast,
+	// precise error when no remote hardware can receive it, instead of making
+	// the GUI wait for the longer physical-playback timeout.
+	acceptanceTimer := time.NewTimer(5 * time.Second)
+	select {
+	case err := <-acceptance:
+		acceptanceTimer.Stop()
+		if err != nil {
+			return err
+		}
+	case <-acceptanceTimer.C:
+		return fmt.Errorf("timed out waiting for Hub to accept the remote playback request")
+	}
+
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for ESP32 playback confirmation")
+	}
+}
+
 // syncDeviceGatewayPetProfile makes reconnects self-healing. A pet can be
 // changed while the GUI is offline; without this catch-up push the Hub and ESP
 // would retain the old skin until another setting change or gateway reply.
@@ -2235,6 +3113,11 @@ func (c *RemoteHubClient) syncDeviceGatewayPetProfile() {
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
 		log.Printf("[device-pet] load profile for reconnect sync failed: %v", err)
+		return
+	}
+	if cfg.HardwareAllowCustomPets {
+		// Per-device profiles already live durably in Hub. A reconnect must not
+		// replace them with the desktop's currently selected system pet.
 		return
 	}
 	if err := c.SendDeviceGatewayPetProfile(cfg); err != nil {
@@ -2256,6 +3139,26 @@ func (c *RemoteHubClient) syncDeviceGatewayVolume() {
 	if err := c.app.SyncHardwareVolume(); err != nil {
 		log.Printf("[device-volume] reconnect sync failed: %v", err)
 	}
+}
+
+func (c *RemoteHubClient) syncDeviceGatewayHardwareState() {
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		log.Printf("[device-hardware] load reconnect state failed: %v", err)
+		return
+	}
+	if err := c.SendDeviceGatewayHardwareEnabled(cfg.HardwareEnabled); err != nil {
+		log.Printf("[device-hardware] reconnect state sync failed: %v", err)
+		return
+	}
+	if !cfg.HardwareEnabled {
+		return
+	}
+	if err := c.SendDeviceGatewayAllowCustomPets(cfg.HardwareAllowCustomPets); err != nil {
+		log.Printf("[device-pet] reconnect custom-pet permission sync failed: %v", err)
+	}
+	c.syncDeviceGatewayWelcome()
+	c.syncDeviceGatewayVolume()
 }
 
 // SendDeviceGatewayAmbient publishes a GUI-resolved weather snapshot to all
@@ -2393,6 +3296,12 @@ func (c *RemoteHubClient) LastError() string {
 
 func (c *RemoteHubClient) Disconnect() error {
 	c.stopPreviewFlusher()
+	c.cancelAllHubDeviceSpeech()
+	c.stopHardwareAgents()
+	disconnectErr := fmt.Errorf("Hub disconnected before request confirmation")
+	c.failHubRequests(disconnectErr)
+	c.failHubPlaybackRequests(fmt.Errorf("Hub disconnected before ESP32 playback confirmation"))
+	c.failHardwareDeviceLists(disconnectErr)
 	c.mu.Lock()
 	c.allowReconnect.Store(false)
 	c.connected = false
@@ -2412,6 +3321,18 @@ func (c *RemoteHubClient) Disconnect() error {
 
 func (c *RemoteHubClient) handleConnectionLoss(err error) {
 	c.stopPreviewFlusher()
+	c.cancelAllHubDeviceSpeech()
+	// A broken Hub connection invalidates every device runtime just as an
+	// explicit Disconnect does. Otherwise an automatic reconnect could retain
+	// per-device loops and private HTTP pools from the dead transport.
+	c.stopHardwareAgents()
+	playbackErr := errors.New("Hub connection lost before ESP32 playback confirmation")
+	if err != nil {
+		playbackErr = fmt.Errorf("Hub connection lost before ESP32 playback confirmation: %w", err)
+	}
+	c.failHubPlaybackRequests(playbackErr)
+	c.failHubRequests(playbackErr)
+	c.failHardwareDeviceLists(playbackErr)
 	c.cleanupIORelay()
 	c.mu.Lock()
 	if err != nil {

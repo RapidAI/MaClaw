@@ -28,50 +28,63 @@ type MessageAttachment = agent.MessageAttachment
 // Core fields are defined in agent.UserMessage; GUI-specific fields are added here.
 type IMUserMessage = agent.UserMessage
 
+// IMVoicePart is one sequential speech segment for voice-first hardware clients.
+// Long replies use multiple compressed parts so the complete answer can be
+// spoken without exceeding a device's per-object download limit.
+type IMVoicePart struct {
+	Data     string `json:"data"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+}
+
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
-	Text                 string                        `json:"text"`
-	Reasoning            string                        `json:"reasoning,omitempty"`
-	ClearUI              bool                          `json:"clear_ui,omitempty"`
-	Fields               []IMResponseField             `json:"fields,omitempty"`
-	Actions              []IMResponseAction            `json:"actions,omitempty"`
-	Confirmation         *IMResponseConfirmation       `json:"confirmation,omitempty"`
-	UnfinishedTask       *IMResponseUnfinishedTask     `json:"unfinished_task,omitempty"`
-	UnfinishedSlot       *IMResponseUnfinishedTask     `json:"unfinished_slot,omitempty"`
-	RecoverableSession   *IMResponseRecoverableSession `json:"recoverable_session,omitempty"`
-	ImageKey             string                        `json:"image_key,omitempty"`
-	FileData             string                        `json:"file_data,omitempty"`
-	FileName             string                        `json:"file_name,omitempty"`
-	FileMimeType         string                        `json:"file_mime_type,omitempty"`
-	VoiceData            string                        `json:"voice_data,omitempty"`      // Base64-encoded voice audio (OGG Opus or WAV)
-	VoiceFileName        string                        `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
-	VoiceMimeType        string                        `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
-	VoiceParts           []IMVoicePart                 `json:"voice_parts,omitempty"`     // ordered hardware playback segments
-	LocalFilePath        string                        `json:"local_file_path,omitempty"`
-	LocalFilePaths       []string                      `json:"local_file_paths,omitempty"`
-	ThumbnailBase64      string                        `json:"thumbnail_base64,omitempty"`
-	Error                string                        `json:"error,omitempty"`
-	ResponseSource       string                        `json:"response_source,omitempty"`
-	Deferred             bool                          `json:"deferred,omitempty"`
-	KeepPanel            bool                          `json:"keep_panel,omitempty"` // when true, frontend should NOT dismiss the AG view panel after successful submit
-	ConfirmedResume      bool                          `json:"confirmed_resume,omitempty"`
-	HardExit             bool                          `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
-	JobID                string                        `json:"job_id,omitempty"`
-	RunID                string                        `json:"run_id,omitempty"`
-	RequestID            string                        `json:"request_id,omitempty"`
-	SessionKey           string                        `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
-	TraceStatus          string                        `json:"trace_status,omitempty"`
-	TraceSummary         string                        `json:"trace_summary,omitempty"`
-	TraceEventCount      int                           `json:"trace_event_count,omitempty"`
-	EvidenceCount        int                           `json:"evidence_count,omitempty"`
-	TrialReflectSummary  string                        `json:"trial_reflect_summary,omitempty"`
-	TrialReflectStatus   string                        `json:"trial_reflect_status,omitempty"`
-	TrialReflectFailures int                           `json:"trial_reflect_failures,omitempty"`
-	InputTokens          int                           `json:"input_tokens,omitempty"`
-	OutputTokens         int                           `json:"output_tokens,omitempty"`
-	TotalTokens          int                           `json:"total_tokens,omitempty"`
-	CacheReadTokens      int                           `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens     int                           `json:"cache_write_tokens,omitempty"`
+	Text               string                        `json:"text"`
+	Reasoning          string                        `json:"reasoning,omitempty"`
+	ClearUI            bool                          `json:"clear_ui,omitempty"`
+	Fields             []IMResponseField             `json:"fields,omitempty"`
+	Actions            []IMResponseAction            `json:"actions,omitempty"`
+	Confirmation       *IMResponseConfirmation       `json:"confirmation,omitempty"`
+	UnfinishedTask     *IMResponseUnfinishedTask     `json:"unfinished_task,omitempty"`
+	UnfinishedSlot     *IMResponseUnfinishedTask     `json:"unfinished_slot,omitempty"`
+	RecoverableSession *IMResponseRecoverableSession `json:"recoverable_session,omitempty"`
+	ImageKey           string                        `json:"image_key,omitempty"`
+	FileData           string                        `json:"file_data,omitempty"`
+	FileName           string                        `json:"file_name,omitempty"`
+	FileMimeType       string                        `json:"file_mime_type,omitempty"`
+	VoiceData          string                        `json:"voice_data,omitempty"`      // Base64-encoded voice audio (OGG Opus or WAV)
+	VoiceFileName      string                        `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
+	VoiceMimeType      string                        `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
+	VoiceParts         []IMVoicePart                 `json:"voice_parts,omitempty"`     // ordered long-form speech for hardware clients
+	// PendingVoiceParts arms a hardware result transaction before deferred TTS
+	// parts are synthesized. Unlike VoiceParts it carries no audio payload, so
+	// the terminal result can cross Hub immediately without waiting for TTS.
+	PendingVoiceParts    int      `json:"pending_voice_parts,omitempty"`
+	LocalFilePath        string   `json:"local_file_path,omitempty"`
+	LocalFilePaths       []string `json:"local_file_paths,omitempty"`
+	ThumbnailBase64      string   `json:"thumbnail_base64,omitempty"`
+	Error                string   `json:"error,omitempty"`
+	ResponseSource       string   `json:"response_source,omitempty"`
+	Deferred             bool     `json:"deferred,omitempty"`
+	KeepPanel            bool     `json:"keep_panel,omitempty"` // when true, frontend should NOT dismiss the AG view panel after successful submit
+	ConfirmedResume      bool     `json:"confirmed_resume,omitempty"`
+	HardExit             bool     `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
+	JobID                string   `json:"job_id,omitempty"`
+	RunID                string   `json:"run_id,omitempty"`
+	RequestID            string   `json:"request_id,omitempty"`
+	SessionKey           string   `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
+	TraceStatus          string   `json:"trace_status,omitempty"`
+	TraceSummary         string   `json:"trace_summary,omitempty"`
+	TraceEventCount      int      `json:"trace_event_count,omitempty"`
+	EvidenceCount        int      `json:"evidence_count,omitempty"`
+	TrialReflectSummary  string   `json:"trial_reflect_summary,omitempty"`
+	TrialReflectStatus   string   `json:"trial_reflect_status,omitempty"`
+	TrialReflectFailures int      `json:"trial_reflect_failures,omitempty"`
+	InputTokens          int      `json:"input_tokens,omitempty"`
+	OutputTokens         int      `json:"output_tokens,omitempty"`
+	TotalTokens          int      `json:"total_tokens,omitempty"`
+	CacheReadTokens      int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens     int      `json:"cache_write_tokens,omitempty"`
 	// EstCostRMB is a local default-price estimate for this turn (optional).
 	EstCostRMB float64 `json:"est_cost_rmb,omitempty"`
 	// PromptProfile is the adaptive system-prompt thickness (full|light).
@@ -127,14 +140,6 @@ type IMAgentResponse struct {
 	// Populated only for interrupt responses (Merge/Queue). The Hub frontend
 	// renders these as clickable buttons; IM gateways format them as text.
 	Corrections []progress.CorrectionOption `json:"corrections,omitempty"`
-}
-
-// IMVoicePart is one bounded audio segment of a longer hardware voice reply.
-// Bread Compact and EchoEar-2ST both consume this ordered protocol.
-type IMVoicePart struct {
-	Data     string `json:"data"`
-	FileName string `json:"file_name"`
-	MimeType string `json:"mime_type"`
 }
 
 const stalledNoToolRecoverThreshold = 2

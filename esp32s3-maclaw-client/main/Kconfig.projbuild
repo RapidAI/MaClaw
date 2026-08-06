@@ -124,6 +124,28 @@ config MACLAW_FANGTANG_DEFAULT_4G
         Mirrors the original ML307 board firmware. A GPIO0 double-click in
         the startup selection window toggles and persists the choice.
 
+config MACLAW_FANGTANG_CHARGE_STATUS_GPIO
+    int "Battery charging-status GPIO"
+    default 38
+    help
+        The original xingzhi-cube-0.85tft-ml307 board reads GPIO38 once per
+        second; high means external charging power is present. This is a status
+        input only and is independent from the physical power switch.
+
+config MACLAW_FANGTANG_BATTERY_ADC_UNIT
+    int "Battery ADC unit"
+    range 1 2
+    default 2
+
+config MACLAW_FANGTANG_BATTERY_ADC_CHANNEL
+    int "Battery ADC channel"
+    range 0 9
+    default 6
+    help
+        Matches the original Fangtang board's ADC2 channel 6 battery divider.
+        Keep this separate from MACLAW_BATTERY_ADC_GPIO, whose generic ADC1
+        assumptions do not apply to this PCB.
+
 endif
 
 config MACLAW_WIFI_SSID

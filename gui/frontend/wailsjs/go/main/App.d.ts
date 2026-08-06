@@ -133,6 +133,8 @@ export function CancelVirtualRepositoryOperation(arg1:string):Promise<void>;
 
 export function CancelXAIOAuth():Promise<void>;
 
+export function CancelXAIOAuthURL(arg1:string):Promise<boolean>;
+
 export function CaptureRemoteScreenshot(arg1:string):Promise<void>;
 
 export function CaptureRemoteWindowScreenshot(arg1:string,arg2:string):Promise<void>;
@@ -783,6 +785,8 @@ export function CreateThirdPartyDevicePairing():Promise<Record<string, any>>;
 
 export function ListThirdPartyHardwareDevices():Promise<Array<Record<string, any>>>;
 
+export function ListThirdPartyHardwareDeviceBindings():Promise<Record<string, any>>;
+
 export function DeleteThirdPartyHardwareDevice(arg1:string):Promise<void>;
 
 export function GenerateHardwareWelcomeAudio(arg1:string,arg2:string):Promise<string>;
@@ -793,7 +797,7 @@ export function SendHardwareWelcomeAudio():Promise<void>;
 
 export function GetHardwareWelcomeAudioDataURL():Promise<string>;
 
-export function SendHardwareWelcomeAudioRemote():Promise<void>;
+export function SendHardwareWelcomeAudioRemote(arg1:string):Promise<void>;
 
 export function ResetHardwareWelcomeAudio():Promise<string>;
 
@@ -802,6 +806,12 @@ export function SynthesizeTTSPreview(arg1:string):Promise<string>;
 export function SyncHardwareWelcome():Promise<void>;
 
 export function SendHardwareVolume(arg1:number):Promise<void>;
+
+export function SendHardwareDeviceVolume(arg1:string,arg2:number):Promise<void>;
+
+export function SendHardwareDevicePetProfile(arg1:string,arg2:string):Promise<void>;
+
+export function SetHardwareAllowCustomPets(arg1:boolean):Promise<void>;
 
 export function GetToolCacheStatus():Promise<main.ToolCacheStatus>;
 

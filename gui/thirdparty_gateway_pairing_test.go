@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestThirdPartyGatewayRejectsHubPairingReservationLocally(t *testing.T) {
@@ -71,5 +75,81 @@ func TestThirdPartyVoicePairExchangeUsesSingleUsePairing(t *testing.T) {
 	manager.exchangeDevicePairing(recorder, httplessDevicePairRequest{PairCode: "645432", ClientID: "pet-a"})
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("pairing code reused: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHardwareEnabledRefusesLocalModeAndGatewayStop(t *testing.T) {
+	localMode := false
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{
+		HardwareEnabled:            true,
+		ThirdPartyGatewayEnabled:   true,
+		ThirdPartyGatewayToken:     "hardware-token",
+		ThirdPartyGatewayLocalMode: &localMode,
+	}}
+	app.thirdPartyGateway = newThirdPartyGatewayManager(app)
+	app.thirdPartyGateway.status = gatewayConnectionStatusConnected
+
+	if err := app.SetThirdPartyGatewayLocalMode(true); err == nil || !strings.Contains(err.Error(), "disable hardware") {
+		t.Fatalf("switching an enabled hardware gateway to local mode = %v, want hardware guard", err)
+	}
+	if app.GetThirdPartyGatewayLocalMode() {
+		t.Fatal("hardware guard still changed the persisted gateway mode")
+	}
+
+	app.StopThirdPartyGateway()
+	if status := app.GetThirdPartyGatewayStatus(); status != gatewayConnectionStatusConnected.String() {
+		t.Fatalf("gateway status after guarded stop = %q, want %q", status, gatewayConnectionStatusConnected)
+	}
+}
+
+func TestHardwareActionsRequireEnabledHardware(t *testing.T) {
+	localMode := false
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{
+		ThirdPartyGatewayEnabled:   true,
+		ThirdPartyGatewayToken:     "gateway-token",
+		ThirdPartyGatewayLocalMode: &localMode,
+	}}
+
+	if _, err := app.CreateThirdPartyDevicePairing(); err == nil || !strings.Contains(err.Error(), "hardware is disabled") {
+		t.Fatalf("pairing while hardware is disabled = %v, want hardware guard", err)
+	}
+	if err := app.SendHardwareVolume(42); err == nil || !strings.Contains(err.Error(), "hardware is disabled") {
+		t.Fatalf("volume while hardware is disabled = %v, want hardware guard", err)
+	}
+	if app.thirdPartyGateway != nil {
+		t.Fatal("disabled hardware action started a gateway")
+	}
+}
+
+func TestHardwareEnableRequiresConnectedHub(t *testing.T) {
+	localMode := true
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{testHomeDir: t.TempDir(), configCacheValid: true, configCache: corelib.AppConfig{
+		RemoteMachineID:            "machine-a",
+		ThirdPartyGatewayHost:      "127.0.0.1",
+		ThirdPartyGatewayPort:      port,
+		ThirdPartyGatewayLocalMode: &localMode,
+	}}
+
+	status, err := app.SetHardwareEnabled(true)
+	if err == nil || !strings.Contains(err.Error(), "Hub is not connected") {
+		t.Fatalf("enabling hardware without Hub = status %q, err %v; want connected-Hub guard", status, err)
+	}
+	if status != gatewayConnectionStatusConnected.String() {
+		t.Fatalf("gateway status after rejected enable = %q, want %q", status, gatewayConnectionStatusConnected)
+	}
+	cfg, loadErr := app.LoadConfig()
+	if loadErr != nil {
+		t.Fatalf("LoadConfig after rejected enable: %v", loadErr)
+	}
+	if cfg.HardwareEnabled || cfg.ThirdPartyGatewayEnabled || !cfg.IsThirdPartyGatewayLocalMode() || cfg.ThirdPartyGatewayToken != "" {
+		t.Fatalf("rejected hardware enable did not restore its transport settings: %#v", cfg)
 	}
 }

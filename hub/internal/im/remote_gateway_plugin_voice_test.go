@@ -49,26 +49,41 @@ func TestRemoteGatewaySendVoiceUsesVoiceReplyType(t *testing.T) {
 	if inner["file_data"] != "base64-audio" || inner["file_name"] != "voice.wav" || inner["mime_type"] != "audio/wav" {
 		t.Fatalf("voice payload = %#v", inner)
 	}
-	if _, ok := inner["voice_part_index"]; ok {
-		t.Fatalf("legacy IM voice unexpectedly carries hardware stream metadata: %#v", inner)
+}
+
+func TestRemoteGatewayPendingVoiceTextIncludesArmingMetadata(t *testing.T) {
+	sender := &captureMachineSender{}
+	plugin := &RemoteGatewayPlugin{
+		platform: "thirdparty", sender: sender,
+		owner: &gatewayOwner{TenantID: "tenant_default", MachineID: "machine-1"},
+	}
+	if err := plugin.SendTextWithPendingVoiceParts(context.Background(), UserTarget{PlatformUID: "pet-1"}, "完整结果", 3); err != nil {
+		t.Fatalf("SendTextWithPendingVoiceParts() error = %v", err)
+	}
+	msg := sender.msg.(map[string]any)
+	inner := msg["payload"].(map[string]any)["payload"].(map[string]any)
+	metadata := inner["metadata"].(map[string]any)
+	if inner["reply_type"] != "text" || inner["final"] != true || metadata["acp_turn"] != "final" || metadata["speech_parts_pending"] != 3 {
+		t.Fatalf("pending voice text payload = %#v", inner)
 	}
 }
 
-func TestRemoteGatewaySendVoicePartCarriesStreamMetadata(t *testing.T) {
+func TestRemoteGatewayPendingVoiceEndPreservesCorrelation(t *testing.T) {
 	sender := &captureMachineSender{}
 	plugin := &RemoteGatewayPlugin{
-		platform: "thirdparty",
-		sender:   sender,
-		owner:    &gatewayOwner{TenantID: "tenant_default", MachineID: "machine-1"},
+		platform: "thirdparty", sender: sender,
+		owner: &gatewayOwner{TenantID: "tenant_default", MachineID: "machine-1"},
 	}
-	if err := plugin.SendVoicePart(context.Background(), UserTarget{PlatformUID: "pet"}, "part-2", "reply-2.wav", "audio/wav", 2, 3, false); err != nil {
-		t.Fatalf("SendVoicePart() error = %v", err)
+	ctx := WithReplyMeta(context.Background(), "pet-1", "command-42")
+	if err := plugin.SendPendingVoiceEnd(ctx, UserTarget{PlatformUID: "pet-1"}, 3, 1); err != nil {
+		t.Fatalf("SendPendingVoiceEnd() error = %v", err)
 	}
 	msg := sender.msg.(map[string]any)
-	payload := msg["payload"].(map[string]any)
-	inner := payload["payload"].(map[string]any)
-	if inner["voice_part_index"] != 2 || inner["voice_part_total"] != 3 || inner["voice_part_final"] != false {
-		t.Fatalf("voice part metadata = %#v", inner)
+	inner := msg["payload"].(map[string]any)["payload"].(map[string]any)
+	extra := inner["extra"].(map[string]any)
+	if inner["reply_type"] != "speech_end" || inner["source_message_id"] != "command-42" ||
+		extra["speech_parts_expected"] != 3 || extra["speech_parts_sent"] != 1 {
+		t.Fatalf("speech end payload = %#v", inner)
 	}
 }
 func TestRemoteGatewayVoiceCapabilityIsPlatformAware(t *testing.T) {

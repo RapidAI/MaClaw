@@ -80,6 +80,44 @@ func TestCleanForSpeech(t *testing.T) {
 	}
 }
 
+func TestStripInternalResponseMetadata(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"[i] 正常回复", "正常回复"},
+		{"[I]\n正常回复", "正常回复"},
+		{"Route task: vision\nRoute model: vision-model\n这是图片内容。", "这是图片内容。"},
+		{"[i]\nInput tokens: 12\nOutput tokens: 8\n最终结果", "最终结果"},
+		{"[I/O] status 正常", "[I/O] status 正常"},
+		{"正文中的 [i] 应保留", "正文中的 [i] 应保留"},
+	}
+	for _, tc := range tests {
+		if got := StripInternalResponseMetadata(tc.input); got != tc.want {
+			t.Errorf("StripInternalResponseMetadata(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestStripInternalResponseMetadataAnywhere(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Weather answer.\nRoute task: vision", "Weather answer."},
+		{"First paragraph.\n\nRoute task: vision | Route model: internal\n\nSecond paragraph.", "First paragraph.\n\nSecond paragraph."},
+		{"Answer.\nNO AUX/ROUTE — STAYED ON PRIMARY...", "Answer."},
+		{"Answer.\n- Route reason: internal diagnostic", "Answer."},
+		{"The route task: vision text is ordinary prose.", "The route task: vision text is ordinary prose."},
+		{"[I/O] status remains visible", "[I/O] status remains visible"},
+	}
+	for _, tc := range tests {
+		if got := StripInternalResponseMetadata(tc.input); got != tc.want {
+			t.Errorf("StripInternalResponseMetadata(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
 		(len(s) > 0 && len(sub) > 0 && findSubstring(s, sub)))

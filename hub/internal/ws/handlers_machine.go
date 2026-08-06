@@ -268,7 +268,6 @@ type identityService interface {
 // IMAgentResponseHandler handles agent responses routed back from MaClaw clients.
 type IMAgentResponseHandler interface {
 	HandleAgentResponse(requestID string, resp json.RawMessage)
-	HandleAgentVoicePart(requestID string, resp json.RawMessage)
 	HandleAgentProgress(requestID string, text string)
 }
 
@@ -566,10 +565,6 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "im.agent_response":
 			if err := g.handleIMAgentResponse(ctx, msg); err != nil {
-				return
-			}
-		case "im.agent_voice_part":
-			if err := g.handleIMAgentVoicePart(ctx, msg); err != nil {
 				return
 			}
 		case "im.agent_progress":
@@ -1354,25 +1349,6 @@ func (g *Gateway) handleIMAgentResponse(ctx *ConnContext, msg Envelope) error {
 	return nil
 }
 
-// handleIMAgentVoicePart accepts one bounded hardware-audio segment. The Hub
-// assembles these ordered segments onto the final im.agent_response, avoiding
-// a single unbounded WebSocket JSON frame for long spoken answers.
-func (g *Gateway) handleIMAgentVoicePart(ctx *ConnContext, msg Envelope) error {
-	if ctx.Role != "machine" {
-		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
-	}
-	if g.IMResponder == nil {
-		log.Printf("[ws] handleIMAgentVoicePart: no IMResponder configured, dropping message")
-		return nil
-	}
-	if msg.RequestID == "" {
-		log.Printf("[ws] handleIMAgentVoicePart: missing request_id, dropping message")
-		return nil
-	}
-	g.IMResponder.HandleAgentVoicePart(msg.RequestID, msg.Payload)
-	return nil
-}
-
 // handleIMAgentProgress handles im.agent_progress from a MaClaw client.
 // It resets the pending request timeout and optionally delivers the progress
 // text to the user via IM.
@@ -1664,7 +1640,26 @@ func (g *Gateway) handleDeviceGatewayDevicesList(ctx *ConnContext, msg Envelope)
 	if !ok {
 		return writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware device registry is unavailable")
 	}
-	return ctx.Conn.WriteJSON(map[string]any{"type": "im.device_gateway_devices", "request_id": msg.RequestID, "payload": map[string]any{"devices": lister.ListMachineDevicesJSON(ctx.MachineID)}})
+	var request struct {
+		LegacyMachineIDs []string `json:"legacyMachineIds"`
+	}
+	if len(msg.Payload) > 0 && json.Unmarshal(msg.Payload, &request) != nil {
+		return writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "invalid hardware list payload")
+	}
+	if migrator, ok := g.DeviceGateway.(interface {
+		MigrateMachineHardwareBindings(string, string, string, []string) error
+	}); ok {
+		if err := migrator.MigrateMachineHardwareBindings(ctx.MachineID, ctx.TenantID, ctx.UserID, request.LegacyMachineIDs); err != nil {
+			return writeWSRequestError(ctx.Conn, msg.RequestID, "HARDWARE_MIGRATION_FAILED", err.Error())
+		}
+	}
+	payload := map[string]any{"devices": lister.ListMachineDevicesJSON(ctx.MachineID)}
+	if state, ok := g.DeviceGateway.(interface{ MachineHardwareBindingStateJSON(string) map[string]any }); ok {
+		for key, value := range state.MachineHardwareBindingStateJSON(ctx.MachineID) {
+			payload[key] = value
+		}
+	}
+	return ctx.Conn.WriteJSON(map[string]any{"type": "im.device_gateway_devices", "request_id": msg.RequestID, "payload": payload})
 }
 
 func (g *Gateway) handleDeviceGatewayDeviceDelete(ctx *ConnContext, msg Envelope) error {
@@ -1710,13 +1705,23 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 		}
 	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "pet_profile") {
-		if profiler, ok := g.DeviceGateway.(interface {
-			UpdateMachinePetProfileAsset(string, string, bool, map[string]any)
+		petSkin, _ := payload.Reply["pet_skin"].(string)
+		motionEnabled, _ := payload.Reply["pet_motion_enabled"].(bool)
+		asset, _ := payload.Reply["pet_asset"].(map[string]any)
+		if payload.ClientID == "*" {
+			if profiler, ok := g.DeviceGateway.(interface {
+				UpdateMachinePetProfileAsset(string, string, bool, map[string]any)
+			}); ok {
+				profiler.UpdateMachinePetProfileAsset(ctx.MachineID, petSkin, motionEnabled, asset)
+			}
+		} else if profiler, ok := g.DeviceGateway.(interface {
+			UpdateMachineDevicePetProfileAsset(string, string, string, bool, map[string]any) error
 		}); ok {
-			petSkin, _ := payload.Reply["pet_skin"].(string)
-			motionEnabled, _ := payload.Reply["pet_motion_enabled"].(bool)
-			asset, _ := payload.Reply["pet_asset"].(map[string]any)
-			profiler.UpdateMachinePetProfileAsset(ctx.MachineID, petSkin, motionEnabled, asset)
+			if err := profiler.UpdateMachineDevicePetProfileAsset(ctx.MachineID, payload.ClientID, petSkin, motionEnabled, asset); err != nil {
+				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "HARDWARE_PET_UPDATE_FAILED", err.Error())
+			}
+		} else {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "per-device pet settings are unavailable")
 		}
 		return false, nil
 	}
@@ -1736,6 +1741,25 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 		}
 		return false, nil
 	}
+	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_custom_pets") {
+		if payload.ClientID != "*" {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "hardware custom-pet permission is machine-scoped")
+		}
+		updater, ok := g.DeviceGateway.(interface {
+			UpdateMachineAllowCustomPets(string, bool) error
+		})
+		if !ok {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "UNAVAILABLE", "hardware custom-pet settings are unavailable")
+		}
+		enabled, ok := payload.Reply["enabled"].(bool)
+		if !ok {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", "custom-pet enabled state is required")
+		}
+		if err := updater.UpdateMachineAllowCustomPets(ctx.MachineID, enabled); err != nil {
+			return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+		}
+		return false, nil
+	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_welcome_config") {
 		if updater, ok := g.DeviceGateway.(interface {
 			UpdateMachineWelcome(string, bool, string, bool) error
@@ -1750,19 +1774,32 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 		return false, nil
 	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "hardware_config") {
-		if updater, ok := g.DeviceGateway.(interface {
-			UpdateMachineVolume(string, any) error
+		extra, _ := payload.Reply["extra"].(map[string]any)
+		if payload.ClientID == "*" {
+			if updater, ok := g.DeviceGateway.(interface {
+				UpdateMachineVolume(string, any) error
+			}); ok {
+				if err := updater.UpdateMachineVolume(ctx.MachineID, extra["volume"]); err != nil {
+					return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
+				}
+			}
+		} else if updater, ok := g.DeviceGateway.(interface {
+			UpdateMachineDeviceVolume(string, string, any) error
 		}); ok {
-			extra, _ := payload.Reply["extra"].(map[string]any)
-			if err := updater.UpdateMachineVolume(ctx.MachineID, extra["volume"]); err != nil {
+			if err := updater.UpdateMachineDeviceVolume(ctx.MachineID, payload.ClientID, extra["volume"]); err != nil {
 				return true, writeWSRequestError(ctx.Conn, msg.RequestID, "INVALID_MESSAGE", err.Error())
 			}
+			// The per-device updater validates ownership, persists the setting and
+			// queues it for a live compatible device. Do not route a second time:
+			// an offline binding is still a successful durable update and receives
+			// its level during the next handshake.
+			return false, nil
 		}
 	}
-	if payload.ClientID == "*" {
-		extra, _ := payload.Reply["extra"].(map[string]any)
-		hardwareAudioPreview, _ := extra["hardware_audio_preview"].(bool)
-		if hardwareAudioPreview {
+	extra, _ := payload.Reply["extra"].(map[string]any)
+	hardwareAudioPreview, _ := extra["hardware_audio_preview"].(bool)
+	if hardwareAudioPreview {
+		if payload.ClientID == "*" {
 			relay, ok := g.DeviceGateway.(interface {
 				EnqueueMachineReplyCount(string, string, map[string]any) int
 			})
@@ -1774,6 +1811,11 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 			}
 			return false, nil
 		}
+		// A selected-device preview must be routed through the ownership-aware
+		// path below.  Do not fall through to a generic reply where an offline
+		// target is indistinguishable from a successful queue acceptance.
+	}
+	if payload.ClientID == "*" {
 		if relay, ok := g.DeviceGateway.(interface {
 			EnqueueMachineReply(string, string, map[string]any)
 		}); ok {

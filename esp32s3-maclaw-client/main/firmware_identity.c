@@ -160,6 +160,7 @@ void firmware_identity_set_local_ready(bool ready) {
 }
 
 void firmware_identity_set_service_ready(bool ready) {
+    bool changed = s_service_ready != ready;
     s_service_ready = ready;
-    if (ready) emit_event("SERVICE_STATUS", NULL);
+    if (changed) emit_event("SERVICE_STATUS", NULL);
 }
