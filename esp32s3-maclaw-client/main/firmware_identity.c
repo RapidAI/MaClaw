@@ -90,7 +90,11 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
     cJSON_AddStringToObject(self_test, "flash", "ok");
     cJSON_AddStringToObject(self_test, "psram", esp_psram_get_size() > 0 ? "ok" : "unavailable");
     cJSON_AddStringToObject(self_test, "local_ready", s_local_ready ? "ok" : "pending");
-    cJSON_AddBoolToObject(root, "ready", s_local_ready);
+    // BOOT_STATUS proves local firmware/HAL readiness, while SERVICE_STATUS
+    // independently reports authenticated external-service readiness. An offline
+    // device must still be able to prove that a newly flashed App booted.
+    bool ready = strcmp(type, "SERVICE_STATUS") == 0 ? s_service_ready : s_local_ready;
+    cJSON_AddBoolToObject(root, "ready", ready);
     return root;
 }
 
