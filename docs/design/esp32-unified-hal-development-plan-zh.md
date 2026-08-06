@@ -5,7 +5,7 @@
 - 状态：待实施
 - 日期：2026-08-06
 - 系统名称：MaClaw AgentOS
-- 评审轮次：第十九轮全面架构审查（在第十八轮基础上，补齐 OTA 暂存分区可实施性、签名域与反混淆、刷写不可取消点、供电/Flash 资源约束、Hub API 错误与事件幂等、设备身份绑定、发布撤销及安全启动分级门禁）
+- 评审轮次：第二十一轮产品决策审查（固定 16 MiB Flash 放弃设备端 OTA，改为 GitHub Release→Hub 版本检查/提醒→用户使用受校验刷机工具更新）
 - 适用工程：`esp32s3-maclaw-client`
 - 首批正式支持硬件：Bread Compact、EchoEar-2ST、Fangtang-4G
 - 稳定 profile ID：`bread-compact-wifi-lcd-v1`、`echoear-2st-r8`、`fangtang-4g-v1`
@@ -32,10 +32,10 @@
 - `main/firmware_identity.c`：当前通过 USB Serial/JTAG 常驻任务解析 `CLAWMATE_QUERY`，回报 board/layout/compat ID、固件版本、ELF SHA256 与 readiness；任务使用永久循环且缺少统一 stop/join，身份协议版本与 Gateway/HAL/NVS 版本也尚未形成兼容矩阵。该通道必须收归 Diagnostic/Manufacturing Platform Service，不能成为绕过 Task Registry、安全脱敏或板型兼容校验的例外。
 - `main/main.c`：仍有大量跨任务 `static`/`volatile` 状态和任务句柄，例如 interaction/meeting/cancel/welcome/HTTP 状态；`volatile` 只能影响编译器访问，不能提供多核原子性、内存序或复合状态一致性。迁移必须把每组状态归入单写者 Service/事件队列或明确 atomic/critical-section 契约，不能把现有全局变量原样搬进新目录。
 - `main/CMakeLists.txt`：EchoEar 选择 `board_port.c`，Bread/Fangtang 共同选择 `board_port_bread_compact.c`，仅 Fangtang追加 ML307 component/source 和方糖资源；但显示、codec、ESP-SR、ADC 等许多组件仍无条件进入同一个 `REQUIRES` 集合。构建拆分必须以三个 profile 的 source/component/resource manifest 为唯一输入，同时产生锁定依赖和可审计 artifact provenance。
-- `.github/workflows/main.yml`：现有 `build-esp32-firmware` 使用 `espressif/idf:v6.0.2`，已分别构建 EchoEar、Bread 和 Fangtang；但发布的 `${FIRMWARE_NAME}.bin` 是 `idf.py merge-bin -f raw` 生成、必须从 flash `0x0` 写入的整机图像，不能作为 OTA app image 写入 `ota_0/ota_1`。Workflow 已通过 `softprops/action-gh-release@v2` 把 `release-assets/*` 发布到 `RapidAI/MaClaw` GitHub Release，但尚未产生独立 application-only OTA 固件、OTA 签名清单或分区回滚证据。
-- `partitions.csv`：16 MiB flash 当前仅有 `factory` app，无 `otadata/ota_0/ota_1`；`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` 与 `CONFIG_APP_ROLLBACK_ENABLE` 未启用，Secure Boot/Flash Encryption 也未形成量产基线。本地现有构建产物中 app image 已观察到约 3.08 MiB，接入 OTA 前必须以三 profile clean release build 重测槽位余量，不能用 merged image 大小代替 app 槽预算。
-- `main/main.c`/`main/CMakeLists.txt`：当前 `storage` 是 SPIFFS，会议录音、宠物素材和资源缓存共用；现有代码已经记录 SPIFFS GC 在碎片化分区上可能持续很久，并在写 Flash 时要求 internal-memory stack/cache-off 安全。因此 OTA 完整暂存不能只写成普通 `/storage` 文件而不冻结介质、预分配、GC 最坏时延、cache-off/PSRAM 栈和会议并发预算；候选专用 raw staging partition 必须与 A/B layout 一起评审。
-- `MaClawSrv/thirdparty_gateway.go`：当前 bearer token 解析到 tenant/user principal，但 token 本身不是设备身份；OTA endpoint 必须在此基础上再绑定已配对的 `clientId + deviceId + profile/hw/layout + credential_generation`，并使用常量时间/索引化 token 查找与独立设备限流，不能仅因 bearer 合法就允许跨设备查询 release。
+- `.github/workflows/main.yml`：现有 `build-esp32-firmware` 使用 `espressif/idf:v6.0.2`，已分别构建 EchoEar、Bread 和 Fangtang；发布的 `${FIRMWARE_NAME}.bin` 是 `idf.py merge-bin -f raw` 生成、必须从 flash `0x0` 写入的整机镜像，只能作为显式恢复出厂/工装资产，不能用于默认“保留数据升级”，也不是设备端 OTA app image。Workflow 已通过 `softprops/action-gh-release@v2` 把 `release-assets/*` 发布到 `RapidAI/MaClaw` GitHub Release；本计划补齐带 offset/写区 allowlist 的分段升级 bundle、签名发布清单、三 profile 兼容元数据与刷机工具校验，不再产生设备端 OTA 专用产物。
+- `partitions.csv`：硬件固定为 16 MiB，当前仅有约 3.625 MiB `factory` app、3 MiB model 和约 9.3 MiB storage；无 `otadata/ota_0/ota_1`。本地 app image 已观察到约 3.08 MiB。若同时加入 A/B 和完整 staging，storage 只剩约 1.7 MiB，无法可靠承载会议录音与资源，因此产品决策是保留现有单 app/model/storage 资源格局，放弃设备端 OTA。
+- `main/main.c`/`main/CMakeLists.txt`：当前 `storage` 是 SPIFFS，会议录音、宠物素材和资源缓存共用；现有代码已记录 SPIFFS GC 在碎片化分区上可能持续很久。版本检查只能存储很小的 release metadata/提醒状态，不下载固件、不借用或清理会议存储。
+- `MaClawSrv/thirdparty_gateway.go`：当前 bearer token 解析到 tenant/user principal，但 token 本身不是设备身份；Hub 版本检查 endpoint 必须再绑定已配对的 `clientId + deviceId + profile/hw/layout + credential_generation`，以免跨设备泄漏错误 profile 的发布信息。
 
 ### 2.1 当前三硬件支持矩阵
 
@@ -58,20 +58,20 @@
 3. 输入、音频、屏幕、连接、电源等实现差异以及非公共物理增强全部封装在 HAL/板级适配中；Bread 公共业务能力不属于可选项。
 4. EchoEar-2ST 保留 360×360 圆屏安全区、现有布局、动画及 ST77916 QSPI 提交策略。
 5. Fangtang-4G 保留 240×240 小屏、单键、方糖视觉、Wi-Fi/ML307 双传输和电池/充电状态；这些差异由独立 profile、Renderer、Input、Connectivity 与 Power adapter 表达。
-6. 三种硬件发布相同的业务能力集合，其验收清单以 Bread Compact 已有及本计划纳入的目标能力为准：语音指令、离线唤醒词、文字/图片/音频回复、取消、会议录音与续传、配网配对、待机环境信息、闹钟、音量、指定时间休眠、硬件输入唤醒和可回滚的设备端 OTA。
+6. 三种硬件发布相同的业务能力集合，其验收清单以 Bread Compact 已有及本计划纳入的目标能力为准：语音指令、离线唤醒词、文字/图片/音频回复、取消、会议录音与续传、配网配对、待机环境信息、闹钟、音量、指定时间休眠、硬件输入唤醒，以及新版本检查、提醒和受校验刷机工具升级。
 7. 后续新增硬件时，只新增板型描述和 HAL/平台适配，不复制或修改业务流程。
 
 这里区分三类范围，防止把“基线对齐”和“本计划增强”混为一谈：
 
 - `BASELINE_EXISTING`：Phase 0 从 Bread 当前已验证行为冻结的功能，迁移全过程不得回退。
-- `BASELINE_PROMOTED`：本计划决定加入 AgentOS 公共基线、但当前 Bread 也需新增或补强的功能，例如正式 Sleep Schedule/硬件唤醒闭环、纳入公共契约后的 Alarm 增强以及从 GitHub Release 安全下载、A/B 切换和自动回滚的 OTA；必须由三硬件同一版本共同交付。
+- `BASELINE_PROMOTED`：本计划决定加入 AgentOS 公共基线、但当前 Bread 也需新增或补强的功能，例如正式 Sleep Schedule/硬件唤醒闭环、纳入公共契约后的 Alarm 增强，以及基于 GitHub Release/Hub 的新版本检查、提醒和受校验刷机工具升级；必须由三硬件同一版本共同交付。
 - `PHYSICAL_EXTENSION`：电池/充电 telemetry、蜂窝图标等不改变公共业务结果的物理增强，可以按 profile 呈现，但不得成为公共流程前置条件。
 
 第 6.1 节每个 `feature_id` 必须标记上述类别、baseline revision 和 owner；“以 Bread 为基线”不能被解释为 Bread 当前尚不存在的功能已经实现，也不能用来绕过三硬件同时交付 `BASELINE_PROMOTED` 的要求。
 
 本文把面向共享业务服务的 `Device API` 视为设备能力抽象的公开表面，把面向驱动实现的 `*_hal_ops_t` 视为板级 HAL 的内部 SPI（Service Provider Interface）。因此“业务只调用硬件抽象层”具体落实为：业务状态机不调用 ESP-IDF、文件系统、网络或板级函数；会议、指令录音等共享业务 Service 只调用通用 Device/Platform API，再由它们调用 HAL SPI 或 ESP-IDF 平台实现。`Device API` 不能出现“会议”“六秒指令”“闹钟”等具体业务用例，否则只是把业务耦合换了一个文件名。
 
-非目标：本次不重写会议上传算法、宠物视觉设计或 LCD/codec 底层驱动，也不让设备接受任意 URL、自行更新 bootloader/partition table 或在未设计数据双槽时 OTA 替换 model/storage。允许为 HAL 边界、安全修复、可靠休眠和 OTA 补充必要的版本协商、签名 release manifest、流式下载 port、能力投影、所有权与生命周期接入；如需新的 Hub durable queue 或普通业务消息类型，仍须独立协议评审。
+非目标：本次不重写会议上传算法、宠物视觉设计或 LCD/codec 底层驱动，不实现设备端固件下载、暂存、分区刷写、A/B 切换或自动回滚，也不让设备接受任意固件 URL。允许为 HAL 边界、安全修复、可靠休眠、版本检查和刷机工具补充必要的版本协商、签名 release manifest、能力投影、设备身份与生命周期接入；如需新的 Hub durable queue 或普通业务消息类型，仍须独立协议评审。
 
 ## 3. 强制架构原则
 
@@ -324,10 +324,10 @@ esp32s3-maclaw-client/main/
     provisioning_service.h
     gateway_service.c
     gateway_service.h
-    ota_service.c
-    ota_service.h
-    ota_release_repository.c
-    ota_release_repository.h
+    update_service.c
+    update_service.h
+    release_catalog.c
+    release_catalog.h
     tool_dispatcher.c
     tool_dispatcher.h
     diagnostic_service.c
@@ -352,12 +352,8 @@ esp32s3-maclaw-client/main/
     storage_port.h
     connectivity_api.h
     connectivity_port.h
-    ota_download_api.h
-    ota_download_port.h
-    ota_staging_api.h
-    ota_staging_port.h
-    ota_partition_api.h
-    ota_partition_port.h
+    update_catalog_api.h
+    update_catalog_port.h
     identity_api.h
     identity_port.h
     clock_api.h
@@ -370,9 +366,7 @@ esp32s3-maclaw-client/main/
     esp_idf/
       storage_esp_vfs.c
       connectivity_esp_wifi.c
-      ota_download_hub.c
-      ota_staging_partition.c
-      ota_partition_esp.c
+      update_catalog_hub.c
       identity_esp_chip.c
       clock_esp_time.c
       entropy_esp_random.c
@@ -849,7 +843,7 @@ ACTIVE
 
 Always-on wake word 是显式功耗约束：当前 MultiNet 任务持续读取 I2S/执行推理，持有“最多进入 MODEM_SLEEP/DISPLAY_OFF”的 power lease。进入 LIGHT/DEEP_SLEEP 前必须停止并 join 唤醒词任务、释放模型/I2S/PM lock；恢复后由 `wake_word_service` 在 Audio/Clock 已就绪时重新加载。若用户选择“始终语音唤醒”，Power Service 只能使用与实机验证相容的较浅状态；若 schedule/低电量选择深睡，UI 和 effective capability 必须明确休眠期间语音唤醒不可用。产品若要求 deep sleep 下语音唤醒，需要 ULP 可行性证明或外部低功耗语音芯片/唤醒电路，不能把当前 ESP-SR 任务标为支持。
 
-业务和 Service 通过有引用计数、owner、原因、deadline、最大允许 power state 的 `power_lease` 约束状态，例如：会议录音/上传、指令录音、音频播放、闹钟响铃、配网 portal、Storage commit、NVS migration、OTA（未来）、Display DMA 和量产测试。lease 不是简单“禁止睡眠”布尔值：网络轮询可能允许 DISPLAY_OFF/MODEM_SLEEP 但禁止 LIGHT/DEEP_SLEEP，会议录音只允许 ACTIVE。lease 必须超时可诊断且在 owner 停止时释放；不允许散落全局 bool 决定休眠。
+业务和 Service 通过有引用计数、owner、原因、deadline、最大允许 power state 的 `power_lease` 约束状态，例如：会议录音/上传、指令录音、音频播放、闹钟响铃、配网 portal、Storage commit、NVS migration、版本检查网络事务、Display DMA 和量产测试。lease 不是简单“禁止睡眠”布尔值：网络轮询可能允许 DISPLAY_OFF/MODEM_SLEEP 但禁止 LIGHT/DEEP_SLEEP，会议录音只允许 ACTIVE。lease 必须超时可诊断且在 owner 停止时释放；不允许散落全局 bool 决定休眠。
 
 #### 5.9.2 指定时间休眠与唤醒调度
 
@@ -975,11 +969,10 @@ Storage 契约至少提供：挂载/只读恢复、容量与保留空间查询�
 
 - `connectivity_service` 封装 Wi-Fi STA/AP、EAP、重连、配网 portal 生命周期和网络 readiness；板级驱动不得调用 HTTP、操作 Hub token 或决定业务状态。
 - `gateway_service` 负责 HTTPS、配对、握手、轮询、会议上传和协议重试；它依赖 Connectivity/Identity/Persistence，不属于 HAL。
-- `ota_service` 负责 release 查询、用户策略、安全点、下载/校验/A-B 切换、待确认启动和回滚；它只调用 Gateway/Connectivity、Storage/Persistence、Power、Boot 与 `ota_download_api`，不属于 HAL，也不识别 Wi-Fi/ML307 具体驱动。
-- OTA 采用固定链路 `GitHub Release → Hub release repository/cache → device`：Hub 根据 release ID 从 `RapidAI/MaClaw` GitHub Release 获取并验证发布清单和三 profile application-only asset，设备只访问自己已配对的 Hub。设备不直连 GitHub，不需感知 GitHub tag/asset URL，不受 GitHub 访问性、DNS/CA 差异、redirect 或企业出口策略直接影响。
-- Hub OTA 下载端点使用现有 device gateway bearer token 与 `clientId`/tenant/device binding 授权，只接受 `releaseId + assetId/profile`，不接受设备传入的任意 upstream URL。Hub 的 upstream GitHub credential（若私有 release 需要）不下发设备；下行使用 HTTPS、有界 Range/断点续传、`ETag`/release digest 固定、简单可预期的 redirect 策略和每设备限流。
-- Hub 缓存是可用性和带宽优化，不是信任根。Hub 在首次从 GitHub 获取时校验 immutable release manifest 的签名、asset 大小/SHA-256 和发布 channel，按 content digest 原子入库；并发请求共享单一 fetch，部分文件不对设备可见。设备在写入 inactive slot 时仍独立验证 manifest 签名、镜像 SHA-256、image header/secure version 与 profile compatibility，不因 Hub 已验证就跳过端到端校验。
-- Hub 缓存未命中时可受控回源 GitHub；GitHub 不可达且无完整缓存时返回明确可重试状态，不给设备回传 GitHub URL 绕过 Hub。Hub 采用按 digest 配额/LRU/pin 的缓存治理，正在发布/回滚窗口的 stable asset 不被淘汰；租户/用户不得上传或替换官方 firmware。
+- `update_service` 只负责 release metadata 查询、版本/兼容性比较、提醒策略和已读/稍后状态；它调用 Gateway/Connectivity、Persistence、Clock 与 `update_catalog_api`，不属于 HAL，也不识别 Wi-Fi/ML307 具体驱动。该 Service 不拥有 firmware bytes、partition、Flash writer 或重启权限。
+- 更新信息链路固定为 `GitHub Release → Hub release catalog → device metadata`：Hub 根据允许的 `RapidAI/MaClaw` Release 读取并验证签名 manifest，只向已配对设备返回适用 profile 的版本、channel、发布时间、重要级别、最低刷机工具版本、release notes 摘要及是否必须连接电脑升级。设备不直连 GitHub、不接收固件 URL、不下载固件。
+- Hub 版本检查 endpoint 复用 device gateway bearer，并绑定 tenant/client/device/profile/hw/layout/credential generation；返回的 artifact ID/digest 仅供提醒和后续桌面刷机工具选择，不构成设备写入授权。GitHub 不可达时可以返回仍在有效期内的已验证 catalog metadata；没有可信缓存时返回可重试状态。
+- 桌面刷机工具由用户主动运行并自行从 GitHub Release 下载完整 signed bundle；下载完成后先验证 manifest 签名、asset size/SHA-256、product/board/hw/layout/compat/flash size，再通过 USB/串口读取设备 identity 并要求用户确认，校验全部成功才开始刷写。Hub 不是固件数据中继，设备端也不存在隐藏安装 API。
 - `identity_service` 从芯片唯一标识或受保护量产身份派生稳定 device ID；克隆普通 NVS 不得克隆设备身份。boot session ID 使用 ESP 硬件随机源；operation ID 至少组合 boot session 与单调计数/随机 nonce，避免重启后复用。
 - 普通可改 NVS 中的诊断副本不作为安全身份根；量产签名 manifest、设备凭据、Secure Boot/Flash Encryption 等根信任分别管理，不能混为 board profile。
 - 网络重连和 Hub 重试使用有上限的指数退避与抖动，不允许 Wi-Fi event callback 紧循环重连或由 Renderer/board profile 发起网络动作。
@@ -1035,7 +1028,7 @@ Handshake 显式协商 protocol major/minor、最小兼容版本、capability de
 
 Capability Service 只发布不可变、带 `revision` 的完整快照；profile descriptor 启动后只读，health 更新由单写者事件流串行归并。一个 operation 在开始时绑定一次 effective capability revision，不允许运行中分别读取多个可变指针造成 TOCTOU。能力收缩后新操作立即拒绝；已开始操作按每项能力预先声明的 policy 完成、降级或取消，并在结果中携带起始/终止 revision。快照通过深拷贝或 refcount handle 获取，并按 API 契约成对 release；release 清空调用方对象且可幂等调用，不返回生命周期不明的内部裸指针。
 
-领域工具定义同样由 effective capabilities 投影：Alarm、Sleep Schedule、OTA 等 Service 各自提供版本化 tool descriptors 与 handler，Gateway 只聚合可用集合并校验 Hub 调用。OTA 最小工具集为 `ota.check`、`ota.status`、`ota.prepare`、`ota.install`、`ota.defer`、`ota.cancel`；`ota.install` 为高风险写操作，只接受 `releaseId`，不接受 URL，并需要设备所有者授权或本地确认。工具声明、执行可用性和恢复能力必须取交集；能力在握手后收缩时，已排队但未执行的写工具以明确失败结果结束，不能静默调用已停止 Service。工具结果使用 operation ID、tool call ID、idempotency key 与 boot session 建立审计关联，跨 deep sleep/重启的 replay 行为由每个领域 handler 显式声明。
+领域工具定义同样由 effective capabilities 投影：Alarm、Sleep Schedule、Update 等 Service 各自提供版本化 tool descriptors 与 handler，Gateway 只聚合可用集合并校验 Hub 调用。更新工具只允许 `update.check`、`update.status`、`update.remind_later`、`update.dismiss_version`；前三者只读或只改提醒偏好，`dismiss_version` 必须绑定具体 release ID。不得注册 `ota.install/prepare/cancel`、固件 URL、分区写入或远程重启工具。工具声明、执行可用性和恢复能力必须取交集；工具结果使用 operation ID、tool call ID、idempotency key 与 boot session 建立审计关联，跨 deep sleep/重启的 replay 行为由每个领域 handler 显式声明。
 
 ### 5.12 任务、锁、实时性与资源预算
 
@@ -1078,85 +1071,18 @@ Alarm Service 不得每秒轮询墙钟作为唯一调度机制。它维护排序
 
 DST 重复小时需要显式策略（只触发一次，按 alarm ID/目标 epoch 去重），DST 缺失小时需要显式策略（跳过或移动到下一个有效时刻）。当前接口以绝对 epoch 创建一次性闹钟时仍保存用户时区上下文用于显示，但不得在时区变化后偷偷改变绝对触发时刻；未来周期闹钟另行定义本地时间语义。
 
-### 5.14 分区、有线升级、Hub OTA 和用户数据保护
+### 5.14 16 MiB 分区、版本提醒、刷机工具升级与用户数据保护
 
-- 定义 `partition_layout_version`，并与 HAL API、profile、firmware release manifest 和 NVS schema 分别演进。
-- 当前仅有 `factory` app 分区，因此现有固件不具备 OTA；OTA 作为本计划 `BASELINE_PROMOTED` 必须新增 `otadata + ota_0 + ota_1`、bootloader rollback 与 application pending-verify 流程后才能发布 capability。
-- 烧录/升级清单明确保留或擦除 NVS、model、storage；默认不得擦除未上传会议录音。OTA v1 只更新 application partition，不从设备端重写 bootloader、partition table、model 或 storage。
-- storage 挂载失败时，只有确认完整分区为 factory-erased 才允许格式化；非空分区进入恢复/只读模式。
-- 固件升级和降级都验证 partition/NVS/model/storage 兼容；旧固件遇到新版 schema 时不得静默破坏数据。
-
-首次从现有单 `factory` layout 迁移到 A/B 必须通过受控有线整机烧录完成，因为运行中 application-only OTA 不应改写自己正在依赖的 partition table/bootloader。第十八轮的候选 layout 没有真正为“完整下载后再刷写”保留独立暂存区，若继续把暂存文件塞入共享 SPIFFS，会与会议录音/素材竞争并受到 GC/碎片影响，因此本轮将首选候选改为专用 raw staging partition。下列 16 MiB layout 仍仅作 Phase 0 容量审计输入：
-
-```text
-nvs       0x009000  0x006000
-phy_init  0x00F000  0x001000
-ota_0     0x010000  0x3A0000
-model     0x3B0000  0x300000
-storage   0x6B0000  0x1AE000
-staging   0x85E000  0x400000
-otadata   0xC5E000  0x002000
-ota_1     0xC60000  0x3A0000
-```
-
-该草案保持现有 app/model 起点，提供 4 MiB staging，足以容纳当前约 3.08 MiB application 和初步增长余量，但把 storage 从约 9.3 MiB 缩至约 1.7 MiB，极可能无法满足长会议录音和资源缓存，因此同样不等于已批准。Phase 0 必须以三 profile clean release app 最大值、批准的增长余量、最长离线会议录音、宠物资源、SPIFFS GC reserve、model 大小和用户数据保留要求运行容量求解；可选择扩大 flash、缩小/按需下载 model、使用外部存储或重新分配分区，但不能挤占 bootloader/partition table/NVS 安全边界。若最终仍使用共享文件系统暂存，必须采用预分配/专用 quota/原子 metadata 并证明最坏 GC 时延和碎片容量；默认首选 raw staging partition，下载器按 offset 写入并由独立 journal 记录已确认范围。若无法同时满足双 app 槽、完整暂存和用户数据保留，不得发布 OTA，也不得退化为边下载边刷写。
-
-GitHub workflow 必须对每个 profile 同时产生两类不可混用的 asset：
-
-- `MaClaw-ESP32S3-<Profile>-firmware.bin/.zip`：保留现有 `merge-bin` 整机图像，只用于首次 A/B 迁移、工装和有线恢复，固定写入 `0x0`。
-- `MaClaw-AgentOS-<Profile>-ota.bin`：从 profile 独立 clean build 的 application `.bin` 生成，只允许写 inactive `ota_*` slot。清单中的 `artifact_kind=application_ota`、profile/board/layout/compat/ESP target 不匹配时拒绝，不能依赖文件名区分。
-
-Workflow 以 tag push 生成 GitHub Release，三个 OTA asset 与一份不可变、canonical-serialized 且签名的 `maclaw-agentos-ota-manifest.json`同步发布到 `https://github.com/RapidAI/MaClaw/releases/download/<tag>/...`。但设备不构造该 URL：Hub `ota_release_repository` 根据 release channel/tag/asset name 发起受控 GitHub 请求，按 digest 缓存，再以稳定 Hub endpoint 向设备提供 manifest 和流。GitHub Release 是上游权威发布源，Hub 是设备唯一下载端点。
-
-Manifest 至少包含 `manifest_schema_version`、`release_id/tag/channel`、`version`、`published_at/not_before/expires_at`、`artifact_kind`、`board_id/hw_rev_range/profile_id/compat_id/layout_id`、`esp_target`、`app_size/sha256`、`secure_version/min_bootloader_version`、`min/max_data_schema`、`release_notes_digest`、`asset_id/github_asset_name`、`signing_key_id/signature_algorithm/signature`。签名输入使用带固定 domain separator（例如 `MaClaw-AgentOS-OTA-Manifest-v1\0`）的 canonical bytes，明确 UTF-8/NFC、字段顺序、整数格式、禁止 duplicate key/NaN/未知 critical field，防止与其他签名对象混淆。Hub 与设备使用同一 golden vectors 验证，设备只信任内置/可轮换发布公钥，不信任 Hub 本地管理员可写文件作为固件根。若生产启用 ESP-IDF signed app verification/Secure Boot，manifest 签名与 application image 签名是两层独立验证；未启用 Secure Boot 时必须明确剩余威胁，不能把 HTTPS+hash 描述为防物理篡改。
-
-Hub API 建议固定为：
-
-```text
-GET  /api/device-gateway/v1/ota/releases/latest?clientId=...&channel=stable
-GET  /api/device-gateway/v1/ota/releases/{releaseId}/manifest?clientId=...
-GET  /api/device-gateway/v1/ota/releases/{releaseId}/assets/{assetId}?clientId=...
-POST /api/device-gateway/v1/ota/releases/{releaseId}/events
-```
-
-所有 endpoint 需复用 device gateway bearer 认证，并将 token principal、`clientId`、稳定 `deviceId`、`credential_generation`、已绑定 profile/hw/layout 和 release eligibility 一起校验；query/path 中的 `clientId` 只是路由提示，不是授权依据。Manifest 响应短缓存；asset 支持严格单段 `Range`/`If-Range`、`Accept-Ranges: bytes`、准确 `Content-Length/Content-Range`、强 digest `ETag`，不使用弱 ETag、multipart Range 或 on-the-fly gzip 改变字节语义。非法 range 返回 `416` 与准确总长度；upstream/cache 未就绪返回可重试 `503 + Retry-After`，release revoked/不适用/身份错配使用稳定错误码并默认不泄漏其他 profile/release 是否存在。Hub 限制每设备并发、速率、Range 大小/次数和每 release 重试；审计只记录 release/device/result/digest，不记录 bearer token。
-
-`events` 端点使用 `event_id + ota_transaction_id + device_id + phase_seq` 幂等去重，允许事件乱序/重投但不允许终态倒退；请求体有界并定义 `downloaded/verified/flashing/booted/confirmed/rolled_back/failed`、reason、固件 digest 和 boot session。OTA 检查/下载/事件走独立 HTTPS 数据面，不依赖普通 Gateway 下行队列的 durability；Gateway tool 只编排用户操作。
-
-首版 Hub 必须先把 GitHub asset 完整下载到磁盘/对象存储临时对象，验证 manifest 签名、asset size/hash 后原子发布，校验完成前不向任何设备提供字节或 Range；不实现边回源边服务。多实例部署使用共享对象存储和分布式 single-flight/发布锁，避免每实例重复回源或看到不同 partial object，并处理 GitHub API rate limit、Release asset redirect、超时和上游撤销。缓存恢复时必须重新核对 metadata/digest；object-store write 完成但 metadata 未提交、反之亦然，都不能形成可服务 release。
-
-设备端下载和刷写必须是两个隔离阶段。`ota_download_port` 使用小块、有界 buffer 从 Hub 流式读取，但只写入由 Storage Service 管理的 OTA 暂存对象，下载阶段不得调用 `esp_ota_begin/write/end()`，也不得把整包放进 PSRAM。下载完成并关闭网络流后，设备对完整暂存对象验证 manifest 签名、asset size、SHA-256、application image header、profile/board/hw/layout/compat/ESP target、secure version、bootloader/data-schema 窗口和 release 撤销状态；任一失败即删除/隔离暂存对象，inactive 槽保持不变。
-
-只有暂存对象验证成功且 lifecycle safe point、电源、温度和空间门禁再次通过，`ota_partition_port` 才擦除并顺序刷写 inactive `ota_*` 槽。进入首个 partition erase 前是最后可取消点；之后 `OTA_CANCEL` 只记录“停止后续切换”请求，刷写任务必须完成当前 Flash 原子步骤并进入确定的 `FAILED_NOT_BOOTABLE` 或验证完成状态，不能任意 task kill。刷写阶段禁止 deep sleep/DFS 不安全频点、并发 SPIFFS 写、core dump 写和其他 flash mutation，要求稳定外部供电或经实测的电量/电压/温度余量，并为 WDT/cache-off/internal-stack/IRAM-safe 路径提供预算。刷写过程中同时计算最终 application image digest，完成后从 flash 回读 image header/segment table，并对有效 image 长度计算 SHA-256 与 manifest 对比；只有 `esp_ota_end()`、回读校验、撤销状态最后复核和 boot partition 设置全部成功，才标记为 bootable。下载校验成功不等于刷写成功，刷写失败不得删除已确认旧槽或改变当前 boot target。
-
-Wi-Fi 和 ML307 可分别实现 `ota_download_port`，但对上层提供相同的 `open/read/resume/cancel/close`、TLS、Range、进度、deadline 和错误契约；它们不拥有 OTA partition。ML307 的 TLS hostname/CA、Range 语义和长时流式稳定性未通过 HIL 前，Fangtang 仅允许 Wi-Fi OTA；这是传输健康限制，不是 OTA 业务功能缺失。
-
-OTA 统一状态机为：
-
-```text
-IDLE → CHECKING → AVAILABLE → DOWNLOADING_TO_STAGING
-     → VERIFYING_STAGING → VERIFIED_READY → WAITING_SAFE_POINT
-     → FLASHING_INACTIVE → VERIFYING_FLASH → STAGED_BOOTABLE
-     → REBOOTING → PENDING_VERIFY → CONFIRMED
-DOWNLOADING_TO_STAGING/VERIFYING_STAGING/FLASHING_INACTIVE/VERIFYING_FLASH → FAILED
-PENDING_VERIFY → ROLLED_BACK
-```
-
-`release_id + manifest_digest + asset_digest` 是事务身份。断网重试只能在 Hub 仍提供同一 digest/ETag 时从暂存对象的已确认 offset 续传；服务端变更、`200`/`206` 与 `Content-Range` 不一致、长度超暂存区/目标槽或 hash 不匹配时废弃暂存 transaction，且不得触碰 inactive slot。设备重启后只有 journal、暂存长度、分块校验状态和 digest identity 一致才能续传；已进入 `FLASHING_INACTIVE` 的异常重启不得把该槽设为 bootable，只能从已验证暂存对象重新开始完整刷写或安全失败。
-
-Hub 的 release policy 必须支持 channel/rollout cohort/device pin、暂停、撤销和 kill switch；cohort 使用稳定设备 ID 的 keyed hash 分桶而不是可被设备伪造的随机百分比，并记录 policy revision。设备在 `VERIFYING_STAGING`、`WAITING_SAFE_POINT` 及设置 boot partition 前都要重新查询/验证撤销状态；release 被撤销后禁止新刷写，已下载暂存对象进入隔离并按 retention 清理。若设备在最后复核后离线，只有 eligibility proof 仍在签名的短有效窗口内才允许切槽；超窗延后，不因时间不可信放宽。已经进入 `PENDING_VERIFY` 的设备优先由本地 boot 安全规则完成确认或回滚，同时在恢复联网后上报撤销命中，不能因 Hub 暂时不可达卡死启动。`not_before/expires_at` 不能在设备时间不可信时单独作为放行依据，必须结合签名、monotonic `secure_version`、已缓存撤销 epoch/列表和 Hub 颁发且绑定 device/release/policy revision 的 eligibility proof 执行反重放。
-
-Secure Boot、Flash Encryption 与 anti-rollback 采用分级发布门禁：开发/实验 profile 可仅使用 manifest+application signed verification 并显著声明不抵抗物理攻击；量产 profile 在密钥烧录、备份、轮换、吊销、返修/RMA 和不可逆 eFuse 演练完成前不得启用 eFuse。启用后 downgrade/rollback 必须同时满足 bootloader secure version 和数据 schema 窗口；不能为了 OTA 在现场远程改 bootloader 或 partition table。
-
-用户操作模式包含 `MANUAL`、`NOTIFY_CONFIRM`（默认）与 `SCHEDULED_AUTO`。Stable channel 默认，可允许 Wi-Fi 后台下载；4G 默认禁止自动下载，只能由用户/设备所有者显式允许。自动安装默认关闭；有电池 telemetry 时要求充电中或电量≥50%，无 battery capability 时依赖 profile 的稳定外部供电信号/策略；支持维护时间窗、最大 defer 次数和紧急版本提示，但即使是安全强制升级也不得在未到 safe point 时断开闹钟/会议/写入。
-
-三硬件使用同一 OTA Scene/intent：Bread 音量键选择、激活键确认；EchoEar 圆屏触控选择“安装/稍后”；Fangtang 单击切换、长按确认。三者都映射为 `OTA_ACCEPT/OTA_DEFER/OTA_CANCEL`，并在显示不可用时保留经认证的正式客户端/本地反馈路径。远端安装命令是高风险操作，只能携带 Hub 颁发的 `releaseId`，且需设备所有者授权或设备本地确认；不接受 URL。
-
-现阶段有线烧录也按正式升级事务治理，而不是把“无 OTA”当作无升级风险：烧录工具在写入前读取设备 identity 的 `product_id/board_id/hw_rev/layout_id/compat_id/flash_size` 和当前 firmware/ELF digest，验证目标 artifact 的签名 manifest、ESP target、secure-version/anti-rollback（若启用）、partition table 与保留分区策略。身份查询失败、manifest 缺失或 compat 不匹配默认拒绝写入，不允许仅凭串口号/人工文件名继续。
-
-烧录完成后的成功条件分层：`BOOT_OK` 只证明本地 Boot Coordinator 达到稳定确认点，`SERVICE_READY` 才证明所需共享服务已越过 readiness barrier；二者均携带本次 flash transaction ID、boot session 和实际 firmware digest，工具验证一致后才标记成功。超时或错误时保留旧用户数据与完整日志，不循环自动重刷。USB Serial/JTAG identity/diagnostic port 属于 Platform Service，具有协议 body/line 上限、nonce correlation、Task Registry stop/join、release build 命令 allowlist 和脱敏输出；不能提供写 secret、任意 NVS、内存 dump 或绕过恢复出厂确认的隐藏命令。
-
-Bootloader 将新槽标记 pending，新 app 必须在有界 deadline 内通过本地关键 readiness/self-test、读取持久 schema 且恢复 Alarm/Meeting 必要状态后调用 confirm；不以“进了 `app_main`”或 Hub 在线作为成功条件。在 deadline 前 crash/WDT/brownout/自检失败必须回滚；连续回滚达到预算后保持旧槽并进入可诊断状态，禁止 OTA boot loop。新固件在 confirm 前不提交旧固件不可读的不可逆 schema；回滚固件不得破坏已迁移用户数据。
+- 定义 `partition_layout_version`，并与 HAL API、profile、firmware release manifest 和 NVS schema 分别演进。固定 16 MiB 产品保留单 `factory` app、model 与 meeting/resource storage；本计划不新增 `otadata/ota_0/ota_1/staging`，也不缩减 storage 为设备端 OTA 让路。
+- 设备版本检查只保存 `current_version`、`latest_seen_release_id`、`last_check_at`、`remind_after`、`dismissed_release_id` 和有界 release notes 摘要；不得下载或缓存 firmware bytes。检查失败不影响本地业务，退避重试也不能阻止休眠或闹钟。
+- Hub API 固定为只读 metadata，例如 `GET /api/device-gateway/v1/updates/latest?clientId=...&channel=stable`。响应至少包含 release ID/version/channel/published_at/severity、profile/hw/layout/compat、bundle digest、minimum flasher version 和 release notes 摘要；不返回设备可下载的 asset URL。认证必须绑定真实设备与 credential generation，错误 profile/布局统一返回不适用。
+- 版本比较使用显式协议字段和兼容矩阵，不依赖字符串字典序；相同 release 不重复打扰。默认启动后低优先级检查一次、随后最多每 24 小时一次；支持 Hub 下发的有界 `max_age`，但设备设有最小检查间隔和抖动，避免重连风暴。Critical 只提高提醒显著性和重复周期，不能远程触发下载、刷写或重启。
+- 三硬件共享 `UPDATE_AVAILABLE` Scene 和 `UPDATE_REMIND_LATER/UPDATE_DISMISS_VERSION` intent：显示当前/最新版本、需要电脑和 USB、官方刷机工具入口提示；EchoEar 保留圆屏布局，Bread/Fangtang 用各自 Renderer。设备不显示“立即安装”“下载中”“刷写中”或百分比进度。
+- GitHub workflow 对三 profile clean build 后生成 signed flasher bundle：用于普通升级的 bootloader/partition table/application/model 等独立 segment、每段 offset/length/SHA-256/write policy，以及仅供显式恢复出厂/工装使用的 merged raw image；同时包含 manifest、SBOM/provenance、release notes 和刷机工具最低版本。Manifest 至少绑定 product/board/hw revision/profile/layout/compat/flash size、firmware/data schema、每段资产与写区 allowlist、必须保留的 NVS/storage 范围、签名 key ID。发布顺序为 draft→上传全量→CI 回读 size/digest/allowlist→publish；已发布 asset 不可覆盖，修复只能创建新 release。
+- 刷机工具必须从允许的 `RapidAI/MaClaw` GitHub Release 获取 bundle，并在写入前完成签名、size/hash、ESP target 与设备 identity/compat/layout/flash size 校验。用户选择错误硬件、identity 查询失败、bundle 不完整或签名错误时 fail closed；不能只靠文件名、串口号或手工板型选择继续。
+- 刷机工具默认选择“保留用户数据升级”：按 manifest 逐 segment/offset 写入且只允许触达批准的 bootloader/partition table/application/model 区域，写前后核对 NVS/storage protected ranges，禁止把 padded merged raw image 从 `0x0` 整包写入。若 layout 或 data schema 变化无法原位兼容，必须在开始前明确展示受影响数据、要求用户导出/确认，并提供独立“恢复出厂刷机”；绝不能把恢复出厂作为普通更新默认项。
+- 开始刷写前，工具要求稳定 USB 与供电，设备进入受控 maintenance/bootloader 模式；如固件仍可通信，先查询 active Meeting/Alarm/Persistence 状态并要求用户安全结束，写入开始后提示禁止断电。刷写完成后回读关键分区 digest，重启并核对 transaction ID、实际 firmware digest、`BOOT_OK` 与 `SERVICE_READY`；失败时停止自动重试，保留诊断并引导使用同一 signed bundle 恢复。
+- 由于单 app 分区没有自动回滚，发布门禁必须更严格：三硬件 clean build/HIL、升级与降级兼容、断电故障注入、保留 NVS/storage、错误板型拒绝和刷后回读全部通过后才能发布 stable。固件 schema 迁移继续使用 expand/contract 与 reader/writer window，至少保留上一稳定刷机版本的安全回退路径。
 
 ### 5.15 可观测性和诊断契约
 
@@ -1170,6 +1096,7 @@ Bootloader 将新槽标记 pending，新 app 必须在有界 deadline 内通过�
 - Resource Manager 中仍存活资源和借用者列表。
 - Event envelope 的 source/sequence/boot session/operation/negotiation epoch，以及按类型的排队、合并、过期、拒绝和 reservation overflow。
 - 当前 firmware identity、build/partition/profile/HAL/NVS/protocol/tool-schema 版本和兼容判定结果；不记录 secret、完整 payload 或可复用 nonce。
+- 更新检查只记录有界结果、提醒原因、版本比较结果、延迟和重试数；release/device 等高基数标识只进入受控审计/trace，不作 metrics label。不得记录或上报 GitHub asset URL、用户本地路径和刷机工具凭据。
 
 日志不能输出 Wi-Fi 密码、gateway token、完整录音数据或其他凭据。诊断开关关闭时，计数器仍保持低成本可读取。
 
@@ -1200,7 +1127,7 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 - 日志、crash dump、诊断页面、量产报告和事件 trace 必须脱敏，禁止记录密码、token、完整音频和私有网络配置。
 - 产品凭据只能由 Persistence/Security Service 访问，板级 HAL 不读取 gateway token 或 Wi-Fi 密码。
 - board manifest/profile 版本校验不能仅依赖可任意修改的普通配置；量产环境优先使用签名 manifest、受保护 NVS 或 eFuse 标识。
-- 若启用 flash encryption、secure boot 或 OTA 签名，profile/build manifest 必须声明并由发布流水线校验；本计划不在未设计密钥生命周期前擅自开启。
+- 若启用 Flash Encryption、Secure Boot 或 release/bundle 签名，profile/build manifest 必须声明并由发布流水线及刷机工具校验；本计划不在未设计密钥生命周期前擅自开启。
 - Release 固件默认只允许规范化 `https://` Hub origin；解析必须拒绝 userinfo、fragment、空 host、控制字符、非预期 path/query 和歧义端口，并使用解析后的 scheme/host/port 做同源比较，禁止字符串拼接绕过。HTTP 仅允许编译隔离的本地开发模式，UI 必须显著标识且不能携带生产 token。
 - TLS 使用受控 CA bundle/可更新信任锚、hostname/SNI 校验和可信时间策略；证书错误不得自动降级 HTTP 或跳过校验。企业 EAP 的 `ca_mode=none` 在 release 中禁用；私有 CA 应作为受保护、可审计的配置对象导入并绑定 server domain。
 - TLS bootstrap 必须使用 Clock Service 的 trust state，并验证证书 `notBefore/notAfter`、构建时间下界、RTC 漂移和异常跳变；任何网络端点都不能在其自身身份尚未验证时提供“可信时间”来证明自己。恢复模式也不发送生产 token，不接受任意新 CA 或关闭时间校验。
@@ -1228,8 +1155,8 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 | `ambient.status` | 时间、日期、星期、地点、天气、Wi-Fi/Hub、宠物状态/素材 | 圆屏完整呈现 | 小屏分页/紧凑呈现；另可显示蜂窝/电池增强 | 必选 scene 字段、刷新和前景保护一致 |
 | `alarm.local` | create/list/clear、离线调度、scheduled 标记、响铃、解除、重启恢复 | 圆屏动画/触屏解除 | 小屏页面/单键解除；ML307 离线不影响本地调度 | tool、NVS、时间、终态和抢占恢复一致 |
 | `sleep.schedule` | 指定时间/idle 休眠、alarm deadline、timer/硬件唤醒 | 按圆屏/BOOT/touch 实测 wake matrix 实现相同用户功能 | 按单键/timer 与 ML307 电源恢复实现相同用户功能 | schedule、阻塞规则、wake 后业务状态一致 |
-| `ota.firmware` | 通过已配对 Hub 查询/下载 GitHub Release 固件，签名校验、A/B 安装、本地确认和自动回滚 | 同一 OTA Service/Hub 协议；圆屏触控确认 | 同一 OTA Service/Hub 协议；单键确认；ML307 经验证后可作下载 transport | release/manifest/asset digest、状态机、权限、断点续传、safe point、pending-confirm/回滚一致 |
-| `lifecycle.recovery` | 有线升级、OTA、计划重启、崩溃、恢复出厂与 durable operation 协调 | 相同 Service/schema 契约 | 相同 Service/schema 契约，另恢复 ML307 observed state | 数据保留/清理、幂等、pending-confirm 和 reconciliation 一致 |
+| `update.notification` | 从已配对 Hub 检查适用 GitHub Release metadata，显示新版本/稍后/已忽略及“连接电脑使用官方刷机工具” | 同一 Update Service；圆屏触控管理提醒 | 同一 Update Service；单键管理提醒；Wi-Fi/ML307 仅传 metadata | current/latest/compat、提醒状态、错误和刷新频率一致；设备均不下载或安装固件 |
+| `lifecycle.recovery` | 刷机工具升级、计划重启、崩溃、恢复出厂与 durable operation 协调 | 相同 Service/schema 契约 | 相同 Service/schema 契约，另恢复 ML307 observed state | 数据保留/清理、幂等、刷机后 reconciliation 一致 |
 
 功能等价判定规则：
 
@@ -1259,7 +1186,7 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 | 回复翻页 | 上一页/下一页或设备自动翻页 | 音量上下键 | 自动翻页；后续可映射滑动 | 5 行小屏自动翻页；不占用单键业务手势 |
 | 普通界面音量 | 调整输出音量 | 音量上下键 | 无实体音量键，走远端/触控菜单设置 | 无实体音量键，走远端/菜单设置；实施中补齐当前 board port 的音量实现，正式发布不得为 false |
 | 网络传输选择 | 切换 Connectivity policy，不改变 Command/Meeting 业务语义 | 固定 Wi-Fi | 固定 Wi-Fi | 启动窗口单键切换 Wi-Fi/ML307，持久化选择并显示当前 transport |
-| OTA 安装确认 | 提交同一 `OTA_ACCEPT/DEFER/CANCEL` intent | 音量键选择，激活键确认 | 圆屏触控“安装/稍后/取消” | 单击切换，长按确认 |
+| 新版本提醒 | 提交同一 `UPDATE_REMIND_LATER/DISMISS_VERSION` intent | 音量键选择，激活键确认 | 圆屏触控“知道了/稍后提醒” | 单击切换，长按确认；不提供安装入口 |
 
 上表是行为契约。不得在 `main.c` 中为板型重新实现分支；映射差异由 Input Service 的板型映射数据或 HAL 标准事件表达。
 
@@ -1315,10 +1242,10 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 42. 盘点每个可重启 Service 的 authoritative/durable/ephemeral state、subscription/timer、desired/observed probe 和 reconciliation 规则，禁止旧 runtime context 直接复活。
 43. 冻结 DFS/PM 各频点下 CPU/APB/I2S/LCD/I2C/UART/timer 的 clock-domain 与 lock 基线，并定义 NORMAL/PRESSURE/CRITICAL 资源压力阈值和 emergency reserve。
 44. 登记 HIL fixture、仪器校准、环境、重复样本、容差、golden 审批和 flaky quarantine 基线，旧证据缺元数据时不得直接沿用 release 结论。
-45. 对现有 GitHub workflow 做 OTA 产物审计：冻结 `RapidAI/MaClaw` release tag/channel、三 profile merged/full-flash asset 名，并增定 application-only OTA asset/manifest/signature 命名契约；明确 merged `0x0` image 禁止写入 OTA slot。
-46. 运行三 profile 隔离 clean release build，记录 application `.bin`、槽位余量和增长趋势；审计单槽→A/B 后 storage 缩容对会议录音/续传/宠物资源的影响，未通过容量门禁不冻结 partition layout。
-47. 冻结 Hub OTA threat model 和 API：GitHub 回源信任、manifest 签名/密钥轮换、content-addressed cache、device bearer/client binding、Range/ETag、限流/配额、并发 single-flight、缓存污染/淘汰和审计契约。
-48. 冻结 OTA 产品策略：`MANUAL/NOTIFY_CONFIRM/SCHEDULED_AUTO`、stable/beta channel、Wi-Fi/4G 自动下载默认、充电/电量门禁、维护窗口、defer/cancel/所有者授权、三硬件本地确认和紧急版本边界。
+45. 对现有 GitHub workflow 做发布产物审计：冻结 `RapidAI/MaClaw` release tag/channel、三 profile segmented upgrade bundle、仅恢复用 merged raw image、signed manifest、SBOM/provenance 和 release notes 命名契约。
+46. 运行三 profile 隔离 clean release build，记录 application/merged image 大小、单 factory 槽增长余量、model 和 storage 预算；冻结“不新增 A/B/staging、不牺牲会议存储”的 16 MiB layout 决策。
+47. 冻结 Hub Update Catalog threat model/API：GitHub release/manifest 信任、签名/密钥轮换、device/client/profile binding、metadata cache TTL、检查限流、隐私和审计契约；设备响应不得包含 firmware URL。
+48. 冻结版本提醒策略：stable/beta channel、启动/24 小时检查频率、critical 提醒强度、稍后/忽略当前版本、圆屏/矩形屏交互和“使用官方刷机工具”文案；明确没有远程安装入口。
 
 退出条件：三硬件基准、Bread 功能母版、对齐差距、事件 trace、数据版本和可量化预算齐全，所有后续回归都有可比较对象。
 
@@ -1435,9 +1362,9 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 
 退出条件：三个 profile 不再复制 capture/playback/唤醒词状态机；会议和指令录音只复用通用音频 API，不出现在 Device/HAL 接口名中；三硬件音频与音量功能通过实机验证。
 
-### Phase 7：平台边界、Hub OTA、电源调度、能力投影和构建依赖收口
+### Phase 7：平台边界、版本检查/刷机工具、电源调度、能力投影和构建依赖收口
 
-该阶段跨度最大，必须拆成可独立构建、可独立回滚的 7A-a/7A-b/7B/7C 里程碑；禁止把网络、持久化、OTA、电源和协议一次性落在同一提交后才开始实机验证。
+该阶段跨度最大，必须拆成可独立构建、可独立回滚的 7A-a/7A-b/7B/7C 里程碑；禁止把网络、持久化、版本检查、刷机工具、电源和协议一次性落在同一提交后才开始实机验证。
 
 #### Phase 7A-a：平台数据边界与构建收口
 
@@ -1465,20 +1392,20 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 20. 将量产校准与用户配置分离，补齐 provenance、board/hw/device-channel 绑定、完整性、双缓冲提交和上一 revision 回滚。
 21. 为 NVS、Storage、credential 和 calibration 分别实现 `DISCOVERED → STAGED → VALIDATED → COMMITTED → CLEANUP_PENDING` 迁移 journal、expand/contract version window、空间/低电量门禁和断电恢复。
 22. 让烧录/升级工具校验 reader/writer 兼容窗口与不可逆 migration point；旧固件无法安全读取新数据时关闭回滚承诺或先提供兼容 reader。
-23. 在 GitHub workflow 中为三 profile 输出 application-only OTA asset、签名 manifest、SBOM/provenance 和 size/digest/layout 证据；保留 merged full-flash asset，但通过 `artifact_kind` 与 CI 负向测试防止混用。
-#### Phase 7A-b：Hub OTA 发布链、设备暂存校验与 A/B 刷写
+23. 在 GitHub workflow 中为三 profile 输出 signed segmented flasher bundle、manifest、SBOM/provenance、release notes 和 size/digest/layout/protected-range 证据；merged raw image 仅标记为恢复出厂/工装资产，不再生成 application-only OTA asset。
+#### Phase 7A-b：Hub Update Catalog、统一提醒与受校验刷机工具
 
-24. 实现 Hub `ota_release_repository/cache`，只从允许的 `RapidAI/MaClaw` GitHub Release/tag/channel 回源，完整下载到磁盘/对象存储、验证签名和 digest 后原子入库；校验完成前不对设备可见，并提供经 device gateway 认证的 latest/manifest/range-download/event API。
-25. 实现 OTA 专用设备身份/授权 binding、稳定 API error/retry 契约、幂等 events、独立数据面和审计；query `clientId` 不作为授权依据，credential generation 变化立即使旧下载权限失效。
-26. 实现 Hub channel/cohort/device pin、暂停/撤销/kill switch、签名 eligibility proof、共享缓存/分布式 single-flight 和 GitHub rate-limit/redirect 故障策略；OTA 下载不依赖普通消息队列 durability，Gateway tool 只负责操作编排。
-27. 实现通用 `ota_download_api`、raw staging port/journal 和 Wi-Fi/ML307 port 的小块流式读取、Range 续传、强 ETag/digest 锁定、cancel/deadline 和 TLS 契约；下载阶段只写暂存区，禁止调用 OTA partition API，未验证 ML307 TLS/Range 前仅开放 Wi-Fi transport。
-28. 对完整暂存对象执行 domain-separated manifest 签名、application image 签名（按安全级别）、size/hash、image/profile/layout/compat/secure-version/schema/revocation 校验；只有全部通过才允许取得 flash lease。暂存容量不足、会议数据不可安全腾挪或 staging/storage 不健康时延后 OTA，不删除用户数据，也不退化为边下边刷。
-29. 实现 A/B partition、已校验暂存对象到 inactive 槽的刷写、不可取消点、Flash 全局写仲裁、供电/温度/电量门禁、flash 回读 digest、bootloader rollback、pending-verify/local-confirm 和断电恢复；将 OTA Service 接入 Power lease、Storage/Persistence、Boot Coordinator 与 lifecycle safe point，不以 Hub 在线作为新固件确认条件。
-30. 实现共享 OTA Scene/intent/tool，完成 Bread/EchoEar/Fangtang 确认映射、所有者授权、维护窗口、defer/cancel 与下载/校验/刷写/回滚反馈；进入 erase 后 UI 将“取消”改为“正在安全完成，禁止断电”，不能谎报可立即中止。
+24. 实现 Hub `release_catalog`，只处理允许的 `RapidAI/MaClaw` GitHub Release/tag/channel 和已验证 signed manifest；对设备仅提供经 device gateway 认证、按 profile/hw/layout 过滤的 latest metadata API，不代理固件字节。
+25. 实现 Update Catalog 的 tenant/client/device/profile/credential-generation binding、稳定错误/retry、metadata cache TTL、检查限流和审计；query `clientId` 不作为授权依据。
+26. 实现共享 Update Service/Scene/intent/tool：`update.check/status/remind_later/dismiss_version`，完成 Bread/EchoEar/Fangtang 的提醒映射、相同版本去重、critical 重复提醒和离线/Hub 不可达降级；禁止 `ota.install`、URL、下载和重启入口。
+27. 实现官方刷机工具从 GitHub Release 下载完整 bundle，验证 manifest signature、asset size/hash、device identity/profile/hw/layout/compat/flash size 和 minimum flasher version；错板、错布局、缺件、签名错误全部在写入前拒绝。
+28. 实现“保留用户数据升级”和显式“恢复出厂刷机”两种独立模式；默认不得擦除 NVS/storage/未上传会议数据，layout/schema 不兼容时先导出/提示并 fail closed。
+29. 实现刷机 maintenance 流程、稳定 USB/供电检查、开始写入后的禁止断电提示、关键区域回读 digest、重启后的 transaction/firmware digest/`BOOT_OK`/`SERVICE_READY` 校验和失败恢复指引。
+30. 为单 app 无自动回滚冻结更严格的 stable 发布门禁：三硬件升级/降级矩阵、断电注入、错板拒绝、用户数据保留、刷后回读和上一稳定 signed bundle 恢复演练全部通过。
 
 7A-a 退出条件：板级显示/音频驱动不持久化产品状态；NVS 初始化失败不会自动清除用户数据；Storage/Connectivity/Gateway/Identity/Provisioning 已有可停止生命周期；量产配网不通过开放 AP 明文提交 secret；release 只接受经严格校验的 HTTPS Hub；Bread 构建不再无条件依赖 EchoEar 控制器组件。
 
-7A-b 退出条件：GitHub 只是 Hub 受控回源，设备不直连 GitHub；Hub 和设备均完成“完整下载后校验”，设备验证完成前不写 inactive 槽，刷写后完成 flash 回读校验；A/B/pending-confirm/回滚、设备身份绑定、签名域、撤销/eligibility、Flash 写仲裁和三 profile OTA asset/专用暂存容量门禁通过；OTA Service、Hub repository 与设备 port 均有可停止生命周期和可诊断失败结果。
+7A-b 退出条件：三硬件只能从已配对 Hub 获得相同语义的可信版本 metadata，不接收固件 URL、不下载、不刷写；官方刷机工具从 GitHub 获取并完整校验正确 bundle，默认保留用户数据，写后回读并验证设备 readiness；错误 profile/layout/signature、断电和恢复流程通过门禁。
 
 #### Phase 7B：Power、Wake、Clock 与调度
 
@@ -1507,7 +1434,7 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 2. 明确 last-seen 超时即离线的现状；不把 best-effort presence 通知设为入睡前置条件，也不因休眠清除凭据。
 3. 定义下行消息 durability/TTL/容量/ACK/跨 boot 语义；latest-wins 状态在 handshake 重建，关键 tool/command 在 Hub 具备 durable queue 前不得宣称离线必达。
 4. deep sleep 新 session 隔离旧 generation、cursor、pending reply/tool result；light sleep 保持 session 并通过 resume barrier 恢复。
-5. 将设备工具改为 Gateway 通用 dispatcher + 领域注册表，新增 capability-gated 的 Sleep Schedule 与 OTA 工具，统一 schema、idempotency、deadline、所有者/本地确认和风险策略。
+5. 将设备工具改为 Gateway 通用 dispatcher + 领域注册表，新增 capability-gated 的 Sleep Schedule 与只读/提醒型 Update 工具，统一 schema、idempotency、deadline 和风险策略；静态禁止设备端安装工具。
 6. 从 `board_capabilities + firmware_features + device_health + Hub accepted` 生成设备能力与工具集合，完成健康收缩和省略 `bootSessionId` 的运行时 refresh handshake；三款正式 profile 的 Bread 公共业务 capability/tool 静态集合必须相同，差异只允许出现在硬件 descriptor、实现参数、临时运行健康及非公共物理增强中。
 7. 将 capability 输出改为 immutable/versioned snapshot，operation 绑定 revision，并定义运行中能力收缩时的完成/降级/取消策略。
 8. 固化 effective/Hub accepted/negotiated 三层能力、`negotiation_epoch` 与 protocol/tool/media descriptor 版本协商；换 Hub、重连和重新认证不得复用旧授权快照。
@@ -1546,12 +1473,12 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 4. 完成安全审查：日志脱敏、凭据边界、量产模式退出、调试入口和发布配置。
 5. 更新 README、构建命令、迁移/回滚手册、架构检查脚本和目录说明。
 6. 更新有线烧录工具：写入前校验签名 artifact manifest 与设备 identity/compat/layout，写后用 flash transaction ID、boot session、实际 digest 和分层 readiness 确认成功。
-7. 输出版本兼容矩阵、发布证据包和残余风险清单；同时说明有线 full-flash 恢复边界与 Hub OTA application-only A/B 回滚边界。
+7. 输出版本兼容矩阵、发布证据包和残余风险清单；明确单 app 刷机无自动回滚、默认数据保留、恢复 bundle 和用户操作边界。
 8. 生成每 profile SBOM、许可证/CVE、依赖 hash、toolchain/sdkconfig/partition/resource provenance 和 clean-build 可复现报告，签名后纳入 artifact manifest。
 9. 删除 facade 前证明迁移台账所有调用点为零、shadow 差分达标、旧任务/全局状态/NVS writer 不再存活，并完成三硬件回退窗口关闭评审。
 10. 生成 requirement→implementation→test→evidence 追踪矩阵和每 profile evidence bundle；校验证据 digest 对应本次 release artifact，清零缺失证据和过期 waiver。
 11. 对 reset/bootloader/WDT/brownout/deep-sleep/下载模式电气安全、DFS 全频点和资源压力降载运行三硬件 HIL，并归档原始签名证据。
-12. 完成 GitHub Release → Hub 回源/缓存 → 三设备流式下载 → inactive slot → pending verify/confirm/rollback 的端到端发布演练，并验证 GitHub 不可达、Hub 缓存命中/未命中、断网续传、低电量、安全点及回滚。
+12. 完成 GitHub Release→Hub metadata catalog→三设备版本提醒，以及 GitHub Release→官方刷机工具→USB 设备的端到端演练；验证设备无固件下载/写入路径、错板拒绝、断电失败、数据保留和上一稳定 bundle 恢复。
 
 退出条件：三硬件发布门禁和 Bread 功能对齐矩阵全部通过；新增板型无需修改 `app/`、`domain/` 或已有共享 `services/`；只需实现 profile、manifest、必要 HAL 与平台 port 即可完成编译和业务测试。
 
@@ -1585,18 +1512,15 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 22. Fake Clock 测试：SNTP 未同步、时间回拨、时区/DST、计数器和 revision 回绕。
 23. UTF-8 合法性、安全截断、缺字 fallback、动态字形不足和双屏安全行宽测试。
 24. partition layout/NVS/storage 的升级、降级、断电和非空录音保护测试。
-24A. OTA 产物混用负向测试：merged full-flash image、错 profile/layout/compat/ESP target、超槽 app、错 secure version、篡改 manifest/signature/size/hash 全部在写入或启动前被拒绝。
-24B. Hub OTA repository/cache 测试：GitHub allowlist/tag/channel、domain-separated canonical 签名 golden vectors、single-flight、metadata/object 原子 publish、部分文件隔离、digest 命中、LRU/pin/配额、进程/集群断电恢复、upstream 404/429/5xx/redirect/timeout 与缓存污染测试。
-24C. Hub OTA 授权/HTTP 测试：缺失/错误 bearer、跨 tenant/client/device/profile/credential-generation、伪造 query `clientId`、任意 URL 注入、release 越权、强/弱 ETag、Range/If-Range/Content-Range/416 边界、503 Retry-After、并发/速率/重试限制和 token 日志泄漏。
-24D. 设备 OTA 下载/断点测试：任意 byte/chunk/重连点断网或断电，错 `200/206`、变更 ETag/digest、长度超暂存区/目标槽、取消/deadline/OOM 均只影响暂存对象，测试桩断言下载阶段 `esp_ota_*` 调用次数为零；Wi-Fi 和经批准 ML307 port 返回相同状态语义。
-24E. 暂存校验与刷写测试：只有完整暂存对象的 manifest/application signature、size/hash/image/profile/layout/compat/secure-version/schema/revocation 全部通过后才允许 `esp_ota_begin/write/end`；raw staging 任意 sector/metadata 断电可恢复；刷写后 flash 回读 digest 不一致不设置 boot partition，失败和重启均保留当前已确认槽。
-24F. A/B boot 测试：重启前 safe point、pending-verify 下 app crash/WDT/brownout/自检失败/时限到期、本地 readiness confirm、Hub 离线 confirm、回滚次数和 OTA boot-loop 熔断。
-24G. OTA/lifecycle 并发测试：Alarm ringing/due、Meeting capture/finalize/upload、Gateway outbox/NVS commit、Sleep PREPARE、配网、低电量和 storage/暂存空间压力下的 download/verify/flash/defer/cancel/reboot 全状态竞争。
-24H. OTA UI/权限测试：三 profile 的 `OTA_ACCEPT/DEFER/CANCEL`、下载/校验/刷写/错误/回滚 Scene、远端所有者授权、本地确认、维护窗口、stable/beta channel、Wi-Fi/4G 默认和无屏 fallback。
-24I. Release 撤销/反重放测试：channel/cohort/pin、暂停、撤销、kill switch、secure-version、设备时间不可信、Hub 离线和已下载未刷写/已刷写未切槽/PENDING_VERIFY 各阶段行为确定且 fail closed。
-24J. Flash 写仲裁/不可取消测试：SPIFFS 会议/素材写、NVS、core dump、OTA erase/write、低压/过温、DFS/cache-off、internal/PSRAM stack 和 WDT 并发；进入 erase 前可取消，进入后不 task-kill、不并发写并给出“禁止断电”反馈。
-24K. OTA event 幂等测试：event ID、transaction/device/phase sequence 乱序、重复、迟到和跨 boot 上报不会倒退 Hub rollout 状态或重复统计终态。
-24L. 安全启动分级测试：开发级 manifest/application signed verification 与量产 Secure Boot/Flash Encryption/anti-rollback 的 build/eFuse manifest 一致；错 key、key revoke、RMA/downgrade 和数据 schema 冲突均 fail closed。
+24A. 发布 bundle 负向测试：错 profile/layout/compat/ESP target/flash size、超 factory 槽、错 secure version、篡改 manifest/signature/size/hash、缺 bootloader/partition metadata、segment offset 越界/重叠 protected range、普通升级误选 merged raw image 全部在写入前被拒绝。
+24B. GitHub Release 原子发布测试：allowlist/tag/channel、draft→完整上传/回读→publish、published asset mutation 隔离、canonical 签名 golden vectors、404/429/5xx/redirect/timeout 和旧刷机工具最低版本拒绝。
+24C. Hub Update Catalog 授权/缓存测试：缺失/错误 bearer、跨 tenant/client/device/profile/credential-generation、伪造 query `clientId`、release 越权、metadata TTL/退避/限流、GitHub 故障和 token 日志泄漏；响应中不存在 firmware URL/bytes。
+24D. 设备更新检查测试：版本比较、stable/beta、相同 release 去重、critical 重复提醒、稍后时间、忽略当前版本、重启/深睡持久化、Hub 离线与时钟不可信；测试桩断言设备无固件下载、partition erase/write、boot target 或远程重启调用。
+24E. 三硬件提醒 UI 测试：Bread、EchoEar 圆屏、Fangtang 小屏显示相同 current/latest/severity/“连接电脑使用官方刷机工具”语义，输入只产生 `UPDATE_REMIND_LATER/DISMISS_VERSION`，无“立即安装”入口。
+24F. 刷机工具身份/下载测试：只从 allowlisted GitHub Release 获取 bundle；USB identity/profile/hw/layout/compat/flash size 与 manifest 匹配，错板、用户选错文件、断网/部分下载和签名错误均在写入前 fail closed。
+24G. 数据保留刷机测试：默认模式在任意成功/失败路径不擦除 NVS/storage/未上传会议，恢复出厂模式必须二次确认；layout/schema 不兼容时要求导出或拒绝，不静默格式化。
+24H. 刷写/恢复测试：稳定供电/USB、active Alarm/Meeting 提示、写入中断电、关键分区回读 digest、重启后的 transaction/firmware digest/BOOT_OK/SERVICE_READY、失败停止自动重试及上一 stable signed bundle 恢复。
+24I. 单 app 发布安全测试：升级/降级 reader-writer window、Secure Boot/Flash Encryption/eFuse 配置、错 key/key revoke/RMA、上一版本恢复和无自动回滚风险提示均与 manifest 一致。
 25. 启动自检与量产模式的进入、退出、超时、防误触发和能力收缩测试。
 26. 事件 trace record/replay，确保相同输入、时钟和故障序列得到确定性的业务终态。
 27. 架构边界测试：Device/HAL API 名称不得包含 meeting/alarm/command-duration；领域服务不得直接引用 SPIFFS、`FILE *`、Wi-Fi、HTTP、GPIO 或板型宏。
@@ -1636,7 +1560,7 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 61. Wake Word/Power 组合测试：always-on listening 持有正确 lease；LIGHT/DEEP_SLEEP 前 stop/join/释放模型与 I2S，恢复后顺序正确；选择始终语音唤醒时禁止不兼容深睡，选择深睡时 UI/能力明确语音唤醒暂不可用。
 62. Battery Policy 测试：ADC 未校准、噪声/离群值、负载压降、充放电切换、温度缺失、阈值滞回和 brownout；低压最多进行一次关键 checkpoint，不反复写 flash，不在无 charger/button/timer 恢复源时进入 DEEP_SLEEP。
 63. Charger wake HIL：USB/充电器插拔、power-good 有效电平、已满/反向抖动、RTC 复检和恢复滞回；profile 没有 charger-detect 电路时 capability 与策略不得声明该唤醒源。
-64. 领域工具测试：Sleep Schedule/OTA tool descriptor 随 effective capability 注册/撤销；schema、时区/depth/wake/releaseId 预校验、idempotency replay、超时、跨重启、迟到调用、`sleep_now` lease 与 `ota.install` 所有者/本地确认门禁正确；OTA 工具拒绝 URL，Gateway dispatcher 不依赖具体领域实现。
+64. 领域工具测试：Sleep Schedule/Update tool descriptor 随 effective capability 注册/撤销；schema、时区/depth/wake/releaseId、idempotency replay、超时、跨重启和迟到调用正确；设备明确不注册 `ota.install/prepare/cancel`，Update 工具拒绝 URL，Gateway dispatcher 不依赖具体领域实现。
 65. Provisioning 安全测试：临时 AP 密码/session ID/CSRF nonce 的熵、轮换和 TTL；连接数、请求体、速率限制、物理取消、超时回退、RAM zeroization，以及非授权客户端无法读取/修改 Wi-Fi/EAP/Hub 配置。
 66. AP+STA 隔离测试：AP 客户端无法访问 STA/Hub token、管理接口或转发流量；DNS/HTTP/AP handler 在成功、失败、取消、低电量和重启准备时全部 stop/join/unregister。
 67. 配置事务测试：`stage → validate → commit → activate → confirm` 任一点断电或 Wi-Fi/Hub 失败均恢复旧已确认配置；新配对确认前不撤销旧 token，pair code 过期/重放/暴力尝试均失败且不长期留存。
@@ -1770,13 +1694,11 @@ HIL evidence bundle 进一步记录实际 board serial/hw revision、fixture/探
 - facade 切换与回退时每个副作用始终只有一个 owner；shadow 只读比较，旧任务/handle/global writer 在 ownership handoff 后全部失效。
 - 多核/ISR 压力下 interaction、cancel、meeting、welcome、HTTP 等迁移状态无基于 `volatile` 的数据竞态、ABA 或多字段撕裂，优先级反转在预算内。
 - 三硬件 release artifact 可从锁定输入 clean build 重现，并附带匹配的 SBOM、许可证/CVE、component/resource hash 和签名 provenance。
-- 三硬件均从已配对 Hub 完成同一 OTA 状态机；设备不直连 GitHub，Hub 在 GitHub 不可达但缓存已命中时仍可交付指定 digest，未命中时明确可重试而不下发 upstream URL。
-- 三 profile OTA application asset 在槽容量与 growth margin 内，merged full-flash asset 无法被 OTA 路径接受；首次单槽→A/B 迁移只能走经过 identity/compat 校验的有线整机烧录。
-- 每次 OTA 都经过 Hub 与设备双重 manifest/signature/size/hash/compat 验证；设备先小块流式写完整暂存对象，验证成功后才刷 inactive 槽并回读校验。断网/断电/错 Range、暂存校验失败或 flash digest 不一致均不会改变 boot target。
-- 新槽在 Hub 离线时仍能依据本地 readiness 确认；pending-verify crash/WDT/brownout/自检失败会自动回滚，Alarm/Meeting/NVS/Storage 数据在升级与回滚窗口中保持兼容。
-- OTA 下载使用专用 raw staging 或经同等级证明的预分配存储，不依赖碎片化 SPIFFS 临时腾挪；会议录音和宠物资源不会被自动删除。
-- OTA erase/write 与 SPIFFS/NVS/core dump 等 Flash mutation 全局互斥；进入不可取消点后 UI 提示禁止断电，异常不会把 partial inactive 槽设为 bootable。
-- OTA API 授权绑定 tenant/user/client/device/profile/layout/credential generation；events 幂等，rollout/revoke/eligibility 和稳定 HTTP 错误可审计。
+- 三硬件从已配对 Hub 得到相同语义的适用版本 metadata；设备不直连 GitHub、不接收 firmware URL、不下载 firmware bytes，也没有 partition 写入或远程安装入口。
+- 版本比较、stable/beta channel、critical 提醒、稍后/忽略当前版本和检查退避在三 profile 上一致；EchoEar 仅以圆屏 Renderer 保留呈现差异。
+- GitHub Release 为三 profile 提供 signed segmented flasher bundle、manifest、SBOM/provenance 和 release notes，merged raw image 仅供恢复出厂；draft/缺件/被覆盖 asset 不可进入 Hub catalog 或刷机工具。
+- 官方刷机工具在写前核对签名、size/hash、device identity/profile/hw/layout/compat/flash size，默认保留 NVS/storage/会议数据；错板、错布局或不可兼容 schema 不进入写入。
+- 刷机开始后提示禁止断电，写后完成关键分区回读 digest、实际 firmware digest、BOOT_OK/SERVICE_READY correlation；单 app 无自动回滚风险由上一 stable signed bundle 恢复演练和更严格 stable 门禁控制。
 
 EchoEar 额外验证：
 
@@ -1803,7 +1725,7 @@ Fangtang 额外验证：
 
 ## 9. 代码审查门槛
 
-完成 Phase 9 时必须达到：
+完成主计划 Phase 9 时必须达到：
 
 1. `main.c` 和共享 `app/domain/services` 中 `CONFIG_MACLAW_BOARD_*` 命中数为 0。
 2. 共享业务代码引用 GPIO/I2C/I2S/SPI/LCD/触摸/codec 驱动符号的命中数为 0。
@@ -1827,7 +1749,7 @@ Fangtang 额外验证：
 20. profile 校验覆盖 board revision、ESP target、flash/PSRAM、partition 和硬件 manifest；错配保持输出安全。
 21. 每个 profile 的 runtime budget 全部通过，任务/锁 owner 和 core/栈类型有唯一清单。
 22. 单调时钟与墙上时钟职责分离，并可使用 Fake Clock 确定性测试。
-23. partition layout、NVS schema、model/storage 兼容和烧录保留策略有版本及升级/降级矩阵；OTA capability 只在 A/B、签名、Hub 中继下载、pending-confirm/回滚与数据兼容全部通过后发布。
+23. 固定 16 MiB 单 factory/model/storage layout、NVS schema、烧录保留策略及升级/降级矩阵已冻结；设备不声明 OTA capability，Update capability 只包含版本检查和提醒。
 24. UI 文本符合 UTF-8、glyph fallback 和硬件无关文案契约。
 25. 自检和量产模式无开放调试后门，失败结果正确收缩能力或进入安全模式。
 26. Device/HAL API 只包含通用设备原语；会议、固定时长指令、闹钟和 Hub 协议仅存在于共享领域 Service。
@@ -1909,10 +1831,15 @@ Fangtang 额外验证：
 102. DFS/PM 的 clock-domain、频率范围、lock owner、切换 barrier 和 peripheral reconfiguration 可执行；每个发布频点的 Audio/Display/Input/Diagnostic/time 行为具有 HIL 证据。
 103. Resource Pressure Service 统一聚合资源水位并按 NORMAL/PRESSURE/CRITICAL 降载；关键控制、数据收尾和持久化具有 emergency reserve，板级 HAL 不复制业务降级策略。
 104. HIL 证据含设备/fixture/仪器校准/环境/脚本/原始数据/样本与不确定度并防篡改；golden 更新独立审批，flaky 重跑不抹除失败历史。
-105. OTA 固定使用 `GitHub Release → Hub repository/cache → device` 信息流；设备不接收任意 URL，Hub 回源与设备下载分别受 allowlist、device binding、TLS、配额和审计约束。
-106. GitHub workflow 同时产生三 profile application-only OTA asset 和签名 manifest；`artifact_kind`、profile/layout/compat/target/size/digest/secure-version 阻止 merged image、错板或超槽固件被安装。
-107. Hub 按 content digest 完整下载、校验并原子缓存后才支持受认证 Range 下载；设备使用有界流式 buffer 写暂存区，完整校验成功后才刷 inactive 槽并执行 flash 回读 digest。ETag/digest 变化、断网、断电或取消不会触碰当前 boot target。
-108. OTA Service 与 Power/Boot/Lifecycle/Alarm/Meeting/Storage/Persistence 共享 safe-point 契约；三 profile 使用同一状态机、intent、授权与回滚语义，Hub 不在线不阻塞本地新固件确认。
+105. 固定 16 MiB 产品明确不实现设备端 OTA：保留单 factory/model/storage layout，不新增 A/B/staging，不牺牲会议与资源存储；capability/tool/schema 中不存在安装能力。
+106. 更新信息固定使用 `GitHub Release → Hub Update Catalog → device metadata`；Hub 绑定真实设备/profile/hw/layout，设备不接收 firmware URL/bytes，检查失败不影响本地业务。
+107. 三 profile 使用同一 Update Service、状态与提醒策略，支持 `update.check/status/remind_later/dismiss_version`；圆屏、矩形屏和单键差异只在 Renderer/Input Binding。
+108. GitHub workflow 为三 profile 产生不可变 signed segmented flasher bundle、manifest、SBOM/provenance 和 release notes；segment offset/write allowlist/protected ranges 明确，merged raw image 仅供恢复出厂，采用 draft→完整回读→publish。
+109. 官方刷机工具从 GitHub 下载并完整校验 bundle，再匹配 USB 设备 identity/profile/hw/layout/compat/flash size；默认保留 NVS/storage/未上传会议，恢复出厂是独立确认模式。
+110. 单 app 无自动回滚的风险由更严格 stable 发布门禁、刷前 maintenance、供电/USB 检查、刷后回读 digest、BOOT_OK/SERVICE_READY correlation 和上一稳定 signed bundle 恢复演练控制。
+111. release/bundle 签名、Secure Boot/Flash Encryption/anti-rollback（若启用）具有明确密钥/eFuse/RMA 生命周期和 CI/工具 golden vectors；产品文案不得宣称设备可自动更新或自动回滚。
+
+上述条目与业务附录统一使用 `UPD-001`～`UPD-007` requirement ID；registry 中只能有一条 requirement 记录和多份 implementation/test evidence，不再保留 `OTA-xxx` 活跃门禁。
 
 可在 CI/本地加入架构检查脚本，对共享目录执行禁止符号扫描，防止后续把硬件特判重新带回业务层。
 
@@ -2310,53 +2237,53 @@ Fangtang 额外验证：
 
 控制：证据绑定 board/fixture/仪器校准/环境/脚本/原始数据/样本和不确定度并签名归档；golden 更新独立审批，所有重跑 attempt 保留。样本不足、仪器过期或 flaky quarantine 过期自动阻断 release。
 
-### 10.99 把 merged full-flash 图像写入 OTA 槽
+### 10.99 固定 16 MiB 仍误启用设备端 OTA
 
-控制：Workflow 分离 full-flash 与 application-only asset，签名 manifest 必须声明 `artifact_kind`、ESP target、entry image/header、profile/layout/compat、app 大小和 digest；Hub 和设备双重拒绝类型错配。CI 必须对现有 `merge-bin -f raw` 产物做负向安装测试。
+控制：partition/capability/tool/CI 四层同时禁止 `otadata/ota_*/staging`、`esp_ota_*`、firmware download URL 和 `ota.install`；架构测试扫描设备 release binary。未来只有新硬件容量、威胁模型和产品决策全部重新评审后，才能建立新的独立计划，不能用远端 feature flag 偷开。
 
-### 10.100 Hub OTA 缓存污染、半成品或旧资产混用
+### 10.100 Hub Update Catalog 被污染或给错 profile
 
-控制：只从 allowlisted GitHub repository/release channel 回源，先验 manifest 签名再取 asset，以 release+digest 为 key single-flight 下载，在临时文件校验 size/hash 后原子 publish。缓存 metadata 与字节一起校验，部分文件不可服务；LRU/pin/配额不淘汰正在 rollout/rollback 的 digest。
+控制：只接收 allowlisted GitHub repository/release/channel 的已签名 immutable manifest，绑定 tenant/client/device/profile/hw/layout/credential generation；draft、缺件、asset mutation、签名错误或未知 critical field 不进入 catalog，响应不包含 firmware URL。
 
-### 10.101 设备绕过 Hub 直连 GitHub 或注入任意 URL
+### 10.101 版本提醒风暴或长期打扰用户
 
-控制：设备协议只使用 Hub 颁发的 opaque `releaseId/assetId`，端点使用现有 device bearer 与 tenant/client/device/profile binding；不定义 URL 参数、redirect-to-GitHub 回复或 upstream credential 下发。GitHub 未命中时只返回可重试状态。
+控制：同 release 去重，启动检查与周期检查有最小间隔、抖动和退避；`remind_after/dismissed_release_id` 持久化且有 schema。Critical 仅调整可见性和重复周期，不能远程下载、刷写、重启或绕过用户选择。
 
-### 10.102 OTA 未完整校验就刷写、整包进 PSRAM 或 Range 续传接上了不同字节
+### 10.102 刷机工具下载到部分、篡改或错误 bundle
 
-控制：使用专用有界 streaming port 写 OTA 暂存对象，下载阶段通过接口隔离和测试桩禁止调用 `esp_ota_*`；续传锁定 manifest digest/asset digest/ETag/total length，并严格验证 `206 Content-Range`。只有完整暂存对象通过签名、size/hash、compat、secure-version 和撤销校验后才获得 flash lease；刷写 inactive 槽后回读 digest，任一失败保持当前 boot target。Wi-Fi/ML307 共用 contract 和 test vectors，不复用整包 HTTP helper。
+控制：工具只从允许的 GitHub Release 获取，完整下载后验证 canonical manifest 签名、asset size/SHA-256、工具最低版本和 product/profile/layout/compat；任何检查失败都发生在首个写入前，已发布 asset 变化整体隔离。
 
-### 10.103 OTA 安装与闹钟、会议、持久化或休眠竞争
+### 10.103 用户选错硬件或刷机工具只信文件名
 
-控制：下载到暂存区可在资源预算内后台进行，但暂存校验、FLASH/VERIFY_FLASH/SET_BOOT/REBOOT 持有明确 power/resource lease，并经过唯一 lifecycle safe-point coordinator。Alarm due/ringing、Meeting finalize、NVS commit、配网和 Sleep COMMIT 按冻结优先级阻止或推迟刷写/安装，不得因紧急版本强制截断数据。
+控制：写入前通过 USB/串口查询设备 identity、flash size、layout/compat 与当前 firmware digest，再与 signed manifest 匹配；identity 查询失败或用户选择与实机冲突时 fail closed，人工确认不能覆盖安全错配。
 
-### 10.104 新固件依赖 Hub 在线确认而陷入回滚循环
+### 10.104 普通更新误擦除 NVS、录音或资源
 
-控制：pending-verify 只使用本地 Boot Coordinator/readiness/self-test 和必要 durable reconciliation 作确认条件；Hub/GitHub 可以在线上报结果，但不是 confirm 前置。超时/crash/WDT/brownout 自动回滚，连续失败熔断 rollout 并保持已确认旧槽。
+控制：“保留用户数据升级”和“恢复出厂刷机”分为两个显式模式；普通更新按 segment offset 与 manifest allowlist 写区，禁止使用 padded merged raw image，并负向验证 NVS/storage protected ranges 不变。layout/schema 不兼容时先导出或拒绝，不能通过自动格式化获得成功。
 
-### 10.105 OTA 签名密钥泄漏或轮换不当
+### 10.105 单 app 刷写中断导致设备不可启动
 
-控制：发布私钥只存在受保护 CI/HSM 流程，Hub 不持有签名私钥；manifest 包含 `signing_key_id` 和有界有效期。设备信任根轮换使用双签/预置下一公钥和明确 revoke 窗口，时间不可信时不得仅靠 expiry 放行；secure-version/anti-rollback 与生产 eFuse 流程单独评审。
+控制：stable 发布前完成三硬件断电故障注入和恢复演练；刷机前检查稳定 USB/供电，开始写入后明确禁止断电，刷后回读关键 digest。失败不循环自动重刷，工具保留日志并用同一或上一 stable signed bundle 引导恢复。
 
-### 10.106 专用暂存容量不足或共享 SPIFFS GC 阻塞
+### 10.106 单 app 没有自动回滚却被误报为安全更新
 
-控制：Phase 0 优先冻结可容纳最大 OTA image 与增长余量的 raw staging partition，并把会议录音/资源存储容量作为独立硬门禁。若使用文件系统暂存，必须证明预分配、quota、碎片与最坏 GC 时延；空间不足只延后 OTA，不删除用户数据、不边下边刷，也不让低优先级 GC 阻塞 Alarm/Meeting 收尾。
+控制：UI、release notes 和工具明确“需要电脑、升级中断可能需要恢复、无设备端自动回滚”。stable 门禁要求升级/降级 reader-writer window、BOOT_OK/SERVICE_READY 和上一稳定版本恢复证据，禁止以 OTA/A-B 文案对外宣传。
 
-### 10.107 OTA 刷写与其他 Flash 写竞争或在不可取消点被强杀
+### 10.107 刷机开始时截断闹钟、会议或持久化
 
-控制：Flash Mutation Coordinator 串行化 OTA erase/write、SPIFFS、NVS migration、core dump 和量产写入；刷写前取得 power/thermal/flash lease 并 quiesce 其他 writer。首个 erase 前可安全取消，之后不得 task kill，必须完成当前原子步骤并使槽保持 non-bootable 或通过完整回读验证。
+控制：若当前固件可通信，工具先请求 maintenance readiness 并检查 Alarm/Meeting/Persistence；活跃事务要求用户结束或明确延期。无法通信时进入 bootloader recovery 但不得承诺保留未知 in-flight 数据，风险必须在写前显示。
 
-### 10.108 Manifest 签名解析歧义或跨协议重放
+### 10.108 Manifest 签名解析歧义或密钥轮换失败
 
-控制：签名输入具有固定 domain separator 和严格 canonical schema，拒绝 duplicate key、未知 critical field、非法 UTF-8/整数/浮点表达；Hub、设备与 CI 使用相同 golden vectors。Manifest 签名与 ESP application signed verification 分层，任何一层失败均不可刷写。
+控制：签名输入具有固定 domain separator 和严格 canonical schema，拒绝 duplicate key、未知 critical field、非法 UTF-8/整数表达；CI、Hub 和刷机工具使用相同 golden vectors。发布私钥留在受保护 CI/HSM，轮换/吊销/RMA 有独立演练。
 
-### 10.109 OTA API 只验证 bearer 而未绑定真实设备
+### 10.109 设备 metadata API 只验证 bearer 而未绑定真实设备
 
-控制：授权同时绑定 tenant/user、已配对 client/device、credential generation、profile/hw/layout 和 rollout eligibility；path/query ID 不作为授权事实。旧 token generation、克隆 identity、跨设备 Range 和事件上报全部拒绝并限流审计。
+控制：授权同时绑定 tenant/user、已配对 client/device、credential generation、profile/hw/layout；path/query ID 不作为授权事实。旧 token、克隆 identity 和跨设备 catalog 查询全部拒绝并限流审计。
 
-### 10.110 Release 撤销与离线切槽竞态
+### 10.110 用户无法找到正确刷机工具或恢复路径
 
-控制：刷写前和设置 boot partition 前复核 signed eligibility/revoke policy revision；离线只在短期、绑定 device/release 的 eligibility proof 内允许继续，超窗延后。已进入 pending-verify 的设备按本地安全规则确认或回滚，恢复联网后幂等上报，不因 Hub 离线卡死 boot。
+控制：设备提醒、Hub 客户端和 GitHub Release 使用一致的官方工具名称/最低版本/release ID；提供 Windows/macOS/Linux 可验证下载、离线签名校验、正常升级与恢复模式步骤。不得只显示裸 URL、内部 asset 名或无法操作的错误码。
 
 ## 11. 提交与回滚策略
 
@@ -2371,9 +2298,9 @@ Fangtang 额外验证：
 7. Fangtang Display/Input profile：先拆出 NV3023、Y offset=80、单键和独立资源表，禁止拖到最终阶段才从 Bread board port 分离。
 8. 三 profile Audio/Wake Service；同时补齐 Fangtang 0–100 音量和持久化。
 9. Phase 7A-a：Storage/Persistence/NVS 恢复、Connectivity/Gateway/Identity、Provisioning/Security 和构建依赖收口；Fangtang ML307 从 Command/Meeting/时间路径迁入 Connectivity port。
-10. Phase 7A-b：GitHub workflow application OTA asset/签名 manifest、Hub 完整回源校验/repository/cache/range API、设备暂存下载/完整校验/刷写回读、A/B partition/pending-confirm/rollback 与首次有线 layout 迁移闭环。
-11. Phase 7B：Power/Wake/Wake Deadline/Sleep Schedule、Alarm deadline、Wake Word power lease、Battery Policy 与 OTA safe-point/power policy。
-12. Phase 7C：Gateway quiesce、离线队列/跨 session 语义、OTA/其他领域工具注册与能力投影。
+10. Phase 7A-b：GitHub workflow signed segmented flasher bundle/manifest、Hub Update Catalog metadata API、三硬件统一版本提醒、官方刷机工具 identity/签名/protected ranges/刷后回读与恢复闭环。
+11. Phase 7B：Power/Wake/Wake Deadline/Sleep Schedule、Alarm deadline、Wake Word power lease、Battery Policy 与版本检查网络 lease。
+12. Phase 7C：Gateway quiesce、离线队列/跨 session 语义、Update/其他领域工具注册与能力投影。
 13. Event envelope/关键 reservation、Entropy、Diagnostic identity 与有线烧录兼容闭环。
 14. Composition/concurrency/lock/schema registry、facade cutover/shadow 与可回退迁移闭环。
 15. Fault-domain supervisor、端到端 deadline、restart reconciliation、持久化 expand/contract migration 与降级反馈闭环。
@@ -2443,7 +2370,7 @@ Fangtang-4G 当前必须按本节完成独立正式 profile 接入；未来新�
 48. 接入共享 Resource Pressure Service，声明 profile 水位、降载能力和 emergency reserve；新增 HAL 只报告资源事实，不实现板型专属业务降级或 OOM 重启策略。
 49. 对 profile 特有可重启 Service/port 声明 authoritative/durable/ephemeral state 与 reconciliation probe；禁止以保存整个 runtime context 实现恢复。
 50. HIL evidence 记录 board/fixture/仪器校准/环境/脚本/原始数据/样本/不确定度并签名；golden 更新与 flaky quarantine 遵循共享审批和过期门禁。
-51. 声明 OTA application 槽余量、raw staging/等价预分配容量、partition layout、Flash 写仲裁、pending-confirm/rollback、本地确认映射、Wi-Fi/ML307 streaming port、设备身份 binding、安全启动级别和新固件本地 readiness 证据；新板不得新建板型 OTA 业务 Service、直连 GitHub 或绕过 Hub release repository。
+51. 声明 flash size/单 factory/model/storage layout、Update Catalog profile binding、版本提醒 Renderer/Input 映射、signed bundle 与刷机工具兼容、默认数据保留、刷后 readiness 和恢复证据；新板不得新建板型更新业务 Service，也不得在设备端引入隐藏 firmware download/partition write 路径。
 
 以下行为不属于硬件接入，原则上禁止：
 
@@ -2487,13 +2414,13 @@ Fangtang-4G 当前必须按本节完成独立正式 profile 接入；未来新�
 - 让 Service 自行查询 `board_hal_get()`/全局单例、隐式初始化依赖或在 constructor/init 中创建未登记的常驻任务。
 - 由单个 Audio/Input/Display HAL 私自 reset 共享总线，继续使用 recovery 前取得的裸 driver handle，或用无限恢复循环制造能力抖动。
 - 让 Hub/临时 override 直接写产品 NVS 并越过 Configuration Service，或把无 provenance 的校准应用到不同 board revision/rotation/codec channel。
-- 让设备 OTA 直连 GitHub、接受任意 URL，或把 `merge-bin -f raw` 整机图像写入 `ota_0/ota_1`。
-- Hub 未验证 GitHub release manifest 签名/asset digest 就缓存或下发，对部分下载文件提供 Range，或让 tenant/用户自行替换官方 firmware。
-- 设备用整包 PSRAM response 下载固件、下载阶段直接写 inactive 槽、未通过完整暂存校验就开始刷写、不锁定 ETag/digest 断点续传、刷后不做 flash 回读校验，或在 Hub 离线时因无法远程确认而拒绝本地可用新固件。
-- 在 Alarm ringing/Meeting finalize/NVS commit/Sleep COMMIT 中强制 OTA reboot，或允许未经所有者授权/本地确认的远端 `ota.install`。
-- 把 OTA 暂存当作普通 SPIFFS 临时文件而不证明预分配/GC/碎片预算，自动删除会议/资源腾空间，或让 OTA/SPIFFS/NVS/core dump 同时写 Flash。
-- 在 OTA 首个 erase 后仍宣传可立即取消、直接删除刷写 task，或在 power/thermal/Flash lease 丢失时把 partial 槽设为 bootable。
-- 仅凭合法 bearer 或 query `clientId` 授权 OTA，允许旧 credential generation、跨设备/profile 下载或无幂等 event 改写 rollout 状态。
+- 在固定 16 MiB 产品上新增 `otadata/ota_*/staging`、调用 `esp_ota_*`、下载 firmware bytes，或用远端 feature flag 暗中恢复设备端 OTA。
+- Hub 未验证 GitHub release manifest 就向设备报告版本，返回 firmware/asset URL，或让 tenant/用户替换官方 release metadata。
+- 设备版本提醒出现“立即安装/下载中/刷写中/自动回滚”等不存在的能力，或 critical release 绕过用户操作触发下载、重启。
+- 刷机工具仅凭文件名、串口号或人工板型选择写入，不校验 signed manifest 与真实 product/board/hw/layout/compat/flash size。
+- 普通更新默认擦除 NVS/storage、删除未上传会议，或把恢复出厂刷机隐藏在普通“更新”按钮后。
+- 刷机工具未完整下载/校验就写入、刷后不回读 digest、失败无限自动重刷，或宣称单 app 具有 A/B 自动回滚。
+- 仅凭合法 bearer 或 query `clientId` 返回跨设备/profile 的 release metadata，允许旧 credential generation 查询或记录敏感 URL/token。
 - 在 steady-state ISR、audio stream、Display DMA completion 或 Power COMMIT 中使用通用 heap，或忽略长录音实际采样时钟漂移和 DMA sequence gap。
 - 在迁移期同时运行 legacy/new 输入、显示、音频、NVS、网络 ACK 或文件删除副作用，或把 facade 变成新的状态/任务/资源 owner。
 - 使用 `volatile` 作为跨核/task/ISR 同步，依赖多个裸全局字段形成一致 snapshot，或用 binary semaphore 替代需要优先级继承的 mutex。

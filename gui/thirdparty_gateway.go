@@ -1822,6 +1822,11 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 	var lastProgress time.Time
 	var lastProgressText string
 	onProgress := func(progressText string) {
+		if !m.isActiveLocalHardwareAgent(req.ClientID, handler) {
+			// Do not keep a removed (or same-ID replaced) device alive through
+			// progress frames while its cancelled turn finishes unwinding.
+			return
+		}
 		if !progressFilter.ShouldSendProgress(progressText) {
 			return
 		}
@@ -1942,8 +1947,12 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 				text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 			}
 		}
-		metadata := map[string]string{"acp_turn": "final"}
+		metadata := make(map[string]string)
 		if speechParts := deferredSpeechParts + len(voiceParts) + resultAudioParts; speechParts > 0 && allowAudio {
+			// This is the one intentional early-terminal case: the result
+			// surface closes Thinking and arms the exact correlated playback
+			// count. The following voice frames are presentation-only.
+			metadata["acp_turn"] = "final"
 			metadata["speech_parts_pending"] = strconv.Itoa(speechParts)
 		}
 		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: metadata})
@@ -1952,7 +1961,7 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		for i, action := range resp.Actions {
 			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 		}
-		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: map[string]string{"acp_turn": "final"}})
+		messages = append(messages, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text})
 	} else if resultAudioParts > 0 && allowText {
 		messages = append(messages, thirdPartyOutgoingMessage{
 			ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: "音频已就绪",
@@ -2045,14 +2054,15 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 	// its presentation-only audio parts.  A voice-only response has no such
 	// armed result surface, so the last part that survives media/capability
 	// validation must terminate the turn instead of leaving the device thinking.
-	hasTerminalResult := false
+	hasArmedSpeechResult := false
 	for _, message := range messages {
-		if strings.EqualFold(strings.TrimSpace(message.Metadata["acp_turn"]), "final") {
-			hasTerminalResult = true
+		pending, _ := strconv.Atoi(strings.TrimSpace(message.Metadata["speech_parts_pending"]))
+		if pending > 0 && strings.EqualFold(strings.TrimSpace(message.Metadata["acp_turn"]), "final") {
+			hasArmedSpeechResult = true
 			break
 		}
 	}
-	queued := m.enqueueBatch(clientID, messages, !hasTerminalResult)
+	queued := m.enqueueBatch(clientID, messages, !hasArmedSpeechResult)
 	if len(queued) == 0 && capabilities.SupportsOutput("text") {
 		m.enqueue(clientID, thirdPartyOutgoingMessage{
 			ConversationID: conversationID, ReplyToMessageID: replyTo,

@@ -3629,7 +3629,17 @@ static esp_err_t send_voice_event(const char *media_id, const char *event_id,
 static const char *command_submit_error_detail(esp_err_t err) {
     switch (err) {
         case ESP_ERR_TIMEOUT: return "网关响应超时，请稍后重试";
-        case ESP_ERR_HTTP_CONNECT: return "网络连接失败，请检查 Wi-Fi";
+        case ESP_ERR_HTTP_CONNECT:
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+            // Fangtang can run with Wi-Fi entirely disabled while ML307 owns
+            // the backhaul. A Wi-Fi-specific diagnosis in that mode sends the
+            // user to the wrong radio even though the shared command pipeline
+            // correctly used the modem transport.
+            return s_fangtang_use_cellular ? "网络连接失败，请检查 4G"
+                                           : "网络连接失败，请检查 Wi-Fi";
+#else
+            return "网络连接失败，请检查 Wi-Fi";
+#endif
         case ESP_ERR_HTTP_WRITE_DATA: return "语音发送中断，请重新尝试";
         case ESP_ERR_HTTP_FETCH_HEADER:
         case ESP_ERR_HTTP_READ_TIMEOUT:
@@ -4418,6 +4428,16 @@ static esp_err_t configure_meeting_chunk_client(esp_http_client_handle_t client,
     return err;
 }
 
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static esp_err_t read_meeting_chunk_body(void *context, void *buffer,
+                                         size_t requested, size_t *read_bytes) {
+    if (!context || !buffer || !read_bytes) return ESP_ERR_INVALID_ARG;
+    *read_bytes = fread(buffer, 1, requested, (FILE *)context);
+    if (*read_bytes == requested) return ESP_OK;
+    return ferror((FILE *)context) ? ESP_FAIL : ESP_ERR_INVALID_SIZE;
+}
+#endif
+
 static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE *file,
                                       size_t offset, size_t length, const char sha256_hex[65],
                                       uint8_t *buffer, size_t buffer_size,
@@ -4434,31 +4454,23 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
         fseek(file, (long)offset, SEEK_SET) != 0) return ESP_ERR_INVALID_SIZE;
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
     if (s_fangtang_use_cellular) {
-        char *chunk = heap_caps_malloc(length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!chunk) chunk = malloc(length);
-        if (!chunk) return ESP_ERR_NO_MEM;
-        if (fread(chunk, 1, length, file) != length) {
-            free(chunk);
-            return ESP_FAIL;
-        }
         http_response_t response = {0};
         response.data = heap_caps_malloc(MEETING_RESPONSE_CAPACITY,
                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!response.data) response.data = malloc(MEETING_RESPONSE_CAPACITY);
         if (!response.data) {
-            free(chunk);
             return ESP_ERR_NO_MEM;
         }
         response.capacity = MEETING_RESPONSE_CAPACITY;
         char authorization[128];
         snprintf(authorization, sizeof(authorization), "Bearer %s", s_gateway_token);
         int64_t started_us = esp_timer_get_time();
-        esp_err_t err = ml307_transport_http_request(
+        esp_err_t err = ml307_transport_http_request_stream(
             "PUT", url, "application/octet-stream", authorization,
-            "X-Chunk-SHA256", sha256_hex, chunk, length,
+            "X-Chunk-SHA256", sha256_hex, length,
+            read_meeting_chunk_body, file, buffer, buffer_size,
             response.data, response.capacity, &response.len, &response.status,
             &response.truncated, 60000, false);
-        free(chunk);
         uint32_t total_ms = (uint32_t)((esp_timer_get_time() - started_us) / 1000);
         ESP_LOGI(TAG, "meeting chunk %d upload bytes=%u connection=ML307 total=%ums status=%d err=%s",
                  index, (unsigned)length, (unsigned)total_ms, response.status,
@@ -6175,7 +6187,7 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
         ".ok{padding:.8rem;background:#e8f7ef;border-radius:.5rem}label{display:block;margin:1rem 0 .3rem}"
         "input{box-sizing:border-box;width:100%;padding:.8rem;font-size:1.2rem;letter-spacing:.25rem}"
         "button{margin-top:1.3rem;padding:.8rem 1.2rem;font-size:1rem;background:#1769aa;color:#fff;border:0;border-radius:.4rem}</style>"
-        "</head><body><h1>Restore MaClaw access</h1><p class=ok>Wi-Fi is connected. The saved device token was rejected by the Hub.</p>"
+        "</head><body><h1>Restore MaClaw access</h1><p class=ok>The selected network is connected. The saved device token was rejected by the Hub.</p>"
         "<p>Generate a temporary code in MaClaw GUI. It is used once to retrieve a replacement device token.</p>"
         "<form method=post action=/save><input type=hidden name=reuse value=1>"
         "<label>New 6-digit pairing code</label><input name=code inputmode=numeric pattern='[0-9]{6}' maxlength=6 required autofocus>"

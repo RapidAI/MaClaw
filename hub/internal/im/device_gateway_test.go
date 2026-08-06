@@ -641,6 +641,49 @@ func TestDeviceGatewayListsMultipleBindingsAndDeleteRevokesOnlyTarget(t *testing
 	}
 }
 
+func TestDeviceGatewayDeleteSuppressesLateAcceptedRelay(t *testing.T) {
+	plugin := NewRemoteGatewayPlugin("thirdparty", nil, nil, nil)
+	plugin.mu.Lock()
+	plugin.owners["tenant-a"] = &gatewayOwner{TenantID: "tenant-a", MachineID: "gui-a"}
+	inboundMessages := make(chan IncomingMessage, 1)
+	plugin.messageHandler = func(msg IncomingMessage) { inboundMessages <- msg }
+	plugin.mu.Unlock()
+
+	gateway := NewDeviceGateway(plugin)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "610003"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-a", "pairCode": "610003"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+	if token == "" {
+		t.Fatalf("missing gateway token: %s", pair.Body.String())
+	}
+
+	// Model an HTTP request which completed validation immediately before the
+	// owner unbound its hardware. The late goroutine must re-check the bearer
+	// rather than letting the old request create a GUI Agent after deletion.
+	payload, err := json.Marshal(map[string]any{
+		"tenant_id": "tenant-a", "platform_uid": "thirdparty:pet-a:default",
+		"reply_target": "thirdparty:pet-a:default", "message_id": "late-1",
+		"message_type": "text", "text": "must not reach GUI",
+		"client_tool_context": agent.ClientToolContext{ClientID: "pet-a", ConversationID: "default", ReplyToMessageID: "late-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.DeleteMachineDevice("gui-a", "pet-a"); err != nil {
+		t.Fatal(err)
+	}
+	gateway.forwardIncomingDeviceMessage(gateway.deviceDispatchMutex("pet-a"), token, devicePrincipal{ClientID: "pet-a"}, "gui-a", payload)
+	select {
+	case received := <-inboundMessages:
+		t.Fatalf("deleted device was relayed to GUI: %#v", received)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestDeviceGatewayMigratesExplicitLegacyMachineBindings(t *testing.T) {
 	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
 	gateway := NewPersistentDeviceGateway(nil, store)

@@ -119,12 +119,19 @@ void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seco
     char next_pet[sizeof(s_model.pet_state)];
     bool meeting;
     bool command_locked;
+    bool new_session;
     taskENTER_CRITICAL(&s_model_lock);
+    new_session = active && !s_model.recording_active;
     s_model.recording_active = active;
     s_model.recording_paused = active && paused;
     s_model.elapsed_seconds = active ? elapsed_seconds : 0;
-    if (!active) s_model.audio_level = 0;
-    if (!active) {
+    // The HAL clears its Bread-compatible history at every recording-session
+    // boundary. Mirror that boundary in the shared model as well: callers
+    // normally publish set_recording_mode() first, but this keeps a direct
+    // fresh visual transition from inheriting the previous session for one
+    // snapshot frame.
+    if (!active || new_session) {
+        s_model.audio_level = 0;
         memset(s_model.audio_history, 0, sizeof(s_model.audio_history));
         ++s_model.audio_history_revision;
     }
@@ -151,43 +158,30 @@ void app_ui_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     taskENTER_CRITICAL(&s_model_lock);
     active = s_model.recording_active;
     if (active) {
-        s_model.audio_level = level;
+        if (level > 1000) level = 1000;
+        // Mirror the board's Bread-compatible smoothing for state snapshots;
+        // the board still receives the raw normalized level and owns its
+        // physical 24-column history.
+        s_model.audio_level = level > s_model.audio_level
+                                  ? (uint16_t)((s_model.audio_level + level * 3u) / 4u)
+                                  : (uint16_t)((s_model.audio_level * 7u + level) / 8u);
         s_model.elapsed_seconds = elapsed_seconds;
+        memmove(&s_model.audio_history[0], &s_model.audio_history[1],
+                (sizeof(s_model.audio_history) / sizeof(s_model.audio_history[0]) - 1) *
+                    sizeof(s_model.audio_history[0]));
+        s_model.audio_history[sizeof(s_model.audio_history) /
+                              sizeof(s_model.audio_history[0]) - 1] = s_model.audio_level;
+        ++s_model.audio_history_revision;
     }
     taskEXIT_CRITICAL(&s_model_lock);
     if (active) board_port_set_audio_level(level, elapsed_seconds);
 }
 
 void app_ui_push_recording_pcm(const int16_t *samples, size_t count) {
-    if (!samples || count == 0) return;
-    uint64_t magnitude_sum = 0;
-    uint32_t usable = 0;
-    for (size_t i = 0; i < count; ++i) {
-        int32_t sample = samples[i];
-        uint32_t magnitude = sample < 0 ? (uint32_t)-sample : (uint32_t)sample;
-        if (magnitude >= 32500u) continue;
-        magnitude_sum += magnitude;
-        ++usable;
-    }
-    uint32_t mean = usable ? (uint32_t)(magnitude_sum / usable) : 0;
-    uint16_t level = mean <= 180u ? 0u :
-                     (mean >= 9000u ? 1000u : (uint16_t)((mean - 180u) * 1000u / 8820u));
-    bool active;
-    taskENTER_CRITICAL(&s_model_lock);
-    active = s_model.recording_active;
-    if (active) {
-        memmove(&s_model.audio_history[0], &s_model.audio_history[1],
-                (sizeof(s_model.audio_history) / sizeof(s_model.audio_history[0]) - 1) *
-                    sizeof(s_model.audio_history[0]));
-        s_model.audio_history[sizeof(s_model.audio_history) /
-                              sizeof(s_model.audio_history[0]) - 1] = level;
-        ++s_model.audio_history_revision;
-    }
-    taskEXIT_CRITICAL(&s_model_lock);
-    // Do not let a just-completed capture append a stale PCM block to the next
-    // session. The board owns the actual envelope history; the app model keeps
-    // only its matching UI snapshot.
-    if (active) board_port_push_recording_pcm(samples, count);
+    // PCM belongs to recording/upload. The visual history is advanced by
+    // app_ui_set_audio_level(), matching Bread's level-driven waveform.
+    (void)samples;
+    (void)count;
 }
 
 void app_ui_show_text(const char *title, const char *text) {

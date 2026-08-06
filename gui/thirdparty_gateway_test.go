@@ -101,6 +101,29 @@ func TestThirdPartyGatewayAgentResponseAllowsDeclaredMultimodalCombination(t *te
 	}
 }
 
+func TestThirdPartyGatewayAgentResponseTerminatesOnLastFileFrame(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("combo-device", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities:   []string{"text", "file"},
+		Combinations: [][]string{{"text", "file"}},
+		Text:         &agent.ClientTextCapabilities{},
+		File:         &agent.ClientFileCapabilities{MimeTypes: []string{"text/plain"}, MaxBytes: 1024},
+	}})
+	m.enqueueAgentResponse("combo-device", "room", "in-file", &IMAgentResponse{
+		Text: "answer", FileData: base64.StdEncoding.EncodeToString([]byte("result")),
+		FileName: "result.txt", FileMimeType: "text/plain",
+	})
+	m.mu.Lock()
+	messages := append([]thirdPartyOutgoingMessage(nil), m.clients["combo-device"].Messages...)
+	m.mu.Unlock()
+	if len(messages) != 2 || messages[0].Type != "text" || messages[1].Type != "file" {
+		t.Fatalf("declared text/file combination not delivered: %#v", messages)
+	}
+	if messages[0].Metadata["acp_turn"] != "" || messages[1].Metadata["acp_turn"] != "final" {
+		t.Fatalf("only the last text/file frame may terminate the turn: %#v", messages)
+	}
+}
+
 func TestThirdPartyGatewayAgentResponseEnqueuesTextBeforeVoice(t *testing.T) {
 	// The terminal text switches ESP32 to the result page and arms the exact
 	// correlated speech count; playback must only begin after that transition.

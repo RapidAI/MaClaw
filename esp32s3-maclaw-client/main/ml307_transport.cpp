@@ -158,7 +158,11 @@ public:
     bool Open(const char *method, const char *url, const char *content_type,
               const char *authorization, const char *extra_header_name,
               const char *extra_header_value, const void *body,
-              size_t body_len) {
+              size_t body_len,
+              ml307_transport_body_reader_t body_reader = nullptr,
+              void *body_reader_context = nullptr,
+              void *stream_buffer = nullptr,
+              size_t stream_buffer_size = 0) {
         int method_id = method_number(method);
         if (!method_id || !ParseUrl(url)) return false;
         method_ = method;
@@ -224,12 +228,31 @@ public:
             if (!uart_->SendCommand(command)) return false;
         }
 
-        if (body && body_len) {
+        if ((body || body_reader) && body_len) {
             const char *bytes = static_cast<const char *>(body);
             size_t offset = 0;
             while (offset < body_len) {
                 if (cancelled_.load()) return false;
                 size_t count = std::min(body_len - offset, kHttpContentChunkSize);
+                const char *content = bytes ? bytes + offset
+                                            : static_cast<const char *>(stream_buffer);
+                if (body_reader) {
+                    if (!stream_buffer || stream_buffer_size < count) {
+                        ESP_LOGE(TAG, "ML307 HTTP stream buffer too small: need=%u have=%u",
+                                 (unsigned)count, (unsigned)stream_buffer_size);
+                        return false;
+                    }
+                    size_t read_bytes = 0;
+                    esp_err_t read_err = body_reader(body_reader_context, stream_buffer,
+                                                     count, &read_bytes);
+                    if (read_err != ESP_OK || read_bytes != count) {
+                        ESP_LOGE(TAG,
+                                 "ML307 HTTP body read failed: offset=%u wanted=%u got=%u err=%s",
+                                 (unsigned)offset, (unsigned)count,
+                                 (unsigned)read_bytes, esp_err_to_name(read_err));
+                        return false;
+                    }
+                }
                 // Match the proven vendor streaming implementation exactly:
                 // append mode for every 4 KiB write, including offset zero.
                 constexpr int append = 1;
@@ -238,7 +261,7 @@ public:
                                       std::to_string(count);
                 if (!uart_->SendCommandWithData(
                         command, kHttpContentWriteTimeoutMs, true,
-                        bytes + offset, count)) {
+                        content, count)) {
                     ESP_LOGE(TAG,
                              "ML307 HTTP content upload failed: id=%d offset=%u chunk=%u total=%u",
                              id, (unsigned)offset, (unsigned)count, (unsigned)body_len);
@@ -568,6 +591,67 @@ extern "C" esp_err_t ml307_transport_http_request(
         int count = request.Read(chunk, sizeof(chunk));
         if (count < 0) {
             ESP_LOGE(TAG, "ML307 HTTP response body timeout/error: %s %s",
+                     method, url);
+            return ESP_ERR_TIMEOUT;
+        }
+        if (count == 0) break;
+        size_t available = response_capacity - *response_len - 1;
+        size_t copy = std::min(available, static_cast<size_t>(count));
+        if (copy) {
+            memcpy(response + *response_len, chunk, copy);
+            *response_len += copy;
+            response[*response_len] = '\0';
+        }
+        if (copy != static_cast<size_t>(count)) *truncated = true;
+    }
+    return *truncated ? ESP_ERR_INVALID_SIZE : ESP_OK;
+}
+
+extern "C" esp_err_t ml307_transport_http_request_stream(
+    const char *method, const char *url, const char *content_type,
+    const char *authorization, const char *extra_header_name,
+    const char *extra_header_value, size_t body_len,
+    ml307_transport_body_reader_t body_reader, void *body_reader_context,
+    void *stream_buffer, size_t stream_buffer_size,
+    char *response, size_t response_capacity, size_t *response_len,
+    int *status_code, bool *truncated, int timeout_ms,
+    bool foreground) {
+    if (!method || !url || !body_reader || !stream_buffer ||
+        stream_buffer_size < kHttpContentChunkSize || !response ||
+        response_capacity < 2 || !response_len || !status_code || !truncated) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *response_len = 0;
+    *status_code = 0;
+    *truncated = false;
+    response[0] = '\0';
+
+    std::shared_ptr<AtUart> uart;
+    {
+        std::lock_guard<std::mutex> lock(s_lifecycle_mutex);
+        if (!s_modem || !s_modem->network_ready()) return ESP_ERR_INVALID_STATE;
+        uart = s_modem->GetAtUart();
+    }
+
+    Ml307Request request(std::move(uart), timeout_ms, foreground);
+    if (!request.Open(method, url, content_type, authorization,
+                      extra_header_name, extra_header_value, nullptr, body_len,
+                      body_reader, body_reader_context,
+                      stream_buffer, stream_buffer_size)) {
+        ESP_LOGE(TAG, "ML307 HTTP stream open failed: %s %s", method, url);
+        return ESP_FAIL;
+    }
+    if (!request.WaitForHeaders(status_code)) {
+        ESP_LOGE(TAG, "ML307 HTTP stream response header timeout/error: %s %s",
+                 method, url);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    while (true) {
+        char chunk[1024];
+        int count = request.Read(chunk, sizeof(chunk));
+        if (count < 0) {
+            ESP_LOGE(TAG, "ML307 HTTP stream response body timeout/error: %s %s",
                      method, url);
             return ESP_ERR_TIMEOUT;
         }

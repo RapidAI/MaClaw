@@ -51,6 +51,10 @@ type DeviceGateway struct {
 	clients  map[string]*deviceClientState
 	media    map[string]*deviceMedia
 	hardware map[string]deviceHardwareConfig
+	// dispatchLocks serializes the short Hub-relay hand-off for one physical
+	// client with deletion of that same binding. It is deliberately per-device:
+	// an ESP32 hand-off must never make another bound ESP32 wait.
+	dispatchLocks map[string]*sync.Mutex
 }
 
 // DeviceMeetingResultNotifier is the narrow callback used by the shared
@@ -281,7 +285,7 @@ const (
 )
 
 func NewDeviceGateway(plugin *RemoteGatewayPlugin) *DeviceGateway {
-	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), voicePairAttempts: make(map[string]*deviceVoicePairAttempt), codePairAttempts: make(map[string]*deviceVoicePairAttempt)}
+	return &DeviceGateway{plugin: plugin, pairings: make(map[string]devicePairing), tokens: make(map[string]devicePrincipal), clients: make(map[string]*deviceClientState), media: make(map[string]*deviceMedia), hardware: make(map[string]deviceHardwareConfig), dispatchLocks: make(map[string]*sync.Mutex), voicePairAttempts: make(map[string]*deviceVoicePairAttempt), codePairAttempts: make(map[string]*deviceVoicePairAttempt)}
 }
 
 // SetMachineMessageSender lets the HTTP-side hardware ACK complete an
@@ -490,6 +494,12 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 		return
 	}
 	token := hex.EncodeToString(bytes[:])
+	// Pairing can replace the bearer for an existing physical ID. Serialize that
+	// credential rotation with the device's asynchronous inbound hand-off so an
+	// old bearer cannot cross the relay boundary during re-pairing.
+	dispatchMu := g.deviceDispatchMutex(clientID)
+	dispatchMu.Lock()
+	defer dispatchMu.Unlock()
 	g.mu.Lock()
 	currentPairing, pairingStillAvailable := g.pairings[pairCode]
 	if !pairingStillAvailable || !currentPairing.ExpiresAt.Equal(pairing.ExpiresAt) || currentPairing.MachineID != pairing.MachineID {
@@ -956,8 +966,57 @@ func (g *DeviceGateway) handleIncoming(w http.ResponseWriter, r *http.Request) {
 	messageID := firstDeviceValue(req.MessageID, req.EventID)
 	g.activateDeviceReply(p.ClientID, messageID)
 	payload, _ := json.Marshal(map[string]any{"tenant_id": p.TenantID, "platform_uid": "thirdparty:" + p.ClientID + ":" + conversationID, "reply_target": "thirdparty:" + p.ClientID + ":" + conversationID, "message_id": messageID, "message_type": firstDeviceValue(req.Message.Type, "text"), "text": req.Message.Text, "attachments": attachments, "client_capabilities": capabilities, "client_tools": clientTools, "client_tool_context": agent.ClientToolContext{ClientID: p.ClientID, ConversationID: conversationID, ReplyToMessageID: messageID}})
-	go g.plugin.HandleGatewayMessage(ownerID, payload)
+	// The HTTP response is intentionally fast, while GUI relay happens on a
+	// goroutine. Capture a per-device hand-off lock so an unlink that wins this
+	// race revokes the credential before the goroutine can reach the GUI.
+	dispatchMu := g.deviceDispatchMutex(p.ClientID)
+	go g.forwardIncomingDeviceMessage(dispatchMu, deviceBearerToken(r), p, ownerID, payload)
 	writeDeviceJSON(w, 200, map[string]any{"ok": true, "accepted": true, "messageId": req.MessageID, "duplicate": false})
+}
+
+// deviceDispatchMutex returns the small critical section shared by one
+// device's asynchronous Hub hand-off and its unbind operation. It does not
+// protect Agent execution and is never shared by unrelated devices.
+func (g *DeviceGateway) deviceDispatchMutex(clientID string) *sync.Mutex {
+	clientID = strings.TrimSpace(clientID)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.dispatchLocks == nil {
+		g.dispatchLocks = make(map[string]*sync.Mutex)
+	}
+	if lock := g.dispatchLocks[clientID]; lock != nil {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	g.dispatchLocks[clientID] = lock
+	return lock
+}
+
+// forwardIncomingDeviceMessage validates the original bearer a second time at
+// the asynchronous boundary. A successful DELETE is therefore a hard fence:
+// a request which had already been accepted by HTTP cannot create a fresh GUI
+// runtime after the device was unbound.
+func (g *DeviceGateway) forwardIncomingDeviceMessage(dispatchMu *sync.Mutex, token string, expected devicePrincipal, ownerID string, payload json.RawMessage) {
+	if g == nil || dispatchMu == nil || g.plugin == nil {
+		return
+	}
+	dispatchMu.Lock()
+	defer dispatchMu.Unlock()
+	if !g.hasCurrentDeviceCredential(token, expected.ClientID) {
+		return
+	}
+	g.plugin.HandleGatewayMessage(ownerID, payload)
+}
+
+func (g *DeviceGateway) hasCurrentDeviceCredential(token, clientID string) bool {
+	token, clientID = strings.TrimSpace(token), strings.TrimSpace(clientID)
+	if token == "" || clientID == "" {
+		return false
+	}
+	g.mu.Lock()
+	principal, ok := g.tokens[token]
+	g.mu.Unlock()
+	return ok && principal.ClientID == clientID
 }
 
 func (g *DeviceGateway) handleMediaUploadURL(w http.ResponseWriter, r *http.Request) {
@@ -1832,6 +1891,12 @@ func (g *DeviceGateway) DeleteMachineDevice(machineID, clientID string) error {
 	if machineID == "" || clientID == "" {
 		return fmt.Errorf("machine ID and client ID are required")
 	}
+	// Linearize this delete with an already-accepted asynchronous inbound relay
+	// from the same ESP32. Other devices continue normally while this short
+	// critical section waits only for their own hand-off to complete.
+	dispatchMu := g.deviceDispatchMutex(clientID)
+	dispatchMu.Lock()
+	defer dispatchMu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	revoked := make(map[string]devicePrincipal)
@@ -1878,6 +1943,10 @@ func (g *DeviceGateway) DeleteMachineDevice(machineID, clientID string) error {
 		}
 		return fmt.Errorf("persist hardware deletion: %w", err)
 	}
+	// New requests can only create this lock after they authenticate. Once the
+	// bearer is gone they fail authentication, so release the per-device entry
+	// instead of retaining one mutex for every historical binding.
+	delete(g.dispatchLocks, clientID)
 	return nil
 }
 
@@ -3359,11 +3428,10 @@ func (g *DeviceGateway) pruneDeviceMessagesLocked(state *deviceClientState) {
 }
 
 func (g *DeviceGateway) principal(r *http.Request) (devicePrincipal, bool) {
-	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+	token := deviceBearerToken(r)
+	if token == "" {
 		return devicePrincipal{}, false
 	}
-	token := strings.TrimSpace(auth[len("Bearer "):])
 	g.mu.Lock()
 	p, ok := g.tokens[token]
 	if ok {
@@ -3394,6 +3462,17 @@ func (g *DeviceGateway) principal(r *http.Request) (devicePrincipal, bool) {
 	}
 	g.mu.Unlock()
 	return p, ok
+}
+
+func deviceBearerToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(auth[len("Bearer "):])
 }
 
 func newDeviceToken(bytes int) (string, string, error) {

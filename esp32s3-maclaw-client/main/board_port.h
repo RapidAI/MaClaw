@@ -85,7 +85,7 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
 // meeting recording.
 void board_port_set_recording_mode(bool meeting);
 // Updates the normalized microphone level and elapsed time without forcing an LCD refresh from the
-// I2S task. The renderer receives its signed waveform directly from the PCM capture paths.
+// I2S task. The renderer advances its 24-column waveform from this filtered level history.
 void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds);
 void board_port_push_recording_pcm(const int16_t *samples, size_t count);
 void board_port_show_text(const char *title, const char *text);

@@ -158,10 +158,13 @@ static const char *const s_wake_word_cn_phonetics[] = {
 // Bread Compact 80 ms cadence and a changed-region presenter below.
 #define PET_ANIMATION_FRAME_MS 150
 #define REMOTE_PET_RENDER_FRAME_MS 80
-// The recorder uses the same fast visual cadence as Bread Compact's live
-// level history.  It is intentionally independent of the calmer idle-pet
-// animation, otherwise speech transients arrive in visibly large jumps.
-#define RECORDING_RENDER_FRAME_MS 80
+// Bread Compact advances its 24-column history for each 512-sample I2S read
+// (32 ms at 16 kHz), and immediately presents that change. EchoEar groups four
+// native 128-sample TDM reads into the same history unit, so its round-screen
+// renderer must use the same 32 ms cadence rather than the idle pet's 80 ms
+// animation cadence; otherwise one frame visibly skips one or two bars.
+#define RECORDING_RENDER_FRAME_MS \
+    (RECORDING_WAVE_SAMPLES_PER_COLUMN * 1000u / AUDIO_RATE)
 #define REMOTE_PET_DEFAULT_KEYFRAME_MS 450
 #define READY_PROMPT_TIMEOUT_US (60LL * 1000 * 1000)
 #define IDLE_PET_SLEEP_TIMEOUT_US (30LL * 60 * 1000 * 1000)
@@ -216,27 +219,16 @@ static volatile bool s_command_capture_stop_requested;
 static bool s_recording_paused;
 static volatile uint32_t s_recording_elapsed_seconds;
 static volatile uint16_t s_recording_audio_level;
-// Same attack/release smoothing as Bread Compact's recorder. The raw PCM
-// envelope remains the waveform source; this only stabilizes the MIC readout.
+// Same attack/release smoothing as Bread Compact's recorder. The same level
+// history feeds both the visible waveform and MIC readout, so one spoken
+// block has one consistent amplitude everywhere on the recording surface.
 static uint16_t s_recording_smoothed_level;
-// Keep the same 24-column, 32 ms history that Bread Compact presents.  The
-// source is still EchoEar's cleaned mono PCM, rather than a synthetic wave,
-// but grouping four native 8 ms reads makes the bar progression and apparent
-// time span identical to the compact board.
+// Keep the same 24-column, 32 ms filtered-level history that Bread Compact
+// presents. EchoEar groups its native 8 ms TDM reads into the same visual
+// unit, so bar progression and the visible time span match the compact board.
 #define RECORDING_WAVE_COLUMNS 24
 #define RECORDING_WAVE_SAMPLES_PER_COLUMN 512
 static uint16_t s_recording_wave_levels[RECORDING_WAVE_COLUMNS];
-static uint16_t s_recording_wave_pending_peak;
-static uint16_t s_recording_wave_pending_samples;
-static uint16_t s_recording_wave_pending_clipped;
-// Incremented at every recorder session boundary. A capture block can finish
-// after its session was stopped; this lets the producer discard that stale
-// block instead of committing it into the next session's waveform.
-static uint32_t s_recording_wave_epoch;
-// ES7210 frames on EchoEar have a board-dependent DC offset. Track it slowly
-// so only variation around the microphone's idle level reaches the waveform.
-static int32_t s_recording_wave_dc;
-static uint16_t s_recording_wave_smoothed_level;
 static char s_ambient_time[9];
 static char s_ambient_location[24];
 static char s_ambient_date[8];
@@ -2177,6 +2169,7 @@ static void draw_recording_visual(void) {
     bool recording_is_meeting;
     uint32_t recording_elapsed_seconds;
     uint16_t recording_smoothed_level;
+    uint16_t wave_levels[RECORDING_WAVE_COLUMNS] = {0};
     // The capture task updates the meter while this renderer prepares a frame.
     // Take one coherent state snapshot, as Bread's LCD-serialized renderer
     // does, so a pause/mode/timer transition cannot mix two recorder states in
@@ -2187,6 +2180,7 @@ static void draw_recording_visual(void) {
     recording_is_meeting = s_recording_is_meeting;
     recording_elapsed_seconds = s_recording_elapsed_seconds;
     recording_smoothed_level = s_recording_smoothed_level;
+    memcpy(wave_levels, s_recording_wave_levels, sizeof(wave_levels));
     taskEXIT_CRITICAL(&s_state_lock);
     if (!recording_active) {
         if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -2210,8 +2204,13 @@ static void draw_recording_visual(void) {
     // indicator, then state / mode / timer) while placing it inside EchoEar's
     // circular safe area. The prior thick bands and breathing red disc made
     // the same recording state read as a different product surface.
-    fill_rect(52, 28, LCD_WIDTH - 52, 32, accent);
-    fill_rect(52, LCD_HEIGHT - 32, LCD_WIDTH - 52, LCD_HEIGHT - 28, accent);
+    // A 360 px framebuffer does not mean its corner pixels are visible: at
+    // these high/low rows the circular aperture only exposes a ~216 px chord.
+    // Keep Bread's paired thin recorder rules wholly inside that chord.  The
+    // matched coordinates leave a small bezel margin at every corner; the
+    // prior bottom-right pixel sat just outside the physical circle.
+    fill_rect(78, 34, LCD_WIDTH - 78, 38, accent);
+    fill_rect(78, LCD_HEIGHT - 38, LCD_WIDTH - 78, LCD_HEIGHT - 34, accent);
     fill_rect(58, 52, 80, 74, accent);
     fill_rect(65, 59, 73, 67, rgb565(255, 235, 238));
     draw_text24_centered_safe(48, recording_paused ? "已暂停" : "正在听取",
@@ -2224,19 +2223,16 @@ static void draw_recording_visual(void) {
     snprintf(elapsed, sizeof(elapsed), "%02lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
     draw_centered_text(122, elapsed, fg, bg);
 
-    // Match Bread Compact's clear, symmetric meter: the same 24 visible
+    // Match Bread Compact's clear, symmetric meter: the same 24 filtered-level
     // history columns advance from left to right around one quiet centre line.
-    // EchoEar fills the history from actual cleaned PCM, so the equivalent
-    // visual behavior does not reintroduce the former generated waveform.
+    // The source remains EchoEar's cleaned microphone level, but shares the
+    // reference board's one meter-to-waveform contract exactly.
     enum { RECORDING_VISUAL_BARS = RECORDING_WAVE_COLUMNS };
-    uint16_t wave_levels[RECORDING_VISUAL_BARS] = {0};
-    taskENTER_CRITICAL(&s_state_lock);
-    for (int bar = 0; bar < RECORDING_VISUAL_BARS; ++bar) {
-        wave_levels[bar] = s_recording_wave_levels[bar];
-    }
-    taskEXIT_CRITICAL(&s_state_lock);
 
-    const int wave_left = 42;
+    // 24 Bread-compatible bars at 12 px pitch span 283 px.  Centre that
+    // exact span on the 360 px round panel: the earlier x=42 placement made
+    // the bars sit 3.5 px to the right of their already-centred quiet rule.
+    const int wave_left = 39;
     const int wave_pitch = 12;
     const int wave_bar_width = 7;
     const int wave_center = 220;
@@ -2263,9 +2259,9 @@ static void draw_recording_visual(void) {
     // header and mode row; retain the action only, inside the round panel's
     // lower safe zone.
     if (recording_is_meeting) {
-        draw_text24_centered_safe(306, "点屏停止保存", 180, muted, bg);
+        draw_text24_centered_safe(298, "点屏停止保存", 180, muted, bg);
     } else {
-        draw_text24_centered_safe(306, "说完自动处理", 180, muted, bg);
+        draw_text24_centered_safe(298, "说完自动处理", 180, muted, bg);
     }
     s_render_target = NULL;
     if (frame) {
@@ -2298,9 +2294,9 @@ static void pet_animation_task(void *arg) {
         // gets Bread Compact's 80 ms cadence; native idle motion keeps its
         // quieter 150 ms rhythm.
         // The 80 ms cadence belongs only to the interpolated standby pet.
-        // Recording and other foreground surfaces have their own live data;
-        // running them at the pet cadence used to submit a needless full frame
-        // every 80 ms after a remote pet pack had been installed.
+        // Recording advances at the Bread-compatible 32 ms PCM history rate;
+        // it is kept independent from remote-pet timing so a pet pack cannot
+        // make the recorder skip live waveform columns.
         bool remote_pack_active = s_remote_pet_has_visible_pixels &&
                                   s_remote_pet_frame_count > 1 &&
                                   s_remote_pet_frame_ms &&
@@ -2980,7 +2976,16 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
         s_idle_pet_visible = false;
         s_idle_pet_sleep_expires_us = 0;
     }
-    if (active) s_message_active = false;
+    if (active) {
+        // Bread Compact makes a fresh recorder the foreground owner. Clear
+        // both reply variants here as well: an activation can begin directly
+        // from a still-visible result, and leaving its ownership bit set made
+        // EchoEar's next recording exit behave as if that old answer remained
+        // on screen.
+        s_message_active = false;
+        s_response_active = false;
+        s_response_image_active = false;
+    }
     s_recording_active = active;
     s_recording_paused = active && paused;
     s_recording_elapsed_seconds = active ? elapsed_seconds : 0;
@@ -2988,18 +2993,11 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
     // publish an initial elapsed=0 update after PCM has already begun to flow;
     // treating that as a reset discarded the first visible slice of speech.
     if (!active || new_session) {
-        ++s_recording_wave_epoch;
         memset(s_recording_wave_levels, 0, sizeof(s_recording_wave_levels));
-        s_recording_wave_pending_peak = 0;
-        s_recording_wave_pending_samples = 0;
-        s_recording_wave_pending_clipped = 0;
-        s_recording_wave_dc = 0;
-        s_recording_wave_smoothed_level = 0;
     }
-    // Bread Compact starts every recording with a quiet meter. EchoEar's raw
-    // PCM history is reset above, but the separately smoothed MIC readout also
-    // has to be reset here; otherwise a command begun immediately after a loud
-    // meeting opens with the previous session's percentage for one frame.
+    // Bread Compact starts every recording with a quiet meter. Reset the
+    // matching shared history too, otherwise a command begun immediately after
+    // a loud meeting opens with the previous session's percentage for one frame.
     if (!active || new_session) {
         s_recording_audio_level = 0;
         s_recording_smoothed_level = 0;
@@ -3038,109 +3036,22 @@ void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
                                      ? (uint16_t)((s_recording_smoothed_level + level * 3u) / 4u)
                                      : (uint16_t)((s_recording_smoothed_level * 7u + level) / 8u);
     s_recording_audio_level = s_recording_smoothed_level;
+    // Bread Compact shifts exactly this filtered meter value into its 24 bar
+    // history for every 512-frame input unit. Keep EchoEar's round renderer
+    // on that same source so the waveform and its MIC percentage agree.
+    memmove(&s_recording_wave_levels[0], &s_recording_wave_levels[1],
+            (RECORDING_WAVE_COLUMNS - 1) * sizeof(s_recording_wave_levels[0]));
+    s_recording_wave_levels[RECORDING_WAVE_COLUMNS - 1] = s_recording_smoothed_level;
     s_recording_elapsed_seconds = elapsed_seconds;
     taskEXIT_CRITICAL(&s_state_lock);
 }
 
-static void recording_wave_push_pcm(const int16_t *samples, size_t count) {
-    if (!samples || count == 0) return;
-    // Only one capture task owns the pending bucket. Aggregate PCM outside the
-    // critical section so I2S is never held behind hundreds of sample compares.
-    // EchoEar's physical reads contain 128 mono frames, while Bread's history
-    // advances for each 512-frame read. Four EchoEar reads therefore form one
-    // identical 32 ms visual step.
-    uint16_t completed_levels[8];
-    size_t completed = 0;
-    int32_t pending_dc;
-    uint16_t pending_peak;
-    uint16_t pending_samples;
-    uint16_t pending_clipped;
-    uint16_t smoothed_level;
-    uint32_t epoch;
-    taskENTER_CRITICAL(&s_state_lock);
-    if (!s_recording_active || s_recording_paused) {
-        taskEXIT_CRITICAL(&s_state_lock);
-        return;
-    }
-    epoch = s_recording_wave_epoch;
-    pending_dc = s_recording_wave_dc;
-    pending_peak = s_recording_wave_pending_peak;
-    pending_samples = s_recording_wave_pending_samples;
-    pending_clipped = s_recording_wave_pending_clipped;
-    smoothed_level = s_recording_wave_smoothed_level;
-    taskEXIT_CRITICAL(&s_state_lock);
-    for (size_t i = 0; i < count; ++i) {
-        int16_t sample = samples[i];
-        int32_t raw_magnitude = sample < 0 ? -(int32_t)sample : sample;
-        // Values this close to full scale are transport/clock artefacts on
-        // EchoEar's ES7210 path far more often than voice. Do not let them
-        // dominate the visual signal. The original PCM is still retained.
-        if (raw_magnitude >= 32500) {
-            ++pending_clipped;
-        } else {
-            // A 1/64 low-pass baseline follows the analogue DC level but is
-            // far too slow to follow speech. This makes silence a thin line
-            // and spoken sound the visible changing envelope.
-            pending_dc += ((int32_t)sample - pending_dc) / 64;
-            int32_t deviation = (int32_t)sample - pending_dc;
-            uint32_t magnitude = deviation < 0 ? (uint32_t)-deviation : (uint32_t)deviation;
-            if (magnitude > pending_peak) pending_peak = (uint16_t)magnitude;
-        }
-        ++pending_samples;
-        if (pending_samples >= RECORDING_WAVE_SAMPLES_PER_COLUMN) {
-            if (completed < sizeof(completed_levels) / sizeof(completed_levels[0])) {
-                // Discard a predominantly clipped period. For clean audio,
-                // use Bread's immediate peak-to-level semantics followed by
-                // its attack/release filter. That gives both boards one calm,
-                // equally paced 24-column trail instead of EchoEar's former
-                // independently averaged 96-column trace.
-                uint16_t level = 0;
-                if (pending_clipped <= RECORDING_WAVE_SAMPLES_PER_COLUMN / 4 &&
-                    pending_peak > 180) {
-                    level = pending_peak >= 12000
-                                ? 1000
-                                : (uint16_t)((pending_peak - 180u) * 1000u /
-                                             (12000u - 180u));
-                }
-                smoothed_level = level > smoothed_level
-                                     ? (uint16_t)((smoothed_level + level * 3u) / 4u)
-                                     : (uint16_t)((smoothed_level * 7u + level) / 8u);
-                completed_levels[completed] = smoothed_level;
-                ++completed;
-            }
-            pending_peak = 0;
-            pending_samples = 0;
-            pending_clipped = 0;
-        }
-    }
-    taskENTER_CRITICAL(&s_state_lock);
-    // A just-ended or paused session must not receive a late PCM block from
-    // the capture hand-off. The app model already filters this path; retaining
-    // the board-side guard keeps the physical renderer equally self-contained.
-    if (!s_recording_active || s_recording_paused || s_recording_wave_epoch != epoch) {
-        taskEXIT_CRITICAL(&s_state_lock);
-        return;
-    }
-    s_recording_wave_dc = pending_dc;
-    s_recording_wave_pending_peak = pending_peak;
-    s_recording_wave_pending_samples = pending_samples;
-    s_recording_wave_pending_clipped = pending_clipped;
-    s_recording_wave_smoothed_level = smoothed_level;
-    if (completed == 0) {
-        taskEXIT_CRITICAL(&s_state_lock);
-        return;
-    }
-    if (completed > RECORDING_WAVE_COLUMNS) completed = RECORDING_WAVE_COLUMNS;
-    size_t retained = RECORDING_WAVE_COLUMNS - completed;
-    memmove(&s_recording_wave_levels[0], &s_recording_wave_levels[completed],
-            retained * sizeof(s_recording_wave_levels[0]));
-    memcpy(&s_recording_wave_levels[retained], completed_levels,
-           completed * sizeof(completed_levels[0]));
-    taskEXIT_CRITICAL(&s_state_lock);
-}
-
 void board_port_push_recording_pcm(const int16_t *samples, size_t count) {
-    recording_wave_push_pcm(samples, count);
+    // EchoEar's board renderer derives its 24-column history from the same
+    // normalized level path as Bread Compact. PCM is retained by the caller
+    // for upload; it must not introduce a second, differently-smoothed wave.
+    (void)samples;
+    (void)count;
 }
 
 void board_port_show_text(const char *title, const char *text) {
@@ -3558,21 +3469,34 @@ esp_err_t board_port_audio_stream_read(int16_t *mono, size_t sample_capacity,
     if (level) *level = 0;
     if (!mono || !samples_read || sample_capacity == 0) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(audio_init(), TAG, "microphone init failed");
+    // Bread Compact reads one 512-sample (32 ms) mono block for both meeting
+    // persistence and the shared recorder meter. EchoEar's TDM DMA delivery
+    // is normally 128 mono frames, so build the same unit here rather than
+    // advancing the meeting UI four times faster on the physical board.
     int16_t tdm[512];
-    size_t received = 0;
-    esp_err_t err = i2s_channel_read(s_audio_rx, tdm, sizeof(tdm), &received,
-                                     pdMS_TO_TICKS(1000));
-    if (err != ESP_OK) return err;
-    size_t frames = received / (sizeof(int16_t) * ECHOEAR_MIC_SLOT_COUNT);
-    if (frames > sample_capacity) frames = sample_capacity;
-    int32_t chunk_peak = recording_pcm_process(tdm, frames, mono);
-    uint32_t scaled = chunk_peak <= 180 ? 0 : (uint32_t)(chunk_peak - 180) * 1000u / (12000u - 180u);
+    size_t total_frames = 0;
+    int32_t peak = 0;
+    while (total_frames < sample_capacity) {
+        size_t received = 0;
+        esp_err_t err = i2s_channel_read(s_audio_rx, tdm, sizeof(tdm), &received,
+                                         pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) return err;
+        size_t frames = received / (sizeof(int16_t) * ECHOEAR_MIC_SLOT_COUNT);
+        if (frames == 0) continue;
+        if (frames > sample_capacity - total_frames) {
+            frames = sample_capacity - total_frames;
+        }
+        int32_t chunk_peak = recording_pcm_process(tdm, frames, mono + total_frames);
+        if (chunk_peak > peak) peak = chunk_peak;
+        total_frames += frames;
+    }
+    uint32_t scaled = peak <= 180 ? 0 : (uint32_t)(peak - 180) * 1000u / (12000u - 180u);
     if (scaled > 1000) scaled = 1000;
     if (level) *level = (uint16_t)scaled;
     // The app UI forwards this exact PCM block to the common recording surface
     // after it has accepted the read. Keep this transport helper data-only so
     // a meeting block contributes one waveform bucket rather than two.
-    *samples_read = frames;
+    *samples_read = total_frames;
     return ESP_OK;
 }
 
@@ -4530,6 +4454,15 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     size_t speech_start_sample = 0;
     bool speech_started = false;
     int32_t peak = 0;
+    // Bread Compact's command reader receives a 512-frame (32 ms) block and
+    // applies a capture-side attack/release filter before handing the value to
+    // the shared recorder, which applies its own filter. EchoEar receives four
+    // 128-frame TDM blocks in that same interval, so aggregate the peak first:
+    // filtering each TDM block would make the meter four times more responsive
+    // than the reference board rather than matching its visible cadence.
+    uint16_t capture_smoothed_level = 0;
+    uint16_t meter_pending_peak = 0;
+    size_t meter_pending_samples = 0;
     uint16_t idle_level = 0;
     uint32_t last_ui_second = UINT32_MAX;
     s_command_capture_active = true;
@@ -4562,12 +4495,23 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
         uint16_t raw_level = chunk_peak <= 180 ? 0
                              : (uint16_t)(((chunk_peak - 180) * 1000) / (12000 - 180));
         if (raw_level > 1000) raw_level = 1000;
-        recording_wave_push_pcm(&mono[written_samples - frames], frames);
         uint32_t elapsed = (uint32_t)(written_samples / AUDIO_RATE);
-        // The shared recording renderer owns the one and only attack/release
-        // filter. Feeding it the raw level matches Bread Compact and avoids a
-        // second filter making EchoEar's MIC value lag the waveform.
-        board_port_set_audio_level(raw_level, elapsed);
+        if (raw_level > meter_pending_peak) meter_pending_peak = raw_level;
+        meter_pending_samples += frames;
+        if (meter_pending_samples >= RECORDING_WAVE_SAMPLES_PER_COLUMN) {
+            capture_smoothed_level = meter_pending_peak > capture_smoothed_level
+                                         ? (uint16_t)((capture_smoothed_level +
+                                                       meter_pending_peak * 3u) / 4u)
+                                         : (uint16_t)((capture_smoothed_level * 7u +
+                                                       meter_pending_peak) / 8u);
+            // This intentionally matches Bread Compact's short-command path:
+            // one filter in capture and a second one in the common recording
+            // UI. VAD below continues to use raw_level, preserving capture
+            // start/stop sensitivity.
+            board_port_set_audio_level(capture_smoothed_level, elapsed);
+            meter_pending_peak = 0;
+            meter_pending_samples = 0;
+        }
         // Command capture is synchronous, unlike the meeting stream.  Keep the
         // shared recording surface alive just as Bread Compact does so timer,
         // MIC readout and PCM waveform advance together instead of relying on

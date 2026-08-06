@@ -2568,6 +2568,14 @@ static void button_task(void *arg) {
 #endif
     int64_t pressed_at = 0;
     int64_t short_pending_at = 0;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    // Gesture ownership is decided when the first click is released, not when
+    // the 500 ms single/double decision eventually expires. A first click near
+    // the end of the 1.8 s startup selector can otherwise mature after the
+    // window closes and leak into normal operation as voice (SHORT), or combine
+    // with a late second click and start a meeting (DOUBLE).
+    bool short_pending_boot_owned = false;
+#endif
     bool long_sent = false;
     while (true) {
         int64_t now = esp_timer_get_time();
@@ -2586,6 +2594,9 @@ static void button_task(void *arg) {
         if (!released && pressed_at && !long_sent && now - pressed_at >= 2500000) {
             long_sent = true;
             short_pending_at = 0;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+            short_pending_boot_owned = false;
+#endif
             ESP_LOGI(TAG, "activate long hold detected");
             if (s_button_cb) {
                 s_button_cb(BOARD_BUTTON_LONG, BOARD_INPUT_SOURCE_ACTIVATE_KEY,
@@ -2596,12 +2607,19 @@ static void button_task(void *arg) {
             int64_t duration = now - pressed_at;
             if (long_sent || duration >= 2500000) {
                 short_pending_at = 0;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                short_pending_boot_owned = false;
+#endif
             } else if (short_pending_at && now - short_pending_at <= 500000) {
                 short_pending_at = 0;
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
                 if (s_boot_network_window_active) {
+                    short_pending_boot_owned = false;
                     s_boot_network_toggle_requested = true;
                     ESP_LOGI(TAG, "GPIO0 startup double click: network toggle requested");
+                } else if (short_pending_boot_owned) {
+                    short_pending_boot_owned = false;
+                    ESP_LOGI(TAG, "GPIO0 startup gesture completed after selector close; consumed");
                 } else
 #endif
                 if (s_button_cb) {
@@ -2610,6 +2628,9 @@ static void button_task(void *arg) {
                 }
             } else {
                 short_pending_at = now;
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+                short_pending_boot_owned = s_boot_network_window_active;
+#endif
             }
             pressed_at = 0;
         }
@@ -2617,8 +2638,12 @@ static void button_task(void *arg) {
         if (short_pending_at && now - short_pending_at > 500000) {
             short_pending_at = 0;
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
-            if (s_boot_network_window_active) {
-                // A single click inside the startup selector window is consumed.
+            bool consume_startup_click = s_boot_network_window_active ||
+                                         short_pending_boot_owned;
+            short_pending_boot_owned = false;
+            if (consume_startup_click) {
+                // Consume the whole gesture even if its delayed single-click
+                // decision crosses the selector deadline.
             } else
 #endif
             if (s_button_cb) {

@@ -318,25 +318,9 @@ func (r *hardwareAgentRuntimeRegistry) handler(clientID string) (*IMMessageHandl
 	}
 }
 
-// activeHandler returns a currently-published runtime without
-// creating one. Delivery paths use it after handler selection to close the
-// tiny unbind-vs-message window.
-func (r *hardwareAgentRuntimeRegistry) activeHandler(clientID string) *IMMessageHandler {
-	if r == nil {
-		return nil
-	}
-	clientID = normalizeHardwareRuntimeClientID(clientID)
-	if clientID == "" {
-		return nil
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if runtime := r.runtimes[clientID]; runtime != nil {
-		return runtime.handler
-	}
-	return nil
-}
-
+// isActiveHandler confirms that a delivery still belongs to the exact runtime
+// that was originally selected. It rejects both a removed runtime and an old
+// runtime after a same-ID replacement is published.
 func (r *hardwareAgentRuntimeRegistry) isActiveHandler(clientID string, handler *IMMessageHandler) bool {
 	if r == nil || handler == nil {
 		return false

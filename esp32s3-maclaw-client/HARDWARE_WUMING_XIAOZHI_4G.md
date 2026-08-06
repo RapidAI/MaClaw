@@ -349,3 +349,96 @@ Fangtang 与 Bread Compact 继续共用严格的事务关联规则：终态结�
 连接、handshake 200、离线唤醒、宠物下载及 `service_ready=true`，未出现 panic、
 assert、Guru Meditation 或 watchdog。发布端关联修复仍需部署 Hub/GUI 后，再分别用
 Wi-Fi 与 4G 完成真实语音、Thinking、终态结果、TTS、自动翻页及双击取消回归。
+### 2026-08-06 Hub queued device identity fix
+
+The real Wi-Fi voice regression reached wake word detection, command capture,
+upload, the Thinking surface, and a correctly correlated terminal result.  The
+terminal payload nevertheless contained `third-party hardware message is
+missing client ID`.  The defect was in the Hub background queue: the inbound
+`ClientTools` and `ClientToolContext` were present before enqueue, but were not
+copied into `IMTask`, so the worker could not restore the concrete device ID,
+conversation ID, or command `replyTo` before sending `im.user_message` to the
+GUI Agent.
+
+The Hub now copies both fields into `IMTask` and re-stashes them in
+`InitTaskDispatcher`; the legacy non-queue route also preserves them.  Direct
+tests cover both the queued task fields and the actual `im.user_message`
+delivered to the Agent. `go test ./hub/internal/im -count=1` passes.  A Linux
+Hub binary is staged at `build/deploy-hub-bin/maclaw-hub-context-fix` (SHA-256
+`B0EF3D4C5E385B429A61B7B590C0C44263470D48BAFCBD4400DB8ABC2D6E1170`).
+After deployment, COM5 still needs the final Wi-Fi/4G TTS, automatic paging,
+double-click cancel, and meeting-upload end-to-end regressions. COM3/COM4 must
+not be accessed for this work.
+
+### 2026-08-06 部署后 Wi-Fi 语音事务实测
+
+上述 Hub 队列身份修复部署后，COM5 已完成一次真实 Wi-Fi 语音事务。实测日志
+`serial-com5-fangtang-hub-context-live-e2e-v2.log` 依次确认：离线“码卡龙”唤醒、
+命令语音起音、静音自动收尾、WAV 上传地址申请、媒体上传、命令提交、带相同
+`voice-*` ID 的终态文字、`speech_parts_pending=1`、相关 TTS 语音分片下载播放和
+剩余分片归零。GUI 日志同时确认 Hub 下发的 `ClientToolContext` 已恢复
+`client=esp32s3-98a316d161bc` 与 `replyTo=voice-55415173`；此前的
+`third-party hardware message is missing client ID` 不再出现。
+
+普通多模态事务也已修正为只由最后一个实际可交付的 image/file frame 终结；只有
+携带有效 `speech_parts_pending` 的结果文字允许先结束 Thinking 并武装后续播放，
+纯语音响应仍由最后一个通过能力与媒体校验的分片终结。相关 GUI 测试和硬件运行时
+测试已通过，新 GUI 已替换运行并重新连接生产 Hub。
+
+本轮同时把开机方糖调整为更明确的拟物咖啡方糖：亮奶油白顶面、暖蔗糖侧面、
+可穿过 RGB565 量化的砂糖晶粒、细暖色倒角和浅咖啡反光，不使用黑色描边。素材由
+`tools/generate_fangtang_sugar.py` 确定性生成，预览为
+`main/fangtang_sugar_device_preview.png`。Fangtang App 构建通过，并只刷入 COM5
+的 App 分区 `0x10000`；esptool 写后返回 `Hash of data verified`，未访问 COM3/COM4。
+
+兼容性构建随后使用三块板各自的 SDK 配置重新执行并全部通过：Fangtang 4G App
+为 3230080 字节（SHA-256
+`3A9C2202BF6A63A1C7E7E3FB528574D4EE22C80E9275ED29CE2660920055C021`），Bread
+Compact App 为 3203152 字节，EchoEar-2ST App 为 3122016 字节。本轮只构建后两种
+配置，没有访问或刷写 COM3/COM4。
+
+### 2026-08-06 Hub 部署后的离线审计与回归
+
+生产 Hub 已部署上述队列身份修复。因现场无人操作，本轮按要求不执行依赖物理启动
+双击的 4G 实机测试；已停止串口捕获进程并释放 COM5，也没有访问 COM3/COM4。此前
+保存的 4G 实机证据仍证明 ML307 注册/PDP、原生 HTTP handshake、长轮询、媒体下载、
+ACK 和 Welcome 播放可用；但“新 Hub + 4G”的完整语音、Thinking 双击取消和会议
+分块上传仍属于待现场复测项，不能用本轮 Wi-Fi 证据替代。
+
+离线代码审计确认 Fangtang 与 Bread Compact 共用同一事务层：录音完成后依次进入
+“正在上传语音”“正在提交指令”“远端处理中”，提交使用幂等 `voice-*` ID，终态严格
+校验 `replyTo`，文字先终态时保留 `speech_parts_pending` 供后续 TTS 播放。Fangtang
+仅在传输层选择 ML307：大请求以 4096 字节 `MHTTPCONTENT` 连续追加，四个模组 HTTP
+槽位有界分配，前台请求可由双击取消；会议录音沿用创建会话、带 SHA-256 的分块 PUT、
+complete、process、NVS 断点续传和失败后重试流程。启动 1.8 秒窗口只消费 GPIO0
+单击并把双击用于持久化切换网络；窗口关闭后，短按录音、处理中双击取消、待机双击
+会议、会议中任意完成手势停止、长按进入配置，均不会泄漏到其他事务。
+
+同时修正了一个 Fangtang 4G 诊断细节：ML307 模式发生连接错误时屏幕现在提示
+“请检查 4G”，不再沿用 Bread/Wi-Fi 的“请检查 Wi-Fi”；该分支不改变其他板型。
+
+启动网络选择器也补齐了窗口边界所有权：启动窗口内第一次释放的点击被完整归属给
+网络选择事务，即使 500 ms 单击/双击判定在 1.8 秒窗口关闭后才到期，也会被消费，
+不会泄漏为普通短按启动语音，或与窗口后的第二次点击组合成待机双击会议。只有整个
+手势都从窗口关闭后开始，才进入正常单键事务。
+
+当前源码重新用三块板各自配置完整构建通过：Fangtang 4G App 为 3230000 字节，
+SHA-256 为 `46B16269A17B0412D66B9E0741CC90219D210EBFEAFD1F5A3B8DB3DEEEF44FC6`；
+Bread Compact App 为 3203056 字节，SHA-256 为
+`C3FC9A97B5AB88D80F9C635D825687E7095189939AEF0458C66102CF409084A5`；
+EchoEar-2ST App 为 3122048 字节，SHA-256 为
+`C1D1E7A82C8CFAAB06F3C4E0D84342708D4657F0044AA5ED24B0378A7F3B05B0`。
+三者均通过 App 分区大小检查；本轮未刷写任何设备。
+
+上述启动手势窗口边界修复随后用 Fangtang 与 Bread Compact 配置重新构建通过：
+Fangtang App 为 3230112 字节（SHA-256
+`980AD48DA0D2AC709B42223074C6008EB2DF78987855A507A4CFA01A6BCE6F22`），Bread
+Compact App 为 3203056 字节。修复代码只在 `CONFIG_MACLAW_BOARD_FANGTANG_4G`
+条件内改变手势所有权；Bread 构建用于证明共享源文件没有兼容性回归。本轮仍未刷机。
+### 2026-08-06 4G 会议分块流式读取审计
+
+现场无人，本轮按要求跳过 4G 实机测试，也未访问 COM3、COM4、COM5。离线审计发现：Hub 允许握手协商 64 KiB 至 8 MiB 的会议分块，但 Fangtang 的 ML307 路径此前会先为整个分块分配同等大小的 PSRAM，再交给传输层按 4 KiB 写入模块。设备只有 8 MiB PSRAM，同时还驻留双帧缓冲、宠物帧及任务内存，因此 8 MiB 协商值会确定性分配失败，较小分块也会造成不必要的峰值占用。
+
+现在 ML307 增加了带回调的请求体流式接口。会议 PUT 直接从 SPIFFS 文件读入现有的 16 KiB I/O 缓冲，并继续以 4 KiB `MHTTPCONTENT` append 写入模块；Hub 看到的单个 PUT、`Content-Length`、`X-Chunk-SHA256`、分块编号以及 NVS 断点续传语义均不变。内存峰值从“协商分块大小”降为固定 16 KiB，因此完整保留 Hub 64 KiB 至 8 MiB 的协商能力，而不是人为缩小会议功能。普通语音和 JSON 请求仍走原有内存请求体接口；Bread Compact 与 EchoEar-2ST 的 Wi-Fi/HTTPS 上传路径不变。
+
+配对恢复页的成功说明同时改为中性的 “The selected network is connected”，避免 Fangtang 选择 4G、仅以 SoftAP 提供本地配对页时错误声称 Wi-Fi 上行已连接。4G 会议上传、Thinking 双击取消、断线恢复和自动翻页仍需人员回到设备旁后完成最终实机回归，不能用本轮静态审计代替。

@@ -104,17 +104,17 @@ def textured_face(mask: Image.Image, base: tuple[int, int, int], seed: int,
 def main() -> None:
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
-    # A very light coffee-coloured contact shadow anchors the white cube.  The
-    # shadow is intentionally much paler than a normal product-photo shadow:
-    # the 240 px panel crushes low tones, which used to make this mark read as
-    # a black technology box instead of something edible.
+    # A warm latte-coloured pool of reflected light keeps the isolated object
+    # from looking like a dark app icon on the navy LCD surface.  It is light,
+    # diffuse and visibly brown only at the centre: a coffee-table reflection,
+    # not a black drop shadow.
     shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
-    sd.ellipse((18 * SSAA, 133 * SSAA, 177 * SSAA, 162 * SSAA),
-               fill=(218, 174, 119, 42))
-    sd.ellipse((43 * SSAA, 142 * SSAA, 157 * SSAA, 158 * SSAA),
-               fill=(189, 137, 82, 28))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(9.0 * SSAA))
+    sd.ellipse((8 * SSAA, 126 * SSAA, 182 * SSAA, 166 * SSAA),
+               fill=(244, 204, 142, 74))
+    sd.ellipse((38 * SSAA, 139 * SSAA, 160 * SSAA, 160 * SSAA),
+               fill=(202, 143, 76, 58))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(10.0 * SSAA))
     canvas.alpha_composite(shadow)
 
     # Slightly irregular, bevelled perspective: a real pressed cube, not a
@@ -129,14 +129,16 @@ def main() -> None:
     left_mask = mask_polygon(left)
     right_mask = mask_polygon(right)
 
-    # Warm white cane-sugar tones. Even the shaded face remains cream rather
-    # than grey, so the mark reads as something dropped into coffee at a glance.
-    canvas.alpha_composite(textured_face(left_mask, (255, 255, 248), 0x51A7,
-                                         (-0.5, -0.4), 980))
-    canvas.alpha_composite(textured_face(right_mask, (255, 251, 239), 0x51A8,
-                                         (-0.8, -0.4), 930))
-    canvas.alpha_composite(textured_face(top_mask, (255, 255, 252), 0x51A9,
-                                         (0.5, -0.7), 1160))
+    # Deliberately separate the three planes.  The previous almost-identical
+    # whites flattened into one dark-edged block on RGB565.  These cane-sugar
+    # creams retain a bright edible top while the front faces pick up distinct
+    # honey/coffee reflections and therefore read as a physical cube.
+    canvas.alpha_composite(textured_face(left_mask, (249, 244, 226), 0x51A7,
+                                         (-13.0, -9.0), 1120))
+    canvas.alpha_composite(textured_face(right_mask, (235, 221, 193), 0x51A8,
+                                         (-18.0, -8.0), 1060))
+    canvas.alpha_composite(textured_face(top_mask, (255, 253, 241), 0x51A9,
+                                         (7.0, -12.0), 1320))
 
     # Pressed sugar has shallow pits and clumped crystals on all faces. Larger
     # warm pinholes survive the 188x164 -> LCD pipeline and prevent the result
@@ -156,7 +158,7 @@ def main() -> None:
                 continue
             radius = rng.choice((3, 4, 4, 5, 5, 6))
             pd.ellipse((x - radius, y - radius, x + radius, y + radius),
-                       fill=(224, 207, 175, rng.randrange(30, 53)))
+                       fill=(197, 165, 119, rng.randrange(36, 66)))
             pd.ellipse((x - radius // 2, y - radius // 2,
                         x + radius // 3, y + radius // 3),
                        fill=(255, 255, 245, rng.randrange(62, 116)))
@@ -168,9 +170,9 @@ def main() -> None:
     bounce = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     bd = ImageDraw.Draw(bounce)
     bd.ellipse((17 * SSAA, 48 * SSAA, 98 * SSAA, 148 * SSAA),
-               fill=(255, 255, 244, 30))
+               fill=(255, 255, 244, 54))
     bd.ellipse((104 * SSAA, 66 * SSAA, 178 * SSAA, 150 * SSAA),
-               fill=(255, 239, 206, 18))
+               fill=(255, 221, 166, 32))
     bounce = bounce.filter(ImageFilter.GaussianBlur(18 * SSAA))
     face_mask = Image.new("L", (W, H), 0)
     face_mask = Image.composite(left_mask, face_mask, left_mask)
@@ -247,16 +249,20 @@ def main() -> None:
                    fill=(255, 255, 255, 220))
     canvas.alpha_composite(rim.filter(ImageFilter.GaussianBlur(0.12 * SSAA)))
 
-    # Restrained cream edge definition; there is deliberately no black outline
-    # or technology-box seam.
+    # Fine warm seams plus an adjacent white glint create bevel depth without a
+    # black outline.  Both strokes survive RGB565 and remain food-like.
     edge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ed = ImageDraw.Draw(edge)
     ed.line(pts([(30, 63), (98, 84), (102, 146)]),
-            fill=(255, 255, 250, 220), width=SSAA)
+            fill=(210, 185, 145, 105), width=2 * SSAA)
+    ed.line(pts([(31, 62), (99, 82), (104, 144)]),
+            fill=(255, 255, 246, 180), width=SSAA)
     ed.line(pts([(107, 81), (163, 48)]),
-            fill=(255, 254, 245, 180), width=SSAA)
+            fill=(205, 177, 136, 92), width=2 * SSAA)
+    ed.line(pts([(108, 79), (162, 47)]),
+            fill=(255, 252, 236, 190), width=SSAA)
     ed.line(pts([(23, 52), (74, 15), (90, 17)]),
-            fill=(255, 255, 248, 125), width=SSAA)
+            fill=(255, 255, 248, 210), width=SSAA)
     canvas.alpha_composite(edge.filter(ImageFilter.GaussianBlur(0.2 * SSAA)))
 
     canvas = canvas.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)

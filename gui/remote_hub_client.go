@@ -1815,8 +1815,18 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 		payload.Platform, payload.UserID = normalizeHubThirdPartyAuditIdentity(payload.Platform, payload.UserID)
 		// Create a progress callback that sends intermediate updates to Hub.
 		// Hub will relay these to the user via IM and reset the response timeout.
+		// A Hub third-party delivery represents one concrete ESP32 binding.
+		// Route only those deliveries to a device runtime; normal Hub IM channels
+		// continue to use the desktop/Hub handler and retain their existing state.
+		var handler *IMMessageHandler
+		var handlerErr error
 		progressFilter := newIMProgressVisibilityFilter(c.app)
 		onProgress := func(text string) {
+			if isThirdPartyHardware && (payload.ClientToolContext == nil || !c.isActiveHardwareAgentHandler(payload.ClientToolContext.ClientID, handler)) {
+				// Suppress progress from an Agent whose hardware binding was removed
+				// while its current turn was unwinding.
+				return
+			}
 			forwardText, ok := progressFilter.ForwardProgressOrHeartbeat(text)
 			if !ok {
 				return
@@ -1825,11 +1835,6 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 				c.app.log(fmt.Sprintf("[im-progress] send error for request=%s: %s", requestID, err.Error()))
 			}
 		}
-		// A Hub third-party delivery represents one concrete ESP32 binding.
-		// Route only those deliveries to a device runtime; normal Hub IM channels
-		// continue to use the desktop/Hub handler and retain their existing state.
-		var handler *IMMessageHandler
-		var handlerErr error
 		if isThirdPartyHardware {
 			clientID := ""
 			if payload.ClientToolContext != nil {
