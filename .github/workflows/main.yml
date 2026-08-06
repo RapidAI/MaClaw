@@ -1876,7 +1876,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          submodules: recursive
+          # Do not request recursive submodules here. The repository contains
+          # a legacy gitlink without a .gitmodules mapping; checkout otherwise
+          # fails before any of the three signed firmware packages are built.
+          # This ESP-IDF project has no declared submodule dependency.
+          submodules: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: ClawMateMaker/go.mod
@@ -1887,6 +1891,7 @@ jobs:
           FIRMWARE_NAME: ${{ matrix.firmware_name }}
           CLAWMATE_FIRMWARE_SIGNING_KEY: ${{ secrets.CLAWMATE_FIRMWARE_SIGNING_KEY }}
           CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
+          CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           project_dir="$GITHUB_WORKSPACE/esp32s3-maclaw-client"
@@ -1910,6 +1915,12 @@ jobs:
               set -euo pipefail
               build_dir="build-release-${{ matrix.device }}"
               idf.py -B "$build_dir" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" build
+              # The desktop tool's nonce-bound IDENTIFY and BOOT_STATUS
+              # protocol runs on the secondary USB Serial/JTAG console. Do
+              # not publish an otherwise-valid image that cannot prove a
+              # post-flash boot to ClawMate Maker.
+              grep -qx "#define CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG 1" "$build_dir/config/sdkconfig.h"
+              grep -qx "#define CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED 1" "$build_dir/config/sdkconfig.h"
               idf.py -B "$build_dir" merge-bin -f raw -o "release/${FIRMWARE_NAME}.bin"
 
               package_dir="release/${FIRMWARE_NAME}"
@@ -1929,6 +1940,17 @@ jobs:
               zip -qr "${FIRMWARE_NAME}.zip" "${FIRMWARE_NAME}"
               rm -rf "${FIRMWARE_NAME}"
             '
+
+          # Run this on the GitHub runner, where actions/setup-go supplies Go.
+          # The ESP-IDF image is intentionally limited to the toolchain and
+          # does not guarantee a Go installation.
+          (
+            cd ClawMateMaker
+            go run ./tools/protocolcheck \
+              --firmware-source "$project_dir/main/firmware_identity.c" \
+              --sdkconfig-header "$project_dir/$build_dir/config/sdkconfig.h" \
+              --protocol 2
+          )
 
           # The user-facing flasher accepts only signed .clawfw archives. The
           # signing key is a protected release secret and never becomes an
@@ -1954,6 +1976,20 @@ jobs:
           test -s "$release_dir/${FIRMWARE_NAME}.zip"
           test -s "$release_dir/${FIRMWARE_NAME}.clawfw"
 
+          # Verify exactly what will be uploaded, using the same public trust
+          # root and catalog binding enforced by the desktop application. The
+          # evidence is later published with the Release assets for incident
+          # triage without exposing signing material.
+          (
+            cd ClawMateMaker
+            go run ./tools/fwverify \
+              --input "$release_dir/${FIRMWARE_NAME}.clawfw" \
+              --board '${{ matrix.device }}' \
+              --key-id "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID" \
+              --evidence "$release_dir/${FIRMWARE_NAME}.clawfw.evidence.json"
+          )
+          test -s "$release_dir/${FIRMWARE_NAME}.clawfw.evidence.json"
+
       - name: Upload ${{ matrix.device }} firmware package
         uses: actions/upload-artifact@v5
         with:
@@ -1963,6 +1999,7 @@ jobs:
             esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.bin
             esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.zip
             esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.clawfw
+            esp32s3-maclaw-client/release/${{ matrix.firmware_name }}.clawfw.evidence.json
           if-no-files-found: error
 
   # ============================================================
@@ -2020,20 +2057,27 @@ jobs:
         env:
           CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
           CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
+          CLAWMATE_FIRMWARE_SIGNING_KEY: ${{ secrets.CLAWMATE_FIRMWARE_SIGNING_KEY }}
         run: |
           set -euo pipefail
           test -n "$CLAWMATE_FIRMWARE_PUBLIC_KEY"
           test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
+          test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY"
           cd ClawMateMaker
           wails build -platform '${{ matrix.platform }}' -clean -o '${{ matrix.output_name }}' \
             -ldflags "-X main.releaseBuild=true -X main.releaseKeyID=$CLAWMATE_FIRMWARE_SIGNING_KEY_ID -X main.releasePublicKeyBase64=$CLAWMATE_FIRMWARE_PUBLIC_KEY"
           test -s "build/bin/${{ matrix.executable }}"
       - name: Build managed esptool sidecar
         shell: bash
+        env:
+          CLAWMATE_FIRMWARE_SIGNING_KEY: ${{ secrets.CLAWMATE_FIRMWARE_SIGNING_KEY }}
+          CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
         run: |
           set -euo pipefail
           # Wails --clean above owns build/bin, so package the sidecar only
           # after it has created the signed desktop executable.
+          test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY"
+          test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
           python3 -m venv "$RUNNER_TEMP/clawmate-esptool-venv"
           "$RUNNER_TEMP/clawmate-esptool-venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir 'esptool==5.3.1' pyinstaller
           pyinstaller_args=(--clean --onefile --collect-data esptool --name esptool)
@@ -2047,10 +2091,11 @@ jobs:
           if [ "$(uname)" = "Darwin" ]; then
             file "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" | grep -q '${{ matrix.sidecar_arch }}'
           fi
-          "$RUNNER_TEMP/clawmate-esptool-venv/bin/python" ClawMateMaker/tools/sidecar/write_manifest.py \
+          go run ./ClawMateMaker/tools/sidecarsign \
             --dir ClawMateMaker/build/bin/tools \
             --binary '${{ matrix.sidecar_binary }}' \
-            --version 'esptool 5.3.1'
+            --version 'esptool 5.3.1' \
+            --key-id "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
           "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" version
           test -s "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}"
           test -s "ClawMateMaker/build/bin/tools/sidecar-manifest.json"
@@ -2233,6 +2278,9 @@ jobs:
               "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw",
               "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw",
               "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw",
+              "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw.evidence.json",
+              "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw.evidence.json",
+              "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw.evidence.json",
               "ClawMateMaker-windows-amd64.zip",
               "ClawMateMaker-darwin-amd64.zip",
               "ClawMateMaker-darwin-arm64.zip",

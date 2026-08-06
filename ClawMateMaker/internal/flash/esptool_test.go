@@ -2,14 +2,20 @@ package flash
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestManagedToolRequiresMatchingHash(t *testing.T) {
@@ -43,6 +49,55 @@ func TestManagedToolRequiresMatchingHash(t *testing.T) {
 	}
 	if _, err := managedTool(filepath.Join(filepath.Dir(dir), "ClawMateMaker")); err == nil {
 		t.Fatal("tampered sidecar accepted")
+	}
+}
+
+func TestOfficialManagedToolRequiresValidManifestSignature(t *testing.T) {
+	binName := "esptool"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	dir := filepath.Join(t.TempDir(), "tools")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(dir, binName)
+	contents := []byte("signed-sidecar")
+	if err := os.WriteFile(binary, contents, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := sidecarManifest{SchemaVersion: 1, Tools: []sidecarRecord{{Name: "esptool", Path: binName, SHA256: "sha256:" + hex.EncodeToString(sum[:]), Version: "5.3.1"}}}
+	payload, err := sidecarManifestPayload(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Signature = &sidecarSignature{Algorithm: "ed25519", KeyID: "release-test", Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload))}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sidecar-manifest.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := sidecarConfig{executable: filepath.Join(filepath.Dir(dir), "ClawMateMaker"), production: true, keyID: "release-test", publicKeyBase64: base64.StdEncoding.EncodeToString(pub)}
+	if tool, err := managedToolForConfig(config); err != nil || tool.Path != binary {
+		t.Fatalf("tool=%+v err=%v", tool, err)
+	}
+	manifest.Tools[0].Version = "modified"
+	raw, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sidecar-manifest.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managedToolForConfig(config); err == nil {
+		t.Fatal("tampered manifest accepted by official build")
 	}
 }
 
@@ -118,6 +173,13 @@ func TestParseSecurityInfoFailsClosedForUnknownValues(t *testing.T) {
 		t.Fatal("unknown must remain unknown")
 	}
 }
+
+func TestParseSecurityInfoTreatsNotEnabledAsDisabled(t *testing.T) {
+	s := ParseSecurityInfo("Secure Boot: Not enabled\nFlash Encryption: Not enabled\nSecure version: 0")
+	if s.SecureBoot == nil || *s.SecureBoot || s.FlashEncryption == nil || *s.FlashEncryption || s.SecureVersion == nil || *s.SecureVersion != 0 {
+		t.Fatalf("not-enabled baseline parsed incorrectly: %#v", s)
+	}
+}
 func TestParseSecurityInfoRecognizesESPTargetZeroFlagsBaseline(t *testing.T) {
 	s := ParseSecurityInfo("Security Information:\nFlags: 0x00000000 (0b0)\nSecure Boot: Disabled\nFlash Encryption: Disabled")
 	if s.SecureVersion == nil || *s.SecureVersion != 0 {
@@ -126,5 +188,34 @@ func TestParseSecurityInfoRecognizesESPTargetZeroFlagsBaseline(t *testing.T) {
 	unknown := ParseSecurityInfo("Flags: 0x00000001\nSecure Boot: Disabled\nFlash Encryption: Disabled")
 	if unknown.SecureVersion != nil {
 		t.Fatal("non-zero eFuse flags must remain unknown and fail closed")
+	}
+}
+
+func TestRunWithCancellationTerminatesSidecar(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("covered by the Windows build; this test uses a POSIX sleep helper")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.Command("sh", "-c", "sleep 30")
+	if err := prepareProcessTree(cmd); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- runWithCancellation(ctx, cmd) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for cmd.Process == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if cmd.Process == nil {
+		t.Fatal("sidecar did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("cancellation error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("sidecar cancellation did not complete")
 	}
 }

@@ -179,6 +179,9 @@ func Verify(pathname string) (Verified, error) {
 		if !hashEqual(sum, spec.SHA256) {
 			return Verified{}, fmt.Errorf("sha256 mismatch for %s", name)
 		}
+		if err := validateFileSpec(spec); err != nil {
+			return Verified{}, fmt.Errorf("invalid manifest file %s: %w", name, err)
+		}
 	}
 	for key := range files {
 		if key == "manifest.json" || key == "manifest.sig" {
@@ -194,6 +197,25 @@ func Verify(pathname string) (Verified, error) {
 		return Verified{}, err
 	}
 	return Verified{Manifest: m, ManifestSHA256: "sha256:" + hex.EncodeToString(manifestHash[:]), ArchiveSHA256: "sha256:" + archiveHash}, nil
+}
+
+func validateFileSpec(spec FileSpec) error {
+	if spec.Size <= 0 || spec.Region == "" {
+		return errors.New("positive size and region are required")
+	}
+	if spec.Region == "metadata" {
+		if spec.Offset != nil {
+			return errors.New("metadata file must not declare a flash offset")
+		}
+		return nil
+	}
+	if spec.Offset == nil {
+		return errors.New("flash image offset is required")
+	}
+	if *spec.Offset%0x1000 != 0 {
+		return errors.New("flash image offset must be 4 KiB aligned")
+	}
+	return nil
 }
 
 // VerifyRelease performs all archive checks and verifies manifest.sig against an
@@ -263,6 +285,19 @@ func VerifyRelease(pathname string, trust TrustStore) (Verified, error) {
 func InstallPlanFor(m Manifest) (InstallPlan, error) {
 	switch m.Mode {
 	case ModeFull:
+		flashImages := 0
+		for _, file := range m.Files {
+			if file.Region == "metadata" {
+				continue
+			}
+			if file.Region != "flash" || file.Offset == nil || *file.Offset != 0 {
+				return InstallPlan{}, errors.New("full package must contain exactly one complete flash image at offset 0")
+			}
+			flashImages++
+		}
+		if flashImages != 1 {
+			return InstallPlan{}, errors.New("full package must contain exactly one complete flash image")
+		}
 		return InstallPlan{Mode: m.Mode, RequiresRecovery: true, PreservesUserData: false, Summary: "完整刷写：会按已签名的包写入系统镜像，可能覆盖启动、分区、模型或存储区域。", Warning: "刷写中断后必须进入 ROM 下载模式并使用完整恢复包；当前单 factory App 布局不保证旧版本仍可启动。"}, nil
 	case ModeAppOnly:
 		appImages := 0
@@ -272,6 +307,9 @@ func InstallPlanFor(m Manifest) (InstallPlan, error) {
 			}
 			if file.Region != "app" {
 				return InstallPlan{}, fmt.Errorf("app-only package contains non-app region %s", file.Region)
+			}
+			if file.Offset == nil {
+				return InstallPlan{}, errors.New("app-only package contains an app image without an offset")
 			}
 			appImages++
 		}

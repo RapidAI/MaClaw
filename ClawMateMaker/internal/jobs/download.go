@@ -68,6 +68,15 @@ func (j *DownloadJob) Run(ctx context.Context) (result catalog.DownloadedRelease
 		retErr = fmt.Errorf("official firmware signature verification: %w", err)
 		return result, retErr
 	}
+	profile, err := catalog.Profile(j.boardID)
+	if err != nil {
+		retErr = err
+		return result, retErr
+	}
+	if err := catalog.ValidateManifestBinding(profile, verified.Manifest.Board.ID, verified.Manifest.Board.ProfileHash, verified.Manifest.Chip.Family, verified.Manifest.Chip.FlashBytes); err != nil {
+		retErr = fmt.Errorf("official firmware catalog binding: %w", err)
+		return result, retErr
+	}
 	plan, err := firmware.InstallPlanFor(verified.Manifest)
 	if err != nil {
 		retErr = fmt.Errorf("official firmware install plan: %w", err)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"clawmatemaker/internal/catalog"
@@ -73,8 +72,8 @@ func (j *ImportJob) Run(ctx context.Context) (result catalog.DownloadedRelease, 
 	if err != nil {
 		return result, fmt.Errorf("offline firmware signature verification: %w", err)
 	}
-	if !strings.EqualFold(verified.Manifest.Board.ID, profile.FirmwareBoardID) {
-		return result, fmt.Errorf("offline firmware board %q does not match selected board %q", verified.Manifest.Board.ID, profile.FirmwareBoardID)
+	if err := catalog.ValidateManifestBinding(profile, verified.Manifest.Board.ID, verified.Manifest.Board.ProfileHash, verified.Manifest.Chip.Family, verified.Manifest.Chip.FlashBytes); err != nil {
+		return result, fmt.Errorf("offline firmware catalog binding: %w", err)
 	}
 	plan, err := firmware.InstallPlanFor(verified.Manifest)
 	if err != nil {

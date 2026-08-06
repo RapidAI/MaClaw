@@ -1,7 +1,6 @@
 package device
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -16,6 +15,11 @@ import (
 )
 
 const maxIdentityFrameBytes = 4096
+
+// ProtocolVersion is shared by every official release profile.  Keeping the
+// value exported lets release CI assert that its build-time identity contract
+// still matches the desktop parser before it publishes a package.
+const ProtocolVersion = 2
 
 // AppIdentity is untrusted application-state evidence. It improves automatic
 // board matching on a booting device, but it can never prove physical board
@@ -55,6 +59,13 @@ func ProbeApplicationIdentity(ctx context.Context, port string) (AppIdentity, er
 		return AppIdentity{}, fmt.Errorf("open application serial: %w", err)
 	}
 	defer p.Close()
+	// Use the serial driver's timeout rather than spawning a goroutine for each
+	// blocking ReadString call. A goroutine left behind after a timeout can
+	// consume the next nonce-bound reply and make a later operation appear to
+	// fail randomly; it also retains the port until a byte eventually arrives.
+	if err := p.SetReadTimeout(300 * time.Millisecond); err != nil {
+		return AppIdentity{}, fmt.Errorf("set application serial timeout: %w", err)
+	}
 	nonce, err := identityNonce()
 	if err != nil {
 		return AppIdentity{}, err
@@ -63,15 +74,17 @@ func ProbeApplicationIdentity(ctx context.Context, port string) (AppIdentity, er
 	if _, err := p.Write([]byte(query)); err != nil {
 		return AppIdentity{}, fmt.Errorf("send identity query: %w", err)
 	}
-	reader := bufio.NewReaderSize(p, maxIdentityFrameBytes+1)
 	// A ROM probe hard-resets the target immediately before this call. Give the
 	// application enough time to boot, bring up USB Serial/JTAG and run its
 	// identity task before declaring automatic recognition unavailable.
 	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
-		line, err := readIdentityLine(ctx, reader, 300*time.Millisecond)
+		if err := ctx.Err(); err != nil {
+			return AppIdentity{}, err
+		}
+		line, err := ReadBoundedLine(p, maxIdentityFrameBytes)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
+			if IsSerialReadTimeout(err) {
 				continue
 			}
 			return AppIdentity{}, err
@@ -112,7 +125,7 @@ func parseIdentityFrame(line, nonce string) (AppIdentity, error) {
 		boardID = frame.LegacyBoardID
 		appVersion = frame.LegacyFirmwareVersion
 	}
-	if (frame.Protocol != 1 && frame.Protocol != 2) || boardID == "" {
+	if (frame.Protocol != 1 && frame.Protocol != ProtocolVersion) || boardID == "" {
 		return AppIdentity{}, errors.New("identity event uses an unsupported protocol or lacks a board target")
 	}
 	return AppIdentity{Protocol: frame.Protocol, FirmwareTargetBoardID: boardID, LayoutID: frame.LayoutID, ProjectName: frame.ProjectName, AppVersion: appVersion, Chip: frame.Chip, FlashBytes: frame.FlashBytes, PSRAMBytes: frame.PSRAMBytes}, nil
@@ -204,20 +217,4 @@ func identityNonce() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-func readIdentityLine(parent context.Context, r *bufio.Reader, timeout time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-	type answer struct {
-		line string
-		err  error
-	}
-	ch := make(chan answer, 1)
-	go func() { line, err := r.ReadString('\n'); ch <- answer{line, err} }()
-	select {
-	case result := <-ch:
-		return result.line, result.err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
 }

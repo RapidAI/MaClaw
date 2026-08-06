@@ -30,6 +30,44 @@ func TestOfficialProfileAssetNames(t *testing.T) {
 	}
 }
 
+func TestValidateManifestBindingRejectsCrossBoardOrBroadPackage(t *testing.T) {
+	profile, err := Profile("bread-compact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateManifestBinding(profile, "bread-compact-wifi-lcd-v1", "catalog:bread-compact", "esp32s3", 16*1024*1024); err != nil {
+		t.Fatalf("valid binding rejected: %v", err)
+	}
+	for _, test := range []struct {
+		name        string
+		firmwareID  string
+		profileHash string
+		chip        string
+		flash       int64
+	}{
+		{"cross board", "fangtang-4g-v1", "catalog:bread-compact", "esp32s3", 16 * 1024 * 1024},
+		{"profile marker", "bread-compact-wifi-lcd-v1", "catalog:echoear-2st", "esp32s3", 16 * 1024 * 1024},
+		{"chip", "bread-compact-wifi-lcd-v1", "catalog:bread-compact", "esp32", 16 * 1024 * 1024},
+		{"flash", "bread-compact-wifi-lcd-v1", "catalog:bread-compact", "esp32s3", 8 * 1024 * 1024},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := ValidateManifestBinding(profile, test.firmwareID, test.profileHash, test.chip, test.flash); err == nil {
+				t.Fatal("invalid manifest binding accepted")
+			}
+		})
+	}
+}
+
+func TestProfileForFirmwareBoardIDIsExactAndCaseInsensitive(t *testing.T) {
+	profile, err := ProfileForFirmwareBoardID("BREAD-COMPACT-WIFI-LCD-V1")
+	if err != nil || profile.ID != "bread-compact" {
+		t.Fatalf("profile=%#v err=%v", profile, err)
+	}
+	if _, err := ProfileForFirmwareBoardID("not-a-board"); err == nil {
+		t.Fatal("unknown firmware board target accepted")
+	}
+}
+
 func TestAssetLockSerializesAndHonorsCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "firmware.clawfw")
 	release, _, err := acquireAssetLock(context.Background(), path)

@@ -40,6 +40,44 @@ func Profile(id string) (BoardProfile, error) {
 	return BoardProfile{}, fmt.Errorf("unsupported board profile: %q", id)
 }
 
+// ProfileForFirmwareBoardID resolves the immutable firmware-target identifier
+// carried by a FlashRequest back to its sole local catalog entry. Flash jobs
+// use it to repeat the same full binding validation performed when a package
+// was downloaded or imported; a package capability alone is never enough to
+// skip write-time policy checks.
+func ProfileForFirmwareBoardID(firmwareBoardID string) (BoardProfile, error) {
+	for _, profile := range officialProfiles {
+		if strings.EqualFold(profile.FirmwareBoardID, firmwareBoardID) {
+			return profile, nil
+		}
+	}
+	return BoardProfile{}, fmt.Errorf("unsupported firmware board target: %q", firmwareBoardID)
+}
+
+// ValidateManifestBinding enforces the local catalog contract after signature
+// verification. A valid signature alone must not allow a release package for
+// one supported board to be selected under another board's exact Release
+// asset name. The profile hash is intentionally a stable, locally-derived
+// marker until a versioned profile-signing format is introduced.
+func ValidateManifestBinding(profile BoardProfile, firmwareBoardID, profileHash, chipFamily string, flashBytes int64) error {
+	if profile.ID == "" || profile.FirmwareBoardID == "" {
+		return fmt.Errorf("invalid board profile")
+	}
+	if !strings.EqualFold(firmwareBoardID, profile.FirmwareBoardID) {
+		return fmt.Errorf("firmware board %q does not match selected board %q", firmwareBoardID, profile.FirmwareBoardID)
+	}
+	if profileHash != "catalog:"+profile.ID {
+		return fmt.Errorf("firmware profile binding %q does not match selected board %q", profileHash, profile.ID)
+	}
+	if !strings.EqualFold(chipFamily, "esp32s3") {
+		return fmt.Errorf("firmware chip family %q is not ESP32-S3", chipFamily)
+	}
+	if flashBytes != 16*1024*1024 {
+		return fmt.Errorf("firmware flash capacity %d does not match supported 16 MiB profile", flashBytes)
+	}
+	return nil
+}
+
 // Recognition is intentionally evidence-based and fail-closed. ROM exposes
 // chip/flash information, but not the product SKU for these three boards.
 type Recognition struct {

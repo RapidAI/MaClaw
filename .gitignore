@@ -179,6 +179,7 @@ __pycache__/
 *.wav
 !gui/hello-maclaw.wav
 .claude/worktrees/
+.tmp_echoear_reference/
 tts_eval/
 build/iworker_services_deploy/
 hub/internal/httpapi/data/ve-files/

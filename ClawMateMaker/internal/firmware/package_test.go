@@ -18,7 +18,7 @@ func TestVerifyArchive(t *testing.T) {
 	archive := filepath.Join(dir, "ok.clawfw")
 	contents := []byte("firmware bytes")
 	sum := sha256.Sum256(contents)
-	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","mode":"app-only","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s","region":"app"}]}`, len(contents), hex.EncodeToString(sum[:]))
+	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","mode":"app-only","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s","offset":65536,"region":"app"}]}`, len(contents), hex.EncodeToString(sum[:]))
 	makeZip(t, archive, map[string]string{"manifest.json": manifest, "images/app.bin": string(contents)})
 	v, err := Verify(archive)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestVerifyReleaseRequiresValidSignature(t *testing.T) {
 	archive := filepath.Join(dir, "signed.clawfw")
 	contents := []byte("firmware bytes")
 	sum := sha256.Sum256(contents)
-	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","mode":"app-only","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s","region":"app"}]}`, len(contents), hex.EncodeToString(sum[:]))
+	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","mode":"app-only","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s","offset":65536,"region":"app"}]}`, len(contents), hex.EncodeToString(sum[:]))
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -55,17 +55,37 @@ func TestVerifyRejectsTraversalAndUnlisted(t *testing.T) {
 		t.Fatal("expected traversal rejection")
 	}
 }
+
+func TestVerifyRejectsAmbiguousFlashFileSpec(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "bad-spec.clawfw")
+	contents := []byte("firmware bytes")
+	sum := sha256.Sum256(contents)
+	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s","offset":1,"region":"app"}]}`, len(contents), hex.EncodeToString(sum[:]))
+	makeZip(t, archive, map[string]string{"manifest.json": manifest, "images/app.bin": string(contents)})
+	if _, err := Verify(archive); err == nil {
+		t.Fatal("unaligned flash image offset accepted")
+	}
+}
 func TestInstallPlanValidatesModeAndDataImpact(t *testing.T) {
-	appOnly, err := InstallPlanFor(Manifest{Mode: ModeAppOnly, Files: []FileSpec{{Path: "images/app.bin", Region: "app"}}})
+	appOffset := uint64(0x10000)
+	appOnly, err := InstallPlanFor(Manifest{Mode: ModeAppOnly, Files: []FileSpec{{Path: "images/app.bin", Region: "app", Offset: &appOffset}}})
 	if err != nil || !appOnly.PreservesUserData || !appOnly.RequiresRecovery {
 		t.Fatalf("plan=%+v err=%v", appOnly, err)
 	}
-	if _, err := InstallPlanFor(Manifest{Mode: ModeAppOnly, Files: []FileSpec{{Path: "images/boot.bin", Region: "bootloader"}}}); err == nil {
+	if _, err := InstallPlanFor(Manifest{Mode: ModeAppOnly, Files: []FileSpec{{Path: "images/boot.bin", Region: "bootloader", Offset: &appOffset}}}); err == nil {
 		t.Fatal("app-only non-app image accepted")
 	}
-	full, err := InstallPlanFor(Manifest{Mode: ModeFull, Files: []FileSpec{{Path: "images/app.bin", Region: "app"}}})
+	if _, err := InstallPlanFor(Manifest{Mode: ModeAppOnly, Files: []FileSpec{{Path: "images/app.bin", Region: "app"}}}); err == nil {
+		t.Fatal("app-only image without offset accepted")
+	}
+	fullOffset := uint64(0)
+	full, err := InstallPlanFor(Manifest{Mode: ModeFull, Files: []FileSpec{{Path: "images/full-flash.bin", Region: "flash", Offset: &fullOffset}}})
 	if err != nil || full.PreservesUserData || !full.RequiresRecovery {
 		t.Fatalf("plan=%+v err=%v", full, err)
+	}
+	if _, err := InstallPlanFor(Manifest{Mode: ModeFull, Files: []FileSpec{{Path: "images/full-flash.bin", Region: "flash", Offset: &appOffset}}}); err == nil {
+		t.Fatal("full image with non-zero offset accepted")
 	}
 	if _, err := InstallPlanFor(Manifest{Mode: "factory-reset"}); err == nil {
 		t.Fatal("unknown mode accepted")

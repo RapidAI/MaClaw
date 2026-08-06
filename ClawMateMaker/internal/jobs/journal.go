@@ -55,7 +55,7 @@ func WriteJournal(root string, j Journal) error {
 	if j.Schema == 0 {
 		j.Schema = JournalSchema
 	}
-	if j.Schema != JournalSchema || j.JobID == "" || j.PackageID == "" {
+	if j.Schema != JournalSchema || j.JobID == "" || j.PackageID == "" || !validJournalState(j.State) {
 		return errors.New("invalid journal")
 	}
 	j.UpdatedAt = time.Now().UTC()
@@ -92,7 +92,7 @@ func ReadJournal(root, jobID string) (Journal, error) {
 	if err := json.Unmarshal(raw, &j); err != nil {
 		return Journal{}, err
 	}
-	if j.Schema != JournalSchema || j.JobID != jobID || j.Checksum == "" {
+	if j.Schema != JournalSchema || j.JobID != jobID || j.Checksum == "" || !validJournalState(j.State) {
 		return Journal{}, errors.New("invalid journal schema or identity")
 	}
 	got := j.Checksum
@@ -106,6 +106,15 @@ func ReadJournal(root, jobID string) (Journal, error) {
 		return Journal{}, fmt.Errorf("journal checksum mismatch")
 	}
 	return j, nil
+}
+
+func validJournalState(state JournalState) bool {
+	switch state {
+	case JournalPrepared, JournalWriting, JournalRecoveryRequired, JournalVerified:
+		return true
+	default:
+		return false
+	}
 }
 
 // ListRecoveryRequired scans only direct job directories, validates every
@@ -131,7 +140,13 @@ func ListRecoveryRequired(root string) ([]RecoveryItem, error) {
 		}
 		journal, err := ReadJournal(root, entry.Name())
 		if err != nil {
-			items = append(items, RecoveryItem{JobID: entry.Name(), State: JournalRecoveryRequired})
+			// Only application-created job directories can contribute a recovery
+			// lock.  A stray or manually-created directory must not become a
+			// permanent denial of service, while a corrupt journal for a genuine
+			// write is still fail-closed.
+			if isWriteJobDirectory(root, entry.Name()) {
+				items = append(items, RecoveryItem{JobID: entry.Name(), State: JournalRecoveryRequired})
+			}
 			continue
 		}
 		// Prepared journals precede every irreversible action. A crash during
@@ -144,4 +159,32 @@ func ListRecoveryRequired(root string) ([]RecoveryItem, error) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
 	return items, nil
+}
+
+func isWriteJobDirectory(root, jobID string) bool {
+	if !strings.HasPrefix(jobID, "job-") || strings.ContainsAny(jobID, `\\/:`) {
+		return false
+	}
+	for _, name := range []string{"events.jsonl", "summary.json", "snapshot.json"} {
+		info, err := os.Stat(filepath.Join(root, jobID, name))
+		if err == nil && !info.IsDir() && info.Size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkRecoveryResolved closes the recovery lock only after a separate full
+// ROM recovery has reached verified boot. The original evidence journal is
+// retained and is atomically moved to a terminal state rather than deleted.
+func MarkRecoveryResolved(root, jobID string) error {
+	journal, err := ReadJournal(root, jobID)
+	if err != nil {
+		return err
+	}
+	if journal.State != JournalWriting && journal.State != JournalRecoveryRequired {
+		return fmt.Errorf("job %s is not awaiting recovery", jobID)
+	}
+	journal.State = JournalVerified
+	return WriteJournal(root, journal)
 }

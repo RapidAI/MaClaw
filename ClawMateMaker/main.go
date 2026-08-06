@@ -19,12 +19,20 @@ var assets embed.FS
 // refuses to run an unverified PATH-provided esptool.
 var releaseBuild = "false"
 
+// Release metadata is injected by the protected workflow. It is intentionally
+// separate from the firmware signing key: it lets support staff distinguish a
+// development build (which trusts no public releases) from a signed release
+// binary without exposing any signing material.
+var releaseKeyID = "clawmate-release-v1"
+var releasePublicKeyBase64 = ""
+
 func main() {
 	executable, err := os.Executable()
 	if err != nil {
 		log.Fatal(err)
 	}
 	flash.ConfigureSidecar(executable, releaseBuild == "true")
+	flash.ConfigureSidecarTrust(releaseKeyID, releasePublicKeyBase64)
 	app := NewApp()
 	if err := wails.Run(&options.App{
 		Title:     "ClawMate Maker",

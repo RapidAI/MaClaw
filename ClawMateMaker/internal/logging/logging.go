@@ -55,6 +55,22 @@ type Meta struct {
 	Truncated     bool              `json:"truncated"`
 }
 
+// Snapshot is the compact, restart-safe view of a job. It is written after
+// every persisted event, so a renderer that reloads while an operation is
+// still active can recover the latest state before replaying events.jsonl.
+// Detailed output deliberately remains in the separately paged log stream.
+type Snapshot struct {
+	SchemaVersion  int       `json:"schemaVersion"`
+	JobID          string    `json:"jobId"`
+	AttemptID      string    `json:"attemptId"`
+	Status         string    `json:"status"`
+	LatestSequence uint64    `json:"latestSequence"`
+	LastEvent      *Event    `json:"lastEvent,omitempty"`
+	ErrorCode      string    `json:"errorCode,omitempty"`
+	ErrorMessage   string    `json:"errorMessage,omitempty"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
 type Writer struct {
 	mu           sync.Mutex
 	root         string
@@ -66,6 +82,7 @@ type Writer struct {
 	emit         func(Event)
 	closed       bool
 	rawTruncated map[string]bool
+	snapshot     Snapshot
 }
 
 func DefaultRoot() (string, error) {
@@ -88,8 +105,13 @@ func New(root, jobID, attemptID string, emit func(Event)) (*Writer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open event log: %w", err)
 	}
-	w := &Writer{root: dir, jobID: jobID, attemptID: attemptID, started: time.Now(), file: f, emit: emit, rawTruncated: make(map[string]bool)}
+	started := time.Now()
+	w := &Writer{root: dir, jobID: jobID, attemptID: attemptID, started: started, file: f, emit: emit, rawTruncated: make(map[string]bool), snapshot: Snapshot{SchemaVersion: SchemaVersion, JobID: jobID, AttemptID: attemptID, Status: "running", UpdatedAt: started.UTC()}}
 	if err := w.writeMeta(false); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := w.writeSnapshotLocked(); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -110,6 +132,13 @@ func (w *Writer) Event(severity Severity, stage, component, code, messageKey, de
 	}
 	if err == nil && (severity == Warn || severity == Error || code == "STAGE_STARTED" || code == "STAGE_COMPLETED" || strings.HasPrefix(code, "JOB_")) {
 		err = w.file.Sync()
+	}
+	if err == nil {
+		w.snapshot.LatestSequence = e.Sequence
+		copy := e
+		w.snapshot.LastEvent = &copy
+		w.snapshot.UpdatedAt = e.Timestamp
+		err = w.writeSnapshotLocked()
 	}
 	if err == nil && w.emit != nil {
 		w.emit(e)
@@ -140,7 +169,71 @@ func (w *Writer) WriteSummary(summary any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(w.root, "summary.json"), append(b, '\n'), 0600)
+	// Results can include sidecar and serial-originated errors. Apply the same
+	// redaction boundary as events before any result becomes persistent.
+	var value any
+	if err := json.Unmarshal(b, &value); err != nil {
+		return err
+	}
+	clean, err := json.MarshalIndent(redactSummaryValue(value), "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(w.root, "summary.json"), append(clean, '\n')); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// Job results have a stable status/error subset. Preserve a fail-safe
+	// running snapshot if a different caller writes auxiliary summary data.
+	var terminal struct {
+		Status       string `json:"status"`
+		ErrorCode    string `json:"errorCode"`
+		ErrorMessage string `json:"errorMessage"`
+	}
+	if json.Unmarshal(clean, &terminal) == nil && (terminal.Status == "succeeded" || terminal.Status == "failed") {
+		w.snapshot.Status = terminal.Status
+		w.snapshot.ErrorCode = Redact(terminal.ErrorCode)
+		w.snapshot.ErrorMessage = Redact(terminal.ErrorMessage)
+		w.snapshot.UpdatedAt = time.Now().UTC()
+		return w.writeSnapshotLocked()
+	}
+	return nil
+}
+
+func (w *Writer) writeSnapshotLocked() error {
+	b, err := json.MarshalIndent(w.snapshot, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(w.root, "snapshot.json"), append(b, '\n'))
+}
+
+func atomicWrite(path string, contents []byte) error {
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, contents, 0600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, path)
+}
+
+func redactSummaryValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return Redact(typed)
+	case []any:
+		for index := range typed {
+			typed[index] = redactSummaryValue(typed[index])
+		}
+		return typed
+	case map[string]any:
+		for key, item := range typed {
+			typed[key] = redactSummaryValue(item)
+		}
+		return typed
+	default:
+		return value
+	}
 }
 
 // AppendRaw stores a bounded and redacted text stream. Allowed names are fixed,
@@ -207,7 +300,7 @@ func (w *Writer) writeMeta(final bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(w.root, "log-meta.json"), append(b, '\n'), 0600)
+	return atomicWrite(filepath.Join(w.root, "log-meta.json"), append(b, '\n'))
 }
 
 var sensitive = regexp.MustCompile(`(?i)(?:password|passwd|token|authorization|api[_-]?key|ssid)\s*[:=]\s*[^\s,;]+|https?://[^\s?]+\?[^\s]+|[0-9a-f]{2}(?::[0-9a-f]{2}){5}`)
@@ -246,6 +339,94 @@ type Page struct {
 	Next   uint64  `json:"next"`
 }
 
+// ReadSnapshot validates and returns one job snapshot without exposing an
+// arbitrary local path to the Wails caller.
+func ReadSnapshot(root, jobID string) (Snapshot, error) {
+	if !SafeJobID(jobID) {
+		return Snapshot{}, errors.New("invalid job ID")
+	}
+	path := filepath.Join(root, jobID, "snapshot.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if info.IsDir() || info.Size() <= 0 || info.Size() > 512*1024 {
+		return Snapshot{}, errors.New("invalid job snapshot")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return Snapshot{}, err
+	}
+	if snapshot.SchemaVersion != SchemaVersion || snapshot.JobID != jobID || snapshot.AttemptID == "" || (snapshot.Status != "running" && snapshot.Status != "succeeded" && snapshot.Status != "failed") {
+		return Snapshot{}, errors.New("invalid job snapshot")
+	}
+	snapshot.ErrorMessage = Redact(snapshot.ErrorMessage)
+	if snapshot.LastEvent != nil {
+		snapshot.LastEvent.Detail = Redact(snapshot.LastEvent.Detail)
+		snapshot.LastEvent.Fields = SafeFields(snapshot.LastEvent.Fields)
+	}
+	return snapshot, nil
+}
+
+// ReadRecentSnapshots includes both running and terminal jobs. It is used by
+// the desktop startup sequence before the UI replays detailed event pages.
+func ReadRecentSnapshots(root string, limit int) ([]Snapshot, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	items := make([]Snapshot, 0, limit)
+	for _, entry := range entries {
+		if !entry.IsDir() || !SafeJobID(entry.Name()) {
+			continue
+		}
+		if snapshot, readErr := ReadSnapshot(root, entry.Name()); readErr == nil {
+			items = append(items, snapshot)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+// JobSummary is the safe, stable subset of a terminal task kept on disk. It
+// lets a restarted WebView restore the diagnostics entry point without making
+// arbitrary job directories or verbose result payloads part of the API.
+type JobSummary struct {
+	JobID        string    `json:"jobId"`
+	Status       string    `json:"status,omitempty"`
+	ErrorCode    string    `json:"errorCode,omitempty"`
+	ErrorMessage string    `json:"errorMessage,omitempty"`
+	StartedAt    time.Time `json:"startedAt,omitempty"`
+	FinishedAt   time.Time `json:"finishedAt,omitempty"`
+}
+
+// SafeJobID accepts only the generated job identifier grammar. It is used by
+// every API that turns a job ID into a local directory path.
+func SafeJobID(jobID string) bool {
+	if !strings.HasPrefix(jobID, "job-") || len(jobID) != len("job-")+16 {
+		return false
+	}
+	for _, r := range jobID[len("job-"):] {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func ReadPage(dir string, after uint64, limit int) (Page, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
@@ -270,6 +451,48 @@ func ReadPage(dir string, after uint64, limit int) (Page, error) {
 		}
 	}
 	return page, s.Err()
+}
+
+// ReadRecentSummaries scans direct job folders only and returns terminal
+// summaries newest-first. Malformed or unrelated files are ignored; they
+// cannot break startup or turn untrusted JSON into task state.
+func ReadRecentSummaries(root string, limit int) ([]JobSummary, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	items := make([]JobSummary, 0, limit)
+	for _, entry := range entries {
+		if !entry.IsDir() || !SafeJobID(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(root, entry.Name(), "summary.json")
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() || info.Size() <= 0 || info.Size() > 512*1024 {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var summary JobSummary
+		if json.Unmarshal(raw, &summary) != nil || summary.JobID != entry.Name() {
+			continue
+		}
+		summary.ErrorMessage = Redact(summary.ErrorMessage)
+		items = append(items, summary)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].FinishedAt.After(items[j].FinishedAt) })
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
 }
 
 func EnvironmentFields() map[string]any {

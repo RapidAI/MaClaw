@@ -1,9 +1,10 @@
 # ClawMate Maker：ESP32 跨平台刷机工具设计
 
-> 状态：Draft v0.6（详细刷机日志设计）
+> 状态：实现中 v0.7（自动多设备识别与 Release 下载）
 > 目标平台：Windows 10/11、macOS 12+（Intel / Apple Silicon）、主流 x86_64 / arm64 Linux
-> MVP 实测基线：Bread Compact Wi-Fi LCD（ESP32-S3、16 MB Flash、8 MB PSRAM）
-> 计划支持设备：EchoEar-2ST（独立 profile，完成硬件在环验证后发布）
+> 当前 Windows 实机只读验证：EchoEar 2ST、Bread Compact、Fangtang 4G（均为 ESP32-S3、16 MB Flash、8 MB PSRAM）
+> 当前发布流水线：三种板型均有独立 profile、精确 Release asset 名和签名包校验规则；截至 2026-08-06 最新 GitHub Release 尚无 `.clawfw` 资产（该次固件 job 在 checkout 阶段失败）。已修复无效 legacy gitlink 导致的递归 submodule checkout；下一次受保护 Release workflow 成功后才能满足线上自动下载条件。
+> 协议发布门禁：Release CI 会同时校验 `firmware_identity.c` 的 protocol:2 字段、nonce-bound IDENTIFY/BOOT_STATUS 查询处理和生成配置中的 USB Serial/JTAG 次级控制台；缺少任一项时拒绝生成 `.clawfw`。
 > 文档日期：2026-08-05
 
 ## 1. 结论与关键决策
@@ -880,7 +881,7 @@ type Session interface {
 
 ### 17.3 MVP 验收
 
-1. 在 Windows/macOS/Linux 上插入 Bread Compact Wi-Fi LCD 后 3 秒内出现设备候选；EchoEar-2ST 仅在独立硬件矩阵通过后加入验收范围。
+1. 在 Windows/macOS/Linux 上插入任一已发布板型后 3 秒内出现设备候选；多块设备同时接入时，工具必须逐块做只读识别并显示独立结果，不能因端口顺序猜测目标。
 2. 工具能确认 ESP32-S3、16 MB Flash；有制造身份时形成 `confirmed`，没有制造身份时只能形成 `probable` 并要求实物确认。
 3. 错误芯片、错误 Flash 容量、错误 layout 的固件 100% 被阻止。
 4. 官方 `.clawfw` 被任意修改 1 bit 后 100% 被拒绝。
@@ -910,7 +911,7 @@ type Session interface {
 - 定稿 `.clawfw` schema、board profile schema、错误码与签名体系。
 - 冻结身份信任模型和 `BOOT_STATUS` / `SERVICE_STATUS` v2 JSON Schema，并建立固件/Go/TypeScript golden contract tests。
 - 冻结 profile/manifest/tool 双向 allow-list、ROM stub hash/RAM 边界和 Watch snapshot/sequence/idempotency 契约。
-- 在 ESP-IDF CI 从构建产物自动生成 Bread Compact 包；EchoEar 使用独立 profile 和包。
+- 在 ESP-IDF CI 从构建产物自动生成 EchoEar 2ST、Bread Compact 和 Fangtang 4G 的独立签名包，并以桌面端同一公钥与 catalog binding 复验后发布。
 - 在固件中加入可重复 nonce 查询、稳定 App identity 和本地/外部服务分离状态。
 - 固定当前单 factory App 的恢复承诺、journal schema、sidecar/helper IPC allow-list，并完成依赖许可证与 SBOM 基线。
 - 定稿 channel index/release evidence schema、客户端二次过滤规则和密钥泄露 runbook。
@@ -943,7 +944,7 @@ type Session interface {
 
 这些问题不阻塞架构，但在实现前需由产品/硬件/发布负责人确认：
 
-1. 当前 MVP 按实测基线先支持 Bread Compact；EchoEar-2ST 是否在同一首版发布，还是完成独立 profile 与硬件在环后再加入？
+1. 三个板型的 Windows 实机只读识别已完成；发布前何时完成 macOS/Linux 的刷写、断电恢复与批量硬件在环矩阵？
 2. Bread Compact 与 EchoEar-2ST 是否能在制造阶段写入不可由普通更新修改的 `factory_board_id` / `factory_hw_rev`？若不能，`probable` 匹配必须永久保留人工确认。
 3. 固件下载域名、stable/beta 渠道和签名私钥托管位置。
 4. 完整刷写是否默认保留/备份 NVS；当前建议首次安装不保留、修复模式明确选择。

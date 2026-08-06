@@ -1,9 +1,12 @@
 package device
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestParseIdentityRequiresProtocolV2AndNonce(t *testing.T) {
-	line := `CLAWMATE_EVT {"type":"IDENTITY","protocol":2,"nonce":"n","firmware_target_board_id":"bread-compact-wifi-lcd-v1","layout_id":"layout","project_name":"app","app_version":"1","chip":"esp32s3","flash_size_bytes":16777216,"psram_size_bytes":8388608}`
+	line := `CLAWMATE_EVT {"type":"IDENTITY","protocol":` + strconv.Itoa(ProtocolVersion) + `,"nonce":"n","firmware_target_board_id":"bread-compact-wifi-lcd-v1","layout_id":"layout","project_name":"app","app_version":"1","chip":"esp32s3","flash_size_bytes":16777216,"psram_size_bytes":8388608}`
 	identity, err := parseIdentityFrame(line, "n")
 	if err != nil || identity.FirmwareTargetBoardID != "bread-compact-wifi-lcd-v1" {
 		t.Fatalf("identity=%+v err=%v", identity, err)

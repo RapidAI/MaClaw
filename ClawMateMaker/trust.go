@@ -18,9 +18,6 @@ import (
 // These are variables so official desktop builds can inject the public key
 // using Go's -ldflags -X. They are deliberately empty in developer builds;
 // an empty or malformed key means zero trusted releases, never a bypass.
-var releaseKeyID = "clawmate-release-v1"
-var releasePublicKeyBase64 = ""
-
 func releaseTrustStore() firmware.TrustStore {
 	raw, err := base64.StdEncoding.DecodeString(releasePublicKeyBase64)
 	if err != nil || len(raw) != ed25519.PublicKeySize {

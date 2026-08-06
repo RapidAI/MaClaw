@@ -40,13 +40,19 @@ type releaseAsset struct {
 }
 
 type DownloadedRelease struct {
-	JobID             string `json:"jobId,omitempty"`
-	BoardID           string `json:"boardId"`
-	BoardName         string `json:"boardName"`
-	ReleaseTag        string `json:"releaseTag"`
-	PublishedAt       string `json:"publishedAt,omitempty"`
-	AssetName         string `json:"assetName"`
-	Path              string `json:"path"`
+	JobID string `json:"jobId,omitempty"`
+	// PackageRef is an opaque, in-memory capability issued by the desktop
+	// application after validation. It is the only firmware handle that the UI
+	// may submit to the irreversible flash endpoint.
+	PackageRef  string `json:"packageRef,omitempty"`
+	BoardID     string `json:"boardId"`
+	BoardName   string `json:"boardName"`
+	ReleaseTag  string `json:"releaseTag"`
+	PublishedAt string `json:"publishedAt,omitempty"`
+	AssetName   string `json:"assetName"`
+	// Path is intentionally not serialized across the Wails boundary. A
+	// browser renderer must not learn or submit arbitrary host file paths.
+	Path              string `json:"-"`
 	Size              int64  `json:"size"`
 	SHA256            string `json:"sha256"`
 	GitHubDigest      string `json:"githubDigest,omitempty"`

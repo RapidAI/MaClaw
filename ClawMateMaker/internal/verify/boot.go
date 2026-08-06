@@ -2,18 +2,16 @@
 package verify
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
+	"clawmatemaker/internal/device"
 	"go.bug.st/serial"
 )
 
@@ -129,8 +127,10 @@ func Wait(ctx context.Context, port string, baud int, timeout time.Duration, exp
 		return Result{}, fmt.Errorf("open application serial: %w", err)
 	}
 	defer p.Close()
+	if err := p.SetReadTimeout(500 * time.Millisecond); err != nil {
+		return Result{}, fmt.Errorf("set application serial timeout: %w", err)
+	}
 	deadline := time.Now().Add(timeout)
-	reader := bufio.NewReaderSize(p, MaxFrameBytes+1)
 	attempt := 0
 	for time.Now().Before(deadline) {
 		nonce, err := NewNonce()
@@ -144,9 +144,12 @@ func Wait(ctx context.Context, port string, baud int, timeout time.Duration, exp
 		}
 		queryUntil := time.Now().Add(3 * time.Second)
 		for time.Now().Before(queryUntil) && time.Now().Before(deadline) {
-			line, readErr := readLineWithContext(ctx, reader, 500*time.Millisecond)
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
+			line, readErr := device.ReadBoundedLine(p, MaxFrameBytes)
 			if readErr != nil {
-				if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, io.EOF) {
+				if device.IsSerialReadTimeout(readErr) {
 					continue
 				}
 				return Result{}, readErr
@@ -163,25 +166,8 @@ func Wait(ctx context.Context, port string, baud int, timeout time.Duration, exp
 	return Result{}, errors.New("timed out waiting for matching BOOT_STATUS v2")
 }
 
-func readLineWithContext(parent context.Context, r *bufio.Reader, wait time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(parent, wait)
-	defer cancel()
-	type answer struct {
-		line string
-		err  error
-	}
-	ch := make(chan answer, 1)
-	go func() { line, err := r.ReadString('\n'); ch <- answer{line, err} }()
-	select {
-	case answer := <-ch:
-		return answer.line, answer.err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-}
-
 func rejectDuplicateKeys(raw []byte) error {
-	d := json.NewDecoder(bytes.NewReader(raw))
+	d := json.NewDecoder(strings.NewReader(string(raw)))
 	if err := walkJSON(d); err != nil {
 		return fmt.Errorf("invalid protocol JSON: %w", err)
 	}

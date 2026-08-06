@@ -114,8 +114,7 @@ func devicePetRenderedFrames(reg *petpack.Registry, packID, variant string) []im
 		// does not silently collapse these selected packs to one static raster.
 		for frame := 0; frame < devicePetFrameCount; frame++ {
 			phase := 2 * math.Pi * float64(frame) / devicePetFrameCount
-			frames = append(frames, renderClawMatePetWithPose(
-				devicePetAssetWidth, packID, petFacePoseForPhase(phase, "balanced")))
+			frames = append(frames, renderDeviceProceduralPet(devicePetAssetWidth, packID, phase))
 		}
 	}
 	return frames

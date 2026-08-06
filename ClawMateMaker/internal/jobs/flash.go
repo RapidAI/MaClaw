@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"clawmatemaker/internal/catalog"
 	"clawmatemaker/internal/device"
 	"clawmatemaker/internal/firmware"
 	"clawmatemaker/internal/flash"
@@ -134,8 +135,15 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	if verified.Manifest.AppIdentity.ProjectName == "" || verified.Manifest.AppIdentity.AppVersion == "" || verified.Manifest.AppIdentity.ELFSHA256 == "" || verified.Manifest.BootVerification.Baud <= 0 || verified.Manifest.BootVerification.TimeoutSeconds <= 0 {
 		return j.fail(&result, "PACKAGE_MANIFEST_INCOMPLETE", errors.New("release package must declare app identity and boot verification policy"))
 	}
-	if j.request.BoardID != "" && j.request.BoardID != verified.Manifest.Board.ID {
-		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", errors.New("requested board does not match package"))
+	if j.request.BoardID == "" {
+		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", errors.New("a selected firmware board target is required"))
+	}
+	profile, err := catalog.ProfileForFirmwareBoardID(j.request.BoardID)
+	if err != nil {
+		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", err)
+	}
+	if err := catalog.ValidateManifestBinding(profile, verified.Manifest.Board.ID, verified.Manifest.Board.ProfileHash, verified.Manifest.Chip.Family, verified.Manifest.Chip.FlashBytes); err != nil {
+		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("firmware catalog binding: %w", err))
 	}
 	j.log.Event(logging.Info, "prepare", "firmware", "PACKAGE_VERIFIED", "package.verified", "", map[string]any{"bytes": len(verified.Manifest.Files)})
 	tool, err := flash.FindTool()

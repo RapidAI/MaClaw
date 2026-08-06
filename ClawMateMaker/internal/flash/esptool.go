@@ -37,7 +37,7 @@ type Result struct {
 func FindTool() (Tool, error) {
 	config := currentSidecarConfig()
 	if config.production {
-		return managedTool(config.executable)
+		return managedToolForConfig(config)
 	}
 	if env := os.Getenv("CLAWMATE_ESPTOOL"); env != "" {
 		if _, err := os.Stat(env); err == nil {
@@ -207,11 +207,14 @@ func (t Tool) ReadFlash(ctx context.Context, port string, offset uint64, length 
 
 func (t Tool) run(ctx context.Context, args []string) (Result, error) {
 	started := time.Now()
-	cmd := exec.CommandContext(ctx, t.Path, args...)
 	var out bytes.Buffer
+	cmd := exec.Command(t.Path, args...)
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	err := cmd.Run()
+	if err := prepareProcessTree(cmd); err != nil {
+		return Result{Command: append([]string{filepath.Base(t.Path)}, args...), Duration: time.Since(started)}, fmt.Errorf("prepare esptool process tree: %w", err)
+	}
+	err := runWithCancellation(ctx, cmd)
 	result := Result{Command: append([]string{filepath.Base(t.Path)}, args...), Output: out.String(), Duration: time.Since(started)}
 	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
@@ -222,6 +225,35 @@ func (t Tool) run(ctx context.Context, args []string) (Result, error) {
 		return result, fmt.Errorf("esptool %s: %w", action(args), err)
 	}
 	return result, nil
+}
+
+// runWithCancellation owns the sidecar lifetime rather than relying on
+// exec.CommandContext's parent-only kill. A sidecar can start Python helpers
+// which retain the serial handle after its parent exits, so cancellation must
+// terminate the whole dedicated process tree before returning to the job.
+func runWithCancellation(ctx context.Context, cmd *exec.Cmd) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		return err
+	case <-ctx.Done():
+		killErr := terminateProcessTree(cmd)
+		waitErr := <-waited
+		if killErr != nil {
+			return fmt.Errorf("cancelled (%w); terminate sidecar process tree: %v", ctx.Err(), killErr)
+		}
+		if waitErr != nil {
+			return fmt.Errorf("cancelled (%w): %v", ctx.Err(), waitErr)
+		}
+		return ctx.Err()
+	}
 }
 func action(args []string) string {
 	if len(args) > 0 {
@@ -291,15 +323,13 @@ func ParseSecurityInfo(output string) SecurityInfo {
 	for _, line := range strings.Split(output, "\n") {
 		lower := strings.ToLower(strings.TrimSpace(line))
 		if strings.Contains(lower, "secure boot") {
-			v := strings.Contains(lower, "enabled") && !strings.Contains(lower, "not enabled") && !strings.Contains(lower, "disabled")
-			if strings.Contains(lower, "enabled") || strings.Contains(lower, "disabled") || strings.Contains(lower, "not enabled") {
-				s.SecureBoot = &v
+			if known, enabled := securitySwitchState(lower); known {
+				s.SecureBoot = &enabled
 			}
 		}
 		if strings.Contains(lower, "flash encryption") {
-			v := strings.Contains(lower, "enabled") && !strings.Contains(lower, "disabled")
-			if strings.Contains(lower, "enabled") || strings.Contains(lower, "disabled") {
-				s.FlashEncryption = &v
+			if known, enabled := securitySwitchState(lower); known {
+				s.FlashEncryption = &enabled
 			}
 		}
 		if strings.Contains(lower, "secure version") || strings.Contains(lower, "anti-rollback") {
@@ -313,6 +343,25 @@ func ParseSecurityInfo(output string) SecurityInfo {
 		}
 	}
 	return s
+}
+
+// securitySwitchState parses only unambiguous affirmative or negative
+// wording.  In particular, "not enabled" must not be classified as enabled
+// merely because it contains the word "enabled".  Unknown wording is kept
+// nil so the pre-write gate remains fail-closed.
+func securitySwitchState(line string) (known bool, enabled bool) {
+	line = strings.ToLower(strings.TrimSpace(line))
+	for _, negative := range []string{"not enabled", "disabled", "not set", "false", "no"} {
+		if strings.Contains(line, negative) {
+			return true, false
+		}
+	}
+	for _, positive := range []string{"enabled", "active", "set", "true", "yes"} {
+		if strings.Contains(line, positive) {
+			return true, true
+		}
+	}
+	return false, false
 }
 
 func ParseFlashID(output string) FlashInfo {
