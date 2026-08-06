@@ -29,3 +29,11 @@ func TestParseFrameRejectsLegacyNonceAndDuplicates(t *testing.T) {
 		t.Fatal("stale nonce passed")
 	}
 }
+func TestParseFrameAllowsLogPrefixButRejectsTrailingData(t *testing.T) {
+	if _, err := ParseFrame("I (200) boot: init"+valid("n"), "n", expectation()); err != nil {
+		t.Fatalf("log-prefixed frame rejected: %v", err)
+	}
+	if _, err := ParseFrame(valid("n")+" trailing", "n", expectation()); err == nil {
+		t.Fatal("trailing data accepted")
+	}
+}

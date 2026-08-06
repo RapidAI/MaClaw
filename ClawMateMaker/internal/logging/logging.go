@@ -231,7 +231,7 @@ func SafeFields(fields map[string]any) map[string]any {
 	if len(fields) == 0 {
 		return nil
 	}
-	allowed := map[string]bool{"port": true, "chip": true, "revision": true, "flashBytes": true, "tool": true, "toolVersion": true, "exitCode": true, "durationMs": true, "command": true, "bytes": true, "attempt": true, "os": true, "vendorId": true, "productId": true, "boardId": true, "asset": true, "release": true, "sha256": true, "cached": true}
+	allowed := map[string]bool{"port": true, "chip": true, "revision": true, "flashBytes": true, "tool": true, "toolVersion": true, "exitCode": true, "durationMs": true, "command": true, "bytes": true, "attempt": true, "os": true, "vendorId": true, "productId": true, "boardId": true, "asset": true, "release": true, "sha256": true, "cached": true, "baud": true, "fromBaud": true, "toBaud": true}
 	out := make(map[string]any)
 	for k, v := range fields {
 		if allowed[k] {

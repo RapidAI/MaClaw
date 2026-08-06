@@ -17,6 +17,12 @@ import (
 
 var ErrToolMissing = errors.New("esptool sidecar not found")
 
+// SupportedWriteBauds are ordered from the normal high-speed path down to
+// the recovery fallback. Jobs may retry at a lower value only when no write
+// was accepted by the bootloader, or when a later verification/boot phase has
+// already marked the device as requiring explicit ROM recovery.
+var SupportedWriteBauds = []int{921600, 460800, 115200}
+
 type Tool struct {
 	Path    string
 	Version string
@@ -29,6 +35,10 @@ type Result struct {
 }
 
 func FindTool() (Tool, error) {
+	config := currentSidecarConfig()
+	if config.production {
+		return managedTool(config.executable)
+	}
 	if env := os.Getenv("CLAWMATE_ESPTOOL"); env != "" {
 		if _, err := os.Stat(env); err == nil {
 			return Tool{Path: env}, nil
@@ -62,8 +72,12 @@ func (t Tool) RunReadOnly(ctx context.Context, port string, action string) (Resu
 	// stable so an older signed sidecar can still be used while new sidecars do
 	// not emit deprecation noise into the diagnostic stream.
 	verb := action
-	if action == "chip_id" { verb = "chip-id" }
-	if action == "flash_id" { verb = "flash-id" }
+	if action == "chip_id" {
+		verb = "chip-id"
+	}
+	if action == "flash_id" {
+		verb = "flash-id"
+	}
 	args := []string{"--port", port, "--baud", "115200", verb}
 	return t.run(ctx, args)
 }
@@ -76,13 +90,46 @@ type WriteImage struct {
 	Region string
 }
 
+func validWriteBaud(baud int) bool {
+	for _, supported := range SupportedWriteBauds {
+		if baud == supported {
+			return true
+		}
+	}
+	return false
+}
+
+// CanRetryWriteAtLowerBaud is deliberately conservative. An esptool process
+// error does not prove that Flash stayed unchanged, so a job may fall back
+// only when diagnostics demonstrate that it never established a ROM session.
+// All other errors must be treated as potentially partial writes and require
+// the explicit recovery path.
+func CanRetryWriteAtLowerBaud(result Result, err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error() + "\n" + result.Output)
+	for _, marker := range []string{
+		"failed to connect",
+		"no serial data received",
+		"could not open port",
+		"cannot configure port",
+		"serial port is unavailable",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // WriteImages is deliberately narrow: the job planner supplies verified files and
 // fixed offsets. This adapter never accepts user-provided argument strings.
 func (t Tool) WriteImages(ctx context.Context, port string, baud int, images []WriteImage) (Result, error) {
 	if !validPort(port) {
 		return Result{}, fmt.Errorf("unsafe serial port: %q", port)
 	}
-	if baud != 115200 && baud != 460800 && baud != 921600 {
+	if !validWriteBaud(baud) {
 		return Result{}, fmt.Errorf("unsupported baud rate: %d", baud)
 	}
 	if len(images) == 0 || len(images) > 16 {
@@ -115,7 +162,7 @@ func (t Tool) VerifyImages(ctx context.Context, port string, baud int, images []
 	if !validPort(port) {
 		return Result{}, fmt.Errorf("unsafe serial port: %q", port)
 	}
-	if baud != 115200 && baud != 460800 && baud != 921600 {
+	if !validWriteBaud(baud) {
 		return Result{}, fmt.Errorf("unsupported baud rate: %d", baud)
 	}
 	if len(images) == 0 || len(images) > 16 {
@@ -232,6 +279,15 @@ type SecurityInfo struct {
 // esptool version changes its wording. Callers must fail closed on nil fields.
 func ParseSecurityInfo(output string) SecurityInfo {
 	s := SecurityInfo{Raw: output}
+	// esptool v5's ESP32-S3 `get-security-info` reports a combined eFuse
+	// flags word rather than a separate SECURE_VERSION line. A zero word is a
+	// provable baseline; a non-zero word remains unknown here and is rejected by
+	// callers unless a future parser can safely decode it for that chip family.
+	zeroFlags := regexp.MustCompile(`(?im)^\s*flags:\s*0x0+\b`)
+	if zeroFlags.MatchString(output) {
+		v := 0
+		s.SecureVersion = &v
+	}
 	for _, line := range strings.Split(output, "\n") {
 		lower := strings.ToLower(strings.TrimSpace(line))
 		if strings.Contains(lower, "secure boot") {

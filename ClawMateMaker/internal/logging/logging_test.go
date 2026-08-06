@@ -63,3 +63,10 @@ func TestRawLogsAreRedacted(t *testing.T) {
 		t.Fatalf("raw log leaked: %q", b)
 	}
 }
+
+func TestSafeFieldsAllowsOperationalBaudButNotDeviceSerial(t *testing.T) {
+	fields := SafeFields(map[string]any{"baud": 115200, "fromBaud": 921600, "toBaud": 115200, "serial": "device-123"})
+	if len(fields) != 3 || fields["baud"] != 115200 || fields["serial"] != nil {
+		t.Fatalf("fields=%#v", fields)
+	}
+}

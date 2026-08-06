@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"clawmatemaker/internal/catalog"
+	"clawmatemaker/internal/device"
 	"clawmatemaker/internal/flash"
 	"clawmatemaker/internal/logging"
 )
@@ -28,6 +29,7 @@ type ProbeResult struct {
 	Chip             flash.ChipInfo      `json:"chip"`
 	Flash            flash.FlashInfo     `json:"flash"`
 	BoardRecognition catalog.Recognition `json:"boardRecognition"`
+	AppIdentity      device.AppIdentity  `json:"appIdentity,omitempty"`
 	Warnings         []string            `json:"warnings,omitempty"`
 	ErrorCode        string              `json:"errorCode,omitempty"`
 	ErrorMessage     string              `json:"errorMessage,omitempty"`
@@ -93,6 +95,14 @@ func (j *ProbeJob) Run(ctx context.Context) (result ProbeResult, retErr error) {
 	}
 	result.Flash = flash.ParseFlashID(flashRun.Output)
 	j.log.Event(logging.Info, "probe", "engine", "FLASH_OBSERVED", "flash.observed", "", map[string]any{"flashBytes": result.Flash.SizeBytes})
+	identity, identityErr := device.ProbeApplicationIdentity(ctx, j.port)
+	if identityErr != nil {
+		j.log.Event(logging.Warn, "probe", "identity", "IDENTITY_UNAVAILABLE", "identity.unavailable", identityErr.Error(), nil)
+	} else {
+		result.AppIdentity = identity
+		result.BoardRecognition = catalog.RecognizeApplicationIdentityEvidence(identity)
+		j.log.Event(logging.Info, "probe", "identity", "IDENTITY_OBSERVED", "identity.observed", "Received nonce-bound application identity.", map[string]any{"chip": identity.Chip, "flashBytes": identity.FlashBytes})
+	}
 	result.Warnings = append(result.Warnings, "Security eFuse / anti-rollback state is not decided by this development probe; production installation must fail closed.")
 	j.log.Event(logging.Info, "probe", "engine", "STAGE_COMPLETED", "stage.completed", "", map[string]any{"durationMs": time.Since(result.StartedAt).Milliseconds()})
 	return result, nil

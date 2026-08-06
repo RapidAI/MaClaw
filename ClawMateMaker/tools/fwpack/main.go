@@ -27,14 +27,15 @@ import (
 const maxInputImage = 32 * 1024 * 1024
 
 type input struct {
-	Board, FirmwareBoard, ReleaseVersion, PackageID, ImagePath, PartitionTablePath, ProjectDescriptionPath, OutputPath, KeyID, PrivateKey string
-	FlashBytes                                                                                                                            int64
+	Board, FirmwareBoard, LayoutID, ReleaseVersion, PackageID, ImagePath, PartitionTablePath, ProjectDescriptionPath, OutputPath, KeyID, PrivateKey string
+	FlashBytes, ReleaseSequence                                                                                                                     int64
 }
 
 func main() {
 	var v input
 	flag.StringVar(&v.Board, "board", "", "official board ID")
 	flag.StringVar(&v.FirmwareBoard, "firmware-board", "", "firmware target board ID emitted in BOOT_STATUS")
+	flag.StringVar(&v.LayoutID, "layout-id", "", "runtime layout ID emitted in BOOT_STATUS")
 	flag.StringVar(&v.ReleaseVersion, "release", "", "release tag/version")
 	flag.StringVar(&v.PackageID, "package-id", "", "stable package identifier")
 	flag.StringVar(&v.ImagePath, "image", "", "merged flash image at offset 0")
@@ -44,6 +45,7 @@ func main() {
 	flag.StringVar(&v.KeyID, "key-id", "", "Ed25519 release signing key ID")
 	flag.StringVar(&v.PrivateKey, "private-key-base64", os.Getenv("CLAWMATE_FIRMWARE_SIGNING_KEY"), "Ed25519 private key, base64")
 	flag.Int64Var(&v.FlashBytes, "flash-bytes", 16*1024*1024, "target flash capacity")
+	flag.Int64Var(&v.ReleaseSequence, "release-sequence", 0, "monotonic release sequence emitted by firmware")
 	flag.Parse()
 	if err := run(v); err != nil {
 		fmt.Fprintln(os.Stderr, "fwpack:", err)
@@ -52,10 +54,10 @@ func main() {
 }
 
 func run(v input) error {
-	if v.Board == "" || v.FirmwareBoard == "" || v.ReleaseVersion == "" || v.ImagePath == "" || v.PartitionTablePath == "" || v.ProjectDescriptionPath == "" || v.OutputPath == "" || v.KeyID == "" || v.PrivateKey == "" || v.FlashBytes <= 0 {
-		return errors.New("board, firmware-board, release, image, partition-table, project-description, output, key-id, private key and flash capacity are required")
+	if v.Board == "" || v.FirmwareBoard == "" || v.LayoutID == "" || v.ReleaseVersion == "" || v.ImagePath == "" || v.PartitionTablePath == "" || v.ProjectDescriptionPath == "" || v.OutputPath == "" || v.KeyID == "" || v.PrivateKey == "" || v.FlashBytes <= 0 || v.ReleaseSequence <= 0 {
+		return errors.New("board, firmware-board, layout-id, release, image, partition-table, project-description, output, key-id, private key, flash capacity and positive release sequence are required")
 	}
-	for _, value := range []string{v.Board, v.FirmwareBoard, v.ReleaseVersion, v.KeyID} {
+	for _, value := range []string{v.Board, v.FirmwareBoard, v.LayoutID, v.ReleaseVersion, v.KeyID} {
 		if strings.ContainsAny(value, "\\/\x00") {
 			return fmt.Errorf("invalid identifier %q", value)
 		}
@@ -102,7 +104,7 @@ func run(v input) error {
 		v.PackageID = v.Board + "-" + v.ReleaseVersion
 	}
 	imageOffset := uint64(0)
-	manifest := firmware.Manifest{SchemaVersion: 1, PackageID: v.PackageID, ReleaseVersion: v.ReleaseVersion, Board: firmware.Board{ID: v.FirmwareBoard, ProfileHash: "catalog:" + v.Board}, Chip: firmware.Chip{Family: "esp32s3", FlashBytes: v.FlashBytes}, SecurityBaseline: firmware.SecurityBaseline{SecureVersion: 0}, Layout: firmware.Layout{Fingerprint: layout.Fingerprint, PartitionTablePath: "metadata/partition-table.bin"}, Mode: "full", AppIdentity: firmware.AppIdentity{ProjectName: projectName, AppVersion: version, ELFSHA256: elfSHA, PSRAMBytes: 8 * 1024 * 1024}, BootVerification: firmware.BootVerification{Baud: 115200, TimeoutSeconds: 30, RequiredSelfTests: []string{"local_ready"}}, Files: []firmware.FileSpec{fileSpec("images/full-flash.bin", image, &imageOffset, "flash"), fileSpec("metadata/partition-table.bin", table, nil, "metadata")}}
+	manifest := firmware.Manifest{SchemaVersion: 1, PackageID: v.PackageID, ReleaseVersion: v.ReleaseVersion, Board: firmware.Board{ID: v.FirmwareBoard, ProfileHash: "catalog:" + v.Board}, Chip: firmware.Chip{Family: "esp32s3", FlashBytes: v.FlashBytes}, SecurityBaseline: firmware.SecurityBaseline{SecureVersion: 0}, Layout: firmware.Layout{ID: v.LayoutID, Fingerprint: layout.Fingerprint, PartitionTablePath: "metadata/partition-table.bin"}, Mode: "full", AppIdentity: firmware.AppIdentity{ProjectName: projectName, AppVersion: version, ELFSHA256: elfSHA, ReleaseSequence: v.ReleaseSequence, PSRAMBytes: 8 * 1024 * 1024}, BootVerification: firmware.BootVerification{Baud: 115200, TimeoutSeconds: 30, RequiredSelfTests: []string{"local_ready"}}, Files: []firmware.FileSpec{fileSpec("images/full-flash.bin", image, &imageOffset, "flash"), fileSpec("metadata/partition-table.bin", table, nil, "metadata")}}
 	manifestRaw, err := json.Marshal(manifest)
 	if err != nil {
 		return err

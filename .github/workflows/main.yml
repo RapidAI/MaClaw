@@ -1860,20 +1860,26 @@ jobs:
         include:
           - device: echoear-2st
             firmware_board: echoear-2st-r8
+            layout_id: maclaw-s3-16m-factory-v2
             sdkconfig_defaults: sdkconfig.defaults
             firmware_name: MaClaw-ESP32S3-EchoEar-2ST-firmware
           - device: bread-compact
             firmware_board: bread-compact-wifi-lcd-v1
+            layout_id: maclaw-s3-16m-factory-v2
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.bread-compact
             firmware_name: MaClaw-ESP32S3-Bread-Compact-firmware
           - device: fangtang-4g
             firmware_board: fangtang-4g-v1
+            layout_id: maclaw-s3-16m-factory-v2
             sdkconfig_defaults: sdkconfig.defaults;sdkconfig.defaults.fangtang-4g
             firmware_name: MaClaw-ESP32S3-Fangtang-4G-firmware
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ClawMateMaker/go.mod
 
       - name: Build ${{ matrix.device }} firmware
         env:
@@ -1887,6 +1893,8 @@ jobs:
           release_dir="$project_dir/release"
           build_dir="build-release-${{ matrix.device }}"
           mkdir -p "$release_dir"
+          printf 'CONFIG_MACLAW_RELEASE_SEQUENCE=%s\n' "${{ github.run_number }}" > "$project_dir/sdkconfig.clawmate-release"
+          export SDKCONFIG_DEFAULTS="${SDKCONFIG_DEFAULTS};sdkconfig.clawmate-release"
 
           # Keep each board configuration in a fresh, isolated build directory.
           # merge-bin creates a complete image beginning at flash offset 0x0,
@@ -1932,7 +1940,9 @@ jobs:
             go run ./tools/fwpack \
               --board '${{ matrix.device }}' \
               --firmware-board '${{ matrix.firmware_board }}' \
+              --layout-id '${{ matrix.layout_id }}' \
               --release '${{ github.ref_name }}' \
+              --release-sequence '${{ github.run_number }}' \
               --image "$release_dir/${FIRMWARE_NAME}.bin" \
               --partition-table "$project_dir/$build_dir/partition_table/partition-table.bin" \
               --project-description "$project_dir/$build_dir/project_description.json" \
@@ -1956,10 +1966,151 @@ jobs:
           if-no-files-found: error
 
   # ============================================================
+  # ClawMate Maker: signed desktop flasher for Windows/macOS/Linux
+  # ============================================================
+  build-clawmate-maker:
+    needs: [build-esp32-firmware]
+    runs-on: ${{ matrix.os }}
+    environment: firmware-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows/amd64
+            executable: ClawMateMaker.exe
+            output_name: ClawMateMaker.exe
+            sidecar_binary: esptool.exe
+            sidecar_arch: native
+            release_name: ClawMateMaker-windows-amd64.zip
+          # Build each macOS variant natively.  Wails links native WebKit
+          # dependencies, so a single runner must not cross-compile both
+          # architectures and then publish an untested binary/sidecar pair.
+          - os: macos-13
+            platform: darwin/amd64
+            executable: ClawMateMaker-darwin-amd64
+            output_name: ClawMateMaker-darwin-amd64
+            sidecar_binary: esptool
+            sidecar_arch: x86_64
+            release_name: ClawMateMaker-darwin-amd64.zip
+          - os: macos-14
+            platform: darwin/arm64
+            executable: ClawMateMaker-darwin-arm64
+            output_name: ClawMateMaker-darwin-arm64
+            sidecar_binary: esptool
+            sidecar_arch: arm64
+            release_name: ClawMateMaker-darwin-arm64.zip
+          - os: ubuntu-24.04
+            platform: linux/amd64
+            executable: ClawMateMaker
+            output_name: ClawMateMaker
+            sidecar_binary: esptool
+            sidecar_arch: native
+            release_name: ClawMateMaker-linux-amd64.zip
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ClawMateMaker/go.mod
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
+      - name: Build signed desktop flasher
+        shell: bash
+        env:
+          CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
+          CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLAWMATE_FIRMWARE_PUBLIC_KEY"
+          test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
+          cd ClawMateMaker
+          wails build -platform '${{ matrix.platform }}' -clean -o '${{ matrix.output_name }}' \
+            -ldflags "-X main.releaseBuild=true -X main.releaseKeyID=$CLAWMATE_FIRMWARE_SIGNING_KEY_ID -X main.releasePublicKeyBase64=$CLAWMATE_FIRMWARE_PUBLIC_KEY"
+          test -s "build/bin/${{ matrix.executable }}"
+      - name: Build managed esptool sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Wails --clean above owns build/bin, so package the sidecar only
+          # after it has created the signed desktop executable.
+          python3 -m venv "$RUNNER_TEMP/clawmate-esptool-venv"
+          "$RUNNER_TEMP/clawmate-esptool-venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir 'esptool==5.3.1' pyinstaller
+          pyinstaller_args=(--clean --onefile --collect-data esptool --name esptool)
+          if [ '${{ matrix.sidecar_arch }}' != 'native' ]; then
+            pyinstaller_args+=(--target-architecture '${{ matrix.sidecar_arch }}')
+          fi
+          "$RUNNER_TEMP/clawmate-esptool-venv/bin/python" -m PyInstaller "${pyinstaller_args[@]}" ClawMateMaker/tools/sidecar/esptool_entry.py
+          mkdir -p ClawMateMaker/build/bin/tools
+          cp "dist/${{ matrix.sidecar_binary }}" "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}"
+          chmod 0755 "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" || true
+          if [ "$(uname)" = "Darwin" ]; then
+            file "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" | grep -q '${{ matrix.sidecar_arch }}'
+          fi
+          "$RUNNER_TEMP/clawmate-esptool-venv/bin/python" ClawMateMaker/tools/sidecar/write_manifest.py \
+            --dir ClawMateMaker/build/bin/tools \
+            --binary '${{ matrix.sidecar_binary }}' \
+            --version 'esptool 5.3.1'
+          "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" version
+          test -s "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}"
+          test -s "ClawMateMaker/build/bin/tools/sidecar-manifest.json"
+      - name: Package desktop flasher
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="ClawMateMaker/build/package/ClawMateMaker"
+          archive="ClawMateMaker/build/release/${{ matrix.release_name }}"
+          rm -rf "$package_dir"
+          mkdir -p "$package_dir/tools" "$(dirname "$archive")"
+          cp "ClawMateMaker/build/bin/${{ matrix.executable }}" "$package_dir/${{ matrix.executable }}"
+          cp "ClawMateMaker/build/bin/tools/${{ matrix.sidecar_binary }}" "$package_dir/tools/${{ matrix.sidecar_binary }}"
+          cp "ClawMateMaker/build/bin/tools/sidecar-manifest.json" "$package_dir/tools/sidecar-manifest.json"
+          python - "$package_dir" "$archive" <<'PY'
+          from pathlib import Path
+          import os
+          import sys
+          import zipfile
+
+          source = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+          root = source.name
+          with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+              for path in sorted(source.rglob("*")):
+                  if not path.is_file():
+                      continue
+                  entry = Path(root) / path.relative_to(source)
+                  info = zipfile.ZipInfo.from_file(path, entry.as_posix())
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  # Preserve executable bits for macOS/Linux after extraction.
+                  info.external_attr = (path.stat().st_mode & 0o777) << 16
+                  archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+          PY
+          test -s "$archive"
+          python - "$archive" <<'PY'
+          import sys
+          import zipfile
+
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              bad = archive.testzip()
+              names = set(archive.namelist())
+          if bad:
+              raise SystemExit(f"invalid zip member: {bad}")
+          required = {"ClawMateMaker/tools/sidecar-manifest.json"}
+          if not required.issubset(names):
+              raise SystemExit("distribution archive is missing managed sidecar metadata")
+          PY
+      - name: Upload desktop flasher distribution
+        uses: actions/upload-artifact@v5
+        with:
+          name: clawmate-maker-${{ matrix.release_name }}
+          path: ClawMateMaker/build/release/${{ matrix.release_name }}
+          if-no-files-found: error
+
+  # ============================================================
   # Release: collect all artifacts and create GitHub Release
   # ============================================================
   release:
-    needs: [build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-esp32-firmware]
+    needs: [build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-esp32-firmware, build-clawmate-maker]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -2082,6 +2233,10 @@ jobs:
               "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw",
               "MaClaw-ESP32S3-Bread-Compact-firmware.clawfw",
               "MaClaw-ESP32S3-Fangtang-4G-firmware.clawfw",
+              "ClawMateMaker-windows-amd64.zip",
+              "ClawMateMaker-darwin-amd64.zip",
+              "ClawMateMaker-darwin-arm64.zip",
+              "ClawMateMaker-linux-amd64.zip",
           ]
 
           print("\n".join(assets))

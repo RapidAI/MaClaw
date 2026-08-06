@@ -74,7 +74,7 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
     cJSON_AddStringToObject(root, "layout_id", CONFIG_MACLAW_LAYOUT_ID);
     cJSON_AddStringToObject(root, "compat_id", CONFIG_MACLAW_COMPAT_ID);
     cJSON_AddStringToObject(root, "project_name", app->project_name);
-    cJSON_AddNumberToObject(root, "release_sequence", 0);
+    cJSON_AddNumberToObject(root, "release_sequence", CONFIG_MACLAW_RELEASE_SEQUENCE);
     cJSON_AddStringToObject(root, "app_version", app->version);
     cJSON_AddStringToObject(root, "idf_version", app->idf_ver);
     cJSON_AddStringToObject(root, "app_elf_sha256", elf_sha256);

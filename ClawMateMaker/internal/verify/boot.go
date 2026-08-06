@@ -72,15 +72,13 @@ func NonceID(nonce string) string {
 // ParseFrame only accepts the formal one-line protocol-v2 BOOT_STATUS shape.
 // No legacy BOOT_OK event, broadcast without nonce, or unknown protocol can pass.
 func ParseFrame(line string, expectedNonce string, expected Expectation) (Status, error) {
-	line = strings.TrimSpace(line)
-	if len(line) > MaxFrameBytes {
+	raw, err := eventPayload(line)
+	if err != nil {
+		return Status{}, err
+	}
+	if len(raw) > MaxFrameBytes {
 		return Status{}, errors.New("protocol frame exceeds 4 KiB")
 	}
-	const prefix = "CLAWMATE_EVT "
-	if !strings.HasPrefix(line, prefix) {
-		return Status{}, errors.New("not a ClawMate event")
-	}
-	raw := []byte(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
 	if err := rejectDuplicateKeys(raw); err != nil {
 		return Status{}, err
 	}
@@ -103,6 +101,20 @@ func ParseFrame(line string, expectedNonce string, expected Expectation) (Status
 		}
 	}
 	return s, nil
+}
+
+func eventPayload(line string) ([]byte, error) {
+	const prefix = "CLAWMATE_EVT "
+	line = strings.TrimSpace(line)
+	index := strings.Index(line, prefix)
+	if index < 0 {
+		return nil, errors.New("not a ClawMate event")
+	}
+	raw := []byte(strings.TrimSpace(line[index+len(prefix):]))
+	if len(raw) == 0 {
+		return nil, errors.New("event has no JSON payload")
+	}
+	return raw, nil
 }
 
 // Wait opens the application serial endpoint after the ROM session is closed,

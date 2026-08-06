@@ -32,7 +32,7 @@ func TestRunBuildsSignedPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run(input{Board: "bread-compact", FirmwareBoard: "bread-compact-wifi-lcd-v1", ReleaseVersion: "v1", ImagePath: image, PartitionTablePath: table, ProjectDescriptionPath: project, OutputPath: output, KeyID: "test", PrivateKey: base64.StdEncoding.EncodeToString(priv), FlashBytes: 16 * 1024 * 1024}); err != nil {
+	if err := run(input{Board: "bread-compact", FirmwareBoard: "bread-compact-wifi-lcd-v1", LayoutID: "maclaw-s3-16m-factory-v2", ReleaseVersion: "v1", ReleaseSequence: 1, ImagePath: image, PartitionTablePath: table, ProjectDescriptionPath: project, OutputPath: output, KeyID: "test", PrivateKey: base64.StdEncoding.EncodeToString(priv), FlashBytes: 16 * 1024 * 1024}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := firmware.VerifyRelease(output, firmware.TrustStore{"test": pub}); err != nil {

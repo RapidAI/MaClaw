@@ -839,6 +839,25 @@ func (a *App) ensureMemoryStore() {
 	}
 }
 
+// newHardwareMemoryStore keeps StoreFactory ownership in the application host
+// while hardware runtimes retain isolated, per-device memory data.
+func (a *App) newHardwareMemoryStore(clientID string) (*memory.Store, error) {
+	baseDir := hardwareAgentDataDir(a, clientID)
+	if baseDir == "" {
+		return nil, fmt.Errorf("hardware agent data directory is not configured")
+	}
+	store, err := memory.NewStoreWithMode(filepath.Join(baseDir, "memory"), memory.StoreModeJSON)
+	if err != nil {
+		return nil, fmt.Errorf("open hardware memory store: %w", err)
+	}
+	if a.embeddingActivated.Load() {
+		if emb := a.activeInterruptEmbedder(); emb != nil {
+			store.SetEmbedder(emb)
+		}
+	}
+	return store, nil
+}
+
 func (a *App) ensureMemoryPipeline() {
 	a.ensureInteractionInfra()
 	if a.memPipeline == nil {
@@ -8081,7 +8100,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 		}(cfg)
 	}
-	if (devicePetChanged && !cfg.HardwareAllowCustomPets || hardwareCustomPetsDisabled) {
+	if devicePetChanged && !cfg.HardwareAllowCustomPets || hardwareCustomPetsDisabled {
 		// Propagate the active GUI pet immediately. Previously the Hub profile was
 		// refreshed only when the GUI happened to send a gateway reply, so changing
 		// packs while the ESP was idle had no observable effect. This is a

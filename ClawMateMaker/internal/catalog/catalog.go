@@ -4,6 +4,7 @@
 package catalog
 
 import (
+	"clawmatemaker/internal/device"
 	"clawmatemaker/internal/flash"
 	"fmt"
 	"strings"
@@ -53,4 +54,28 @@ func RecognizeProbe(chip flash.ChipInfo, _ flash.FlashInfo) Recognition {
 		return Recognition{Status: "unsupported", Reason: "Only ESP32-S3 hardware is supported by the current official catalog."}
 	}
 	return Recognition{Status: "requires_confirmation", Reason: "ROM/USB data confirms ESP32-S3 but cannot distinguish EchoEar 2ST, Bread Compact, and Fangtang 4G. Confirm the board label, or use protocol:2 device identity before selecting firmware.", CandidateBoards: []string{"echoear-2st", "bread-compact", "fangtang-4g"}}
+}
+
+func RecognizeApplicationIdentity(identity string) Recognition {
+	return recognizeApplicationIdentity(identity, 2)
+}
+
+// RecognizeApplicationIdentityEvidence maps a nonce-bound application report
+// to a catalog entry. It does not prove physical board identity: application
+// firmware is replaceable. Protocol v1 is accepted strictly to migrate
+// existing devices into the signed protocol-v2 update path.
+func RecognizeApplicationIdentityEvidence(identity device.AppIdentity) Recognition {
+	return recognizeApplicationIdentity(identity.FirmwareTargetBoardID, identity.Protocol)
+}
+
+func recognizeApplicationIdentity(identity string, protocol int) Recognition {
+	for _, profile := range officialProfiles {
+		if profile.FirmwareBoardID == identity {
+			if protocol == 1 {
+				return Recognition{Status: "probable", Reason: "The running nonce-bound legacy protocol:1 application reports this board target. It can automatically select the signed migration firmware, but is not physical manufacturing identity; user confirmation remains required before flashing.", CandidateBoards: []string{profile.ID}}
+			}
+			return Recognition{Status: "probable", Reason: "The running nonce-bound protocol:2 application reports this board target. This is useful automatic evidence but not a physical manufacturing identity, so user confirmation is still required before flashing.", CandidateBoards: []string{profile.ID}}
+		}
+	}
+	return Recognition{Status: "requires_confirmation", Reason: "The application identity is unknown to the official board catalog."}
 }

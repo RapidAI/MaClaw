@@ -996,6 +996,8 @@ CONFIG_MACLAW_COMPAT_ID="maclaw-clawmate:echoear-2st-r8:maclaw-s3-16m-factory-v2
 # default:
 CONFIG_MACLAW_FIRMWARE_DISPLAY_NAME="ClawMate / EchoEar-2ST R8"
 # default:
+CONFIG_MACLAW_RELEASE_SEQUENCE=0
+# default:
 CONFIG_MACLAW_WIFI_SSID=""
 # default:
 CONFIG_MACLAW_WIFI_PASSWORD=""

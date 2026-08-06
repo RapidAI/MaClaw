@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"clawmatemaker/internal/device"
 	"clawmatemaker/internal/firmware"
 	"clawmatemaker/internal/flash"
 	"clawmatemaker/internal/logging"
@@ -42,6 +44,21 @@ type FlashJob struct {
 	logRoot          string
 }
 
+// flashLease serializes irreversible writes inside one desktop process. A
+// port can be reused by the operating system after an unplug, so allowing a
+// second write job to race the first would invalidate the pre-write binding
+// check even when the jobs name different COM ports. Cross-process protection
+// is supplied by the OS serial-port open itself; this lease covers the Wails
+// API boundary before a child process owns the port.
+var flashLease sync.Mutex
+
+func acquireFlashLease() (func(), error) {
+	if !flashLease.TryLock() {
+		return nil, errors.New("another firmware write job is already active")
+	}
+	return flashLease.Unlock, nil
+}
+
 func NewFlashJob(root string, request FlashRequest, emit func(logging.Event)) (*FlashJob, error) {
 	if request.Port == "" || request.PackagePath == "" {
 		return nil, errors.New("port and package path are required")
@@ -67,7 +84,26 @@ func NewFlashJob(root string, request FlashRequest, emit func(logging.Event)) (*
 func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	result = FlashResult{JobID: j.jobID, AttemptID: j.attemptID, Status: "running", StartedAt: time.Now().UTC()}
 	j.log.Event(logging.Info, "prepare", "job", "JOB_CREATED", "job.created", "", map[string]any{"port": j.request.Port})
+	releaseLease, err := acquireFlashLease()
+	if err != nil {
+		return j.fail(&result, "WRITE_JOB_ACTIVE", err)
+	}
+	defer releaseLease()
+	writingStarted := false
+	var writingBootCritical bool
+	var packageSHA256 string
 	defer func() {
+		if retErr != nil && writingStarted {
+			// A completed esptool process is not enough to prove that every image
+			// was written and booted. Persist the recovery state before closing the
+			// job so a later app start cannot mistake an interrupted single-slot
+			// factory update for an ordinary retry.
+			if err := WriteJournal(j.logRoot, Journal{JobID: j.jobID, PackageID: result.PackageID, PackageSHA256: packageSHA256, State: JournalRecoveryRequired, BootCriticalModified: writingBootCritical}); err != nil {
+				j.log.Event(logging.Error, "flash", "journal", "JOURNAL_RECOVERY_WRITE_FAILED", "journal.recovery.write.failed", err.Error(), nil)
+			} else {
+				j.log.Event(logging.Warn, "flash", "journal", "RECOVERY_REQUIRED", "flash.recovery_required", "The write did not complete a verified boot. Keep the device connected and use a complete recovery package through ROM download mode.", nil)
+			}
+		}
 		result.FinishedAt = time.Now().UTC()
 		if retErr != nil {
 			result.Status = "failed"
@@ -85,13 +121,14 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 		return j.fail(&result, "PACKAGE_SIGNATURE_INVALID", err)
 	}
 	result.PackageID = verified.Manifest.PackageID
+	packageSHA256 = verified.ArchiveSHA256
 	if err := WriteJournal(j.logRoot, Journal{JobID: j.jobID, PackageID: verified.Manifest.PackageID, PackageSHA256: verified.ArchiveSHA256, State: JournalPrepared}); err != nil {
 		return j.fail(&result, "JOURNAL_INVALID", err)
 	}
 	if verified.Manifest.Board.ID == "" || verified.Manifest.Chip.Family == "" || verified.Manifest.Chip.FlashBytes <= 0 {
 		return j.fail(&result, "PACKAGE_MANIFEST_INCOMPLETE", errors.New("release package must declare board and chip capacity"))
 	}
-	if verified.Manifest.Layout.Fingerprint == "" || verified.Manifest.Layout.PartitionTablePath == "" || (verified.Manifest.Mode != "full" && verified.Manifest.Mode != "app-only") {
+	if verified.Manifest.Layout.ID == "" || verified.Manifest.Layout.Fingerprint == "" || verified.Manifest.Layout.PartitionTablePath == "" || (verified.Manifest.Mode != "full" && verified.Manifest.Mode != "app-only") {
 		return j.fail(&result, "PACKAGE_MANIFEST_INCOMPLETE", errors.New("release package must declare a known layout and mode"))
 	}
 	if verified.Manifest.AppIdentity.ProjectName == "" || verified.Manifest.AppIdentity.AppVersion == "" || verified.Manifest.AppIdentity.ELFSHA256 == "" || verified.Manifest.BootVerification.Baud <= 0 || verified.Manifest.BootVerification.TimeoutSeconds <= 0 {
@@ -105,6 +142,22 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	if err != nil {
 		return j.fail(&result, "TOOL_UNAVAILABLE", err)
 	}
+	// Preserve stable OS enumeration evidence before esptool's hard reset. A
+	// native USB Serial/JTAG device can come back under a different COM/tty
+	// path after the flash, so its USB serial number (when supplied by the OS)
+	// is the only signal that may associate a changed endpoint automatically.
+	postFlashCandidate := device.Candidate{Port: j.request.Port}
+	if candidates, listErr := device.ListCandidates(); listErr != nil {
+		j.log.Event(logging.Warn, "prepare", "device", "PORT_BASELINE_UNAVAILABLE", "port.baseline.unavailable", "Could not read USB enumeration metadata; boot verification will accept only the original serial port.", map[string]any{"port": j.request.Port})
+	} else {
+		for _, candidate := range candidates {
+			if candidate.Port == j.request.Port {
+				postFlashCandidate = candidate
+				break
+			}
+		}
+		j.log.Event(logging.Info, "prepare", "device", "PORT_BASELINE_CAPTURED", "port.baseline.captured", "Captured serial endpoint metadata for post-reset association.", map[string]any{"port": j.request.Port})
+	}
 	chipRun, err := tool.RunReadOnly(ctx, j.request.Port, "chip_id")
 	j.logSidecar("chip_id", chipRun, err)
 	if err != nil {
@@ -113,6 +166,9 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	chip := flash.ParseChipID(chipRun.Output)
 	if j.request.ExpectedChip != "" && !strings.Contains(strings.ToLower(chip.Chip+" "+chip.Revision), strings.ToLower(j.request.ExpectedChip)) {
 		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("expected %s, observed %s", j.request.ExpectedChip, chip.Chip))
+	}
+	if chip.MAC == "" {
+		return j.fail(&result, "DEVICE_BINDING_UNAVAILABLE", errors.New("ROM probe did not return a device MAC address"))
 	}
 	flashRun, err := tool.RunReadOnly(ctx, j.request.Port, "flash_id")
 	j.logSidecar("flash_id", flashRun, err)
@@ -152,7 +208,7 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 		return j.fail(&result, "SECURITY_STATE_UNSUPPORTED", err)
 	}
 	security := flash.ParseSecurityInfo(securityRun.Output)
-	if security.SecureBoot == nil || security.FlashEncryption == nil || *security.SecureBoot || *security.FlashEncryption || verified.Manifest.SecurityBaseline.SecureVersion != 0 || (security.SecureVersion != nil && *security.SecureVersion != 0) {
+	if security.SecureBoot == nil || security.FlashEncryption == nil || security.SecureVersion == nil || *security.SecureBoot || *security.FlashEncryption || verified.Manifest.SecurityBaseline.SecureVersion != 0 || *security.SecureVersion != 0 {
 		return j.fail(&result, "SECURITY_STATE_UNSUPPORTED", errors.New("security state is non-baseline or could not be safely determined"))
 	}
 	for _, f := range verified.Manifest.Files {
@@ -199,6 +255,20 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 		}
 		images = append(images, flash.WriteImage{Offset: *spec.Offset, Path: filepath.Join(tmp, filepath.FromSlash(spec.Path)), SHA256: spec.SHA256, Size: spec.Size, Region: spec.Region})
 	}
+	// A serial port name can be reused after a hot-unplug. Re-query ROM
+	// identity immediately before the irreversible operation and compare the
+	// in-memory MAC (never emitted to public logs) with the one seen during the
+	// compatibility checks above.
+	bindingRun, err := tool.RunReadOnly(ctx, j.request.Port, "chip_id")
+	j.logSidecar("chip_id_prewrite_binding", bindingRun, err)
+	if err != nil {
+		return j.fail(&result, "DEVICE_BINDING_UNAVAILABLE", err)
+	}
+	currentChip := flash.ParseChipID(bindingRun.Output)
+	if currentChip.MAC == "" || !strings.EqualFold(currentChip.MAC, chip.MAC) {
+		return j.fail(&result, "DEVICE_CHANGED", errors.New("device identity changed after compatibility checks; refusing to write"))
+	}
+	j.log.Event(logging.Info, "prepare", "device", "DEVICE_BINDING_VERIFIED", "device.binding.verified", "ROM device identity still matches the preflight probe.", nil)
 	j.log.Event(logging.Warn, "flash", "job", "RISK_WINDOW_STARTED", "flash.risk_window", "Flash writing is starting. Do not disconnect the device.", map[string]any{"bytes": len(images)})
 	bootCritical := false
 	for _, image := range images {
@@ -210,24 +280,36 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	if err := WriteJournal(j.logRoot, Journal{JobID: j.jobID, PackageID: verified.Manifest.PackageID, PackageSHA256: verified.ArchiveSHA256, State: JournalWriting, BootCriticalModified: bootCritical}); err != nil {
 		return j.fail(&result, "JOURNAL_INVALID", err)
 	}
-	writeRun, err := tool.WriteImages(ctx, j.request.Port, 921600, images)
-	j.logSidecar("write_flash", writeRun, err)
+	writingStarted = true
+	writingBootCritical = bootCritical
+	writeRun, writeBaud, err := j.writeWithFallback(ctx, tool, images)
 	if err != nil {
 		j.log.Event(logging.Warn, "flash", "job", "RECOVERY_REQUIRED", "flash.recovery_required", "Writing was interrupted; enter ROM download mode and retry a complete recovery package.", nil)
 		return j.fail(&result, "FLASH_WRITE_FAILED", err)
 	}
 	result.ImagesWritten = len(images)
-	j.log.Event(logging.Info, "flash", "engine", "STAGE_COMPLETED", "stage.completed", "", map[string]any{"durationMs": writeRun.Duration.Milliseconds(), "bytes": len(images)})
-	verifyRun, err := tool.VerifyImages(ctx, j.request.Port, 921600, images)
+	j.log.Event(logging.Info, "flash", "engine", "STAGE_COMPLETED", "stage.completed", "", map[string]any{"durationMs": writeRun.Duration.Milliseconds(), "bytes": len(images), "baud": writeBaud})
+	verifyRun, err := tool.VerifyImages(ctx, j.request.Port, writeBaud, images)
 	j.logSidecar("verify_flash", verifyRun, err)
 	if err != nil {
 		return j.fail(&result, "FLASH_VERIFY_FAILED", err)
 	}
 	j.log.Event(logging.Info, "verify", "engine", "FLASH_VERIFIED", "flash.verified", "All written images were verified by readback hash.", map[string]any{"bytes": len(images), "durationMs": verifyRun.Duration.Milliseconds()})
 	bootTimeout := time.Duration(verified.Manifest.BootVerification.TimeoutSeconds) * time.Second
-	expectedBoot := verify.Expectation{BoardID: verified.Manifest.Board.ID, LayoutID: verified.Manifest.Layout.Fingerprint, ReleaseSequence: verified.Manifest.AppIdentity.ReleaseSequence, ProjectName: verified.Manifest.AppIdentity.ProjectName, AppVersion: verified.Manifest.AppIdentity.AppVersion, AppELFSHA256: verified.Manifest.AppIdentity.ELFSHA256, Chip: verified.Manifest.Chip.Family, FlashBytes: verified.Manifest.Chip.FlashBytes, PSRAMBytes: verified.Manifest.AppIdentity.PSRAMBytes, RequiredSelfTests: verified.Manifest.BootVerification.RequiredSelfTests}
-	j.log.Event(logging.Info, "boot", "verify", "STAGE_STARTED", "stage.started", "Waiting for a fresh protocol-v2 BOOT_STATUS response.", nil)
-	bootResult, err := verify.Wait(ctx, j.request.Port, verified.Manifest.BootVerification.Baud, bootTimeout, expectedBoot, func(line string) error { return j.log.AppendRaw("serial.log", line) })
+	expectedBoot := verify.Expectation{BoardID: verified.Manifest.Board.ID, LayoutID: verified.Manifest.Layout.ID, ReleaseSequence: verified.Manifest.AppIdentity.ReleaseSequence, ProjectName: verified.Manifest.AppIdentity.ProjectName, AppVersion: verified.Manifest.AppIdentity.AppVersion, AppELFSHA256: verified.Manifest.AppIdentity.ELFSHA256, Chip: verified.Manifest.Chip.Family, FlashBytes: verified.Manifest.Chip.FlashBytes, PSRAMBytes: verified.Manifest.AppIdentity.PSRAMBytes, RequiredSelfTests: verified.Manifest.BootVerification.RequiredSelfTests}
+	j.log.Event(logging.Info, "boot", "device", "PORT_REENUMERATION_STARTED", "port.reenumeration.started", "Waiting for the same device serial endpoint after hard reset.", map[string]any{"port": j.request.Port})
+	bootCandidate, err := device.WaitForReenumeratedPort(ctx, postFlashCandidate, device.ListCandidates, device.DefaultReenumerationPolicy())
+	if err != nil {
+		j.log.Event(logging.Warn, "boot", "device", "PORT_REENUMERATION_FAILED", "port.reenumeration.failed", err.Error(), map[string]any{"port": j.request.Port})
+		return j.fail(&result, "BOOT_NOT_VERIFIED", err)
+	}
+	if bootCandidate.Port != j.request.Port {
+		j.log.Event(logging.Info, "boot", "device", "PORT_REENUMERATED", "port.reenumerated", "Matched the post-reset serial endpoint using stable USB metadata.", map[string]any{"port": bootCandidate.Port})
+	} else {
+		j.log.Event(logging.Info, "boot", "device", "PORT_REENUMERATED", "port.reenumerated", "The original serial endpoint returned after reset.", map[string]any{"port": bootCandidate.Port})
+	}
+	j.log.Event(logging.Info, "boot", "verify", "STAGE_STARTED", "stage.started", "Waiting for a fresh protocol-v2 BOOT_STATUS response.", map[string]any{"port": bootCandidate.Port})
+	bootResult, err := verify.Wait(ctx, bootCandidate.Port, verified.Manifest.BootVerification.Baud, bootTimeout, expectedBoot, func(line string) error { return j.log.AppendRaw("serial.log", line) })
 	if err != nil {
 		j.log.Event(logging.Warn, "boot", "verify", "BOOT_NOT_VERIFIED", "boot.not_verified", err.Error(), nil)
 		return j.fail(&result, "BOOT_NOT_VERIFIED", err)
@@ -237,6 +319,36 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 		return j.fail(&result, "JOURNAL_INVALID", err)
 	}
 	return result, nil
+}
+
+// writeWithFallback retries the initial flash transfer from high speed to the
+// conservative ROM rate. Every failed attempt is preserved in diagnostics.
+// Once any write process succeeds, no further baud retry is allowed: later
+// verification failure must enter the recovery flow rather than risk a second
+// unplanned write to a potentially changed device.
+func (j *FlashJob) writeWithFallback(ctx context.Context, tool flash.Tool, images []flash.WriteImage) (flash.Result, int, error) {
+	var lastResult flash.Result
+	var lastErr error
+	for attempt, baud := range flash.SupportedWriteBauds {
+		j.log.Event(logging.Info, "flash", "engine", "FLASH_WRITE_ATTEMPT", "flash.write.attempt", "Starting controlled flash transfer.", map[string]any{"attempt": attempt + 1, "baud": baud})
+		result, err := tool.WriteImages(ctx, j.request.Port, baud, images)
+		j.logSidecar(fmt.Sprintf("write_flash_%d", baud), result, err)
+		if err == nil {
+			if attempt > 0 {
+				j.log.Event(logging.Warn, "flash", "engine", "FLASH_BAUD_FALLBACK_SUCCEEDED", "flash.baud.fallback.succeeded", "Firmware transfer succeeded after lowering the serial speed.", map[string]any{"attempt": attempt + 1, "baud": baud})
+			}
+			return result, baud, nil
+		}
+		lastResult, lastErr = result, err
+		if !flash.CanRetryWriteAtLowerBaud(result, err) {
+			j.log.Event(logging.Warn, "flash", "engine", "FLASH_BAUD_FALLBACK_BLOCKED", "flash.baud.fallback.blocked", "The transfer may have started writing, so automatic retry is blocked and recovery is required.", map[string]any{"attempt": attempt + 1, "baud": baud})
+			break
+		}
+		if attempt+1 < len(flash.SupportedWriteBauds) {
+			j.log.Event(logging.Warn, "flash", "engine", "FLASH_BAUD_FALLBACK", "flash.baud.fallback", "Flash transfer failed before a successful write; retrying at a lower serial speed.", map[string]any{"attempt": attempt + 1, "fromBaud": baud, "toBaud": flash.SupportedWriteBauds[attempt+1]})
+		}
+	}
+	return lastResult, 0, fmt.Errorf("flash transfer failed at all supported baud rates: %w", lastErr)
 }
 func (j *FlashJob) fail(r *FlashResult, code string, err error) (FlashResult, error) {
 	r.ErrorCode = code

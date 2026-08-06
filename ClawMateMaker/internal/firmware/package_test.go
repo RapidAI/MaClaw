@@ -18,7 +18,7 @@ func TestVerifyArchive(t *testing.T) {
 	archive := filepath.Join(dir, "ok.clawfw")
 	contents := []byte("firmware bytes")
 	sum := sha256.Sum256(contents)
-	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s"}]}`, len(contents), hex.EncodeToString(sum[:]))
+	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","mode":"app-only","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s","region":"app"}]}`, len(contents), hex.EncodeToString(sum[:]))
 	makeZip(t, archive, map[string]string{"manifest.json": manifest, "images/app.bin": string(contents)})
 	v, err := Verify(archive)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestVerifyReleaseRequiresValidSignature(t *testing.T) {
 	archive := filepath.Join(dir, "signed.clawfw")
 	contents := []byte("firmware bytes")
 	sum := sha256.Sum256(contents)
-	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s"}]}`, len(contents), hex.EncodeToString(sum[:]))
+	manifest := fmt.Sprintf(`{"schemaVersion":1,"packageId":"bread-v1","releaseVersion":"1","mode":"app-only","files":[{"path":"images/app.bin","size":%d,"sha256":"sha256:%s","region":"app"}]}`, len(contents), hex.EncodeToString(sum[:]))
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -53,6 +53,22 @@ func TestVerifyRejectsTraversalAndUnlisted(t *testing.T) {
 	makeZip(t, archive, map[string]string{"manifest.json": `{"schemaVersion":1,"packageId":"p","files":[{"path":"x.bin","size":1,"sha256":"sha256:00"}]}`, "../x.bin": "x"})
 	if _, err := Verify(archive); err == nil {
 		t.Fatal("expected traversal rejection")
+	}
+}
+func TestInstallPlanValidatesModeAndDataImpact(t *testing.T) {
+	appOnly, err := InstallPlanFor(Manifest{Mode: ModeAppOnly, Files: []FileSpec{{Path: "images/app.bin", Region: "app"}}})
+	if err != nil || !appOnly.PreservesUserData || !appOnly.RequiresRecovery {
+		t.Fatalf("plan=%+v err=%v", appOnly, err)
+	}
+	if _, err := InstallPlanFor(Manifest{Mode: ModeAppOnly, Files: []FileSpec{{Path: "images/boot.bin", Region: "bootloader"}}}); err == nil {
+		t.Fatal("app-only non-app image accepted")
+	}
+	full, err := InstallPlanFor(Manifest{Mode: ModeFull, Files: []FileSpec{{Path: "images/app.bin", Region: "app"}}})
+	if err != nil || full.PreservesUserData || !full.RequiresRecovery {
+		t.Fatalf("plan=%+v err=%v", full, err)
+	}
+	if _, err := InstallPlanFor(Manifest{Mode: "factory-reset"}); err == nil {
+		t.Fatal("unknown mode accepted")
 	}
 }
 func makeZip(t *testing.T, name string, entries map[string]string) {

@@ -22,6 +22,11 @@ const MaxEntries = 64
 
 var ErrUnsupportedSchema = errors.New("unsupported firmware manifest schema")
 
+const (
+	ModeFull    = "full"
+	ModeAppOnly = "app-only"
+)
+
 type Manifest struct {
 	SchemaVersion    int              `json:"schemaVersion"`
 	PackageID        string           `json:"packageId"`
@@ -36,6 +41,7 @@ type Manifest struct {
 	Files            []FileSpec       `json:"files"`
 }
 type Layout struct {
+	ID                 string `json:"id"`
 	Fingerprint        string `json:"fingerprint"`
 	PartitionTablePath string `json:"partitionTablePath"`
 }
@@ -76,6 +82,17 @@ type Verified struct {
 	Manifest       Manifest `json:"manifest"`
 	ManifestSHA256 string   `json:"manifestSha256"`
 	ArchiveSHA256  string   `json:"archiveSha256"`
+}
+
+// InstallPlan is the signed package's user-visible impact summary. It is
+// derived only after archive and signature validation; the frontend never
+// supplies the mode or decides what is safe to preserve.
+type InstallPlan struct {
+	Mode              string `json:"mode"`
+	RequiresRecovery  bool   `json:"requiresRecovery"`
+	PreservesUserData bool   `json:"preservesUserData"`
+	Summary           string `json:"summary"`
+	Warning           string `json:"warning,omitempty"`
 }
 type SignatureEnvelope struct {
 	Algorithm string `json:"algorithm"`
@@ -233,7 +250,38 @@ func VerifyRelease(pathname string, trust TrustStore) (Verified, error) {
 	if !ed25519.Verify(key, manifestRaw, sig) {
 		return Verified{}, errors.New("manifest signature verification failed")
 	}
+	if _, err := InstallPlanFor(v.Manifest); err != nil {
+		return Verified{}, err
+	}
 	return v, nil
+}
+
+// InstallPlanFor validates the release-defined install mode and gives the UI
+// the exact, conservative impact text. Full mode may change boot-critical
+// regions and requires ROM recovery after interruption. App-only must contain
+// only an app image and promises to preserve NVS/storage by not writing them.
+func InstallPlanFor(m Manifest) (InstallPlan, error) {
+	switch m.Mode {
+	case ModeFull:
+		return InstallPlan{Mode: m.Mode, RequiresRecovery: true, PreservesUserData: false, Summary: "完整刷写：会按已签名的包写入系统镜像，可能覆盖启动、分区、模型或存储区域。", Warning: "刷写中断后必须进入 ROM 下载模式并使用完整恢复包；当前单 factory App 布局不保证旧版本仍可启动。"}, nil
+	case ModeAppOnly:
+		appImages := 0
+		for _, file := range m.Files {
+			if file.Region == "metadata" {
+				continue
+			}
+			if file.Region != "app" {
+				return InstallPlan{}, fmt.Errorf("app-only package contains non-app region %s", file.Region)
+			}
+			appImages++
+		}
+		if appImages == 0 {
+			return InstallPlan{}, errors.New("app-only package contains no app image")
+		}
+		return InstallPlan{Mode: m.Mode, RequiresRecovery: true, PreservesUserData: true, Summary: "仅更新应用：只写入 App 分区，保留现有 NVS、配对、Wi-Fi 和 storage 数据。", Warning: "当前为单 factory App 布局。若 App 写入中断或启动未验证，仍需通过 ROM 下载模式执行完整恢复。"}, nil
+	default:
+		return InstallPlan{}, fmt.Errorf("unsupported firmware install mode %q", m.Mode)
+	}
 }
 func safePath(name string) (string, error) {
 	if name == "" || strings.Contains(name, "\\") || strings.HasPrefix(name, "/") {

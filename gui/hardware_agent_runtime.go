@@ -279,7 +279,7 @@ func (r *hardwareAgentRuntimeRegistry) handler(clientID string) (*IMMessageHandl
 			if r.configure != nil {
 				r.configure(h)
 			}
-			store, err = newHardwareMemoryStore(r.app, clientID)
+			store, err = r.app.newHardwareMemoryStore(clientID)
 			if err == nil {
 				h.SetMemoryStore(store)
 			}
@@ -579,21 +579,4 @@ func newHardwareConfirmationStore(app *App, clientID string) *aiConfirmationStor
 		return newAIConfirmationStore("")
 	}
 	return newAIConfirmationStore(filepath.Join(baseDir, "confirmations.json"))
-}
-
-func newHardwareMemoryStore(app *App, clientID string) (*memory.Store, error) {
-	baseDir := hardwareAgentDataDir(app, clientID)
-	if baseDir == "" {
-		return nil, fmt.Errorf("hardware agent data directory is not configured")
-	}
-	store, err := memory.NewStoreWithMode(filepath.Join(baseDir, "memory"), memory.StoreModeJSON)
-	if err != nil {
-		return nil, fmt.Errorf("open hardware memory store: %w", err)
-	}
-	if app != nil && app.embeddingActivated.Load() {
-		if emb := app.activeInterruptEmbedder(); emb != nil {
-			store.SetEmbedder(emb)
-		}
-	}
-	return store, nil
 }

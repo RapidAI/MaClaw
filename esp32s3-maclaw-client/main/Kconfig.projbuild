@@ -58,6 +58,13 @@ config MACLAW_FIRMWARE_DISPLAY_NAME
     default "ClawMate / EchoEar-2ST R8" if MACLAW_BOARD_ECHOEAR_2ST
     default "ClawMate / 无名星智 4G" if MACLAW_BOARD_FANGTANG_4G
 
+config MACLAW_RELEASE_SEQUENCE
+    int "Monotonic firmware release sequence"
+    default 0
+    help
+        Set by protected release CI. Protocol-v2 BOOT_STATUS includes this
+        value and ClawMate Maker compares it with the signed package.
+
 if MACLAW_BOARD_FANGTANG_4G
 
 config MACLAW_FANGTANG_MODEM_UART_PORT
