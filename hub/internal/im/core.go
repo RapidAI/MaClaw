@@ -309,6 +309,11 @@ func (a *Adapter) InitTaskDispatcher(capacity int) {
 		// Re-stash attachments so routeToSingleMachine can pick them up.
 		a.messageRouter.StashMessageTypeForTenant(task.TenantID, task.UserID, task.MessageType)
 		a.messageRouter.StashClientCapabilitiesForTenant(task.TenantID, task.UserID, task.ClientCapabilities)
+		// ClientToolContext is not only tool-routing metadata: for a physical
+		// third-party client it is the canonical device/conversation identity.
+		// The queue owns a detached IMTask, so restore both the catalog and its
+		// context before MessageRouter constructs im.user_message.
+		a.messageRouter.StashClientToolsForTenant(task.TenantID, task.UserID, task.ClientTools, task.ClientToolContext)
 		if len(task.Attachments) > 0 {
 			a.messageRouter.StashAttachmentsForTenant(task.TenantID, task.UserID, task.Attachments)
 		}
@@ -463,6 +468,15 @@ func (a *Adapter) PluginsForTenant(tenantID string) map[string]IMPlugin {
 func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	if msg.TenantID != "" {
 		ctx = WithTenant(ctx, msg.TenantID)
+	}
+	// Hardware commands carry their concrete device transaction id separately
+	// from the transport's message id.  Prefer that id for every terminal path
+	// (fast answers, validation errors, queue execution and normal Agent output)
+	// so the ESP32 can complete exactly the command it submitted.  This also
+	// repairs older relays that generated an internal Hub message id while still
+	// preserving the original command id in control_reply_to.
+	if controlReplyTo := incomingControlReplyTo(msg.RawPayload); controlReplyTo != "" {
+		msg.MessageID = controlReplyTo
 	}
 	plugin := a.GetPluginForTenant(TenantIDFromContext(ctx), msg.PlatformName)
 	if plugin == nil {
@@ -1068,6 +1082,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			Text:               text,
 			Attachments:        msg.Attachments,
 			ClientCapabilities: msg.ClientCapabilities,
+			ClientTools:        msg.ClientTools,
+			ClientToolContext:  msg.ClientToolContext,
 			StartMenu:          startMenuTask,
 		}
 		queueResp := a.taskDispatcher.Enqueue(task)
@@ -1093,6 +1109,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	a.messageRouter.StashMessageTypeForTenant(tenantID, unifiedID, msg.MessageType)
 	a.messageRouter.StashClientCapabilitiesForTenant(tenantID, unifiedID, msg.ClientCapabilities)
 	a.messageRouter.StashAttachmentsForTenant(tenantID, unifiedID, msg.Attachments)
+	a.messageRouter.StashClientToolsForTenant(tenantID, unifiedID, msg.ClientTools, msg.ClientToolContext)
 	// Pair decorations with this inbound for the eventual agent reply.
 	ctx = WithReplyMeta(ctx, msg.PlatformUID, msg.MessageID)
 

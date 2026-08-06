@@ -14160,6 +14160,13 @@ body {
 .im-settings-hardware__device-list { border-top: 1px solid var(--theme-border-subtle); }
 .im-settings-hardware__device { display: grid; grid-template-columns: 10px minmax(180px, 1fr) minmax(0, 1.35fr); align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--theme-border-subtle); }
 .im-settings-hardware__device-details { display: grid; min-width: 0; gap: 2px; }
+.im-settings-hardware__device-name { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.im-settings-hardware__device-name strong { min-width: 0; }
+.im-settings-hardware__device-name input { min-width: 0; flex: 1 1 auto; max-width: 220px; padding: 3px 6px; font-size: 0.79rem; font-weight: 700; }
+.im-settings-hardware__device-rename { flex: 0 0 auto; padding: 2px 5px; border: 0; border-radius: 4px; background: transparent; color: var(--theme-primary-strong); font: inherit; font-size: 0.68rem; font-weight: 700; cursor: pointer; }
+.im-settings-hardware__device-rename:hover { background: var(--theme-surface-muted); }
+.im-settings-hardware__device-rename:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 1px; }
+.im-settings-hardware__device-rename:disabled { cursor: not-allowed; opacity: 0.6; }
 .im-settings-hardware__device > .im-settings-hardware__device-actions { display: flex; min-width: 0; flex: 1 1 auto; flex-flow: row nowrap; align-items: center; justify-content: flex-end; gap: 8px; white-space: nowrap; }
 .im-settings-hardware__device strong { overflow: hidden; color: var(--theme-text-primary); font-size: 0.79rem; text-overflow: ellipsis; white-space: nowrap; }
 .im-settings-hardware__device code { overflow: hidden; color: var(--theme-text-secondary); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -14171,10 +14178,21 @@ body {
 .im-settings-hardware__device-volume small { grid-column: 2; }
 .im-settings-hardware__custom-pets { align-items: flex-start; }
 .im-settings-hardware__custom-pets small { display: block; max-width: 54ch; margin-top: 2px; color: var(--theme-text-muted); font-size: 0.72rem; font-weight: 400; line-height: 1.4; }
-.im-settings-hardware__device-pet { display: grid; min-width: 132px; grid-template-columns: 24px auto minmax(78px, 1fr); align-items: center; gap: 6px; color: var(--theme-text-secondary); font-size: 0.7rem; font-weight: 700; }
+.im-settings-hardware__device-pet { position: relative; display: grid; min-width: 132px; grid-template-columns: 24px auto minmax(78px, 1fr); align-items: center; gap: 6px; color: var(--theme-text-secondary); font-size: 0.7rem; font-weight: 700; }
 .im-settings-hardware__device-pet-preview { display: grid; width: 24px; height: 24px; place-items: center; overflow: hidden; border: 1px solid var(--theme-border-subtle); border-radius: 6px; background: var(--theme-surface-muted); }
 .im-settings-hardware__device-pet-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
-.im-settings-hardware__device-pet select { min-width: 0; width: 100%; }
+.im-settings-hardware__device-pet-trigger { display: inline-flex; min-width: 0; width: 100%; min-height: 34px; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; overflow: hidden; color: var(--theme-text-primary); font: inherit; font-weight: 600; text-align: start; text-overflow: ellipsis; white-space: nowrap; }
+.im-settings-hardware__device-pet-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.im-settings-hardware__device-pet-trigger:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
+.im-settings-hardware__device-pet-trigger:disabled { cursor: not-allowed; opacity: 0.6; }
+.im-settings-hardware__device-pet-chevron { flex: 0 0 auto; font-size: 1rem; line-height: 1; }
+.im-settings-hardware__device-pet-menu { position: absolute; z-index: 20; top: calc(100% + 4px); right: 0; display: grid; width: max(196px, 100%); max-height: 240px; padding: 4px; overflow-y: auto; border: 1px solid var(--theme-border); border-radius: 8px; background: var(--theme-surface); box-shadow: 0 6px 8px color-mix(in srgb, var(--theme-text-primary) 16%, transparent); }
+.im-settings-hardware__device-pet-option { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--theme-text-primary); font: inherit; font-size: 0.78rem; font-weight: 600; text-align: start; cursor: pointer; }
+.im-settings-hardware__device-pet-option:hover,
+.im-settings-hardware__device-pet-option:focus-visible { background: var(--theme-surface-muted); outline: none; }
+.im-settings-hardware__device-pet-option[aria-selected="true"] { background: color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface)); color: var(--theme-primary-strong); }
+.im-settings-hardware__device-pet-option img { flex: 0 0 auto; width: 28px; height: 28px; object-fit: contain; }
+.im-settings-hardware__device-pet-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .im-settings-hardware__device-status { width: 8px; height: 8px; border-radius: 50%; background: var(--theme-text-muted); }
 .im-settings-hardware__device-status[data-online="true"] { background: var(--theme-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-success) 16%, transparent); }
 .im-settings-hardware__device .im-settings-button { min-height: 36px; }
@@ -14215,7 +14233,8 @@ body {
     .im-settings-hardware__actions { align-items: stretch; flex-direction: column; }
     .im-settings-hardware__devices-heading { align-items: stretch; flex-direction: column; }
     .im-settings-hardware__devices-error { align-items: stretch; flex-direction: column; }
-    .im-settings-hardware__device { grid-template-columns: 10px minmax(0, 1fr); }
+	.im-settings-hardware__device { grid-template-columns: 10px minmax(0, 1fr); }
+	.im-settings-hardware__device-name input { max-width: none; }
 	.im-settings-hardware__device > .im-settings-hardware__device-actions { grid-column: 2; justify-self: start; flex-flow: row nowrap; }
 	.im-settings-hardware__device .im-settings-button { min-height: 44px; }
     .im-settings-hardware__actions .im-settings-button,
@@ -14223,6 +14242,7 @@ body {
     .im-settings-hardware__device-volume { grid-template-columns: auto minmax(72px, 1fr); gap: 8px; }
     .im-settings-hardware__device-volume small { grid-column: auto; }
 	.im-settings-hardware__device-pet { min-width: 0; grid-template-columns: 22px auto minmax(72px, 1fr); }
+	.im-settings-hardware__device-pet-menu { right: auto; left: 0; }
     .im-settings-hardware__weather-controls { grid-template-columns: minmax(0, 1fr) auto; }
 }
 

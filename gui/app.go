@@ -5905,6 +5905,12 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	incoming.ThirdPartyGatewayToken = ondisk.ThirdPartyGatewayToken
 	incoming.ThirdPartyGatewayLocalMode = ondisk.ThirdPartyGatewayLocalMode
 
+	// ── Local hardware labels (SetThirdPartyHardwareDeviceAlias) ──
+	// Display labels are saved independently of the full settings form. Keep a
+	// stale form snapshot from erasing a recent rename or restoring a label for
+	// an already-unbound device.
+	incoming.HardwareDeviceAliases = ondisk.HardwareDeviceAliases
+
 	// ── MaClaw LLM provider state (SaveMaclawLLMProviders, syncHubLLMServiceStatusToConfig) ──
 	if incoming.MaclawLLMCurrentProvider != ondisk.MaclawLLMCurrentProvider {
 		restored = append(restored, "maclaw_llm_current_provider("+incoming.MaclawLLMCurrentProvider+"->"+ondisk.MaclawLLMCurrentProvider+")")
@@ -7208,6 +7214,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, fmt.Errorf("hardware_volume must be between 0 and 100")
 			}
 			cfg.HardwareVolume = v
+		case "hardware_device_aliases":
+			v, err := stringMapField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.HardwareDeviceAliases = v
 		case "hardware_allow_custom_pets":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -8069,10 +8081,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 		}(cfg)
 	}
-	if (devicePetChanged && !cfg.HardwareAllowCustomPets || hardwareCustomPetsDisabled) && a.ctx != nil {
+	if (devicePetChanged && !cfg.HardwareAllowCustomPets || hardwareCustomPetsDisabled) {
 		// Propagate the active GUI pet immediately. Previously the Hub profile was
 		// refreshed only when the GUI happened to send a gateway reply, so changing
-		// packs while the ESP was idle had no observable effect.
+		// packs while the ESP was idle had no observable effect. This is a
+		// transport-side state transition, not a frontend event: app context can
+		// be nil during startup/reconnect while the Hub socket is already live.
+		// Gating it on a.ctx therefore silently dropped real pet selections.
 		go func(cfg corelib.AppConfig) {
 			if hub := a.hubClient(); hub != nil && hub.IsConnected() {
 				if err := hub.SendDeviceGatewayPetProfile(cfg); err != nil {

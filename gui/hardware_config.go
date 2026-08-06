@@ -390,22 +390,30 @@ func (a *App) GetHardwareWelcomeAudioDataURL() (string, error) {
 // preview from being broadcast to every paired device.
 func (a *App) SendHardwareWelcomeAudioRemote(clientID string) error {
 	a.imGatewaySyncMu.Lock()
-	defer a.imGatewaySyncMu.Unlock()
 	if _, err := a.requireHardwareEnabled(); err != nil {
+		a.imGatewaySyncMu.Unlock()
 		return err
 	}
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
+		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("hardware client ID is required")
 	}
 	payload, err := a.hardwareWelcomePreviewPayload()
 	if err != nil {
+		a.imGatewaySyncMu.Unlock()
 		return err
 	}
-	if hub := a.hubClient(); hub != nil && hub.IsConnected() {
-		return hub.SendDeviceGatewayHardwareReplyConfirmed(clientID, payload)
+	hub := a.hubClient()
+	if hub == nil || !hub.IsConnected() {
+		a.imGatewaySyncMu.Unlock()
+		return fmt.Errorf("Hub is not connected; connect MaClaw to Hub and ensure the selected remote ESP32 is online")
 	}
-	return fmt.Errorf("Hub is not connected; connect MaClaw to Hub and ensure the selected remote ESP32 is online")
+	// Physical playback confirmation can take fifteen seconds. This operation
+	// has an explicit client ID, so waiting must not freeze controls for other
+	// independently bound devices.
+	a.imGatewaySyncMu.Unlock()
+	return hub.SendDeviceGatewayHardwareReplyConfirmed(clientID, payload)
 }
 
 // SendHardwareWelcomeAudio preserves the existing mode-aware API for older

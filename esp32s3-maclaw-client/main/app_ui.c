@@ -172,8 +172,10 @@ void app_ui_push_recording_pcm(const int16_t *samples, size_t count) {
     uint32_t mean = usable ? (uint32_t)(magnitude_sum / usable) : 0;
     uint16_t level = mean <= 180u ? 0u :
                      (mean >= 9000u ? 1000u : (uint16_t)((mean - 180u) * 1000u / 8820u));
+    bool active;
     taskENTER_CRITICAL(&s_model_lock);
-    if (s_model.recording_active) {
+    active = s_model.recording_active;
+    if (active) {
         memmove(&s_model.audio_history[0], &s_model.audio_history[1],
                 (sizeof(s_model.audio_history) / sizeof(s_model.audio_history[0]) - 1) *
                     sizeof(s_model.audio_history[0]));
@@ -182,7 +184,10 @@ void app_ui_push_recording_pcm(const int16_t *samples, size_t count) {
         ++s_model.audio_history_revision;
     }
     taskEXIT_CRITICAL(&s_model_lock);
-    board_port_push_recording_pcm(samples, count);
+    // Do not let a just-completed capture append a stale PCM block to the next
+    // session. The board owns the actual envelope history; the app model keeps
+    // only its matching UI snapshot.
+    if (active) board_port_push_recording_pcm(samples, count);
 }
 
 void app_ui_show_text(const char *title, const char *text) {

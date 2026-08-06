@@ -68,6 +68,25 @@ func TestRemoteGatewayPendingVoiceTextIncludesArmingMetadata(t *testing.T) {
 	}
 }
 
+func TestRemoteGatewayTerminalTextCarriesHardwareReplyCorrelation(t *testing.T) {
+	sender := &captureMachineSender{}
+	plugin := &RemoteGatewayPlugin{
+		platform: "thirdparty", sender: sender,
+		owner: &gatewayOwner{TenantID: "tenant_default", MachineID: "machine-1"},
+	}
+	ctx := WithReplyMeta(context.Background(), "thirdparty:pet-1:default", "voice-502985705")
+	if err := plugin.SendText(ctx, UserTarget{PlatformUID: "thirdparty:pet-1:default"}, "42"); err != nil {
+		t.Fatalf("SendText() error = %v", err)
+	}
+	msg := sender.msg.(map[string]any)
+	inner := msg["payload"].(map[string]any)["payload"].(map[string]any)
+	if inner["source_message_id"] != "voice-502985705" ||
+		inner["replyTo"] != "voice-502985705" ||
+		inner["replyToMessageId"] != "voice-502985705" {
+		t.Fatalf("terminal correlation = %#v", inner)
+	}
+}
+
 func TestRemoteGatewayPendingVoiceEndPreservesCorrelation(t *testing.T) {
 	sender := &captureMachineSender{}
 	plugin := &RemoteGatewayPlugin{

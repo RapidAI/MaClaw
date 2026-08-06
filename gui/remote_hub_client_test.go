@@ -38,7 +38,7 @@ func TestRemoteHubClientListsAndDeletesHardwareBindings(t *testing.T) {
 			switch request.Type {
 			case "im.device_gateway_devices_list":
 				_ = conn.WriteJSON(map[string]any{"type": "im.device_gateway_devices", "request_id": request.RequestID, "payload": map[string]any{"devices": []map[string]any{{"clientId": "esp32s3-a", "clientName": "Desk Pet", "online": true}}}})
-			case "im.device_gateway_device_delete":
+			case "im.device_gateway_device_delete", "im.device_gateway_device_rename":
 				_ = conn.WriteJSON(map[string]any{"type": "ack", "request_id": request.RequestID, "payload": map[string]any{"ok": true}})
 			}
 		}
@@ -48,7 +48,7 @@ func TestRemoteHubClientListsAndDeletesHardwareBindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &RemoteHubClient{conn: conn, connected: true, machineID: "gui-a"}
+	client := &RemoteHubClient{app: &App{}, conn: conn, connected: true, machineID: "gui-a"}
 	go client.readLoop()
 	devices, err := client.ListHardwareDevices()
 	if err != nil || len(devices) != 1 || devices[0].ClientID != "esp32s3-a" {
@@ -62,6 +62,31 @@ func TestRemoteHubClientListsAndDeletesHardwareBindings(t *testing.T) {
 	_ = client.conn.Close()
 	client.conn = nil
 	client.mu.Unlock()
+}
+
+func TestHardwareDeviceBindingsUsesFrontendJSONNames(t *testing.T) {
+	body, err := json.Marshal(HardwareDeviceBindings{
+		Devices:    []HardwareDeviceBinding{{ClientID: "esp32s3-a"}},
+		MaxDevices: 5,
+		BoundCount: 3,
+	})
+	if err != nil {
+		t.Fatalf("marshal hardware bindings: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode hardware bindings: %v", err)
+	}
+	for _, key := range []string{"devices", "maxDevices", "boundCount"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("hardware bindings JSON missing %q: %s", key, body)
+		}
+	}
+	for _, key := range []string{"Devices", "MaxDevices", "BoundCount"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("hardware bindings JSON leaked Go field %q: %s", key, body)
+		}
+	}
 }
 
 func TestRemoteHubClientConnectionLossStopsHardwareAgents(t *testing.T) {
@@ -127,6 +152,68 @@ func TestRemoteHubClientHardwareRequestsPropagateCorrelatedErrors(t *testing.T) 
 	_ = client.conn.Close()
 	client.conn = nil
 	client.mu.Unlock()
+}
+
+func TestRemoteHubClientIndependentHardwareRequestsDoNotSerialize(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	requests := make(chan HubEnvelope, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			var request HubEnvelope
+			if err := conn.ReadJSON(&request); err != nil {
+				return
+			}
+			if request.Type != "im.device_gateway_reply" {
+				continue
+			}
+			requests <- request
+			if err := conn.WriteJSON(map[string]any{"type": "ack", "request_id": request.RequestID, "payload": map[string]any{"ok": true}}); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &RemoteHubClient{app: &App{}, conn: conn, connected: true, machineID: "gui-a"}
+	defer func() {
+		client.mu.Lock()
+		client.connected = false
+		if client.conn != nil {
+			_ = client.conn.Close()
+		}
+		client.conn = nil
+		client.mu.Unlock()
+	}()
+	go client.readLoop()
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- client.SendDeviceGatewayHardwareConfigForClient("esp32-a", map[string]any{"volume": 31})
+	}()
+	go func() {
+		errCh <- client.SendDeviceGatewayPetProfileForClient("esp32-b", map[string]any{"skin": "clawmate"})
+	}()
+	for range 2 {
+		select {
+		case <-requests:
+		case <-time.After(time.Second):
+			t.Fatal("independent hardware request was not sent promptly")
+		}
+	}
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("independent hardware request failed: %v", err)
+		}
+	}
 }
 
 func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {

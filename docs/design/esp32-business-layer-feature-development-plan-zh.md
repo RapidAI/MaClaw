@@ -9,6 +9,7 @@
 - 正式支持硬件：Bread Compact、EchoEar-2ST、Fangtang-4G
 - 评审对象：Bread Compact 当前完整业务功能、EchoEar-2ST 当前闹钟及圆屏/触屏能力、Fangtang-4G 当前单键/小屏/ML307/电池能力，以及三者在共享业务层中的收敛方案
 - 唯一功能与业务行为基线：Bread Compact 已验证的完整功能集合及处理方式；EchoEar-2ST 与 Fangtang-4G 必须逐项对齐，不得保留板型专属业务分叉或正式功能缺口
+- 基线版本：由主计划定义的 `baseline_manifest` 冻结；本附录中的“Bread 行为”均指已批准且带 firmware/ELF digest、profile/hardware revision 和 golden trace 的基线 revision，不指任意 Bread 当前构建
 - 关联文档：`docs/design/esp32-unified-hal-development-plan-zh.md`
 
 本文作为 MaClaw AgentOS 总体开发计划的业务层评审附录，不构成并列或独立的实施计划。总体计划统一定义业务服务、Device API、硬件抽象、板型适配、迁移阶段与发布门禁；本附录保留三硬件源码评审事实和详细业务设计。新增硬件只能实现 profile、HAL、Renderer、Input Binding 和必要平台 port；不得复制或按板型改写 Command、Reply、Meeting、Alarm 等业务流程。
@@ -36,6 +37,8 @@
 - Fangtang 的单键没有独立音量键，必须提供可操作的远端/菜单等统一音量入口并实现底层音量控制；当前 `ESP_ERR_NOT_SUPPORTED` 只是待补差距，不能成为正式发布结果。
 - 后续新增硬件时，不修改 `app/`、`domain/` 和既有共享 `services/` 即可获得相同业务功能。
 - 所有未来正式硬件也必须完整实现 Bread Compact 功能母版；不以 capability 裁剪出硬件专属“精简版”，物理控件缺失时由适配层提供替代入口。
+
+范围口径与主计划一致：Bread 当前已有且已验证的行为属于 `BASELINE_EXISTING`；本计划新纳入公共产品契约、Bread 本身也要补齐的 Sleep Schedule/硬件唤醒、Alarm 增强和可回滚 OTA 属于 `BASELINE_PROMOTED`；电池、充电与蜂窝图标等只作为 `PHYSICAL_EXTENSION`。三硬件功能完全一致同时覆盖前两类，不能把计划新增能力写成 Bread 已经具备的源码事实。OTA 固定采用 `GitHub Release → Hub 完整回源/校验/缓存 → 设备完整下载到专用暂存区/校验 → inactive 槽刷写/回读校验 → A/B 切换`，设备不直连 GitHub，也不边下载边刷写。专用暂存区、Flash 写仲裁和进入 erase 后的不可取消语义属于三硬件共同业务契约。
 
 ### 2.3 本计划不做的事情
 
@@ -225,7 +228,7 @@ alarm_task()
 
 ### 4.4 生命周期、可靠性与安全边界问题
 
-1. OTA 下载、固件切换、计划重启、崩溃重启与 factory reset 期间如何处理 scheduled/active alarm 尚无统一业务契约。
+1. 当前有线升级/重启、计划重启、崩溃重启与 factory reset 期间如何处理 scheduled/active alarm 尚无统一业务契约；本计划纳入的 OTA 下载、完整校验、刷写、切换、pending-confirm 和回滚必须接入同一 lifecycle coordinator。
 2. Alarm 是离线本地能力，但当前启动顺序、时间可信度和 Gateway capability 发布之间的关系主要依靠注释和调用顺序维持，缺少可测试 invariant。
 3. 普通有界事件队列满载时，alarm due、dismiss、cancel、录音收尾等关键事件不能与天气或动画更新同等丢弃；当前没有集中 admission/backpressure 策略。
 4. alarm label、会议标题、回复文本和 tool 参数都可能包含隐私或恶意 UTF-8/控制字符，日志、crash dump、Renderer 和 glyph cache 需要一致的验证与脱敏规则。
@@ -292,6 +295,7 @@ flowchart TB
     ALARM["Alarm Service"]
     PROV["Provisioning Service"]
     AMBIENT["Ambient Service"]
+    OTA["OTA Service"]
     FG["Foreground & Interruption Coordinator"]
     DEVICE["Device API / Capability / Resource Leases"]
     SCENE["Scene Model"]
@@ -304,18 +308,21 @@ flowchart TB
     APP --> MEET
     APP --> ALARM
     APP --> PROV
+    APP --> OTA
     CMD --> REPLY
     CMD --> FG
     REPLY --> FG
     MEET --> FG
     ALARM --> FG
     PROV --> FG
+    OTA --> FG
     AMBIENT --> FG
     FG --> SCENE --> RENDER
     CMD --> DEVICE
     REPLY --> DEVICE
     MEET --> DEVICE
     ALARM --> DEVICE
+    OTA --> DEVICE
     DEVICE --> HAL
 ```
 
@@ -330,6 +337,8 @@ flowchart TB
 | Alarm Service | CRUD、调度、响铃 session、dismiss/snooze/missed、持久化 | 直接播放 tone 或刷新 LCD |
 | Provisioning Service | 配置事务、portal 状态、配对状态 | 板级 AP 驱动细节和安全策略硬编码 |
 | Ambient Service | 时间/天气/网络/pet 聚合为待机场景 | 覆盖高优先级 foreground |
+| OTA Service | release 检查、专用暂存、完整校验、安全点、不可取消点、inactive 槽刷写、回读校验、切换与回滚编排 | 直连 GitHub、接收任意 URL、边下载边刷、实现 Wi-Fi/ML307/partition 驱动 |
+| Hub OTA Repository | 从 allowlisted GitHub Release 完整回源，签名/size/hash 校验后原子缓存并向已授权设备提供 Range | 未校验即服务 partial asset、替设备放宽签名/兼容校验、依赖普通消息队列传固件 |
 | Gateway Dispatcher | outgoing poll、ACK/cursor、tool/result/reply 分发 | 直接执行业务 mutation |
 | Foreground Coordinator | 前景优先级、抢占、resume token、场景恢复 | 持有业务领域实体或写领域 NVS |
 | Audio Arbitration Service | capture/playback/wake lease、抢占和静音策略 | 决定 command/alarm 的业务终态 |
@@ -363,6 +372,7 @@ esp32s3-maclaw-client/main/
     audio_arbitration_service.c
     clock_deadline_service.c
     power_policy_service.c
+    ota_service.c
   presentation/
     scene_model.h
     scene_presenter.c
@@ -370,6 +380,9 @@ esp32s3-maclaw-client/main/
   device/
     device_api.h
     capability_service.h
+    ota_download_api.h
+    ota_staging_api.h
+    ota_partition_api.h
   adapters/
     bread_compact/
       input_binding_bread.c
@@ -409,6 +422,9 @@ typedef enum {
     APP_INTENT_VOLUME_DOWN,
     APP_INTENT_ALARM_DISMISS,
     APP_INTENT_ALARM_SNOOZE,
+    APP_INTENT_OTA_ACCEPT,
+    APP_INTENT_OTA_DEFER,
+    APP_INTENT_OTA_CANCEL,
 } app_intent_kind_t;
 ```
 
@@ -428,8 +444,11 @@ Input Binding 根据当前 foreground、原始 gesture 和 capability 生成 int
 | 任意可配置状态 | `CONFIGURE` | 激活键长按 | 触屏长按或板级配置键 | 单激活键长按 |
 | 闹钟响铃 | `ALARM_DISMISS` | 激活键按下沿 | 触屏按下沿 | 单激活键按下沿 |
 | 闹钟响铃 | `ALARM_SNOOZE` | 默认暂不绑定；产品启用后可用双击 | 默认暂不绑定；产品启用后可用双击 | 默认暂不绑定；产品启用后须提供不与 dismiss/网络选择冲突的单键或远端入口 |
+| OTA 更新提示 | `OTA_ACCEPT/DEFER/CANCEL` | 音量键选择，激活键确认 | 圆屏触控“安装/稍后/取消” | 单击切换，长按确认；正式客户端可作为辅助入口 |
 
 Phase 1 保持现有解除行为，不立即启用 snooze 手势，避免迁移时改变用户习惯。Phase 5 完成独立 snooze 状态和可用性提示后再启用绑定。
+
+替代入口必须作为产品能力实现和验收，而不是表格备注。EchoEar/Fangtang 的音量、snooze 等缺少独立实体键的功能，至少具有一个不依赖 Hub 在线的本地入口，并可从当前 Scene 或设置提示中发现；远端入口与本地入口必须汇聚为同一 intent/tool 和 operation，统一权限、当前值、提交结果、超时、取消及持久化。仅有隐藏 API、调试命令或无法从正式 UI 发现的入口，不计作与 Bread 功能等价。
 
 ### 7.3 手势消费规则
 
@@ -437,6 +456,7 @@ Phase 1 保持现有解除行为，不立即启用 snooze 手势，避免迁移�
 - 同一 `raw_contact_id` 或 `gesture_generation` 的事件只能产生一个终态 intent。
 - 屏幕/设备从 idle sleep 唤醒时，物理动作默认仅唤醒并被消费；明确的 voice wake-word 不消费后续 voice intent。
 - 闹钟 foreground 时，未绑定输入不能穿透到 Command/Meeting/Provisioning。
+- OTA Scene 的确认 contact 必须消费对应完成手势；Alarm 抢占 OTA Scene 时，原 contact/generation 失效，不能在恢复后自动执行安装。
 - Input Binding 输出日志只记录 intent、binding revision 和匿名 source class，不把触摸坐标当业务数据持久化。
 
 ## 8. Foreground 与 Operation 模型
@@ -776,13 +796,19 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 
 如果某硬件无法从 deep sleep 被触屏或 timer 唤醒，则该 profile 不允许在存在有效 alarm 时进入会错过闹钟的睡眠深度。可退化到 light sleep、仅关屏或保持运行，不能为了省电静默牺牲闹钟正确性。
 
-### 12.5 OTA、重启、解绑与恢复出厂
+### 12.5 有线升级、Hub OTA、重启、解绑与恢复出厂
 
-- OTA 下载可在 scheduled alarm 存在时后台进行；flash 写入需遵守资源/电源预算，不得阻塞 alarm critical lane。
-- Alarm ringing、Meeting finalize、NVS commit 或 sleep transaction 中禁止开始固件切换重启。已有更新等待安全点，并向用户显示延迟原因。
+- 当前单 `factory` 分区是待迁移源码事实；OTA 作为本计划 `BASELINE_PROMOTED`，只有完成 `otadata + ota_0 + ota_1`、bootloader rollback、设备暂存区和 pending-confirm 后才可发布 capability。首次布局迁移必须受控有线完整烧录，OTA v1 只更新 application。
+- OTA 固定链路为 `GitHub Release → Hub repository/cache → device`。Hub 必须完整下载 asset 到磁盘/对象存储，验证签名、size/hash 后原子发布；设备不构造 GitHub URL，也不接受任意 URL。
+- 设备把 Hub asset 小块流式下载到专用 raw staging（或经过同等级预分配/GC/碎片证明的暂存对象）；只有整个对象完成并通过 domain-separated manifest/application 签名、size/hash、image/profile/layout/compat/secure-version/schema/revocation 校验后，才可取得 flash lease 并刷写 inactive 槽。下载阶段禁止调用 `esp_ota_*`，刷写后必须从 flash 回读校验 digest，成功后才设置 boot partition。
+- OTA 暂存空间不得通过删除未上传会议录音、alarm 数据或用户资源获得；空间不足时延后并提示。断网只续传相同 manifest digest/asset digest/强 ETag，校验失败删除或隔离暂存对象且不触碰 inactive 槽。
+- 首个 inactive partition erase 前是最后可取消点；进入后不能杀死刷写任务，设备显示“正在安全完成，请勿断电”，并串行化 OTA、SPIFFS、NVS、core dump 等全部 Flash 写。刷写失败只留下 non-bootable inactive 槽，不改变当前启动目标。
+- OTA API 授权绑定 tenant/user/client/device/profile/layout/credential generation 和 rollout eligibility，query `clientId` 不作为授权依据；事件上报幂等且不能倒退终态。
+- 有线升级和 OTA 刷写/切换都必须进入维护/安全点，校验 artifact manifest、board/layout/compat 和数据 schema 窗口；Alarm ringing/due、Meeting capture/finalize、NVS commit、Provisioning transaction 或 Sleep COMMIT 中禁止开始刷写或重启。后台下载到暂存区也不得阻塞 alarm critical lane。
+- 新固件确认只依赖本地 Boot Coordinator/readiness/self-test 与 durable reconciliation，不依赖 Hub/GitHub 在线；pending-verify 期间 crash/WDT/brownout/自检失败自动回滚。
 - 必须重启时先持久化 active occurrence/ring session、meeting recovery、Gateway outbox/cursor 和 reboot reason；重启后按新 schema reconciliation，不能把所有操作重新执行一遍。
 - 普通网络重新配置和 Hub 暂时解绑默认保留本地 alarm；完整 factory reset、设备转移或明确“清除个人数据”必须擦除 alarm label、schedule、occurrence、replay/outbox 和相关日志索引。
-- OTA 升级/回退必须覆盖 ALM1、ALM2、V3 读取窗口。无法安全降级时由 artifact manifest 阻止回退，不以清空用户闹钟换取启动成功。
+- 有线升级与 OTA 回退必须覆盖 ALM1、ALM2、V3 读取窗口。无法安全降级时由 artifact manifest 阻止回退，不以清空用户闹钟换取启动成功。
 - 崩溃转储、诊断包和 telemetry 默认不包含完整 alarm label；需要用户授权的诊断也应使用长度、hash 或显式脱敏值。
 
 ## 13. 分阶段开发计划
@@ -905,11 +931,27 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 5. 完成 checkpoint→arm wake source→sleep→read wake cause→reconcile 事务。
 6. 无法保证 alarm wake 的 profile 自动限制最大睡眠深度。
 7. 验证 display-only sleep 与 MCU light/deep sleep 的状态、功耗和用户提示不混淆。
-8. 将 OTA/reboot 与 sleep 使用同一 safe-point/checkpoint 协调协议，避免两个生命周期事务并发。
+8. 将有线升级、OTA 刷写/切换、reboot 与 sleep 使用同一 safe-point/checkpoint 协调协议，避免生命周期事务并发；OTA 仅下载到暂存区时仍持有可取消的网络/存储 lease。
 
 退出条件：指定时间可稳定休眠；alarm timer、实体键和已声明支持的触屏能可靠唤醒；存在有效闹钟时不会进入不可唤醒睡眠。
 
-### Phase 9：三硬件切换、全功能对齐与第四参考硬件验证
+### Phase 9：Hub 中继 OTA、完整校验与 A/B 回滚
+
+任务：
+
+1. Workflow 为三 profile 同时发布 application-only OTA asset、签名 canonical manifest 和保留的 merged full-flash 恢复 asset，使用 `artifact_kind` 防止混用。
+2. Hub 只从 allowlisted `RapidAI/MaClaw` GitHub Release/tag/channel 回源，完整下载、校验并原子缓存后，才经 device bearer/client/device/profile/eligibility 绑定向设备提供 latest/manifest/Range/event API。
+3. Hub 实现 content-addressed cache、共享 single-flight、限流/配额/审计、channel/cohort/pin、暂停/撤销/kill switch；GitHub 不可达时缓存命中可服务，未命中只返回可重试错误，不向设备泄漏上游 URL。
+4. 设备实现专用 raw staging port 与 journal；Wi-Fi/ML307 port 仅流式下载到暂存区，Range 续传锁定 manifest/asset digest、强 ETag 和长度，下载阶段禁止调用 partition OTA API。
+5. 完整暂存对象通过 manifest/application signature、size/hash/image/profile/layout/compat/target/secure-version/schema/revocation 校验后，才可在 lifecycle safe point 刷 inactive 槽；进入 erase 后不再立即取消，Flash writer 全局互斥，刷写后回读 digest，成功才设置 boot partition。
+6. 完成 A/B pending-verify、本地 readiness confirm、自动回滚、连续失败熔断和 Hub 离线确认；首次单槽到 A/B 只走经 identity/compat 校验的有线整机烧录。
+7. 实现共享 OTA Scene、`OTA_ACCEPT/DEFER/CANCEL`、`ota.check/status/prepare/install/defer/cancel`，并完成三硬件本地确认、所有者授权、维护窗口、电量/供电与 safe-point 门禁。
+8. 完成专用暂存与 storage 容量求解：不得牺牲未上传会议数据；空间不足、校验失败、release 撤销、断网/断电和 flash 回读失败均确定性恢复且不改变当前 boot target。
+9. 完成 OTA API 设备身份/credential-generation binding、幂等 events、稳定 HTTP retry/error 和 Flash 写仲裁；三硬件在不可取消阶段显示等价的“请勿断电”反馈。
+
+退出条件：三硬件从 Hub 完成相同 OTA 状态机；Hub 和设备均只在完整下载后校验，设备完整校验前不刷写、刷后回读验证；专用暂存容量、设备身份绑定、签名域、Flash 写仲裁和不可取消点均通过门禁；错误 artifact、partial asset、撤销 release、断网/断电均不能改变当前 boot target，新槽能本地确认或自动回滚。
+
+### Phase 10：三硬件切换、全功能对齐与第四参考硬件验证
 
 任务：
 
@@ -918,10 +960,10 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 3. Fangtang-4G 运行同一共享服务和独立小屏/单键/direct-I2S/ML307/battery adapter；补齐音量等当前 `NOT_SUPPORTED` 功能。
 4. 删除 `main.c` 业务板型/ML307 分支、Bread/Fangtang 大型条件编译、重复全局状态和旧 service facade。
 5. 引入 Fake/Headless 第四 reference profile，验证新增硬件不修改业务服务。
-6. 完成资源预算、故障注入、长稳、OTA 升降级和生产 telemetry 门禁。
+6. 完成资源预算、故障注入、长稳、有线升级/回退、Hub OTA 和生产 telemetry 门禁。
 7. 验证重配保留 alarm、完整恢复出厂/设备转移清除 alarm 与隐私数据，并生成可审计证据。
 
-退出条件：三硬件逐项通过 Bread 功能对齐矩阵和所有发布门禁；第四 reference profile 只实现适配层即可运行适用的共享业务测试。
+退出条件：三硬件逐项通过 Bread 功能对齐矩阵、OTA 与所有发布门禁；第四 reference profile 只实现适配层即可运行适用的共享业务测试。
 
 ## 14. 测试计划
 
@@ -939,6 +981,7 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 - critical queue 饱和、事件合并、预留耗尽、producer generation 和重复 event ID。
 - Alarm Policy revision 固化、非法远端 policy、运行中更新与旧 occurrence 恢复。
 - 非法 UTF-8、控制字符、超长 glyph 集合、敏感日志脱敏和 factory-reset 数据清理。
+- OTA 状态机、专用暂存 journal、完整对象验证、签名域、设备身份 binding、release 撤销、安全点/不可取消点、Flash 写仲裁、flash 回读校验、pending-confirm 与回滚。
 
 所有时间测试使用 Fake Clock，不允许真实等待 5 分钟或依赖主机本地时区。
 
@@ -953,8 +996,9 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 7. Alarm foreground 下所有未绑定输入不得穿透。
 8. Renderer 故障、speaker 故障、audio busy、display busy 和 capability 动态收缩。
 9. deep sleep 前后恢复 queue、active occurrence、meeting pending 与 Gateway cursor/outbox。
-10. OTA 下载/切换与 alarm due、meeting finalize、NVS commit、sleep prepare 并发。
+10. OTA 下载/暂存校验/刷写/切换与 alarm due/ringing、meeting capture/finalize、NVS/SPIFFS/core-dump write、sleep prepare、配网、低电量和过温并发；下载阶段不得调用 `esp_ota_*`，安全点前不得刷写，进入 erase 后不得强杀任务。
 11. 已配对但错误 device/tenant/session、过期 schema、越权 tool 和调用风暴被拒绝且不改变本地状态。
+12. GitHub 404/429/5xx/redirect/timeout、Hub 缓存命中/未命中、Range/ETag 改变、release 撤销和 Hub 离线 pending-confirm。
 
 ### 14.3 三硬件 HIL
 
@@ -968,6 +1012,7 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 | 电源 | timer/实体键 wake、有效闹钟阻止错误深睡 | timer/触屏或 BOOT wake，业务恢复一致 | timer/单键 wake、ML307/charger 恢复，业务恢复一致 |
 | 音量 | 键控及远端设置可用 | 远端/触控替代入口，codec 音量可用 | 远端/菜单替代入口，补齐 direct-I2S 音量实现 |
 | 音频 | capture/playback 切换、静音、brownout 峰值 | codec/I2S 互斥、wake word 重载、触屏并发 | direct-I2S 仲裁、wake word、ML307/电池峰值并发 |
+| OTA | Hub 下载、实体键选择/确认、专用暂存校验、刷写期请勿断电、A/B 回滚 | 同一状态机；圆屏完整进度/确认/回滚，触控映射统一 intent | 同一状态机；小屏/单键入口；Wi-Fi 与验证后的 ML307 下载语义一致 |
 
 ### 14.4 非功能门禁
 
@@ -981,6 +1026,7 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 - 到期到首个可感知反馈、解除到铃声/动画停止、前景切换/恢复、sleep prepare 和 timer wake drift 均有 P50/P95/P99；门限使用 Phase 0 三硬件实测和 Bread 行为 SLO，不在未测量前拍脑袋固化。
 - 在天气/动画/Gateway progress 洪泛和内存压力下，critical alarm/dismiss/cancel/capture-stop 事件仍可入队并在有界时间处理。
 - 离线、Gateway 不可达和未配对恢复期间，已有且时间可信的本地 alarm 仍按策略触发；网络恢复后状态上报不重复 mutation。
+- OTA 暂存区、inactive 槽和会议存储同时纳入容量预算；下载/校验/刷写过程满足 flash 寿命、温升、供电、网络和 UI 响应预算，禁止用删除用户数据维持升级。
 
 ## 15. 需求—实现—证据追踪
 
@@ -1006,7 +1052,16 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 | CON-001 | Fangtang Wi-Fi/ML307 只替换 transport，不改变业务 deadline、幂等或恢复 | 双传输 trace diff、断网/切换 HIL |
 | EVT-001 | 事件洪泛时关键 control event 不静默丢失 | queue saturation、时延 trace |
 | SEC-001 | Tool 绑定、UTF-8、日志脱敏和数据清理符合契约 | 负向测试、隐私扫描 |
-| LCM-001 | OTA/reboot/reset 与 active operation 安全协调 | 断电、升降级和清理 HIL |
+| LCM-001 | 有线升级/OTA/reboot/reset 与 active operation 安全协调 | 断电、升降级、清理 HIL 与 lifecycle trace |
+| OTA-001 | OTA 固定采用 GitHub Release→Hub 完整校验缓存→设备，设备不直连 GitHub | Hub API/allowlist/缓存故障注入、网络 trace |
+| OTA-002 | 三 profile 使用签名 application-only artifact，并校验 profile/layout/compat/target/secure-version/schema | Workflow evidence、负向 artifact matrix |
+| OTA-003 | 设备完整下载到专用暂存区并校验后才刷 inactive 槽，刷后回读 digest | `esp_ota_*` 调用顺序断言、断网/断电/篡改 HIL |
+| OTA-004 | A/B 新槽本地确认，失败自动回滚且不依赖 Hub 在线 | pending-verify/crash/WDT/brownout HIL |
+| OTA-005 | OTA 服从 Alarm/Meeting/Storage/Power/Sleep 生命周期安全点 | 并发矩阵、lease 与恢复 trace |
+| OTA-006 | 三硬件 OTA Scene、intent、权限、错误与恢复完全等价 | 三 profile intent/operation/scene diff、HIL |
+| OTA-007 | channel/rollout/pin/撤销/kill switch 与反重放行为确定且 fail closed | Hub policy、设备时间不可信和阶段化撤销测试 |
+| OTA-008 | OTA API 绑定真实设备/credential generation，events 幂等且错误可重试 | 跨设备/旧 token/乱序事件/HTTP 边界测试 |
+| OTA-009 | Flash 写全局互斥，进入 erase 后不强杀并明确提示禁止断电 | SPIFFS/NVS/core dump 并发、低压/过温/WDT HIL |
 
 每项证据需记录 firmware digest、profile、硬件 revision、测试版本、原始 trace/hash 和结论。另一板型或另一固件的通过结果不能替代当前目标。
 
@@ -1030,13 +1085,14 @@ business.meeting_service_v2
 business.alarm_service_v3
 business.foreground_coordinator_v2
 power.sleep_policy_v2
+ota.service_v1
 ```
 
 flag 必须有过期 Phase 和删除条件。禁止长期形成 Bread 走 V2、EchoEar/Fangtang 走 V1 的永久分叉。
 
 ### 16.3 数据回退
 
-- OTA 前保存可验证的旧 schema 兼容窗口。
+- 有线升级和 OTA 前保存可验证的旧 schema 兼容窗口；OTA 在 A/B pending-confirm 前不得提交旧固件不可读的不可逆 schema。
 - 新 schema 出现旧固件无法理解的状态时，manifest 必须阻止不安全降级或先执行显式 downgrade migration。
 - 不因解析失败把 alarm blob 清空；进入只读恢复/SAFE_MODE 并提示导出诊断。
 - meeting 文件和 alarm store 的迁移失败必须彼此隔离，不能清除整个 NVS namespace。
@@ -1058,7 +1114,12 @@ flag 必须有过期 Phase 和删除条件。禁止长期形成 Bread 走 V2、E
 | 业务层继续新增板型判断 | 新架构再次分叉 | CI 禁止规则；CodeGraph 依赖检查；第四 Fake/Reference profile |
 | 把 Fangtang `NOT_SUPPORTED` 固化为 capability 差异 | 三硬件名义共享、实际功能不一致 | Bread feature matrix 硬门禁；补齐音量/输入替代入口；握手集合 diff |
 | 普通事件洪泛挤掉解除/取消 | 铃声无法及时停止或录音无法收尾 | critical lane、预留 pool、合并低价值状态、饱和注入 |
-| OTA/重启与响铃/持久化竞争 | 重复响铃、丢状态或损坏 schema | lifecycle safe point、durable reboot reason、reconciliation |
+| 有线升级/OTA/重启与响铃/持久化竞争 | 重复响铃、丢状态或损坏 schema | lifecycle safe point、durable reboot reason、reconciliation |
+| OTA 下载阶段直接刷 inactive 槽 | 未完整校验的镜像进入 Flash，断网后槽污染 | 强制持久暂存对象；下载层隔离 partition API；完整校验门禁 |
+| 暂存占满 storage 或删除会议数据 | 用户数据丢失、升级死锁 | 预分配与容量门禁；用户数据优先；空间不足延后并提示 |
+| Hub partial cache 或撤销版本继续下发 | 供应链污染、已知坏版本扩散 | 完整校验后原子 publish；共享锁；revoke/kill switch；设备二次校验 |
+| OTA bearer 未绑定设备或事件无幂等 | 跨设备下载、rollout 状态被重放污染 | device/profile/layout/credential generation binding；event sequence 去重 |
+| 进入 erase 后仍允许取消或并发 Flash 写 | partial 槽、WDT、文件系统损坏 | 最后可取消点；Flash Mutation Coordinator；刷写期禁止断电提示 |
 | label/tool 输入污染显示或日志 | 崩溃、glyph 耗尽或隐私泄露 | UTF-8/控制字符验证、glyph 预算、脱敏与速率限制 |
 
 ## 18. 发布完成定义
@@ -1077,11 +1138,13 @@ flag 必须有过期 Phase 和删除条件。禁止长期形成 Bread 走 V2、E
 10. 无法从目标睡眠深度被 alarm 唤醒的 profile 会自动限制睡眠，不会静默漏响。
 11. Fangtang 当前音量 `NOT_SUPPORTED` 等差距清零；没有独立物理控件的功能均有可操作的替代入口。
 12. 新增 Fake/Headless 第四参考硬件不修改共享业务代码即可通过适用的核心业务测试。
-13. ALM1/ALM2 数据升级、OTA 回退窗口、meeting recovery 和 Gateway cursor/outbox 均有可复测证据。
+13. ALM1/ALM2 数据的有线/OTA 升级回退窗口、meeting recovery 和 Gateway cursor/outbox 均有可复测证据。
 14. 旧 facade、重复 task、板型业务分支和临时 feature flag 在迁移台账清零后删除。
 15. 事件队列饱和、资源压力和网络洪泛下，alarm/dismiss/cancel/capture-stop 仍满足已冻结 SLO。
 16. 普通重配保留本地 alarm；factory reset/设备转移可靠清除 alarm、label、replay/outbox 和相关隐私数据。
-17. OTA 下载/切换、计划重启、崩溃恢复与 active alarm/meeting/sleep 事务均按 durable lifecycle contract 收敛。
+17. 有线升级、OTA 下载/完整校验/刷写/切换、计划重启、崩溃恢复与 active alarm/meeting/sleep 事务均按 durable lifecycle contract 收敛。
+18. 三硬件只从已配对 Hub 下载 OTA；Hub 和设备均在完整下载后校验，设备校验完成前不刷写 inactive 槽，刷写后回读 digest，新槽本地确认失败时自动回滚。
+19. OTA 使用专用暂存/等价证明容量，API 绑定真实设备，Flash writer 全局互斥；进入 erase 后三硬件都显示不可取消的“请勿断电”反馈且不会强杀刷写任务。
 
 ## 19. 实施优先级摘要
 
@@ -1092,6 +1155,8 @@ flag 必须有过期 Phase 和删除条件。禁止长期形成 Bread 走 V2、E
 3. 先迁移 Command/Reply，再迁移 Meeting。
 4. 行为等价提取 Alarm，保持现有数据和 Gateway 幂等语义。
 5. 补齐 Alarm 抢占恢复、时间、稳定 ID、明确 snooze/missed。
-6. 最后接入统一 Power/Clock，完成指定时间休眠和硬件/触屏唤醒。
+6. 接入统一 Power/Clock，完成指定时间休眠和硬件/触屏唤醒。
+7. 完成 GitHub Release→Hub→设备的 OTA，严格执行“完整暂存并校验后刷写、刷后回读、A/B 回滚”。
+8. 最后完成三硬件全功能门禁与第四参考 profile 验证。
 
 按此顺序可以让 Bread Compact 成为唯一功能与行为母版，让 EchoEar-2ST 和 Fangtang-4G 在保留各自硬件呈现、输入和连接差异的同时完整对齐同一业务实现，也为后续硬件只做适配层接入建立可执行边界。

@@ -2,11 +2,14 @@ package im
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -366,6 +369,163 @@ func TestIncomingDedupKeyIncludesTenant(t *testing.T) {
 	}
 	if !isDuplicateIncoming(msgA) {
 		t.Fatal("second tenant_a message should be duplicate")
+	}
+}
+
+func TestHandleMessageQueueUsesHardwareControlReplyTo(t *testing.T) {
+	resetIncomingDedup()
+	plugin := &mockPlugin{name: "test", caps: CapabilityDeclaration{SupportsRichCard: false}}
+	df := &mockDeviceFinder{machineID: "m1", llmConfigured: true, found: true}
+	router := NewMessageRouter(df)
+	defer router.Stop()
+
+	adapter := NewAdapter(router, &mockIdentity{})
+	defer close(adapter.limiter.stopCh)
+	if err := adapter.RegisterPlugin(plugin); err != nil {
+		t.Fatal(err)
+	}
+	// The queue path is enabled only when a Coordinator is present. The custom
+	// dispatcher below captures the exact reply metadata before any Agent work.
+	adapter.coordinator = NewCoordinator(router, df, func(context.Context) *HubLLMConfig { return nil })
+	type queuedHardwareIdentity struct {
+		replyTo string
+		context *agent.ClientToolContext
+		tools   []agent.ClientToolDefinition
+	}
+	seenIdentity := make(chan queuedHardwareIdentity, 1)
+	adapter.taskDispatcher = NewIMTaskDispatcher(1,
+		func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
+			_, messageID := ReplyMetaFromContext(ctx)
+			seenIdentity <- queuedHardwareIdentity{
+				replyTo: messageID,
+				context: task.ClientToolContext,
+				tools:   task.ClientTools,
+			}
+			return nil, nil
+		},
+		func(context.Context, string, string, string, string, *GenericResponse) {},
+	)
+	defer adapter.taskDispatcher.Shutdown()
+
+	raw, err := json.Marshal(map[string]any{
+		"message_id":       "hub_hardware_internal_42",
+		"control_reply_to": "voice-502985705",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.HandleMessage(context.Background(), IncomingMessage{
+		PlatformName: "test",
+		PlatformUID:  "thirdparty:fangtang-4g:default",
+		MessageID:    "hub_hardware_internal_42",
+		MessageType:  "voice",
+		Text:         "transcribed command",
+		ClientTools:  []agent.ClientToolDefinition{{Name: "device.display"}},
+		ClientToolContext: &agent.ClientToolContext{
+			ClientID: "fangtang-4g", ConversationID: "default",
+			ReplyToMessageID: "voice-502985705",
+		},
+		RawPayload: raw,
+	})
+
+	select {
+	case got := <-seenIdentity:
+		if got.replyTo != "voice-502985705" {
+			t.Fatalf("queued task reply correlation=%q, want hardware command id", got.replyTo)
+		}
+		if got.context == nil || got.context.ClientID != "fangtang-4g" ||
+			got.context.ConversationID != "default" ||
+			got.context.ReplyToMessageID != "voice-502985705" {
+			t.Fatalf("queued task lost hardware client context: %#v", got.context)
+		}
+		if len(got.tools) != 1 || got.tools[0].Name != "device.display" {
+			t.Fatalf("queued task lost hardware client tools: %#v", got.tools)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queued hardware task")
+	}
+}
+
+func TestTaskDispatcherForwardsHardwareIdentityToAgent(t *testing.T) {
+	df := &mockDeviceFinder{machineID: "m1", llmConfigured: true, found: true}
+	router := NewMessageRouter(df)
+	defer router.Stop()
+	adapter := NewAdapter(router, &mockIdentity{})
+	defer close(adapter.limiter.stopCh)
+	adapter.InitTaskDispatcher(1)
+	defer adapter.taskDispatcher.Shutdown()
+
+	ctx := WithTenant(context.Background(), "tenant-hardware")
+	task := &IMTask{
+		TenantID:     "tenant-hardware",
+		UserID:       "owner@example.com",
+		PlatformName: "thirdparty",
+		PlatformUID:  "thirdparty:fangtang-4g:default",
+		MessageID:    "voice-502985705",
+		MessageType:  "voice",
+		Text:         "现在几点了",
+		ClientCapabilities: &agent.ClientCapabilities{
+			Output: agent.ClientOutputCapabilities{Text: &agent.ClientTextCapabilities{}},
+		},
+		ClientTools: []agent.ClientToolDefinition{{Name: "device.display"}},
+		ClientToolContext: &agent.ClientToolContext{
+			ClientID: "fangtang-4g", ConversationID: "default",
+			ReplyToMessageID: "voice-502985705",
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.taskDispatcher.executor(ctx, task)
+		done <- err
+	}()
+	var sent any
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		df.mu.Lock()
+		if len(df.sentMessages) > 0 {
+			sent = df.sentMessages[0]
+		}
+		df.mu.Unlock()
+		if sent != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if sent == nil {
+		t.Fatal("timed out waiting for im.user_message")
+	}
+	wire, ok := sent.(map[string]interface{})
+	if !ok {
+		t.Fatalf("agent message type=%T", sent)
+	}
+	payload, ok := wire["payload"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("agent payload=%#v", wire["payload"])
+	}
+	contextValue, ok := payload["client_tool_context"].(*agent.ClientToolContext)
+	if !ok || contextValue == nil {
+		t.Fatalf("agent payload lost client_tool_context: %#v", payload)
+	}
+	if contextValue.ClientID != "fangtang-4g" || contextValue.ConversationID != "default" ||
+		contextValue.ReplyToMessageID != "voice-502985705" {
+		t.Fatalf("agent hardware context=%#v", contextValue)
+	}
+	tools, ok := payload["client_tools"].([]agent.ClientToolDefinition)
+	if !ok || len(tools) != 1 || tools[0].Name != "device.display" {
+		t.Fatalf("agent hardware tools=%#v", payload["client_tools"])
+	}
+	requestID, _ := wire["request_id"].(string)
+	if requestID == "" {
+		t.Fatalf("agent message missing request_id: %#v", wire)
+	}
+	router.HandleAgentResponse(requestID, &AgentResponse{Text: "ok"})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("execute hardware task: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("hardware task did not finish after agent response")
 	}
 }
 

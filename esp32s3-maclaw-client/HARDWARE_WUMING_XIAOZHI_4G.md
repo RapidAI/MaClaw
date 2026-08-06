@@ -259,13 +259,58 @@ App 分区 `0x10000`，esptool 返回 `Hash of data verified`。冷启动日志
 Wi-Fi 连接、握手 200、Welcome 播放、会议能力协商、宠物首帧以及 `service_ready=true`，
 未出现 panic、assert、Guru Meditation 或 watchdog。
 
+### 录音停止触点消费回归
+
+激活键按下沿在命令录音期间会立即请求停止采集，不必额外等待 500 ms 的单击/双击判定。
+同一个物理触点随后产生的 `SHORT`/`DOUBLE` 完成事件现被显式消费；此前该延迟事件可能在
+录音已经切换到 Thinking 后被重新解释为普通输入，造成新事务、会议或回复页面被误触发。
+下一次真正的按下沿会解除该单触点屏障并按当前状态正常处理。此语义适用于共享事务层，
+保留 Bread Compact 和 EchoEar-2ST 的原有输入来源及能力。
+
+三种板型配置均重新构建成功。Fangtang App 为 3229248 字节，SHA-256 为
+`46AA147AC507921BA28A245FFFBFF3EC87FFB8E7B17036DE125F258C3D964B95`；仅刷入 COM5 的
+App 分区 `0x10000`，esptool 返回 `Hash of data verified`，未访问 COM3/COM4。
+
+### 命令录音门限实机校准
+
+COM5 实测显示 Fangtang 的离线唤醒可以稳定识别 `ma ka long`，但切换到命令录音后，
+正常近场说话的峰值经同一 I2S 归一化链常落在 `45..70/1000`，原先 `75/1000` 的
+起音门限会出现“已唤醒但六秒内未检测到后续语音”。Fangtang 专用起音门限现校准为
+`45/1000`，同时继续保留 `160 ms` 连续确认、去直流均值能量静音检测和 `1500 ms`
+自然停顿结束，避免单帧麦克风尖峰触发命令。该变更位于
+`CONFIG_MACLAW_BOARD_FANGTANG_4G` 分支，不改变 Bread Compact 或 EchoEar-2ST。
+
 ### 咖啡方糖与 ML307 取消补充回归
 
 开机及状态页的方糖素材进一步调整为暖白咖啡方糖：三个面保持奶油/象牙白，不使用
 黑色描边；增加在 240 像素屏和 RGB565 量化后仍可识别的压制砂糖颗粒、微孔、晶体
 高光、轻微不规则边缘和暖色柔和接触阴影。确定性生成脚本仍为
-`tools/generate_fangtang_sugar.py`，预览为 `main/fangtang_sugar_preview.png`，运行时
+`tools/generate_fangtang_sugar.py`，素材预览为 `main/fangtang_sugar_preview.png`，按屏幕
+RGB565 与开机位置模拟的预览为 `main/fangtang_sugar_device_preview.png`，运行时
 继续使用 RGB565+A8 与页面底色合成。
+
+V3 素材进一步提高正面亮度并弱化黑边，保留可被 RGB565 看见的压糖微孔、晶粒高光、
+轻微不规则压制边缘以及暖咖啡色反光/接触阴影，避免在深色开机页上看成黑色电子盒。
+Fangtang 独立干净构建通过，App 为 3229264 字节，SHA-256 为
+`E10EB11BD8E26570F3BD915CE40B361F9B7CD0AC3F8396508331144334AB2245`；仅刷入 COM5
+App 分区 `0x10000`，写后校验为 `Hash of data verified`。冷启动日志
+`serial-com5-fangtang-coffee-sugar-v3-clean-boot.log` 确认 Welcome 完成、
+`service_ready=true`、宠物 8 帧加载完成，未出现 panic、assert、Guru Meditation 或
+watchdog。COM3/COM4 未访问。
+
+V4 继续针对实机上“黑乎乎的盒子感”收敛：三个可见面都提高到奶油白/象牙白，降低接触
+阴影的不透明度，并在两个竖直面补充能够穿过 RGB565 量化的糖晶簇。方糖仍有明暗关系，
+但明暗只用暖白与浅焦糖反光表达，不使用黑面、黑边或科技盒状态色；因此开机页应首先
+读成可投入咖啡的压制方糖，而不是立方体图标。
+
+### 运行时宠物缓存内部栈保护
+
+Fangtang 的长轮询任务和启动宠物下载任务都使用 PSRAM 栈；SPIFFS 在 `unlink`、写文件、
+垃圾回收时会临时关闭共享 Flash/PSRAM Cache，因此不能直接从这两类任务执行缓存变更。
+运行时 `pet_profile` 的首帧缓存以及无素材配置的缓存清理，现与启动首帧缓存统一经由一个
+串行化的内部 RAM 栈工作线程执行。调用方会等待工作线程完成后才释放所借用的 RGB565A8
+帧；缓存写入与清理由同一互斥量保护，避免并发更新产生混合版本。Bread Compact 与
+EchoEar-2ST 沿用原有路径，不受 Fangtang 专用桥接影响。
 
 ML307 前台请求取消也做了有界化。双击激活键取消语音事务时，取消任务会立刻设置
 请求取消标志并唤醒响应等待；若此刻模组恰好在串行分配 `MHTTPCREATE` 槽位，最多只
@@ -280,3 +325,27 @@ App 分区 `0x10000`，esptool 返回 `Hash of data verified`。冷启动日志
 handshake 200、Welcome 播放完成且 `service_ready=true`，未出现 panic、assert、
 Guru Meditation 或 watchdog。真实 Wi-Fi/4G 语音事务以及处理中双击取消的最终
 端到端证据仍需用户在设备上实际触发后采集。
+
+### 硬件命令关联与事务终结保护
+
+Fangtang 与 Bread Compact 继续共用严格的事务关联规则：终态结果只有在 `replyTo`
+等于当前 `voice-*` 命令 ID 时，才允许结束 Thinking 并进入结果页。Hub 入口现优先把
+硬件 `control_reply_to` 作为队列任务的消息 ID，GUI/Hub 的终态文字、图片、文件和
+语音会同时携带 `source_message_id`、`replyTo` 与 `replyToMessageId`。纯语音回复没有
+先行终态文字时，最后一个真正通过能力和媒体校验的语音分片负责结束事务；若已经有
+带 `speech_parts_pending` 的终态文字，后续 TTS 分片仍只负责播放，不会再次结束事务。
+
+为兼容发布端升级前已经残留在队列中的旧消息，客户端对“活动命令期间、无任何
+`replyTo` 的终态文字”执行安全消费：该消息不显示、不会完成或取消当前命令，但会 ACK
+并推进共享 outgoing 游标，避免它永久堵住后方真正相关的结果。带有其他 `replyTo` 的
+消息仍按孤儿结果静默丢弃；无关联的普通通知仍会等待前台事务释放，因此不会放宽防串话
+边界。该规则位于三板共享事务层，Bread Compact、EchoEar-2ST 与 Fangtang 行为一致。
+
+本次三板构建均通过：Fangtang App 为 3230032 字节（SHA-256
+`1CD94EA5BB502F5FCADCEDC716D3ADC5E0BA895D63A56B8ECFA20DAC52F2E2BA`），Bread Compact
+为 3203152 字节，EchoEar-2ST 为 3122384 字节。仅将 Fangtang App 刷入 COM5 的
+`0x10000`，写后校验为 `Hash of data verified`；未访问 COM3/COM4。冷启动日志
+`serial-com5-fangtang-transaction-correlation-boot.log` 已确认 Fangtang 身份、Wi-Fi
+连接、handshake 200、离线唤醒、宠物下载及 `service_ready=true`，未出现 panic、
+assert、Guru Meditation 或 watchdog。发布端关联修复仍需部署 Hub/GUI 后，再分别用
+Wi-Fi 与 4G 完成真实语音、Thinking、终态结果、TTS、自动翻页及双击取消回归。

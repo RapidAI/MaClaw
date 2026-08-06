@@ -229,6 +229,9 @@ func TestThirdPartyGatewayHubReplyCorrelation(t *testing.T) {
 	if got := thirdPartyReplyCorrelation(GatewayReplyPayload{Extra: map[string]any{"replyToMessageId": "mc_in_legacy"}}); got != "mc_in_legacy" {
 		t.Fatalf("legacy correlation=%q", got)
 	}
+	if got := thirdPartyReplyCorrelation(GatewayReplyPayload{Metadata: map[string]any{"replyTo": "voice-metadata"}}); got != "voice-metadata" {
+		t.Fatalf("metadata correlation=%q", got)
+	}
 }
 
 func TestThirdPartyGatewayLegacyHubVoiceUsesAudioCapability(t *testing.T) {

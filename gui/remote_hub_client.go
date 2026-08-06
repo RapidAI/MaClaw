@@ -164,9 +164,13 @@ type hardwareDeviceListResult struct {
 // HardwareDeviceBindings describes the Hub-owned hardware bindings and their
 // fixed Hub-owned capacity (five devices per GUI).
 type HardwareDeviceBindings struct {
-	Devices    []HardwareDeviceBinding
-	MaxDevices int
-	BoundCount int
+	// Keep these names stable at the Wails boundary. The settings UI consumes
+	// camel-case JSON keys; leaving this struct untagged made encoding/json
+	// expose Go's exported names ("Devices" / "BoundCount"), which the UI
+	// interpreted as an empty list and zero bindings.
+	Devices    []HardwareDeviceBinding `json:"devices"`
+	MaxDevices int                     `json:"maxDevices"`
+	BoundCount int                     `json:"boundCount"`
 }
 
 type veDetailRefreshState struct {
@@ -338,6 +342,16 @@ func (c *RemoteHubClient) existingHardwareAgentHandler(clientID string) *IMMessa
 	runtimes := c.hardwareAgents
 	c.imHandlerMu.Unlock()
 	return runtimes.existingHandler(clientID)
+}
+
+func (c *RemoteHubClient) isActiveHardwareAgentHandler(clientID string, handler *IMMessageHandler) bool {
+	if c == nil {
+		return false
+	}
+	c.imHandlerMu.Lock()
+	runtimes := c.hardwareAgents
+	c.imHandlerMu.Unlock()
+	return runtimes.isActiveHandler(clientID, handler)
 }
 
 func thirdPartyClientIDFromSessionUserID(userID string) string {
@@ -1838,6 +1852,11 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 			c.setLastError("im handler not initialized")
 			return
 		}
+		if isThirdPartyHardware && !c.isActiveHardwareAgentHandler(payload.ClientToolContext.ClientID, handler) {
+			// The binding was removed after this Hub message was accepted. Never
+			// revive or execute an Agent for a revoked hardware identity.
+			return
+		}
 		if payload.StartMenu != nil {
 			if !c.app.hasWailsEventsContext() {
 				resp := &IMAgentResponse{Error: "当前设备未打开 AI 助手界面，无法创建任务标签页。请打开桌面端 AI 助手后重试。"}
@@ -1911,6 +1930,12 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 		}
 
 		resp := handler.HandleIMMessageWithProgress(payload, onProgress)
+		if isThirdPartyHardware && !c.isActiveHardwareAgentHandler(payload.ClientToolContext.ClientID, handler) {
+			// The binding was removed while the Agent was running. Do not relay the
+			// old turn to a later pairing that happens to reuse this client ID.
+			c.cancelHubDeviceSpeech(payload)
+			return
+		}
 		// Downsize large screenshots before sending over WebSocket to Hub.
 		// Multi-monitor captures can be several MB; Hub WebSocket may timeout.
 		if resp != nil && len(resp.ImageKey) > 500_000 {

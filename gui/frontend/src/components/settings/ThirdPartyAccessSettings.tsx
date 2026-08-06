@@ -16,6 +16,7 @@ import {
 	SendHardwareDevicePetProfile,
 	SetHardwareAllowCustomPets,
 	SendHardwareDeviceVolume,
+	SetThirdPartyHardwareDeviceAlias,
     SendHardwareWelcomeAudioRemote,
     SetHardwareEnabled,
     SetThirdPartyGatewayLocalMode,
@@ -55,9 +56,33 @@ type HardwareDeviceBindings = {
 	devices?: HardwareDevice[];
 	maxDevices?: number;
 	boundCount?: number;
+	// Older desktop builds exposed Go field names at the Wails boundary. Keep
+	// this narrow compatibility path so an updated frontend never renders an
+	// existing Hub binding list as empty during a staged desktop rollout.
+	Devices?: HardwareDevice[];
+	MaxDevices?: number;
+	BoundCount?: number;
 };
 
 const hardwareBindingLimit = 5;
+
+const numberOrFallback = (value: unknown, fallback: number) => {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+};
+
+const normalizeHardwareDeviceBindings = (value: HardwareDeviceBindings | null | undefined) => {
+	const devices = Array.isArray(value?.devices)
+		? value.devices
+		: Array.isArray(value?.Devices)
+			? value.Devices
+			: [];
+	return {
+		devices,
+		maxDevices: numberOrFallback(value?.maxDevices ?? value?.MaxDevices, hardwareBindingLimit),
+		boundCount: numberOrFallback(value?.boundCount ?? value?.BoundCount, devices.length),
+	};
+};
 
 type WelcomeAction = 'generate' | 'import' | 'reset' | 'preview-local';
 
@@ -111,10 +136,14 @@ export const ThirdPartyAccessSettings = ({
     const [devicesLoading, setDevicesLoading] = useState(false);
     const [devicesError, setDevicesError] = useState('');
 	const [boundDeviceCount, setBoundDeviceCount] = useState(0);
-	const [deletingClientId, setDeletingClientId] = useState<string | null>(null);
+	const [deletingClientIds, setDeletingClientIds] = useState<Set<string>>(() => new Set());
 	const [petOptions, setPetOptions] = useState<PetSkinOption[]>(petSkinOptions);
 	const [savingPetClientIds, setSavingPetClientIds] = useState<Set<string>>(() => new Set());
-	const [previewingClientId, setPreviewingClientId] = useState<string | null>(null);
+	const [editingDeviceNameClientId, setEditingDeviceNameClientId] = useState<string | null>(null);
+	const [deviceNameDraft, setDeviceNameDraft] = useState('');
+	const [savingDeviceNameClientIds, setSavingDeviceNameClientIds] = useState<Set<string>>(() => new Set());
+	const [openPetPickerClientId, setOpenPetPickerClientId] = useState<string | null>(null);
+	const [previewingClientIds, setPreviewingClientIds] = useState<Set<string>>(() => new Set());
     const [ambientCityDraft, setAmbientCityDraft] = useState(() => String((config as any)?.pet_ambient_city || ''));
     const [detectedAmbientCity, setDetectedAmbientCity] = useState<string | null>(null);
     const [ambientRefreshState, setAmbientRefreshState] = useState<'idle' | 'refreshing' | 'done' | 'error'>('idle');
@@ -126,12 +155,19 @@ export const ThirdPartyAccessSettings = ({
     const devicesRequestRef = useRef(0);
     const refreshDevicesRef = useRef<() => Promise<void>>(async () => undefined);
     const showToastMessageRef = useRef(showToastMessage);
-    const previewRunRef = useRef(0);
+	const previewRunRef = useRef(0);
 	const volumeSendTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 	const pendingVolumesRef = useRef(new Map<string, number>());
 	const volumeSendsInFlightRef = useRef(new Set<string>());
 	const volumeFlushPendingRef = useRef(new Set<string>());
-	const deviceVolumeBeforeEditRef = useRef(new Map<string, number>());
+		const deviceVolumeBeforeEditRef = useRef(new Map<string, number>());
+		const deletedClientIdsRef = useRef(new Set<string>());
+		const pendingDeletedClientIdsRef = useRef(new Set<string>());
+		// A client ID can be paired again after it was removed. Keep a small
+		// lifecycle counter so completions from the previous binding cannot mutate
+		// or notify against its newly-paired replacement.
+		const deviceLifecycleRef = useRef(new Map<string, number>());
+		const confirmedAbsentDeletedClientIdsRef = useRef(new Set<string>());
     const ambientRefreshRequestRef = useRef(0);
     const ambientSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingAmbientCityRef = useRef<string | null>(null);
@@ -140,7 +176,8 @@ export const ThirdPartyAccessSettings = ({
     const ambientQueuedVersionRef = useRef(0);
     const ambientQueuedPromiseRef = useRef<Promise<void> | null>(null);
     const confirmedAmbientCityRef = useRef(String((config as any)?.pet_ambient_city || ''));
-    const saveRemoteConfigFieldRef = useRef(saveRemoteConfigField);
+	const saveRemoteConfigFieldRef = useRef(saveRemoteConfigField);
+	const petPickerRootRef = useRef<HTMLDivElement | null>(null);
 
     showToastMessageRef.current = showToastMessage;
     saveRemoteConfigFieldRef.current = saveRemoteConfigField;
@@ -181,7 +218,7 @@ export const ThirdPartyAccessSettings = ({
 
     const refreshConfig = async () => setConfig(await LoadConfig() as any);
 
-    const refreshDevices = useCallback(async () => {
+		const refreshDevices = useCallback(async () => {
         const requestID = ++devicesRequestRef.current;
         if (thirdPartyGatewayLocalMode || !hardwareEnabled) {
             setDevices([]);
@@ -191,14 +228,29 @@ export const ThirdPartyAccessSettings = ({
             return;
         }
         setDevicesLoading(true);
-        setDevicesError('');
-        try {
-			const bindings = await ListThirdPartyHardwareDeviceBindings() as HardwareDeviceBindings;
-			const next = bindings?.devices || [];
-			if (mountedRef.current && requestID === devicesRequestRef.current) {
+		setDevicesError('');
+		try {
+			const bindings = normalizeHardwareDeviceBindings(await ListThirdPartyHardwareDeviceBindings() as HardwareDeviceBindings);
+			if (!mountedRef.current || requestID !== devicesRequestRef.current) return;
+				const pendingDeletedIDs = pendingDeletedClientIdsRef.current;
+				const confirmedAbsentIDs = confirmedAbsentDeletedClientIdsRef.current;
+				const incomingIDs = new Set(bindings.devices.map((device) => device.clientId));
+				for (const clientId of pendingDeletedIDs) {
+					if (!incomingIDs.has(clientId)) confirmedAbsentIDs.add(clientId);
+				}
+				const next = bindings.devices.filter((device) => {
+					if (!pendingDeletedIDs.has(device.clientId)) return true;
+					// Hub first confirmed that the old binding disappeared. A later
+					// appearance of this ID is a new pairing, not a stale list entry.
+					if (!confirmedAbsentIDs.has(device.clientId)) return false;
+					pendingDeletedIDs.delete(device.clientId);
+					deletedClientIdsRef.current.delete(device.clientId);
+					confirmedAbsentIDs.delete(device.clientId);
+					return true;
+				});
 				setDevices(next);
-				setBoundDeviceCount(Math.max(0, Number(bindings?.boundCount ?? next.length)));
-			}
+				const pendingBoundCount = bindings.devices.filter((device) => pendingDeletedIDs.has(device.clientId)).length;
+				setBoundDeviceCount(Math.max(0, bindings.boundCount - pendingBoundCount));
         } catch (err: any) {
             const message = err?.message || String(err);
             if (mountedRef.current && requestID === devicesRequestRef.current) {
@@ -233,6 +285,21 @@ export const ThirdPartyAccessSettings = ({
 			.catch(() => undefined);
 		return () => { cancelled = true; };
 	}, [lang]);
+	useEffect(() => {
+		if (!openPetPickerClientId) return;
+		const closeWhenOutside = (event: PointerEvent) => {
+			if (!petPickerRootRef.current?.contains(event.target as Node)) setOpenPetPickerClientId(null);
+		};
+		const closeOnEscape = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') setOpenPetPickerClientId(null);
+		};
+		document.addEventListener('pointerdown', closeWhenOutside);
+		document.addEventListener('keydown', closeOnEscape);
+		return () => {
+			document.removeEventListener('pointerdown', closeWhenOutside);
+			document.removeEventListener('keydown', closeOnEscape);
+		};
+	}, [openPetPickerClientId]);
     useEffect(() => {
         // React StrictMode runs an effect setup/cleanup/setup cycle in development.
         // Restore the guard during setup so the live second mount is not mistaken
@@ -293,7 +360,7 @@ export const ThirdPartyAccessSettings = ({
         localPreviewCleanupRef.current?.();
     };
 
-    const playLocalWelcomePreview = async () => {
+	    const playLocalWelcomePreview = async () => {
         stopLocalWelcomePreview();
         const runID = previewRunRef.current;
         const source = localPreviewSourceRef.current || await refreshLocalWelcomePreviewSource();
@@ -327,9 +394,15 @@ export const ThirdPartyAccessSettings = ({
                 finish(false, err instanceof Error ? err : new Error(String(err)));
             }
         });
-    };
+	    };
 
-	const sendDeviceVolume = useCallback(async (clientId: string, value: number) => {
+		const deviceLifecycle = (clientId: string) => deviceLifecycleRef.current.get(clientId) ?? 0;
+		const isCurrentDeviceLifecycle = (clientId: string, lifecycle: number) => deviceLifecycle(clientId) === lifecycle;
+		const invalidateDeviceLifecycle = (clientId: string) => {
+			deviceLifecycleRef.current.set(clientId, deviceLifecycle(clientId) + 1);
+		};
+
+		const sendDeviceVolume = useCallback(async (clientId: string, value: number, lifecycle: number) => {
 		const timer = volumeSendTimersRef.current.get(clientId);
 		if (timer !== undefined) {
 			clearTimeout(timer);
@@ -345,8 +418,10 @@ export const ThirdPartyAccessSettings = ({
 				pendingVolumesRef.current.delete(clientId);
 				try {
 					await SendHardwareDeviceVolume(clientId, next);
+					if (deletedClientIdsRef.current.has(clientId) || !isCurrentDeviceLifecycle(clientId, lifecycle)) break;
 					deviceVolumeBeforeEditRef.current.delete(clientId);
 				} catch (err: any) {
+					if (deletedClientIdsRef.current.has(clientId) || !isCurrentDeviceLifecycle(clientId, lifecycle)) break;
 					pendingVolumesRef.current.delete(clientId);
 					const previous = deviceVolumeBeforeEditRef.current.get(clientId);
 					deviceVolumeBeforeEditRef.current.delete(clientId);
@@ -361,10 +436,10 @@ export const ThirdPartyAccessSettings = ({
 		} finally {
 			volumeSendsInFlightRef.current.delete(clientId);
 			if (volumeFlushPendingRef.current.delete(clientId) && pendingVolumesRef.current.has(clientId) && mountedRef.current) {
-				void sendDeviceVolume(clientId, pendingVolumesRef.current.get(clientId)!);
+					void sendDeviceVolume(clientId, pendingVolumesRef.current.get(clientId)!, deviceLifecycle(clientId));
+				}
 			}
-		}
-	}, []);
+		}, []);
 
 	const rememberDeviceVolumeBeforeEdit = useCallback((clientId: string) => {
 		if (deviceVolumeBeforeEditRef.current.has(clientId)) return;
@@ -377,7 +452,8 @@ export const ThirdPartyAccessSettings = ({
 		});
 	}, [defaultVolume]);
 
-	const scheduleDeviceVolume = useCallback((clientId: string, value: number, immediate = false) => {
+		const scheduleDeviceVolume = useCallback((clientId: string, value: number, immediate = false) => {
+			const lifecycle = deviceLifecycle(clientId);
 		const next = Math.max(0, Math.min(100, Math.round(value)));
 		pendingVolumesRef.current.set(clientId, next);
 		const timer = volumeSendTimersRef.current.get(clientId);
@@ -387,16 +463,16 @@ export const ThirdPartyAccessSettings = ({
 		}
 		if (immediate) {
 			if (volumeSendsInFlightRef.current.has(clientId)) volumeFlushPendingRef.current.add(clientId);
-			void sendDeviceVolume(clientId, next);
+				void sendDeviceVolume(clientId, next, lifecycle);
 			return;
 		}
 		volumeSendTimersRef.current.set(clientId, setTimeout(() => {
 			volumeSendTimersRef.current.delete(clientId);
-			void sendDeviceVolume(clientId, pendingVolumesRef.current.get(clientId) ?? next);
-		}, 100));
+				void sendDeviceVolume(clientId, pendingVolumesRef.current.get(clientId) ?? next, lifecycle);
+			}, 100));
 	}, [sendDeviceVolume]);
 
-	const discardPendingDeviceVolume = useCallback((clientId: string) => {
+		const discardPendingDeviceVolume = useCallback((clientId: string) => {
 		const timer = volumeSendTimersRef.current.get(clientId);
 		if (timer !== undefined) {
 			clearTimeout(timer);
@@ -405,20 +481,64 @@ export const ThirdPartyAccessSettings = ({
 		pendingVolumesRef.current.delete(clientId);
 		volumeFlushPendingRef.current.delete(clientId);
 		deviceVolumeBeforeEditRef.current.delete(clientId);
-	}, []);
+		}, []);
 
-	const setDevicePet = async (device: HardwareDevice, skin: string) => {
-		const previous = device.petSkin || String((config as any)?.pet_skin || 'clawmate');
+		const setDevicePet = async (device: HardwareDevice, skin: string) => {
+			const lifecycle = deviceLifecycle(device.clientId);
+			const previous = device.petSkin || String((config as any)?.pet_skin || 'clawmate');
 		setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, petSkin: skin } : item));
 		setSavingPetClientIds((current) => new Set(current).add(device.clientId));
 		try {
 			await SendHardwareDevicePetProfile(device.clientId, skin);
+				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
 			showToastMessage(isZh ? `${device.clientName || device.clientId} 的宠物已更新。` : `Pet updated for ${device.clientName || device.clientId}.`);
 		} catch (err: any) {
+				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
 			setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, petSkin: previous } : item));
 			showToastMessage(err?.message || String(err));
 		} finally {
-			if (mountedRef.current) setSavingPetClientIds((current) => {
+			if (mountedRef.current && isCurrentDeviceLifecycle(device.clientId, lifecycle)) setSavingPetClientIds((current) => {
+				const next = new Set(current);
+				next.delete(device.clientId);
+				return next;
+			});
+		}
+	};
+
+	const beginDeviceNameEdit = (device: HardwareDevice) => {
+		setDeviceNameDraft(device.clientName || device.clientId);
+		setEditingDeviceNameClientId(device.clientId);
+	};
+
+		const saveDeviceName = async (device: HardwareDevice) => {
+			const lifecycle = deviceLifecycle(device.clientId);
+		const alias = deviceNameDraft.trim();
+		if (!alias) {
+			showToastMessage(isZh ? '硬件名称不能为空。' : 'Hardware name cannot be empty.');
+			return;
+		}
+		if ([...alias].length > 48) {
+			showToastMessage(isZh ? '硬件名称不能超过 48 个字符。' : 'Hardware name must be at most 48 characters.');
+			return;
+		}
+		const normalizedAlias = alias.toLocaleLowerCase();
+		const duplicate = devices.some((item) => item.clientId !== device.clientId && (item.clientName || item.clientId).trim().toLocaleLowerCase() === normalizedAlias);
+		if (duplicate) {
+			showToastMessage(isZh ? '硬件名称不能重复。' : 'Hardware names must be unique.');
+			return;
+		}
+		setSavingDeviceNameClientIds((current) => new Set(current).add(device.clientId));
+		try {
+			await SetThirdPartyHardwareDeviceAlias(device.clientId, alias);
+				if (!mountedRef.current || deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
+			setDevices((current) => current.map((item) => item.clientId === device.clientId ? { ...item, clientName: alias } : item));
+			setEditingDeviceNameClientId(null);
+			showToastMessage(isZh ? '硬件名称已保存，仅在本机显示。' : 'Hardware name saved locally.');
+		} catch (err: any) {
+				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
+			showToastMessage(err?.message || String(err));
+		} finally {
+			if (mountedRef.current && isCurrentDeviceLifecycle(device.clientId, lifecycle)) setSavingDeviceNameClientIds((current) => {
 				const next = new Set(current);
 				next.delete(device.clientId);
 				return next;
@@ -452,16 +572,23 @@ export const ThirdPartyAccessSettings = ({
         }
     };
 
-	const previewRemoteHardware = async (device: HardwareDevice) => {
-		if (!device.online) return;
-		setPreviewingClientId(device.clientId);
+		const previewRemoteHardware = async (device: HardwareDevice) => {
+			if (!device.online) return;
+			const lifecycle = deviceLifecycle(device.clientId);
+		setPreviewingClientIds((current) => new Set(current).add(device.clientId));
 		try {
 			await SendHardwareWelcomeAudioRemote(device.clientId);
+				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
 			showToastMessage(isZh ? `${device.clientName || device.clientId} 已确认播放完成。` : `${device.clientName || device.clientId} confirmed playback.`);
 		} catch (err: any) {
+				if (deletedClientIdsRef.current.has(device.clientId) || !isCurrentDeviceLifecycle(device.clientId, lifecycle)) return;
 			showToastMessage(welcomePreviewErrorMessage(err, isZh));
 		} finally {
-			if (mountedRef.current) setPreviewingClientId(null);
+			if (mountedRef.current && isCurrentDeviceLifecycle(device.clientId, lifecycle)) setPreviewingClientIds((current) => {
+				const next = new Set(current);
+				next.delete(device.clientId);
+				return next;
+			});
 		}
 	};
 
@@ -845,8 +972,28 @@ export const ThirdPartyAccessSettings = ({
 								const availablePetOptions = petOptions.some((pet) => pet.id === devicePetSkin) ? petOptions : [devicePet, ...petOptions];
                                 return <div className="im-settings-hardware__device" key={device.clientId}>
                                     <span className="im-settings-hardware__device-status" data-online={Boolean(device.online)} aria-hidden="true" />
-                                    <div className="im-settings-hardware__device-details">
-                                        <strong title={name}>{name}</strong>
+									<div className="im-settings-hardware__device-details">
+										<div className="im-settings-hardware__device-name">
+											{editingDeviceNameClientId === device.clientId ? <input
+													aria-label={`${isZh ? '硬件名称' : 'Hardware name'} ${device.clientId}`}
+													value={deviceNameDraft}
+													maxLength={48}
+													disabled={savingDeviceNameClientIds.has(device.clientId)}
+													onChange={(event) => setDeviceNameDraft(event.target.value)}
+													onKeyDown={(event) => {
+													if (event.key === 'Enter') { event.preventDefault(); void saveDeviceName(device); }
+													if (event.key === 'Escape') setEditingDeviceNameClientId(null);
+												}}
+												autoFocus
+												/> : <strong title={name}>{name}</strong>}
+											<button
+												type="button"
+												className="im-settings-hardware__device-rename"
+												aria-label={`${editingDeviceNameClientId === device.clientId ? (isZh ? '保存名称' : 'Save name') : (isZh ? '更名' : 'Rename')} ${name}`}
+												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId) || savingDeviceNameClientIds.has(device.clientId)}
+												onClick={() => editingDeviceNameClientId === device.clientId ? void saveDeviceName(device) : beginDeviceNameEdit(device)}
+											>{editingDeviceNameClientId === device.clientId ? (isZh ? '保存' : 'Save') : (isZh ? '更名' : 'Rename')}</button>
+										</div>
                                         <code title={device.clientId}>{device.clientId}</code>
                                         <small>
                                             {device.online ? (isZh ? '在线' : 'Online') : (lastSeen ? `${isZh ? '最后连接' : 'Last seen'} ${lastSeen}` : (isZh ? '尚未连接' : 'Not seen yet'))}
@@ -854,21 +1001,47 @@ export const ThirdPartyAccessSettings = ({
                                         </small>
                                     </div>
 									<div className="im-settings-hardware__device-actions">
-										{allowCustomHardwarePets && <label className="im-settings-hardware__device-pet" title={devicePet.label}>
+										{allowCustomHardwarePets && <div className="im-settings-hardware__device-pet" title={devicePet.label} ref={openPetPickerClientId === device.clientId ? petPickerRootRef : undefined}>
 											<span className="im-settings-hardware__device-pet-preview"><img src={devicePet.image} alt="" /></span>
 											<span>{isZh ? '宠物' : 'Pet'}</span>
-											<select
+											<button
+												id={`hardware-pet-trigger-${device.clientId}`}
+												type="button"
+												className="im-settings-hardware__device-pet-trigger"
+												role="combobox"
 												aria-label={`${isZh ? '宠物' : 'Pet'} ${name}`}
-												value={devicePetSkin}
-												disabled={hardwareControlsDisabled || deletingClientId === device.clientId || savingPetClientIds.has(device.clientId)}
-												onChange={(event) => void setDevicePet(device, event.target.value)}
+												aria-controls={`hardware-pet-list-${device.clientId}`}
+												aria-expanded={openPetPickerClientId === device.clientId}
+												aria-haspopup="listbox"
+												disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId) || savingPetClientIds.has(device.clientId)}
+												onClick={() => setOpenPetPickerClientId((current) => current === device.clientId ? null : device.clientId)}
+												onKeyDown={(event) => {
+													if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+														event.preventDefault();
+														setOpenPetPickerClientId(device.clientId);
+													}
+												}}
 											>
-												{availablePetOptions.map((pet) => <option key={pet.id} value={pet.id}>{pet.label}</option>)}
-											</select>
-										</label>}
+												<span>{devicePet.label}</span><span className="im-settings-hardware__device-pet-chevron" aria-hidden="true">⌄</span>
+											</button>
+											{openPetPickerClientId === device.clientId && <div id={`hardware-pet-list-${device.clientId}`} className="im-settings-hardware__device-pet-menu" role="listbox" aria-label={`${isZh ? '宠物' : 'Pet'} ${name}`}>
+												{availablePetOptions.map((pet) => <button
+													key={pet.id}
+													type="button"
+													className="im-settings-hardware__device-pet-option"
+													role="option"
+													aria-selected={pet.id === devicePetSkin}
+													data-testid={`hardware-pet-option-${device.clientId}-${pet.id}`}
+													onClick={() => {
+														setOpenPetPickerClientId(null);
+														if (pet.id !== devicePetSkin) void setDevicePet(device, pet.id);
+													}}
+												><img src={pet.image} alt="" /><span>{pet.label}</span></button>)}
+											</div>}
+										</div>}
 										<div className="im-settings-hardware__device-volume">
 										<label htmlFor={`hardware-volume-${device.clientId}`}>{isZh ? '音量' : 'Volume'} <strong>{deviceVolume}%</strong></label>
-										<input id={`hardware-volume-${device.clientId}`} aria-label={`${isZh ? '音量' : 'Volume'} ${name}`} type="range" min={0} max={100} step={1} value={deviceVolume} disabled={hardwareControlsDisabled || deletingClientId === device.clientId} onPointerDown={() => rememberDeviceVolumeBeforeEdit(device.clientId)} onKeyDown={(event) => {
+											<input id={`hardware-volume-${device.clientId}`} aria-label={`${isZh ? '音量' : 'Volume'} ${name}`} type="range" min={0} max={100} step={1} value={deviceVolume} disabled={hardwareControlsDisabled || deletingClientIds.has(device.clientId)} onPointerDown={() => rememberDeviceVolumeBeforeEdit(device.clientId)} onKeyDown={(event) => {
 											if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) rememberDeviceVolumeBeforeEdit(device.clientId);
 										}} onChange={(event) => {
 											const next = Number(event.target.value);
@@ -879,17 +1052,34 @@ export const ThirdPartyAccessSettings = ({
 										}} />
 										<small>{device.online ? (isZh ? '调整后仅发送到此设备。' : 'Changes apply only to this device.') : (isZh ? '设备离线；设置会在下次连接时生效。' : 'Offline; applied when this device reconnects.')}</small>
 									</div>
-	                                        <button type="button" className="im-settings-button im-settings-button--primary" aria-label={`${isZh ? '远程播放' : 'Play remotely'} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientId !== null || previewingClientId !== null} title={!device.online ? (isZh ? '设备离线，无法远程播放。' : 'This device is offline.') : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientId === device.clientId ? (isZh ? '播放中…' : 'Playing…') : (isZh ? '远程播放' : 'Play remotely')}</button>
-	                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${isZh ? '解绑' : 'Remove'} ${name}`} disabled={deletingClientId !== null || previewingClientId !== null} onClick={async () => {
+	                                        <button type="button" className="im-settings-button im-settings-button--primary" aria-label={`${isZh ? '远程播放' : 'Play remotely'} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientIds.has(device.clientId) || previewingClientIds.has(device.clientId)} title={!device.online ? (isZh ? '设备离线，无法远程播放。' : 'This device is offline.') : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientIds.has(device.clientId) ? (isZh ? '播放中…' : 'Playing…') : (isZh ? '远程播放' : 'Play remotely')}</button>
+	                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${isZh ? '解绑' : 'Remove'} ${name}`} disabled={deletingClientIds.has(device.clientId) || savingDeviceNameClientIds.has(device.clientId)} onClick={async () => {
                                         const confirmed = await showConfirm(
                                             isZh ? `解绑后，${name} 的 Token 将立即失效；如需再次使用，必须重新配对。` : `${name}'s token will be revoked immediately. The device must pair again before it can reconnect.`,
                                             isZh ? '解绑硬件？' : 'Remove hardware?',
                                             { confirmText: isZh ? '解绑' : 'Remove', cancelText: isZh ? '取消' : 'Cancel', confirmVariant: 'danger' },
                                         );
 	                                        if (!confirmed || !mountedRef.current) return;
-	                                        setDeletingClientId(device.clientId);
+	                                        pendingDeletedClientIdsRef.current.add(device.clientId);
+	                                        deletedClientIdsRef.current.add(device.clientId);
+										invalidateDeviceLifecycle(device.clientId);
+										// Detach stale in-flight UI state before a same-ID device can
+										// be paired again. The guarded finalizers above cannot then
+										// clear state belonging to the replacement lifecycle.
+										setPreviewingClientIds((current) => {
+											const next = new Set(current);
+											next.delete(device.clientId);
+											return next;
+										});
+										setSavingPetClientIds((current) => {
+											const next = new Set(current);
+											next.delete(device.clientId);
+											return next;
+										});
+										setDeletingClientIds((current) => new Set(current).add(device.clientId));
+										setEditingDeviceNameClientId((current) => current === device.clientId ? null : current);
+										discardPendingDeviceVolume(device.clientId);
 	                                        try {
-							discardPendingDeviceVolume(device.clientId);
                                             await DeleteThirdPartyHardwareDevice(device.clientId);
                                             if (mountedRef.current) {
                                                 devicesRequestRef.current += 1;
@@ -898,12 +1088,18 @@ export const ThirdPartyAccessSettings = ({
 												setBoundDeviceCount((count) => Math.max(0, count - 1));
                                                 showToastMessage(isZh ? '硬件已解绑。' : 'Hardware removed.');
                                             }
-                                        } catch (err: any) {
+	                                        } catch (err: any) {
+										pendingDeletedClientIdsRef.current.delete(device.clientId);
+										deletedClientIdsRef.current.delete(device.clientId);
                                             if (mountedRef.current) showToastMessage(err?.message || String(err));
                                         } finally {
-                                            if (mountedRef.current) setDeletingClientId(null);
-                                        }
-	                                    }}>{deletingClientId === device.clientId ? (isZh ? '解绑中…' : 'Removing…') : (isZh ? '解绑' : 'Remove')}</button>
+	                                            if (mountedRef.current) setDeletingClientIds((current) => {
+												const next = new Set(current);
+												next.delete(device.clientId);
+												return next;
+											});
+	                                        }
+	                                    }}>{deletingClientIds.has(device.clientId) ? (isZh ? '解绑中…' : 'Removing…') : (isZh ? '解绑' : 'Remove')}</button>
 	                                    </div>
                                 </div>;
                             })}</div>}

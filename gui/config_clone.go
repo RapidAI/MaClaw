@@ -84,6 +84,12 @@ func cloneAppConfigForMutation(cfg corelib.AppConfig) corelib.AppConfig {
 			out.FavoriteEmployeeNames[k] = v
 		}
 	}
+	if cfg.HardwareDeviceAliases != nil {
+		out.HardwareDeviceAliases = make(map[string]string, len(cfg.HardwareDeviceAliases))
+		for k, v := range cfg.HardwareDeviceAliases {
+			out.HardwareDeviceAliases[k] = v
+		}
+	}
 	if n := len(cfg.VEAllowedDirectories); n > 0 {
 		out.VEAllowedDirectories = append([]string(nil), cfg.VEAllowedDirectories...)
 	}

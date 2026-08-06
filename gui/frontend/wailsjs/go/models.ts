@@ -2329,6 +2329,7 @@ export namespace corelib {
 	    hardware_welcome_voice_id?: string;
 	    hardware_welcome_audio_path?: string;
 	    hardware_volume?: number;
+	    hardware_device_aliases?: {[key: string]: string};
 	    hardware_allow_custom_pets?: boolean;
 	    acp_host_enabled?: boolean;
 	    acp_host_port?: number;
@@ -2593,6 +2594,7 @@ export namespace corelib {
 	        this.hardware_welcome_voice_id = source["hardware_welcome_voice_id"];
 	        this.hardware_welcome_audio_path = source["hardware_welcome_audio_path"];
 	        this.hardware_volume = source["hardware_volume"];
+	        this.hardware_device_aliases = source["hardware_device_aliases"];
 	        this.hardware_allow_custom_pets = source["hardware_allow_custom_pets"];
 	        this.acp_host_enabled = source["acp_host_enabled"];
 	        this.acp_host_port = source["acp_host_port"];

@@ -335,3 +335,66 @@ func TestHardwareAgentRuntimeOwnsPrivateMemoryPaths(t *testing.T) {
 		t.Fatalf("chat transport type = %T, want *http.Transport", handler.client.Transport)
 	}
 }
+
+func TestRemoveHardwareAgentRuntimeClearsHubAndLocalRegistries(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	localGateway := newThirdPartyGatewayManager(app)
+	localRegistry := newHardwareAgentRuntimeRegistry(app, nil, nil)
+	localGateway.localHandlers = localRegistry
+	app.thirdPartyGateway = localGateway
+
+	hubRegistry := newHardwareAgentRuntimeRegistry(app, nil, nil)
+	hubClient := &RemoteHubClient{app: app, hardwareAgents: hubRegistry}
+	app.remoteSessions = &RemoteSessionManager{hubClient: hubClient}
+
+	local, err := localRegistry.handler("pet-alpha")
+	if err != nil {
+		t.Fatalf("create local runtime: %v", err)
+	}
+	hub, err := hubRegistry.handler("pet-alpha")
+	if err != nil {
+		t.Fatalf("create Hub runtime: %v", err)
+	}
+	localLoop := NewLoopContext("local task", 1, nil)
+	hubLoop := NewLoopContext("Hub task", 1, nil)
+	local.setSessionLoopCtx("thirdparty:pet-alpha:local", localLoop)
+	hub.setSessionLoopCtx("thirdparty:pet-alpha:hub", hubLoop)
+
+	app.removeHardwareAgentRuntime("PET-alpha")
+	if got := localRegistry.count(); got != 0 {
+		t.Fatalf("local runtimes after unbind = %d, want 0", got)
+	}
+	if got := hubRegistry.count(); got != 0 {
+		t.Fatalf("Hub runtimes after unbind = %d, want 0", got)
+	}
+	if !localLoop.IsCancelled() || !hubLoop.IsCancelled() {
+		t.Fatal("unbind did not cancel both transport-specific runtimes")
+	}
+}
+
+func TestHardwareRuntimeActivityCheckRejectsRemovedOrReplacedHandler(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	registry := newHardwareAgentRuntimeRegistry(app, nil, nil)
+	first, err := registry.handler("pet-alpha")
+	if err != nil {
+		t.Fatalf("create runtime: %v", err)
+	}
+	if !registry.isActiveHandler("PET-alpha", first) {
+		t.Fatal("published runtime was not considered active")
+	}
+	registry.remove("pet-alpha")
+	if registry.isActiveHandler("pet-alpha", first) {
+		t.Fatal("removed runtime was still considered active")
+	}
+	replacement, err := registry.handler("pet-alpha")
+	if err != nil {
+		t.Fatalf("create replacement runtime: %v", err)
+	}
+	if registry.isActiveHandler("pet-alpha", first) {
+		t.Fatal("old runtime was accepted after same-ID replacement")
+	}
+	if !registry.isActiveHandler("pet-alpha", replacement) {
+		t.Fatal("replacement runtime was not considered active")
+	}
+	registry.stopAll()
+}

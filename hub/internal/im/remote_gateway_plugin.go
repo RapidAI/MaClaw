@@ -138,10 +138,12 @@ func (p *RemoteGatewayPlugin) ReceiveMessage(handler func(msg IncomingMessage)) 
 }
 
 func (p *RemoteGatewayPlugin) SendText(ctx context.Context, target UserTarget, text string) error {
-	return p.sendToGatewayOwner(ctx, "text", map[string]any{
+	payload := map[string]any{
 		"platform_uid": target.PlatformUID,
 		"text":         text,
-	})
+	}
+	attachRemoteGatewayTurnCorrelation(ctx, payload)
+	return p.sendToGatewayOwner(ctx, "text", payload)
 }
 
 func (p *RemoteGatewayPlugin) SendTextWithPendingVoiceParts(ctx context.Context, target UserTarget, text string, pendingParts int) error {
@@ -149,12 +151,34 @@ func (p *RemoteGatewayPlugin) SendTextWithPendingVoiceParts(ctx context.Context,
 	if pendingParts > 0 {
 		metadata["speech_parts_pending"] = pendingParts
 	}
-	return p.sendToGatewayOwner(ctx, "text", map[string]any{
+	payload := map[string]any{
 		"platform_uid": target.PlatformUID,
 		"text":         text,
 		"final":        true,
 		"metadata":     metadata,
-	})
+	}
+	attachRemoteGatewayTurnCorrelation(ctx, payload)
+	return p.sendToGatewayOwner(ctx, "text", payload)
+}
+
+// Hardware clients use source_message_id as the command completion key.  Put
+// it on the result envelope before transport dispatch instead of relying only
+// on sendToGatewayOwner's decoration path; that makes the correlation explicit
+// for terminal text and keeps it intact through GUI -> Hub -> device relays.
+func attachRemoteGatewayTurnCorrelation(ctx context.Context, payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	if senderUID, sourceMsgID := ReplyMetaFromContext(ctx); senderUID != "" || sourceMsgID != "" {
+		if sourceMsgID != "" {
+			payload["source_message_id"] = sourceMsgID
+			payload["replyTo"] = sourceMsgID
+			payload["replyToMessageId"] = sourceMsgID
+		}
+		if senderUID != "" {
+			payload["sender_id"] = senderUID
+		}
+	}
 }
 
 // SendProgress preserves the non-terminal nature of an Agent status update.
@@ -198,47 +222,57 @@ func (p *RemoteGatewayPlugin) SendCard(ctx context.Context, target UserTarget, c
 }
 
 func (p *RemoteGatewayPlugin) SendImage(ctx context.Context, target UserTarget, imageKey string, caption string) error {
-	return p.sendToGatewayOwner(ctx, "image", map[string]any{
+	payload := map[string]any{
 		"platform_uid": target.PlatformUID,
 		"image_data":   imageKey,
 		"caption":      caption,
-	})
+	}
+	attachRemoteGatewayTurnCorrelation(ctx, payload)
+	return p.sendToGatewayOwner(ctx, "image", payload)
 }
 
 func (p *RemoteGatewayPlugin) SendFile(ctx context.Context, target UserTarget, fileData, fileName, mimeType string) error {
-	return p.sendToGatewayOwner(ctx, "file", map[string]any{
+	payload := map[string]any{
 		"platform_uid": target.PlatformUID,
 		"file_data":    fileData,
 		"file_name":    fileName,
 		"mime_type":    mimeType,
-	})
+	}
+	attachRemoteGatewayTurnCorrelation(ctx, payload)
+	return p.sendToGatewayOwner(ctx, "file", payload)
 }
 
 func (p *RemoteGatewayPlugin) SendVoice(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string) error {
-	return p.sendToGatewayOwner(ctx, "voice", map[string]any{
+	payload := map[string]any{
 		"platform_uid": target.PlatformUID,
 		"file_data":    voiceData,
 		"file_name":    fileName,
 		"mime_type":    mimeType,
-	})
+	}
+	attachRemoteGatewayTurnCorrelation(ctx, payload)
+	return p.sendToGatewayOwner(ctx, "voice", payload)
 }
 
 func (p *RemoteGatewayPlugin) SendVoicePart(ctx context.Context, target UserTarget, voiceData, fileName, mimeType string, index, total int, final bool) error {
-	return p.sendToGatewayOwner(ctx, "voice", map[string]any{
+	payload := map[string]any{
 		"platform_uid": target.PlatformUID,
 		"file_data":    voiceData, "file_name": fileName, "mime_type": mimeType,
 		"voice_part_index": index, "voice_part_total": total, "voice_part_final": final,
-	})
+	}
+	attachRemoteGatewayTurnCorrelation(ctx, payload)
+	return p.sendToGatewayOwner(ctx, "voice", payload)
 }
 
 func (p *RemoteGatewayPlugin) SendPendingVoiceEnd(ctx context.Context, target UserTarget, expectedParts, sentParts int) error {
-	return p.sendToGatewayOwner(ctx, "speech_end", map[string]any{
+	payload := map[string]any{
 		"platform_uid": target.PlatformUID,
 		"extra": map[string]any{
 			"speech_parts_expected": expectedParts,
 			"speech_parts_sent":     sentParts,
 		},
-	})
+	}
+	attachRemoteGatewayTurnCorrelation(ctx, payload)
+	return p.sendToGatewayOwner(ctx, "speech_end", payload)
 }
 
 func (p *RemoteGatewayPlugin) ResolveUser(ctx context.Context, platformUID string) (string, error) {

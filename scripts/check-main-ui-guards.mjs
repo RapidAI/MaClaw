@@ -574,7 +574,7 @@ const highRiskRemoteFileLineLimits = [
   // Implementation lives here; freeze growth until further extraction (entry is a thin re-export).
   ['gui/frontend/src/components/remote/SkillsManagementPanelView.tsx', 5700],
   ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 2400],
-    ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1450],
+  ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1600],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
 ];

@@ -811,6 +811,8 @@ export function SendHardwareDeviceVolume(arg1:string,arg2:number):Promise<void>;
 
 export function SendHardwareDevicePetProfile(arg1:string,arg2:string):Promise<void>;
 
+export function SetThirdPartyHardwareDeviceAlias(arg1:string,arg2:string):Promise<void>;
+
 export function SetHardwareAllowCustomPets(arg1:boolean):Promise<void>;
 
 export function GetToolCacheStatus():Promise<main.ToolCacheStatus>;

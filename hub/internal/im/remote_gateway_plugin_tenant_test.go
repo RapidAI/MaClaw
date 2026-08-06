@@ -272,6 +272,12 @@ func TestRemoteGatewayReplyCarriesSourceMessageMeta(t *testing.T) {
 	if got, _ := inner["source_message_id"].(string); got != "mid-42" {
 		t.Fatalf("source_message_id = %q", got)
 	}
+	if got, _ := inner["replyTo"].(string); got != "mid-42" {
+		t.Fatalf("replyTo = %q", got)
+	}
+	if got, _ := inner["replyToMessageId"].(string); got != "mid-42" {
+		t.Fatalf("replyToMessageId = %q", got)
+	}
 	if got, _ := inner["sender_id"].(string); got != "staff-1" {
 		t.Fatalf("sender_id = %q", got)
 	}

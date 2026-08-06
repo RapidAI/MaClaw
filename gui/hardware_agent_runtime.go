@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -180,6 +181,13 @@ func (a *App) newHardwareIntentClassifier() *intent.UnifiedIntentClassifier {
 }
 
 func newHardwareAgentRuntimeRegistry(app *App, manager *RemoteSessionManager, configure func(*IMMessageHandler)) *hardwareAgentRuntimeRegistry {
+	if configure == nil && app != nil {
+		// Tests and lightweight hosts can construct the registry without the App
+		// wiring callback. Preserve the same per-device classifier boundary there.
+		configure = func(h *IMMessageHandler) {
+			h.unifiedClassifier = app.newHardwareIntentClassifier()
+		}
+	}
 	return &hardwareAgentRuntimeRegistry{
 		app:          app,
 		manager:      manager,
@@ -230,7 +238,7 @@ func (r *hardwareAgentRuntimeRegistry) handler(clientID string) (*IMMessageHandl
 	if r == nil || r.app == nil {
 		return nil, fmt.Errorf("hardware agent runtime is not configured")
 	}
-	clientID = normalizeThirdPartyID(clientID)
+	clientID = normalizeHardwareRuntimeClientID(clientID)
 	if clientID == "" {
 		return nil, fmt.Errorf("hardware client ID is required")
 	}
@@ -310,11 +318,41 @@ func (r *hardwareAgentRuntimeRegistry) handler(clientID string) (*IMMessageHandl
 	}
 }
 
+// activeHandler returns a currently-published runtime without
+// creating one. Delivery paths use it after handler selection to close the
+// tiny unbind-vs-message window.
+func (r *hardwareAgentRuntimeRegistry) activeHandler(clientID string) *IMMessageHandler {
+	if r == nil {
+		return nil
+	}
+	clientID = normalizeHardwareRuntimeClientID(clientID)
+	if clientID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if runtime := r.runtimes[clientID]; runtime != nil {
+		return runtime.handler
+	}
+	return nil
+}
+
+func (r *hardwareAgentRuntimeRegistry) isActiveHandler(clientID string, handler *IMMessageHandler) bool {
+	if r == nil || handler == nil {
+		return false
+	}
+	clientID = normalizeHardwareRuntimeClientID(clientID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	runtime := r.runtimes[clientID]
+	return runtime != nil && runtime.handler == handler
+}
+
 func (r *hardwareAgentRuntimeRegistry) remove(clientID string) {
 	if r == nil {
 		return
 	}
-	clientID = normalizeThirdPartyID(clientID)
+	clientID = normalizeHardwareRuntimeClientID(clientID)
 	if clientID == "" {
 		return
 	}
@@ -337,6 +375,26 @@ func (r *hardwareAgentRuntimeRegistry) remove(clientID string) {
 			r.stopRuntime(runtime)
 		}
 		return
+	}
+}
+
+// removeAll removes a private runtime from every transport registry in the
+// current process. A device can briefly be reachable through both the direct
+// gateway and Hub while routing changes; unbinding must tear down either
+// runtime so no stale Agent/session/resources survive that ownership change.
+func (a *App) removeHardwareAgentRuntime(clientID string) {
+	if a == nil {
+		return
+	}
+	clientID = normalizeHardwareRuntimeClientID(clientID)
+	if clientID == "" {
+		return
+	}
+	if hub := a.hubClient(); hub != nil {
+		hub.removeHardwareAgent(clientID)
+	}
+	if gateway := a.thirdPartyGateway; gateway != nil {
+		gateway.removeLocalHardwareAgent(clientID)
 	}
 }
 
@@ -422,7 +480,7 @@ func (r *hardwareAgentRuntimeRegistry) existingHandler(clientID string) *IMMessa
 	if r == nil {
 		return nil
 	}
-	clientID = normalizeThirdPartyID(clientID)
+	clientID = normalizeHardwareRuntimeClientID(clientID)
 	if clientID == "" {
 		return nil
 	}
@@ -496,6 +554,13 @@ func (runtime *hardwareAgentRuntime) stop() {
 	if runtime.memoryStore != nil {
 		runtime.memoryStore.Stop()
 	}
+}
+
+// normalizeHardwareRuntimeClientID is the registry key for a physical device.
+// Client IDs are case-insensitive in the hardware protocol, so case variants
+// must resolve to one runtime rather than creating competing Agents.
+func normalizeHardwareRuntimeClientID(clientID string) string {
+	return strings.ToLower(normalizeThirdPartyID(clientID))
 }
 
 func hardwareConversationMemoryPath(app *App, clientID string) string {

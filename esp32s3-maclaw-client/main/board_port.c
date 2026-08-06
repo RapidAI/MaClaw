@@ -9,6 +9,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
+#include "driver/i2s_tdm.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "esp_check.h"
@@ -91,14 +92,26 @@ static const char *const s_wake_word_cn_phonetics[] = {
 // conversational delivery of the short product name.
 #define WAKE_WORD_DETECTION_THRESHOLD 0.24f
 #define WAKE_WORD_COOLDOWN_US (2LL * 1000 * 1000)
-// MIC1/left is not reliable on the tested EchoEar-2ST: damaged I2S words
-// regularly sit close to full scale. MIC2/right is the verified capsule used
-// for recordings. Keep all foreground recording paths on the same source and
-// apply only inexpensive, deterministic conditioning suitable for ESP32-S3.
+#define WAKE_WORD_DIAGNOSTIC_INTERVAL_US (2LL * 1000 * 1000)
+#define WAKE_WORD_TARGET_RMS 3400
+#define WAKE_WORD_MIN_SOFTWARE_GAIN_Q8 256
+#define WAKE_WORD_MAX_SOFTWARE_GAIN_Q8 (24 * 256)
+#define WAKE_WORD_GAIN_ATTACK_SHIFT 1
+#define WAKE_WORD_GAIN_RELEASE_SHIFT 4
+#define WAKE_WORD_GAIN_UPDATE_FLOOR 96
+#define ECHOEAR_MIC_SLOT_COUNT 4
+#define ECHOEAR_MIC_SELECTED_SLOT 0
+// Keep every foreground path on the same physical slot as the verified wake
+// recognizer. Slots 0 and 2 carry microphones on EchoEar-2ST; slots 1 and 3
+// are empty in the ES7210 four-slot stream. Slot 0 is the tested clean source.
 #define RECORDING_INVALID_SAMPLE_ABS 32500
 #define RECORDING_DC_BLOCKER_Q15 32604  // 0.995
-#define RECORDING_MAKEUP_NUM 5         // +1.94 dB
-#define RECORDING_MAKEUP_DEN 4
+#define RECORDING_TARGET_RMS 3400
+#define RECORDING_MIN_SOFTWARE_GAIN_Q8 256
+#define RECORDING_MAX_SOFTWARE_GAIN_Q8 (24 * 256)
+#define RECORDING_GAIN_ATTACK_SHIFT 1
+#define RECORDING_GAIN_RELEASE_SHIFT 4
+#define RECORDING_GAIN_UPDATE_FLOOR 96
 #define RECORDING_OUTPUT_LIMIT 30000
 
 #define LCD_STRIPE_ROWS 40
@@ -126,7 +139,6 @@ static const char *const s_wake_word_cn_phonetics[] = {
 #define RESPONSE_LINES_PER_PAGE 5
 #define RESPONSE_FOOTER_Y 278
 #define RESPONSE_TEXT_CAPACITY 768
-#define RESPONSE_PAGE_INTERVAL_US (8LL * 1000 * 1000)
 #define AMBIENT_TOP_W   336
 #define AMBIENT_TOP_H   80
 #define AMBIENT_BOTTOM_W 316
@@ -146,6 +158,10 @@ static const char *const s_wake_word_cn_phonetics[] = {
 // Bread Compact 80 ms cadence and a changed-region presenter below.
 #define PET_ANIMATION_FRAME_MS 150
 #define REMOTE_PET_RENDER_FRAME_MS 80
+// The recorder uses the same fast visual cadence as Bread Compact's live
+// level history.  It is intentionally independent of the calmer idle-pet
+// animation, otherwise speech transients arrive in visibly large jumps.
+#define RECORDING_RENDER_FRAME_MS 80
 #define REMOTE_PET_DEFAULT_KEYFRAME_MS 450
 #define READY_PROMPT_TIMEOUT_US (60LL * 1000 * 1000)
 #define IDLE_PET_SLEEP_TIMEOUT_US (30LL * 60 * 1000 * 1000)
@@ -200,22 +216,27 @@ static volatile bool s_command_capture_stop_requested;
 static bool s_recording_paused;
 static volatile uint32_t s_recording_elapsed_seconds;
 static volatile uint16_t s_recording_audio_level;
-// The recording screen is fed from the same signed PCM samples that are saved
-// or uploaded. Each display column represents the measured, gated signal
-// envelope from 128 samples (8 ms at 16 kHz), so the 96-column trace covers
-// the most recent 768 ms. Using the envelope rather than literal extrema is
-// important on this shared full-duplex I2S bus: a clipped bus word must not
-// turn the whole waveform area into one opaque rectangle.
-#define RECORDING_WAVE_COLUMNS 96
-#define RECORDING_WAVE_SAMPLES_PER_COLUMN 128
-static int16_t s_recording_wave_min[RECORDING_WAVE_COLUMNS];
-static int16_t s_recording_wave_max[RECORDING_WAVE_COLUMNS];
-static int16_t s_recording_wave_pending_min = INT16_MAX;
-static int16_t s_recording_wave_pending_max = INT16_MIN;
+// Same attack/release smoothing as Bread Compact's recorder. The raw PCM
+// envelope remains the waveform source; this only stabilizes the MIC readout.
+static uint16_t s_recording_smoothed_level;
+// Keep the same 24-column, 32 ms history that Bread Compact presents.  The
+// source is still EchoEar's cleaned mono PCM, rather than a synthetic wave,
+// but grouping four native 8 ms reads makes the bar progression and apparent
+// time span identical to the compact board.
+#define RECORDING_WAVE_COLUMNS 24
+#define RECORDING_WAVE_SAMPLES_PER_COLUMN 512
+static uint16_t s_recording_wave_levels[RECORDING_WAVE_COLUMNS];
+static uint16_t s_recording_wave_pending_peak;
 static uint16_t s_recording_wave_pending_samples;
+static uint16_t s_recording_wave_pending_clipped;
+// Incremented at every recorder session boundary. A capture block can finish
+// after its session was stopped; this lets the producer discard that stale
+// block instead of committing it into the next session's waveform.
+static uint32_t s_recording_wave_epoch;
 // ES7210 frames on EchoEar have a board-dependent DC offset. Track it slowly
 // so only variation around the microphone's idle level reaches the waveform.
 static int32_t s_recording_wave_dc;
+static uint16_t s_recording_wave_smoothed_level;
 static char s_ambient_time[9];
 static char s_ambient_location[24];
 static char s_ambient_date[8];
@@ -253,7 +274,6 @@ static bool s_message_active;
 static volatile bool s_wake_callback_pending;
 static TaskHandle_t s_wake_callback_task;
 static unsigned s_response_page;
-static int64_t s_response_next_page_us;
 static char s_response_title[48];
 static char s_response_text[RESPONSE_TEXT_CAPACITY];
 static volatile uint32_t s_ambient_revision;
@@ -329,10 +349,12 @@ static portMUX_TYPE s_wake_word_lock = portMUX_INITIALIZER_UNLOCKED;
 typedef struct {
     int32_t previous_input;
     int32_t previous_filtered;
+    uint32_t gain_q8;
     uint32_t diagnostic_samples;
     uint32_t diagnostic_bad_samples;
     int32_t diagnostic_input_peak;
     int32_t diagnostic_output_peak;
+    uint32_t diagnostic_rms;
     const char *diagnostic_label;
 } recording_pcm_filter_t;
 static recording_pcm_filter_t s_recording_pcm_filter;
@@ -343,20 +365,26 @@ static int32_t sample_magnitude(int32_t sample) {
 
 static void recording_pcm_reset(const char *label) {
     memset(&s_recording_pcm_filter, 0, sizeof(s_recording_pcm_filter));
+    // The verified codec stream is quiet, so begin ready for nearby speech.
+    // The attack path below immediately backs this down if a block is loud.
+    s_recording_pcm_filter.gain_q8 = RECORDING_MAX_SOFTWARE_GAIN_Q8;
     s_recording_pcm_filter.diagnostic_label = label;
 }
 
-// Convert the verified MIC2/right I2S slot to clean mono PCM. Full-scale bus
-// artefacts are replaced before a fixed-point DC blocker, then a conservative
-// digital make-up gain restores useful speech level without changing ES7210's
-// non-clipping analogue gain. Meeting and command recordings both use this
-// function so their uploaded audio has identical characteristics.
-static int32_t recording_pcm_process(const int16_t *stereo, size_t frames,
+// Convert the verified ES7210 slot to clean mono PCM. Full-scale bus artefacts
+// are replaced before a fixed-point DC blocker. A bounded RMS AGC then restores
+// the very quiet but valid EchoEar signal to the same useful range as the other
+// boards. Gain falls quickly to protect loud speech, recovers slowly, and does
+// not update below the measured speech floor so silence is never pumped up.
+// Meeting and command recordings share this path so uploaded PCM and VAD see
+// identical samples.
+static int32_t recording_pcm_process(const int16_t *tdm, size_t frames,
                                      int16_t *mono) {
     recording_pcm_filter_t *filter = &s_recording_pcm_filter;
+    uint64_t energy = 0;
     int32_t chunk_peak = 0;
     for (size_t i = 0; i < frames; ++i) {
-        int32_t input = stereo[i * 2 + 1];
+        int32_t input = tdm[i * ECHOEAR_MIC_SLOT_COUNT + ECHOEAR_MIC_SELECTED_SLOT];
         int32_t input_magnitude = sample_magnitude(input);
         if (input_magnitude > filter->diagnostic_input_peak) {
             filter->diagnostic_input_peak = input_magnitude;
@@ -375,7 +403,34 @@ static int32_t recording_pcm_process(const int16_t *stereo, size_t frames,
         filter->previous_input = input;
         filter->previous_filtered = filtered;
 
-        int32_t output = filtered * RECORDING_MAKEUP_NUM / RECORDING_MAKEUP_DEN;
+        // Keep the DC-blocked block in the caller's output area while its RMS
+        // is measured; it is replaced with final scaled PCM in the second pass.
+        if (filtered > INT16_MAX) filtered = INT16_MAX;
+        if (filtered < INT16_MIN) filtered = INT16_MIN;
+        mono[i] = (int16_t)filtered;
+        energy += (uint64_t)((int64_t)filtered * filtered);
+    }
+
+    uint32_t rms = frames ? (uint32_t)sqrtf((float)(energy / frames)) : 0;
+    if (rms >= RECORDING_GAIN_UPDATE_FLOOR) {
+        uint32_t target_q8 = (RECORDING_TARGET_RMS * 256u) / rms;
+        if (target_q8 < RECORDING_MIN_SOFTWARE_GAIN_Q8) {
+            target_q8 = RECORDING_MIN_SOFTWARE_GAIN_Q8;
+        }
+        if (target_q8 > RECORDING_MAX_SOFTWARE_GAIN_Q8) {
+            target_q8 = RECORDING_MAX_SOFTWARE_GAIN_Q8;
+        }
+        unsigned shift = target_q8 < filter->gain_q8
+                             ? RECORDING_GAIN_ATTACK_SHIFT
+                             : RECORDING_GAIN_RELEASE_SHIFT;
+        filter->gain_q8 = (uint32_t)((int32_t)filter->gain_q8 +
+                                     ((int32_t)target_q8 - (int32_t)filter->gain_q8) /
+                                         (1 << shift));
+    }
+    filter->diagnostic_rms = rms;
+
+    for (size_t i = 0; i < frames; ++i) {
+        int32_t output = (int32_t)(((int64_t)mono[i] * filter->gain_q8) >> 8);
         if (output > RECORDING_OUTPUT_LIMIT) output = RECORDING_OUTPUT_LIMIT;
         if (output < -RECORDING_OUTPUT_LIMIT) output = -RECORDING_OUTPUT_LIMIT;
         mono[i] = (int16_t)output;
@@ -389,11 +444,14 @@ static int32_t recording_pcm_process(const int16_t *stereo, size_t frames,
 
     filter->diagnostic_samples += (uint32_t)frames;
     if (filter->diagnostic_samples >= AUDIO_RATE) {
-        ESP_LOGI(TAG, "%s mic: MIC2 peak=%ld bad=%lu; clean peak=%ld",
+        ESP_LOGI(TAG, "%s mic: S%u peak=%ld rms=%lu bad=%lu; clean peak=%ld gain=%.2f",
                  filter->diagnostic_label ? filter->diagnostic_label : "recording",
+                 ECHOEAR_MIC_SELECTED_SLOT,
                  (long)filter->diagnostic_input_peak,
+                 (unsigned long)filter->diagnostic_rms,
                  (unsigned long)filter->diagnostic_bad_samples,
-                 (long)filter->diagnostic_output_peak);
+                 (long)filter->diagnostic_output_peak,
+                 (double)filter->gain_q8 / 256.0);
         filter->diagnostic_samples = 0;
         filter->diagnostic_bad_samples = 0;
         filter->diagnostic_input_peak = 0;
@@ -406,7 +464,7 @@ static int32_t recording_pcm_process(const int16_t *stereo, size_t frames,
 // can keep a peak-only VAD alive for an entire I2S block.  Use the mean
 // absolute deviation around the block's DC level for the completion decision,
 // matching Bread Compact's natural-pause contract while retaining EchoEar's
-// MIC2 cleanup and make-up gain above.
+// selected-slot cleanup and bounded AGC above.
 static uint16_t command_capture_mean_level(const int16_t *samples, size_t count) {
     if (!samples || count == 0) return 0;
     int64_t sum = 0;
@@ -653,31 +711,50 @@ static esp_err_t audio_init(void) {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 8;
     chan_cfg.dma_frame_num = 256;
-    err = i2s_new_channel(&chan_cfg, NULL, &s_audio_rx);
+    // ES7210 input and ES8311 output share I2S0's MCLK/BCLK/WS wires. Allocate
+    // them as one full-duplex channel pair so the driver owns and configures
+    // the clock domain only once. Creating RX and TX in two independent calls
+    // makes the second call collide with the first controller/GPIO ownership;
+    // on real EchoEar hardware that leaves the microphone stream looking like
+    // near-full-scale random data and MultiNet cannot recognise any phrase.
+    err = i2s_new_channel(&chan_cfg, &s_audio_tx, &s_audio_rx);
     if (err != ESP_OK) goto fail;
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+    // ES7210 publishes four 16-bit microphone slots. This matches Espressif's
+    // BoxAudioCodec path: TX remains stereo for ES8311 while RX runs four-slot
+    // TDM with BCLK=MCLK/8. Reading it as stereo halves the frame width and
+    // shifts physical microphones between software channels.
+    i2s_tdm_config_t rx_cfg = {
+        .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(AUDIO_RATE),
+        .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(
+            I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO,
+            I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3),
         .gpio_cfg = {
             .mclk = AUDIO_MCLK, .bclk = AUDIO_BCLK, .ws = AUDIO_WS,
             .dout = I2S_GPIO_UNUSED, .din = AUDIO_DIN,
             .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
         },
     };
-    err = i2s_channel_init_std_mode(s_audio_rx, &std_cfg);
+    err = i2s_channel_init_tdm_mode(s_audio_rx, &rx_cfg);
     if (err != ESP_OK) goto fail;
-    err = i2s_channel_enable(s_audio_rx);
-    if (err != ESP_OK) goto fail;
-    err = i2s_new_channel(&chan_cfg, &s_audio_tx, NULL);
-    if (err != ESP_OK) goto fail;
-    std_cfg.gpio_cfg.dout = AUDIO_DOUT;
-    err = i2s_channel_init_std_mode(s_audio_tx, &std_cfg);
+    i2s_std_config_t tx_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+            I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = AUDIO_MCLK, .bclk = AUDIO_BCLK, .ws = AUDIO_WS,
+            .dout = AUDIO_DOUT, .din = I2S_GPIO_UNUSED,
+            .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
+        },
+    };
+    err = i2s_channel_init_std_mode(s_audio_tx, &tx_cfg);
     if (err != ESP_OK) goto fail;
     // EchoEar's ES7210/ES8311 share this full-duplex I2S clock domain.  Unlike
     // Bread Compact's separate speaker path, stopping TX also makes the live
     // microphone samples go silent on this codec pair.  Keep TX enabled and
     // use AUDIO_PA_ENABLE plus an explicit zero tail to make playback quiet.
     err = i2s_channel_enable(s_audio_tx);
+    if (err != ESP_OK) goto fail;
+    err = i2s_channel_enable(s_audio_rx);
     if (err != ESP_OK) goto fail;
     gpio_config_t pa_cfg = {
         .pin_bit_mask = 1ULL << AUDIO_PA_ENABLE, .mode = GPIO_MODE_OUTPUT,
@@ -741,8 +818,14 @@ static uint16_t state_color(const char *state) {
     if (state && !strcmp(state, "speaking")) return rgb565(0, 145, 113);
     if (state && !strcmp(state, "done")) return rgb565(26, 120, 62);
     if (state && !strcmp(state, "alert")) return rgb565(180, 46, 45);
-    if (state && !strcmp(state, "idle")) return rgb565(28, 82, 133);
-    return rgb565(18, 30, 48);
+    // Keep the ambient face on Bread Compact's deep blue-black base.  The
+    // former brighter blue read washed-out on EchoEar's high-brightness round
+    // panel and reduced contrast against the cool pet halo and white clock.
+    if (state && !strcmp(state, "idle")) return rgb565(18, 24, 38);
+    // "quiet" is an ambient standby state too. Match Bread Compact's same
+    // deep base rather than letting the boot/reconnect standby frame jump to
+    // a lighter blue than the normal idle frame.
+    return rgb565(18, 24, 38);
 }
 
 static void fill_rect(int x0, int y0, int x1, int y1, uint16_t color) {
@@ -2089,7 +2172,23 @@ static void draw_recording_visual(void) {
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     // The animation task may have queued this draw just before capture ended.
     // Never allow that old waveform frame to replace the thinking/result page.
-    if (!s_recording_active) {
+    bool recording_active;
+    bool recording_paused;
+    bool recording_is_meeting;
+    uint32_t recording_elapsed_seconds;
+    uint16_t recording_smoothed_level;
+    // The capture task updates the meter while this renderer prepares a frame.
+    // Take one coherent state snapshot, as Bread's LCD-serialized renderer
+    // does, so a pause/mode/timer transition cannot mix two recorder states in
+    // one presented image.
+    taskENTER_CRITICAL(&s_state_lock);
+    recording_active = s_recording_active;
+    recording_paused = s_recording_paused;
+    recording_is_meeting = s_recording_is_meeting;
+    recording_elapsed_seconds = s_recording_elapsed_seconds;
+    recording_smoothed_level = s_recording_smoothed_level;
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (!recording_active) {
         if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
         return;
     }
@@ -2101,54 +2200,72 @@ static void draw_recording_visual(void) {
     uint16_t red = rgb565(241, 76, 85);
     uint16_t amber = rgb565(244, 178, 58);
     uint16_t cyan = rgb565(72, 205, 220);
-    uint16_t muted = rgb565(81, 108, 130);
+    // Keep Bread Compact's muted recording chrome exactly; the round layout
+    // changes geometry, not the recorder's visual hierarchy.
+    uint16_t muted = rgb565(91, 118, 138);
     uint16_t fg = rgb565(244, 250, 255);
-    uint16_t accent = s_recording_paused ? amber : red;
+    uint16_t accent = recording_paused ? amber : red;
     fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, bg);
-    fill_rect(16, 16, LCD_WIDTH - 16, 20, accent);
-    fill_rect(16, LCD_HEIGHT - 20, LCD_WIDTH - 16, LCD_HEIGHT - 16, accent);
-    bool pulse = !s_recording_paused && (s_pet_frame & 1u) == 0;
-    fill_circle(62, 62, pulse ? 18 : 12, accent);
-    // Keep the header copy inside the round panel's inscribed safe column
-    // rather than anchoring it to a rectangular x coordinate.
-    draw_text24_centered_safe(46, s_recording_paused ? "已暂停" : "正在听取",
+    // Keep Bread Compact's visual grammar (thin recording rules, square red
+    // indicator, then state / mode / timer) while placing it inside EchoEar's
+    // circular safe area. The prior thick bands and breathing red disc made
+    // the same recording state read as a different product surface.
+    fill_rect(52, 28, LCD_WIDTH - 52, 32, accent);
+    fill_rect(52, LCD_HEIGHT - 32, LCD_WIDTH - 52, LCD_HEIGHT - 28, accent);
+    fill_rect(58, 52, 80, 74, accent);
+    fill_rect(65, 59, 73, 67, rgb565(255, 235, 238));
+    draw_text24_centered_safe(48, recording_paused ? "已暂停" : "正在听取",
                               208, fg, bg);
-    uint32_t minutes = s_recording_elapsed_seconds / 60;
-    uint32_t seconds = s_recording_elapsed_seconds % 60;
+    draw_text24_centered_safe(84, recording_is_meeting ? "会议录音" : "语音指令",
+                              224, recording_paused ? amber : cyan, bg);
+    uint32_t minutes = recording_elapsed_seconds / 60;
+    uint32_t seconds = recording_elapsed_seconds % 60;
     char elapsed[16];
-    snprintf(elapsed, sizeof(elapsed), "%02lu %02lu", (unsigned long)minutes, (unsigned long)seconds);
-    draw_centered_text(104, elapsed, fg, bg);
+    snprintf(elapsed, sizeof(elapsed), "%02lu:%02lu", (unsigned long)minutes, (unsigned long)seconds);
+    draw_centered_text(122, elapsed, fg, bg);
 
-    // Render the same measured audio level as spaced columns instead of a
-    // solid min/max fill. EchoEar's codec may report a large DC bias after
-    // switching the speaker path; this presentation makes that a bounded
-    // meter rather than an opaque cyan block, while still responding to voice.
-    uint16_t visual_level = s_recording_paused ? 0 : s_recording_audio_level;
-    if (visual_level > 700) visual_level = 700;
-    const int wave_left = 26;
-    const int wave_width = 308;
+    // Match Bread Compact's clear, symmetric meter: the same 24 visible
+    // history columns advance from left to right around one quiet centre line.
+    // EchoEar fills the history from actual cleaned PCM, so the equivalent
+    // visual behavior does not reintroduce the former generated waveform.
+    enum { RECORDING_VISUAL_BARS = RECORDING_WAVE_COLUMNS };
+    uint16_t wave_levels[RECORDING_VISUAL_BARS] = {0};
+    taskENTER_CRITICAL(&s_state_lock);
+    for (int bar = 0; bar < RECORDING_VISUAL_BARS; ++bar) {
+        wave_levels[bar] = s_recording_wave_levels[bar];
+    }
+    taskEXIT_CRITICAL(&s_state_lock);
+
+    const int wave_left = 42;
+    const int wave_pitch = 12;
+    const int wave_bar_width = 7;
     const int wave_center = 220;
     const int wave_half_height = 42;
-    fill_rect(wave_left, wave_center, wave_left + wave_width, wave_center + 1, muted);
-    for (int column = 0; column < 24; ++column) {
-        // Preserve a readable rhythm at quiet levels. The phase offset is
-        // deterministic, so the user sees live motion rather than random UI.
-        uint16_t variation = (uint16_t)((column * 37u + s_pet_frame * 29u) % 120u);
-        uint16_t column_level = visual_level > variation ? visual_level - variation : 0;
-        int half = 3 + (int)(column_level * wave_half_height / 700u);
+    fill_rect(wave_left - 4, wave_center, LCD_WIDTH - wave_left + 4, wave_center + 1, muted);
+    for (int bar = 0; bar < RECORDING_VISUAL_BARS; ++bar) {
+        uint16_t level = recording_paused ? 0 : wave_levels[bar];
+        // Keep Bread Compact's five-pixel quiet bar (2 px above/below the
+        // centre rule). EchoEar only scales the horizontal spacing for the
+        // larger round panel; an extra pixel here made silence look active.
+        int half = 2 + (int)(level * wave_half_height / 1000u);
         if (half > wave_half_height) half = wave_half_height;
-        int x = wave_left + column * wave_width / 24;
-        fill_rect(x, wave_center - half, x + 7, wave_center + half + 1,
-                  s_recording_paused ? muted : cyan);
+        int x = wave_left + bar * wave_pitch;
+        fill_rect(x, wave_center - half, x + wave_bar_width, wave_center + half + 1,
+                  recording_paused ? muted : cyan);
     }
-    if (s_recording_is_meeting) {
-        draw_text24_centered_safe(266,
-                                  s_recording_paused ? "会议记录已暂停" : "会议记录进行中",
-                                  248, s_recording_paused ? amber : red, bg);
-        draw_text24_centered_safe(302, "点屏停止保存", 224, muted, bg);
+    char level_label[20];
+    snprintf(level_label, sizeof(level_label), "MIC %u%%",
+             (unsigned)(recording_smoothed_level / 10u));
+    draw_centered_text(278, level_label, recording_paused ? muted : cyan, bg);
+    // Bread Compact keeps one calm action line below the meter.  The previous
+    // EchoEar layout added a second state row just four pixels above it, so the
+    // two 24 px glyph rows visibly collided. State is already explicit in the
+    // header and mode row; retain the action only, inside the round panel's
+    // lower safe zone.
+    if (recording_is_meeting) {
+        draw_text24_centered_safe(306, "点屏停止保存", 180, muted, bg);
     } else {
-        draw_text24_centered_safe(266, "正在记录命令", 248, cyan, bg);
-        draw_text24_centered_safe(302, "说完后自动处理", 224, muted, bg);
+        draw_text24_centered_safe(306, "说完自动处理", 180, muted, bg);
     }
     s_render_target = NULL;
     if (frame) {
@@ -2191,8 +2308,12 @@ static void pet_animation_task(void *arg) {
                                   ambient_visible_for_state() &&
                                   !s_recording_active && !s_response_active &&
                                   !s_alarm_visual_active && !s_setup_qrcode_visible;
-        vTaskDelay(pdMS_TO_TICKS(remote_pack_active ? REMOTE_PET_RENDER_FRAME_MS
-                                                     : PET_ANIMATION_FRAME_MS));
+        const TickType_t frame_delay = s_recording_active
+                                           ? pdMS_TO_TICKS(RECORDING_RENDER_FRAME_MS)
+                                           : pdMS_TO_TICKS(remote_pack_active
+                                                               ? REMOTE_PET_RENDER_FRAME_MS
+                                                               : PET_ANIMATION_FRAME_MS);
+        vTaskDelay(frame_delay);
         // Read the revision after the delay. Reading it at the end of a frame
         // can acknowledge a clock update that arrived while the previous DMA
         // transfer was running even though that second was never rendered.
@@ -2206,18 +2327,6 @@ static void pet_animation_task(void *arg) {
         } else if (s_message_active && s_ready_prompt_expires_us == 0) {
             // A regular status notice is deliberately static.  Ready prompts
             // carry the one explicit expiry which returns to the ambient pet.
-        } else if (s_response_active && s_response_next_page_us > 0 &&
-                   esp_timer_get_time() >= s_response_next_page_us) {
-            unsigned pages = response_page_count();
-            if (pages > 1 && s_response_page + 1 < pages) {
-                ++s_response_page;
-                s_response_next_page_us = esp_timer_get_time() + RESPONSE_PAGE_INTERVAL_US;
-                draw_response_page();
-            } else {
-                // Keep the last page visible. Cycling to page one without a
-                // user gesture makes long answers impossible to finish reading.
-                s_response_next_page_us = 0;
-            }
         } else if (!s_command_display_locked && s_ready_prompt_expires_us > 0 &&
                    esp_timer_get_time() >= s_ready_prompt_expires_us) {
             s_ready_prompt_expires_us = 0;
@@ -2708,7 +2817,6 @@ void board_port_set_pet_state(const char *state) {
     s_message_active = false;
     if (strcmp(next_state, "speaking")) {
         s_response_active = false;
-        s_response_next_page_us = 0;
     }
     strlcpy(s_pet_state, next_state, sizeof(s_pet_state));
     // Idle/quiet are the permanent ambient pet face. Previously every state
@@ -2864,6 +2972,9 @@ no_mem:
 }
 
 void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds) {
+    bool new_session;
+    taskENTER_CRITICAL(&s_state_lock);
+    new_session = active && !s_recording_active;
     if (active) s_ready_prompt_expires_us = 0;
     if (active) {
         s_idle_pet_visible = false;
@@ -2871,50 +2982,93 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
     }
     if (active) s_message_active = false;
     s_recording_active = active;
-    s_recording_paused = paused;
-    s_recording_elapsed_seconds = elapsed_seconds;
-    if (!active || elapsed_seconds == 0) {
-        taskENTER_CRITICAL(&s_state_lock);
-        memset(s_recording_wave_min, 0, sizeof(s_recording_wave_min));
-        memset(s_recording_wave_max, 0, sizeof(s_recording_wave_max));
-        s_recording_wave_pending_min = INT16_MAX;
-        s_recording_wave_pending_max = INT16_MIN;
+    s_recording_paused = active && paused;
+    s_recording_elapsed_seconds = active ? elapsed_seconds : 0;
+    // Reset only at a real state boundary. Both command and meeting capture
+    // publish an initial elapsed=0 update after PCM has already begun to flow;
+    // treating that as a reset discarded the first visible slice of speech.
+    if (!active || new_session) {
+        ++s_recording_wave_epoch;
+        memset(s_recording_wave_levels, 0, sizeof(s_recording_wave_levels));
+        s_recording_wave_pending_peak = 0;
         s_recording_wave_pending_samples = 0;
+        s_recording_wave_pending_clipped = 0;
         s_recording_wave_dc = 0;
-        taskEXIT_CRITICAL(&s_state_lock);
+        s_recording_wave_smoothed_level = 0;
     }
-    if (!active) s_recording_audio_level = 0;
+    // Bread Compact starts every recording with a quiet meter. EchoEar's raw
+    // PCM history is reset above, but the separately smoothed MIC readout also
+    // has to be reset here; otherwise a command begun immediately after a loud
+    // meeting opens with the previous session's percentage for one frame.
+    if (!active || new_session) {
+        s_recording_audio_level = 0;
+        s_recording_smoothed_level = 0;
+    }
+    taskEXIT_CRITICAL(&s_state_lock);
     if (active) {
         draw_recording_visual();
-    } else if (!s_command_display_locked && !s_response_active) {
+    } else {
+        if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) == pdTRUE) {
+        // Wait for a recording frame already in flight before the caller
+        // presents thinking/upload/result. Without this fence, a renderer that
+        // took its state snapshot just before the transition can overwrite the
+        // newer foreground screen after capture has already ended.
+            xSemaphoreGiveRecursive(s_lcd_mutex);
+        }
+        if (!s_command_display_locked && !s_response_active) {
         // Finishing a command recording is a foreground transition, not a
         // return to the ambient pet.  The caller has already selected the
         // thinking/result/error surface; repainting a pet here queues one old
         // full frame between the waveform and that surface, which resembles a
         // brief boot/standby screen.  Only restore the pet when no foreground
         // command owns the display.
-        draw_pet();
+            draw_pet();
+        }
     }
 }
 
 void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     if (level > 1000) level = 1000;
-    s_recording_audio_level = level;
+    taskENTER_CRITICAL(&s_state_lock);
+    if (!s_recording_active) {
+        taskEXIT_CRITICAL(&s_state_lock);
+        return;
+    }
+    s_recording_smoothed_level = level > s_recording_smoothed_level
+                                     ? (uint16_t)((s_recording_smoothed_level + level * 3u) / 4u)
+                                     : (uint16_t)((s_recording_smoothed_level * 7u + level) / 8u);
+    s_recording_audio_level = s_recording_smoothed_level;
     s_recording_elapsed_seconds = elapsed_seconds;
+    taskEXIT_CRITICAL(&s_state_lock);
 }
 
 static void recording_wave_push_pcm(const int16_t *samples, size_t count) {
     if (!samples || count == 0) return;
     // Only one capture task owns the pending bucket. Aggregate PCM outside the
     // critical section so I2S is never held behind hundreds of sample compares.
-    // A single 8 ms column must remain legible even if the shared I2S bus
-    // delivers saturated words while the speaker path changes state.
-    int16_t completed_min[8];
-    int16_t completed_max[8];
+    // EchoEar's physical reads contain 128 mono frames, while Bread's history
+    // advances for each 512-frame read. Four EchoEar reads therefore form one
+    // identical 32 ms visual step.
+    uint16_t completed_levels[8];
     size_t completed = 0;
-    uint32_t amplitude_sum = 0;
-    uint16_t usable_samples = 0;
-    uint16_t clipped_samples = 0;
+    int32_t pending_dc;
+    uint16_t pending_peak;
+    uint16_t pending_samples;
+    uint16_t pending_clipped;
+    uint16_t smoothed_level;
+    uint32_t epoch;
+    taskENTER_CRITICAL(&s_state_lock);
+    if (!s_recording_active || s_recording_paused) {
+        taskEXIT_CRITICAL(&s_state_lock);
+        return;
+    }
+    epoch = s_recording_wave_epoch;
+    pending_dc = s_recording_wave_dc;
+    pending_peak = s_recording_wave_pending_peak;
+    pending_samples = s_recording_wave_pending_samples;
+    pending_clipped = s_recording_wave_pending_clipped;
+    smoothed_level = s_recording_wave_smoothed_level;
+    taskEXIT_CRITICAL(&s_state_lock);
     for (size_t i = 0; i < count; ++i) {
         int16_t sample = samples[i];
         int32_t raw_magnitude = sample < 0 ? -(int32_t)sample : sample;
@@ -2922,50 +3076,66 @@ static void recording_wave_push_pcm(const int16_t *samples, size_t count) {
         // EchoEar's ES7210 path far more often than voice. Do not let them
         // dominate the visual signal. The original PCM is still retained.
         if (raw_magnitude >= 32500) {
-            ++clipped_samples;
+            ++pending_clipped;
         } else {
             // A 1/64 low-pass baseline follows the analogue DC level but is
             // far too slow to follow speech. This makes silence a thin line
             // and spoken sound the visible changing envelope.
-            s_recording_wave_dc += ((int32_t)sample - s_recording_wave_dc) / 64;
-            int32_t deviation = (int32_t)sample - s_recording_wave_dc;
+            pending_dc += ((int32_t)sample - pending_dc) / 64;
+            int32_t deviation = (int32_t)sample - pending_dc;
             uint32_t magnitude = deviation < 0 ? (uint32_t)-deviation : (uint32_t)deviation;
-            amplitude_sum += (uint32_t)magnitude;
-            ++usable_samples;
+            if (magnitude > pending_peak) pending_peak = (uint16_t)magnitude;
         }
-        ++s_recording_wave_pending_samples;
-        if (s_recording_wave_pending_samples >= RECORDING_WAVE_SAMPLES_PER_COLUMN) {
-            if (completed < sizeof(completed_min) / sizeof(completed_min[0])) {
-                // Discard a predominantly clipped bucket. Otherwise use a
-                // gated mean absolute amplitude, which is naturally smoother
-                // than min/max yet still follows consonants and speech rhythm.
-                uint32_t mean = usable_samples ? amplitude_sum / usable_samples : 0;
-                if (clipped_samples > RECORDING_WAVE_SAMPLES_PER_COLUMN / 4 || mean <= 180) mean = 0;
-                if (mean > 9000) mean = 9000;
-                completed_min[completed] = -(int16_t)mean;
-                completed_max[completed] = (int16_t)mean;
+        ++pending_samples;
+        if (pending_samples >= RECORDING_WAVE_SAMPLES_PER_COLUMN) {
+            if (completed < sizeof(completed_levels) / sizeof(completed_levels[0])) {
+                // Discard a predominantly clipped period. For clean audio,
+                // use Bread's immediate peak-to-level semantics followed by
+                // its attack/release filter. That gives both boards one calm,
+                // equally paced 24-column trail instead of EchoEar's former
+                // independently averaged 96-column trace.
+                uint16_t level = 0;
+                if (pending_clipped <= RECORDING_WAVE_SAMPLES_PER_COLUMN / 4 &&
+                    pending_peak > 180) {
+                    level = pending_peak >= 12000
+                                ? 1000
+                                : (uint16_t)((pending_peak - 180u) * 1000u /
+                                             (12000u - 180u));
+                }
+                smoothed_level = level > smoothed_level
+                                     ? (uint16_t)((smoothed_level + level * 3u) / 4u)
+                                     : (uint16_t)((smoothed_level * 7u + level) / 8u);
+                completed_levels[completed] = smoothed_level;
                 ++completed;
             }
-            s_recording_wave_pending_min = INT16_MAX;
-            s_recording_wave_pending_max = INT16_MIN;
-            s_recording_wave_pending_samples = 0;
-            amplitude_sum = 0;
-            usable_samples = 0;
-            clipped_samples = 0;
+            pending_peak = 0;
+            pending_samples = 0;
+            pending_clipped = 0;
         }
     }
-    if (completed == 0) return;
-    if (completed > RECORDING_WAVE_COLUMNS) completed = RECORDING_WAVE_COLUMNS;
     taskENTER_CRITICAL(&s_state_lock);
+    // A just-ended or paused session must not receive a late PCM block from
+    // the capture hand-off. The app model already filters this path; retaining
+    // the board-side guard keeps the physical renderer equally self-contained.
+    if (!s_recording_active || s_recording_paused || s_recording_wave_epoch != epoch) {
+        taskEXIT_CRITICAL(&s_state_lock);
+        return;
+    }
+    s_recording_wave_dc = pending_dc;
+    s_recording_wave_pending_peak = pending_peak;
+    s_recording_wave_pending_samples = pending_samples;
+    s_recording_wave_pending_clipped = pending_clipped;
+    s_recording_wave_smoothed_level = smoothed_level;
+    if (completed == 0) {
+        taskEXIT_CRITICAL(&s_state_lock);
+        return;
+    }
+    if (completed > RECORDING_WAVE_COLUMNS) completed = RECORDING_WAVE_COLUMNS;
     size_t retained = RECORDING_WAVE_COLUMNS - completed;
-    memmove(&s_recording_wave_min[0], &s_recording_wave_min[completed],
-            retained * sizeof(s_recording_wave_min[0]));
-    memmove(&s_recording_wave_max[0], &s_recording_wave_max[completed],
-            retained * sizeof(s_recording_wave_max[0]));
-    memcpy(&s_recording_wave_min[retained], completed_min,
-           completed * sizeof(completed_min[0]));
-    memcpy(&s_recording_wave_max[retained], completed_max,
-           completed * sizeof(completed_max[0]));
+    memmove(&s_recording_wave_levels[0], &s_recording_wave_levels[completed],
+            retained * sizeof(s_recording_wave_levels[0]));
+    memcpy(&s_recording_wave_levels[retained], completed_levels,
+           completed * sizeof(completed_levels[0]));
     taskEXIT_CRITICAL(&s_state_lock);
 }
 
@@ -2982,7 +3152,6 @@ void board_port_show_text(const char *title, const char *text) {
     // Compact clears the same ownership state before every status screen.
     s_response_active = false;
     s_response_image_active = false;
-    s_response_next_page_us = 0;
     s_message_active = true;
     s_display_sleeping = false;
     s_idle_pet_visible = false;
@@ -3063,7 +3232,6 @@ void board_port_show_upload_progress(size_t completed_bytes, size_t total_bytes,
     s_message_active = false;
     s_response_active = false;
     s_response_image_active = false;
-    s_response_next_page_us = 0;
     const uint16_t bg = rgb565(9, 35, 64);
     const uint16_t fg = rgb565(244, 250, 255);
     const uint16_t muted = rgb565(174, 206, 224);
@@ -3161,7 +3329,6 @@ void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
     // page can obtain the LCD mutex first and briefly cover the code.
     s_response_active = false;
     s_response_image_active = false;
-    s_response_next_page_us = 0;
     // Set this before drawing so the animation task cannot paint a pet frame
     // between QR stripes on the shared LCD.
     s_setup_qrcode_visible = true;
@@ -3233,31 +3400,20 @@ void board_port_set_wifi_status(const char *ssid, bool connected) {
     s_wifi_connected = next_connected;
     if (changed) ++s_ambient_revision;
     taskEXIT_CRITICAL(&s_state_lock);
-    if (!s_panel || s_recording_active || s_setup_qrcode_visible || s_command_display_locked) return;
-    // Wi-Fi is transport state, not command UI. Never overlay it on the
-    // thinking/result states, where it resembles a transition to startup.
-    if (strcmp(s_pet_state, "idle") && strcmp(s_pet_state, "quiet")) return;
-    // This indicator is cosmetic. Never let it hold Wi-Fi startup behind a
-    // full animated frame; the next status event can paint it instead.
-    if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, pdMS_TO_TICKS(40)) != pdTRUE) {
-        ESP_LOGI(TAG, "Wi-Fi indicator deferred: %s", connected ? "connected" : "connecting");
-        return;
+    // Do not write a small Wi-Fi widget directly to the panel here. The
+    // standby renderer uses a double-buffered changed-region presenter; a
+    // direct patch is unknown to its front-frame snapshot and can survive as
+    // a stale "WIFI" fragment when the following pet frame omits that region.
+    // Fold the transport state into the same curved ambient ring as Bread
+    // Compact. It keeps one owner for every standby pixel and lets the next
+    // composed frame clear or redraw the exact changed area without flicker.
+    if (changed && !s_display_sleeping && !s_recording_active &&
+        !s_setup_qrcode_visible && !s_command_display_locked &&
+        ambient_visible_for_state()) {
+        draw_pet();
     }
-    uint16_t bg = state_color(s_pet_state);
-    uint16_t signal = connected ? rgb565(82, 220, 146) : rgb565(245, 177, 76);
-    uint16_t muted = rgb565(167, 189, 208);
-    // Reserved status corner: update only this small rectangle, never redraw
-    // the pet, so connection retries cannot produce a visible full-screen flash.
-    fill_rect(242, 14, 350, 52, bg);
-    fill_rect(250, 40, 258, 46, signal);
-    fill_rect(262, 33, 270, 46, signal);
-    fill_rect(274, 25, 282, 46, signal);
-    draw_text(290, 24, connected ? "WIFI" : "WIFI?", signal, bg);
-    if (!connected && ssid && ssid[0]) {
-        fill_rect(246, 53, 346, 56, muted);
-    }
-    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
-    ESP_LOGI(TAG, "Wi-Fi indicator: %s (%s)", connected ? "connected" : "connecting", ssid ? ssid : "");
+    ESP_LOGI(TAG, "Wi-Fi state: %s (%s)", next_connected ? "connected" : "connecting",
+             ssid ? ssid : "");
 }
 
 void board_port_set_ambient(const char *time, const char *location, const char *date, const char *weekday,
@@ -3318,6 +3474,13 @@ void board_port_set_alarm_scheduled(bool scheduled) {
 
 void board_port_show_ready_prompt(const char *title, const char *text) {
     if (s_alarm_visual_active) return;
+    // Completing provisioning is the terminal transition for the QR surface.
+    // Keep its guard while a phone is scanning, but release it before the
+    // ready path republishes idle; otherwise board_port_set_pet_state() keeps
+    // deferring the standby frame forever and EchoEar remains visually stuck
+    // on the old QR page. Bread Compact clears its foreground owner as part of
+    // this same ready-to-idle transition.
+    s_setup_qrcode_visible = false;
     // A successful startup belongs on the actual standby surface.  The former
     // implementation drew the pet and then immediately replaced it with the
     // generic full-screen "device ready" message for a full minute.  That made
@@ -3395,18 +3558,20 @@ esp_err_t board_port_audio_stream_read(int16_t *mono, size_t sample_capacity,
     if (level) *level = 0;
     if (!mono || !samples_read || sample_capacity == 0) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(audio_init(), TAG, "microphone init failed");
-    int16_t stereo[512];
+    int16_t tdm[512];
     size_t received = 0;
-    esp_err_t err = i2s_channel_read(s_audio_rx, stereo, sizeof(stereo), &received,
+    esp_err_t err = i2s_channel_read(s_audio_rx, tdm, sizeof(tdm), &received,
                                      pdMS_TO_TICKS(1000));
     if (err != ESP_OK) return err;
-    size_t frames = received / (sizeof(int16_t) * 2);
+    size_t frames = received / (sizeof(int16_t) * ECHOEAR_MIC_SLOT_COUNT);
     if (frames > sample_capacity) frames = sample_capacity;
-    int32_t chunk_peak = recording_pcm_process(stereo, frames, mono);
+    int32_t chunk_peak = recording_pcm_process(tdm, frames, mono);
     uint32_t scaled = chunk_peak <= 180 ? 0 : (uint32_t)(chunk_peak - 180) * 1000u / (12000u - 180u);
     if (scaled > 1000) scaled = 1000;
     if (level) *level = (uint16_t)scaled;
-    recording_wave_push_pcm(mono, frames);
+    // The app UI forwards this exact PCM block to the common recording surface
+    // after it has accepted the read. Keep this transport helper data-only so
+    // a meeting block contributes one waveform bucket rather than two.
     *samples_read = frames;
     return ESP_OK;
 }
@@ -3465,7 +3630,9 @@ static bool response_opening_punctuation(uint32_t cp) {
 }
 
 void board_port_set_recording_mode(bool meeting) {
+    taskENTER_CRITICAL(&s_state_lock);
     s_recording_is_meeting = meeting;
+    taskEXIT_CRITICAL(&s_state_lock);
 }
 
 // Match Bread Compact's server-response hygiene.  Older desktop paths can
@@ -3661,8 +3828,11 @@ static void draw_response_page(void) {
                     line, body_color, bg);
     }
     unsigned pages = response_page_count();
+    // EchoEar has physical side keys, so it follows Bread Compact's deliberate
+    // reader flow: the answer stays on the current page until the user moves
+    // it.  Auto-turning belongs only to one-key boards such as Fangtang.
     draw_text24(RESPONSE_TEXT_X, RESPONSE_FOOTER_Y,
-                pages > 1 ? "自动翻页" : "轻点返回", muted, bg);
+                pages > 1 ? "音量键翻页" : "轻点返回", muted, bg);
     char indicator[16];
     snprintf(indicator, sizeof(indicator), "%u/%u", s_response_page + 1, pages);
     draw_text24(LCD_WIDTH - RESPONSE_TEXT_X - text24_width(indicator, 8),
@@ -3691,11 +3861,11 @@ void board_port_show_response(const char *title, const char *text) {
     s_idle_pet_visible = false;
     s_idle_pet_sleep_expires_us = 0;
     s_display_sleeping = false;
-    // Publish the new response atomically with its automatic-page deadline.
-    // The animation task reads these fields without taking the LCD mutex.
+    // EchoEar has manual response keys.  Keep the response timer cleared so a
+    // long answer cannot turn beneath the reader; Bread Compact has the same
+    // manual-paging contract.
     s_response_active = false;
     s_response_image_active = false;
-    s_response_next_page_us = 0;
     s_message_active = false;
     s_response_page = 0;
     strlcpy(s_response_title, title && title[0] ? title : "码卡龙", sizeof(s_response_title));
@@ -3703,10 +3873,6 @@ void board_port_show_response(const char *title, const char *text) {
     if (!s_response_text[0]) {
         strlcpy(s_response_text, "没有收到文字回复", sizeof(s_response_text));
     }
-    unsigned pages = response_page_count();
-    s_response_next_page_us = pages > 1
-                                  ? esp_timer_get_time() + RESPONSE_PAGE_INTERVAL_US
-                                  : 0;
     s_response_active = true;
     draw_response_page();
     ESP_LOGI(TAG, "response: %s", s_response_text);
@@ -3716,16 +3882,25 @@ void board_port_show_response(const char *title, const char *text) {
 void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_text,
                                  const char *label, unsigned attempt, unsigned max_attempts) {
     if (!active) {
+        // Alarm completion has already been committed to the shared UI model.
+        // Do not call the public board setters from here: on EchoEar the
+        // application macro routes those names back through app_ui, so this
+        // board-local terminal branch used to recurse through the UI facade.
+        // Bread clears its board-local foreground owner then renders idle; do
+        // the equivalent directly here.
         s_alarm_visual_active = false;
-        board_port_set_command_display_lock(false);
-        board_port_set_pet_state("idle");
+        s_command_display_locked = false;
+        strlcpy(s_pet_state, "idle", sizeof(s_pet_state));
+        s_display_sleeping = false;
+        s_idle_pet_visible = true;
+        s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
+        draw_pet();
         return;
     }
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     s_command_display_locked = true;
     s_response_active = false;
     s_response_image_active = false;
-    s_response_next_page_us = 0;
     s_message_active = false;
     s_alarm_visual_active = true;
     const uint16_t bg = rgb565(9, 23, 38);
@@ -3806,7 +3981,6 @@ void board_port_show_response_image(const char *title, const char *caption,
     s_response_active = true;
     s_response_image_active = true;
     s_response_page = 0;
-    s_response_next_page_us = 0;
     uint16_t bg = rgb565(8, 17, 28), header = rgb565(14, 31, 47);
     uint16_t ink = rgb565(244, 248, 251);
     uint16_t muted = rgb565(174, 198, 215);
@@ -3875,13 +4049,14 @@ bool board_port_navigate_response(int page_delta) {
         return true;
     }
     int next = (int)s_response_page + page_delta;
-    if (next < 0) next = 0;
-    if (next >= (int)pages) next = (int)pages - 1;
+    // Keep the result reader cyclic, as on Bread Compact.  EchoEar maps the
+    // side volume keys to previous/next while a reply is visible; pinning at an
+    // edge made a working key appear dead and contradicted the shared input
+    // flow's documented 1 -> 2 -> ... -> 1 sequence.
+    if (next < 0) next = (int)pages - 1;
+    if (next >= (int)pages) next = 0;
     if ((unsigned)next != s_response_page) {
         s_response_page = (unsigned)next;
-        s_response_next_page_us = s_response_page + 1 < pages
-                                      ? esp_timer_get_time() + RESPONSE_PAGE_INTERVAL_US
-                                      : 0;
         draw_response_page();
     }
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -3983,25 +4158,19 @@ static void wake_word_task(void *arg) {
 
     int16_t *mono = heap_caps_malloc((size_t)chunk_samples * sizeof(int16_t),
                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    int16_t *stereo = heap_caps_malloc((size_t)chunk_samples * 2 * sizeof(int16_t),
-                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!mono || !stereo) {
+    int16_t *tdm = heap_caps_malloc((size_t)chunk_samples * ECHOEAR_MIC_SLOT_COUNT *
+                                        sizeof(int16_t),
+                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!mono || !tdm) {
         ESP_LOGE(TAG, "offline wake disabled: no memory for %d-sample audio buffers", chunk_samples);
         heap_caps_free(mono);
-        heap_caps_free(stereo);
+        heap_caps_free(tdm);
         multinet->destroy(model_data);
         esp_srmodel_deinit(models);
         goto finish;
     }
 
     s_wake_word_ready = true;
-    // Foreground capture has established MIC2/right as EchoEar's reliable
-    // capsule.  Start the same filter chain here so standby recognition sees
-    // the same DC-blocked, invalid-word-suppressed PCM as a voice command.
-    // Mixing the two raw slots was not equivalent: live diagnostics show both
-    // slots periodically emit full-scale transport words, and averaging them
-    // lets those artefacts reach MultiNet even when one real capsule is clear.
-    recording_pcm_reset("offline wake");
     ESP_LOGI(TAG,
              "offline wake listening: model=%s phrase='%s' variants=%u threshold=%.2f rate=%d chunk=%d",
              model_name, WAKE_WORD_CN_LABEL,
@@ -4010,6 +4179,9 @@ static void wake_word_task(void *arg) {
     multinet->print_active_speech_commands(model_data);
     bool model_was_paused = false;
     int64_t last_detection_us = 0;
+    int64_t last_audio_diagnostic_us = 0;
+    int16_t last_valid_wake_sample = 0;
+    uint32_t wake_gain_q8 = WAKE_WORD_MAX_SOFTWARE_GAIN_Q8;
     while (true) {
         if (s_wake_word_stop_requested) break;
         if (s_wake_word_paused) {
@@ -4028,7 +4200,8 @@ static void wake_word_task(void *arg) {
         }
         size_t received = 0;
         esp_err_t read_err = i2s_channel_read(
-            s_audio_rx, stereo, (size_t)chunk_samples * 2 * sizeof(int16_t),
+            s_audio_rx, tdm,
+            (size_t)chunk_samples * ECHOEAR_MIC_SLOT_COUNT * sizeof(int16_t),
             &received, pdMS_TO_TICKS(250));
         xSemaphoreGive(s_audio_mutex);
         if (read_err != ESP_OK) {
@@ -4038,16 +4211,98 @@ static void wake_word_task(void *arg) {
             continue;
         }
 
-        size_t frames = received / (sizeof(int16_t) * 2);
+        size_t frames = received /
+                        (sizeof(int16_t) * ECHOEAR_MIC_SLOT_COUNT);
         if (frames < (size_t)chunk_samples) {
-            memset(stereo + frames * 2, 0,
-                   ((size_t)chunk_samples - frames) * 2 * sizeof(int16_t));
+            memset(tdm + frames * ECHOEAR_MIC_SLOT_COUNT, 0,
+                   ((size_t)chunk_samples - frames) * ECHOEAR_MIC_SLOT_COUNT *
+                       sizeof(int16_t));
         }
-        // Do not average the two raw slots here. MIC1/left is not a stable
-        // capture source on this PCB, while MIC2/right is the capsule used by
-        // command and meeting recording. Keeping one source also makes a wake
-        // phrase and the immediately-following command acoustically coherent.
-        (void)recording_pcm_process(stereo, (size_t)chunk_samples, mono);
+        // Feed MultiNet the codec PCM directly, following Fangtang's working
+        // recognizer path. The recording high-pass/make-up chain is useful for
+        // uploaded speech, but on EchoEar it amplified idle noise close to full
+        // scale and destroyed MultiNet's expected feature range. EchoEar's
+        // verified speech capsule is the first ES7210 TDM slot; remove its DC bias and
+        // restore the feature scale that MultiNet receives on Fangtang. The
+        // correctly clocked EchoEar codec is very quiet (idle MAD in the tens),
+        // so use a bounded block gain derived from the idle floor instead of a
+        // fixed analogue gain that can clip loud nearby speech.
+        int64_t slot_sum[ECHOEAR_MIC_SLOT_COUNT] = {0};
+        uint32_t slot_valid[ECHOEAR_MIC_SLOT_COUNT] = {0};
+        uint16_t slot_bad[ECHOEAR_MIC_SLOT_COUNT] = {0};
+        int32_t slot_peak[ECHOEAR_MIC_SLOT_COUNT] = {0};
+        for (int i = 0; i < chunk_samples; ++i) {
+            for (unsigned slot = 0; slot < ECHOEAR_MIC_SLOT_COUNT; ++slot) {
+                int32_t sample = tdm[i * ECHOEAR_MIC_SLOT_COUNT + slot];
+                int32_t magnitude = sample_magnitude(sample);
+                if (magnitude > slot_peak[slot]) slot_peak[slot] = magnitude;
+                if (magnitude < RECORDING_INVALID_SAMPLE_ABS) {
+                    slot_sum[slot] += sample;
+                    ++slot_valid[slot];
+                } else {
+                    ++slot_bad[slot];
+                }
+            }
+        }
+        int32_t slot_dc[ECHOEAR_MIC_SLOT_COUNT] = {0};
+        uint64_t slot_energy[ECHOEAR_MIC_SLOT_COUNT] = {0};
+        for (unsigned slot = 0; slot < ECHOEAR_MIC_SLOT_COUNT; ++slot) {
+            if (slot_valid[slot]) {
+                slot_dc[slot] = (int32_t)(slot_sum[slot] / slot_valid[slot]);
+            }
+        }
+        for (int i = 0; i < chunk_samples; ++i) {
+            for (unsigned slot = 0; slot < ECHOEAR_MIC_SLOT_COUNT; ++slot) {
+                int32_t sample = tdm[i * ECHOEAR_MIC_SLOT_COUNT + slot];
+                if (sample_magnitude(sample) < RECORDING_INVALID_SAMPLE_ABS) {
+                    int32_t centered = sample - slot_dc[slot];
+                    slot_energy[slot] += (uint64_t)((int64_t)centered * centered);
+                }
+            }
+        }
+        const unsigned selected = ECHOEAR_MIC_SELECTED_SLOT;
+        uint32_t mean_square = (uint32_t)(slot_energy[selected] / (uint32_t)chunk_samples);
+        uint32_t rms = (uint32_t)sqrtf((float)mean_square);
+        if (rms >= WAKE_WORD_GAIN_UPDATE_FLOOR) {
+            uint32_t target_q8 = (WAKE_WORD_TARGET_RMS * 256u) / rms;
+            if (target_q8 < WAKE_WORD_MIN_SOFTWARE_GAIN_Q8) {
+                target_q8 = WAKE_WORD_MIN_SOFTWARE_GAIN_Q8;
+            }
+            if (target_q8 > WAKE_WORD_MAX_SOFTWARE_GAIN_Q8) {
+                target_q8 = WAKE_WORD_MAX_SOFTWARE_GAIN_Q8;
+            }
+            unsigned shift = target_q8 < wake_gain_q8
+                                 ? WAKE_WORD_GAIN_ATTACK_SHIFT
+                                 : WAKE_WORD_GAIN_RELEASE_SHIFT;
+            wake_gain_q8 = (uint32_t)((int32_t)wake_gain_q8 +
+                                      ((int32_t)target_q8 - (int32_t)wake_gain_q8) /
+                                          (1 << shift));
+        }
+        for (int i = 0; i < chunk_samples; ++i) {
+            int32_t input = tdm[i * ECHOEAR_MIC_SLOT_COUNT + selected];
+            int32_t sample;
+            if (sample_magnitude(input) < RECORDING_INVALID_SAMPLE_ABS) {
+                sample = (int32_t)(((int64_t)(input - slot_dc[selected]) *
+                                    wake_gain_q8) >> 8);
+            } else {
+                sample = last_valid_wake_sample;
+            }
+            if (sample > INT16_MAX) sample = INT16_MAX;
+            if (sample < INT16_MIN) sample = INT16_MIN;
+            last_valid_wake_sample = (int16_t)sample;
+            mono[i] = (int16_t)sample;
+        }
+        int64_t diagnostic_now_us = esp_timer_get_time();
+        if (diagnostic_now_us - last_audio_diagnostic_us >=
+            WAKE_WORD_DIAGNOSTIC_INTERVAL_US) {
+            last_audio_diagnostic_us = diagnostic_now_us;
+            ESP_LOGI(TAG,
+                     "offline wake mic: S0 peak=%ld rms=%lu bad=%u; "
+                     "S1=%ld S2=%ld S3=%ld; selected=S%u gain=%.2f",
+                     (long)slot_peak[0], (unsigned long)rms, slot_bad[0],
+                     (long)slot_peak[1], (long)slot_peak[2], (long)slot_peak[3],
+                     selected, (double)wake_gain_q8 / 256.0);
+        }
 
         esp_mn_state_t state = multinet->detect(model_data, mono);
         // MultiNet is compute-heavy and this task is pinned to CPU1. Yield once
@@ -4098,7 +4353,7 @@ static void wake_word_task(void *arg) {
     }
 
     heap_caps_free(mono);
-    heap_caps_free(stereo);
+    heap_caps_free(tdm);
     multinet->destroy(model_data);
     esp_srmodel_deinit(models);
     ESP_LOGI(TAG, "offline wake stopped and model memory released");
@@ -4242,7 +4497,12 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
         AUDIO_RATE * COMMAND_CAPTURE_START_CONFIRM_MS / 1000;
     const size_t preroll_samples = AUDIO_RATE * COMMAND_CAPTURE_PREROLL_MS / 1000;
     const size_t wav_capacity = 44 + max_samples * sizeof(int16_t);
-    uint8_t *wav = heap_caps_malloc(wav_capacity, MALLOC_CAP_8BIT);
+    // A 30-second mono command is almost 1 MiB. Keep that payload in PSRAM so
+    // command capture cannot consume the small internal/DMA heap needed by
+    // Wi-Fi and mbedTLS immediately afterwards. The recorder writes it only as
+    // ordinary byte-addressable PCM; it is never an I2S DMA descriptor.
+    uint8_t *wav = heap_caps_malloc(wav_capacity,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!wav) {
         xSemaphoreGive(s_audio_mutex);
         board_port_pause_wake_word(false);
@@ -4262,7 +4522,7 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     uint32_t data_size = (uint32_t)(max_samples * 2);
     memcpy(wav + 40, &data_size, 4);
 
-    int16_t stereo[512];
+    int16_t tdm[512];
     int16_t *mono = (int16_t *)(wav + 44);
     size_t written_samples = 0;
     size_t voiced_samples = 0;
@@ -4270,12 +4530,13 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     size_t speech_start_sample = 0;
     bool speech_started = false;
     int32_t peak = 0;
-    uint16_t smoothed_level = 0;
     uint16_t idle_level = 0;
+    uint32_t last_ui_second = UINT32_MAX;
     s_command_capture_active = true;
     while (written_samples < max_samples) {
         size_t received = 0;
-        esp_err_t err = i2s_channel_read(s_audio_rx, stereo, sizeof(stereo), &received, pdMS_TO_TICKS(1000));
+        esp_err_t err = i2s_channel_read(s_audio_rx, tdm, sizeof(tdm), &received,
+                                         pdMS_TO_TICKS(1000));
         if (err != ESP_OK) {
             s_command_capture_active = false;
             free(wav);
@@ -4283,29 +4544,38 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
             board_port_pause_wake_word(false);
             return err;
         }
-        size_t frames = received / (sizeof(int16_t) * 2);
+        size_t frames = received /
+                        (sizeof(int16_t) * ECHOEAR_MIC_SLOT_COUNT);
         if (frames == 0) {
-            // A successful I2S read may still return no complete stereo frame.
+            // A successful I2S read may still return no complete TDM frame.
             // Do not feed the VAD state or pointer arithmetic with an empty
             // chunk; simply keep waiting within the existing time bounds.
             continue;
         }
         if (frames > max_samples - written_samples) frames = max_samples - written_samples;
-        int32_t chunk_peak = recording_pcm_process(stereo, frames,
+        int32_t chunk_peak = recording_pcm_process(tdm, frames,
                                                    &mono[written_samples]);
         written_samples += frames;
         if (chunk_peak > peak) peak = chunk_peak;
-        // ES7210 speech peaks around 10k-12k on this board. Apply a small
-        // noise gate and attack/release smoothing for a responsive stable UI.
+        // recording_pcm_process() brings the quiet EchoEar capsule into the
+        // same 10k-12k peak range used by the common UI/VAD thresholds.
         uint16_t raw_level = chunk_peak <= 180 ? 0
                              : (uint16_t)(((chunk_peak - 180) * 1000) / (12000 - 180));
         if (raw_level > 1000) raw_level = 1000;
-        smoothed_level = raw_level > smoothed_level
-                             ? (uint16_t)((smoothed_level + raw_level * 3) / 4)
-                             : (uint16_t)((smoothed_level * 7 + raw_level) / 8);
-        board_port_set_audio_level(smoothed_level,
-                                    (uint32_t)(written_samples / AUDIO_RATE));
         recording_wave_push_pcm(&mono[written_samples - frames], frames);
+        uint32_t elapsed = (uint32_t)(written_samples / AUDIO_RATE);
+        // The shared recording renderer owns the one and only attack/release
+        // filter. Feeding it the raw level matches Bread Compact and avoids a
+        // second filter making EchoEar's MIC value lag the waveform.
+        board_port_set_audio_level(raw_level, elapsed);
+        // Command capture is synchronous, unlike the meeting stream.  Keep the
+        // shared recording surface alive just as Bread Compact does so timer,
+        // MIC readout and PCM waveform advance together instead of relying on
+        // the unrelated 150 ms standby animation task.
+        if (elapsed != last_ui_second) {
+            board_port_set_recording_visual(true, false, elapsed);
+            last_ui_second = elapsed;
+        }
         // Hysteresis ignores short loud clicks before speech, then allows
         // natural intra-word dips without treating them as the command end.
         const uint16_t mean_level = command_capture_mean_level(

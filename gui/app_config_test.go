@@ -129,6 +129,17 @@ func TestPreserveBackendOwnedFieldsKeepsHardwareGatewayInvariant(t *testing.T) {
 	}
 }
 
+func TestPreserveBackendOwnedFieldsKeepsHardwareDeviceAliases(t *testing.T) {
+	ondisk := corelib.AppConfig{HardwareDeviceAliases: map[string]string{"esp32-a": "Desk Pet"}}
+	incoming := corelib.AppConfig{HardwareDeviceAliases: map[string]string{"esp32-b": "Stale Pet"}}
+
+	preserveBackendOwnedFields(&incoming, &ondisk)
+
+	if got := incoming.HardwareDeviceAliases; len(got) != 1 || got["esp32-a"] != "Desk Pet" {
+		t.Fatalf("hardware aliases were not preserved: %#v", got)
+	}
+}
+
 func TestLoadConfigMigratesOnlyLegacyDefaultRoleDescription(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

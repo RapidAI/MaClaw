@@ -281,6 +281,9 @@ type AppConfig struct {
 	HardwareWelcomeVoiceID   string `json:"hardware_welcome_voice_id,omitempty"`
 	HardwareWelcomeAudioPath string `json:"hardware_welcome_audio_path,omitempty"`
 	HardwareVolume           int    `json:"hardware_volume,omitempty"`
+	// HardwareDeviceAliases stores local-only display names keyed by hardware
+	// client ID. These labels are never sent to the Hub or the ESP32.
+	HardwareDeviceAliases map[string]string `json:"hardware_device_aliases,omitempty"`
 	// HardwareAllowCustomPets lets each Hub-bound hardware binding select its
 	// own pet. It is deliberately opt-in: the default behavior is to mirror the
 	// pet chosen in the desktop's system pet settings on every device.

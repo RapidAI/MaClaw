@@ -383,6 +383,18 @@ func (m *thirdPartyGatewayManager) resetLocalHandler() {
 	}
 }
 
+func (m *thirdPartyGatewayManager) removeLocalHardwareAgent(clientID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	registry := m.localHandlers
+	m.mu.Unlock()
+	if registry != nil {
+		registry.remove(clientID)
+	}
+}
+
 func (m *thirdPartyGatewayManager) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeGatewayError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
@@ -1801,6 +1813,11 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		m.enqueueError(req, maclawID, "agent_runtime_error", err.Error())
 		return
 	}
+	if !m.isActiveLocalHardwareAgent(req.ClientID, handler) {
+		// An unbind can race this already-authenticated request. Do not let the
+		// removed binding start or resume work after its private runtime retires.
+		return
+	}
 	progressFilter := newIMProgressVisibilityFilter(m.app)
 	var lastProgress time.Time
 	var lastProgressText string
@@ -1847,7 +1864,22 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 	if resp == nil || resp.Deferred {
 		return
 	}
+	if !m.isActiveLocalHardwareAgent(req.ClientID, handler) {
+		// The device was unbound while the Agent was working. Suppress the stale
+		// final response instead of publishing it to a later same-ID binding.
+		return
+	}
 	m.enqueueAgentResponse(req.ClientID, req.ConversationID, maclawID, resp)
+}
+
+func (m *thirdPartyGatewayManager) isActiveLocalHardwareAgent(clientID string, handler *IMMessageHandler) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	registry := m.localHandlers
+	m.mu.Unlock()
+	return registry.isActiveHandler(clientID, handler)
 }
 
 func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID, replyTo string, resp *IMAgentResponse) {
@@ -2009,8 +2041,18 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 	}
 	// Publish the complete logical response in one lock scope so polling cannot
 	// observe a premature terminal marker between its constituent messages.
-	speechTransaction := deferredSpeechParts+len(voiceParts)+resultAudioParts > 0
-	queued := m.enqueueBatch(clientID, messages, !speechTransaction)
+	// A result text carrying speech_parts_pending deliberately terminates before
+	// its presentation-only audio parts.  A voice-only response has no such
+	// armed result surface, so the last part that survives media/capability
+	// validation must terminate the turn instead of leaving the device thinking.
+	hasTerminalResult := false
+	for _, message := range messages {
+		if strings.EqualFold(strings.TrimSpace(message.Metadata["acp_turn"]), "final") {
+			hasTerminalResult = true
+			break
+		}
+	}
+	queued := m.enqueueBatch(clientID, messages, !hasTerminalResult)
 	if len(queued) == 0 && capabilities.SupportsOutput("text") {
 		m.enqueue(clientID, thirdPartyOutgoingMessage{
 			ConversationID: conversationID, ReplyToMessageID: replyTo,
@@ -2365,9 +2407,11 @@ func thirdPartyReplyCorrelation(reply GatewayReplyPayload) string {
 	if sourceID := strings.TrimSpace(reply.SourceMessageID); sourceID != "" {
 		return sourceID
 	}
-	for _, key := range []string{"replyTo", "replyToMessageId", "source_message_id", "sourceMessageId", "sourceMessageID"} {
-		if value, ok := reply.Extra[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
+	for _, source := range []map[string]any{reply.Extra, reply.Metadata} {
+		for _, key := range []string{"replyTo", "replyToMessageId", "source_message_id", "sourceMessageId", "sourceMessageID"} {
+			if value, ok := source[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
 		}
 	}
 	return ""
@@ -2879,18 +2923,24 @@ func (a *App) SendHardwareDeviceVolume(clientID string, volume int) error {
 		return fmt.Errorf("hardware volume must be between 0 and 100")
 	}
 	a.imGatewaySyncMu.Lock()
-	defer a.imGatewaySyncMu.Unlock()
 	cfg, err := a.requireHardwareEnabled()
 	if err != nil {
+		a.imGatewaySyncMu.Unlock()
 		return err
 	}
 	if cfg.IsThirdPartyGatewayLocalMode() {
+		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("per-device volume is managed by Hub mode")
 	}
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
+		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("Hub is not connected")
 	}
+	// The Hub correlates this request by client ID. Release the gateway-wide
+	// lifecycle lock before waiting for its response so a slow volume update on
+	// one device cannot stall independent controls on another device.
+	a.imGatewaySyncMu.Unlock()
 	return hub.SendDeviceGatewayHardwareConfigForClient(clientID, map[string]any{"volume": volume})
 }
 
@@ -2899,22 +2949,28 @@ func (a *App) SendHardwareDeviceVolume(clientID string, volume int) error {
 // behavior and prevents stale UI clients from creating accidental overrides.
 func (a *App) SendHardwareDevicePetProfile(clientID, skin string) error {
 	a.imGatewaySyncMu.Lock()
-	defer a.imGatewaySyncMu.Unlock()
 	cfg, err := a.requireHardwareEnabled()
 	if err != nil {
+		a.imGatewaySyncMu.Unlock()
 		return err
 	}
 	if !cfg.HardwareAllowCustomPets {
+		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("enable individual hardware pets before selecting a device pet")
 	}
 	if cfg.IsThirdPartyGatewayLocalMode() {
+		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("per-device pets are managed by Hub mode")
 	}
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
+		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("Hub is not connected")
 	}
 	profile := a.devicePetProfileForSkin(cfg, skin)
+	// The selected profile is addressed to one binding and Hub persists it for
+	// reconnects. Do not serialize other hardware while this confirmation waits.
+	a.imGatewaySyncMu.Unlock()
 	return hub.SendDeviceGatewayPetProfileForClient(clientID, profile)
 }
 
@@ -3210,40 +3266,136 @@ func (a *App) ListThirdPartyHardwareDevices() ([]HardwareDeviceBinding, error) {
 // with the fixed five-device capacity for this GUI.
 func (a *App) ListThirdPartyHardwareDeviceBindings() (HardwareDeviceBindings, error) {
 	a.imGatewaySyncMu.Lock()
-	defer a.imGatewaySyncMu.Unlock()
-
 	cfg, err := a.requireHardwareEnabled()
 	if err != nil {
+		a.imGatewaySyncMu.Unlock()
 		return HardwareDeviceBindings{}, err
 	}
 	if cfg.IsThirdPartyGatewayLocalMode() {
+		a.imGatewaySyncMu.Unlock()
 		return HardwareDeviceBindings{Devices: []HardwareDeviceBinding{}, MaxDevices: 5}, nil
 	}
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
+		a.imGatewaySyncMu.Unlock()
 		return HardwareDeviceBindings{}, fmt.Errorf("Hub is not connected")
 	}
-	return hub.ListHardwareDeviceBindings()
+	// Listing waits for a correlated Hub response (up to five seconds). Do not
+	// hold the gateway-wide lock over that network wait: it would make one slow
+	// refresh block independent per-device volume, playback, and unbind actions.
+	// The captured Hub client remains safe for the duration of the request.
+	a.imGatewaySyncMu.Unlock()
+	bindings, err := hub.ListHardwareDeviceBindings()
+	if err != nil {
+		return HardwareDeviceBindings{}, err
+	}
+	aliases := cfg.HardwareDeviceAliases
+	if len(aliases) == 0 {
+		return bindings, nil
+	}
+	for index := range bindings.Devices {
+		if alias := strings.TrimSpace(aliases[bindings.Devices[index].ClientID]); alias != "" {
+			bindings.Devices[index].ClientName = alias
+		}
+	}
+	return bindings, nil
+}
+
+// SetThirdPartyHardwareDeviceAlias saves a local-only label for one hardware
+// binding. The Hub continues to own the actual device name and credentials.
+func (a *App) SetThirdPartyHardwareDeviceAlias(clientID, alias string) error {
+	clientID = strings.TrimSpace(clientID)
+	alias = strings.TrimSpace(alias)
+	if clientID == "" {
+		return fmt.Errorf("hardware client ID is required")
+	}
+	if alias == "" {
+		return fmt.Errorf("hardware display name cannot be empty")
+	}
+	if len([]rune(alias)) > 48 {
+		return fmt.Errorf("hardware display name must be at most 48 characters")
+	}
+	// Check and write under the same config transaction. A separate LoadConfig
+	// followed by PatchConfig leaves a window where simultaneous renames can
+	// both pass validation and produce duplicate local labels.
+	duplicate := false
+	_, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		for id, existing := range cfg.HardwareDeviceAliases {
+			if id != clientID && strings.EqualFold(strings.TrimSpace(existing), alias) {
+				duplicate = true
+				return false
+			}
+		}
+		next := make(map[string]string, len(cfg.HardwareDeviceAliases)+1)
+		for id, name := range cfg.HardwareDeviceAliases {
+			if id != clientID && strings.TrimSpace(name) != "" {
+				next[id] = strings.TrimSpace(name)
+			}
+		}
+		next[clientID] = alias
+		if len(cfg.HardwareDeviceAliases) == len(next) && strings.TrimSpace(cfg.HardwareDeviceAliases[clientID]) == alias {
+			return false
+		}
+		cfg.HardwareDeviceAliases = next
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if duplicate {
+		return fmt.Errorf("hardware display name must be unique")
+	}
+	return nil
 }
 
 // DeleteThirdPartyHardwareDevice removes a durable Hub-owned hardware
 // binding. The Hub remains the authority for ownership and credentials.
 func (a *App) DeleteThirdPartyHardwareDevice(clientID string) error {
 	a.imGatewaySyncMu.Lock()
-	defer a.imGatewaySyncMu.Unlock()
-
 	cfg, err := a.requireHardwareEnabled()
 	if err != nil {
+		a.imGatewaySyncMu.Unlock()
 		return err
 	}
 	if cfg.IsThirdPartyGatewayLocalMode() {
+		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("durable hardware bindings are managed by Hub mode")
 	}
 	hub := a.hubClient()
 	if hub == nil || !hub.IsConnected() {
+		a.imGatewaySyncMu.Unlock()
 		return fmt.Errorf("Hub is not connected")
 	}
-	return hub.DeleteHardwareDevice(clientID)
+	// Hub deletion waits for a correlated response. Do not hold the gateway-wide
+	// lock while it waits: an unlink on one device must not pause independent
+	// volume, playback, pet, or rename operations on the others.
+	a.imGatewaySyncMu.Unlock()
+	if err := hub.DeleteHardwareDevice(clientID); err != nil {
+		return err
+	}
+	// Hub deletion is authoritative. Tear down any private local or Hub runtime
+	// after that confirmation so an unbound device cannot retain an Agent,
+	// conversation, memory store, or connection pool while routing changes.
+	a.removeHardwareAgentRuntime(clientID)
+	// The durable Hub binding is gone. Remove its local-only label as best
+	// effort so a later pairing with the same generated client ID does not
+	// inherit an obsolete nickname. A failed cleanup must not make an already
+	// completed unlink look like it failed.
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		if len(cfg.HardwareDeviceAliases) == 0 {
+			return
+		}
+		next := make(map[string]string, len(cfg.HardwareDeviceAliases)-1)
+		for id, alias := range cfg.HardwareDeviceAliases {
+			if id != clientID {
+				next[id] = alias
+			}
+		}
+		cfg.HardwareDeviceAliases = next
+	}); err != nil {
+		log.Printf("[hardware-alias] remove stale alias for %s: %v", clientID, err)
+	}
+	return nil
 }
 
 func (m *thirdPartyGatewayManager) removeRemotePairingReservation(code string) {

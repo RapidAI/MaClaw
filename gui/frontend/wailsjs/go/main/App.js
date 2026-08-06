@@ -1586,6 +1586,10 @@ export function SendHardwareDevicePetProfile(arg1, arg2) {
   return window['go']['main']['App']['SendHardwareDevicePetProfile'](arg1, arg2);
 }
 
+export function SetThirdPartyHardwareDeviceAlias(arg1, arg2) {
+  return window['go']['main']['App']['SetThirdPartyHardwareDeviceAlias'](arg1, arg2);
+}
+
 export function SetHardwareAllowCustomPets(arg1) {
   return window['go']['main']['App']['SetHardwareAllowCustomPets'](arg1);
 }

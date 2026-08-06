@@ -127,7 +127,7 @@ static const nv3023_lcd_init_cmd_t s_fangtang_nv3023_init_cmds[] = {
 // onset.
 #define COMMAND_CAPTURE_SILENCE_MS 1500
 #define COMMAND_CAPTURE_START_CONFIRM_MS 160
-#define COMMAND_CAPTURE_START_LEVEL 75
+#define COMMAND_CAPTURE_START_LEVEL 45
 #define COMMAND_CAPTURE_SILENCE_FLOOR 55
 #define COMMAND_CAPTURE_SILENCE_MARGIN 35
 #define COMMAND_CAPTURE_SILENCE_CEILING 180
@@ -150,8 +150,29 @@ static const char *const s_wake_word_phonetics[] = {
     "ma ga long",
     "ma ke long",
 };
+// Bread Compact's direct I2S microphone is quieter at normal speaking
+// distance than EchoEar's codec path. A small threshold reduction improves
+// recall without making the short product name excessively eager in noise.
+// Both compact boards benefit from the modest recall increase. Keep the
+// conditional explicit so future board variants sharing this port do not
+// silently inherit the tuned threshold.
+#if CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD || CONFIG_MACLAW_BOARD_FANGTANG_4G
+#define WAKE_WORD_DETECTION_THRESHOLD 0.20f
+#else
 #define WAKE_WORD_DETECTION_THRESHOLD 0.24f
+#endif
 #define WAKE_WORD_COOLDOWN_US (2LL * 1000 * 1000)
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+// MultiNet7 on the current ESP-SR build reports that its runtime threshold is
+// not adjustable. Give Fangtang's quieter MEMS microphone a modest wake-only
+// gain instead. Foreground recordings retain their established level, and
+// saturation below protects the recognizer from close-range speech clipping.
+#define WAKE_WORD_INPUT_GAIN_NUM 3
+#define WAKE_WORD_INPUT_GAIN_DEN 2
+#else
+#define WAKE_WORD_INPUT_GAIN_NUM 1
+#define WAKE_WORD_INPUT_GAIN_DEN 1
+#endif
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
 /* The real panel exposes a 240x240 viewport at GRAM rows 80..319. One-row
  * transfers exactly match the independently verified display test. */
@@ -3676,10 +3697,18 @@ static void wake_word_task(void *arg) {
         }
 
         size_t samples = received / sizeof(*raw);
+        int32_t input_peak = 0;
         int32_t peak = 0;
         uint64_t energy = 0;
         for (int i = 0; i < chunk_samples; ++i) {
-            int16_t sample = i < (int)samples ? (int16_t)(raw[i] >> 14) : 0;
+            int32_t input = i < (int)samples ? raw[i] >> 14 : 0;
+            int32_t input_magnitude = input < 0 ? -input : input;
+            if (input_magnitude > input_peak) input_peak = input_magnitude;
+            int32_t amplified = input * WAKE_WORD_INPUT_GAIN_NUM /
+                                WAKE_WORD_INPUT_GAIN_DEN;
+            if (amplified > INT16_MAX) amplified = INT16_MAX;
+            if (amplified < INT16_MIN) amplified = INT16_MIN;
+            int16_t sample = (int16_t)amplified;
             mono[i] = sample;
             int32_t magnitude = sample < 0 ? -(int32_t)sample : sample;
             if (magnitude > peak) peak = magnitude;
@@ -3688,9 +3717,11 @@ static void wake_word_task(void *arg) {
         int64_t diagnostic_now_us = esp_timer_get_time();
         if (diagnostic_now_us - last_audio_diagnostic_us >= 2000000) {
             last_audio_diagnostic_us = diagnostic_now_us;
-            ESP_LOGI(TAG, "offline wake mic: samples=%u peak=%ld mean=%lu shift=14",
-                     (unsigned)samples, (long)peak,
-                     (unsigned long)(energy / (uint32_t)chunk_samples));
+            ESP_LOGI(TAG,
+                     "offline wake mic: samples=%u input_peak=%ld peak=%ld mean=%lu shift=14 gain=%.2f",
+                     (unsigned)samples, (long)input_peak, (long)peak,
+                     (unsigned long)(energy / (uint32_t)chunk_samples),
+                     (double)WAKE_WORD_INPUT_GAIN_NUM / WAKE_WORD_INPUT_GAIN_DEN);
         }
 
         esp_mn_state_t state = multinet->detect(model_data, mono);

@@ -99,8 +99,8 @@
 #define GATEWAY_RETRY_MAX_MS 60000
 // Once MultiNet is listening, give the optional boot greeting only a short
 // grace period. Hardware/profile messages may precede it in the outgoing
-// queue; they must not keep a ready microphone unavailable for another 15 s.
-#define STARTUP_WELCOME_TIMEOUT_MS 8000
+// queue; they must not keep activation input blocked for most of the boot.
+#define STARTUP_WELCOME_TIMEOUT_MS 2500
 #define CLOCK_SYNC_WAIT_MS 12000
 #define CLOCK_SYNC_RETRY_MS 30000
 #define COMMAND_RESULT_PROGRESS_MS 15000
@@ -206,6 +206,7 @@ static TaskHandle_t s_interaction_task;
 static TaskHandle_t s_meeting_task;
 static TaskHandle_t s_meeting_resume_supervisor_task;
 static volatile bool s_wake_restart_scheduled;
+static volatile bool s_wake_restart_after_startup;
 static TaskHandle_t s_meeting_capability_refresh_task;
 static bool s_meeting_task_running;
 static bool s_pairing_recovery_portal;
@@ -213,6 +214,7 @@ static TaskHandle_t s_ambient_task;
 static TaskHandle_t s_clock_sync_task;
 static TaskHandle_t s_gateway_poll_task;
 static TaskHandle_t s_startup_pet_asset_task;
+static SemaphoreHandle_t s_pet_cache_flash_mutex;
 static TaskHandle_t s_setup_restart_task;
 static SemaphoreHandle_t s_startup_welcome_done;
 static volatile bool s_startup_welcome_gate_active;
@@ -271,6 +273,10 @@ static char s_gateway_poll_http_origin[URL_CAPACITY];
 static SemaphoreHandle_t s_gateway_asset_http_mutex;
 static esp_http_client_handle_t s_gateway_asset_http_client;
 static char s_gateway_asset_http_origin[URL_CAPACITY];
+// Exactly one pet pack may own the renderer at a time.  A cold-start pack is
+// deliberately cancellable, but once it starts touching the display its final
+// install/cache sequence must not race an online pet_profile update.
+static SemaphoreHandle_t s_pet_asset_apply_mutex;
 // Protects the foreground client pointer through cancel/cleanup. The general
 // HTTP mutex cannot serve this purpose because it remains owned for the whole
 // request and cancellation must run concurrently with esp_http_client_perform.
@@ -1347,9 +1353,12 @@ typedef struct {
 // Pet artwork is optional startup decoration. Keep its small descriptor here
 // so the authenticated handshake can release TLS/JSON memory and initialize
 // ESP-SR before any media download or SPIFFS write takes place.
-static bool s_startup_pet_asset_pending;
+// Written by the gateway poll task to pre-empt the optional cold-start pack,
+// then observed by the startup worker between frame downloads/installs.
+static volatile bool s_startup_pet_asset_pending;
 static bool s_startup_pet_asset_present;
 static pet_asset_ref_t *s_startup_pet_asset_ref;
+static char s_startup_pet_asset_skin[32];
 static char s_loaded_pet_asset_revision[40];
 static int s_loaded_pet_asset_frame_count;
 
@@ -1643,60 +1652,105 @@ static esp_err_t cache_pet_asset_first_frame(const pet_asset_ref_t *ref,
     return cache_pet_asset(&preview, frames);
 }
 
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+static void clear_pet_asset_cache_direct(void);
+
+typedef enum {
+    PET_CACHE_FIRST_FRAME,
+    PET_CACHE_CLEAR,
+} pet_cache_operation_t;
+
 typedef struct {
+    pet_cache_operation_t operation;
     pet_asset_ref_t preview;
     uint8_t *frames[PET_ASSET_MAX_FRAMES];
     SemaphoreHandle_t complete;
     esp_err_t result;
-} fangtang_pet_cache_job_t;
+} pet_cache_job_t;
 
-static void fangtang_pet_cache_task(void *arg) {
-    fangtang_pet_cache_job_t *job = (fangtang_pet_cache_job_t *)arg;
-    job->result = cache_pet_asset_first_frame(&job->preview, job->frames);
+static void pet_cache_task(void *arg) {
+    pet_cache_job_t *job = (pet_cache_job_t *)arg;
+    if (job->operation == PET_CACHE_CLEAR) {
+        clear_pet_asset_cache_direct();
+        job->result = ESP_OK;
+    } else {
+        job->result = cache_pet_asset_first_frame(&job->preview, job->frames);
+    }
     xSemaphoreGive(job->complete);
-    vTaskDelete(NULL);
+    // This worker is explicitly created with an internal-RAM stack because
+    // SPIFFS temporarily disables the shared flash/PSRAM cache. Pair the
+    // allocator with its matching deleter; the ordinary FreeRTOS deleter can
+    // pick the external heap on this target and reintroduce the same fault at
+    // task teardown.
+    vTaskDeleteWithCaps(NULL);
 }
 
-static esp_err_t cache_fangtang_startup_pet_first_frame(
+static esp_err_t run_pet_cache_operation(
+    pet_cache_operation_t operation,
     const pet_asset_ref_t *ref,
     uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
-    if (!ref || !frames || !frames[0]) return ESP_ERR_INVALID_ARG;
+    if (operation == PET_CACHE_FIRST_FRAME &&
+        (!ref || !frames || !frames[0])) return ESP_ERR_INVALID_ARG;
+    if (!s_pet_cache_flash_mutex) return ESP_ERR_INVALID_STATE;
     /* SPIFFS/esp_flash disables the shared flash/PSRAM cache while programming.
-     * The startup media worker deliberately has a PSRAM stack, so it must not
-     * execute even the first unlink/fopen itself. Keep the descriptor, wait
-     * state and complete cache call on internal RAM while the large RGB565A8
-     * source frame remains borrowed from the waiting owner. */
-    fangtang_pet_cache_job_t *job = heap_caps_calloc(
+     * Both startup media and gateway polling deliberately use PSRAM stacks, so
+     * neither may execute unlink/fopen itself. Serialize all pet-cache flash
+     * mutations and run them on a short-lived internal-stack worker while any
+     * large RGB565A8 frame remains borrowed from the waiting owner. */
+    if (xSemaphoreTake(s_pet_cache_flash_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_FAIL;
+    }
+    pet_cache_job_t *job = heap_caps_calloc(
         1, sizeof(*job), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!job) return ESP_ERR_NO_MEM;
-    job->preview = *ref;
-    job->preview.frame_count = 1;
-    job->frames[0] = frames[0];
+    if (!job) {
+        xSemaphoreGive(s_pet_cache_flash_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    job->operation = operation;
+    if (operation == PET_CACHE_FIRST_FRAME) {
+        job->preview = *ref;
+        job->preview.frame_count = 1;
+        job->frames[0] = frames[0];
+    }
     job->complete = xSemaphoreCreateBinary();
     if (!job->complete) {
         heap_caps_free(job);
+        xSemaphoreGive(s_pet_cache_flash_mutex);
         return ESP_ERR_NO_MEM;
     }
     job->result = ESP_FAIL;
     TaskHandle_t task = NULL;
-    BaseType_t created = xTaskCreatePinnedToCore(
-        fangtang_pet_cache_task, "fangtang_pet_cache", 8192,
-        job, 3, &task, 1);
+    // Do not let the generic task allocator place this stack in PSRAM.  Even
+    // an unlink() reads stack-resident libc/SPIFFS state while flash cache is
+    // disabled, which manifests as a cache-disabled assert and software reset
+    // during an online pet switch.
+    BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
+        pet_cache_task, "maclaw_pet_cache", 8192,
+        job, 3, &task, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (created != pdPASS) {
         vSemaphoreDelete(job->complete);
         heap_caps_free(job);
+        xSemaphoreGive(s_pet_cache_flash_mutex);
         return ESP_ERR_NO_MEM;
     }
     xSemaphoreTake(job->complete, portMAX_DELAY);
     esp_err_t result = job->result;
     vSemaphoreDelete(job->complete);
     heap_caps_free(job);
+    xSemaphoreGive(s_pet_cache_flash_mutex);
     return result;
 }
-#endif
 
-static void clear_pet_asset_cache(void) {
+static esp_err_t cache_pet_first_frame_safe(
+    const pet_asset_ref_t *ref,
+    uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
+    return run_pet_cache_operation(PET_CACHE_FIRST_FRAME, ref, frames);
+}
+
+static esp_err_t clear_pet_asset_cache_safe(void) {
+    return run_pet_cache_operation(PET_CACHE_CLEAR, NULL, NULL);
+}
+
+static void clear_pet_asset_cache_direct(void) {
     unlink(PET_ASSET_CACHE_META_PATH);
     unlink(PET_ASSET_CACHE_META_TMP_PATH);
     char path[64];
@@ -1715,13 +1769,23 @@ static void clear_pet_asset_cache(void) {
     }
 }
 
+static esp_err_t clear_pet_asset_cache(void) {
+    return clear_pet_asset_cache_safe();
+}
+
 static esp_err_t clear_applied_pet_asset(void) {
+    if (!s_pet_asset_apply_mutex ||
+        xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
     esp_err_t err = board_port_set_pet_asset(NULL, 0, 0, 0, 0);
     if (err == ESP_OK) {
         s_loaded_pet_asset_revision[0] = '\0';
         s_loaded_pet_asset_frame_count = 0;
-        clear_pet_asset_cache();
+        esp_err_t cache_err = clear_pet_asset_cache();
+        if (cache_err != ESP_OK) err = cache_err;
     }
+    xSemaphoreGive(s_pet_asset_apply_mutex);
     return err;
 }
 
@@ -1751,7 +1815,7 @@ static bool load_cached_pet_asset(void) {
     if (!valid || ref.width < 32 || ref.width > PET_ASSET_MAX_DIMENSION ||
         ref.height < 32 || ref.height > PET_ASSET_MAX_DIMENSION ||
         ref.frame_count < 1 || ref.frame_count > PET_ASSET_MAX_FRAMES) {
-        clear_pet_asset_cache();
+        (void)clear_pet_asset_cache();
         return false;
     }
     size_t frame_bytes = (size_t)ref.width * (size_t)ref.height * PET_ASSET_BYTES_PER_PIXEL;
@@ -1778,6 +1842,12 @@ static bool load_cached_pet_asset(void) {
     bool loaded = true;
     for (int i = 0; i < ref.frame_count; ++i) loaded = loaded && frames[i] != NULL;
     if (loaded) {
+        if (!s_pet_asset_apply_mutex ||
+            xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
+            loaded = false;
+        }
+    }
+    if (loaded) {
         int installed_frames = 0, installed_frame_ms = 0;
         loaded = install_pet_asset_with_fallback(&ref, frames, &installed_frames,
                                                  &installed_frame_ms) == ESP_OK;
@@ -1788,9 +1858,10 @@ static bool load_cached_pet_asset(void) {
             ESP_LOGI(TAG, "cached pet asset applied: revision=%s frames=%d/%d frame_ms=%d",
                      revision, installed_frames, ref.frame_count, installed_frame_ms);
         }
+        xSemaphoreGive(s_pet_asset_apply_mutex);
     }
     free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
-    if (!loaded) clear_pet_asset_cache();
+    if (!loaded) (void)clear_pet_asset_cache();
     return loaded;
 }
 
@@ -1837,8 +1908,28 @@ static esp_err_t install_pet_asset_first_frame(const pet_asset_ref_t *ref,
 static esp_err_t apply_pet_asset_ref(cJSON *object) {
     pet_asset_ref_t ref;
     if (!parse_pet_asset_ref(object, &ref)) return ESP_ERR_INVALID_ARG;
+    // A pet_profile is durable latest-wins state. Hub can re-deliver its
+    // still-unacknowledged control message after a poll retry, so do not fetch
+    // and scale the exact revision again. More importantly, the startup
+    // installer may already have published this full pack before its delayed
+    // mirror reaches the outgoing queue. Bread treats that mirror as applied;
+    // EchoEar must do the same instead of spending another eight TLS downloads
+    // while the new pet is already on screen.
+    if (s_loaded_pet_asset_revision[0] &&
+        !strcmp(s_loaded_pet_asset_revision, ref.revision) &&
+        s_loaded_pet_asset_frame_count >= ref.frame_count) {
+        ESP_LOGI(TAG, "GUI pet asset already applied: revision=%s frames=%d/%d",
+                 ref.revision, s_loaded_pet_asset_frame_count, ref.frame_count);
+        return ESP_OK;
+    }
     uint8_t *frames[PET_ASSET_MAX_FRAMES] = {0};
     esp_err_t err = download_pet_asset_frames(&ref, frames, false);
+    if (err == ESP_OK) {
+        if (!s_pet_asset_apply_mutex ||
+            xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
+            err = ESP_ERR_INVALID_STATE;
+        }
+    }
     if (err == ESP_OK) {
         int installed_frames = 0, installed_frame_ms = 0;
         err = install_pet_asset_with_fallback(&ref, frames, &installed_frames,
@@ -1847,12 +1938,13 @@ static esp_err_t apply_pet_asset_ref(cJSON *object) {
             strlcpy(s_loaded_pet_asset_revision, ref.revision,
                     sizeof(s_loaded_pet_asset_revision));
             s_loaded_pet_asset_frame_count = ref.frame_count;
-            esp_err_t cache_err = cache_pet_asset_first_frame(&ref, frames);
+            esp_err_t cache_err = cache_pet_first_frame_safe(&ref, frames);
             if (cache_err != ESP_OK) ESP_LOGW(TAG, "pet asset cache failed: %s", esp_err_to_name(cache_err));
             ESP_LOGI(TAG, "GUI pet asset applied: revision=%s frames=%d/%d frame_ms=%d size=%dx%d",
                      ref.revision, installed_frames, ref.frame_count, installed_frame_ms,
                      ref.width, ref.height);
         }
+        xSemaphoreGive(s_pet_asset_apply_mutex);
     }
     free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
     return err;
@@ -1904,6 +1996,18 @@ static esp_err_t apply_deferred_pet_asset(void) {
         }
     }
     if (err == ESP_OK) {
+        // The live GUI choice may have arrived after the last frame download.
+        // Re-check after acquiring renderer ownership so this optional startup
+        // transaction can never publish an older pack over a newer selection.
+        if (!s_pet_asset_apply_mutex ||
+            xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
+            err = ESP_ERR_INVALID_STATE;
+        } else if (!s_startup_pet_asset_pending) {
+            xSemaphoreGive(s_pet_asset_apply_mutex);
+            err = ESP_ERR_INVALID_STATE;
+        }
+    }
+    if (err == ESP_OK) {
         ESP_LOGI(TAG, "startup pet frames downloaded; installing first frame");
         // Put a real pet on the standby surface immediately. Scaling one frame
         // is quick; the remaining seven animated frames can be installed after
@@ -1930,23 +2034,16 @@ static esp_err_t apply_deferred_pet_asset(void) {
             // restore a revision that was never actually usable. EchoEar runs
             // this transfer worker on a PSRAM stack; SPIFFS programming turns
             // off the shared cache and cannot execute safely on that stack.
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-            // Fangtang still persists the same first-frame cache as Bread, but
-            // delegates the flash transaction to a short-lived internal-stack
-            // worker and waits before releasing the borrowed source frame.
-            esp_err_t cache_err = cache_fangtang_startup_pet_first_frame(
+            // Flash/VFS work must run from an internal-stack task. The startup
+            // installer itself is PSRAM-backed on EchoEar and Fangtang.
+            esp_err_t cache_err = cache_pet_first_frame_safe(
                 s_startup_pet_asset_ref, frames);
             if (cache_err != ESP_OK) {
                 ESP_LOGW(TAG, "deferred pet preview cache failed: %s",
                          esp_err_to_name(cache_err));
             }
-#elif !CONFIG_MACLAW_BOARD_ECHOEAR_2ST
-            esp_err_t cache_err = cache_pet_asset_first_frame(s_startup_pet_asset_ref, frames);
-            if (cache_err != ESP_OK) {
-                ESP_LOGW(TAG, "deferred pet preview cache failed: %s", esp_err_to_name(cache_err));
-            }
-#endif
         }
+        xSemaphoreGive(s_pet_asset_apply_mutex);
     }
     // The display port retains its own scaled PSRAM copies.  The source HTTP
     // buffers are normally released here, but on EchoEar that deallocation
@@ -1954,11 +2051,7 @@ static esp_err_t apply_deferred_pet_asset(void) {
     // immediately after the visible pet has been installed. Retain the tiny
     // one-shot source set for this boot; it is bounded (8 × 192 KiB) and avoids
     // a restart that would otherwise erase the successful standby transition.
-#if CONFIG_MACLAW_BOARD_ECHOEAR_2ST
-    ESP_LOGI(TAG, "EchoEar retained startup pet source buffers until reboot");
-#else
     free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
-#endif
     // Keep pending true for the entire download/install/cache transaction so
     // a queued pet_profile mirror is ACKed without starting a competing copy.
     s_startup_pet_asset_pending = false;
@@ -1968,36 +2061,12 @@ static esp_err_t apply_deferred_pet_asset(void) {
 static void startup_pet_asset_task(void *arg) {
     (void)arg;
     int64_t started_us = esp_timer_get_time();
-    // EchoEar's 8 MB PSRAM is sufficient for the scaled animation, but its
-    // concurrent ESP-SR/TLS start-up peak can leave too little contiguous
-    // internal heap for mbedTLS AES.  The verified preview is already on the
-    // standby screen at this point, so temporarily release MultiNet while the
-    // optional full pack is fetched.  This mirrors Bread's ownership rule:
-    // one high-memory foreground/media operation at a time.  A direct touch
-    // still starts capture while the recognizer is down; it is restarted
-    // immediately after the install transaction.
-    bool wake_was_stopped = false;
-#if CONFIG_MACLAW_BOARD_ECHOEAR_2ST
-    esp_err_t stop_err = board_port_stop_wake_word();
-    wake_was_stopped = stop_err == ESP_OK;
-    if (stop_err != ESP_OK && stop_err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "startup pet animation could not pause offline wake: %s",
-                 esp_err_to_name(stop_err));
-    }
-#endif
+    // Offline wake is a core standby capability; an optional pet download must
+    // never leave a visibly ready device unable to hear its wake phrase. Keep
+    // MultiNet listening throughout this low-priority transaction. HTTP data
+    // and this worker's stack live in PSRAM, while SPIFFS mutation is delegated
+    // to the internal-stack cache worker below.
     esp_err_t err = apply_deferred_pet_asset();
-#if CONFIG_MACLAW_BOARD_ECHOEAR_2ST
-    if (wake_was_stopped && !s_setup_portal_active) {
-        esp_err_t wake_err = board_port_start_wake_word(on_wake_word, NULL);
-        if (wake_err == ESP_OK) {
-            ESP_LOGI(TAG, "offline wake restored after startup pet animation install");
-        } else {
-            ESP_LOGW(TAG, "offline wake restore after startup pet animation failed: %s",
-                     esp_err_to_name(wake_err));
-            schedule_wake_restart();
-        }
-    }
-#endif
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "deferred startup pet asset ignored: %s", esp_err_to_name(err));
     }
@@ -2021,8 +2090,15 @@ static void apply_deferred_startup_pet_asset(void) {
     // wake model and long-poll worker are live, EchoEar no longer has an 8 KiB
     // contiguous internal block, so use the PSRAM-backed task-stack path used
     // by the other deferred workers instead of silently dropping the asset.
+    // HTTPS ECDH is synchronous inside esp_http_client_perform().  The startup
+    // animation transaction is optional after the cached/first-frame preview
+    // has made standby usable, so it must not outrank IDLE1: a cold TLS
+    // handshake can otherwise occupy CPU1 for more than the task-WDT window.
+    // At idle priority FreeRTOS time-slices this worker with IDLE1; downloads
+    // still complete whenever the device is otherwise idle, without trading
+    // away the first-frame preview or the full-resolution animation install.
     BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
-        startup_pet_asset_task, "maclaw_pet_startup", 8192, NULL, 4,
+        startup_pet_asset_task, "maclaw_pet_startup", 8192, NULL, 0,
         &s_startup_pet_asset_task, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (created != pdPASS) {
         s_startup_pet_asset_task = NULL;
@@ -2452,14 +2528,16 @@ static bool start_gateway_ready_tasks(void) {
     // the startup surface, although recognition itself is already hot.
     taskENTER_CRITICAL(&s_task_state_lock);
     s_startup_sequence_complete = true;
+    bool restart_after_startup = s_wake_restart_after_startup;
+    s_wake_restart_after_startup = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
     // A phrase can be detected while the optional Welcome audio is still
-    // authoritative. EchoEar deliberately unloads MultiNet before delivering
-    // that callback so the foreground task can get contiguous internal RAM;
-    // re-arm the listener here even when no command was admitted. If it is
-    // already listening this is a no-op; if its cleanup is still in flight the
-    // bounded restart worker retries after it releases the model.
-    schedule_wake_restart();
+    // authoritative. In that case the one-shot EchoEar recognizer tears itself
+    // down and the callback below records a deferred restart. Avoid spawning a
+    // restart worker on every normal boot: calling start_wake_word while the
+    // recognizer is already ready only waits and logs a false "restarted"
+    // transition, and can overlap the optional pet-asset memory transaction.
+    if (!wake_ready || restart_after_startup) schedule_wake_restart();
     firmware_identity_set_service_ready(true);
     board_port_set_service_ready(true);
 #if CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD || CONFIG_MACLAW_BOARD_FANGTANG_4G
@@ -2471,7 +2549,6 @@ static bool start_gateway_ready_tasks(void) {
                                  wake_ready ? "点屏说话 双点会议"
                                             : "唤醒加载失败，可点屏说话");
 #endif
-    if (!wake_ready) schedule_wake_restart();
     return true;
 }
 
@@ -3205,6 +3282,8 @@ static esp_err_t gateway_handshake(bool cold_start) {
         s_startup_pet_asset_present = s_startup_pet_asset_ref &&
                                       cJSON_IsObject(pet_asset) &&
                                       parse_pet_asset_ref(pet_asset, s_startup_pet_asset_ref);
+        strlcpy(s_startup_pet_asset_skin, skin ? skin : "",
+                sizeof(s_startup_pet_asset_skin));
         if (cJSON_IsObject(pet_asset) && !s_startup_pet_asset_present) {
             ESP_LOGW(TAG, "startup pet asset descriptor is invalid; cached asset will be cleared after wake readiness");
         }
@@ -3812,11 +3891,18 @@ static esp_err_t poll_reply(void) {
              * It is already being installed after Welcome on the startup task;
              * downloading the queued mirror here races it, doubles PSRAM usage,
              * and can reduce both attempts to the native robot fallback. */
+            // The cold-start worker owns only the descriptor captured from
+            // the handshake. A later GUI selection must supersede it even if
+            // Hub happened to reuse the same content revision under a new
+            // profile message. Comparing the revision alone made that new
+            // selection get ACKed as "deferred" while the old startup worker
+            // was still the only transaction allowed to publish pixels.
             bool defer_to_startup_installer = s_startup_pet_asset_pending &&
                 s_startup_pet_asset_ref && cJSON_IsObject(pet_asset) &&
                 !strcmp(s_startup_pet_asset_ref->revision,
                         json_string(pet_asset, "revision") ?
-                            json_string(pet_asset, "revision") : "");
+                            json_string(pet_asset, "revision") : "") &&
+                (!skin || !strcmp(skin, s_startup_pet_asset_skin));
             pet_profile_handled = true;
             if (defer_to_startup_installer) {
                 ESP_LOGI(TAG, "startup pet_profile asset deferred to handshake installer");
@@ -3917,6 +4003,16 @@ static esp_err_t poll_reply(void) {
 					} else if (active_reply) {
 						TaskHandle_t waiter = begin_active_command_reply();
 						if (waiter) {
+							// A terminal image can be followed by the same correlated
+							// multipart TTS stream as a text result.  Arm that hand-off
+							// before waking the interaction task: completing the image
+							// clears the active reply correlation, and without this
+							// transaction a later audio part would be classified as an
+							// orphan and acknowledged silently.
+							unsigned pending_speech_parts = outgoing_pending_speech_parts(item);
+							if (pending_speech_parts > 0) {
+								remember_result_speech_reply(reply_to, pending_speech_parts);
+							}
 							complete_active_command_image_reply(waiter, "码卡龙", caption,
 									(const uint16_t *)pixels, (size_t)image_width,
 									(size_t)image_height);
@@ -3984,6 +4080,16 @@ static esp_err_t poll_reply(void) {
                 // an active command unless replyTo identifies that command.
 				if (!command_display_active()) {
 					board_port_show_response("码卡龙", text);
+					text_handled = true;
+				} else if (final && (!reply_to || !reply_to[0])) {
+					// Older Hub/GUI builds could enqueue a terminal hardware result
+					// without its command correlation. Keeping that item pending pins
+					// the shared page cursor, so the correctly correlated result behind
+					// it can never arrive. Consume the malformed terminal frame while
+					// preserving the active command: it is neither displayed nor used
+					// to complete/cancel the foreground transaction.
+					ESP_LOGW(TAG, "discarded uncorrelated terminal text during active command: id=%s",
+					         id && id[0] ? id : "<none>");
 					text_handled = true;
 				} else {
                     ESP_LOGI(TAG, "deferred unrelated text during active command: replyTo=%s",
@@ -4789,6 +4895,7 @@ static void meeting_task(void *arg) {
         uint64_t total_samples = 0;
         s_meeting_elapsed_seconds = 0;
         uint32_t last_elapsed = UINT32_MAX;
+        bool last_paused = false;
         meeting_set_state(MEETING_RECORDING);
         pet("listening");
         board_port_set_recording_mode(true);
@@ -4797,13 +4904,17 @@ static void meeting_task(void *arg) {
             size_t count = 0;
             uint16_t level = 0;
             esp_err_t capture = board_port_audio_stream_read(samples, 512, &count, &level);
-            if (capture == ESP_OK && count > 0) board_port_push_recording_pcm(samples, count);
             if (capture != ESP_OK) {
                 meeting_set_state(MEETING_ERROR);
                 break;
             }
             bool paused = s_meeting_state == MEETING_PAUSED;
             if (!paused && count > 0) {
+                // A paused meeting keeps the I2S reader alive to retain bus
+                // ownership, but its samples are neither persisted nor shown.
+                // Pushing them into the renderer made resume reveal a strip of
+                // audio captured while the user believed recording was paused.
+                board_port_push_recording_pcm(samples, count);
                 if (fwrite(samples, sizeof(int16_t), count, file) != count) {
                     meeting_set_state(MEETING_ERROR);
                     break;
@@ -4813,9 +4924,13 @@ static void meeting_task(void *arg) {
             uint32_t elapsed = (uint32_t)(total_samples / MEETING_SAMPLE_RATE);
             s_meeting_elapsed_seconds = elapsed;
             board_port_set_audio_level(paused ? 0 : level, elapsed);
-            if (elapsed != last_elapsed) {
+            // The timer deliberately freezes while paused, so elapsed alone
+            // cannot represent this state transition. Publish it immediately
+            // and let the shared recorder switch its rule, copy and waveform.
+            if (elapsed != last_elapsed || paused != last_paused) {
                 board_port_set_recording_visual(true, paused, elapsed);
                 last_elapsed = elapsed;
+                last_paused = paused;
             }
         }
         board_port_audio_stream_stop();
@@ -5341,7 +5456,11 @@ static void on_wake_word(void *arg) {
     if (!s_startup_sequence_complete) {
         ESP_LOGI(TAG, "offline wake detected while startup greeting owns audio; ignored until ready");
         // The board has already retired MultiNet to safely hand this callback
-        // off. Startup completion performs the matching re-arm.
+        // off. Remember the one-shot teardown here; startup completion cannot
+        // infer it from its earlier successful start result.
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_wake_restart_after_startup = true;
+        taskEXIT_CRITICAL(&s_task_state_lock);
         return;
     }
     EventBits_t wifi = s_wifi_events ? xEventGroupGetBits(s_wifi_events) : 0;
@@ -5636,14 +5755,16 @@ static void on_user_input(board_input_action_t action, board_input_source_t sour
     // activation press closes it and returns to the clock/date/weather screen;
     // only a later press starts a new recording. This avoids accidentally
     // recording while the user is still reading the answer.
-    if (board_port_dismiss_response()) {
+    if (app_ui_dismiss_response()) {
         dismiss_result_speech_transaction();
         taskENTER_CRITICAL(&s_task_state_lock);
         s_interaction_phase = INTERACTION_IDLE;
         taskEXIT_CRITICAL(&s_task_state_lock);
         s_command_display_locked = false;
-        board_port_set_command_display_lock(false);
-        pet("idle");
+        // app_ui_dismiss_response() releases the board guard and publishes the
+        // matching PET model atomically.  Calling the board port directly here
+        // left the shared model on RESPONSE, so later ambient/profile updates
+        // could reason about a result page that was no longer on screen.
         ESP_LOGI(TAG, "response dismissed; ambient screen restored");
         return;
     }
@@ -6891,6 +7012,10 @@ void app_main(void) {
     ESP_ERROR_CHECK(s_gateway_poll_http_mutex ? ESP_OK : ESP_ERR_NO_MEM);
     s_gateway_asset_http_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_gateway_asset_http_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    s_pet_asset_apply_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_pet_asset_apply_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    s_pet_cache_flash_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_pet_cache_flash_mutex ? ESP_OK : ESP_ERR_NO_MEM);
     s_foreground_http_client_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_foreground_http_client_mutex ? ESP_OK : ESP_ERR_NO_MEM);
     s_command_cancel_ui_ready = xSemaphoreCreateBinary();
