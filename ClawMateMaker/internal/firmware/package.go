@@ -20,6 +20,13 @@ import (
 const MaxManifestBytes = 1024 * 1024
 const MaxEntries = 64
 
+// Release packages currently contain a <=16 MiB complete image plus small
+// metadata. These caps leave room for future profiles while rejecting offline
+// ZIP bombs before decompression can consume host storage or memory.
+const MaxArchiveBytes int64 = 128 * 1024 * 1024
+const MaxUncompressedBytes uint64 = 64 * 1024 * 1024
+const MaxFileBytes int64 = 32 * 1024 * 1024
+
 var ErrUnsupportedSchema = errors.New("unsupported firmware manifest schema")
 
 const (
@@ -104,6 +111,13 @@ type TrustStore map[string]ed25519.PublicKey
 // Verify rejects archive traversal, unlisted entries, invalid hashes and ambiguous paths.
 // Signature verification is intentionally separate: this package never treats an unsigned archive as a release package.
 func Verify(pathname string) (Verified, error) {
+	info, err := os.Stat(pathname)
+	if err != nil {
+		return Verified{}, fmt.Errorf("stat .clawfw: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxArchiveBytes {
+		return Verified{}, errors.New("firmware archive has an invalid size or file type")
+	}
 	r, err := zip.OpenReader(pathname)
 	if err != nil {
 		return Verified{}, fmt.Errorf("open .clawfw: %w", err)
@@ -113,6 +127,7 @@ func Verify(pathname string) (Verified, error) {
 		return Verified{}, fmt.Errorf("archive has %d entries, maximum is %d", len(r.File), MaxEntries)
 	}
 	files := map[string]*zip.File{}
+	var uncompressed uint64
 	for _, f := range r.File {
 		name, err := safePath(f.Name)
 		if err != nil {
@@ -125,6 +140,13 @@ func Verify(pathname string) (Verified, error) {
 		if f.FileInfo().IsDir() {
 			return Verified{}, fmt.Errorf("directory entries are not allowed: %s", name)
 		}
+		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return Verified{}, fmt.Errorf("symbolic-link entries are not allowed: %s", name)
+		}
+		if f.UncompressedSize64 > MaxUncompressedBytes-uncompressed {
+			return Verified{}, errors.New("firmware archive exceeds uncompressed size limit")
+		}
+		uncompressed += f.UncompressedSize64
 		files[key] = f
 	}
 	mf, ok := files["manifest.json"]
@@ -172,15 +194,18 @@ func Verify(pathname string) (Verified, error) {
 		if int64(f.UncompressedSize64) != spec.Size {
 			return Verified{}, fmt.Errorf("size mismatch for %s", name)
 		}
+		// Validate declared bounds before opening/decompressing the entry. A
+		// signed manifest is still untrusted until its signature is checked,
+		// and Verify is also used by tooling that inspects unsigned archives.
+		if err := validateFileSpec(spec); err != nil {
+			return Verified{}, fmt.Errorf("invalid manifest file %s: %w", name, err)
+		}
 		sum, err := hashZip(f, spec.Size)
 		if err != nil {
 			return Verified{}, err
 		}
 		if !hashEqual(sum, spec.SHA256) {
 			return Verified{}, fmt.Errorf("sha256 mismatch for %s", name)
-		}
-		if err := validateFileSpec(spec); err != nil {
-			return Verified{}, fmt.Errorf("invalid manifest file %s: %w", name, err)
 		}
 	}
 	for key := range files {
@@ -200,7 +225,7 @@ func Verify(pathname string) (Verified, error) {
 }
 
 func validateFileSpec(spec FileSpec) error {
-	if spec.Size <= 0 || spec.Region == "" {
+	if spec.Size <= 0 || spec.Size > MaxFileBytes || spec.Region == "" {
 		return errors.New("positive size and region are required")
 	}
 	if spec.Region == "metadata" {
@@ -337,7 +362,14 @@ func readZip(f *zip.File, max uint64) ([]byte, error) {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(io.LimitReader(r, int64(max)+1))
+	raw, err := io.ReadAll(io.LimitReader(r, int64(max)+1))
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(raw)) > max {
+		return nil, fmt.Errorf("archive entry %s exceeds size limit", f.Name)
+	}
+	return raw, nil
 }
 func hashZip(f *zip.File, size int64) (string, error) {
 	r, err := f.Open()

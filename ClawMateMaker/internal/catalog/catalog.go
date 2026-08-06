@@ -10,7 +10,10 @@ import (
 	"strings"
 )
 
-const Repository = "RapidAI/CodeClaw"
+// Repository is the canonical GitHub repository that owns Release assets.
+// The former RapidAI/CodeClaw endpoint currently redirects here, but the
+// downloader must not depend on that redirect for automatic installation.
+const Repository = "RapidAI/MaClaw"
 
 type BoardProfile struct {
 	ID              string `json:"id"`

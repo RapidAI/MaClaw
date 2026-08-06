@@ -265,6 +265,25 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
 		await waitFor(() => expect(appMocks.sendHardwareDevicePetProfile).toHaveBeenCalledWith('device-a', 'focus-claw'));
 	});
 
+	it('keeps custom-pet controls disabled while the preference update is pending and restores them after failure', async () => {
+		let rejectUpdate!: (error: Error) => void;
+		appMocks.setHardwareAllowCustomPets.mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectUpdate = reject; }));
+		const props = renderSettings({ thirdparty_gateway_enabled: true, thirdparty_gateway_local_mode: false, hardware_enabled: true });
+
+		const toggle = screen.getByRole('checkbox', { name: 'Allow individual pets' });
+		fireEvent.click(toggle);
+		await waitFor(() => expect(appMocks.setHardwareAllowCustomPets).toHaveBeenCalledWith(true));
+		expect(toggle).toHaveProperty('disabled', true);
+		expect(screen.getByLabelText('Hardware configuration').getAttribute('aria-busy')).toBe('true');
+
+		await act(async () => rejectUpdate(new Error('Hub is not connected')));
+		await waitFor(() => expect(props.showToastMessage).toHaveBeenCalledWith('Hub is not connected'));
+		expect(toggle).toHaveProperty('disabled', false);
+		expect(toggle).toHaveProperty('checked', false);
+		expect(screen.queryByRole('combobox', { name: 'Pet Desk' })).toBeNull();
+		expect(screen.getByLabelText('Hardware configuration').getAttribute('aria-busy')).toBe('false');
+	});
+
 	it('uses the installed pack preview and does not block another device while a pet update is in flight', async () => {
 		let resolveDesk!: () => void;
 		appMocks.listHardwareBindings.mockResolvedValue({ devices: [

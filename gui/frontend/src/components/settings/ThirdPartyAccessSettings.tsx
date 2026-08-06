@@ -862,7 +862,7 @@ export const ThirdPartyAccessSettings = ({
             }}>{textForLang(lang, 'Open docs', '打开接入文档', '開啟接入文件')}</button>
         </div>
 
-        <div className="im-settings-hardware" aria-label={isZh ? '硬件配置' : 'Hardware configuration'}>
+		<div className="im-settings-hardware" aria-label={isZh ? '硬件配置' : 'Hardware configuration'} aria-busy={settingsBusy}>
             <div className="im-settings-hardware__heading">
                 <div>
                     <strong>{isZh ? '硬件配置' : 'Hardware configuration'}</strong>

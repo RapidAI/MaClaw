@@ -293,7 +293,7 @@ func (a *App) FlashFirmware(requestID, port, boardID, packageRef string) (jobs.F
 		if items := a.ListRecoveryRequired(); len(items) != 0 {
 			return jobs.FlashResult{}, fmt.Errorf("recovery is required for %d unfinished write job(s); inspect diagnostics and perform a complete ROM recovery before starting a new flash", len(items))
 		}
-		return a.flashVerifiedFirmware(port, boardID, packageRef)
+		return a.flashVerifiedFirmware(port, boardID, packageRef, false)
 	})
 }
 
@@ -333,7 +333,7 @@ func (a *App) RecoverFirmware(requestID, recoveryJobID, port, boardID, packageRe
 		if manifest.Manifest.Mode != "full" {
 			return jobs.FlashResult{}, fmt.Errorf("recovery requires a verified full firmware package; app-only packages are not permitted")
 		}
-		result, err := a.flashVerifiedFirmware(port, boardID, packageRef)
+		result, err := a.flashVerifiedFirmware(port, boardID, packageRef, true)
 		if err != nil {
 			return result, err
 		}
@@ -392,7 +392,7 @@ func safeRequestID(value string) bool {
 	return true
 }
 
-func (a *App) flashVerifiedFirmware(port, boardID, packageRef string) (jobs.FlashResult, error) {
+func (a *App) flashVerifiedFirmware(port, boardID, packageRef string, recovery bool) (jobs.FlashResult, error) {
 	profile, err := catalog.Profile(boardID)
 	if err != nil {
 		return jobs.FlashResult{}, err
@@ -407,7 +407,7 @@ func (a *App) flashVerifiedFirmware(port, boardID, packageRef string) (jobs.Flas
 	if verified.boardID != boardID {
 		return jobs.FlashResult{}, fmt.Errorf("verified firmware reference does not match the selected board")
 	}
-	job, err := jobs.NewFlashJob(a.logsPath(), jobs.FlashRequest{Port: port, PackagePath: verified.path, Trust: releaseTrustStore(), ExpectedChip: "esp32-s3", ExpectedFlashBytes: 16 * 1024 * 1024, BoardID: profile.FirmwareBoardID}, a.emitLog)
+	job, err := jobs.NewFlashJob(a.logsPath(), jobs.FlashRequest{Port: port, PackagePath: verified.path, Trust: releaseTrustStore(), ExpectedChip: "esp32-s3", ExpectedFlashBytes: 16 * 1024 * 1024, BoardID: profile.FirmwareBoardID, Recovery: recovery}, a.emitLog)
 	if err != nil {
 		return jobs.FlashResult{}, err
 	}

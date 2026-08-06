@@ -3,9 +3,9 @@
 > 状态：实现中 v0.7（自动多设备识别与 Release 下载）
 > 目标平台：Windows 10/11、macOS 12+（Intel / Apple Silicon）、主流 x86_64 / arm64 Linux
 > 当前 Windows 实机只读验证：EchoEar 2ST、Bread Compact、Fangtang 4G（均为 ESP32-S3、16 MB Flash、8 MB PSRAM）
-> 当前发布流水线：三种板型均有独立 profile、精确 Release asset 名和签名包校验规则；截至 2026-08-06 最新 GitHub Release 尚无 `.clawfw` 资产（该次固件 job 在 checkout 阶段失败）。已修复无效 legacy gitlink 导致的递归 submodule checkout；下一次受保护 Release workflow 成功后才能满足线上自动下载条件。
+> 当前发布流水线：三种板型均有独立 profile、精确 Release asset 名和签名包校验规则；截至 2026-08-07，`RapidAI/MaClaw` 最新 GitHub Release 尚无 `.clawfw` 资产。已修复无效 legacy gitlink 导致的递归 submodule checkout；受保护 Release workflow 完成并发布三种签名资产后，线上自动下载路径即可端到端验证。
 > 协议发布门禁：Release CI 会同时校验 `firmware_identity.c` 的 protocol:2 字段、nonce-bound IDENTIFY/BOOT_STATUS 查询处理和生成配置中的 USB Serial/JTAG 次级控制台；缺少任一项时拒绝生成 `.clawfw`。
-> 文档日期：2026-08-05
+> 文档日期：2026-08-07
 
 ## 1. 结论与关键决策
 

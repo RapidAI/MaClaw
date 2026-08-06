@@ -67,6 +67,13 @@ func TestVerifyRejectsAmbiguousFlashFileSpec(t *testing.T) {
 		t.Fatal("unaligned flash image offset accepted")
 	}
 }
+
+func TestVerifyRejectsOversizedFileSpec(t *testing.T) {
+	offset := uint64(0x10000)
+	if err := validateFileSpec(FileSpec{Path: "images/app.bin", Size: MaxFileBytes + 1, Offset: &offset, Region: "app"}); err == nil {
+		t.Fatal("oversized image specification was accepted")
+	}
+}
 func TestInstallPlanValidatesModeAndDataImpact(t *testing.T) {
 	appOffset := uint64(0x10000)
 	appOnly, err := InstallPlanFor(Manifest{Mode: ModeAppOnly, Files: []FileSpec{{Path: "images/app.bin", Region: "app", Offset: &appOffset}}})

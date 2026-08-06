@@ -96,6 +96,13 @@ func TestReadBoundedLineRejectsOversizedFrame(t *testing.T) {
 	}
 }
 
+func TestReadBoundedLineRejectsOversizedTerminatedFrame(t *testing.T) {
+	p := &fixedReadPort{chunks: [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("\n")}}
+	if _, err := ReadBoundedLine(p, 3); err == nil {
+		t.Fatal("oversized terminated serial frame accepted")
+	}
+}
+
 func TestIsSerialReadTimeoutRejectsEOFAndRecognizesTimeout(t *testing.T) {
 	if IsSerialReadTimeout(io.EOF) || !IsSerialReadTimeout(errors.New("i/o timeout")) {
 		t.Fatal("incorrect timeout classification")

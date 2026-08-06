@@ -1914,6 +1914,14 @@ jobs:
             bash -lc '
               set -euo pipefail
               build_dir="build-release-${{ matrix.device }}"
+              # uart-uhci 0.3.2 forward-declares uhci_dev_t as a struct, while
+              # ESP-IDF 6 declares it as a volatile typedef. Resolve managed
+              # dependencies first, then apply the one-line IDF 6 compatibility
+              # patch before compiling any board image.
+              idf.py -B "$build_dir" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" reconfigure
+              header="managed_components/78__uart-uhci/include/uart_uhci.h"
+              grep -qx 'struct uhci_dev_t;' "$header" || grep -qx 'typedef volatile struct uhci_dev_s uhci_dev_t;' "$header"
+              sed -i 's/^struct uhci_dev_t;$/typedef volatile struct uhci_dev_s uhci_dev_t;/' "$header"
               idf.py -B "$build_dir" -D SDKCONFIG_DEFAULTS="$SDKCONFIG_DEFAULTS" build
               # The desktop tool's nonce-bound IDENTIFY and BOOT_STATUS
               # protocol runs on the secondary USB Serial/JTAG console. Do
@@ -1957,6 +1965,11 @@ jobs:
           # artifact or is printed in CI output.
           test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY"
           test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
+          # fwverify is the same public-key verification boundary used by an
+          # official desktop build. Check it explicitly so a missing Actions
+          # variable fails with a clear release-gate error rather than after
+          # the expensive firmware build and packaging work.
+          test -n "$CLAWMATE_FIRMWARE_PUBLIC_KEY"
           (
             cd ClawMateMaker
             go run ./tools/fwpack \

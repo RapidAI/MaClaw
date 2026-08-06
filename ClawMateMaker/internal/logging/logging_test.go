@@ -66,9 +66,43 @@ func TestRawLogsAreRedacted(t *testing.T) {
 	}
 }
 
+func TestRawLogTruncationUpdatesSnapshot(t *testing.T) {
+	root := t.TempDir()
+	const jobID = "job-0123456789abcdef"
+	w, err := New(root, jobID, "attempt-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// AppendRaw redacts before applying the on-disk cap. Feed bounded chunks so
+	// the test exercises the cumulative raw-log limit, not detail truncation.
+	chunk := strings.Repeat("x\n", 1024)
+	for written := int64(0); written <= maxRawLogBytes; written += int64(len(chunk)) {
+		if err := w.AppendRaw("serial.log", chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ReadSnapshot(root, jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.LastEvent == nil || snapshot.LastEvent.Code != "LOG_TRUNCATED" || snapshot.LatestSequence != 1 {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+}
+
 func TestSafeFieldsAllowsOperationalBaudButNotDeviceSerial(t *testing.T) {
 	fields := SafeFields(map[string]any{"baud": 115200, "fromBaud": 921600, "toBaud": 115200, "serial": "device-123"})
 	if len(fields) != 3 || fields["baud"] != 115200 || fields["serial"] != nil {
+		t.Fatalf("fields=%#v", fields)
+	}
+}
+
+func TestSafeFieldsAllowsApplicationDescriptorMetadata(t *testing.T) {
+	fields := SafeFields(map[string]any{"project": "maclaw_esp32s3_client", "version": "V7.0.0", "serial": "device-123"})
+	if len(fields) != 2 || fields["project"] != "maclaw_esp32s3_client" || fields["version"] != "V7.0.0" || fields["serial"] != nil {
 		t.Fatalf("fields=%#v", fields)
 	}
 }

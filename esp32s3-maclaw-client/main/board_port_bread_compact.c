@@ -331,6 +331,9 @@ static void draw_text24_clipped(int x, int y, const char *text,
                                 uint16_t fg, uint16_t bg, int max_glyphs);
 static void draw_text24_centered(int y, const char *text,
                                  uint16_t fg, uint16_t bg, int max_glyphs);
+static void draw_text24_scaled_centered(int y, const char *text,
+                                        uint16_t fg, uint16_t bg, int max_glyphs,
+                                        int scale);
 static void fill_rect_solid(int x, int y, int width, int height, uint16_t fill);
 static bool draw_remote_pet_frame(uint16_t bg);
 static void show_state_screen(const char *state);
@@ -1084,6 +1087,47 @@ static void draw_text24_centered(int y, const char *text, uint16_t fg, uint16_t 
                                  int max_glyphs) {
     int width = text24_width(text, max_glyphs);
     draw_text24_clipped((LCD_WIDTH - width) / 2, y, text, fg, bg, max_glyphs);
+}
+
+// The weather row is deliberately denser than response copy. Scaling the
+// existing 24px CJK raster to 3/4 preserves all dynamic city/weather glyphs
+// without adding another font asset, while allowing four-character locations
+// to coexist with weather and temperature on Bread Compact's 240px panel.
+static void draw_text24_scaled_centered(int y, const char *text, uint16_t fg,
+                                        uint16_t bg, int max_glyphs, int scale) {
+    if (!text || !*text || scale < 1 || scale > 4 || y < 0 || y + 24 * scale / 4 > LCD_HEIGHT) return;
+    const int source_width = text24_width(text, max_glyphs);
+    const int width = (source_width * scale + 3) / 4;
+    const int height = 24 * scale / 4;
+    if (width <= 0 || height <= 0 || width > LCD_WIDTH) return;
+    uint16_t *bitmap = heap_caps_malloc((size_t)width * height * sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (!bitmap) return;
+    for (int i = 0; i < width * height; ++i) bitmap[i] = bg;
+    const char *cursor = text;
+    int pen = 0;
+    for (int count = 0; *cursor && count < max_glyphs; ++count) {
+        const uint32_t cp = utf8_next(&cursor);
+        const uint32_t *rows = cjk24_rows(cp);
+        uint8_t dynamic_bitmap[DYNAMIC_GLYPH_BYTES];
+        const uint8_t *dynamic = !rows &&
+            (dynamic_glyph_copy(cp, dynamic_bitmap) || full_cjk24_copy(cp, dynamic_bitmap))
+                ? dynamic_bitmap : NULL;
+        const int advance = text24_advance(cp);
+        const int glyph_width = (advance * scale + 3) / 4;
+        for (int dy = 0; dy < height; ++dy) {
+            const int source_y = dy * 4 / scale;
+            for (int dx = 0; dx < glyph_width; ++dx) {
+                const int source_x = dx * 4 / scale;
+                if (source_x >= 24 || !glyph24_pixel(cp, rows, dynamic, source_y, source_x)) continue;
+                const int px = (pen * scale + 3) / 4 + dx;
+                if (px >= 0 && px < width) bitmap[(size_t)dy * width + px] = fg;
+            }
+        }
+        pen += advance;
+    }
+    const int x = (LCD_WIDTH - width) / 2;
+    draw_bitmap_sync(x, y, x + width, y + height, bitmap);
+    heap_caps_free(bitmap);
 }
 
 static void draw_progress_bar(int x, int y, int width, int height, unsigned value,
@@ -2219,8 +2263,11 @@ static void show_state_screen(const char *state) {
         } else {
             snprintf(weather, sizeof(weather), "%s 天气同步中", s_ambient_location);
         }
-        draw_text24_centered(AMBIENT_WEATHER_TEXT_Y, weather,
-                             color(121, 210, 224), bg, 10);
+        // Weather is informational, so use the compact 18px-equivalent style
+        // and retain all 13 glyphs. This keeps four-character city names,
+        // weather and temperature visible instead of truncating the latter.
+        draw_text24_scaled_centered(AMBIENT_WEATHER_TEXT_Y, weather,
+                                    color(121, 210, 224), bg, 13, 3);
 
         // Everything below the three compact information rows belongs to the
         // pet. There is deliberately no ready/tagline row or bottom status
@@ -2399,11 +2446,7 @@ static void remote_pet_animation_task(void *arg) {
             !s_foreground_surface && !s_recording_active && !s_response_active &&
             !s_alarm_visual_active &&
             esp_timer_get_time() >= s_idle_pet_sleep_expires_us) {
-            s_display_sleeping = true;
-            s_idle_pet_sleep_expires_us = 0;
-            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
-            ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
-            ESP_LOGI(TAG, "ambient display sleeping after 30 minutes");
+            (void)board_port_enter_display_off();
         }
         if (s_remote_pet_frame_count > 1 && s_remote_pet_frame_ms && ambient &&
             !s_display_sleeping && !s_foreground_surface && !s_recording_active &&
@@ -3585,6 +3628,25 @@ void board_port_show_ready_prompt(const char *title, const char *text) {
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 void board_port_cancel_ready_prompt(void) {}
+// Board-owned DISPLAY_OFF transaction shared by Bread Compact and Fangtang.
+// It is deliberately display-only: active system services continue until a
+// future power coordinator has proven a board-specific MCU sleep transaction.
+bool board_port_enter_display_off(void) {
+    if (!s_lcd_mutex || !s_panel) return false;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
+    if (s_display_sleeping) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return false;
+    }
+    s_display_sleeping = true;
+    s_idle_pet_sleep_expires_us = 0;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    ESP_LOGI(TAG, "display HAL entered DISPLAY_OFF");
+    return true;
+}
+
 bool board_port_wake_from_idle(void) {
     if (!s_lcd_mutex) return false;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);

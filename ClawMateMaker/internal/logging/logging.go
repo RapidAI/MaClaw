@@ -264,9 +264,23 @@ func (w *Writer) AppendRaw(name, text string) error {
 		w.rawTruncated[name] = true
 		w.sequence++
 		e := Event{Timestamp: time.Now().UTC(), MonotonicMs: time.Since(w.started).Milliseconds(), Sequence: w.sequence, JobID: w.jobID, AttemptID: w.attemptID, Severity: Warn, Stage: "logging", Component: "logging", Code: "LOG_TRUNCATED", MessageKey: "log.truncated", Fields: map[string]any{"bytes": maxRawLogBytes}}
-		b, _ := json.Marshal(e)
-		_, _ = w.file.Write(append(b, '\n'))
-		_ = w.file.Sync()
+		b, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		if _, err := w.file.Write(append(b, '\n')); err != nil {
+			return err
+		}
+		if err := w.file.Sync(); err != nil {
+			return err
+		}
+		w.snapshot.LatestSequence = e.Sequence
+		copy := e
+		w.snapshot.LastEvent = &copy
+		w.snapshot.UpdatedAt = e.Timestamp
+		if err := w.writeSnapshotLocked(); err != nil {
+			return err
+		}
 		if w.emit != nil {
 			w.emit(e)
 		}
@@ -324,7 +338,7 @@ func SafeFields(fields map[string]any) map[string]any {
 	if len(fields) == 0 {
 		return nil
 	}
-	allowed := map[string]bool{"port": true, "chip": true, "revision": true, "flashBytes": true, "tool": true, "toolVersion": true, "exitCode": true, "durationMs": true, "command": true, "bytes": true, "attempt": true, "os": true, "vendorId": true, "productId": true, "boardId": true, "asset": true, "release": true, "sha256": true, "cached": true, "baud": true, "fromBaud": true, "toBaud": true}
+	allowed := map[string]bool{"port": true, "chip": true, "revision": true, "flashBytes": true, "tool": true, "toolVersion": true, "exitCode": true, "durationMs": true, "command": true, "bytes": true, "attempt": true, "os": true, "vendorId": true, "productId": true, "boardId": true, "asset": true, "release": true, "sha256": true, "cached": true, "baud": true, "fromBaud": true, "toBaud": true, "project": true, "version": true}
 	out := make(map[string]any)
 	for k, v := range fields {
 		if allowed[k] {

@@ -42,6 +42,11 @@ typedef board_input_cb_t board_port_button_cb_t;
 #define BOARD_BUTTON_LONG BOARD_INPUT_CONFIGURE
 typedef void (*board_port_wake_word_cb_t)(void *arg);
 
+// The application owns idle policy; the board port owns only the physical
+// panel/backlight transaction. DISPLAY_OFF keeps alarm, network and wake-word
+// services running, unlike a future MCU light/deep-sleep transition.
+bool board_port_enter_display_off(void);
+
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg);
 // Fangtang uses GPIO0's initial double click exclusively as a boot-time
 // network-transport selector. The board consumes this bounded window before

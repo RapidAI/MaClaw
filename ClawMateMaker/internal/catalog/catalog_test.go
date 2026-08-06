@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"clawmatemaker/internal/logging"
 )
 
 func TestOfficialProfileAssetNames(t *testing.T) {
@@ -138,7 +141,7 @@ func TestLegacyApplicationIdentitySupportsMigrationOnly(t *testing.T) {
 	}
 }
 func TestGitHubReleaseURLAllowList(t *testing.T) {
-	for _, raw := range []string{"https://github.com/RapidAI/CodeClaw/releases/download/v1/a.zip", "https://objects.githubusercontent.com/a"} {
+	for _, raw := range []string{"https://github.com/RapidAI/MaClaw/releases/download/v1/a.zip", "https://objects.githubusercontent.com/a"} {
 		if !isGitHubReleaseURL(raw) {
 			t.Fatalf("expected allowed: %s", raw)
 		}
@@ -147,6 +150,12 @@ func TestGitHubReleaseURLAllowList(t *testing.T) {
 		if isGitHubReleaseURL(raw) {
 			t.Fatalf("expected rejected: %s", raw)
 		}
+	}
+}
+
+func TestReleaseRepositoryUsesCanonicalAssetOwner(t *testing.T) {
+	if Repository != "RapidAI/MaClaw" {
+		t.Fatalf("release repository = %q, want canonical RapidAI/MaClaw", Repository)
 	}
 }
 
@@ -167,6 +176,61 @@ func TestNewestStableReleaseWithAssetRequiresExactName(t *testing.T) {
 	releases := []releaseResponse{{TagName: "v1", Assets: []releaseAsset{{Name: "lookalike.clawfw"}}}}
 	if _, _, ok := newestStableReleaseWithAsset(releases, "MaClaw-ESP32S3-EchoEar-2ST-firmware.clawfw"); ok {
 		t.Fatal("lookalike asset was selected")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestDownloadLatestFallsBackToNewestStableExactAsset(t *testing.T) {
+	profile, err := Profile("bread-compact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("signed firmware package bytes")
+	sum := sha256.Sum256(payload)
+	assetURL := "https://github.com/RapidAI/MaClaw/releases/download/v8/" + profile.AssetName
+	client := &Client{
+		cacheDir: t.TempDir(),
+		apiURL:   latestReleaseURL,
+		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			var body []byte
+			switch req.URL.String() {
+			case latestReleaseURL:
+				body, _ = json.Marshal(releaseResponse{TagName: "v9-without-firmware", PublishedAt: time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)})
+			case releasesURL:
+				body, _ = json.Marshal([]releaseResponse{
+					{TagName: "v9-preview", Prerelease: true, Assets: []releaseAsset{{Name: profile.AssetName, Size: int64(len(payload)), DownloadURL: assetURL}}},
+					{TagName: "v8-stable", PublishedAt: time.Date(2026, 8, 6, 0, 0, 0, 0, time.UTC), Assets: []releaseAsset{{Name: profile.AssetName, Size: int64(len(payload)), DownloadURL: assetURL, Digest: "sha256:" + hex.EncodeToString(sum[:])}}},
+				})
+			case assetURL:
+				body = payload
+			default:
+				t.Fatalf("unexpected release request: %s", req.URL)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
+		})},
+	}
+	var events []logging.Event
+	result, err := client.DownloadLatest(context.Background(), profile.ID, func(event logging.Event) { events = append(events, event) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReleaseTag != "v8-stable" || result.AssetName != profile.AssetName || result.Size != int64(len(payload)) {
+		t.Fatalf("unexpected download result: %#v", result)
+	}
+	if got, readErr := os.ReadFile(result.Path); readErr != nil || string(got) != string(payload) {
+		t.Fatalf("cached payload=%q read error=%v", got, readErr)
+	}
+	codes := make(map[string]bool, len(events))
+	for _, event := range events {
+		codes[event.Code] = true
+	}
+	for _, want := range []string{"RELEASE_LATEST_MISSING_ASSET", "RELEASE_FALLBACK_SELECTED", "RELEASE_ASSET_SELECTED", "RELEASE_DOWNLOAD_COMPLETED"} {
+		if !codes[want] {
+			t.Fatalf("missing diagnostic event %s: %#v", want, events)
+		}
 	}
 }
 

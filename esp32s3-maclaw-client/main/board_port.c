@@ -610,11 +610,11 @@ static esp_err_t es8311_init(void) {
     // ESP32-S3 supplying its 4.096 MHz MCLK.
     static const uint8_t init[][2] = {
         {0x00, 0x1F}, {0x00, 0x00}, {0x00, 0x80},
-        // 16 kHz / 4.096 MHz MCLK coefficients from the hardware-verified
-        // EchoEar-2ST driver. REG01 bit 6 enables MCLK input and REG06 stores
-        // bclk_div-1, so a physical divider of 4 must be programmed as 0x03.
-        // The previous 0x3F/0x04 pair could leave the DAC clocked incorrectly
-        // while I2S writes still appeared successful, producing silent ACKs.
+        // ES8311 REG06 stores BCLK divider minus one. With this board's
+        // 4.096 MHz MCLK and 16 kHz I2S stream, the physical divider is four
+        // and the codec must receive 0x03. Programming 0x04 makes the DAC
+        // consume the wrong bit-clock ratio: data is audible but speech is
+        // severely distorted, like a weak two-way radio.
         {0x01, 0x7F}, {0x02, 0x00}, {0x03, 0x10}, {0x04, 0x10},
         {0x05, 0x00}, {0x06, 0x03}, {0x07, 0x00}, {0x08, 0xFF},
         {0x09, 0x0C}, {0x0A, 0x0C}, {0x0D, 0x01}, {0x0E, 0x02},
@@ -730,10 +730,10 @@ static esp_err_t audio_init(void) {
     // near-full-scale random data and MultiNet cannot recognise any phrase.
     err = i2s_new_channel(&chan_cfg, &s_audio_tx, &s_audio_rx);
     if (err != ESP_OK) goto fail;
-    // ES7210 publishes four 16-bit microphone slots. This matches Espressif's
-    // BoxAudioCodec path: TX remains stereo for ES8311 while RX runs four-slot
-    // TDM with BCLK=MCLK/8. Reading it as stereo halves the frame width and
-    // shifts physical microphones between software channels.
+    // Keep the previously verified full-duplex initialization order: RX claims
+    // the shared clock domain first, then TX attaches the ES8311 output path.
+    // Explicit TX/RX configuration needs a board-level clock probe before it
+    // can replace this known-audible baseline.
     i2s_tdm_config_t rx_cfg = {
         .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(AUDIO_RATE),
         .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(
@@ -757,6 +757,11 @@ static esp_err_t audio_init(void) {
             .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
         },
     };
+    // Preserve the known-audible shared-clock initialization order above, but
+    // make the ES8311 data alignment explicit. This board's codec expects the
+    // 16-bit samples left-aligned in the Philips slots; relying on the IDF
+    // default leaves speech data offset although simple tones remain audible.
+    tx_cfg.slot_cfg.left_align = true;
     err = i2s_channel_init_std_mode(s_audio_tx, &tx_cfg);
     if (err != ESP_OK) goto fail;
     // EchoEar's ES7210/ES8311 share this full-duplex I2S clock domain.  Unlike
@@ -2432,10 +2437,7 @@ static void pet_animation_task(void *arg) {
             draw_pet();
         } else if (s_idle_pet_visible &&
                    esp_timer_get_time() >= s_idle_pet_sleep_expires_us) {
-            s_idle_pet_visible = false;
-            s_display_sleeping = true;
-            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
-            ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
+            (void)board_port_enter_display_off();
         } else if (!s_display_sleeping && s_pet_motion_enabled &&
                    (s_idle_pet_visible || !strcmp(s_pet_state, "thinking"))) {
             s_pet_frame = (uint8_t)((s_pet_frame + 1u) % 8u);
@@ -3550,6 +3552,26 @@ void board_port_show_ready_prompt(const char *title, const char *text) {
 
 void board_port_cancel_ready_prompt(void) {
     s_ready_prompt_expires_us = 0;
+}
+
+// Board-owned DISPLAY_OFF transaction. Network, alarm, and wake-word services
+// deliberately stay alive; the application controls idle policy while this HAL
+// owns only the physical panel/backlight state and matching wake bookkeeping.
+bool board_port_enter_display_off(void) {
+    if (!s_lcd_mutex || !s_panel) return false;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
+    if (s_display_sleeping) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return false;
+    }
+    s_idle_pet_visible = false;
+    s_idle_pet_sleep_expires_us = 0;
+    s_display_sleeping = true;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    ESP_LOGI(TAG, "display HAL entered DISPLAY_OFF");
+    return true;
 }
 
 bool board_port_wake_from_idle(void) {

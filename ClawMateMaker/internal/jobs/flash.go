@@ -26,6 +26,10 @@ type FlashRequest struct {
 	ExpectedChip       string              `json:"expectedChip"`
 	ExpectedFlashBytes int64               `json:"expectedFlashBytes"`
 	BoardID            string              `json:"boardId"`
+	// Recovery is set only by the explicit journal-recovery flow. A damaged
+	// bootloader or partition table must not make a complete ROM recovery
+	// impossible merely because the old layout can no longer be parsed.
+	Recovery bool `json:"-"`
 }
 type FlashResult struct {
 	JobID         string    `json:"jobId"`
@@ -132,6 +136,9 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	if verified.Manifest.Layout.ID == "" || verified.Manifest.Layout.Fingerprint == "" || verified.Manifest.Layout.PartitionTablePath == "" || (verified.Manifest.Mode != "full" && verified.Manifest.Mode != "app-only") {
 		return j.fail(&result, "PACKAGE_MANIFEST_INCOMPLETE", errors.New("release package must declare a known layout and mode"))
 	}
+	if j.request.Recovery && verified.Manifest.Mode != firmware.ModeFull {
+		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", errors.New("ROM recovery requires a complete firmware package"))
+	}
 	if verified.Manifest.AppIdentity.ProjectName == "" || verified.Manifest.AppIdentity.AppVersion == "" || verified.Manifest.AppIdentity.ELFSHA256 == "" || verified.Manifest.BootVerification.Baud <= 0 || verified.Manifest.BootVerification.TimeoutSeconds <= 0 {
 		return j.fail(&result, "PACKAGE_MANIFEST_INCOMPLETE", errors.New("release package must declare app identity and boot verification policy"))
 	}
@@ -191,25 +198,65 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 	if observed.SizeBytes <= 0 || observed.SizeBytes < required {
 		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("flash capacity %d is below required %d", observed.SizeBytes, required))
 	}
-	partitionPath := filepath.Join(os.TempDir(), j.jobID+"-partition-table.bin")
-	defer os.Remove(partitionPath)
-	partitionRun, err := tool.ReadFlash(ctx, j.request.Port, 0x8000, 4096, partitionPath)
-	j.logSidecar("read_flash_partition_table", partitionRun, err)
-	if err != nil {
-		return j.fail(&result, "PARTITION_READ_FAILED", err)
+	var currentLayout partition.Table
+	var currentApp flash.ESPAppDescription
+	if j.request.Recovery {
+		j.log.Event(logging.Warn, "prepare", "partition", "RECOVERY_LAYOUT_BYPASS", "recovery.layout.bypass", "Explicit full ROM recovery does not depend on the existing partition table; the signed package layout will be verified before writing.", nil)
+	} else {
+		partitionPath := filepath.Join(os.TempDir(), j.jobID+"-partition-table.bin")
+		defer os.Remove(partitionPath)
+		partitionRun, err := tool.ReadFlash(ctx, j.request.Port, 0x8000, 4096, partitionPath)
+		j.logSidecar("read_flash_partition_table", partitionRun, err)
+		if err != nil {
+			return j.fail(&result, "PARTITION_READ_FAILED", err)
+		}
+		partitionBytes, err := os.ReadFile(partitionPath)
+		if err != nil {
+			return j.fail(&result, "PARTITION_READ_FAILED", err)
+		}
+		currentLayout, err = partition.Parse(partitionBytes, uint64(observed.SizeBytes))
+		if err != nil {
+			return j.fail(&result, "PARTITION_LAYOUT_INVALID", err)
+		}
+		layoutReplacing, layoutErr := validateCurrentLayoutForMode(verified.Manifest.Mode, currentLayout.Fingerprint, verified.Manifest.Layout.Fingerprint)
+		if layoutErr != nil {
+			return j.fail(&result, "FIRMWARE_INCOMPATIBLE", layoutErr)
+		}
+		if layoutReplacing {
+			j.log.Event(logging.Warn, "prepare", "partition", "FULL_LAYOUT_REPLACEMENT", "full.layout.replacement", "The signed complete image replaces a different existing partition layout; user data may be overwritten.", map[string]any{"bytes": len(currentLayout.Entries)})
+		} else {
+			j.log.Event(logging.Info, "prepare", "partition", "LAYOUT_VERIFIED", "layout.verified", "", map[string]any{"bytes": len(currentLayout.Entries)})
+		}
+		factory, found := partition.Find(currentLayout.Entries, "factory")
+		if !found || factory.Size < 4096 {
+			return j.fail(&result, "PARTITION_LAYOUT_INVALID", errors.New("current layout has no readable factory application partition"))
+		}
+		appDescriptorPath := filepath.Join(os.TempDir(), j.jobID+"-app-descriptor.bin")
+		defer os.Remove(appDescriptorPath)
+		appDescriptorRun, appDescriptorErr := tool.ReadFlash(ctx, j.request.Port, uint64(factory.Offset), 4096, appDescriptorPath)
+		j.logSidecar("read_flash_app_descriptor", appDescriptorRun, appDescriptorErr)
+		if appDescriptorErr == nil {
+			var appDescriptorBytes []byte
+			appDescriptorBytes, appDescriptorErr = os.ReadFile(appDescriptorPath)
+			if appDescriptorErr == nil {
+				currentApp, appDescriptorErr = flash.ParseESPAppDescription(appDescriptorBytes)
+			}
+		}
+		if appDescriptorErr != nil {
+			if verified.Manifest.Mode == firmware.ModeAppOnly {
+				return j.fail(&result, "APP_DESCRIPTOR_INVALID", fmt.Errorf("read current application descriptor: %w", appDescriptorErr))
+			}
+			j.log.Event(logging.Warn, "prepare", "firmware", "APP_DESCRIPTOR_UNAVAILABLE", "app_descriptor.unavailable", "The installed application descriptor is unavailable; continuing only because this signed complete image replaces the whole layout.", nil)
+		} else {
+			j.log.Event(logging.Info, "prepare", "firmware", "APP_DESCRIPTOR_OBSERVED", "app_descriptor.observed", "Read the current ESP-IDF application descriptor before writing.", map[string]any{"project": currentApp.ProjectName, "version": currentApp.Version})
+			if err := flash.ValidateCurrentAppDescription(currentApp, verified.Manifest.AppIdentity.ProjectName); err != nil {
+				if verified.Manifest.Mode == firmware.ModeAppOnly {
+					return j.fail(&result, "FIRMWARE_INCOMPATIBLE", err)
+				}
+				j.log.Event(logging.Warn, "prepare", "firmware", "APP_DESCRIPTOR_PROJECT_MISMATCH", "app_descriptor.project_mismatch", "The installed application project differs from the complete replacement package; user data may not be compatible.", nil)
+			}
+		}
 	}
-	partitionBytes, err := os.ReadFile(partitionPath)
-	if err != nil {
-		return j.fail(&result, "PARTITION_READ_FAILED", err)
-	}
-	currentLayout, err := partition.Parse(partitionBytes, uint64(observed.SizeBytes))
-	if err != nil {
-		return j.fail(&result, "PARTITION_LAYOUT_INVALID", err)
-	}
-	if currentLayout.Fingerprint != verified.Manifest.Layout.Fingerprint {
-		return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("layout fingerprint mismatch: device %s, package %s", currentLayout.Fingerprint, verified.Manifest.Layout.Fingerprint))
-	}
-	j.log.Event(logging.Info, "prepare", "partition", "LAYOUT_VERIFIED", "layout.verified", "", map[string]any{"bytes": len(currentLayout.Entries)})
 	securityRun, err := tool.RunReadOnly(ctx, j.request.Port, "get-security-info")
 	j.logSidecar("get-security-info", securityRun, err)
 	if err != nil {
@@ -255,7 +302,7 @@ func (j *FlashJob) Run(ctx context.Context) (result FlashResult, retErr error) {
 		if verified.Manifest.Mode == "app-only" && spec.Region != "app" {
 			return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("app-only package contains non-app region %s", spec.Region))
 		}
-		if verified.Manifest.Mode == "app-only" {
+		if verified.Manifest.Mode == firmware.ModeAppOnly {
 			factory, ok := partition.Find(currentLayout.Entries, "factory")
 			if !ok || uint64(*spec.Offset) < uint64(factory.Offset) || uint64(*spec.Offset)+uint64(spec.Size) > uint64(factory.Offset)+uint64(factory.Size) {
 				return j.fail(&result, "FIRMWARE_INCOMPATIBLE", fmt.Errorf("app image %s is outside factory partition", spec.Path))
@@ -362,6 +409,21 @@ func (j *FlashJob) fail(r *FlashResult, code string, err error) (FlashResult, er
 	r.ErrorCode = code
 	r.ErrorMessage = err.Error()
 	return *r, err
+}
+
+// validateCurrentLayoutForMode keeps the preservation boundary explicit. An
+// app-only package can only be safe when it targets exactly the installed
+// layout. A signed complete image writes from offset zero and is allowed to
+// replace an older layout; the UI has already shown the destructive impact and
+// the job records the replacement in the diagnostic journal.
+func validateCurrentLayoutForMode(mode, currentFingerprint, expectedFingerprint string) (replacing bool, err error) {
+	if currentFingerprint == expectedFingerprint {
+		return false, nil
+	}
+	if mode == firmware.ModeFull {
+		return true, nil
+	}
+	return false, fmt.Errorf("layout fingerprint mismatch: device %s, package %s", currentFingerprint, expectedFingerprint)
 }
 func (j *FlashJob) logSidecar(action string, r flash.Result, err error) {
 	s := logging.Info

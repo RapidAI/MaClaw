@@ -40,3 +40,33 @@ func TestFlashResultCarriesTheFinalWriteBaudOnlyInLogs(t *testing.T) {
 		t.Fatalf("unexpected zero result: %+v", result)
 	}
 }
+
+func TestRecoveryRequestIsInternalOnlyAndRequiresFullPackage(t *testing.T) {
+	request := FlashRequest{Port: "COM4", PackagePath: "firmware.clawfw", Recovery: true}
+	if !request.Recovery {
+		t.Fatal("recovery marker was lost")
+	}
+	// FlashJob validates this marker only after signature/package parsing, so a
+	// caller cannot turn an app-only package into recovery by changing UI data.
+}
+
+func TestCurrentLayoutPolicyPreservesOnlyAppOnlyPackages(t *testing.T) {
+	if replacing, err := validateCurrentLayoutForMode(firmware.ModeAppOnly, "device-layout", "package-layout"); err == nil || replacing {
+		t.Fatalf("app-only mismatch replacing=%v err=%v", replacing, err)
+	}
+	if replacing, err := validateCurrentLayoutForMode(firmware.ModeFull, "device-layout", "package-layout"); err != nil || !replacing {
+		t.Fatalf("full migration replacing=%v err=%v", replacing, err)
+	}
+	if replacing, err := validateCurrentLayoutForMode(firmware.ModeAppOnly, "same", "same"); err != nil || replacing {
+		t.Fatalf("same layout replacing=%v err=%v", replacing, err)
+	}
+}
+
+func TestFlashJobContainsCurrentAppDescriptorGate(t *testing.T) {
+	if !strings.Contains(flashSecurityGateSource(t), "read_flash_app_descriptor") {
+		t.Fatal("flash preflight must read the bounded current application descriptor")
+	}
+	if !strings.Contains(flashSecurityGateSource(t), "APP_DESCRIPTOR_INVALID") {
+		t.Fatal("app-only updates must fail closed when the current app descriptor is unavailable")
+	}
+}

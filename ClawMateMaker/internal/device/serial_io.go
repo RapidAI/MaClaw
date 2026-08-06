@@ -22,11 +22,14 @@ func ReadBoundedLine(port serial.Port, limit int) (string, error) {
 		n, err := port.Read(one)
 		if n > 0 {
 			buf = append(buf, one[:n]...)
-			if one[0] == '\n' {
-				return string(buf), nil
-			}
+			// The final delimiter counts toward the bounded protocol frame. Check
+			// the bound first so a peer cannot bypass it with an oversized line
+			// whose last byte happens to be a newline.
 			if len(buf) > limit {
 				return "", errors.New("serial frame exceeds size limit")
+			}
+			if one[0] == '\n' {
+				return string(buf), nil
 			}
 		}
 		// go.bug.st/serial reports a configured idle timeout as (0, nil)
