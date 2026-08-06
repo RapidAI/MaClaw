@@ -199,6 +199,10 @@ esp_err_t board_port_audio_playback_begin(void);
 esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
                                           unsigned channels);
 esp_err_t board_port_audio_playback_end(esp_err_t playback_err);
+// Stops an in-flight foreground playback at its next bounded PCM write. A call
+// while no playback owns the bus is ignored, so the next alarm burst starts
+// with a clean playback transaction.
+void board_port_request_audio_playback_stop(void);
 // Short local acknowledgement used while the network/TTS reply is pending.
 esp_err_t board_port_play_ack_chime(void);
 // Plays one short, interruptible mechanical double-bell burst. The alarm task

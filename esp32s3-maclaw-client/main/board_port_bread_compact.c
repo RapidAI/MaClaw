@@ -233,6 +233,7 @@ static bool s_front_frame_valid;
 static bool s_direct_draw_warning_logged;
 static bool s_audio_ready;
 static TaskHandle_t s_audio_playback_owner;
+static volatile bool s_audio_playback_stop_requested;
 static bool s_audio_stream_owned;
 static unsigned s_thinking_mouth_frame;
 static bool s_thinking_surface_visible;
@@ -4192,17 +4193,23 @@ bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
 }
 
 void board_port_request_capture_stop(void) {
-    if (s_command_capture_active) s_command_capture_stop_requested = true;
+    // Retain a stop that lands in the application-to-reader hand-off window.
+    s_command_capture_stop_requested = true;
 }
 
 void board_port_reset_capture_stop(void) {
     s_command_capture_stop_requested = false;
 }
 
+void board_port_request_audio_playback_stop(void) {
+    if (s_audio_playback_owner) s_audio_playback_stop_requested = true;
+}
+
 static esp_err_t write_stereo(const int16_t *source, size_t frames, unsigned channels) {
     int16_t stereo[512];
     size_t done = 0;
     while (done < frames) {
+        if (s_audio_playback_stop_requested) return ESP_ERR_INVALID_STATE;
         size_t count = frames - done;
         if (count > 256) count = 256;
         for (size_t i = 0; i < count; ++i) {
@@ -4310,6 +4317,7 @@ esp_err_t board_port_audio_playback_begin(void) {
     esp_err_t err = audio_init();
     if (err == ESP_OK) err = speaker_play_begin();
     if (err == ESP_OK) {
+        s_audio_playback_stop_requested = false;
         s_audio_playback_owner = xTaskGetCurrentTaskHandle();
     } else {
         xSemaphoreGive(s_audio_mutex);
@@ -4326,6 +4334,7 @@ esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
     if (!pcm || frames == 0 || (channels != 1 && channels != 2)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_audio_playback_stop_requested) return ESP_ERR_INVALID_STATE;
     return write_stereo(pcm, frames, channels);
 }
 
@@ -4335,6 +4344,7 @@ esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
     }
     esp_err_t err = speaker_play_end(playback_err);
     s_audio_playback_owner = NULL;
+    s_audio_playback_stop_requested = false;
     xSemaphoreGive(s_audio_mutex);
     board_port_pause_wake_word(false);
     return err;

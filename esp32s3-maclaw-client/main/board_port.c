@@ -324,6 +324,7 @@ static bool s_audio_ready;
 // stop cannot release a mutex held by an unrelated wake/audio operation.
 static bool s_audio_stream_owned;
 static TaskHandle_t s_audio_playback_owner;
+static volatile bool s_audio_playback_stop_requested;
 static unsigned s_output_volume = OUTPUT_VOLUME_DEFAULT;
 static volatile bool s_command_display_locked;
 static volatile bool s_command_cancel_enabled;
@@ -4840,11 +4841,17 @@ bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
 }
 
 void board_port_request_capture_stop(void) {
-    if (s_command_capture_active) s_command_capture_stop_requested = true;
+    // Retain a stop arriving after the application publishes RECORDING but
+    // before the synchronous reader marks itself active.
+    s_command_capture_stop_requested = true;
 }
 
 void board_port_reset_capture_stop(void) {
     s_command_capture_stop_requested = false;
+}
+
+void board_port_request_audio_playback_stop(void) {
+    if (s_audio_playback_owner) s_audio_playback_stop_requested = true;
 }
 
 esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len) {
@@ -4914,6 +4921,7 @@ esp_err_t board_port_audio_playback_begin(void) {
     // Let the external amplifier leave shutdown before the first PCM frames.
     if (err == ESP_OK) vTaskDelay(pdMS_TO_TICKS(10));
     if (err == ESP_OK) {
+        s_audio_playback_stop_requested = false;
         s_audio_playback_owner = xTaskGetCurrentTaskHandle();
     } else {
         (void)gpio_set_level(AUDIO_PA_ENABLE, 0);
@@ -4931,9 +4939,11 @@ esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
     if (!pcm || frames == 0 || (channels != 1 && channels != 2)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_audio_playback_stop_requested) return ESP_ERR_INVALID_STATE;
     int16_t stereo[512];
     size_t offset = 0;
     while (offset < frames) {
+        if (s_audio_playback_stop_requested) return ESP_ERR_INVALID_STATE;
         size_t count = frames - offset;
         if (count > 256) count = 256;
         for (size_t i = 0; i < count; ++i) {
@@ -4968,6 +4978,7 @@ esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
     vTaskDelay(pdMS_TO_TICKS(10));
     esp_err_t pa_err = gpio_set_level(AUDIO_PA_ENABLE, 0);
     s_audio_playback_owner = NULL;
+    s_audio_playback_stop_requested = false;
     xSemaphoreGive(s_audio_mutex);
     board_port_pause_wake_word(false);
     if (playback_err != ESP_OK) return playback_err;

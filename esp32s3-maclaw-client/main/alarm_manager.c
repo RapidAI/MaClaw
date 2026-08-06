@@ -68,6 +68,8 @@ static TaskHandle_t s_task;
 static volatile bool s_ringing;
 static volatile bool s_dismiss_requested;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
+static alarm_manager_ring_callback_t s_ring_callback;
+static void *s_ring_callback_arg;
 
 static esp_err_t persist_locked(void);
 
@@ -226,7 +228,10 @@ static void alarm_task(void *arg) {
         for (unsigned attempt = 1; attempt <= ALARM_MAX_ATTEMPTS; ++attempt) {
             taskENTER_CRITICAL(&s_state_lock);
             s_ringing = true;
+            alarm_manager_ring_callback_t ring_callback = s_ring_callback;
+            void *ring_callback_arg = s_ring_callback_arg;
             taskEXIT_CRITICAL(&s_state_lock);
+            if (ring_callback) ring_callback(ring_callback_arg);
             int64_t ring_started = esp_timer_get_time();
             unsigned frame = 0;
             while (!dismiss_requested() &&
@@ -334,6 +339,14 @@ esp_err_t alarm_manager_init(void) {
         s_lock = NULL;
     }
     return task_err;
+}
+
+void alarm_manager_set_ring_callback(alarm_manager_ring_callback_t callback,
+                                     void *arg) {
+    taskENTER_CRITICAL(&s_state_lock);
+    s_ring_callback = callback;
+    s_ring_callback_arg = arg;
+    taskEXIT_CRITICAL(&s_state_lock);
 }
 
 bool alarm_manager_is_ringing(void) {
