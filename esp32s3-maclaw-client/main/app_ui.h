@@ -26,12 +26,12 @@ typedef struct {
     bool meeting_recording;
     bool recording_paused;
     uint32_t elapsed_seconds;
-    uint16_t audio_level;
-    uint16_t audio_history[24];
-    uint32_t audio_history_revision;
     bool wifi_connected;
     bool service_ready;
     bool command_display_locked;
+    bool command_cancel_enabled;
+    bool alarm_visual_active;
+    char command_stage[32];
     char ambient_time[16];
     char ambient_location[24];
     char ambient_date[24];

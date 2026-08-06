@@ -218,7 +218,6 @@ static volatile bool s_command_capture_active;
 static volatile bool s_command_capture_stop_requested;
 static bool s_recording_paused;
 static volatile uint32_t s_recording_elapsed_seconds;
-static volatile uint16_t s_recording_audio_level;
 // Same attack/release smoothing as Bread Compact's recorder. The same level
 // history feeds both the visible waveform and MIC readout, so one spoken
 // block has one consistent amplitude everywhere on the recording surface.
@@ -292,6 +291,14 @@ static uint16_t *s_framebuffers[2];
 static uint8_t s_next_framebuffer;
 static uint8_t s_front_framebuffer;
 static bool s_front_frame_valid;
+// A valid front frame is not necessarily a recording frame: it may still be a
+// pet/result/upload scene.  Keep that distinction so the first recorder frame
+// always owns every pixel before later recorder frames use delta updates.
+static volatile bool s_recording_frame_baseline;
+// Full recording scenes are required when header/mode/timer/pause state
+// changes. Audio-only updates instead patch the meter dirty region over the
+// last composed scene, matching Bread Compact's per-block renderer.
+static volatile bool s_recording_meter_dirty;
 static uint16_t *s_render_target;
 static volatile uint32_t s_presented_frames;
 static bool s_pet_animation_started;
@@ -497,6 +504,7 @@ static esp_err_t present_pet_frame_delta_sync(const uint16_t *frame);
 static bool draw_remote_pet(void);
 static unsigned response_page_count(void);
 static void draw_response_page(void);
+static void draw_recording_visual(void);
 
 static void emit_button_input(board_input_action_t action,
                               board_input_source_t source) {
@@ -525,6 +533,11 @@ static esp_err_t present_frame_sync(const uint16_t *frame) {
     // draw_pet_frame() revalidates this cache only after it presents a complete
     // ambient pet frame successfully.
     s_front_frame_valid = false;
+    // A complete foreground scene also supersedes any former recorder delta
+    // baseline. draw_recording_visual() restores this only after its own full
+    // first frame succeeds, preventing an out-of-band status/setup screen from
+    // being used as the source for a later waveform delta.
+    s_recording_frame_baseline = false;
     // The frame lives in PSRAM, while this ESP32-S3 shares its MSPI fabric
     // between PSRAM and the LCD. With psram_dma_direct disabled, esp_lcd must
     // allocate an internal bounce buffer for every submitted color transfer.
@@ -558,6 +571,11 @@ static esp_err_t draw_bitmap_sync(int x0, int y0, int x1, int y1,
     // A successful pet delta revalidates the cache at its caller, while a failed
     // or interrupted transfer correctly leaves it invalid for the next frame.
     s_front_frame_valid = false;
+    // Keep the recorder's baseline under the same rule. This helper is also
+    // used by direct status/clock writes and by every stripe of a delta frame;
+    // draw_recording_visual() re-arms it only after its entire recorder frame
+    // has completed successfully.
+    s_recording_frame_baseline = false;
     esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x1, y1, pixels);
     if (err != ESP_OK) return err;
     return wait_for_lcd_color_transfer();
@@ -2160,6 +2178,91 @@ static void scale_remote_pet_frame(const uint8_t *source, size_t source_width,
     }
 }
 
+static void compose_recording_meter(const uint16_t wave_levels[RECORDING_WAVE_COLUMNS],
+                                    uint16_t recording_smoothed_level,
+                                    bool recording_paused, uint16_t bg,
+                                    uint16_t cyan, uint16_t muted) {
+    enum { RECORDING_VISUAL_BARS = RECORDING_WAVE_COLUMNS };
+    // Keep Bread Compact's actual bar rhythm, not merely its column count:
+    // 24 five-pixel bars advance on an eight-pixel pitch.  Stretching that to
+    // 12/7 on EchoEar made the waveform read as a different visual language
+    // and made each 32 ms update transfer substantially more pixels.  This
+    // 189 px span is centred inside the round screen's safe chord.
+    const int wave_left = 84;
+    const int wave_pitch = 8;
+    const int wave_bar_width = 5;
+    const int wave_center = 205;
+    const int wave_half_height = 42;
+    fill_rect(wave_left - 4, wave_center,
+              wave_left + (RECORDING_VISUAL_BARS - 1) * wave_pitch +
+                  wave_bar_width + 4,
+              wave_center + 1, muted);
+    for (int bar = 0; bar < RECORDING_VISUAL_BARS; ++bar) {
+        uint16_t level = recording_paused ? 0 : wave_levels[bar];
+        // Keep Bread Compact's five-pixel quiet bar (2 px above/below the
+        // centre rule). EchoEar only adapts placement for the round aperture.
+        int half = 2 + (int)(level * wave_half_height / 1000u);
+        if (half > wave_half_height) half = wave_half_height;
+        int x = wave_left + bar * wave_pitch;
+        fill_rect(x, wave_center - half, x + wave_bar_width,
+                  wave_center + half + 1, recording_paused ? muted : cyan);
+    }
+    char level_label[20];
+    snprintf(level_label, sizeof(level_label), "MIC %u%%",
+             (unsigned)(recording_smoothed_level / 10u));
+    draw_centered_text(260, level_label, recording_paused ? muted : cyan, bg);
+}
+
+static void draw_recording_meter_visual(void) {
+    if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
+    bool recording_active;
+    bool recording_paused;
+    bool recording_frame_baseline;
+    uint16_t recording_smoothed_level;
+    uint16_t wave_levels[RECORDING_WAVE_COLUMNS] = {0};
+    taskENTER_CRITICAL(&s_state_lock);
+    recording_active = s_recording_active;
+    recording_paused = s_recording_paused;
+    recording_smoothed_level = s_recording_smoothed_level;
+    memcpy(wave_levels, s_recording_wave_levels, sizeof(wave_levels));
+    recording_frame_baseline = s_recording_frame_baseline;
+    taskEXIT_CRITICAL(&s_state_lock);
+
+    if (!recording_active || recording_paused || !recording_frame_baseline ||
+        !s_front_frame_valid || !s_framebuffers[s_front_framebuffer]) {
+        if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+        if (recording_active) draw_recording_visual();
+        return;
+    }
+
+    uint16_t *frame = s_framebuffers[s_next_framebuffer];
+    if (frame) {
+        // Bread Compact starts from its previous composed frame and touches
+        // only the live meter band. Keep that exact ownership model here: it
+        // avoids re-rasterising static header/timer/prompt pixels every 32 ms.
+        memcpy(frame, s_framebuffers[s_front_framebuffer], LCD_FRAMEBUFFER_BYTES);
+        s_render_target = frame;
+        fill_rect(72, 157, 288, 280, rgb565(10, 19, 30));
+        compose_recording_meter(wave_levels, recording_smoothed_level, false,
+                                rgb565(10, 19, 30), rgb565(72, 205, 220),
+                                rgb565(91, 118, 138));
+        s_render_target = NULL;
+        esp_err_t draw_err = present_pet_frame_delta_sync(frame);
+        if (draw_err == ESP_OK) {
+            s_front_framebuffer = s_next_framebuffer;
+            s_front_frame_valid = true;
+            s_recording_frame_baseline = true;
+            s_next_framebuffer ^= 1u;
+            ++s_presented_frames;
+            s_recording_meter_dirty = false;
+        } else {
+            s_recording_meter_dirty = true;
+            ESP_LOGE(TAG, "recording meter present failed: %s", esp_err_to_name(draw_err));
+        }
+    }
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
 static void draw_recording_visual(void) {
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     // The animation task may have queued this draw just before capture ended.
@@ -2170,6 +2273,7 @@ static void draw_recording_visual(void) {
     uint32_t recording_elapsed_seconds;
     uint16_t recording_smoothed_level;
     uint16_t wave_levels[RECORDING_WAVE_COLUMNS] = {0};
+    bool recording_frame_baseline;
     // The capture task updates the meter while this renderer prepares a frame.
     // Take one coherent state snapshot, as Bread's LCD-serialized renderer
     // does, so a pause/mode/timer transition cannot mix two recorder states in
@@ -2181,13 +2285,16 @@ static void draw_recording_visual(void) {
     recording_elapsed_seconds = s_recording_elapsed_seconds;
     recording_smoothed_level = s_recording_smoothed_level;
     memcpy(wave_levels, s_recording_wave_levels, sizeof(wave_levels));
+    recording_frame_baseline = s_recording_frame_baseline;
     taskEXIT_CRITICAL(&s_state_lock);
     if (!recording_active) {
         if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
         return;
     }
-    // Compose the complete recording surface off-screen, then present it as
-    // one DMA transaction. Direct drawing exposes every clear/bar/text step.
+    // Compose the complete recording surface off-screen. The first recorder
+    // frame must be a full foreground hand-off; later frames can compare
+    // against this same recorder scene so they only send the timer/meter
+    // regions which genuinely changed.
     uint16_t *frame = s_framebuffers[s_next_framebuffer];
     if (frame) s_render_target = frame;
     uint16_t bg = rgb565(10, 19, 30);
@@ -2211,12 +2318,15 @@ static void draw_recording_visual(void) {
     // prior bottom-right pixel sat just outside the physical circle.
     fill_rect(78, 34, LCD_WIDTH - 78, 38, accent);
     fill_rect(78, LCD_HEIGHT - 38, LCD_WIDTH - 78, LCD_HEIGHT - 34, accent);
-    fill_rect(58, 52, 80, 74, accent);
-    fill_rect(65, 59, 73, 67, rgb565(255, 235, 238));
+    // Bread's active marker is a 20 px outer square with an 8 px light core.
+    // Preserve that scale on the round panel; only its position moves inward
+    // for the visible chord.
+    fill_rect(58, 52, 78, 72, accent);
+    fill_rect(64, 58, 72, 66, rgb565(255, 235, 238));
     draw_text24_centered_safe(48, recording_paused ? "已暂停" : "正在听取",
-                              208, fg, bg);
+                              198, fg, bg);
     draw_text24_centered_safe(84, recording_is_meeting ? "会议录音" : "语音指令",
-                              224, recording_paused ? amber : cyan, bg);
+                              198, recording_paused ? amber : cyan, bg);
     uint32_t minutes = recording_elapsed_seconds / 60;
     uint32_t seconds = recording_elapsed_seconds % 60;
     char elapsed[16];
@@ -2225,34 +2335,8 @@ static void draw_recording_visual(void) {
 
     // Match Bread Compact's clear, symmetric meter: the same 24 filtered-level
     // history columns advance from left to right around one quiet centre line.
-    // The source remains EchoEar's cleaned microphone level, but shares the
-    // reference board's one meter-to-waveform contract exactly.
-    enum { RECORDING_VISUAL_BARS = RECORDING_WAVE_COLUMNS };
-
-    // 24 Bread-compatible bars at 12 px pitch span 283 px.  Centre that
-    // exact span on the 360 px round panel: the earlier x=42 placement made
-    // the bars sit 3.5 px to the right of their already-centred quiet rule.
-    const int wave_left = 39;
-    const int wave_pitch = 12;
-    const int wave_bar_width = 7;
-    const int wave_center = 220;
-    const int wave_half_height = 42;
-    fill_rect(wave_left - 4, wave_center, LCD_WIDTH - wave_left + 4, wave_center + 1, muted);
-    for (int bar = 0; bar < RECORDING_VISUAL_BARS; ++bar) {
-        uint16_t level = recording_paused ? 0 : wave_levels[bar];
-        // Keep Bread Compact's five-pixel quiet bar (2 px above/below the
-        // centre rule). EchoEar only scales the horizontal spacing for the
-        // larger round panel; an extra pixel here made silence look active.
-        int half = 2 + (int)(level * wave_half_height / 1000u);
-        if (half > wave_half_height) half = wave_half_height;
-        int x = wave_left + bar * wave_pitch;
-        fill_rect(x, wave_center - half, x + wave_bar_width, wave_center + half + 1,
-                  recording_paused ? muted : cyan);
-    }
-    char level_label[20];
-    snprintf(level_label, sizeof(level_label), "MIC %u%%",
-             (unsigned)(recording_smoothed_level / 10u));
-    draw_centered_text(278, level_label, recording_paused ? muted : cyan, bg);
+    compose_recording_meter(wave_levels, recording_smoothed_level,
+                            recording_paused, bg, cyan, muted);
     // Bread Compact keeps one calm action line below the meter.  The previous
     // EchoEar layout added a second state row just four pixels above it, so the
     // two 24 px glyph rows visibly collided. State is already explicit in the
@@ -2265,16 +2349,22 @@ static void draw_recording_visual(void) {
     }
     s_render_target = NULL;
     if (frame) {
-        // Recording changes only a pulse, timer and narrow waveform band. Use
-        // the verified changed-region presenter so an installed remote pet
-        // cannot make this independent foreground surface feel sluggish.
-        esp_err_t draw_err = present_pet_frame_delta_sync(frame);
+        // First frame: a complete scene prevents result/upload/standby pixels
+        // leaking into the recorder. Once it is on screen, retain the recorder
+        // frame as the delta baseline. This preserves Bread's live waveform
+        // cadence without re-sending 259 KB every 32 ms on the S3 QSPI panel.
+        esp_err_t draw_err = recording_frame_baseline
+                                 ? present_pet_frame_delta_sync(frame)
+                                 : present_frame_sync(frame);
         if (draw_err == ESP_OK) {
             s_front_framebuffer = s_next_framebuffer;
             s_front_frame_valid = true;
+            s_recording_frame_baseline = true;
             s_next_framebuffer ^= 1u;
             ++s_presented_frames;
+            s_recording_meter_dirty = false;
         } else {
+            s_recording_meter_dirty = true;
             ESP_LOGE(TAG, "recording frame present failed: %s", esp_err_to_name(draw_err));
         }
     }
@@ -2318,8 +2408,14 @@ static void pet_animation_task(void *arg) {
             // The QR code and its white quiet zone must stay pixel-stable for
             // phone cameras. Nothing else should draw while setup is active.
         } else if (s_recording_active) {
-            s_pet_frame = (uint8_t)((s_pet_frame + 1u) % 8u);
-            draw_recording_visual();
+            // Recording frames are driven synchronously by
+            // board_port_set_audio_level(): one completed 512-sample capture
+            // block produces one waveform frame, exactly as on Bread Compact.
+            // The idle animation scheduler must not add a second, phase-shifted
+            // draw between two audio blocks. If a 32 ms meter frame was
+            // blocked by a foreground LCD transfer, render the latest state
+            // once here rather than losing that audio history update forever.
+            if (s_recording_meter_dirty) draw_recording_meter_visual();
         } else if (s_message_active && s_ready_prompt_expires_us == 0) {
             // A regular status notice is deliberately static.  Ready prompts
             // carry the one explicit expiry which returns to the ambient pet.
@@ -2969,8 +3065,12 @@ no_mem:
 
 void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds) {
     bool new_session;
+    bool visual_changed;
     taskENTER_CRITICAL(&s_state_lock);
     new_session = active && !s_recording_active;
+    visual_changed = !active || new_session ||
+                     paused != s_recording_paused ||
+                     (active && elapsed_seconds != s_recording_elapsed_seconds);
     if (active) s_ready_prompt_expires_us = 0;
     if (active) {
         s_idle_pet_visible = false;
@@ -2994,16 +3094,22 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
     // treating that as a reset discarded the first visible slice of speech.
     if (!active || new_session) {
         memset(s_recording_wave_levels, 0, sizeof(s_recording_wave_levels));
+        s_recording_frame_baseline = false;
+        s_recording_meter_dirty = false;
     }
     // Bread Compact starts every recording with a quiet meter. Reset the
     // matching shared history too, otherwise a command begun immediately after
     // a loud meeting opens with the previous session's percentage for one frame.
     if (!active || new_session) {
-        s_recording_audio_level = 0;
         s_recording_smoothed_level = 0;
     }
     taskEXIT_CRITICAL(&s_state_lock);
-    if (active) {
+    // Bread Compact only redraws the complete static recording scene at a
+    // state/timer boundary. Meter samples call board_port_set_audio_level(),
+    // which owns the live waveform frames. Avoid re-composing a no-op scene on
+    // every caller reassertion so a paused/steady recorder cannot compete with
+    // the next audio-driven update.
+    if (active && visual_changed) {
         draw_recording_visual();
     } else {
         if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) == pdTRUE) {
@@ -3027,6 +3133,7 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
 
 void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     if (level > 1000) level = 1000;
+    bool should_draw = false;
     taskENTER_CRITICAL(&s_state_lock);
     if (!s_recording_active) {
         taskEXIT_CRITICAL(&s_state_lock);
@@ -3035,15 +3142,28 @@ void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     s_recording_smoothed_level = level > s_recording_smoothed_level
                                      ? (uint16_t)((s_recording_smoothed_level + level * 3u) / 4u)
                                      : (uint16_t)((s_recording_smoothed_level * 7u + level) / 8u);
-    s_recording_audio_level = s_recording_smoothed_level;
     // Bread Compact shifts exactly this filtered meter value into its 24 bar
     // history for every 512-frame input unit. Keep EchoEar's round renderer
     // on that same source so the waveform and its MIC percentage agree.
     memmove(&s_recording_wave_levels[0], &s_recording_wave_levels[1],
             (RECORDING_WAVE_COLUMNS - 1) * sizeof(s_recording_wave_levels[0]));
     s_recording_wave_levels[RECORDING_WAVE_COLUMNS - 1] = s_recording_smoothed_level;
-    s_recording_elapsed_seconds = elapsed_seconds;
+    // Keep the live waveform cadence independent from the visible timer.
+    // Bread Compact advances its recorder clock only from
+    // board_port_set_recording_visual() at the one-second boundary. Updating
+    // it here made that later call appear unchanged, so EchoEar could skip the
+    // full frame containing the next timer value. The meter does not draw the
+    // timer region, therefore it must leave this state alone.
+    should_draw = true;
+    s_recording_meter_dirty = true;
     taskEXIT_CRITICAL(&s_state_lock);
+    // Bread Compact owns the waveform cadence at the capture boundary: each
+    // 512-sample level update immediately redraws the meter. EchoEar used to
+    // rebuild the full recording scene here, unlike Bread Compact which
+    // updates only its meter band from the previous composed frame. Keep the
+    // same one audio block -> one UI frame contract without spending the whole
+    // 32 ms budget on static labels and round-screen chrome.
+    if (should_draw) draw_recording_meter_visual();
 }
 
 void board_port_push_recording_pcm(const int16_t *samples, size_t count) {
@@ -3209,9 +3329,8 @@ void board_port_show_upload_progress(size_t completed_bytes, size_t total_bytes,
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
-    if (!s_panel || !qrcode) return;
-    const int size = esp_qrcode_get_size(qrcode);
+static void show_qrcode_matrix(const uint8_t *modules, size_t size, const char *ssid) {
+    if (!s_panel || !modules || size == 0) return;
     const int quiet_zone = 4;
     // A QR code is necessarily square, but its corners must remain inside the
     // round aperture.  204px at y=40 is safely within the EchoEar's visible
@@ -3219,8 +3338,8 @@ void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
     // at y=12 placed its upper corners behind the bezel.
     const int available = 204;
     const int module = available / (size + quiet_zone * 2);
-    if (size <= 0 || module < 2) {
-        ESP_LOGW(TAG, "QR code is too large for display: %d modules", size);
+    if (module < 2) {
+        ESP_LOGW(TAG, "QR code is too large for display: %u modules", (unsigned)size);
         return;
     }
     const int qr_pixels = (size + quiet_zone * 2) * module;
@@ -3260,8 +3379,8 @@ void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
         for (int px = 0; px < qr_pixels; ++px) {
             const int module_x = px / module - quiet_zone;
             const bool black_module = module_x >= 0 && module_x < size &&
-                                      module_y >= 0 && module_y < size &&
-                                      esp_qrcode_get_module(qrcode, module_x, module_y);
+                                       module_y >= 0 && module_y < size &&
+                                       modules[(size_t)module_y * size + module_x] != 0;
             if (row) row[px] = black_module ? black : white;
         }
     }
@@ -3297,6 +3416,27 @@ void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
     }
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "showing setup Wi-Fi QR for %s", ssid ? ssid : "");
+}
+
+void board_port_show_qrcode_matrix(const uint8_t *modules, size_t module_count,
+                                   const char *ssid) {
+    show_qrcode_matrix(modules, module_count, ssid);
+}
+
+void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
+    if (!qrcode) return;
+    const int size = esp_qrcode_get_size(qrcode);
+    if (size <= 0 || size > 177) return;
+    const size_t pixels = (size_t)size * size;
+    uint8_t *modules = heap_caps_malloc(pixels, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!modules) return;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            modules[(size_t)y * size + x] = esp_qrcode_get_module(qrcode, x, y) ? 1u : 0u;
+        }
+    }
+    show_qrcode_matrix(modules, (size_t)size, ssid);
+    heap_caps_free(modules);
 }
 
 void board_port_set_wifi_status(const char *ssid, bool connected) {
@@ -3806,19 +3946,13 @@ void board_port_show_response(const char *title, const char *text) {
 void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_text,
                                  const char *label, unsigned attempt, unsigned max_attempts) {
     if (!active) {
-        // Alarm completion has already been committed to the shared UI model.
-        // Do not call the public board setters from here: on EchoEar the
-        // application macro routes those names back through app_ui, so this
-        // board-local terminal branch used to recurse through the UI facade.
-        // Bread clears its board-local foreground owner then renders idle; do
-        // the equivalent directly here.
+        // The shared UI coordinator immediately replays the authoritative
+        // foreground scene. Release only the alarm-local guard here; drawing
+        // idle would flash and would discard a response/upload/setup page.
         s_alarm_visual_active = false;
-        s_command_display_locked = false;
-        strlcpy(s_pet_state, "idle", sizeof(s_pet_state));
         s_display_sleeping = false;
-        s_idle_pet_visible = true;
-        s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
-        draw_pet();
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, true));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
         return;
     }
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
@@ -3982,6 +4116,37 @@ bool board_port_navigate_response(int page_delta) {
     if ((unsigned)next != s_response_page) {
         s_response_page = (unsigned)next;
         draw_response_page();
+    }
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+    return true;
+}
+
+bool board_port_get_response_page(unsigned *page) {
+    if (!page) return false;
+    if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    bool active = s_response_active;
+    if (active) *page = s_response_image_active ? 0u : s_response_page;
+    if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+    return active;
+}
+
+bool board_port_restore_response_page(unsigned page) {
+    if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    if (!s_response_active) {
+        if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
+        return false;
+    }
+    if (!s_response_image_active) {
+        unsigned pages = response_page_count();
+        unsigned target = pages > 0 && page >= pages ? pages - 1 : page;
+        if (target != s_response_page) {
+            s_response_page = target;
+            draw_response_page();
+        }
     }
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
     return true;
@@ -4745,7 +4910,6 @@ esp_err_t board_port_audio_playback_begin(void) {
         return ESP_ERR_INVALID_STATE;
     }
     esp_err_t err = audio_init();
-    if (err == ESP_OK && s_output_volume == 0) err = ESP_ERR_INVALID_STATE;
     if (err == ESP_OK) err = gpio_set_level(AUDIO_PA_ENABLE, 1);
     // Let the external amplifier leave shutdown before the first PCM frames.
     if (err == ESP_OK) vTaskDelay(pdMS_TO_TICKS(10));

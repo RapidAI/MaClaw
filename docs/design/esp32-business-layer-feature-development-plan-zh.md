@@ -796,12 +796,13 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 ### 12.5 版本提醒、刷机工具升级、重启、解绑与恢复出厂
 
 - 固定 16 MiB 产品保留单 `factory` app、model 和会议/资源 storage；不新增 `otadata/ota_0/ota_1/staging`，不发布设备端 OTA capability，也不为了升级缩减用户数据空间。
-- 更新信息链路固定为 `GitHub Release → Hub Update Catalog → device metadata`。设备仅从已配对 Hub 取得适用 profile 的版本、channel、severity、发布时间、release notes 摘要和最低刷机工具版本；不构造 GitHub URL、不接收 firmware URL、不下载 firmware bytes。
-- 三硬件共用 Update Service、`UPDATE_AVAILABLE` Scene、版本去重、稍后和忽略当前版本语义。Critical 只能提高提醒显著性/频率，不能触发下载、刷写、重启或远程安装。
-- 用户主动在电脑运行官方刷机工具；工具从 allowlisted GitHub Release 完整下载 signed segmented bundle，先验证 manifest/signature/size/hash/segment offset/write allowlist，再读取 USB 设备 identity 并匹配 product/profile/hw/layout/compat/flash size，全部成功才刷写。padded merged raw image 仅用于显式恢复出厂/工装，普通升级不得从 `0x0` 整包写入。
+- 更新信息链路固定为 `GitHub Release → Hub Update Catalog → device metadata`。设备仅从已配对 Hub 取得适用 profile 的版本、单调 `releaseSequence`、channel、severity、发布时间、package/manifest digest、release notes 摘要/digest、撤回状态、`checkAfter/maxAge` 和最低 ClawMate Maker 版本；不构造 GitHub URL、不接收 firmware URL、不下载 firmware bytes。版本字符串只展示，是否有更新按 sequence 判定；同 sequence 异 digest、撤回、降级、跨 channel、设备版本更高均使用独立稳定状态，不能误报为升级。
+- 三硬件共用 Update Service、`UPDATE_AVAILABLE` Scene、版本去重、稍后和忽略当前版本语义。Critical 只能提高提醒显著性/频率，允许暂时静音但必须有最大 defer/dismiss TTL；catalog 撤回/替换或更高 sequence 会使旧 dismiss 失效，仍不能触发下载、刷写、重启或远程安装。提醒状态合并、限频写 NVS。
+- 用户主动在电脑运行官方 ClawMate Maker；工具从 allowlisted GitHub Release 完整下载正式 `.clawfw`，复用既有 manifest 原始字节签名、package/file size/hash、profile/manifest/tool 三方 allow-list、`layoutFingerprint` 和 `reservedRegions` 契约，再读取 ROM/USB 设备 identity、真实 partition table 和安全基线。制造身份可为 `confirmed`；无强身份最多为 `probable` 并人工确认；`ambiguous/conflict` 必须拒绝。padded merged raw image 仅用于显式恢复出厂/工装，普通升级不得从 `0x0` 整包写入。
 - 普通升级默认保留 NVS、storage、未上传会议和 alarm 数据；恢复出厂刷机是独立二次确认模式。layout/data schema 不兼容时必须提示导出或拒绝，不能静默清空用户数据。
-- 刷机前若设备可通信，工具先检查 active Alarm/Meeting/Persistence 并引导安全结束；刷写开始后提示禁止断电，完成后回读关键 digest，重启并验证 transaction/firmware digest、`BOOT_OK` 与 `SERVICE_READY`。
-- 单 app 没有自动回滚；stable 发布必须完成升级/降级兼容、断电故障注入和上一稳定 signed bundle 恢复演练。产品文案不得宣传自动安装、A/B 或自动回滚。
+- 日常 `.clawfw appUpdate` 只写 application，显式保留 NVS/model/storage；bootloader/partition table/model 不默认随版本写入，模型升级必须是独立兼容模式。实际禁止触达范围取 signed manifest、profile `reservedRegions` 和真实布局的最严格约束。
+- 刷机前若设备可通信，工具先在正常模式检查 active Alarm/Meeting/Persistence 并引导安全结束，再进入 ROM bootloader；设备无法通信时只能进入 recovery 并明确提示未知 in-flight 数据风险。刷写完成后执行 ROM hash/readback，重启并以新 nonce 验证正式 `BOOT_STATUS.ready`、App/ELF/release/layout/self-test，再独立检查 `SERVICE_STATUS.ready`。
+- 单 app 没有自动回滚；App 擦除后中断必须进入 ClawMate Maker `RECOVERY_REQUIRED`，job journal 重新验证设备/包后从镜像边界恢复。Stable 发布必须完成升级/降级 reader-writer 兼容、断电故障注入和上一稳定 `.clawfw` 的真实恢复演练；schema 已不可逆迁移时必须阻止不安全降级。产品文案不得宣传自动安装、A/B 或自动回滚。
 - 必须重启时先持久化 active occurrence/ring session、meeting recovery、Gateway outbox/cursor 和 reboot reason；重启后按新 schema reconciliation，不能把所有操作重新执行一遍。
 - 普通网络重新配置和 Hub 暂时解绑默认保留本地 alarm；完整 factory reset、设备转移或明确“清除个人数据”必须擦除 alarm label、schedule、occurrence、replay/outbox 和相关日志索引。
 - 有线升级/回退必须覆盖 ALM1、ALM2、V3 reader/writer 窗口；无法安全降级时由 signed manifest 和刷机工具阻止，不以清空用户闹钟换取启动成功。
@@ -937,16 +938,16 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 
 任务：
 
-1. Workflow 为三 profile 同时发布 signed segmented flasher bundle、canonical manifest、SBOM/provenance 和 release notes；每段 offset/write allowlist/protected ranges 明确，merged raw image 仅供恢复出厂；采用 draft→上传全量→API 回读 size/digest/allowlist→publish，已发布 asset 不允许覆盖。
-2. Hub 只处理 allowlisted `RapidAI/MaClaw` GitHub Release/tag/channel 的已验证 manifest，经 device/client/profile/hw/layout/credential-generation binding 向设备提供 latest metadata，不下发固件 URL/bytes。
+1. Workflow 为三 profile 同时发布 ClawMate Maker `.clawfw`、manifest、SBOM/provenance 和 release notes；日常 `appUpdate` 只写 App，`fullInstall` 使用 signed `files/eraseRegions/writeOrder`，并生成 `layoutFingerprint/reservedRegions` 兼容证据；merged raw image 仅供恢复出厂。采用 draft→上传全量→API 回读 size/digest/allowlist→publish，`packageId + manifest digest` 唯一，已发布 asset 不允许覆盖。
+2. Hub 只处理 allowlisted `RapidAI/MaClaw` GitHub Release/tag/channel 的已验证 manifest，经 device/client/profile/hw/layout/credential-generation binding 向设备提供 latest metadata，不下发固件 URL/bytes；明确 `releaseSequence`、digest conflict、撤回/降级/开发版、最低工具版本、`checkAfter/maxAge` 与稳定错误码。
 3. 设备实现共享 Update Service、`UPDATE_AVAILABLE` Scene、`update.check/status/remind_later/dismiss_version`，完成检查退避、同版本去重、critical 提醒、稍后/忽略和三硬件输入/显示适配。
 4. 静态与运行测试证明设备没有 firmware download、`esp_ota_*`、partition erase/write、boot target 和远程安装/重启路径；固定 16 MiB layout 保留单 factory/model/storage。
-5. 官方刷机工具从 GitHub 完整下载 bundle，验证签名/size/hash/tool version/segment offsets/protected ranges，再匹配 USB identity/profile/hw/layout/compat/flash size；错误输入或普通升级误选 merged raw image 在首个写入前拒绝。
+5. 官方 ClawMate Maker 从 GitHub 完整下载 `.clawfw`，验证签名/size/hash/tool version、profile/manifest/tool allow-list、identity confidence、真实 `layoutFingerprint`/`reservedRegions`、compat/flash/security baseline；错误输入、`ambiguous/conflict` 或普通升级误选 merged raw image 在首个写入前拒绝。
 6. 普通升级默认保留 NVS/storage/未上传会议，恢复出厂是独立二次确认；schema/layout 不兼容先导出或拒绝，不自动格式化。
-7. 完成 maintenance readiness、稳定 USB/供电、刷写中禁止断电、刷后回读 digest、BOOT_OK/SERVICE_READY 和失败恢复流程。
-8. 完成单 app stable 发布门禁和上一稳定 signed bundle 恢复演练；明确没有自动回滚。
+7. 完成正常模式 maintenance readiness→ROM bootloader、稳定 USB/供电、安全取消点、ROM hash/readback、新 nonce `BOOT_STATUS/SERVICE_STATUS` 和 job journal 流程。
+8. 完成单 app `RECOVERY_REQUIRED`、schema reader/writer 窗口和上一稳定 `.clawfw` 恢复演练；明确没有自动回滚，无法安全降级时 fail closed。
 
-退出条件：三硬件只接收相同语义的可信版本 metadata 并显示等价提醒，均不存在设备端固件下载/安装路径；官方刷机工具对 signed bundle、设备 identity、数据保留、刷后回读和失败恢复通过门禁。
+退出条件：三硬件只接收相同语义的可信版本 metadata 并显示等价提醒，均不存在设备端固件下载/安装路径；官方 ClawMate Maker 对 `.clawfw`、identity confidence、数据保留、readback 和失败恢复通过门禁。
 
 ### Phase 10：三硬件切换、全功能对齐与第四参考硬件验证
 
@@ -1053,10 +1054,10 @@ Power Service 只选择满足所有 lease 和 deadline 的最深睡眠状态，�
 | UPD-001 | 固定 16 MiB 设备不实现 OTA，不新增 A/B/staging，不下载或写入固件 | partition/capability/tool 静态扫描、设备网络/Flash trace |
 | UPD-002 | GitHub Release→Hub Update Catalog→设备 metadata，身份/profile 绑定且不返回 firmware URL | Hub API/allowlist/跨设备负向测试 |
 | UPD-003 | 三 profile 的检查、提醒、稍后/忽略和错误语义一致 | 三 profile intent/scene/status diff、HIL |
-| UPD-004 | Workflow 发布不可变 signed segmented flasher bundle/manifest/SBOM/provenance，merged raw 仅供恢复 | draft/publish、offset/protected-range、签名/asset mutation 测试 |
-| UPD-005 | 刷机工具完整校验 bundle 与真实设备 identity 后才写入 | 错板/错 layout/partial/tamper 负向矩阵 |
-| UPD-006 | 普通升级保留 NVS/storage/会议，刷后回读并验证 readiness | 分区前后 digest、断电和数据保留 HIL |
-| UPD-007 | 单 app 无自动回滚风险明确，上一稳定 signed bundle 可恢复 | 升降级/schema 窗口、失败恢复演练 |
+| UPD-004 | Workflow 发布不可变 ClawMate Maker `.clawfw`/manifest/SBOM/provenance；`appUpdate` 只写 App，merged raw 仅供恢复 | draft/publish、files/eraseRegions、layoutFingerprint/reservedRegions、签名/asset mutation 测试 |
+| UPD-005 | ClawMate Maker 校验 `.clawfw`、三方 allow-list、真实布局、安全基线与 identity confidence 后才写入 | probable 确认、ambiguous/conflict、错 layout/partial/tamper 负向矩阵 |
+| UPD-006 | 普通升级保留 NVS/model/storage/会议，刷后 readback 并以 nonce readiness 验证 | 分区前后 digest、BOOT_STATUS/SERVICE_STATUS、断电和数据保留 HIL |
+| UPD-007 | 单 app 无自动回滚风险明确，`RECOVERY_REQUIRED` 与上一稳定 `.clawfw` 可真实恢复 | journal、升降级/schema 窗口、逐 block 断电恢复演练 |
 
 每项证据需记录 firmware digest、profile、硬件 revision、测试版本、原始 trace/hash 和结论。另一板型或另一固件的通过结果不能替代当前目标。
 
@@ -1114,7 +1115,7 @@ flag 必须有过期 Phase 和删除条件。禁止长期形成 Bread 走 V2、E
 | 提醒过于频繁或无法忽略 | 用户打扰、关闭设备联网 | 同版本去重、最小间隔、稍后/忽略持久化、critical 有界策略 |
 | 刷机工具下载部分/篡改/错板 bundle | 设备变砖或运行错误固件 | 完整签名/size/hash/identity 校验后才开始写 |
 | 普通更新擦除 storage/NVS | 会议、闹钟、配对数据丢失 | 数据保留默认；写区 allowlist；恢复出厂独立二次确认 |
-| 单 app 中断且无自动回滚 | 设备无法启动 | 供电/USB 门禁、刷后回读、上一 stable signed bundle 恢复演练 |
+| 单 app 中断且无自动回滚 | 设备无法启动 | 供电/USB 门禁、ROM readback、`RECOVERY_REQUIRED` journal、上一 stable `.clawfw` 恢复演练 |
 | label/tool 输入污染显示或日志 | 崩溃、glyph 耗尽或隐私泄露 | UTF-8/控制字符验证、glyph 预算、脱敏与速率限制 |
 
 ## 18. 发布完成定义
@@ -1139,7 +1140,7 @@ flag 必须有过期 Phase 和删除条件。禁止长期形成 Bread 走 V2、E
 16. 普通重配保留本地 alarm；factory reset/设备转移可靠清除 alarm、label、replay/outbox 和相关隐私数据。
 17. 版本检查、刷机工具 maintenance、计划重启、崩溃恢复与 active alarm/meeting/sleep 事务均按 durable lifecycle contract 收敛。
 18. 三硬件只从已配对 Hub 获取版本 metadata，不接收 firmware URL/bytes，不存在设备端安装 capability/tool/partition 写入路径。
-19. 官方刷机工具完整校验 GitHub signed bundle 与真实设备 identity，默认保留用户数据，刷后回读并验证 readiness；单 app 无自动回滚边界清晰。
+19. 官方 ClawMate Maker 完整校验 GitHub `.clawfw`、真实布局与 identity confidence，默认保留用户数据，刷后 readback 并以 nonce 验证 readiness；单 app 无自动回滚和 `RECOVERY_REQUIRED` 边界清晰。
 
 ## 19. 实施优先级摘要
 

@@ -50,8 +50,8 @@ bool board_port_wait_for_boot_network_toggle(uint32_t window_ms);
 // Re-presents the board-specific boot artwork and keeps it in the foreground
 // until another explicit surface (ready, setup, error, etc.) replaces it.
 void board_port_show_startup_screen(void);
-// Applies a relative output-volume step. Boards without adjustable output may
-// return ESP_ERR_NOT_SUPPORTED. The resulting 0..100 value is optional.
+// Applies a relative output-volume step. The resulting 0..100 value is optional;
+// a board without physical volume keys may still expose software/remote volume.
 esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_percent);
 // Applies an absolute 0..100 output-volume value received from MaClaw.
 esp_err_t board_port_set_output_volume(unsigned percent);
@@ -103,6 +103,13 @@ void board_port_show_response_image(const char *title, const char *caption,
 // Moves a paged response surface. Returns false when no response is visible,
 // allowing the caller to retain the keys' normal volume function.
 bool board_port_navigate_response(int page_delta);
+// Returns the currently rendered zero-based text-reply page. Image replies
+// report page 0. This lets the shared foreground coordinator preserve reading
+// position when an alarm temporarily owns the display.
+bool board_port_get_response_page(unsigned *page);
+// Restores a zero-based text-reply page after board_port_show_response(). The
+// renderer clamps out-of-range values to the final available page.
+bool board_port_restore_response_page(unsigned page);
 // Adds/refreshes compact 24x24 glyphs supplied by the Hub. The RAM cache is
 // bounded and uses least-recently-used replacement, so arbitrary UTF-8 text
 // can render without embedding a full Chinese font in the firmware.
@@ -110,6 +117,10 @@ int board_port_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]);
 // Draws a scannable QR code on the full display while the provisioning access
 // point is active. It stays on screen until another display operation occurs.
 void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid);
+// Renders an owned QR module matrix. This is the replay-safe form used by the
+// shared UI coordinator when an alarm temporarily preempts the setup scene.
+void board_port_show_qrcode_matrix(const uint8_t *modules, size_t module_count,
+                                   const char *ssid);
 // Shows the normal ready-to-talk hint temporarily. After one minute with no
 // interaction, the display returns to the selected MaClaw GUI pet.
 void board_port_show_ready_prompt(const char *title, const char *text);

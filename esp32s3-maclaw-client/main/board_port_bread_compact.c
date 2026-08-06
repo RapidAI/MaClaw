@@ -183,6 +183,7 @@ static const char *const s_wake_word_phonetics[] = {
 #define THINKING_MOUTH_FRAME_MS 420
 #define REMOTE_PET_RENDER_FRAME_MS 80
 #define REMOTE_PET_DEFAULT_KEYFRAME_MS 450
+#define IDLE_PET_SLEEP_TIMEOUT_US (30LL * 60 * 1000 * 1000)
 #define AMBIENT_WEATHER_TEXT_Y 66
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
 // Fangtang has only two compact status rows. Give the selected pet every row
@@ -241,6 +242,8 @@ static volatile bool s_command_capture_active;
 static volatile bool s_command_capture_stop_requested;
 static bool s_foreground_surface;
 static bool s_alarm_visual_active;
+static bool s_display_sleeping;
+static int64_t s_idle_pet_sleep_expires_us;
 static bool s_recording_paused;
 static uint32_t s_recording_elapsed;
 static uint16_t s_recording_levels[24];
@@ -432,7 +435,25 @@ static bool begin_composed_frame(void) {
     return true;
 }
 
+static void wake_display_for_draw_locked(void) {
+    if (!s_display_sleeping) return;
+    s_display_sleeping = false;
+    s_idle_pet_sleep_expires_us = 0;
+    // A controller is allowed to lose or alter GRAM while DISP is disabled.
+    // Invalidate the front snapshot so the first wake draw transfers every row
+    // even when its pixels happen to match the last pre-sleep ambient frame.
+    s_front_frame_valid = false;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, true));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+}
+
+static void enter_ambient_awake_locked(void) {
+    wake_display_for_draw_locked();
+    s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
+}
+
 static bool begin_screen_frame(void) {
+    wake_display_for_draw_locked();
     if (begin_composed_frame()) return true;
     if (!s_direct_draw_warning_logged) {
         ESP_LOGW(TAG, "LCD framebuffer unavailable; drawing screen directly");
@@ -2339,7 +2360,14 @@ static void remote_pet_animation_task(void *arg) {
         /* Schedule from the completed presentation. If TLS or SPI makes one
          * frame late, vTaskDelayUntil would run catch-up frames back-to-back;
          * that uneven burst cadence looks like both a jump and panel ghosting. */
-        vTaskDelay(pdMS_TO_TICKS(REMOTE_PET_RENDER_FRAME_MS));
+        uint32_t delay_ms = REMOTE_PET_RENDER_FRAME_MS;
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+        // Bread needs this task even without an animated pack so it can enforce
+        // the idle display timeout. Avoid waking 12.5 times a second when it has
+        // no animation work; a later pet install automatically restores 80 ms.
+        if (s_remote_pet_frame_count < 2) delay_ms = 500;
+#endif
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
         xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
         if (s_response_active && !s_response_image_active && s_response_next_page_us > 0 &&
@@ -2366,8 +2394,19 @@ static void remote_pet_animation_task(void *arg) {
         }
 #endif
         bool ambient = !strcmp(s_state, "idle") || !strcmp(s_state, "quiet");
+        if (!s_display_sleeping && s_idle_pet_sleep_expires_us > 0 && ambient &&
+            !s_foreground_surface && !s_recording_active && !s_response_active &&
+            !s_alarm_visual_active &&
+            esp_timer_get_time() >= s_idle_pet_sleep_expires_us) {
+            s_display_sleeping = true;
+            s_idle_pet_sleep_expires_us = 0;
+            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
+            ESP_LOGI(TAG, "ambient display sleeping after 30 minutes");
+        }
         if (s_remote_pet_frame_count > 1 && s_remote_pet_frame_ms && ambient &&
-            !s_foreground_surface && !s_recording_active && !s_alarm_visual_active) {
+            !s_display_sleeping && !s_foreground_surface && !s_recording_active &&
+            !s_alarm_visual_active) {
             uint64_t current_tick = ((uint64_t)esp_timer_get_time() / 1000u) /
                                     REMOTE_PET_RENDER_FRAME_MS;
             if (current_tick != rendered_tick) {
@@ -2387,9 +2426,6 @@ static void remote_pet_animation_task(void *arg) {
 
 static void ensure_remote_pet_animation_task(void) {
     if (s_remote_pet_animation_task) return;
-#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
-    if (s_remote_pet_frame_count < 2) return;
-#endif
     TaskHandle_t task = NULL;
     if (xTaskCreate(remote_pet_animation_task, "bread_pet_animation", 3072,
                     NULL, 2, &task) == pdPASS) {
@@ -2820,11 +2856,9 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     if (xTaskCreate(button_task, "bread_button", 3072, NULL, 4, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    // This task also owns the six-second response page timer on the single-key
-    // board, so it must run even when no animated pet pack is installed.
+    // Besides pet animation this task owns the compact boards' 30-minute idle
+    // display timeout. Fangtang also uses it for timed response pagination.
     ensure_remote_pet_animation_task();
-#endif
     // The mouth animation is decorative state feedback. Give its floating-point
     // renderer enough stack headroom, but never make the essential buttons,
     // display, microphone, or speaker unavailable if this task cannot start.
@@ -2873,29 +2907,18 @@ void board_port_show_startup_screen(void) {
 }
 
 esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_percent) {
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    (void)delta_percent;
-    (void)out_percent;
-    return ESP_ERR_NOT_SUPPORTED;
-#else
     int next = (int)s_output_volume + delta_percent;
     if (next < 0) next = 0;
     if (next > 100) next = 100;
     s_output_volume = (unsigned)next;
     if (out_percent) *out_percent = s_output_volume;
     return ESP_OK;
-#endif
 }
 
 esp_err_t board_port_set_output_volume(unsigned percent) {
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    (void)percent;
-    return ESP_ERR_NOT_SUPPORTED;
-#else
     if (percent > 100) return ESP_ERR_INVALID_ARG;
     s_output_volume = percent;
     return ESP_OK;
-#endif
 }
 
 void board_port_set_pet_state(const char *state) {
@@ -2909,6 +2932,11 @@ void board_port_set_pet_state(const char *state) {
         return;
     }
     strlcpy(s_state, next_state, sizeof(s_state));
+    if (ambient) {
+        enter_ambient_awake_locked();
+    } else {
+        s_idle_pet_sleep_expires_us = 0;
+    }
     if (!strcmp(next_state, "thinking")) {
         s_thinking_mouth_frame = 0;
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
@@ -2950,6 +2978,10 @@ void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
     bool changed = skin && skin[0] && strcmp(s_pet_skin, skin) != 0;
     if (changed) strlcpy(s_pet_skin, skin, sizeof(s_pet_skin));
     if (changed && !s_foreground_surface && !s_recording_active) {
+        if (s_display_sleeping) {
+            xSemaphoreGiveRecursive(s_lcd_mutex);
+            return;
+        }
         show_state_screen(s_state);
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -2997,7 +3029,9 @@ esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_co
     s_remote_pet_frame_ms = frame_ms ? frame_ms : REMOTE_PET_DEFAULT_KEYFRAME_MS;
     s_remote_pet_animation_elapsed_ms = 0;
     ensure_remote_pet_animation_task();
-    if (!s_foreground_surface && !s_recording_active) show_state_screen(s_state);
+    if (!s_display_sleeping && !s_foreground_surface && !s_recording_active) {
+        show_state_screen(s_state);
+    }
     xSemaphoreGiveRecursive(s_lcd_mutex);
     return ESP_OK;
 }
@@ -3020,6 +3054,9 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed)
     if (!active) {
         memset(s_recording_levels, 0, sizeof(s_recording_levels));
         s_recording_smoothed_level = 0;
+        if (!strcmp(s_state, "idle") || !strcmp(s_state, "quiet")) {
+            enter_ambient_awake_locked();
+        }
         show_state_screen(s_state);
         xSemaphoreGiveRecursive(s_lcd_mutex);
         return;
@@ -3181,6 +3218,7 @@ void board_port_show_text(const char *title, const char *text) {
     if (ready) {
         strlcpy(s_state, "idle", sizeof(s_state));
         s_foreground_surface = false;
+        enter_ambient_awake_locked();
         show_state_screen(s_state);
     } else {
         show_status(title, text);
@@ -3253,10 +3291,11 @@ void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_t
                                  const char *label, unsigned attempt, unsigned max_attempts) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     if (!active) {
+        // app_ui owns the interrupted scene and replays it immediately after
+        // this guard is released. Do not force an ambient frame in between.
         s_alarm_visual_active = false;
         s_foreground_surface = false;
-        strlcpy(s_state, "idle", sizeof(s_state));
-        show_state_screen(s_state);
+        enter_ambient_awake_locked();
         xSemaphoreGiveRecursive(s_lcd_mutex);
         return;
     }
@@ -3446,6 +3485,39 @@ bool board_port_navigate_response(int page_delta) {
     xSemaphoreGiveRecursive(s_lcd_mutex);
     return true;
 }
+
+bool board_port_get_response_page(unsigned *page) {
+    if (!page || !s_lcd_mutex) return false;
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    bool active = s_response_active;
+    if (active) *page = s_response_image_active ? 0u : s_response_page;
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    return active;
+}
+
+bool board_port_restore_response_page(unsigned page) {
+    if (!s_lcd_mutex) return false;
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    if (!s_response_active) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return false;
+    }
+    if (!s_response_image_active) {
+        unsigned pages = response_page_count();
+        unsigned target = pages > 0 && page >= pages ? pages - 1 : page;
+        if (target != s_response_page) {
+            s_response_page = target;
+            draw_response_page();
+        }
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+        s_response_next_page_us = pages > 1
+                                      ? esp_timer_get_time() + RESPONSE_AUTO_PAGE_INTERVAL_US
+                                      : 0;
+#endif
+    }
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    return true;
+}
 int board_port_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
     if (!bitmap || codepoint < 0x20 || codepoint > 0xffff) return 0;
     size_t replacement = 0;
@@ -3467,21 +3539,25 @@ int board_port_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
     taskEXIT_CRITICAL(&s_glyph_lock);
     return 1;
 }
-void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
+void board_port_show_qrcode_matrix(const uint8_t *modules, size_t module_count,
+                                   const char *ssid) {
+    if (!modules || module_count == 0 || module_count > 177) return;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    wake_display_for_draw_locked();
+    s_idle_pet_sleep_expires_us = 0;
     s_thinking_surface_visible = false;
     s_foreground_surface = true;
     s_response_active = false;
-    int modules = esp_qrcode_get_size(qrcode);
-    int scale = modules > 0 ? 180 / (modules + 8) : 0;
+    int module_size = (int)module_count;
+    int scale = 180 / (module_size + 8);
     if (scale < 1) { board_port_show_text("setup", ssid); xSemaphoreGiveRecursive(s_lcd_mutex); return; }
-    int side = (modules + 8) * scale;
+    int side = (module_size + 8) * scale;
     uint16_t *qr = heap_caps_malloc((size_t)side * side * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (!qr) { board_port_show_text("setup", ssid); xSemaphoreGiveRecursive(s_lcd_mutex); return; }
     for (int y = 0; y < side; ++y) for (int x = 0; x < side; ++x) {
         int mx = x / scale - 4, my = y / scale - 4;
-        bool dark = mx >= 0 && my >= 0 && mx < modules && my < modules &&
-                    esp_qrcode_get_module(qrcode, mx, my);
+        bool dark = mx >= 0 && my >= 0 && mx < module_size && my < module_size &&
+                    modules[(size_t)my * module_count + mx] != 0;
         qr[y * side + x] = dark ? color(0, 0, 0) : color(255, 255, 255);
     }
     fill_screen(color(255, 255, 255));
@@ -3502,22 +3578,55 @@ void board_port_show_ready_prompt(const char *title, const char *text) {
     s_response_active = false;
     strlcpy(s_state, "idle", sizeof(s_state));
     s_foreground_surface = false;
+    enter_ambient_awake_locked();
     show_state_screen(s_state);
     ESP_LOGI(TAG, "ready: %s | %s", title ? title : "", text ? text : "");
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 void board_port_cancel_ready_prompt(void) {}
-bool board_port_wake_from_idle(void) {return false;}
+bool board_port_wake_from_idle(void) {
+    if (!s_lcd_mutex) return false;
+    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+    if (!s_display_sleeping) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return false;
+    }
+    wake_display_for_draw_locked();
+    s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
+    strlcpy(s_state, "idle", sizeof(s_state));
+    s_response_active = false;
+    s_foreground_surface = false;
+    show_state_screen(s_state);
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    ESP_LOGI(TAG, "ambient display awakened");
+    return true;
+}
 void board_port_set_wifi_status(const char *ssid, bool connected) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     strlcpy(s_wifi_ssid, ssid ? ssid : "", sizeof(s_wifi_ssid));
     /* Once the authenticated gateway is ready, a transient STA disconnect
      * must not demote the UI. The networking layer reconnects independently. */
     if (!s_gateway_ready || connected) s_wifi_connected = connected;
-    if (!s_recording_active && !s_foreground_surface &&
+    if (!s_display_sleeping && !s_recording_active && !s_foreground_surface &&
         (!strcmp(s_state, "idle") || !strcmp(s_state, "quiet"))) show_state_screen(s_state);
     ESP_LOGI(TAG,"wifi %s %s",ssid?ssid:"",connected?"on":"off");
     xSemaphoreGiveRecursive(s_lcd_mutex);
+}
+
+void board_port_show_qrcode(esp_qrcode_handle_t qrcode, const char *ssid) {
+    if (!qrcode) return;
+    const int size = esp_qrcode_get_size(qrcode);
+    if (size <= 0 || size > 177) return;
+    const size_t pixels = (size_t)size * size;
+    uint8_t *modules = heap_caps_malloc(pixels, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!modules) return;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            modules[(size_t)y * size + x] = esp_qrcode_get_module(qrcode, x, y) ? 1u : 0u;
+        }
+    }
+    board_port_show_qrcode_matrix(modules, (size_t)size, ssid);
+    heap_caps_free(modules);
 }
 void board_port_set_service_ready(bool ready) {
     if (!s_lcd_mutex) {
@@ -3527,7 +3636,7 @@ void board_port_set_service_ready(bool ready) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     bool changed = s_gateway_ready != ready;
     s_gateway_ready = ready;
-    if (changed && !s_recording_active && !s_foreground_surface &&
+    if (changed && !s_display_sleeping && !s_recording_active && !s_foreground_surface &&
         !s_alarm_visual_active &&
         (!strcmp(s_state, "idle") || !strcmp(s_state, "quiet"))) {
         show_state_screen(s_state);
@@ -3545,7 +3654,7 @@ void board_port_set_ambient(const char *time, const char *location, const char *
     s_ambient_temperature = temp;
     s_ambient_weather_valid = valid;
     s_ambient_weather_stale = stale;
-    if (!s_recording_active && !s_foreground_surface &&
+    if (!s_display_sleeping && !s_recording_active && !s_foreground_surface &&
         (!strcmp(s_state, "idle") || !strcmp(s_state, "quiet"))) show_state_screen(s_state);
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
@@ -3556,7 +3665,8 @@ void board_port_set_alarm_scheduled(bool scheduled) {
     if (s_alarm_scheduled != scheduled) {
         s_alarm_scheduled = scheduled;
         const bool ambient = !strcmp(s_state, "idle") || !strcmp(s_state, "quiet");
-        if (ambient && !s_foreground_surface && !s_recording_active && !s_alarm_visual_active) {
+        if (ambient && !s_display_sleeping && !s_foreground_surface &&
+            !s_recording_active && !s_alarm_visual_active) {
             show_state_screen(s_state);
         }
     }
@@ -4056,7 +4166,7 @@ void board_port_set_network_transport(bool cellular) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     bool changed = s_network_transport_cellular != cellular;
     s_network_transport_cellular = cellular;
-    if (changed && !s_recording_active && !s_foreground_surface &&
+    if (changed && !s_display_sleeping && !s_recording_active && !s_foreground_surface &&
         (!strcmp(s_state, "idle") || !strcmp(s_state, "quiet"))) {
         show_state_screen(s_state);
     }
@@ -4198,7 +4308,6 @@ esp_err_t board_port_audio_playback_begin(void) {
         return ESP_ERR_INVALID_STATE;
     }
     esp_err_t err = audio_init();
-    if (err == ESP_OK && s_output_volume == 0) err = ESP_ERR_INVALID_STATE;
     if (err == ESP_OK) err = speaker_play_begin();
     if (err == ESP_OK) {
         s_audio_playback_owner = xTaskGetCurrentTaskHandle();

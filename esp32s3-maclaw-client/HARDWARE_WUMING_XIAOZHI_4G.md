@@ -88,7 +88,10 @@
 - Fangtang 在握手中声明支持最多 8 帧远程宠物动画/素材，并处理运行期宠物切换；
   方糖只作为板型产品标志，不再阻止宠物下发。Bread Compact 和 EchoEar 的宠物行为
   保持原样。
-- Fangtang 的板级音量调节仍返回“不支持”，直连扬声器以固定安全音量播放。
+- Fangtang 虽然没有实体音量键，但保留统一远端音量入口：握手声明 `volumeControl:true`，Hub 下发的
+  `hardware_config.extra.volume` 可设置 0–100 音量，direct-I2S 播放按该百分比做软件增益。音量写入
+  `maclaw/output_vol` 并在重启后恢复；0% 是正常静音，不再被误报为播放失败。Bread Compact 与 EchoEar-2ST
+  同样保留原有音量入口和播放实现，回复翻页映射不变。
 - Fangtang 没有翻页键：多页文字回复每 6 秒自动前进一页。
 - Fangtang 的语音/会议录音波形、会议上传进度和闹钟页面均使用独立的
   240×240 布局；不会沿用 Bread Compact 的 240×320 底部坐标而把提示画到可视区外。
@@ -442,3 +445,57 @@ Compact App 为 3203056 字节。修复代码只在 `CONFIG_MACLAW_BOARD_FANGTAN
 现在 ML307 增加了带回调的请求体流式接口。会议 PUT 直接从 SPIFFS 文件读入现有的 16 KiB I/O 缓冲，并继续以 4 KiB `MHTTPCONTENT` append 写入模块；Hub 看到的单个 PUT、`Content-Length`、`X-Chunk-SHA256`、分块编号以及 NVS 断点续传语义均不变。内存峰值从“协商分块大小”降为固定 16 KiB，因此完整保留 Hub 64 KiB 至 8 MiB 的协商能力，而不是人为缩小会议功能。普通语音和 JSON 请求仍走原有内存请求体接口；Bread Compact 与 EchoEar-2ST 的 Wi-Fi/HTTPS 上传路径不变。
 
 配对恢复页的成功说明同时改为中性的 “The selected network is connected”，避免 Fangtang 选择 4G、仅以 SoftAP 提供本地配对页时错误声称 Wi-Fi 上行已连接。4G 会议上传、Thinking 双击取消、断线恢复和自动翻页仍需人员回到设备旁后完成最终实机回归，不能用本轮静态审计代替。
+
+三板独立构建均通过 App 分区大小检查：Fangtang 4G 为 3231616 bytes（SHA-256 `75166E1C870252EF652C0A01A511140ECAE7E443EEEFA98DE133C7540CC4DED9`），Bread Compact 为 3203072 bytes，EchoEar-2ST 为 3122048 bytes。本轮只构建，未刷写任何设备。
+
+### 远端音量与静音补差（离线验证）
+
+Fangtang 的 0–100 远端音量已经从临时“不支持”路径提升为正式能力。握手统一声明
+`volumeControl:true`；收到 `hardware_config.extra.volume` 后，直连 I2S 播放链按百分比缩放 PCM，随后由
+内部 RAM 栈上的专用持久化任务写入 `maclaw/output_vol`，避免在 PSRAM 栈的 Hub 长轮询任务中直接执行
+NVS flash 写入。持久化成功后才 ACK 配置消息，失败保留 cursor 供 Hub 重试；设备启动时恢复该值。
+0% 继续执行完整播放事务并输出零样本，属于静音成功，不再伪装成 `ESP_ERR_INVALID_STATE`。Bread Compact
+沿用相同软件增益，EchoEar-2ST 沿用 ES8311 codec 增益；三板的原有输入和回复翻页行为没有改变。
+
+本轮三板均以独立 SDK 配置重新完整构建并通过 App 分区检查：Fangtang 4G 为 3451296 bytes
+（SHA-256 `5F9C93EF1C91B96C6D736988A18DA8D7D970693E55969632333C4B7613CEC192`），Bread Compact 为
+3247120 bytes（SHA-256 `15D0FA6F2D928C6BC422BFC148037D8CA1D7A1D589A7EDCB7F7AC7D33571AA4A`），
+EchoEar-2ST 为 3271408 bytes（SHA-256 `56BE1E56AFA3236098F7DA18455E1E5071FC5F31944A0B3216FA09CB58BC9AFE`）。
+EchoEar 首次并行构建遇到一次无诊断信息的工具链/ccache 子进程失败，关闭 ccache 后从同一构建目录重试成功。
+现场无人，按要求跳过 4G 和全部实机测试；未访问任何串口，未刷写 COM3、COM4 或 COM5。
+
+### 待机熄屏、唤醒与持久化关联补差
+
+Fangtang 与 Bread Compact 的紧凑屏端口现已对齐 EchoEar-2ST 的待机节能语义：进入
+`idle/quiet` 待机面后开始 30 分钟计时，期间时钟、网络状态和宠物动画正常刷新；超时且
+没有录音、回复、闹钟或其他前台页面时，关闭 LCD panel 与背光。熄屏后环境时间、Wi-Fi/4G
+和服务状态仍只更新内存，不继续向 LCD 发送 DMA，也不会被后台刷新意外点亮。
+
+熄屏后的第一次实体按键只恢复 panel/backlight 并重新绘制待机宠物，由共享业务层消费该次
+物理输入，不会误启动语音；离线唤醒词则先恢复屏幕、随后继续原有语音采集。Fangtang 的
+开机 1.8 秒双击 Wi-Fi/4G 切换窗口发生在正常待机计时之前，原有网络切换手势、处理中双击
+取消及 6 秒回复自动翻页均保持不变。任何真实前台事务绘制也会先恢复显示，避免闹钟或远端
+结果到达时仍处于黑屏。
+
+音量 NVS worker 的完成通知同时由共享二值信号改为带 generation 的请求/回复队列。即使一次
+flash 写入超过调用方超时，后续配置也只接受与自身请求编号匹配的完成结果，不会错误 ACK
+前一笔迟到写入。该变化保持内部 RAM 栈写 NVS、持久化成功后才 ACK 的既有约束。
+
+三板以各自独立 SDK 配置重新完整构建并通过 App 分区检查：Fangtang 4G 为 3452320 bytes
+（SHA-256 `97D1880E820A9C502CEE8B52513A43EB89BF7B4C9B465B3C87DD88E5A7979365`），Bread Compact
+为 3248240 bytes（SHA-256 `E0F7186F7B55BD2370399DFBDAF5396836EA9AB90315C274FB5C178232F0DF9B`），
+EchoEar-2ST 为 3271600 bytes（SHA-256
+`7510774B7624226A900237AC7353F6AA7633886CCA46492D0C3BA77C0705F096`）。本节为离线实现记录；
+现场无人，本轮继续跳过 4G 实机测试，也不访问或刷写 COM3、COM4、COM5。
+
+### 2026-08-06 闹钟前景恢复（离线实现）
+
+闹钟显示现已统一经过共享 `app_ui` 协调器，不再由 Alarm Manager 直接绕过业务 UI 模型。闹钟响铃期间，消息、上传进度、文字回复、64×64 以内的 RGB565 图片回复、配网二维码、录音状态和待机宠物仍会更新为最新的待恢复场景，但不会覆盖响铃页面；闹钟结束时先仅释放板级 alarm guard，再重放最新场景，不再固定跳回 idle，也不会先闪一次待机页。图片像素和二维码 module matrix 均由协调器深拷贝，未保存调用方裸指针或只在二维码 callback 内有效的 handle。
+
+该改造位于三板共享层，并为 EchoEar 与 Bread/Fangtang 两套 board port 都增加了相同的无闪屏释放语义，因此 Bread Compact、EchoEar-2ST 与 Fangtang 的既有前景流程保持一致。三套独立 SDK 配置均已离线完成编译/链接验证；现场无人，本轮按要求跳过 4G 与全部实机测试，未访问或刷写 COM3、COM4、COM5。实机仍需在人员回到设备旁后覆盖“回复/上传/配网二维码被闹钟打断及恢复”的组合场景。
+
+### 2026-08-06 闹钟恢复保留回复阅读页码
+
+共享前景恢复现进一步保存文字回复的零基页码。闹钟第一次覆盖文字回复时，`app_ui` 从 renderer 读取当前页；响铃期间输入由 Alarm 独占，不会误改被遮挡的回复页；解除后先重新发布相同回复内容，再由两套 board port 将阅读位置恢复到原页。Bread Compact 与 EchoEar-2ST 的手动分页、Fangtang 的六秒自动分页都使用同一页码快照语义；Fangtang 恢复后从完整的六秒间隔重新计时，避免刚恢复就立即跳页。图片回复仍为单页。
+
+本节仅作离线实现和三 profile 构建验证。现场无人，继续跳过 4G 与全部实机测试，未访问或刷写 COM3、COM4、COM5。

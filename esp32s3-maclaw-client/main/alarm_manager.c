@@ -233,8 +233,8 @@ static void alarm_task(void *arg) {
                    esp_timer_get_time() - ring_started < (int64_t)ALARM_RING_SECONDS * 1000000) {
                 char display[24];
                 format_local_time(current.trigger_at_ms, display);
-                board_port_set_alarm_visual(true, frame++, display, current.label,
-                                            attempt, ALARM_MAX_ATTEMPTS);
+                app_ui_set_alarm_visual(true, frame++, display, current.label,
+                                        attempt, ALARM_MAX_ATTEMPTS);
                 (void)board_port_play_alarm_burst();
                 vTaskDelay(pdMS_TO_TICKS(120));
             }
@@ -242,7 +242,7 @@ static void alarm_task(void *arg) {
             s_ringing = false;
             bool was_dismissed = s_dismiss_requested;
             taskEXIT_CRITICAL(&s_state_lock);
-            board_port_set_alarm_visual(false, 0, NULL, NULL, attempt, ALARM_MAX_ATTEMPTS);
+            app_ui_set_alarm_visual(false, 0, NULL, NULL, attempt, ALARM_MAX_ATTEMPTS);
             if (was_dismissed) {
                 dismissed = true;
                 break;

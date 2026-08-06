@@ -286,6 +286,28 @@ static SemaphoreHandle_t s_command_cancel_ui_ready;
 static TaskHandle_t s_command_cancel_task;
 static SemaphoreHandle_t s_interaction_lock;
 static SemaphoreHandle_t s_nvs_mutex;
+// The outgoing long-poll worker deliberately has a PSRAM-backed stack so it
+// can decode audio replies without consuming the small internal-RAM budget.
+// Flash writes temporarily disable caches, however, and ESP-IDF requires the
+// calling task's stack to remain accessible while that happens.  Never invoke
+// NVS directly from that worker; route volume persistence through this small
+// internal-stack worker instead.
+typedef struct {
+    unsigned percent;
+    uint32_t generation;
+} output_volume_persist_request_t;
+
+typedef struct {
+    esp_err_t result;
+    uint32_t generation;
+} output_volume_persist_reply_t;
+
+static QueueHandle_t s_output_volume_persist_queue;
+static QueueHandle_t s_output_volume_persist_reply_queue;
+static SemaphoreHandle_t s_output_volume_persist_request_mutex;
+static uint32_t s_output_volume_persist_generation;
+static unsigned s_configured_output_volume = 70;
+static bool s_configured_output_volume_saved;
 static portMUX_TYPE s_task_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static char s_weather_summary[24];
 static char s_weather_location[24];
@@ -2800,6 +2822,7 @@ static void load_device_config(void) {
     s_pair_code[0] = '\0';
     nvs_handle_t nvs;
     if (nvs_open("maclaw", NVS_READONLY, &nvs) == ESP_OK) {
+        uint8_t output_volume = 0;
         (void)load_nvs_string(nvs, "wifi_ssid", s_wifi_ssid, sizeof(s_wifi_ssid));
         (void)load_nvs_string(nvs, "wifi_pass", s_wifi_password, sizeof(s_wifi_password));
         (void)load_nvs_string(nvs, "wifi_sec", s_wifi_security, sizeof(s_wifi_security));
@@ -2811,8 +2834,94 @@ static void load_device_config(void) {
         (void)load_nvs_string(nvs, "wifi_domain", s_wifi_server_domain, sizeof(s_wifi_server_domain));
         (void)load_nvs_string(nvs, "gateway_url", s_gateway_url, sizeof(s_gateway_url));
         (void)load_nvs_string(nvs, "pair_code", s_pair_code, sizeof(s_pair_code));
+        if (nvs_get_u8(nvs, "output_vol", &output_volume) == ESP_OK && output_volume <= 100) {
+            s_configured_output_volume = output_volume;
+            s_configured_output_volume_saved = true;
+        }
         nvs_close(nvs);
     }
+}
+
+static esp_err_t save_output_volume(unsigned percent) {
+    if (percent > 100) return ESP_ERR_INVALID_ARG;
+    if (!nvs_lock()) return ESP_ERR_TIMEOUT;
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("maclaw", NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "output_vol", (uint8_t)percent);
+        if (err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    nvs_unlock();
+    if (err == ESP_OK) {
+        s_configured_output_volume = percent;
+        s_configured_output_volume_saved = true;
+    }
+    return err;
+}
+
+static void output_volume_persist_task(void *arg) {
+    (void)arg;
+    output_volume_persist_request_t request = {0};
+    while (true) {
+        if (xQueueReceive(s_output_volume_persist_queue, &request,
+                          portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        output_volume_persist_reply_t reply = {
+            .result = save_output_volume(request.percent),
+            .generation = request.generation,
+        };
+        // The reply queue has room for the active completion plus one stale
+        // completion from a timed-out caller. Do not lose the correlation ID:
+        // the next caller must be able to distinguish that old result.
+        xQueueSend(s_output_volume_persist_reply_queue, &reply, portMAX_DELAY);
+    }
+}
+
+// NVS flash writes cannot run from a task whose stack lives in PSRAM: cache
+// disable makes that stack inaccessible. The regular key handler already runs
+// from internal RAM, but the gateway poller does not, so use one shared
+// internal-stack persistence worker for both call paths.
+static esp_err_t persist_output_volume(unsigned percent) {
+    if (percent > 100 || !s_output_volume_persist_queue ||
+        !s_output_volume_persist_reply_queue || !s_output_volume_persist_request_mutex) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_output_volume_persist_request_mutex,
+                       pdMS_TO_TICKS(4000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    output_volume_persist_reply_t reply = {0};
+    while (xQueueReceive(s_output_volume_persist_reply_queue, &reply, 0) == pdTRUE) {}
+    output_volume_persist_request_t request = {
+        .percent = percent,
+        .generation = ++s_output_volume_persist_generation,
+    };
+    if (request.generation == 0) request.generation = ++s_output_volume_persist_generation;
+    esp_err_t err = ESP_ERR_TIMEOUT;
+    if (xQueueSend(s_output_volume_persist_queue, &request,
+                   pdMS_TO_TICKS(1000)) == pdTRUE) {
+        TickType_t started = xTaskGetTickCount();
+        const TickType_t timeout = pdMS_TO_TICKS(3000);
+        while (true) {
+            TickType_t elapsed = xTaskGetTickCount() - started;
+            if (elapsed >= timeout ||
+                xQueueReceive(s_output_volume_persist_reply_queue, &reply,
+                              timeout - elapsed) != pdTRUE) {
+                break;
+            }
+            if (reply.generation == request.generation) {
+                err = reply.result;
+                break;
+            }
+            ESP_LOGW(TAG, "discarding stale volume persistence reply generation=%lu (want %lu)",
+                     (unsigned long)reply.generation,
+                     (unsigned long)request.generation);
+        }
+    }
+    xSemaphoreGive(s_output_volume_persist_request_mutex);
+    return err;
 }
 
 static void finish_result_speech_transaction(const char *reply_to) {
@@ -3180,12 +3289,7 @@ static esp_err_t gateway_handshake(bool cold_start) {
 		"\"image\":{\"mimeTypes\":[\"" RESPONSE_IMAGE_MIME "\"],\"maxWidth\":64,\"maxHeight\":64,\"animated\":false}},"
         "\"features\":{\"petStates\":true,\"petAnimation\":true,"
         "\"petAsset\":true,\"petAssetMaxFrames\":8,"
-        "\"ambientDisplay\":true,\"meetingRecorder\":true,\"volumeControl\":"
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-        "false"
-#else
-        "true"
-#endif
+        "\"ambientDisplay\":true,\"meetingRecorder\":true,\"volumeControl\":true"
         "}},\"tools\":["
         "{\"name\":\"alarm_create\",\"description\":\"Create one alarm on this device. Resolve relative spoken time to an absolute future epoch in the device timezone before calling.\",\"risk\":\"write\",\"timeoutMs\":5000,\"inputSchema\":{\"type\":\"object\",\"properties\":{\"triggerAtEpochMs\":{\"type\":\"integer\",\"description\":\"Absolute Unix epoch milliseconds in the future\"},\"label\":{\"type\":\"string\",\"maxLength\":48}},\"required\":[\"triggerAtEpochMs\"]},\"outputSchema\":{\"type\":\"object\"}},"
         "{\"name\":\"alarm_clear_all\",\"description\":\"Clear every alarm on this device.\",\"risk\":\"write\",\"timeoutMs\":5000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
@@ -3949,8 +4053,13 @@ static esp_err_t poll_reply(void) {
             if (json_number(extra, "volume", &volume) && volume >= 0 && volume <= 100) {
                 esp_err_t volume_err = board_port_set_output_volume((unsigned)volume);
                 if (volume_err == ESP_OK) {
-                    hardware_config_handled = true;
                     ESP_LOGI(TAG, "server output volume: %d%%", volume);
+                    esp_err_t save_err = persist_output_volume((unsigned)volume);
+                    hardware_config_handled = save_err == ESP_OK;
+                    if (!hardware_config_handled) {
+                        ESP_LOGW(TAG, "server output volume persistence failed: %s",
+                                 esp_err_to_name(save_err));
+                    }
                 } else if (volume_err != ESP_ERR_NOT_SUPPORTED) {
                     ESP_LOGW(TAG, "server output volume failed: %s", esp_err_to_name(volume_err));
                 } else {
@@ -4935,7 +5044,13 @@ static void meeting_task(void *arg) {
             }
             uint32_t elapsed = (uint32_t)(total_samples / MEETING_SAMPLE_RATE);
             s_meeting_elapsed_seconds = elapsed;
-            board_port_set_audio_level(paused ? 0 : level, elapsed);
+            // While paused, Bread Compact keeps the frozen meter exactly as it
+            // was at the pause boundary. Passing a synthetic zero level through
+            // the normal attack/release path made EchoEar's supposedly paused
+            // waveform visibly decay for every discarded 512-sample block.
+            // The visual-state transition below already recolours the frozen
+            // bars and applies the paused quiet display treatment.
+            if (!paused) board_port_set_audio_level(level, elapsed);
             // The timer deliberately freezes while paused, so elapsed alone
             // cannot represent this state transition. Publish it immediately
             // and let the shared recorder switch its rule, copy and waveform.
@@ -5627,6 +5742,10 @@ static void on_user_input(board_input_action_t action, board_input_source_t sour
         esp_err_t volume_err = board_port_adjust_output_volume(delta, &volume);
         if (volume_err == ESP_OK) {
             ESP_LOGI(TAG, "output volume: %u%%", volume);
+            esp_err_t save_err = persist_output_volume(volume);
+            if (save_err != ESP_OK) {
+                ESP_LOGW(TAG, "output volume persistence failed: %s", esp_err_to_name(save_err));
+            }
         }
         return;
     }
@@ -7039,6 +7158,15 @@ void app_main(void) {
                         ? ESP_OK : ESP_ERR_NO_MEM);
     s_nvs_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_nvs_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    s_output_volume_persist_queue = xQueueCreate(1, sizeof(output_volume_persist_request_t));
+    ESP_ERROR_CHECK(s_output_volume_persist_queue ? ESP_OK : ESP_ERR_NO_MEM);
+    s_output_volume_persist_reply_queue = xQueueCreate(2, sizeof(output_volume_persist_reply_t));
+    ESP_ERROR_CHECK(s_output_volume_persist_reply_queue ? ESP_OK : ESP_ERR_NO_MEM);
+    s_output_volume_persist_request_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_output_volume_persist_request_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(xTaskCreate(output_volume_persist_task,
+                                "maclaw_volume_nvs", 3072, NULL, 4, NULL) == pdPASS
+                        ? ESP_OK : ESP_ERR_NO_MEM);
     s_setup_options_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_setup_options_mutex ? ESP_OK : ESP_ERR_NO_MEM);
     // A foreground interaction starts in the button callback but finishes in
@@ -7056,6 +7184,14 @@ void app_main(void) {
     load_ambient_weather();
     app_ui_init();
     ESP_ERROR_CHECK(board_port_init(on_user_input, NULL));
+    if (s_configured_output_volume_saved) {
+        esp_err_t volume_err = board_port_set_output_volume(s_configured_output_volume);
+        if (volume_err == ESP_OK) {
+            ESP_LOGI(TAG, "restored output volume: %u%%", s_configured_output_volume);
+        } else {
+            ESP_LOGW(TAG, "cannot restore output volume: %s", esp_err_to_name(volume_err));
+        }
+    }
 
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
     // GPIO0 double-click is only a startup gesture. It toggles the persisted
