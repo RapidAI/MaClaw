@@ -179,9 +179,19 @@ func decideComputerUseActivation(in computerUseActivationInput) computerUseActiv
 }
 
 // shouldActivateComputerUse decides playbook + tool injection for this turn.
+// Pure: repeated calls within a turn (prompt build + per-iteration tool
+// filtering) must not mutate session control state.
 func (h *IMMessageHandler) shouldActivateComputerUse(userText string) bool {
+	active, _ := h.gateComputerUse(userText)
+	return active
+}
+
+// gateComputerUse evaluates the CU gate. fresh reports an explicit/semantic
+// open (a new desktop task) as opposed to sticky continuation of an existing
+// session.
+func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool) {
 	if h == nil || !h.computerUseEnabled() {
-		return false
+		return false, false
 	}
 
 	sticky, stickyAge := computerUseStickyState()
@@ -204,7 +214,48 @@ func (h *IMMessageHandler) shouldActivateComputerUse(userText string) bool {
 		log.Printf("[computer-use] gate active=%v clear=%v reason=%s sticky=%v age=%s",
 			d.Active, d.ClearSticky, d.Reason, sticky, stickyAge.Round(time.Millisecond))
 	}
-	return d.Active
+	fresh = d.Active && d.Reason != "sticky" && d.Reason != "sticky_degraded"
+	return d.Active, fresh
+}
+
+// liftComputerUseStopForFreshRequest lifts a stale hard-stop when a brand-new
+// CU task activates, so the operator console can hide after Stop without
+// leaving the session permanently blocked. Pause is left untouched.
+//
+// Safety: the lift happens at most once per request ID. A stopped in-flight
+// turn whose cancel is still taking effect re-gates with the SAME request ID
+// (the same user text reclassifies as explicit/semantic) — that re-gate must
+// not resurrect the turn the operator just stopped.
+func liftComputerUseStopForFreshRequest(requestID string) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		// Without a request identity a re-gated in-flight turn is
+		// indistinguishable from a new task — stay safe and keep the stop.
+		return
+	}
+	globalComputerUse.mu.Lock()
+	if globalComputerUse.lastFreshOpenRequestID == requestID {
+		globalComputerUse.mu.Unlock()
+		return
+	}
+	globalComputerUse.lastFreshOpenRequestID = requestID
+	globalComputerUse.mu.Unlock()
+
+	sess := cuSession()
+	if sess == nil {
+		return
+	}
+	if _, stopped := sess.ControlState(); !stopped {
+		return
+	}
+	sess.ResetControl()
+	log.Printf("[computer-use] cleared stopped state for fresh task activation")
+	// Keep the tray submenu in sync — nothing else refreshes it until the next
+	// sticky transition, so without this the tray would show "stopped" for the
+	// whole new task.
+	if UpdateComputerUseTray != nil {
+		UpdateComputerUseTray()
+	}
 }
 
 // computerUseIntentActivated is the pure decision on a UIC result: the gate
@@ -326,6 +377,23 @@ func computerUsePlaybookSection(active bool) string {
 // Defaults to true so headless tests still exercise YOLO when weights exist.
 var computerUseYOLOAllowedFn = func() bool { return true }
 
+// computerUseEnabledFn gates computer_* tool EXECUTION (not just activation).
+// Defaults to true so headless tests exercise the handlers.
+var computerUseEnabledFn = func() bool { return true }
+
+// computerUseTargetAppsFn supplies the TargetApps click allowlist from config.
+// ok=false means the config could not be read — callers must keep the previous
+// allowlist rather than silently dropping it (fail-closed).
+var computerUseTargetAppsFn func() (apps []string, ok bool)
+
+// computerUseToolsEnabled reports whether computer_* handlers may run.
+func computerUseToolsEnabled() bool {
+	if computerUseEnabledFn == nil {
+		return true
+	}
+	return computerUseEnabledFn()
+}
+
 // computerUseEventEmitter pushes operator-preview events to the UI when bound.
 var computerUseEventEmitter func(name string, data interface{})
 
@@ -361,6 +429,16 @@ func bindComputerUseApp(app *App) {
 	}
 	computerUseYOLOAllowedFn = func() bool {
 		return app.GetScreenParsingEnabled()
+	}
+	computerUseEnabledFn = func() bool {
+		return app.GetComputerUseEnabled()
+	}
+	computerUseTargetAppsFn = func() ([]string, bool) {
+		cfg, err := app.LoadConfig()
+		if err != nil {
+			return nil, false
+		}
+		return cfg.ComputerUseTargetApps, true
 	}
 	computerUseEventEmitter = func(name string, data interface{}) {
 		app.emitEvent(name, data)

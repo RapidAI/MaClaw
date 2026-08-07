@@ -135,8 +135,13 @@ func main() {
 	envCheckWidth, envCheckHeight := envCheckWindowSize()
 	startMaximised := shouldMaximiseMainWindowForPrimaryScreen()
 	appOptions := &options.App{
-		Title:                    brand.Current().WindowTitle,
-		Frameless:                frameless,
+		Title:     brand.Current().WindowTitle,
+		Frameless: frameless,
+		// On Windows the built-in --wails-draggable handling is disabled
+		// (race between the async "drag" invoke and mouse release could wedge
+		// the window in the native move loop); dragging goes through the
+		// guarded BeginWindowDrag binding + data-window-drag regions instead.
+		CSSDragProperty:          cssDragPropertyOverride(),
 		Width:                    envCheckWidth,
 		Height:                   envCheckHeight,
 		EnableDefaultContextMenu: true,

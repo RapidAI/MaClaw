@@ -10,6 +10,12 @@ import (
 // DefaultIMDeliveryTimeout is the shared deadline for proactive / scheduled IM send.
 const DefaultIMDeliveryTimeout = 45 * time.Second
 
+// DefaultIMFileDeliveryTimeout is the shared deadline for IM file upload
+// (im_message send_file). Files up to agent.SendFileMaxSize cannot realistically
+// upload within the 45s text budget; this matches the lansenger media client's
+// own five-minute transfer window.
+const DefaultIMFileDeliveryTimeout = 5 * time.Minute
+
 // NormalizeIMMessageAction maps im_message action aliases to canonical values.
 // Unknown non-empty strings are returned lowercased; empty stays empty.
 func NormalizeIMMessageAction(s string) string {
@@ -19,6 +25,8 @@ func NormalizeIMMessageAction(s string) string {
 		return "list_targets"
 	case "send", "push", "deliver", "notify":
 		return "send"
+	case "send_file", "sendfile", "upload_file", "upload", "file", "send_media":
+		return "send_file"
 	default:
 		return s
 	}
@@ -26,19 +34,24 @@ func NormalizeIMMessageAction(s string) string {
 
 // ResolveIMMessageAction returns the effective action for im_message.
 // When action is omitted, infers:
+//   - send_file if a local file path is present
 //   - send  if message text is present
 //   - list_targets if only query/filter fields are present
 //   - empty otherwise
 func ResolveIMMessageAction(args map[string]interface{}) string {
 	raw := strings.TrimSpace(argString(args, "action"))
 	n := NormalizeIMMessageAction(raw)
-	if n == "list_targets" || n == "send" {
+	if n == "list_targets" || n == "send" || n == "send_file" {
 		return n
 	}
 	if n != "" {
 		return n // unknown verb — leave for caller error
 	}
-	// Infer when models omit action (common).
+	// Infer when models omit action (common). A file path wins over text so
+	// "send this file with a caption" does not degrade to a text-only send.
+	if strings.TrimSpace(IMMessageFilePathFromArgs(args)) != "" {
+		return "send_file"
+	}
 	if strings.TrimSpace(IMMessageTextFromArgs(args)) != "" {
 		return "send"
 	}
@@ -57,7 +70,8 @@ func ResolveIMMessageAction(args map[string]interface{}) string {
 // IsIMMessageSendIntent reports whether args mean proactive send (for security gates).
 // Uses the same inference as ResolveIMMessageAction so policy cannot be bypassed by omitting action.
 func IsIMMessageSendIntent(args map[string]interface{}) bool {
-	return ResolveIMMessageAction(args) == "send"
+	action := ResolveIMMessageAction(args)
+	return action == "send" || action == "send_file"
 }
 
 // IMMessageTextFromArgs picks the first non-empty message body field.
@@ -70,13 +84,31 @@ func IMMessageTextFromArgs(args map[string]interface{}) string {
 	return ""
 }
 
-// RunIMMessageTool dispatches list_targets / send for host tool handlers.
-func RunIMMessageTool(args map[string]interface{}, listTargets, send func(map[string]interface{}) string) string {
+// IMMessageFilePathFromArgs picks the first non-empty local file path field.
+func IMMessageFilePathFromArgs(args map[string]interface{}) string {
+	for _, key := range []string{"path", "file_path", "file"} {
+		if s := argString(args, key); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// IMMessageFileNameFromArgs returns the optional display name for send_file.
+func IMMessageFileNameFromArgs(args map[string]interface{}) string {
+	return argString(args, "file_name")
+}
+
+// RunIMMessageTool dispatches list_targets / send / send_file for host tool handlers.
+func RunIMMessageTool(args map[string]interface{}, listTargets, send, sendFile func(map[string]interface{}) string) string {
 	if listTargets == nil {
 		listTargets = func(map[string]interface{}) string { return "list_targets 未实现" }
 	}
 	if send == nil {
 		send = func(map[string]interface{}) string { return "send 未实现" }
+	}
+	if sendFile == nil {
+		sendFile = func(map[string]interface{}) string { return "send_file 未实现" }
 	}
 	action := ResolveIMMessageAction(args)
 	switch action {
@@ -84,10 +116,12 @@ func RunIMMessageTool(args map[string]interface{}, listTargets, send func(map[st
 		return listTargets(args)
 	case "send":
 		return send(args)
+	case "send_file":
+		return sendFile(args)
 	case "":
-		return "缺少 action：请使用 list_targets 或 send（发送时也可省略 action，并提供 text + group_name/group_id/user_id）"
+		return "缺少 action：请使用 list_targets、send 或 send_file（发文本可省略 action 并提供 text；发文件提供 path + group_name/group_id/user_id）"
 	default:
-		return fmt.Sprintf("未知 im_message action: %s（支持: list_targets, send）", action)
+		return fmt.Sprintf("未知 im_message action: %s（支持: list_targets, send, send_file）", action)
 	}
 }
 
@@ -104,6 +138,19 @@ func FormatIMMessageSendOK(summary, original string) string {
 		msg += fmt.Sprintf("\n（已按上限 %d 字截断后发送）", MaxDeliveryBodyRunes)
 	}
 	return msg
+}
+
+// FormatIMMessageSendFileOK builds a stable success observation for send_file.
+// summary is channel→targets (e.g. from SummarizeDelivery); size is in bytes.
+func FormatIMMessageSendFileOK(summary, name string, size int64) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unnamed file)"
+	}
+	if summary == "" {
+		summary = "(unknown target)"
+	}
+	return fmt.Sprintf("已发送文件到 %s\n文件名: %s\n大小: %d 字节", summary, name, size)
 }
 
 // CanonicalDeliveryChannel maps human / alias channel names to stable keys.

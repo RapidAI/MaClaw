@@ -1,0 +1,43 @@
+B:Ëtest
+b
+x0
+w0v0Conv_0"Conv*
+kernel_shapeB *
+stridesB *
+group *
+padsB 
+
+v0v1Relu_1"Relu
+
+v1
+v0v2Sub_2"Sub
+2
+v0v3	Softmax_3"Softmax*
+axisüÿÿÿÿÿÿÿÿ 
+E
+v3v4HardSigmoid_4"HardSigmoid*
+alphaÌÀ> *
+beta+“l> 
+
+v2v5
+Identity_5"Identity
+
+v3
+v1v6Mul_6"Mul*&
+Bw0Jc¥=|¸>²> ª/½Îðæ>pv >Z
+x0
+
+
+
+
+Z
+x1
+
+
+b
+v6
+
+
+
+
+

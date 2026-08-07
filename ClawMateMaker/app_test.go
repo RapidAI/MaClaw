@@ -41,6 +41,59 @@ func TestAutoDetectionResultDoesNotExposePackagePath(t *testing.T) {
 	}
 }
 
+func TestEmbeddedFrontendKeepsPortBoundDiagnostics(t *testing.T) {
+	contents, err := assets.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		t.Fatalf("read embedded frontend: %v", err)
+	}
+	for _, want := range []string{
+		"AutoDetectPortFirmware",
+		"ConfirmDetectedBoard",
+		"Connected device details · {port}",
+		"selected-badge",
+		"Cloudflare R2",
+		"zh-TW",
+	} {
+		if !strings.Contains(string(contents), want) {
+			t.Fatalf("embedded frontend lost required surface %q", want)
+		}
+	}
+}
+func TestAutoDetectPortFirmwareRejectsBlankPort(t *testing.T) {
+	if _, err := NewApp().AutoDetectPortFirmware("  "); err == nil || !strings.Contains(err.Error(), "serial port is required") {
+		t.Fatalf("blank port error = %v", err)
+	}
+}
+
+func TestConfirmDetectedBoardRejectsProbeWithoutUniqueRuntimeIdentity(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	jobID := "job-0123456789abcdef"
+	probe := jobs.ProbeResult{
+		JobID:            jobID,
+		Port:             "COM3",
+		Status:           "succeeded",
+		DeviceBinding:    "binding",
+		FinishedAt:       time.Now().UTC(),
+		BoardRecognition: catalog.Recognition{Status: "requires_confirmation", CandidateBoards: []string{"bread-compact", "echoear-2st"}},
+	}
+	writer, err := logging.New(a.logRoot, jobID, "attempt-probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteSummary(probe); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ConfirmDetectedBoard("COM3", jobID); err == nil || !strings.Contains(err.Error(), "uniquely supported board identity") {
+		t.Fatalf("unexpected automatic confirmation result: %v", err)
+	}
+}
 func TestDeveloperBuildReportsProbeOnly(t *testing.T) {
 	previous := releaseBuild
 	releaseBuild = "false"
@@ -56,6 +109,15 @@ func TestOfficialBuildDoesNotReportProbeOnly(t *testing.T) {
 	t.Cleanup(func() { releaseBuild = previous })
 	if NewApp().GetAppInfo().ProbeOnly {
 		t.Fatal("official build must expose the full verified-installation flow")
+	}
+}
+
+func TestAppInfoReportsInjectedBuildVersion(t *testing.T) {
+	previous := buildVersion
+	buildVersion = "1.2.3"
+	t.Cleanup(func() { buildVersion = previous })
+	if got := NewApp().GetAppInfo().Version; got != "1.2.3" {
+		t.Fatalf("version = %q, want injected build version", got)
 	}
 }
 

@@ -44,14 +44,14 @@ type OCRProvider interface {
 
 // OCRResult matches browser.OCRResult (text + bounding box).
 type OCRResult struct {
-	Text  string    `json:"text"`
-	Box   [][]int   `json:"box,omitempty"`
-	Score float64   `json:"score,omitempty"`
+	Text  string  `json:"text"`
+	Box   [][]int `json:"box,omitempty"`
+	Score float64 `json:"score,omitempty"`
 }
 
 // CompositeImageDescriber implements ImageDescriber with two-layer fallback:
 // 1. Vision LLM (if configured and verified)
-// 2. RapidOCR + context inference (always available fallback)
+// 2. Native OCR (PP-OCRv6) + context inference (always available fallback)
 type CompositeImageDescriber struct {
 	vision *VisionDescriber // nil if not configured
 	ocr    OCRProvider      // nil if not available
@@ -97,7 +97,7 @@ func (c *CompositeImageDescriber) Close() {
 	if c.vision != nil {
 		c.vision.Close()
 	}
-	// OCR lifecycle is managed by the caller (shared RapidOCRSidecar).
+	// OCR lifecycle is managed by the caller (shared native OCR provider).
 }
 
 // describeWithOCR uses OCR text + context hints to generate a description.
@@ -128,8 +128,8 @@ func (c *CompositeImageDescriber) ocrImage(imagePath string) string {
 		return ""
 	}
 
-	// RapidOCR expects PNG base64. For non-PNG formats, we still send base64
-	// of the raw bytes — RapidOCR handles JPEG/PNG/BMP internally.
+	// The OCR engine expects base64 image bytes. For non-PNG formats, we still
+	// send base64 of the raw bytes — JPEG/PNG are decoded internally.
 	b64 := base64.StdEncoding.EncodeToString(data)
 	results, err := c.ocr.Recognize(b64)
 	if err != nil {

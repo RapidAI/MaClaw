@@ -1,0 +1,21 @@
+#pragma once
+
+#include <stdbool.h>
+
+#include "device_api.h"
+
+/*
+ * Hardware-independent battery admission policy.  Board ports only publish a
+ * calibrated (or unavailable) telemetry snapshot through Device API; this
+ * service never reads ADCs, charger GPIOs or board identifiers.
+ *
+ * This first safe slice deliberately does not force sleep or write a
+ * checkpoint: those actions require a verified per-profile wake matrix and a
+ * Persistence Service transaction.  It does, however, give every business
+ * operation one consistent answer for starting an optional/high-power job.
+ */
+
+device_status_t battery_policy_service_init(void);
+bool battery_policy_service_get_snapshot(device_battery_policy_snapshot_t *out_snapshot);
+bool battery_policy_service_allows_optional_work(void);
+bool battery_policy_service_allows_high_power_work(void);

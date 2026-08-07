@@ -196,7 +196,7 @@ type OCRResult struct {
 	BBox       [4]int  `json:"bbox"` // x, y, width, height
 }
 
-// OCRProvider abstracts OCR recognition (RapidOCR sidecar or LLM Vision).
+// OCRProvider abstracts OCR recognition (native PP-OCRv6 engine or LLM Vision).
 type OCRProvider interface {
 	Recognize(pngBase64 string) ([]OCRResult, error)
 	IsAvailable() bool

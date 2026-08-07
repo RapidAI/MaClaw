@@ -1,0 +1,22 @@
+{
+  "inputs": {
+    "x0": {
+      "shape": [
+        2,
+        3,
+        8,
+        7
+      ],
+      "dtype": "float32",
+      "data": "1PkBPx0zL78+3XM/VinHvla5PT8wa0E/8C76PswDZj+ATye8PI8vvngQQz7gK5g+eE5GPyAOLz38Aqk+TLNqv96lZ7+4pDa/+OATPraTyb4A5Wo/RmZoP6gLkT7s5QA/aO/3vqCJPL/ADWK/opIMP5SNAT9Ivvq9GGbNvoBX9DwCH1Q/gCwIPJRkdL54MCk/oKyHvNgwIr5g1aI+uLktvyjYpb3gvIK8IDIKPvB8vD0gyfu9sJhivlxSfz+sFEk/385av6xq0j55fiS/mOQ+P9p6ND90E1y/DrYYPzt/Yb8Miq8+3q0Bv9icFL7HgBu/CN4/v9BTmz0IgMk+6jT4vvo/+b6HQje/0rkBv9DNb71AtSs9CCcovmgLtb6yzwq/7HKhPvBGUr8ETs++npQVP9DUlj1M6q0+kNYNvUCrOT0wre09mD1Fv6h+2z7cOAS/eGqpvrTsQb80U80+vMHFPtT9Dz/kSSM/HMEQvrj6tb7UrH8/knKpvmhG7L0k4yI/Nltqvyi+Dj/wFcQ9EKtyPnKabj8A58c7ljshP/SBXT82yhU/rGhtPxaZiL4G71Y/mypvvxaeGr/2k0I/2pB9v3QaUT/cILa+pCRcvpwbL7+A9Wm+wKkTvcZYYb/+GTS/gKXhPhbuOz+EGha/ZsLwvnZvcj/QEWM/xP/0PlSfhD7A6SE/bLavPrCRZ72SUJ++l3kivyg0XL4CCBu/nbtdv7irEz/T8VS/I05uv3DqOj4Ik5u9GE8tPnX6Ub8G9Gs/SA4Gv3QoEb792HS/ckmTvtT/C74wV4E+kv5jP+d/d7/so1Y/gP62PKt2S7+UctA+yIINPoCXQL/+K5y+ABX3PkrTFL/gVUs9BgM2P2JX/r7gkdy9rpKgvoQw977g7RO/hLwCP8SAeb4K4i4/Iluhvu7Z275Gm0a/SNBOPgQDqz58FBm/VmY2P/IqCb+e2Ea/SCYbPsJfAr/utlQ/hGpcv2wjdj/0pqY+5l8dP81iF782OX4/UD0jPopXCr/QNOE9DNxnPxweXT984pg+wAnIPHqpQT9EqK0+GN1+vkD3XL8EkQM//35EvwCCaLu/ZEu/BrxFP0Bm7jz0NsO+IJRoPwgLbD5kkp++PFYfvkufb79G/CO/qG3cPg6IvL7yis2+2HrGPiiaor2wT7u9YNhhPp4l4r4AFcU9QJR7PyTml75ELiK+6IhJP3b2NT/AdJI95PFJvhibDL+ooE8+ZP7uPlR1gb4YYiU+osQ4P/ylkL4IkxS/vtwnv6TbMr4AnJI9EgNkPyAEDD22jwq/WK2YvUjYQz+Suw6/wNLvPRwkDj9W/34/Cq1cvxq0/770Z0e/9FV4vkB9+jxcwaM+TnkOvzr41r5CIdG+JKEpv0qLcj+o8na/rMA1P8CmUD9qnAu/Ckz1vnR1ZT/fDgK/iJY1v/3MRr9CfYq+LKJ5v/jv8j6Q9dE9GLdzv3DuQD64wsQ+gH4fPs7Sxr4KL8G+ED4mPshc7z4K7DM/hMMMvmQGgT7gg5++YPLtPUVyHb8YJJ694vowP1oNLT9cEAu/oFQ/v8AjgjxeokM/xn91v8ZxWz8QGde9rmOcvoiu+70AcXc/sExIv9BpIr7iRlK/oEUOvVI2Nb8vTgi/yhpBv6EPG78cMgG/BBoFv7rnX79gCf09WM3OPiJI3r4+Y3m/GKdSPsbsXr/IKOi+yigQv5jlfL+ieIC+bu8Qv5B38z6K9ca+hkhqv85rSr9A0HM9dLbZPtxkZT/2o1I/0EJ9P8Ctf754j7S9aAJyvgCHcjwAxMw+"
+    },
+    "x1": {
+      "shape": [
+        1,
+        3
+      ],
+      "dtype": "float32",
+      "data": "0DdaP8h+gz4uhiA/"
+    }
+  }
+}

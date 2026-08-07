@@ -607,18 +607,21 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name: "im_message",
-		Description: "即时向 IM 发文本（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send（可省略：有 text 则 send）。" +
+		Description: "即时向 IM 发文本或文件（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file）。" +
 			"用户要求现在发到蓝信某群/微信时用本工具；周期播报才用 manage_schedule+delivery。" +
-			"list_targets 的 channel：lansenger|weixin|telegram|qq；send 需 text + group_name/group_id/user_id。",
+			"list_targets 的 channel：lansenger|weixin|telegram|qq；send 需 text + group_name/group_id/user_id。" +
+			"send_file 上传本机文件（目前仅蓝信 lansenger 支持），需 path + group_name/group_id/user_id，可带 text 作为说明文字。",
 		Properties: map[string]interface{}{
-			"action":           map[string]string{"type": "string", "description": "list_targets 或 send；可省略并自动推断"},
-			"text":             map[string]string{"type": "string", "description": "send 时消息正文"},
+			"action":           map[string]string{"type": "string", "description": "list_targets、send 或 send_file；可省略并自动推断"},
+			"text":             map[string]string{"type": "string", "description": "send 时消息正文；send_file 时作为文件说明文字"},
 			"message":          map[string]string{"type": "string", "description": "text 别名"},
+			"path":             map[string]string{"type": "string", "description": "send_file：要发送的本机文件路径"},
+			"file_name":        map[string]string{"type": "string", "description": "send_file：发送时显示的文件名（可选）"},
 			"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq（默认 lansenger）"},
 			"query":            map[string]string{"type": "string", "description": "list_targets 名称/ID 过滤"},
-			"group_name":       map[string]string{"type": "string", "description": "send：群名（自动解析）"},
-			"group_id":         map[string]string{"type": "string", "description": "send：群 ID"},
-			"user_id":          map[string]string{"type": "string", "description": "send：私聊 ID 或 self"},
+			"group_name":       map[string]string{"type": "string", "description": "send/send_file：群名（自动解析）"},
+			"group_id":         map[string]string{"type": "string", "description": "send/send_file：群 ID"},
+			"user_id":          map[string]string{"type": "string", "description": "send/send_file：私聊 ID 或 self"},
 			"mention_user_ids": map[string]string{"type": "string", "description": "群 @ 用户 ID，逗号分隔"},
 			"mention_all":      map[string]string{"type": "boolean", "description": "是否 @所有人"},
 			"delivery":         map[string]string{"type": "object", "description": "可选完整投递配置"},

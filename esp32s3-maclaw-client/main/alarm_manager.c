@@ -13,6 +13,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include "persistence_service.h"
+#include "wake_deadline_service.h"
 
 #define ALARM_MAX_COUNT 16
 #define ALARM_LABEL_BYTES 48
@@ -65,13 +67,59 @@ static const char *TAG = "alarm_manager";
 static alarm_store_t s_store = {.magic = ALARM_STORE_MAGIC, .next_id = 1};
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_task;
+static SemaphoreHandle_t s_stopped;
+static wake_deadline_handle_t s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
 static volatile bool s_ringing;
 static volatile bool s_dismiss_requested;
+static volatile bool s_stop_requested;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
+/* Tool admission is separate from the store mutex.  Deinit closes admission
+ * before joining the worker, then waits for callers that observed the old
+ * service instance before it may destroy s_lock. */
+static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_tool_admissions;
 static alarm_manager_ring_callback_t s_ring_callback;
 static void *s_ring_callback_arg;
 
 static esp_err_t persist_locked(void);
+
+/* Callers own s_lock.  The common dispatcher replaces the legacy 250 ms
+ * polling loop: only the earliest queued alarm owns a wall-clock deadline. */
+static void arm_next_deadline_locked(void) {
+    if (!s_deadline) return;
+    if (!s_store.count) {
+        wake_deadline_service_cancel(s_deadline);
+        return;
+    }
+    esp_err_t err = wake_deadline_service_arm(s_deadline, s_store.items[0].trigger_at_ms);
+    if (err != ESP_OK) ESP_LOGW(TAG, "cannot arm alarm deadline: %s", esp_err_to_name(err));
+}
+
+static void alarm_deadline_callback(void *arg) {
+    (void)arg;
+    if (s_task && !s_stop_requested) xTaskNotifyGive(s_task);
+}
+
+static bool stop_requested(void) {
+    return s_stop_requested;
+}
+
+static bool admit_tool(void) {
+    bool admitted = false;
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_lock && !s_stop_requested) {
+        ++s_tool_admissions;
+        admitted = true;
+    }
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    return admitted;
+}
+
+static void release_tool(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_tool_admissions > 0) --s_tool_admissions;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+}
 
 static void publish_scheduled_state(void) {
     bool scheduled = false;
@@ -145,13 +193,8 @@ static void sort_alarms(void) {
 }
 
 static esp_err_t persist_locked(void) {
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("alarms", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) return err;
-    err = nvs_set_blob(nvs, "store", &s_store, sizeof(s_store));
-    if (err == ESP_OK) err = nvs_commit(nvs);
-    nvs_close(nvs);
-    return err;
+    return persistence_service_write_blob("alarms", "store",
+                                          &s_store, sizeof(s_store));
 }
 
 static void remove_index_locked(size_t index) {
@@ -185,6 +228,8 @@ static cJSON *alarm_json(const alarm_item_t *item, size_t index) {
 static void alarm_task(void *arg) {
     (void)arg;
     for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (stop_requested()) break;
         alarm_item_t current = {0};
         bool due = false;
         int64_t now_ms = (int64_t)time(NULL) * 1000;
@@ -217,15 +262,25 @@ static void alarm_task(void *arg) {
                              esp_err_to_name(persist_err));
                 }
             }
+            arm_next_deadline_locked();
             xSemaphoreGive(s_lock);
         }
-        if (!due) {
-            vTaskDelay(pdMS_TO_TICKS(250));
+        if (!due || stop_requested()) {
             continue;
         }
 
+        device_power_lease_t ring_lease = DEVICE_POWER_LEASE_INVALID;
+        device_status_t lease_status = device_power_lease_acquire(
+            DEVICE_POWER_LEASE_OWNER_ALARM, &ring_lease);
+        if (lease_status != DEVICE_STATUS_OK) {
+            /* A ringing alarm remains safety-critical even if all fixed lease
+             * slots are unexpectedly exhausted.  Continue the existing alarm
+             * policy and leave a diagnostic; normal images reserve ample
+             * slots for the bounded foreground domains. */
+            ESP_LOGE(TAG, "cannot acquire alarm power lease: status=%d", lease_status);
+        }
         bool dismissed = false;
-        for (unsigned attempt = 1; attempt <= ALARM_MAX_ATTEMPTS; ++attempt) {
+        for (unsigned attempt = 1; attempt <= ALARM_MAX_ATTEMPTS && !stop_requested(); ++attempt) {
             taskENTER_CRITICAL(&s_state_lock);
             s_ringing = true;
             alarm_manager_ring_callback_t ring_callback = s_ring_callback;
@@ -234,7 +289,7 @@ static void alarm_task(void *arg) {
             if (ring_callback) ring_callback(ring_callback_arg);
             int64_t ring_started = esp_timer_get_time();
             unsigned frame = 0;
-            while (!dismiss_requested() &&
+            while (!stop_requested() && !dismiss_requested() &&
                    esp_timer_get_time() - ring_started < (int64_t)ALARM_RING_SECONDS * 1000000) {
                 char display[24];
                 format_local_time(current.trigger_at_ms, display);
@@ -248,61 +303,112 @@ static void alarm_task(void *arg) {
             bool was_dismissed = s_dismiss_requested;
             taskEXIT_CRITICAL(&s_state_lock);
             app_ui_set_alarm_visual(false, 0, NULL, NULL, attempt, ALARM_MAX_ATTEMPTS);
-            if (was_dismissed) {
+            if (stop_requested() || was_dismissed) {
                 dismissed = true;
                 break;
             }
             if (attempt < ALARM_MAX_ATTEMPTS) {
                 int64_t snooze_started = esp_timer_get_time();
-                while (!dismiss_requested() &&
+                while (!stop_requested() && !dismiss_requested() &&
                        esp_timer_get_time() - snooze_started < (int64_t)ALARM_SNOOZE_SECONDS * 1000000) {
                     vTaskDelay(pdMS_TO_TICKS(250));
                 }
-                if (dismiss_requested()) {
+                if (stop_requested() || dismiss_requested()) {
                     dismissed = true;
                     break;
                 }
             }
         }
-        while (!complete_active_alarm(current.id)) {
+        /* Stopping is not a dismissal: leave the already-persisted active
+         * record intact so init can recover the reminder after restart. */
+        while (!stop_requested() && !complete_active_alarm(current.id)) {
             vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        if (!stop_requested() && xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
+            arm_next_deadline_locked();
+            xSemaphoreGive(s_lock);
         }
         publish_scheduled_state();
         set_ring_state(false, false);
-        ESP_LOGI(TAG, "alarm %lu finished (%s)", (unsigned long)current.id,
-                 dismissed ? "dismissed" : "attempts exhausted");
+        device_power_lease_release(ring_lease);
+        if (!stop_requested()) {
+            ESP_LOGI(TAG, "alarm %lu finished (%s)", (unsigned long)current.id,
+                     dismissed ? "dismissed" : "attempts exhausted");
+        }
     }
+    set_ring_state(false, false);
+    s_task = NULL;
+    if (s_stopped) xSemaphoreGive(s_stopped);
+    vTaskDelete(NULL);
 }
 
 esp_err_t alarm_manager_init(void) {
     if (s_lock || s_task) return ESP_ERR_INVALID_STATE;
+    if (!persistence_service_is_initialized()) return ESP_ERR_INVALID_STATE;
+    s_stop_requested = false;
     s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
-    nvs_handle_t nvs;
+    s_stopped = xSemaphoreCreateBinary();
+    if (!s_stopped) {
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
+        return ESP_ERR_NO_MEM;
+    }
     bool store_needs_persist = false;
-    if (nvs_open("alarms", NVS_READONLY, &nvs) == ESP_OK) {
-        size_t size = 0;
-        esp_err_t size_err = nvs_get_blob(nvs, "store", NULL, &size);
-        if (size_err == ESP_OK && size == sizeof(alarm_store_t)) {
-            alarm_store_t loaded = {0};
-            if (nvs_get_blob(nvs, "store", &loaded, &size) == ESP_OK &&
-                loaded.magic == ALARM_STORE_MAGIC && loaded.count <= ALARM_MAX_COUNT) {
-                s_store = loaded;
-            }
-        } else if (size_err == ESP_OK && size == sizeof(alarm_store_v1_t)) {
-            alarm_store_v1_t loaded = {0};
-            if (nvs_get_blob(nvs, "store", &loaded, &size) == ESP_OK &&
-                loaded.magic == ALARM_STORE_MAGIC_V1 && loaded.count <= ALARM_MAX_COUNT) {
-                s_store.magic = ALARM_STORE_MAGIC;
-                s_store.next_id = loaded.next_id;
-                s_store.count = loaded.count;
-                 memcpy(s_store.items, loaded.items, sizeof(loaded.items));
-                 s_store.cache_next = loaded.cache_next;
-                 memcpy(s_store.cache, loaded.cache, sizeof(loaded.cache));
-                 store_needs_persist = true;
-            }
+    size_t size = 0;
+    esp_err_t size_err = persistence_service_read_blob("alarms", "store", NULL, &size);
+    if (size_err != ESP_OK && size_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "cannot inspect alarm store: %s", esp_err_to_name(size_err));
+        vSemaphoreDelete(s_lock);
+        vSemaphoreDelete(s_stopped);
+        s_lock = NULL;
+        s_stopped = NULL;
+        return size_err;
+    }
+    if (size_err == ESP_OK && size == sizeof(alarm_store_t)) {
+        alarm_store_t loaded = {0};
+        size_t loaded_size = sizeof(loaded);
+        esp_err_t read_err = persistence_service_read_blob("alarms", "store",
+                                                            &loaded, &loaded_size);
+        if (read_err != ESP_OK) {
+            ESP_LOGE(TAG, "cannot load alarm store: %s", esp_err_to_name(read_err));
+            vSemaphoreDelete(s_lock);
+            vSemaphoreDelete(s_stopped);
+            s_lock = NULL;
+            s_stopped = NULL;
+            return read_err;
         }
-        nvs_close(nvs);
+        if (loaded.magic == ALARM_STORE_MAGIC && loaded.count <= ALARM_MAX_COUNT) {
+            s_store = loaded;
+        } else {
+            ESP_LOGW(TAG, "ignoring invalid alarm store");
+        }
+    } else if (size_err == ESP_OK && size == sizeof(alarm_store_v1_t)) {
+        alarm_store_v1_t loaded = {0};
+        size_t loaded_size = sizeof(loaded);
+        esp_err_t read_err = persistence_service_read_blob("alarms", "store",
+                                                            &loaded, &loaded_size);
+        if (read_err != ESP_OK) {
+            ESP_LOGE(TAG, "cannot load legacy alarm store: %s", esp_err_to_name(read_err));
+            vSemaphoreDelete(s_lock);
+            vSemaphoreDelete(s_stopped);
+            s_lock = NULL;
+            s_stopped = NULL;
+            return read_err;
+        }
+        if (loaded.magic == ALARM_STORE_MAGIC_V1 && loaded.count <= ALARM_MAX_COUNT) {
+            s_store.magic = ALARM_STORE_MAGIC;
+            s_store.next_id = loaded.next_id;
+            s_store.count = loaded.count;
+            memcpy(s_store.items, loaded.items, sizeof(loaded.items));
+            s_store.cache_next = loaded.cache_next;
+            memcpy(s_store.cache, loaded.cache, sizeof(loaded.cache));
+            store_needs_persist = true;
+        } else {
+            ESP_LOGW(TAG, "ignoring invalid legacy alarm store");
+        }
+    } else if (size_err == ESP_OK) {
+        ESP_LOGW(TAG, "ignoring incompatible alarm store (%u bytes)", (unsigned)size);
     }
     if (s_store.next_id == 0) s_store.next_id = 1;
     sort_alarms();
@@ -312,6 +418,10 @@ esp_err_t alarm_manager_init(void) {
         alarm_item_t recovered = s_store.active_alarm;
         if (s_store.count >= ALARM_MAX_COUNT) {
             ESP_LOGE(TAG, "cannot recover active alarm: capacity exhausted");
+            vSemaphoreDelete(s_stopped);
+            vSemaphoreDelete(s_lock);
+            s_stopped = NULL;
+            s_lock = NULL;
             return ESP_ERR_INVALID_SIZE;
         }
         s_store.items[s_store.count++] = recovered;
@@ -325,20 +435,89 @@ esp_err_t alarm_manager_init(void) {
         if (migration_err != ESP_OK) {
             ESP_LOGE(TAG, "cannot persist migrated alarm store: %s",
                      esp_err_to_name(migration_err));
+            vSemaphoreDelete(s_stopped);
+            vSemaphoreDelete(s_lock);
+            s_stopped = NULL;
+            s_lock = NULL;
             return migration_err;
         }
+    }
+    esp_err_t deadline_err = wake_deadline_service_register(alarm_deadline_callback, NULL,
+                                                             &s_deadline);
+    if (deadline_err != ESP_OK) {
+        vSemaphoreDelete(s_stopped);
+        vSemaphoreDelete(s_lock);
+        s_stopped = NULL;
+        s_lock = NULL;
+        return deadline_err;
     }
     esp_err_t task_err = xTaskCreate(alarm_task, "maclaw_alarm", 5120, NULL, 7, &s_task) == pdPASS
                              ? ESP_OK : ESP_ERR_NO_MEM;
     if (task_err == ESP_OK) {
-        publish_scheduled_state();
+        if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
+            arm_next_deadline_locked();
+            xSemaphoreGive(s_lock);
+        }
+        if (!stop_requested()) publish_scheduled_state();
         ESP_LOGI(TAG, "alarm scheduler ready: queued=%u active=%s",
                  (unsigned)s_store.count, s_store.active_valid ? "yes" : "no");
     } else {
+        wake_deadline_service_unregister(s_deadline);
+        s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
+        vSemaphoreDelete(s_stopped);
         vSemaphoreDelete(s_lock);
         s_lock = NULL;
+        s_stopped = NULL;
     }
     return task_err;
+}
+
+esp_err_t alarm_manager_deinit(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_lock && !s_task) return ESP_OK;
+    if (!s_lock || !s_stopped) return ESP_ERR_INVALID_STATE;
+    if (s_task && xTaskGetCurrentTaskHandle() == s_task) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    s_stop_requested = true;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (s_deadline) wake_deadline_service_cancel(s_deadline);
+    TaskHandle_t task = s_task;
+    xSemaphoreGive(s_lock);
+    if (task) {
+        xTaskNotifyGive(task);
+        if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    }
+    const TickType_t tool_drain_started = xTaskGetTickCount();
+    const TickType_t tool_drain_timeout = pdMS_TO_TICKS(timeout_ms);
+    for (;;) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        uint32_t admissions = s_tool_admissions;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        if (admissions == 0) break;
+        if ((xTaskGetTickCount() - tool_drain_started) >= tool_drain_timeout) {
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    /* A tool call may have been waiting while stop was requested.  Re-acquire
+     * the mutex before destruction so it observes the stop boundary first. */
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    if (s_deadline) wake_deadline_service_unregister(s_deadline);
+    s_deadline = WAKE_DEADLINE_HANDLE_INVALID;
+    s_ring_callback = NULL;
+    s_ring_callback_arg = NULL;
+    xSemaphoreGive(s_lock);
+    vSemaphoreDelete(s_stopped);
+    vSemaphoreDelete(s_lock);
+    s_stopped = NULL;
+    s_lock = NULL;
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    s_stop_requested = false;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    set_ring_state(false, false);
+    ESP_LOGI(TAG, "alarm scheduler stopped");
+    return ESP_OK;
 }
 
 void alarm_manager_set_ring_callback(alarm_manager_ring_callback_t callback,
@@ -356,6 +535,13 @@ bool alarm_manager_is_ringing(void) {
     return ringing;
 }
 
+bool alarm_manager_is_initialized(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    bool initialized = s_lock != NULL && s_task != NULL && !s_stop_requested;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    return initialized;
+}
+
 void alarm_manager_dismiss(void) {
     // The UI calls this only for the enclosure-specific control while the
     // alarm is ringing. Keep this path lock-free with respect to NVS/tool
@@ -371,10 +557,11 @@ void alarm_manager_dismiss(void) {
 esp_err_t alarm_manager_execute_tool(const char *name, cJSON *arguments,
                                      const char *idempotency_key,
                                      cJSON **out_result, char *error, size_t error_size) {
-    if (!name || !out_result) return ESP_ERR_INVALID_ARG;
+    if (!name || !out_result || !admit_tool()) return ESP_ERR_INVALID_STATE;
     *out_result = NULL;
     if (!cJSON_IsObject(arguments)) {
         snprintf(error, error_size, "arguments must be a JSON object");
+        release_tool();
         return ESP_ERR_INVALID_ARG;
     }
     // Mutating calls are replay-protected by a fixed NVS record. Reject keys
@@ -394,15 +581,26 @@ esp_err_t alarm_manager_execute_tool(const char *name, cJSON *arguments,
         }
         if (key_bytes >= ALARM_RESULT_CACHE_KEY_BYTES || !ascii) {
             snprintf(error, error_size, "idempotencyKey must be at most 63 ASCII characters");
+            release_tool();
             return ESP_ERR_INVALID_ARG;
         }
     }
     cJSON *result = cJSON_CreateObject();
-    if (!result) return ESP_ERR_NO_MEM;
+    if (!result) {
+        release_tool();
+        return ESP_ERR_NO_MEM;
+    }
     esp_err_t err = ESP_OK;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(3000)) != pdTRUE) {
         cJSON_Delete(result);
+        release_tool();
         return ESP_ERR_TIMEOUT;
+    }
+    if (s_stop_requested) {
+        xSemaphoreGive(s_lock);
+        cJSON_Delete(result);
+        release_tool();
+        return ESP_ERR_INVALID_STATE;
     }
     // Read-only list calls are safe to execute again and may return more JSON
     // than the bounded persistent result cache can hold. Cache only operations
@@ -422,6 +620,7 @@ esp_err_t alarm_manager_execute_tool(const char *name, cJSON *arguments,
                 xSemaphoreGive(s_lock);
                 if (cached_status != ESP_OK) cJSON_Delete(result);
                 else *out_result = result;
+                release_tool();
                 return cached_status;
             }
         }
@@ -432,6 +631,7 @@ esp_err_t alarm_manager_execute_tool(const char *name, cJSON *arguments,
         if (!store_before) {
             xSemaphoreGive(s_lock);
             cJSON_Delete(result);
+            release_tool();
             return ESP_ERR_NO_MEM;
         }
         *store_before = s_store;
@@ -582,13 +782,24 @@ esp_err_t alarm_manager_execute_tool(const char *name, cJSON *arguments,
     } else if (cacheable && rollback_store && store_before) {
         s_store = *store_before;
     }
+    /* s_lock is still owned here.  Re-arm before releasing it so a just
+     * persisted earlier alarm cannot be missed between the durable commit and
+     * dispatcher update. */
+    if (cacheable && store_dirty) arm_next_deadline_locked();
     free(store_before);
     xSemaphoreGive(s_lock);
     if (err != ESP_OK) {
         cJSON_Delete(result);
+        release_tool();
         return err;
     }
     if (cacheable && store_dirty) publish_scheduled_state();
+    if (cacheable && store_dirty) {
+        /* A new earlier alarm needs immediate dispatcher re-evaluation; an
+         * expired alarm is delivered by this same notification. */
+        if (s_task) xTaskNotifyGive(s_task);
+    }
     *out_result = result;
+    release_tool();
     return ESP_OK;
 }

@@ -145,6 +145,10 @@ type OutgoingMedia struct {
 	FileName  string
 	MediaType string // "image", "file", "video"
 	IsGroup   bool
+	// Strict returns upload failures as errors. The default (false) preserves the
+	// legacy text fallback, which can mask a failed upload behind a successful
+	// SendMedia return; delivery tools that report success to agents set this.
+	Strict bool
 }
 
 // MessageHandler is the callback for incoming messages.
@@ -1718,10 +1722,13 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 func (g *Gateway) sendMediaWithToken(ctx context.Context, token string, msg OutgoingMedia) error {
 	mediaID, err := g.uploadMedia(ctx, token, msg.FileData, msg.FileName, msg.MediaType)
 	if err != nil {
-		log.Printf("[lansenger] media upload failed: %v, sending text fallback", err)
 		if isLansengerTokenExpiredError(err) {
 			return err
 		}
+		if msg.Strict {
+			return fmt.Errorf("media upload failed: %w", err)
+		}
+		log.Printf("[lansenger] media upload failed: %v, sending text fallback", err)
 		return g.SendText(ctx, OutgoingText{
 			ToUserID: msg.ToUserID,
 			Text:     fmt.Sprintf("[%s: %s upload failed]", msg.MediaType, msg.FileName),

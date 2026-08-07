@@ -30,3 +30,19 @@ func focusWindow(titleSubstring string) error {
 	}
 	return nil
 }
+
+// foregroundWindowTitle returns the active window name via xdotool ("" when
+// xdotool is unavailable).
+func foregroundWindowTitle() string {
+	out, err := exec.Command("xdotool", "getactivewindow", "getwindowname").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// windowTitleAtPoint is unsupported on Linux; callers fall back to
+// ForegroundWindowTitle.
+func windowTitleAtPoint(x, y int) string {
+	return ""
+}

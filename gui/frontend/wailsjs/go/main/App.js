@@ -118,6 +118,10 @@ export function BatchTriggerSkillSelfRepair(arg1, arg2) {
   return window['go']['main']['App']['BatchTriggerSkillSelfRepair'](arg1, arg2);
 }
 
+export function BeginWindowDrag() {
+  return window['go']['main']['App']['BeginWindowDrag']();
+}
+
 export function BeginLiveRecordedAudioUpload(arg1) {
   return window['go']['main']['App']['BeginLiveRecordedAudioUpload'](arg1);
 }
@@ -268,6 +272,10 @@ export function CheckMCPServerHealth(arg1) {
 
 export function CheckMaclawAppRuntimeHealth(arg1, arg2) {
   return window['go']['main']['App']['CheckMaclawAppRuntimeHealth'](arg1, arg2);
+}
+
+export function CheckOCRModel() {
+  return window['go']['main']['App']['CheckOCRModel']();
 }
 
 export function CheckRemoteClaudeLaunchProbe(arg1, arg2) {
@@ -716,6 +724,10 @@ export function DownloadEmbeddingModel() {
 
 export function DownloadMaclawAppPackageFromHub(arg1) {
   return window['go']['main']['App']['DownloadMaclawAppPackageFromHub'](arg1);
+}
+
+export function DownloadOCRModel() {
+  return window['go']['main']['App']['DownloadOCRModel']();
 }
 
 export function DownloadSkillRunArtifact(arg1, arg2) {
@@ -1276,6 +1288,10 @@ export function GetMobileMeetingRecordingAudio(arg1) {
 
 export function GetNLSkillRunStatus(arg1) {
   return window['go']['main']['App']['GetNLSkillRunStatus'](arg1);
+}
+
+export function GetOCREnabled() {
+  return window['go']['main']['App']['GetOCREnabled']();
 }
 
 export function GetOpenAIUsage() {
@@ -3944,6 +3960,10 @@ export function SetMoAStickyPreset(arg1) {
 
 export function SetNLSkillStatus(arg1, arg2) {
   return window['go']['main']['App']['SetNLSkillStatus'](arg1, arg2);
+}
+
+export function SetOCREnabled(arg1) {
+  return window['go']['main']['App']['SetOCREnabled'](arg1);
 }
 
 export function SetPassthroughCommandEnabled(arg1, arg2) {

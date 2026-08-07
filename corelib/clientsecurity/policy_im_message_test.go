@@ -46,3 +46,23 @@ func TestIsIMMessageSendIntentInferredWithoutAction(t *testing.T) {
 		t.Fatalf("inferred send allowed=%v reason=%q", ok, reason)
 	}
 }
+
+func TestEnforceConfigBlocksIMMessageSendFileWhenOutboundDisabled(t *testing.T) {
+	cfg := corelib.AppConfig{
+		HubSecurityCentralized: true,
+		FileOutboundEnabled:    false,
+		ImageOutboundEnabled:   true,
+		NetworkLevel:           "full",
+	}
+	// Explicit send_file and path-inferred send_file are both outbound file sends.
+	if ok, reason := EnforceConfig(cfg, "im_message", map[string]interface{}{"action": "send_file", "path": "a.pdf", "group_id": "g"}); ok || !strings.Contains(reason, "outbound") {
+		t.Fatalf("send_file allowed=%v reason=%q", ok, reason)
+	}
+	if ok, reason := EnforceConfig(cfg, "im_message", map[string]interface{}{"path": "a.pdf", "group_id": "g"}); ok || !strings.Contains(reason, "outbound") {
+		t.Fatalf("inferred send_file allowed=%v reason=%q", ok, reason)
+	}
+	cfg.FileOutboundEnabled = true
+	if ok, reason := EnforceConfig(cfg, "im_message", map[string]interface{}{"action": "send_file", "path": "a.pdf", "group_id": "g"}); !ok {
+		t.Fatalf("send_file blocked when outbound enabled reason=%q", reason)
+	}
+}

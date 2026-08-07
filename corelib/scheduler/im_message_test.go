@@ -12,6 +12,9 @@ func TestNormalizeIMMessageAction(t *testing.T) {
 		"LIST":        "list_targets",
 		"push":        "send",
 		"SEND":        "send",
+		"send_file":   "send_file",
+		"upload":      "send_file",
+		"SendFile":    "send_file",
 		"explode":     "explode",
 		"":            "",
 	}
@@ -26,11 +29,24 @@ func TestResolveIMMessageActionInfer(t *testing.T) {
 	if got := ResolveIMMessageAction(map[string]interface{}{"text": "hi", "group_name": "g"}); got != "send" {
 		t.Fatalf("infer send: %q", got)
 	}
+	if got := ResolveIMMessageAction(map[string]interface{}{"path": "a.pdf", "group_id": "g"}); got != "send_file" {
+		t.Fatalf("infer send_file: %q", got)
+	}
+	// A file path wins over text so a captioned file send does not degrade to text-only.
+	if got := ResolveIMMessageAction(map[string]interface{}{"path": "a.pdf", "text": "看看"}); got != "send_file" {
+		t.Fatalf("path beats text: %q", got)
+	}
+	if got := ResolveIMMessageAction(map[string]interface{}{"file_path": "a.pdf"}); got != "send_file" {
+		t.Fatalf("file_path alias: %q", got)
+	}
 	if got := ResolveIMMessageAction(map[string]interface{}{"query": "校友"}); got != "list_targets" {
 		t.Fatalf("infer list: %q", got)
 	}
 	if got := ResolveIMMessageAction(map[string]interface{}{"action": "send"}); got != "send" {
 		t.Fatalf("explicit: %q", got)
+	}
+	if got := ResolveIMMessageAction(map[string]interface{}{"action": "send_file"}); got != "send_file" {
+		t.Fatalf("explicit send_file: %q", got)
 	}
 	if got := ResolveIMMessageAction(nil); got != "" {
 		t.Fatalf("empty: %q", got)
@@ -40,6 +56,12 @@ func TestResolveIMMessageActionInfer(t *testing.T) {
 func TestIsIMMessageSendIntent(t *testing.T) {
 	if !IsIMMessageSendIntent(map[string]interface{}{"text": "weather", "group_name": "x"}) {
 		t.Fatal("inferred send must be send intent for security")
+	}
+	if !IsIMMessageSendIntent(map[string]interface{}{"path": "a.pdf", "group_id": "g"}) {
+		t.Fatal("inferred send_file must be send intent for security")
+	}
+	if !IsIMMessageSendIntent(map[string]interface{}{"action": "send_file", "path": "a.pdf"}) {
+		t.Fatal("explicit send_file must be send intent for security")
 	}
 	if IsIMMessageSendIntent(map[string]interface{}{"action": "list_targets"}) {
 		t.Fatal("list is not send")
@@ -94,6 +116,7 @@ func TestRunIMMessageToolDispatch(t *testing.T) {
 	out := RunIMMessageTool(map[string]interface{}{"text": "hi", "group_id": "g"},
 		func(map[string]interface{}) string { saw = "list"; return "L" },
 		func(map[string]interface{}) string { saw = "send"; return "S" },
+		func(map[string]interface{}) string { saw = "send_file"; return "F" },
 	)
 	if saw != "send" || out != "S" {
 		t.Fatalf("saw=%q out=%q", saw, out)
@@ -101,9 +124,35 @@ func TestRunIMMessageToolDispatch(t *testing.T) {
 	out = RunIMMessageTool(map[string]interface{}{"query": "x"},
 		func(map[string]interface{}) string { saw = "list"; return "L" },
 		func(map[string]interface{}) string { saw = "send"; return "S" },
+		func(map[string]interface{}) string { saw = "send_file"; return "F" },
 	)
 	if saw != "list" || out != "L" {
 		t.Fatalf("saw=%q out=%q", saw, out)
+	}
+	out = RunIMMessageTool(map[string]interface{}{"path": "a.pdf", "group_id": "g"},
+		func(map[string]interface{}) string { saw = "list"; return "L" },
+		func(map[string]interface{}) string { saw = "send"; return "S" },
+		func(map[string]interface{}) string { saw = "send_file"; return "F" },
+	)
+	if saw != "send_file" || out != "F" {
+		t.Fatalf("saw=%q out=%q", saw, out)
+	}
+	// Nil send_file handler degrades to a clear message instead of a panic.
+	out = RunIMMessageTool(map[string]interface{}{"path": "a.pdf"}, nil, nil, nil)
+	if !strings.Contains(out, "send_file") {
+		t.Fatalf("nil send_file handler: %q", out)
+	}
+}
+
+func TestFormatIMMessageSendFileOK(t *testing.T) {
+	msg := FormatIMMessageSendFileOK("lansenger → 群:test", "report.pdf", 123)
+	for _, want := range []string{"report.pdf", "123", "lansenger → 群:test"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("want %q in %q", want, msg)
+		}
+	}
+	if got := FormatIMMessageSendFileOK("", "  ", 0); !strings.Contains(got, "(unnamed file)") || !strings.Contains(got, "(unknown target)") {
+		t.Fatalf("defaults: %q", got)
 	}
 }
 

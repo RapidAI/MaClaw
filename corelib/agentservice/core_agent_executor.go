@@ -842,8 +842,9 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name: "im_message",
-			Description: "即时向 IM 发文本（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send（可省略：有 text 则 send）。" +
-				"用户要求现在发到蓝信某群/微信时用本工具；周期播报才用 manage_schedule+delivery。",
+			Description: "即时向 IM 发文本或文件（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file）。" +
+				"用户要求现在发到蓝信某群/微信时用本工具；周期播报才用 manage_schedule+delivery。" +
+				"send_file 上传本机文件（lansenger/telegram/qq，微信不支持），可同时带 text 作为说明文字。",
 			Enabled: c.imMessageHandler != nil,
 			DisabledReason: func() string {
 				if c.imMessageHandler == nil {
@@ -854,14 +855,16 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"action":           map[string]interface{}{"type": "string", "description": "list_targets 或 send；可省略并自动推断"},
-					"text":             map[string]interface{}{"type": "string", "description": "send 时消息正文"},
+					"action":           map[string]interface{}{"type": "string", "description": "list_targets、send 或 send_file；可省略并自动推断"},
+					"text":             map[string]interface{}{"type": "string", "description": "send 时消息正文；send_file 时作为文件说明文字"},
 					"message":          map[string]interface{}{"type": "string", "description": "text 别名"},
+					"path":             map[string]interface{}{"type": "string", "description": "send_file：要发送的本机文件路径"},
+					"file_name":        map[string]interface{}{"type": "string", "description": "send_file：发送时显示的文件名（可选）"},
 					"channel":          map[string]interface{}{"type": "string", "description": "lansenger|weixin|telegram|qq"},
 					"query":            map[string]interface{}{"type": "string", "description": "list_targets 过滤"},
-					"group_name":       map[string]interface{}{"type": "string", "description": "send：群名"},
-					"group_id":         map[string]interface{}{"type": "string", "description": "send：群 ID"},
-					"user_id":          map[string]interface{}{"type": "string", "description": "send：私聊 ID 或 self"},
+					"group_name":       map[string]interface{}{"type": "string", "description": "send/send_file：群名"},
+					"group_id":         map[string]interface{}{"type": "string", "description": "send/send_file：群 ID"},
+					"user_id":          map[string]interface{}{"type": "string", "description": "send/send_file：私聊 ID 或 self"},
 					"mention_user_ids": map[string]interface{}{"type": "string", "description": "逗号分隔 @ 用户"},
 					"mention_all":      map[string]interface{}{"type": "boolean"},
 					"delivery":         map[string]interface{}{"type": "object", "description": "可选完整投递配置"},

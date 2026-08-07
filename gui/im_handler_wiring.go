@@ -613,6 +613,8 @@ func newIMMessageHandler(app *App, manager *RemoteSessionManager, conversationMe
 	registerNonCodeTools(h.registry, app)
 	// Register browser automation tools (CDP-based).
 	registerBrowserTools(h.registry, app)
+	// Register the native OCR recognition tool.
+	registerOCRTools(h.registry, app)
 	// Register current-Hub MaClaw group discussion tools.
 	registerGroupDiscussionTools(h.registry, app, h)
 	// Knowledge retrieval is part of the baseline IM capability set. Local

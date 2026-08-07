@@ -77,6 +77,8 @@ export function BatchTriggerSkillOptimize(arg1:Array<string>,arg2:boolean):Promi
 
 export function BatchTriggerSkillSelfRepair(arg1:Array<string>,arg2:boolean):Promise<Record<string, any>>;
 
+export function BeginWindowDrag():Promise<void>;
+
 export function BeginLiveRecordedAudioUpload(arg1:string):Promise<Record<string, any>>;
 
 export function BeginRecordedAudioUpload(arg1:string):Promise<Record<string, any>>;
@@ -152,6 +154,8 @@ export function CheckHubSkillUpdates():Promise<Array<main.HubSkillUpdateInfo>>;
 export function CheckMCPServerHealth(arg1:string):Promise<void>;
 
 export function CheckMaclawAppRuntimeHealth(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function CheckOCRModel():Promise<Record<string, any>>;
 
 export function CheckRemoteClaudeLaunchProbe(arg1:string,arg2:boolean):Promise<main.RemoteToolLaunchProbeResult>;
 
@@ -376,6 +380,8 @@ export function DownloadDiarizationModel():Promise<void>;
 export function DownloadEmbeddingModel():Promise<void>;
 
 export function DownloadMaclawAppPackageFromHub(arg1:string):Promise<Record<string, any>>;
+
+export function DownloadOCRModel():Promise<void>;
 
 export function DownloadSkillRunArtifact(arg1:string,arg2:string):Promise<main.SkillArtifactRegistryEntry>;
 
@@ -656,6 +662,8 @@ export function GetMobileLibraryItem(arg1:string):Promise<main.MobileLibraryItem
 export function GetMobileMeetingRecordingAudio(arg1:string):Promise<main.MobileMeetingRecordingAudioPayload>;
 
 export function GetNLSkillRunStatus(arg1:string):Promise<main.SkillRunStatus>;
+
+export function GetOCREnabled():Promise<boolean>;
 
 export function GetOpenAIUsage():Promise<oauth.UsageInfo>;
 
@@ -1988,6 +1996,8 @@ export function SetMoASticky(arg1:boolean):Promise<void>;
 export function SetMoAStickyPreset(arg1:string):Promise<void>;
 
 export function SetNLSkillStatus(arg1:string,arg2:string):Promise<void>;
+
+export function SetOCREnabled(arg1:boolean):Promise<void>;
 
 export function SetPassthroughCommandEnabled(arg1:string,arg2:boolean):Promise<void>;
 

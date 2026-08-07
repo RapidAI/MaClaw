@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "x": {
+      "shape": [
+        1,
+        2,
+        6,
+        4
+      ],
+      "dtype": "float32",
+      "data": "wJwLPnDKoj5Q1H8/EjGlvijs1b5ahAy/jtFfv3h0fb5Q+AK/EN1hv7g4wb7ucAq/zJSvvhVPW7/23kq/gBIwP3gzMz6YRAs/zDZSP5olJj+wAho+sCSOPWQM0b48GGI/8IJ8vRDLLb9pagK/KjUjP3y15j5O3XI/AlBLPyxWfD805yA/0JLIPtBFWD5Xf22/+O0sPk4h7L6gzFm9QmzCvujSn72wBEW/qc1fv9TFtj5TKgm/HsxIPzwCqT7iClY/"
+    }
+  }
+}

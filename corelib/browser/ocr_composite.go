@@ -1,7 +1,7 @@
 package browser
 
 // CompositeOCRProvider tries multiple OCR providers in order, returning
-// the first successful result. Fallback chain: RapidOCR → LLM Vision → empty.
+// the first successful result. Fallback chain: native OCR → LLM Vision → empty.
 type CompositeOCRProvider struct {
 	providers []OCRProvider
 }

@@ -8,7 +8,14 @@
 /* Internal service behind the ISO-C Device Power API.  Board-specific panel,
  * rail and wake-control details remain below this header. */
 device_status_t power_service_init(void);
+/* Stops the DISPLAY_OFF timer after any in-flight transition leaves the
+ * board adapter.  The separate Power Lease service remains alive so existing
+ * domain cleanup can release its own handles safely. */
+device_status_t power_service_deinit(uint32_t timeout_ms);
 device_status_t power_service_schedule_display_off(uint32_t idle_after_ms);
 void power_service_cancel_display_off(void);
 bool power_service_wake_display_from_user(void);
+/* A domain deadline may restore a schedule-owned DISPLAY_OFF panel without
+ * synthesizing a physical input event. */
+bool power_service_wake_display_from_schedule(void);
 bool power_service_get_snapshot(device_power_snapshot_t *out_snapshot);

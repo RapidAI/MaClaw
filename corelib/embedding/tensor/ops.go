@@ -164,6 +164,26 @@ func matMulF32ParallelN(out, a, b, bias []float32, M, N, K int, add bool) {
 }
 
 func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
+	// For very wide column ranges the B panel (span*K floats) is re-streamed
+	// from memory once per 8-row M tile. Block the range so each B sub-panel
+	// stays cache resident across the M tiles. Each output element is still
+	// produced by the same kernel over the same K order, so results are
+	// bit-identical to the unblocked walk.
+	const bPanelMaxElems = 1 << 17 // 512 KB of float32
+	if span := ne - ns; M > 8 && span*K > bPanelMaxElems {
+		nb := bPanelMaxElems / K
+		nb &^= 1 // keep dual-B pairs inside a block
+		if nb >= 2 && nb < span {
+			for n0 := ns; n0 < ne; n0 += nb {
+				n1 := n0 + nb
+				if n1 > ne {
+					n1 = ne
+				}
+				matMulRangeDual(out, a, b, bias, M, N, K, n0, n1)
+			}
+			return
+		}
+	}
 	var d4 [4]float32
 	var d2 [4]float32
 	var d8 [8]float32

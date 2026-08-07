@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "x": {
+      "shape": [
+        1,
+        2,
+        5,
+        7
+      ],
+      "dtype": "float32",
+      "data": "TOaLPiS5/j6eVCw/riVLP4iT8r3MimA/aSVCv5rSMr+6/Vs/3ZV8vybEmb6wOtM+KJnSvaqGJb/ymvO+wHISPyYvbD8AKtc72lsVP9L2ob6YCOk+vsQ2v1i6Tr9Q9Aq9aM95P73hRr/UEeA+6MkXPmCHbT2gunO+jHVVP/CEAr4+4Hs/SR80v3BJ3z5AGNg8AhwKP2o7DT/y/F6/qDE4Ps4hID/+8yi/eM0UvyUQDr804a8+XPwPPy5EHz/IyMe9MEeZPdCJS77/fxO/zCKIPoZcE7+USNs+uExFPhSDbL+gp/A9eCVzv3wqIb7At3Q/Zo1fvxh65L4fk1i/ImNyP/g4HD9AQsW84pmLvshxKD4ANKQ6WORxPw=="
+    }
+  }
+}

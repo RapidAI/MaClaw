@@ -63,8 +63,14 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 
 	// Computer Use: when intent/session active, force computer_* tools and
 	// demote raw gui_click/type (text-primary OmniParser path).
-	cuActive := h.shouldActivateComputerUse(userText)
+	cuActive, cuFresh := h.gateComputerUse(userText)
 	if cuActive {
+		if cuFresh {
+			// New desktop task: lift a stale hard-stop so the injected tools are
+			// not blocked by a previous Stop. Guarded per request — a stopped
+			// in-flight turn re-gating while cancel lags keeps its Stop.
+			liftComputerUseStopForFreshRequest(requestID)
+		}
 		tools = ensureComputerUseTools(tools, allTools, true)
 	}
 

@@ -31,9 +31,18 @@ typedef struct {
      * represents DISPLAY_OFF; it never asserts MCU light/deep sleep. */
     device_power_snapshot_t power;
     bool power_available;
+    /* Optional normalized board telemetry.  `available=false` is distinct
+     * from an empty battery: profiles without calibrated hardware must not
+     * manufacture a 0% value for diagnostics or future policy. */
+    device_power_telemetry_t power_telemetry;
+    bool power_telemetry_available;
+    device_battery_policy_snapshot_t battery_policy;
+    bool battery_policy_available;
     /* Observed selected uplink state. This is separate from external-service
      * readiness and does not disclose credentials, AP names, or modem data. */
     device_connectivity_snapshot_t connectivity;
+    device_resource_pressure_snapshot_t resource_pressure;
+    bool resource_pressure_available;
 } firmware_identity_info_t;
 
 #ifdef __cplusplus

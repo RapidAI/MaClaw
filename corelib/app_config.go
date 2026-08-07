@@ -140,6 +140,9 @@ type AppConfig struct {
 	// ComputerUseEnabled controls desktop Computer Use tools/playbook injection.
 	// Nil means default true. Independent of ScreenParsingEnabled (OmniParser YOLO weights).
 	ComputerUseEnabled *bool `json:"computer_use_enabled,omitempty"`
+	// ComputerUseTargetApps restricts computer_* interactions to windows whose title
+	// contains one of these substrings. Empty means all non-blocked windows.
+	ComputerUseTargetApps []string `json:"computer_use_target_apps,omitempty"`
 	// ComputerUseLogKeepNewest is how many newest diag/csv files to keep per kind when pruning.
 	// Nil/0 means default 10.
 	ComputerUseLogKeepNewest *int `json:"computer_use_log_keep_newest,omitempty"`
@@ -355,6 +358,14 @@ type AppConfig struct {
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
 	// ASR toggle.
 	ASREnabled bool `json:"asr_enabled"`
+	// OCR toggle — gates the ocr_recognize tool and the background model
+	// preload/download. It does NOT gate computer use / GUI automation /
+	// browser tasks: those use the shared native PP-OCRv6 provider (no Python
+	// sidecar required) whenever the model files are installed.
+	OCREnabled bool `json:"ocr_enabled"`
+	// OCRModelTier selects the PP-OCRv6 model size: "tiny", "small" or
+	// "medium". Empty means the default tier (see NormalizeOCRModelTier).
+	OCRModelTier string `json:"ocr_model_tier,omitempty"`
 	// Diarization toggle. When enabled, the CAM++ speaker embedding model is
 	// downloaded in the background and made available for meeting transcription.
 	DiarizationEnabled bool `json:"diarization_enabled"`
@@ -645,6 +656,22 @@ func (c LLMPromptCacheConfig) Options() LLMPromptCacheOptions {
 		IgnoreModelField:             c.IgnoreModelField,
 		IgnoreUserField:              c.IgnoreUserField,
 		IgnoreMetadataField:          c.IgnoreMetadataField,
+	}
+}
+
+// DefaultOCRModelTier is the PP-OCRv6 model size used when none is configured.
+// Mirrors ocr.DefaultModelTier (kept as a literal to avoid a corelib→ocr
+// import just for a constant).
+const DefaultOCRModelTier = "small"
+
+// NormalizeOCRModelTier returns a valid OCR model tier, mapping empty or
+// unknown values to DefaultOCRModelTier.
+func NormalizeOCRModelTier(tier string) string {
+	switch strings.TrimSpace(tier) {
+	case "tiny", "small", "medium":
+		return strings.TrimSpace(tier)
+	default:
+		return DefaultOCRModelTier
 	}
 }
 
@@ -1066,6 +1093,8 @@ func AppConfigDefaults() AppConfig {
 		UseWindowsTerminal:         true,
 		VectorSearchEnabled:        true,
 		ASREnabled:                 true,
+		OCREnabled:                 true,
+		OCRModelTier:               DefaultOCRModelTier,
 		DiarizationEnabled:         true,
 		ASRVoiceCorrectionEnabled:  true,
 		TTSEnabled:                 true,

@@ -6,10 +6,14 @@
 
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
+#include "driver/spi_master.h"
 #include "esp_check.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_vendor.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_psram.h"
@@ -31,6 +35,18 @@
 #define USER_BUTTON2 GPIO_NUM_39
 #define STATUS_LED   GPIO_NUM_48
 
+/* Bread Compact display, verified against the board profile used by the
+ * client firmware. The panel is a 240x320 ST7789 on SPI3. */
+#define LCD_HOST       SPI3_HOST
+#define LCD_WIDTH      240
+#define LCD_HEIGHT     320
+#define LCD_MOSI       GPIO_NUM_47
+#define LCD_CLK        GPIO_NUM_21
+#define LCD_DC         GPIO_NUM_40
+#define LCD_RESET      GPIO_NUM_45
+#define LCD_CS         GPIO_NUM_41
+#define LCD_BACKLIGHT  GPIO_NUM_42
+
 #define AUDIO_RATE 16000
 #define TEST_SECONDS 5
 #define TEST_SAMPLES (AUDIO_RATE * TEST_SECONDS)
@@ -38,6 +54,85 @@
 static const char *TAG = "maclaw_hwtest";
 static i2s_chan_handle_t s_mic;
 static i2s_chan_handle_t s_speaker;
+static esp_lcd_panel_handle_t s_lcd;
+static uint16_t s_lcd_pattern_rows[LCD_WIDTH * 8];
+static TaskHandle_t s_main_task;
+
+static esp_err_t init_display(void)
+{
+    gpio_config_t backlight = {
+        .pin_bit_mask = 1ULL << LCD_BACKLIGHT,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&backlight), TAG, "LCD backlight GPIO");
+    ESP_RETURN_ON_ERROR(gpio_set_level(LCD_BACKLIGHT, 1), TAG, "LCD backlight on");
+
+    spi_bus_config_t bus = {
+        .mosi_io_num = LCD_MOSI,
+        .miso_io_num = GPIO_NUM_NC,
+        .sclk_io_num = LCD_CLK,
+        .quadwp_io_num = GPIO_NUM_NC,
+        .quadhd_io_num = GPIO_NUM_NC,
+        .max_transfer_sz = LCD_WIDTH * 8 * sizeof(uint16_t),
+    };
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO), TAG, "LCD SPI bus");
+
+    esp_lcd_panel_io_spi_config_t io = {
+        .cs_gpio_num = LCD_CS,
+        .dc_gpio_num = LCD_DC,
+        .spi_mode = 3,
+        .pclk_hz = 20 * 1000 * 1000,
+        .trans_queue_depth = 4,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+    };
+    esp_lcd_panel_io_handle_t panel_io = NULL;
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi(LCD_HOST, &io, &panel_io), TAG, "LCD IO");
+    esp_lcd_panel_dev_config_t panel = {
+        .reset_gpio_num = LCD_RESET,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = 16,
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7789(panel_io, &panel, &s_lcd), TAG, "ST7789 panel");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_lcd), TAG, "LCD reset");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_lcd), TAG, "LCD init");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(s_lcd, true), TAG, "LCD inversion");
+    return esp_lcd_panel_disp_on_off(s_lcd, true);
+}
+
+static void show_display_pattern(void)
+{
+    static const uint16_t colors[] = {0xF800, 0x07E0, 0x001F, 0xFFFF, 0x0000};
+    static const char *names[] = {"red", "green", "blue", "white", "black"};
+    for (size_t color = 0; color < sizeof(colors) / sizeof(colors[0]); ++color) {
+        for (size_t i = 0; i < sizeof(s_lcd_pattern_rows) / sizeof(s_lcd_pattern_rows[0]); ++i) {
+            s_lcd_pattern_rows[i] = colors[color];
+        }
+        for (int y = 0; y < LCD_HEIGHT; y += 8) {
+            const int y1 = y + 8 < LCD_HEIGHT ? y + 8 : LCD_HEIGHT;
+            ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(
+                s_lcd, 0, y, LCD_WIDTH, y1, s_lcd_pattern_rows));
+        }
+        ESP_LOGI(TAG, "TEST display=%s (visual confirmation required)", names[color]);
+        vTaskDelay(pdMS_TO_TICKS(700));
+    }
+    ESP_LOGI(TAG, "TEST display=PASS (ST7789 initialized; verify all five colors are full-screen)");
+}
+
+static void display_test_task(void *arg)
+{
+    esp_err_t err = init_display();
+    if (err == ESP_OK) {
+        show_display_pattern();
+    } else {
+        ESP_LOGE(TAG, "TEST display=FAIL err=%s", esp_err_to_name(err));
+    }
+    xTaskNotifyGive(s_main_task);
+    vTaskDelete(NULL);
+}
 
 static esp_err_t init_i2s(void)
 {
@@ -195,6 +290,11 @@ static esp_err_t play_recording(const int16_t *recorded, size_t samples)
 void app_main(void)
 {
     print_platform_report();
+    s_main_task = xTaskGetCurrentTaskHandle();
+    BaseType_t display_task_started = xTaskCreate(
+        display_test_task, "display_test", 8192, NULL, 5, NULL);
+    ESP_ERROR_CHECK(display_task_started == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     test_gpio();
     ESP_ERROR_CHECK(init_i2s());
     ESP_LOGI(TAG, "TEST audio-pins mic=(BCLK5,WS4,DIN6) speaker=(BCLK15,WS16,DOUT7)");

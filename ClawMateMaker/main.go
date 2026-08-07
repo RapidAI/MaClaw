@@ -23,6 +23,12 @@ var assets embed.FS
 // signed sidecar, while developer builds remain probe-only by default.
 var releaseBuild = "false"
 
+// buildVersion is display metadata injected alongside the release trust root.
+// Keeping the development default explicit makes locally-built probe-only
+// executables distinguishable from an official release in the UI and in
+// exported diagnostics.
+var buildVersion = "0.1.0-dev"
+
 // These values are public release metadata, not private signing material.
 // Official packaging injects them with -ldflags.
 var releaseKeyID = "clawmate-release-v1"

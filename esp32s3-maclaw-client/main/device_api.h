@@ -22,6 +22,77 @@ typedef enum {
     DEVICE_STATUS_INTERNAL_ERROR,
 } device_status_t;
 
+/* Shared resource-pressure observation is deliberately a small value type:
+ * callers see usable capacity, not allocator/partition handles.  NORMAL,
+ * PRESSURE and CRITICAL are common policy tiers, never board-specific modes. */
+#define DEVICE_RESOURCE_PRESSURE_ABI_VERSION 1u
+typedef enum {
+    DEVICE_RESOURCE_PRESSURE_NORMAL = 0,
+    DEVICE_RESOURCE_PRESSURE_PRESSURE,
+    DEVICE_RESOURCE_PRESSURE_CRITICAL,
+} device_resource_pressure_level_t;
+
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    device_resource_pressure_level_t level;
+    uint32_t internal_free_bytes;
+    uint32_t internal_largest_free_bytes;
+    uint32_t external_free_bytes;
+    uint32_t external_largest_free_bytes;
+    bool storage_available;
+    uint32_t storage_total_bytes;
+    uint32_t storage_free_bytes;
+} device_resource_pressure_snapshot_t;
+
+bool device_resource_pressure_get_snapshot(
+    device_resource_pressure_snapshot_t *out_snapshot);
+bool device_resource_pressure_allows_optional_work(void);
+/* Admission for new decorative/background work that needs a bounded peak
+ * allocation or a durable write.  The requested values are peak *additional*
+ * bytes, not total system usage.  A false result means callers must defer or
+ * decline the optional operation; it never authorizes rejecting foreground
+ * voice, alarm, recording finalization or persistence recovery. */
+bool device_resource_pressure_allows_optional_allocation(
+    uint32_t internal_bytes, uint32_t external_bytes, uint32_t storage_bytes);
+
+/* Display adapters expose an upper bound for the transient copy they create
+ * while installing an externally supplied pet pack.  It is a capability
+ * fact, not a board ID or a renderer implementation detail. */
+bool device_display_get_pet_asset_install_budget(uint32_t source_width,
+                                                 uint32_t source_height,
+                                                 uint32_t frame_count,
+                                                 uint32_t *out_external_bytes);
+
+/*
+ * Read-only boot/lifecycle diagnostics.  This is deliberately a small
+ * observation API, rather than a second application state machine: no caller
+ * can use it to grant gateway access or revive a failed service.
+ */
+#define DEVICE_RUNTIME_ABI_VERSION 1u
+
+typedef enum {
+    DEVICE_RUNTIME_PHASE_BOOTING = 0,
+    DEVICE_RUNTIME_PHASE_PROFILE_VALIDATED,
+    DEVICE_RUNTIME_PHASE_IDENTITY_READY,
+    DEVICE_RUNTIME_PHASE_STORAGE_READY,
+    DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+    DEVICE_RUNTIME_PHASE_LOCAL_READY,
+    DEVICE_RUNTIME_PHASE_DEGRADED,
+} device_runtime_phase_t;
+
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    device_runtime_phase_t phase;
+    device_runtime_phase_t first_failure_phase;
+    device_status_t first_failure_status;
+    bool local_services_allowed;
+} device_runtime_snapshot_t;
+
+/* Returns an immutable-by-value view of the current startup state. */
+bool device_runtime_get_snapshot(device_runtime_snapshot_t *out_snapshot);
+
 /* Maps a Device API result to ESP-IDF only at a legacy component boundary.
  * New business/services code should keep device_status_t end-to-end. */
 int device_status_to_platform_error(device_status_t status);
@@ -49,6 +120,10 @@ enum {
     DEVICE_CAPABILITY_DISPLAY_OFF          = 1u << 10,
     DEVICE_CAPABILITY_CELLULAR_TRANSPORT  = 1u << 11,
     DEVICE_CAPABILITY_ROUND_DISPLAY       = 1u << 12,
+    /* A board can provide normalized acceleration and angular-rate samples.
+     * This advertises sensor hardware only; it does not claim a calibrated
+     * fall-detection product feature. */
+    DEVICE_CAPABILITY_MOTION_SENSOR        = 1u << 13,
 };
 
 #define DEVICE_PROFILE_ABI_VERSION 1u
@@ -69,7 +144,7 @@ enum {
      DEVICE_CAPABILITY_AUDIO_PLAYBACK | DEVICE_CAPABILITY_OFFLINE_WAKE_WORD | \
      DEVICE_CAPABILITY_PERSISTENT_STORAGE | DEVICE_CAPABILITY_BATTERY_TELEMETRY | \
      DEVICE_CAPABILITY_DISPLAY_OFF | DEVICE_CAPABILITY_CELLULAR_TRANSPORT | \
-     DEVICE_CAPABILITY_ROUND_DISPLAY)
+     DEVICE_CAPABILITY_ROUND_DISPLAY | DEVICE_CAPABILITY_MOTION_SENSOR)
 
 /* A profile describes the role of its local physical control without exposing
  * GPIOs, touch-controller details or gesture timing.  Business policy can use
@@ -106,6 +181,33 @@ bool device_profile_get(device_profile_t *out_profile);
 bool device_profile_is_valid(const device_profile_t *profile);
 
 bool device_profile_has_capability(device_capability_flags_t capability);
+
+/*
+ * Hardware-neutral inertial sample.  Values use fixed engineering units so
+ * application services never need a sensor model, I2C address, register map,
+ * configured full scale or floating point conversion.
+ *
+ * `timestamp_us` is the local monotonic time at which the board read the
+ * sample.  It is suitable for interval/state-machine work but not wall-clock
+ * correlation.  A board without a motion sensor returns UNAVAILABLE.
+ */
+#define DEVICE_MOTION_SAMPLE_ABI_VERSION 1u
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t timestamp_us;
+    int32_t acceleration_mg_x;
+    int32_t acceleration_mg_y;
+    int32_t acceleration_mg_z;
+    int32_t angular_rate_mdps_x;
+    int32_t angular_rate_mdps_y;
+    int32_t angular_rate_mdps_z;
+} device_motion_sample_t;
+
+/* Reads one fresh, normalized inertial sample.  It has no policy side effect:
+ * fall classification, alerting and wake behavior belong to a future shared
+ * service above this boundary. */
+device_status_t device_motion_get_sample(device_motion_sample_t *out_sample);
 
 /*
  * Shared 0..100 output-volume contract. The implementation may use codec
@@ -154,6 +256,35 @@ void device_wake_word_pause(bool paused);
 // means "no deadline"; it is never a wall-clock timestamp.
 typedef uint64_t device_deadline_ms_t;
 
+/* A lease is a business-level assertion that the caller has foreground work
+ * which must remain visible.  It applies to DISPLAY_OFF only: it is not a
+ * hardware wakelock and does not claim LIGHT/DEEP_SLEEP support.  Leases are
+ * opaque and must be released by their owning domain on every terminal path. */
+typedef uint32_t device_power_lease_t;
+#define DEVICE_POWER_LEASE_INVALID ((device_power_lease_t)0)
+
+typedef enum {
+    DEVICE_POWER_LEASE_OWNER_NONE = 0,
+    DEVICE_POWER_LEASE_OWNER_ALARM,
+    DEVICE_POWER_LEASE_OWNER_VOICE_INTERACTION,
+    DEVICE_POWER_LEASE_OWNER_MEETING_RECORDING,
+    DEVICE_POWER_LEASE_OWNER_AUDIO_PLAYBACK,
+    /* A local suspected-fall confirmation window owns the presentation until
+     * it is cancelled or expires.  The classifier itself remains a domain
+     * service and never knows a board's panel or input implementation. */
+    DEVICE_POWER_LEASE_OWNER_FALL_DETECTION,
+    /* Captive portal remains a foreground user flow until configuration is
+     * submitted and the deliberate restart completes. */
+    DEVICE_POWER_LEASE_OWNER_PROVISIONING,
+    DEVICE_POWER_LEASE_OWNER_COUNT,
+} device_power_lease_owner_t;
+
+typedef struct {
+    bool initialized;
+    uint8_t active_count;
+    uint32_t owner_mask;
+} device_power_lease_snapshot_t;
+
 /*
  * Power is modeled explicitly even though the currently proven common state
  * is DISPLAY_OFF only.  DISPLAY_OFF means panel/backlight off while the MCU,
@@ -187,6 +318,16 @@ typedef struct {
 /* Starts the common power-service scheduler after the selected board adapter
  * is initialized.  Repeated initialization is safe. */
 device_status_t device_power_init(void);
+/* Composition-root lifecycle hook. Shared business code must not call board
+ * power internals directly. */
+device_status_t device_power_deinit(uint32_t timeout_ms);
+
+/* Acquires/releases a shared foreground lease.  The Power Service refuses a
+ * pending DISPLAY_OFF commit while at least one valid lease is active. */
+device_status_t device_power_lease_acquire(device_power_lease_owner_t owner,
+                                           device_power_lease_t *out_lease);
+void device_power_lease_release(device_power_lease_t lease);
+bool device_power_lease_get_snapshot(device_power_lease_snapshot_t *out_snapshot);
 
 /* Arms/cancels the application-owned idle deadline for DISPLAY_OFF. A zero
  * delay is invalid; callers must cancel before publishing foreground work. */
@@ -197,6 +338,10 @@ void device_power_cancel_display_off(void);
  * preserves each adapter's existing first-contact semantics. */
 bool device_power_wake_display_from_user(void);
 
+/* Restores a DISPLAY_OFF panel for an approved domain deadline.  This does
+ * not impersonate touch/button input and is not a LIGHT/DEEP_SLEEP wake API. */
+bool device_power_wake_display_from_schedule(void);
+
 /* Returns the Power Service's serialized observation of the panel/backlight
  * state and any pending display-off deadline. */
 bool device_power_get_snapshot(device_power_snapshot_t *out_snapshot);
@@ -204,6 +349,31 @@ bool device_power_get_snapshot(device_power_snapshot_t *out_snapshot);
 /* Reads the latest board-owned power telemetry snapshot without exposing ADC
  * units, divider ratios, charge GPIO polarity, or sampling implementation. */
 bool device_power_get_telemetry(device_power_telemetry_t *out_telemetry);
+
+/* Battery policy is shared business admission based on normalized telemetry,
+ * never on ADC/GPIO details.  `telemetry_available=false` means there is no
+ * calibrated signal; it is intentionally not treated as zero battery. */
+#define DEVICE_BATTERY_POLICY_ABI_VERSION 1u
+typedef enum {
+    DEVICE_BATTERY_POLICY_NORMAL = 0,
+    DEVICE_BATTERY_POLICY_CONSERVE,
+    DEVICE_BATTERY_POLICY_PROTECT,
+} device_battery_policy_level_t;
+
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    bool telemetry_available;
+    bool charging;
+    uint8_t level_percent;
+    device_battery_policy_level_t level;
+    bool optional_work_allowed;
+    bool high_power_work_allowed;
+} device_battery_policy_snapshot_t;
+
+bool device_battery_policy_get_snapshot(device_battery_policy_snapshot_t *out_snapshot);
+bool device_battery_policy_allows_optional_work(void);
+bool device_battery_policy_allows_high_power_work(void);
 
 /* Connectivity presentation is a shared intent: it selects which currently
  * active uplink is shown in the ambient UI.  The cellular modem, Wi-Fi stack
@@ -240,10 +410,70 @@ bool device_connectivity_get_snapshot(device_connectivity_snapshot_t *out_snapsh
  * responsibilities. Profiles without cellular hardware report UNAVAILABLE. */
 device_status_t device_connectivity_prepare_cellular_transport(void);
 
+/* Starts or probes the selected profile's cellular transport. Board-specific
+ * UART pins, APN and modem implementation stay below this API; callers only
+ * receive the stable Device status/readiness contract. */
+device_status_t device_connectivity_start_cellular_transport(uint32_t timeout_ms);
+bool device_connectivity_is_cellular_transport_ready(void);
+
+/* Cellular request parameters are transport-neutral. The caller owns all
+ * buffers and keeps them valid until the synchronous call returns; adapters
+ * must not retain them. Wi-Fi stays on the existing shared HTTP client. */
+typedef device_status_t (*device_connectivity_body_reader_t)(
+    void *context, void *buffer, uint32_t requested, uint32_t *read_bytes);
+
+typedef struct {
+    const char *method;
+    const char *url;
+    const char *content_type;
+    const char *authorization;
+    const char *extra_header_name;
+    const char *extra_header_value;
+    const void *body;
+    uint32_t body_len;
+    char *response;
+    uint32_t response_capacity;
+    uint32_t *response_len;
+    int *status_code;
+    bool *truncated;
+    uint32_t timeout_ms;
+    bool foreground;
+} device_connectivity_http_request_t;
+
+typedef struct {
+    device_connectivity_http_request_t request;
+    device_connectivity_body_reader_t body_reader;
+    void *body_reader_context;
+    void *stream_buffer;
+    uint32_t stream_buffer_size;
+} device_connectivity_stream_request_t;
+
+device_status_t device_connectivity_cellular_http_request(
+    const device_connectivity_http_request_t *request);
+device_status_t device_connectivity_cellular_http_stream_request(
+    const device_connectivity_stream_request_t *request);
+
+/* Best-effort cancellation of the active profile's cellular foreground
+ * request. This is intentionally a no-op on Wi-Fi-only profiles and does
+ * not cancel the shared Wi-Fi HTTP client. */
+bool device_connectivity_cancel_cellular_foreground_request(void);
+
 /* Some profiles expose a bounded, pre-input startup selector.  It is a
  * hardware-normalized intent rather than a GPIO gesture; profiles without
  * such a selector return false. */
 bool device_connectivity_take_startup_transport_toggle(uint32_t window_ms);
+
+/* Profile-owned selection/persistence is normalized here so business startup
+ * does not inspect a board Kconfig symbol or vendor NVS namespace. A Wi-Fi-
+ * only profile restores Wi-Fi and reports no toggle. */
+void device_connectivity_restore_selected_uplink(void);
+bool device_connectivity_apply_startup_transport_toggle(uint32_t window_ms);
+
+/* Gives a selected physical transport one narrowly scoped chance to adapt a
+ * configured Gateway origin for a documented protocol limitation. The caller
+ * keeps URL storage and all gateway/business semantics. */
+void device_connectivity_adapt_gateway_url(char *gateway_url,
+                                           uint32_t gateway_url_capacity);
 
 /*
  * Display Device API.  The shared UI state machine publishes semantic scenes
@@ -313,13 +543,35 @@ typedef enum {
 // dismissal contact.  Profiles map GPIO/touch-controller specifics into these
 // stable categories; app code must not infer pin or board identity from them.
 
-typedef void (*device_input_cb_t)(device_input_action_t action,
-                                  device_input_source_t source, void *context);
+/*
+ * Versioned input envelope delivered across the Device API boundary.
+ *
+ * `sequence` is assigned by the Input Service and is monotonic for the active
+ * service generation; it is a diagnostic/correlation value, not a persisted
+ * identifier and must not be compared across a stop/start lifecycle.  The
+ * timestamp is the local monotonic microsecond clock.  Board adapters never
+ * construct this value: they publish only normalized action/source pairs, so
+ * touch coordinates, GPIO numbers, debounce state and controller details
+ * cannot leak into business policy.
+ */
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t sequence;
+    uint64_t timestamp_us;
+    device_input_action_t action;
+    device_input_source_t source;
+} device_input_event_t;
+
+typedef void (*device_input_cb_t)(const device_input_event_t *event,
+                                  void *context);
 
 /*
  * Starts the shared input boundary.  Board adapters publish normalized input
- * values here; a single application consumer receives them from a bounded
- * task-owned queue.  The callback never executes in a GPIO/touch scan task.
+ * values here; a single application consumer receives versioned envelopes
+ * from a bounded task-owned queue.  The callback never executes in a
+ * GPIO/touch scan task, and the event pointer is valid only for the callback
+ * duration.
  *
  * This is deliberately a lifecycle operation rather than a board-init hook:
  * application code must not register a board callback or know which physical

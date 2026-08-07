@@ -1,0 +1,22 @@
+{
+  "inputs": {
+    "x0": {
+      "shape": [
+        1,
+        2,
+        7,
+        7
+      ],
+      "dtype": "float32",
+      "data": "hPNMv+AmHT4MsME+6Ss6vzZ2hb4opV++bpF8v47ZBz9aNS2/1DGsPhT5Ij/oCki/mil1Pwz7Q744HhW+nprYvu5ccj8MxIo+o147v3zONT9UMTq/uPJeP1hXnT6g1ws+PlZDPyureb9dl2+/EKgLv0wEDb+wRdE+gJIPvWiRlL08d9m+uLUFP/Xobb8ASHE85vsFv4imIL6MF32+kMGCPuTHRj/wh689OocSP4Eeab9A2mo+Jx8Xvz72Wz9spZo+dLO5PgDw6zkaoxY/WJRiP0ALbb9Wlre+MLsrPjBFgz42gSk/SsokP/MYar9QyYM+fOuDvh6fFr+kq4c+QN/fvkgHDT8cbMg+pnP0vqDqAL0w8pi9xcMuv/B5Dr9OeRk/PqgPP7ZMJj9MeC++opbEvtg6V79MQm8/QDIgvXaAFT9gUGi/vHKTviAXTz+YdO8+jEONPpiXWT/QN3i9YjRuPypPbT9wUX8+gB7lvVBv6T5eBCg/9OpgvsSYTj9aDBs/Pjj+voHpVr8="
+    },
+    "x1": {
+      "shape": [
+        4,
+        3
+      ],
+      "dtype": "float32",
+      "data": "ampOvyAojL0KP6a+KArbvaBADz0g6ZW+jvMLPw6Bpb7glDQ9VxNmv5pvw74QZXq9"
+    }
+  }
+}

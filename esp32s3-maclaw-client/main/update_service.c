@@ -5,9 +5,13 @@
 #include <string.h>
 #include <time.h>
 
-#include "nvs.h"
+#include "nvs.h" /* ESP_ERR_NVS_NOT_FOUND for legacy-key migration */
+#include "persistence_service.h"
 
 #define UPDATE_SERVICE_NAMESPACE "maclaw"
+#define UPDATE_SERVICE_STORE_KEY "update_meta"
+#define UPDATE_SERVICE_STORE_MAGIC 0x55504431u /* UPD1 */
+#define UPDATE_SERVICE_STORE_VERSION 1u
 #define UPDATE_SERVICE_MIN_INTERVAL_SECONDS (5 * 60)
 #define UPDATE_SERVICE_MAX_INTERVAL_SECONDS (7 * 24 * 60 * 60)
 #define UPDATE_SERVICE_DEFAULT_INTERVAL_SECONDS (6 * 60 * 60)
@@ -15,6 +19,8 @@
 #define UPDATE_SERVICE_MAX_DISMISS_SECONDS (7 * 24 * 60 * 60)
 
 typedef struct {
+    uint32_t magic;
+    uint32_t version;
     int64_t release_sequence;
     int64_t remind_after_epoch;
     int64_t dismissed_sequence;
@@ -23,17 +29,8 @@ typedef struct {
     char dismissed_digest[UPDATE_SERVICE_DIGEST_CAPACITY];
 } update_service_store_t;
 
-static SemaphoreHandle_t s_nvs_mutex;
 static int64_t s_running_release_sequence;
 static update_service_status_t s_status;
-
-static bool nvs_lock(void) {
-    return s_nvs_mutex && xSemaphoreTake(s_nvs_mutex, pdMS_TO_TICKS(3000)) == pdTRUE;
-}
-
-static void nvs_unlock(void) {
-    if (s_nvs_mutex) xSemaphoreGive(s_nvs_mutex);
-}
 
 static bool metadata_string(cJSON *object, const char *key, char *out, size_t out_size) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
@@ -50,44 +47,86 @@ static bool valid_digest(const char *digest) {
     return true;
 }
 
-static bool load_store(update_service_store_t *store) {
-    if (!store) return false;
+static void reset_store(update_service_store_t *store) {
     memset(store, 0, sizeof(*store));
-    if (!nvs_lock()) return false;
-    nvs_handle_t nvs;
-    if (nvs_open(UPDATE_SERVICE_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
-        nvs_unlock();
-        return true; // empty state is valid
+    store->magic = UPDATE_SERVICE_STORE_MAGIC;
+    store->version = UPDATE_SERVICE_STORE_VERSION;
+}
+
+/* Versions before Persistence Service stored this state as independent NVS
+ * keys.  Import it exactly once into a versioned blob; failure to read an
+ * individual old key means that field simply used its original zero/default
+ * value.  This is safe because legacy writers are no longer linked. */
+static esp_err_t load_legacy_store(update_service_store_t *store, bool *out_found) {
+    if (!store || !out_found) return ESP_ERR_INVALID_ARG;
+    *out_found = false;
+    const char *keys[] = {"upd_seq", "upd_after", "upd_dseq", "upd_duntil"};
+    int64_t *values[] = {&store->release_sequence, &store->remind_after_epoch,
+                         &store->dismissed_sequence, &store->dismissed_until_epoch};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+        esp_err_t err = persistence_service_read_i64(UPDATE_SERVICE_NAMESPACE,
+                                                     keys[i], values[i]);
+        if (err == ESP_OK) {
+            *out_found = true;
+        } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+            return err;
+        }
     }
-    (void)nvs_get_i64(nvs, "upd_seq", &store->release_sequence);
-    (void)nvs_get_i64(nvs, "upd_after", &store->remind_after_epoch);
-    (void)nvs_get_i64(nvs, "upd_dseq", &store->dismissed_sequence);
-    (void)nvs_get_i64(nvs, "upd_duntil", &store->dismissed_until_epoch);
     size_t digest_size = sizeof(store->manifest_sha256);
-    (void)nvs_get_str(nvs, "upd_digest", store->manifest_sha256, &digest_size);
+    esp_err_t err = persistence_service_read_string(UPDATE_SERVICE_NAMESPACE,
+                                                    "upd_digest", store->manifest_sha256,
+                                                    &digest_size);
+    if (err == ESP_OK) {
+        *out_found = true;
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        return err;
+    }
     digest_size = sizeof(store->dismissed_digest);
-    (void)nvs_get_str(nvs, "upd_ddigest", store->dismissed_digest, &digest_size);
-    nvs_close(nvs);
-    nvs_unlock();
-    return true;
+    err = persistence_service_read_string(UPDATE_SERVICE_NAMESPACE,
+                                          "upd_ddigest", store->dismissed_digest,
+                                          &digest_size);
+    if (err == ESP_OK) {
+        *out_found = true;
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        return err;
+    }
+    return ESP_OK;
+}
+
+/* A missing state is the normal first boot.  A non-empty, malformed state is
+ * deliberately rejected instead of silently dropping the user's reminder
+ * preference. */
+static esp_err_t load_store(update_service_store_t *store) {
+    if (!store || !persistence_service_is_initialized()) return ESP_ERR_INVALID_STATE;
+    reset_store(store);
+    size_t size = sizeof(*store);
+    esp_err_t err = persistence_service_read_blob(UPDATE_SERVICE_NAMESPACE,
+                                                  UPDATE_SERVICE_STORE_KEY,
+                                                  store, &size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        bool legacy_found = false;
+        err = load_legacy_store(store, &legacy_found);
+        if (err != ESP_OK) return err;
+        if (legacy_found) {
+            err = persistence_service_write_blob(UPDATE_SERVICE_NAMESPACE,
+                                                 UPDATE_SERVICE_STORE_KEY,
+                                                 store, sizeof(*store));
+            if (err != ESP_OK) return err;
+        }
+        return ESP_OK;
+    }
+    if (err != ESP_OK) return err;
+    if (size != sizeof(*store) || store->magic != UPDATE_SERVICE_STORE_MAGIC ||
+        store->version != UPDATE_SERVICE_STORE_VERSION) return ESP_ERR_INVALID_STATE;
+    return ESP_OK;
 }
 
 static esp_err_t save_store(const update_service_store_t *store) {
-    if (!store || !nvs_lock()) return ESP_ERR_TIMEOUT;
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(UPDATE_SERVICE_NAMESPACE, NVS_READWRITE, &nvs);
-    if (err == ESP_OK) {
-        err = nvs_set_i64(nvs, "upd_seq", store->release_sequence);
-        if (err == ESP_OK) err = nvs_set_i64(nvs, "upd_after", store->remind_after_epoch);
-        if (err == ESP_OK) err = nvs_set_i64(nvs, "upd_dseq", store->dismissed_sequence);
-        if (err == ESP_OK) err = nvs_set_i64(nvs, "upd_duntil", store->dismissed_until_epoch);
-        if (err == ESP_OK) err = nvs_set_str(nvs, "upd_digest", store->manifest_sha256);
-        if (err == ESP_OK) err = nvs_set_str(nvs, "upd_ddigest", store->dismissed_digest);
-        if (err == ESP_OK) err = nvs_commit(nvs);
-        nvs_close(nvs);
-    }
-    nvs_unlock();
-    return err;
+    if (!store || store->magic != UPDATE_SERVICE_STORE_MAGIC ||
+        store->version != UPDATE_SERVICE_STORE_VERSION) return ESP_ERR_INVALID_ARG;
+    return persistence_service_write_blob(UPDATE_SERVICE_NAMESPACE,
+                                          UPDATE_SERVICE_STORE_KEY,
+                                          store, sizeof(*store));
 }
 
 static int64_t reminder_interval(cJSON *metadata, bool critical) {
@@ -113,8 +152,8 @@ static void clear_update_status(void) {
 }
 
 esp_err_t update_service_init(const update_service_config_t *config) {
-    if (!config || !config->nvs_mutex || config->running_release_sequence < 0) return ESP_ERR_INVALID_ARG;
-    s_nvs_mutex = config->nvs_mutex;
+    if (!config || !persistence_service_is_initialized() ||
+        config->running_release_sequence < 0) return ESP_ERR_INVALID_ARG;
     s_running_release_sequence = config->running_release_sequence;
     memset(&s_status, 0, sizeof(s_status));
     return ESP_OK;
@@ -155,7 +194,7 @@ bool update_service_apply_metadata(cJSON *metadata, int64_t now_epoch,
         !valid_digest(next.manifest_sha256)) return false;
 
     update_service_store_t store;
-    if (!load_store(&store)) return false;
+    if (load_store(&store) != ESP_OK) return false;
     const bool release_changed = store.release_sequence != next.release_sequence ||
                                  strcmp(store.manifest_sha256, next.manifest_sha256) != 0;
     const bool dismiss_matches = store.dismissed_sequence == next.release_sequence &&
@@ -230,7 +269,7 @@ esp_err_t update_service_execute_tool(const char *name, cJSON *arguments,
             return ESP_ERR_INVALID_STATE;
         }
         update_service_store_t store;
-        if (!load_store(&store)) {
+        if (load_store(&store) != ESP_OK) {
             cJSON_Delete(result);
             return ESP_ERR_TIMEOUT;
         }

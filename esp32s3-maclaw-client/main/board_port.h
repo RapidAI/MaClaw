@@ -30,7 +30,11 @@ typedef device_input_source_t board_input_source_t;
 #define BOARD_INPUT_SOURCE_ACTIVATE_KEY DEVICE_INPUT_SOURCE_PRIMARY_CONTROL
 #define BOARD_INPUT_SOURCE_OTHER_KEY DEVICE_INPUT_SOURCE_AUXILIARY_CONTROL
 
-typedef device_input_cb_t board_input_cb_t;
+/* This raw publisher belongs below the Device API boundary.  Input Service
+ * wraps it in a versioned device_input_event_t before application policy sees
+ * it, preventing board callbacks from manufacturing public event metadata. */
+typedef void (*board_input_cb_t)(device_input_action_t action,
+                                 device_input_source_t source, void *context);
 // Source-compatible names for board ports that have not yet adopted the
 // hardware-neutral terminology.
 typedef board_input_action_t board_port_button_event_t;
@@ -39,6 +43,12 @@ typedef board_input_cb_t board_port_button_cb_t;
 #define BOARD_BUTTON_DOUBLE BOARD_INPUT_SECONDARY
 #define BOARD_BUTTON_LONG BOARD_INPUT_CONFIGURE
 typedef void (*board_port_wake_word_cb_t)(void *arg);
+
+/* Board port implementation of the public normalized Motion HAL.  This
+ * header deliberately sees the Device API value type only: controller model,
+ * I2C address, register layout and board interrupt wiring remain private to
+ * the adapter source. */
+esp_err_t board_port_motion_get_sample(device_motion_sample_t *out_sample);
 
 // The application owns idle policy; the board port owns only the physical
 // panel/backlight transaction. DISPLAY_OFF keeps alarm, network and wake-word
@@ -50,14 +60,50 @@ bool board_port_enter_display_off(void);
 bool board_port_display_is_off(void);
 
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg);
+/* Stops only the board-owned input scanner task.  It does not deinitialize
+ * display/audio buses or make the boot-lifetime adapter restartable.  Input
+ * Service calls this before releasing its event queues. */
+esp_err_t board_port_stop_input(uint32_t timeout_ms);
+/* Stops only board-owned decorative display tasks during a failed startup
+ * rollback. It leaves display/audio buses initialized for the diagnostic
+ * surface and does not imply a restartable board-port deinit. */
+esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms);
 // Fangtang uses GPIO0's initial double click exclusively as a boot-time
 // network-transport selector. The board consumes this bounded window before
 // normal application callbacks become active. Other boards return false.
 bool board_port_wait_for_boot_network_toggle(uint32_t window_ms);
+/* Restores the profile-owned selected uplink. Persistence format, vendor-image
+ * migration and the physical meaning of a cellular choice stay in the adapter.
+ * Wi-Fi-only boards return false and select Wi-Fi. */
+bool board_port_load_transport_selection(bool *out_cellular);
+/* Consumes an optional, already-bounded startup selector and persists the
+ * resulting profile-owned uplink choice. `current_cellular` is a normalized
+ * Connectivity-Service intent, not a board identity. */
+bool board_port_apply_startup_transport_toggle(uint32_t window_ms,
+                                               bool current_cellular,
+                                               bool *out_cellular);
+/* Adapts a configured Gateway origin only when the selected physical
+ * transport has a documented protocol limitation. It leaves arbitrary user
+ * origins untouched and never exposes that limitation above this seam. */
+void board_port_adapt_gateway_url(char *gateway_url, size_t capacity,
+                                  bool cellular_active);
 /* Applies only the board-owned modem guard/power wiring required before a
  * cellular transport adapter starts. It deliberately does not start ML307,
  * select an uplink, or issue any network request. */
 esp_err_t board_port_prepare_cellular_transport(void);
+/* Starts the selected profile's cellular transport after applying its own
+ * wiring/configuration. This is transport lifecycle only: uplink policy,
+ * retry/backoff and gateway semantics remain above the Device API boundary. */
+esp_err_t board_port_start_cellular_transport(uint32_t timeout_ms);
+bool board_port_is_cellular_transport_ready(void);
+esp_err_t board_port_cellular_http_request(
+    const device_connectivity_http_request_t *request);
+esp_err_t board_port_cellular_http_stream_request(
+    const device_connectivity_stream_request_t *request);
+/* Cancels a profile-owned foreground request on the selected cellular
+ * transport, if one exists. Wi-Fi foreground requests remain owned by the
+ * shared HTTP client; profiles without cellular hardware return false. */
+bool board_port_cancel_cellular_foreground_request(void);
 // Re-presents the board-specific boot artwork and keeps it in the foreground
 // until another explicit surface (ready, setup, error, etc.) replaces it.
 void board_port_show_startup_screen(void);
@@ -87,6 +133,11 @@ void board_port_set_pet_profile(const char *skin, bool motion_enabled);
 // Passing no frames clears the remote asset and restores the native skin.
 esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
                                    size_t width, size_t height, uint32_t frame_ms);
+// Returns the maximum additional external-memory copy created by this display
+// port while replacing a remote pet asset. The caller owns neither memory nor
+// display state; this is only an admission-planning query.
+bool board_port_get_pet_asset_install_budget(size_t source_width, size_t source_height,
+                                             size_t frame_count, size_t *out_external_bytes);
 // Shows the dedicated dynamic meeting-recording surface. Call every second
 // with the elapsed duration while recording; passing active=false restores the
 // selected pet screen.

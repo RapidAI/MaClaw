@@ -38,7 +38,7 @@ type preparedDeviceResponseImage struct {
 func deviceResponseImageCaption(values ...string) string {
 	for _, value := range values {
 		if caption := strings.TrimSpace(textutil.StripMarkdown(value)); caption != "" {
-			return truncateThirdPartyOutputText(caption, deviceResponseImageCaptionRunes)
+			return coreim.ThirdPartyTruncateRunes(caption, deviceResponseImageCaptionRunes)
 		}
 	}
 	return ""

@@ -70,7 +70,7 @@ export const MainTopHeader = ({
     const toolOptions = getAllToolOptions();
     const showToolSwitcher = isToolTab(navTab);
     return (
-    <div className="top-header" style={{ '--wails-draggable': 'drag' } as any} onDoubleClick={() => handleWindowMaximizeToggle()}>
+    <div className="top-header" data-window-drag style={{ '--wails-draggable': 'drag', userSelect: 'none' } as any} onDoubleClick={() => handleWindowMaximizeToggle()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
             <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--theme-text-primary)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
                 {showToolSwitcher ? (

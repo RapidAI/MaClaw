@@ -26,9 +26,6 @@
 #include "esp_spiffs.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-#include "ml307_transport.h"
-#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
@@ -41,21 +38,37 @@
 #include "qrcode.h"
 
 #include "board_port.h"
+#include "app_intent_service.h"
 #include "device_api.h"
+#include "device_tool_registry.h"
 #include "app_ui.h"
 #include "alarm_manager.h"
+#include "fall_detection_service.h"
 #include "mp3_player.h"
 #include "firmware_identity.h"
+#include "lifecycle_service.h"
+#include "operation_context.h"
+#include "sleep_schedule_service.h"
 #include "update_service.h"
+#include "wake_deadline_service.h"
+#include "resource_pressure_service.h"
+#include "battery_policy_service.h"
+#include "persistence_service.h"
+#include "weather_cache_service.h"
+#include "meeting_recovery_service.h"
+#include "configuration_service.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_CONNECT_TIMEOUT_MS 20000
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
 #define CELLULAR_CONNECT_TIMEOUT_MS 60000
-#define FANGTANG_BOOT_NETWORK_WINDOW_MS 1800
-#endif
+#define STARTUP_TRANSPORT_SELECTOR_WINDOW_MS 1800
 #define RESPONSE_CAPACITY 16384
 #define HANDSHAKE_RESPONSE_CAPACITY 24576
+/* The unified tool registry makes the handshake descriptor larger than the
+ * former 4 KiB stack buffer.  Rejecting it before the HTTP request leaves a
+ * paired device permanently on its boot surface, so keep an explicit bounded
+ * request capacity for this control-plane payload. */
+#define HANDSHAKE_REQUEST_CAPACITY 8192
 #define HARDWARE_AUDIO_RESPONSE_CAPACITY (512 * 1024 + 1)
 #define RESPONSE_IMAGE_MAX_DIMENSION 64
 #define RESPONSE_IMAGE_MAX_BYTES (RESPONSE_IMAGE_MAX_DIMENSION * RESPONSE_IMAGE_MAX_DIMENSION * 2)
@@ -141,13 +154,12 @@ static char s_pair_code[PAIR_CODE_CAPACITY];
 static char s_device_id[DEVICE_ID_CAPACITY];
 static httpd_handle_t s_setup_server;
 static bool s_network_initialized;
+static bool s_startup_ui_initialized;
 static bool s_wifi_driver_initialized;
 static bool s_ap_netif_created;
 static bool s_sta_netif_created;
 static bool s_wifi_started;
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
 static TaskHandle_t s_cellular_recovery_task;
-#endif
 // The provisioning portal needs APSTA mode to scan nearby networks, but a
 // first-run portal must not repeatedly attempt an unconfigured STA join.
 static bool s_station_auto_connect;
@@ -158,6 +170,9 @@ static bool s_station_expected_disconnect;
 // which then asserts just after esp_wifi_start().
 static bool s_wifi_enterprise_enabled;
 static bool s_setup_portal_active;
+/* The setup AP/QR page is a foreground flow.  Keep its ownership explicit so
+ * an ambient idle deadline cannot blank the only configuration surface. */
+static device_power_lease_t s_setup_power_lease;
 static esp_netif_t *s_setup_ap_netif;
 static TaskHandle_t s_dns_task;
 static SemaphoreHandle_t s_setup_options_mutex;
@@ -178,17 +193,32 @@ static bool s_alarm_manager_started;
 // may only launch TLS/pairing after app_main explicitly opens this gate.
 static volatile bool s_gateway_startup_allowed;
 static TaskHandle_t s_interaction_task;
+static device_power_lease_t s_interaction_power_lease;
 static TaskHandle_t s_meeting_task;
+static device_power_lease_t s_meeting_power_lease;
 static TaskHandle_t s_meeting_resume_supervisor_task;
 static volatile bool s_wake_restart_scheduled;
 static volatile bool s_wake_restart_after_startup;
 static TaskHandle_t s_meeting_capability_refresh_task;
 static bool s_meeting_task_running;
+/* The worker receives this explicit context instead of inferring ownership
+ * from a naked resume flag or global task handle. */
+typedef struct {
+    uint32_t generation;
+    bool resume_only;
+} meeting_task_context_t;
 static bool s_pairing_recovery_portal;
 static TaskHandle_t s_ambient_task;
+static SemaphoreHandle_t s_ambient_task_stopped;
 static TaskHandle_t s_clock_sync_task;
 static TaskHandle_t s_gateway_poll_task;
+static SemaphoreHandle_t s_gateway_poll_stopped;
+static SemaphoreHandle_t s_gateway_poll_client_mutex;
+static esp_http_client_handle_t s_gateway_poll_active_client;
+static bool s_gateway_poll_stop_requested;
 static TaskHandle_t s_startup_pet_asset_task;
+static SemaphoreHandle_t s_startup_pet_asset_stopped;
+static bool s_startup_pet_asset_stop_requested;
 static SemaphoreHandle_t s_pet_cache_flash_mutex;
 static TaskHandle_t s_setup_restart_task;
 static SemaphoreHandle_t s_startup_welcome_done;
@@ -248,6 +278,39 @@ static char s_gateway_poll_http_origin[URL_CAPACITY];
 static SemaphoreHandle_t s_gateway_asset_http_mutex;
 static esp_http_client_handle_t s_gateway_asset_http_client;
 static char s_gateway_asset_http_origin[URL_CAPACITY];
+static SemaphoreHandle_t s_gateway_asset_client_mutex;
+static esp_http_client_handle_t s_gateway_asset_active_client;
+// Startup pet artwork is intentionally optional.  Its independent worker may
+// otherwise open a second TLS session while the poll worker receives a spoken
+// reply, exhausting the small internal TLS heap on EchoEar.  Keep the priority
+// state separate from the normal HTTP mutexes: it is only an admission gate
+// for the optional asset worker, never an ownership token for a client handle.
+static portMUX_TYPE s_media_priority_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_audio_media_download_active;
+static SemaphoreHandle_t s_media_transfer_mutex;
+// The outgoing worker can receive a server speech URL while the offline
+// recognizer is resident.  ESP-SR's model allocations fragment the internal
+// heap enough for mbedTLS/AES to fail even though the eventual audio body is
+// kept in PSRAM.  This flag records a successful, temporary recognizer
+// teardown so the poll worker can restore it only after the entire message
+// transaction (including its ACK) has finished.
+/* Large TLS media transfers share one internal-memory lease. A foreground
+ * server-audio transaction may preempt an optional pet worker; only the final
+ * lease holder may restore the offline recognizer. */
+static uint32_t s_media_wake_memory_lease_count;
+static bool s_server_audio_wake_memory_lease_active;
+
+static void set_audio_media_download_active(bool active);
+static bool audio_media_download_active(void);
+static void cancel_optional_startup_pet_asset_for_audio(void);
+static esp_err_t stop_startup_pet_asset_task(uint32_t timeout_ms);
+static void discard_gateway_asset_http_client(void);
+static bool begin_server_audio_wake_memory_lease(const char *source);
+static void begin_optional_media_wake_memory_lease(const char *source);
+static bool finish_server_audio_wake_memory_lease(void);
+static bool finish_optional_media_wake_memory_lease(void);
+static bool server_audio_wake_memory_lease_active(void);
+static void startup_stop_local_workers(void);
 // Exactly one pet pack may own the renderer at a time.  A cold-start pack is
 // deliberately cancellable, but once it starts touching the display its final
 // install/cache sequence must not race an online pet_profile update.
@@ -259,6 +322,8 @@ static SemaphoreHandle_t s_foreground_http_client_mutex;
 static esp_http_client_handle_t s_foreground_http_client;
 static SemaphoreHandle_t s_command_cancel_ui_ready;
 static TaskHandle_t s_command_cancel_task;
+static SemaphoreHandle_t s_command_cancel_stopped;
+static bool s_command_cancel_stop_requested;
 static SemaphoreHandle_t s_interaction_lock;
 static SemaphoreHandle_t s_nvs_mutex;
 // The outgoing long-poll worker deliberately has a PSRAM-backed stack so it
@@ -270,6 +335,7 @@ static SemaphoreHandle_t s_nvs_mutex;
 typedef struct {
     unsigned percent;
     uint32_t generation;
+    bool stop;
 } output_volume_persist_request_t;
 
 typedef struct {
@@ -280,6 +346,8 @@ typedef struct {
 static QueueHandle_t s_output_volume_persist_queue;
 static QueueHandle_t s_output_volume_persist_reply_queue;
 static SemaphoreHandle_t s_output_volume_persist_request_mutex;
+static TaskHandle_t s_output_volume_persist_task_handle;
+static SemaphoreHandle_t s_output_volume_persist_stopped;
 static uint32_t s_output_volume_persist_generation;
 static unsigned s_configured_output_volume = 70;
 static bool s_configured_output_volume_saved;
@@ -290,6 +358,7 @@ static int s_weather_temperature_c;
 static int64_t s_weather_expires_at_ms;
 static bool s_weather_valid;
 static void on_wake_word(void *arg);
+static void on_fall_detection_event(fall_detection_event_t event, void *arg);
 
 // NVS may contain Wi-Fi credentials, the pairing token, alarms and the
 // meeting-recovery cursor.  ESP-IDF suggests erasing the whole partition for
@@ -380,6 +449,7 @@ static void publish_pending_update_reminder(void);
 static void save_ambient_weather(void);
 static void load_ambient_weather(void);
 static esp_err_t poll_reply(void);
+static esp_err_t stop_gateway_poll_task(uint32_t timeout_ms);
 static esp_err_t send_text_event(const char *text, const char *reply_to);
 static bool hardware_audio_url_allowed(const char *url);
 static void digest_hex(const uint8_t digest[32], char out[65]);
@@ -391,9 +461,11 @@ static const char *json_string(cJSON *root, const char *key);
 static bool json_number(cJSON *root, const char *key, int *value);
 static int apply_glyphs_json(cJSON *glyphs);
 static bool start_meeting_task(bool resume_only);
+static bool meeting_operation_is_current(uint32_t generation);
 static esp_err_t gateway_handshake(bool cold_start);
 static void start_setup_portal(bool keep_station);
 static void schedule_wake_restart(void);
+static esp_err_t audio_wake_word_stop(void);
 static esp_err_t clear_meeting_recovery(bool delete_audio);
 static void pet(const char *state);
 static void apply_deferred_startup_pet_asset(void);
@@ -408,8 +480,10 @@ static esp_err_t handle_client_tool_call(cJSON *item) {
     const char *conversation_id = json_string(item, "conversationId");
     cJSON *arguments = cJSON_GetObjectItemCaseSensitive(call, "arguments");
     if (!cJSON_IsObject(call) || !call_id || !name) return ESP_ERR_INVALID_ARG;
-    const bool update_tool = !strcmp(name, "update_check") || !strcmp(name, "update_status") ||
-                             !strcmp(name, "update_remind_later") || !strcmp(name, "update_dismiss_version");
+    const device_tool_definition_t *tool_definition = NULL;
+    bool known_tool = device_tool_registry_find(name, &tool_definition);
+    const bool requires_idempotency_key =
+        device_tool_registry_requires_idempotency(tool_definition);
     bool missing_idempotency_key = !idempotency_key || !idempotency_key[0];
     bool invalid_arguments = arguments && !cJSON_IsObject(arguments);
     bool owned_arguments = false;
@@ -420,7 +494,7 @@ static esp_err_t handle_client_tool_call(cJSON *item) {
     cJSON *result = NULL;
     char detail[128] = {0};
     esp_err_t execute_err;
-    if (missing_idempotency_key && !update_tool) {
+    if (missing_idempotency_key && requires_idempotency_key) {
         snprintf(detail, sizeof(detail), "idempotencyKey is required");
         execute_err = ESP_ERR_INVALID_ARG;
     } else if (invalid_arguments) {
@@ -429,17 +503,16 @@ static esp_err_t handle_client_tool_call(cJSON *item) {
     } else if (!arguments) {
         snprintf(detail, sizeof(detail), "cannot allocate arguments object");
         execute_err = ESP_ERR_NO_MEM;
-    } else if (!update_tool && !s_alarm_manager_started) {
-        // The tool is advertised only after the startup handshake; retaining
-        // this guard makes a malformed/early outgoing item fail closed rather
-        // than touching uninitialized local scheduler state.
-        snprintf(detail, sizeof(detail), "alarm service is not ready");
+    } else if (!known_tool) {
+        snprintf(detail, sizeof(detail), "unsupported client tool: %s", name);
+        execute_err = ESP_ERR_NOT_SUPPORTED;
+    } else if (!device_tool_registry_is_ready(tool_definition)) {
+        snprintf(detail, sizeof(detail), "client tool is temporarily unavailable");
         execute_err = ESP_ERR_INVALID_STATE;
     } else {
-        execute_err = update_tool
-            ? update_service_execute_tool(name, arguments, &result, detail, sizeof(detail))
-            : alarm_manager_execute_tool(name, arguments, idempotency_key,
-                                         &result, detail, sizeof(detail));
+        execute_err = device_tool_registry_execute(tool_definition, arguments,
+                                                    idempotency_key, &result,
+                                                    detail, sizeof(detail));
     }
     if (owned_arguments) cJSON_Delete(arguments);
     ESP_LOGI(TAG, "client tool executed: name=%s call=%s status=%s",
@@ -495,12 +568,6 @@ static esp_err_t handle_client_tool_call(cJSON *item) {
     return err;
 }
 
-static bool nvs_lock(void) {
-    return s_nvs_mutex && xSemaphoreTake(s_nvs_mutex, pdMS_TO_TICKS(3000)) == pdTRUE;
-}
-
-static void nvs_unlock(void);
-
 static void publish_pending_update_reminder(void) {
     char title[32] = {0};
     char detail[UPDATE_SERVICE_DETAIL_CAPACITY] = {0};
@@ -517,10 +584,6 @@ static void process_update_metadata(cJSON *update, bool defer_presentation) {
     }
 }
 
-static void nvs_unlock(void) {
-    if (s_nvs_mutex) xSemaphoreGive(s_nvs_mutex);
-}
-
 static bool meeting_is_active(void) {
     meeting_state_t state = s_meeting_state;
     return state != MEETING_IDLE && state != MEETING_DONE && state != MEETING_ERROR;
@@ -534,8 +597,9 @@ static void meeting_set_state(meeting_state_t state) {
 static void finish_interaction_task_with_surface(uint32_t generation,
                                                  bool restore_standby) {
     app_ui_set_command_cancel_enabled(false);
+    bool operation_current = operation_context_is_current(generation);
     taskENTER_CRITICAL(&s_task_state_lock);
-    bool owns_interaction = s_interaction_generation == generation &&
+    bool owns_interaction = operation_current && s_interaction_generation == generation &&
                             s_interaction_task == xTaskGetCurrentTaskHandle();
     if (owns_interaction) {
         s_interaction_task = NULL;
@@ -552,7 +616,13 @@ static void finish_interaction_task_with_surface(uint32_t generation,
             s_command_display_locked = false;
         }
     }
+    device_power_lease_t interaction_lease = DEVICE_POWER_LEASE_INVALID;
+    if (owns_interaction) {
+        interaction_lease = s_interaction_power_lease;
+        s_interaction_power_lease = DEVICE_POWER_LEASE_INVALID;
+    }
     taskEXIT_CRITICAL(&s_task_state_lock);
+    device_power_lease_release(interaction_lease);
     if (owns_interaction && restore_standby) {
         // A cancelled command ends on APP_UI_SURFACE_MESSAGE ("已取消"), so the
         // normal response-only dismiss path cannot restore the ambient screen.
@@ -567,6 +637,10 @@ static void finish_interaction_task_with_surface(uint32_t generation,
         vTaskDelete(NULL);
         return;
     }
+    /* A poller may have committed the final response before waking this
+     * worker.  In that case commit_terminal simply reports false; this task
+     * still owns cleanup and must release the admission token exactly once. */
+    (void)operation_context_commit_terminal(generation);
     // This is a binary admission token, not a mutex: the button task starts
     // the interaction task, which completes it on another task context.
     // Releasing a FreeRTOS mutex from that child task asserts and reboots.
@@ -604,6 +678,13 @@ static void finish_interaction_task(uint32_t generation) {
     finish_interaction_task_with_surface(generation, false);
 }
 
+/* A foreground meeting is an operation-context owner.  Keep this guard local
+ * to the meeting flow while its UI and recorder state are migrated out of
+ * main.c; background recovery deliberately has no foreground generation. */
+static bool meeting_operation_is_current(uint32_t generation) {
+    return generation != 0 && operation_context_matches(generation);
+}
+
 // A local validation, capture, upload, or submission failure has no result to
 // keep on screen.  Treat it like Bread Compact's short status acknowledgement:
 // leave the message readable, then return every layer (application model,
@@ -616,10 +697,12 @@ static void finish_interaction_message(uint32_t generation, uint32_t dwell_ms) {
 }
 
 static bool command_cancel_requested_for(uint32_t generation) {
+    bool operation_cancelled = operation_context_cancel_requested(generation);
     bool requested;
     taskENTER_CRITICAL(&s_task_state_lock);
     requested = s_command_cancel_requested &&
-                s_cancel_requested_generation == generation;
+                s_cancel_requested_generation == generation &&
+                operation_cancelled;
     taskEXIT_CRITICAL(&s_task_state_lock);
     return requested;
 }
@@ -855,8 +938,20 @@ static TaskHandle_t begin_active_command_reply(void) {
     // snapshot before drawing. A simultaneous double tap then observes either
     // a cancellable command or a completed one, never a half-transition.
     TaskHandle_t waiter = NULL;
+    uint32_t generation = 0;
     taskENTER_CRITICAL(&s_task_state_lock);
     if (!s_command_cancel_requested) {
+        generation = s_interaction_generation;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    /* Win the terminal token before any display side effect. A concurrent
+     * cancellation that arrives after this point observes terminal_committed
+     * and is discarded instead of painting "cancelled" over a final reply. */
+    if (!generation || !operation_context_commit_terminal(generation)) return NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_interaction_generation == generation && s_interaction_task) {
+        s_command_cancel_requested = false;
+        s_cancel_requested_generation = 0;
         s_command_cancel_enabled = false;
         waiter = s_interaction_task;
     }
@@ -965,6 +1060,11 @@ static void command_cancel_worker(void *arg) {
     while (true) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
+        taskENTER_CRITICAL(&s_task_state_lock);
+        bool stop_requested = s_command_cancel_stop_requested;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (stop_requested) break;
+
         uint32_t cancel_generation = 0;
         taskENTER_CRITICAL(&s_task_state_lock);
         cancel_generation = s_cancel_requested_generation;
@@ -999,12 +1099,10 @@ static void command_cancel_worker(void *arg) {
         } else {
             ESP_LOGW(TAG, "foreground HTTP cancel skipped: client guard timeout");
         }
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
         if (device_connectivity_is_active_cellular() &&
-            ml307_transport_cancel_foreground()) {
+            device_connectivity_cancel_cellular_foreground_request()) {
             ESP_LOGI(TAG, "foreground ML307 HTTP request cancelled");
         }
-#endif
 
         // Local cancellation stops waiting immediately, but the server-side
         // agent may already be executing after accepting the voice event. Send
@@ -1042,10 +1140,16 @@ static void command_cancel_worker(void *arg) {
         if (s_command_cancel_ui_ready) xSemaphoreGive(s_command_cancel_ui_ready);
         if (waiter) xTaskNotifyGive(waiter);
     }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_command_cancel_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_command_cancel_stopped) xSemaphoreGive(s_command_cancel_stopped);
+    vTaskDelete(NULL);
 }
 
 static bool request_command_cancel(void) {
     TaskHandle_t waiter = NULL;
+    uint32_t generation = 0;
     taskENTER_CRITICAL(&s_task_state_lock);
     // Cancellation belongs strictly to the thinking phase. Once the poller has
     // accepted a result it clears this flag before drawing the answer, so a
@@ -1054,11 +1158,23 @@ static bool request_command_cancel(void) {
         !s_command_cancel_requested) {
         s_command_cancel_requested = true;
         s_cancel_requested_generation = s_interaction_generation;
+        generation = s_interaction_generation;
         s_command_cancel_enabled = false;
         waiter = s_interaction_task;
     }
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (!waiter) return false;
+    if (!operation_context_request_cancel(generation)) {
+        /* A terminal reply won while the gesture was being classified.  Do
+         * not let the stale gesture revive a cancellation side effect. */
+        taskENTER_CRITICAL(&s_task_state_lock);
+        if (s_cancel_requested_generation == generation) {
+            s_command_cancel_requested = false;
+            s_cancel_requested_generation = 0;
+        }
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        return false;
+    }
     app_ui_set_command_cancel_enabled(false);
     // Keep the touch task responsive: a dedicated internal-RAM worker renders
     // the final frame and interrupts any in-flight HTTP operation safely.
@@ -1189,20 +1305,26 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
     bool absolute_url = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
     bool reusable_gateway_request = !absolute_url || url_has_same_origin(s_gateway_url, url);
     bool bearer_request = !absolute_url;
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     if (device_connectivity_is_active_cellular()) {
         char authorization[128] = {0};
+        uint32_t cellular_response_len = 0;
         if (s_gateway_token[0] && bearer_request) {
             snprintf(authorization, sizeof(authorization), "Bearer %s", s_gateway_token);
         }
-        esp_err_t cellular_err = ml307_transport_http_request(
-            method, url, content_type, authorization, NULL, NULL,
-            body, body_len > 0 ? (size_t)body_len : 0,
-            out->data, out->capacity, &out->len, &out->status,
-            &out->truncated,
-            cancellation_request ? 5000
-                                 : (foreground_request && body_len > 32768 ? 90000 : 30000),
-            foreground_request);
+        device_connectivity_http_request_t cellular_request = {
+            .method = method, .url = url, .content_type = content_type,
+            .authorization = authorization, .body = body,
+            .body_len = body_len > 0 ? (uint32_t)body_len : 0,
+            .response = out->data, .response_capacity = (uint32_t)out->capacity,
+            .response_len = &cellular_response_len, .status_code = &out->status,
+            .truncated = &out->truncated,
+            .timeout_ms = cancellation_request ? 5000
+                         : (foreground_request && body_len > 32768 ? 90000 : 30000),
+            .foreground = foreground_request,
+        };
+        esp_err_t cellular_err = device_status_to_platform_error(
+            device_connectivity_cellular_http_request(&cellular_request));
+        out->len = cellular_response_len;
         xSemaphoreGive(request_mutex);
         ESP_LOGI(TAG, "ML307 HTTP %s %s status=%d err=%s response=%u%s",
                  method, absolute_url ? "<absolute URL>" : path, out->status,
@@ -1210,7 +1332,6 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
                  out->truncated ? " truncated" : "");
         return cellular_err;
     }
-#endif
     esp_http_client_handle_t *pool_client = asset_request
                                                 ? &s_gateway_asset_http_client
                                                 : poll_request ? &s_gateway_poll_http_client
@@ -1275,6 +1396,11 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         s_foreground_http_client = client;
         xSemaphoreGive(s_foreground_http_client_mutex);
     }
+    if (poll_request && s_gateway_poll_client_mutex) {
+        xSemaphoreTake(s_gateway_poll_client_mutex, portMAX_DELAY);
+        s_gateway_poll_active_client = client;
+        xSemaphoreGive(s_gateway_poll_client_mutex);
+    }
     esp_http_client_method_t http_method = HTTP_METHOD_GET;
     if (!strcmp(method, "POST")) http_method = HTTP_METHOD_POST;
     else if (!strcmp(method, "PUT")) http_method = HTTP_METHOD_PUT;
@@ -1310,6 +1436,11 @@ static esp_err_t request_with_capacity(const char *method, const char *path, con
         xSemaphoreTake(s_foreground_http_client_mutex, portMAX_DELAY);
         if (s_foreground_http_client == client) s_foreground_http_client = NULL;
         xSemaphoreGive(s_foreground_http_client_mutex);
+    }
+    if (poll_request && s_gateway_poll_client_mutex) {
+        xSemaphoreTake(s_gateway_poll_client_mutex, portMAX_DELAY);
+        if (s_gateway_poll_active_client == client) s_gateway_poll_active_client = NULL;
+        xSemaphoreGive(s_gateway_poll_client_mutex);
     }
     // The body and callback point at caller-owned memory. Clear both before a
     // pooled handle can outlive this stack frame.
@@ -1361,9 +1492,29 @@ static esp_err_t download_audio(const char *url, uint8_t **out_audio, size_t *ou
     if (!url || !url[0] || !out_audio || !out_len) return ESP_ERR_INVALID_ARG;
     *out_audio = NULL;
     *out_len = 0;
-    http_response_t response;
+    // Unlike a local voice interaction, an outgoing reply is handled by the
+    // poll task and historically kept MultiNet alive.  On EchoEar that leaves
+    // no contiguous internal block for TLS AES.  Take the same explicit
+    // memory lease used by the upload paths before opening the media TLS
+    // connection; the caller restores wake after the response has been ACKed.
+    (void)begin_server_audio_wake_memory_lease("server audio download");
+    // A delivered voice reply is a foreground user outcome.  The cold-start
+    // pet is decorative, so stop it before waiting for the media lane.  Its
+    // worker observes this flag after the one already-running bounded request,
+    // releases the lane, and cannot start another frame over the reply.
+    cancel_optional_startup_pet_asset_for_audio();
+    if (!s_media_transfer_mutex ||
+        xSemaphoreTake(s_media_transfer_mutex, pdMS_TO_TICKS(35000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    // Advertise priority before starting TLS so the optional pet worker cannot
+    // begin another large transfer between the cursor parse and this request.
+    set_audio_media_download_active(true);
+    http_response_t response = {0};
     esp_err_t err = request_with_capacity("GET", url, NULL, NULL, 0,
                                           HARDWARE_AUDIO_RESPONSE_CAPACITY, &response);
+    set_audio_media_download_active(false);
+    xSemaphoreGive(s_media_transfer_mutex);
     if (err != ESP_OK || response.status != 200 || response.len < 2) {
         esp_err_t result = err;
         if (err == ESP_OK) {
@@ -1457,6 +1608,157 @@ static void free_pet_asset_frames(uint8_t *frames[PET_ASSET_MAX_FRAMES], size_t 
     }
 }
 
+/* A full remote pack keeps every verified source frame until the renderer has
+ * atomically accepted the pack.  Reserve that bounded peak up front; the
+ * cache only writes the first frame, but must also retain SPIFFS headroom for
+ * foreground recordings and recovery.  This policy is shared across boards;
+ * the round EchoEar renderer remains an adapter concern. */
+static bool pet_asset_capacity_available(const pet_asset_ref_t *ref) {
+    if (!ref || ref->frame_count < 1) return false;
+    const size_t frame_bytes = (size_t)ref->width * (size_t)ref->height *
+                               PET_ASSET_BYTES_PER_PIXEL;
+    const size_t source_external = frame_bytes * (size_t)ref->frame_count;
+    uint32_t install_external = 0;
+    const size_t cache_storage = frame_bytes + 4096u;
+    if (frame_bytes == 0 || source_external > UINT32_MAX || cache_storage > UINT32_MAX ||
+        !device_display_get_pet_asset_install_budget(
+            (uint32_t)ref->width, (uint32_t)ref->height, (uint32_t)ref->frame_count,
+            &install_external) ||
+        install_external > UINT32_MAX - source_external) {
+        return false;
+    }
+    const uint32_t peak_external = (uint32_t)source_external + install_external;
+    if (!device_battery_policy_allows_optional_work()) {
+        ESP_LOGW(TAG, "pet asset deferred: battery protection policy is active");
+        return false;
+    }
+    if (!device_resource_pressure_allows_optional_allocation(
+            0, peak_external, (uint32_t)cache_storage)) {
+        ESP_LOGW(TAG, "pet asset deferred: insufficient shared optional capacity "
+                      "(source_psram=%u install_psram=%u storage=%u)",
+                 (unsigned)source_external, (unsigned)install_external,
+                 (unsigned)cache_storage);
+        return false;
+    }
+    return true;
+}
+
+static void set_audio_media_download_active(bool active) {
+    taskENTER_CRITICAL(&s_media_priority_lock);
+    s_audio_media_download_active = active;
+    taskEXIT_CRITICAL(&s_media_priority_lock);
+}
+
+static bool audio_media_download_active(void) {
+    bool active;
+    taskENTER_CRITICAL(&s_media_priority_lock);
+    active = s_audio_media_download_active;
+    taskEXIT_CRITICAL(&s_media_priority_lock);
+    return active;
+}
+
+static bool begin_server_audio_wake_memory_lease(const char *source) {
+    bool should_stop = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_server_audio_wake_memory_lease_active) {
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        return false;
+    }
+    s_server_audio_wake_memory_lease_active = true;
+    should_stop = s_media_wake_memory_lease_count == 0;
+    ++s_media_wake_memory_lease_count;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+
+    // Abort an optional cold-start asset before waiting for model teardown.
+    // Otherwise the asset worker can begin (or retain) a 192 KiB TLS body in
+    // the gap, and the eventual wake restart races its PSRAM renderer copies.
+    cancel_optional_startup_pet_asset_for_audio();
+    if (!should_stop) return true;
+    log_heap_snapshot("server-audio-before-wake-stop");
+    esp_err_t wake_stop_err = audio_wake_word_stop();
+    if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "offline wake stop before %s: %s",
+                 source ? source : "server audio", esp_err_to_name(wake_stop_err));
+    }
+    log_heap_snapshot("server-audio-after-wake-stop");
+    return true;
+}
+
+static void begin_optional_media_wake_memory_lease(const char *source) {
+    bool should_stop;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    should_stop = s_media_wake_memory_lease_count == 0;
+    ++s_media_wake_memory_lease_count;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!should_stop) return;
+
+    // Decorative asset downloads are still large HTTPS transactions. They
+    // must reserve internal TLS/AES memory before opening their first request,
+    // rather than repeatedly failing while MultiNet is resident. If foreground
+    // speech arrives it takes a second lease and owns the final restart.
+    log_heap_snapshot("optional-media-before-wake-stop");
+    esp_err_t wake_stop_err = audio_wake_word_stop();
+    if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "offline wake stop before %s: %s",
+                 source ? source : "optional media", esp_err_to_name(wake_stop_err));
+    }
+    log_heap_snapshot("optional-media-after-wake-stop");
+}
+
+static bool finish_server_audio_wake_memory_lease(void) {
+    bool final_owner = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_server_audio_wake_memory_lease_active) {
+        s_server_audio_wake_memory_lease_active = false;
+        if (s_media_wake_memory_lease_count > 0) {
+            --s_media_wake_memory_lease_count;
+            final_owner = s_media_wake_memory_lease_count == 0;
+        }
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return final_owner;
+}
+
+static bool finish_optional_media_wake_memory_lease(void) {
+    bool final_owner = false;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    if (s_media_wake_memory_lease_count > 0) {
+        --s_media_wake_memory_lease_count;
+        final_owner = s_media_wake_memory_lease_count == 0;
+    }
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return final_owner;
+}
+
+static bool server_audio_wake_memory_lease_active(void) {
+    bool active;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    active = s_server_audio_wake_memory_lease_active;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    return active;
+}
+
+static void cancel_optional_startup_pet_asset_for_audio(void) {
+    if (!s_startup_pet_asset_pending) return;
+    s_startup_pet_asset_pending = false;
+    ESP_LOGI(TAG, "startup pet asset preempted by server audio");
+}
+
+static void discard_gateway_asset_http_client(void) {
+    if (!s_gateway_asset_http_mutex) return;
+    if (xSemaphoreTake(s_gateway_asset_http_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        ESP_LOGW(TAG, "optional pet HTTP client cleanup deferred: lane busy");
+        return;
+    }
+    if (s_gateway_asset_http_client) {
+        esp_http_client_cleanup(s_gateway_asset_http_client);
+        s_gateway_asset_http_client = NULL;
+        s_gateway_asset_http_origin[0] = '\0';
+        ESP_LOGI(TAG, "optional pet HTTP client released before wake restore");
+    }
+    xSemaphoreGive(s_gateway_asset_http_mutex);
+}
+
 static esp_err_t install_pet_asset_first_frame(const pet_asset_ref_t *ref,
                                                uint8_t *const frames[PET_ASSET_MAX_FRAMES]);
 
@@ -1464,6 +1766,7 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
                                            uint8_t *frames[PET_ASSET_MAX_FRAMES],
                                            bool startup_transaction) {
     if (!ref || !frames) return ESP_ERR_INVALID_ARG;
+    if (!pet_asset_capacity_available(ref)) return ESP_ERR_NO_MEM;
     size_t expected = (size_t)ref->width * (size_t)ref->height * PET_ASSET_BYTES_PER_PIXEL;
     if (expected == 0 || expected > PET_ASSET_MAX_BYTES) return ESP_ERR_INVALID_SIZE;
     memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
@@ -1473,7 +1776,9 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
         // command is recording, uploading, or waiting for its result. A frame
         // already in flight is bounded to one 192 KiB response; the next one
         // cannot start until foreground ownership is released.
-        while (startup_transaction && s_foreground_http_requested &&
+        while (startup_transaction &&
+               (s_foreground_http_requested || audio_media_download_active() ||
+                server_audio_wake_memory_lease_active()) &&
                s_startup_pet_asset_pending) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
@@ -1491,8 +1796,49 @@ static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
         esp_err_t err = ESP_FAIL;
         const unsigned max_attempts = startup_transaction ? 3 : 2;
         for (unsigned attempt = 1; attempt <= max_attempts; ++attempt) {
+            bool optional_lease_held = false;
+            // Serialize all large media bodies.  This does not serialize the
+            // gateway poll itself, only the optional pet download against the
+            // audible reply it may have just received.  With one TLS media
+            // session at a time, EchoEar retains enough internal heap for
+            // AES/TLS and completes the voice playback transaction.
+            if (!s_media_transfer_mutex ||
+                xSemaphoreTake(s_media_transfer_mutex, pdMS_TO_TICKS(35000)) != pdTRUE) {
+                err = ESP_ERR_TIMEOUT;
+                break;
+            }
+            if (startup_transaction) {
+                // The media lane makes this test-and-reserve atomic with
+                // respect to other large media operations. A foreground reply
+                // arriving before the request begins preempts the asset;
+                // otherwise this optional TLS transfer gets enough internal
+                // memory without resident MultiNet fragmenting AES buffers.
+                if (!s_startup_pet_asset_pending ||
+                    server_audio_wake_memory_lease_active()) {
+                    xSemaphoreGive(s_media_transfer_mutex);
+                    free_pet_asset_frames(frames, (size_t)i);
+                    memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
+                    return ESP_ERR_INVALID_STATE;
+                }
+                begin_optional_media_wake_memory_lease("optional pet asset");
+                optional_lease_held = true;
+            }
             err = request_with_capacity("GET", ref->urls[i], NULL, NULL, 0,
                                         expected + 1, &response);
+            if (optional_lease_held && finish_optional_media_wake_memory_lease()) {
+                schedule_wake_restart();
+            }
+            xSemaphoreGive(s_media_transfer_mutex);
+            // The user-visible server reply may have pre-empted this optional
+            // request while its TLS read was in flight.  Do not retain/apply a
+            // completed decorative frame after that cancellation, and release
+            // its response body immediately so wake can reclaim its memory.
+            if (startup_transaction && !s_startup_pet_asset_pending) {
+                response_release(&response);
+                free_pet_asset_frames(frames, (size_t)i);
+                memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
+                return ESP_ERR_INVALID_STATE;
+            }
             if (err == ESP_OK && response.status == 200 && response.len == expected) {
                 break;
             }
@@ -1955,6 +2301,9 @@ static esp_err_t install_pet_asset_first_frame(const pet_asset_ref_t *ref,
 static esp_err_t apply_pet_asset_ref(cJSON *object) {
     pet_asset_ref_t ref;
     if (!parse_pet_asset_ref(object, &ref)) return ESP_ERR_INVALID_ARG;
+    if (!pet_asset_capacity_available(&ref)) {
+        return ESP_ERR_NO_MEM;
+    }
     // A pet_profile is durable latest-wins state. Hub can re-deliver its
     // still-unacknowledged control message after a poll retry, so do not fetch
     // and scale the exact revision again. More importantly, the startup
@@ -2129,6 +2478,14 @@ static void startup_pet_asset_task(void *arg) {
 
 static void apply_deferred_startup_pet_asset(void) {
     if (!s_startup_pet_asset_pending) return;
+    if (!s_startup_pet_asset_ref || !pet_asset_capacity_available(s_startup_pet_asset_ref)) {
+        /* Decorative network/cache work is the first domain to yield.  Do not
+         * reserve TLS/PSRAM or trigger SPIFFS GC when foreground safety margin
+         * is already exhausted; a later Hub state refresh can offer it again. */
+        ESP_LOGW(TAG, "startup pet asset skipped: shared optional capacity unavailable");
+        s_startup_pet_asset_pending = false;
+        return;
+    }
     // Never block the gateway startup owner for an optional asset. Downloads
     // and SPIFFS GC may take minutes on a fragmented partition; the independent
     // worker keeps handshake retries and subsequent runtime state responsive.
@@ -2365,8 +2722,16 @@ static void ambient_task(void *arg) {
         // a long time.
         int64_t now_us = esp_timer_get_time();
         int64_t wait_us = 1000000 - (now_us % 1000000) + 1000;
-        vTaskDelay(pdMS_TO_TICKS((wait_us + 999) / 1000));
+        if (ulTaskNotifyTake(pdTRUE,
+                             pdMS_TO_TICKS((wait_us + 999) / 1000)) != 0) {
+            break;
+        }
     }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_ambient_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_ambient_task_stopped) xSemaphoreGive(s_ambient_task_stopped);
+    vTaskDelete(NULL);
 }
 
 // Ambient state and pet-profile updates are server initiated. Keep a single
@@ -2378,6 +2743,10 @@ static void gateway_poll_task(void *arg) {
     (void)arg;
     unsigned consecutive_failures = 0;
     while (true) {
+        taskENTER_CRITICAL(&s_task_state_lock);
+        bool stop_requested = s_gateway_poll_stop_requested;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (stop_requested) break;
         if (s_gateway_token[0]) {
             int64_t started_us = esp_timer_get_time();
             esp_err_t err = poll_reply();
@@ -2387,7 +2756,7 @@ static void gateway_poll_task(void *arg) {
                     app_ui_set_service_ready(false);
                     firmware_identity_set_service_ready(false);
                 }
-                vTaskDelay(pdMS_TO_TICKS(3000));
+                if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000)) != 0) break;
             } else {
                 consecutive_failures = 0;
                 app_ui_set_service_ready(true);
@@ -2398,15 +2767,23 @@ static void gateway_poll_task(void *arg) {
                 // the v1.1 long-poll implementation.
                 // During a foreground command, avoid repeated two-second
                 // blind spots while still preventing a hot reconnect loop.
-                vTaskDelay(pdMS_TO_TICKS(command_display_active() ? 80 : 2000));
+                if (ulTaskNotifyTake(pdTRUE,
+                                     pdMS_TO_TICKS(command_display_active() ? 80 : 2000)) != 0) {
+                    break;
+                }
             }
         } else {
             consecutive_failures = 0;
             app_ui_set_service_ready(false);
             firmware_identity_set_service_ready(false);
-            vTaskDelay(pdMS_TO_TICKS(3000));
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000)) != 0) break;
         }
     }
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_gateway_poll_task = NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (s_gateway_poll_stopped) xSemaphoreGive(s_gateway_poll_stopped);
+    vTaskDeleteWithCaps(NULL);
 }
 
 static bool startup_welcome_is_current_boot(cJSON *item, bool welcome_audio) {
@@ -2433,7 +2810,10 @@ static void finish_startup_welcome_gate(const char *reason) {
 }
 
 static bool ensure_gateway_poll_task(void) {
-    if (!s_gateway_poll_task) {
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool already_started = s_gateway_poll_task != NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!already_started) {
         // MP3 is decoded synchronously when an outgoing audio message arrives.
         // The official decoder needs substantially more stack than JSON/TLS
         // polling alone, especially for stereo Layer III frames.  EchoEar's
@@ -2442,12 +2822,25 @@ static bool ensure_gateway_poll_task(void) {
         // the final ready/standby pet transition.  This worker only performs
         // HTTP/JSON/MP3 work; keep its large stack in PSRAM, like the clock
         // and recovery workers, to preserve internal RAM for Wi-Fi and I2S.
+        s_gateway_poll_stopped = xSemaphoreCreateBinary();
+        if (!s_gateway_poll_stopped) {
+            ESP_LOGE(TAG, "cannot allocate gateway poll completion semaphore");
+            return false;
+        }
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_gateway_poll_stop_requested = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        TaskHandle_t task = NULL;
         BaseType_t created = xTaskCreateWithCaps(gateway_poll_task,
                                                  "maclaw_gateway_poll", 16384,
-                                                 NULL, 3, &s_gateway_poll_task,
+                                                 NULL, 3, &task,
                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_gateway_poll_task = created == pdPASS ? task : NULL;
+        taskEXIT_CRITICAL(&s_task_state_lock);
         if (created != pdPASS) {
-            s_gateway_poll_task = NULL;
+            vSemaphoreDelete(s_gateway_poll_stopped);
+            s_gateway_poll_stopped = NULL;
             ESP_LOGE(TAG, "cannot start gateway poll task");
             return false;
         }
@@ -2631,6 +3024,43 @@ static bool start_gateway_ready_tasks(void) {
     return true;
 }
 
+static esp_err_t stop_gateway_poll_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_gateway_poll_task;
+    if (task) s_gateway_poll_stop_requested = true;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+
+    /* The poll uses this lane's persistent ESP client. Cancel the active
+     * request before waiting, so a 30s network timeout cannot delay rollback.
+     * Cellular polling remains bounded by its adapter request timeout; do not
+     * touch its private handle from here. */
+    if (s_gateway_poll_client_mutex &&
+        xSemaphoreTake(s_gateway_poll_client_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        esp_http_client_handle_t client = s_gateway_poll_active_client;
+        if (client) {
+            esp_err_t cancel_err = esp_http_client_cancel_request(client);
+            if (cancel_err != ESP_OK) {
+                ESP_LOGW(TAG, "gateway poll HTTP cancel returned: %s",
+                         esp_err_to_name(cancel_err));
+            }
+        }
+        xSemaphoreGive(s_gateway_poll_client_mutex);
+    }
+    xTaskNotifyGive(task);
+    if (!s_gateway_poll_stopped ||
+        xSemaphoreTake(s_gateway_poll_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(s_gateway_poll_stopped);
+    s_gateway_poll_stopped = NULL;
+    ESP_LOGI(TAG, "gateway poll task stopped");
+    return ESP_OK;
+}
+
 static void clock_sync_cb(struct timeval *tv) {
     if (!tv || tv->tv_sec < 1672531200) return; // 2023-01-01 UTC
     taskENTER_CRITICAL(&s_task_state_lock);
@@ -2642,22 +3072,59 @@ static void clock_sync_cb(struct timeval *tv) {
     // and unnecessarily restart the client. Both sources feed this callback.
     s_clock_sync_complete = true;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    /* Re-evaluate all wall-clock deadlines after either SNTP or authenticated
+     * Hub time changes the epoch.  The dispatcher does this in task context. */
+    wake_deadline_service_on_wall_clock_updated();
+    sleep_schedule_service_on_wall_clock_updated();
     ESP_LOGI(TAG, "clock synchronized: epoch=%lld", (long long)tv->tv_sec);
 }
 
 static void start_ambient_clock_task(void) {
     setenv("TZ", "CST-8", 1);
     tzset();
-    if (s_ambient_task) return;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    bool already_started = s_ambient_task != NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (already_started) return;
+
+    s_ambient_task_stopped = xSemaphoreCreateBinary();
+    if (!s_ambient_task_stopped) {
+        ESP_LOGE(TAG, "cannot allocate ambient clock completion semaphore");
+        return;
+    }
 
     // Clock cadence must remain independent of animation/render load. A higher
     // priority lets the once-per-second update preempt a slow LCD presentation.
-    BaseType_t created = xTaskCreate(ambient_task, "maclaw_ambient", 3072, NULL, 3,
-                                     &s_ambient_task);
+    TaskHandle_t task = NULL;
+    BaseType_t created = xTaskCreate(ambient_task, "maclaw_ambient", 3072, NULL, 3, &task);
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_ambient_task = created == pdPASS ? task : NULL;
+    taskEXIT_CRITICAL(&s_task_state_lock);
     if (created != pdPASS) {
-        s_ambient_task = NULL;
+        vSemaphoreDelete(s_ambient_task_stopped);
+        s_ambient_task_stopped = NULL;
         ESP_LOGE(TAG, "cannot start ambient clock task");
     }
+}
+
+static esp_err_t stop_ambient_clock_task(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    task = s_ambient_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
+
+    xTaskNotifyGive(task);
+    if (!s_ambient_task_stopped ||
+        xSemaphoreTake(s_ambient_task_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(s_ambient_task_stopped);
+    s_ambient_task_stopped = NULL;
+    ESP_LOGI(TAG, "ambient clock task stopped");
+    return ESP_OK;
 }
 
 static void apply_gateway_server_time(cJSON *json) {
@@ -2744,22 +3211,17 @@ static void start_clock_sync(void) {
 }
 
 static void save_ambient_weather(void) {
-    if (!nvs_lock()) {
-        ESP_LOGW(TAG, "weather cache save deferred: NVS busy");
-        return;
+    weather_cache_snapshot_t snapshot = {
+        .temperature_c = s_weather_temperature_c,
+        .expires_at_ms = s_weather_expires_at_ms,
+        .valid = s_weather_valid,
+    };
+    strlcpy(snapshot.summary, s_weather_summary, sizeof(snapshot.summary));
+    strlcpy(snapshot.location, s_weather_location, sizeof(snapshot.location));
+    esp_err_t err = weather_cache_service_save(&snapshot);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "weather cache save deferred: %s", esp_err_to_name(err));
     }
-    nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READWRITE, &nvs) != ESP_OK) {
-        nvs_unlock();
-        return;
-    }
-    (void)nvs_set_str(nvs, "weather", s_weather_summary);
-    (void)nvs_set_str(nvs, "weather_loc", s_weather_location);
-    (void)nvs_set_i32(nvs, "weather_temp", s_weather_temperature_c);
-    (void)nvs_set_i64(nvs, "weather_exp", s_weather_expires_at_ms);
-    (void)nvs_commit(nvs);
-    nvs_close(nvs);
-    nvs_unlock();
 }
 
 static void wake_restart_task(void *arg) {
@@ -2782,6 +3244,23 @@ static void wake_restart_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
+        // Startup pet artwork is nonessential and may still own large PSRAM
+        // source/renderer buffers just after a server reply.  Do not repeatedly
+        // construct MultiNet against that transient allocation pressure: wait
+        // until the cancelled worker has actually exited and released it.
+        if (s_startup_pet_asset_task) {
+            if (!waiting_for_foreground) {
+                ESP_LOGI(TAG, "offline wake restart waiting for optional pet worker");
+                waiting_for_foreground = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        // The asset lane's persistent esp_http_client retains TLS buffers
+        // after a cancelled cold-start pet request.  Release that optional
+        // client before loading MultiNet; otherwise the recognizer's small
+        // internal PCM buffers can fail even after the worker itself exited.
+        discard_gateway_asset_http_client();
         waiting_for_foreground = false;
         err = audio_wake_word_start(on_wake_word, NULL);
         if (err == ESP_OK) break;
@@ -2831,28 +3310,17 @@ static void schedule_wake_restart(void) {
 }
 
 static void load_ambient_weather(void) {
-    if (!nvs_lock()) return;
-    nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READONLY, &nvs) != ESP_OK) {
-        nvs_unlock();
+    weather_cache_snapshot_t snapshot;
+    esp_err_t err = weather_cache_service_load(&snapshot);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "weather cache unavailable: %s", esp_err_to_name(err));
         return;
     }
-    size_t summary_len = sizeof(s_weather_summary);
-    size_t location_len = sizeof(s_weather_location);
-    int32_t temperature = 0;
-    bool found = nvs_get_str(nvs, "weather", s_weather_summary, &summary_len) == ESP_OK;
-    (void)nvs_get_str(nvs, "weather_loc", s_weather_location, &location_len);
-    (void)nvs_get_i32(nvs, "weather_temp", &temperature);
-    (void)nvs_get_i64(nvs, "weather_exp", &s_weather_expires_at_ms);
-    nvs_close(nvs);
-    nvs_unlock();
-    s_weather_temperature_c = temperature;
-    s_weather_valid = found && s_weather_summary[0] != '\0';
-}
-
-static bool load_nvs_string(nvs_handle_t nvs, const char *key, char *out, size_t cap) {
-    size_t len = cap;
-    return nvs_get_str(nvs, key, out, &len) == ESP_OK && out[0] != '\0';
+    strlcpy(s_weather_summary, snapshot.summary, sizeof(s_weather_summary));
+    strlcpy(s_weather_location, snapshot.location, sizeof(s_weather_location));
+    s_weather_temperature_c = snapshot.temperature_c;
+    s_weather_expires_at_ms = snapshot.expires_at_ms;
+    s_weather_valid = snapshot.valid;
 }
 
 static bool is_valid_gateway_url(const char *url) {
@@ -2872,44 +3340,47 @@ static bool is_six_digit_pair_code(const char *code) {
     return true;
 }
 
-static void load_device_config(void) {
-    strlcpy(s_wifi_ssid, CONFIG_MACLAW_WIFI_SSID, sizeof(s_wifi_ssid));
-    strlcpy(s_wifi_password, CONFIG_MACLAW_WIFI_PASSWORD, sizeof(s_wifi_password));
-    strlcpy(s_gateway_url, CONFIG_MACLAW_SERVER_URL, sizeof(s_gateway_url));
-    s_pair_code[0] = '\0';
-    nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READONLY, &nvs) == ESP_OK) {
-        uint8_t output_volume = 0;
-        (void)load_nvs_string(nvs, "wifi_ssid", s_wifi_ssid, sizeof(s_wifi_ssid));
-        (void)load_nvs_string(nvs, "wifi_pass", s_wifi_password, sizeof(s_wifi_password));
-        (void)load_nvs_string(nvs, "wifi_sec", s_wifi_security, sizeof(s_wifi_security));
-        (void)load_nvs_string(nvs, "wifi_eap", s_wifi_eap_method, sizeof(s_wifi_eap_method));
-        (void)load_nvs_string(nvs, "wifi_ident", s_wifi_identity, sizeof(s_wifi_identity));
-        (void)load_nvs_string(nvs, "wifi_user", s_wifi_username, sizeof(s_wifi_username));
-        (void)load_nvs_string(nvs, "wifi_ttls", s_wifi_ttls_phase2, sizeof(s_wifi_ttls_phase2));
-        (void)load_nvs_string(nvs, "wifi_ca", s_wifi_ca_mode, sizeof(s_wifi_ca_mode));
-        (void)load_nvs_string(nvs, "wifi_domain", s_wifi_server_domain, sizeof(s_wifi_server_domain));
-        (void)load_nvs_string(nvs, "gateway_url", s_gateway_url, sizeof(s_gateway_url));
-        (void)load_nvs_string(nvs, "pair_code", s_pair_code, sizeof(s_pair_code));
-        if (nvs_get_u8(nvs, "output_vol", &output_volume) == ESP_OK && output_volume <= 100) {
-            s_configured_output_volume = output_volume;
-            s_configured_output_volume_saved = true;
-        }
-        nvs_close(nvs);
+/* Configuration contains the Wi-Fi credential and the Hub bearer token.  A
+ * malformed persisted snapshot is therefore not equivalent to an empty first
+ * boot: silently falling back to firmware defaults could reconnect a device
+ * using credentials that no longer describe its owner.  Return the read
+ * result to the composition root so it can stop before radio/gateway work.
+ */
+static esp_err_t load_device_config(void) {
+    configuration_snapshot_t snapshot = {0};
+    strlcpy(snapshot.wifi_ssid, CONFIG_MACLAW_WIFI_SSID, sizeof(snapshot.wifi_ssid));
+    strlcpy(snapshot.wifi_password, CONFIG_MACLAW_WIFI_PASSWORD, sizeof(snapshot.wifi_password));
+    strlcpy(snapshot.wifi_security, "personal", sizeof(snapshot.wifi_security));
+    strlcpy(snapshot.wifi_eap_method, "peap", sizeof(snapshot.wifi_eap_method));
+    strlcpy(snapshot.wifi_ttls_phase2, "mschapv2", sizeof(snapshot.wifi_ttls_phase2));
+    strlcpy(snapshot.wifi_ca_mode, "system", sizeof(snapshot.wifi_ca_mode));
+    strlcpy(snapshot.gateway_url, CONFIG_MACLAW_SERVER_URL, sizeof(snapshot.gateway_url));
+    strlcpy(snapshot.gateway_token, CONFIG_MACLAW_GATEWAY_TOKEN, sizeof(snapshot.gateway_token));
+    esp_err_t err = configuration_service_load(&snapshot);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "configuration snapshot rejected: %s", esp_err_to_name(err));
+        return err;
     }
+    strlcpy(s_wifi_ssid, snapshot.wifi_ssid, sizeof(s_wifi_ssid));
+    strlcpy(s_wifi_password, snapshot.wifi_password, sizeof(s_wifi_password));
+    strlcpy(s_wifi_security, snapshot.wifi_security, sizeof(s_wifi_security));
+    strlcpy(s_wifi_eap_method, snapshot.wifi_eap_method, sizeof(s_wifi_eap_method));
+    strlcpy(s_wifi_identity, snapshot.wifi_identity, sizeof(s_wifi_identity));
+    strlcpy(s_wifi_username, snapshot.wifi_username, sizeof(s_wifi_username));
+    strlcpy(s_wifi_ttls_phase2, snapshot.wifi_ttls_phase2, sizeof(s_wifi_ttls_phase2));
+    strlcpy(s_wifi_ca_mode, snapshot.wifi_ca_mode, sizeof(s_wifi_ca_mode));
+    strlcpy(s_wifi_server_domain, snapshot.wifi_server_domain, sizeof(s_wifi_server_domain));
+    strlcpy(s_gateway_url, snapshot.gateway_url, sizeof(s_gateway_url));
+    strlcpy(s_pair_code, snapshot.pair_code, sizeof(s_pair_code));
+    strlcpy(s_gateway_token, snapshot.gateway_token, sizeof(s_gateway_token));
+    s_configured_output_volume = snapshot.output_volume;
+    s_configured_output_volume_saved = snapshot.output_volume_saved;
+    return ESP_OK;
 }
 
 static esp_err_t save_output_volume(unsigned percent) {
     if (percent > 100) return ESP_ERR_INVALID_ARG;
-    if (!nvs_lock()) return ESP_ERR_TIMEOUT;
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("maclaw", NVS_READWRITE, &nvs);
-    if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "output_vol", (uint8_t)percent);
-        if (err == ESP_OK) err = nvs_commit(nvs);
-        nvs_close(nvs);
-    }
-    nvs_unlock();
+    esp_err_t err = configuration_service_set_output_volume((uint8_t)percent);
     if (err == ESP_OK) {
         s_configured_output_volume = percent;
         s_configured_output_volume_saved = true;
@@ -2925,6 +3396,7 @@ static void output_volume_persist_task(void *arg) {
                           portMAX_DELAY) != pdTRUE) {
             continue;
         }
+        if (request.stop) break;
         output_volume_persist_reply_t reply = {
             .result = save_output_volume(request.percent),
             .generation = request.generation,
@@ -2934,6 +3406,9 @@ static void output_volume_persist_task(void *arg) {
         // the next caller must be able to distinguish that old result.
         xQueueSend(s_output_volume_persist_reply_queue, &reply, portMAX_DELAY);
     }
+    s_output_volume_persist_task_handle = NULL;
+    if (s_output_volume_persist_stopped) xSemaphoreGive(s_output_volume_persist_stopped);
+    vTaskDelete(NULL);
 }
 
 // NVS flash writes cannot run from a task whose stack lives in PSRAM: cache
@@ -3045,28 +3520,28 @@ static esp_err_t save_device_config(const char *ssid, const char *password, cons
                         !is_valid_choice(ttls_phase2, "mschapv2", "pap", NULL) ||
                         !is_valid_choice(ca_mode, "system", "none", NULL) ||
                         strlen(server_domain) >= sizeof(s_wifi_server_domain)))) return ESP_ERR_INVALID_ARG;
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("maclaw", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) return err;
-    err = nvs_set_str(nvs, "wifi_ssid", ssid);
-    if (err == ESP_OK) err = nvs_set_str(nvs, "wifi_pass", password);
-    if (err == ESP_OK) err = nvs_set_str(nvs, "wifi_sec", enterprise ? "enterprise" : "personal");
-    if (err == ESP_OK) err = nvs_set_str(nvs, "wifi_eap", enterprise ? eap_method : "peap");
-    if (err == ESP_OK) err = nvs_set_str(nvs, "wifi_ident", enterprise ? identity : "");
-    if (err == ESP_OK) err = nvs_set_str(nvs, "wifi_user", enterprise ? username : "");
-    if (err == ESP_OK) err = nvs_set_str(nvs, "wifi_ttls", enterprise ? ttls_phase2 : "mschapv2");
-    if (err == ESP_OK) err = nvs_set_str(nvs, "wifi_ca", enterprise ? ca_mode : "system");
-    if (err == ESP_OK) err = nvs_set_str(nvs, "wifi_domain", enterprise ? server_domain : "");
-    if (err == ESP_OK) err = nvs_set_str(nvs, "gateway_url", gateway_url);
-    if (err == ESP_OK) err = nvs_set_str(nvs, "pair_code", pair_code);
-    if (err == ESP_OK) {
-        esp_err_t erase_err = nvs_erase_key(nvs, "gateway_token");
-        // First-time provisioning has no token yet; that is a successful state,
-        // not an NVS error that should reject the submitted configuration.
-        if (erase_err != ESP_OK && erase_err != ESP_ERR_NVS_NOT_FOUND) err = erase_err;
-    }
-    if (err == ESP_OK) err = nvs_commit(nvs);
-    nvs_close(nvs);
+    configuration_snapshot_t snapshot = {
+        .output_volume = (uint8_t)s_configured_output_volume,
+        .output_volume_saved = s_configured_output_volume_saved,
+    };
+    strlcpy(snapshot.wifi_ssid, ssid, sizeof(snapshot.wifi_ssid));
+    strlcpy(snapshot.wifi_password, password, sizeof(snapshot.wifi_password));
+    strlcpy(snapshot.wifi_security, enterprise ? "enterprise" : "personal",
+            sizeof(snapshot.wifi_security));
+    strlcpy(snapshot.wifi_eap_method, enterprise ? eap_method : "peap",
+            sizeof(snapshot.wifi_eap_method));
+    strlcpy(snapshot.wifi_identity, enterprise ? identity : "", sizeof(snapshot.wifi_identity));
+    strlcpy(snapshot.wifi_username, enterprise ? username : "", sizeof(snapshot.wifi_username));
+    strlcpy(snapshot.wifi_ttls_phase2, enterprise ? ttls_phase2 : "mschapv2",
+            sizeof(snapshot.wifi_ttls_phase2));
+    strlcpy(snapshot.wifi_ca_mode, enterprise ? ca_mode : "system", sizeof(snapshot.wifi_ca_mode));
+    strlcpy(snapshot.wifi_server_domain, enterprise ? server_domain : "",
+            sizeof(snapshot.wifi_server_domain));
+    strlcpy(snapshot.gateway_url, gateway_url, sizeof(snapshot.gateway_url));
+    strlcpy(snapshot.pair_code, pair_code, sizeof(snapshot.pair_code));
+    /* New network/pairing data atomically invalidates an old Hub credential. */
+    snapshot.gateway_token[0] = '\0';
+    esp_err_t err = configuration_service_save_provisioning(&snapshot);
     if (err == ESP_OK) {
         strlcpy(s_wifi_ssid, ssid, sizeof(s_wifi_ssid));
         strlcpy(s_wifi_password, password, sizeof(s_wifi_password));
@@ -3079,6 +3554,11 @@ static esp_err_t save_device_config(const char *ssid, const char *password, cons
         strlcpy(s_wifi_server_domain, enterprise ? server_domain : "", sizeof(s_wifi_server_domain));
         strlcpy(s_gateway_url, gateway_url, sizeof(s_gateway_url));
         strlcpy(s_pair_code, pair_code, sizeof(s_pair_code));
+        /* The durable transaction cleared the former Hub credential.  Match
+         * the runtime authority before the portal tears down/restarts so no
+         * concurrent retry can issue one more authenticated request with an
+         * owner token that no longer belongs to the new network/pairing flow. */
+        s_gateway_token[0] = '\0';
     }
     ESP_LOGI(TAG, "config save: ssid_len=%u security=%s gateway_len=%u code_len=%u result=%s",
              (unsigned)strlen(ssid), security, (unsigned)strlen(gateway_url),
@@ -3088,81 +3568,15 @@ static esp_err_t save_device_config(const char *ssid, const char *password, cons
 
 static esp_err_t save_pairing_code_only(const char *pair_code) {
     if (!is_six_digit_pair_code(pair_code)) return ESP_ERR_INVALID_ARG;
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("maclaw", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) return err;
-    err = nvs_set_str(nvs, "pair_code", pair_code);
-    if (err == ESP_OK) err = nvs_commit(nvs);
-    nvs_close(nvs);
+    esp_err_t err = configuration_service_set_pairing_code(pair_code);
     if (err == ESP_OK) strlcpy(s_pair_code, pair_code, sizeof(s_pair_code));
     return err;
 }
 
 static void load_gateway_token(void) {
-    nvs_handle_t nvs;
-    size_t len = sizeof(s_gateway_token);
-    if (nvs_open("maclaw", NVS_READONLY, &nvs) == ESP_OK) {
-        if (nvs_get_str(nvs, "gateway_token", s_gateway_token, &len) != ESP_OK) s_gateway_token[0] = '\0';
-        nvs_close(nvs);
-    }
-    if (!s_gateway_token[0]) strlcpy(s_gateway_token, CONFIG_MACLAW_GATEWAY_TOKEN, sizeof(s_gateway_token));
+    /* Token is now loaded with the atomic configuration snapshot. Kept as a
+     * compatibility call-site seam while Gateway startup is migrated. */
 }
-
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-// The original 无名星智 firmware uses NVS to keep the Wi-Fi/ML307 choice across
-// resets. Preserve a prior stock selection when this app is flashed without
-// erasing NVS, then migrate it to the MaClaw namespace for later boots.
-static void load_fangtang_network_choice(void) {
-    uint8_t choice = CONFIG_MACLAW_FANGTANG_DEFAULT_4G ? 1 : 0;
-    bool loaded = false;
-    nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READONLY, &nvs) == ESP_OK) {
-        uint8_t saved = 0;
-        if (nvs_get_u8(nvs, "net_transport", &saved) == ESP_OK && saved <= 1) {
-            choice = saved;
-            loaded = true;
-        }
-        nvs_close(nvs);
-    }
-    if (!loaded && nvs_open("network", NVS_READONLY, &nvs) == ESP_OK) {
-        int32_t stock_type = 0;
-        // Xiaozhi DualNetworkBoard stores ML307 as 1 and Wi-Fi as 0.
-        if (nvs_get_i32(nvs, "type", &stock_type) == ESP_OK &&
-            (stock_type == 0 || stock_type == 1)) {
-            choice = stock_type == 1 ? 1 : 0;
-        }
-        nvs_close(nvs);
-    }
-    device_connectivity_set_active_cellular(choice != 0);
-    ESP_LOGI(TAG, "Fangtang saved network choice: %s",
-             device_connectivity_is_active_cellular() ? "4G" : "Wi-Fi");
-}
-
-static void apply_fangtang_cellular_gateway_compatibility(void) {
-    // ML307R-DL-MBRH0S01 cannot negotiate the Hub's current ECDSA-only TLS
-    // certificate with its built-in HTTPS engine. The Hub service also exposes
-    // a directly reachable HTTP listener on 9399 for the modem-owned IP stack.
-    // Preserve every user-configured host and keep Wi-Fi on normal HTTPS; only
-    // translate the standard production endpoint while 4G is selected.
-    if (device_connectivity_is_active_cellular() &&
-        (!strcmp(s_gateway_url, "https://hub.mypapers.top") ||
-         !strcmp(s_gateway_url, "http://hub.mypapers.top"))) {
-        strlcpy(s_gateway_url, "http://hub.mypapers.top:9399", sizeof(s_gateway_url));
-        ESP_LOGW(TAG, "Fangtang 4G uses Hub direct HTTP endpoint because ML307 TLS lacks ECDSA support");
-    }
-}
-
-static void save_fangtang_network_choice(bool use_cellular) {
-    nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READWRITE, &nvs) == ESP_OK) {
-        if (nvs_set_u8(nvs, "net_transport", use_cellular ? 1 : 0) == ESP_OK) {
-            (void)nvs_commit(nvs);
-        }
-        nvs_close(nvs);
-    }
-    device_connectivity_set_active_cellular(use_cellular);
-}
-#endif
 
 static bool is_valid_setup_selected_ssid(const char *ssid) {
     if (!ssid || !ssid[0] || strlen(ssid) > WIFI_SSID_MAX_LEN) return false;
@@ -3183,12 +3597,6 @@ static void load_device_id(void) {
     if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
         snprintf(s_device_id, sizeof(s_device_id), "esp32s3-%02x%02x%02x%02x%02x%02x",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        nvs_handle_t nvs;
-        if (nvs_open("maclaw", NVS_READWRITE, &nvs) == ESP_OK) {
-            (void)nvs_set_str(nvs, "device_id", s_device_id);
-            (void)nvs_commit(nvs);
-            nvs_close(nvs);
-        }
     }
     if (!s_device_id[0]) snprintf(s_device_id, sizeof(s_device_id), "%s", CONFIG_MACLAW_CLIENT_ID);
 }
@@ -3256,17 +3664,19 @@ static void load_meeting_recovery(void) {
     s_meeting_next_chunk = 0;
     s_meeting_phase = 0;
     s_meeting_recording_id[0] = '\0';
-    nvs_handle_t nvs;
-    if (nvs_open("maclaw", NVS_READONLY, &nvs) != ESP_OK) return;
-    uint8_t pending = 0;
-    size_t id_len = sizeof(s_meeting_recording_id);
-    (void)nvs_get_u8(nvs, "meet_pending", &pending);
-    (void)nvs_get_i32(nvs, "meet_next", &s_meeting_next_chunk);
-    (void)nvs_get_i32(nvs, "meet_phase", &s_meeting_phase);
-    (void)nvs_get_str(nvs, "meet_id", s_meeting_recording_id, &id_len);
-    nvs_close(nvs);
+    meeting_recovery_snapshot_t snapshot;
+    esp_err_t load_err = meeting_recovery_service_load(&snapshot);
+    if (load_err != ESP_OK) {
+        ESP_LOGW(TAG, "meeting recovery metadata unavailable: %s",
+                 esp_err_to_name(load_err));
+        return;
+    }
+    s_meeting_next_chunk = snapshot.next_chunk;
+    s_meeting_phase = snapshot.phase;
+    strlcpy(s_meeting_recording_id, snapshot.recording_id,
+            sizeof(s_meeting_recording_id));
     struct stat info;
-    s_meeting_pending = pending != 0 && s_storage_mounted &&
+    s_meeting_pending = snapshot.pending && s_storage_mounted &&
                         stat(MEETING_WAV_PATH, &info) == 0 && info.st_size > 44;
     if (!s_meeting_pending) {
         s_meeting_recording_id[0] = '\0';
@@ -3277,23 +3687,14 @@ static void load_meeting_recovery(void) {
 
 static esp_err_t save_meeting_recovery(bool pending, const char *recording_id,
                                        int32_t next_chunk, int32_t phase) {
-    // Gateway polling can persist weather/glyph state while a meeting upload
-    // advances its recovery cursor. Serialize every NVS writer: an overlapping
-    // flash commit can reset the MCU exactly at a successful chunk boundary.
-    if (!nvs_lock()) return ESP_ERR_TIMEOUT;
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("maclaw", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        nvs_unlock();
-        return err;
-    }
-    err = nvs_set_u8(nvs, "meet_pending", pending ? 1 : 0);
-    if (err == ESP_OK) err = nvs_set_str(nvs, "meet_id", recording_id ? recording_id : "");
-    if (err == ESP_OK) err = nvs_set_i32(nvs, "meet_next", next_chunk);
-    if (err == ESP_OK) err = nvs_set_i32(nvs, "meet_phase", phase);
-    if (err == ESP_OK) err = nvs_commit(nvs);
-    nvs_close(nvs);
-    nvs_unlock();
+    meeting_recovery_snapshot_t snapshot = {
+        .pending = pending,
+        .next_chunk = next_chunk,
+        .phase = phase,
+    };
+    strlcpy(snapshot.recording_id, recording_id ? recording_id : "",
+            sizeof(snapshot.recording_id));
+    esp_err_t err = meeting_recovery_service_save(&snapshot);
     if (err == ESP_OK) {
         s_meeting_pending = pending;
         s_meeting_next_chunk = next_chunk;
@@ -3313,19 +3714,13 @@ static esp_err_t clear_meeting_recovery(bool delete_audio) {
 }
 static esp_err_t save_gateway_token(const char *token) {
     if (!token || !token[0] || strlen(token) >= sizeof(s_gateway_token)) return ESP_ERR_INVALID_SIZE;
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("maclaw", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) return err;
-    err = nvs_set_str(nvs, "gateway_token", token);
-    if (err == ESP_OK) err = nvs_commit(nvs);
-    nvs_close(nvs);
+    esp_err_t err = configuration_service_set_gateway_token(token, true);
     if (err == ESP_OK) strlcpy(s_gateway_token, token, sizeof(s_gateway_token));
     return err;
 }
 
 static esp_err_t gateway_handshake(bool cold_start) {
-	char payload[4096];
-    char boot_field[64] = {0};
+	char boot_field[64] = {0};
     http_response_t response = {0};
     if (cold_start) {
         s_handshake_startup_welcome_queued = false;
@@ -3419,7 +3814,29 @@ static esp_err_t gateway_handshake(bool cold_start) {
         !cJSON_AddBoolToObject(power, "available", identity.power_available) ||
         !cJSON_AddNumberToObject(power, "state", identity.power.state) ||
         !cJSON_AddBoolToObject(power, "displayOffArmed",
-                               identity.power.display_off_armed)) {
+                                identity.power.display_off_armed) ||
+        !cJSON_AddBoolToObject(power, "telemetryAvailable",
+                                identity.power_telemetry_available) ||
+        !cJSON_AddNumberToObject(power, "batteryLevelPercent",
+                                 identity.power_telemetry_available
+                                     ? identity.power_telemetry.level_percent
+                                     : -1) ||
+        !cJSON_AddBoolToObject(power, "charging",
+                                identity.power_telemetry_available &&
+                                    identity.power_telemetry.charging)) {
+        cJSON_Delete(request_json);
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON *battery = cJSON_AddObjectToObject(firmware, "batteryPolicy");
+    if (!battery ||
+        !cJSON_AddBoolToObject(battery, "available", identity.battery_policy_available) ||
+        !cJSON_AddBoolToObject(battery, "telemetryAvailable",
+                                identity.battery_policy.telemetry_available) ||
+        !cJSON_AddNumberToObject(battery, "level", identity.battery_policy.level) ||
+        !cJSON_AddBoolToObject(battery, "optionalWorkAllowed",
+                                identity.battery_policy.optional_work_allowed) ||
+        !cJSON_AddBoolToObject(battery, "highPowerWorkAllowed",
+                                identity.battery_policy.high_power_work_allowed)) {
         cJSON_Delete(request_json);
         return ESP_ERR_NO_MEM;
     }
@@ -3436,30 +3853,40 @@ static esp_err_t gateway_handshake(bool cold_start) {
         return ESP_ERR_NO_MEM;
     }
     cJSON *tools = cJSON_AddArrayToObject(request_json, "tools");
-    cJSON_AddItemToArray(tools, cJSON_Parse("{\"name\":\"alarm_create\",\"description\":\"Create one alarm on this device. Resolve relative spoken time to an absolute future epoch in the device timezone before calling.\",\"risk\":\"write\",\"timeoutMs\":5000,\"inputSchema\":{\"type\":\"object\",\"properties\":{\"triggerAtEpochMs\":{\"type\":\"integer\",\"description\":\"Absolute Unix epoch milliseconds in the future\"},\"label\":{\"type\":\"string\",\"maxLength\":48}},\"required\":[\"triggerAtEpochMs\"]},\"outputSchema\":{\"type\":\"object\"}}"));
-    cJSON_AddItemToArray(tools, cJSON_Parse("{\"name\":\"alarm_clear_all\",\"description\":\"Clear every alarm on this device.\",\"risk\":\"write\",\"timeoutMs\":5000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"));
-    cJSON_AddItemToArray(tools, cJSON_Parse("{\"name\":\"alarm_clear\",\"description\":\"Clear one alarm by its current 1-based list index.\",\"risk\":\"write\",\"timeoutMs\":5000,\"inputSchema\":{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"index\"]}}"));
-    cJSON_AddItemToArray(tools, cJSON_Parse("{\"name\":\"alarm_list\",\"description\":\"List all alarms on this device in chronological order with 1-based indices.\",\"risk\":\"read\",\"timeoutMs\":5000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"));
-    // These tools only expose metadata/reminder state. There is intentionally
-    // no ota.install/download/reboot capability on the 16 MiB profiles.
-    cJSON_AddItemToArray(tools, cJSON_Parse("{\"name\":\"update_check\",\"description\":\"Read the latest Hub-confirmed firmware update metadata. Updates require a connected computer and ClawMate Maker.\",\"risk\":\"read\",\"timeoutMs\":3000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"));
-    cJSON_AddItemToArray(tools, cJSON_Parse("{\"name\":\"update_status\",\"description\":\"Read local firmware update reminder status.\",\"risk\":\"read\",\"timeoutMs\":3000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"));
-    cJSON_AddItemToArray(tools, cJSON_Parse("{\"name\":\"update_remind_later\",\"description\":\"Defer the current firmware update reminder. Does not download or install firmware.\",\"risk\":\"write\",\"timeoutMs\":3000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"));
-    cJSON_AddItemToArray(tools, cJSON_Parse("{\"name\":\"update_dismiss_version\",\"description\":\"Temporarily dismiss the current non-critical firmware update. Does not download or install firmware.\",\"risk\":\"write\",\"timeoutMs\":3000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}"));
-    char *request_body = cJSON_PrintUnformatted(request_json);
+    if (!device_tool_registry_append_descriptors(tools)) {
+        cJSON_Delete(request_json);
+        return ESP_ERR_NO_MEM;
+    }
+    /* The descriptor grows with the common tool registry.  Keep it out of
+     * maclaw_gateway_startup's stack: even an 8 KiB automatic buffer trips the
+     * FreeRTOS stack canary before TLS gets a chance to run. */
+    char *payload = heap_caps_malloc(HANDSHAKE_REQUEST_CAPACITY,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!payload) payload = heap_caps_malloc(HANDSHAKE_REQUEST_CAPACITY, MALLOC_CAP_8BIT);
+    if (!payload) {
+        cJSON_Delete(request_json);
+        return ESP_ERR_NO_MEM;
+    }
+    bool printed = cJSON_PrintPreallocated(request_json, payload,
+                                            HANDSHAKE_REQUEST_CAPACITY, false);
     cJSON_Delete(request_json);
-    if (!request_body) return ESP_ERR_NO_MEM;
-    int request_len = strlen(request_body);
-    if (request_len <= 0 || request_len >= (int)sizeof(payload)) {
-        cJSON_free(request_body);
+    if (!printed) {
+        ESP_LOGE(TAG, "gateway handshake descriptor exceeds capacity=%u",
+                 (unsigned)HANDSHAKE_REQUEST_CAPACITY);
+        heap_caps_free(payload);
         return ESP_ERR_INVALID_SIZE;
     }
-    memcpy(payload, request_body, (size_t)request_len + 1);
-    cJSON_free(request_body);
-    if (request_len <= 0 || request_len >= (int)sizeof(payload)) return ESP_ERR_INVALID_SIZE;
+    int request_len = strlen(payload);
+    if (request_len <= 0 || request_len >= HANDSHAKE_REQUEST_CAPACITY) {
+        ESP_LOGE(TAG, "gateway handshake descriptor too large: bytes=%d capacity=%u",
+                 request_len, (unsigned)HANDSHAKE_REQUEST_CAPACITY);
+        heap_caps_free(payload);
+        return ESP_ERR_INVALID_SIZE;
+    }
     log_heap_snapshot("handshake-before");
     esp_err_t err = request_with_capacity("POST", "/api/im-gateway/v1/handshake", "application/json",
                                           payload, (size_t)request_len, HANDSHAKE_RESPONSE_CAPACITY, &response);
+    heap_caps_free(payload);
     if (err != ESP_OK || response.status != 200) {
         ESP_LOGE(TAG, "gateway handshake failed: err=%s status=%d body=%s", esp_err_to_name(err), response.status, response.data);
         log_heap_snapshot("handshake-fail");
@@ -3607,13 +4034,20 @@ static esp_err_t pair_by_voice(const uint8_t *wav, size_t wav_len) {
     }
     response.capacity = RESPONSE_CAPACITY;
     response.data[0] = '\0';
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     if (device_connectivity_is_active_cellular()) {
         bool truncated = false;
-        esp_err_t err = ml307_transport_http_request(
-            "POST", url, "audio/wav", NULL, "X-MaClaw-Client-ID", client_header,
-            wav, wav_len, response.data, response.capacity, &response.len,
-            &response.status, &truncated, 30000, true);
+        uint32_t cellular_response_len = 0;
+        device_connectivity_http_request_t cellular_request = {
+            .method = "POST", .url = url, .content_type = "audio/wav",
+            .extra_header_name = "X-MaClaw-Client-ID",
+            .extra_header_value = client_header, .body = wav, .body_len = (uint32_t)wav_len,
+            .response = response.data, .response_capacity = (uint32_t)response.capacity,
+            .response_len = &cellular_response_len, .status_code = &response.status,
+            .truncated = &truncated, .timeout_ms = 30000, .foreground = true,
+        };
+        esp_err_t err = device_status_to_platform_error(
+            device_connectivity_cellular_http_request(&cellular_request));
+        response.len = cellular_response_len;
         response.truncated = truncated;
         xSemaphoreGive(s_http_mutex);
         if (err != ESP_OK || response.status != 201) {
@@ -3628,7 +4062,6 @@ static esp_err_t pair_by_voice(const uint8_t *wav, size_t wav_len) {
         response_release(&response);
         return err;
     }
-#endif
     esp_http_client_config_t config = {.url = url, .event_handler = on_http_event, .user_data = &response, .timeout_ms = 30000, .crt_bundle_attach = esp_crt_bundle_attach};
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
@@ -3708,12 +4141,8 @@ static esp_err_t pair_by_code(void) {
     err = token ? save_gateway_token(token) : ESP_ERR_INVALID_RESPONSE;
     cJSON_Delete(json);
     if (err == ESP_OK) {
-        nvs_handle_t nvs;
-        if (nvs_open("maclaw", NVS_READWRITE, &nvs) == ESP_OK) {
-            (void)nvs_erase_key(nvs, "pair_code");
-            (void)nvs_commit(nvs);
-            nvs_close(nvs);
-        }
+        // Token and pairing-code clear were committed by save_gateway_token()
+        // as one Configuration Service transaction.
         s_pair_code[0] = '\0';
     }
     response_release(&response);
@@ -3895,16 +4324,8 @@ static const char *command_submit_error_detail(esp_err_t err) {
     switch (err) {
         case ESP_ERR_TIMEOUT: return "网关响应超时，请稍后重试";
         case ESP_ERR_HTTP_CONNECT:
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-            // Fangtang can run with Wi-Fi entirely disabled while ML307 owns
-            // the backhaul. A Wi-Fi-specific diagnosis in that mode sends the
-            // user to the wrong radio even though the shared command pipeline
-            // correctly used the modem transport.
             return device_connectivity_is_active_cellular() ? "网络连接失败，请检查 4G"
                                            : "网络连接失败，请检查 Wi-Fi";
-#else
-            return "网络连接失败，请检查 Wi-Fi";
-#endif
         case ESP_ERR_HTTP_WRITE_DATA: return "语音发送中断，请重新尝试";
         case ESP_ERR_HTTP_FETCH_HEADER:
         case ESP_ERR_HTTP_READ_TIMEOUT:
@@ -3982,18 +4403,21 @@ static esp_err_t poll_reply(void) {
     // old 16 KiB buffer and pinned cursor zero forever, starving later replies.
     snprintf(path, sizeof(path), "/api/im-gateway/v1/outgoing?clientId=%s&cursor=%lld&limit=1&timeout=%d",
              s_device_id, s_cursor, poll_timeout_seconds);
+    bool server_audio_wake_lease_used = false;
     http_response_t response;
     esp_err_t err = request_with_capacity("GET", path, NULL, NULL, 0,
                                           OUTGOING_RESPONSE_CAPACITY, &response);
     if (err != ESP_OK || response.status != 200) {
         esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
         response_release(&response);
+        if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
         return result;
     }
     cJSON *json = cJSON_Parse(response.data);
     if (!json) {
         ESP_LOGW(TAG, "outgoing response is not valid JSON");
         response_release(&response);
+        if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
         return ESP_ERR_INVALID_RESPONSE;
     }
     const char *next = json_string(json, "nextCursor");
@@ -4002,6 +4426,7 @@ static esp_err_t poll_reply(void) {
         ESP_LOGW(TAG, "outgoing response missing nextCursor/messages");
         cJSON_Delete(json);
         response_release(&response);
+        if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
         return ESP_ERR_INVALID_RESPONSE;
     }
     errno = 0;
@@ -4011,6 +4436,7 @@ static esp_err_t poll_reply(void) {
         ESP_LOGW(TAG, "outgoing response has invalid cursor: %s", next);
         cJSON_Delete(json);
         response_release(&response);
+        if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
         return ESP_ERR_INVALID_RESPONSE;
     }
     cJSON *delivered_ack_ids = cJSON_CreateArray();
@@ -4020,6 +4446,7 @@ static esp_err_t poll_reply(void) {
         cJSON_Delete(failed_ack_ids);
         cJSON_Delete(json);
         response_release(&response);
+        if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
         return ESP_ERR_NO_MEM;
     }
     bool keep_cursor_for_retry = false;
@@ -4415,6 +4842,14 @@ static esp_err_t poll_reply(void) {
             !orphaned_command_result &&
             !cancelled_reply && audio_can_play &&
             audio_mime_supported(audio_mime)) {
+            // Inline server speech does not open a second media HTTP request,
+            // but it still competes with resident MultiNet for the DMA/codec
+            // path and must obey the same foreground wake lifecycle as URL
+            // speech. Keep the lease through the ACK below so no later poll
+            // can recreate the recognizer before this reply is committed.
+            server_audio_wake_lease_used =
+                begin_server_audio_wake_memory_lease("inline server audio") ||
+                server_audio_wake_lease_used;
             size_t audio_capacity = 0;
             int decode_status = mbedtls_base64_decode(NULL, 0, &audio_capacity,
                                                        (const unsigned char *)audio_data,
@@ -4457,6 +4892,7 @@ static esp_err_t poll_reply(void) {
             uint8_t *audio = NULL;
             size_t audio_len = 0;
             esp_err_t fetch_err = download_audio(audio_url, &audio, &audio_len);
+            server_audio_wake_lease_used = true;
             if (fetch_err == ESP_OK) {
                 ESP_LOGI(TAG, "playing downloaded server audio: %u bytes mime=%s",
                          (unsigned)audio_len, audio_mime ? audio_mime : "auto");
@@ -4523,6 +4959,7 @@ static esp_err_t poll_reply(void) {
                 cJSON_Delete(failed_ack_ids);
                 cJSON_Delete(json);
                 response_release(&response);
+                if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
                 return ESP_ERR_NO_MEM;
             }
         }
@@ -4538,6 +4975,7 @@ static esp_err_t poll_reply(void) {
             cJSON_Delete(failed_ack_ids);
             cJSON_Delete(json);
             response_release(&response);
+            if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
             return ESP_ERR_NO_MEM;
         }
         cJSON_AddStringToObject(ack, "clientId", s_device_id);
@@ -4550,6 +4988,7 @@ static esp_err_t poll_reply(void) {
             cJSON_Delete(failed_ack_ids);
             cJSON_Delete(json);
             response_release(&response);
+            if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
             return ESP_ERR_NO_MEM;
         }
         http_response_t ack_resp;
@@ -4565,6 +5004,7 @@ static esp_err_t poll_reply(void) {
             cJSON_Delete(failed_ack_ids);
             cJSON_Delete(json);
             response_release(&response);
+            if (finish_server_audio_wake_memory_lease()) schedule_wake_restart();
             return result;
         }
         response_release(&ack_resp);
@@ -4577,6 +5017,11 @@ static esp_err_t poll_reply(void) {
     if (!keep_cursor_for_retry) s_cursor = (int64_t)parsed_cursor;
     cJSON_Delete(json);
     response_release(&response);
+    if (server_audio_wake_lease_used && finish_server_audio_wake_memory_lease()) {
+        // The acknowledgement also uses TLS.  Restart only once this ordered
+        // server-audio transaction has released every AES/TLS allocation.
+        schedule_wake_restart();
+    }
     return ESP_OK;
 }
 
@@ -4698,15 +5143,13 @@ static esp_err_t configure_meeting_chunk_client(esp_http_client_handle_t client,
     return err;
 }
 
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-static esp_err_t read_meeting_chunk_body(void *context, void *buffer,
-                                         size_t requested, size_t *read_bytes) {
-    if (!context || !buffer || !read_bytes) return ESP_ERR_INVALID_ARG;
+static device_status_t read_meeting_chunk_body(void *context, void *buffer,
+                                               uint32_t requested, uint32_t *read_bytes) {
+    if (!context || !buffer || !read_bytes) return DEVICE_STATUS_INVALID_ARGUMENT;
     *read_bytes = fread(buffer, 1, requested, (FILE *)context);
-    if (*read_bytes == requested) return ESP_OK;
-    return ferror((FILE *)context) ? ESP_FAIL : ESP_ERR_INVALID_SIZE;
+    if (*read_bytes == requested) return DEVICE_STATUS_OK;
+    return ferror((FILE *)context) ? DEVICE_STATUS_IO_ERROR : DEVICE_STATUS_INVALID_ARGUMENT;
 }
-#endif
 
 static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE *file,
                                       size_t offset, size_t length, const char sha256_hex[65],
@@ -4722,7 +5165,6 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
     if (path_len < 0 || path_len >= (int)sizeof(path) ||
         url_len < 0 || url_len >= (int)sizeof(url) ||
         fseek(file, (long)offset, SEEK_SET) != 0) return ESP_ERR_INVALID_SIZE;
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     if (device_connectivity_is_active_cellular()) {
         http_response_t response = {0};
         response.data = heap_caps_malloc(MEETING_RESPONSE_CAPACITY,
@@ -4733,14 +5175,24 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
         }
         response.capacity = MEETING_RESPONSE_CAPACITY;
         char authorization[128];
+        uint32_t cellular_response_len = 0;
         snprintf(authorization, sizeof(authorization), "Bearer %s", s_gateway_token);
         int64_t started_us = esp_timer_get_time();
-        esp_err_t err = ml307_transport_http_request_stream(
-            "PUT", url, "application/octet-stream", authorization,
-            "X-Chunk-SHA256", sha256_hex, length,
-            read_meeting_chunk_body, file, buffer, buffer_size,
-            response.data, response.capacity, &response.len, &response.status,
-            &response.truncated, 60000, false);
+        device_connectivity_stream_request_t cellular_request = {
+            .request = {
+                .method = "PUT", .url = url, .content_type = "application/octet-stream",
+                .authorization = authorization, .extra_header_name = "X-Chunk-SHA256",
+                .extra_header_value = sha256_hex, .body_len = (uint32_t)length,
+                .response = response.data, .response_capacity = (uint32_t)response.capacity,
+                .response_len = &cellular_response_len, .status_code = &response.status,
+                .truncated = &response.truncated, .timeout_ms = 60000,
+            },
+            .body_reader = read_meeting_chunk_body, .body_reader_context = file,
+            .stream_buffer = buffer, .stream_buffer_size = (uint32_t)buffer_size,
+        };
+        esp_err_t err = device_status_to_platform_error(
+            device_connectivity_cellular_http_stream_request(&cellular_request));
+        response.len = cellular_response_len;
         uint32_t total_ms = (uint32_t)((esp_timer_get_time() - started_us) / 1000);
         ESP_LOGI(TAG, "meeting chunk %d upload bytes=%u connection=ML307 total=%ums status=%d err=%s",
                  index, (unsigned)length, (unsigned)total_ms, response.status,
@@ -4753,7 +5205,6 @@ static esp_err_t stream_meeting_chunk(const char *recording_id, int index, FILE 
         response_release(&response);
         return err;
     }
-#endif
     if (!s_http_mutex || xSemaphoreTake(s_http_mutex, pdMS_TO_TICKS(35000)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
@@ -5127,12 +5578,33 @@ static esp_err_t upload_pending_meeting(bool publish_state) {
 }
 
 static void meeting_task(void *arg) {
-    bool resume_only = arg != NULL;
+    meeting_task_context_t *context = arg;
+    if (!context) {
+        vTaskDelete(NULL);
+        return;
+    }
+    /* Publish s_meeting_task/s_meeting_task_running before this worker can
+     * complete a fast local failure.  Otherwise a cross-core task create can
+     * leave the creator writing a stale handle after the worker cleared it. */
+    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    const uint32_t operation_generation = context->generation;
+    const bool resume_only = context->resume_only;
+    free(context);
+    if (!resume_only && !meeting_operation_is_current(operation_generation)) {
+        ESP_LOGW(TAG, "stale meeting worker discarded: generation=%lu",
+                 (unsigned long)operation_generation);
+        goto finish;
+    }
     if (resume_only) {
         // Recovery is a background transfer. It must not take over the pet UI,
         // publish an active meeting state, or block a new short voice command.
         ESP_LOGI(TAG, "background meeting resume started");
     } else {
+        /* Do not publish a foreground meeting surface unless this worker still
+         * owns the operation slot.  The current interaction lock makes this
+         * normally true, but the explicit guard keeps UI ownership correct as
+         * future cancellation and restart paths become asynchronous. */
+        if (!meeting_operation_is_current(operation_generation)) goto finish;
         meeting_set_state(MEETING_STARTING);
         FILE *file = fopen(MEETING_WAV_PATH, "wb+");
         if (!file) {
@@ -5183,6 +5655,10 @@ static void meeting_task(void *arg) {
         app_ui_set_recording_mode(true);
         app_ui_set_recording_visual(true, false, 0);
         while (s_meeting_state == MEETING_RECORDING || s_meeting_state == MEETING_PAUSED) {
+            if (!meeting_operation_is_current(operation_generation)) {
+                meeting_set_state(MEETING_ERROR);
+                break;
+            }
             uint32_t count = 0;
             uint16_t level = 0;
             esp_err_t capture = device_status_to_esp_err(
@@ -5227,6 +5703,10 @@ static void meeting_task(void *arg) {
         esp_err_t finalize_err = total_samples > 0
                                      ? finalize_meeting_wav(file, total_samples)
                                      : ESP_ERR_INVALID_SIZE;
+        if (!meeting_operation_is_current(operation_generation)) {
+            fclose(file);
+            goto finish;
+        }
         if (stopped_state == MEETING_FINALIZING && finalize_err == ESP_OK) {
             fclose(file);
             meeting_set_state(MEETING_UPLOADING);
@@ -5273,10 +5753,11 @@ static void meeting_task(void *arg) {
     }
     log_heap_snapshot("meeting-upload-after-wake-stop");
 
+    if (!resume_only && !meeting_operation_is_current(operation_generation)) goto finish;
     esp_err_t upload_err = upload_pending_meeting(!resume_only);
 
     if (upload_err == ESP_OK) {
-        if (!resume_only) {
+        if (!resume_only && meeting_operation_is_current(operation_generation)) {
             meeting_set_state(MEETING_DONE);
             pet("done");
             app_ui_show_text("会议记录已保存", "可在文稿库中查看");
@@ -5293,7 +5774,7 @@ static void meeting_task(void *arg) {
                  s_meeting_recording_id,
                  (long)s_meeting_next_chunk, (long)s_meeting_phase);
         log_heap_snapshot("meeting-upload-fail");
-        if (!resume_only) {
+        if (!resume_only && meeting_operation_is_current(operation_generation)) {
             meeting_set_state(MEETING_ERROR);
             pet("alert");
             app_ui_show_text("上传未完成", "联网后将自动续传");
@@ -5306,10 +5787,18 @@ static void meeting_task(void *arg) {
         }
     }
 finish:
+    /* The meeting has no user cancel action once finalization/upload begins,
+     * but every success/error/recovery exit still claims the same terminal
+     * token.  This makes a late worker unable to publish a second terminal
+     * outcome after another foreground operation owns the slot. */
+    if (!resume_only) (void)operation_context_commit_terminal(operation_generation);
     taskENTER_CRITICAL(&s_task_state_lock);
     s_meeting_task = NULL;
     s_meeting_task_running = false;
+    device_power_lease_t meeting_lease = s_meeting_power_lease;
+    s_meeting_power_lease = DEVICE_POWER_LEASE_INVALID;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!resume_only) device_power_lease_release(meeting_lease);
     if (!resume_only) {
         // Error exits before the normal success/deferred UI cleanup still
         // need to release the display for the ambient screen.
@@ -5348,7 +5837,55 @@ static bool start_meeting_task(bool resume_only) {
         taskEXIT_CRITICAL(&s_task_state_lock);
         return false;
     }
+    device_operation_context_t operation = {0};
+    if (!resume_only) {
+        device_status_t operation_status = operation_context_begin(
+            DEVICE_OPERATION_KIND_MEETING_RECORDING, 0, &operation);
+        if (operation_status != DEVICE_STATUS_OK) {
+            xSemaphoreGive(s_interaction_lock);
+            taskENTER_CRITICAL(&s_task_state_lock);
+            s_meeting_task_running = false;
+            taskEXIT_CRITICAL(&s_task_state_lock);
+            ESP_LOGI(TAG, "meeting operation admission rejected: status=%d", (int)operation_status);
+            return false;
+        }
+    }
     if (!resume_only) app_ui_cancel_ready_prompt();
+    device_power_lease_t meeting_lease = DEVICE_POWER_LEASE_INVALID;
+    if (!resume_only) {
+        device_status_t lease_status = device_power_lease_acquire(
+            DEVICE_POWER_LEASE_OWNER_MEETING_RECORDING, &meeting_lease);
+        if (lease_status != DEVICE_STATUS_OK) {
+            (void)operation_context_commit_terminal(operation.generation);
+            xSemaphoreGive(s_interaction_lock);
+            taskENTER_CRITICAL(&s_task_state_lock);
+            s_meeting_task_running = false;
+            taskEXIT_CRITICAL(&s_task_state_lock);
+            ESP_LOGW(TAG, "meeting start rejected: power lease unavailable status=%d",
+                     (int)lease_status);
+            return false;
+        }
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_power_lease = meeting_lease;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+    }
+    meeting_task_context_t *context = calloc(1, sizeof(*context));
+    if (!context) {
+        device_power_lease_release(meeting_lease);
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_power_lease = DEVICE_POWER_LEASE_INVALID;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (!resume_only) (void)operation_context_commit_terminal(operation.generation);
+        if (!resume_only) xSemaphoreGive(s_interaction_lock);
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_task_running = false;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        return false;
+    }
+    *context = (meeting_task_context_t){
+        .generation = operation.generation,
+        .resume_only = resume_only,
+    };
     TaskHandle_t handle = NULL;
     // Meeting startup writes recovery metadata to NVS before the microphone
     // begins.  Flash writes disable the cache, so this task must keep its
@@ -5364,16 +5901,23 @@ static bool start_meeting_task(bool resume_only) {
     // commits disable the external-memory cache, therefore both modes need an
     // internal stack. A PSRAM stack here reset the MCU just after chunk PUT.
     BaseType_t created = xTaskCreate(meeting_task, "maclaw_meeting", 8192,
-                                     resume_only ? (void *)1 : NULL, 5, &handle);
+                                     context, 5, &handle);
     taskENTER_CRITICAL(&s_task_state_lock);
     s_meeting_task = created == pdPASS ? handle : NULL;
     if (created != pdPASS) s_meeting_task_running = false;
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (created != pdPASS) {
+        free(context);
+        device_power_lease_release(meeting_lease);
+        taskENTER_CRITICAL(&s_task_state_lock);
+        s_meeting_power_lease = DEVICE_POWER_LEASE_INVALID;
+        taskEXIT_CRITICAL(&s_task_state_lock);
+        if (!resume_only) (void)operation_context_commit_terminal(operation.generation);
         if (!resume_only) xSemaphoreGive(s_interaction_lock);
         log_heap_snapshot("meeting-task-create-fail");
         return false;
     }
+    xTaskNotifyGive(handle);
     return true;
 }
 
@@ -5446,6 +5990,13 @@ static bool refresh_meeting_capability(void) {
 
 static void interaction_task(void *arg) {
     uint32_t interaction_generation = (uint32_t)(uintptr_t)arg;
+    /* xTaskCreate may run this worker before the creator publishes
+     * s_interaction_task on the other core. Do not let an immediate capture
+     * failure complete against a NULL/stale owner and strand the admission
+     * token. The creator releases this one-shot gate only after publishing
+     * the handle under the same lock. Later notifications retain their normal
+     * result/progress/cancellation meaning. */
+    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     int64_t interaction_started_us = esp_timer_get_time();
     // The wake-phrase path creates this worker from inside MultiNet, while a
     // panel tap unloads it before task creation. Converge both paths here so
@@ -5665,6 +6216,25 @@ static bool start_voice_interaction(bool physical_screen_wake) {
         ESP_LOGW(TAG, "voice interaction ignored: interaction already active");
         return false;
     }
+    device_operation_context_t operation = {0};
+    device_status_t operation_status = operation_context_begin(
+        DEVICE_OPERATION_KIND_VOICE_INTERACTION, 0, &operation);
+    if (operation_status != DEVICE_STATUS_OK) {
+        xSemaphoreGive(s_interaction_lock);
+        ESP_LOGW(TAG, "voice interaction operation admission rejected: status=%d",
+                 (int)operation_status);
+        return false;
+    }
+    device_power_lease_t interaction_lease = DEVICE_POWER_LEASE_INVALID;
+    device_status_t lease_status = device_power_lease_acquire(
+        DEVICE_POWER_LEASE_OWNER_VOICE_INTERACTION, &interaction_lease);
+    if (lease_status != DEVICE_STATUS_OK) {
+        (void)operation_context_commit_terminal(operation.generation);
+        xSemaphoreGive(s_interaction_lock);
+        ESP_LOGW(TAG, "voice interaction rejected: power lease unavailable status=%d",
+                 (int)lease_status);
+        return false;
+    }
     if (physical_screen_wake) {
         // MultiNet leaves the largest internal block below this worker's 10 KiB
         // stack requirement. A physical tap can safely release the model here;
@@ -5684,6 +6254,7 @@ static bool start_voice_interaction(bool physical_screen_wake) {
     s_command_timing_accepted_us = 0;
     s_command_timing_first_progress_us = 0;
     taskENTER_CRITICAL(&s_task_state_lock);
+    s_interaction_power_lease = interaction_lease;
     s_command_cancel_requested = false;
     s_command_cancel_enabled = false;
     s_command_cancel_ui_shown = false;
@@ -5693,14 +6264,17 @@ static bool start_voice_interaction(bool physical_screen_wake) {
     // RECORDING becomes visible to the input task, so a rapid next tap is
     // retained and can end this newly started command.
     device_audio_reset_capture_stop();
-    uint32_t interaction_generation = ++s_interaction_generation;
-    if (!interaction_generation) interaction_generation = ++s_interaction_generation;
+    uint32_t interaction_generation = operation.generation;
+    s_interaction_generation = interaction_generation;
     s_interaction_phase = INTERACTION_RECORDING;
     s_active_command_reply_to[0] = '\0';
     s_result_speech_reply_to[0] = '\0';
     s_result_speech_parts_remaining = 0;
     s_result_speech_deadline_us = 0;
     taskEXIT_CRITICAL(&s_task_state_lock);
+    ESP_LOGI(TAG, "voice operation started: id=%llu generation=%lu",
+             (unsigned long long)operation.operation_id,
+             (unsigned long)interaction_generation);
     if (s_command_cancel_ui_ready) {
         while (xSemaphoreTake(s_command_cancel_ui_ready, 0) == pdTRUE) {}
     }
@@ -5721,9 +6295,12 @@ static bool start_voice_interaction(bool physical_screen_wake) {
     taskEXIT_CRITICAL(&s_task_state_lock);
     if (created != pdPASS) {
         s_foreground_http_requested = false;
+        device_power_lease_release(interaction_lease);
         taskENTER_CRITICAL(&s_task_state_lock);
+        s_interaction_power_lease = DEVICE_POWER_LEASE_INVALID;
         s_interaction_phase = INTERACTION_RESULT;
         taskEXIT_CRITICAL(&s_task_state_lock);
+        (void)operation_context_commit_terminal(interaction_generation);
         log_heap_snapshot("interaction-task-create-fail");
         xSemaphoreGive(s_interaction_lock);
         schedule_wake_restart();
@@ -5731,6 +6308,10 @@ static bool start_voice_interaction(bool physical_screen_wake) {
         app_ui_show_text("操作失败", "无法启动语音任务");
         return false;
     }
+    // Release only after the task handle is visible to cancellation, reply
+    // correlation and the completion path. This establishes one owner per
+    // interaction generation before the worker can cause side effects.
+    xTaskNotifyGive(created_handle);
     return true;
 }
 
@@ -5805,15 +6386,63 @@ static void on_alarm_ring_start(void *arg) {
     device_audio_request_playback_stop();
 }
 
-static void on_user_input(device_input_action_t action, device_input_source_t source,
-                          void *arg) {
+/* The classifier owns only sensor evidence and a bounded confirmation timer.
+ * Presentation is kept at the application boundary, so it stays identical
+ * across touch, buttons, round panels and rectangular panels.  In particular,
+ * this wording deliberately does not diagnose a person: an un-worn device can
+ * only establish that the device may have fallen. */
+static void on_fall_detection_event(fall_detection_event_t event, void *arg) {
     (void)arg;
+    (void)device_power_wake_display_from_schedule();
+    if (event == FALL_DETECTION_EVENT_SUSPECTED) {
+        app_ui_show_text("疑似设备跌落", "请点击取消");
+        return;
+    }
+    app_ui_show_text("疑似设备跌落", "未收到本机取消");
+}
+
+static void on_app_intent(const app_intent_event_t *event, void *arg) {
+    (void)arg;
+    if (!event || event->struct_size != sizeof(*event) ||
+        event->abi_version != APP_INTENT_ABI_VERSION) {
+        ESP_LOGW(TAG, "discarded invalid app intent event");
+        return;
+    }
+    app_intent_type_t action = event->type;
+    device_input_source_t source = event->source;
+    bool primary_interaction_source = event->primary_interaction_source;
     static bool suppress_alarm_dismiss_gesture;
     static device_input_source_t alarm_dismiss_source = DEVICE_INPUT_SOURCE_UNKNOWN;
 
+    /* DISPLAY_OFF is a presentation-only state.  Consume the very first
+     * primary contact at the shared business boundary, before any recorder or
+     * meeting transition can observe it.  The Power Service serializes this
+     * with the idle timer; the board adapter restores its own round/rectangular
+     * ambient scene.  This is deliberately source-neutral: touch and physical
+     * controls follow the same wake-then-act contract. */
+    if (primary_interaction_source && app_ui_wake_from_idle()) {
+        sleep_schedule_service_note_manual_wake();
+        ESP_LOGI(TAG, "primary interaction consumed as display wake: source=%d action=%d",
+                 (int)source, (int)action);
+        return;
+    }
+
+    /* A suspected-fall prompt is a local safety surface.  Accept the normal
+     * primary interaction for every profile (touch or physical control) before
+     * the gesture can enter voice/meeting policy.  Contact-down cancels early
+     * on touch devices; a completed primary action performs the same action on
+     * button-only devices. */
+    if (primary_interaction_source && fall_detection_service_cancel_from_user()) {
+        ESP_LOGI(TAG, "suspected-fall prompt cancelled by input source=%d action=%d",
+                 (int)source, (int)action);
+        app_ui_restore_standby();
+        return;
+    }
+
     if (s_command_capture_stop_gesture_pending &&
         source == s_command_capture_stop_source) {
-        if (action == DEVICE_INPUT_CONTACT_DOWN) {
+        if (action == APP_INTENT_PRIMARY_CONTACT_DOWN ||
+            action == APP_INTENT_AUXILIARY_CONTACT_DOWN) {
             // This is a genuinely new contact, not completion of the stop
             // contact. Admit it normally after retiring the old barrier.
             s_command_capture_stop_gesture_pending = false;
@@ -5827,11 +6456,11 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
     // An alarm is an urgent local foreground owner and may become due while
     // networking or Welcome playback is still finishing. Keep its physical
     // dismiss control available before applying the normal startup gate.
-    bool alarm_dismiss_input = device_input_is_primary_interaction_source(source);
+    bool alarm_dismiss_input = primary_interaction_source;
     if (s_alarm_manager_started && alarm_manager_is_ringing()) {
         if (alarm_dismiss_input) {
             alarm_manager_dismiss();
-            if (action == DEVICE_INPUT_CONTACT_DOWN) {
+            if (action == APP_INTENT_PRIMARY_CONTACT_DOWN) {
                 suppress_alarm_dismiss_gesture = true;
                 alarm_dismiss_source = source;
             }
@@ -5848,7 +6477,7 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
         // Startup owns the audio/display path until the optional greeting has
         // completed and the wake listener is loaded. Volume keys remain useful,
         // but activation gestures must not overtake this ordering boundary.
-        if (action != DEVICE_INPUT_VOLUME_UP && action != DEVICE_INPUT_VOLUME_DOWN) {
+        if (action != APP_INTENT_INCREASE_VOLUME && action != APP_INTENT_DECREASE_VOLUME) {
             ESP_LOGI(TAG, "input ignored until startup Welcome sequence completes");
             return;
         }
@@ -5856,7 +6485,9 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
 
     // A down edge dismisses immediately; consume the completed gesture from
     // that same contact so it cannot also start voice, cancel, or configure.
-    if (suppress_alarm_dismiss_gesture && action != DEVICE_INPUT_CONTACT_DOWN &&
+    if (suppress_alarm_dismiss_gesture &&
+        action != APP_INTENT_PRIMARY_CONTACT_DOWN &&
+        action != APP_INTENT_AUXILIARY_CONTACT_DOWN &&
         source == alarm_dismiss_source) {
         // A native double gesture may be followed by a delayed short from the
         // same contact-drain window. Keep suppression armed; the next real
@@ -5864,13 +6495,16 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
         ESP_LOGI(TAG, "completed alarm-dismiss gesture consumed");
         return;
     }
-    if (suppress_alarm_dismiss_gesture && action == DEVICE_INPUT_CONTACT_DOWN) {
+    if (suppress_alarm_dismiss_gesture &&
+        (action == APP_INTENT_PRIMARY_CONTACT_DOWN ||
+         action == APP_INTENT_AUXILIARY_CONTACT_DOWN)) {
         suppress_alarm_dismiss_gesture = false;
         alarm_dismiss_source = DEVICE_INPUT_SOURCE_UNKNOWN;
     }
     // The down-edge action exists only for latency-sensitive foreground
     // surfaces. Preserve all established behavior on the completed gesture.
-    if (action == DEVICE_INPUT_CONTACT_DOWN) {
+    if (action == APP_INTENT_PRIMARY_CONTACT_DOWN ||
+        action == APP_INTENT_AUXILIARY_CONTACT_DOWN) {
         interaction_phase_t interaction_phase;
         taskENTER_CRITICAL(&s_task_state_lock);
         interaction_phase = s_interaction_phase;
@@ -5884,19 +6518,19 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
         }
         return;
     }
-    if (action == DEVICE_INPUT_VOLUME_UP || action == DEVICE_INPUT_VOLUME_DOWN) {
+    if (action == APP_INTENT_INCREASE_VOLUME || action == APP_INTENT_DECREASE_VOLUME) {
         // On a response page the available upper side key advances through the
         // reply. This keeps one-key reading in the natural 1 -> 2 -> 3 order;
         // the board renderer wraps the final page back to page 1. If the lower
         // key is confirmed later, it can use the opposite direction.
-        int page_delta = action == DEVICE_INPUT_VOLUME_UP ? 1 : -1;
+        int page_delta = action == APP_INTENT_INCREASE_VOLUME ? 1 : -1;
         bool page_handled = app_ui_navigate_response(page_delta);
         ESP_LOGI(TAG, "volume key: %s page_delta=%d response_handled=%s",
-                 action == DEVICE_INPUT_VOLUME_UP ? "up" : "down", page_delta,
+                 action == APP_INTENT_INCREASE_VOLUME ? "up" : "down", page_delta,
                  page_handled ? "yes" : "no");
         if (page_handled) return;
         uint8_t volume = 0;
-        int delta = action == DEVICE_INPUT_VOLUME_UP ? 10 : -10;
+        int delta = action == APP_INTENT_INCREASE_VOLUME ? 10 : -10;
         device_status_t volume_status = device_audio_adjust_output_volume(delta, &volume);
         if (volume_status == DEVICE_STATUS_OK) {
             ESP_LOGI(TAG, "output volume: %u%%", volume);
@@ -5908,8 +6542,8 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
         return;
     }
     ESP_LOGI(TAG, "input action received: %s",
-             action == DEVICE_INPUT_PRIMARY ? "primary" :
-             action == DEVICE_INPUT_SECONDARY ? "secondary" : "configure");
+             action == APP_INTENT_PRIMARY_ACTIVATE ? "primary" :
+             action == APP_INTENT_SECONDARY_ACTIVATE ? "secondary" : "configure");
     // The setup screen owns both the display and the radio. Treat touch/BOOT
     // input as inert until the submitted form deliberately restarts the
     // device; otherwise a stray tap starts normal voice UI and repaints the
@@ -5922,12 +6556,8 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
     /* Reconfiguration is the emergency/maintenance gesture and must take
      * precedence over voice, meeting and upload state. Previously a long hold
      * was detected correctly but silently consumed by the meeting guards. */
-    if (action == DEVICE_INPUT_CONFIGURE) {
-        if (!s_wifi_ssid[0]
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-            && !device_connectivity_is_active_cellular()
-#endif
-        ) {
+    if (action == APP_INTENT_OPEN_CONFIGURATION) {
+        if (!s_wifi_ssid[0] && !device_connectivity_is_active_cellular()) {
             ESP_LOGI(TAG, "long press ignored while setup portal is active");
             return;
         }
@@ -5935,13 +6565,7 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
         /* Use a clean reboot as the transaction boundary. The next boot sees
          * the persisted setup request before starting STA/TLS, so it can enter
          * AP mode deterministically without racing an active long poll. */
-        nvs_handle_t setup_nvs;
-        esp_err_t setup_err = nvs_open("maclaw", NVS_READWRITE, &setup_nvs);
-        if (setup_err == ESP_OK) {
-            setup_err = nvs_set_u8(setup_nvs, "force_setup", 1);
-            if (setup_err == ESP_OK) setup_err = nvs_commit(setup_nvs);
-            nvs_close(setup_nvs);
-        }
+        esp_err_t setup_err = configuration_service_request_force_setup();
         if (setup_err == ESP_OK) {
             ESP_LOGW(TAG, "configuration request saved; rebooting into setup");
             esp_restart();
@@ -5971,15 +6595,15 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
         // meeting task observes FINALIZING and owns the following UI updates.
         meeting_set_state(MEETING_FINALIZING);
         ESP_LOGI(TAG, "meeting stop requested: gesture=%s",
-                 action == DEVICE_INPUT_PRIMARY ? "primary" :
-                 action == DEVICE_INPUT_SECONDARY ? "secondary" : "configure");
+                 action == APP_INTENT_PRIMARY_ACTIVATE ? "primary" :
+                 action == APP_INTENT_SECONDARY_ACTIVATE ? "secondary" : "configure");
         return;
     }
     if (meeting_is_active()) {
         ESP_LOGW(TAG, "button ignored: meeting transition/upload active");
         return;
     }
-    if (action == DEVICE_INPUT_SECONDARY) {
+    if (action == APP_INTENT_SECONDARY_ACTIVATE) {
         bool interaction_active;
         interaction_phase_t interaction_phase;
         taskENTER_CRITICAL(&s_task_state_lock);
@@ -6039,7 +6663,7 @@ static void on_user_input(device_input_action_t action, device_input_source_t so
         }
         return;
     }
-    if (action != DEVICE_INPUT_PRIMARY) return;
+    if (action != APP_INTENT_PRIMARY_ACTIVATE) return;
     // The result is a deliberate terminal step in the command flow. The first
     // activation press closes it and returns to the clock/date/weather screen;
     // only a later press starts a new recording. This avoids accidentally
@@ -6652,6 +7276,10 @@ static esp_err_t setup_save_handler(httpd_req_t *req) {
 static void recover_after_setup_portal_start_failure(bool wake_was_stopped) {
     s_setup_portal_active = false;
     s_pairing_recovery_portal = false;
+    if (s_setup_power_lease != DEVICE_POWER_LEASE_INVALID) {
+        device_power_lease_release(s_setup_power_lease);
+        s_setup_power_lease = DEVICE_POWER_LEASE_INVALID;
+    }
     // The portal stops MultiNet before allocating its HTTP server.  If one of
     // those allocations fails on a configured device, restore the normal local
     // interaction path instead of leaving the device silent until a reboot.
@@ -6704,6 +7332,20 @@ static void start_setup_portal(bool keep_station) {
             return;
         }
     }
+    if (s_setup_power_lease == DEVICE_POWER_LEASE_INVALID) {
+        device_status_t lease_status = device_power_lease_acquire(
+            DEVICE_POWER_LEASE_OWNER_PROVISIONING, &s_setup_power_lease);
+        if (lease_status != DEVICE_STATUS_OK) {
+            ESP_LOGE(TAG, "cannot acquire power lease for setup portal: status=%d",
+                     (int)lease_status);
+            app_ui_show_text("设置失败", "电源服务不可用，请重启后再试");
+            return;
+        }
+        /* A boot-time portal can begin while an old ambient deadline has
+         * already blanked the panel.  This is an approved foreground wake;
+         * the QR/form render below owns the subsequent scene. */
+        (void)device_power_wake_display_from_schedule();
+    }
     s_setup_portal_active = true;
     // Provisioning has no use for the always-listening recognizer. Pause it
     // so it cannot compete for audio/I2S work while the captive portal runs.
@@ -6743,20 +7385,15 @@ static void start_setup_portal(bool keep_station) {
     // ML307 remains the backhaul, and starting an unused STA/scan path here can
     // leave ESP-IDF's scan timer with a stale notification target. Use a plain
     // SoftAP for that one flow.
-    bool cellular_pairing_ap_only = false;
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    cellular_pairing_ap_only = device_connectivity_is_active_cellular() &&
-                                s_pairing_recovery_portal;
-#endif
+    bool cellular_pairing_ap_only = device_connectivity_is_active_cellular() &&
+                                    s_pairing_recovery_portal;
     if (!cellular_pairing_ap_only) ensure_station_netif();
     // A Fangtang in 4G mode still uses the Wi-Fi AP for local provisioning,
     // but its backhaul is the independent ML307.  Do not reconnect the saved
     // Wi-Fi STA while bringing up that AP: doing so races the setup scan and
     // needlessly runs two network bring-up paths at once.
-    bool keep_wifi_station = s_pairing_recovery_portal;
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    if (device_connectivity_is_active_cellular()) keep_wifi_station = false;
-#endif
+    bool keep_wifi_station = s_pairing_recovery_portal &&
+                             !device_connectivity_is_active_cellular();
     s_station_auto_connect = keep_wifi_station;
     if (!keep_wifi_station && s_wifi_started) {
         s_station_expected_disconnect = true;
@@ -6971,27 +7608,22 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
 static void cellular_recovery_task(void *arg) {
     (void)arg;
     uint32_t retry_ms = GATEWAY_RETRY_INITIAL_MS;
-    bool needs_gateway_restart = !ml307_transport_is_ready();
+    bool needs_gateway_restart = !device_connectivity_is_cellular_transport_ready();
     while (!s_setup_portal_active && device_connectivity_is_active_cellular()) {
-        if (!ml307_transport_is_ready()) {
+        if (!device_connectivity_is_cellular_transport_ready()) {
             device_connectivity_set_cellular_ready(false);
             needs_gateway_restart = true;
             app_ui_set_wifi_status("4G", false);
             app_ui_set_service_ready(false);
             firmware_identity_set_service_ready(false);
-            esp_err_t modem_err = ml307_transport_start(
-                CONFIG_MACLAW_FANGTANG_MODEM_UART_TX_GPIO,
-                CONFIG_MACLAW_FANGTANG_MODEM_UART_RX_GPIO,
-                CONFIG_MACLAW_FANGTANG_MODEM_UART_BAUD,
-                CELLULAR_CONNECT_TIMEOUT_MS,
-                CONFIG_MACLAW_FANGTANG_MODEM_APN);
-            if (modem_err != ESP_OK) {
-                ESP_LOGW(TAG, "ML307 recovery failed: %s; retry in %lu ms",
-                         esp_err_to_name(modem_err), (unsigned long)retry_ms);
+            device_status_t transport_status =
+                device_connectivity_start_cellular_transport(CELLULAR_CONNECT_TIMEOUT_MS);
+            if (transport_status != DEVICE_STATUS_OK) {
+                ESP_LOGW(TAG, "cellular recovery failed: device status=%d; retry in %lu ms",
+                         transport_status, (unsigned long)retry_ms);
                 vTaskDelay(pdMS_TO_TICKS(retry_ms));
                 if (retry_ms < GATEWAY_RETRY_MAX_MS) {
                     retry_ms *= 2;
@@ -7034,8 +7666,10 @@ static bool start_cellular(void) {
      * ML307 session before the adapter touches its pins or UART. */
     device_connectivity_set_cellular_ready(false);
     device_status_t preparation = device_connectivity_prepare_cellular_transport();
+    /* A missing cellular profile is a configuration error. Other transport
+     * failures are handled below after the shared status surfaces are reset. */
     if (preparation != DEVICE_STATUS_OK) {
-        ESP_LOGE(TAG, "4G transport hardware preparation failed: device status=%d",
+        ESP_LOGE(TAG, "cellular transport is unavailable: device status=%d",
                  preparation);
         app_ui_show_text("4G 未配置", "请先确认模块 UART、供电与控制引脚");
         return false;
@@ -7045,18 +7679,10 @@ static bool start_cellular(void) {
     app_ui_set_wifi_status("4G", false);
     app_ui_set_service_ready(false);
     firmware_identity_set_service_ready(false);
-    esp_err_t modem_err = ml307_transport_start(
-        CONFIG_MACLAW_FANGTANG_MODEM_UART_TX_GPIO,
-        CONFIG_MACLAW_FANGTANG_MODEM_UART_RX_GPIO,
-        CONFIG_MACLAW_FANGTANG_MODEM_UART_BAUD,
-        CELLULAR_CONNECT_TIMEOUT_MS,
-        CONFIG_MACLAW_FANGTANG_MODEM_APN);
-    if (modem_err != ESP_OK) {
-        ESP_LOGE(TAG, "ML307 network start failed on UART%d GPIO%d/GPIO%d: %s",
-                 CONFIG_MACLAW_FANGTANG_MODEM_UART_PORT,
-                 CONFIG_MACLAW_FANGTANG_MODEM_UART_TX_GPIO,
-                 CONFIG_MACLAW_FANGTANG_MODEM_UART_RX_GPIO,
-                 esp_err_to_name(modem_err));
+    preparation =
+        device_connectivity_start_cellular_transport(CELLULAR_CONNECT_TIMEOUT_MS);
+    if (preparation != DEVICE_STATUS_OK) {
+        ESP_LOGE(TAG, "cellular transport start failed: device status=%d", preparation);
         app_ui_show_text("4G 模块未响应", "检查 SIM、供电与天线");
         (void)ensure_cellular_recovery_task();
         return false;
@@ -7067,7 +7693,6 @@ static bool start_cellular(void) {
     (void)ensure_cellular_recovery_task();
     return true;
 }
-#endif
 
 static bool start_wifi(void) {
     /* A prior DHCP session is not evidence for this new adapter start. The
@@ -7322,10 +7947,152 @@ static bool validate_compiled_board_profile(void) {
     return true;
 }
 
+static device_status_t startup_status_from_esp_err(esp_err_t err) {
+    switch (err) {
+        case ESP_OK: return DEVICE_STATUS_OK;
+        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
+        case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
+        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
+        default: return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+}
+
+/* The first lifecycle slice deliberately stops before radio/gateway work when
+ * a required local service cannot start.  It is not a full SAFE_MODE: it
+ * merely leaves serial identity diagnostics alive and avoids a panic/reboot
+ * loop that would conceal the original failing phase. */
+static void startup_enter_degraded(device_runtime_phase_t phase,
+                                   device_status_t status,
+                                   const char *reason) {
+    startup_stop_local_workers();
+    lifecycle_service_degrade(phase, status);
+    firmware_identity_set_local_ready(false);
+    firmware_identity_set_service_ready(false);
+    ESP_LOGE(TAG, "startup degraded: phase=%d device_status=%d reason=%s",
+             (int)phase, (int)status, reason ? reason : "unknown");
+    if (s_startup_ui_initialized) {
+        app_ui_show_text("Startup failed", "Local service unavailable; connect a computer for diagnostics");
+    }
+}
+
+/* These two workers own no board driver and have explicit stop sentinels, so
+ * they can be joined safely when startup fails after configuration validation.
+ * Other services are intentionally not force-deleted here: their lifecycle
+ * contracts are still being migrated and may own timers, I/O, or callbacks. */
+static void startup_stop_local_workers(void) {
+    const TickType_t timeout = pdMS_TO_TICKS(500);
+
+    /* Close the publisher before draining its persistence workers.  The call
+     * is idempotent, so it is also safe on early failures before Input Service
+     * was started.  Never delete a foreground interaction here: it has its
+     * own operation/cancel protocol and is not yet part of this rollback set. */
+    device_status_t input_stop_status = app_intent_service_stop(500);
+    if (input_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "input service did not stop during startup rollback: %d",
+                 (int)input_stop_status);
+    }
+
+    /* Decorative board tasks may hold the LCD mutex and continue rendering
+     * after the shared local services have entered DEGRADED. Stop/join the
+     * explicitly covered animation workers before Power Service can tear down
+     * display-off timing; this is intentionally not a full board deinit. */
+    esp_err_t board_background_stop_err = board_port_stop_background_tasks(500);
+    if (board_background_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "board background tasks did not stop during startup rollback: %s",
+                 esp_err_to_name(board_background_stop_err));
+    }
+
+    esp_err_t ambient_stop_err = stop_ambient_clock_task(500);
+    if (ambient_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "ambient clock task did not stop during startup rollback: %s",
+                 esp_err_to_name(ambient_stop_err));
+    }
+
+    esp_err_t gateway_poll_stop_err = stop_gateway_poll_task(500);
+    if (gateway_poll_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "gateway poll task did not stop during startup rollback: %s",
+                 esp_err_to_name(gateway_poll_stop_err));
+    }
+
+    TaskHandle_t cancel_task = NULL;
+    taskENTER_CRITICAL(&s_task_state_lock);
+    s_command_cancel_stop_requested = true;
+    cancel_task = s_command_cancel_task;
+    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (cancel_task) {
+        xTaskNotifyGive(cancel_task);
+        if (s_command_cancel_stopped &&
+            xSemaphoreTake(s_command_cancel_stopped, timeout) != pdTRUE) {
+            ESP_LOGW(TAG, "command cancel worker did not stop within startup rollback timeout");
+        }
+    }
+
+    if (s_output_volume_persist_task_handle && s_output_volume_persist_queue) {
+        output_volume_persist_request_t stop_request = {.stop = true};
+        if (xQueueSend(s_output_volume_persist_queue, &stop_request, timeout) != pdTRUE) {
+            ESP_LOGW(TAG, "volume persistence worker stop queue is full");
+        } else if (s_output_volume_persist_stopped &&
+                   xSemaphoreTake(s_output_volume_persist_stopped, timeout) != pdTRUE) {
+            ESP_LOGW(TAG, "volume persistence worker did not stop within startup rollback timeout");
+        }
+    }
+
+    device_status_t fall_stop_status = fall_detection_service_deinit(500);
+    if (fall_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "fall detection did not stop during startup rollback: %d",
+                 (int)fall_stop_status);
+    }
+
+    device_status_t power_stop_status = device_power_deinit(500);
+    if (power_stop_status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "power service did not stop during startup rollback: %d",
+                 (int)power_stop_status);
+    }
+
+    /* Deadline clients must leave first. Alarm normally starts only after
+     * gateway TLS, but include it here so this rollback stays correct as new
+     * post-alarm startup phases are added. A failed alarm join keeps the
+     * shared dispatcher alive rather than freeing callback state beneath it. */
+    esp_err_t alarm_stop_err = alarm_manager_deinit(500);
+    if (alarm_stop_err == ESP_OK) {
+        s_alarm_manager_started = false;
+    } else {
+        ESP_LOGW(TAG, "alarm manager did not stop during startup rollback: %s",
+                 esp_err_to_name(alarm_stop_err));
+    }
+    esp_err_t schedule_stop_err = sleep_schedule_service_deinit(500);
+    if (schedule_stop_err != ESP_OK) {
+        ESP_LOGW(TAG, "sleep schedule did not stop during startup rollback: %s",
+                 esp_err_to_name(schedule_stop_err));
+    } else if (alarm_stop_err == ESP_OK) {
+        esp_err_t deadline_stop_err = wake_deadline_service_deinit(500);
+        if (deadline_stop_err != ESP_OK) {
+            ESP_LOGW(TAG, "wake deadline dispatcher did not stop during startup rollback: %s",
+                     esp_err_to_name(deadline_stop_err));
+        }
+    } else {
+        ESP_LOGW(TAG, "wake deadline dispatcher retained because alarm client is still active");
+    }
+}
+
 void app_main(void) {
     ESP_LOGW(TAG, "boot reset reason=%d", (int)esp_reset_reason());
-    if (!validate_compiled_board_profile()) return;
-    ESP_ERROR_CHECK(firmware_identity_start());
+    lifecycle_service_begin();
+    operation_context_service_init();
+    if (!validate_compiled_board_profile()) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_PROFILE_VALIDATED,
+                               DEVICE_STATUS_INTERNAL_ERROR, "board profile validation");
+        return;
+    }
+    lifecycle_service_reach(DEVICE_RUNTIME_PHASE_PROFILE_VALIDATED);
+    esp_err_t identity_err = firmware_identity_start();
+    if (identity_err != ESP_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_IDENTITY_READY,
+                               startup_status_from_esp_err(identity_err), "identity service");
+        return;
+    }
+    lifecycle_service_reach(DEVICE_RUNTIME_PHASE_IDENTITY_READY);
     esp_err_t nvs_err = initialize_nvs_preserving_user_data();
     if (nvs_err != ESP_OK) {
         // firmware_identity_start() intentionally remains available so a
@@ -7333,70 +8100,180 @@ void app_main(void) {
         // recovery. Do not start Wi-Fi, audio or writers against an NVS
         // partition whose contents we deliberately chose not to destroy.
         ESP_LOGE(TAG, "startup stopped before user-data writes: %s", esp_err_to_name(nvs_err));
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_STORAGE_READY,
+                               startup_status_from_esp_err(nvs_err), "NVS initialization");
         return;
     }
+	 lifecycle_service_reach(DEVICE_RUNTIME_PHASE_STORAGE_READY);
 	load_device_id();
     uint8_t boot_random[16];
     esp_fill_random(boot_random, sizeof(boot_random));
     for (size_t i = 0; i < sizeof(boot_random); ++i) {
         snprintf(s_boot_session_id + i * 2, 3, "%02x", boot_random[i]);
     }
-    ESP_ERROR_CHECK(psa_crypto_init() == PSA_SUCCESS ? ESP_OK : ESP_FAIL);
+    if (psa_crypto_init() != PSA_SUCCESS) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_INTERNAL_ERROR, "PSA crypto initialization");
+        return;
+    }
     (void)mount_meeting_storage();
-    load_meeting_recovery();
+    device_status_t pressure_status = resource_pressure_service_init("storage", s_storage_mounted);
+    if (pressure_status != DEVICE_STATUS_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               pressure_status, "resource pressure service");
+        return;
+    }
     s_http_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_http_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_http_mutex) goto startup_core_no_memory;
     s_gateway_poll_http_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_gateway_poll_http_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_gateway_poll_http_mutex) goto startup_core_no_memory;
+    s_gateway_poll_client_mutex = xSemaphoreCreateMutex();
+    if (!s_gateway_poll_client_mutex) goto startup_core_no_memory;
     s_gateway_asset_http_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_gateway_asset_http_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_gateway_asset_http_mutex) goto startup_core_no_memory;
+    s_media_transfer_mutex = xSemaphoreCreateMutex();
+    if (!s_media_transfer_mutex) goto startup_core_no_memory;
     s_pet_asset_apply_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_pet_asset_apply_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_pet_asset_apply_mutex) goto startup_core_no_memory;
     s_pet_cache_flash_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_pet_cache_flash_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_pet_cache_flash_mutex) goto startup_core_no_memory;
     s_foreground_http_client_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_foreground_http_client_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_foreground_http_client_mutex) goto startup_core_no_memory;
     s_command_cancel_ui_ready = xSemaphoreCreateBinary();
-    ESP_ERROR_CHECK(s_command_cancel_ui_ready ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_command_cancel_ui_ready) goto startup_core_no_memory;
+    s_command_cancel_stopped = xSemaphoreCreateBinary();
+    if (!s_command_cancel_stopped) goto startup_core_no_memory;
     s_startup_welcome_done = xSemaphoreCreateBinary();
-    ESP_ERROR_CHECK(s_startup_welcome_done ? ESP_OK : ESP_ERR_NO_MEM);
-    ESP_ERROR_CHECK(xTaskCreate(command_cancel_worker, "maclaw_cancel", 4096, NULL, 6,
-                                &s_command_cancel_task) == pdPASS
-                        ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_startup_welcome_done) goto startup_core_no_memory;
     s_nvs_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_nvs_mutex ? ESP_OK : ESP_ERR_NO_MEM);
-    ESP_ERROR_CHECK(update_service_init(&(update_service_config_t){
-        .nvs_mutex = s_nvs_mutex,
+    if (!s_nvs_mutex) goto startup_core_no_memory;
+    esp_err_t persistence_init_err = persistence_service_init(s_nvs_mutex);
+    if (persistence_init_err != ESP_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               startup_status_from_esp_err(persistence_init_err),
+                               "persistence service");
+        return;
+    }
+    esp_err_t weather_cache_init_err = weather_cache_service_init();
+    if (weather_cache_init_err != ESP_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               startup_status_from_esp_err(weather_cache_init_err),
+                               "weather cache service");
+        return;
+    }
+    esp_err_t meeting_recovery_init_err = meeting_recovery_service_init();
+    if (meeting_recovery_init_err != ESP_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               startup_status_from_esp_err(meeting_recovery_init_err),
+                               "meeting recovery service");
+        return;
+    }
+    esp_err_t configuration_init_err = configuration_service_init();
+    if (configuration_init_err != ESP_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               startup_status_from_esp_err(configuration_init_err),
+                               "configuration service");
+        return;
+    }
+    load_meeting_recovery();
+    esp_err_t update_init_err = update_service_init(&(update_service_config_t){
         .running_release_sequence = CONFIG_MACLAW_RELEASE_SEQUENCE,
-    }));
+    });
+    if (update_init_err != ESP_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               startup_status_from_esp_err(update_init_err), "update metadata service");
+        return;
+    }
+    esp_err_t configuration_load_err = load_device_config();
+    if (configuration_load_err != ESP_OK) {
+        /* Fail closed before restoring an uplink, presenting a pairing flow,
+         * or issuing any authenticated request.  USB identity diagnostics
+         * remain alive and make the recovery reason observable. */
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               startup_status_from_esp_err(configuration_load_err),
+                               "configuration snapshot");
+        return;
+    }
+    /* Do not create any permanent interaction/persistence worker until the
+     * authoritative configuration snapshot has passed validation.  A corrupt
+     * snapshot deliberately leaves this boot in USB-diagnosable degraded
+     * mode; starting these workers first would leak background activity into
+     * that otherwise fail-closed state. */
     s_output_volume_persist_queue = xQueueCreate(1, sizeof(output_volume_persist_request_t));
-    ESP_ERROR_CHECK(s_output_volume_persist_queue ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_output_volume_persist_queue) goto startup_core_no_memory;
     s_output_volume_persist_reply_queue = xQueueCreate(2, sizeof(output_volume_persist_reply_t));
-    ESP_ERROR_CHECK(s_output_volume_persist_reply_queue ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_output_volume_persist_reply_queue) goto startup_core_no_memory;
     s_output_volume_persist_request_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_output_volume_persist_request_mutex ? ESP_OK : ESP_ERR_NO_MEM);
-    ESP_ERROR_CHECK(xTaskCreate(output_volume_persist_task,
-                                "maclaw_volume_nvs", 3072, NULL, 4, NULL) == pdPASS
-                        ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_output_volume_persist_request_mutex) goto startup_core_no_memory;
+    s_output_volume_persist_stopped = xSemaphoreCreateBinary();
+    if (!s_output_volume_persist_stopped) goto startup_core_no_memory;
     s_setup_options_mutex = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(s_setup_options_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    if (!s_setup_options_mutex) goto startup_core_no_memory;
     // A foreground interaction starts in the button callback but finishes in
     // its worker task, therefore mutual exclusion must use a binary semaphore
     // rather than an ownership-tracked mutex.
     s_interaction_lock = xSemaphoreCreateBinary();
-    ESP_ERROR_CHECK(s_interaction_lock ? ESP_OK : ESP_ERR_NO_MEM);
-    ESP_ERROR_CHECK(xSemaphoreGive(s_interaction_lock) == pdTRUE ? ESP_OK : ESP_FAIL);
-    load_device_config();
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    load_fangtang_network_choice();
-#endif
+    if (!s_interaction_lock || xSemaphoreGive(s_interaction_lock) != pdTRUE) goto startup_core_no_memory;
+    if (xTaskCreate(command_cancel_worker, "maclaw_cancel", 4096, NULL, 6,
+                    &s_command_cancel_task) != pdPASS) goto startup_core_no_memory;
+    if (xTaskCreate(output_volume_persist_task,
+                    "maclaw_volume_nvs", 3072, NULL, 4,
+                    &s_output_volume_persist_task_handle) != pdPASS) goto startup_core_no_memory;
+    device_connectivity_restore_selected_uplink();
     load_gateway_token();
     load_ambient_weather();
     app_ui_init();
-    device_status_t input_status = device_input_start(on_user_input, NULL);
-    ESP_ERROR_CHECK(input_status == DEVICE_STATUS_OK ? ESP_OK : ESP_FAIL);
+    s_startup_ui_initialized = true;
+    device_status_t input_status = app_intent_service_start(on_app_intent, NULL);
+    if (input_status != DEVICE_STATUS_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               input_status, "input service");
+        return;
+    }
     device_status_t power_status = device_power_init();
-    ESP_ERROR_CHECK(power_status == DEVICE_STATUS_OK ? ESP_OK : ESP_FAIL);
+    if (power_status != DEVICE_STATUS_OK) {
+        (void)app_intent_service_stop(500);
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               power_status, "power service");
+        return;
+    }
+    device_status_t battery_policy_status = battery_policy_service_init();
+    if (battery_policy_status != DEVICE_STATUS_OK) {
+        (void)app_intent_service_stop(500);
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               battery_policy_status, "battery policy service");
+        return;
+    }
+    device_status_t fall_detection_status =
+        fall_detection_service_init(on_fall_detection_event, NULL);
+    if (fall_detection_status == DEVICE_STATUS_OK) {
+        ESP_LOGI(TAG, "suspected-fall service available");
+    } else if (fall_detection_status == DEVICE_STATUS_UNAVAILABLE) {
+        ESP_LOGI(TAG, "suspected-fall service unavailable on this profile");
+    } else {
+        /* Motion safety is an optional profile capability; do not convert a
+         * local service startup into a reboot/degraded loop on boards that do
+         * not carry the sensor or under transient resource pressure. */
+        ESP_LOGW(TAG, "cannot start suspected-fall service: device status=%d",
+                 (int)fall_detection_status);
+    }
+    esp_err_t deadline_init_err = wake_deadline_service_init();
+    if (deadline_init_err != ESP_OK) {
+        (void)app_intent_service_stop(500);
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               startup_status_from_esp_err(deadline_init_err),
+                               "wake deadline service");
+        return;
+    }
+    esp_err_t schedule_init_err = sleep_schedule_service_init();
+    if (schedule_init_err != ESP_OK) {
+        (void)app_intent_service_stop(500);
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               startup_status_from_esp_err(schedule_init_err),
+                               "sleep schedule service");
+        return;
+    }
+    lifecycle_service_reach(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY);
     if (s_configured_output_volume_saved) {
         device_status_t volume_status =
             device_audio_set_output_volume((uint8_t)s_configured_output_volume);
@@ -7407,22 +8284,15 @@ void app_main(void) {
         }
     }
 
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    // GPIO0 double-click is only a startup gesture. It toggles the persisted
-    // Wi-Fi/ML307 selection, matching the original 无名星智 firmware; normal
-    // button gestures resume as soon as this bounded window ends.
-    bool toggle_network = device_connectivity_take_startup_transport_toggle(
-        FANGTANG_BOOT_NETWORK_WINDOW_MS);
-    if (toggle_network) {
-        save_fangtang_network_choice(!device_connectivity_is_active_cellular());
-        ESP_LOGI(TAG, "Fangtang startup toggle: %s selected",
-                 device_connectivity_is_active_cellular() ? "4G" : "Wi-Fi");
+    // A profile may provide a bounded boot selector (for example a physical
+    // double-click) and an uplink-specific Gateway compatibility adaptation.
+    // The business startup path sees only the selected normalized transport.
+    if (device_connectivity_apply_startup_transport_toggle(
+            STARTUP_TRANSPORT_SELECTOR_WINDOW_MS)) {
+        ESP_LOGI(TAG, "startup transport toggle selected: %s",
+                 device_connectivity_is_active_cellular() ? "cellular" : "Wi-Fi");
     }
-    // Resolve the Hub endpoint only after the bounded startup gesture has
-    // selected the final transport. Applying this before the gesture made a
-    // Wi-Fi->4G toggle retain ECDSA HTTPS, while 4G->Wi-Fi retained port 9399.
-    apply_fangtang_cellular_gateway_compatibility();
-#endif
+    device_connectivity_adapt_gateway_url(s_gateway_url, sizeof(s_gateway_url));
 	// board initialization may briefly show and then clear its ROM/embedded
 	// artwork. Re-present it as an explicit foreground UI surface so ambient
 	// clock/profile updates cannot replace it while Welcome is being fetched and
@@ -7436,15 +8306,18 @@ void app_main(void) {
     // The LCD mutex already exists here; only the timing is intentionally
     // deferred.
     firmware_identity_set_local_ready(true);
-    nvs_handle_t setup_nvs;
-    uint8_t force_setup = 0;
-    if (nvs_open("maclaw", NVS_READWRITE, &setup_nvs) == ESP_OK) {
-        (void)nvs_get_u8(setup_nvs, "force_setup", &force_setup);
-        if (force_setup) {
-            (void)nvs_erase_key(setup_nvs, "force_setup");
-            (void)nvs_commit(setup_nvs);
-        }
-        nvs_close(setup_nvs);
+    lifecycle_service_reach(DEVICE_RUNTIME_PHASE_LOCAL_READY);
+    bool force_setup = false;
+    esp_err_t force_setup_err = configuration_service_take_force_setup(&force_setup);
+    if (force_setup_err != ESP_OK) {
+        /* This is the same authoritative configuration snapshot that carries
+         * network credentials and the Hub token.  Continuing into radio or
+         * gateway startup after its one-shot flag cannot be read/committed
+         * would violate the fail-closed configuration boundary. */
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_LOCAL_READY,
+                               startup_status_from_esp_err(force_setup_err),
+                               "configuration force-setup request");
+        return;
     }
     if (force_setup) {
         ESP_LOGW(TAG, "booting directly into requested configuration portal");
@@ -7453,11 +8326,7 @@ void app_main(void) {
     }
     // Keep the explicit board-specific startup surface until the Welcome/wake-word
     // sequence publishes ready. Do not transition to standby here.
-    if (!s_wifi_ssid[0]
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-        && !device_connectivity_is_active_cellular()
-#endif
-    ) {
+    if (!s_wifi_ssid[0] && !device_connectivity_is_active_cellular()) {
         start_setup_portal(false);
         return;
     }
@@ -7468,22 +8337,16 @@ void app_main(void) {
     // handler reconnect automatically when this SSID is reachable again.
     // Setup is entered only when no SSID was ever saved or after the user's
     // deliberate long-press reset.
-    bool network_ready =
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-        device_connectivity_is_active_cellular() ? start_cellular() :
-#endif
-        start_wifi();
+    bool network_ready = device_connectivity_is_active_cellular()
+                             ? start_cellular()
+                             : start_wifi();
     // Wi-Fi boards have an independent wall-clock source and must not depend
     // on a successful Hub handshake before the standby clock or persisted
     // alarms can advance.  Start SNTP only after esp_wifi_start() has returned,
     // preserving the startup stability boundary above.  ML307 has no
     // ESP-NETIF route, so Fangtang 4G continues to use authenticated
     // handshake serverTime in apply_gateway_server_time().
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     if (!device_connectivity_is_active_cellular()) start_clock_sync();
-#else
-    start_clock_sync();
-#endif
     // Delay the alarm task until the authenticated gateway startup has
     // released TLS/PSRAM pressure. start_gateway_ready_tasks() initializes it
     // before the outgoing poll can expose any alarm tool.
@@ -7494,11 +8357,7 @@ void app_main(void) {
     taskENTER_CRITICAL(&s_task_state_lock);
     s_gateway_startup_allowed = true;
     taskEXIT_CRITICAL(&s_task_state_lock);
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
     if (!network_ready && !device_connectivity_is_active_cellular() && s_wifi_events) {
-#else
-    if (!network_ready && s_wifi_events) {
-#endif
         network_ready = device_connectivity_is_active_uplink_ready();
         if (network_ready) {
             ESP_LOGI(TAG, "Wi-Fi recovered at startup boundary; continuing gateway startup");
@@ -7521,4 +8380,9 @@ void app_main(void) {
         pet("alert");
         app_ui_show_text("设备启动失败", "无法启动网关任务");
     }
+    return;
+
+startup_core_no_memory:
+    startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                           DEVICE_STATUS_RESOURCE_EXHAUSTED, "core startup allocation");
 }

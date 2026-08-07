@@ -1,6 +1,7 @@
 #include "board_port.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -17,7 +18,13 @@
 #include "esp_mn_speech_commands.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_lcd_io_i2c.h"
 #include "esp_lcd_st77916.h"
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+#include "esp_lcd_co5300.h"
+#include "esp_lcd_touch.h"
+#include "esp_lcd_touch_cst9217.h"
+#endif
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
@@ -27,11 +34,51 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#if !CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
 #include "echoear_st77916_init.h"
+#endif
 #include "font_cjk24.h"
 
 // EchoEar-2ST board definition. GPIO values are the physical GPIO numbers;
 // the original Zephyr board file uses gpio1 offsets for pins 40/41/48.
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+// Waveshare ESP32-S3 Touch AMOLED 1.75C.  Keep its pins and panel protocol
+// local to the adapter: domain code sees only Device API scenes/input/audio.
+#define LCD_HOST        SPI2_HOST
+#define LCD_WIDTH       466
+#define LCD_HEIGHT      466
+#define LCD_SCLK        GPIO_NUM_38
+#define LCD_DATA0       GPIO_NUM_4
+#define LCD_DATA1       GPIO_NUM_5
+#define LCD_DATA2       GPIO_NUM_6
+#define LCD_DATA3       GPIO_NUM_7
+#define LCD_CS          GPIO_NUM_12
+#define LCD_RESET       GPIO_NUM_1
+#define LCD_BACKLIGHT   GPIO_NUM_NC
+#define LCD_QSPI_PCLK_HZ (40 * 1000 * 1000)
+#define FUNCTION_BUTTON GPIO_NUM_0
+#define TOUCH_IRQ       GPIO_NUM_11
+#define CST8XX_ADDRESS  0x15
+#define AUDIO_I2C_SCL   GPIO_NUM_14
+#define AUDIO_I2C_SDA   GPIO_NUM_15
+#define AUDIO_MCLK      GPIO_NUM_16
+#define AUDIO_BCLK      GPIO_NUM_9
+#define AUDIO_WS        GPIO_NUM_45
+#define AUDIO_DOUT      GPIO_NUM_8
+#define AUDIO_DIN       GPIO_NUM_10
+#define AUDIO_PA_ENABLE GPIO_NUM_46
+#define ES7210_ADDRESS  0x40
+#define ES8311_ADDRESS  0x18
+#define ES8311_DAC_MUTE_REG 0x31
+#define ES8311_DAC_VOLUME_REG 0x32
+#define OUTPUT_VOLUME_DEFAULT 70
+/* MaClaw Device API transports normalized 16 kHz signed PCM.  Keep the first
+ * integration at that contract even though the vendor demo uses 24 kHz; a
+ * sample-rate converter belongs in a future audio adapter, not in business
+ * capture/playback paths. */
+#define AUDIO_RATE      16000
+#define WAVESHARE_AMOLED 1
+#else
 #define LCD_HOST        SPI2_HOST
 #define LCD_WIDTH       360
 #define LCD_HEIGHT      360
@@ -61,6 +108,8 @@
 #define ES8311_DAC_VOLUME_REG 0x32
 #define OUTPUT_VOLUME_DEFAULT 70
 #define AUDIO_RATE      16000
+#define WAVESHARE_AMOLED 0
+#endif
 /* ES8311's 16 kHz coefficient set is derived for a 256fs master clock.
  * Keep the hardware clock relation stated here because the microphone and
  * DAC share the same I2S controller on EchoEar-2ST:
@@ -137,6 +186,32 @@ static const char *const s_wake_word_cn_phonetics[] = {
 #define COMPACT_FONT_SIZE 16
 #define COMPACT_CJK_ADVANCE 17
 #define COMPACT_ASCII_ADVANCE 12
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+/* 466px round viewport. Keep all shared scenes inside the real circular
+ * aperture; this is a layout descriptor, not a business/UI branch. */
+#define RESPONSE_TITLE_Y 48
+#define RESPONSE_RULE_Y  100
+#define RESPONSE_TEXT_X 76
+#define RESPONSE_TEXT_Y 126
+#define RESPONSE_TEXT_W (LCD_WIDTH - RESPONSE_TEXT_X * 2)
+#define RESPONSE_LINE_GAP 34
+#define RESPONSE_LINES_PER_PAGE 6
+#define RESPONSE_FOOTER_Y 364
+#define AMBIENT_TOP_W   LCD_WIDTH
+#define AMBIENT_TOP_H   162
+#define AMBIENT_BOTTOM_W 398
+#define AMBIENT_BOTTOM_H 108
+#define AMBIENT_BOTTOM_X ((LCD_WIDTH - AMBIENT_BOTTOM_W) / 2)
+#define AMBIENT_BOTTOM_Y 346
+#define AMBIENT_TOP_RING_RADIUS 312
+#define AMBIENT_RING_RADIUS 196
+#define PET_HALO_CENTER_Y 226
+// Native pet art remains expressed in the 360px design grid.  The renderer
+// maps this radius into the 466px safe zone and applies its deliberate 7/8
+// standby scale, yielding a 120px halo instead of accidentally over-scaling
+// a 466px value a second time.
+#define PET_HALO_RADIUS   106
+#else
 #define RESPONSE_TITLE_Y 36
 #define RESPONSE_RULE_Y  78
 // EchoEar has a 360x360 framebuffer behind a circular panel.  Rectangular
@@ -149,11 +224,20 @@ static const char *const s_wake_word_cn_phonetics[] = {
 #define RESPONSE_LINE_GAP 30
 #define RESPONSE_LINES_PER_PAGE 5
 #define RESPONSE_FOOTER_Y 278
-#define RESPONSE_TEXT_CAPACITY 768
 #define AMBIENT_TOP_W   360
 #define AMBIENT_TOP_H   128
 #define AMBIENT_BOTTOM_W 316
 #define AMBIENT_BOTTOM_H 90
+#define AMBIENT_BOTTOM_X 22
+#define AMBIENT_BOTTOM_Y 268
+#define AMBIENT_TOP_RING_RADIUS 240
+#define AMBIENT_RING_RADIUS 150
+#define PET_HALO_CENTER_Y 175
+#define PET_HALO_RADIUS   106
+#endif
+#define AMBIENT_OVERLAY_PIXELS ((size_t)AMBIENT_TOP_W * (size_t)AMBIENT_TOP_H)
+#define AMBIENT_OVERLAY_BYTES (AMBIENT_OVERLAY_PIXELS * sizeof(uint16_t))
+#define RESPONSE_TEXT_CAPACITY 768
 // Use a slightly tighter common circle for the two information bands.  With
 // the overlay origins below, its centre lands at y=169 on the 360px panel for
 // both arcs, so the date/time and weather no longer read as two unrelated,
@@ -165,8 +249,6 @@ static const char *const s_wake_word_cn_phonetics[] = {
 // and the final CJK glyph in "在线" were clipped. Keep the lower information
 // ring unchanged, but give the upper status ring a gentler, fully-contained
 // arc.
-#define AMBIENT_TOP_RING_RADIUS 240
-#define AMBIENT_RING_RADIUS 150
 #define AMBIENT_TRANSPARENT_KEY 0x0001u
 #define LCD_FRAMEBUFFER_PIXELS ((size_t)LCD_WIDTH * LCD_HEIGHT)
 #define LCD_FRAMEBUFFER_BYTES  (LCD_FRAMEBUFFER_PIXELS * sizeof(uint16_t))
@@ -188,8 +270,6 @@ static const char *const s_wake_word_cn_phonetics[] = {
 #define IDLE_PET_SLEEP_TIMEOUT_US (30LL * 60 * 1000 * 1000)
 #define INPUT_DOUBLE_WINDOW_US  (500LL * 1000)
 #define INPUT_LONG_HOLD_US      (2500LL * 1000)
-#define PET_HALO_CENTER_Y 175
-#define PET_HALO_RADIUS   106
 // The default procedural cat is shown on the permanent circular standby
 // surface before a remotely selected pet has loaded.  Keep its head noticeably
 // inside the top date/status ring: the former 103px face plus 55px ears reached
@@ -198,11 +278,50 @@ static const char *const s_wake_word_cn_phonetics[] = {
 #define STANDBY_CAT_SCALE_NUM 7
 #define STANDBY_CAT_SCALE_DEN 8
 
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+static const uint8_t s_co5300_qspi_mode[] = {0x20};
+static const uint8_t s_co5300_qspi_enable[] = {0x10};
+static const uint8_t s_co5300_qspi_clock[] = {0xA0};
+static const uint8_t s_co5300_page0[] = {0x00};
+static const uint8_t s_co5300_c4[] = {0x80};
+static const uint8_t s_co5300_rgb565[] = {0x55};
+static const uint8_t s_co5300_te[] = {0x00};
+static const uint8_t s_co5300_control[] = {0x20};
+static const uint8_t s_co5300_brightness[] = {0xFF};
+static const uint8_t s_co5300_cabc[] = {0xFF};
+static const uint8_t s_co5300_column[] = {0x00, 0x06, 0x01, 0xD7};
+static const uint8_t s_co5300_row[] = {0x00, 0x00, 0x01, 0xD1};
+static const co5300_lcd_init_cmd_t s_waveshare_co5300_init_cmds[] = {
+    {0xFE, s_co5300_qspi_mode, sizeof(s_co5300_qspi_mode), 0},
+    {0x19, s_co5300_qspi_enable, sizeof(s_co5300_qspi_enable), 0},
+    {0x1C, s_co5300_qspi_clock, sizeof(s_co5300_qspi_clock), 0},
+    {0xFE, s_co5300_page0, sizeof(s_co5300_page0), 0},
+    {0xC4, s_co5300_c4, sizeof(s_co5300_c4), 0},
+    {0x3A, s_co5300_rgb565, sizeof(s_co5300_rgb565), 0},
+    {0x35, s_co5300_te, sizeof(s_co5300_te), 0},
+    {0x53, s_co5300_control, sizeof(s_co5300_control), 0},
+    {0x51, s_co5300_brightness, sizeof(s_co5300_brightness), 0},
+    {0x63, s_co5300_cabc, sizeof(s_co5300_cabc), 0},
+    {0x2A, s_co5300_column, sizeof(s_co5300_column), 0},
+    {0x2B, s_co5300_row, sizeof(s_co5300_row), 600},
+    {0x11, NULL, 0, 600}, {0x29, NULL, 0, 0},
+};
+#endif
+
 static const char *TAG = "maclaw_board";
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_panel_io;
 static board_port_button_cb_t s_on_button;
 static void *s_on_press_arg;
+/* Input Service owns the queues consumed by this scanner's callbacks.  The
+ * scanner therefore has an explicit stop/join handshake for degraded-startup
+ * rollback.  It intentionally does not make the whole board adapter
+ * restartable: LCD, audio and I2C resources are still boot-lifetime. */
+static TaskHandle_t s_button_task;
+static SemaphoreHandle_t s_button_task_stopped;
+static SemaphoreHandle_t s_background_tasks_lock;
+static TaskHandle_t s_pet_animation_task;
+static SemaphoreHandle_t s_pet_animation_stopped;
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
 static volatile bool s_boot_network_window_active;
 static volatile bool s_boot_network_toggle_requested;
@@ -327,23 +446,24 @@ static volatile bool s_recording_meter_dirty;
 static uint16_t *s_render_target;
 static volatile uint32_t s_presented_frames;
 static bool s_pet_animation_started;
-// Status text gets an immutable DMA buffer. Color transfers are queued by the
-// LCD IO driver, so reusing s_line immediately can otherwise modify pixels
-// that have not reached the panel yet and leave specks around the text rows.
-// The status and weather overlays are presented synchronously, one after the
-// other; they never have pixels in flight at the same time.  A single immutable
-// DMA buffer is therefore sufficient for both regions.  Keeping two separate
-// arrays consumed another 57 KiB of precious internal RAM on EchoEar, leaving
-// too little contiguous memory for the first TLS handshake even though PSRAM
-// was mostly unused.  Do not reuse s_line here: it is much smaller and is also
-// used by full-frame stripe presentation.
-static DMA_ATTR uint16_t s_ambient_overlay[AMBIENT_TOP_W * AMBIENT_TOP_H];
+// Status text gets one immutable overlay buffer.  It is never reused before a
+// synchronous transfer completes.  The 466x162 AMOLED header needs 151 KiB,
+// which must live in PSRAM; the 360px EchoEar keeps its smaller DMA-safe copy
+// in internal RAM.  Do not reuse s_line here: that buffer is also used by the
+// full-frame stripe presenter.
+static uint16_t *s_ambient_overlay;
 static uint16_t s_draw_transactions;
 static volatile uint32_t s_skipped_pet_frames;
 static i2c_master_bus_handle_t s_audio_i2c_bus;
 static i2c_master_dev_handle_t s_es7210;
 static i2c_master_dev_handle_t s_es8311;
 static i2c_master_dev_handle_t s_touch;
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+static i2c_master_dev_handle_t s_axp2101;
+static i2c_master_dev_handle_t s_qmi8658;
+static esp_lcd_panel_io_handle_t s_cst9217_io;
+static esp_lcd_touch_handle_t s_cst9217_touch;
+#endif
 static i2s_chan_handle_t s_audio_rx;
 static i2s_chan_handle_t s_audio_tx;
 static bool s_audio_ready;
@@ -620,6 +740,12 @@ static esp_err_t es8311_write(uint8_t reg, uint8_t value) {
     return i2c_master_transmit(s_es8311, bytes, sizeof(bytes), 1000);
 }
 
+static esp_err_t es8311_read(uint8_t reg, uint8_t *value) {
+    if (!value) return ESP_ERR_INVALID_ARG;
+    return i2c_master_transmit_receive(s_es8311, &reg, sizeof(reg), value,
+                                       sizeof(*value), 1000);
+}
+
 static uint8_t es8311_volume_register(unsigned percent) {
     if (percent == 0) return 0;
     // ES8311's DAC volume register spans 0x00..0xFF. Match the codec's
@@ -637,7 +763,18 @@ static esp_err_t es8311_set_output_volume(unsigned percent) {
  * PCM block. This prevents DAC floor/reference ramp noise being mixed into
  * every voice reply on the EchoEar analogue path. */
 static esp_err_t es8311_set_dac_muted(bool muted) {
-    return es8311_write(ES8311_DAC_MUTE_REG, muted ? 0x60 : 0x00);
+    /* REG31 also carries DAC control bits.  Only alter the documented mute
+     * pair, as the reference driver does; writing a literal 0x00 after a
+     * runtime configuration can accidentally undo unrelated DAC controls. */
+    uint8_t reg31 = 0;
+    ESP_RETURN_ON_ERROR(es8311_read(ES8311_DAC_MUTE_REG, &reg31), TAG,
+                        "read ES8311 DAC mute register");
+    if (muted) {
+        reg31 |= 0x60;
+    } else {
+        reg31 &= (uint8_t)~0x60;
+    }
+    return es8311_write(ES8311_DAC_MUTE_REG, reg31);
 }
 
 static esp_err_t es8311_init(void) {
@@ -655,9 +792,21 @@ static esp_err_t es8311_init(void) {
          * ADC OSR=0x10 and DAC OSR=0x20.  Programming 0x10 into REG04
          * clocks the DAC at the ADC oversampling ratio, which preserves
          * rough tones but corrupts broadband speech with radio-like noise. */
-        {0x01, 0x7F}, {0x02, 0x00}, {0x03, 0x10}, {0x04, 0x20},
+        /* REG01: use external MCLK (bit7=0) with normal, non-inverted
+         * MCLK polarity (bit6=0).  `0x7f` inadvertently sets bit6 and makes
+         * the ES8311 sample MCLK on the opposite edge.  That can leave short
+         * tones recognisable while making broadband voice sound like strong
+         * white noise.  Espressif's ES8311 reference driver derives `0x3f`
+         * for slave mode with MCLK enabled and no inversion. */
+        {0x01, 0x3F}, {0x02, 0x00}, {0x03, 0x10}, {0x04, 0x20},
         {0x05, 0x00}, {0x06, 0x03}, {0x07, 0x00}, {0x08, 0xFF},
-        {0x09, 0x0C}, {0x0A, 0x0C}, {0x0D, 0x01}, {0x0E, 0x02},
+        /* REG09/REG0A are I2S-format interfaces.  The old literal 0x0C
+         * advertised a 16-bit word while the ESP now deliberately emits
+         * 16 valid bits in 32-bit slots (64 BCLK/LRCK).  Per ES8311's
+         * reference driver, bits [4:2]=100 select a 32-bit I2S word; leaving
+         * it at 0x0C makes the DAC advance to the next channel after 16 clocks
+         * and interleave padding/data as broadband white noise. */
+        {0x09, 0x10}, {0x0A, 0x10}, {0x0D, 0x01}, {0x0E, 0x02},
         {0x12, 0x00}, {0x13, 0x10}, {0x14, 0x1A}, {0x15, 0x40},
         {0x1C, 0x6A}, {0x37, 0x08}, {0x44, 0x58}, {0x31, 0x60},
     };
@@ -669,6 +818,118 @@ static esp_err_t es8311_init(void) {
     }
     return es8311_set_output_volume(s_output_volume);
 }
+
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+/* The PMIC is a board detail.  Higher layers only receive normalized battery
+ * state through board_port_get_power_status(). */
+static esp_err_t axp2101_write(uint8_t reg, uint8_t value) {
+    uint8_t bytes[2] = {reg, value};
+    return i2c_master_transmit(s_axp2101, bytes, sizeof(bytes), 1000);
+}
+
+static esp_err_t axp2101_read(uint8_t reg, uint8_t *value) {
+    return i2c_master_transmit_receive(s_axp2101, &reg, sizeof(reg), value, 1, 1000);
+}
+
+static bool axp2101_read_power_status(unsigned *level_percent, bool *charging) {
+    uint8_t capacity = 0;
+    uint8_t state = 0;
+    if (axp2101_read(0xA4, &capacity) != ESP_OK || axp2101_read(0x00, &state) != ESP_OK) {
+        return false;
+    }
+    if (level_percent) *level_percent = capacity > 100 ? 100 : capacity;
+    /* AXP2101 register 0x01 bits [6:5] encode current direction.  Bit 2
+     * alone means charge-done, not active charging, which previously made
+     * normal discharging state appear as a charger state to the common HAL. */
+    if (charging) *charging = ((state >> 5) & 0x03u) == 1u;
+    return true;
+}
+
+static esp_err_t axp2101_init(void) {
+    const i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x34,
+        .scl_speed_hz = 100000,
+    };
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_audio_i2c_bus, &cfg, &s_axp2101),
+                        TAG, "add AXP2101");
+    static const uint8_t init[][2] = {
+        {0x80, 0x01}, {0x90, 0x01}, {0x91, 0x00}, {0x82, 0x12},
+        {0x92, 0x1c}, {0x64, 0x02}, {0x61, 0x02}, {0x62, 0x0a},
+        {0x63, 0x01}, {0x22, 0x06}, {0x27, 0x10},
+    };
+    for (size_t i = 0; i < sizeof(init) / sizeof(init[0]); ++i) {
+        ESP_RETURN_ON_ERROR(axp2101_write(init[i][0], init[i][1]), TAG,
+                            "AXP2101 reg %02x", init[i][0]);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t cst9217_init(void) {
+    esp_lcd_touch_config_t touch_cfg = {
+        .x_max = LCD_WIDTH - 1, .y_max = LCD_HEIGHT - 1,
+        .rst_gpio_num = GPIO_NUM_2, .int_gpio_num = TOUCH_IRQ,
+        .levels = {.reset = 0, .interrupt = 0},
+        .flags = {.swap_xy = 0, .mirror_x = 1, .mirror_y = 1},
+    };
+    esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_CST9217_CONFIG();
+    io_cfg.scl_speed_hz = 400000;
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c(s_audio_i2c_bus, &io_cfg, &s_cst9217_io),
+                        TAG, "create CST9217 I2C IO");
+    return esp_lcd_touch_new_i2c_cst9217(s_cst9217_io, &touch_cfg, &s_cst9217_touch);
+}
+
+/* QMI8658 is a board-local device.  The common Motion HAL receives only a
+ * normalized sample; identity, range configuration and raw register values
+ * deliberately never escape this adapter.  The Waveshare schematic exposes
+ * the IMU on the same I2C bus at 0x6B. */
+#define QMI8658_ADDRESS             0x6B
+#define QMI8658_REG_WHO_AM_I        0x00
+#define QMI8658_REG_CTRL1           0x02
+#define QMI8658_REG_CTRL2           0x03
+#define QMI8658_REG_CTRL3           0x04
+#define QMI8658_REG_CTRL7           0x08
+#define QMI8658_REG_DATA            0x35
+#define QMI8658_WHO_AM_I_VALUE      0x05
+
+static esp_err_t qmi8658_write(uint8_t reg, uint8_t value) {
+    const uint8_t bytes[2] = {reg, value};
+    return i2c_master_transmit(s_qmi8658, bytes, sizeof(bytes), 1000);
+}
+
+static esp_err_t qmi8658_read(uint8_t reg, uint8_t *data, size_t length) {
+    return i2c_master_transmit_receive(s_qmi8658, &reg, sizeof(reg), data, length, 1000);
+}
+
+static int16_t qmi8658_decode_i16(const uint8_t *data) {
+    return (int16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
+}
+
+static esp_err_t qmi8658_init(void) {
+    const i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = QMI8658_ADDRESS,
+        .scl_speed_hz = 400000,
+    };
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_audio_i2c_bus, &cfg, &s_qmi8658),
+                        TAG, "add QMI8658");
+    uint8_t who_am_i = 0;
+    ESP_RETURN_ON_ERROR(qmi8658_read(QMI8658_REG_WHO_AM_I, &who_am_i, 1), TAG,
+                        "read QMI8658 identity");
+    if (who_am_i != QMI8658_WHO_AM_I_VALUE) {
+        ESP_LOGE(TAG, "unexpected QMI8658 identity 0x%02x", who_am_i);
+        return ESP_ERR_NOT_FOUND;
+    }
+    /* 0x40 selects auto-address-increment and little-endian output.  The
+     * verified reference driver encodes CTRL2 range in [5:4] and ODR in
+     * [3:0], and CTRL3 analogously.  Use +/-8g/125Hz and +/-1024dps/112Hz:
+     * enough headroom and time resolution for later fall-state calibration. */
+    ESP_RETURN_ON_ERROR(qmi8658_write(QMI8658_REG_CTRL1, 0x40), TAG, "QMI8658 CTRL1");
+    ESP_RETURN_ON_ERROR(qmi8658_write(QMI8658_REG_CTRL2, 0x26), TAG, "QMI8658 CTRL2");
+    ESP_RETURN_ON_ERROR(qmi8658_write(QMI8658_REG_CTRL3, 0x66), TAG, "QMI8658 CTRL3");
+    ESP_RETURN_ON_ERROR(qmi8658_write(QMI8658_REG_CTRL7, 0x03), TAG, "QMI8658 CTRL7");
+    ESP_LOGI(TAG, "QMI8658 ready: accel 8g/125Hz, gyro 1024dps/112Hz");
+    return ESP_OK;
+}
+#endif
 
 static void audio_init_rollback(void) {
     // audio_init() is intentionally retryable: board_port_init() probes audio
@@ -689,6 +950,24 @@ static void audio_init_rollback(void) {
         (void)i2c_master_bus_rm_device(s_touch);
         s_touch = NULL;
     }
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    if (s_cst9217_touch) {
+        (void)esp_lcd_touch_del(s_cst9217_touch);
+        s_cst9217_touch = NULL;
+    }
+    if (s_cst9217_io) {
+        (void)esp_lcd_panel_io_del(s_cst9217_io);
+        s_cst9217_io = NULL;
+    }
+    if (s_axp2101) {
+        (void)i2c_master_bus_rm_device(s_axp2101);
+        s_axp2101 = NULL;
+    }
+    if (s_qmi8658) {
+        (void)i2c_master_bus_rm_device(s_qmi8658);
+        s_qmi8658 = NULL;
+    }
+#endif
     if (s_es8311) {
         (void)i2c_master_bus_rm_device(s_es8311);
         s_es8311 = NULL;
@@ -718,6 +997,14 @@ static esp_err_t audio_init(void) {
     };
     err = i2c_new_master_bus(&bus_cfg, &s_audio_i2c_bus);
     if (err != ESP_OK) goto fail;
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    err = axp2101_init();
+    if (err != ESP_OK) goto fail;
+    err = cst9217_init();
+    if (err != ESP_OK) goto fail;
+    err = qmi8658_init();
+    if (err != ESP_OK) goto fail;
+#endif
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = ES7210_ADDRESS,
         .scl_speed_hz = 100000,
@@ -730,7 +1017,7 @@ static esp_err_t audio_init(void) {
     };
     err = i2c_master_bus_add_device(s_audio_i2c_bus, &speaker_cfg, &s_es8311);
     if (err != ESP_OK) goto fail;
-#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G && !CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
     i2c_device_config_t touch_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = CST8XX_ADDRESS,
         .scl_speed_hz = 100000,
@@ -830,9 +1117,15 @@ static esp_err_t audio_init(void) {
     err = es8311_init();
     if (err != ESP_OK) goto fail;
     s_audio_ready = true;
-    ESP_LOGI(TAG, "EchoEar audio ready: ES7210 mic + ES8311 speaker at %dHz "
-             "(MCLK=%dHz, DAC BCLK=%dHz, 16-bit PCM in 32-bit stereo slots)",
-             AUDIO_RATE, AUDIO_RATE * 256, AUDIO_RATE * 2 * 32);
+    i2s_chan_info_t tx_info = {0};
+    if (i2s_channel_get_info(s_audio_tx, &tx_info) == ESP_OK) {
+        ESP_LOGI(TAG, "EchoEar audio ready: ES7210 mic + ES8311 speaker at %dHz "
+                 "(MCLK=%" PRIu32 "Hz, DAC BCLK=%" PRIu32
+                 "Hz, 16-bit PCM in 32-bit stereo slots, MCLK normal)",
+                 AUDIO_RATE, tx_info.mclk_hz, tx_info.bclk_hz);
+    } else {
+        ESP_LOGW(TAG, "EchoEar audio ready but I2S clock diagnostics unavailable");
+    }
     return ESP_OK;
 fail:
     ESP_LOGE(TAG, "EchoEar audio initialization failed: %s; rolling back for retry",
@@ -890,6 +1183,25 @@ static uint16_t state_color(const char *state) {
     // deep base rather than letting the boot/reconnect standby frame jump to
     // a lighter blue than the normal idle frame.
     return rgb565(18, 24, 38);
+}
+
+/* Shared round scenes were authored around the 360px EchoEar.  The 1.75C
+ * adapter retains their semantics but scales their local art coordinates into
+ * its larger logical viewport; this keeps display geometry below the HAL. */
+static int round_scene_x(int x) {
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    return (x * LCD_WIDTH + 180) / 360;
+#else
+    return x;
+#endif
+}
+
+static int round_scene_y(int y) {
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    return (y * LCD_HEIGHT + 180) / 360;
+#else
+    return y;
+#endif
 }
 
 static void fill_rect(int x0, int y0, int x1, int y1, uint16_t color) {
@@ -1610,7 +1922,8 @@ static void draw_clock_calendar(uint16_t bg) {
     // is available in that path.
     const bool keyed_overlay = s_render_target != NULL;
     const uint16_t overlay_bg = keyed_overlay ? AMBIENT_TRANSPARENT_KEY : bg;
-    for (size_t i = 0; i < sizeof(s_ambient_overlay) / sizeof(s_ambient_overlay[0]); ++i) {
+    if (!s_ambient_overlay) return;
+    for (size_t i = 0; i < AMBIENT_OVERLAY_PIXELS; ++i) {
         s_ambient_overlay[i] = overlay_bg;
     }
     bool clock_valid = ambient_time[0] && strcmp(ambient_time, "--:--:--");
@@ -1647,7 +1960,7 @@ static void draw_clock_calendar(uint16_t bg) {
     // City precedes weather on the matching lower arc. Its physical region
     // starts below the native pet's 96..272 drawing area, so neither text nor
     // background clearing can cut into the pet circle.
-    for (size_t i = 0; i < sizeof(s_ambient_overlay) / sizeof(s_ambient_overlay[0]); ++i) {
+    for (size_t i = 0; i < AMBIENT_OVERLAY_PIXELS; ++i) {
         s_ambient_overlay[i] = overlay_bg;
     }
     if (ambient_weather_valid && ambient_weather[0]) {
@@ -1681,7 +1994,8 @@ static void draw_clock_calendar(uint16_t bg) {
         // This taller, transparent area starts above the old lower strip so
         // the two ends of the tighter lower arc remain visible.  It only
         // paints foreground glyphs; the pet pixels underneath are preserved.
-        22, 268, 22 + AMBIENT_BOTTOM_W, 268 + AMBIENT_BOTTOM_H,
+        AMBIENT_BOTTOM_X, AMBIENT_BOTTOM_Y,
+        AMBIENT_BOTTOM_X + AMBIENT_BOTTOM_W, AMBIENT_BOTTOM_Y + AMBIENT_BOTTOM_H,
                            s_ambient_overlay, keyed_overlay);
 }
 
@@ -1690,17 +2004,19 @@ static void draw_clock_calendar(uint16_t bg) {
 // powered pixel.  Keep the lettering upright for legibility, but place it on
 // the lower half of the same true circle used by EchoEar's ambient rings.
 static void draw_startup_brand_arc(uint16_t bg) {
+    if (!s_ambient_overlay) return;
     const bool keyed_overlay = s_render_target != NULL;
     const uint16_t overlay_bg = keyed_overlay ? AMBIENT_TRANSPARENT_KEY : bg;
-    for (size_t i = 0; i < sizeof(s_ambient_overlay) / sizeof(s_ambient_overlay[0]); ++i) {
+    for (size_t i = 0; i < AMBIENT_OVERLAY_PIXELS; ++i) {
         s_ambient_overlay[i] = overlay_bg;
     }
     compose_text24_curve(s_ambient_overlay, AMBIENT_BOTTOM_W, AMBIENT_BOTTOM_W,
                          AMBIENT_BOTTOM_H, AMBIENT_BOTTOM_W / 2, 48,
                          -AMBIENT_RING_RADIUS, "MaClaw Mate",
                          rgb565(244, 249, 253));
-    draw_or_compose_bitmap(22, 268, 22 + AMBIENT_BOTTOM_W,
-                           268 + AMBIENT_BOTTOM_H, s_ambient_overlay,
+    draw_or_compose_bitmap(AMBIENT_BOTTOM_X, AMBIENT_BOTTOM_Y,
+                           AMBIENT_BOTTOM_X + AMBIENT_BOTTOM_W,
+                           AMBIENT_BOTTOM_Y + AMBIENT_BOTTOM_H, s_ambient_overlay,
                            keyed_overlay);
 }
 
@@ -1740,11 +2056,26 @@ static void fill_circle_vertical_gradient(int cx, int cy, int radius,
 }
 
 static int scale_standby_cat_coordinate(int value, int center) {
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    // Native pet coordinates are authored in a 360px square around (180,180).
+    // Preserve the intentional 7/8 smaller idle cat while mapping it into the
+    // target board's pet safe zone.  `center` is the board-specific anchor:
+    // LCD centre for x, and the visual halo centre for y.
+    return center + (value - 180) * LCD_WIDTH * STANDBY_CAT_SCALE_NUM /
+                        (360 * STANDBY_CAT_SCALE_DEN);
+#else
+    // Preserve EchoEar's established 360px composition byte-for-byte.
     return center + (value - center) * STANDBY_CAT_SCALE_NUM / STANDBY_CAT_SCALE_DEN;
+#endif
 }
 
 static int scale_standby_cat_radius(int value) {
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    return value * LCD_WIDTH * STANDBY_CAT_SCALE_NUM /
+                   (360 * STANDBY_CAT_SCALE_DEN);
+#else
     return value * STANDBY_CAT_SCALE_NUM / STANDBY_CAT_SCALE_DEN;
+#endif
 }
 
 static void draw_standby_cat_eye(int x, int y, uint16_t dark, uint16_t shine) {
@@ -1797,13 +2128,16 @@ static void draw_eye(int cx, int cy, uint16_t dark, uint16_t shine) {
 }
 
 static void draw_ear(int x, int y, int dir, uint16_t outer, uint16_t inner) {
-    for (int row = 0; row < 55; ++row) {
-        int w = 20 + row / 2;
+    const int rows = round_scene_y(55);
+    for (int row = 0; row < rows; ++row) {
+        int source_row = row * 360 / LCD_HEIGHT;
+        int w = round_scene_x(20 + source_row / 2);
         int left = dir > 0 ? x : x - w;
         fill_rect(left, y + row, left + w, y + row + 1, outer);
-        if (row > 13) {
-            int inner_w = w - 15;
-            int inner_left = dir > 0 ? x + 7 : x - inner_w - 7;
+        if (source_row > 13) {
+            int inner_w = round_scene_x(20 + source_row / 2 - 15);
+            int inner_left = dir > 0 ? x + round_scene_x(7)
+                                     : x - inner_w - round_scene_x(7);
             fill_rect(inner_left, y + row, inner_left + inner_w, y + row + 1, inner);
         }
     }
@@ -1897,9 +2231,12 @@ static void draw_ragdoll_pet(int bob, uint16_t bg) {
     // highest/lowest animation offsets. The previous 125 px circle extended
     // beneath both ambient dirty regions, which replaced its top and bottom
     // with straight horizontal chords.
-    fill_circle_vertical_gradient(180, PET_HALO_CENTER_Y + bob, PET_HALO_RADIUS,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2, PET_HALO_CENTER_Y + bob,
+                                  round_scene_x(PET_HALO_RADIUS),
                                   halo_top, halo_bottom);
-    fill_circle_vertical_gradient(180, PET_HALO_CENTER_Y - 11 + bob, 92,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2,
+                                  PET_HALO_CENTER_Y - round_scene_y(11) + bob,
+                                  round_scene_x(92),
                                   rgb565(237, 216, 255), rgb565(173, 105, 237));
     // A relaxed ~3.8-second sway replaces the former 0/7 px every-frame toggle,
     // which reversed direction about eight times per second and looked like a
@@ -1910,69 +2247,74 @@ static void draw_ragdoll_pet(int bob, uint16_t bg) {
         ragdoll_tail_offsets(s_pet_motion_tick, &tail_root_shift,
                              &tail_mid_shift, &tail_tip_shift);
     }
-    fill_circle_vertical_gradient(244 + tail_root_shift, 224 + bob, 43,
+    fill_circle_vertical_gradient(round_scene_x(244 + tail_root_shift), round_scene_y(224) + bob,
+                                  round_scene_x(43),
                                   rgb565(126, 96, 99), rgb565(66, 46, 51));
-    fill_circle_vertical_gradient(238 + tail_mid_shift, 213 + bob, 30,
+    fill_circle_vertical_gradient(round_scene_x(238 + tail_mid_shift), round_scene_y(213) + bob,
+                                  round_scene_x(30),
                                   rgb565(212, 169, 252), rgb565(143, 82, 222));
-    fill_circle_vertical_gradient(246 + tail_tip_shift, 192 + bob, 19,
+    fill_circle_vertical_gradient(round_scene_x(246 + tail_tip_shift), round_scene_y(192) + bob,
+                                  round_scene_x(19),
                                   rgb565(139, 105, 108), rgb565(70, 48, 54));
 
     // Fluffy seated body and paws.
-    fill_circle_vertical_gradient(180, 217 + bob, 73, rgb565(236, 211, 186),
+    fill_circle_vertical_gradient(LCD_WIDTH / 2, round_scene_y(217) + bob, round_scene_x(73), rgb565(236, 211, 186),
                                   rgb565(194, 158, 131));
-    fill_circle_vertical_gradient(180, 210 + bob, 70, rgb565(255, 247, 229),
+    fill_circle_vertical_gradient(LCD_WIDTH / 2, round_scene_y(210) + bob, round_scene_x(70), rgb565(255, 247, 229),
                                   fur_shadow);
-    fill_circle_vertical_gradient(130, 250 + bob, 31, rgb565(255, 244, 225),
+    fill_circle_vertical_gradient(round_scene_x(130), round_scene_y(250) + bob, round_scene_x(31), rgb565(255, 244, 225),
                                   fur_shadow);
-    fill_circle_vertical_gradient(230, 250 + bob, 31, rgb565(255, 244, 225),
+    fill_circle_vertical_gradient(round_scene_x(230), round_scene_y(250) + bob, round_scene_x(31), rgb565(255, 244, 225),
                                   fur_shadow);
-    fill_circle(130, 260 + bob, 17, seal);
-    fill_circle(230, 260 + bob, 17, seal);
-    fill_circle(126, 257 + bob, 5, pink);
-    fill_circle(134, 257 + bob, 5, pink);
-    fill_circle(226, 257 + bob, 5, pink);
-    fill_circle(234, 257 + bob, 5, pink);
+    fill_circle(round_scene_x(130), round_scene_y(260) + bob, round_scene_x(17), seal);
+    fill_circle(round_scene_x(230), round_scene_y(260) + bob, round_scene_x(17), seal);
+    fill_circle(round_scene_x(126), round_scene_y(257) + bob, round_scene_x(5), pink);
+    fill_circle(round_scene_x(134), round_scene_y(257) + bob, round_scene_x(5), pink);
+    fill_circle(round_scene_x(226), round_scene_y(257) + bob, round_scene_x(5), pink);
+    fill_circle(round_scene_x(234), round_scene_y(257) + bob, round_scene_x(5), pink);
 
     // Head and seal-point ears.  The paired nested triangles read clearly at
     // 360 px while leaving the calendar unobscured.
-    fill_circle_vertical_gradient(180, 146 + bob, 75, rgb565(241, 220, 199),
+    fill_circle_vertical_gradient(LCD_WIDTH / 2, round_scene_y(146) + bob, round_scene_x(75), rgb565(241, 220, 199),
                                   rgb565(197, 164, 139));
-    draw_ear(111, 80 + bob, 1, seal, pink);
-    draw_ear(249, 80 + bob, -1, seal, pink);
-    fill_circle_vertical_gradient(180, 142 + bob, 72, rgb565(255, 249, 234),
+    draw_ear(round_scene_x(111), round_scene_y(80) + bob, 1, seal, pink);
+    draw_ear(round_scene_x(249), round_scene_y(80) + bob, -1, seal, pink);
+    fill_circle_vertical_gradient(LCD_WIDTH / 2, round_scene_y(142) + bob, round_scene_x(72), rgb565(255, 249, 234),
                                   rgb565(226, 197, 169));
-    fill_circle_vertical_gradient(134, 143 + bob, 31, rgb565(129, 99, 102),
+    fill_circle_vertical_gradient(round_scene_x(134), round_scene_y(143) + bob, round_scene_x(31), rgb565(129, 99, 102),
                                   rgb565(66, 46, 51));
-    fill_circle_vertical_gradient(226, 143 + bob, 31, rgb565(129, 99, 102),
+    fill_circle_vertical_gradient(round_scene_x(226), round_scene_y(143) + bob, round_scene_x(31), rgb565(129, 99, 102),
                                   rgb565(66, 46, 51));
-    fill_circle_vertical_gradient(180, 171 + bob, 26, rgb565(132, 101, 103),
+    fill_circle_vertical_gradient(LCD_WIDTH / 2, round_scene_y(171) + bob, round_scene_x(26), rgb565(132, 101, 103),
                                   rgb565(68, 46, 52));
-    fill_circle(180, 165 + bob, 19, fur_shadow);
+    fill_circle(LCD_WIDTH / 2, round_scene_y(165) + bob, round_scene_x(19), fur_shadow);
 
     // Blink briefly only every few seconds. The old 8-frame loop closed the
     // eyes roughly twice per second, which read as flicker rather than life.
     uint8_t blink_stage = s_pet_motion_enabled ? pet_blink_stage(s_pet_motion_tick) : 0u;
     if (blink_stage == 2u) {
-        fill_rect(119, 138 + bob, 149, 144 + bob, blue_dark);
-        fill_rect(211, 138 + bob, 241, 144 + bob, blue_dark);
+        fill_rect(round_scene_x(119), round_scene_y(138) + bob,
+                  round_scene_x(149), round_scene_y(144) + bob, blue_dark);
+        fill_rect(round_scene_x(211), round_scene_y(138) + bob,
+                  round_scene_x(241), round_scene_y(144) + bob, blue_dark);
     } else if (blink_stage == 1u) {
-        fill_circle(134, 145 + bob, 11, blue_dark);
-        fill_circle(226, 145 + bob, 11, blue_dark);
-        fill_rect(121, 132 + bob, 148, 142 + bob, rgb565(129, 99, 102));
-        fill_rect(213, 132 + bob, 240, 142 + bob, rgb565(129, 99, 102));
+        fill_circle(round_scene_x(134), round_scene_y(145) + bob, round_scene_x(11), blue_dark);
+        fill_circle(round_scene_x(226), round_scene_y(145) + bob, round_scene_x(11), blue_dark);
+        fill_rect(round_scene_x(121), round_scene_y(132) + bob, round_scene_x(148), round_scene_y(142) + bob, rgb565(129, 99, 102));
+        fill_rect(round_scene_x(213), round_scene_y(132) + bob, round_scene_x(240), round_scene_y(142) + bob, rgb565(129, 99, 102));
     } else {
-        fill_circle(134, 142 + bob, 17, blue_dark);
-        fill_circle(226, 142 + bob, 17, blue_dark);
-        fill_circle(134, 139 + bob, 12, blue);
-        fill_circle(226, 139 + bob, 12, blue);
-        fill_circle(140, 134 + bob, 5, shine);
-        fill_circle(232, 134 + bob, 5, shine);
+        fill_circle(round_scene_x(134), round_scene_y(142) + bob, round_scene_x(17), blue_dark);
+        fill_circle(round_scene_x(226), round_scene_y(142) + bob, round_scene_x(17), blue_dark);
+        fill_circle(round_scene_x(134), round_scene_y(139) + bob, round_scene_x(12), blue);
+        fill_circle(round_scene_x(226), round_scene_y(139) + bob, round_scene_x(12), blue);
+        fill_circle(round_scene_x(140), round_scene_y(134) + bob, round_scene_x(5), shine);
+        fill_circle(round_scene_x(232), round_scene_y(134) + bob, round_scene_x(5), shine);
     }
-    fill_circle(180, 167 + bob, 7, pink);
-    fill_circle(178, 165 + bob, 2, shine);
-    fill_rect(177, 174 + bob, 183, 184 + bob, seal);
-    fill_rect(163, 183 + bob, 180, 188 + bob, seal);
-    fill_rect(180, 183 + bob, 198, 188 + bob, seal);
+    fill_circle(LCD_WIDTH / 2, round_scene_y(167) + bob, round_scene_x(7), pink);
+    fill_circle(round_scene_x(178), round_scene_y(165) + bob, round_scene_x(2), shine);
+    fill_rect(round_scene_x(177), round_scene_y(174) + bob, round_scene_x(183), round_scene_y(184) + bob, seal);
+    fill_rect(round_scene_x(163), round_scene_y(183) + bob, LCD_WIDTH / 2, round_scene_y(188) + bob, seal);
+    fill_rect(LCD_WIDTH / 2, round_scene_y(183) + bob, round_scene_x(198), round_scene_y(188) + bob, seal);
     (void)bg;
 }
 
@@ -2027,29 +2369,30 @@ static void draw_pet_frame_contents(bool redraw_background) {
     // The ambient header owns y=8..62 and the lower ring owns y=288..359.
     // Center/radius are shared with the ragdoll renderer so the whole circle
     // remains rounded across every selected pet and every bobbing frame.
-    fill_circle_vertical_gradient(180, PET_HALO_CENTER_Y + bob,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2, PET_HALO_CENTER_Y + bob,
                                   scale_standby_cat_radius(PET_HALO_RADIUS),
                                   halo_top, halo_bottom);
     // Offset inner light produces a soft dimensional halo without storing or
     // decoding any bitmap asset.
-    fill_circle_vertical_gradient(180, PET_HALO_CENTER_Y - scale_standby_cat_radius(12) + bob,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2,
+                                  PET_HALO_CENTER_Y - scale_standby_cat_radius(12) + bob,
                                   scale_standby_cat_radius(92),
                                   rgb565(153, 229, 255), rgb565(53, 126, 224));
     draw_standby_cat_ear(88, 64 + pet_y_offset, 1, face_shadow, ear);
     draw_standby_cat_ear(272, 64 + pet_y_offset, -1, face_shadow, ear);
-    fill_circle_vertical_gradient(180,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2,
                                   scale_standby_cat_coordinate(170 + pet_y_offset + bob,
                                                                PET_HALO_CENTER_Y),
                                   scale_standby_cat_radius(103),
                                   face_shadow, face_deep);
-    fill_circle_vertical_gradient(180,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2,
                                   scale_standby_cat_coordinate(164 + pet_y_offset + bob,
                                                                PET_HALO_CENTER_Y),
                                   scale_standby_cat_radius(100),
                                   face_light, face);
     // A restrained forehead sheen and lower-face shade add volume while
     // leaving the time and calendar rings visually dominant.
-    fill_circle_vertical_gradient(180,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2,
                                   scale_standby_cat_coordinate(120 + pet_y_offset + bob,
                                                                PET_HALO_CENTER_Y),
                                   scale_standby_cat_radius(54),
@@ -2065,7 +2408,7 @@ static void draw_pet_frame_contents(bool redraw_background) {
         draw_standby_cat_eye(140, 151 + pet_y_offset + bob, ink, shine);
         draw_standby_cat_eye(220, 151 + pet_y_offset + bob, ink, shine);
     }
-    fill_circle_vertical_gradient(180,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2,
                                   scale_standby_cat_coordinate(190 + pet_y_offset + bob,
                                                                PET_HALO_CENTER_Y),
                                   scale_standby_cat_radius(15),
@@ -2089,14 +2432,15 @@ static void draw_pet_frame_contents(bool redraw_background) {
         // A restrained orbit above the head is visible without competing with
         // the time band. The changing brightness gives the state an obvious
         // direction even on the small round LCD.
-        const int dot_x[3] = {158, 180, 202};
+        const int dot_x[3] = {round_scene_x(158), round_scene_x(180), round_scene_x(202)};
         const int active = (int)((s_pet_motion_tick / 4u) % 3u);
         for (int i = 0; i < 3; ++i) {
             uint16_t dot = i == active ? rgb565(244, 250, 255) : rgb565(142, 190, 255);
-            fill_circle(dot_x[i], 82, i == active ? 5 : 3, dot);
+            fill_circle(dot_x[i], round_scene_y(82),
+                        round_scene_x(i == active ? 5 : 3), dot);
         }
     }
-    fill_circle_vertical_gradient(180,
+    fill_circle_vertical_gradient(LCD_WIDTH / 2,
                                   scale_standby_cat_coordinate(236 + pet_y_offset + bob,
                                                                PET_HALO_CENTER_Y),
                                   scale_standby_cat_radius(39),
@@ -2247,6 +2591,24 @@ static bool remote_pet_target_size(size_t width, size_t height,
     if (!target_width || !target_height) return false;
     *out_width = target_width;
     *out_height = target_height;
+    return true;
+}
+
+bool board_port_get_pet_asset_install_budget(size_t source_width, size_t source_height,
+                                             size_t frame_count, size_t *out_external_bytes) {
+    if (!out_external_bytes || frame_count > REMOTE_PET_MAX_FRAMES) return false;
+    if (frame_count == 0) {
+        *out_external_bytes = 0;
+        return true;
+    }
+    size_t target_width = 0, target_height = 0;
+    if (!remote_pet_target_size(source_width, source_height, &target_width, &target_height) ||
+        target_width > SIZE_MAX / target_height ||
+        target_width * target_height > SIZE_MAX / 3u ||
+        target_width * target_height * 3u > SIZE_MAX / frame_count) {
+        return false;
+    }
+    *out_external_bytes = target_width * target_height * 3u * frame_count;
     return true;
 }
 
@@ -2530,7 +2892,7 @@ static void pet_animation_task(void *arg) {
                                            : pdMS_TO_TICKS(remote_pack_active
                                                                ? REMOTE_PET_RENDER_FRAME_MS
                                                                : PET_ANIMATION_FRAME_MS);
-        vTaskDelay(frame_delay);
+        if (ulTaskNotifyTake(pdTRUE, frame_delay) != 0) break;
         // Read the revision after the delay. Reading it at the end of a frame
         // can acknowledge a clock update that arrived while the previous DMA
         // transfer was running even though that second was never rendered.
@@ -2621,11 +2983,22 @@ static void pet_animation_task(void *arg) {
         // task and networking cannot be starved by catch-up frames.
         taskYIELD();
     }
+    if (s_pet_animation_stopped) xSemaphoreGive(s_pet_animation_stopped);
+    vTaskDelete(NULL);
 }
 
 static bool touch_read(bool *pressed, uint8_t *gesture) {
     if (pressed) *pressed = false;
     if (gesture) *gesture = 0;
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    if (!s_cst9217_touch) return false;
+    if (esp_lcd_touch_read_data(s_cst9217_touch) != ESP_OK) return false;
+    esp_lcd_touch_point_data_t point = {0};
+    uint8_t points = 0;
+    bool down = esp_lcd_touch_get_data(s_cst9217_touch, &point, &points, 1) == ESP_OK;
+    if (pressed) *pressed = down && points != 0;
+    return true;
+#else
     if (!s_touch) return false;
 
     // Read the gesture ID and finger count in one transaction. CST816 reports
@@ -2639,6 +3012,7 @@ static bool touch_read(bool *pressed, uint8_t *gesture) {
     if (gesture) *gesture = status[0];
     if (pressed) *pressed = (status[1] & 0x0Fu) != 0;
     return true;
+#endif
 }
 
 static void button_task(void *arg) {
@@ -2669,7 +3043,13 @@ static void button_task(void *arg) {
     bool native_double_sent = false;
     uint32_t command_gesture_revision = s_command_gesture_revision;
     ESP_LOGI(TAG, "interaction monitor ready: boot_gpio=%d idle_level=%d touch=%s irq=%d",
-             FUNCTION_BUTTON, gpio_get_level(FUNCTION_BUTTON), s_touch ? "yes" : "no", TOUCH_IRQ);
+             FUNCTION_BUTTON, gpio_get_level(FUNCTION_BUTTON),
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+             s_cst9217_touch ? "yes" : "no",
+#else
+             s_touch ? "yes" : "no",
+#endif
+             TOUCH_IRQ);
     while (true) {
         bool now_button_pressed = gpio_get_level(FUNCTION_BUTTON) == 0;
         bool now_panel_pressed = false;
@@ -2838,8 +3218,15 @@ static void button_task(void *arg) {
             emit_button_input(BOARD_BUTTON_SHORT, pending_source);
             pending_source = BOARD_INPUT_SOURCE_UNKNOWN;
         }
-        vTaskDelay(pdMS_TO_TICKS(15));
+        /* The lifecycle owner wakes the scanner through its task notification;
+         * do not use a volatile flag as a cross-task stop protocol. */
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(15)) != 0) break;
     }
+
+    s_on_button = NULL;
+    s_on_press_arg = NULL;
+    if (s_button_task_stopped) xSemaphoreGive(s_button_task_stopped);
+    vTaskDelete(NULL);
 }
 esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     s_on_button = on_button;
@@ -2848,6 +3235,8 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     s_boot_network_window_active = true;
     s_boot_network_toggle_requested = false;
 #endif
+    s_background_tasks_lock = xSemaphoreCreateMutex();
+    if (!s_background_tasks_lock) return ESP_ERR_NO_MEM;
     s_lcd_mutex = xSemaphoreCreateRecursiveMutex();
     if (!s_lcd_mutex) return ESP_ERR_NO_MEM;
     s_audio_mutex = xSemaphoreCreateMutex();
@@ -2855,12 +3244,31 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     s_lcd_transfer_done = xSemaphoreCreateBinary();
     if (!s_lcd_transfer_done) return ESP_ERR_NO_MEM;
 
-    ESP_ERROR_CHECK(gpio_set_direction(LCD_BACKLIGHT, GPIO_MODE_OUTPUT));
-    ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 0));
+    if (LCD_BACKLIGHT != GPIO_NUM_NC) {
+        ESP_ERROR_CHECK(gpio_set_direction(LCD_BACKLIGHT, GPIO_MODE_OUTPUT));
+        ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 0));
+    }
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    const spi_bus_config_t bus_config = {
+        .sclk_io_num = LCD_SCLK, .data0_io_num = LCD_DATA0,
+        .data1_io_num = LCD_DATA1, .data2_io_num = LCD_DATA2,
+        .data3_io_num = LCD_DATA3, .max_transfer_sz = LCD_FRAMEBUFFER_BYTES,
+        .flags = SPICOMMON_BUSFLAG_QUAD,
+    };
+#else
     const spi_bus_config_t bus_config = ST77916_PANEL_BUS_QSPI_CONFIG(
         LCD_SCLK, LCD_DATA0, LCD_DATA1, LCD_DATA2, LCD_DATA3, LCD_FRAMEBUFFER_BYTES);
+#endif
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus_config, SPI_DMA_CH_AUTO));
     esp_lcd_panel_io_handle_t io = NULL;
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    esp_lcd_panel_io_spi_config_t io_config = {
+        .cs_gpio_num = LCD_CS, .dc_gpio_num = GPIO_NUM_NC, .spi_mode = 0,
+        .pclk_hz = LCD_QSPI_PCLK_HZ, .trans_queue_depth = 10,
+        .lcd_cmd_bits = 32, .lcd_param_bits = 8, .on_color_trans_done = lcd_color_transfer_done,
+        .user_ctx = s_lcd_transfer_done, .flags = {.quad_mode = true},
+    };
+#else
     esp_lcd_panel_io_spi_config_t io_config = ST77916_PANEL_IO_QSPI_CONFIG(
         LCD_CS, lcd_color_transfer_done, s_lcd_transfer_done);
     // ST77916 uses the board's four QSPI data lines for RAMWR pixel payloads.
@@ -2875,24 +3283,39 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     // path needs a conservative clock to prevent vertical stripe corruption.
     io_config.pclk_hz = LCD_QSPI_PCLK_HZ;
     io_config.flags.psram_dma_direct = false;
+#endif
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(LCD_HOST, &io_config, &io));
     s_panel_io = io;
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    co5300_vendor_config_t vendor_config = {
+        .init_cmds = s_waveshare_co5300_init_cmds,
+        .init_cmds_size = sizeof(s_waveshare_co5300_init_cmds) /
+                          sizeof(s_waveshare_co5300_init_cmds[0]),
+        .flags = {.use_qspi_interface = 1},
+    };
+#else
     st77916_vendor_config_t vendor_config = {
         .init_cmds = s_echoear_init_cmds,
         .init_cmds_size = sizeof(s_echoear_init_cmds) / sizeof(s_echoear_init_cmds[0]),
         .flags = {.use_qspi_interface = 1},
     };
+#endif
     const esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = LCD_RESET,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
         .vendor_config = &vendor_config,
     };
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    ESP_ERROR_CHECK(esp_lcd_new_panel_co5300(io, &panel_config, &s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 6, 0));
+#else
     ESP_ERROR_CHECK(esp_lcd_new_panel_st77916(io, &panel_config, &s_panel));
+#endif
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
-    ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 1));
+    if (LCD_BACKLIGHT != GPIO_NUM_NC) ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 1));
 
     for (size_t i = 0; i < 2; ++i) {
         s_framebuffers[i] = heap_caps_malloc(
@@ -2912,6 +3335,27 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
         ESP_LOGI(TAG, "LCD double buffer ready: 2 x %u bytes in DMA PSRAM, %u ms cadence",
                  (unsigned)LCD_FRAMEBUFFER_BYTES, (unsigned)PET_ANIMATION_FRAME_MS);
     }
+    // The two curved text regions are composed serially.  The larger AMOLED
+    // header cannot be a static DMA object without starving internal memory,
+    // while panel IO is already configured to bounce PSRAM sources safely.
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    const uint32_t overlay_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    const uint32_t overlay_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
+#endif
+    s_ambient_overlay = heap_caps_malloc(AMBIENT_OVERLAY_BYTES, overlay_caps);
+    if (!s_ambient_overlay) {
+        ESP_LOGE(TAG, "cannot allocate %u-byte ambient overlay", (unsigned)AMBIENT_OVERLAY_BYTES);
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "ambient overlay ready: %u bytes in %s",
+             (unsigned)AMBIENT_OVERLAY_BYTES,
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+             "PSRAM"
+#else
+             "internal DMA memory"
+#endif
+    );
     // Do not submit any full-screen transfer until networking has completed
     // its fragile association phase.  On this S3, simultaneous LCD GDMA and
     // Wi-Fi ROM initialisation can corrupt Wi-Fi's timer callback state.
@@ -2924,6 +3368,22 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     if (input_i2c_err != ESP_OK) {
         ESP_LOGW(TAG, "touch/audio init deferred: %s", esp_err_to_name(input_i2c_err));
     }
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    else {
+        device_motion_sample_t motion = {
+            .struct_size = sizeof(motion),
+            .abi_version = DEVICE_MOTION_SAMPLE_ABI_VERSION,
+        };
+        if (board_port_motion_get_sample(&motion) == ESP_OK) {
+            ESP_LOGI(TAG, "Motion HAL sample: a=(%ld,%ld,%ld)mg g=(%ld,%ld,%ld)mdps",
+                     (long)motion.acceleration_mg_x, (long)motion.acceleration_mg_y,
+                     (long)motion.acceleration_mg_z, (long)motion.angular_rate_mdps_x,
+                     (long)motion.angular_rate_mdps_y, (long)motion.angular_rate_mdps_z);
+        } else {
+            ESP_LOGW(TAG, "Motion HAL sample unavailable after QMI8658 initialization");
+        }
+    }
+#endif
 
     gpio_config_t button_cfg = {
         .pin_bit_mask = 1ULL << FUNCTION_BUTTON,
@@ -2933,13 +3393,21 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&button_cfg));
+    s_button_task_stopped = xSemaphoreCreateBinary();
+    if (!s_button_task_stopped) return ESP_ERR_NO_MEM;
     BaseType_t button_task_created = xTaskCreate(button_task, "echoear_button", 3072, NULL, 4,
-                                                  NULL);
+                                                  &s_button_task);
     if (button_task_created != pdPASS) {
         ESP_LOGE(TAG, "cannot start button task");
+        vSemaphoreDelete(s_button_task_stopped);
+        s_button_task_stopped = NULL;
         return ESP_ERR_NO_MEM;
     }
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    ESP_LOGI(TAG, "Waveshare 1.75C CO5300 round AMOLED, CST9217 touch and boot key ready");
+#else
     ESP_LOGI(TAG, "EchoEar-2ST ST77916 QSPI display and function button ready");
+#endif
     return ESP_OK;
 }
 
@@ -2959,6 +3427,55 @@ bool board_port_wait_for_boot_network_toggle(uint32_t window_ms) {
     (void)window_ms;
     return false;
 #endif
+}
+
+bool board_port_load_transport_selection(bool *out_cellular) {
+    if (out_cellular) *out_cellular = false;
+    return false;
+}
+
+bool board_port_apply_startup_transport_toggle(uint32_t window_ms,
+                                               bool current_cellular,
+                                               bool *out_cellular) {
+    (void)window_ms;
+    if (out_cellular) *out_cellular = current_cellular;
+    return false;
+}
+
+void board_port_adapt_gateway_url(char *gateway_url, size_t capacity,
+                                  bool cellular_active) {
+    (void)gateway_url;
+    (void)capacity;
+    (void)cellular_active;
+}
+
+esp_err_t board_port_prepare_cellular_transport(void) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+bool board_port_cancel_cellular_foreground_request(void) {
+    return false;
+}
+
+esp_err_t board_port_start_cellular_transport(uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+bool board_port_is_cellular_transport_ready(void) {
+    return false;
+}
+
+esp_err_t board_port_cellular_http_request(
+    const device_connectivity_http_request_t *request) {
+    (void)request;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t board_port_cellular_http_stream_request(
+    const device_connectivity_stream_request_t *request) {
+    (void)request;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 void board_port_show_startup_screen(void) {
@@ -3070,21 +3587,29 @@ void board_port_set_command_stage(const char *stage) {
 void board_port_set_command_display_lock(bool locked) {
     s_command_display_locked = locked;
     if (locked) s_ready_prompt_expires_us = 0;
-    if (!locked && !s_pet_animation_started) {
+    if (!locked && !s_pet_animation_started && s_background_tasks_lock &&
+        xSemaphoreTake(s_background_tasks_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
         // By the time the Welcome/wake sequence releases the boot surface,
         // TLS and ESP-SR have legitimately consumed the remaining contiguous
         // internal heap.  The renderer keeps all transfer buffers in static
         // DMA memory/PSRAM and does not need an internal task stack; allocating
         // this idle-only worker from PSRAM prevents the standby pet from being
         // silently dropped exactly when the device becomes ready.
-        BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
-            pet_animation_task, "maclaw_pet_animation", 6144, NULL, 2, NULL,
-            1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_pet_animation_stopped = xSemaphoreCreateBinary();
+        BaseType_t created = s_pet_animation_stopped
+            ? xTaskCreatePinnedToCoreWithCaps(
+                pet_animation_task, "maclaw_pet_animation", 6144, NULL, 2,
+                &s_pet_animation_task, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+            : pdFAIL;
         if (created == pdPASS) {
             s_pet_animation_started = true;
         } else {
+            if (s_pet_animation_stopped) vSemaphoreDelete(s_pet_animation_stopped);
+            s_pet_animation_stopped = NULL;
+            s_pet_animation_task = NULL;
             ESP_LOGE(TAG, "cannot start deferred pet animation task");
         }
+        xSemaphoreGive(s_background_tasks_lock);
     }
     // The startup artwork/ready hint is a foreground surface.  Once the
     // shared UI model releases that lock, explicitly publish the pet frame;
@@ -3313,7 +3838,9 @@ void board_port_show_text(const char *title, const char *text) {
     s_idle_pet_visible = false;
     s_idle_pet_sleep_expires_us = 0;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, true));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+    if (LCD_BACKLIGHT != GPIO_NUM_NC) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+    }
     const uint16_t bg = state_color(s_pet_state);
     const uint16_t header = rgb565(14, 31, 47);
     const uint16_t ink = rgb565(248, 252, 255);
@@ -3666,7 +4193,9 @@ void board_port_show_ready_prompt(const char *title, const char *text) {
     s_message_active = false;
     s_display_sleeping = false;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, true));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+    if (LCD_BACKLIGHT != GPIO_NUM_NC) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+    }
     board_port_set_pet_state("idle");
     s_ready_prompt_expires_us = 0;
     ESP_LOGI(TAG, "ready standby: %s | %s", title ? title : "", text ? text : "");
@@ -3697,7 +4226,9 @@ bool board_port_enter_display_off(void) {
     s_idle_pet_sleep_expires_us = 0;
     s_display_sleeping = true;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
+    if (LCD_BACKLIGHT != GPIO_NUM_NC) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
+    }
     xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "display HAL entered DISPLAY_OFF");
     return true;
@@ -3712,10 +4243,17 @@ bool board_port_display_is_off(void) {
 }
 
 bool board_port_wake_from_idle(void) {
-    if (!s_display_sleeping) return false;
+    if (!s_lcd_mutex || !s_panel) return false;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
+    if (!s_display_sleeping) {
+        xSemaphoreGiveRecursive(s_lcd_mutex);
+        return false;
+    }
     s_display_sleeping = false;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, true));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+    if (LCD_BACKLIGHT != GPIO_NUM_NC) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+    }
     // The first physical contact after the 30-minute ambient timeout is a
     // screen wake, not an implicit voice command. Re-publish the same ready
     // pet surface and arm its normal hint timeout, matching the documented
@@ -3724,6 +4262,8 @@ bool board_port_wake_from_idle(void) {
     s_idle_pet_sleep_expires_us = esp_timer_get_time() + IDLE_PET_SLEEP_TIMEOUT_US;
     s_ready_prompt_expires_us = esp_timer_get_time() + READY_PROMPT_TIMEOUT_US;
     draw_pet();
+    xSemaphoreGiveRecursive(s_lcd_mutex);
+    ESP_LOGI(TAG, "ambient display awakened");
     return true;
 }
 
@@ -4112,7 +4652,9 @@ void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_t
         s_alarm_visual_active = false;
         s_display_sleeping = false;
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, true));
-        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+        if (LCD_BACKLIGHT != GPIO_NUM_NC) {
+            ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+        }
         return;
     }
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
@@ -4925,6 +5467,54 @@ esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
     return ESP_OK;
 }
 
+esp_err_t board_port_stop_input(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_button_task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == s_button_task) return ESP_ERR_INVALID_STATE;
+
+    xTaskNotifyGive(s_button_task);
+    if (!s_button_task_stopped ||
+        xSemaphoreTake(s_button_task_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        ESP_LOGW(TAG, "timed out stopping board input scanner");
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(s_button_task_stopped);
+    s_button_task_stopped = NULL;
+    s_button_task = NULL;
+    ESP_LOGI(TAG, "board input scanner stopped");
+    return ESP_OK;
+}
+
+esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_background_tasks_lock ||
+        xSemaphoreTake(s_background_tasks_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (!s_pet_animation_task) {
+        xSemaphoreGive(s_background_tasks_lock);
+        return ESP_OK;
+    }
+    if (xTaskGetCurrentTaskHandle() == s_pet_animation_task) {
+        xSemaphoreGive(s_background_tasks_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    xTaskNotifyGive(s_pet_animation_task);
+    if (!s_pet_animation_stopped ||
+        xSemaphoreTake(s_pet_animation_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        xSemaphoreGive(s_background_tasks_lock);
+        ESP_LOGW(TAG, "timed out stopping board pet animation task");
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(s_pet_animation_stopped);
+    s_pet_animation_stopped = NULL;
+    s_pet_animation_task = NULL;
+    s_pet_animation_started = false;
+    xSemaphoreGive(s_background_tasks_lock);
+    ESP_LOGI(TAG, "board pet animation task stopped");
+    return ESP_OK;
+}
+
 // Bread Compact presents only rows/columns that changed from the previous
 // composed frame. EchoEar keeps the same ownership rule but retains its
 // conservative 20 MHz QSPI and bounce-buffered DMA path. This cuts a normal
@@ -4994,9 +5584,45 @@ void board_port_set_service_ready(bool ready) {
 }
 
 bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    if (!s_axp2101) return false;
+    return axp2101_read_power_status(level_percent, charging);
+#else
     (void)level_percent;
     (void)charging;
     return false;
+#endif
+}
+
+esp_err_t board_port_motion_get_sample(device_motion_sample_t *out_sample) {
+    if (!out_sample) return ESP_ERR_INVALID_ARG;
+#if CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    if (!s_qmi8658) return ESP_ERR_NOT_FOUND;
+    uint8_t data[12] = {0};
+    ESP_RETURN_ON_ERROR(qmi8658_read(QMI8658_REG_DATA, data, sizeof(data)), TAG,
+                        "read QMI8658 motion sample");
+    /* The adapter configures QMI8658 at +/-8 g and +/-1024 dps.  Convert
+     * sensor LSBs into the Device API's integer engineering units here, once,
+     * rather than forcing every business consumer to understand its range. */
+    const int32_t acceleration_mg_per_lsb_num = 8000;
+    const int32_t angular_rate_mdps_per_lsb_num = 1024000;
+    out_sample->timestamp_us = (uint64_t)esp_timer_get_time();
+    out_sample->acceleration_mg_x =
+        (int32_t)qmi8658_decode_i16(&data[0]) * acceleration_mg_per_lsb_num / 32768;
+    out_sample->acceleration_mg_y =
+        (int32_t)qmi8658_decode_i16(&data[2]) * acceleration_mg_per_lsb_num / 32768;
+    out_sample->acceleration_mg_z =
+        (int32_t)qmi8658_decode_i16(&data[4]) * acceleration_mg_per_lsb_num / 32768;
+    out_sample->angular_rate_mdps_x =
+        (int32_t)qmi8658_decode_i16(&data[6]) * angular_rate_mdps_per_lsb_num / 32768;
+    out_sample->angular_rate_mdps_y =
+        (int32_t)qmi8658_decode_i16(&data[8]) * angular_rate_mdps_per_lsb_num / 32768;
+    out_sample->angular_rate_mdps_z =
+        (int32_t)qmi8658_decode_i16(&data[10]) * angular_rate_mdps_per_lsb_num / 32768;
+    return ESP_OK;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 void board_port_request_capture_stop(void) {
@@ -5100,6 +5726,12 @@ esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
         return ESP_ERR_INVALID_ARG;
     }
     if (s_audio_playback_stop_requested) return ESP_ERR_INVALID_STATE;
+    /* This codec needs 32-bit I2S slots (64 BCLK/LRCK), while the configured
+     * DMA data width and the Device API PCM contract remain signed 16-bit.
+     * ESP-IDF uses data_bit_width, not slot_bit_width, for its DMA frame
+     * payload, and emits the 16-bit samples in the configured left-aligned
+     * slots.  Keep this buffer packed int16_t; expanding it would change the
+     * DMA frame contract and corrupt the stream. */
     int16_t stereo[512];
     size_t offset = 0;
     while (offset < frames) {

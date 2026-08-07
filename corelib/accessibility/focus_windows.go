@@ -18,6 +18,8 @@ var (
 	procSetForegroundWindow      = user32Enum.NewProc("SetForegroundWindow")
 	procShowWindow               = user32Enum.NewProc("ShowWindow")
 	procGetForegroundWindow      = user32Enum.NewProc("GetForegroundWindow")
+	procWindowFromPoint          = user32Enum.NewProc("WindowFromPoint")
+	procGetAncestor              = user32Enum.NewProc("GetAncestor")
 	procAttachThreadInput        = user32Enum.NewProc("AttachThreadInput")
 	procGetWindowThreadProcessId = user32Enum.NewProc("GetWindowThreadProcessId")
 	kernel32                     = syscall.NewLazyDLL("kernel32.dll")
@@ -89,4 +91,37 @@ func focusWindow(titleSubstring string) error {
 		return fmt.Errorf("SetForegroundWindow: %v", err)
 	}
 	return nil
+}
+
+// foregroundWindowTitle returns the foreground window title ("" when none).
+func foregroundWindowTitle() string {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return ""
+	}
+	return windowText(hwnd)
+}
+
+// windowTitleAtPoint resolves the top-level window owning screen point (x,y)
+// and returns its title ("" when none).
+func windowTitleAtPoint(x, y int) string {
+	// POINT by value: two int32 packed into one uintptr on x64.
+	hwnd, _, _ := procWindowFromPoint.Call(uintptr(uint32(x)) | uintptr(uint32(y))<<32)
+	if hwnd == 0 {
+		return ""
+	}
+	if root, _, _ := procGetAncestor.Call(hwnd, 2 /*GA_ROOT*/); root != 0 {
+		hwnd = root
+	}
+	return windowText(hwnd)
+}
+
+func windowText(hwnd uintptr) string {
+	n, _, _ := procGetWindowTextLengthW.Call(hwnd)
+	if n == 0 {
+		return ""
+	}
+	buf := make([]uint16, n+1)
+	procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(n+1))
+	return syscall.UTF16ToString(buf)
 }

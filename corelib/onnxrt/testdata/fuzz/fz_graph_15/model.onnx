@@ -1,0 +1,37 @@
+B:’test
+
+x0
+k0v0Mul_0"Mul
+
+v0
+k1v1Mul_1"Mul
+T
+v1
+w2
+b3v2Conv_2"Conv*
+kernel_shapeB *
+group *
+padsB 
+E
+v2v3HardSigmoid_3"HardSigmoid*
+alphaªm¹> *
+beta¸¸\? 
+
+v3v4
+Identity_4"Identity*
+Bk0J@ÀU¾*
+Bk1JÐ€ö¾*
+Bw2Jaƒ> àw¾b=À>@¸î=*
+Bb3J<7î>^„”¾Ùò>ì¾Z
+x0
+
+
+
+
+b
+v4
+
+
+
+
+	

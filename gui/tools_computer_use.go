@@ -28,12 +28,18 @@ type computerUseRuntime struct {
 	input      guiautomation.InputSimulator
 	yolo       *guiautomation.YOLOScreenParser
 	ocr        taskengine.OCRProvider
-	ocrSidecar *browser.RapidOCRSidecar // underlying process for Warm(); may be nil
+	ocrSidecar *browser.NativeOCRProvider // underlying engine for Warm(); may be nil
 	logger     func(string)
 	// activated is sticky session state after a successful computer_* observe/action.
 	// It expires after computerUseStickyTTL unless refreshed by further CU activity.
 	activated   bool
 	activatedAt time.Time
+	// lastFreshOpenRequestID is the request that last opened the CU gate via a
+	// fresh (explicit/semantic) decision. A stopped in-flight turn re-gates with
+	// the same request ID while cancel is still taking effect; the ID lets
+	// liftComputerUseStopForFreshRequest tell that re-gate apart from a genuine
+	// new task and keep the operator's Stop blocking.
+	lastFreshOpenRequestID string
 }
 
 var globalComputerUse = &computerUseRuntime{}
@@ -101,7 +107,7 @@ func registerComputerUseTools(registry *ToolRegistry) {
 		}
 	}
 	if ocrSidecar == nil {
-		ocrSidecar = browser.NewRapidOCRSidecar(logger)
+		ocrSidecar = sharedNativeOCRProvider()
 	}
 	if sess == nil {
 		sess = computeruse.NewSession(computeruse.DefaultConfig())
@@ -299,6 +305,9 @@ func registerComputerUseTools(registry *ToolRegistry) {
 		},
 		Source: "builtin:computer_use",
 		Handler: func(args map[string]interface{}) string {
+			if msg := cuGuardDisabled("computer_done"); msg != "" {
+				return msg
+			}
 			summary := guiStrArg(args, "summary", "done")
 			rt := globalComputerUse
 			rt.mu.Lock()
@@ -329,7 +338,33 @@ func registerComputerUseTools(registry *ToolRegistry) {
 		InputSchema: map[string]interface{}{},
 		Source:      "builtin:computer_use",
 		Handler: func(args map[string]interface{}) string {
+			if msg := cuGuardDisabled("computer_playbook"); msg != "" {
+				return msg
+			}
 			return computeruse.Playbook()
+		},
+	})
+
+	// --- computer_find ---
+	registry.Register(RegisteredTool{
+		Name: "computer_find",
+		Description: "Find on-screen text or UI elements by keyword (e.g. a contact name in an IM app). " +
+			"Runs a fresh observe, then searches element labels AND raw OCR text; matches become " +
+			"clickable eN refs — even for text no YOLO/a11y element covers. " +
+			"Use this before clicking anything you cannot see a ref for.",
+		Category: ToolCategoryBuiltin,
+		Tags:     []string{"computer", "gui", "desktop", "find", "search"},
+		Priority: 8,
+		Status:   RegToolAvailable,
+		Required: []string{"query"},
+		InputSchema: map[string]interface{}{
+			"query":  map[string]interface{}{"type": "string", "description": "Text to find on screen, e.g. a contact name"},
+			"window": map[string]interface{}{"type": "string", "description": "Optional window title substring to bias a11y tree"},
+			"limit":  map[string]interface{}{"type": "integer", "description": "Max matches (default 10)"},
+		},
+		Source: "builtin:computer_use",
+		Handler: func(args map[string]interface{}) string {
+			return cuHandleFind(args)
 		},
 	})
 
@@ -342,10 +377,41 @@ func cuSession() *computeruse.Session {
 	if globalComputerUse.session == nil {
 		globalComputerUse.session = computeruse.NewSession(computeruse.DefaultConfig())
 	}
+	// Attribute elements to their owning window at observe time (click policy).
+	globalComputerUse.session.SetWindowResolver(accessibility.WindowTitleAtPoint)
+	// Re-apply the target-app allowlist on every access so config changes take
+	// effect without restarting the session. A config read error keeps the
+	// previous allowlist (fail-closed).
+	if computerUseTargetAppsFn != nil {
+		if apps, ok := computerUseTargetAppsFn(); ok {
+			globalComputerUse.session.SetTargetApps(apps)
+		}
+	}
 	return globalComputerUse.session
 }
 
+// cuGuardDisabled returns a user-facing message when Computer Use is disabled
+// in settings (computer_use_enabled=false), or "" when the tool may run.
+func cuGuardDisabled(tool string) string {
+	if computerUseToolsEnabled() {
+		return ""
+	}
+	return fmt.Sprintf("%s: Computer Use is disabled (computer_use_enabled=false). Enable it in Settings → Computer Use first.", tool)
+}
+
+// cuPolicyWindowTitle resolves the window a click at (x,y) will actually land
+// in, falling back to the foreground window title (what type/key target).
+func cuPolicyWindowTitle(x, y int) string {
+	if t := accessibility.WindowTitleAtPoint(x, y); t != "" {
+		return t
+	}
+	return accessibility.ForegroundWindowTitle()
+}
+
 func cuHandleObserve(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_observe"); msg != "" {
+		return msg
+	}
 	// Default to primary monitor. Full multi-monitor stitch (-1) is explicit only —
 	// huge virtual desktops crash/degrade OCR and leave all YOLO labels empty.
 	screenIdx := guiIntArg(args, "screen_index", 0)
@@ -355,6 +421,80 @@ func cuHandleObserve(args map[string]interface{}) string {
 		return res.Message
 	}
 	return res.Message
+}
+
+// cuHandleFind searches element labels and raw OCR lines for the query,
+// reusing a just-taken observation when possible. OCR hits not covered by any
+// element are appended to the session ref table so they can be clicked like
+// normal refs.
+func cuHandleFind(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_find"); msg != "" {
+		return msg
+	}
+	query := guiStrArg(args, "query", "")
+	if strings.TrimSpace(query) == "" {
+		return "computer_find: query is required"
+	}
+	windowHint := guiStrArg(args, "window", "")
+	limit := guiIntArg(args, "limit", 10)
+
+	sess := cuSession()
+	// Reuse a just-taken observation (the playbook flow is observe → find) to
+	// skip a second screenshot+YOLO+OCR cycle. Only without a window bias and
+	// only while refs are still valid.
+	obs := sess.LastObserve()
+	tookObserve := false
+	if obs == nil || windowHint != "" || !sess.RefsValid() || time.Since(obs.ObservedAt) > 2*time.Second {
+		res := computerUseObserve(0, windowHint, true)
+		if !res.OK {
+			return res.Message
+		}
+		tookObserve = true
+		obs = sess.LastObserve()
+	}
+	matches := computeruse.FindMatches(obs, query, limit)
+	if len(matches) == 0 {
+		return fmt.Sprintf("computer_find: no match for %q. Suggestions: pass window=... to include accessibility elements; "+
+			"use the app's own search box; or computer_scroll and find again.", query)
+	}
+	// Assign refs to synthesized (unmarked) OCR matches.
+	var synth []computeruse.MarkedElement
+	for _, m := range matches {
+		if m.Ref == "" {
+			synth = append(synth, m)
+		}
+	}
+	assigned := sess.AppendElements(synth)
+	if len(assigned) < len(synth) {
+		// Refs went stale between observe and append (e.g. operator stop) — report
+		// coordinates as guidance instead of dangling refs.
+		var b strings.Builder
+		fmt.Fprintf(&b, "computer_find %q: %d match(es), but refs could not be assigned — re-run computer_find. Approximate centers:\n", query, len(matches))
+		for _, m := range matches {
+			fmt.Fprintf(&b, "  %q center=%d,%d src=%s\n", m.Name, m.CenterX, m.CenterY, m.Source)
+		}
+		return b.String()
+	}
+	var b strings.Builder
+	if tookObserve {
+		fmt.Fprintf(&b, "computer_find %q: %d match(es) (fresh observe). Click with computer_click ref=eN.\n", query, len(matches))
+	} else {
+		fmt.Fprintf(&b, "computer_find %q: %d match(es) (reused last observe). Click with computer_click ref=eN.\n", query, len(matches))
+	}
+	si := 0
+	for _, m := range matches {
+		ref := m.Ref
+		if ref == "" && si < len(assigned) {
+			ref = assigned[si]
+			si++
+		}
+		name := m.Name
+		if name == "" {
+			name = "(no label)"
+		}
+		fmt.Fprintf(&b, "  %s [%s] %q center=%d,%d src=%s\n", ref, m.Type, name, m.CenterX, m.CenterY, m.Source)
+	}
+	return b.String()
 }
 
 // computerUseObserveResult is the structured outcome of a desktop observe.
@@ -624,6 +764,9 @@ func cuPostActionSettle() {
 }
 
 func cuHandleFocus(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_focus"); msg != "" {
+		return msg
+	}
 	window := guiStrArg(args, "window", "")
 	if window == "" {
 		return "computer_focus: missing window (title substring)"
@@ -676,6 +819,9 @@ func flattenA11y(dst *[]taskengine.UIElement, nodes []accessibility.Element, dep
 }
 
 func cuHandleClick(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_click"); msg != "" {
+		return msg
+	}
 	rt := globalComputerUse
 	rt.mu.Lock()
 	input := rt.input
@@ -698,12 +844,15 @@ func cuHandleClick(args map[string]interface{}) string {
 	}
 	var x, y int
 	var detail string
+	var policyTitle string
 	if ref != "" {
 		cx, cy, el, err := sess.ResolveClickRef(ref)
 		if err != nil {
 			return fmt.Sprintf("computer_click: %v", err)
 		}
 		x, y = cx, cy
+		// Prefer the element's owning-window attribution from observe time.
+		policyTitle = el.Window
 		detail = fmt.Sprintf("ref=%s name=%q at (%d,%d) button=%s count=%d", el.Ref, el.Name, x, y, button, count)
 	} else {
 		if !sess.AllowPixelClick() {
@@ -713,14 +862,18 @@ func cuHandleClick(args map[string]interface{}) string {
 		y = guiIntArg(args, "y", 0)
 		detail = fmt.Sprintf("pixel (%d,%d) button=%s count=%d", x, y, button, count)
 	}
-	if err := sess.BeginAction("click", detail); err != nil {
-		emitComputerUseActionUI("click", detail, false, err.Error())
-		return fmt.Sprintf("computer_click: %v", err)
+	if policyTitle == "" {
+		policyTitle = cuPolicyWindowTitle(x, y)
 	}
-	if err := sess.CheckClickPolicy(x, y, ""); err != nil {
+	// Policy before BeginAction: a blocked click must not consume step budget.
+	if err := sess.CheckClickPolicy(x, y, policyTitle); err != nil {
 		sess.RecordAction("click", detail, false, err.Error(), false)
 		emitComputerUseActionUI("click", detail, false, err.Error())
 		return fmt.Sprintf("computer_click blocked: %v", err)
+	}
+	if err := sess.BeginAction("click", detail); err != nil {
+		emitComputerUseActionUI("click", detail, false, err.Error())
+		return fmt.Sprintf("computer_click: %v", err)
 	}
 	var err error
 	switch {
@@ -744,6 +897,9 @@ func cuHandleClick(args map[string]interface{}) string {
 }
 
 func cuHandleType(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_type"); msg != "" {
+		return msg
+	}
 	rt := globalComputerUse
 	rt.mu.Lock()
 	input := rt.input
@@ -758,6 +914,14 @@ func cuHandleType(args map[string]interface{}) string {
 	sess := cuSession()
 	ref := guiStrArg(args, "ref", "")
 	detail := fmt.Sprintf("chars=%d", len([]rune(text)))
+	// Typing sends keystrokes to whatever window is foreground — gate it with
+	// the same blocked-window/target-app policy as clicks. Policy before
+	// BeginAction so a blocked type must not consume step budget.
+	if err := sess.CheckClickPolicy(0, 0, accessibility.ForegroundWindowTitle()); err != nil {
+		sess.RecordAction("type", detail, false, err.Error(), false)
+		emitComputerUseActionUI("type", detail, false, err.Error())
+		return fmt.Sprintf("computer_type blocked: %v", err)
+	}
 	if err := sess.BeginAction("type", detail); err != nil {
 		return fmt.Sprintf("computer_type: %v", err)
 	}
@@ -768,11 +932,28 @@ func cuHandleType(args map[string]interface{}) string {
 			return fmt.Sprintf("computer_type: %v", err)
 		}
 		detail = fmt.Sprintf("ref=%s name=%q chars=%d", el.Ref, el.Name, len([]rune(text)))
+		// Gate the focus click itself: the element may live in a blocked window
+		// that is not the current foreground.
+		focusTitle := el.Window
+		if focusTitle == "" {
+			focusTitle = cuPolicyWindowTitle(x, y)
+		}
+		if err := sess.CheckClickPolicy(x, y, focusTitle); err != nil {
+			sess.RecordAction("type", detail, false, err.Error(), false)
+			emitComputerUseActionUI("type", detail, false, err.Error())
+			return fmt.Sprintf("computer_type blocked: %v", err)
+		}
 		if err := input.Click(x, y); err != nil {
 			sess.RecordAction("type", detail, false, err.Error(), false)
 			return fmt.Sprintf("computer_type focus click failed: %v", err)
 		}
 		time.Sleep(80 * time.Millisecond)
+		// Re-check: the focus click may have foregrounded a blocked window.
+		if err := sess.CheckClickPolicy(x, y, cuPolicyWindowTitle(x, y)); err != nil {
+			sess.RecordAction("type", detail, false, err.Error(), false)
+			emitComputerUseActionUI("type", detail, false, err.Error())
+			return fmt.Sprintf("computer_type blocked: %v", err)
+		}
 	}
 	if err := input.Type(text); err != nil {
 		sess.RecordAction("type", detail, false, err.Error(), false)
@@ -787,6 +968,9 @@ func cuHandleType(args map[string]interface{}) string {
 }
 
 func cuHandleKey(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_key"); msg != "" {
+		return msg
+	}
 	rt := globalComputerUse
 	rt.mu.Lock()
 	input := rt.input
@@ -801,6 +985,14 @@ func cuHandleKey(args map[string]interface{}) string {
 	keys := splitKeyCombo(raw)
 	sess := cuSession()
 	detail := strings.Join(keys, "+")
+	// Keys go to the foreground window (enter/space can confirm dialogs) — gate
+	// with the same blocked-window/target-app policy as clicks. Policy before
+	// BeginAction so a blocked key press must not consume step budget.
+	if err := sess.CheckClickPolicy(0, 0, accessibility.ForegroundWindowTitle()); err != nil {
+		sess.RecordAction("key", detail, false, err.Error(), false)
+		emitComputerUseActionUI("key", detail, false, err.Error())
+		return fmt.Sprintf("computer_key blocked: %v", err)
+	}
 	if err := sess.BeginAction("key", detail); err != nil {
 		return fmt.Sprintf("computer_key: %v", err)
 	}
@@ -831,6 +1023,9 @@ func splitKeyCombo(raw string) []string {
 }
 
 func cuHandleScroll(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_scroll"); msg != "" {
+		return msg
+	}
 	rt := globalComputerUse
 	rt.mu.Lock()
 	input := rt.input
@@ -881,6 +1076,9 @@ func cuHandleScroll(args map[string]interface{}) string {
 }
 
 func cuHandleWait(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_wait"); msg != "" {
+		return msg
+	}
 	ms := guiIntArg(args, "ms", 500)
 	stable := false
 	if v, ok := args["stable"].(bool); ok {

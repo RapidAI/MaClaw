@@ -11,6 +11,7 @@ var ToolNames = []string{
 	"computer_scroll",
 	"computer_wait",
 	"computer_focus",
+	"computer_find",
 	"computer_done",
 	"computer_playbook",
 }

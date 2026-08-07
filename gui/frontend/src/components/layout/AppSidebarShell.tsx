@@ -204,13 +204,14 @@ export const AppSidebarShell = ({
     onToggleMoASticky,
 }: AppSidebarShellProps) => (
 <>
-            <div style={{
+            <div data-window-drag style={{
                 height: '30px',
                 width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px`,
                 position: 'absolute',
                 top: 0,
                 left: 0,
                 zIndex: 999,
+                userSelect: 'none',
                 '--wails-draggable': 'drag'
             } as any}></div>
 

@@ -49,14 +49,16 @@ type Config[T any] struct {
 // Manager manages the lifecycle of a single model instance of type T.
 // It is safe for concurrent use.
 type Manager[T any] struct {
-	name        string // resolved once at construction
-	load        func() (T, error)
-	close       func(T)
-	mu          sync.Mutex
-	model       T
-	loaded      bool
-	unloadDelay time.Duration
-	unloadTimer *time.Timer
+	name          string // resolved once at construction
+	load          func() (T, error)
+	close         func(T)
+	mu            sync.Mutex
+	model         T
+	loaded        bool
+	unloadDelay   time.Duration
+	unloadTimer   *time.Timer
+	active        int  // in-flight acquisitions (Acquire without done)
+	unloadPending bool // manual Unload deferred until the last done()
 }
 
 // New creates a ModelManager. The model is NOT loaded until first Acquire().
@@ -89,6 +91,8 @@ func (m *Manager[T]) Acquire() (model T, done func(), err error) {
 		m.unloadTimer.Stop()
 		m.unloadTimer = nil
 	}
+	// A new acquisition supersedes a deferred manual Unload.
+	m.unloadPending = false
 	if !m.loaded {
 		log.Printf("[%s] loading model", m.name)
 		t0 := time.Now()
@@ -103,11 +107,20 @@ func (m *Manager[T]) Acquire() (model T, done func(), err error) {
 		log.Printf("[%s] model loaded in %v", m.name, time.Since(t0))
 	}
 	model = m.model
+	m.active++
 	m.mu.Unlock()
 
 	done = func() {
 		m.mu.Lock()
-		m.scheduleUnload()
+		m.active--
+		if m.unloadPending && m.active == 0 {
+			// A manual Unload/Shutdown arrived while this acquisition was in
+			// flight; close now that the model is no longer in use.
+			m.unloadPending = false
+			m.unloadLocked()
+		} else {
+			m.scheduleUnload()
+		}
 		m.mu.Unlock()
 	}
 	return model, done, nil
@@ -118,19 +131,41 @@ func (m *Manager[T]) scheduleUnload() {
 	if m.unloadDelay <= 0 {
 		return // no auto-unload configured
 	}
+	if m.active > 0 {
+		return // model still in use; the last done() will schedule the timer
+	}
 	if m.unloadTimer != nil {
 		m.unloadTimer.Stop()
 	}
 	m.unloadTimer = time.AfterFunc(m.unloadDelay, func() {
-		m.Unload()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		// A timer callback may already be running (unstoppable) when a new
+		// Acquire comes in — never close a model with in-flight acquisitions.
+		if m.active == 0 {
+			m.unloadLocked()
+		}
 	})
 }
 
 // Unload releases the model from memory. Safe to call even if not loaded.
 // The model will be reloaded on next Acquire().
+//
+// If acquisitions are still in flight, the close is deferred until the last
+// done() runs — Unload never closes a model an Acquire caller is holding
+// (closing e.g. an mmap-backed model under a running inference would fault).
+// A new Acquire before that supersedes the pending unload.
 func (m *Manager[T]) Unload() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.loaded && m.active > 0 {
+		if m.unloadTimer != nil {
+			m.unloadTimer.Stop()
+			m.unloadTimer = nil
+		}
+		m.unloadPending = true
+		return
+	}
 	m.unloadLocked()
 }
 

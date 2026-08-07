@@ -868,6 +868,25 @@ func TestThirdPartyGatewayAckPrunesDeliveredMessages(t *testing.T) {
 	}
 }
 
+func TestThirdPartyGatewayPollCursorAdvancesPastAckedAfterPrune(t *testing.T) {
+	m := newThirdPartyGatewayManager(nil)
+	m.setClientCapabilities("device", &agent.ClientCapabilities{Output: agent.ClientOutputCapabilities{
+		Modalities: []string{"text"}, Text: &agent.ClientTextCapabilities{},
+	}})
+	queued := m.enqueue("device", thirdPartyOutgoingMessage{Type: "text", Text: "done"})
+	polled, next, _ := m.messagesAfter("device", 0, 10)
+	if len(polled) != 1 || next != queued.Seq {
+		t.Fatalf("initial poll: msgs=%#v next=%d", polled, next)
+	}
+	m.ack("device", thirdPartyAckRequest{ClientID: "device", MessageIDs: []string{queued.ID}, Status: "delivered"})
+	// The acked entry is pruned eagerly; a later poll with an old cursor must
+	// still advance past it instead of stalling at 0.
+	polled, next, _ = m.messagesAfter("device", 0, 10)
+	if len(polled) != 0 || next != queued.Seq {
+		t.Fatalf("poll after ack+prune: msgs=%#v next=%d, want empty with cursor %d", polled, next, queued.Seq)
+	}
+}
+
 func TestThirdPartyGatewayPruneKeepsUnacknowledgedControlMessage(t *testing.T) {
 	m := newThirdPartyGatewayManager(nil)
 	m.setClientCapabilities("device", &agent.ClientCapabilities{Features: agent.ClientFeatureCapabilities{VolumeControl: true}})
@@ -1174,13 +1193,13 @@ func TestThirdPartyGatewayRequestBaseURLSanitizesForwardedHeaders(t *testing.T) 
 	req.Host = "gateway.example.test"
 	req.Header.Set("X-Forwarded-Proto", "javascript")
 	req.Header.Set("X-Forwarded-Host", "evil.example\\@bad")
-	if got := thirdPartyGatewayRequestBaseURL(req); got != "http://127.0.0.1/api/im-gateway/v1" {
+	if got := coreim.ThirdPartyGatewayBaseURL(req); got != "http://127.0.0.1/api/im-gateway/v1" {
 		t.Fatalf("bad forwarded headers should be sanitized, got %q", got)
 	}
 
 	req.Header.Set("X-Forwarded-Proto", "https, http")
 	req.Header.Set("X-Forwarded-Host", "maclaw.example.test:18443, proxy.local")
-	if got := thirdPartyGatewayRequestBaseURL(req); got != "https://maclaw.example.test:18443/api/im-gateway/v1" {
+	if got := coreim.ThirdPartyGatewayBaseURL(req); got != "https://maclaw.example.test:18443/api/im-gateway/v1" {
 		t.Fatalf("safe forwarded headers should be preserved, got %q", got)
 	}
 }

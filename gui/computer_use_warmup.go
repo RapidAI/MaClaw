@@ -15,7 +15,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/accessibility"
-	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -402,7 +401,7 @@ func warmComputerUseYOLO() map[string]interface{} {
 	return out
 }
 
-// warmComputerUseOCR starts RapidOCR if already installed (no pip install here).
+// warmComputerUseOCR loads the native OCR models if installed (no download here).
 func warmComputerUseOCR() map[string]interface{} {
 	start := time.Now()
 	out := map[string]interface{}{
@@ -417,8 +416,8 @@ func warmComputerUseOCR() map[string]interface{} {
 	globalComputerUse.mu.Lock()
 	sc := globalComputerUse.ocrSidecar
 	if sc == nil {
-		// Tools may not be registered yet at early startup; create a probe sidecar.
-		sc = browser.NewRapidOCRSidecar(func(msg string) { log.Printf("[computer-use] %s", msg) })
+		// Tools may not be registered yet at early startup; use the shared provider.
+		sc = sharedNativeOCRProvider()
 		globalComputerUse.ocrSidecar = sc
 		if globalComputerUse.ocr == nil {
 			globalComputerUse.ocr = &taskOCRFromBrowser{inner: sc}
@@ -429,7 +428,7 @@ func warmComputerUseOCR() map[string]interface{} {
 	out["installed"] = sc.Installed()
 	if !sc.Installed() {
 		out["skipped"] = true
-		out["error"] = "OCR not installed yet (will install on first observe)"
+		out["error"] = "OCR models not installed yet (downloading in background)"
 		out["warm_ms"] = time.Since(start).Milliseconds()
 		return out
 	}

@@ -211,7 +211,7 @@ Chrome DevTools Protocol-based browser interaction:
 
 * Page navigation, element clicking, text input, content extraction, screenshots
 * Flow recording and replay with scheduled triggers and parameterized variables
-* OCR integration (RapidOCR + LLM vision models)
+* OCR integration (built-in native PP-OCRv6 engine — models auto-downloaded, no Python required — plus LLM vision models)
 
 ### Desktop GUI Automation
 

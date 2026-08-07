@@ -16,8 +16,12 @@ typedef void (*alarm_manager_ring_callback_t)(void *arg);
 void alarm_manager_set_ring_callback(alarm_manager_ring_callback_t callback,
                                      void *arg);
 esp_err_t alarm_manager_init(void);
+/* Stops the scheduler without completing an active alarm.  Its durable active
+ * record is intentionally retained so a subsequent boot can recover it. */
+esp_err_t alarm_manager_deinit(uint32_t timeout_ms);
 esp_err_t alarm_manager_execute_tool(const char *name, cJSON *arguments,
                                      const char *idempotency_key,
                                      cJSON **out_result, char *error, size_t error_size);
 bool alarm_manager_is_ringing(void);
+bool alarm_manager_is_initialized(void);
 void alarm_manager_dismiss(void);

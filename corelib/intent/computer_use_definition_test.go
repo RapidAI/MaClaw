@@ -32,8 +32,8 @@ func TestComputerUseDefinitionRegistered(t *testing.T) {
 
 	wantTools := []string{
 		"computer_observe", "computer_click", "computer_type", "computer_key",
-		"computer_scroll", "computer_wait", "computer_focus", "computer_done",
-		"computer_playbook",
+		"computer_scroll", "computer_wait", "computer_focus", "computer_find",
+		"computer_done", "computer_playbook",
 	}
 	got := make(map[string]bool, len(cu.ToolNames))
 	for _, n := range cu.ToolNames {

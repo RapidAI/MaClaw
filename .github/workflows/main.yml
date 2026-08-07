@@ -2089,14 +2089,23 @@ jobs:
           CLAWMATE_FIRMWARE_PUBLIC_KEY: ${{ vars.CLAWMATE_FIRMWARE_PUBLIC_KEY }}
           CLAWMATE_FIRMWARE_SIGNING_KEY_ID: ${{ vars.CLAWMATE_FIRMWARE_SIGNING_KEY_ID }}
           CLAWMATE_FIRMWARE_SIGNING_KEY: ${{ secrets.CLAWMATE_FIRMWARE_SIGNING_KEY }}
+          CLAWMATE_DESKTOP_VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           test -n "$CLAWMATE_FIRMWARE_PUBLIC_KEY"
           test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY_ID"
           test -n "$CLAWMATE_FIRMWARE_SIGNING_KEY"
           cd ClawMateMaker
+          # Tags are commonly prefixed with V/v, while workflow_dispatch has
+          # no immutable tag. Keep that distinction visible rather than
+          # labelling an official package as a local development build.
+          desktop_version="${CLAWMATE_DESKTOP_VERSION#v}"
+          desktop_version="${desktop_version#V}"
+          if [ -z "$desktop_version" ] || [ "$desktop_version" = "main" ]; then
+            desktop_version="0.1.0-ci.${GITHUB_RUN_NUMBER}"
+          fi
           wails build -platform '${{ matrix.platform }}' -clean -o '${{ matrix.output_name }}' \
-            -ldflags "-X main.releaseBuild=true -X main.releaseKeyID=$CLAWMATE_FIRMWARE_SIGNING_KEY_ID -X main.releasePublicKeyBase64=$CLAWMATE_FIRMWARE_PUBLIC_KEY"
+            -ldflags "-X main.releaseBuild=true -X main.buildVersion=$desktop_version -X main.releaseKeyID=$CLAWMATE_FIRMWARE_SIGNING_KEY_ID -X main.releasePublicKeyBase64=$CLAWMATE_FIRMWARE_PUBLIC_KEY"
           test -s "build/bin/${{ matrix.executable }}"
       - name: Build managed esptool sidecar
         shell: bash

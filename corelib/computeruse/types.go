@@ -32,6 +32,9 @@ type MarkedElement struct {
 	Confidence   float64 `json:"confidence"`
 	Source       string  `json:"source"`
 	Interactable bool    `json:"interactable"`
+	// Window is the title of the top-level window owning this element's center
+	// ("" when unknown). Policy metadata — kept out of TextForModel.
+	Window string `json:"window,omitempty"`
 }
 
 // ScreenMeta describes the coordinate space of the last capture.
@@ -47,24 +50,27 @@ type ScreenMeta struct {
 // ObserveResult is the structured outcome of one observation step.
 // TextForModel is what goes into the tool result for the LLM.
 type ObserveResult struct {
-	Mode       ObserveMode     `json:"mode"`
-	Meta       ScreenMeta      `json:"meta"`
-	Windows    []string        `json:"windows,omitempty"`
-	Elements   []MarkedElement `json:"elements"`
-	OCRExcerpt string          `json:"ocr_excerpt,omitempty"`
-	TextForModel string        `json:"-"`
+	Mode         ObserveMode     `json:"mode"`
+	Meta         ScreenMeta      `json:"meta"`
+	Windows      []string        `json:"windows,omitempty"`
+	Elements     []MarkedElement `json:"elements"`
+	OCRExcerpt   string          `json:"ocr_excerpt,omitempty"`
+	TextForModel string          `json:"-"`
 	// ScreenshotB64 is kept in-session only; never dump into text-primary tool results.
 	ScreenshotB64 string `json:"-"`
-	ObservedAt    time.Time `json:"observed_at"`
+	// OCRLines keeps the raw OCR results (with boxes) in-session so text search
+	// (computer_find) can synthesize clickable targets for text no element covers.
+	OCRLines   []taskengine.OCRResult `json:"-"`
+	ObservedAt time.Time              `json:"observed_at"`
 }
 
 // ActionRecord is an audit entry for one computer action.
 type ActionRecord struct {
-	At      time.Time `json:"at"`
-	Action  string    `json:"action"`
-	Detail  string    `json:"detail"`
-	OK      bool      `json:"ok"`
-	Error   string    `json:"error,omitempty"`
+	At     time.Time `json:"at"`
+	Action string    `json:"action"`
+	Detail string    `json:"detail"`
+	OK     bool      `json:"ok"`
+	Error  string    `json:"error,omitempty"`
 }
 
 // Config holds session limits and policy defaults.

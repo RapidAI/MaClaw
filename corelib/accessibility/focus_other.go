@@ -7,3 +7,11 @@ import "fmt"
 func focusWindow(titleSubstring string) error {
 	return fmt.Errorf("FocusWindow not supported on this platform")
 }
+
+func foregroundWindowTitle() string {
+	return ""
+}
+
+func windowTitleAtPoint(x, y int) string {
+	return ""
+}

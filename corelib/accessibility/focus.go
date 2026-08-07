@@ -6,3 +6,16 @@ package accessibility
 func FocusWindow(titleSubstring string) error {
 	return focusWindow(titleSubstring)
 }
+
+// ForegroundWindowTitle returns the title of the current foreground window,
+// or "" when unavailable/unsupported. Best-effort; used for click policy checks.
+func ForegroundWindowTitle() string {
+	return foregroundWindowTitle()
+}
+
+// WindowTitleAtPoint returns the root window title owning screen point (x,y),
+// or "" when unavailable. More precise than ForegroundWindowTitle for click
+// policy: the clicked window is not always the foreground one.
+func WindowTitleAtPoint(x, y int) string {
+	return windowTitleAtPoint(x, y)
+}

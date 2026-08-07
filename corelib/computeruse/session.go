@@ -15,6 +15,10 @@ type Session struct {
 	cfg    Config
 	policy *Policy
 
+	// windowResolver attributes elements to their owning window title at
+	// observe time (injected by the host; nil disables attribution).
+	windowResolver func(x, y int) string
+
 	// Last observation (ref table valid until next action or new observe).
 	last        *ObserveResult
 	refsValid   bool
@@ -67,6 +71,14 @@ func (s *Session) SetTargetApps(apps []string) {
 	if s.policy != nil {
 		s.policy.TargetApps = append([]string(nil), apps...)
 	}
+}
+
+// SetWindowResolver injects a point→window-title resolver used to attribute
+// each observed element to its owning top-level window (for click policy).
+func (s *Session) SetWindowResolver(fn func(x, y int) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.windowResolver = fn
 }
 
 // Policy exposes pause/resume controls.
@@ -162,6 +174,11 @@ func (s *Session) CommitObserve(
 		meta.ScaleFactor = 1.0
 	}
 	marks := BuildMarks(elements, ocr)
+	if s.windowResolver != nil {
+		for i := range marks {
+			marks[i].Window = s.windowResolver(marks[i].CenterX, marks[i].CenterY)
+		}
+	}
 	excerpt := FormatOCRExcerpt(ocr, s.cfg.OCRMaxChars)
 	res := &ObserveResult{
 		Mode:          s.cfg.Mode,
@@ -170,6 +187,7 @@ func (s *Session) CommitObserve(
 		Elements:      marks,
 		OCRExcerpt:    excerpt,
 		ScreenshotB64: screenshotB64,
+		OCRLines:      append([]taskengine.OCRResult(nil), ocr...),
 		ObservedAt:    time.Now(),
 	}
 	res.TextForModel = RenderTextObserve(res, s.cfg.ElementsMaxInText)
@@ -204,6 +222,31 @@ func (s *Session) ResolveClickRef(ref string) (x, y int, el *MarkedElement, err 
 		return 0, 0, nil, err
 	}
 	return m.CenterX, m.CenterY, m, nil
+}
+
+// AppendElements adds synthesized elements (e.g. OCR text hits from
+// computer_find) to the current ref table, assigning fresh eN refs.
+// Returns the assigned refs. No-op when refs are stale or nothing to add.
+func (s *Session) AppendElements(els []MarkedElement) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.refsValid || s.last == nil || len(els) == 0 {
+		return nil
+	}
+	refs := make([]string, 0, len(els))
+	next := len(s.last.Elements)
+	// Copy-then-swap instead of in-place append: holders of the old slice
+	// header (LastObserve callers, event payloads) keep a consistent view.
+	merged := make([]MarkedElement, 0, next+len(els))
+	merged = append(merged, s.last.Elements...)
+	for _, el := range els {
+		el.Ref = fmt.Sprintf("e%d", next)
+		next++
+		merged = append(merged, el)
+		refs = append(refs, el.Ref)
+	}
+	s.last.Elements = merged
+	return refs
 }
 
 // AllowPixelClick checks policy for raw coordinates.
@@ -277,6 +320,9 @@ func Playbook() string {
 	return `Computer Use (text-primary):
 - You may be a text-only model. Screenshots are NOT sent to you.
 - Always call computer_observe first. It returns windows, eN elements (from local OmniParser/OCR/a11y), and ocr_excerpt.
+- Pass the window parameter (app title substring) to computer_observe to get accessibility elements (list items, text nodes) for that app — without it only YOLO boxes and OCR are available.
+- To locate a specific person, button, or text, call computer_find query=... first. It searches element labels AND raw screen text, and returns clickable eN refs even for text that no element covers.
+- To reach a person/chat in an IM or any long list: prefer the app's own search box (focus window → find/click the search field → computer_type the name → computer_find the result). Otherwise computer_scroll and re-observe/re-find to page through the list.
 - Use computer_focus with a window title substring before interacting with a specific app.
 - Click with computer_click ref=eN. Do NOT invent pixel coordinates unless explicitly allowed.
 - After every click/type/key/scroll/focus, call computer_observe again (refs become stale).

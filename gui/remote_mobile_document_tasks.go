@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -40,18 +39,11 @@ type mobileDocumentUploadClaimResponse struct {
 	Task   *mobileDocumentUploadTask `json:"task"`
 }
 
-var (
-	mobileDocOCROnce sync.Once
-	mobileDocOCR     *browser.RapidOCRSidecar
-)
-
-func mobileDocumentOCRSidecar() *browser.RapidOCRSidecar {
-	mobileDocOCROnce.Do(func() {
-		mobileDocOCR = browser.NewRapidOCRSidecar(func(msg string) {
-			log.Printf("[mobile-doc-ocr] %s", msg)
-		})
-	})
-	return mobileDocOCR
+// mobileDocumentOCRSidecar returns the shared process-wide native OCR
+// provider. Kept as a lazy accessor so mobile document OCR shares the single
+// PP-OCRv6 model manager with the rest of the app.
+func mobileDocumentOCRSidecar() *browser.NativeOCRProvider {
+	return sharedNativeOCRProvider()
 }
 
 func (c *RemoteHubClient) pollMobileDocumentUploadTasksOnce() {
@@ -253,7 +245,7 @@ func mobileDocumentOCRMarkdown(filename string, raw []byte) (string, error) {
 	b64 := base64.StdEncoding.EncodeToString(raw)
 	results, err := sidecar.Recognize(b64)
 	if err != nil {
-		return "", fmt.Errorf("桌面 OCR 失败（请确认本机已安装 Python 与 RapidOCR）：%w", err)
+		return "", fmt.Errorf("桌面 OCR 失败（本机 OCR 模型可能尚未下载完成）：%w", err)
 	}
 
 	title := strings.TrimSpace(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))

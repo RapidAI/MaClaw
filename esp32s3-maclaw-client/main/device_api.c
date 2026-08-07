@@ -1,9 +1,14 @@
 #include "device_api.h"
 #include <limits.h>
+#include "freertos/FreeRTOS.h"
 #include "board_profile.h"
+#include "battery_policy_service.h"
 #include "connectivity_service.h"
 #include "input_service.h"
+#include "lifecycle_service.h"
 #include "power_service.h"
+#include "power_lease_service.h"
+#include "resource_pressure_service.h"
 
 /*
  * Compatibility facade during the board_port cutover.
@@ -14,6 +19,9 @@
  * implementation is split into boards/<profile>/ input adapters.
  */
 #include "board_port.h"
+
+static portMUX_TYPE s_audio_playback_lease_lock = portMUX_INITIALIZER_UNLOCKED;
+static device_power_lease_t s_audio_playback_lease;
 
 static device_status_t device_status_from_esp_err(esp_err_t err) {
     switch (err) {
@@ -40,6 +48,40 @@ int device_status_to_platform_error(device_status_t status) {
         case DEVICE_STATUS_INTERNAL_ERROR:
         default: return ESP_FAIL;
     }
+}
+
+bool device_runtime_get_snapshot(device_runtime_snapshot_t *out_snapshot) {
+    return lifecycle_service_get_snapshot(out_snapshot);
+}
+
+bool device_resource_pressure_get_snapshot(
+    device_resource_pressure_snapshot_t *out_snapshot) {
+    return resource_pressure_service_get_snapshot(out_snapshot);
+}
+
+bool device_resource_pressure_allows_optional_work(void) {
+    return resource_pressure_service_allows_optional_work();
+}
+
+bool device_resource_pressure_allows_optional_allocation(
+    uint32_t internal_bytes, uint32_t external_bytes, uint32_t storage_bytes) {
+    return resource_pressure_service_allows_optional_allocation(
+        internal_bytes, external_bytes, storage_bytes);
+}
+
+bool device_display_get_pet_asset_install_budget(uint32_t source_width,
+                                                 uint32_t source_height,
+                                                 uint32_t frame_count,
+                                                 uint32_t *out_external_bytes) {
+    if (!out_external_bytes) return false;
+    size_t bytes = 0;
+    if (!board_port_get_pet_asset_install_budget(source_width, source_height,
+                                                  frame_count, &bytes) ||
+        bytes > UINT32_MAX) {
+        return false;
+    }
+    *out_external_bytes = (uint32_t)bytes;
+    return true;
 }
 
 bool device_profile_get(device_profile_t *out_profile) {
@@ -86,6 +128,21 @@ bool device_profile_has_capability(device_capability_flags_t capability) {
            (profile.capabilities & capability) == capability;
 }
 
+device_status_t device_motion_get_sample(device_motion_sample_t *out_sample) {
+    if (!out_sample) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!device_profile_has_capability(DEVICE_CAPABILITY_MOTION_SENSOR)) {
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    device_motion_sample_t sample = {
+        .struct_size = sizeof(sample),
+        .abi_version = DEVICE_MOTION_SAMPLE_ABI_VERSION,
+    };
+    device_status_t status = device_status_from_esp_err(
+        board_port_motion_get_sample(&sample));
+    if (status == DEVICE_STATUS_OK) *out_sample = sample;
+    return status;
+}
+
 device_status_t device_audio_set_output_volume(uint8_t percent) {
     if (percent > 100) return DEVICE_STATUS_INVALID_ARGUMENT;
     return device_status_from_esp_err(board_port_set_output_volume(percent));
@@ -101,7 +158,13 @@ device_status_t device_audio_adjust_output_volume(int delta_percent,
 }
 
 device_status_t device_audio_play_wav(const uint8_t *wav, uint32_t wav_len) {
-    return device_status_from_esp_err(board_port_play_wav(wav, wav_len));
+    device_power_lease_t lease = DEVICE_POWER_LEASE_INVALID;
+    device_status_t lease_status = device_power_lease_acquire(
+        DEVICE_POWER_LEASE_OWNER_AUDIO_PLAYBACK, &lease);
+    if (lease_status != DEVICE_STATUS_OK) return lease_status;
+    device_status_t status = device_status_from_esp_err(board_port_play_wav(wav, wav_len));
+    device_power_lease_release(lease);
+    return status;
 }
 
 device_status_t device_audio_play_alarm_burst(void) {
@@ -142,7 +205,24 @@ void device_audio_stream_stop(void) {
 }
 
 device_status_t device_audio_playback_begin(void) {
-    return device_status_from_esp_err(board_port_audio_playback_begin());
+    device_power_lease_t lease = DEVICE_POWER_LEASE_INVALID;
+    device_status_t lease_status = device_power_lease_acquire(
+        DEVICE_POWER_LEASE_OWNER_AUDIO_PLAYBACK, &lease);
+    if (lease_status != DEVICE_STATUS_OK) return lease_status;
+    device_status_t status = device_status_from_esp_err(board_port_audio_playback_begin());
+    if (status != DEVICE_STATUS_OK) {
+        device_power_lease_release(lease);
+        return status;
+    }
+    taskENTER_CRITICAL(&s_audio_playback_lease_lock);
+    device_power_lease_t prior = s_audio_playback_lease;
+    s_audio_playback_lease = lease;
+    taskEXIT_CRITICAL(&s_audio_playback_lease_lock);
+    /* The board transaction is exclusive.  If a legacy caller somehow began
+     * twice, do not leak its previous handle while preserving the current
+     * transaction's visibility guarantee. */
+    device_power_lease_release(prior);
+    return DEVICE_STATUS_OK;
 }
 
 device_status_t device_audio_playback_write(const int16_t *pcm, uint32_t frames,
@@ -155,8 +235,14 @@ device_status_t device_audio_playback_write(const int16_t *pcm, uint32_t frames,
 }
 
 device_status_t device_audio_playback_end(bool playback_succeeded) {
-    return device_status_from_esp_err(
+    device_status_t status = device_status_from_esp_err(
         board_port_audio_playback_end(playback_succeeded ? ESP_OK : ESP_FAIL));
+    taskENTER_CRITICAL(&s_audio_playback_lease_lock);
+    device_power_lease_t lease = s_audio_playback_lease;
+    s_audio_playback_lease = DEVICE_POWER_LEASE_INVALID;
+    taskEXIT_CRITICAL(&s_audio_playback_lease_lock);
+    device_power_lease_release(lease);
+    return status;
 }
 
 void device_audio_request_playback_stop(void) {
@@ -185,7 +271,25 @@ void device_wake_word_pause(bool paused) {
 }
 
 device_status_t device_power_init(void) {
-    return power_service_init();
+    device_status_t lease_status = power_lease_service_init();
+    return lease_status == DEVICE_STATUS_OK ? power_service_init() : lease_status;
+}
+
+device_status_t device_power_deinit(uint32_t timeout_ms) {
+    return power_service_deinit(timeout_ms);
+}
+
+device_status_t device_power_lease_acquire(device_power_lease_owner_t owner,
+                                           device_power_lease_t *out_lease) {
+    return power_lease_service_acquire(owner, out_lease);
+}
+
+void device_power_lease_release(device_power_lease_t lease) {
+    power_lease_service_release(lease);
+}
+
+bool device_power_lease_get_snapshot(device_power_lease_snapshot_t *out_snapshot) {
+    return power_lease_service_get_snapshot(out_snapshot);
 }
 
 device_status_t device_power_schedule_display_off(uint32_t idle_after_ms) {
@@ -198,6 +302,10 @@ void device_power_cancel_display_off(void) {
 
 bool device_power_wake_display_from_user(void) {
     return power_service_wake_display_from_user();
+}
+
+bool device_power_wake_display_from_schedule(void) {
+    return power_service_wake_display_from_schedule();
 }
 
 bool device_power_get_snapshot(device_power_snapshot_t *out_snapshot) {
@@ -213,6 +321,18 @@ bool device_power_get_telemetry(device_power_telemetry_t *out_telemetry) {
     out_telemetry->level_percent = level > 100 ? 100 : (uint8_t)level;
     out_telemetry->charging = charging;
     return available;
+}
+
+bool device_battery_policy_get_snapshot(device_battery_policy_snapshot_t *out_snapshot) {
+    return battery_policy_service_get_snapshot(out_snapshot);
+}
+
+bool device_battery_policy_allows_optional_work(void) {
+    return battery_policy_service_allows_optional_work();
+}
+
+bool device_battery_policy_allows_high_power_work(void) {
+    return battery_policy_service_allows_high_power_work();
 }
 
 void device_connectivity_set_active_cellular(bool active) {
@@ -248,8 +368,80 @@ device_status_t device_connectivity_prepare_cellular_transport(void) {
     return device_status_from_esp_err(board_port_prepare_cellular_transport());
 }
 
+device_status_t device_connectivity_start_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    return device_status_from_esp_err(board_port_start_cellular_transport(timeout_ms));
+}
+
+bool device_connectivity_is_cellular_transport_ready(void) {
+    return device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT) &&
+           board_port_is_cellular_transport_ready();
+}
+
+static bool cellular_http_request_is_valid(
+    const device_connectivity_http_request_t *request) {
+    return request && request->method && request->method[0] && request->url &&
+           request->url[0] && request->response && request->response_capacity >= 2 &&
+           request->response_len && request->status_code && request->truncated &&
+           request->timeout_ms > 0;
+}
+
+device_status_t device_connectivity_cellular_http_request(
+    const device_connectivity_http_request_t *request) {
+    if (!cellular_http_request_is_valid(request)) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    return device_status_from_esp_err(board_port_cellular_http_request(request));
+}
+
+device_status_t device_connectivity_cellular_http_stream_request(
+    const device_connectivity_stream_request_t *request) {
+    if (!request || !cellular_http_request_is_valid(&request->request) ||
+        !request->body_reader || !request->stream_buffer || request->stream_buffer_size == 0) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    return device_status_from_esp_err(board_port_cellular_http_stream_request(request));
+}
+
+bool device_connectivity_cancel_cellular_foreground_request(void) {
+    if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {
+        return false;
+    }
+    return board_port_cancel_cellular_foreground_request();
+}
+
 bool device_connectivity_take_startup_transport_toggle(uint32_t window_ms) {
     return board_port_wait_for_boot_network_toggle(window_ms);
+}
+
+void device_connectivity_restore_selected_uplink(void) {
+    bool cellular = false;
+    if (!board_port_load_transport_selection(&cellular)) cellular = false;
+    device_connectivity_set_active_cellular(cellular);
+}
+
+bool device_connectivity_apply_startup_transport_toggle(uint32_t window_ms) {
+    bool selected_cellular = device_connectivity_is_active_cellular();
+    if (!board_port_apply_startup_transport_toggle(window_ms, selected_cellular,
+                                                   &selected_cellular)) {
+        return false;
+    }
+    device_connectivity_set_active_cellular(selected_cellular);
+    return true;
+}
+
+void device_connectivity_adapt_gateway_url(char *gateway_url,
+                                           uint32_t gateway_url_capacity) {
+    if (!gateway_url || gateway_url_capacity == 0) return;
+    board_port_adapt_gateway_url(gateway_url, gateway_url_capacity,
+                                 device_connectivity_is_active_cellular());
 }
 
 void device_display_set_command_lock(bool locked) {

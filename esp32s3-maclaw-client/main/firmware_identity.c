@@ -13,6 +13,10 @@
 #include "hal/usb_serial_jtag_ll.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "app_intent_service.h"
+#include "fall_detection_service.h"
+#include "operation_context.h"
+#include "sleep_schedule_service.h"
 
 #define IDENTITY_PROTOCOL_VERSION 2
 #define IDENTITY_QUERY_PREFIX "CLAWMATE_QUERY "
@@ -98,7 +102,29 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
         !cJSON_AddBoolToObject(power_json, "available", identity.power_available) ||
         !cJSON_AddNumberToObject(power_json, "state", identity.power.state) ||
         !cJSON_AddBoolToObject(power_json, "display_off_armed",
-                               identity.power.display_off_armed)) {
+                                identity.power.display_off_armed) ||
+        !cJSON_AddBoolToObject(power_json, "telemetry_available",
+                                identity.power_telemetry_available) ||
+        !cJSON_AddNumberToObject(power_json, "battery_level_percent",
+                                 identity.power_telemetry_available
+                                     ? identity.power_telemetry.level_percent
+                                     : -1) ||
+        !cJSON_AddBoolToObject(power_json, "charging",
+                                identity.power_telemetry_available &&
+                                    identity.power_telemetry.charging)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *battery_json = cJSON_AddObjectToObject(root, "battery_policy");
+    if (!battery_json ||
+        !cJSON_AddBoolToObject(battery_json, "available", identity.battery_policy_available) ||
+        !cJSON_AddBoolToObject(battery_json, "telemetry_available",
+                                identity.battery_policy.telemetry_available) ||
+        !cJSON_AddNumberToObject(battery_json, "level", identity.battery_policy.level) ||
+        !cJSON_AddBoolToObject(battery_json, "optional_work_allowed",
+                                identity.battery_policy.optional_work_allowed) ||
+        !cJSON_AddBoolToObject(battery_json, "high_power_work_allowed",
+                                identity.battery_policy.high_power_work_allowed)) {
         cJSON_Delete(root);
         return NULL;
     }
@@ -112,6 +138,121 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
                                identity.connectivity.cellular_ready) ||
         !cJSON_AddBoolToObject(connectivity_json, "ready",
                                identity.connectivity.ready)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *pressure_json = cJSON_AddObjectToObject(root, "resource_pressure");
+    if (!pressure_json ||
+        !cJSON_AddBoolToObject(pressure_json, "available",
+                               identity.resource_pressure_available) ||
+        !cJSON_AddNumberToObject(pressure_json, "level",
+                                 identity.resource_pressure.level) ||
+        !cJSON_AddNumberToObject(pressure_json, "internal_largest_free_bytes",
+                                 identity.resource_pressure.internal_largest_free_bytes) ||
+        !cJSON_AddNumberToObject(pressure_json, "external_largest_free_bytes",
+                                 identity.resource_pressure.external_largest_free_bytes) ||
+        !cJSON_AddBoolToObject(pressure_json, "storage_available",
+                               identity.resource_pressure.storage_available) ||
+        !cJSON_AddNumberToObject(pressure_json, "storage_free_bytes",
+                                 identity.resource_pressure.storage_free_bytes)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    device_runtime_snapshot_t runtime = {0};
+    if (!device_runtime_get_snapshot(&runtime)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *runtime_json = cJSON_AddObjectToObject(root, "runtime");
+    if (!runtime_json ||
+        !cJSON_AddNumberToObject(runtime_json, "abi_version", runtime.abi_version) ||
+        !cJSON_AddNumberToObject(runtime_json, "phase", runtime.phase) ||
+        !cJSON_AddNumberToObject(runtime_json, "first_failure_phase",
+                                 runtime.first_failure_phase) ||
+        !cJSON_AddNumberToObject(runtime_json, "first_failure_status",
+                                 runtime.first_failure_status) ||
+        !cJSON_AddBoolToObject(runtime_json, "local_services_allowed",
+                               runtime.local_services_allowed)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    app_intent_service_snapshot_t intents = {0};
+    if (!app_intent_service_get_snapshot(&intents)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *intents_json = cJSON_AddObjectToObject(root, "input_queue");
+    if (!intents_json ||
+        !cJSON_AddBoolToObject(intents_json, "started", intents.started) ||
+        !cJSON_AddBoolToObject(intents_json, "critical_overflow",
+                               intents.critical_overflow) ||
+        !cJSON_AddNumberToObject(intents_json, "critical_pending",
+                                 intents.critical_pending) ||
+        !cJSON_AddNumberToObject(intents_json, "control_pending",
+                                 intents.control_pending) ||
+        !cJSON_AddNumberToObject(intents_json, "auxiliary_pending",
+                                 intents.auxiliary_pending) ||
+        !cJSON_AddNumberToObject(intents_json, "dropped_critical",
+                                 intents.dropped_critical) ||
+        !cJSON_AddNumberToObject(intents_json, "dropped_control",
+                                 intents.dropped_control) ||
+        !cJSON_AddNumberToObject(intents_json, "dropped_auxiliary",
+                                 intents.dropped_auxiliary)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    device_operation_context_t operation = {0};
+    if (!operation_context_get_active(&operation)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    char operation_id[24];
+    snprintf(operation_id, sizeof(operation_id), "%llu",
+             (unsigned long long)operation.operation_id);
+    cJSON *operation_json = cJSON_AddObjectToObject(root, "operation");
+    if (!operation_json ||
+        !cJSON_AddNumberToObject(operation_json, "abi_version", operation.abi_version) ||
+        !cJSON_AddStringToObject(operation_json, "id", operation_id) ||
+        !cJSON_AddNumberToObject(operation_json, "generation", operation.generation) ||
+        !cJSON_AddNumberToObject(operation_json, "kind", operation.kind) ||
+        !cJSON_AddBoolToObject(operation_json, "cancel_requested",
+                               operation.cancel_requested) ||
+        !cJSON_AddBoolToObject(operation_json, "terminal_committed",
+                               operation.terminal_committed)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    sleep_schedule_status_t schedule = {0};
+    sleep_schedule_service_get_status(&schedule);
+    cJSON *schedule_json = cJSON_AddObjectToObject(root, "sleep_schedule");
+    if (!schedule_json ||
+        !cJSON_AddBoolToObject(schedule_json, "initialized", schedule.initialized) ||
+        !cJSON_AddBoolToObject(schedule_json, "enabled", schedule.enabled) ||
+        !cJSON_AddBoolToObject(schedule_json, "active_window", schedule.active_window) ||
+        !cJSON_AddBoolToObject(schedule_json, "manual_override_active",
+                               schedule.override_active) ||
+        !cJSON_AddBoolToObject(schedule_json, "display_off_requested",
+                               schedule.display_off_requested) ||
+        !cJSON_AddNumberToObject(schedule_json, "revision", schedule.revision) ||
+        !cJSON_AddNumberToObject(schedule_json, "next_transition_epoch",
+                                 (double)schedule.next_transition_epoch)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    fall_detection_snapshot_t fall_detection = {0};
+    if (!fall_detection_service_get_snapshot(&fall_detection)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *fall_json = cJSON_AddObjectToObject(root, "fall_detection");
+    if (!fall_json ||
+        !cJSON_AddBoolToObject(fall_json, "available", fall_detection.available) ||
+        !cJSON_AddBoolToObject(fall_json, "enabled", fall_detection.enabled) ||
+        !cJSON_AddNumberToObject(fall_json, "state", fall_detection.state) ||
+        !cJSON_AddNumberToObject(fall_json, "suspected_count",
+                                 fall_detection.suspected_count) ||
+        !cJSON_AddNumberToObject(fall_json, "configuration_revision",
+                                 fall_detection.configuration_revision)) {
         cJSON_Delete(root);
         return NULL;
     }
@@ -265,7 +406,13 @@ esp_err_t firmware_identity_get(firmware_identity_info_t *out) {
     (void)esp_app_get_elf_sha256(out->elf_sha256, sizeof(out->elf_sha256));
     if (!device_profile_get(&out->profile)) return ESP_ERR_INVALID_STATE;
     out->power_available = device_power_get_snapshot(&out->power);
+    out->power_telemetry_available =
+        device_power_get_telemetry(&out->power_telemetry);
+    out->battery_policy_available =
+        device_battery_policy_get_snapshot(&out->battery_policy);
     (void)device_connectivity_get_snapshot(&out->connectivity);
+    out->resource_pressure_available =
+        device_resource_pressure_get_snapshot(&out->resource_pressure);
     return ESP_OK;
 }
 

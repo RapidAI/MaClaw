@@ -42,3 +42,20 @@ error "not found"
 	}
 	return nil
 }
+
+// foregroundWindowTitle returns the frontmost window title via System Events
+// ("" on failure, e.g. missing accessibility permission).
+func foregroundWindowTitle() string {
+	out, err := exec.Command("osascript", "-e",
+		`tell application "System Events" to get name of first window of (first process whose frontmost is true)`).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// windowTitleAtPoint is unsupported on macOS (no cheap point→window API);
+// callers fall back to ForegroundWindowTitle.
+func windowTitleAtPoint(x, y int) string {
+	return ""
+}

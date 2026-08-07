@@ -378,7 +378,7 @@ func (s *SQLiteStore) Doctor(ctx context.Context) (DoctorResult, error) {
 			if emptyDescCount > 0 {
 				add("info", "images_without_description", "Some images have no description",
 					"These images were imported but OCR/Vision description was not generated. They are searchable only by filename and context.",
-					emptyDescCount, "Configure Vision LLM or ensure RapidOCR is available, then re-process affected images.")
+					emptyDescCount, "Configure Vision LLM or ensure the built-in OCR engine is available, then re-process affected images.")
 			}
 		}
 	}

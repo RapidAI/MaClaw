@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -72,6 +75,128 @@ func (app *TUIApp) DeliverIMFromTaskDelivery(ctx context.Context, d *scheduler.T
 		return fmt.Errorf("delivery not active")
 	}
 	return app.DeliverIMText(ctx, d.Channel, d.Targets, text)
+}
+
+// DeliverIMFile immediately uploads a local file to IM channel targets.
+// caption, when non-empty, is delivered as a text message to the same target first
+// (Lansenger media messages carry no caption field). Currently lansenger only.
+func (app *TUIApp) DeliverIMFile(ctx context.Context, channel string, targets []scheduler.DeliveryTarget, path, fileName, caption string) (string, int64, error) {
+	if app == nil {
+		return "", 0, fmt.Errorf("app unavailable")
+	}
+	if len(targets) == 0 {
+		return "", 0, fmt.Errorf("no delivery targets")
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", 0, fmt.Errorf("file path is empty")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", 0, fmt.Errorf("file not found or inaccessible: %w", err)
+	}
+	if info.IsDir() {
+		return "", 0, fmt.Errorf("path is a directory: %s", path)
+	}
+	if info.Size() == 0 {
+		// Fail before any caption text goes out so an unsendable file never
+		// leaves a half-delivered caption behind.
+		return "", 0, fmt.Errorf("file is empty: %s", path)
+	}
+	if info.Size() > agent.SendFileMaxSize {
+		return "", 0, fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), agent.SendFileMaxSize)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, fmt.Errorf("read file failed: %w", err)
+	}
+	name := strings.TrimSpace(fileName)
+	if name == "" {
+		name = filepath.Base(path)
+	}
+	caption = scheduler.TruncateDeliveryBody(caption)
+	channel = scheduler.DefaultDeliveryChannel(channel)
+	if channel != scheduler.DeliveryChannelLansenger {
+		return "", 0, fmt.Errorf("channel %q 暂不支持 im_message 文件发送（目前仅蓝信 lansenger）", channel)
+	}
+	ctx, cancel := scheduler.WithDeliveryTimeout(ctx, scheduler.DefaultIMFileDeliveryTimeout)
+	defer cancel()
+	gw, err := app.newLansengerGatewayForSend()
+	if err != nil {
+		return "", 0, err
+	}
+	store := app.deliveryStateStore()
+	_, err = scheduler.FanOutDeliveryTargets(targets, func(i int, target scheduler.DeliveryTarget) error {
+		peer, sendErr := app.sendLansengerFileTarget(ctx, gw, store, target, data, name, caption)
+		if sendErr != nil {
+			log.Printf("[TUI-IM] file delivery failed channel=%s target=%d: %v", channel, i, sendErr)
+			return sendErr
+		}
+		if peer != "" && scheduler.CanRememberAsSelfPeer(target) {
+			store.RememberPeer(channel, peer)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return name, info.Size(), nil
+}
+
+// sendLansengerFileTarget uploads one file to a single lansenger target and
+// returns the concrete peer id used, mirroring sendLansengerScheduleTarget.
+func (app *TUIApp) sendLansengerFileTarget(ctx context.Context, gw *lansenger.Gateway, store *scheduler.DeliveryStateStore, target scheduler.DeliveryTarget, data []byte, name, caption string) (string, error) {
+	if gw == nil {
+		return "", fmt.Errorf("lansenger gateway is nil")
+	}
+	send := func(peer string, isGroup bool) error {
+		if strings.TrimSpace(caption) != "" {
+			text := lansenger.OutgoingText{ToUserID: peer, Text: caption, IsGroup: isGroup}
+			if isGroup {
+				if target.MentionAll {
+					text.Reminder = &lansenger.OutgoingReminder{All: true}
+				} else if len(target.MentionUserIDs) > 0 {
+					text.Reminder = &lansenger.OutgoingReminder{UserIDs: append([]string(nil), target.MentionUserIDs...)}
+				}
+			}
+			if err := gw.SendText(ctx, text); err != nil {
+				return fmt.Errorf("caption send failed: %w", err)
+			}
+		}
+		return gw.SendMedia(ctx, lansenger.OutgoingMedia{
+			ToUserID:  peer,
+			FileData:  data,
+			FileName:  name,
+			MediaType: "file",
+			IsGroup:   isGroup,
+			Strict:    true,
+		})
+	}
+	switch target.Kind {
+	case scheduler.DeliveryKindGroup:
+		if strings.TrimSpace(target.GroupID) == "" {
+			return "", fmt.Errorf("lansenger group target missing group_id")
+		}
+		if err := send(target.GroupID, true); err != nil {
+			return "", err
+		}
+		return target.GroupID, nil
+	case scheduler.DeliveryKindUser:
+		userID := strings.TrimSpace(target.UserID)
+		if userID == "" {
+			return "", fmt.Errorf("lansenger user target missing user_id")
+		}
+		userID = store.ResolveSelfPeer(scheduler.DeliveryChannelLansenger, userID)
+		if scheduler.IsSelfPeerID(userID) {
+			return "", fmt.Errorf("lansenger: user_id=self 需要 staffId，或先成功私聊推送一次以记住对方")
+		}
+		if err := send(userID, false); err != nil {
+			return "", err
+		}
+		return userID, nil
+	default:
+		return "", fmt.Errorf("unknown target kind %q", target.Kind)
+	}
 }
 
 func (app *TUIApp) deliveryStateStore() *scheduler.DeliveryStateStore {

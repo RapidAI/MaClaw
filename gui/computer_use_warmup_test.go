@@ -571,7 +571,7 @@ func TestRegisterComputerUseToolsReusesWarmYOLO(t *testing.T) {
 	warm.SetUnloadDelay(15 * time.Minute)
 	globalComputerUse.mu.Lock()
 	globalComputerUse.yolo = warm
-	globalComputerUse.ocrSidecar = browser.NewRapidOCRSidecar(nil)
+	globalComputerUse.ocrSidecar = browser.NewNativeOCRProvider("", "", nil)
 	globalComputerUse.mu.Unlock()
 
 	reg := NewToolRegistry()

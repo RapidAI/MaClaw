@@ -5,6 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Bread Compact and Fangtang have no normalized inertial adapter in the
+ * current hardware profiles.  Keep an explicit board-port fallback so common
+ * Device API linkage never depends on a board model branch. */
+esp_err_t board_port_motion_get_sample(device_motion_sample_t *out_sample) {
+    (void)out_sample;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 #include "driver/gpio.h"
 #if !CONFIG_MACLAW_BOARD_FANGTANG_4G
 #include "driver/ledc.h"
@@ -20,7 +28,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
-#include "esp_lcd_nv3023.h"
+#include "boards/fangtang_4g/fangtang_display_adapter.h"
 #endif
 #include "esp_log.h"
 #include "esp_mn_models.h"
@@ -34,17 +42,18 @@
 
 #define LCD_HOST SPI3_HOST
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
-// 无名星智 0.85-inch single-key ML307 variant. These are taken from its
-// original board source; in particular GPIO11/12 stay exclusively for ML307.
-#define LCD_WIDTH 240
-#define LCD_HEIGHT 240
-#define LCD_Y_OFFSET 80
-#define LCD_MOSI GPIO_NUM_10
-#define LCD_CLK GPIO_NUM_9
-#define LCD_DC GPIO_NUM_8
-#define LCD_RST GPIO_NUM_18
-#define LCD_CS GPIO_NUM_14
-#define LCD_BACKLIGHT GPIO_NUM_13
+/* The Fangtang profile owns its physical NV3023 contract. These aliases keep
+ * the legacy generic renderer working during the staged split, but no
+ * controller pin or initialization sequence remains defined in Bread code. */
+#define LCD_WIDTH FANGTANG_DISPLAY_WIDTH
+#define LCD_HEIGHT FANGTANG_DISPLAY_HEIGHT
+#define LCD_Y_OFFSET FANGTANG_DISPLAY_GRAM_Y_OFFSET
+#define LCD_MOSI FANGTANG_DISPLAY_MOSI
+#define LCD_CLK FANGTANG_DISPLAY_CLK
+#define LCD_DC FANGTANG_DISPLAY_DC
+#define LCD_RST FANGTANG_DISPLAY_RESET
+#define LCD_CS FANGTANG_DISPLAY_CS
+#define LCD_BACKLIGHT FANGTANG_DISPLAY_BACKLIGHT
 #define BUTTON_ACTIVATE GPIO_NUM_0
 #define FANGTANG_CHARGE_STATUS_GPIO ((gpio_num_t)CONFIG_MACLAW_FANGTANG_CHARGE_STATUS_GPIO)
 #define MIC_WS GPIO_NUM_4
@@ -54,39 +63,6 @@
 #define SPK_BCLK GPIO_NUM_15
 #define SPK_WS GPIO_NUM_16
 
-/* The stock firmware configures this NV3023 with COLMOD=0x65, while its
- * registered panel format and every draw buffer remain 16-bit RGB565. The
- * assembled Fangtang panel additionally needs RGB MADCTL order, INVON and an
- * explicit IDMOFF to render the full RGB565 range with natural polarity. */
-static const nv3023_lcd_init_cmd_t s_fangtang_nv3023_init_cmds[] = {
-    {0xff, (const uint8_t[]){0xa5}, 1, 0}, {0x3e, (const uint8_t[]){0x09}, 1, 0},
-    {0x3a, (const uint8_t[]){0x65}, 1, 0}, {0x82, (const uint8_t[]){0x00}, 1, 0},
-    {0x98, (const uint8_t[]){0x00}, 1, 0}, {0x63, (const uint8_t[]){0x0f}, 1, 0},
-    {0x64, (const uint8_t[]){0x0f}, 1, 0}, {0xb4, (const uint8_t[]){0x34}, 1, 0},
-    {0xb5, (const uint8_t[]){0x30}, 1, 0}, {0x83, (const uint8_t[]){0x03}, 1, 0},
-    {0x86, (const uint8_t[]){0x04}, 1, 0}, {0x87, (const uint8_t[]){0x16}, 1, 0},
-    {0x88, (const uint8_t[]){0x0a}, 1, 0}, {0x89, (const uint8_t[]){0x27}, 1, 0},
-    {0x93, (const uint8_t[]){0x63}, 1, 0}, {0x96, (const uint8_t[]){0x81}, 1, 0},
-    {0xc3, (const uint8_t[]){0x10}, 1, 0}, {0xe6, (const uint8_t[]){0x00}, 1, 0},
-    {0x99, (const uint8_t[]){0x01}, 1, 0}, {0x70, (const uint8_t[]){0x09}, 1, 0},
-    {0x71, (const uint8_t[]){0x1d}, 1, 0}, {0x72, (const uint8_t[]){0x14}, 1, 0},
-    {0x73, (const uint8_t[]){0x0a}, 1, 0}, {0x74, (const uint8_t[]){0x11}, 1, 0},
-    {0x75, (const uint8_t[]){0x16}, 1, 0}, {0x76, (const uint8_t[]){0x38}, 1, 0},
-    {0x77, (const uint8_t[]){0x0b}, 1, 0}, {0x78, (const uint8_t[]){0x08}, 1, 0},
-    {0x79, (const uint8_t[]){0x3e}, 1, 0}, {0x7a, (const uint8_t[]){0x07}, 1, 0},
-    {0x7b, (const uint8_t[]){0x0d}, 1, 0}, {0x7c, (const uint8_t[]){0x16}, 1, 0},
-    {0x7d, (const uint8_t[]){0x0f}, 1, 0}, {0x7e, (const uint8_t[]){0x14}, 1, 0},
-    {0x7f, (const uint8_t[]){0x05}, 1, 0}, {0xa0, (const uint8_t[]){0x04}, 1, 0},
-    {0xa1, (const uint8_t[]){0x28}, 1, 0}, {0xa2, (const uint8_t[]){0x0c}, 1, 0},
-    {0xa3, (const uint8_t[]){0x11}, 1, 0}, {0xa4, (const uint8_t[]){0x0b}, 1, 0},
-    {0xa5, (const uint8_t[]){0x23}, 1, 0}, {0xa6, (const uint8_t[]){0x45}, 1, 0},
-    {0xa7, (const uint8_t[]){0x07}, 1, 0}, {0xa8, (const uint8_t[]){0x0a}, 1, 0},
-    {0xa9, (const uint8_t[]){0x3b}, 1, 0}, {0xaa, (const uint8_t[]){0x0d}, 1, 0},
-    {0xab, (const uint8_t[]){0x18}, 1, 0}, {0xac, (const uint8_t[]){0x14}, 1, 0},
-    {0xad, (const uint8_t[]){0x0f}, 1, 0}, {0xae, (const uint8_t[]){0x19}, 1, 0},
-    {0xaf, (const uint8_t[]){0x08}, 1, 0}, {0xff, (const uint8_t[]){0x00}, 1, 0},
-    {0x11, NULL, 0, 120}, {0x29, NULL, 0, 10},
-};
 #else
 #define LCD_WIDTH 240
 #define LCD_HEIGHT 320
@@ -106,10 +82,10 @@ static const nv3023_lcd_init_cmd_t s_fangtang_nv3023_init_cmds[] = {
 #define BREAD_BACKLIGHT_LEDC_TIMER LEDC_TIMER_0
 #define BREAD_BACKLIGHT_LEDC_CHANNEL LEDC_CHANNEL_0
 #define BREAD_BACKLIGHT_LEDC_RESOLUTION LEDC_TIMER_10_BIT
-// Bread uses 65% as its normal indoor brightness.  This is one fixed step
-// below the previous 80% setting while retaining enough headroom for legible
+// Bread uses 50% as its normal indoor brightness.  This is one fixed step
+// below the previous 65% setting while retaining enough headroom for legible
 // standby content in ordinary room lighting.
-#define BREAD_BACKLIGHT_DUTY 665u
+#define BREAD_BACKLIGHT_DUTY 512u
 
 #define BUTTON_BOOT GPIO_NUM_0
 #define BUTTON_ACTIVATE GPIO_NUM_0
@@ -222,6 +198,18 @@ static const char *const s_wake_word_phonetics[] = {
 static const char *TAG = "maclaw_bread";
 static board_port_button_cb_t s_button_cb;
 static void *s_button_arg;
+/* Input Service may stop during a degraded-startup rollback.  Keep the
+ * board-owned polling task joinable so it cannot publish through a queue that
+ * Input Service is about to release.  This stops only the scanner; the board
+ * port itself remains boot-lifetime because display/audio deinit is not yet a
+ * complete, restartable transaction. */
+static TaskHandle_t s_button_task;
+static SemaphoreHandle_t s_button_task_stopped;
+static SemaphoreHandle_t s_background_tasks_lock;
+static TaskHandle_t s_remote_pet_animation_task;
+static TaskHandle_t s_thinking_mouth_task;
+static SemaphoreHandle_t s_remote_pet_animation_stopped;
+static SemaphoreHandle_t s_thinking_mouth_stopped;
 static board_port_wake_word_cb_t s_wake_cb;
 static void *s_wake_arg;
 static TaskHandle_t s_wake_task;
@@ -279,8 +267,6 @@ static uint8_t *s_remote_pet_frames[REMOTE_PET_MAX_FRAMES];
 static size_t s_remote_pet_frame_count, s_remote_pet_width, s_remote_pet_height;
 static uint32_t s_remote_pet_frame_ms = REMOTE_PET_DEFAULT_KEYFRAME_MS;
 static uint64_t s_remote_pet_animation_elapsed_ms;
-static TaskHandle_t s_remote_pet_animation_task;
-static TaskHandle_t s_thinking_mouth_task;
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
 static int64_t s_fangtang_thinking_next_frame_us;
 #endif
@@ -401,39 +387,9 @@ static bool lcd_color_transfer_done(esp_lcd_panel_io_handle_t io,
     return task_woken == pdTRUE;
 }
 
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-static esp_err_t fangtang_draw_bitmap_rows(int x0, int y0, int x1, int y1,
-                                           const uint16_t *pixels) {
-    if (!s_panel_io || !pixels || x0 < 0 || y0 < 0 || x1 > LCD_WIDTH ||
-        y1 > LCD_HEIGHT || x1 <= x0 || y1 <= y0) return ESP_ERR_INVALID_ARG;
-    const uint8_t columns[] = {
-        (uint8_t)(x0 >> 8), (uint8_t)x0,
-        (uint8_t)((x1 - 1) >> 8), (uint8_t)(x1 - 1),
-    };
-    const int width = x1 - x0;
-    for (int y = y0; y < y1; ++y) {
-        const int gram_y = LCD_Y_OFFSET + y;
-        const uint8_t rows[] = {
-            (uint8_t)(gram_y >> 8), (uint8_t)gram_y,
-            (uint8_t)(gram_y >> 8), (uint8_t)gram_y,
-        };
-        esp_err_t err = esp_lcd_panel_io_tx_param(s_panel_io, 0x2a,
-                                                   columns, sizeof(columns));
-        if (err != ESP_OK) return err;
-        err = esp_lcd_panel_io_tx_param(s_panel_io, 0x2b, rows, sizeof(rows));
-        if (err != ESP_OK) return err;
-        err = esp_lcd_panel_io_tx_color(
-            s_panel_io, 0x2c, pixels + (size_t)(y - y0) * width,
-            (size_t)width * sizeof(uint16_t));
-        if (err != ESP_OK) return err;
-    }
-    return ESP_OK;
-}
-#endif
-
 static esp_err_t panel_draw_bitmap_sync(int x0, int y0, int x1, int y1, const void *pixels) {
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    return fangtang_draw_bitmap_rows(x0, y0, x1, y1, pixels);
+    return fangtang_display_draw_bitmap_rows(s_panel_io, x0, y0, x1, y1, pixels);
 #endif
     while (xSemaphoreTake(s_lcd_transfer_done, 0) == pdTRUE) {}
     esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x1, y1, pixels);
@@ -474,7 +430,7 @@ static void wake_display_for_draw_locked(void) {
     s_front_frame_valid = false;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, true));
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 1));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(fangtang_display_set_backlight(true));
 #else
     ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_set_duty(LEDC_LOW_SPEED_MODE,
                                                 BREAD_BACKLIGHT_LEDC_CHANNEL,
@@ -2052,6 +2008,24 @@ static bool remote_pet_target_size(size_t width, size_t height,
     return true;
 }
 
+bool board_port_get_pet_asset_install_budget(size_t source_width, size_t source_height,
+                                             size_t frame_count, size_t *out_external_bytes) {
+    if (!out_external_bytes || frame_count > REMOTE_PET_MAX_FRAMES) return false;
+    if (frame_count == 0) {
+        *out_external_bytes = 0;
+        return true;
+    }
+    size_t target_width = 0, target_height = 0;
+    if (!remote_pet_target_size(source_width, source_height, &target_width, &target_height) ||
+        target_width > SIZE_MAX / target_height ||
+        target_width * target_height > SIZE_MAX / 3u ||
+        target_width * target_height * 3u > SIZE_MAX / frame_count) {
+        return false;
+    }
+    *out_external_bytes = target_width * target_height * 3u * frame_count;
+    return true;
+}
+
 static void scale_remote_pet_frame(const uint8_t *source, size_t source_width,
                                    size_t source_height, uint8_t *destination,
                                    size_t target_width, size_t target_height) {
@@ -2280,9 +2254,10 @@ static void draw_thinking_mouth_frame(void) {
 
 static void thinking_mouth_task(void *arg) {
     (void)arg;
-    TickType_t next_frame = xTaskGetTickCount();
     while (true) {
-        vTaskDelayUntil(&next_frame, pdMS_TO_TICKS(THINKING_MOUTH_FRAME_MS));
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(THINKING_MOUTH_FRAME_MS)) != 0) {
+            break;
+        }
         xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
         // Re-check every terminal ownership flag while holding the same LCD
         // lock used by full-screen transitions.  A final response can arrive
@@ -2296,6 +2271,8 @@ static void thinking_mouth_task(void *arg) {
         }
         xSemaphoreGiveRecursive(s_lcd_mutex);
     }
+    if (s_thinking_mouth_stopped) xSemaphoreGive(s_thinking_mouth_stopped);
+    vTaskDelete(NULL);
 }
 
 static void show_state_screen(const char *state) {
@@ -2473,14 +2450,28 @@ static void show_state_screen(const char *state) {
 }
 
 static void ensure_thinking_mouth_task(void) {
-    if (s_thinking_mouth_task) return;
+    if (!s_background_tasks_lock ||
+        xSemaphoreTake(s_background_tasks_lock, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    if (s_thinking_mouth_task) {
+        xSemaphoreGive(s_background_tasks_lock);
+        return;
+    }
+    s_thinking_mouth_stopped = xSemaphoreCreateBinary();
+    if (!s_thinking_mouth_stopped) {
+        xSemaphoreGive(s_background_tasks_lock);
+        ESP_LOGW(TAG, "thinking mouth animation disabled: cannot create completion semaphore");
+        return;
+    }
     TaskHandle_t task = NULL;
     if (xTaskCreate(thinking_mouth_task, "bread_thinking_mouth", 3072,
                     NULL, 2, &task) == pdPASS) {
         s_thinking_mouth_task = task;
     } else {
+        vSemaphoreDelete(s_thinking_mouth_stopped);
+        s_thinking_mouth_stopped = NULL;
         ESP_LOGW(TAG, "thinking mouth animation disabled: cannot create task");
     }
+    xSemaphoreGive(s_background_tasks_lock);
 }
 
 static bool show_remote_pet_animation_frame(void) {
@@ -2587,7 +2578,7 @@ static void remote_pet_animation_task(void *arg) {
         // no animation work; a later pet install automatically restores 80 ms.
         if (s_remote_pet_frame_count < 2) delay_ms = 500;
 #endif
-        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms)) != 0) break;
         xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
         if (s_response_active && !s_response_image_active && s_response_next_page_us > 0 &&
@@ -2632,17 +2623,33 @@ static void remote_pet_animation_task(void *arg) {
         }
         xSemaphoreGiveRecursive(s_lcd_mutex);
     }
+    if (s_remote_pet_animation_stopped) xSemaphoreGive(s_remote_pet_animation_stopped);
+    vTaskDelete(NULL);
 }
 
 static void ensure_remote_pet_animation_task(void) {
-    if (s_remote_pet_animation_task) return;
+    if (!s_background_tasks_lock ||
+        xSemaphoreTake(s_background_tasks_lock, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    if (s_remote_pet_animation_task) {
+        xSemaphoreGive(s_background_tasks_lock);
+        return;
+    }
+    s_remote_pet_animation_stopped = xSemaphoreCreateBinary();
+    if (!s_remote_pet_animation_stopped) {
+        xSemaphoreGive(s_background_tasks_lock);
+        ESP_LOGW(TAG, "remote pet animation disabled: cannot create completion semaphore");
+        return;
+    }
     TaskHandle_t task = NULL;
     if (xTaskCreate(remote_pet_animation_task, "bread_pet_animation", 3072,
                     NULL, 2, &task) == pdPASS) {
         s_remote_pet_animation_task = task;
     } else {
+        vSemaphoreDelete(s_remote_pet_animation_stopped);
+        s_remote_pet_animation_stopped = NULL;
         ESP_LOGW(TAG, "remote pet animation disabled: cannot create task");
     }
+    xSemaphoreGive(s_background_tasks_lock);
 }
 
 static uint16_t state_color(const char *state) {
@@ -2691,7 +2698,8 @@ static esp_err_t audio_init(void) {
     return ESP_OK;
 }
 
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
+#if CONFIG_MACLAW_BOARD_FANGTANG_4G && \
+    !defined(MACLAW_FANGTANG_EXTERNAL_POWER_TELEMETRY)
 static unsigned fangtang_battery_percent_from_adc(int adc) {
     static const struct {
         int adc;
@@ -2945,8 +2953,15 @@ static void button_task(void *arg) {
         }
 #endif
 
-        vTaskDelay(pdMS_TO_TICKS(20));
+        /* A direct task notification is the scanner's stop token.  Do not use
+         * a cross-core volatile flag for lifecycle synchronization. */
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20)) != 0) break;
     }
+
+    s_button_cb = NULL;
+    s_button_arg = NULL;
+    if (s_button_task_stopped) xSemaphoreGive(s_button_task_stopped);
+    vTaskDelete(NULL);
 }
 
 esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
@@ -2955,17 +2970,15 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     // Hub reachability is session state. Never restore a previous boot's
     // ONLINE bit: the current handshake/poll must prove it again.
     s_gateway_ready = false;
+    s_background_tasks_lock = xSemaphoreCreateMutex();
+    if (!s_background_tasks_lock) return ESP_ERR_NO_MEM;
     s_audio_mutex = xSemaphoreCreateMutex();
     if (!s_audio_mutex) return ESP_ERR_NO_MEM;
     s_lcd_mutex = xSemaphoreCreateRecursiveMutex();
     if (!s_lcd_mutex) return ESP_ERR_NO_MEM;
     s_lcd_transfer_done = xSemaphoreCreateBinary();
     if (!s_lcd_transfer_done) return ESP_ERR_NO_MEM;
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    gpio_config_t backlight = {.pin_bit_mask = 1ULL << LCD_BACKLIGHT, .mode = GPIO_MODE_OUTPUT};
-    ESP_ERROR_CHECK(gpio_config(&backlight));
-    ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 0));
-#else
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G
     ledc_timer_config_t backlight_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = BREAD_BACKLIGHT_LEDC_RESOLUTION,
@@ -2985,65 +2998,32 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     ESP_ERROR_CHECK(ledc_timer_config(&backlight_timer));
     ESP_ERROR_CHECK(ledc_channel_config(&backlight_channel));
 #endif
+    #if CONFIG_MACLAW_BOARD_FANGTANG_4G
+    ESP_ERROR_CHECK(fangtang_display_init_hardware(
+        LCD_HOST, lcd_color_transfer_done, s_lcd_transfer_done, &s_panel, &s_panel_io));
+    ESP_LOGI(TAG, "NV3023 viewport ready: 240x240, GRAM Y=%d..%d",
+             LCD_Y_OFFSET, LCD_Y_OFFSET + LCD_HEIGHT - 1);
+    #else
     spi_bus_config_t bus = {.mosi_io_num = LCD_MOSI, .miso_io_num = GPIO_NUM_NC,
                             .sclk_io_num = LCD_CLK, .quadwp_io_num = GPIO_NUM_NC,
                             .quadhd_io_num = GPIO_NUM_NC,
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-                            .max_transfer_sz = LCD_WIDTH * sizeof(uint16_t)};
-#else
                             .max_transfer_sz = LCD_WIDTH * 16 * sizeof(uint16_t)};
-#endif
+    #endif
+    #if !CONFIG_MACLAW_BOARD_FANGTANG_4G
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
     esp_lcd_panel_io_handle_t io = NULL;
     esp_lcd_panel_io_spi_config_t io_cfg = {.cs_gpio_num = LCD_CS, .dc_gpio_num = LCD_DC,
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-        .spi_mode = 0, .pclk_hz = 40 * 1000 * 1000,
-#else
         .spi_mode = 3, .pclk_hz = 20 * 1000 * 1000,
-#endif
         .trans_queue_depth = 10, .lcd_cmd_bits = 8, .lcd_param_bits = 8,
         .on_color_trans_done = lcd_color_transfer_done, .user_ctx = s_lcd_transfer_done};
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(LCD_HOST, &io_cfg, &io));
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    s_panel_io = io;
-#endif
     esp_lcd_panel_dev_config_t panel_cfg = {.reset_gpio_num = LCD_RST,
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16,
-        .vendor_config = &(nv3023_vendor_config_t){
-            .init_cmds = s_fangtang_nv3023_init_cmds,
-            .init_cmds_size = sizeof(s_fangtang_nv3023_init_cmds) / sizeof(s_fangtang_nv3023_init_cmds[0]),
-        }};
-#else
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16};
-#endif
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    ESP_ERROR_CHECK(esp_lcd_new_panel_nv3023(io, &panel_cfg, &s_panel));
-#else
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io, &panel_cfg, &s_panel));
-#endif
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, false));
-    // The module is mounted 180 degrees in the enclosure. Both axes must be
-    // mirrored; Y-only makes every glyph and line read right-to-left.
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, true));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-    // NV3023A resets into its 8-color idle mode. Exit it explicitly so the
-    // RGB565 framebuffer is displayed with the full 262K-color output depth.
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(io, 0x38, NULL, 0));
-#else
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-#endif
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    ESP_LOGI(TAG, "NV3023 viewport ready: 240x240, GRAM Y=%d..%d",
-             LCD_Y_OFFSET, LCD_Y_OFFSET + LCD_HEIGHT - 1);
-#endif
-#if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    ESP_ERROR_CHECK(gpio_set_level(LCD_BACKLIGHT, 1));
-#else
     ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE,
                                   BREAD_BACKLIGHT_LEDC_CHANNEL,
                                   BREAD_BACKLIGHT_DUTY));
@@ -3097,13 +3077,21 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
 #endif
     ESP_RETURN_ON_ERROR(audio_init(), TAG, "audio init");
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
+#if defined(MACLAW_FANGTANG_EXTERNAL_POWER_TELEMETRY)
+    ESP_RETURN_ON_ERROR(fangtang_board_power_init(), TAG, "power monitor init");
+#else
     ESP_RETURN_ON_ERROR(fangtang_power_init(), TAG, "power monitor init");
+#endif
 #endif
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G && \
     defined(MACLAW_FANGTANG_EXTERNAL_BOOT_SELECTOR)
     fangtang_board_run_boot_network_selector();
 #endif
-    if (xTaskCreate(button_task, "bread_button", 3072, NULL, 4, NULL) != pdPASS) {
+    s_button_task_stopped = xSemaphoreCreateBinary();
+    if (!s_button_task_stopped) return ESP_ERR_NO_MEM;
+    if (xTaskCreate(button_task, "bread_button", 3072, NULL, 4, &s_button_task) != pdPASS) {
+        vSemaphoreDelete(s_button_task_stopped);
+        s_button_task_stopped = NULL;
         return ESP_ERR_NO_MEM;
     }
     // Besides pet animation this task owns the compact boards' 30-minute idle
@@ -3146,6 +3134,29 @@ bool board_port_wait_for_boot_network_toggle(uint32_t window_ms) {
 #endif
 
 #if !CONFIG_MACLAW_BOARD_FANGTANG_4G || \
+    !defined(MACLAW_FANGTANG_EXTERNAL_CONNECTIVITY_CONFIGURATION)
+bool board_port_load_transport_selection(bool *out_cellular) {
+    if (out_cellular) *out_cellular = false;
+    return false;
+}
+
+bool board_port_apply_startup_transport_toggle(uint32_t window_ms,
+                                               bool current_cellular,
+                                               bool *out_cellular) {
+    (void)window_ms;
+    if (out_cellular) *out_cellular = current_cellular;
+    return false;
+}
+
+void board_port_adapt_gateway_url(char *gateway_url, size_t capacity,
+                                  bool cellular_active) {
+    (void)gateway_url;
+    (void)capacity;
+    (void)cellular_active;
+}
+#endif
+
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G || \
     !defined(MACLAW_FANGTANG_EXTERNAL_CELLULAR_PREPARATION)
 esp_err_t board_port_prepare_cellular_transport(void) {
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
@@ -3184,6 +3195,38 @@ esp_err_t board_port_prepare_cellular_transport(void) {
 }
 #endif
 
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G || \
+    !defined(MACLAW_FANGTANG_EXTERNAL_CELLULAR_CANCELLATION)
+bool board_port_cancel_cellular_foreground_request(void) {
+    return false;
+}
+#endif
+
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G || \
+    !defined(MACLAW_FANGTANG_EXTERNAL_CELLULAR_START) || \
+    !defined(MACLAW_FANGTANG_EXTERNAL_CELLULAR_HTTP)
+esp_err_t board_port_start_cellular_transport(uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+bool board_port_is_cellular_transport_ready(void) {
+    return false;
+}
+
+esp_err_t board_port_cellular_http_request(
+    const device_connectivity_http_request_t *request) {
+    (void)request;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t board_port_cellular_http_stream_request(
+    const device_connectivity_stream_request_t *request) {
+    (void)request;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+#endif
+
 void board_port_show_startup_screen(void) {
     if (!s_panel || !s_lcd_mutex) return;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
@@ -3213,6 +3256,80 @@ esp_err_t board_port_set_output_volume(unsigned percent) {
     __atomic_store_n(&s_output_volume, percent, __ATOMIC_RELAXED);
     ESP_LOGI(TAG, "direct-I2S output volume applied: %u%%", percent);
     return ESP_OK;
+}
+
+esp_err_t board_port_stop_input(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_button_task) return ESP_OK;
+    if (xTaskGetCurrentTaskHandle() == s_button_task) return ESP_ERR_INVALID_STATE;
+
+    xTaskNotifyGive(s_button_task);
+    if (!s_button_task_stopped ||
+        xSemaphoreTake(s_button_task_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        ESP_LOGW(TAG, "timed out stopping board input scanner");
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(s_button_task_stopped);
+    s_button_task_stopped = NULL;
+    s_button_task = NULL;
+    ESP_LOGI(TAG, "board input scanner stopped");
+    return ESP_OK;
+}
+
+static esp_err_t stop_background_task(TaskHandle_t *task,
+                                      SemaphoreHandle_t *stopped,
+                                      TickType_t timeout) {
+    if (!*task) return ESP_OK;
+    xTaskNotifyGive(*task);
+    if (!*stopped || xSemaphoreTake(*stopped, timeout) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(*stopped);
+    *stopped = NULL;
+    *task = NULL;
+    return ESP_OK;
+}
+
+esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_background_tasks_lock ||
+        xSemaphoreTake(s_background_tasks_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (xTaskGetCurrentTaskHandle() == s_remote_pet_animation_task ||
+        xTaskGetCurrentTaskHandle() == s_thinking_mouth_task) {
+        xSemaphoreGive(s_background_tasks_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    const TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
+    const TickType_t started = xTaskGetTickCount();
+    esp_err_t err = stop_background_task(&s_thinking_mouth_task,
+                                         &s_thinking_mouth_stopped, deadline);
+    TickType_t elapsed = xTaskGetTickCount() - started;
+    TickType_t remaining = elapsed >= deadline ? 0 : deadline - elapsed;
+    if (err == ESP_OK && remaining > 0) {
+        err = stop_background_task(&s_remote_pet_animation_task,
+                                   &s_remote_pet_animation_stopped, remaining);
+    } else if (err == ESP_OK) {
+        err = ESP_ERR_TIMEOUT;
+    }
+ #if CONFIG_MACLAW_BOARD_FANGTANG_4G && \
+    defined(MACLAW_FANGTANG_EXTERNAL_POWER_MONITOR_STOP)
+    elapsed = xTaskGetTickCount() - started;
+    remaining = elapsed >= deadline ? 0 : deadline - elapsed;
+    if (err == ESP_OK && remaining > 0) {
+        err = fangtang_board_stop_power_monitor((uint32_t)remaining * portTICK_PERIOD_MS);
+    } else if (err == ESP_OK) {
+        err = ESP_ERR_TIMEOUT;
+    }
+ #endif
+    xSemaphoreGive(s_background_tasks_lock);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "timed out stopping board background task");
+    } else {
+        ESP_LOGI(TAG, "board background tasks stopped");
+    }
+    return err;
 }
 
 void board_port_set_pet_state(const char *state) {
@@ -3897,7 +4014,7 @@ bool board_port_enter_display_off(void) {
     s_idle_pet_sleep_expires_us = 0;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_disp_on_off(s_panel, false));
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
-    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(LCD_BACKLIGHT, 0));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(fangtang_display_set_backlight(false));
 #else
     ESP_ERROR_CHECK_WITHOUT_ABORT(ledc_set_duty(LEDC_LOW_SPEED_MODE,
                                                 BREAD_BACKLIGHT_LEDC_CHANNEL,
@@ -4510,6 +4627,8 @@ void board_port_set_network_transport(bool cellular) {
 #endif
 }
 
+#if !CONFIG_MACLAW_BOARD_FANGTANG_4G || \
+    !defined(MACLAW_FANGTANG_EXTERNAL_POWER_STATUS_GETTER)
 bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
 #if CONFIG_MACLAW_BOARD_FANGTANG_4G
     taskENTER_CRITICAL(&s_power_status_lock);
@@ -4524,6 +4643,7 @@ bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
     return false;
 #endif
 }
+#endif
 
 void board_port_request_capture_stop(void) {
     // Retain a stop that lands in the application-to-reader hand-off window.

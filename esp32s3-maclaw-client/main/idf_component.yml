@@ -16,6 +16,11 @@ dependencies:
   #   public: true
   espressif/cjson: ^1.7.19
   espressif/esp_lcd_st77916: '*'
+  # CO5300 QSPI AMOLED controller used by the Waveshare 1.75C circular panel.
+  espressif/esp_lcd_co5300: ^2.0.3
+  # CST9217 touch controller on the same board. The board port owns all
+  # coordinate conversion and exposes only semantic touch input upstream.
+  waveshare/esp_lcd_touch_cst9217: ^1.0.3
   # NV3023 controller used by the single-key 无名星智 0.85-inch ML307 board.
   78/esp_lcd_nv3023: ~1.0.0
   # Render the standard Wi-Fi QR code while the provisioning SoftAP is active.

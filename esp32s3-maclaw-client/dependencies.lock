@@ -117,6 +117,20 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.6.1
+  espressif/esp_lcd_co5300:
+    component_hash: 21f84c5c825509ebacbddb379555b49092ae165b3e19f0edfbf6f8eff8aa036d
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: idf
+      require: private
+      version: '>=5.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.1.0
   espressif/esp_lcd_st77916:
     component_hash: c0a565af3ea85a9d9f1e79b0e4d0829378db319bc4dab4939eca44361b3c5a1b
     dependencies:
@@ -131,6 +145,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.0.2
+  espressif/esp_lcd_touch:
+    component_hash: 3f85a7d95af876f1a6ecca8eb90a81614890d0f03a038390804e5a77e2caf862
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4.2'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.2.1
   espressif/mqtt:
     component_hash: fb18bc3b65aa8c94693a9811ffc322cca8a65d92d5ec84983d3e385080e3969c
     dependencies:
@@ -152,6 +176,20 @@ dependencies:
     source:
       type: idf
     version: 6.0.2
+  waveshare/esp_lcd_touch_cst9217:
+    component_hash: 27a00845832b7987cacf4c4125cbed5415d940987583065b01870ac080930856
+    dependencies:
+    - name: espressif/esp_lcd_touch
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^1.1.0
+    - name: idf
+      require: private
+      version: '>=4.4.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.4
 direct_dependencies:
 - 78/esp-ml307
 - 78/esp_lcd_nv3023
@@ -159,9 +197,11 @@ direct_dependencies:
 - espressif/cjson
 - espressif/esp-sr
 - espressif/esp_audio_codec
+- espressif/esp_lcd_co5300
 - espressif/esp_lcd_st77916
 - espressif/qrcode
 - idf
-manifest_hash: a3e8a3f80e8f9d75c70eca393214d1fb29bfe27fd54de79bd0764a38fc851144
+- waveshare/esp_lcd_touch_cst9217
+manifest_hash: 2565324b557f9bc521dd663e2c25ffa6f9a728ce4f5e6ea7b128811d2c6661c2
 target: esp32s3
 version: 3.0.0

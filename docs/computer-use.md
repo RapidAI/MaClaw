@@ -25,6 +25,7 @@ LLM 输出 computer_click(ref=e3) 等
 | `computer_scroll` | 滚动 |
 | `computer_wait` | 等待 / UI 稳定 |
 | `computer_focus` | 按窗口标题子串前置前台 |
+| `computer_find` | 按关键词查找屏幕文本/元素（含无元素覆盖的 OCR 文本），命中即分配可点击 ref |
 | `computer_done` | 结束并汇报 |
 | `computer_playbook` | 打印操作规则 |
 
@@ -63,7 +64,8 @@ Wails：`GetComputerUseEnabled` / `SetComputerUseEnabled` / `GetComputerUseStatu
 
 API：`ComputerUsePause` / `ComputerUseResume` / `ComputerUseStop` / `ComputerUseReset`
 
-主聊天输入区上方会出现 **Computer Use 快捷条**（会话 active/paused/stopped 时）：Pause / Resume / Stop CU / Reset。  
+主聊天输入区上方会出现 **Computer Use 快捷条**（会话 active/paused 时；Stop 或空闲后自动隐藏）：Pause / Resume / Stop CU（paused 时另有 Reset）。  
+新桌面任务激活（`@computer` 或高置信分类）时后端自动解除上次的 Stop，无需手动复位；sticky 续聊不会解除，确保 Stop 能阻断当前回合。
 点输入栏 **停止生成** 时，若桌面操控进行中会一并 `ComputerUseStop`，避免点停文字后仍在点桌面。
 
 **系统托盘** *Computer Use* 子菜单（Windows + macOS）：状态行 + Pause / Resume / Stop / Reset（随会话激活与 `computer-use:control` 刷新）。
@@ -72,6 +74,8 @@ API：`ComputerUsePause` / `ComputerUseResume` / `ComputerUseStop` / `ComputerUs
 
 - 默认假设模型是 **text-only**：看不到截图。
 - 必须先 `computer_observe`，再用 `ref`，动作后再次 observe。
+- observe 传 `window`（应用标题子串）才会合并该应用的 a11y 元素（列表项、文本节点）。
+- 定位指定的人/文字先 `computer_find query=...`；长列表用 `computer_scroll` + 重新 find 翻页，或优先用应用内搜索框。
 - 不要臆造像素坐标。
 
 ## 权重
@@ -92,7 +96,7 @@ OmniParser 权重路径由 `yoloModelPath()` 解析（见 `gui/app_yolo_model.go
 
 | 时机 | 行为 |
 |------|------|
-| GUI 启动 | 后台 `backgroundWarmupComputerUse`：预启 Windows UIA、探测输入、**YOLO 权重入内存**、**OCR sidecar 启动**（仅当已安装）、探测桌面权限；发 `computer-use:warmup` |
+| GUI 启动 | 后台 `backgroundWarmupComputerUse`：预启 Windows UIA、探测输入、**YOLO 权重入内存**、**原生 OCR 模型加载**（仅当已安装）、探测桌面权限；发 `computer-use:warmup` |
 | 设置页 | **运行自检** + **打开隐私设置**；`ComputerUseSelfCheck` 含 UIA/YOLO/OCR/权限/readiness |
 | 聊天区 | **Computer Use 准备** 横幅：缺权重 / 权限 / **最近 observe 失败**；**按 issue 关闭**（`dismissed_ids`）；可 Smoke / 自检 |
 | 观察失败 | `computer_observe` 失败返回 **Guidance** 文案；事件 `computer-use:error`；`GetComputerUseLastError` |
@@ -137,14 +141,15 @@ go test ./gui/ -count=1 -timeout 180s -run "TestComputerUseE2EInteract"
 | Linux | AT-SPI / 显示权限（best-effort stub） |
 
 YOLO `Warm()` 只加载权重、不跑检测；首次 `computer_observe` 才推理。权重缺失时 observe 仍可用 a11y/OCR。  
-OCR `Warm()` 仅在 `~/.maclaw/ocr/ocr_server.py` 已存在时启动进程（**不**在预热阶段 pip install）。
+OCR `Warm()` 仅在 det/rec ONNX 模型文件（`~/.maclaw/models/ppocrv6_<tier>_{det,rec}.onnx`）已存在时加载引擎（**不**在预热阶段下载；缺失时由后台预载下载）。
 
 API：`OpenComputerUsePermissionSettings(target)` — `accessibility` / `screen_recording`（macOS 深链）或 Windows `ms-settings:privacy`。
 
 ## 安全
 
-- 默认拒绝 UAC / 系统安全类窗口标题关键字。
-- 可选 `TargetApps` 白名单（Session/API）。
+- 默认拒绝 UAC / 系统安全类窗口：observe 时每个元素按中心点归因所属窗口标题（`Session.SetWindowResolver` + `accessibility.WindowTitleAtPoint`）；`computer_click` 直接用元素的归属窗口过 `Policy.AllowClickAt` 黑名单，`computer_type` 的聚焦点击在点击发生前同样检查，`computer_key` 按前台窗口标题检查。
+- 可选 `TargetApps` 白名单：配置项 `computer_use_target_apps`（字符串数组或逗号分隔串，`PatchConfigFields`），每次工具调用前同步进 Session；黑名单优先于白名单。
+- `computer_use_enabled=false` 时所有 `computer_*` handler 直接拒绝执行（不只是关闭激活门）。
 - 步数上限默认 40。
 
 ## 代码

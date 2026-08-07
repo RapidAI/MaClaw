@@ -26,6 +26,7 @@ vi.mock('../../../appLazyComponents', () => ({
     EmbeddingConfigPanel: () => <div>Embedding</div>,
     ASRConfigPanel: () => <div>ASR</div>,
     DiarizationConfigPanel: () => <div>Diarization</div>,
+    OCRConfigPanel: () => <div>OCR</div>,
     TTSConfigPanel: () => <div>TTS</div>,
     MemoryManagementPanel: () => <div>Memory</div>,
     KnowledgeSettingsPanel: () => <div>Knowledge</div>,

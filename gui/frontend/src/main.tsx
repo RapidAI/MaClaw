@@ -5,6 +5,9 @@ import App from './App'
 import { DialogProvider } from './components/CustomDialog'
 import { ToastProvider } from './components/Toast'
 import { KnowledgeImportProvider } from './components/settings/KnowledgeImportContext'
+import { installWindowDragHandler } from './utils/windowDrag'
+
+installWindowDragHandler()
 
 function getStartupLang() {
     const lang = document.documentElement.lang || navigator.language || 'en'

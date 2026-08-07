@@ -1,0 +1,13 @@
+# Name,   Type, SubType, Offset,   Size,      Flags
+# 32 MiB layout for Waveshare ESP32-S3 Touch AMOLED 1.75C.
+# No OTA slots are intentionally allocated: this product uses update check and
+# external flashing, while the extra flash remains available for models/assets.
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x500000,
+model,    data, spiffs,  0x510000, 0x500000,
+# The shared packed-CJK fallback needs about 1.5 MiB.  A 3 MiB SPIFFS keeps
+# the 16-bit page index well within range and leaves the remaining flash
+# unallocated for a future versioned layout rather than inventing a silent,
+# incompatible partition.
+storage,  data, spiffs,  0xa10000, 0x300000,

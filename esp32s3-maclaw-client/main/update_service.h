@@ -6,8 +6,6 @@
 
 #include "cJSON.h"
 #include "esp_err.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 
 // Metadata-only device update service.  It deliberately has no firmware URL,
 // downloader, flash writer or restart API: a fixed 16 MiB device tells the
@@ -19,9 +17,6 @@
 #define UPDATE_SERVICE_DETAIL_CAPACITY 144
 
 typedef struct {
-    // The caller owns the NVS mutex; this service never creates a separate
-    // writer for the shared "maclaw" namespace.
-    SemaphoreHandle_t nvs_mutex;
     int64_t running_release_sequence;
 } update_service_config_t;
 

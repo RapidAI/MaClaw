@@ -142,7 +142,7 @@ func Capabilities() KnowledgeCapabilities {
 				Status:        "supported",
 				Refreshable:   false,
 				DefaultImport: false,
-				Notes:         "Image files are imported when --include-images is enabled. Description via Vision LLM (if configured) or RapidOCR + context inference.",
+				Notes:         "Image files are imported when --include-images is enabled. Description via Vision LLM (if configured) or built-in OCR + context inference.",
 			},
 		},
 	}

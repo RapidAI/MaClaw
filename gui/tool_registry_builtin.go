@@ -638,17 +638,19 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolManageSchedule(args) })
 
 	// --- Immediate IM message (proactive push, independent of schedule) ---
-	reg("im_message", "即时向 IM 通道发文本消息（蓝信群/人、微信/Telegram/QQ 最近会话）。action: list_targets|send（可省略：有 text 则 send，有 query/群名则 list）。用户说「给蓝信某群发…」「推送到微信」时用本工具，不要用 manage_schedule 绕路。send 需 text + group_name/group_id/user_id。",
+	reg("im_message", "即时向 IM 通道发文本或文件（蓝信群/人、微信/Telegram/QQ 最近会话）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file，有 query/群名则 list）。用户说「给蓝信某群发…」「推送到微信」时用本工具，不要用 manage_schedule 绕路。send 需 text + group_name/group_id/user_id。send_file 上传本机文件（目前仅蓝信 lansenger 支持），需 path + group_name/group_id/user_id，可带 text 作为说明文字。",
 		ToolCategoryBuiltin, []string{"im", "message", "lansenger", "weixin", "telegram", "qq", "push", "notify", "group"},
 		map[string]interface{}{
-			"action":           map[string]string{"type": "string", "description": "list_targets 或 send；可省略并自动推断"},
-			"text":             map[string]string{"type": "string", "description": "send 时消息正文"},
+			"action":           map[string]string{"type": "string", "description": "list_targets、send 或 send_file；可省略并自动推断"},
+			"text":             map[string]string{"type": "string", "description": "send 时消息正文；send_file 时作为文件说明文字"},
 			"message":          map[string]string{"type": "string", "description": "text 别名"},
+			"path":             map[string]string{"type": "string", "description": "send_file：要发送的本机文件路径"},
+			"file_name":        map[string]string{"type": "string", "description": "send_file：发送时显示的文件名（可选）"},
 			"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq（默认 lansenger）"},
 			"query":            map[string]string{"type": "string", "description": "list_targets 时按名称/ID 过滤"},
-			"group_name":       map[string]string{"type": "string", "description": "send：群名（自动解析 group_id）"},
-			"group_id":         map[string]string{"type": "string", "description": "send：群 ID"},
-			"user_id":          map[string]string{"type": "string", "description": "send：私聊 ID；weixin/telegram/qq 可用 self"},
+			"group_name":       map[string]string{"type": "string", "description": "send/send_file：群名（自动解析 group_id）"},
+			"group_id":         map[string]string{"type": "string", "description": "send/send_file：群 ID"},
+			"user_id":          map[string]string{"type": "string", "description": "send/send_file：私聊 ID；weixin/telegram/qq 可用 self"},
 			"mention_user_ids": map[string]string{"type": "string", "description": "群消息可选 @ 用户 ID，逗号分隔"},
 			"mention_all":      map[string]string{"type": "boolean", "description": "群消息是否 @所有人"},
 			"delivery":         map[string]string{"type": "object", "description": "可选完整投递配置 {channel,targets:[...]}"},

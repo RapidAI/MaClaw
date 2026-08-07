@@ -23,6 +23,7 @@ import {
     MemoryManagementPanel,
     MigrationSettingsPanel,
     MISDataSettingsPanel,
+    OCRConfigPanel,
     ProgrammingToolsSettingsPanel,
     ProxySettingsPanel,
     SecurityPolicyPanel,
@@ -409,6 +410,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     <EmbeddingConfigPanel lang={lang} />
                     <ASRConfigPanel lang={lang} />
 					<DiarizationConfigPanel lang={lang} />
+                    <OCRConfigPanel lang={lang} />
                     <TTSConfigPanel lang={lang} />
                 </>
             ));

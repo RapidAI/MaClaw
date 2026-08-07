@@ -29,6 +29,9 @@ func TestIsComputerUseTool(t *testing.T) {
 	if !IsComputerUseTool("computer_observe") {
 		t.Fatal("expected computer_observe")
 	}
+	if !IsComputerUseTool("computer_find") {
+		t.Fatal("expected computer_find")
+	}
 	if IsComputerUseTool("bash") {
 		t.Fatal("bash is not CU")
 	}

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "device_api.h"
+#include "sleep_schedule_service.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -58,6 +59,7 @@ static void replay_unlock(void) {
 }
 
 static void arm_ambient_display_off(uint32_t delay_ms) {
+    delay_ms = sleep_schedule_service_adjust_display_off_delay(delay_ms);
     device_status_t status = device_power_schedule_display_off(delay_ms);
     if (status != DEVICE_STATUS_OK) {
         /* Power scheduling is an energy optimization; it must not make a

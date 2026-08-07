@@ -1,6 +1,8 @@
 /**
  * Compact Computer Use controls near the chat input (next to stop-generation UX).
- * Visible when a CU session is active, paused, or stopped.
+ * Visible while a CU session is active or paused; hidden once stopped or idle
+ * so the console does not linger after use. A new CU task re-opens it — the
+ * backend lifts the stale stop on fresh activation.
  */
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import {
@@ -28,7 +30,6 @@ type Props = {
 type CUState = {
     visible: boolean;
     paused: boolean;
-    stopped: boolean;
     steps: number;
     elements: number;
     label: string;
@@ -37,7 +38,6 @@ type CUState = {
 const empty: CUState = {
     visible: false,
     paused: false,
-    stopped: false,
     steps: 0,
     elements: 0,
     label: "",
@@ -59,15 +59,15 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
                 return;
             }
             const paused = !!s.paused && !s.stopped;
-            const stopped = !!s.stopped;
-            const active = !!s.session_active || paused || stopped || (s.step_count ?? 0) > 0;
-            if (!active) {
+            // Hide once control is no longer in use: a stopped session, or stale
+            // step counters after the sticky window expired, must not pin the bar.
+            const active = !!s.session_active || paused;
+            if (s.stopped || !active) {
                 setSt(empty);
                 return;
             }
             let label = tr("Desktop control", "桌面操控", "桌面操控");
-            if (stopped) label = tr("Desktop control · stopped", "桌面操控 · 已停止", "桌面操控 · 已停止");
-            else if (paused) label = tr("Desktop control · paused", "桌面操控 · 已暂停", "桌面操控 · 已暫停");
+            if (paused) label = tr("Desktop control · paused", "桌面操控 · 已暂停", "桌面操控 · 已暫停");
             else label = tr("Desktop control · active", "桌面操控 · 活动中", "桌面操控 · 活動中");
             const backend = typeof s.uia_sidecar_backend === "string" && s.uia_sidecar_backend
                 ? s.uia_sidecar_backend
@@ -76,7 +76,6 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
             setSt({
                 visible: true,
                 paused,
-                stopped,
                 steps: s.step_count ?? 0,
                 elements: s.element_count ?? 0,
                 label,
@@ -148,7 +147,7 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
             <span style={{ flex: 1 }} />
             <button
                 type="button"
-                disabled={busy || st.stopped || st.paused}
+                disabled={busy || st.paused}
                 onClick={() => void run(() => ComputerUsePause())}
                 style={btn()}
                 title={tr("Pause desktop actions", "暂停桌面动作", "暫停桌面動作")}
@@ -157,7 +156,7 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
             </button>
             <button
                 type="button"
-                disabled={busy || st.stopped || !st.paused}
+                disabled={busy || !st.paused}
                 onClick={() => void run(() => ComputerUseResume())}
                 style={btn()}
                 title={tr("Resume desktop actions", "继续桌面动作", "繼續桌面動作")}
@@ -166,14 +165,14 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
             </button>
             <button
                 type="button"
-                disabled={busy || st.stopped}
+                disabled={busy}
                 onClick={() => void run(() => ComputerUseStop())}
                 style={btn(true)}
                 title={tr("Stop desktop control and cancel generation", "停止桌面操控并取消生成", "停止桌面操控並取消生成")}
             >
                 {tr("Stop CU", "停止操控", "停止操控")}
             </button>
-            {(st.stopped || st.paused) && (
+            {st.paused && (
                 <button
                     type="button"
                     disabled={busy}

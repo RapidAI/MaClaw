@@ -1,0 +1,14 @@
+{
+  "inputs": {
+    "x": {
+      "shape": [
+        2,
+        1,
+        4,
+        3
+      ],
+      "dtype": "float32",
+      "data": "jMm/vjIaF7/kh1y/rPazvhS7Kj9dNma/0PXZPbp1Kz/oRh6/N3Z1v44ejr6ihFg/YPBlPmjFRz6Qes8+AJpiPJblGT84dw8+LFoHP5QZZT9Ig3O+sL1bPqBw7T1g63M/"
+    }
+  }
+}

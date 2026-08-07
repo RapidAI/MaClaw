@@ -579,6 +579,42 @@ func TestSendMediaUsesCurrentUploadEndpoint(t *testing.T) {
 	}
 }
 
+func TestSendMediaStrictReturnsUploadError(t *testing.T) {
+	var textSent bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"appToken": "token", "expiresIn": 3600}})
+		case "/v1/app/medias/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 5001, "errMsg": "upload rejected"})
+		case "/v1/bot/messages/create":
+			textSent = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+	gw := NewGateway(Config{AppID: "app", AppSecret: "secret", ApiGatewayURL: api.URL}, nil)
+
+	// Default: upload failure degrades to a text fallback and reports success.
+	if err := gw.SendMedia(context.Background(), OutgoingMedia{ToUserID: "user", FileData: []byte("f"), FileName: "a.txt", MediaType: "file"}); err != nil {
+		t.Fatalf("non-strict SendMedia: %v", err)
+	}
+	if !textSent {
+		t.Fatal("non-strict should send the text fallback")
+	}
+
+	// Strict: the upload failure surfaces as an error with no fallback text.
+	textSent = false
+	if err := gw.SendMedia(context.Background(), OutgoingMedia{ToUserID: "user", FileData: []byte("f"), FileName: "a.txt", MediaType: "file", Strict: true}); err == nil {
+		t.Fatal("strict SendMedia must return the upload error")
+	}
+	if textSent {
+		t.Fatal("strict must not send the text fallback")
+	}
+}
+
 func TestSendRejectsMissingRecipientWithoutCallingAPI(t *testing.T) {
 	requests := atomic.Int32{}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

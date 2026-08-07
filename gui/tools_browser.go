@@ -56,10 +56,8 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 	coreReg := tool.NewRegistry()
 	browser.RegisterTools(coreReg)
 
-	// Create OCR provider
-	ocrSidecar := browser.NewRapidOCRSidecar(func(msg string) {
-		log.Printf("[browser-ocr] %s", msg)
-	})
+	// Create OCR provider (shared process-wide native PP-OCRv6 engine).
+	ocrSidecar := sharedNativeOCRProvider()
 	compositeOCR := browser.NewCompositeOCRProvider(ocrSidecar)
 
 	// Create BrowserTaskSupervisor

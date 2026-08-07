@@ -41,6 +41,12 @@ func (a *App) ensureConfiguredAIModels() {
 				}
 			}
 
+			if cfg.OCREnabled {
+				if !modelStatusExists(a.CheckOCRModel()) {
+					startPreload("OCR", a.backgroundPreloadOCRModel)
+				}
+			}
+
 			if cfg.DiarizationEnabled {
 				if !modelStatusExists(a.CheckDiarizationModel()) {
 					startPreload("CAM++ diarization", a.backgroundPreloadDiarizationModel)

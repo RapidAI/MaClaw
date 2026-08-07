@@ -279,7 +279,7 @@ func (a *App) AutoDetectPortFirmware(port string) (AutoDetectedDevice, error) {
 	return AutoDetectedDevice{}, fmt.Errorf("selected serial port is no longer available")
 }
 func (a *App) GetAppInfo() AppInfo {
-	return AppInfo{Name: "ClawMate Maker", Version: "0.1.0-dev", Platform: goruntime.GOOS + "/" + goruntime.GOARCH, LogRoot: a.logsPath(), ProbeOnly: releaseBuild != "true"}
+	return AppInfo{Name: "ClawMate Maker", Version: buildVersion, Platform: goruntime.GOOS + "/" + goruntime.GOARCH, LogRoot: a.logsPath(), ProbeOnly: releaseBuild != "true"}
 }
 
 func (a *App) ListDevices() ([]device.Candidate, error) { return device.ListCandidates() }

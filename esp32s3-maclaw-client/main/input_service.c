@@ -36,13 +36,8 @@ typedef enum {
 } input_service_event_kind_t;
 
 typedef struct {
-    uint32_t struct_size;
-    uint32_t abi_version;
-    uint32_t sequence;
-    uint64_t timestamp_us;
+    device_input_event_t input;
     input_service_event_kind_t kind;
-    device_input_action_t action;
-    device_input_source_t source;
 } input_service_event_t;
 
 typedef struct {
@@ -65,8 +60,9 @@ typedef struct {
 
 static const char *TAG = "maclaw_input";
 static input_service_state_t s_input_service;
-/* Board scanners are boot-lifetime today.  Once one has been initialized we
- * must never call board_port_init() again without a matching board deinit. */
+/* The scanner can be stopped before Input Service frees its queues, but the
+ * wider board port remains boot-lifetime today.  Do not call board_port_init()
+ * again without a matching full board deinit. */
 static bool s_board_scanner_initialized;
 static portMUX_TYPE s_input_service_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -95,14 +91,19 @@ static void input_service_publish_from_board(device_input_action_t action,
     queue = control ? service->control_queue : service->auxiliary_queue;
     taskEXIT_CRITICAL(&s_input_service_lock);
 
+    taskENTER_CRITICAL(&s_input_service_lock);
+    uint32_t sequence = ++service->next_sequence;
+    taskEXIT_CRITICAL(&s_input_service_lock);
     input_service_event_t event = {
-        .struct_size = sizeof(event),
-        .abi_version = DEVICE_PROFILE_ABI_VERSION,
-        .sequence = ++service->next_sequence,
-        .timestamp_us = (uint64_t)esp_timer_get_time(),
+        .input = {
+            .struct_size = sizeof(device_input_event_t),
+            .abi_version = DEVICE_PROFILE_ABI_VERSION,
+            .sequence = sequence,
+            .timestamp_us = (uint64_t)esp_timer_get_time(),
+            .action = action,
+            .source = source,
+        },
         .kind = INPUT_SERVICE_EVENT_INPUT,
-        .action = action,
-        .source = source,
     };
     if (xQueueSend(queue, &event, 0) != pdPASS) {
         uint32_t *dropped = control ? &service->dropped_control : &service->dropped_auxiliary;
@@ -134,15 +135,15 @@ static void input_service_task(void *arg) {
         if (!input_service_take_next(&event)) continue;
         if (event.kind == INPUT_SERVICE_EVENT_STOP) break;
         if (s_input_service.stopping) continue;
-        if (event.struct_size != sizeof(event) ||
-            event.abi_version != DEVICE_PROFILE_ABI_VERSION) {
+        if (event.input.struct_size != sizeof(device_input_event_t) ||
+            event.input.abi_version != DEVICE_PROFILE_ABI_VERSION) {
             ESP_LOGW(TAG, "discarded incompatible input event: size=%lu abi=%lu",
-                     (unsigned long)event.struct_size, (unsigned long)event.abi_version);
+                     (unsigned long)event.input.struct_size,
+                     (unsigned long)event.input.abi_version);
             continue;
         }
         if (s_input_service.consumer) {
-            s_input_service.consumer(event.action, event.source,
-                                     s_input_service.consumer_context);
+            s_input_service.consumer(&event.input, s_input_service.consumer_context);
         }
     }
     if (s_input_service.stopped) xSemaphoreGive(s_input_service.stopped);
@@ -155,6 +156,7 @@ static device_status_t input_service_status_from_esp_err(esp_err_t err) {
         case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
         case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
         case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
         default: return DEVICE_STATUS_INTERNAL_ERROR;
     }
 }
@@ -261,18 +263,33 @@ device_status_t input_service_stop(uint32_t timeout_ms) {
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
+    /* Board scanner callbacks publish into these queues.  Join the scanner
+     * before releasing them, so the earlier publisher count cannot be made
+     * stale by a new scan iteration after admission has closed. */
+    TickType_t elapsed = xTaskGetTickCount() - started_at;
+    TickType_t remaining = elapsed >= deadline ? 0 : deadline - elapsed;
+    if (remaining == 0) return DEVICE_STATUS_TIMEOUT;
+    device_status_t board_stop_status = input_service_status_from_esp_err(
+        board_port_stop_input((uint32_t)remaining * portTICK_PERIOD_MS));
+    if (board_stop_status != DEVICE_STATUS_OK) return board_stop_status;
+
     /* With admission closed, this bounded control lane is only drained by the
      * consumer.  Waiting here cannot deadlock a board scanner. */
     input_service_event_t stop_event = {
-        .struct_size = sizeof(stop_event),
-        .abi_version = DEVICE_PROFILE_ABI_VERSION,
+        .input = {
+            .struct_size = sizeof(device_input_event_t),
+            .abi_version = DEVICE_PROFILE_ABI_VERSION,
+        },
         .kind = INPUT_SERVICE_EVENT_STOP,
     };
-    if (xQueueSend(s_input_service.control_queue, &stop_event, deadline) != pdPASS) {
+    elapsed = xTaskGetTickCount() - started_at;
+    remaining = elapsed >= deadline ? 0 : deadline - elapsed;
+    if (remaining == 0 ||
+        xQueueSend(s_input_service.control_queue, &stop_event, remaining) != pdPASS) {
         return DEVICE_STATUS_TIMEOUT;
     }
-    TickType_t elapsed = xTaskGetTickCount() - started_at;
-    TickType_t remaining = elapsed >= deadline ? 0 : deadline - elapsed;
+    elapsed = xTaskGetTickCount() - started_at;
+    remaining = elapsed >= deadline ? 0 : deadline - elapsed;
     if (xSemaphoreTake(s_input_service.stopped, remaining) != pdTRUE) {
         return DEVICE_STATUS_TIMEOUT;
     }
@@ -282,6 +299,6 @@ device_status_t input_service_stop(uint32_t timeout_ms) {
     vQueueDelete(s_input_service.control_queue);
     vSemaphoreDelete(s_input_service.stopped);
     memset(&s_input_service, 0, sizeof(s_input_service));
-    ESP_LOGI(TAG, "input service stopped; board scanner remains boot-lifetime");
+    ESP_LOGI(TAG, "input service and board scanner stopped");
     return DEVICE_STATUS_OK;
 }

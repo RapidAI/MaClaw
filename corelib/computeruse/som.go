@@ -3,17 +3,20 @@ package computeruse
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 )
 
 // BuildMarks assigns e0..eN refs, associates OCR text to boxes, and computes centers.
+// YOLO boxes already covered by a same-size accessibility element are dropped so
+// dense screens don't waste the text budget on duplicate refs.
 func BuildMarks(elements []taskengine.UIElement, ocr []taskengine.OCRResult) []MarkedElement {
 	if len(elements) == 0 {
 		return nil
 	}
-	out := make([]MarkedElement, 0, len(elements))
-	for i, el := range elements {
+	marks := make([]MarkedElement, 0, len(elements))
+	for _, el := range elements {
 		name := strings.TrimSpace(el.Name)
 		// Drop synthetic YOLO names like element_0 so OCR can fill them.
 		if isSyntheticName(name) {
@@ -31,8 +34,7 @@ func BuildMarks(elements []taskengine.UIElement, ocr []taskengine.OCRResult) []M
 		if typ == "" {
 			typ = "interactable"
 		}
-		out = append(out, MarkedElement{
-			Ref:          fmt.Sprintf("e%d", i),
+		marks = append(marks, MarkedElement{
 			Type:         typ,
 			Name:         name,
 			Value:        el.Value,
@@ -44,7 +46,54 @@ func BuildMarks(elements []taskengine.UIElement, ocr []taskengine.OCRResult) []M
 			Interactable: el.Interactable || el.Source == "yolo",
 		})
 	}
+	marks = dedupeCoveredYoloMarks(marks)
+	out := make([]MarkedElement, len(marks))
+	for i, m := range marks {
+		m.Ref = fmt.Sprintf("e%d", i)
+		out[i] = m
+	}
 	return out
+}
+
+// dedupeCoveredYoloMarks drops YOLO marks whose center lies inside an
+// accessibility mark of comparable size (the a11y entry carries the semantics).
+// Large container panes are ignored via the area ratio guard so buttons inside
+// a named panel survive.
+func dedupeCoveredYoloMarks(marks []MarkedElement) []MarkedElement {
+	out := marks[:0]
+	for _, m := range marks {
+		if m.Source == "yolo" && coveredByA11yMark(marks, m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func coveredByA11yMark(marks []MarkedElement, m MarkedElement) bool {
+	mArea := int64(m.BBox[2]) * int64(m.BBox[3])
+	if mArea <= 0 {
+		mArea = 1
+	}
+	for _, other := range marks {
+		if other.Source != "accessibility" {
+			continue
+		}
+		// A nameless a11y node carries no semantics — never sacrifice a labeled
+		// YOLO mark (e.g. OCR-tagged) for it.
+		if other.Name == "" && m.Name != "" {
+			continue
+		}
+		// Skip large containers: only same-scale elements dedupe.
+		if otherArea := int64(other.BBox[2]) * int64(other.BBox[3]); otherArea > 4*mArea {
+			continue
+		}
+		if m.CenterX >= other.BBox[0] && m.CenterX <= other.BBox[0]+other.BBox[2] &&
+			m.CenterY >= other.BBox[1] && m.CenterY <= other.BBox[1]+other.BBox[3] {
+			return true
+		}
+	}
+	return false
 }
 
 func isSyntheticName(name string) bool {
@@ -109,6 +158,7 @@ func associateOCRLabel(bbox [4]int, ocr []taskengine.OCRResult) string {
 }
 
 // FormatOCRExcerpt joins OCR results into a bounded text block for the model.
+// maxChars is a rune budget (not bytes) so CJK screens get their full allowance.
 func FormatOCRExcerpt(ocr []taskengine.OCRResult, maxChars int) string {
 	if maxChars <= 0 {
 		maxChars = 2000
@@ -117,22 +167,25 @@ func FormatOCRExcerpt(ocr []taskengine.OCRResult, maxChars int) string {
 		return ""
 	}
 	var b strings.Builder
-	for i, r := range ocr {
+	runes := 0
+	for _, r := range ocr {
 		t := strings.TrimSpace(r.Text)
 		if t == "" {
 			continue
 		}
-		if i > 0 && b.Len() > 0 {
+		n := utf8.RuneCountInString(t)
+		if b.Len() > 0 {
 			b.WriteByte(' ')
+			runes++
+		}
+		if runes+n > maxChars {
+			if rem := maxChars - runes; rem > 0 {
+				b.WriteString(string([]rune(t)[:rem]))
+			}
+			return b.String() + "…"
 		}
 		b.WriteString(t)
-		if b.Len() >= maxChars {
-			s := b.String()
-			if len(s) > maxChars {
-				return s[:maxChars] + "…"
-			}
-			return s + "…"
-		}
+		runes += n
 	}
 	return b.String()
 }
@@ -163,10 +216,21 @@ func RenderTextObserve(res *ObserveResult, maxElements int) string {
 	}
 	b.WriteString(fmt.Sprintf("elements (%d", n))
 	if show < n {
-		b.WriteString(fmt.Sprintf(", showing first %d", show))
+		b.WriteString(fmt.Sprintf(", showing %d, labeled first", show))
 	}
 	b.WriteString("):\n")
-	for i := 0; i < show; i++ {
+	// Render labeled elements first: on dense screens the unlabeled YOLO boxes
+	// are the least useful entries and the first to be cut by the budget.
+	order := make([]int, 0, n)
+	for pass := 0; pass < 2; pass++ {
+		for i := range res.Elements {
+			labeled := res.Elements[i].Name != ""
+			if (pass == 0) == labeled {
+				order = append(order, i)
+			}
+		}
+	}
+	for _, i := range order[:show] {
 		el := res.Elements[i]
 		name := el.Name
 		if name == "" {

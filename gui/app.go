@@ -7682,6 +7682,26 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ComputerUseEnabled = &v
+		case "computer_use_target_apps":
+			// Accept []interface{} of strings or a comma/semicolon-separated string.
+			var apps []string
+			switch v := value.(type) {
+			case string:
+				for _, part := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ';' || r == '，' || r == '；' }) {
+					if s := strings.TrimSpace(part); s != "" {
+						apps = append(apps, s)
+					}
+				}
+			case []interface{}:
+				for _, item := range v {
+					if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+						apps = append(apps, strings.TrimSpace(s))
+					}
+				}
+			default:
+				return corelib.AppConfig{}, fmt.Errorf("config field %q must be string array or comma-separated string", key)
+			}
+			cfg.ComputerUseTargetApps = apps
 		case "computer_use_log_keep_newest":
 			v, err := intField(key, value)
 			if err != nil {

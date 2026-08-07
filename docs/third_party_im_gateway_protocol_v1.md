@@ -6,7 +6,10 @@ always initiates connections to MaClaw over HTTP, sends user messages through
 JSON, and retrieves Agent replies with cursor-based long polling.
 
 The canonical protocol structs, validators, default limits, feature map, strict
-JSON decoder, and handshake response builder live in `corelib/im`. MaClawSrv,
+JSON decoder, and handshake response builder live in `corelib/im`. Host-agnostic
+server helpers shared by the gateway implementations (cursor queue pruning,
+forwarded-header/base-URL resolution, media tokens, request IDs, bearer
+extraction) live in the same package (`thirdparty_helpers.go`). MaClawSrv,
 MaClaw GUI, and ThirdAPIDemo share that implementation instead of duplicating
 protocol rules.
 

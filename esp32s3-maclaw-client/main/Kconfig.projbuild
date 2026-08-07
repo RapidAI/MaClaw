@@ -15,6 +15,13 @@ choice MACLAW_BOARD
 
     config MACLAW_BOARD_FANGTANG_4G
         bool "无名星智 4G / Fangtang 4G (ESP32-S3 dual-network)"
+
+    config MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+        bool "Waveshare ESP32-S3 Touch AMOLED 1.75C (CO5300 + CST9217)"
+        help
+            1.75-inch 466x466 round AMOLED board with AXP2101 PMU, CST9217
+            touch and ES7210/ES8311 audio codecs. This is a distinct board
+            profile; it must not share a rectangular-display configuration.
 endchoice
 
 config MACLAW_PRODUCT_ID
@@ -28,6 +35,7 @@ config MACLAW_BOARD_ID
     default "bread-compact-wifi-lcd-v1" if MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
     default "echoear-2st-r8" if MACLAW_BOARD_ECHOEAR_2ST
     default "fangtang-4g-v1" if MACLAW_BOARD_FANGTANG_4G
+    default "waveshare-s3-touch-amoled-1.75c-v1" if MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
     help
         Machine-readable physical PCB/display/audio configuration. Change only
         when hardware compatibility changes, not for firmware releases.
@@ -48,6 +56,7 @@ config MACLAW_COMPAT_ID
     default "maclaw-clawmate:bread-compact-wifi-lcd-v1:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
     default "maclaw-clawmate:echoear-2st-r8:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_ECHOEAR_2ST
     default "maclaw-clawmate:fangtang-4g-v1:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_FANGTANG_4G
+    default "maclaw-clawmate:waveshare-s3-touch-amoled-1.75c-v1:maclaw-s3-32m-factory-v1" if MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
     help
         Compact allow-list key used by the flasher after independent chip and
         partition-table verification.
@@ -57,6 +66,7 @@ config MACLAW_FIRMWARE_DISPLAY_NAME
     default "ClawMate / Bread Compact Wi-Fi LCD" if MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
     default "ClawMate / EchoEar-2ST R8" if MACLAW_BOARD_ECHOEAR_2ST
     default "ClawMate / 无名星智 4G" if MACLAW_BOARD_FANGTANG_4G
+    default "ClawMate / Waveshare S3 Touch AMOLED 1.75C" if MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
 
 config MACLAW_RELEASE_SEQUENCE
     int "Monotonic firmware release sequence"

@@ -1,0 +1,26 @@
+{
+  "inputs": {
+    "a": {
+      "shape": [
+        1
+      ],
+      "dtype": "float32",
+      "data": "fLEnvw=="
+    },
+    "b": {
+      "shape": [
+        1,
+        1
+      ],
+      "dtype": "float32",
+      "data": "8LaxPQ=="
+    },
+    "c": {
+      "shape": [
+        1
+      ],
+      "dtype": "float32",
+      "data": "Ticlvw=="
+    }
+  }
+}

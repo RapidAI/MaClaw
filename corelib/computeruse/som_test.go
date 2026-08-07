@@ -3,6 +3,7 @@ package computeruse
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 )
@@ -36,13 +37,13 @@ func TestBuildMarks_AssociatesOCRAndDropsSyntheticNames(t *testing.T) {
 
 func TestRenderTextObserve_NoBase64(t *testing.T) {
 	res := &ObserveResult{
-		Mode: ObserveTextPrimary,
-		Meta: ScreenMeta{Width: 800, Height: 600, ScaleFactor: 1},
+		Mode:    ObserveTextPrimary,
+		Meta:    ScreenMeta{Width: 800, Height: 600, ScaleFactor: 1},
 		Windows: []string{"Notepad"},
 		Elements: []MarkedElement{
 			{Ref: "e0", Type: "interactable", Name: "File", CenterX: 10, CenterY: 10, BBox: [4]int{0, 0, 20, 20}, Confidence: 0.9, Source: "yolo"},
 		},
-		OCRExcerpt: "File Edit",
+		OCRExcerpt:    "File Edit",
 		ScreenshotB64: strings.Repeat("A", 5000),
 	}
 	text := RenderTextObserve(res, 80)
@@ -72,5 +73,98 @@ func TestResolveRef(t *testing.T) {
 	}
 	if _, err := ResolveRef(els, "e9"); err == nil {
 		t.Fatal("expected stale_ref")
+	}
+}
+
+func TestBuildMarks_DedupesYoloCoveredByA11y(t *testing.T) {
+	els := []taskengine.UIElement{
+		// YOLO box fully covered by a same-scale a11y element → dropped.
+		{Type: "interactable", Name: "element_0", BBox: [4]int{12, 12, 36, 20}, Confidence: 0.9, Source: "yolo", Interactable: true},
+		{Type: "button", Name: "确定", BBox: [4]int{10, 10, 40, 24}, Confidence: 1, Source: "accessibility", Interactable: true},
+		// YOLO box inside a large named container (area >> 4x) → kept.
+		{Type: "interactable", Name: "element_1", BBox: [4]int{200, 200, 30, 20}, Confidence: 0.8, Source: "yolo", Interactable: true},
+		{Type: "pane", Name: "主面板", BBox: [4]int{0, 0, 1000, 800}, Confidence: 1, Source: "accessibility"},
+	}
+	marks := BuildMarks(els, nil)
+	if len(marks) != 3 {
+		t.Fatalf("len=%d want 3: %+v", len(marks), marks)
+	}
+	if marks[0].Ref != "e0" || marks[0].Name != "确定" {
+		t.Fatalf("e0=%+v want a11y 确定 first (gapless refs)", marks[0])
+	}
+	sources := map[string]int{}
+	for _, m := range marks {
+		sources[m.Source]++
+	}
+	if sources["yolo"] != 1 || sources["accessibility"] != 2 {
+		t.Fatalf("sources=%v", sources)
+	}
+}
+
+func TestBuildMarks_KeepsLabeledYoloOverNamelessA11y(t *testing.T) {
+	els := []taskengine.UIElement{
+		{Type: "interactable", Name: "保存按钮", BBox: [4]int{12, 12, 36, 20}, Confidence: 0.9, Source: "yolo", Interactable: true},
+		{Type: "listitem", Name: "", BBox: [4]int{10, 10, 40, 24}, Confidence: 1, Source: "accessibility", Interactable: true},
+	}
+	marks := BuildMarks(els, nil)
+	if len(marks) != 2 {
+		t.Fatalf("len=%d want 2 (labeled yolo must survive): %+v", len(marks), marks)
+	}
+	found := false
+	for _, m := range marks {
+		if m.Source == "yolo" && m.Name == "保存按钮" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("labeled yolo mark lost: %+v", marks)
+	}
+}
+
+func TestRenderTextObserve_LabeledFirst(t *testing.T) {
+	var els []MarkedElement
+	for i := 0; i < 5; i++ {
+		els = append(els, MarkedElement{Ref: "e" + string(rune('0'+i)), Type: "interactable", BBox: [4]int{0, i * 10, 10, 8}, Source: "yolo"})
+	}
+	els = append(els, MarkedElement{Ref: "e5", Type: "listitem", Name: "张三", BBox: [4]int{0, 100, 100, 20}, Source: "accessibility"})
+	res := &ObserveResult{Mode: ObserveTextPrimary, Meta: ScreenMeta{Width: 800, Height: 600, ScaleFactor: 1}, Elements: els}
+
+	// Budget smaller than element count: the labeled element must survive.
+	text := RenderTextObserve(res, 2)
+	if !strings.Contains(text, `"张三"`) {
+		t.Fatalf("labeled element cut by budget:\n%s", text)
+	}
+	if !strings.Contains(text, "labeled first") {
+		t.Fatalf("missing truncation note:\n%s", text)
+	}
+}
+
+func TestFormatOCRExcerpt_RuneSafeTruncation(t *testing.T) {
+	ocr := []taskengine.OCRResult{{Text: strings.Repeat("中", 50), Confidence: 0.9}}
+	out := FormatOCRExcerpt(ocr, 10)
+	if !strings.HasPrefix(out, strings.Repeat("中", 10)) || !strings.HasSuffix(out, "…") {
+		t.Fatalf("out=%q", out)
+	}
+	if !utf8.ValidString(out) {
+		t.Fatal("truncated output is not valid UTF-8")
+	}
+}
+
+func TestFormatOCRExcerpt_CJKGetsFullRuneBudget(t *testing.T) {
+	// 1500 CJK runes ≈ 4500 bytes: a byte-based budget of 2000 would cut this
+	// to ~667 runes; a rune budget must keep it whole.
+	ocr := []taskengine.OCRResult{{Text: strings.Repeat("文", 1500), Confidence: 0.9}}
+	out := FormatOCRExcerpt(ocr, 2000)
+	if strings.HasSuffix(out, "…") || utf8.RuneCountInString(out) != 1500 {
+		t.Fatalf("CJK text truncated early: runes=%d", utf8.RuneCountInString(out))
+	}
+	// Two lines joined by a space count the separator against the budget.
+	ocr = []taskengine.OCRResult{
+		{Text: strings.Repeat("a", 6), Confidence: 0.9},
+		{Text: strings.Repeat("b", 6), Confidence: 0.9},
+	}
+	out = FormatOCRExcerpt(ocr, 10)
+	if out != "aaaaaa bbb…" {
+		t.Fatalf("out=%q", out)
 	}
 }

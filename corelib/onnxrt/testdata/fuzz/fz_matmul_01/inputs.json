@@ -1,0 +1,22 @@
+{
+  "inputs": {
+    "a": {
+      "shape": [
+        1,
+        4,
+        2
+      ],
+      "dtype": "float32",
+      "data": "+JeKPjfLW7/Uiqw+s8lQv56ear8wsI0+ALkCPXItnL4="
+    },
+    "b": {
+      "shape": [
+        1,
+        2,
+        2
+      ],
+      "dtype": "float32",
+      "data": "sBaoPn0RNL+2rTe/tuDVvg=="
+    }
+  }
+}

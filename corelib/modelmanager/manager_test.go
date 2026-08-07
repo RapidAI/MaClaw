@@ -115,8 +115,8 @@ func TestAutoUnload(t *testing.T) {
 
 func TestAutoUnload_ResetByAcquire(t *testing.T) {
 	mgr := New(Config[*fakeModel]{
-		Name: "test",
-		Load: func() (*fakeModel, error) { return &fakeModel{}, nil },
+		Name:        "test",
+		Load:        func() (*fakeModel, error) { return &fakeModel{}, nil },
 		UnloadDelay: 200 * time.Millisecond,
 	})
 
@@ -237,6 +237,72 @@ func TestConcurrentAcquire(t *testing.T) {
 		t.Fatalf("expected 1 load, got %d", n)
 	}
 	mgr.Shutdown()
+}
+
+// TestManualUnload_InFlightDeferred is a regression test: a manual Unload
+// (or Shutdown) racing an in-flight Acquire must not close the model the
+// caller is still holding — the close is deferred to the last done().
+// (For mmap-backed models like ASR, closing under a running inference would
+// touch unmapped pages.)
+func TestManualUnload_InFlightDeferred(t *testing.T) {
+	mgr := New(Config[*fakeModel]{
+		Name:        "test",
+		Load:        func() (*fakeModel, error) { return &fakeModel{}, nil },
+		Close:       func(m *fakeModel) { atomic.StoreInt32(&m.closed, 1) },
+		UnloadDelay: time.Hour, // idle timer out of the picture
+	})
+
+	m, done, err := mgr.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.Unload() // in-flight: must NOT close yet
+	if m.isClosed() {
+		t.Fatal("Unload closed a model with an in-flight acquisition")
+	}
+	if !mgr.Loaded() {
+		t.Fatal("model should stay loaded until the last done()")
+	}
+	done() // last acquisition finished -> deferred close runs
+	if !m.isClosed() {
+		t.Fatal("deferred Unload should close the model after done()")
+	}
+	if mgr.Loaded() {
+		t.Fatal("should not be loaded after deferred Unload completed")
+	}
+}
+
+// TestManualUnload_InFlightSupersededByAcquire: a new Acquire before the
+// pending Unload completes cancels it — the re-acquired model stays loaded.
+func TestManualUnload_InFlightSupersededByAcquire(t *testing.T) {
+	var closeCount int32
+	mgr := New(Config[*fakeModel]{
+		Name:        "test",
+		Load:        func() (*fakeModel, error) { return &fakeModel{}, nil },
+		Close:       func(m *fakeModel) { atomic.AddInt32(&closeCount, 1) },
+		UnloadDelay: time.Hour,
+	})
+
+	_, done1, _ := mgr.Acquire()
+	mgr.Unload() // pending while done1 outstanding
+
+	m2, done2, err := mgr.Acquire() // supersedes the pending unload
+	if err != nil {
+		t.Fatal(err)
+	}
+	done1()
+	if atomic.LoadInt32(&closeCount) != 0 {
+		t.Fatal("pending Unload should have been cancelled by the new Acquire")
+	}
+	if !mgr.Loaded() {
+		t.Fatal("model should remain loaded after re-Acquire")
+	}
+	done2()
+	_ = m2
+	mgr.Shutdown()
+	if atomic.LoadInt32(&closeCount) != 1 {
+		t.Fatalf("expected exactly 1 close at final Shutdown, got %d", closeCount)
+	}
 }
 
 func TestNilClose(t *testing.T) {

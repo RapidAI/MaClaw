@@ -3468,11 +3468,7 @@ func deviceBearerToken(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-		return ""
-	}
-	return strings.TrimSpace(auth[len("Bearer "):])
+	return coreim.ThirdPartyBearerToken(r)
 }
 
 func newDeviceToken(bytes int) (string, string, error) {

@@ -4175,7 +4175,7 @@ ${instruction}`;
         logStartupTrace('render-gate-isLoading', { envLogsCount: envLogs.length, isManualCheck });
         return (
             <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} className="app-loading-shell">
-                <div className="app-loading-drag-zone" />
+                <div className="app-loading-drag-zone" data-window-drag />
                 <h2 className="app-loading-title">{t("envCheckTitle")}</h2>
                 <div className="app-loading-progress" aria-hidden="true">
                     <div className="app-loading-progress__bar" />

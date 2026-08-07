@@ -99,8 +99,14 @@ func (s *cuGateStubEmbedder) Close()   {}
 func resetComputerUseSessionForTest(t *testing.T) {
 	t.Helper()
 	clearComputerUseSessionActive()
+	globalComputerUse.mu.Lock()
+	globalComputerUse.lastFreshOpenRequestID = ""
+	globalComputerUse.mu.Unlock()
 	t.Cleanup(func() {
 		clearComputerUseSessionActive()
+		globalComputerUse.mu.Lock()
+		globalComputerUse.lastFreshOpenRequestID = ""
+		globalComputerUse.mu.Unlock()
 	})
 }
 
@@ -154,6 +160,96 @@ func TestShouldActivateComputerUseStickySession(t *testing.T) {
 	// Without a classifier, sticky alone keeps the gate open (degraded TTL).
 	if !h.shouldActivateComputerUse("随便聊聊") {
 		t.Fatal("active CU session should keep the gate open")
+	}
+}
+
+func installComputerUseSessionForTest(t *testing.T) *computeruse.Session {
+	t.Helper()
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	globalComputerUse.mu.Lock()
+	globalComputerUse.session = sess
+	globalComputerUse.mu.Unlock()
+	t.Cleanup(func() {
+		globalComputerUse.mu.Lock()
+		globalComputerUse.session = nil
+		globalComputerUse.mu.Unlock()
+	})
+	return sess
+}
+
+func installStoppedComputerUseSessionForTest(t *testing.T) *computeruse.Session {
+	t.Helper()
+	sess := installComputerUseSessionForTest(t)
+	sess.Stop()
+	return sess
+}
+
+func TestComputerUseFreshOpenLiftsStaleStopOncePerRequest(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	sess := installStoppedComputerUseSessionForTest(t)
+	h := &IMMessageHandler{}
+
+	active, fresh := h.gateComputerUse("@computer 点一下确定")
+	if !active || !fresh {
+		t.Fatalf("explicit trigger must be a fresh open, got active=%v fresh=%v", active, fresh)
+	}
+	liftComputerUseStopForFreshRequest("req-new-task")
+	if _, stopped := sess.ControlState(); stopped {
+		t.Fatal("fresh request must lift stale stop so the new task can run")
+	}
+
+	// Operator stops again mid-turn; the same turn re-gates (cancel still
+	// taking effect) with the same request ID and must stay blocked.
+	sess.Stop()
+	liftComputerUseStopForFreshRequest("req-new-task")
+	if _, stopped := sess.ControlState(); !stopped {
+		t.Fatal("re-gate of the same request must not resurrect a stopped turn")
+	}
+
+	// A genuinely new user message carries a new request ID and lifts.
+	liftComputerUseStopForFreshRequest("req-next-message")
+	if _, stopped := sess.ControlState(); stopped {
+		t.Fatal("new request must lift the stop")
+	}
+}
+
+func TestComputerUseFreshOpenLiftRequiresRequestID(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	sess := installStoppedComputerUseSessionForTest(t)
+	liftComputerUseStopForFreshRequest("")
+	if _, stopped := sess.ControlState(); !stopped {
+		t.Fatal("empty request ID must not lift a stop (cannot rule out in-flight re-gate)")
+	}
+}
+
+func TestShouldActivateComputerUseStickyKeepsStop(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	sess := installStoppedComputerUseSessionForTest(t)
+	markComputerUseSessionActive()
+	h := &IMMessageHandler{}
+	// Sticky continuation (degraded, no classifier) keeps the gate open but is
+	// not a fresh open — the in-flight turn stays blocked.
+	active, fresh := h.gateComputerUse("随便聊聊")
+	if !active {
+		t.Fatal("sticky session should keep the gate open")
+	}
+	if fresh {
+		t.Fatal("sticky continuation must not count as a fresh open")
+	}
+	if _, stopped := sess.ControlState(); !stopped {
+		t.Fatal("sticky continuation must not lift operator stop")
+	}
+}
+
+func TestComputerUseFreshOpenKeepsPause(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	sess := installComputerUseSessionForTest(t)
+	sess.Pause()
+	liftComputerUseStopForFreshRequest("req-paused")
+	// Pause is the operator's explicit hold — a fresh task must not silently
+	// resume it; only a stale hard-stop is lifted.
+	if paused, _ := sess.ControlState(); !paused {
+		t.Fatal("fresh activation must not lift operator pause")
 	}
 }
 
