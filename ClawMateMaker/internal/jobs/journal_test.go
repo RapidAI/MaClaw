@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,5 +174,15 @@ func TestListRecoveryRequiredIgnoresStrayInvalidDirectoryButBlocksWriteEvidence(
 	items, err := ListRecoveryRequired(root)
 	if err != nil || len(items) != 1 || items[0].JobID != "job-interrupted" {
 		t.Fatalf("items=%#v err=%v", items, err)
+	}
+}
+
+func TestListRecoveryRequiredRejectsFileAsRecoveryRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "jobs-file")
+	if err := os.WriteFile(root, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ListRecoveryRequired(root); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("file recovery root error = %v", err)
 	}
 }

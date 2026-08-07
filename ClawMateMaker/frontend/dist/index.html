@@ -67,22 +67,23 @@ const localizeDynamicRegions=()=>['#summary','#deviceDetail','#boardDetail','#fi
 async function diagnoseAccess(d){const note=$('#accessNote');note.className='notice';note.dataset.updated='true';note.textContent=t('readOnlyChecking',{port:d.port});try{const r=await api().DiagnoseDeviceAccess(d.port);if(!chosen||chosen.port!==d.port)return;if(r.status==='ready'){note.className='notice';note.textContent=t('readOnlyReady',{port:d.port});return}note.className='notice warning';note.textContent=r.message+(r.guide?' '+r.guide:'')}catch(e){note.className='notice warning';note.textContent=t('accessFailed',{error:String(e)})}}
 function selectDevice(d,automatic=false){chosen=d;board=null;firmware=null;boardConfirmed=false;boardConfirmationRef='';lastProbeJobID='';$('#flash').disabled=true;$('#download').disabled=true;$('#probe').disabled=false;document.querySelectorAll('.device').forEach(x=>x.classList.toggle('selected',x.dataset.port===d.port));$('#deviceStatus').className='status ok';$('#deviceDetail').textContent=d.port+' · '+(d.vendorId?'VID '+d.vendorId:t('serialCandidate'));$('#summary').textContent=t(automatic?'autoSelected':'selected',{port:d.port});void diagnoseAccess(d)}
 async function selectBoard(b,automatic=false,protocol=2){board=b;firmware=null;boardConfirmed=false;boardConfirmationRef='';$('#flash').disabled=true;document.querySelectorAll('.board').forEach(y=>y.classList.toggle('selected',y.dataset.board===b.id));$('#download').disabled=false;$('#import').disabled=false;const source=protocol===1?'protocol:1':'protocol:2';if(automatic){$('#boardStatus').className='status';$('#boardDetail').textContent=t('boardRuntimeReported',{source,board:b.name});if(recoveryRequired){$('#summary').textContent=t('recoveryPending');return}$('#summary').textContent=t('boardAutoDownloading',{source});void download();return}if(!chosen||!lastProbeJobID){$('#boardStatus').className='status bad';$('#boardDetail').textContent=t('boardSpecificConfirmation');$('#summary').textContent=t('confirmBoard');return}try{const confirmation=await api().ConfirmBoard(chosen.port,b.id,lastProbeJobID);if(board!==b||!chosen||chosen.port!==confirmation.port)return;boardConfirmationRef=confirmation.confirmationRef;boardConfirmed=!!boardConfirmationRef;$('#boardStatus').className='status ok';$('#boardDetail').textContent=t('boardConfirmedExact',{board:b.name});if(recoveryRequired){$('#summary').textContent=t('recoveryPending');return}$('#summary').textContent=t('boardManualDownloading',{source});void download()}catch(e){boardConfirmed=false;boardConfirmationRef='';$('#boardStatus').className='status bad';$('#boardDetail').textContent=String(e);$('#summary').textContent=t('confirmBoard')}}
-function renderDevices(list){const host=$('#devices');host.innerHTML='';const items=list.filter(d=>d.isUsb||d.likelyEsp);if(!items.length){host.innerHTML='<div class="empty">'+t('noDevices')+'</div>';return items}items.forEach(d=>{const x=document.createElement('button');x.className='device';x.dataset.port=d.port;x.innerHTML='<span class="icon">ESP</span><span><strong>'+esc(d.port)+(d.description?' · '+esc(d.description):'')+'</strong><small>'+(d.vendorId?'VID '+esc(d.vendorId)+' · PID '+esc(d.productId||'—'):t('serialCandidate'))+'</small></span>'+(d.likelyEsp?'<span class="badge">'+t('espCandidate')+'</span>':'');x.onclick=()=>selectDevice(d);host.append(x)});return items}
-function renderBoards(){const host=$('#boards');host.innerHTML='';boards.forEach(b=>{const x=document.createElement('button');x.className='board';x.dataset.board=b.id;x.innerHTML='<span class="icon">FW</span><span><strong>'+esc(b.name)+'</strong><small>'+esc(b.assetName)+'</small></span>';x.onclick=()=>selectBoard(b);host.append(x)})}
+function renderDevices(list){const host=$('#devices');host.innerHTML='';const items=list.filter(d=>d.isUsb||d.likelyEsp);if(!items.length){host.innerHTML='<div class="empty">'+t('noDevices')+'</div>';return items}items.forEach(d=>{const active=chosen?.port===d.port;const x=document.createElement('button');x.className='device'+(active?' selected is-selected-port':'');x.dataset.port=d.port;x.setAttribute('aria-pressed',active?'true':'false');if(active)x.setAttribute('aria-current','true');x.innerHTML='<span class="icon">ESP</span><span><strong>'+esc(d.port)+(d.description?' · '+esc(d.description):'')+'</strong><small>'+(d.vendorId?'VID '+esc(d.vendorId)+' · PID '+esc(d.productId||'—'):t('serialCandidate'))+'</small></span>'+(d.likelyEsp?'<span class="badge">'+t('espCandidate')+'</span>':'');x.onclick=()=>selectDevice(d);host.append(x)});return items}
+// The catalog is a result of the selected port's identity, never a chooser.
+function renderBoards(){const host=$('#boards');if(!host)return;host.innerHTML='';if(!board){host.hidden=true;return}host.hidden=false;const x=document.createElement('div');x.className='board selected';x.dataset.board=board.id;x.setAttribute('aria-current','true');x.innerHTML='<span class="icon">FW</span><span><strong>'+esc(board.name)+'</strong><small>'+esc(board.assetName)+'</small></span>';host.append(x)}
 const firmwareVersionCopy={'zh-CN':{upgrade_available:'发现新固件：已安装 #{installed}，可用 #{available}。',up_to_date:'固件已是最新：#{installed}。',installed_newer:'设备固件 #{installed} 比当前可用包 #{available} 更新。',unknown:'无法读取可比较的固件版本。'},'zh-TW':{upgrade_available:'發現新韌體：已安裝 #{installed}，可用 #{available}。',up_to_date:'韌體已是最新：#{installed}。',installed_newer:'裝置韌體 #{installed} 比目前可用套件 #{available} 更新。',unknown:'無法讀取可比較的韌體版本。'},en:{upgrade_available:'Firmware update available: installed #{installed}, available #{available}.',up_to_date:'Firmware is up to date: #{installed}.',installed_newer:'Device firmware #{installed} is newer than available package #{available}.',unknown:'No comparable firmware version is available.'}};
 function firmwareUpdateText(update){const installed=Number(update?.installedVersion)||0,available=Number(update?.availableVersion)||0,status=update?.status||'unknown';return String((firmwareVersionCopy[language]||firmwareVersionCopy['zh-CN'])[status]||(firmwareVersionCopy[language]||firmwareVersionCopy['zh-CN']).unknown).replace(/\{(installed|available)\}/g,(_,key)=>key==='installed'?installed:available)}
 function refreshFirmwareUpdateCopy(){const detail=$('#firmwareDetail');if(firmware&&firmware._update&&detail?.textContent.includes(' · '))detail.textContent=firmware.releaseTag+' · '+installModeText(firmware)+' · '+t('signed')+' · '+firmwareUpdateText(firmware._update)}
 $('#language')?.addEventListener('change',()=>setTimeout(refreshFirmwareUpdateCopy,0));
-function applyAutoDetectedItem(item){if(!item?.device)return;selectDevice(item.device,true);if(item.probe){lastJobID=item.probe.jobId||lastJobID;lastProbeJobID=item.probe.jobId||'';$('#export').disabled=!lastJobID}const matched=boards.find(b=>b.id===(item.boardId||item.firmware?.boardId));if(item.status==='firmware_ready'&&item.firmware&&matched){$('#boardCard').hidden=false;renderBoards();board=matched;firmware=item.firmware;firmware._update=item.update;boardConfirmed=false;document.querySelectorAll('.board').forEach(y=>y.classList.toggle('selected',y.dataset.board===matched.id));$('#boardStatus').className='status';$('#boardDetail').textContent=t('boardRuntimeReported',{source:'protocol:'+(item.probe?.appIdentity?.protocol||2),board:matched.name});$('#firmwareStatus').className='status ok';$('#firmwareDetail').textContent=firmware.releaseTag+' · '+installModeText(firmware)+' · '+t('signed')+' · '+firmwareUpdateText(item.update);$('#downloadNote').textContent=firmware.safetyNote;$('#download').disabled=false;$('#import').disabled=false;$('#flash').disabled=true;$('#summary').textContent=t('autoFirmwareReady',{port:item.device.port,asset:firmware.assetName})+' '+firmwareUpdateText(item.update);return}if(item.status==='requires_confirmation'&&item.probe){$('#boardCard').hidden=false;renderBoards();$('#boardStatus').className='status bad';$('#boardDetail').textContent=t('boardSpecificConfirmation');$('#downloadNote').textContent=item.reason||t('boardUnknown')}$('#summary').textContent=(item.reason||t('autoDetectIncomplete'))+' '+t('retryOrLogs')}
-function renderAutoDetectedDevices(items){const host=$('#devices');host.innerHTML='';items.forEach(item=>{const d=item.device;if(!d)return;const x=document.createElement('button');x.className='device';x.dataset.port=d.port;const state=item.status==='firmware_ready'?t('firmwareReady'):item.status==='requires_confirmation'?t('confirmationNeeded'):item.status==='probe_failed'?t('probeFailed'):item.status==='firmware_failed'?t('firmwareFailed'):t('recognizing');x.innerHTML='<span class="icon">ESP</span><span><strong>'+esc(d.port)+(d.description?' · '+esc(d.description):'')+'</strong><small>'+esc(state)+(item.boardId?' · '+esc(item.boardId):'')+'</small></span><span class="badge">'+esc(state)+'</span>';x.onclick=()=>applyAutoDetectedItem(item);host.append(x)})}
-async function refresh(auto=true){if(scanInFlight)return;scanInFlight=true;try{if(!api())throw new Error(t('desktopUnavailable'));const candidates=renderDevices(await api().ListDevices());const selectedStillPresent=chosen&&candidates.some(d=>d.port===chosen.port);if(chosen&&!selectedStillPresent){chosen=null;board=null;firmware=null;boardConfirmed=false;boardConfirmationRef='';lastProbeJobID='';$('#probe').disabled=true;$('#download').disabled=true;$('#flash').disabled=true;$('#deviceStatus').className='status bad';$('#deviceDetail').textContent=t('deviceDisconnected');$('#summary').textContent=t('preparationCancelled')}if(auto&&candidates.length===1&&!chosen){selectDevice(candidates[0],true);void probe(true)}else if(auto&&candidates.length>1&&!chosen){$('#summary').textContent=t('multipleDevices')}}catch(e){$('#devices').innerHTML='<div class="empty">'+t('scanFailed',{error:esc(e)})+'</div>'}finally{scanInFlight=false}}
+function applyAutoDetectedItem(item){if(!item?.device)return;selectDevice(item.device,true);if(item.probe){lastJobID=item.probe.jobId||lastJobID;lastProbeJobID=item.probe.jobId||'';$('#export').disabled=!lastJobID}const matched=boards.find(b=>b.id===(item.boardId||item.firmware?.boardId));if(!matched){renderBoards();$('#boardStatus').className='status bad';$('#boardDetail').textContent=t('boardSpecificConfirmation');$('#summary').textContent=(item.reason||t('autoDetectIncomplete'))+' '+t('retryOrLogs');return}board=matched;renderBoards();firmware=item.status==='firmware_ready'?item.firmware:null;if(firmware)firmware._update=item.update;boardConfirmed=false;boardConfirmationRef='';$('#boardCard').hidden=false;const source='protocol:'+(item.probe?.appIdentity?.protocol||2);$('#boardStatus').className='status ok';$('#boardDetail').textContent=t('boardRuntimeReported',{source,board:matched.name});$('#flash').disabled=true;if(firmware){$('#firmwareStatus').className='status ok';$('#firmwareDetail').textContent=firmware.releaseTag+' · '+installModeText(firmware)+' · '+t('signed')+' · '+firmwareUpdateText(item.update);$('#downloadNote').textContent=firmware.safetyNote;$('#download').disabled=false;$('#import').disabled=false;$('#summary').textContent=t('autoFirmwareReady',{port:item.device.port,asset:firmware.assetName})+' '+firmwareUpdateText(item.update)}else{$('#firmwareStatus').className='status bad';$('#firmwareDetail').textContent=item.reason||t('downloadFailed');$('#downloadNote').textContent=item.reason||t('downloadFailed');$('#download').disabled=true;$('#import').disabled=true;$('#summary').textContent=t('boardRuntimeReported',{source,board:matched.name})}}
+function renderAutoDetectedDevices(items){const host=$('#devices');host.innerHTML='';items.forEach(item=>{const d=item.device;if(!d)return;const active=chosen?.port===d.port;const x=document.createElement('button');x.className='device'+(active?' selected is-selected-port':'');x.dataset.port=d.port;x.setAttribute('aria-pressed',active?'true':'false');if(active)x.setAttribute('aria-current','true');const state=item.status==='firmware_ready'?t('firmwareReady'):item.status==='requires_confirmation'?t('confirmationNeeded'):item.status==='probe_failed'?t('probeFailed'):item.status==='firmware_failed'?t('firmwareFailed'):t('recognizing');x.innerHTML='<span class="icon">ESP</span><span><strong>'+esc(d.port)+(d.description?' · '+esc(d.description):'')+'</strong><small>'+esc(state)+(item.boardId?' · '+esc(item.boardId):'')+'</small></span><span class="badge">'+esc(state)+'</span>';x.onclick=()=>applyAutoDetectedItem(item);host.append(x)})}
+async function refresh(auto=true){if(scanInFlight)return;scanInFlight=true;try{if(!api())throw new Error(t('desktopUnavailable'));const candidates=renderDevices(await api().ListDevices());const selectedStillPresent=chosen&&candidates.some(d=>d.port===chosen.port);if(chosen&&!selectedStillPresent){chosen=null;document.dispatchEvent(new Event('clawmate:device-selection-cleared'));board=null;firmware=null;boardConfirmed=false;boardConfirmationRef='';lastProbeJobID='';$('#probe').disabled=true;$('#download').disabled=true;$('#flash').disabled=true;$('#deviceStatus').className='status bad';$('#deviceDetail').textContent=t('deviceDisconnected');$('#summary').textContent=t('preparationCancelled')}if(auto&&candidates.length===1&&!chosen){selectDevice(candidates[0],true);void probe(true)}else if(auto&&candidates.length>1&&!chosen){$('#summary').textContent=t('multipleDevices')}}catch(e){$('#devices').innerHTML='<div class="empty">'+t('scanFailed',{error:esc(e)})+'</div>'}finally{scanInFlight=false}}
 async function autoDetect(){if(scanInFlight)return false;scanInFlight=true;try{if(!api())throw new Error(t('desktopUnavailable'));$('#devices').innerHTML='<div class="empty">'+t('autoDetecting')+'</div>';const r=await api().AutoDetectFirmware();if(Array.isArray(r.devices)&&r.devices.length){renderAutoDetectedDevices(r.devices);const ready=r.devices.filter(x=>x.status==='firmware_ready').length;const probed=r.devices.filter(x=>x.probe).length;$('#summary').textContent=r.reason||t('autoDetectBatch',{probed,ready});add({code:'AUTO_DETECTION_BATCH_COMPLETED',detail:t('autoDetectLog',{count:r.devices.length,ready})});return true}const candidates=renderDevices(r.candidates||[]);if(r.device){selectDevice(r.device,true)}if(r.probe){lastJobID=r.probe.jobId||lastJobID;lastProbeJobID=r.probe.jobId||'';$('#export').disabled=!lastJobID}if(r.status==='firmware_ready'&&r.probe&&r.firmware){applyAutoDetectedItem({device:r.device,probe:r.probe,firmware:r.firmware,status:r.status,reason:r.reason,boardId:r.firmware.boardId});add({code:'AUTO_FIRMWARE_READY',detail:t('autoFirmwarePrepared',{asset:r.firmware.assetName})});return true}if(r.status==='requires_confirmation'&&r.probe){$('#boardCard').hidden=false;renderBoards();$('#boardStatus').className='status bad';$('#boardDetail').textContent=t('boardSpecificConfirmation');$('#downloadNote').textContent=r.reason||t('boardUnknown');$('#summary').textContent=r.reason||t('confirmBoardDownload');return true}if(r.status==='no_candidate'||r.status==='multiple_candidates'){$('#summary').textContent=r.reason;return true}if(r.status==='probe_failed'){$('#summary').textContent=t('autoProbeIncomplete',{reason:r.reason||t('checkAccess')});return true}if(r.status==='firmware_failed'){$('#summary').textContent=t('autoFirmwareFailed',{reason:r.reason||t('unknownError')});return true}return candidates.length>0}catch(e){$('#devices').innerHTML='<div class="empty">'+t('autoDetectFailed',{error:esc(e)})+'</div>';return false}finally{scanInFlight=false}}
 async function probe(automatic=false){if(!chosen||probeInFlight)return;const port=chosen.port;boardConfirmationRef='';boardConfirmed=false;lastProbeJobID='';probeInFlight=true;$('#probe').disabled=true;add({code:'PROBE_STARTED',detail:t('probeStarted',{automatic:automatic?t('automaticPrefix'):'',port})});try{const r=await api().ProbeDevice(port),ok=r.status==='succeeded';lastJobID=r.jobId||lastJobID;$('#export').disabled=!lastJobID;if(!chosen||chosen.port!==port)return;$('#summary').textContent=ok?t('probeSucceeded',{chip:r.chip?.revision||r.chip?.chip||t('chipIdentified'),flash:Math.round((r.flash?.sizeBytes||0)/1048576)}):t('probeIncomplete',{reason:r.errorMessage||r.errorCode});add({severity:ok?'info':'error',code:r.errorCode||'PROBE_COMPLETED',detail:r.errorMessage||t('probeCollected')});if(!ok)return;lastProbeJobID=r.jobId||'';const recognition=r.boardRecognition||{};$('#boardCard').hidden=false;renderBoards();const candidates=recognition.candidateBoards||[];const protocol=r.appIdentity?.protocol||2;if(recognition.status==='probable'&&candidates.length===1){const matched=boards.find(b=>b.id===candidates[0]);if(matched){add({code:'BOARD_AUTO_MATCHED',detail:t('boardAutoMatched',{source:'protocol:'+protocol,board:matched.name})});void selectBoard(matched,true,protocol);return}}$('#boardStatus').className='status bad';$('#boardDetail').textContent=t('boardSpecificConfirmation');$('#downloadNote').textContent=recognition.reason||t('boardUnknown')}catch(e){add({severity:'error',code:'PROBE_FAILED',detail:String(e)})}finally{probeInFlight=false;$('#probe').disabled=false}}
 function installModeText(r){return t(r.installPlan==='app-only'?'appOnly':'full')}
 async function download(){if(!board)return;const selectedBoard=board,channel=$('#releaseChannel')?.value||'stable';$('#download').disabled=true;$('#firmwareStatus').className='status';$('#firmwareDetail').textContent=t('downloadVerifying');add({code:'RELEASE_DOWNLOAD_STARTED',detail:t('downloadStarted',{asset:selectedBoard.assetName})+' · '+channel});try{const endpoint=api();const r=endpoint.GetLatestFirmwareForChannel?await endpoint.GetLatestFirmwareForChannel(selectedBoard.id,channel):await endpoint.GetLatestFirmware(selectedBoard.id);lastJobID=r.jobId||lastJobID;$('#export').disabled=!lastJobID;if(board!==selectedBoard)return;firmware=r;$('#firmwareStatus').className='status ok';$('#firmwareDetail').textContent=t('firmwareVerifiedDetail',{release:r.releaseTag,mode:installModeText(r)});$('#downloadNote').textContent=r.safetyNote;$('#summary').textContent=t('downloadVerified',{asset:r.assetName,mode:installModeText(r),recovery:recoveryRequired?(r.installPlan==='full'?t('usableForRecovery'):t('fullPackageRequired')):(boardConfirmed?t('readyToFlash'):t('confirmPhysicalBoard'))});$('#flash').disabled=recoveryRequired||!chosen||!boardConfirmed||r.installStatus!=='verified_ready';$('#recoveryFlash').disabled=!recoveryRequired||!chosen||!boardConfirmed||r.installStatus!=='verified_ready'||r.installPlan!=='full';add({code:'RELEASE_DOWNLOAD_COMPLETED',detail:r.assetName+' · '+r.sha256+' · '+installModeText(r)+' · '+channel})}catch(e){if(board!==selectedBoard)return;firmware=null;$('#flash').disabled=true;$('#firmwareStatus').className='status bad';$('#firmwareDetail').textContent=t('downloadFailed');add({severity:'error',code:'RELEASE_DOWNLOAD_FAILED',detail:String(e)})}finally{if(board===selectedBoard)$('#download').disabled=false}}
 async function importFirmware(){if(!board)return;const selectedBoard=board,channel=$('#releaseChannel')?.value||'stable';$('#download').disabled=true;$('#import').disabled=true;$('#flash').disabled=true;$('#firmwareStatus').className='status';$('#firmwareDetail').textContent=t('offlineVerifying');try{const endpoint=api();const r=endpoint.ImportFirmwarePackageForChannel?await endpoint.ImportFirmwarePackageForChannel(selectedBoard.id,language,channel):await endpoint.ImportFirmwarePackage(selectedBoard.id,language);lastJobID=r.jobId||lastJobID;$('#export').disabled=!lastJobID;if(board!==selectedBoard)return;firmware=r;$('#firmwareStatus').className='status ok';$('#firmwareDetail').textContent=t('offlineVerifiedDetail',{mode:installModeText(r)})+' · '+(r.channel||channel);$('#downloadNote').textContent=r.safetyNote;$('#summary').textContent=t('offlineVerified',{asset:r.assetName,mode:installModeText(r),recovery:recoveryRequired?(r.installPlan==='full'?t('usableForRecovery'):t('fullPackageRequired')):(boardConfirmed?t('readyToFlash'):t('confirmPhysicalBoard'))});$('#flash').disabled=recoveryRequired||!chosen||!boardConfirmed||r.installStatus!=='verified_ready';$('#recoveryFlash').disabled=!recoveryRequired||!chosen||!boardConfirmed||r.installStatus!=='verified_ready'||r.installPlan!=='full';add({code:'OFFLINE_IMPORT_COMPLETED',detail:r.assetName+' · '+r.sha256+' · '+installModeText(r)+' · '+(r.channel||channel)})}catch(e){if(board!==selectedBoard)return;firmware=null;$('#firmwareStatus').className='status bad';$('#firmwareDetail').textContent=t('offlineFailed');add({severity:'error',code:'OFFLINE_IMPORT_FAILED',detail:String(e)})}finally{if(board===selectedBoard){$('#download').disabled=false;$('#import').disabled=false}}}
-let activeFlashJobID='';let cancelRequested=false;async function flash(){if(recoveryRequired){$('#summary').textContent=t('unverifiedWritePending');return}if(!chosen||!board||!firmware||!firmware.packageRef||!boardConfirmed||!boardConfirmationRef){$('#summary').textContent=t('confirmBoard');return}const impact=installModeText(firmware);const recovery=firmware.requiresRecovery?t('recoveryRisk'):'';if(!confirm(t('confirmFlash',{port:chosen.port,mode:impact,recovery,board:board.name})))return;const id=requestID(),confirmation=boardConfirmationRef;cancelRequested=false;$('#flash').disabled=true;$('#download').disabled=true;$('#cancelFlash').hidden=false;add({code:'FLASH_STARTED',detail:t('flashStarted',{port:chosen.port,mode:impact})});$('#summary').textContent=t('writing');try{const r=await api().FlashFirmware(id,chosen.port,board.id,firmware.packageRef,confirmation);lastJobID=r.jobId||lastJobID;activeFlashJobID='';$('#export').disabled=!lastJobID;if(r.status!=='succeeded')throw new Error(r.errorMessage||r.errorCode||t('flashIncomplete'));boardConfirmationRef='';boardConfirmed=false;$('#summary').textContent=t('flashDone');add({code:'FLASH_SUCCEEDED',detail:t('flashLogSucceeded',{count:r.imagesWritten})})}catch(e){boardConfirmationRef='';boardConfirmed=false;$('#summary').textContent=cancelRequested?t('flashFailed'):t('flashFailed');add({severity:'error',code:cancelRequested?'FLASH_CANCELLED':'FLASH_FAILED',detail:String(e)})}finally{activeFlashJobID='';$('#cancelFlash').hidden=true;$('#flash').disabled=recoveryRequired;$('#download').disabled=recoveryRequired}}
-async function cancelActiveFlash(){const jobID=activeFlashJobID||lastJobID;if(!jobID){$('#summary').textContent='正在等待刷写任务建立；任务启动后即可停止。';return}if(!confirm('停止当前刷写？若已开始写入，设备将进入恢复检查状态，需使用完整固件恢复。'))return;cancelRequested=true;$('#cancelFlash').disabled=true;$('#summary').textContent='正在停止刷写并记录恢复状态…';try{await api().CancelJob(jobID);add({severity:'warning',code:'JOB_CANCEL_REQUESTED',detail:'已请求停止刷写；正在安全终止当前操作。'})}catch(e){$('#cancelFlash').disabled=false;cancelRequested=false;add({severity:'error',code:'JOB_CANCEL_FAILED',detail:String(e)})}}
+let activeFlashJobID='';let cancelRequested=false;const flashCancelCopy={'zh-CN':{waiting:'正在等待刷写任务建立；任务启动后即可停止。',confirm:'停止当前刷写？若已开始写入，设备将进入恢复检查状态，需使用完整固件恢复。',stopping:'正在停止刷写并记录恢复状态…',requested:'已请求停止刷写；正在安全终止当前操作。'},'zh-TW':{waiting:'正在等待建立燒錄工作；工作啟動後即可停止。',confirm:'要停止目前燒錄嗎？若已開始寫入，裝置將進入復原檢查狀態，必須使用完整韌體復原。',stopping:'正在停止燒錄並記錄復原狀態…',requested:'已要求停止燒錄；正在安全終止目前操作。'},en:{waiting:'Waiting for the flash job to be created. It can be stopped once it starts.',confirm:'Stop the current flash? If writing has started, the device will enter recovery-check state and requires full firmware recovery.',stopping:'Stopping the flash and recording recovery state…',requested:'Stop requested; safely terminating the current operation.'}};const flashCancelText=()=>flashCancelCopy[language]||flashCancelCopy['zh-CN'];async function flash(){if(recoveryRequired){$('#summary').textContent=t('unverifiedWritePending');return}if(!chosen||!board||!firmware||!firmware.packageRef||!boardConfirmed||!boardConfirmationRef){$('#summary').textContent=t('confirmBoard');return}const impact=installModeText(firmware);const recovery=firmware.requiresRecovery?t('recoveryRisk'):'';if(!confirm(t('confirmFlash',{port:chosen.port,mode:impact,recovery,board:board.name})))return;const id=requestID(),confirmation=boardConfirmationRef;cancelRequested=false;$('#flash').disabled=true;$('#download').disabled=true;$('#cancelFlash').hidden=false;add({code:'FLASH_STARTED',detail:t('flashStarted',{port:chosen.port,mode:impact})});$('#summary').textContent=t('writing');try{const r=await api().FlashFirmware(id,chosen.port,board.id,firmware.packageRef,confirmation);lastJobID=r.jobId||lastJobID;activeFlashJobID='';$('#export').disabled=!lastJobID;if(r.status!=='succeeded')throw new Error(r.errorMessage||r.errorCode||t('flashIncomplete'));boardConfirmationRef='';boardConfirmed=false;$('#summary').textContent=t('flashDone');add({code:'FLASH_SUCCEEDED',detail:t('flashLogSucceeded',{count:r.imagesWritten})})}catch(e){boardConfirmationRef='';boardConfirmed=false;$('#summary').textContent=cancelRequested?t('flashFailed'):t('flashFailed');add({severity:'error',code:cancelRequested?'FLASH_CANCELLED':'FLASH_FAILED',detail:String(e)})}finally{activeFlashJobID='';$('#cancelFlash').hidden=true;$('#flash').disabled=recoveryRequired;$('#download').disabled=recoveryRequired}}
+async function cancelActiveFlash(){const jobID=activeFlashJobID||lastJobID,copy=flashCancelText();if(!jobID){$('#summary').textContent=copy.waiting;return}if(!confirm(copy.confirm))return;cancelRequested=true;$('#cancelFlash').disabled=true;$('#summary').textContent=copy.stopping;try{await api().CancelJob(jobID);add({severity:'warning',code:'JOB_CANCEL_REQUESTED',detail:copy.requested})}catch(e){$('#cancelFlash').disabled=false;cancelRequested=false;add({severity:'error',code:'JOB_CANCEL_FAILED',detail:String(e)})}}
 $('#cancelFlash').onclick=cancelActiveFlash;
 async function recover(){if(!recoveryRequired||!recoveryJobID||!chosen||!board||!firmware||!firmware.packageRef||!boardConfirmed||!boardConfirmationRef){$('#summary').textContent=t('recoveryNeedsSetup');return}if(firmware.installPlan!=='full'){$('#summary').textContent=t('recoveryFullOnly');return}if(!confirm(t('confirmRecovery',{port:chosen.port})))return;const id=requestID(),confirmation=boardConfirmationRef;$('#recoveryFlash').disabled=true;add({code:'RECOVERY_STARTED',detail:t('recoveryStarted',{port:chosen.port})});$('#summary').textContent=t('recovering');try{const r=await api().RecoverFirmware(id,recoveryJobID,chosen.port,board.id,firmware.packageRef,confirmation);lastJobID=r.jobId||lastJobID;if(r.status!=='succeeded')throw new Error(r.errorMessage||r.errorCode||t('recoveryIncomplete'));boardConfirmationRef='';boardConfirmed=false;recoveryRequired=false;recoveryJobID='';$('#recoveryCard').hidden=true;$('#summary').textContent=t('recoveryDone');add({code:'RECOVERY_SUCCEEDED',detail:t('recoveryLogSucceeded')})}catch(e){boardConfirmationRef='';boardConfirmed=false;$('#summary').textContent=t('recoveryFailed');add({severity:'error',code:'RECOVERY_FAILED',detail:String(e)})}finally{$('#recoveryFlash').disabled=!recoveryRequired}}
 async function replayLogs(){if(!lastJobID)return;try{const filter={severity:$('#logSeverity')?.value||'',stage:$('#logStage')?.value||'',component:$('#logComponent')?.value||'',code:$('#logCode')?.value||''};const page=api().GetJobLogPageFiltered?await api().GetJobLogPageFiltered(lastJobID,lastLogSequence,200,filter):await api().GetJobLogPage(lastJobID,lastLogSequence,200);for(const event of page.events||[])add(event);if(page.next)lastLogSequence=Math.max(lastLogSequence,page.next)}catch(e){add({severity:'warning',code:'LOG_REPLAY_FAILED',detail:t('logReplayFailed',{error:String(e)})})}}
@@ -119,7 +120,9 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
   const interpolate=(value,args)=>String(value).replace(/\{(\w+)\}/g,(_,key)=>args[key]??'');
   const bool=value=>value===true?'on':value===false?'off':'?';
   const bytes=value=>{const n=Number(value||0);return n>0?(n/1048576).toFixed(n%1048576?'1':'0')+' MiB':'—'};
-  const currentPort=()=>String((typeof chosen!=='undefined'&&chosen?.port)||selectedPort||'');
+  // `chosen` is the single source of truth.  A historical DOM selection must
+  // never survive a device removal or re-enumeration and look writable.
+  const currentPort=()=>String((typeof chosen!=='undefined'&&chosen?.port)||'');
   function securityStatus(security){if(!security||typeof security!=='object')return 'unavailable';if(security.secureBoot===false&&security.flashEncryption===false&&security.secureVersion===0)return 'supported';if(security.secureBoot===true||security.flashEncryption===true||(typeof security.secureVersion==='number'&&security.secureVersion!==0))return 'enabled';return 'unknown'}
   function refreshSelection(){
     selectedPort=currentPort();
@@ -143,6 +146,7 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
   }
   const boardCard=document.querySelector('#boardCard');if(boardCard)host.insertBefore(panel,boardCard);else host.append(panel);
   language.addEventListener('change',render);
+  document.addEventListener('clawmate:device-selection-cleared',()=>{selectedPort='';render()});
   function observe(result,port){
     if(result&&typeof result==='object'&&result.probe)observe(result.probe,port||result.device?.port||result.port);
     const evidencePort=String(port||result?.port||'');
@@ -153,7 +157,7 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
   function install(){
     let ready=wrap('ProbeDevice')&&wrap('AutoDetectFirmware');
     const app=window.go?.main?.App;if(app?.AutoDetectPortFirmware)ready=wrap('AutoDetectPortFirmware')&&ready;
-    if(typeof selectDevice==='function'&&!selectDevice.__selectionEvidenceBound){const original=selectDevice;selectDevice=(device,...args)=>{const result=original(device,...args);selectedPort=String(device?.port||'');render();return result};selectDevice.__selectionEvidenceBound=true;ready=true}
+    if(typeof selectDevice==='function'&&!selectDevice.__selectionEvidenceBound){const original=selectDevice;selectDevice=(device,...args)=>{const result=original(device,...args);selectedPort=String(device?.port||'');render();document.dispatchEvent(new Event('clawmate:device-selected'));return result};selectDevice.__selectionEvidenceBound=true;ready=true}
     if(typeof renderDevices==='function'&&!renderDevices.__selectionEvidenceBound){const original=renderDevices;renderDevices=(...args)=>{const result=original(...args);refreshSelection();return result};renderDevices.__selectionEvidenceBound=true}
     if(typeof renderAutoDetectedDevices==='function'&&!renderAutoDetectedDevices.__selectionEvidenceBound){const original=renderAutoDetectedDevices;renderAutoDetectedDevices=(...args)=>{const result=original(...args);refreshSelection();return result};renderAutoDetectedDevices.__selectionEvidenceBound=true}
     return ready;
@@ -222,13 +226,35 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
     $('#flash').disabled=true; $('#download').disabled=true; $('#import').disabled=true;
     $('#summary').textContent=text('blocked');
   };
-  const applyPrepared=async(item)=>{
-    if(!item?.device)return;
+  let activePort='',identifyGeneration=0;
+  const isCurrentPort=(port,generation)=>chosen?.port===port&&activePort===port&&identifyGeneration===generation;
+  const showDetectedHardware=(matched,detail)=>{
+    // The hardware identity and the package acquisition are separate facts.
+    // Keep the one exact hardware row visible when a local/development build
+    // cannot acquire a signed package, otherwise a correctly identified port
+    // looks indistinguishable from an unknown board.
+    board=matched; firmware=null; boardConfirmed=false; boardConfirmationRef='';
+    $('#boardCard').hidden=false; applyStatic(); renderBoards();
+    $('#boardStatus').className='status ok'; $('#boardDetail').textContent=text('detected',{board:matched.name});
+    $('#firmwareStatus').className='status bad'; $('#firmwareDetail').textContent=detail||text('blocked');
+    $('#downloadNote').textContent=detail||text('blocked');
+    $('#download').disabled=true; $('#import').disabled=true; $('#flash').disabled=true;
+    $('#summary').textContent=text('detected',{board:matched.name})+' '+(detail||text('blocked'));
+  };
+  const applyPrepared=async(item,port,generation)=>{
+    if(!item?.device||!isCurrentPort(port,generation)||item.device.port!==port)return false;
     if(item.probe){lastJobID=item.probe.jobId||lastJobID;lastProbeJobID=item.probe.jobId||'';$('#export').disabled=!lastJobID}
     const matched=boards.find(value=>value.id===(item.boardId||item.firmware?.boardId));
-    if(item.status!=='firmware_ready'||!item.firmware||!matched){setBlocked(item.reason);return}
+    if(item.status!=='firmware_ready'||!item.firmware||!matched){
+      if(isCurrentPort(port,generation)){
+        if(matched)showDetectedHardware(matched,item.reason);
+        else {setBlocked(item.reason);renderBoards()}
+      }
+      return false
+    }
+    if(!isCurrentPort(port,generation))return false;
     board=matched; firmware=item.firmware; firmware._update=item.update; boardConfirmed=false; boardConfirmationRef='';
-    $('#boardCard').hidden=false; applyStatic();
+    $('#boardCard').hidden=false; applyStatic(); renderBoards();
     $('#boardStatus').className='status'; $('#boardDetail').textContent=text('detected',{board:matched.name});
     $('#firmwareStatus').className='status ok'; $('#firmwareDetail').textContent=firmware.releaseTag+' · '+installModeText(firmware)+' · '+t('signed')+' · '+firmwareUpdateText(item.update);
     $('#downloadNote').textContent=firmware.safetyNote||text('hint'); $('#download').disabled=false; $('#import').disabled=false; $('#flash').disabled=true;
@@ -237,15 +263,18 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
     $('#recoveryFlash').disabled=!recoveryRequired||firmware.installStatus!=='verified_ready'||firmware.installPlan!=='full';
     $('#summary').textContent=text('ready')+' '+firmwareUpdateText(item.update);
     add({code:'PORT_AUTO_MATCHED',detail:text('detected',{board:matched.name})});
+    return true;
   };
   const identifyPort=async(device)=>{
-    const endpoint=api(); if(!endpoint?.AutoDetectPortFirmware){setBlocked(text('blocked'));return}
-    $('#boardCard').hidden=false; applyStatic(); $('#boardStatus').className='status'; $('#boardDetail').textContent=text('detecting');
+    const port=String(device?.port||'');
+    const generation=++identifyGeneration; activePort=port;
+    const endpoint=api(); if(!endpoint?.AutoDetectPortFirmware){if(isCurrentPort(port,generation))setBlocked(text('blocked'));return}
+    $('#boardCard').hidden=false; applyStatic(); renderBoards(); $('#boardStatus').className='status'; $('#boardDetail').textContent=text('detecting');
     $('#firmwareStatus').className='status'; $('#firmwareDetail').textContent=text('detecting'); $('#summary').textContent=text('detecting');
     $('#probe').disabled=true; $('#download').disabled=true; $('#import').disabled=true; $('#flash').disabled=true;
-    try{await applyPrepared(await endpoint.AutoDetectPortFirmware(device.port))}
-    catch(error){setBlocked(String(error));add({severity:'error',code:'PORT_AUTO_DETECT_FAILED',detail:String(error)})}
-    finally{$('#probe').disabled=false}
+    try{const item=await endpoint.AutoDetectPortFirmware(port); await applyPrepared(item,port,generation)}
+    catch(error){if(isCurrentPort(port,generation)){setBlocked(String(error));add({severity:'error',code:'PORT_AUTO_DETECT_FAILED',detail:String(error)})}}
+    finally{if(isCurrentPort(port,generation))$('#probe').disabled=false}
   };
   let attempts=0;
   const install=()=>{
@@ -254,18 +283,18 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
     const originalSelectDevice=selectDevice;
     selectDevice=(device,automatic=false)=>{originalSelectDevice(device,automatic); $('#summary').textContent=text('selected',{port:device.port}); void identifyPort(device)};
     selectDevice.__portFirstAutoMatch=true;
-    applyAutoDetectedItem=(item)=>{if(!item?.device)return; originalSelectDevice(item.device,true); void applyPrepared(item)};
+    applyAutoDetectedItem=(item)=>{if(!item?.device)return; originalSelectDevice(item.device,true); const port=String(item.device.port||''); const generation=++identifyGeneration; activePort=port; void applyPrepared(item,port,generation)};
     const requestWriteConfirmation=async(event)=>{
       if(boardConfirmed||!chosen||!board||!firmware||!firmware.packageRef||recoveryRequired)return;
       event.preventDefault(); event.stopImmediatePropagation();
       if(!confirm(text('finalConfirm',{port:chosen.port,board:board.name})))return;
-      const port=chosen.port, detectedBoard=board;
+      const port=chosen.port, generation=identifyGeneration, detectedBoard=board, detectedFirmware=firmware, probeJobID=lastProbeJobID;
       $('#flash').disabled=true; $('#summary').textContent=text('confirming');
       try{
         const endpoint=api();
-        if(!endpoint?.ConfirmDetectedBoard||!lastProbeJobID)throw new Error('automatic confirmation is unavailable');
-        const confirmation=await endpoint.ConfirmDetectedBoard(port,lastProbeJobID);
-        if(!chosen||chosen.port!==port||board!==detectedBoard)return;
+        if(!endpoint?.ConfirmDetectedBoard||!probeJobID)throw new Error('automatic confirmation is unavailable');
+        const confirmation=await endpoint.ConfirmDetectedBoard(port,probeJobID);
+        if(!isCurrentPort(port,generation)||board!==detectedBoard||firmware!==detectedFirmware||lastProbeJobID!==probeJobID)return;
         boardConfirmationRef=confirmation.confirmationRef||''; boardConfirmed=!!boardConfirmationRef;
         if(!boardConfirmed)throw new Error('missing write confirmation');
         $('#boardStatus').className='status ok'; $('#boardDetail').textContent=text('confirmed',{board:detectedBoard.name});
@@ -277,7 +306,181 @@ const renderPlatformInfo=()=>{const node=$('#platform');const info=node.dataset.
       }
     };
     document.querySelector('#flash')?.addEventListener('click',requestWriteConfirmation,true);    document.querySelector('#boards')?.replaceChildren(); applyStatic();
+    // Firmware is not a product picker. Until one nonce-bound board identity
+    // has selected an official package, show no rows. Once identified, show
+    // only that immutable match—never the other hardware firmware options.
+    // Install this before the first device can be selected. The base script,
+    // compatibility wrappers, periodic refresh, and manual probe all call the
+    // same renderer, so filtering at this one boundary makes it impossible
+    // for an unmatched firmware row to reappear.
+    renderBoards=()=>{const host=document.querySelector('#boards');if(!host)return;host.replaceChildren();if(!board){host.hidden=true;return}host.hidden=false;const item=document.createElement('div');item.className='board selected';item.dataset.board=board.id;item.setAttribute('aria-current','true');item.innerHTML='<span class="icon">FW</span><span><strong>'+esc(board.name)+'</strong><small>'+esc(board.assetName)+'</small></span>';host.append(item)};
+    // Repair an already-rendered catalog if an early selection happened while
+    // this late-binding script was being installed.
+    if(board)renderBoards();
     document.querySelector('#language')?.addEventListener('change',()=>setTimeout(applyStatic,0));
+  };
+  install();
+})();
+</script><style>
+/* A port remains visibly selected across re-renders and auto-detection. The
+   full outline, icon inversion and explicit state badge avoid relying on a
+   subtle background tint or the readiness panel for this critical context. */
+.device.is-selected-port{border:2px solid var(--blue);padding:12px;background:#eaf4ff;outline:3px solid #2869a82b;outline-offset:1px}
+.device.selected{border:2px solid var(--blue);padding:12px;background:#eaf4ff;box-shadow:inset 4px 0 0 var(--blue)}
+.device.selected .icon{background:var(--blue);color:#fff}.device.selected strong{color:#123f6a}
+.device.selected:after{position:absolute;top:50%;right:14px;width:9px;height:9px;border:2px solid #fff;border-radius:50%;background:var(--blue);box-shadow:0 0 0 2px var(--blue);content:"";transform:translateY(-50%)}
+.device.is-selected-port:hover{border-color:var(--blue);background:#e4f0fb}
+.device.selected:hover{border-color:var(--blue);background:#e4f0fb}
+.device.is-selected-port .icon{background:var(--blue);color:#fff}
+.device.is-selected-port strong{color:#123f6a}
+.device-selection-label{display:inline-flex;align-items:center;min-height:24px;margin-left:8px;padding:3px 8px;border-radius:999px;background:var(--blue);color:#fff;font-size:11px;font-weight:700;white-space:nowrap}
+.device.is-selected-port:focus-visible{outline:3px solid #174e80;outline-offset:3px}
+@media(prefers-reduced-motion:no-preference){.device{transition:border-color 160ms ease,background-color 160ms ease,outline-color 160ms ease}.device .icon{transition:background-color 160ms ease,color 160ms ease}}
+</style><script>
+/* Keep the selected serial port unmistakable. Device lists are rebuilt by
+   scanning and automatic identification, so this is deliberately driven by
+   both the semantic selection and captured clicks rather than one render path. */
+(()=>{
+  const labels={
+    'zh-CN':'当前选中',
+    'zh-TW':'目前選取',
+    en:'Selected'
+  };
+  let pending=false;
+  const current=()=>{
+    // The visual state must derive only from the application's authoritative
+    // selection. Keeping an old DOM-click value after a disconnect would make
+    // a re-enumerated port look selected when it no longer has write context.
+    try{return typeof chosen!=='undefined'&&chosen?.port?String(chosen.port):''}catch(_){return ''}
+  };
+  const label=()=>labels[document.querySelector('#language')?.value]||labels['zh-CN'];
+  const refresh=()=>{
+    pending=false;
+    const port=current();
+    document.querySelectorAll('.device[data-port]').forEach(device=>{
+      const active=!!port&&device.dataset.port===port;
+      device.classList.toggle('is-selected-port',active);
+      device.setAttribute('aria-pressed',active?'true':'false');
+      if(active){
+        device.setAttribute('aria-current','true');
+        let state=device.querySelector('.device-selection-label');
+        if(!state){state=document.createElement('span');state.className='device-selection-label';device.append(state)}
+        state.textContent=label();
+      }else{
+        device.removeAttribute('aria-current');
+        device.querySelector('.device-selection-label')?.remove();
+      }
+    });
+  };
+  const schedule=()=>{if(!pending){pending=true;requestAnimationFrame(refresh)}};
+  document.addEventListener('click',event=>{
+    const device=event.target.closest?.('.device[data-port]');
+    if(!device)return;
+    // selectDevice owns the state update. Schedule after its target handler
+    // has run; do not treat the click itself as durable selection evidence.
+    queueMicrotask(schedule);
+  },true);
+  // Some automatic-identification paths intentionally invoke the preserved
+  // selection function to avoid a duplicate probe.  Listen to its semantic
+  // event as well, so the visible selected-port state cannot lag behind.
+  document.addEventListener('clawmate:device-selected',schedule);
+  document.addEventListener('clawmate:device-selection-cleared',schedule);
+  new MutationObserver(schedule).observe(document.querySelector('#devices'),{childList:true,subtree:true});
+  document.querySelector('#language')?.addEventListener('change',schedule);
+  let attempts=0;
+  const bind=()=>{
+    if(typeof selectDevice!=='function'){if(attempts++<60)setTimeout(bind,100);return}
+    if(selectDevice.__persistentPortHighlight){schedule();return}
+    const original=selectDevice;
+    selectDevice=(device,...args)=>{const result=original(device,...args);schedule();return result};
+    selectDevice.__persistentPortHighlight=true;
+    schedule();
+  };
+  bind();
+})();
+</script><script>
+/* A write RPC does not return its job ID until the flash has finished. Bind
+   cancellation to the JOB_CREATED event instead of an older download/probe
+   ID, so an early Stop action can only target the current write. */
+(()=>{
+  let attempts=0;
+  const bind=()=>{
+    const events=window.runtime?.EventsOn;
+    if(!events){if(attempts++<60)setTimeout(bind,100);return}
+    if(events.__clawMateFlashCancelBinding)return;
+    events('job:log',event=>{
+      if(!event||event.code!=='JOB_CREATED'||event.stage!=='prepare'||event.component!=='job')return;
+      const cancel=document.querySelector('#cancelFlash');
+      if(!cancel?.hidden&&event.jobId)activeFlashJobID=event.jobId;
+    });
+    events.__clawMateFlashCancelBinding=true;
+    if(typeof cancelActiveFlash==='function'&&!cancelActiveFlash.__currentWriteOnly){
+      const cancelCurrentWrite=async()=>{
+        const jobID=activeFlashJobID,copy=flashCancelText();
+        if(!jobID){document.querySelector('#summary').textContent=copy.waiting;return}
+        if(!confirm(copy.confirm))return;
+        cancelRequested=true;
+        const button=document.querySelector('#cancelFlash');
+        button.disabled=true;
+        document.querySelector('#summary').textContent=copy.stopping;
+        try{await api().CancelJob(jobID);add({severity:'warning',code:'JOB_CANCEL_REQUESTED',detail:copy.requested})}
+        catch(error){button.disabled=false;cancelRequested=false;add({severity:'error',code:'JOB_CANCEL_FAILED',detail:String(error)})}
+      };
+      cancelCurrentWrite.__currentWriteOnly=true;
+      cancelActiveFlash=cancelCurrentWrite;
+      document.querySelector('#cancelFlash').onclick=cancelCurrentWrite;
+    }
+    if(typeof flash==='function'&&!flash.__currentWriteReset){
+      const startCurrentWrite=async(...args)=>{
+        // A previous completed job must never remain cancelable while the new
+        // write RPC is still creating its own job and emitting JOB_CREATED.
+        activeFlashJobID='';
+        cancelRequested=false;
+        document.querySelector('#cancelFlash').disabled=false;
+        return startCurrentWrite.__original(...args);
+      };
+      startCurrentWrite.__currentWriteReset=true;
+      startCurrentWrite.__original=flash;
+      flash=startCurrentWrite;
+      document.querySelector('#flash').onclick=startCurrentWrite;
+    }
+    if(typeof add==='function'&&!add.__currentWriteJobBinding){
+      const renderEvent=add;
+      add=event=>{
+        if(event?.code==='JOB_CREATED'&&event.stage==='prepare'&&event.component==='job'){
+          const cancel=document.querySelector('#cancelFlash');
+          if(!cancel?.hidden&&event.jobId)activeFlashJobID=event.jobId;
+        }
+        return renderEvent(event);
+      };
+      add.__currentWriteJobBinding=true;
+    }
+  };
+  bind();
+})();
+</script><style>
+/* The read-only probe can reset the board briefly. Keep its active state
+   visible in the action itself, rather than asking users to infer it from
+   disabled styling or the log stream. */
+#probe{position:relative}#probe.is-busy:before{position:absolute;left:16px;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;content:"";animation:clawmate-probe-spin .72s linear infinite}@keyframes clawmate-probe-spin{to{transform:rotate(1turn)}}@media(prefers-reduced-motion:reduce){#probe.is-busy:before{animation:none;border-right-color:currentColor;opacity:.78}}
+</style><script>
+/* Keep the probe's working indicator bound to the actual asynchronous ROM
+   operation. This covers both a manual safety check and the automatic probe
+   after choosing the only available port. */
+(()=>{
+  let attempts=0;
+  const install=()=>{
+    if(typeof probe!=='function'){if(attempts++<60)setTimeout(install,100);return}
+    if(probe.__busyIndicator)return;
+    const original=probe;
+    const wrapped=async(...args)=>{
+      const button=document.querySelector('#probe');
+      button?.classList.add('is-busy');
+      button?.setAttribute('aria-busy','true');
+      try{return await original(...args)}finally{button?.classList.remove('is-busy');button?.removeAttribute('aria-busy')}
+    };
+    wrapped.__busyIndicator=true;
+    probe=wrapped;
   };
   install();
 })();

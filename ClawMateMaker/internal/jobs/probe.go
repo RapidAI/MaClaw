@@ -80,6 +80,9 @@ func (j *ProbeJob) Run(ctx context.Context) (result ProbeResult, retErr error) {
 		_ = j.log.WriteSummary(result)
 		_ = j.log.Close()
 	}()
+	if err := ctx.Err(); err != nil {
+		return j.fail(&result, "PROBE_CANCELLED", err)
+	}
 
 	j.log.Event(logging.Info, "probe", "engine", "STAGE_STARTED", "stage.started", "Read-only ROM probing; no flash write or erase command is permitted.", map[string]any{"port": j.port})
 	tool, err := flash.FindTool()
@@ -128,6 +131,13 @@ func (j *ProbeJob) Run(ctx context.Context) (result ProbeResult, retErr error) {
 			j.log.Event(logging.Warn, "probe", "partition", "LAYOUT_UNAVAILABLE", "layout.unavailable", err.Error(), nil)
 		}
 	}
+	// ROM probe commands reset the target. Give its application a bounded
+	// opportunity to return before opening the application serial endpoint for
+	// the nonce-bound identity query. This makes automatic matching reliable on
+	// real USB Serial/JTAG hardware without changing the read-only contract.
+	if err := waitForApplicationIdentity(ctx, 800*time.Millisecond); err != nil {
+		return j.fail(&result, "PROBE_CANCELLED", err)
+	}
 	identity, identityErr := device.ProbeApplicationIdentity(ctx, j.port)
 	if identityErr != nil {
 		j.log.Event(logging.Warn, "probe", "identity", "IDENTITY_UNAVAILABLE", "identity.unavailable", identityErr.Error(), nil)
@@ -138,6 +148,20 @@ func (j *ProbeJob) Run(ctx context.Context) (result ProbeResult, retErr error) {
 	}
 	j.log.Event(logging.Info, "probe", "engine", "STAGE_COMPLETED", "stage.completed", "", map[string]any{"durationMs": time.Since(result.StartedAt).Milliseconds()})
 	return result, nil
+}
+
+func waitForApplicationIdentity(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func deviceBinding(mac string) string {

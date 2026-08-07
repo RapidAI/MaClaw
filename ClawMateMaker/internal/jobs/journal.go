@@ -236,6 +236,13 @@ func validJournalEvidence(j Journal) bool {
 func ListRecoveryRequired(root string) ([]RecoveryItem, error) {
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
+		// Windows may report ERROR_PATH_NOT_FOUND for ReadDir(file), which
+		// os.IsNotExist classifies the same way as an absent directory. Verify
+		// the root before treating the recovery store as empty; otherwise a bad
+		// log-root configuration could silently bypass the recovery interlock.
+		if info, statErr := os.Stat(root); statErr == nil && !info.IsDir() {
+			return nil, fmt.Errorf("recovery log root is not a directory")
+		}
 		return nil, nil
 	}
 	if err != nil {

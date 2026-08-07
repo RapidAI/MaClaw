@@ -7226,13 +7226,13 @@ func TestThirdPartyGatewayBaseURLSanitizesForwardedHeaders(t *testing.T) {
 	req.Host = "gateway.example.test"
 	req.Header.Set("X-Forwarded-Proto", "javascript")
 	req.Header.Set("X-Forwarded-Host", "evil.example\\@bad")
-	if got := thirdPartyGatewayBaseURL(req); got != "http://127.0.0.1/api/im-gateway/v1" {
+	if got := coreim.ThirdPartyGatewayBaseURL(req); got != "http://127.0.0.1/api/im-gateway/v1" {
 		t.Fatalf("bad forwarded headers should be sanitized, got %q", got)
 	}
 
 	req.Header.Set("X-Forwarded-Proto", "https, http")
 	req.Header.Set("X-Forwarded-Host", "maclaw.example.test:18443, proxy.local")
-	if got := thirdPartyGatewayBaseURL(req); got != "https://maclaw.example.test:18443/api/im-gateway/v1" {
+	if got := coreim.ThirdPartyGatewayBaseURL(req); got != "https://maclaw.example.test:18443/api/im-gateway/v1" {
 		t.Fatalf("safe forwarded headers should be preserved, got %q", got)
 	}
 }

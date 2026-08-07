@@ -1,4 +1,4 @@
-# ClawMate Maker：ESP32 跨平台刷机工具设计
+﻿# ClawMate Maker：ESP32 跨平台刷机工具设计
 
 > 状态：实现中 v0.7（自动多设备识别与 Release 下载）
 > 目标平台：Windows 10/11、macOS 12+（Intel / Apple Silicon）、主流 x86_64 / arm64 Linux
@@ -185,6 +185,11 @@ ESP32 ROM 通常只能确认芯片，不能可靠区分使用同一芯片的不�
 ```
 
 规则：仅经过验证的制造身份才能直接产生 `confirmed` 并一键继续；`probable` 必须让用户确认；同类硬件候选超过一个为 `ambiguous`；任何物理身份、自报目标或芯片能力冲突均为 `conflict`。`ambiguous`/`conflict` 禁止刷写。用户确认只能消解证据不足，不能覆盖芯片、容量、布局或安全状态冲突。
+### 5.3.1 端口优先的自动匹配交互（实现约束）
+
+用户可以选择一个串口，但不应被要求从 EchoEar 2ST、Bread Compact、Fangtang 4G 中手动选择固件。对所选端口，桌面端必须自动执行只读 ROM/应用身份探测；只有收到 nonce-bound 且唯一映射到官方 catalog 的运行中 `firmware_target_board_id` 时，才能自动选择该板型的唯一签名 `.clawfw` 资产、下载并验证它。若身份未知、冲突、非唯一、端口变化或签名验证失败，则显示原因并阻止刷写；禁止按 VID/PID、端口名或第一个候选项猜测固件。
+
+“自动匹配”不等于绕过用户确认：界面在开始刷写时必须显示自动识别的板型、端口与刷写影响，要求用户确认实物与识别结果一致后，才创建一次性的、端口与新鲜 probe 证据绑定的写入授权。该确认不显示板型选择器，也不允许用户将授权改绑至另一块板或另一端口。
 
 ### 5.4 制造身份建议格式
 
@@ -978,3 +983,4 @@ type Session interface {
 - `esp32s3-maclaw-client/tools/flash-app-on-com3.ps1` 已验证“检查 Espressif VID/PID + 固件 SHA-256 + App-only + hard reset + 启动日志”的最小闭环。ClawMate Maker 应把这些思路泛化为跨平台、动态端口、签名 manifest 和结构化启动验证，不再固定 COM3、Python 路径或单个 hash。
 - 当前 `firmware_identity.c` 的 `protocol:1` 是实验版：使用 `BOOT_OK`、编译期 `board_id`、`firmware_version`、`local_ready/service_ready`。Phase 0 必须把它迁移到第 10.3 节冻结的正式 `protocol:2`；桌面端不得把实验版事件静默解释为正式成功证明。
 - 现有 MaClaw Wails/React 主题使用钢蓝、蓝灰和克制语义色，ClawMate Maker 可复用其产品语言，但应保持独立进程和独立发布，以降低主应用与硬件恢复流程的耦合风险。
+

@@ -50,7 +50,31 @@ func TestEmbeddedFrontendKeepsPortBoundDiagnostics(t *testing.T) {
 		"AutoDetectPortFirmware",
 		"ConfirmDetectedBoard",
 		"Connected device details · {port}",
+		"Firmware is not a product picker",
+		"function renderBoards(){const host=$('#boards');if(!host)return;host.innerHTML='';if(!board){host.hidden=true;return}",
+		"board=matched;renderBoards();firmware=item.status==='firmware_ready'?item.firmware:null;",
+		"The catalog is a result of the selected port's identity, never a chooser.",
+		"function applyAutoDetectedItem(item){if(!item?.device)return;selectDevice(item.device,true);",
+		"filtering at this one boundary makes it impossible",
+		"if(board)renderBoards();",
+		"showDetectedHardware",
+		"The hardware identity and the package acquisition are separate facts.",
+		"__busyIndicator",
 		"selected-badge",
+		"active?' selected is-selected-port'",
+		".device.selected{border:2px solid var(--blue)",
+		".device.selected .icon{background:var(--blue);color:#fff}",
+		".device.selected:after{position:absolute;top:50%;right:14px",
+		"chosen?.port===d.port",
+		"identifyGeneration",
+		"isCurrentPort",
+		"detectedFirmware=firmware",
+		"lastProbeJobID!==probeJobID",
+		"__currentWriteOnly",
+		"__currentWriteReset",
+		"__currentWriteJobBinding",
+		"activeFlashJobID=''",
+		"JOB_CREATED",
 		"Cloudflare R2",
 		"zh-TW",
 	} {
@@ -94,6 +118,45 @@ func TestConfirmDetectedBoardRejectsProbeWithoutUniqueRuntimeIdentity(t *testing
 		t.Fatalf("unexpected automatic confirmation result: %v", err)
 	}
 }
+
+func TestConfirmDetectedBoardRejectsExpiredOrFutureProbe(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+
+	for _, finishedAt := range []time.Time{
+		time.Now().UTC().Add(-boardConfirmationTTL - time.Second),
+		time.Now().UTC().Add(time.Second),
+	} {
+		a := NewApp()
+		a.logRoot = t.TempDir()
+		jobID := "job-0123456789abcdef"
+		probe := jobs.ProbeResult{
+			JobID:         jobID,
+			Port:          "COM3",
+			Status:        "succeeded",
+			DeviceBinding: "binding",
+			FinishedAt:    finishedAt,
+			BoardRecognition: catalog.Recognition{
+				Status:          "probable",
+				CandidateBoards: []string{"bread-compact"},
+			},
+		}
+		writer, err := logging.New(a.logRoot, jobID, "attempt-probe", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.WriteSummary(probe); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.ConfirmDetectedBoard("COM3", jobID); err == nil || !strings.Contains(err.Error(), "probe evidence expired") {
+			t.Fatalf("finishedAt=%v automatic confirmation error = %v", finishedAt, err)
+		}
+	}
+}
 func TestDeveloperBuildReportsProbeOnly(t *testing.T) {
 	previous := releaseBuild
 	releaseBuild = "false"
@@ -121,6 +184,24 @@ func TestAppInfoReportsInjectedBuildVersion(t *testing.T) {
 	}
 }
 
+func TestDialogCopyUsesReadableLocalizedNativeDialogText(t *testing.T) {
+	for _, test := range []struct {
+		locale      string
+		importTitle string
+		filter      string
+		diagnostics string
+	}{
+		{"zh-CN", "选择已签名的 ClawMate 固件包", "ClawMate 固件包 (*.clawfw)", "选择诊断包保存文件夹"},
+		{"zh-TW", "選擇已簽署的 ClawMate 韌體套件", "ClawMate 韌體套件 (*.clawfw)", "選擇診斷套件儲存資料夾"},
+		{"en", "Choose a signed ClawMate firmware package", "ClawMate firmware package (*.clawfw)", "Choose a folder for the diagnostic bundle"},
+	} {
+		got := dialogCopyFor(test.locale)
+		if got.importTitle != test.importTitle || got.firmwareFilter != test.filter || got.diagnosticsDirectoryTitle != test.diagnostics {
+			t.Fatalf("locale %s copy = %#v", test.locale, got)
+		}
+	}
+}
+
 func TestDeveloperBuildRejectsInstallOperationsAtBackendBoundary(t *testing.T) {
 	previous := releaseBuild
 	releaseBuild = "false"
@@ -143,6 +224,19 @@ func TestDeveloperBuildRejectsInstallOperationsAtBackendBoundary(t *testing.T) {
 	}
 	if _, err := a.RetryJob("request-0123456789", "job-0123456789abcdef", "COM3", "bread-compact", "fwref-test", "boardref-test"); err != errOfficialBuildRequired {
 		t.Fatalf("developer retry error = %v, want official build requirement", err)
+	}
+}
+
+func TestNormalFlashFailsClosedWhenRecoveryStateCannotBeRead(t *testing.T) {
+	a := NewApp()
+	// Use a regular file as the recovery root. os.ReadDir must reject this
+	// before the write path can inspect or consume any capability.
+	a.logRoot = filepath.Join(t.TempDir(), "not-a-job-directory")
+	if err := os.WriteFile(a.logRoot, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.requireNoRecovery(); err == nil || !strings.Contains(err.Error(), "inspect recovery state") {
+		t.Fatalf("normal flash with unreadable recovery state = %v", err)
 	}
 }
 
@@ -522,6 +616,115 @@ func TestConsumeBoardConfirmationRejectsExpiration(t *testing.T) {
 	}
 }
 
+func TestWriteCapabilitiesRejectFutureIssueTimes(t *testing.T) {
+	a := NewApp()
+	path := filepath.Join(t.TempDir(), "release.clawfw")
+	contents := []byte("package")
+	if err := os.WriteFile(path, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	a.verifiedPackage["fwref-test"] = verifiedPackage{
+		path:          path,
+		boardID:       "bread-compact",
+		archiveSHA256: hex.EncodeToString(sum[:]),
+		issuedAt:      time.Now().UTC().Add(time.Second),
+	}
+	if _, err := a.lookupVerifiedPackage("fwref-test"); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("future package capability error = %v", err)
+	}
+	a.confirmations["boardref-test"] = boardConfirmation{
+		port:     "COM3",
+		boardID:  "bread-compact",
+		issuedAt: time.Now().UTC().Add(time.Second),
+	}
+	if _, err := a.consumeBoardConfirmation("boardref-test", "COM3", "bread-compact"); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("future board confirmation error = %v", err)
+	}
+}
+
+func TestConsumeBoardConfirmationIsSingleUseUnderConcurrency(t *testing.T) {
+	a := NewApp()
+	a.confirmations["boardref-test"] = boardConfirmation{port: "COM3", boardID: "bread-compact", deviceBinding: "binding", issuedAt: time.Now().UTC()}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			_, err := a.consumeBoardConfirmation("boardref-test", "COM3", "bread-compact")
+			errs <- err
+		}()
+	}
+	close(start)
+	var succeeded int
+	for range 2 {
+		if err := <-errs; err == nil {
+			succeeded++
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("confirmation was consumed %d times, want exactly once", succeeded)
+	}
+}
+
+func TestVerifyBootWaitsForRecoveryOperationLock(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.recoveryOperationMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.VerifyBoot("request-0123456789", "job-0123456789abcdef", "COM3", "fwref-test")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("VerifyBoot bypassed recovery operation lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	a.recoveryOperationMu.Unlock()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("invalid boot verification unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("VerifyBoot did not resume after recovery operation lock was released")
+	}
+}
+
+func TestRecoveryStartJobWaitsForRecoveryOperationLock(t *testing.T) {
+	a := NewApp()
+	plan := &preparedFlashPlan{FlashPlan: FlashPlan{
+		PlanID:    "plan-recovery-lock",
+		PlanHash:  "hash",
+		Recovery:  true,
+		ExpiresAt: time.Now().UTC().Add(time.Minute),
+	}, requestID: "request-0123456789"}
+	a.plans[plan.PlanID] = plan
+	a.recoveryOperationMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.StartJob(plan.PlanID, plan.PlanHash)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("recovery StartJob bypassed recovery operation lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	a.recoveryOperationMu.Unlock()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("incomplete recovery plan unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery StartJob did not resume after recovery operation lock was released")
+	}
+}
+
 func TestPrepareJobKeepsConfirmationUntilStartAndRejectsChangedPlan(t *testing.T) {
 	previous := releaseBuild
 	releaseBuild = "true"
@@ -594,6 +797,68 @@ func TestPrepareJobUsesVerifiedPackageInstallImpact(t *testing.T) {
 				t.Fatalf("plan impact = %#v, want mode=%q preserves=%t recovery=%t", plan, test.installPlan, test.preservesUserData, test.requiresRecovery)
 			}
 		})
+	}
+}
+
+func TestStartJobRechecksRecoveryStateBeforeConfirmationIsConsumed(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	path := filepath.Join(t.TempDir(), "release.clawfw")
+	contents := []byte("package")
+	if err := os.WriteFile(path, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	a.verifiedPackage["fwref-test"] = verifiedPackage{path: path, boardID: "bread-compact", archiveSHA256: hex.EncodeToString(sum[:]), installPlan: "app-only", issuedAt: time.Now().UTC()}
+	a.confirmations["boardref-test"] = boardConfirmation{port: "COM3", boardID: "bread-compact", deviceBinding: "binding", issuedAt: time.Now().UTC()}
+	plan, err := a.PrepareJob("request-0123456789", "COM3", "bread-compact", "fwref-test", "boardref-test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.WriteJournal(a.logRoot, jobs.Journal{JobID: "job-0123456789abcdef", PackageID: "package", PackageSHA256: "sha256:deadbeef", State: jobs.JournalRecoveryRequired}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.StartJob(plan.PlanID, plan.PlanHash); err == nil || !strings.Contains(err.Error(), "recovery is required") {
+		t.Fatalf("start with newly-required recovery = %v", err)
+	}
+	if _, ok := a.confirmations["boardref-test"]; !ok {
+		t.Fatal("new recovery lock consumed physical board confirmation")
+	}
+}
+
+func TestStartJobKeepsConfirmationWhenPackageIsAlreadyReserved(t *testing.T) {
+	previous := releaseBuild
+	releaseBuild = "true"
+	t.Cleanup(func() { releaseBuild = previous })
+
+	a := NewApp()
+	a.logRoot = t.TempDir()
+	path := filepath.Join(t.TempDir(), "release.clawfw")
+	contents := []byte("package")
+	if err := os.WriteFile(path, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	a.verifiedPackage["fwref-test"] = verifiedPackage{path: path, boardID: "bread-compact", archiveSHA256: hex.EncodeToString(sum[:]), installPlan: "app-only", issuedAt: time.Now().UTC()}
+	a.confirmations["boardref-test"] = boardConfirmation{port: "COM3", boardID: "bread-compact", deviceBinding: "binding", issuedAt: time.Now().UTC()}
+	plan, err := a.PrepareJob("request-0123456789", "COM3", "bread-compact", "fwref-test", "boardref-test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := a.reserveVerifiedPackage("fwref-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release(false)
+
+	if _, err := a.StartJob(plan.PlanID, plan.PlanHash); err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("start with reserved package error = %v", err)
+	}
+	if _, ok := a.confirmations["boardref-test"]; !ok {
+		t.Fatal("package reservation failure consumed physical board confirmation")
 	}
 }
 
@@ -928,5 +1193,35 @@ func TestLookupVerifiedPackageRejectsExpiredReference(t *testing.T) {
 	a.packageRefsMu.Unlock()
 	if _, err := a.lookupVerifiedPackage(result.PackageRef); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expired reference lookup error = %v", err)
+	}
+}
+
+func TestReserveVerifiedPackageIsExclusiveAndReleasesAfterPrewriteFailure(t *testing.T) {
+	a := NewApp()
+	path := filepath.Join(t.TempDir(), "release.clawfw")
+	contents := []byte("archive")
+	if err := os.WriteFile(path, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	result, err := a.registerVerifiedPackage(catalog.DownloadedRelease{BoardID: "bread-compact", Channel: "stable", Path: path, InstallStatus: "verified_ready", SHA256: hex.EncodeToString(sum[:])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := a.reserveVerifiedPackage(result.PackageRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.reserveVerifiedPackage(result.PackageRef); err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("concurrent reservation error = %v", err)
+	}
+	release(false)
+	if _, retryRelease, err := a.reserveVerifiedPackage(result.PackageRef); err != nil {
+		t.Fatalf("pre-write failure did not release package capability: %v", err)
+	} else {
+		retryRelease(true)
+	}
+	if _, _, err := a.reserveVerifiedPackage(result.PackageRef); err == nil {
+		t.Fatal("successful reservation did not revoke package capability")
 	}
 }

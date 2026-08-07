@@ -29,7 +29,6 @@ type App struct {
 	ctx             context.Context
 	watchCancel     context.CancelFunc
 	logRoot         string
-	recovery        []jobs.RecoveryItem
 	packageRefsMu   sync.Mutex
 	verifiedPackage map[string]verifiedPackage
 	confirmationsMu sync.Mutex
@@ -40,8 +39,12 @@ type App struct {
 	bootVerifies    map[string]*bootVerifyRequest
 	activeWritesMu  sync.Mutex
 	activeWrites    map[string]activeWrite
-	plansMu         sync.Mutex
-	plans           map[string]*preparedFlashPlan
+	// Recovery verification and complete ROM recovery both act on the same
+	// durable journal. They must not race to decide whether that journal is
+	// resolved.
+	recoveryOperationMu sync.Mutex
+	plansMu             sync.Mutex
+	plans               map[string]*preparedFlashPlan
 }
 
 type verifiedPackage struct {
@@ -52,6 +55,7 @@ type verifiedPackage struct {
 	preservesUserData bool
 	requiresRecovery  bool
 	issuedAt          time.Time
+	inUse             bool
 }
 
 // verifiedPackageTTL limits an in-memory package capability to the user's
@@ -65,6 +69,15 @@ const verifiedPackageTTL = 30 * time.Minute
 // package reference: a downloaded archive may remain valid, but a user must
 // reconfirm the actual device before an irreversible write.
 const boardConfirmationTTL = 10 * time.Minute
+
+// capabilityExpired deliberately treats a future issue time as invalid. A
+// clock correction must not extend an in-memory write capability beyond its
+// intended lifetime; failing closed asks the user to perform a fresh,
+// observable download/import or device confirmation instead.
+func capabilityExpired(issuedAt time.Time, ttl time.Duration) bool {
+	now := time.Now().UTC()
+	return issuedAt.IsZero() || issuedAt.After(now) || !issuedAt.After(now.Add(-ttl))
+}
 
 type boardConfirmation struct {
 	port          string
@@ -157,9 +170,6 @@ func (a *App) startup(ctx context.Context) {
 	// Do this before the UI starts regular discovery. A previous single-slot
 	// write that never reached verified boot must take precedence over a new
 	// installation attempt.
-	if items, err := jobs.ListRecoveryRequired(a.logsPath()); err == nil {
-		a.recovery = items
-	}
 	watchCtx, cancel := context.WithCancel(ctx)
 	a.watchCancel = cancel
 	go device.WatchCandidates(watchCtx, device.ListCandidates, device.DefaultWatchPolicy(), func(event device.ChangeEvent) {
@@ -393,13 +403,43 @@ func (a *App) DiagnoseDeviceAccess(port string) device.HostAccess {
 	return device.DiagnoseAccess(port)
 }
 
-func (a *App) ListRecoveryRequired() []jobs.RecoveryItem {
+// ListRecoveryRequired exposes durable recovery locks to the UI. A scan error
+// is intentionally preserved for write preflight instead of being treated as
+// an empty recovery list, since that could authorize a new write while the
+// state of an interrupted earlier write is unknown.
+func (a *App) ListRecoveryRequired() ([]jobs.RecoveryItem, error) {
 	items, err := jobs.ListRecoveryRequired(a.logsPath())
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("inspect recovery state: %w", err)
 	}
-	a.recovery = items
-	return append([]jobs.RecoveryItem(nil), items...)
+	return append([]jobs.RecoveryItem(nil), items...), nil
+}
+
+func (a *App) requireNoRecovery() error {
+	items, err := a.ListRecoveryRequired()
+	if err != nil {
+		return err
+	}
+	if len(items) != 0 {
+		return fmt.Errorf("recovery is required for %d unfinished write job(s); inspect diagnostics and perform a complete ROM recovery before starting a new flash", len(items))
+	}
+	return nil
+}
+
+func (a *App) requireRecoveryJob(recoveryJobID string) error {
+	if !logging.SafeJobID(recoveryJobID) {
+		return fmt.Errorf("invalid recovery job ID")
+	}
+	items, err := a.ListRecoveryRequired()
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.JobID == recoveryJobID {
+			return nil
+		}
+	}
+	return fmt.Errorf("recovery job is no longer pending")
 }
 
 // ListRecentJobSummaries exposes only terminal task metadata. Detailed events
@@ -568,17 +608,23 @@ func (a *App) validateRetryableJob(jobID string) error {
 // intentionally the only route that consumes a board confirmation, preserving
 // the same fresh ROM device-binding check for both paths.
 func (a *App) startNormalFlash(port, boardID, packageRef, confirmationRef, retryOfJobID string) (jobs.FlashResult, error) {
-	if items := a.ListRecoveryRequired(); len(items) != 0 {
-		return jobs.FlashResult{}, fmt.Errorf("recovery is required for %d unfinished write job(s); inspect diagnostics and perform a complete ROM recovery before starting a new flash", len(items))
-	}
-	if _, err := a.lookupVerifiedPackage(packageRef); err != nil {
+	if err := a.requireNoRecovery(); err != nil {
 		return jobs.FlashResult{}, err
 	}
-	confirmation, err := a.consumeBoardConfirmation(confirmationRef, port, boardID)
+	verified, releasePackage, err := a.reserveVerifiedPackage(packageRef)
 	if err != nil {
 		return jobs.FlashResult{}, err
 	}
-	return a.flashVerifiedFirmware(port, boardID, packageRef, confirmation.deviceBinding, false, retryOfJobID)
+	if verified.boardID != boardID {
+		releasePackage(false)
+		return jobs.FlashResult{}, fmt.Errorf("verified firmware reference does not match the selected board")
+	}
+	confirmation, err := a.consumeBoardConfirmation(confirmationRef, port, boardID)
+	if err != nil {
+		releasePackage(false)
+		return jobs.FlashResult{}, err
+	}
+	return a.flashReservedFirmware(port, boardID, verified, releasePackage, confirmation.deviceBinding, false, retryOfJobID)
 }
 
 // RecoverFirmware performs one explicitly selected full recovery operation for
@@ -588,40 +634,40 @@ func (a *App) RecoverFirmware(requestID, recoveryJobID, port, boardID, packageRe
 	if releaseBuild != "true" {
 		return jobs.FlashResult{}, errOfficialBuildRequired
 	}
+	// A no-write BOOT_STATUS retry could otherwise resolve the same recovery
+	// journal while a full ROM recovery is beginning its write sequence.
+	a.recoveryOperationMu.Lock()
+	defer a.recoveryOperationMu.Unlock()
 	return a.runWriteRequest(requestID, "recovery", port, boardID, packageRef, confirmationRef, recoveryJobID, func() (jobs.FlashResult, error) {
-		confirmation, err := a.consumeBoardConfirmation(confirmationRef, port, boardID)
-		if err != nil {
+		if err := a.requireRecoveryJob(recoveryJobID); err != nil {
 			return jobs.FlashResult{}, err
 		}
-		if !logging.SafeJobID(recoveryJobID) {
-			return jobs.FlashResult{}, fmt.Errorf("invalid recovery job ID")
-		}
-		items := a.ListRecoveryRequired()
-		found := false
-		for _, item := range items {
-			if item.JobID == recoveryJobID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return jobs.FlashResult{}, fmt.Errorf("recovery job is no longer pending")
-		}
-		verified, err := a.lookupVerifiedPackage(packageRef)
+		verified, releasePackage, err := a.reserveVerifiedPackage(packageRef)
 		if err != nil || verified.boardID != boardID {
 			if err != nil {
 				return jobs.FlashResult{}, err
 			}
+			releasePackage(false)
 			return jobs.FlashResult{}, fmt.Errorf("verified firmware reference does not match the selected board")
 		}
 		manifest, err := firmware.VerifyRelease(verified.path, releaseTrustStore())
 		if err != nil {
+			releasePackage(false)
 			return jobs.FlashResult{}, fmt.Errorf("verify recovery package: %w", err)
 		}
 		if manifest.Manifest.Mode != "full" {
+			releasePackage(false)
 			return jobs.FlashResult{}, fmt.Errorf("recovery requires a verified full firmware package; app-only packages are not permitted")
 		}
-		result, err := a.flashVerifiedFirmware(port, boardID, packageRef, confirmation.deviceBinding, true, "")
+		// Do all non-writing preflight first. A bad recovery job or package must
+		// leave the user's short-lived physical-board confirmation available for
+		// the corrected retry.
+		confirmation, err := a.consumeBoardConfirmation(confirmationRef, port, boardID)
+		if err != nil {
+			releasePackage(false)
+			return jobs.FlashResult{}, err
+		}
+		result, err := a.flashReservedFirmware(port, boardID, verified, releasePackage, confirmation.deviceBinding, true, "")
 		if err != nil {
 			return result, err
 		}
@@ -641,6 +687,11 @@ func (a *App) VerifyBoot(requestID, recoveryJobID, port, packageRef string) (job
 	if releaseBuild != "true" {
 		return jobs.BootVerificationResult{}, errOfficialBuildRequired
 	}
+	// Serialize against RecoverFirmware for the same durable recovery state.
+	// Both paths can mark a journal resolved, so their preflight must not run
+	// concurrently and make a stale recovery decision.
+	a.recoveryOperationMu.Lock()
+	defer a.recoveryOperationMu.Unlock()
 	if !safeRequestID(requestID) || !logging.SafeJobID(recoveryJobID) || strings.TrimSpace(port) == "" {
 		return jobs.BootVerificationResult{}, fmt.Errorf("a valid request ID, recovery job ID, and serial port are required")
 	}
@@ -664,15 +715,8 @@ func (a *App) VerifyBoot(requestID, recoveryJobID, port, packageRef string) (job
 		return existing.result, existing.err
 	}
 	a.bootVerifyMu.Unlock()
-	if found := func() bool {
-		for _, item := range a.ListRecoveryRequired() {
-			if item.JobID == recoveryJobID {
-				return true
-			}
-		}
-		return false
-	}(); !found {
-		return jobs.BootVerificationResult{}, fmt.Errorf("recovery job is no longer pending")
+	if err := a.requireRecoveryJob(recoveryJobID); err != nil {
+		return jobs.BootVerificationResult{}, err
 	}
 	verified, err := a.lookupVerifiedPackage(packageRef)
 	if err != nil {
@@ -728,25 +772,15 @@ func (a *App) PrepareJob(requestID, port, boardID, packageRef, confirmationRef, 
 	}
 	recovery := recoveryJobID != ""
 	if recovery {
-		if !logging.SafeJobID(recoveryJobID) {
-			return FlashPlan{}, fmt.Errorf("invalid recovery job ID")
-		}
-		found := false
-		for _, item := range a.ListRecoveryRequired() {
-			if item.JobID == recoveryJobID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return FlashPlan{}, fmt.Errorf("recovery job is no longer pending")
+		if err := a.requireRecoveryJob(recoveryJobID); err != nil {
+			return FlashPlan{}, err
 		}
 		manifest, verifyErr := firmware.VerifyRelease(verified.path, releaseTrustStore())
 		if verifyErr != nil || manifest.Manifest.Mode != firmware.ModeFull {
 			return FlashPlan{}, fmt.Errorf("recovery requires a verified full firmware package")
 		}
-	} else if items := a.ListRecoveryRequired(); len(items) != 0 {
-		return FlashPlan{}, fmt.Errorf("recovery is required for %d unfinished write job(s)", len(items))
+	} else if err := a.requireNoRecovery(); err != nil {
+		return FlashPlan{}, err
 	}
 	bytes := make([]byte, 24)
 	if _, err := rand.Read(bytes); err != nil {
@@ -805,12 +839,38 @@ func (a *App) StartJob(planID, planHash string) (jobs.FlashResult, error) {
 	if !ok {
 		return jobs.FlashResult{}, fmt.Errorf("flash plan is unknown, expired, or changed; prepare it again")
 	}
+	// A prepared recovery plan is another route that can resolve the durable
+	// journal. It must serialize with VerifyBoot and direct RecoverFirmware
+	// before it rechecks that journal or starts a ROM write.
+	if plan.Recovery {
+		a.recoveryOperationMu.Lock()
+		defer a.recoveryOperationMu.Unlock()
+	}
 	result, err := a.runWriteRequest(plan.requestID, map[bool]string{true: "recovery", false: "flash"}[plan.Recovery], plan.Port, plan.BoardID, plan.packageRef, plan.confirmationRef, plan.recoveryJobID, func() (jobs.FlashResult, error) {
-		confirmation, err := a.consumeBoardConfirmation(plan.confirmationRef, plan.Port, plan.BoardID)
+		// A plan freezes user inputs, not mutable device safety state. Recovery
+		// locks and package capabilities may change between PrepareJob and
+		// StartJob, so re-check them before spending the single-use confirmation.
+		if plan.Recovery {
+			if err := a.requireRecoveryJob(plan.recoveryJobID); err != nil {
+				return jobs.FlashResult{}, err
+			}
+		} else if err := a.requireNoRecovery(); err != nil {
+			return jobs.FlashResult{}, err
+		}
+		verified, releasePackage, err := a.reserveVerifiedPackage(plan.packageRef)
 		if err != nil {
 			return jobs.FlashResult{}, err
 		}
-		result, err := a.flashVerifiedFirmware(plan.Port, plan.BoardID, plan.packageRef, confirmation.deviceBinding, plan.Recovery, "")
+		if verified.boardID != plan.BoardID {
+			releasePackage(false)
+			return jobs.FlashResult{}, fmt.Errorf("verified firmware reference does not match the selected board")
+		}
+		confirmation, err := a.consumeBoardConfirmation(plan.confirmationRef, plan.Port, plan.BoardID)
+		if err != nil {
+			releasePackage(false)
+			return jobs.FlashResult{}, err
+		}
+		result, err := a.flashReservedFirmware(plan.Port, plan.BoardID, verified, releasePackage, confirmation.deviceBinding, plan.Recovery, "")
 		if err != nil || !plan.Recovery {
 			return result, err
 		}
@@ -875,17 +935,29 @@ func safeRequestID(value string) bool {
 }
 
 func (a *App) flashVerifiedFirmware(port, boardID, packageRef, expectedDeviceBinding string, recovery bool, retryOfJobID string) (jobs.FlashResult, error) {
-	profile, err := catalog.Profile(boardID)
-	if err != nil {
-		return jobs.FlashResult{}, err
-	}
 	if port == "" || packageRef == "" {
 		return jobs.FlashResult{}, fmt.Errorf("port and verified firmware reference are required")
 	}
-	verified, err := a.lookupVerifiedPackage(packageRef)
+	verified, releasePackage, err := a.reserveVerifiedPackage(packageRef)
 	if err != nil {
 		return jobs.FlashResult{}, err
 	}
+	return a.flashReservedFirmware(port, boardID, verified, releasePackage, expectedDeviceBinding, recovery, retryOfJobID)
+}
+
+// flashReservedFirmware receives a package capability already reserved by the
+// caller. Callers reserve before consuming the one-time board confirmation so
+// a concurrent write cannot spend a physical confirmation and then discover
+// that its package is unavailable. This helper takes ownership of releasing
+// the reservation on every post-reservation outcome.
+func (a *App) flashReservedFirmware(port, boardID string, verified verifiedPackage, releasePackage func(bool), expectedDeviceBinding string, recovery bool, retryOfJobID string) (jobs.FlashResult, error) {
+	profile, err := catalog.Profile(boardID)
+	if err != nil {
+		releasePackage(false)
+		return jobs.FlashResult{}, err
+	}
+	succeeded := false
+	defer func() { releasePackage(succeeded) }()
 	if verified.boardID != boardID {
 		return jobs.FlashResult{}, fmt.Errorf("verified firmware reference does not match the selected board")
 	}
@@ -907,12 +979,7 @@ func (a *App) flashVerifiedFirmware(port, boardID, packageRef, expectedDeviceBin
 		a.activeWritesMu.Unlock()
 	}()
 	result, err := job.Run(ctx)
-	if err == nil && result.Status == "succeeded" {
-		// A completed package reference must not be silently reused for a
-		// second write. runWriteRequest retains the completed result, so a
-		// transport retry with the same request ID remains idempotent.
-		a.revokeVerifiedPackage(packageRef)
-	}
+	succeeded = err == nil && result.Status == "succeeded"
 	return result, err
 }
 
@@ -998,7 +1065,7 @@ func (a *App) lookupVerifiedPackage(ref string) (verifiedPackage, error) {
 	if !ok {
 		return verifiedPackage{}, fmt.Errorf("firmware reference is unknown, expired, or was not verified in this application session")
 	}
-	if time.Since(result.issuedAt) > verifiedPackageTTL {
+	if capabilityExpired(result.issuedAt, verifiedPackageTTL) {
 		a.revokeVerifiedPackage(ref)
 		return verifiedPackage{}, fmt.Errorf("firmware reference expired; download or import the verified package again")
 	}
@@ -1012,6 +1079,58 @@ func (a *App) lookupVerifiedPackage(ref string) (verifiedPackage, error) {
 		return verifiedPackage{}, fmt.Errorf("verified firmware package changed after validation; download or import it again")
 	}
 	return result, nil
+}
+
+// reserveVerifiedPackage grants exclusive use of a verified package capability
+// to one write attempt. The result still gets re-verified by FlashJob before
+// writing; this reservation closes the interval where two independently
+// confirmed devices could otherwise begin using the same package reference.
+func (a *App) reserveVerifiedPackage(ref string) (verifiedPackage, func(bool), error) {
+	a.packageRefsMu.Lock()
+	result, ok := a.verifiedPackage[ref]
+	if !ok {
+		a.packageRefsMu.Unlock()
+		return verifiedPackage{}, nil, fmt.Errorf("firmware reference is unknown, expired, or was not verified in this application session")
+	}
+	if result.inUse {
+		a.packageRefsMu.Unlock()
+		return verifiedPackage{}, nil, fmt.Errorf("firmware reference is already in use by another flash operation")
+	}
+	if capabilityExpired(result.issuedAt, verifiedPackageTTL) {
+		delete(a.verifiedPackage, ref)
+		a.packageRefsMu.Unlock()
+		return verifiedPackage{}, nil, fmt.Errorf("firmware reference expired; download or import the verified package again")
+	}
+	result.inUse = true
+	a.verifiedPackage[ref] = result
+	a.packageRefsMu.Unlock()
+
+	actualSHA256, err := archiveSHA256(result.path)
+	if err != nil || actualSHA256 != result.archiveSHA256 {
+		a.revokeVerifiedPackage(ref)
+		if err != nil {
+			return verifiedPackage{}, nil, fmt.Errorf("verified firmware package is no longer readable: %w", err)
+		}
+		return verifiedPackage{}, nil, fmt.Errorf("verified firmware package changed after validation; download or import it again")
+	}
+	var once sync.Once
+	release := func(succeeded bool) {
+		once.Do(func() {
+			a.packageRefsMu.Lock()
+			defer a.packageRefsMu.Unlock()
+			current, exists := a.verifiedPackage[ref]
+			if !exists || !current.inUse {
+				return
+			}
+			if succeeded {
+				delete(a.verifiedPackage, ref)
+				return
+			}
+			current.inUse = false
+			a.verifiedPackage[ref] = current
+		})
+	}
+	return result, release, nil
 }
 
 func (a *App) revokeVerifiedPackage(ref string) {
@@ -1085,7 +1204,7 @@ func (a *App) ConfirmBoard(port, boardID, probeJobID string) (BoardConfirmation,
 	if probe.Port != port {
 		return BoardConfirmation{}, fmt.Errorf("probe evidence belongs to a different serial port")
 	}
-	if time.Since(probe.FinishedAt) > boardConfirmationTTL {
+	if probe.FinishedAt.After(time.Now().UTC()) || time.Since(probe.FinishedAt) > boardConfirmationTTL {
 		return BoardConfirmation{}, fmt.Errorf("probe evidence expired; run the read-only check again before confirming the board")
 	}
 	bytes := make([]byte, 24)
@@ -1099,7 +1218,7 @@ func (a *App) ConfirmBoard(port, boardID, probeJobID string) (BoardConfirmation,
 		a.confirmations = make(map[string]boardConfirmation)
 	}
 	for key, confirmation := range a.confirmations {
-		if time.Since(confirmation.issuedAt) > boardConfirmationTTL {
+		if capabilityExpired(confirmation.issuedAt, boardConfirmationTTL) {
 			delete(a.confirmations, key)
 		}
 	}
@@ -1122,6 +1241,9 @@ func (a *App) ConfirmDetectedBoard(port, probeJobID string) (BoardConfirmation, 
 	}
 	if probe.Port != port {
 		return BoardConfirmation{}, fmt.Errorf("probe evidence belongs to a different serial port")
+	}
+	if probe.FinishedAt.After(time.Now().UTC()) || time.Since(probe.FinishedAt) > boardConfirmationTTL {
+		return BoardConfirmation{}, fmt.Errorf("probe evidence expired; run the read-only check again before confirming the board")
 	}
 	recognition := probe.BoardRecognition
 	if recognition.Status != "probable" && probe.AppIdentity.FirmwareTargetBoardID != "" {
@@ -1153,12 +1275,12 @@ func (a *App) readSuccessfulProbe(jobID string) (jobs.ProbeResult, error) {
 }
 
 func (a *App) consumeBoardConfirmation(ref, port, boardID string) (boardConfirmation, error) {
-	if _, err := a.validateBoardConfirmation(ref, port, boardID); err != nil {
-		return boardConfirmation{}, err
-	}
 	a.confirmationsMu.Lock()
 	defer a.confirmationsMu.Unlock()
-	confirmation := a.confirmations[ref]
+	confirmation, err := a.validateBoardConfirmationLocked(ref, port, boardID)
+	if err != nil {
+		return boardConfirmation{}, err
+	}
 	delete(a.confirmations, ref)
 	return confirmation, nil
 }
@@ -1167,16 +1289,24 @@ func (a *App) consumeBoardConfirmation(ref, port, boardID string) (boardConfirma
 // prepared plan is allowed to expire; only StartJob spends the single-use
 // physical-board confirmation.
 func (a *App) validateBoardConfirmation(ref, port, boardID string) (boardConfirmation, error) {
+	a.confirmationsMu.Lock()
+	defer a.confirmationsMu.Unlock()
+	return a.validateBoardConfirmationLocked(ref, port, boardID)
+}
+
+// validateBoardConfirmationLocked keeps validation and single-use consumption
+// in one critical section. Without this, two concurrent StartJob calls that
+// carry distinct request IDs could both validate the same confirmation before
+// either caller removes it.
+func (a *App) validateBoardConfirmationLocked(ref, port, boardID string) (boardConfirmation, error) {
 	if strings.TrimSpace(ref) == "" {
 		return boardConfirmation{}, fmt.Errorf("a fresh physical board confirmation is required before flashing")
 	}
-	a.confirmationsMu.Lock()
-	defer a.confirmationsMu.Unlock()
 	confirmation, ok := a.confirmations[ref]
 	if !ok {
 		return boardConfirmation{}, fmt.Errorf("board confirmation is unknown, expired, or already used; confirm the physical board again")
 	}
-	if time.Since(confirmation.issuedAt) > boardConfirmationTTL {
+	if capabilityExpired(confirmation.issuedAt, boardConfirmationTTL) {
 		delete(a.confirmations, ref)
 		return boardConfirmation{}, fmt.Errorf("board confirmation expired; run the read-only check and confirm the physical board again")
 	}

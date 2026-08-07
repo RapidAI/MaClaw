@@ -163,7 +163,7 @@ func deliverSrvIMFileToTarget(ctx context.Context, svc *agentservice.Service, pr
 		if err != nil {
 			return err
 		}
-		return gw.SendMedia(ctx, lansenger.OutgoingMedia{ToUserID: peer, FileData: data, FileName: fileName, MediaType: "file", IsGroup: isGroup})
+		return gw.SendMedia(ctx, lansenger.OutgoingMedia{ToUserID: peer, FileData: data, FileName: fileName, MediaType: "file", IsGroup: isGroup, Strict: true})
 	case scheduler.DeliveryChannelTelegram:
 		gw, err := newTelegramGatewayForPrincipal(svc, principal)
 		if err != nil {

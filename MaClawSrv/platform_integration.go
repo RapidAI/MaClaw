@@ -20,6 +20,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 )
 
 const (
@@ -2033,18 +2034,11 @@ func platformLaunchScheme(value string) string {
 }
 
 func platformLaunchHost(value string) string {
-	host := platformForwardedHeaderFirst(value)
-	if host == "" || strings.ContainsAny(host, " \t\r\n/@?#\\%\"'") {
-		return "127.0.0.1"
-	}
-	return host
+	return coreim.ThirdPartyForwardedHost(value)
 }
 
 func platformForwardedHeaderFirst(value string) string {
-	if idx := strings.Index(value, ","); idx >= 0 {
-		value = value[:idx]
-	}
-	return strings.TrimSpace(value)
+	return coreim.ThirdPartyForwardedHeaderFirst(value)
 }
 
 func maxPlatformTime(a, b time.Time) time.Time {

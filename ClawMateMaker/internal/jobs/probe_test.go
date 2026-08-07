@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"clawmatemaker/internal/flash"
 	"clawmatemaker/internal/partition"
@@ -93,6 +94,24 @@ func TestSecurityBaselineRequiresKnownDisabledState(t *testing.T) {
 	enabled := true
 	if securityBaseline(flash.SecurityInfo{SecureBoot: &enabled, FlashEncryption: &baseline, SecureVersion: &version}) {
 		t.Fatal("enabled secure boot was accepted")
+	}
+}
+
+func TestWaitForApplicationIdentityHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitForApplicationIdentity(ctx, time.Second); err != context.Canceled {
+		t.Fatalf("cancelled identity wait error = %v", err)
+	}
+}
+
+func TestWaitForApplicationIdentityWaitsForRequestedDelay(t *testing.T) {
+	started := time.Now()
+	if err := waitForApplicationIdentity(context.Background(), 15*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < 10*time.Millisecond {
+		t.Fatalf("identity stabilization wait was too short: %s", elapsed)
 	}
 }
 

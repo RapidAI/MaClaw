@@ -221,7 +221,7 @@ func (s *HTTPServer) pairHardwareDevice(ctx context.Context, clientID, code stri
 	}
 	before := cfg.AppConfig
 	if strings.TrimSpace(cfg.AppConfig.ThirdPartyGatewayToken) == "" {
-		cfg.AppConfig.ThirdPartyGatewayToken, err = randomThirdPartyGatewayToken()
+		cfg.AppConfig.ThirdPartyGatewayToken, err = coreim.RandomThirdPartyToken()
 		if err != nil {
 			return nil, fmt.Errorf("could not create device credential")
 		}
